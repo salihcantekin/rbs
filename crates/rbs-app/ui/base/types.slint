@@ -1,0 +1,2345 @@
+// Every global, struct and enum of the desktop UI (ADR-0138 decision 2). Moved here
+// from the files named above each group; those files import them back by path, and
+// the window crates import them from the base library (`@rbsui`).
+import { Palette } from "std-widgets.slint";
+import { Theme, Tokens, ThemeSlot } from "tokens.slint";
+
+// From components.slint.
+// Focus ring drawn around a focused control.
+// A FocusScope that tells keyboard focus from pointer focus (like CSS :focus-visible).
+// A click or press calls `focus-pointer()`; `ring` is then false until focus leaves,
+// so the focus ring appears only after Tab or arrow-key navigation, never after a mouse
+// click. Focus and the accessibility tree are unchanged.
+// Rule (tests/ui_patterns.rs): a focus scope without child elements that is declared after another element sets
+// `focus-on-click: false`. Declared later, it lies over that element, and a scope that
+// takes focus on click accepts the first press while it has no focus, so the control
+// under it would need a second click (a Tabs bar after a click in another panel). The
+// control's own click handler calls `focus-pointer()` instead.
+// Keyboard focus that lands in a scrolled list shows the whole row holding the
+// control, its name and help too, not only the control (Slint scrolls just the
+// focused element into view). A control reports where its focus landed; the
+// `SettingRow` that contains that place reports itself; the `ScrollArea` that holds
+// the row scrolls it into view. All in window coordinates, all on events only.
+export global FocusReveal {
+    in-out property <int> serial;
+    in-out property <length> x;
+    in-out property <length> y;
+    in-out property <int> row-serial;
+    in-out property <length> row-x;
+    in-out property <length> row-y;
+    in-out property <length> row-w;
+    in-out property <length> row-h;
+    public function focused(x: length, y: length) {
+        self.x = x;
+        self.y = y;
+        self.serial += 1;
+    }
+    public function row(x: length, y: length, w: length, h: length) {
+        self.row-x = x;
+        self.row-y = y;
+        self.row-w = w;
+        self.row-h = h;
+        self.row-serial += 1;
+    }
+}
+
+// The Settings search target (docs/specs/settings-search.md, step 2). The window
+// sets `key` (a row key or card id) and steps `serial`; the row or card with that
+// key, when drawn, answers: it sets `found`, reports itself through FocusReveal so
+// its scroll area brings it into view, and is marked while `marked` holds its key.
+// Rows also answer when they are made, so a section switched to at the same time
+// works. Nothing runs while `key` is empty.
+export global SettingsFind {
+    in-out property <string> key;
+    in-out property <int> serial;
+    in-out property <bool> found;
+    in-out property <string> marked;
+    // Called by the row or card with `key` (absolute position and size).
+    public function answer(key: string, x: length, y: length, w: length, h: length) {
+        self.found = true;
+        self.marked = key;
+        FocusReveal.row(x, y, w, h);
+    }
+}
+
+// BEGIN generated icon names (icons.rs; do not edit)
+// The icon set (docs/specs/ui-design-system.md, "Icons"; rbs_ui::icon::ICONS).
+export enum IconName {
+    none,
+    more,
+    chevron-down,
+    chevron-up,
+    chevron-left,
+    chevron-right,
+    check,
+    close,
+    dot,
+    ring,
+    stop,
+    pause,
+    play,
+    hold,
+    coffee,
+    plus,
+    pin,
+    panel-left,
+    panel-right,
+    panel-bottom,
+    bolt,
+    grid,
+    copy,
+    window,
+    search,
+    monitor,
+    camera,
+    mic,
+    speaker,
+    eye,
+    eye-off,
+    expand,
+    lock,
+    unlock,
+    speaker-off,
+    headphones,
+    headphones-off,
+    sliders,
+    palette,
+    keyboard,
+    broadcast,
+    link,
+    globe,
+    warning,
+    info,
+    gear,
+    user,
+    folder,
+    undo,
+    redo,
+    layout,
+    panel-all,
+    panel-none,
+    reset,
+    refresh,
+    image,
+    pencil,
+    trash,
+    transition,
+    export,
+    import,
+    arrow-left,
+    arrow-right,
+    menu,
+    rail-between,
+    rail-below,
+    window-minimize,
+    window-maximize,
+    flip-h,
+    flip-v,
+    rotate-cw,
+    rotate-ccw,
+    fit,
+    fill-canvas,
+    stretch,
+    center,
+    window-restore,
+    collapse,
+    expand-all,
+    auto-hide,
+    move,
+    float,
+    dock,
+    save,
+    clock,
+    hourglass,
+    canvas-vertical,
+    circle,
+    square,
+    rectangle,
+    rounded-rectangle,
+    ellipse,
+    triangle,
+    key,
+    wand,
+    eraser,
+    ban,
+    text,
+    flag,
+}
+
+// An icon by its name in the icon set, as Rust passes it (registry and panel icons).
+export global Icons {
+    // Slint has no string to enum conversion; unknown names draw nothing.
+    public pure function named(name: string) -> IconName {
+        return name == "more" ? IconName.more
+        : name == "chevron-down" ? IconName.chevron-down
+        : name == "chevron-up" ? IconName.chevron-up
+        : name == "chevron-left" ? IconName.chevron-left
+        : name == "chevron-right" ? IconName.chevron-right
+        : name == "check" ? IconName.check
+        : name == "close" ? IconName.close
+        : name == "dot" ? IconName.dot
+        : name == "ring" ? IconName.ring
+        : name == "stop" ? IconName.stop
+        : name == "pause" ? IconName.pause
+        : name == "play" ? IconName.play
+        : name == "hold" ? IconName.hold
+        : name == "coffee" ? IconName.coffee
+        : name == "plus" ? IconName.plus
+        : name == "pin" ? IconName.pin
+        : name == "panel-left" ? IconName.panel-left
+        : name == "panel-right" ? IconName.panel-right
+        : name == "panel-bottom" ? IconName.panel-bottom
+        : name == "bolt" ? IconName.bolt
+        : name == "grid" ? IconName.grid
+        : name == "copy" ? IconName.copy
+        : name == "window" ? IconName.window
+        : name == "search" ? IconName.search
+        : name == "monitor" ? IconName.monitor
+        : name == "camera" ? IconName.camera
+        : name == "mic" ? IconName.mic
+        : name == "speaker" ? IconName.speaker
+        : name == "eye" ? IconName.eye
+        : name == "eye-off" ? IconName.eye-off
+        : name == "expand" ? IconName.expand
+        : name == "lock" ? IconName.lock
+        : name == "unlock" ? IconName.unlock
+        : name == "speaker-off" ? IconName.speaker-off
+        : name == "headphones" ? IconName.headphones
+        : name == "headphones-off" ? IconName.headphones-off
+        : name == "sliders" ? IconName.sliders
+        : name == "palette" ? IconName.palette
+        : name == "keyboard" ? IconName.keyboard
+        : name == "broadcast" ? IconName.broadcast
+        : name == "link" ? IconName.link
+        : name == "globe" ? IconName.globe
+        : name == "warning" ? IconName.warning
+        : name == "info" ? IconName.info
+        : name == "gear" ? IconName.gear
+        : name == "user" ? IconName.user
+        : name == "folder" ? IconName.folder
+        : name == "undo" ? IconName.undo
+        : name == "redo" ? IconName.redo
+        : name == "layout" ? IconName.layout
+        : name == "panel-all" ? IconName.panel-all
+        : name == "panel-none" ? IconName.panel-none
+        : name == "reset" ? IconName.reset
+        : name == "refresh" ? IconName.refresh
+        : name == "image" ? IconName.image
+        : name == "pencil" ? IconName.pencil
+        : name == "trash" ? IconName.trash
+        : name == "transition" ? IconName.transition
+        : name == "export" ? IconName.export
+        : name == "import" ? IconName.import
+        : name == "arrow-left" ? IconName.arrow-left
+        : name == "arrow-right" ? IconName.arrow-right
+        : name == "menu" ? IconName.menu
+        : name == "rail-between" ? IconName.rail-between
+        : name == "rail-below" ? IconName.rail-below
+        : name == "window-minimize" ? IconName.window-minimize
+        : name == "window-maximize" ? IconName.window-maximize
+        : name == "flip-h" ? IconName.flip-h
+        : name == "flip-v" ? IconName.flip-v
+        : name == "rotate-cw" ? IconName.rotate-cw
+        : name == "rotate-ccw" ? IconName.rotate-ccw
+        : name == "fit" ? IconName.fit
+        : name == "fill-canvas" ? IconName.fill-canvas
+        : name == "stretch" ? IconName.stretch
+        : name == "center" ? IconName.center
+        : name == "window-restore" ? IconName.window-restore
+        : name == "collapse" ? IconName.collapse
+        : name == "expand-all" ? IconName.expand-all
+        : name == "auto-hide" ? IconName.auto-hide
+        : name == "move" ? IconName.move
+        : name == "float" ? IconName.float
+        : name == "dock" ? IconName.dock
+        : name == "save" ? IconName.save
+        : name == "clock" ? IconName.clock
+        : name == "hourglass" ? IconName.hourglass
+        : name == "canvas-vertical" ? IconName.canvas-vertical
+        : name == "circle" ? IconName.circle
+        : name == "square" ? IconName.square
+        : name == "rectangle" ? IconName.rectangle
+        : name == "rounded-rectangle" ? IconName.rounded-rectangle
+        : name == "ellipse" ? IconName.ellipse
+        : name == "triangle" ? IconName.triangle
+        : name == "key" ? IconName.key
+        : name == "wand" ? IconName.wand
+        : name == "eraser" ? IconName.eraser
+        : name == "ban" ? IconName.ban
+        : name == "text" ? IconName.text
+        : name == "flag" ? IconName.flag
+        : IconName.none;
+    }
+}
+// END generated icon names
+
+// One fixed picture size inside a SizeNest. `scale` is its long side divided by 4K,
+// so the frames share one corner and keep their pixel ratio.
+export struct SizeBand { title: string, detail: string, picture-w: int, picture-h: int, index: int, scale: float }
+
+// Panel sections the user closed (ADR-0078), saved in the workspace file. Rust answers
+// `closed`; `rev` changes whenever the answers may have, because Slint calls a pure
+// callback again only when its arguments change.
+// Which section levels are drawn (ADR-0113 decision 1), set from the `experience`
+// setting in every window. Both on until the app sets them, so a window shows
+// everything.
+export global Experience {
+    in property <bool> advanced: true;
+    in property <bool> expert: true;
+    // Shells whose "More options are hidden" line was answered with Show (decision 4),
+    // by the shell's id, while this window is open. Slint asks again when `rev` changes;
+    // the shell steps it after `show`.
+    in-out property <int> rev;
+    pure callback shown(string /* id */, int /* rev */) -> bool;
+    callback show(string /* id */);
+}
+
+export global Sections {
+    in property <int> rev;
+    // The Mixer's layout (ADR-0083): 0 auto (by the panel's shape), 1 rows, 2 columns.
+    in property <int> mixer-orientation;
+    // Columns: This scene pane share of the groups row (0.05..0.95). Default 0.5.
+    in property <float> mixer-scene-share;
+    pure callback closed(string /* id */, int /* rev */) -> bool;
+    callback set-closed(string /* id */, bool /* closed */);
+    callback set-mixer-scene-share(float /* share */);
+    // A page's cards by id prefix: 0 none fold, 1 some are open, 2 all are closed.
+    pure callback group-state(string /* prefix */, int /* rev */) -> int;
+    callback set-group(string /* prefix */, bool /* closed */);
+    // The same for a list of section ids, comma separated (the sections Properties
+    // draws now): 0 none, 1 some are open, 2 all are closed.
+    pure callback list-state(string /* ids */, int /* rev */) -> int;
+    callback set-list(string /* ids */, bool /* closed */);
+}
+
+// ---- Overlays (ADR-0094): the info hint popover and the tooltip --------------------
+// Slint draws a `PopupWindow` without keyboard focus, so these are plain layers drawn
+// last in the window root by `OverlayHost` (one per window). They exist (are
+// instantiated) only while open or shown, and the only timer runs while a tooltip is
+// waiting. The shell cuts what they cover out of the native preview layer through
+// `hint-cover` and `tip-cover` (ADR-0054), like the toasts.
+export struct OverlayCover { x: length, y: length, width: length, height: length }
+
+// A row of the picker: `index` is its place in the listing the app made it from, so a
+// filter never changes what choosing it means.
+export struct PickerRow { name: string, note: string, index: int }
+
+// The menus RBS draws in the window (ADR-0137): every context menu (`CommandMenu`)
+// is a layer of the window's `OverlayHost`, drawn from tokens the same on every
+// platform. Only the projector keeps a native menu (`NativeCommandMenu`), which the
+// system draws outside its shared picture.
+
+// One choice of a native submenu: its title, the registry id it runs, and whether it
+// is the current one.
+export struct ContextChoice { title: string, id: string, checked: bool, icon: image }
+
+// One item of a native menu: `kind` 1 a command, 2 a separator, 3 a submenu of `choices`.
+export struct ContextItem {
+    kind: int,
+    title: string,
+    // Empty while a checkmark takes its place.
+    icon: image,
+    id: string,
+    enabled: bool,
+    checkable: bool,
+    checked: bool,
+    choices: [ContextChoice],
+}
+
+// One row of a drawn menu: `kind` 1 a command, 2 a separator, 3 a submenu (its rows
+// come from `ContextMenus.submenu`).
+export struct MenuRow {
+    kind: int,
+    title: string,
+    // Icon name from the set; empty while a checkmark takes its place.
+    icon: string,
+    // The shortcut bound to the command, as the platform writes it, or "".
+    shortcut: string,
+    id: string,
+    enabled: bool,
+    checkable: bool,
+    checked: bool,
+    // Why it is disabled, or "".
+    reason: string,
+}
+
+export global ContextMenus {
+    // The native menu's items (the projector), at most as many as its slots.
+    in-out property <[ContextItem]> items;
+    // The native menu's items of `context` for `target` (`key=value&...`, the
+    // parameters that name what was right-clicked, percent-encoded as in command ids).
+    callback prepare(string /* context */, string /* target */) -> [ContextItem];
+    // The drawn menu's rows of `context` for `target`. Rust keeps the submenus of the
+    // menu it made, sets `has-reasons`, and keeps the focus of the moment, which
+    // `closed` gives back.
+    callback rows(string /* context */, string /* target */) -> [MenuRow];
+    // The rows of the submenu at row `index` of the last menu made.
+    callback submenu(int) -> [MenuRow];
+    // The next row after `from` (wrapping) whose title starts with `letter`
+    // (case-insensitive), or -1.
+    pure callback find(/* rows */ [MenuRow], /* from */ int, /* letter */ string) -> int;
+    // Where a menu (`beside` false) or a submenu (`beside` true) of natural size `w` x `h`
+    // goes for `anchor`, in a window `win-w` x `win-h`, `margin` from its edges
+    // (`menu_layout::place`).
+    pure callback place(/* anchor */ OverlayCover, /* w */ length, /* h */ length, /* win-w */ length, /* win-h */ length, /* margin */ length, /* beside */ bool) -> OverlayCover;
+    // Runs a command registry id: false when it is refused (its entry is disabled by
+    // now, ADR-0137 decision 6), so a switch row keeps its state and the menu closes.
+    callback run(string) -> bool;
+    // The drawn menu closed: Rust gives the focus back to what had it.
+    callback closed();
+    // The drawn menu of the window: open, its rows, whether any row has a disabled
+    // reason (the menu then has a reason line), and its anchor (window coordinates:
+    // the bottom-left corner and the height above it). `serial` moves on each open.
+    in-out property <bool> open;
+    in-out property <[MenuRow]> shown;
+    in-out property <bool> has-reasons;
+    in-out property <length> x;
+    in-out property <length> y;
+    in-out property <length> above;
+    in-out property <length> wide;
+    in-out property <int> serial;
+    // Where the menu and its submenu are, for the preview layer's cut-out (ADR-0054).
+    in-out property <OverlayCover> cover;
+    in-out property <bool> sub-open;
+    in-out property <OverlayCover> sub-cover;
+    // Opens the menu of `context` for `target` under the window point (`x`, `y`), or
+    // over it, `above` higher, when there is no room below; a menu that does not fit
+    // on the right ends at `x + wide` (a button's right edge). Nothing opens when the
+    // context has no items.
+    public function open-at(context: string, target: string, x: length, y: length, wide: length, above: length) {
+        let rows = root.rows(context, target);
+        if rows.length == 0 { return; }
+        root.shown = rows;
+        root.x = x;
+        root.y = y;
+        root.above = above;
+        root.wide = wide;
+        root.serial += 1;
+        root.open = true;
+    }
+    // Closes the menu without running anything.
+    public function close() {
+        if !root.open { return; }
+        root.open = false;
+        root.sub-open = false;
+        root.closed();
+    }
+}
+
+export global Overlays {
+    property <int> serial;
+    // The info hint popover: its text, and the button it belongs to (its window
+    // position and size). One is open at a time.
+    in-out property <bool> hint-open;
+    in-out property <int> hint-owner;
+    in-out property <string> hint-text;
+    in-out property <string> hint-detail;
+    in-out property <length> hint-x;
+    in-out property <length> hint-y;
+    in-out property <length> hint-w;
+    in-out property <length> hint-h;
+    in-out property <OverlayCover> hint-cover;
+    public function open-hint(text: string, detail: string, x: length, y: length, w: length, h: length) -> int {
+        ContextMenus.close();
+        serial += 1;
+        hint-text = text;
+        hint-detail = detail;
+        hint-x = x;
+        hint-y = y;
+        hint-w = w;
+        hint-h = h;
+        hint-owner = serial;
+        hint-open = true;
+        tip-owner = -1;
+        tip-shown = false;
+        return serial;
+    }
+    public function close-hint() { hint-open = false; }
+
+    // The colour popover (ColorPicker): opened by a swatch at its window position, drawn
+    // by `OverlayHost`; a pick comes back as `color-result` with `color-serial` moving,
+    // and only the swatch whose id is `color-owner` takes it.
+    in-out property <bool> color-open;
+    in-out property <string> color-label;
+    in-out property <color> color-value;
+    in-out property <length> color-x;
+    in-out property <length> color-y;
+    in-out property <length> color-w;
+    in-out property <length> color-h;
+    in-out property <int> color-owner;
+    in-out property <string> color-result;
+    in-out property <int> color-serial;
+    in-out property <OverlayCover> color-cover;
+    public function open-color(label: string, value: color, x: length, y: length, w: length, h: length) -> int {
+        ContextMenus.close();
+        serial += 1;
+        color-label = label;
+        color-value = value;
+        color-x = x;
+        color-y = y;
+        color-w = w;
+        color-h = h;
+        color-owner = serial;
+        color-open = true;
+        return serial;
+    }
+
+    // The long list of a `Select` (`SelectList`): opened by the field at its window
+    // position, drawn by `OverlayHost`; a choice comes back as `select-result` with
+    // `select-serial` moving, and only the Select whose id is `select-owner` takes it.
+    in-out property <bool> select-open;
+    in-out property <string> select-label;
+    in-out property <[string]> select-options;
+    // The chosen option (checked) and the highlighted one (Up and Down move it).
+    in-out property <int> select-chosen;
+    in-out property <int> select-current;
+    in-out property <length> select-x;
+    in-out property <length> select-y;
+    in-out property <length> select-w;
+    in-out property <length> select-h;
+    in-out property <int> select-owner: -1;
+    in-out property <int> select-result;
+    in-out property <int> select-serial;
+    in-out property <OverlayCover> select-cover;
+    public function open-select(label: string, options: [string], index: int, x: length, y: length, w: length, h: length) -> int {
+        ContextMenus.close();
+        serial += 1;
+        select-label = label;
+        select-options = options;
+        select-chosen = index;
+        select-current = max(0, index);
+        select-x = x;
+        select-y = y;
+        select-w = w;
+        select-h = h;
+        select-owner = serial;
+        select-open = true;
+        return serial;
+    }
+    public function choose-select(index: int) {
+        select-open = false;
+        select-result = index;
+        select-serial += 1;
+    }
+
+    // The searchable picker (Add source; the font list next): a title, a filter field
+    // that keeps the focus, a status line while it says something (searching, nothing
+    // found), the rows the app made, Cancel. The app filters (`picker-filtered`) and
+    // sets the rows; Enter chooses the highlighted row, Up and Down move it, Escape or a
+    // click outside cancels. Reported as a cover like the name prompt (ADR-0054).
+    in-out property <bool> picker-open;
+    in-out property <string> picker-title;
+    in-out property <string> picker-status;
+    in-out property <[PickerRow]> picker-rows;
+    in-out property <int> picker-current;
+    in-out property <OverlayCover> picker-cover;
+    // An optional checkbox next to Cancel (empty label: none), for example "Capture
+    // audio too" when adding a display or window (ADR-0096). The explanation sits
+    // behind its info button.
+    in-out property <string> picker-option-label;
+    in-out property <string> picker-option-hint;
+    in-out property <bool> picker-option;
+    callback picker-option-toggled(bool);
+    callback picker-chosen(int /* the row's index */);
+    callback picker-filtered(string);
+    callback picker-cancelled();
+
+    // The name prompt of the main window (Save as new): a small dialog over the
+    // window. Enter accepts, Escape or Cancel closes it; a refusal stays in the prompt
+    // as `name-error`. Reported as a cover like the hint (ADR-0054).
+    in-out property <bool> name-open;
+    in-out property <string> name-value;
+    in-out property <string> name-error;
+    // The dialog's title and the label of its accepting button; `name-ask` false makes
+    // it a confirmation (Delete / Keep, Keep focused) with `name-error` as its message
+    // line and no field.
+    in-out property <string> name-title: @tr("Save as new workspace");
+    in-out property <string> name-confirm: @tr("Save");
+    in-out property <bool> name-ask: true;
+    in-out property <OverlayCover> name-cover;
+    callback name-accepted(string);
+    callback name-cancelled();
+
+    // The transition rail's options (ADR-0128): drawn by the main window over the
+    // button that opened them (its window position and size); `transition-full` adds
+    // the type and the duration (the narrow rail). Reported as a cover like the hint.
+    in-out property <bool> transition-open;
+    in-out property <bool> transition-full;
+    in-out property <length> transition-x;
+    in-out property <length> transition-y;
+    in-out property <length> transition-w;
+    in-out property <length> transition-h;
+    in-out property <OverlayCover> transition-cover;
+
+    // A scene's "Transition into this scene" card (ADR-0135 decision 14): drawn by the
+    // window whose Scenes panel holds the scene's row, under the row (its window
+    // position and size). `scene-transition-kind` is -1 for the collection's kind, else
+    // the rail's index; `scene-transition-ms` -1 for the kind's own duration. Reported
+    // as a cover like the hint.
+    in-out property <bool> scene-transition-open;
+    in-out property <int> scene-transition-id: -1;
+    in-out property <string> scene-transition-name;
+    in-out property <int> scene-transition-kind: -1;
+    in-out property <int> scene-transition-ms: -1;
+    in-out property <length> scene-transition-x;
+    in-out property <length> scene-transition-y;
+    in-out property <length> scene-transition-w;
+    in-out property <length> scene-transition-h;
+    in-out property <OverlayCover> scene-transition-cover;
+
+    // The live chip's destinations list (ADR-0127 decision 17): drawn by the main
+    // window under the button that opened it, reported as a cover like the hint.
+    in-out property <bool> live-open;
+    in-out property <length> live-x;
+    in-out property <length> live-y;
+    in-out property <length> live-w;
+    in-out property <length> live-h;
+    in-out property <OverlayCover> live-cover;
+
+    // The "Add vertical output" dialog (ADR-0093 decision 8): a small form over the
+    // main window. Rust reads the chosen values when `vertical-accepted` fires and
+    // sets `vertical-error` when the studio refuses. With a vertical canvas already
+    // there (`vertical-exists`) the dialog offers Remove instead.
+    in-out property <bool> vertical-open;
+    in-out property <bool> vertical-exists;
+    in-out property <string> vertical-error;
+    in-out property <OverlayCover> vertical-cover;
+    // 0 is 1080x1920, 1 is 720x1280, 2 is a custom size (`vertical-w` by `vertical-h`).
+    in-out property <int> vertical-size;
+    in-out property <float> vertical-w: 1080;
+    in-out property <float> vertical-h: 1920;
+    in-out property <bool> vertical-follow: true;
+    // 0 keeps the main layout, 1 Fit, 2 Fill, 3 Stack.
+    in-out property <int> vertical-layout;
+    callback vertical-accepted();
+    callback vertical-removed();
+    callback vertical-cancelled();
+
+    // The first-run page (ADR-0113 decision 5): shown once on a new install. `first-run-choice`
+    // is 0 Simple, 1 Standard (the default), 2 Pro; `first-run-theme` 0 System, 1 Dark,
+    // 2 Light. `first-run-done` gets the choice, or -1 for Skip.
+    in-out property <bool> first-run-open;
+    in-out property <OverlayCover> first-run-cover;
+    in-out property <int> first-run-choice: 1;
+    in-out property <int> first-run-theme;
+    callback first-run-done(int /* choice, -1 skipped */, int /* theme */);
+
+    // The tooltip: waits `delay.tooltip` after the pointer rests on its control, shows
+    // at once for keyboard focus, stays while the pointer is over the control or the
+    // tooltip, and Escape dismisses it until the pointer or focus leaves. Only the
+    // active window shows one. The app reports what Slint does not tell a control
+    // (`rbs_app::window_events`): losing the activation, a press, a scroll, the pointer
+    // leaving the window or moving off the control (`pointer-at`) close it.
+    in-out property <int> tip-owner: -1;
+    in-out property <bool> window-active: true;
+    in-out property <string> tip-text;
+    in-out property <length> tip-x;
+    in-out property <length> tip-y;
+    in-out property <length> tip-w;
+    in-out property <length> tip-h;
+    in-out property <bool> tip-shown;
+    in-out property <bool> tip-over;
+    in-out property <OverlayCover> tip-cover;
+    out property <bool> tip-waiting: tip-owner >= 0 && !tip-shown && !hint-open && window-active;
+    public function window-activation(active: bool) {
+        window-active = active;
+        if !active {
+            tip-close();
+            // A drawn menu closes with its window's activation (ADR-0137 decision 6).
+            ContextMenus.close();
+        }
+    }
+    // Closes the tooltip, shown or waiting.
+    public function tip-close() {
+        tip-owner = -1;
+        tip-shown = false;
+        tip-over = false;
+    }
+    // The app reports where the pointer moved in the window (logical pixels): outside
+    // the tooltip's control and the tooltip itself, the tooltip closes. This also covers
+    // a control that went away under it (a page change, a list rebuilt) and a move onto
+    // a control without a tooltip, which never call `tip-leave`.
+    public function pointer-at(x: length, y: length) {
+        if tip-owner < 0 { return; }
+        if x >= tip-x && x < tip-x + tip-w && y >= tip-y && y < tip-y + tip-h { return; }
+        if tip-shown && x >= tip-cover.x && x < tip-cover.x + tip-cover.width && y >= tip-cover.y && y < tip-cover.y + tip-cover.height { return; }
+        tip-close();
+    }
+    public function tip-enter(text: string, x: length, y: length, w: length, h: length, by-focus: bool) -> int {
+        serial += 1;
+        tip-text = text;
+        tip-x = x;
+        tip-y = y;
+        tip-w = w;
+        tip-h = h;
+        tip-owner = serial;
+        tip-shown = by-focus && !hint-open && window-active;
+        return serial;
+    }
+    public function tip-leave(owner: int) {
+        if owner == tip-owner && !tip-over {
+            tip-owner = -1;
+            tip-shown = false;
+        }
+    }
+    // True when a tooltip was showing for `owner` and is now dismissed.
+    public function tip-dismiss(owner: int) -> bool {
+        if owner == tip-owner && tip-shown {
+            tip-shown = false;
+            tip-owner = -1;
+            return true;
+        }
+        return false;
+    }
+}
+
+// From app.slint.
+// One destination of the running stream in the live chip's list (ADR-0127 decision 17).
+export struct LiveDestinationRow { id: int, name: string, state: string, detail: string, problem: bool, can-stop: bool, can-retry: bool }
+
+export struct TabData { id: string, title: string, known: bool, icon: string }
+
+export struct StackData { window: int, stack: int, x: length, y: length, w: length, h: length, tabs: [TabData], active: int, collapsed: bool, can-collapse: bool, can-hide: bool }
+
+// The Transition rail of the centre's studio split, in studio mode (ADR-0064).
+export struct RailData { shown: bool, x: length, y: length, w: length, h: length, below: bool }
+
+export struct HandleData { window: int, index: int, x: length, y: length, w: length, h: length, horizontal: bool, percent: int }
+
+export struct PanelEntry { id: string, title: string, open: bool }
+
+export struct WorkspaceEntry { name: string, built-in: bool, current: bool }
+
+// A toolbar item (ADR-0050). kind: 0 command, 1 the workspace picker, 2 separator,
+// 3 flexible space, 4 an item this version cannot run (shown disabled).
+export struct ToolbarData { id: string, title: string, kind: int, enabled: bool, checked: bool, live: bool, icon: string, icon-only: bool }
+
+// An auto-hidden panel's edge tab (ADR-0049 decision 2); `size` is its flyout's
+// width, or height on the bottom edge.
+export struct EdgeTabData { id: string, title: string, icon: string, size: length }
+
+// State and commands shared by every window. Slint globals are per window, so
+// A rectangle in window coordinates.
+export struct Cover {
+    x: length,
+    y: length,
+    width: length,
+    height: length,
+}
+
+// Rust pushes the same state into each window's copy.
+// The menu bar's run-time values (menu_bar.rs): titles, enabled and checked states
+// indexed in the generated items' order, and each choice submenu's choices.
+export struct MenuChoice { title: string, id: string, checked: bool, icon: image }
+
+export global Menus {
+    in property <[string]> titles;
+    // Each item's icon; empty while a checkmark takes its place.
+    in property <[image]> icons;
+    in property <[bool]> enabled;
+    in property <[bool]> checked;
+    in property <[[MenuChoice]]> choices;
+    // Runs a command registry id (ADR-0050).
+    callback run(string);
+}
+
+export global Shell {
+    // The chord that runs `canvas.transition`, as the platform writes it; shown on the
+    // Transition rail (ADR-0064). Empty when it has none.
+    in property <string> transition-keys;
+    // The menu bar shows: macOS's system menu bar. Windows and Linux use the RBS menu
+    // (ADR-0069). A binding, so every window (main and floating) gets it.
+    out property <bool> native-menu-bar: Platform.os == OperatingSystemType.macos;
+    // Counts `ui.app_menu.open` runs and F10 presses: each opens the RBS menu with its
+    // search field.
+    in-out property <int> app-menu-asked;
+    // 0 not live, 1 live, 2 recording, 3 live and recording.
+    in property <int> live-state;
+    in property <string> live-duration;
+    // The running stream's destinations (ADR-0127 decision 17): "2/3" live of those
+    // Go live started, empty with one; and the chip's list.
+    in property <string> live-dest-count;
+    in property <[LiveDestinationRow]> live-dests;
+    callback live-dest-stop(int);
+    callback live-dest-retry(int);
+    in property <string> live-outputs;
+    // How long the recording's pause has lasted ("0:01:05"), while it is paused
+    // (ADR-0124); live-duration then holds the time recorded, which stands still.
+    in property <string> rec-paused-for;
+    // How long the stream's hold has lasted ("0:00:42"), while it is held (ADR-0124).
+    in property <string> st-held-for;
+    // The recording in progress, or the next one while idle is not what this names:
+    // the running file has no picture.
+    in property <bool> audio-only;
+    // RBS sends the program to the virtual camera (ADR-0066 decision 12).
+    in property <bool> live-camera;
+    in property <[PanelEntry]> panels;
+    in property <[WorkspaceEntry]> workspaces;
+    in property <string> workspace-name;
+    in property <bool> workspace-built-in;
+    in property <bool> locked;
+    in property <bool> can-undo;
+    in property <bool> can-redo;
+    // 0 none, 1 "<subject> closed." (undo), 2 automatic switch from workspace <subject>.
+    in property <int> toast-kind;
+    in property <string> toast-subject;
+    // Bumps when a new toast replaces the one showing, so its countdown starts again.
+    in property <int> toast-generation;
+    // 0 none, 1 layout locked, 2 other error with <error-detail>, 3 a notice whose
+    // <error-detail> is the whole text (ADR-0055: a caught panic, an unclean last exit).
+    in property <int> error-kind;
+    in property <string> error-detail;
+    // Bumps when a new error replaces the one showing, so its countdown starts again.
+    in property <int> error-generation;
+    // Where the bottom toast and the top error bar are while they show (the main
+    // window's): the preview layer hides only while one overlaps the picture.
+    in-out property <Cover> bottom-toast;
+    in-out property <Cover> top-toast;
+    // The End stream question's card while it shows.
+    in-out property <Cover> confirm-cover;
+    // The main window was closed while a stream runs: the frame asks first (U4).
+    in property <bool> quit-confirm;
+    // The first Close to the background says once where RBS went (ADR-0056): 0 none,
+    // 1 macOS (the Dock), 2 Windows (the notification area).
+    in property <int> background-notice;
+    callback background-notice-ok();
+    // Cmd+W on macOS: Close, as the main window's close button (ADR-0056).
+    callback close-main();
+    callback quit-end-stream();
+    callback quit-keep();
+    // The toolbar row's groups (ADR-0071): the items before its flexible space and the
+    // items after it, and whether the toolbar is shown.
+    in property <[ToolbarData]> toolbar;
+    in property <[ToolbarData]> toolbar-end;
+    // Go live and Record, the frame's fixed group (ADR-0073): shown with the toolbar
+    // hidden too.
+    in property <[ToolbarData]> toolbar-fixed;
+    in property <bool> toolbar-visible: true;
+    // Windows (ADR-0071): the toolbar row is the title bar and ends with the window
+    // buttons. Set once the window's caption is removed.
+    in property <bool> custom-caption;
+    in property <bool> window-maximized;
+    // The maximize button gets its mouse through the OS (snap layouts): its hover and
+    // pressed state come from there.
+    in property <bool> caption-max-hover;
+    in property <bool> caption-max-pressed;
+    // 0 minimize, 1 maximize or restore, 2 close.
+    callback caption(int);
+    // Where the row's groups and the maximize button are, in the window (logical px):
+    // the hit test's regions. Sent whenever one moves.
+    callback caption-regions(length /* lead end */, length /* end start */, length /* max x */, length /* max width */, length /* row height */);
+    // End stream from the menu bar: the frame asks first (U4).
+    in property <bool> end-stream-confirm;
+    // Record (1) or Go live (2) was pressed while no microphone is heard: the frame
+    // asks first (UI spec, "Silent output warning"); 0 asks nothing. The reason in
+    // words for the question's first line.
+    in property <int> silent-confirm;
+    in property <string> silent-reason;
+    // `go` starts anyway; `stop-asking` (with `go`) turns the warning off.
+    callback silent-answer(bool /* go */, bool /* stop-asking */);
+    // The same for the vertical canvas's stream (ADR-0093 decision 6).
+    in property <bool> end-vertical-confirm;
+    // A vertical canvas exists: Go live and Record get a ▾ with its outputs.
+    in property <bool> vertical-outputs;
+    // The vertical canvas streams, records (or starts to): Go live and Record show "9:16".
+    in property <bool> vertical-live;
+    in property <bool> vertical-rec;
+    // The chips beside Record and Go live (ADR-0111): 0 none, 1 starting, 2 connecting,
+    // 3 recording or live, 4 stopping; and the elapsed time.
+    in property <int> vertical-rec-state;
+    in property <string> vertical-rec-time;
+    in property <int> vertical-live-state;
+    in property <string> vertical-live-time;
+    // A chip's stop: the vertical stream (true) or recording alone.
+    callback vertical-stop(bool /* stream */);
+    // End stream ends the vertical stream too: the question names both.
+    in property <bool> end-stream-both;
+    // The main output stopped and the vertical one runs on: 1 recording, 2 stream.
+    in property <int> vertical-left;
+    callback vertical-left-stop();
+    callback vertical-left-dismiss();
+    // A vertical server is saved; without one the ▾ menu offers to set it up.
+    in property <bool> vertical-stream-set-up;
+    // The gap between panel cards and around them: the layout's divider thickness.
+    // literal: Rust sets it to rbs_ui::layout::HANDLE_THICKNESS, which the frame geometry also uses
+    in property <length> gap: 6px;
+    // Edge tabs of auto-hidden panels on the left, right and bottom edges.
+    in property <[EdgeTabData]> left-tabs;
+    in property <[EdgeTabData]> right-tabs;
+    in property <[EdgeTabData]> bottom-tabs;
+    // Every edge tab's panel id, joined: changes when one is added, pinned or closed.
+    in property <string> edge-ids;
+    // Ask the main window to slide an auto-hidden panel out (reveal-edge 0 left,
+    // 1 right, 2 bottom) or to slide the current one back (reveal-edge -1).
+    // The serial changes on each ask, so the same panel can be shown again.
+    in property <int> reveal-edge: -1;
+    in property <EdgeTabData> reveal-tab;
+    in property <int> reveal-serial;
+    // The slid-out auto-hide panel's rectangle while one is out (the preview layer
+    // leaves it out, ADR-0054).
+    in-out property <bool> flyout-open;
+    in-out property <Cover> flyout;
+    callback end-stream-answer(bool /* end */);
+    callback end-vertical-answer(bool /* end */);
+
+    // Dragging a tab (ADR-0049 decision 5): the payload names the panel; the dock area
+    // under the pointer reports moves and the drop in its own coordinates, and Rust
+    // answers with the guide: the part of window <drop-window> the drop would fill.
+    pure callback panel-data(string /* panel */) -> data-transfer;
+    // True when a drag payload is a panel id, so a source drag is not docked and a
+    // panel drag is not taken for a source.
+    pure callback is-panel(data-transfer) -> bool;
+    callback drag-over(int /* window */, data-transfer, length, length);
+    callback drag-drop(int /* window */, data-transfer, length, length);
+    callback drag-leave();
+    // The maximized panel's id, or empty (ADR-0049 decision 2; not saved).
+    in property <string> maximized;
+    in property <int> drop-window: -1;
+    in property <Cover> drop-guide;
+    // The guide in window surface coordinates while it shows: the preview layer cuts it out.
+    in-out property <bool> drop-open;
+    in-out property <Cover> drop-cover;
+    // A window's dock area: its position in the window and its size.
+    callback relayout(int /* window */, length, length, length, length);
+    callback collapse(string, bool /* collapsed */);
+    callback auto-hide(string);
+    callback pin(string);
+    callback activate-tab(int /* window */, int /* stack */, int /* tab */);
+    callback close-panel(string);
+    callback toggle-panel(string);
+    callback dock(int /* window */);
+    // Wanted position of the handle along its axis, in the dock area.
+    callback drag(int /* window */, int /* handle */, length);
+    callback drag-end();
+    callback nudge(int /* window */, int /* handle */, length);
+    callback switch-workspace(string);
+    callback toast-undo();
+    callback toast-dismiss();
+    callback dismiss-error();
+}
+
+// From app_menu.slint.
+// One row of the item column. kind: 1 command, 2 section heading, 3 separator,
+// 4 picker (opens its choices), 5 back (from a picker's choices).
+export struct AppMenuRow {
+    kind: int,
+    title: string,
+    // Icon name from the set.
+    icon: string,
+    // The shortcut bound to it, as the platform writes it.
+    shortcut: string,
+    // A picker's current choice ("Edit" for Workspace).
+    value: string,
+    // The id a click runs (commands) or the picker's id (pickers).
+    id: string,
+    enabled: bool,
+    checkable: bool,
+    checked: bool,
+    // Why it is disabled; shown under the menu while it is the current row.
+    reason: string,
+    // The rows Up and Down move to (-1: none).
+    up: int,
+    down: int,
+}
+
+// An Output profile chip in the bottom row.
+export struct AppMenuChip {
+    title: string,
+    id: string,
+    current: bool,
+}
+
+export global AppMenus {
+    // The menu is open (a layer of the main window) and where it is, for the preview
+    // layer's cut-out.
+    in-out property <bool> open;
+    in-out property <OverlayCover> cover;
+    // The menu shown last, kept while the app runs.
+    in-out property <int> category;
+    // The menus, in menu bar order (refreshed when the menu opens).
+    in-out property <[string]> categories;
+    in-out property <[AppMenuChip]> profiles;
+    // The shortcuts of the search command and of Settings, or "".
+    in-out property <string> search-shortcut;
+    in-out property <string> settings-shortcut;
+    // Fills `categories`, `profiles` and the shortcuts.
+    callback prepare();
+    // The rows of menu `category`, of the picker `picker` when it is not "", or the
+    // search results for `query` when it is not blank.
+    callback rows(/* category */ int, /* picker */ string, /* query */ string) -> [AppMenuRow];
+    // Runs a command registry id.
+    callback run(string);
+}
+
+// From appearance.slint.
+// One theme in the library: built-in themes first, then user themes by name.
+// `surface`, `text`, `accent`: its swatch. `usable`: it passes every rule; else
+// `problem` is its first problem.
+export struct ThemeOption {
+    name: string,
+    user: bool,
+    usable: bool,
+    problem: string,
+    surface: color,
+    text: color,
+    accent: color,
+    // Colour warnings of a usable theme (ADR-0072).
+    warnings: int,
+}
+
+// One token in the editor. `kind`: 0 colour, 1 number (`unit` px or ms), 2 text style,
+// 3 font family, 4 the theme's effects (ADR-0122: `choice` Calm, Glow, Glass or Tactile;
+// `disabled` says why they cannot apply). `overridden`: the theme sets it (Reset removes
+// it).
+export struct ThemeTokenRow {
+    name: string,
+    label: string,
+    kind: int,
+    color: color,
+    number: float,
+    step: float,
+    unit: string,
+    size: float,
+    line: float,
+    weight: float,
+    fonts: string,
+    choice: int,
+    disabled: string,
+    overridden: bool,
+    problem: string,
+    // Colour warnings in words (ADR-0072): shown, never blocking.
+    warning: string,
+    // "Fix" can clear the warnings by moving the colour's lightness.
+    fixable: bool,
+    // What a length shapes, in words; empty when the label says it.
+    hint: string,
+}
+
+export global Appearance {
+    in property <[ThemeOption]> themes;
+    // Usable themes only, for the pickers, and their list positions.
+    in property <[string]> usable-names;
+    in property <bool> follow-system: true;
+    // Spacing for every theme (ADR-0112): 0 regular, 1 compact (spacing, control height
+    // and panel gaps step down), 2 roomy (default control and panel gaps step up).
+    in property <int> density: 0;
+    // Stops 1, 2 and 3. Kept while compact is off.
+    in property <int> compact-steps: 1;
+    // The default spacing, as an index like `density`.
+    in property <int> density-default: 0;
+    // Positions in `usable-names`.
+    in property <int> dark-index;
+    in property <int> light-index;
+    in property <int> theme-index;
+    // Position in `themes`; -1 none.
+    in property <int> selected: -1;
+    // A note: a theme in use could not be used, or an action failed.
+    in property <string> note;
+    // `RBS_TOKENS` or `RBS_THEME` is set.
+    in property <bool> dev-override;
+    // "Keep this look?" is asked.
+    in property <bool> keep-asking;
+    in property <int> keep-seconds;
+    // The editor.
+    in property <bool> editing;
+    in property <string> editor-name;
+    in property <[string]> groups;
+    in property <int> group;
+    in property <[ThemeTokenRow]> rows;
+    in property <[string]> general-problems;
+    // How many colour warnings the draft has (ADR-0072).
+    in property <int> warning-count;
+    in property <[string]> unknown-tokens;
+    in property <bool> can-save;
+    in property <bool> changed;
+    // The theme being edited is used by a slot: its changes show in the windows.
+    in property <bool> editing-in-use;
+    // The family the window uses now ("" the system font).
+    in property <string> font-in-use;
+    // A value typed in the editor and not yet confirmed (Enter or leaving the field):
+    // `pending-kind` is the row's kind (1 number, 2 text style, 3 font family) or -1
+    // for none, `pending-part` the text style's part. Only the focused field types, so
+    // one slot holds it. Save is on while it is set and applies it first, so a value
+    // being typed is saved without leaving the field.
+    in-out property <int> pending-kind: -1;
+    // The font picker's list: `find-fonts` fills the picker's rows with the installed
+    // families whose names contain the filter, when it opens and as the filter changes.
+    callback find-fonts(string);
+    // The button that opened the picker (its row's label), the family picked and a
+    // counter that moves with each pick.
+    in-out property <string> font-owner;
+    in-out property <string> font-picked;
+    in-out property <int> font-picked-serial;
+    // The font field's suggestions for the family being typed (the part after the
+    // last comma): names that start with it first. `suggest-fonts` fills it as the
+    // field's text changes; `complete-font` returns the text with that part replaced.
+    in property <[string]> font-suggestions;
+    callback suggest-fonts(string);
+    pure callback complete-font(string, string) -> string;
+    in-out property <string> pending-name;
+    in-out property <int> pending-part;
+    in-out property <string> pending-text;
+    public function hold(kind: int, name: string, part: int, text: string) {
+        pending-kind = kind;
+        pending-name = name;
+        pending-part = part;
+        pending-text = text;
+    }
+    public function apply-pending() {
+        if pending-kind == 1 && pending-text.is-float() {
+            set-number(pending-name, pending-text.to-float());
+        } else if pending-kind == 2 && pending-text.is-float() {
+            set-style(pending-name, pending-part, pending-text.to-float());
+        } else if pending-kind == 3 {
+            set-fonts(pending-text);
+        }
+        pending-kind = -1;
+    }
+    // 0 dark, 1 light, 2 the one theme.
+    callback pick(int, int);
+    callback set-follow-system(bool);
+    callback set-density(int);
+    callback set-compact-steps(int);
+    callback select(int);
+    callback use-selected();
+    callback edit();
+    callback duplicate();
+    callback rename(string);
+    callback delete();
+    callback import();
+    callback export();
+    callback set-group(int);
+    callback set-color(string, string);
+    callback set-number(string, float);
+    callback set-style(string, int, float);
+    // The theme's effects: 0 Calm, 1 Glow, 2 Glass, 3 Tactile (ADR-0122).
+    callback set-effects(int);
+    callback set-fonts(string);
+    callback reset(string);
+    // Moves a colour to the nearest lightness that clears its warnings.
+    callback fix(string);
+    callback save();
+    callback cancel();
+    callback keep();
+    callback undo();
+}
+
+// From context_menu.slint: moved before Overlays, which closes the drawn menu.
+
+// From obs_import.slint.
+// One scene of the chosen collection and whether it is brought.
+export struct ObsSceneChoice {
+    name: string,
+    on: bool,
+}
+
+// One line of the check: the OBS object, where it is, and why it did not come across
+// exactly.
+export struct ObsReportRow {
+    name: string,
+    place: string,
+    reason: string,
+}
+
+// From replay.slint.
+export global ReplayBuffer {
+    // The studio runs, so the buffer can arm.
+    in property <bool> can-arm;
+    // The buffer keeps the past now.
+    in property <bool> armed;
+    // Arm it when RBS starts.
+    in property <bool> arm-on-start;
+    in property <bool> audio;
+    // The length slider, 0 to 1 on a log scale, and its text ("2 min").
+    in property <float> length;
+    in property <string> length-text;
+    // The saved length differs from the default, which reads as `length-default-text`.
+    in property <bool> length-changed;
+    in property <string> length-default-text;
+    in property <[string]> memories;
+    in property <int> memory;
+    // The default memory limit as an index into `memories`, or -1 when not offered.
+    in property <int> memory-default: -1;
+    in property <string> folder;
+    // Bumped when Rust changes the folder, so the field takes the new text.
+    in property <int> folder-serial;
+    // What it holds in words, with `tone` 0 neutral, 1 good, 2 problem.
+    in property <string> status;
+    in property <int> tone;
+    // What the settings cost in memory, in words.
+    in property <string> estimate;
+    // The last problem with the settings, or "".
+    in property <string> problem;
+    // A clip is being cut or written.
+    in property <bool> saving;
+    in property <bool> can-save;
+    // The last clip: its file name, and whether it can be shown in its folder.
+    in property <string> saved-name;
+    in property <string> saved-error;
+    callback toggle(bool);
+    callback set-arm-on-start(bool);
+    callback set-audio(bool);
+    callback length-moved(float);
+    callback length-released();
+    callback reset-length();
+    callback set-memory(int);
+    callback set-folder(string);
+    callback save();
+    callback show-saved();
+}
+
+// From settings.slint.
+// One result of the Settings window's search field (docs/specs/settings-search.md,
+// step 3): what was found, where it is ("Recording › Encoding"; empty for a section)
+// and the section number it opens, which gives its icon.
+export struct SettingsHit {
+    title: string,
+    path: string,
+    section: int,
+}
+
+// The Settings page's scroll. A panel that opens inside the page (a confirmation, the
+// shortcut recorder) reports its place; the page moves so that place is on screen.
+export global SettingsScroll {
+    in-out property <int> serial: 0;
+    in-out property <length> y: 0px;
+    in-out property <length> h: 0px;
+    // The place goes to the top of the view, not only into it (a long panel such as the
+    // theme editor, whose start is what matters).
+    in-out property <bool> top: false;
+    public function reveal(ay: length, ah: length) {
+        self.y = ay;
+        self.h = ah;
+        self.top = false;
+        self.serial += 1;
+    }
+    public function reveal-top(ay: length) {
+        self.y = ay;
+        self.top = true;
+        self.serial += 1;
+    }
+}
+
+// From shortcuts.slint.
+// One shortcut of a row: its label ("⇧⌘Z"), canonical text, and scope.
+export struct ShortcutChip {
+    label: string,
+    keys: string,
+    global: bool,
+}
+
+// One command (or picker choice). `group` is set on the first row of a menu group.
+// `problem`: why one of its shortcuts does nothing; `note`: what a global shortcut of
+// it does without asking.
+export struct ShortcutRow {
+    group: string,
+    command: string,
+    title: string,
+    chips: [ShortcutChip],
+    changed: bool,
+    problem: string,
+    note: string,
+}
+
+export global Shortcuts {
+    // A key press no control took in a main or floating window: true when it ran a
+    // shortcut. Arguments: text, Ctrl (Cmd on macOS), Alt, Shift, Meta, repeat.
+    callback press(string, bool, bool, bool, bool, bool) -> bool;
+
+    in property <[ShortcutRow]> rows;
+    in property <string> hint;
+    in property <string> note;
+    in-out property <string> search;
+    callback set-search(string);
+    callback remove(int, int);
+    callback reset(int);
+    in property <bool> confirm-reset-all;
+    callback ask-reset-all();
+    callback answer-reset-all(bool);
+
+    // The recorder: the row it adds to (-1 none).
+    in property <int> recording: -1;
+    // Its chord, as a label; "" until a key is pressed.
+    in property <string> rec-label;
+    // 0 nothing yet, 1 free, 2 taken (Replace), 3 refused, 4 warning.
+    in property <int> rec-state;
+    in property <string> rec-message;
+    in property <bool> rec-global;
+    in property <bool> rec-global-available;
+    in property <[bool]> rec-mods: [false, false, false, false];
+    in property <[string]> mod-names: ["Ctrl", "Alt", "Shift", "Meta"];
+    in property <[string]> key-names;
+    in property <int> rec-key: -1;
+    callback add(int);
+    // Double-click on a chip (row, chip): the recorder opens with that shortcut, and
+    // Save replaces it.
+    callback edit(int, int);
+    in property <bool> rec-editing;
+    // A key press in the recorder: true when taken.
+    callback rec-press(string, bool, bool, bool, bool) -> bool;
+    callback rec-set-mod(int, bool);
+    callback rec-set-key(int);
+    callback rec-set-global(bool);
+    callback rec-confirm();
+    callback rec-cancel();
+}
+
+// From studio.slint.
+// `picture`: a video source; `x`, `y`, `w`, `h` place its box on the canvas (canvas
+// pixels). `can-up` / `can-down`: another source with a picture is above / below it.
+// Style (ADR-0053): `shape` 0 rectangle, 1 circle, 2 ellipse; `radius` for rectangles;
+// `border` on or off, its `border-width`, its colour as `#rrggbb` or `#rrggbbaa` text
+// and as a swatch (the values a border gets when turned on while it is off).
+// One field of a filter in the Filters tab (ADR-0062), generated from its type's
+// schema: `kind` 0 a number (`position` from 0 to 1 on its slider, `step` one step
+// there, `value-text` the value with its unit; `min`, `max`, `snap` (the value's step),
+// `decimals` and `suffix` (the unit with its space) for the text while dragging), 1 a colour (`colour` as #rrggbb or
+// #rrggbbaa, `swatch` the same colour).
+export struct FilterFieldData { label: string, help: string, log: bool, options: [string], choice: int, kind: int, position: float, step: float, value-text: string, min: float, max: float, snap: float, decimals: int, suffix: string, colour: string, swatch: color, changed: bool, default-text: string }
+
+// One filter of a source's chain: `known` false for a type this version lacks (it can
+// only be removed); `can-up` / `can-down` false at the ends of the chain.
+export struct FilterLevels { input: float, reduction: float }
+
+export struct FilterData { id: int, name: string, enabled: bool, known: bool, gate: bool, latency-text: string, latency-warn: bool, curve: string, curve-text: string, bar-label: string, open-pos: float, close-pos: float, can-up: bool, can-down: bool, fields: [FilterFieldData] }
+
+export struct SourceData { id: int, name: string, kind: string, icon: string, status: string, ok: bool, picture: bool, visible: bool, x: float, y: float, w: float, h: float, can-up: bool, can-down: bool, shape: int, radius: float, border: bool, border-width: float, border-color: string, border-swatch: color, crop-l: int, crop-t: int, crop-r: int, crop-b: int, pic-w: int, pic-h: int, locked: bool, flip-h: bool, flip-v: bool, rotation: float, audio: bool, muted: bool, volume: float, volume-text: string, filters: [FilterData], selected-filter: int, sync-offset: int, global: bool, also-in: string, in-globals: bool, places: int, kind-code: int, companion: bool, custom-glide: bool, glide-duration: int, glide-easing: int, solid: bool, fill: string, fill-swatch: color, filled: bool, item-id: int, cap-has: bool, cap-l: int, cap-t: int, cap-r: int, cap-b: int, chrome-on: bool, chrome-t: int, chrome-r: int, chrome-b: int, chrome-l: int, chrome-fill: int, has-work-rect: bool, show-for-ms: int, cue-remaining-ms: int, record-separately: bool, record-choice: int, record-form: int, media: bool, media-path: string, media-loop: bool, media-restart: bool, media-start-ms: int, media-end-ms: int, media-state: int, media-pos-ms: int, media-len-ms: int, scene-level: bool, scene-entry: bool, own-volume-text: string, device-peers: string, peer-count: int }
+
+// `global`: a global source's row (ADR-0065). `also-in`: the other scenes that place it,
+// by name; `in-globals`: it is a global source too; `places`: how many items place it.
+// A scene in the Scenes panel (ADR-0059): `live` on air, `number` its place (1 up).
+// `live`: the scene on air; `preview`: the preview scene in studio mode (ADR-0061).
+// `own-levels`: the scene keeps its own volumes and mutes (Own levels, ADR-0091).
+// `transition-kind`: the scene's own transition into it (ADR-0135), -1 the collection's,
+// else the rail's index; `transition-ms` its own duration, -1 the kind's.
+export struct SceneData { id: int, name: string, live: bool, preview: bool, number: int, own-levels: bool, transition-kind: int, transition-ms: int }
+
+// A source of the collection for Add source's "Existing source" list.
+// A look in the Library (ADR-0075): `group` 0 colour, 1 effect, 2 shape. A sample
+// picture: `frame` is true for a frame (transparent in the middle), `thumb` its picture.
+export struct LookData { id: string, name: string, group: int }
+
+export struct SampleData { id: string, name: string, frame: bool, thumb: image }
+
+export struct KindData { code: int, label: string }
+
+// A filled rectangle of the selection on the preview (outline or handle), in the
+// panel's coordinates; kind 0 outline, 1 handle border, 2 handle inside.
+export struct MarkData { x: length, y: length, w: length, h: length, kind: int }
+
+// One line of the Source tab's target list: `index` is its place in the answer, `current` marks the source's own target (ADR-0077).
+// One mode of a camera in the Source settings window: its size and the frame rates it runs at.
+export struct ModeData { label: string, rates: [string] }
+
+// What the Source settings window shows for one source (ADR-0077): the camera's modes with
+// the chosen mode and rate, or the rates of a screen or window and its cursor choice.
+// The Measure sync offset window (ADR-0126 step 6). `phase`: 0 ready, 1 measuring,
+// 2 a result, 3 no result, 4 Start refused. `reason` (phase 3): 0 too few claps,
+// 1 no movement seen, 2 claps disagree, 3 not heard, 4 source closed, 5 offset
+// changed, 6 a filter changed, 7 studio restarted, 8 cancelled, 9 other. `refusal`
+// (phase 4): 0 busy, 1 not heard, 2 no picture now, 3 no reference, 4 not a picture,
+// 5 other. `progress`: 0 to 1 of the longest measurement.
+export struct SyncMeasureData { source: int, name: string, current: int, refs: [string], ref-ids: [int], ref-index: int, phase: int, pairs: int, sound: bool, picture: bool, progress: float, suggested: int, measured: int, clamped: bool, spread: int, reason: int, onset-filter: bool, refusal: int }
+
+// The Paste attributes and Reset source windows (ADR-0133 decision 8). A group row:
+// `index` is its place in the window's group order; `at-default` when the value is the default;
+// `help` says why it is off or that Undo leaves it.
+export struct AttributeGroupRow { id: string, title: string, index: int, checked: bool, enabled: bool, at-default: bool, help: string }
+
+// A source to paste onto: `note` is its place when placed twice, or "global"; `shown`
+// is false while Same type only hides it.
+export struct AttributeTargetRow { name: string, note: string, checked: bool, copied: bool, shown: bool }
+
+// `count` sources are checked, `groups-on` groups; `has-filters` when a filter group is on.
+export struct AttributesData { paste: bool, name: string, picture: [AttributeGroupRow], sound: [AttributeGroupRow], source: [AttributeGroupRow], targets: [AttributeTargetRow], same-type: bool, append: bool, count: int, groups-on: int, has-filters: bool }
+
+// The Text tab of a text source (ADR-0129 decision 13), filled while the selected
+// source is one (`on`). `kind`: 0 text, 1 clock, 2 countdown, 3 stopwatch, 4 recording
+// time, 5 stream time. `align`: 0 left, 1 centre, 2 right. A countdown counts to
+// `target` when `until`, else for `minutes` and `seconds`. `format-default` is the
+// pattern used while `format` is empty. Colours are `#rrggbb[aa]` with their swatch.
+export struct TextData { on: bool, id: int, kind: int, text: string, file: string, file-name: string, file-lines: int, fields: bool, font: string, size: float, bold: bool, italic: bool, color: string, swatch: color, align: int, format: string, format-default: string, until: bool, target: string, minutes: int, seconds: int, end-text: string, outline: bool, outline-width: float, outline-color: string, outline-swatch: color, shadow: bool, shadow-color: string, shadow-swatch: color, shadow-x: float, shadow-y: float, shadow-blur: float, background: bool, background-color: string, background-swatch: color, padding: float }
+
+export struct SourceSettingsData { id: int, name: string, kind-code: int, modes: [ModeData], mode-labels: [string], mode-index: int, rates: [string], rate-index: int, has-cursor: bool, cursor: bool, cap-has: bool, cap-l: int, cap-t: int, cap-r: int, cap-b: int, chrome-on: bool, chrome-t: int, chrome-r: int, chrome-b: int, chrome-l: int, chrome-fill: int, has-work-rect: bool, pic-w: int, pic-h: int, has-region-preview: bool, region-preview: image }
+
+// `heading` is set on the first row of a group ("Same application", "Other").
+// `picture` is the target's thumbnail when `has-picture`; `wants-picture` is set for displays and windows, whose rows keep the kind's icon until the picture comes.
+export struct SourceTargetData { name: string, current: bool, index: int, heading: string, picture: image, has-picture: bool, wants-picture: bool }
+
+// One meter's moving parts as fractions of the bar (rbs_ui::meter::MeterView::zones),
+// its peak-hold position and zone, the clip latch and the accessible value (U16).
+export struct MeterRow {
+    // The source's id and whether its sound is muted (ADR-0059).
+    id: int,
+    muted: bool,
+    // The fader: its position (0 to 1, the fader law) and the level in words ("-6.0 dB").
+    volume: float,
+    volume-text: string,
+    name: string,
+    icon: string,
+    lo-from: float, lo-to: float, mi-from: float, mi-to: float, hi-from: float, hi-to: float,
+    peak: float, peak-zone: int, clipped: bool, value: string,
+    // A global source (ADR-0065): the Mixer groups it apart from the scene's own.
+    global: bool,
+    // Heard on the monitor (ADR-0097): 0 off, 1 monitor and output, 2 monitor only;
+    // and soloed on the monitor.
+    monitor: int,
+    solo: bool,
+    // False while an audio source is not running: the strip stays, the fader does not move.
+    live: bool,
+    // The program scene is in Own levels (ADR-0091): the fader and mute show and edit
+    // that scene's level for the source, and the strip shows the scene mark.
+    scene-level: bool,
+}
+
+export struct ScaleMark { label: string, at: float }
+
+// The master's loudness (ADR-0092 decision 7), shown while `on`. Bar positions follow the
+// meter law (rbs_ui::meter::position), so a LUFS value sits at its dB on the dBFS scale.
+// `has` is false until the meter has a short-term value (silence reads none).
+// The texts are ready to show ("−14.2", "−0.6 dBTP"); an empty text has no value yet.
+export struct LoudnessData {
+    on: bool,
+    has: bool,
+    short-text: string,
+    at: float,
+    target-at: float,
+    target-text: string,
+    over: bool,
+    momentary: string,
+    integrated: string,
+    range: string,
+    true-peak: string,
+    limit-text: string,
+}
+
+// The encoder fields of one output (a recording or a stream): the options offered and
+// the one in use (rbs_app::encoder_form). `rate-kind`: 0 CBR, 1 VBR, 2 constant quality.
+// One destination of the stream in Settings, Stream (ADR-0127 decision 17).
+export struct DestinationRow { id: int, name: string, note: string, on: bool, warn: bool }
+
+export struct EncoderData {
+    codecs: [string], codec: int,
+    encoders: [string], encoder: int,
+    video-rates: [string], video-rate: int,
+    audio-rates: [string], audio-rate: int,
+    rate-modes: [string], rate-mode: int, rate-kind: int, bitrate-label: string,
+    peaks: [string], peak: int,
+    qualities: [string], quality: int,
+    padding: bool, padding-available: bool,
+    keyframes: [string], keyframe: int,
+    presets: [string], preset: int,
+    profiles: [string], profile: int,
+    b-frames: [string], b-frame: int, b-frames-note: string,
+    // The chosen video bitrate, and the recommendation when it is below that
+    // figure (0 when it is not, or when there is no bitrate). The picture is the
+    // resolved output size at the canvas frame rate.
+    video-kbps: int, recommended-kbps: int,
+    out-width: int, out-height: int, out-fps: int,
+    // 0 Video (Rec. 709 limited), 1 Screen (sRGB full range).
+    delivery: int,
+    // Lifts only the darkest tones. Shown while Colour is Video.
+    open-shadows: bool,
+    // The default of each field, by its `set` code (an index into that field's
+    // options), or -1 when the default is not one of them or the field has none.
+    defaults: [int],
+}
+
+// One access token in the Remote control section: its name and what it allows.
+export struct TokenRow { name: string, access: string }
+
+// One recent action of AI tools (ADR-0134 decision 7): when, the method, and whether it
+// was allowed; `why` says why it was refused.
+export struct AiActionRow { time: string, method: string, allowed: bool, why: string }
+
+// One line of the Stats panel: a section heading (`heading`, `label` only) or a counter
+// with its value; `bad` marks a value that shows a loss (in words too, U7).
+export struct StatRow { heading: bool, label: string, value: string, bad: bool }
+
+// An output profile or scene collection in its menu (ADR-0051).
+export struct EntryRow { id: string, name: string, current: bool }
+
+export global Studio {
+    // 0 starting, 1 running, 2 failed (`failure` says why).
+    in property <int> state;
+    in property <string> failure;
+    in property <[SourceData]> sources;
+    in property <[KindData]> kinds;
+    // The Source tab's list of what the selected source's kind can capture.
+    in property <[SourceTargetData]> source-targets;
+    // The Source settings window's content: empty until the host answers, then one entry.
+    in property <[SourceSettingsData]> source-settings;
+    // The Measure sync offset window's content: empty until the host answers, then one entry.
+    in property <[SyncMeasureData]> sync-measure;
+    // The Paste attributes or Reset source window's content: empty until the host answers.
+    in property <[AttributesData]> attributes;
+    // The source whose sync offset was just changed in Properties: its row offers
+    // "Apply to N sources" while other sources of its device differ (ADR-0126).
+    in-out property <int> sync-offer-for: -1;
+    // The kind `targets` lists; -1 while a list is being made.
+    in property <[MeterRow]> meters;
+    // Sources kept out of the Mixer, still heard (ADR-0080); no meter runs for them.
+    in property <[MeterRow]> hidden-meters;
+    // The master strip (ADR-0081): one row while the studio has a mixer, else none.
+    in property <[MeterRow]> master-meter;
+    // How many of `meters` are the scene's own and how many are global (Mixer groups).
+    in property <int> meter-scenes;
+    in property <int> meter-globals;
+    // The program scene (the scene the Mixer hears), and its name while it is in Own
+    // levels (ADR-0091): empty in Shared levels. The Mixer's "This scene" header and
+    // Properties › Sound say whose level a fader edits.
+    in property <int> program-scene: -1;
+    in property <string> scene-levels;
+    // The Stats panel's lines; empty while nothing records or streams.
+    in property <[StatRow]> stats;
+    in property <[ScaleMark]> scale;
+    // 0 shown, 1 starting, 2 not on this platform yet, 3 not in this session (remote
+    // desktop), 4 shown only in the main window, 5 the studio is not running.
+    in property <int> preview-state: 1;
+    // Name of the source just deleted (an undo toast shows while it is set);
+    // `deleted-from-scene`: only removed from one scene (ADR-0065).
+    in property <string> deleted;
+    in property <bool> deleted-from-scene;
+    // Bumps on each delete, so the toast's countdown starts again.
+    in property <int> deleted-generation;
+    // Something goes out (a recording or a stream): edits to what is on air show at once.
+    out property <bool> on-air: self.rec-state != 0 || self.st-state != 0;
+    // The panel the picture shows in: "rbs.program", else "rbs.preview" (without studio
+    // mode both show the scene on air); the other one says where it is.
+    in property <string> picture-panel: "rbs.program";
+    // Studio mode (ADR-0061): Preview shows the preview scene (edited there) and
+    // Program the scene on air; `scene-preview-state` is the Preview picture's state,
+    // with the codes of `preview-state`.
+    in property <bool> studio-mode;
+    in property <int> scene-preview-state: 1;
+    // The vertical canvas's picture (ADR-0093 decision 7), with the codes of
+    // `preview-state`, 7: no vertical canvas exists, 8: its picture did not start.
+    in property <int> vertical-preview-state: 1;
+    callback set-studio-mode(bool /* on */);
+    // The preview scene goes on air and the scene on air to preview (a cut).
+    callback transition();
+    callback list-targets(int /* kind */);
+    callback list-source-targets(int /* source */);
+    // The Source settings window opens for a source.
+    callback open-source-settings(int /* source */);
+    // The Measure sync offset window opens for a source with sound (ADR-0126).
+    callback open-sync-measure(int /* source */);
+    // Settings › General: open the Import from OBS window (ADR-0131).
+    callback open-obs-import();
+    // Start in that window, clapping in view of a picture source.
+    callback start-sync-measure(int /* reference */);
+    // The Measure window closes (Cancel, Apply, its close button).
+    callback close-sync-measure();
+    // The other sources of a source's audio device take its sync offset.
+    callback apply-sync-to-device-sources(int /* source */);
+    // The Paste attributes window's checks (ADR-0133): a group, a source to paste
+    // onto, Same type only and the filter mode; then the confirm button.
+    callback attributes-group(int /* index */, bool);
+    callback attributes-target(int /* index */, bool);
+    callback attributes-same-type(bool);
+    callback attributes-append(bool);
+    callback attributes-apply();
+    // Apply or OK in the Source settings window: the chosen mode (cameras), rate and cursor.
+    callback apply-source-settings(int /* source */, int /* mode */, int /* rate */, bool /* cursor */);
+    callback filter-source-targets(string);
+    callback retarget-source(int /* source */, int /* index */);
+    callback reload-source(int /* source */);
+    // Adds or removes the "Capture audio too" companion sound of a display or window (ADR-0096).
+    callback set-companion-audio(int /* source */, bool /* on */);
+    // Media files (ADR-0108 decision 10): live playback actions, then stored settings.
+    // "m:ss" of a media time; hours as "h:mm:ss".
+    pure public function media-clock(ms: int) -> string {
+        let s = Math.floor(ms / 1000);
+        let h = Math.floor(s / 3600);
+        let m = Math.floor(Math.mod(s, 3600) / 60);
+        let sec = Math.mod(s, 60);
+        let mm = h > 0 && m < 10 ? "0" + m : "" + m;
+        let ss = sec < 10 ? "0" + sec : "" + sec;
+        return h > 0 ? h + ":" + mm + ":" + ss : mm + ":" + ss;
+    }
+    // "m:ss.t" of a media time, to the tenth of a second: a play range's ends.
+    pure public function media-mark(ms: int) -> string {
+        return media-clock(ms) + "." + Math.floor(Math.mod(ms, 1000) / 100);
+    }
+    // A media file's play state in words (ADR-0108 decision 10).
+    pure public function media-state-text(state: int) -> string {
+        return state == 0 ? @tr("Playing")
+            : state == 1 ? @tr("Paused")
+            : state == 2 ? @tr("Cued: plays when it goes on air")
+            : state == 3 ? @tr("Ended")
+            : state == 5 ? @tr("The file cannot be opened")
+            : @tr("Not shown");
+    }
+    callback media-play-pause(int /* source */);
+    callback media-restart(int /* source */);
+    callback media-seek(int /* source */, int /* ms */);
+    callback set-media-loop(int /* source */, bool /* on */);
+    callback set-media-restart-when-shown(int /* source */, bool /* on */);
+    // Sets the play range's start (0) or end (1) at a media time, or plays the whole
+    // file again (2); one undo step (ADR-0108 decision 11).
+    callback set-media-range-mark(int /* source */, int /* mark */, int /* ms */);
+    callback change-media-file(int /* source */);
+    // Delete source: from every scene and the global sources (ADR-0065).
+    callback delete-source(int /* id */);
+    // Remove from scene: this scene only (the global sources for a global row); the
+    // source goes too when it was its last placement.
+    callback remove-from-scene(int /* id */);
+    // Delete or Backspace on the editable picture: the source row asks, and the
+    // Sources panel opens if it is closed. The selected source is the one to remove.
+    callback ask-remove-selected();
+    // Show in every scene (ADR-0065): on makes the source global, off moves it into the
+    // edited scene.
+    callback set-global(int /* id */, bool /* global */);
+    // Settings › Global sources: the global sources (rows of `sources` with `global`),
+    // the kind picked (an index into `kinds`, -1 none), the Source field's options (the
+    // kind's devices, then the collection's sources of that kind that are not global)
+    // and how many of them are devices.
+    in-out property <int> global-kind: -1;
+    in property <[string]> global-options;
+    in property <int> global-devices;
+    // The kinds Add source offers, by name, for the Kind field; how many global
+    // sources there are.
+    in property <[string]> global-kind-names;
+    in property <int> global-count;
+    in-out property <int> global-option: -1;
+    callback pick-global-kind(int /* kind index */);
+    callback add-global(int /* option */);
+    callback remove-global(int /* id */);
+    // The source selected in the Sources panel (its id; -1 none). Every window shows
+    // the same selection. The Sources rows follow this, including when it is none.
+    in property <int> selected-source: -1;
+    // Properties edits the vertical canvas's own layout of the selected source
+    // (ADR-0093 decision 4); `props-can-vertical` while that source can be placed there.
+    in property <bool> props-vertical;
+    in property <bool> props-can-vertical;
+    callback set-props-vertical(bool);
+    // The source Properties shows: the selection, else the last selected source that
+    // still exists, else -1 (the Nothing selected state).
+    in property <int> properties-source: -1;
+    callback select-source(int /* id */);
+    // One layer up (over the source above it in the list) or down.
+    callback move-source(int /* id */, bool /* up */);
+    // A Sources row dragged onto another row: it takes that row's place.
+    callback move-source-to(int /* id */, int /* to */);
+    // The source whose row is being dragged, or -1.
+    in-out property <int> dragging-source: -1;
+    pure callback source-data(int /* id */) -> data-transfer;
+    // One place up or down in the scene list.
+    callback move-scene(int /* id */, bool /* up */);
+    // A Scenes row dragged onto another row: it takes that row's place.
+    callback move-scene-to(int /* id */, int /* to */);
+    // The scene whose row is being dragged, or -1.
+    in-out property <int> dragging-scene: -1;
+    pure callback scene-data(int /* id */) -> data-transfer;
+    // The selected source has a picture, so a Library look can be applied.
+    in property <bool> looks-ready: false;
+    // True when a drag payload is a panel id, so a panel drop is not taken for a source.
+    pure callback is-panel(data-transfer) -> bool;
+    // Show or hide a source in the program scene.
+    callback set-source-visible(int /* id */, bool /* visible */);
+    // Lock a source so the picture panel does not move it (ADR-0059).
+    callback set-source-locked(int /* id */, bool /* locked */);
+    // A source's sound: mute, and the volume as a fader position from 0 to 1.
+    // Separate files (ADR-0086): mark a source's main feed (a picture source's picture,
+    // anything else's sound) to record as its own file.
+    callback set-source-record-separately(int, bool);
+    // The form of a marked picture (ADR-0117): for a still source 0 Automatic (image),
+    // 1 Image, 2 Video; for a media file 0 Picture and sound, 1 Picture, 2 Sound.
+    callback set-source-record-form(int, int);
+    // The marked sources by name, for Settings › Recording; empty when none.
+    in property <string> rec-separate-names;
+    // What they write ("1 video · 1 image · 1 sound"), how many video files that is,
+    // and how many a take writes (ADR-0087 interim limit).
+    in property <string> rec-separate-counts;
+    in property <int> rec-separate-videos;
+    in property <int> rec-separate-limit;
+    // The output profile's Separate files switch (ADR-0086 decision 4).
+    in property <bool> rec-separate-on;
+    callback set-separate-files(bool);
+    // The running recording's separate files in words, for the Outputs card; empty
+    // when it writes one file.
+    in property <string> out-separate;
+    callback set-source-muted(int /* id */, bool /* muted */);
+    callback set-source-mixer-hidden(int /* id */, bool /* hidden */);
+    // Removes the program scene's own level for a source (ADR-0091 reset_source): the
+    // source's own level is heard again in that scene.
+    callback reset-scene-level(int /* source */);
+    // Puts a scene back in Shared levels after the row's confirm (ADR-0091).
+    callback use-shared-levels(int /* scene */);
+    // The monitor output (ADR-0097): a source's mode (0 off, 1 monitor and output,
+    // 2 monitor only) and solo, and the Mixer row's and Settings › Audio's controls.
+    callback set-source-monitor(int /* id */, int /* mode */);
+    callback set-source-solo(int /* id */, bool /* on */);
+    callback end-monitor-solo();
+    // The volume as a fader position (sent when a drag ends) and the device by its
+    // index in `monitor-devices` (0: System default).
+    // The words for a position while a drag runs (`-1` clears them). The host is told
+    // only from `set-monitor-volume`, when the pointer is released.
+    callback preview-monitor-volume(float);
+    callback set-monitor-volume(float);
+    callback set-monitor-device(int);
+    // A device picker is shown: list the playback devices (only then, ADR-0097).
+    callback list-monitor-devices();
+    // Some adapter can play on this computer.
+    in property <bool> monitor-available;
+    // A source is monitored or soloed: the Mixer shows the monitor row.
+    in property <bool> monitor-wanted;
+    // 0 neutral (not in use, opening), 1 playing, 2 a problem; the state in words, and
+    // the latency while it plays ("42 ms").
+    in property <int> monitor-tone;
+    in property <string> monitor-status;
+    in property <string> monitor-latency;
+    in property <float> monitor-volume;
+    in property <string> monitor-volume-text;
+    in property <[string]> monitor-devices;
+    in property <int> monitor-device;
+    in property <string> monitor-device-name;
+    // The soloed sources' names; empty while solo is off.
+    in property <string> monitor-solo;
+    callback set-source-volume(int /* id */, float /* position */);
+    callback rename-source(int /* id */, string /* name */);
+    // Collection glide defaults (ADR-0100): duration ms and easing 0 linear / 1 ease-in-out.
+    in property <int> glide-duration: 400;
+    in property <int> glide-easing: 1;
+    // The collection glide's defaults, for the reset buttons.
+    in property <int> glide-default-duration: 400;
+    in property <int> glide-default-easing: 1;
+    callback set-glide(int /* duration_ms */, int /* easing */);
+    // The collection's transition (ADR-0128) as the rail shows it: 0 Cut, 1 Fade,
+    // 2 Move, 3 Swipe, 4 Slide. Move's duration and easing are the collection glide
+    // above; the others have their own. Fade may pass through an opaque colour; Swipe
+    // and Slide have a direction (0 left, 1 right, 2 up, 3 down).
+    in property <int> transition-kind: 2;
+    in property <int> fade-duration: 300;
+    in property <int> fade-easing;
+    in property <bool> fade-via;
+    in property <color> fade-via-color;
+    in property <int> swipe-duration: 500;
+    in property <int> swipe-easing: 1;
+    in property <int> swipe-direction;
+    in property <int> slide-duration: 500;
+    in property <int> slide-easing: 1;
+    in property <int> slide-direction;
+    callback set-transition-kind(int);
+    // The duration of the current kind (Move: the glide's).
+    callback set-transition-duration(int /* ms */);
+    // `via-color` is "#rrggbb", or empty to keep the colour.
+    callback set-fade-options(int /* easing */, bool /* via */, string /* via-color */);
+    // Swipe's options, or Slide's when `slide`.
+    callback set-swipe-options(bool /* slide */, int /* easing */, int /* direction */);
+    // Per-source slide override (ADR-0100). `custom` false clears it.
+    callback set-source-glide(int /* id */, bool /* custom */, int /* duration_ms */, int /* easing */);
+    // The sync offset of a source's sound in milliseconds (ADR-0062): a live control.
+    callback set-source-sync-offset(int /* id */, int /* ms */);
+    // The Library panel (ADR-0075): the built-in looks and sample pictures. The samples'
+    // thumbnails are made when the panel first shows (`library-shown`), not before.
+    in property <[LookData]> library-looks;
+    in property <[string]> library-look-names;
+    in property <[SampleData]> library-samples;
+    // The argument is the physical pixel height a sample's picture is shown at.
+    callback library-shown(int /* picture_px */);
+    callback apply-look(string /* look id */);
+    callback apply-look-at(int /* index in library-looks */);
+    callback add-sample(string /* sample id */);
+    callback add-stamp(int /* 0 circle … 6 arrow */);
+    callback add-image();
+    callback set-source-fill(int /* id */, string /* #rrggbb */);
+    // A text source (ADR-0129 decision 13): what the Text tab shows, and its edits.
+    // Each edit is one undo step; `key` is a setting key of the text source type.
+    in property <TextData> text-props;
+    callback set-text-kind(int /* id */, int /* kind */);
+    callback set-text-value(int /* id */, string /* key */, string /* value; "" removes it */);
+    callback set-text-number(int /* id */, string /* key */, float /* value */);
+    callback set-text-flag(int /* id */, string /* key */, bool /* value */);
+    // Outline, Shadow and Background on or off.
+    callback set-text-effect(int /* id */, int /* 0 outline, 1 shadow, 2 background */, bool /* on */);
+    callback set-text-countdown(int /* id */, bool /* until a time */, string /* target */, int /* length in seconds */);
+    callback choose-text-font(int /* id */);
+    callback choose-text-file(int /* id */);
+    callback fit-text-box(int /* id */);
+    callback text-timer(int /* id */, int /* 0 start, 1 pause, 2 reset */);
+    callback set-source-filled(int /* id */, bool /* draw the fill */);
+    callback open-filter-settings(int /* source */, int /* filter */);
+    callback open-shape-settings(int /* source */);
+    // The Library gear: open Properties on the look's settings. `look-reveal`
+    // counts those asks; the section reports its place in `look-anchor-y`.
+    callback open-look-settings(string /* look id */);
+    in-out property <int> look-reveal: 0;
+    in-out property <int> look-anchor-serial: 0;
+    in-out property <length> look-anchor-y: 0px;
+    // Filters (ADR-0062).
+    // The Properties tab picked last: 0 Transform, 1 Filters, 2 Audio, 3 Source (shown first),
+    // 4 Text (a text source's first tab).
+    in-out property <int> properties-tab;
+    // The ids of the sections Properties draws now, comma separated: the panel's title
+    // row folds them all with one button (Collapse all / Expand all).
+    in-out property <string> properties-folds;
+    callback select-filter(int /* source */, int /* filter */);
+    callback remove-filter(int /* filter */);
+    callback move-filter(int /* filter */, int /* index */);
+    callback set-filter-enabled(int /* filter */, bool /* on */);
+    // A slider drag shows on the picture; release commits it as one undo step, cancel
+    // puts the stored values back.
+    callback preview-filter(int /* filter */, int /* field */, float /* position */);
+    callback commit-filter(int /* filter */);
+    // Puts one field of a filter back to its default (one change).
+    callback reset-filter-field(int /* filter */, int /* field */);
+    callback cancel-filter(int /* filter */);
+    callback set-filter-colour(int /* filter */, int /* field */, string /* colour */);
+    callback reset-filter(int /* filter */);
+    // A key source picked in a source field: option 0 is none, then the other sound sources.
+    callback set-filter-source(int /* filter */, int /* field */, int /* option */);
+    // A choice field's option, or a switch (0 off, 1 on), of a filter (ADR-0130).
+    callback set-filter-option(int /* filter */, int /* field */, int /* option */);
+    // The live levels of a filter's meter as bar positions; read by the gate bar's timer.
+    callback filter-levels(int /* filter */) -> FilterLevels;
+    // `commands` (M and L only) drawn in a view box of `vb-w` by `vb-h`, stretched to
+    // `w` by `h` pixels, so a curve fills its box at any width (the EQ curve).
+    pure callback fit-path(string /* commands */, float /* vb-w */, float /* vb-h */, float /* w */, float /* h */) -> string;
+    // The scenes the canvas may show, in panel order, and what Add source can place
+    // again (every source of the collection that the scene does not have yet).
+    in property <[SceneData]> scenes;
+    callback switch-scene(int /* id */);
+    callback add-scene();
+    callback remove-scene(int /* id */);
+    callback rename-scene(int /* id */, string /* name */);
+    // Sets a scene's transition into it (ADR-0135): `kind` -1 the collection's, else the
+    // rail's index; `duration` -1 the kind's own duration, else milliseconds.
+    callback set-scene-transition(int /* id */, int /* kind */, int /* duration */);
+    // "Transition into this scene…" from a menu: the row of this scene opens its card
+    // and sets it back to -1; the count makes each ask a change.
+    in-out property <int> transition-scene: -1;
+    in-out property <int> transition-scene-asked;
+    // The Scenes panel's `+` in its card title row; each press adds one.
+    in-out property <int> add-scene-asked;
+    // Rename from a menu or a shortcut: the row of this scene or source starts its
+    // name field and sets it back to -1.
+    in-out property <int> renaming-scene: -1;
+    in-out property <int> renaming-source: -1;
+    // Counts the asks, so asking for the same row again is a change too.
+    in-out property <int> rename-scene-asked;
+    in-out property <int> rename-source-asked;
+    // A menu or a shortcut asked to confirm before removing. The row shows its
+    // confirm and sets the id back to -1. `confirm-source-kind` 1 removes the source
+    // from this scene; 2 deletes it from every scene.
+    in-out property <int> confirming-scene: -1;
+    in-out property <int> confirm-scene-asked;
+    // What the scene row asks: 0 remove the scene, 1 discard its own levels (ADR-0091).
+    in-out property <int> confirm-scene-kind: 0;
+    in-out property <int> confirming-source: -1;
+    in-out property <int> confirm-source-kind: 0;
+    in-out property <int> confirm-source-asked;
+    // A video source's box on the canvas, in canvas pixels.
+    callback set-source-box(int /* id */, float /* x */, float /* y */, float /* w */, float /* h */);
+    // Shape and border of a video source (ADR-0053); a colour that is not #rrggbb or
+    // #rrggbbaa is ignored.
+    // Source pixels cut from each edge (ADR-0058); the box changes so the scale stays.
+    callback set-source-crop(int /* id */, int /* left */, int /* top */, int /* right */, int /* bottom */);
+    // 0 full picture, 1 canvas size centred, 2 left half, 3 right half.
+    callback set-source-region(int /* id */, int /* region */);
+    // Capture region on the source (ADR-0103), not item crop.
+    callback set-source-capture-region(int /* id */, bool /* clear */, int /* left */, int /* top */, int /* right */, int /* bottom */);
+    // Display chrome (ADR-0104); fill 0 cover, 1 fit.
+    callback set-display-chrome(int /* id */, bool /* on */, int /* top */, int /* right */, int /* bottom */, int /* left */, int /* fill */);
+    callback fit-display-chrome(int /* id */);
+    callback reset-display-chrome(int /* id */);
+    // Timed show (ADR-0105): `show_for_ms` 0 clears; `show-item` is live.
+    callback set-item-show-for(int /* item */, int /* show_for_ms */);
+    callback show-item(int /* item */);
+    // 0 flip horizontally, 1 flip vertically, 2 turn 90 clockwise, 3 turn 90 counter-clockwise,
+    // 4 reserved (was 180°; use two 90° turns), 5 fit, 6 fill, 7 stretch, 8 centre, 9 reset (ADR-0084).
+    callback transform-source(int /* id */, int /* op */);
+    // Degrees clockwise about the box centre, wrapped into 0..360. Moves that share a
+    // non-zero `gesture` are one undo step. 0 never joins.
+    callback set-source-rotation(int /* id */, float /* degrees */, int /* gesture */);
+    // Bumped by a drag so each drag has its own gesture. The host never writes it.
+    in-out property <int> gesture-serial: 1;
+    callback set-source-style(int /* id */, int /* shape */, float /* radius */, bool /* border */, float /* width */, string /* colour */);
+    // The selection drawn by the toolkit where no preview layer shows the picture (the
+    // layer draws it itself otherwise, ADR-0048).
+    in property <[MarkData]> marks;
+    // Pointer on the picture panel (panel coordinates, logical pixels; `w`, `h` the
+    // panel's size). Shift: free resize at corners; Ctrl or Cmd: no snapping.
+    // `crop`: Alt (Option) held, a handle crops instead of resizing (ADR-0058).
+    callback preview-press(float /* x */, float /* y */, float /* w */, float /* h */, bool /* shift */, bool /* no-snap */, bool /* crop */);
+    callback preview-drag(float /* x */, float /* y */);
+    callback preview-release();
+    // Arrow keys on the picture panel: move the selected source by this many canvas
+    // pixels.
+    callback preview-nudge(int /* dx */, int /* dy */);
+    // Escape on the picture panel.
+    callback preview-deselect();
+    // The same on the vertical canvas's picture (ADR-0093 decision 4): boxes there are
+    // the sources' own layout on that canvas; no crop and no menu yet.
+    in property <[MarkData]> vertical-marks;
+    callback vertical-press(float /* x */, float /* y */, float /* w */, float /* h */, bool /* shift */, bool /* no-snap */, bool /* crop */);
+    callback vertical-drag(float /* x */, float /* y */);
+    callback vertical-release();
+    callback vertical-nudge(int /* dx */, int /* dy */);
+    callback undo-delete();
+    callback dismiss-deleted();
+    // Markers (ADR-0089 decision 10): the running recording's manual markers, whether
+    // its marker controls show (it writes an editor project), and the notice of the
+    // marker just added ("Marker 3 at 0:12:31"; empty: none).
+    in property <int> rec-markers;
+    in property <bool> rec-markers-shown;
+    in property <string> marker-note;
+    in property <int> marker-generation;
+    callback add-marker();
+    callback undo-marker();
+    callback dismiss-marker();
+    // Pause (ADR-0124): a recording runs that Pause applies to, and every running
+    // recording is paused (Pause reads Resume).
+    in property <bool> rec-pausable;
+    in property <bool> rec-paused;
+    callback pause-recording();
+    // Hold (ADR-0124): a stream is live that Hold applies to, and every live stream
+    // is on hold (Hold reads Resume stream).
+    in property <bool> st-holdable;
+    in property <bool> st-held;
+    callback hold-stream();
+    // What Undo and Redo would apply to the scene now: 0 nothing, 1 adding, 2 deleting,
+    // 3 the layer order, 4 moving or resizing the source named `undo-name` /
+    // `redo-name` (U4). Separate from the layout history (U21).
+    in property <int> undo-kind;
+    in property <string> undo-name;
+    in property <int> redo-kind;
+    in property <string> redo-name;
+    // Undo (true) or redo (false) the newest scene edit.
+    callback undo-edit(bool /* back */);
+    callback reset-clip(int /* source id */);
+    callback reset-master-clip();
+    // The master's fader position (0 to 1, the strips' fader law) and its mute (ADR-0081).
+    callback set-master-volume(float);
+    callback set-master-muted(bool);
+    // The master's loudness meter (ADR-0092): Show loudness (`loudness.set_enabled`),
+    // Reset loudness (`loudness.reset`) and what both show.
+    // One row while Show loudness is on (a model, so the Mixer's 30 Hz refresh does not
+    // touch the global); `loudness` reads it.
+    in property <[LoudnessData]> loudness-rows;
+    property <LoudnessData> loudness-off;
+    out property <LoudnessData> loudness: Studio.loudness-rows.length > 0 ? Studio.loudness-rows[0] : Studio.loudness-off;
+    callback set-loudness-shown(bool);
+    callback reset-loudness();
+    // Settings › Audio › Loudness (`ui.settings.open {setting}`).
+    callback open-loudness-settings();
+    // Settings › Audio › Loudness (ADR-0092 decision 5): the target presets and Custom
+    // (the last option), the chosen one, its value in LUFS and the true-peak limit (dBTP).
+    in property <[string]> loudness-targets;
+    in property <int> loudness-target;
+    in property <float> loudness-target-lufs;
+    in property <float> loudness-limit;
+    callback set-loudness-target(int);
+    callback set-loudness-target-lufs(float);
+    callback set-loudness-limit(float);
+    // The fader position (0 to 1) of a level the user typed, such as "-6 dB"; -1 when the
+    // text is not a level. Pure: it reads nothing from the app.
+    pure callback level-position(string) -> float;
+
+    // Recording: 0 off, 1 starting, 2 recording, 3 stopping.
+    in property <int> rec-state;
+    // The file being recorded (name only).
+    in property <string> rec-file;
+    // The last recording's outcome or why one did not start; `rec-note-bad` marks a problem.
+    in property <string> rec-note;
+    in property <bool> rec-note-bad;
+    // Why this system cannot record; empty when it can.
+    in property <string> rec-unavailable;
+    callback record();
+    callback stop-recording();
+
+    // The canvas whose settings the Recording and Stream sections show (ADR-0093
+    // decision 6): 0 main, 1 vertical. The selector is shown only while the vertical
+    // canvas exists (`settings-canvases` has two entries).
+    in property <[string]> settings-canvases;
+    in property <int> settings-canvas;
+    callback set-settings-canvas(int);
+    // The picked canvas's recording, and its stream, do not run: its settings can change.
+    in property <bool> rec-form-idle: true;
+    in property <bool> st-form-idle: true;
+    // The vertical canvas has no recording settings of its own yet: it uses the main ones.
+    in property <bool> out-uses-main;
+
+    // Output settings of the next recording.
+    in-out property <string> out-folder;
+    // Bumped by Rust when `out-folder` is set from outside the field.
+    in-out property <int> out-folder-serial;
+    // 0 video, 1 audio. The container menu lists that category.
+    in property <int> out-media;
+    in property <[string]> out-containers;
+    in property <int> out-container;
+    // WAV or FLAC: the Encoding card shows the sample width and hides the picture settings.
+    in property <bool> out-audio-only;
+    // FLAC: the width row is 16-bit and 24-bit. WAV keeps 32-bit float.
+    in property <bool> out-flac;
+    in property <[string]> out-pcm-widths;
+    in property <int> out-bit-depth;
+    // The default sample width as an index into out-pcm-widths.
+    in property <int> out-bit-depth-default;
+    // The main recording is audio only, so Record works with no video encoder.
+    in property <bool> rec-audio-only;
+    // The vertical canvas's next recording is audio only.
+    in property <bool> vertical-audio-only;
+    // The Record button names audio: idle follows the profile, a running file follows
+    // the file that started.
+    in property <bool> rec-button-audio;
+    // Output size of the next recording (ADR-0102): a switch, then nested frames.
+    in property <bool> out-same;
+    in property <bool> out-portrait;
+    in property <[SizeBand]> out-bands;
+    in property <[SizeBand]> out-extras;
+    in property <int> out-choice;
+    in property <string> out-value;
+    // The long side the field shows: the stored size, or the canvas when it is the same.
+    in property <int> out-long;
+    // The recording's encoder fields.
+    in property <EncoderData> out-enc;
+    // A problem with the settings or their file; empty when none.
+    in property <string> out-note;
+    callback set-folder(string);
+    callback set-media(int);
+    callback set-container(int);
+    callback set-bit-depth(int);
+    // Markers and project (ADR-0089 decisions 3, 4 and 10; ADR-0124 decision 10):
+    // the editor project (0 off, 1 FCP7 XML, 2 FCPXML), the marker lead in seconds
+    // and the automatic marker switches (0 scenes, 1 stream, 2 pauses).
+    in property <int> rec-project;
+    in property <float> rec-marker-lead;
+    in property <bool> rec-marker-scenes;
+    in property <bool> rec-marker-stream;
+    in property <bool> rec-marker-pauses;
+    callback set-editor-project(int);
+    callback set-marker-lead(float);
+    callback set-marker-option(int /* which */, bool);
+    // An Output size chip of an output (0 recording, 1 stream) was picked.
+    callback set-output-size(int /* output */, int /* index */);
+    // A long side was typed for that output. The short side follows the canvas.
+    callback set-output-long-side(int /* output */, float);
+    // Same as canvas was turned on or off for that output.
+    callback set-output-same(int /* output */, bool);
+    // An encoder field of an output (0 recording, 1 stream) was picked: `field` is an
+    // `EncoderFields` code, `value` the picked index (padding: 0 off, 1 on).
+    callback set-encoding(int /* output */, int /* field */, int /* value */);
+    // One line: format, encoder, bitrates and folder of the next recording.
+    in property <string> out-summary;
+    // Opens the Settings window at its Recording section.
+    callback open-settings();
+
+    // Streaming (Live controls, Settings > Stream): 0 off, 1 starting, 2 live, 3 ending.
+    in property <int> st-state;
+    // Live and connected: the program reaches the server.
+    in property <bool> st-connected;
+    // The stream's state or last outcome in words, for Live controls; `st-bad` marks a
+    // problem.
+    in property <string> st-text;
+    in property <bool> st-bad;
+    // No server or stream key yet: Live controls offer "Stream settings".
+    in property <bool> st-needs-setup;
+    callback go-live();
+    callback end-stream();
+
+    // The virtual camera in Live controls (ADR-0066 decision 12): shown where this
+    // platform has one; `vcam-can` while it is added (or sends) and the studio runs.
+    // End stream ends the vertical stream too ("Main + vertical", ADR-0111): the
+    // question names both.
+    in property <bool> st-end-both;
+    in property <bool> vcam-shown;
+    in property <bool> vcam-can;
+    in property <bool> vcam-on;
+    // Its state in words under the button; empty when the button says enough.
+    in property <string> vcam-text;
+    // Start (true) or stop sending.
+    callback vcam-toggle(bool);
+    // Opens the Settings window at its Stream section.
+    callback open-stream-settings();
+    // Stream settings: the server URL field's text, bumped serial when Rust sets it.
+    in property <string> st-server;
+    in property <int> st-server-serial;
+    // Whether a key is saved, and where keys are kept (the hint).
+    in property <bool> st-key-saved;
+    in property <string> st-key-place;
+    // Bumped when a key was saved or removed: the key field is emptied.
+    in property <int> st-key-serial;
+    in property <bool> st-reconnect;
+    // "Record when the stream starts", and what it costs (shown while it is on).
+    in property <bool> st-auto-record;
+    in property <string> st-auto-record-note;
+    // "While on hold": 0 Last frame, 1 Black, 2 A scene (ADR-0124). With a scene, the
+    // canvas's scenes, the one chosen (-1: none yet) and whether its sound goes out.
+    in property <int> st-hold-picture;
+    in property <[string]> st-hold-scenes;
+    in property <int> st-hold-scene: -1;
+    in property <bool> st-hold-sound-scene;
+    // The Stream card's notice while a scene hold fell back ("" otherwise).
+    in property <string> st-hold-note;
+    // The server is srt://: the latency field shows.
+    in property <bool> st-srt;
+    in property <[string]> st-latencies;
+    in property <int> st-latency;
+    in property <EncoderData> st-enc;
+    // Output size of the next stream (ADR-0102): a switch, then nested frames.
+    in property <bool> st-same;
+    in property <[SizeBand]> st-bands;
+    in property <[SizeBand]> st-extras;
+    in property <int> st-choice;
+    in property <string> st-value;
+    in property <int> st-long;
+    // A problem with the stream settings, the key or their file; empty when none.
+    in property <string> st-note;
+    // One line: protocol, server, encoder and bitrates of the next stream.
+    in property <string> st-summary;
+    // The Outputs panel's labelled rows (recording, then stream).
+    in property <string> out-kind;
+    in property <string> out-encoder-name;
+    in property <string> out-video-line;
+    in property <string> out-audio-line;
+    in property <string> out-where;
+    in property <string> st-kind;
+    in property <string> st-where;
+    in property <string> st-encoder-name;
+    in property <string> st-video-line;
+    in property <string> st-audio-line;
+    callback set-server(string);
+    // The server field changed but is not confirmed yet: confirmed when Settings
+    // closes or Go live is pressed.
+    callback server-edited(string);
+    callback save-key(string);
+    callback remove-key();
+    callback set-reconnect(bool);
+    callback set-auto-record(bool);
+    callback set-hold-picture(int);
+    callback set-hold-scene(int);
+    callback set-hold-sound(int);
+    callback set-latency(int);
+    // The Destinations card (ADR-0127 decision 17): the picked canvas's destinations,
+    // the first one first; "3 of 6"; whether one can be added and the list changed
+    // (not while that canvas streams); the upload Go live needs and service limit
+    // warnings (one per line), "" when none.
+    in property <[DestinationRow]> st-dests;
+    in property <string> st-dest-count;
+    in property <bool> st-dest-can-add;
+    in property <bool> st-dest-editable: true;
+    in property <string> st-dest-upload;
+    in property <string> st-dest-warnings;
+    // Its inline editor, while open: a copy written on Save. The text fields show what
+    // Rust set last, re-read when the serial changes.
+    in property <bool> st-ed-open;
+    in property <bool> st-ed-new;
+    // The first destination: its server and key are the stream settings'.
+    in property <bool> st-ed-first;
+    in property <string> st-ed-title;
+    in property <[string]> st-ed-services;
+    in property <int> st-ed-service;
+    in property <string> st-ed-name;
+    in property <string> st-ed-server;
+    in property <int> st-ed-serial;
+    in property <string> st-ed-server-help;
+    in property <string> st-ed-key-help;
+    in property <bool> st-ed-key-saved;
+    in property <bool> st-ed-own;
+    in property <bool> st-ed-reconnect;
+    in property <string> st-ed-problem;
+    in property <EncoderData> st-ed-enc;
+    callback dest-set-enabled(int /* id */, bool);
+    callback dest-edit(int /* id */);
+    callback dest-add();
+    callback dest-set-service(int);
+    callback dest-set-name(string);
+    callback dest-set-server(string);
+    callback dest-save-key(string);
+    callback dest-remove-key();
+    callback dest-set-own(bool);
+    callback dest-set-reconnect(bool);
+    callback dest-save();
+    callback dest-cancel();
+    callback dest-remove();
+
+    // The canvas (Settings, Video): tiles for the current orientation, the one in
+    // use (-1 when the size matches none), the fields, and "W × H" for the status bar.
+    in property <[SizeBand]> canvas-bands;
+    in property <[SizeBand]> canvas-extras;
+    in property <int> canvas-choice;
+    in property <string> canvas-value;
+    in property <int> canvas-width;
+    in property <int> canvas-height;
+    in property <bool> canvas-portrait;
+    in property <string> canvas-label;
+    in property <[string]> canvas-rates;
+    in property <int> canvas-rate;
+    // The default frame rate as an index into canvas-rates.
+    in property <int> canvas-rate-default;
+    // The studio restarts with a new canvas; true until it runs again.
+    in property <bool> canvas-restarting;
+    // A problem with the canvas or its file; empty when none.
+    in property <string> canvas-note;
+    callback set-canvas-sides(float, float);
+    callback set-canvas-portrait(bool);
+    callback set-canvas-rate(int);
+
+    // Audio (Settings, Audio): Record and Go live ask first while no microphone is
+    // heard (UI spec, "Silent output warning").
+    in property <bool> warn-silent: true;
+    callback set-warn-silent(bool);
+    // General (Settings, General): leave the RBS windows out of a screen recording.
+    in property <bool> exclude-own-window: true;
+    callback set-exclude-own-window(bool);
+    // General (Settings, General, ADR-0056): what closing the main window does.
+    // 0 Quit RBS, 1 Keep RBS running.
+    in property <int> on-close;
+    // The experience level (ADR-0113 decision 2): 0 Simple, 1 Standard, 2 Pro.
+    in property <int> experience: 1;
+    // 0 macOS, 1 Windows, 2 elsewhere (the setting is not available there).
+    in property <int> platform;
+    // A hidden window can be brought back on this platform now; without it, closing
+    // the window quits.
+    in property <bool> way-back;
+    callback set-on-close(int);
+    callback set-experience(int);
+    // Studio mode (Settings, General, ADR-0098): a transition also puts the old
+    // program scene in preview. Off by default.
+    in property <bool> swap-after-transition;
+    callback set-swap-after-transition(bool);
+
+    // Remote control (Settings, Remote control): other apps control RBS through the
+    // control API. Off by default.
+    in property <bool> rc-enabled;
+    // The port field's text; set by Rust on load and when a typed port is refused.
+    in property <string> rc-port;
+    // The port remote control uses by default, for the reset button.
+    in property <string> rc-default-port;
+    // Bumped by Rust when `rc-port` is set from outside the field.
+    in property <int> rc-port-serial;
+    // Where apps connect, or why remote control is not running; `rc-status-bad` marks a
+    // problem.
+    in property <string> rc-status;
+    in property <bool> rc-status-bad;
+    in property <[TokenRow]> rc-tokens;
+    // Access choices and the one-line explanation of each.
+    in property <[string]> rc-accesses;
+    in property <[string]> rc-access-hints;
+    // A token just made: shown once, until dismissed. Empty when none.
+    in property <string> rc-new-token;
+    in property <string> rc-new-token-name;
+    // A problem with a token or the settings file; empty when none.
+    in property <string> rc-note;
+    callback set-rc-enabled(bool);
+    callback set-rc-port(string);
+    callback create-token(string /* name */, int /* access */);
+    callback revoke-token(int);
+    callback dismiss-new-token();
+    // The access token revoked last; empty when none. "Undo" puts it back.
+    in property <string> rc-revoked;
+    callback undo-revoke();
+
+    // Network access (ADR-0046): other computers connect over TLS. Off by default.
+    in property <bool> rc-network;
+    // "Allow remote admin": Full control tokens keep admin from other computers.
+    in property <bool> rc-remote-admin;
+    // Other computers can connect now: the frame shows it in every workspace.
+    in property <bool> rc-network-on;
+    // Where other computers connect, or why they cannot; `-bad` marks a problem.
+    in property <string> rc-network-status;
+    in property <bool> rc-network-status-bad;
+    // What clients check: the key pin, and the certificate fingerprint.
+    in property <string> rc-key-pin;
+    in property <string> rc-fingerprint;
+    // Where the certificate came from, and whether it was just renewed.
+    in property <string> rc-cert-note;
+    // A problem with a network access change (files, new key); empty when none.
+    in property <string> rc-network-note;
+    // The user's own certificate is used, and its files.
+    in property <bool> rc-own;
+    in property <string> rc-own-cert;
+    in property <string> rc-own-key;
+    callback set-rc-network(bool);
+    callback set-rc-remote-admin(bool);
+    callback rc-use-own(string /* certificate */, string /* key */);
+    callback rc-use-generated();
+    callback rc-new-key();
+
+    // AI tools (Settings, AI tools; ADR-0134). The section shows once the server side
+    // exists (`ai-ready`).
+    in property <bool> ai-ready;
+    // 0 stopped, 1 started, 2 Start failed (`ai-status` says why).
+    in property <int> ai-state;
+    // The status line under the state, or why Start failed.
+    in property <string> ai-status;
+    // The names connected AI tools report, already cleaned (decision 7).
+    in property <[string]> ai-clients;
+    in property <bool> ai-autostart;
+    // 0 View only, 1 Control (the default), 2 Full control.
+    in property <int> ai-access: 1;
+    in property <bool> ai-irreversible;
+    // The AI tools the connection line is made for, the one picked, where its line
+    // goes, and the line. `ai-line` is empty when no line can be made; `ai-line-note`
+    // then says why.
+    in property <[string]> ai-tool-names;
+    in property <int> ai-tool;
+    in property <string> ai-where;
+    in property <string> ai-line;
+    in property <string> ai-line-note;
+    // What to do with the line beside pasting it (merging, copying again after a move).
+    in property <string> ai-line-help;
+    // The picked tool's own configuration file: its name and folder ("" for a tool set
+    // up by a command), and whether it exists yet. RBS only shows it (ADR-0134
+    // decision 5).
+    in property <string> ai-config-name;
+    in property <string> ai-config-folder;
+    in property <bool> ai-config-exists;
+    in property <[AiActionRow]> ai-actions;
+    callback ai-start();
+    callback ai-stop();
+    callback set-ai-autostart(bool);
+    callback set-ai-access(int);
+    callback set-ai-irreversible(bool);
+    callback ai-new-token();
+    callback pick-ai-tool(int);
+    callback ai-show-config();
+
+    // Output profiles and scene collections (ADR-0051): the entries, the one in use,
+    // and the menu actions. Actions: 0 new, 1 duplicate (both with a name and then
+    // used), 2 rename the one in use, 3 delete the one in use, 4 import a file,
+    // 5 export the one in use to a file.
+    in property <[EntryRow]> profiles;
+    in property <string> profile-name;
+    in property <[EntryRow]> collections;
+    in property <string> collection-name;
+    // A scene collection switch is running (the studio restarts).
+    in property <bool> switching;
+}
+
+// From vcam.slint.
+export global VirtualCamera {
+    // The camera can be added on this computer.
+    in property <bool> available;
+    // The toggle: added, or being added.
+    in property <bool> added;
+    in property <bool> can-toggle;
+    // The state in words; `tone` 0 neutral, 1 good, 2 problem.
+    in property <string> state;
+    in property <int> tone;
+    // The warning before adding is shown.
+    in property <bool> confirming;
+    in property <[string]> sizes;
+    in property <int> size;
+    in property <[string]> rates;
+    in property <int> rate;
+    // The default size and frame rate as indexes into `sizes` and `rates`.
+    in property <int> size-default;
+    in property <int> rate-default;
+    in property <bool> can-format;
+    in property <string> format-help;
+    in property <bool> sending;
+    in property <bool> can-send;
+    in property <string> sending-text;
+    in property <bool> can-remove-all;
+    // The toggle: on shows the warning, off removes the camera.
+    callback toggle(bool);
+    callback add();
+    callback cancel();
+    callback set-size(int);
+    callback set-rate(int);
+    // Start or stop sending.
+    callback send(bool);
+    callback remove-all();
+}

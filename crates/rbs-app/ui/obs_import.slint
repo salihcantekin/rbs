@@ -5,20 +5,8 @@
 // collection and output profile are made, and nothing the user has now changes.
 import { Theme, Tokens } from "tokens.slint";
 import { Button, Checkbox, DialogActions, OverlayHost, ScrollArea, Select, SettingRow, StatusLine, Toggle } from "components.slint";
-
-// One scene of the chosen collection and whether it is brought.
-export struct ObsSceneChoice {
-    name: string,
-    on: bool,
-}
-
-// One line of the check: the OBS object, where it is, and why it did not come across
-// exactly.
-export struct ObsReportRow {
-    name: string,
-    place: string,
-    reason: string,
-}
+import { ObsSceneChoice, ObsReportRow } from "base/types.slint";
+export { ObsSceneChoice, ObsReportRow }
 
 // A raised card with a caps title, as on a Settings page.
 component Card inherits Rectangle {

@@ -38,6 +38,7 @@ pub mod settings_index;
 pub mod shortcut;
 pub mod store;
 pub mod tokens;
+pub mod tokens_slint;
 pub mod transform;
 pub mod workspace;
 

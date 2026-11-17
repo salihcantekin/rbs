@@ -6,7 +6,7 @@
 //! no Rust build at all. Development only: the interpreter is slower than the generated
 //! code, so measurements and builds that ship never use it.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 pub const USAGE: &str = "\
@@ -27,6 +27,16 @@ fn command_args(extra: &[String]) -> Vec<String> {
     args
 }
 
+/// The target directory of the live preview: `live-preview/` under `CARGO_TARGET_DIR`
+/// when it is set, else under the checkout's `target/`. Switching modes in one directory
+/// would rerun every UI build script and rebuild the window crates (ADR-0138 decision 5).
+pub fn target_dir(root: &Path, cargo_target_dir: Option<&std::ffi::OsStr>) -> PathBuf {
+    cargo_target_dir
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root.join("target"))
+        .join("live-preview")
+}
+
 pub fn run(root: &Path, extra: &[String]) -> Result<ExitCode, String> {
     if extra.iter().any(|a| a == "--help" || a == "-h") {
         eprintln!("{USAGE}");
@@ -37,6 +47,10 @@ pub fn run(root: &Path, extra: &[String]) -> Result<ExitCode, String> {
         .current_dir(root)
         .args(command_args(extra))
         .env("SLINT_LIVE_PREVIEW", "1")
+        .env(
+            "CARGO_TARGET_DIR",
+            target_dir(root, std::env::var_os("CARGO_TARGET_DIR").as_deref()),
+        )
         .status()
         .map_err(|e| format!("run {cargo}: {e}"))?;
     Ok(if status.success() {
@@ -48,7 +62,22 @@ pub fn run(root: &Path, extra: &[String]) -> Result<ExitCode, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::command_args;
+    use std::path::Path;
+
+    use super::{command_args, target_dir};
+
+    #[test]
+    fn the_live_preview_builds_beside_the_normal_target() {
+        let root = Path::new("/repo");
+        assert_eq!(
+            target_dir(root, None),
+            Path::new("/repo/target/live-preview")
+        );
+        assert_eq!(
+            target_dir(root, Some("/shared/target".as_ref())),
+            Path::new("/shared/target/live-preview")
+        );
+    }
 
     #[test]
     fn the_feature_comes_first_and_extra_arguments_follow() {

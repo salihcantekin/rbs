@@ -1,6 +1,6 @@
 [package]
 name = "rbs-app-ui"
-description = "The Rust code Slint generates from the RBS desktop app's UI files (rbs-app/ui), in its own crate so it is compiled once per build."
+description = "The RBS desktop UI types rbs-app uses: a facade over the crates of the Slint-generated UI code (ADR-0138), plus the generated token setters."
 version.workspace = true
 edition.workspace = true
 # Slint 1.18 needs Rust 1.92 (ADR-0022, decision 6), as for rbs-app.
@@ -11,9 +11,9 @@ publish.workspace = true
 
 # Part of the desktop app (application layer, docs/architecture/overview.md); only
 # rbs-app depends on it. The UI files stay in crates/rbs-app/ui. Slint turns them into
-# about 23 MB of Rust. Inside the `rbs` binary that code was compiled twice by every
-# `cargo test` (the binary and its unit-test harness) and was most of every CI test
-# build (9 of 10 minutes on macOS). A library is compiled once and linked into both.
+# about 62 MB of Rust, split by ADR-0138 into a base library and one crate per window
+# group so a change rebuilds only its group and the groups compile in parallel. This
+# crate re-exports them under the names rbs-app has always used.
 [lib]
 # No tests, examples or docs of its own: the code is generated, and rbs-app tests it.
 test = false
@@ -21,20 +21,29 @@ doctest = false
 doc = false
 
 [features]
+# The test-only probe windows; only rbs-app's dev-dependency turns this on, so `cargo
+# build` and release builds never compile them (ADR-0138 decision 1).
+probes = ["dep:rbs-app-ui-probes"]
 # Development only: the UI is interpreted at run time and reloads when a `.slint` file
 # is saved, so a UI edit needs no Rust build (`cargo xtask ui-dev`, testing strategy,
-# "UI live preview"). Takes effect only with `SLINT_LIVE_PREVIEW=1` at build time.
-# Never enabled in builds that ship.
-live-preview = ["slint/live-preview"]
+# "UI live preview"). Takes effect only with `SLINT_LIVE_PREVIEW=1` at build time, when
+# every type comes from `rbs-app-ui-single` (ADR-0138 decision 5). Never enabled in
+# builds that ship.
+live-preview = ["dep:rbs-app-ui-single", "slint/live-preview"]
 
 [dependencies]
 rbs-ui = { path = "../rbs-ui" }
+rbs-app-ui-base = { path = "../rbs-app-ui-base" }
+rbs-app-ui-main = { path = "../rbs-app-ui-main" }
+rbs-app-ui-settings = { path = "../rbs-app-ui-settings" }
+rbs-app-ui-dialogs = { path = "../rbs-app-ui-dialogs" }
+rbs-app-ui-probes = { path = "../rbs-app-ui-probes", optional = true }
+rbs-app-ui-single = { path = "../rbs-app-ui-single", optional = true }
 # The same exact pin and features as rbs-app (ADR-0022, decisions 1, 2 and 5).
 slint = { version = "=1.18.1", default-features = false, features = ["std", "backend-winit", "renderer-skia", "accessibility", "compat-1-2", "unstable-wgpu-30", "raw-window-handle-06"] }
 
 [build-dependencies]
 rbs-ui = { path = "../rbs-ui" }
-slint-build = "=1.18.1"
 
 [lints]
 workspace = true

@@ -175,6 +175,8 @@ rbs-codec-audiotoolbox = { path = "../rbs-codec-audiotoolbox" }
 winresource = "0.1"
 
 [dev-dependencies]
+# The test-only probe windows (ADR-0138 decision 1).
+rbs-app-ui = { path = "../rbs-app-ui", features = ["probes"] }
 # Headless Slint windows for tests/popup_covers.rs; already in the lockfile through Slint.
 # `renderer-skia`: tests/effects_render.rs reads real Skia pixels (the mock renderer and
 # Slint's software renderer draw no shadows; ADR-0120 decision 11).

@@ -1,0 +1,2804 @@
+// The main window and its floating panel windows (ADR-0138: one file per window group,
+// so a change here rebuilds only `rbs-app-ui-main`). Layout geometry comes from the
+// toolkit-neutral rbs-ui crate: Slint has no recursive components, so Rust flattens
+// each window's layout tree into tab stacks and splitter handles with absolute positions.
+import { Theme, Tokens } from "tokens.slint";
+import { Button, SplitButton, IconButton, Icon, FocusRing, RingFocus, EmptyState, Select, NumberField, Toggle, SegmentedControl, ColorPicker, InfoHint, OverlayHost, PopoverLayer, PopoverCard, Checkbox, DialogActions } from "components.slint";
+import { CommandMenu } from "context_menu.slint";
+import { AppMenu, AppMenuButton } from "app_menu.slint";
+import { ProgramPanel, ScenesPanel, SourcesPanel, PropertiesPanel, MixerPanel, LiveControlsPanel, TransitionPanel, OutputsPanel, LibraryPanel, StatsPanel } from "studio.slint";
+import { LiveDestinationRow, TabData, StackData, RailData, HandleData, ToolbarData, EdgeTabData, Cover, Menus, Shell, Sections, IconName, Icons, Overlays, Shortcuts, AppMenus, Studio } from "base/types.slint";
+
+// Live indicator (rules U4, U21): the state in words, never colour alone. Compact on
+// purpose: idle it takes no room (the status bar says "Not live · not recording");
+// live or recording a small chip in the live colour (U12) with a dot and "REC",
+// "LIVE" or "LIVE · REC", and "CAM" while RBS sends to the virtual camera (an app may
+// be showing it to other people).
+// The duration and the outputs are in the status bar under the window (spec Frame);
+// the accessible name keeps the whole text.
+component LiveIndicator inherits Rectangle {
+    property <bool> active: Shell.live-state != 0 || Shell.live-camera;
+    // A paused recording (ADR-0124): PAUSED in the warning colour, outlined, never in
+    // the live colour; while also live the chip stays live and says the recording is
+    // paused.
+    property <bool> paused: Studio.rec-paused && (Shell.live-state == 2 || Shell.live-state == 3);
+    // A held stream (ADR-0124): ON HOLD, outlined in the warning colour like PAUSED,
+    // with the live dot: still connected, but viewers see the hold picture.
+    property <bool> held: Studio.st-held && (Shell.live-state == 1 || Shell.live-state == 3);
+    property <bool> calm: ((paused && Shell.live-state == 2) || held) && !Shell.live-camera;
+    property <string> state-text: held && Shell.live-state == 1 ? @tr("On hold")
+        : held && paused ? @tr("On hold, recording paused")
+        : held ? @tr("On hold and recording")
+        : Shell.live-state == 1 ? @tr("Live")
+        : Shell.live-state == 2 && paused ? @tr("Recording paused")
+        : Shell.live-state == 2 ? (Shell.audio-only ? @tr("Recording audio") : @tr("Recording"))
+        : Shell.live-state == 3 && paused ? @tr("Live, recording paused")
+        : Shell.live-state == 3 ? (Shell.audio-only ? @tr("Live and recording audio") : @tr("Live and recording"))
+        : @tr("Not live");
+    // With several destinations (ADR-0127 decision 17): "LIVE 2/3", those live of
+    // those Go live started.
+    property <string> live-word: Shell.live-dest-count != "" ? @tr("LIVE {}", Shell.live-dest-count) : @tr("LIVE");
+    property <bool> several: Shell.live-dest-count != "" && (Shell.live-state == 1 || Shell.live-state == 3);
+    property <string> output-text: held && Shell.live-state == 1 ? @tr("ON HOLD")
+        : held && paused ? @tr("ON HOLD · PAUSED")
+        : held ? @tr("ON HOLD · REC")
+        : Shell.live-state == 1 ? live-word
+        : Shell.live-state == 2 && paused ? @tr("PAUSED")
+        : Shell.live-state == 2 ? (Shell.audio-only ? @tr("REC audio") : @tr("REC"))
+        : Shell.live-state == 3 && paused ? @tr("{} · PAUSED", live-word)
+        : Shell.live-state == 3 ? (Shell.audio-only ? @tr("{} · REC audio", live-word) : @tr("{} · REC", live-word))
+        : "";
+    property <string> short-text: !Shell.live-camera ? output-text
+        : output-text != "" ? @tr("{} · CAM", output-text)
+        : @tr("CAM");
+    property <string> outputs-full: Shell.live-state != 0
+        ? state-text + " " + Shell.live-duration + (Shell.live-outputs != "" ? " · " + Shell.live-outputs : "")
+        : state-text;
+    property <string> full: !Shell.live-camera ? outputs-full
+        : Shell.live-state == 0 ? @tr("Virtual camera on · not live · not recording")
+        : @tr("{} · virtual camera on", outputs-full);
+    height: Tokens.size-control-md;
+    width: content.preferred-width;
+    accessible-role: AccessibleRole.text;
+    accessible-label: several ? @tr("Live status: {} · destinations live: {}", full, Shell.live-dest-count) : @tr("Live status: {}", full);
+    content := HorizontalLayout {
+        alignment: center;
+        spacing: Tokens.space-1 / 2;
+        if active: VerticalLayout {
+            alignment: center;
+            Rectangle {
+                height: Tokens.type-caption-line + Tokens.space-1;
+                width: chip.preferred-width;
+                border-radius: Tokens.radius-sm;
+                background: calm ? transparent : Theme.state-live;
+                border-width: calm ? Tokens.size-border : 0px;
+                border-color: Theme.state-warning;
+                chip := HorizontalLayout {
+                    padding-left: Tokens.space-1;
+                    padding-right: Tokens.space-2;
+                    spacing: Tokens.space-1 / 2;
+                    VerticalLayout {
+                        alignment: center;
+                        Icon {
+                            name: paused && Shell.live-state == 2 ? IconName.pause : IconName.dot;
+                            ink: held && calm ? Theme.state-live : calm ? Theme.state-warning : Theme.text-on-live;
+                        }
+                    }
+                    Text {
+                        text: short-text;
+                        color: calm ? Theme.state-warning : Theme.text-on-live;
+                        font-size: Tokens.type-caption-size;
+                        font-weight: Tokens.type-label-weight;
+                        vertical-alignment: center;
+                        accessible-role: none;
+                    }
+                }
+            }
+        }
+        // Opens the list of destinations (ADR-0127 decision 17).
+        if several: VerticalLayout {
+            alignment: center;
+            IconButton {
+                icon: IconName.chevron-down;
+                name: @tr("Destinations: {} live", Shell.live-dest-count);
+                clicked => {
+                    Overlays.live-x = self.absolute-position.x;
+                    Overlays.live-y = self.absolute-position.y;
+                    Overlays.live-w = self.width;
+                    Overlays.live-h = self.height;
+                    Overlays.live-open = !Overlays.live-open;
+                }
+            }
+        }
+    }
+}
+
+// A panel's content: the panels connected to the studio, a placeholder for the others.
+component PanelContent inherits Rectangle {
+    in property <TabData> tab;
+    property <bool> connected: tab.id == "rbs.program" || tab.id == "rbs.transition" || tab.id == "rbs.scenes" || tab.id == "rbs.sources" || tab.id == "rbs.properties" || tab.id == "rbs.mixer" || tab.id == "rbs.preview" || tab.id == "rbs.live-controls" || tab.id == "rbs.outputs" || tab.id == "rbs.library" || tab.id == "rbs.stats" || tab.id == "rbs.program?canvas=vertical";
+    background: Theme.surface-raised;
+    if tab.id == "rbs.program" || tab.id == "rbs.preview" || tab.id == "rbs.program?canvas=vertical": ProgramPanel {
+        width: parent.width;
+        height: parent.height;
+        panel: tab.id;
+        title: tab.title;
+    }
+    if tab.id == "rbs.scenes": ScenesPanel {
+        width: parent.width;
+        height: parent.height;
+        live-state: Shell.live-state;
+    }
+    if tab.id == "rbs.sources": SourcesPanel {
+        width: parent.width;
+        height: parent.height;
+    }
+    if tab.id == "rbs.properties": PropertiesPanel {
+        width: parent.width;
+        height: parent.height;
+        live-state: Shell.live-state;
+    }
+    if tab.id == "rbs.mixer": MixerPanel {
+        width: parent.width;
+        height: parent.height;
+    }
+    if tab.id == "rbs.transition": TransitionPanel {
+        width: parent.width;
+        height: parent.height;
+    }
+    if tab.id == "rbs.live-controls": LiveControlsPanel {
+        width: parent.width;
+        height: parent.height;
+    }
+    if tab.id == "rbs.outputs": OutputsPanel {
+        width: parent.width;
+        height: parent.height;
+    }
+    if tab.id == "rbs.library": LibraryPanel {
+        width: parent.width;
+        height: parent.height;
+    }
+    if tab.id == "rbs.stats": StatsPanel {
+        width: parent.width;
+        height: parent.height;
+    }
+    if tab.known && !connected: EmptyState {
+        width: parent.width;
+        height: parent.height;
+        title: tab.title;
+        message: @tr("Not connected to the engine yet.");
+    }
+    if !tab.known: EmptyState {
+        width: parent.width;
+        height: parent.height;
+        title: tab.title;
+        message: @tr("This panel comes from a plugin that is not installed. Close it from its tab menu.");
+    }
+}
+
+// A tab in a panel header: its title, underlined in the accent colour while it is the
+// shown one (no tab background, spec Frame).
+component Tab inherits Rectangle {
+    in property <TabData> tab;
+    in property <bool> selected;
+    // A stack with one panel is a window title, not a tab.
+    in property <bool> sole;
+    callback activate();
+    callback open-menu();
+    callback close();
+    // Double-click, or Shift+Escape (Escape alone stays with dialogs and fields).
+    callback maximize();
+    height: Tokens.size-control-lg;
+    width: title.preferred-width + 2 * Tokens.space-2;
+    border-radius: Tokens.radius-sm;
+    background: !selected && touch.has-hover ? Theme.surface-overlay : transparent;
+    accessible-role: AccessibleRole.tab;
+    accessible-label: tab.title;
+    accessible-item-selected: selected;
+    accessible-description: @tr("Menu key or Shift+F10 opens panel actions; Delete or Backspace closes it; Shift+Escape maximizes or restores it");
+    accessible-action-default => { activate(); }
+    forward-focus: focus;
+    focus := RingFocus {
+        key-pressed(e) => {
+            if e.text == Key.Return || e.text == " " { activate(); return accept; }
+            if e.text == Key.Menu || (e.text == Key.F10 && e.modifiers.shift) { open-menu(); return accept; }
+            if e.text == Key.Delete || e.text == Key.Backspace { close(); return accept; }
+            if e.text == Key.Escape && e.modifiers.shift { maximize(); return accept; }
+            reject
+        }
+    }
+    // The TouchArea comes after the FocusScope so it is on top: a FocusScope
+    // under the pointer takes the press for itself (focus-on-click).
+    // Dragging the tab moves the panel (ADR-0049 decision 5); a press without a drag
+    // reaches the TouchArea inside as a click. Not while the layout is locked.
+    drag := DragArea {
+        allow-move: !Shell.locked;
+        data: Shell.panel-data(tab.id);
+        touch := TouchArea {
+            clicked => { focus.focus-pointer(); activate(); }
+            double-clicked => { maximize(); }
+            pointer-event(e) => {
+                if e.kind == PointerEventKind.down && e.button == PointerEventButton.right { open-menu(); }
+            }
+        }
+    }
+    title := Text {
+        x: Tokens.space-2;
+        text: tab.title;
+        color: selected || touch.has-hover ? Theme.text-primary : Theme.text-secondary;
+        font-size: Tokens.type-label-size;
+        font-weight: selected && !sole ? Tokens.type-title-weight : Tokens.type-label-weight;
+        vertical-alignment: center;
+    }
+    Rectangle {
+        x: title.x;
+        width: title.preferred-width;
+        y: parent.height - Tokens.size-tab-indicator;
+        height: selected && !sole ? Tokens.size-tab-indicator : 0px;
+        background: Theme.accent;
+    }
+    Rectangle {
+        border-width: focus.has-focus ? Tokens.size-focus-ring : 0px;
+        border-color: Theme.border-focus;
+        border-radius: Tokens.radius-sm;
+    }
+}
+
+// A panel card (spec Frame): a rounded card with a header of the stack's tabs and its
+// actions (auto-hide, collapse, more), then the shown panel. Collapsed, only the
+// header is drawn; in a horizontal split it is a strip as wide as the header is high.
+component StackView inherits Rectangle {
+    in property <StackData> data;
+    in property <bool> floating;
+    // The rail between the pictures holds the Studio mode switch (ADR-0073); otherwise
+    // Preview's title row does, left of its other buttons.
+    in property <bool> switch-in-rail;
+    property <length> bar: Tokens.size-control-lg;
+    property <bool> strip: data.collapsed && data.h > data.w;
+    property <bool> has-tabs: data.tabs.length > 0;
+    property <string> active-id: has-tabs ? data.tabs[data.active].id : "";
+    property <string> active-title: has-tabs ? data.tabs[data.active].title : "";
+    property <string> menu-panel;
+    background: Theme.surface-raised;
+    // The outline shows only where the panel colour does not separate it from the
+    // window ground (ADR-0112 decision 3).
+    border-color: Theme.border-subtle;
+    border-width: Theme.panel-outline ? Tokens.size-border : 0px;
+    border-radius: Tokens.radius-lg;
+    clip: true;
+    if !strip: Rectangle {
+        x: Tokens.size-border;
+        y: 0;
+        width: parent.width - 2 * Tokens.size-border;
+        height: bar;
+        HorizontalLayout {
+            padding-left: Tokens.space-1;
+            padding-right: Tokens.space-1;
+            Flickable {
+                horizontal-stretch: 1;
+                content-width: tabs.preferred-width;
+                interactive: false;
+                tabs := HorizontalLayout {
+                    accessible-role: tab-list;
+                    alignment: start;
+                    for t[i] in data.tabs: Tab {
+                        tab: t;
+                        sole: data.tabs.length < 2;
+                        selected: i == data.active && !data.collapsed;
+                        activate => {
+                            if data.collapsed { Shell.collapse(t.id, false); }
+                            Shell.activate-tab(data.window, data.stack, i);
+                        }
+                        close => { Shell.close-panel(t.id); }
+                        maximize => { Menus.run("ui.panel.maximize?id=" + t.id); }
+                        open-menu => {
+                            menu-panel = t.id;
+                            menu.open-from({ x: Tokens.space-2, y: bar }, 0px, bar);
+                        }
+                    }
+                }
+            }
+            if has-tabs: HorizontalLayout {
+                horizontal-stretch: 0;
+                alignment: end;
+                padding-top: (bar - Tokens.size-control-sm) / 2;
+                padding-bottom: (bar - Tokens.size-control-sm) / 2;
+                // A panel's own action in its title row: Add source on Sources.
+                if active-id == "rbs.scenes" && !data.collapsed: IconButton {
+                    icon: IconName.plus;
+                    name: @tr("Add scene");
+                    enabled: Studio.state == 1;
+                    clicked => { Studio.add-scene-asked += 1; }
+                }
+                if active-id == "rbs.sources" && !data.collapsed: IconButton {
+                    icon: IconName.plus;
+                    name: @tr("Add source");
+                    enabled: Studio.state == 1;
+                    clicked => { add-menu.open-from({ x: self.absolute-position.x - root.absolute-position.x, y: bar }, self.width, bar); }
+                }
+                if active-id == "rbs.preview" && !data.collapsed && !root.switch-in-rail: HorizontalLayout {
+                    padding-right: Tokens.space-2;
+                    // Its own bordered component, set apart from the panel's buttons.
+                    Rectangle {
+                        border-width: Tokens.size-border;
+                        border-color: Theme.border-subtle;
+                        border-radius: Tokens.radius-md;
+                        HorizontalLayout {
+                            padding-left: Tokens.space-2;
+                            padding-right: Tokens.space-2;
+                            Toggle {
+                                label: @tr("Studio mode");
+                                text: @tr("Studio mode");
+                                checked: Studio.studio-mode;
+                                toggled(on) => { Menus.run("canvas.studio_mode.toggle"); }
+                            }
+                        }
+                    }
+                }
+                // Picture panels: Maximize or Restore in the title row, as in design E.
+                if (active-id == "rbs.preview" || active-id == "rbs.program") && !data.collapsed: IconButton {
+                    icon: IconName.expand;
+                    name: Shell.maximized == active-id ? @tr("Restore layout") : @tr("Maximize {}", active-title);
+                    checked: Shell.maximized == active-id;
+                    clicked => { Menus.run("ui.panel.maximize?id=" + active-id); }
+                }
+                // Properties: one button folds every section it shows now, as the
+                // Settings page header's Collapse all / Expand all does.
+                if active-id == "rbs.properties" && !data.collapsed && Studio.properties-source >= 0 && Studio.properties-folds != "": IconButton {
+                    property <bool> some-open: Sections.list-state(Studio.properties-folds, Sections.rev) == 1;
+                    icon: self.some-open ? IconName.collapse : IconName.expand-all;
+                    name: self.some-open ? @tr("Collapse all sections") : @tr("Expand all sections");
+                    accessible-expandable: true;
+                    accessible-expanded: self.some-open;
+                    clicked => { Sections.set-list(Studio.properties-folds, self.some-open); }
+                }
+                if data.can-hide && Shell.maximized == "": IconButton {
+                    icon: IconName.pin;
+                    name: @tr("Auto-hide {}", active-title);
+                    clicked => { Shell.auto-hide(active-id); }
+                }
+                if data.can-collapse && Shell.maximized == "": IconButton {
+                    // A tall stack is a column: it collapses toward the side. A wide one
+                    // collapses upward.
+                    icon: (data.h > data.w) ? (data.collapsed ? IconName.chevron-right : IconName.chevron-left) : (data.collapsed ? IconName.chevron-up : IconName.chevron-down);
+                    name: data.collapsed ? @tr("Expand {}", active-title) : (data.h > data.w ? @tr("Collapse {} to the side", active-title) : @tr("Collapse {}", active-title));
+                    accessible-expandable: true;
+                    accessible-expanded: !data.collapsed;
+                    clicked => { Shell.collapse(active-id, !data.collapsed); }
+                }
+                IconButton {
+                    icon: IconName.more;
+                    name: @tr("Actions for {}", active-title);
+                    // The menu opens under this button, as Add source's does.
+                    clicked => {
+                        menu-panel = active-id;
+                        menu.open-from({ x: self.absolute-position.x - root.absolute-position.x, y: bar }, self.width, bar);
+                    }
+                }
+            }
+        }
+    }
+    // A collapsed stack in a horizontal split: its expand button and the tabs' icons,
+    // named for screen readers (no rotated text).
+    if strip: VerticalLayout {
+        padding-top: (bar - Tokens.size-control-sm) / 2;
+        padding-left: (parent.width - Tokens.size-control-sm) / 2;
+        spacing: Tokens.space-2;
+        alignment: start;
+        accessible-role: groupbox;
+        accessible-label: active-title;
+        IconButton {
+            icon: IconName.chevron-right;
+            name: @tr("Expand {}", active-title);
+            accessible-expandable: true;
+            accessible-expanded: false;
+            clicked => { Shell.collapse(active-id, false); }
+        }
+        for t[i] in data.tabs: IconButton {
+            icon: Icons.named(t.icon);
+            name: t.title;
+            clicked => {
+                Shell.collapse(t.id, false);
+                Shell.activate-tab(data.window, data.stack, i);
+            }
+        }
+    }
+    if has-tabs && !data.collapsed: PanelContent {
+        x: Tokens.size-border;
+        y: bar + Tokens.size-border;
+        width: parent.width - 2 * Tokens.size-border;
+        height: max(0px, parent.height - bar - 2 * Tokens.size-border);
+        tab: data.tabs[data.active];
+    }
+    // The panel's menu: the same CommandMenu as every other context (ADR-0094 B1).
+    menu := CommandMenu {
+        context: "panel";
+        target: "id=" + menu-panel;
+    }
+    // The Add source button's menu: the source types (ADR-0094 B1).
+    add-menu := CommandMenu { context: "add-source"; }
+}
+
+// Splitter between two cards: the gap itself, shown in the accent colour while hovered,
+// dragged or keyboard-focused. A pointer drag does not leave it focused. Tab to it
+// and use the arrow keys to nudge.
+component Splitter inherits Rectangle {
+    in property <HandleData> data;
+    background: focus.has-focus || touch.has-hover || touch.pressed ? Theme.accent : transparent;
+    border-radius: Tokens.radius-sm;
+    accessible-role: slider;
+    accessible-label: data.horizontal ? @tr("Resize panes left and right") : @tr("Resize panes up and down");
+    accessible-value: data.percent;
+    accessible-value-minimum: 0;
+    accessible-value-maximum: 100;
+    forward-focus: focus;
+    focus := RingFocus {
+        key-pressed(e) => {
+            if (data.horizontal && e.text == Key.LeftArrow) || (!data.horizontal && e.text == Key.UpArrow) {
+                Shell.nudge(data.window, data.index, e.modifiers.shift ? -Tokens.step-nudge-large : -Tokens.step-nudge);
+                return accept;
+            }
+            if (data.horizontal && e.text == Key.RightArrow) || (!data.horizontal && e.text == Key.DownArrow) {
+                Shell.nudge(data.window, data.index, e.modifiers.shift ? Tokens.step-nudge-large : Tokens.step-nudge);
+                return accept;
+            }
+            reject
+        }
+    }
+    // The TouchArea comes after the FocusScope so it is on top: a FocusScope
+    // under the pointer takes the press for itself (focus-on-click).
+    touch := TouchArea {
+        mouse-cursor: data.horizontal ? ew-resize : ns-resize;
+        // A pointer drag does not focus the handle: the accent colour stays only
+        // while the pointer is on it or it is dragged. Tab still focuses it, so the
+        // arrow keys can nudge it.
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.up { Shell.drag-end(); }
+        }
+        moved => {
+            // The handle's wanted position in the dock area: idempotent however many
+            // move events arrive before the layout catches up.
+            Shell.drag(data.window, data.index, data.horizontal ? data.x + self.mouse-x - self.pressed-x : data.y + self.mouse-y - self.pressed-y);
+        }
+    }
+}
+
+// The Transition rail (ADR-0064): between Preview and Program, or below them with its
+// controls centred; only in studio mode, and only beside the two pictures. Its move
+// button puts it in the other place (`ui.layout.studio_rail`).
+// Where the Transition rail sits (ADR-0064): two icon toggles drawn like the docking
+// guide's targets, the current one checked, behind a divider and apart from the
+// Transition button so they read as a setting.
+component RailPlace inherits HorizontalLayout {
+    in property <bool> below;
+    in property <bool> caption: true;
+    spacing: Tokens.space-1;
+    alignment: center;
+    if root.caption: Text {
+        text: @tr("Position");
+        color: Theme.text-secondary;
+        font-size: Tokens.type-caption-size;
+        vertical-alignment: center;
+        accessible-role: none;
+    }
+    IconButton {
+        icon: IconName.rail-between;
+        name: @tr("Transition rail between the pictures");
+        checked: !root.below;
+        clicked => { Menus.run("ui.layout.studio_rail?at=between"); }
+    }
+    IconButton {
+        icon: IconName.rail-below;
+        name: @tr("Transition rail below the pictures");
+        checked: root.below;
+        clicked => { Menus.run("ui.layout.studio_rail?at=below"); }
+    }
+}
+
+// The transition to run (ADR-0128): Cut, Fade, Move, Swipe or Slide. Move's duration
+// and easing are the collection glide (ADR-0100), also in Settings › General; a
+// source's own glide is in Properties.
+component TransitionChoice inherits Select {
+    label: @tr("Transition type");
+    options: [@tr("Cut"), @tr("Fade"), @tr("Move"), @tr("Swipe"), @tr("Slide")];
+    index: Studio.transition-kind;
+    selected(i) => { Studio.set-transition-kind(i); }
+}
+
+// The duration of the transition type on the rail; a cut has none.
+component TransitionDuration inherits NumberField {
+    label: @tr("Duration");
+    unit: @tr("ms");
+    value: Studio.transition-kind == 1 ? Studio.fade-duration
+        : Studio.transition-kind == 2 ? Studio.glide-duration
+        : Studio.transition-kind == 3 ? Studio.swipe-duration
+        : Studio.transition-kind == 4 ? Studio.slide-duration : 0;
+    step: 50;
+    enabled: Studio.transition-kind != 0;
+    edited(v) => { Studio.set-transition-duration(max(0, min(5000, round(v)))); }
+}
+
+// The transition type and duration in words, under the narrow rail's buttons.
+component TransitionCaption inherits Text {
+    property <int> ms: Studio.transition-kind == 1 ? Studio.fade-duration
+        : Studio.transition-kind == 3 ? Studio.swipe-duration
+        : Studio.transition-kind == 4 ? Studio.slide-duration : Studio.glide-duration;
+    text: Studio.transition-kind == 0 ? @tr("Cut")
+        : Studio.transition-kind == 1 ? @tr("Fade") + "\n" + @tr("{} ms", root.ms)
+        : Studio.transition-kind == 3 ? @tr("Swipe") + "\n" + @tr("{} ms", root.ms)
+        : Studio.transition-kind == 4 ? @tr("Slide") + "\n" + @tr("{} ms", root.ms)
+        : @tr("Move") + "\n" + @tr("{} ms", root.ms);
+    color: Theme.text-secondary;
+    font-size: Tokens.type-caption-size;
+    horizontal-alignment: center;
+    wrap: word-wrap;
+    accessible-role: none;
+}
+
+// Opens the transition options under itself (ADR-0128). On the narrow rail (`full`)
+// they include the type and the duration, which the rail has no room for.
+component TransitionOptionsButton inherits IconButton {
+    in property <bool> full;
+    icon: IconName.sliders;
+    name: root.full ? @tr("Transition type, duration and options") : @tr("Transition options");
+    enabled: root.full || Studio.transition-kind != 0;
+    clicked => {
+        Overlays.transition-full = root.full;
+        Overlays.transition-x = self.absolute-position.x;
+        Overlays.transition-y = self.absolute-position.y;
+        Overlays.transition-w = self.width;
+        Overlays.transition-h = self.height;
+        Overlays.transition-open = true;
+    }
+}
+
+// A labelled row of the transition options.
+component TransitionOptionRow inherits HorizontalLayout {
+    in property <string> label;
+    spacing: Tokens.space-2;
+    Text {
+        text: root.label;
+        width: Tokens.size-transition-type;
+        color: Theme.text-primary;
+        font-size: Tokens.type-body-size;
+        vertical-alignment: center;
+        wrap: word-wrap;
+        accessible-role: none;
+    }
+    @children
+}
+
+// One destination in the live chip's list: name, state in words, time on air and
+// drops or why it failed, and Stop or Retry (ADR-0127 decision 17).
+component LiveDestinationItem inherits Rectangle {
+    in property <LiveDestinationRow> dest;
+    in property <bool> divider;
+    min-height: row.min-height;
+    preferred-height: row.preferred-height;
+    if root.divider: Rectangle { y: 0; height: Tokens.size-border; background: Theme.border-subtle; }
+    row := HorizontalLayout {
+        padding-top: Tokens.space-2;
+        padding-bottom: Tokens.space-2;
+        spacing: Tokens.space-3;
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+            Text {
+                text: root.dest.name;
+                color: Theme.text-primary;
+                font-size: Tokens.type-body-size;
+                font-weight: Tokens.type-label-weight;
+                overflow: elide;
+                accessible-role: none;
+            }
+            Text {
+                text: root.dest.detail == "" ? root.dest.state : @tr("{} · {}", root.dest.state, root.dest.detail);
+                color: root.dest.problem ? Theme.state-warning : Theme.text-secondary;
+                font-size: Tokens.type-caption-size;
+                wrap: word-wrap;
+                accessible-role: none;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            if root.dest.can-stop: Button {
+                text: @tr("Stop");
+                kind: "secondary";
+                dense: true;
+                accessible-name: @tr("Stop {}", root.dest.name);
+                clicked => { Shell.live-dest-stop(root.dest.id); }
+            }
+            if root.dest.can-retry: Button {
+                text: @tr("Retry");
+                kind: "secondary";
+                dense: true;
+                accessible-name: @tr("Retry {}", root.dest.name);
+                clicked => { Shell.live-dest-retry(root.dest.id); }
+            }
+        }
+    }
+}
+
+// The live chip's destinations popover (ADR-0127 decision 17): each destination of the
+// running stream, as the transition options are drawn. A click outside or Escape
+// closes it. Stopping the last one ends the stream, as Stop does.
+component LiveDestinations inherits PopoverLayer {
+    dismissed => { Overlays.live-open = false; }
+    card := PopoverCard {
+        width: max(Tokens.size-menu-md + Tokens.size-menu-sm, body.preferred-width);
+        height: body.preferred-height;
+        x: clamp(Overlays.live-x + Overlays.live-w - self.width, Tokens.space-1, max(Tokens.space-1, root.width - self.width - Tokens.space-1));
+        y: Overlays.live-y + Overlays.live-h + Tokens.space-1;
+        accessible-role: groupbox;
+        accessible-label: @tr("Destinations");
+        init => { Overlays.live-cover = { x: self.x, y: self.y, width: self.width, height: self.height }; keys.focus(); }
+        changed x => { Overlays.live-cover = { x: self.x, y: self.y, width: self.width, height: self.height }; }
+        changed y => { Overlays.live-cover = { x: self.x, y: self.y, width: self.width, height: self.height }; }
+        changed height => { Overlays.live-cover = { x: self.x, y: self.y, width: self.width, height: self.height }; }
+        keys := FocusScope {
+            key-pressed(e) => {
+                if e.text == Key.Escape { Overlays.live-open = false; return accept; }
+                reject
+            }
+        }
+        body := VerticalLayout {
+            padding-left: Tokens.space-3;
+            padding-right: Tokens.space-3;
+            padding-top: Tokens.space-2;
+            padding-bottom: Tokens.space-1;
+            Text {
+                text: @tr("Destinations · {} live", Shell.live-dest-count);
+                color: Theme.text-primary;
+                font-size: Tokens.type-label-size;
+                font-weight: Tokens.type-label-weight;
+                accessible-role: none;
+            }
+            for d[i] in Shell.live-dests: LiveDestinationItem {
+                dest: d;
+                divider: i > 0;
+            }
+        }
+    }
+}
+
+// The transition options popover (ADR-0128): a layer of the main window over its
+// button, under the hint and tooltip layer so a dropdown or the colour picker in it
+// opens above it. A click outside or Escape closes it; every change applies at once.
+component TransitionOptions inherits PopoverLayer {
+    dismissed => { Overlays.transition-open = false; }
+    card := PopoverCard {
+        width: max(Tokens.size-menu-md, body.preferred-width);
+        height: body.preferred-height;
+        x: clamp(Overlays.transition-x + Overlays.transition-w / 2 - self.width / 2, Tokens.space-1, max(Tokens.space-1, root.width - self.width - Tokens.space-1));
+        y: Overlays.transition-y + Overlays.transition-h + Tokens.space-1 + self.height > root.height
+            ? max(Tokens.space-1, Overlays.transition-y - self.height - Tokens.space-1)
+            : Overlays.transition-y + Overlays.transition-h + Tokens.space-1;
+        accessible-role: groupbox;
+        accessible-label: @tr("Transition options");
+        init => { Overlays.transition-cover = { x: self.x, y: self.y, width: self.width, height: self.height }; keys.focus(); }
+        changed x => { Overlays.transition-cover = { x: self.x, y: self.y, width: self.width, height: self.height }; }
+        changed y => { Overlays.transition-cover = { x: self.x, y: self.y, width: self.width, height: self.height }; }
+        changed height => { Overlays.transition-cover = { x: self.x, y: self.y, width: self.width, height: self.height }; }
+        keys := FocusScope {
+            key-pressed(e) => {
+                if e.text == Key.Escape { Overlays.transition-open = false; return accept; }
+                reject
+            }
+        }
+        body := VerticalLayout {
+            padding: Tokens.space-3;
+            spacing: Tokens.space-2;
+            HorizontalLayout {
+                spacing: Tokens.space-1;
+                Text {
+                    text: Overlays.transition-full ? @tr("Transition")
+                        : Studio.transition-kind == 1 ? @tr("Fade options")
+                        : Studio.transition-kind == 3 ? @tr("Swipe options")
+                        : Studio.transition-kind == 4 ? @tr("Slide options") : @tr("Move options");
+                    color: Theme.text-primary;
+                    font-size: Tokens.type-body-size;
+                    font-weight: Tokens.type-label-weight;
+                    vertical-alignment: center;
+                    accessible-role: none;
+                }
+                InfoHint {
+                    label: @tr("About transitions");
+                    text: Studio.transition-kind == 0 ? @tr("The scene coming on air replaces the one on air at once.")
+                        : Studio.transition-kind == 1 ? @tr("The scene coming on air fades in over the one on air.")
+                        : Studio.transition-kind == 3 ? @tr("The scene coming on air slides in over the one on air.")
+                        : Studio.transition-kind == 4 ? @tr("The scene coming on air pushes the one on air out.")
+                        : @tr("Sources in both scenes slide to their new place, new ones fade in, leaving ones fade out.");
+                    detail: @tr("Sound follows the picture. A global scene stays still on top.");
+                }
+                Rectangle { }
+            }
+            if Overlays.transition-full: TransitionOptionRow {
+                label: @tr("Type");
+                TransitionChoice { horizontal-stretch: 1; }
+            }
+            if Overlays.transition-full: TransitionOptionRow {
+                label: @tr("Duration");
+                TransitionDuration { horizontal-stretch: 1; }
+            }
+            if Studio.transition-kind == 1: TransitionOptionRow {
+                label: @tr("Easing");
+                SegmentedControl {
+                    horizontal-stretch: 1;
+                    label: @tr("Easing");
+                    options: [@tr("Linear"), @tr("Ease in-out")];
+                    index: Studio.fade-easing;
+                    selected(i) => { Studio.set-fade-options(i, Studio.fade-via, ""); }
+                }
+            }
+            if Studio.transition-kind == 1: TransitionOptionRow {
+                label: @tr("Through a colour");
+                Toggle {
+                    label: @tr("Through a colour");
+                    checked: Studio.fade-via;
+                    toggled(on) => { Studio.set-fade-options(Studio.fade-easing, on, ""); }
+                }
+                if Studio.fade-via: ColorPicker {
+                    label: @tr("Colour to fade through");
+                    value: Studio.fade-via-color;
+                    picked(c) => { Studio.set-fade-options(Studio.fade-easing, true, c); }
+                }
+                Rectangle { }
+            }
+            if Studio.transition-kind == 2: TransitionOptionRow {
+                label: @tr("Easing");
+                SegmentedControl {
+                    horizontal-stretch: 1;
+                    label: @tr("Easing");
+                    options: [@tr("Linear"), @tr("Ease in-out")];
+                    index: Studio.glide-easing;
+                    selected(i) => { Studio.set-glide(Studio.glide-duration, i); }
+                }
+            }
+            if Studio.transition-kind == 3 || Studio.transition-kind == 4: TransitionOptionRow {
+                property <bool> slide: Studio.transition-kind == 4;
+                label: @tr("Direction");
+                Select {
+                    horizontal-stretch: 1;
+                    label: @tr("Direction");
+                    options: [@tr("Left"), @tr("Right"), @tr("Up"), @tr("Down")];
+                    index: parent.slide ? Studio.slide-direction : Studio.swipe-direction;
+                    selected(i) => {
+                        Studio.set-swipe-options(parent.slide, parent.slide ? Studio.slide-easing : Studio.swipe-easing, i);
+                    }
+                }
+            }
+            if Studio.transition-kind == 3 || Studio.transition-kind == 4: TransitionOptionRow {
+                property <bool> slide: Studio.transition-kind == 4;
+                label: @tr("Easing");
+                SegmentedControl {
+                    horizontal-stretch: 1;
+                    label: @tr("Easing");
+                    options: [@tr("Linear"), @tr("Ease in-out")];
+                    index: parent.slide ? Studio.slide-easing : Studio.swipe-easing;
+                    selected(i) => {
+                        Studio.set-swipe-options(parent.slide, i, parent.slide ? Studio.slide-direction : Studio.swipe-direction);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// A scene's "Transition into this scene" card (ADR-0135 decision 14), under its row in
+// the Scenes panel: Type (Default, the collection's kind, or one of the kinds) and
+// Duration (the kind's own, or this scene's). Every change applies at once as one undo
+// step; a click outside or Escape closes it.
+component SceneTransitionCard inherits PopoverLayer {
+    // The kind the card shows: the scene's, else the collection's (rail index).
+    property <int> kind: Overlays.scene-transition-kind >= 0 ? Overlays.scene-transition-kind : Studio.transition-kind;
+    property <int> kind-ms: root.kind == 1 ? Studio.fade-duration
+        : root.kind == 2 ? Studio.glide-duration
+        : root.kind == 3 ? Studio.swipe-duration
+        : root.kind == 4 ? Studio.slide-duration : 0;
+    property <[string]> kinds: [@tr("Cut"), @tr("Fade"), @tr("Move"), @tr("Swipe"), @tr("Slide")];
+    function put(kind: int, ms: int) {
+        Overlays.scene-transition-kind = kind;
+        Overlays.scene-transition-ms = ms;
+        Studio.set-scene-transition(Overlays.scene-transition-id, kind, ms);
+    }
+    dismissed => { Overlays.scene-transition-open = false; }
+    card := PopoverCard {
+        width: max(Tokens.size-menu-md, body.preferred-width);
+        height: body.preferred-height;
+        x: clamp(Overlays.scene-transition-x, Tokens.space-1, max(Tokens.space-1, root.width - self.width - Tokens.space-1));
+        y: Overlays.scene-transition-y + Overlays.scene-transition-h + Tokens.space-1 + self.height > root.height
+            ? max(Tokens.space-1, Overlays.scene-transition-y - self.height - Tokens.space-1)
+            : Overlays.scene-transition-y + Overlays.scene-transition-h + Tokens.space-1;
+        accessible-role: groupbox;
+        accessible-label: @tr("Transition into {}", Overlays.scene-transition-name);
+        init => { Overlays.scene-transition-cover = { x: self.x, y: self.y, width: self.width, height: self.height }; keys.focus(); }
+        changed x => { Overlays.scene-transition-cover = { x: self.x, y: self.y, width: self.width, height: self.height }; }
+        changed y => { Overlays.scene-transition-cover = { x: self.x, y: self.y, width: self.width, height: self.height }; }
+        changed height => { Overlays.scene-transition-cover = { x: self.x, y: self.y, width: self.width, height: self.height }; }
+        keys := FocusScope {
+            key-pressed(e) => {
+                if e.text == Key.Escape { Overlays.scene-transition-open = false; return accept; }
+                reject
+            }
+        }
+        body := VerticalLayout {
+            padding: Tokens.space-3;
+            spacing: Tokens.space-2;
+            HorizontalLayout {
+                spacing: Tokens.space-1;
+                Text {
+                    text: @tr("Transition into “{}”", Overlays.scene-transition-name);
+                    color: Theme.text-primary;
+                    font-size: Tokens.type-body-size;
+                    font-weight: Tokens.type-label-weight;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    accessible-role: none;
+                }
+                InfoHint {
+                    label: @tr("About the transition into a scene");
+                    text: @tr("How the program changes to this scene. Default uses the scene collection's transition.");
+                    detail: @tr("A transition chosen for one change, such as by a control surface, still comes first.");
+                }
+                Rectangle { }
+            }
+            TransitionOptionRow {
+                label: @tr("Type");
+                Select {
+                    horizontal-stretch: 1;
+                    label: @tr("Type");
+                    options: [@tr("Default ({})", root.kinds[Studio.transition-kind]), @tr("Cut"), @tr("Fade"), @tr("Move"), @tr("Swipe"), @tr("Slide")];
+                    index: Overlays.scene-transition-kind + 1;
+                    selected(i) => { root.put(i - 1, Overlays.scene-transition-ms); }
+                }
+            }
+            if root.kind != 0: TransitionOptionRow {
+                label: @tr("Duration");
+                Toggle {
+                    label: @tr("Own duration");
+                    checked: Overlays.scene-transition-ms >= 0;
+                    toggled(on) => { root.put(Overlays.scene-transition-kind, on ? root.kind-ms : -1); }
+                }
+                Rectangle { horizontal-stretch: 1; }
+                Text {
+                    text: @tr("Own");
+                    color: Overlays.scene-transition-ms >= 0 ? Theme.text-secondary : Theme.text-disabled;
+                    font-size: Tokens.type-body-size;
+                    vertical-alignment: center;
+                    accessible-role: none;
+                }
+                NumberField {
+                    label: @tr("Own duration");
+                    unit: @tr("ms");
+                    value: Overlays.scene-transition-ms >= 0 ? Overlays.scene-transition-ms : root.kind-ms;
+                    step: 50;
+                    enabled: Overlays.scene-transition-ms >= 0;
+                    edited(v) => { root.put(Overlays.scene-transition-kind, max(0, min(5000, round(v)))); }
+                }
+            }
+        }
+    }
+}
+
+component TransitionGo inherits VerticalLayout {
+    in property <bool> can;
+    // A narrow rail shows an icon button; its name and shortcut appear under it while
+    // the pointer or the focus is on it (ADR-0073).
+    in property <bool> icons;
+    spacing: Tokens.space-1;
+    if !root.icons: Button {
+        lead: IconName.transition;
+        text: @tr("Transition");
+        kind: "primary";
+        enabled: root.can;
+        accessible-name: Shell.transition-keys == ""
+            ? @tr("Transition: put the preview scene on air")
+            : @tr("Transition: put the preview scene on air ({})", Shell.transition-keys);
+        clicked => { Studio.transition(); }
+    }
+    if root.icons: VerticalLayout {
+        spacing: Tokens.space-1;
+        HorizontalLayout {
+            alignment: center;
+            go := Button {
+                icon: IconName.transition;
+                kind: "primary";
+                enabled: root.can;
+                width: Tokens.size-control-lg;
+                height: Tokens.size-control-lg;
+                accessible-name: Shell.transition-keys == ""
+                    ? @tr("Transition: put the preview scene on air")
+                    : @tr("Transition: put the preview scene on air ({})", Shell.transition-keys);
+                clicked => { Studio.transition(); }
+            }
+        }
+        // The type, duration and options behind the sliders button, then the type
+        // and duration in words (ADR-0128).
+        HorizontalLayout {
+            alignment: center;
+            TransitionOptionsButton { full: true; }
+        }
+        TransitionCaption { }
+    }
+    // The shortcut as small, quiet text under the button (the owner, 2026-11-07); the
+    // button's accessible name carries it too.
+    if !root.icons && Shell.transition-keys != "": Text {
+        text: Shell.transition-keys;
+        color: Theme.text-secondary;
+        font-size: Tokens.type-caption-size;
+        horizontal-alignment: center;
+        accessible-role: none;
+    }
+}
+
+// The Studio mode switch above the rail between the pictures (ADR-0073): the same
+// setting as the toolbar button, the Scene menu entry and the shortcut. Its name is
+// under the switch, so the card reads the same at any rail width.
+component RailSwitch inherits Rectangle {
+    background: Theme.surface-raised;
+    border-color: Theme.border-subtle;
+    border-width: Tokens.size-border;
+    border-radius: Tokens.radius-md;
+    VerticalLayout {
+        padding: Tokens.space-2;
+        alignment: center;
+        HorizontalLayout {
+            alignment: center;
+            Toggle {
+                label: @tr("Studio mode");
+                checked: Studio.studio-mode;
+                toggled(on) => { Menus.run("canvas.studio_mode.toggle"); }
+            }
+        }
+        Text {
+            text: @tr("Studio mode");
+            color: Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+            accessible-role: none;
+        }
+    }
+}
+
+component TransitionRail inherits Rectangle {
+    in property <bool> below;
+    property <bool> can: Studio.studio-mode && Studio.state == 1;
+    background: Theme.surface-raised;
+    border-color: Theme.border-subtle;
+    border-width: Tokens.size-border;
+    border-radius: Tokens.radius-md;
+    accessible-role: AccessibleRole.groupbox;
+    accessible-label: @tr("Transition");
+    // Between the pictures: type and the button in a column, the position toggles
+    // at the foot. Up to `size.transition.icons` wide only the icon button and the
+    // position toggles show (ADR-0073). Glide is not on the rail (Settings /
+    // Properties, ADR-0100).
+    property <bool> icons: root.width <= Tokens.size-transition-icons;
+    if !below: VerticalLayout {
+        padding: Tokens.space-2;
+        spacing: Tokens.space-2;
+        Rectangle { }
+        if !root.icons: TransitionChoice { }
+        if !root.icons: HorizontalLayout {
+            spacing: Tokens.space-1;
+            TransitionDuration { horizontal-stretch: 1; }
+            TransitionOptionsButton { }
+        }
+        TransitionGo { can: root.can; icons: root.icons; }
+        Rectangle { }
+        Rectangle { height: Tokens.size-border; background: Theme.border-subtle; }
+        RailPlace { below: false; caption: !root.icons; }
+    }
+    // Below the pictures: type and the button centred under the two pictures, the
+    // position toggles at the right end behind a divider. A narrow split keeps the
+    // type, the button and the position icons; the Position caption goes first.
+    property <bool> compact: root.width < Tokens.size-transition-compact;
+    if below && compact: HorizontalLayout {
+        width: root.width;
+        height: root.height;
+        padding-left: Tokens.space-2;
+        padding-right: Tokens.space-2;
+        spacing: Tokens.space-2;
+        VerticalLayout {
+            alignment: center;
+            TransitionChoice { min-width: Tokens.size-transition-type-min; }
+        }
+        VerticalLayout {
+            alignment: center;
+            TransitionOptionsButton { full: true; }
+        }
+        VerticalLayout {
+            alignment: center;
+            Button {
+                lead: IconName.transition;
+                text: @tr("Transition");
+                kind: "primary";
+                enabled: root.can;
+                accessible-name: Shell.transition-keys == ""
+                    ? @tr("Transition: put the preview scene on air")
+                    : @tr("Transition: put the preview scene on air ({})", Shell.transition-keys);
+                clicked => { Studio.transition(); }
+            }
+        }
+        Rectangle { width: Tokens.size-border; background: Theme.border-subtle; }
+        VerticalLayout {
+            alignment: center;
+            RailPlace { below: true; caption: false; }
+        }
+    }
+    if below && !compact: HorizontalLayout {
+        width: root.width;
+        height: root.height;
+        alignment: center;
+        spacing: Tokens.space-2;
+        VerticalLayout {
+            alignment: center;
+            TransitionChoice { width: Tokens.size-transition-type; }
+        }
+        VerticalLayout {
+            alignment: center;
+            TransitionDuration { width: Tokens.size-transition-duration; }
+        }
+        VerticalLayout {
+            alignment: center;
+            TransitionOptionsButton { }
+        }
+        VerticalLayout {
+            alignment: center;
+            // Below the pictures the shortcut is not shown: only the accessible name
+            // carries it (the owner, 2026-11-07).
+            HorizontalLayout {
+                spacing: Tokens.space-2;
+                Button {
+                    lead: IconName.transition;
+                    text: @tr("Transition");
+                    kind: "primary";
+                    enabled: root.can;
+                    accessible-name: Shell.transition-keys == ""
+                        ? @tr("Transition: put the preview scene on air")
+                        : @tr("Transition: put the preview scene on air ({})", Shell.transition-keys);
+                    clicked => { Studio.transition(); }
+                }
+            }
+        }
+    }
+    if below && !compact: HorizontalLayout {
+        x: root.width - self.preferred-width - Tokens.space-3;
+        width: self.preferred-width;
+        height: root.height;
+        spacing: Tokens.space-2;
+        Rectangle { width: Tokens.size-border; background: Theme.border-subtle; }
+        VerticalLayout {
+            alignment: center;
+            RailPlace { below: true; }
+        }
+    }
+}
+
+// A window's panel cards and dividers. It tells Rust where it is in the window (the
+// preview layer is placed from that) and how big it is (the layout is flattened to it).
+component DockArea inherits Rectangle {
+    in property <int> window;
+    in property <[StackData]> stacks;
+    in property <[HandleData]> handles;
+    in property <RailData> rail;
+    in property <bool> floating;
+    // The height of the Studio mode switch card above the rail between the pictures.
+    property <length> switch-h: 2 * Tokens.space-2 + 2 * Tokens.size-control-md;
+    property <length> ax: self.absolute-position.x;
+    property <length> ay: self.absolute-position.y;
+    changed window => { report(); }
+    changed width => { report(); }
+    changed height => { report(); }
+    changed ax => { report(); }
+    changed ay => { report(); }
+    init => { report(); }
+    function report() {
+        Shell.relayout(window, ax, ay, self.width, self.height);
+    }
+    // Under the stacks: the stacks' own items ignore drag events, so every drag over
+    // the dock area reaches it.
+    drop := DropArea {
+        can-drop(e) => {
+            if !Shell.is-panel(e.data) { return DragAction.none; }
+            Shell.drag-over(root.window, e.data, e.position.x, e.position.y);
+            return DragAction.move;
+        }
+        dropped(e) => {
+            if !Shell.is-panel(e.data) { return DragAction.none; }
+            Shell.drag-drop(root.window, e.data, e.position.x, e.position.y);
+            return DragAction.move;
+        }
+        changed has-drag => {
+            if !self.has-drag { Shell.drag-leave(); }
+        }
+    }
+    for s in stacks: StackView {
+        x: s.x;
+        y: s.y;
+        width: s.w;
+        height: s.h;
+        data: s;
+        floating: root.floating;
+        switch-in-rail: root.rail.shown && !root.rail.below;
+    }
+    for h in handles: Splitter {
+        x: h.x;
+        y: h.y;
+        width: h.w;
+        height: h.h;
+        data: h;
+    }
+    // Between the pictures the rail is two cards: the Studio mode switch above, the
+    // Transition controls below (ADR-0073). Below the pictures it is the Transition
+    // row alone and the switch is in Preview's title row.
+    if rail.shown && !rail.below: RailSwitch {
+        x: rail.x;
+        y: rail.y;
+        width: rail.w;
+        height: root.switch-h;
+    }
+    if rail.shown: TransitionRail {
+        x: rail.x;
+        y: rail.below ? rail.y : rail.y + root.switch-h + Shell.gap;
+        width: rail.w;
+        height: rail.below ? rail.h : rail.h - root.switch-h - Shell.gap;
+        below: rail.below;
+    }
+    // The drop guide: the part of the window the drop would fill.
+    if drop.has-drag && Shell.drop-window == root.window && Shell.drop-guide.width > 0: Rectangle {
+        x: Shell.drop-guide.x;
+        y: Shell.drop-guide.y;
+        width: Shell.drop-guide.width;
+        height: Shell.drop-guide.height;
+        property <Cover> rect: { x: self.absolute-position.x, y: self.absolute-position.y, width: self.width, height: self.height };
+        init => { Shell.drop-cover = rect; Shell.drop-open = true; }
+        changed rect => { Shell.drop-cover = rect; }
+        background: Theme.accent-subtle.with-alpha(0.6);
+        border-radius: Tokens.radius-md;
+        border-width: Tokens.size-focus-ring;
+        border-color: Theme.accent;
+    }
+}
+
+// One edge tab of an auto-hidden panel (ADR-0049 decision 2): its icon and title, the
+// title turned to run along a left or right edge. Clicking it, or Enter or Space,
+// slides the panel out or back.
+component EdgeTab inherits Rectangle {
+    in property <EdgeTabData> data;
+    in property <bool> vertical;
+    in property <bool> open;
+    callback toggle();
+    property <length> along: label.preferred-width + Tokens.size-icon-box + 2 * Tokens.space-2 + Tokens.space-1;
+    width: vertical ? Tokens.size-control-md : along;
+    height: vertical ? along : Tokens.size-control-md;
+    border-radius: Tokens.radius-sm;
+    border-width: Tokens.size-border;
+    border-color: Theme.border-subtle;
+    background: open || touch.has-hover ? Theme.surface-overlay : Theme.surface-raised;
+    accessible-role: AccessibleRole.tab;
+    accessible-label: data.title;
+    accessible-expandable: true;
+    accessible-expanded: open;
+    accessible-action-default => { toggle(); }
+    forward-focus: focus;
+    focus := RingFocus {
+        key-pressed(e) => {
+            if e.text == Key.Return || e.text == " " { toggle(); return accept; }
+            reject
+        }
+    }
+    touch := TouchArea { clicked => { focus.focus-pointer(); toggle(); } }
+    Icon {
+        x: vertical ? (parent.width - self.width) / 2 : Tokens.space-2;
+        y: vertical ? Tokens.space-2 : (parent.height - self.height) / 2;
+        name: Icons.named(data.icon);
+        ink: open ? Theme.text-primary : Theme.text-secondary;
+    }
+    label := Text {
+        // Laid out unturned, then turned about its centre.
+        width: self.preferred-width;
+        height: self.preferred-height;
+        x: vertical ? (parent.width - self.width) / 2 : Tokens.size-icon-box + Tokens.space-2 + Tokens.space-1;
+        y: vertical ? Tokens.size-icon-box + Tokens.space-2 + Tokens.space-1 + (self.width - self.height) / 2 : (parent.height - self.height) / 2;
+        transform-rotation: vertical ? 90deg : 0deg;
+        text: data.title;
+        color: open || touch.has-hover ? Theme.text-primary : Theme.text-secondary;
+        font-size: Tokens.type-caption-size;
+        font-weight: Tokens.type-label-weight;
+    }
+    FocusRing { show: focus.ring; border-radius: Tokens.radius-md; }
+}
+
+// The edge tabs on one edge. `open-id` is the slid-out panel, if it is on this edge.
+component EdgeStrip inherits Rectangle {
+    in property <[EdgeTabData]> tabs;
+    in property <bool> vertical;
+    in property <string> open-id;
+    callback toggle(EdgeTabData);
+    // Fixed across its edge, free along it.
+    min-width: vertical ? Tokens.size-control-md : 0px;
+    max-width: vertical ? Tokens.size-control-md : 100000px;
+    min-height: vertical ? 0px : Tokens.size-control-md;
+    max-height: vertical ? 100000px : Tokens.size-control-md;
+    accessible-role: tab-list;
+    if vertical: VerticalLayout {
+        spacing: Tokens.space-1;
+        alignment: start;
+        for t in tabs: EdgeTab {
+            data: t;
+            vertical: true;
+            open: t.id == open-id;
+            toggle => { root.toggle(t); }
+        }
+    }
+    if !vertical: HorizontalLayout {
+        spacing: Tokens.space-1;
+        alignment: start;
+        for t in tabs: EdgeTab {
+            data: t;
+            vertical: false;
+            open: t.id == open-id;
+            toggle => { root.toggle(t); }
+        }
+    }
+}
+
+// A slid-out auto-hide panel: a card over the dock area along its edge. Its title
+// drags like a tab, the menu is the panel menu, Pin docks it and Close closes it.
+// Escape, or a click on the dock, slides it back without closing it. A direct child
+// of the window, so it reports its own rectangle for the preview layer (ADR-0054).
+component Flyout inherits Rectangle {
+    in property <EdgeTabData> data;
+    callback hide();
+    // In window surface coordinates, as the preview layer is placed.
+    property <Cover> rect: { x: self.absolute-position.x, y: self.absolute-position.y, width: self.width, height: self.height };
+    init => { Shell.flyout = rect; Shell.flyout-open = true; focus.focus(); }
+    changed rect => { Shell.flyout = rect; }
+    background: Theme.surface-raised;
+    border-color: Theme.border-subtle;
+    border-width: Tokens.size-border;
+    border-radius: Tokens.radius-md;
+    clip: true;
+    accessible-role: groupbox;
+    accessible-label: data.title;
+    // The same panel menu as a docked tab: move, float, close.
+    menu := CommandMenu {
+        context: "panel";
+        target: "id=" + data.id;
+    }
+    focus := RingFocus {
+        key-pressed(e) => {
+            if e.text == Key.Escape { root.hide(); return accept; }
+            reject
+        }
+        VerticalLayout {
+            Rectangle {
+                height: Tokens.size-control-lg;
+                HorizontalLayout {
+                    padding-left: Tokens.space-3;
+                    padding-right: Tokens.space-1;
+                    spacing: Tokens.space-1;
+                    // The title is the drag handle, the same as a docked tab.
+                    DragArea {
+                        horizontal-stretch: 1;
+                        allow-move: !Shell.locked;
+                        data: Shell.panel-data(data.id);
+                        Text {
+                            text: data.title;
+                            color: Theme.text-primary;
+                            font-size: Tokens.type-label-size;
+                            font-weight: Tokens.type-title-weight;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        IconButton {
+                            icon: IconName.more;
+                            name: @tr("Actions for {}", data.title);
+                            clicked => {
+                                menu.open-from({
+                                    x: self.absolute-position.x - menu.absolute-position.x,
+                                    y: self.absolute-position.y - menu.absolute-position.y + self.height,
+                                }, self.width, self.height);
+                            }
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        IconButton {
+                            icon: IconName.pin;
+                            name: @tr("Pin {}", data.title);
+                            clicked => { Shell.pin(data.id); root.hide(); }
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        IconButton {
+                            icon: IconName.close;
+                            name: @tr("Close {}", data.title);
+                            clicked => { Shell.close-panel(data.id); root.hide(); }
+                        }
+                    }
+                }
+            }
+            Rectangle { height: Tokens.size-border; background: Theme.border-subtle; }
+            PanelContent { tab: { id: data.id, title: data.title, known: true, icon: data.icon }; }
+        }
+    }
+}
+
+// End stream picked in the menu bar asks first (U4). In a floating window it sits in
+// the window's own bar; Keep streaming has the focus. `vertical`: the vertical
+// canvas's stream (ADR-0093 decision 6).
+component EndStreamConfirm inherits HorizontalLayout {
+    in property <bool> vertical;
+    horizontal-stretch: 0;
+    spacing: Tokens.space-2;
+    accessible-role: groupbox;
+    accessible-label: vertical ? @tr("End the vertical stream?") : @tr("End the stream?");
+    init => { keep-stream.focus(); }
+    Text {
+        text: vertical ? @tr("End the vertical stream? Viewers see it end.")
+            : Shell.end-stream-both ? @tr("End both streams, main and vertical? Viewers see them end.")
+            : @tr("End the stream? Viewers see it end.");
+        color: Theme.text-primary;
+        font-size: Tokens.type-body-size;
+        vertical-alignment: center;
+    }
+    Button {
+        text: vertical ? @tr("Yes, end the vertical stream")
+            : Shell.end-stream-both ? @tr("Yes, end both streams") : @tr("Yes, end the stream");
+        kind: "live";
+        clicked => { if vertical { Shell.end-vertical-answer(true); } else { Shell.end-stream-answer(true); } }
+    }
+    keep-stream := Button {
+        text: @tr("Keep streaming");
+        clicked => { if vertical { Shell.end-vertical-answer(false); } else { Shell.end-stream-answer(false); } }
+    }
+}
+
+// The same question in the main window: a card under Go live and Record, over the
+// window instead of in the toolbar row, so the row keeps its room. It reports its
+// rectangle as `Shell.confirm-cover` for the preview layer (ADR-0054).
+component EndStreamCard inherits Rectangle {
+    in property <bool> vertical;
+    // A direct child of the window, so its own coordinates are the window's.
+    property <Cover> rect: { x: self.x, y: self.y, width: self.width, height: self.height };
+    init => { Shell.confirm-cover = rect; keep.focus(); }
+    changed rect => { Shell.confirm-cover = rect; }
+    // The main question was answered and the vertical one is next: the focus goes back
+    // to Keep streaming, never stays on an end button.
+    changed vertical => { keep.focus(); }
+    function answer(end: bool) {
+        if vertical { Shell.end-vertical-answer(end); } else { Shell.end-stream-answer(end); }
+    }
+    width: lay.preferred-width;
+    height: lay.preferred-height;
+    background: Theme.surface-overlay;
+    border-color: Theme.border-strong;
+    border-width: Tokens.size-border;
+    border-radius: Tokens.radius-md;
+    accessible-role: groupbox;
+    accessible-label: vertical ? @tr("End the vertical stream?") : @tr("End the stream?");
+    lay := VerticalLayout {
+        padding: Tokens.space-3;
+        spacing: Tokens.space-2;
+        Text {
+            text: vertical ? @tr("End the vertical stream? Viewers see it end.")
+                : Shell.end-stream-both ? @tr("End both streams, main and vertical? Viewers see them end.")
+                : @tr("End the stream? Viewers see it end.");
+            color: Theme.text-primary;
+            font-size: Tokens.type-body-size;
+        }
+        HorizontalLayout {
+            alignment: end;
+            spacing: Tokens.space-2;
+            Button {
+                text: vertical ? @tr("Yes, end the vertical stream")
+                    : Shell.end-stream-both ? @tr("Yes, end both streams") : @tr("Yes, end the stream");
+                kind: "live";
+                clicked => { root.answer(true); }
+            }
+            keep := Button {
+                text: @tr("Keep streaming");
+                clicked => { root.answer(false); }
+            }
+        }
+    }
+}
+
+// Record or Go live while no microphone is heard asks first (UI spec, "Silent output
+// warning"): the reason, what it means, "Don't ask again" and the answers. Cancel
+// has the focus, so a stray Enter does not start a silent output.
+component SilentQuestion inherits VerticalLayout {
+    property <bool> stream: Shell.silent-confirm == 2;
+    property <bool> stop-asking;
+    public function focus-cancel() { actions.focus-cancel(); }
+    spacing: Tokens.space-2;
+    Text {
+        text: root.stream ? @tr("Go live without sound?") : @tr("Record without sound?");
+        color: Theme.text-primary;
+        font-size: Tokens.type-label-size;
+        font-weight: Tokens.type-label-weight;
+    }
+    Text {
+        text: Shell.silent-reason;
+        color: Theme.text-primary;
+        font-size: Tokens.type-body-size;
+    }
+    Text {
+        text: root.stream ? @tr("Viewers will not hear you.") : @tr("The recording will have no voice.");
+        color: Theme.text-secondary;
+        font-size: Tokens.type-body-size;
+    }
+    Checkbox {
+        text: @tr("Don't ask again");
+        checked: root.stop-asking;
+        toggled(on) => { root.stop-asking = on; }
+    }
+    actions := DialogActions {
+        confirm-text: root.stream ? @tr("Go live anyway") : @tr("Record anyway");
+        cancelled => { Shell.silent-answer(false, false); }
+        confirmed => { Shell.silent-answer(true, root.stop-asking); }
+    }
+}
+
+// The question in the main window: a card under Go live and Record, like End stream's.
+// It reports its rectangle as `Shell.confirm-cover` for the preview layer (ADR-0054).
+component SilentCard inherits Rectangle {
+    property <Cover> rect: { x: self.x, y: self.y, width: self.width, height: self.height };
+    init => { Shell.confirm-cover = rect; question.focus-cancel(); }
+    changed rect => { Shell.confirm-cover = rect; }
+    width: lay.preferred-width;
+    height: lay.preferred-height;
+    background: Theme.surface-overlay;
+    border-color: Theme.border-strong;
+    border-width: Tokens.size-border;
+    border-radius: Tokens.radius-md;
+    accessible-role: groupbox;
+    accessible-label: Shell.silent-confirm == 2 ? @tr("Go live without sound?") : @tr("Record without sound?");
+    lay := VerticalLayout {
+        padding: Tokens.space-3;
+        question := SilentQuestion { }
+    }
+}
+
+// The workspace picker in the toolbar: "Workspace" and the current one's name, a
+// library Button in its menu form.
+component WorkspacePicker inherits Button {
+    menu: true;
+    caption: @tr("Workspace");
+    text: Shell.workspace-name;
+    icon: IconName.chevron-down;
+    accessible-name: @tr("Workspace: {}", Shell.workspace-name);
+}
+
+// One toolbar item: a command button with its icon (a toggle that is on is tinted;
+// one that stops a live output is a normal button whose stop square is in the live
+// colour, U12: the state shows, the toolbar stays calm), the workspace picker, a
+// separator or the flexible space. Go live is the one primary button.
+component ToolbarCell inherits HorizontalLayout {
+    in property <ToolbarData> item;
+    // The workspace picker was clicked, at this window x.
+    callback open-workspaces(length);
+    // The Add source item was clicked, at this window x: it opens the type menu.
+    callback open-add-source(length);
+    // Go live and Record in the frame's fixed group: a ▾ with the vertical canvas's
+    // outputs while it exists, and "9:16" while its stream or recording runs
+    // (ADR-0093 decision 6).
+    in property <bool> vertical-menu;
+    in property <bool> vertical-on;
+    // The ▾ was clicked, at this window x.
+    callback open-vertical(length);
+    property <bool> go-live: item.id == "stream.toggle" && !item.live;
+    property <bool> record: item.id == "record.toggle" && !item.live;
+    // A running recording's Stop gets Pause or Resume as its second half (ADR-0124):
+    // the pair is no wider than Stop recording was.
+    property <bool> pausable: item.id == "record.toggle" && item.live && Studio.rec-pausable;
+    // A live stream's End stream gets Hold or Resume stream as its second half
+    // (ADR-0124, owner approval 2026-11-16).
+    property <bool> holdable: item.id == "stream.toggle" && item.live && Studio.st-holdable;
+    property <bool> split: vertical-menu || pausable || holdable;
+    // A position that opts in keeps the halo's clear zone round its button (ADR-0122
+    // decision 8): the cell pads its sides so that, with the row's `space.2`, nothing
+    // lies within `Theme.halo-clear + size.focus-ring` of the button. The zone belongs to
+    // the position, whatever the button's kind is now, so going live moves nothing. 0
+    // unless the theme draws a halo. No frame bar position opts in today (ADR-0136).
+    in property <bool> halo-room: false;
+    property <length> halo-pad: halo-room && Theme.halo-clear > 0 ? max(Tokens.space-2, Theme.halo-clear + Tokens.size-focus-ring) - Tokens.space-2 : 0px;
+    padding-left: halo-pad;
+    padding-right: halo-pad;
+    horizontal-stretch: item.kind == 3 ? 1 : 0;
+    if (item.kind == 0 || item.kind == 4) && item.icon-only: Button {
+        // Round, like every icon-only button (ADR-0118).
+        width: self.height;
+        accessible-name: item.title;
+        lead: Icons.named(item.icon);
+        lead-ink: item.live && self.enabled ? Theme.state-live
+            : item.checked ? Theme.text-primary : Theme.text-secondary;
+        lead-signal: item.live && self.enabled;
+        kind: "ghost";
+        enabled: item.enabled;
+        checked: item.checked && !item.live;
+        clicked => { if item.id == "source.add" { root.open-add-source(self.absolute-position.x); } else { Menus.run(item.id); } }
+    }
+    if (item.kind == 0 || item.kind == 4) && !item.icon-only && !split: Button {
+        text: item.title;
+        lead: Icons.named(item.icon);
+        // Record's dot, and the stop square of a running output, in the live colour.
+        lead-ink: (record || item.live) && self.enabled ? Theme.state-live : self.ink;
+        lead-signal: (record || item.live) && self.enabled;
+        enabled: item.enabled;
+        checked: item.checked && !item.live;
+        kind: go-live ? "primary" : record || item.live ? "secondary" : "ghost";
+        halo-room: root.halo-room;
+        clicked => { if item.id == "source.add" { root.open-add-source(self.absolute-position.x); } else { Menus.run(item.id); } }
+    }
+    if (item.kind == 0 || item.kind == 4) && !item.icon-only && split: SplitButton {
+        text: pausable ? @tr("Stop") : item.title;
+        accessible-name: item.title;
+        menu: vertical-menu;
+        action-icon: holdable ? (Studio.st-held ? IconName.play : IconName.hold)
+            : !pausable ? IconName.none : Studio.rec-paused ? IconName.play : IconName.pause;
+        action-name: holdable ? (Studio.st-held ? @tr("Resume stream") : @tr("Hold stream"))
+            : Studio.rec-paused ? @tr("Resume recording") : @tr("Pause recording");
+        action => { Menus.run(holdable ? "stream.hold_toggle" : "record.pause_toggle"); }
+        lead: Icons.named(item.icon);
+        lead-ink: (record || item.live) && self.enabled ? Theme.state-live : self.ink;
+        lead-signal: (record || item.live) && self.enabled;
+        enabled: item.enabled;
+        checked: item.checked && !item.live;
+        kind: go-live ? "primary" : "secondary";
+        halo-room: root.halo-room;
+        menu-name: item.id == "stream.toggle" ? @tr("Vertical stream") : @tr("Vertical recording");
+        // A running vertical output shows as its own chip beside the buttons (ADR-0111).
+        menu-text: "";
+        menu-description: vertical-on ? @tr("The vertical canvas is on air") : "";
+        clicked => { Menus.run(item.id); }
+        open-menu(x) => { root.open-vertical(x); }
+    }
+    if item.kind == 1: WorkspacePicker {
+        clicked => { root.open-workspaces(self.absolute-position.x); }
+    }
+    // The separator has a fixed height; it does not stretch with the row.
+    if item.kind == 2: VerticalLayout {
+        alignment: center;
+        Rectangle {
+            width: Tokens.size-border;
+            height: Tokens.size-control-md - 2 * Tokens.space-1;
+            background: Theme.border-subtle;
+        }
+    }
+    // The flexible space: an empty layout cannot grow, a rectangle can.
+    if item.kind == 3: Rectangle { }
+}
+
+// A window button on Windows (ADR-0071): minimize, maximize or restore, close. Not a
+// Tab stop, as the OS's own are not; Alt+Space, Win+arrows and Alt+F4 stay.
+component CaptionButton inherits Rectangle {
+    in property <IconName> icon;
+    in property <string> name;
+    in property <bool> close;
+    // For maximize, whose mouse the OS handles: its state from there.
+    in property <bool> outside-hover;
+    in property <bool> outside-pressed;
+    in property <bool> outside: false;
+    callback clicked();
+    property <bool> hot: outside ? outside-hover || outside-pressed : touch.has-hover || touch.pressed;
+    width: Tokens.size-caption-w;
+    background: !hot ? transparent : close ? Theme.caption-close-hover : Theme.surface-overlay;
+    accessible-role: button;
+    accessible-label: name;
+    accessible-action-default => { root.clicked(); }
+    Icon {
+        name: root.icon;
+        ink: hot && close ? Theme.caption-close-text : Theme.text-primary;
+    }
+    touch := TouchArea {
+        enabled: !root.outside;
+        clicked => { root.clicked(); }
+    }
+}
+
+// A running vertical output beside Record and Go live (ADR-0111 decision 6): the
+// vertical mark, its state, the time since it started and a stop for it alone. It
+// exists only while that output runs (P13); the 1 Hz tick that moves its time runs
+// only then too.
+component VerticalChip inherits Rectangle {
+    // 1 starting, 2 connecting, 3 recording or live, 4 stopping.
+    in property <int> state;
+    in property <string> time;
+    in property <bool> stream;
+    callback stop();
+    property <bool> on-air: state == 3;
+    property <string> state-text: state == 1 ? @tr("Starting…")
+        : state == 2 ? @tr("Connecting…")
+        : state == 4 ? (stream ? @tr("Ending…") : @tr("Stopping…"))
+        : stream ? @tr("Live") : @tr("Recording");
+    height: Tokens.size-control-md;
+    width: row.preferred-width;
+    horizontal-stretch: 0;
+    border-radius: Tokens.radius-sm;
+    border-width: Tokens.size-border;
+    border-color: on-air ? Theme.state-live : Theme.border-subtle;
+    background: Theme.surface-raised;
+    accessible-role: groupbox;
+    accessible-label: stream ? @tr("Vertical stream: {} {}", state-text, time)
+        : @tr("Vertical recording: {} {}", state-text, time);
+    row := HorizontalLayout {
+        padding-left: Tokens.space-2;
+        spacing: Tokens.space-1;
+        alignment: start;
+        VerticalLayout {
+            alignment: center;
+            Icon { name: IconName.canvas-vertical; ink: on-air ? Theme.state-live : Theme.text-secondary; }
+        }
+        Text {
+            text: (stream ? @tr("Vertical live") : @tr("Vertical rec")) + (on-air ? "" : " · " + state-text);
+            color: Theme.text-primary;
+            font-size: Tokens.type-caption-size;
+            font-weight: Tokens.type-label-weight;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
+        if on-air: Text {
+            text: time;
+            color: Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
+        VerticalLayout {
+            alignment: center;
+            IconButton {
+                icon: IconName.stop;
+                name: stream ? @tr("End vertical stream") : @tr("Stop vertical recording");
+                enabled: state == 1 || state == 2 || state == 3;
+                clicked => { root.stop(); }
+            }
+        }
+    }
+}
+
+// The window frame's toolbar row (ADR-0049, ADR-0050): the workspace's toolbar items
+// and, at its right end, the live indicator (U4, U21). It stays in every workspace,
+// even with every panel closed.
+component FrameBar inherits Rectangle {
+    // Where the workspace menu opens: under the toolbar's Workspace item.
+    property <length> ws-menu-x;
+    // The hit test's regions on Windows (ADR-0071), in the window: where the leading
+    // group ends, where the end group starts, and the maximize button (the second of
+    // the three window buttons at the row's right end). Sent when one moves.
+    property <length> lead-end: lead.absolute-position.x + lead.width;
+    property <length> end-start: end.absolute-position.x;
+    property <length> max-x: root.absolute-position.x + root.width - 2 * Tokens.size-caption-w;
+    function publish-regions() {
+        if Shell.custom-caption {
+            Shell.caption-regions(lead-end, end-start, max-x, Tokens.size-caption-w, root.height);
+        }
+    }
+    changed lead-end => { publish-regions(); }
+    changed end-start => { publish-regions(); }
+    changed max-x => { publish-regions(); }
+    property <bool> caption-on: Shell.custom-caption;
+    changed caption-on => { publish-regions(); }
+    // The row's height changes with density, and the caption row reported to Windows is
+    // this height.
+    changed height => { publish-regions(); }
+    // The room above and below the row's items. It is the same in every look: the frame
+    // bar does not opt in to the halo (ADR-0136), so Glow does not make it taller. Every
+    // item keeps its size, centred; only the window buttons span the row.
+    property <length> row-pad: Tokens.space-1;
+    height: Tokens.size-control-md + 2 * row-pad + Tokens.size-border;
+    background: Theme.surface-base;
+    Rectangle {
+        y: parent.height - Tokens.size-border;
+        height: Tokens.size-border;
+        background: Theme.border-subtle;
+    }
+    // The width the row wants with every item at full size (ADR-0112 decision 12).
+    out property <length> wanted-width: row.preferred-width;
+    row := HorizontalLayout {
+        height: parent.height - Tokens.size-border;
+        y: 0;
+        padding-left: Tokens.space-2;
+        // The window buttons end the row with no padding (ADR-0071).
+        padding-right: Shell.custom-caption ? 0 : Tokens.space-2;
+        spacing: 0;
+        // The leading group: the RBS button, the items before the flexible space,
+        // the in-row prompts and status texts.
+        lead := HorizontalLayout {
+            horizontal-stretch: 0;
+            padding-top: root.row-pad;
+            padding-bottom: root.row-pad;
+            spacing: Tokens.space-2;
+            // The RBS menu (spec, "RBS menu"): every command, with search. Part of the
+            // frame, not a toolbar item, so it cannot be removed.
+            rbs := AppMenuButton {
+                clicked => { root.open-app-menu(); }
+            }
+            // The workspace's toolbar items (ADR-0050); hidden, the row stays with the
+            // live indicator at its right end.
+            for item in Shell.toolbar-visible ? Shell.toolbar : []: ToolbarCell {
+                item: item;
+                open-workspaces(x) => {
+                    root.ws-menu-x = x - root.absolute-position.x;
+                    ws-menu.open-from({ x: root.ws-menu-x, y: root.height }, 0px, root.height);
+                }
+                open-add-source(x) => { add-source-menu.open-from({ x: x - root.absolute-position.x, y: root.height }, 0px, root.height); }
+            }
+            // Closing while live ends the stream: asked first, in the frame (U4).
+            if Shell.quit-confirm: HorizontalLayout {
+                horizontal-stretch: 0;
+                spacing: Tokens.space-2;
+                accessible-role: groupbox;
+                accessible-label: @tr("End the stream and quit?");
+                init => { keep-live.focus(); }
+                Text {
+                    text: @tr("End the stream and quit?");
+                    color: Theme.text-primary;
+                    font-size: Tokens.type-body-size;
+                    vertical-alignment: center;
+                }
+                Button {
+                    text: @tr("End stream and quit");
+                    kind: "live";
+                    clicked => { Shell.quit-end-stream(); }
+                }
+                keep-live := Button {
+                    text: @tr("Keep streaming");
+                    clicked => { Shell.quit-keep(); }
+                }
+            }
+            // Network access (ADR-0046 decision 7): shown in every workspace while other
+            // computers can connect, in words.
+            if Studio.rc-network-on: Text {
+                horizontal-stretch: 0;
+                text: @tr("Reachable from other computers");
+                color: Theme.text-secondary;
+                font-size: Tokens.type-caption-size;
+                vertical-alignment: center;
+                accessible-role: AccessibleRole.text;
+                accessible-label: @tr("Remote control: reachable from other computers");
+            }
+            if Shell.locked: Text {
+                horizontal-stretch: 0;
+                text: @tr("Layout locked");
+                color: Theme.text-secondary;
+                font-size: Tokens.type-caption-size;
+                vertical-alignment: center;
+            }
+        }
+        // The flexible space: on Windows it moves the window (ADR-0071).
+        Rectangle {
+            horizontal-stretch: 1;
+            min-width: Tokens.space-2;
+        }
+        // The end group: the items after the flexible space, then the live indicator
+        // while live or recording (U4, U21). An item not shown takes no width and no
+        // spacing.
+        end := HorizontalLayout {
+            horizontal-stretch: 0;
+            padding-top: root.row-pad;
+            padding-bottom: root.row-pad;
+            spacing: Tokens.space-2;
+            for item in Shell.toolbar-visible ? Shell.toolbar-end : []: ToolbarCell {
+                item: item;
+                open-workspaces(x) => {
+                    root.ws-menu-x = x - root.absolute-position.x;
+                    ws-menu.open-from({ x: root.ws-menu-x, y: root.height }, 0px, root.height);
+                }
+                open-add-source(x) => { add-source-menu.open-from({ x: x - root.absolute-position.x, y: root.height }, 0px, root.height); }
+            }
+            // Go live and Record: part of the frame, not of the toolbar, so they stay
+            // with the toolbar hidden or customised (U1, ADR-0073).
+            for item in Shell.toolbar-fixed: ToolbarCell {
+                item: item;
+                // No halo here, so the bar keeps its height in Glow (ADR-0136).
+                vertical-menu: Shell.vertical-outputs;
+                vertical-on: item.id == "stream.toggle" ? Shell.vertical-live : Shell.vertical-rec;
+                open-workspaces(x) => { }
+                open-vertical(x) => { vertical-menu.open-from({ x: x - root.absolute-position.x, y: root.height }, 0px, root.height); }
+            }
+            // Each running vertical output's chip (ADR-0111 decision 6).
+            if Shell.vertical-live-state != 0: VerticalChip {
+                state: Shell.vertical-live-state;
+                time: Shell.vertical-live-time;
+                stream: true;
+                stop => { Shell.vertical-stop(true); }
+            }
+            if Shell.vertical-rec-state != 0: VerticalChip {
+                state: Shell.vertical-rec-state;
+                time: Shell.vertical-rec-time;
+                stream: false;
+                stop => { Shell.vertical-stop(false); }
+            }
+            // Idle it is not in the layout at all (the status bar says "Not live").
+            if Shell.live-state != 0 || Shell.live-camera: LiveIndicator { horizontal-stretch: 0; }
+        }
+        // Windows: the window buttons end the row (ADR-0071).
+        if Shell.custom-caption: HorizontalLayout {
+            horizontal-stretch: 0;
+            padding-left: Tokens.space-2;
+            CaptionButton {
+                icon: IconName.window-minimize;
+                name: @tr("Minimize");
+                clicked => { Shell.caption(0); }
+            }
+            max := CaptionButton {
+                icon: Shell.window-maximized ? IconName.window-restore : IconName.window-maximize;
+                name: Shell.window-maximized ? @tr("Restore") : @tr("Maximize");
+                outside: true;
+                outside-hover: Shell.caption-max-hover;
+                outside-pressed: Shell.caption-max-pressed;
+                clicked => { Shell.caption(1); }
+            }
+            CaptionButton {
+                icon: IconName.close;
+                name: @tr("Close");
+                close: true;
+                clicked => { Shell.caption(2); }
+            }
+        }
+    }
+    // The workspace menu: the same CommandMenu as every other context (ADR-0094 B1).
+    ws-menu := CommandMenu { context: "workspace"; }
+    add-source-menu := CommandMenu { context: "add-source"; }
+    vertical-menu := CommandMenu { context: "vertical-outputs"; }
+    function open-app-menu() { AppMenus.open = true; }
+    property <int> asked: Shell.app-menu-asked;
+    changed asked => { open-app-menu(); }
+}
+
+// A status bar item that opens a menu: "<label> <value>", a dense ghost Button in its
+// menu form.
+component StatusPicker inherits Button {
+    in property <string> label;
+    in property <string> value;
+    kind: "ghost";
+    dense: true;
+    small: true;
+    menu: true;
+    caption: label;
+    text: value;
+    accessible-name: @tr("{}: {}", label, value);
+}
+
+// The status bar (spec Frame): live and recording state in words, the Output profile
+// and Scene collection in use (each opens its menu), and the canvas. It shows values
+// the app already has; it polls nothing (P13).
+component StatusBar inherits Rectangle {
+    // The duration and the outputs (file name, server) live here, not in the
+    // frame's compact live indicator.
+    property <string> outputs: Shell.live-outputs != "" ? " · " + Shell.live-outputs : "";
+    // A paused recording (ADR-0124): how long the pause has lasted and the time
+    // recorded, in the warning colour.
+    property <bool> paused: Studio.rec-paused && (Shell.live-state == 2 || Shell.live-state == 3);
+    // A held stream (ADR-0124): how long the hold has lasted, in the warning colour.
+    property <bool> held: Studio.st-held && (Shell.live-state == 1 || Shell.live-state == 3);
+    property <string> state-text: held && Shell.live-state == 1 ? @tr("Stream on hold {} · live {}", Shell.st-held-for, Shell.live-duration) + outputs
+        : held && paused ? @tr("Stream on hold {} · recording paused {}", Shell.st-held-for, Shell.rec-paused-for) + outputs
+        : held ? @tr("Stream on hold {} · recording {}", Shell.st-held-for, Shell.live-duration) + outputs
+        : Shell.live-state == 1 ? @tr("Live {} · not recording", Shell.live-duration) + outputs
+        : Shell.live-state == 2 && paused ? @tr("Recording paused {} · {} recorded", Shell.rec-paused-for, Shell.live-duration) + outputs
+        : Shell.live-state == 3 && paused ? @tr("Live {} · recording paused {}", Shell.live-duration, Shell.rec-paused-for) + outputs
+        : Shell.live-state == 2 ? (Shell.audio-only ? @tr("Recording audio {}", Shell.live-duration) : @tr("Recording {}", Shell.live-duration)) + outputs
+        : Shell.live-state == 3 ? (Shell.audio-only ? @tr("Live and recording audio {}", Shell.live-duration) : @tr("Live and recording {}", Shell.live-duration)) + outputs
+        : @tr("Not live · not recording");
+    property <string> text-with-camera: !Shell.live-camera ? state-text
+        : Shell.live-state == 0 ? @tr("Virtual camera on · not live · not recording")
+        : @tr("{} · virtual camera on", state-text);
+    property <bool> on: Shell.live-state != 0 || Shell.live-camera;
+    height: Tokens.size-control-sm + 2 * Tokens.size-border;
+    // The window ground (ADR-0112 decision 1).
+    background: Theme.surface-base;
+    Rectangle {
+        y: 0;
+        height: Tokens.size-border;
+        background: Theme.border-subtle;
+    }
+    HorizontalLayout {
+        padding-left: Tokens.space-3;
+        padding-right: Tokens.space-3;
+        padding-top: Tokens.size-border;
+        spacing: Tokens.space-4;
+        HorizontalLayout {
+            horizontal-stretch: 0;
+            spacing: Tokens.space-1;
+            if on: VerticalLayout {
+                alignment: center;
+                Icon {
+                    name: held ? IconName.hold : paused ? IconName.pause : IconName.dot;
+                    ink: held || paused ? Theme.state-warning : Theme.state-live;
+                }
+            }
+            Text {
+                text: text-with-camera;
+                color: held || paused ? Theme.state-warning : on ? Theme.text-primary : Theme.text-secondary;
+                font-size: Tokens.type-caption-size;
+                vertical-alignment: center;
+            }
+        }
+        // Markers (ADR-0089 decision 10): while a recording that writes an editor
+        // project runs, its manual markers; a click adds one.
+        if Studio.rec-markers-shown: Button {
+            horizontal-stretch: 0;
+            kind: "ghost";
+            dense: true;
+            small: true;
+            lead: IconName.flag;
+            text: Studio.rec-markers;
+            accessible-name: @tr("Add marker. {} markers so far", Studio.rec-markers);
+            clicked => { Studio.add-marker(); }
+        }
+        if Studio.st-text != "": Text {
+            horizontal-stretch: 0;
+            text: Studio.st-text;
+            color: Studio.st-bad ? Theme.state-error : Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            vertical-alignment: center;
+        }
+        // What the Live controls panel said under its buttons (ADR-0073): the last
+        // recording's outcome ("Saved ..."), or why recording is not possible, and the
+        // virtual camera's state. Long paths are cut in the middle of the bar's room.
+        if Studio.rec-state == 0 && (Studio.rec-unavailable != "" || Studio.rec-note != ""): Text {
+            horizontal-stretch: 1;
+            text: Studio.rec-unavailable != "" ? Studio.rec-unavailable : Studio.rec-note;
+            color: Studio.rec-unavailable != "" || Studio.rec-note-bad ? Theme.state-error : Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        if Studio.vcam-shown && Studio.vcam-text != "": Text {
+            horizontal-stretch: 0;
+            text: Studio.vcam-text;
+            color: Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        Rectangle { horizontal-stretch: 1; }
+        profile-button := StatusPicker {
+            label: @tr("Output profile");
+            value: Studio.profile-name;
+            clicked => { profile-menu.open-from({ x: profile-button.x, y: profile-button.y + profile-button.height }, profile-button.width, profile-button.height); }
+        }
+        collection-button := StatusPicker {
+            label: @tr("Scene collection");
+            value: Studio.collection-name;
+            clicked => { collection-menu.open-from({ x: collection-button.x, y: collection-button.y + collection-button.height }, collection-button.width, collection-button.height); }
+        }
+        if Studio.canvas-label != "": Text {
+            horizontal-stretch: 0;
+            text: Studio.canvas-rates.length > Studio.canvas-rate && Studio.canvas-rate >= 0
+                ? @tr("{} · {} fps", Studio.canvas-label, Studio.canvas-rates[Studio.canvas-rate])
+                : Studio.canvas-label;
+            color: Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            vertical-alignment: center;
+        }
+    }
+    // The Output profile and Scene collection menus (ADR-0094 rule B1); each opens
+    // at the top-left of its picker.
+    profile-menu := CommandMenu { context: "profiles"; }
+    collection-menu := CommandMenu { context: "collections"; }
+}
+
+// A notice card (undo toast, delete toast, error bar). One control tall and at
+// most `size.toast.max` wide: stretch stays 0, because a layout that stretches
+// inside a free-floating child of the window takes the window and covers the
+// preview. The fill stays quiet; the outline, the side mark and the icon are
+// what make it visible on every theme. While `timed`, the seconds left sit at
+// the right end in an edge-coloured chip with a filled hourglass, and the card
+// closes when they run out; Dismiss closes it sooner. The countdown steps
+// by `delay.toast-tick` (not an animation, so it still runs under reduce motion).
+// The first-close notice sets `timed` off: its buttons hide the windows (ADR-0056).
+component Toast inherits Rectangle {
+    in property <string> text;
+    in property <string> action;
+    // The action button's lead icon (`none` draws the words alone).
+    in property <IconName> action-icon: IconName.none;
+    // Reports its rectangle as `Shell.top-toast` (the error bar) instead of
+    // `Shell.bottom-toast`.
+    in property <bool> top;
+    in property <bool> timed: true;
+    // A new notice, even with the same words, starts the countdown again.
+    in property <int> generation;
+    in property <IconName> mark: IconName.info;
+    callback act();
+    callback dismiss();
+    // A direct child of the window, so its own coordinates are the window's.
+    property <Cover> rect: { x: self.x, y: self.y, width: self.width, height: self.height };
+    property <int> total-ms: round(Tokens.delay-toast / 1ms);
+    property <int> tick-ms: max(1, round(Tokens.delay-toast-tick / 1ms));
+    property <int> left-ms: total-ms;
+    // Never reads 0: the last step closes the card while it still says 1 s.
+    property <int> seconds: max(1, ceil(root.left-ms * 1.0 / root.tick-ms));
+    // False, then true, restarts the one-second step (a running timer keeps its phase).
+    property <bool> clock: false;
+    init => { report(); root.restart(); }
+    changed rect => { report(); }
+    changed generation => { root.restart(); }
+    changed text => { root.restart(); }
+    function report() {
+        if top { Shell.top-toast = rect; } else { Shell.bottom-toast = rect; }
+    }
+    function restart() {
+        root.left-ms = root.total-ms;
+        if root.timed {
+            root.clock = false;
+            root.clock = true;
+        }
+    }
+    Timer {
+        interval: Tokens.delay-toast-tick;
+        running: root.clock;
+        triggered => {
+            root.clock = false;
+            if root.left-ms <= root.tick-ms {
+                root.left-ms = 0;
+                root.dismiss();
+            } else {
+                root.left-ms = root.left-ms - root.tick-ms;
+                root.clock = true;
+            }
+        }
+    }
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    // The row, its vertical padding and the outline. Fixed, so the card cannot
+    // grow with the window the way an unsized layout does.
+    height: Tokens.size-control-md + 2 * Tokens.space-1 + 2 * Tokens.size-toast-border;
+    width: min(Tokens.size-toast-max, body.preferred-width);
+    background: Theme.toast-surface;
+    border-color: Theme.toast-edge;
+    border-width: Tokens.size-toast-border;
+    border-radius: Tokens.radius-md;
+    clip: true;
+    accessible-role: none;
+    body := HorizontalLayout {
+        alignment: center;
+        Rectangle {
+            width: Tokens.size-toast-rail;
+            vertical-stretch: 1;
+            background: Theme.toast-edge;
+            accessible-role: none;
+        }
+        HorizontalLayout {
+            horizontal-stretch: 1;
+            padding-left: Tokens.space-3;
+            padding-right: Tokens.space-3;
+            padding-top: Tokens.space-1;
+            padding-bottom: Tokens.space-1;
+            spacing: Tokens.space-3;
+            alignment: center;
+            // A fixed-height button stays at the top of a row that stretches. Centre
+            // every child on the card, the words included.
+            cross-axis-alignment: center;
+            VerticalLayout {
+                alignment: center;
+                width: Tokens.size-icon-box;
+                Icon { name: root.mark; ink: Theme.toast-edge; }
+            }
+            Text {
+                text: root.text;
+                color: Theme.text-primary;
+                font-size: Tokens.type-body-size;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                min-width: 0px;
+                max-width: Tokens.size-toast-max;
+                overflow: elide;
+            }
+            if action != "": Button {
+                text: root.action;
+                kind: "primary";
+                lead: root.action-icon;
+                clicked => { act(); }
+            }
+            Button {
+                text: @tr("Dismiss");
+                kind: "secondary";
+                lead: IconName.close;
+                clicked => { dismiss(); }
+            }
+            // Past the buttons, so the time reads as the end of the card, not another action.
+            // The chip is the edge colour with the surface colour on it, so the passing
+            // time stands out from the quiet fill.
+            if root.timed: VerticalLayout {
+                horizontal-stretch: 0;
+                alignment: center;
+                padding-left: Tokens.space-3;
+                Rectangle {
+                    horizontal-stretch: 0;
+                    background: Theme.toast-edge;
+                    border-radius: Tokens.radius-sm;
+                    HorizontalLayout {
+                        padding-left: Tokens.space-2;
+                        padding-right: Tokens.space-2;
+                        padding-top: Tokens.space-1;
+                        padding-bottom: Tokens.space-1;
+                        spacing: Tokens.space-1;
+                        alignment: center;
+                        VerticalLayout {
+                            alignment: center;
+                            Icon { name: IconName.hourglass; ink: Theme.toast-surface; }
+                        }
+                        Text {
+                            horizontal-stretch: 0;
+                            text: @tr("{} s", root.seconds);
+                            color: Theme.toast-surface;
+                            font-size: Tokens.type-body-size;
+                            font-weight: Tokens.type-label-weight;
+                            vertical-alignment: center;
+                            accessible-label: @tr("{n} second left" | "{n} seconds left" % root.seconds);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component MainWindow inherits Window {
+    default-font-family: Theme.font-family;
+    title: @tr("RBS");
+    icon: @image-url("../assets/brand/icon-win-256.png");
+    preferred-width: Tokens.size-window-w;
+    preferred-height: Tokens.size-window-h;
+    min-width: Tokens.size-window-min-w;
+    min-height: Tokens.size-window-min-h;
+    // The width the frame row wants for every item at full size; a test holds it inside the window's
+    // minimum width in every density (ADR-0112 decision 12, U11).
+    out property <length> frame-row-width: frame.wanted-width;
+    // The window ground (ADR-0112 decision 1).
+    background: Theme.surface-base;
+    default-font-size: Tokens.type-body-size;
+    in property <[StackData]> stacks;
+    in property <[HandleData]> handles;
+    in property <RailData> rail;
+    forward-focus: edit-keys;
+    // BEGIN generated menu bar (menu_bar.rs; do not edit)
+    if Shell.native-menu-bar: MenuBar {
+        Menu {
+            title: @tr("File");
+            Menu {
+                title: Menus.titles[0];
+                icon: Menus.icons[0];
+                enabled: Menus.enabled[0];
+                for c in Menus.choices[0]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+            }
+            Menu {
+                title: Menus.titles[1];
+                icon: Menus.icons[1];
+                enabled: Menus.enabled[1];
+                for c in Menus.choices[1]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+            }
+            MenuSeparator { }
+            MenuItem { title: Menus.titles[2]; icon: Menus.icons[2]; enabled: Menus.enabled[2]; activated => { Menus.run("ui.settings.open"); } }
+        }
+        Menu {
+            title: @tr("Edit");
+            MenuItem { title: Menus.titles[3]; icon: Menus.icons[3]; enabled: Menus.enabled[3]; activated => { Menus.run("edit.undo"); } }
+            MenuItem { title: Menus.titles[4]; icon: Menus.icons[4]; enabled: Menus.enabled[4]; activated => { Menus.run("edit.redo"); } }
+        }
+        Menu {
+            title: @tr("View");
+            Menu {
+                title: Menus.titles[5];
+                icon: Menus.icons[5];
+                enabled: Menus.enabled[5];
+                for c in Menus.choices[2]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+            }
+            MenuSeparator { }
+            Menu {
+                title: Menus.titles[6];
+                icon: Menus.icons[6];
+                enabled: Menus.enabled[6];
+                for c in Menus.choices[3]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+            }
+            Menu {
+                title: Menus.titles[7];
+                icon: Menus.icons[7];
+                enabled: Menus.enabled[7];
+                for c in Menus.choices[4]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+            }
+            Menu {
+                title: Menus.titles[8];
+                icon: Menus.icons[8];
+                enabled: Menus.enabled[8];
+                for c in Menus.choices[5]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+            }
+            Menu {
+                title: Menus.titles[9];
+                icon: Menus.icons[9];
+                enabled: Menus.enabled[9];
+                for c in Menus.choices[6]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+            }
+            Menu {
+                title: Menus.titles[10];
+                icon: Menus.icons[10];
+                enabled: Menus.enabled[10];
+                for c in Menus.choices[7]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+            }
+        }
+        Menu {
+            title: @tr("Scene");
+            Menu {
+                title: Menus.titles[11];
+                icon: Menus.icons[11];
+                enabled: Menus.enabled[11];
+                for c in Menus.choices[8]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+            }
+            MenuItem { title: Menus.titles[12]; icon: Menus.icons[12]; enabled: Menus.enabled[12]; activated => { Menus.run("scene.previous"); } }
+            MenuItem { title: Menus.titles[13]; icon: Menus.icons[13]; enabled: Menus.enabled[13]; activated => { Menus.run("scene.next"); } }
+            MenuSeparator { }
+            MenuItem { title: Menus.titles[14]; icon: Menus.icons[14]; enabled: Menus.enabled[14]; activated => { Menus.run("scene.add"); } }
+            Menu {
+                title: Menus.titles[15];
+                icon: Menus.icons[15];
+                enabled: Menus.enabled[15];
+                for c in Menus.choices[9]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+            }
+            MenuItem { title: Menus.titles[16]; icon: Menus.icons[16]; enabled: Menus.enabled[16]; checkable: true; checked: Menus.checked[16]; activated => { Menus.run("scene.audio.own_levels.toggle"); } }
+            MenuSeparator { }
+            MenuItem { title: Menus.titles[17]; icon: Menus.icons[17]; enabled: Menus.enabled[17]; checkable: true; checked: Menus.checked[17]; activated => { Menus.run("canvas.studio_mode.toggle"); } }
+            MenuItem { title: Menus.titles[18]; icon: Menus.icons[18]; enabled: Menus.enabled[18]; activated => { Menus.run("canvas.transition"); } }
+        }
+        Menu {
+            title: @tr("Source");
+            Menu {
+                title: Menus.titles[19];
+                icon: Menus.icons[19];
+                enabled: Menus.enabled[19];
+                for c in Menus.choices[10]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+            }
+            MenuSeparator { }
+            Menu {
+                title: Menus.titles[20];
+                icon: Menus.icons[20];
+                enabled: Menus.enabled[20];
+                for c in Menus.choices[11]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+            }
+            Menu {
+                title: Menus.titles[21];
+                icon: Menus.icons[21];
+                enabled: Menus.enabled[21];
+                for c in Menus.choices[12]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+            }
+            Menu {
+                title: Menus.titles[22];
+                icon: Menus.icons[22];
+                enabled: Menus.enabled[22];
+                for c in Menus.choices[13]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+            }
+            Menu {
+                title: Menus.titles[23];
+                icon: Menus.icons[23];
+                enabled: Menus.enabled[23];
+                for c in Menus.choices[14]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+            }
+            Menu {
+                title: Menus.titles[24];
+                icon: Menus.icons[24];
+                enabled: Menus.enabled[24];
+                for c in Menus.choices[15]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+            }
+            MenuSeparator { }
+            MenuItem { title: Menus.titles[25]; icon: Menus.icons[25]; enabled: Menus.enabled[25]; activated => { Menus.run("item.remove"); } }
+            MenuItem { title: Menus.titles[26]; icon: Menus.icons[26]; enabled: Menus.enabled[26]; activated => { Menus.run("source.delete"); } }
+            MenuSeparator { }
+            Menu {
+                title: Menus.titles[27];
+                icon: Menus.icons[27];
+                enabled: Menus.enabled[27];
+                for c in Menus.choices[16]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+            }
+        }
+        Menu {
+            title: @tr("Output");
+            MenuItem { title: Menus.titles[28]; icon: Menus.icons[28]; enabled: Menus.enabled[28]; checkable: true; checked: Menus.checked[28]; activated => { Menus.run("stream.toggle"); } }
+            MenuItem { title: Menus.titles[29]; icon: Menus.icons[29]; enabled: Menus.enabled[29]; checkable: true; checked: Menus.checked[29]; activated => { Menus.run("record.toggle"); } }
+            MenuItem { title: Menus.titles[30]; icon: Menus.icons[30]; enabled: Menus.enabled[30]; activated => { Menus.run("record.pause_toggle"); } }
+            MenuItem { title: Menus.titles[31]; icon: Menus.icons[31]; enabled: Menus.enabled[31]; activated => { Menus.run("stream.hold_toggle"); } }
+            MenuItem { title: Menus.titles[32]; icon: Menus.icons[32]; enabled: Menus.enabled[32]; activated => { Menus.run("output.break_toggle"); } }
+            Menu {
+                title: Menus.titles[33];
+                icon: Menus.icons[33];
+                enabled: Menus.enabled[33];
+                for c in Menus.choices[17]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+            }
+            MenuSeparator { }
+            MenuItem { title: Menus.titles[34]; icon: Menus.icons[34]; enabled: Menus.enabled[34]; checkable: true; checked: Menus.checked[34]; activated => { Menus.run("vcam.toggle"); } }
+            MenuSeparator { }
+            MenuItem { title: Menus.titles[35]; icon: Menus.icons[35]; enabled: Menus.enabled[35]; checkable: true; checked: Menus.checked[35]; activated => { Menus.run("replay.toggle"); } }
+            MenuItem { title: Menus.titles[36]; icon: Menus.icons[36]; enabled: Menus.enabled[36]; activated => { Menus.run("replay.save"); } }
+            MenuSeparator { }
+            MenuItem { title: Menus.titles[37]; icon: Menus.icons[37]; enabled: Menus.enabled[37]; activated => { Menus.run("marker.add"); } }
+        }
+        Menu {
+            title: @tr("Window");
+            Menu {
+                title: Menus.titles[38];
+                icon: Menus.icons[38];
+                enabled: Menus.enabled[38];
+                for c in Menus.choices[18]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+            }
+            MenuSeparator { }
+            MenuItem { title: Menus.titles[39]; icon: Menus.icons[39]; enabled: Menus.enabled[39]; checkable: true; checked: Menus.checked[39]; activated => { Menus.run("ui.panel.maximize?id=rbs.preview"); } }
+        }
+        Menu {
+            title: @tr("Help");
+            MenuItem { title: Menus.titles[40]; icon: Menus.icons[40]; enabled: Menus.enabled[40]; activated => { Menus.run("ui.app_menu.open"); } }
+        }
+    }
+    // END generated menu bar
+    // Shortcuts (ADR-0060): keys a focused control does not take come up here, and a
+    // click where no control takes it focuses this scope, so they work from any panel
+    // of this window. Text fields keep their own editing keys. No KeyBinding here: a
+    // KeyBinding accepts its keys even when it does nothing.
+    edit-keys := FocusScope {
+        focus-on-tab-navigation: false;
+        key-pressed(e) => {
+            // Cmd+W closes the main window on macOS, as its close button does
+            // (ADR-0056); reserved there, free on Windows.
+            if Studio.platform == 0 && e.modifiers.control && !e.modifiers.shift && !e.modifiers.alt && !e.modifiers.meta && (e.text == "w" || e.text == "W") {
+                Shell.close-main();
+                return accept;
+            }
+            // F10 opens the RBS menu where it replaces the menu bar (Windows, Linux).
+            if !Shell.native-menu-bar && e.text == Key.F10 && !e.modifiers.control && !e.modifiers.alt && !e.modifiers.shift && !e.modifiers.meta {
+                Shell.app-menu-asked += 1;
+                return accept;
+            }
+            // Escape answers the silent output question as Cancel.
+            if e.text == Key.Escape && !Shell.quit-confirm && Shell.silent-confirm != 0 {
+                Shell.silent-answer(false, false);
+                return accept;
+            }
+            // Escape answers the End stream card as Keep streaming (U4, U7).
+            if e.text == Key.Escape && !Shell.quit-confirm && (Shell.end-stream-confirm || Shell.end-vertical-confirm) {
+                if Shell.end-stream-confirm { Shell.end-stream-answer(false); } else { Shell.end-vertical-answer(false); }
+                return accept;
+            }
+            if Shortcuts.press(e.text, e.modifiers.control, e.modifiers.alt, e.modifiers.shift, e.modifiers.meta, e.repeat) { return accept; }
+            reject
+        }
+        VerticalLayout {
+            frame := FrameBar { }
+            HorizontalLayout {
+                padding: Shell.gap;
+                spacing: Shell.gap;
+                if Shell.left-tabs.length > 0: EdgeStrip {
+                    tabs: Shell.left-tabs;
+                    vertical: true;
+                    open-id: root.flyout-edge == 0 ? root.flyout-tab.id : "";
+                    toggle(t) => { root.toggle-flyout(0, t); }
+                }
+                VerticalLayout {
+                    spacing: Shell.gap;
+                    dock := DockArea {
+                        window: 0;
+                        stacks: root.stacks;
+                        handles: root.handles;
+                        rail: root.rail;
+                    }
+                    if Shell.bottom-tabs.length > 0: EdgeStrip {
+                        tabs: Shell.bottom-tabs;
+                        vertical: false;
+                        open-id: root.flyout-edge == 2 ? root.flyout-tab.id : "";
+                        toggle(t) => { root.toggle-flyout(2, t); }
+                    }
+                }
+                if Shell.right-tabs.length > 0: EdgeStrip {
+                    tabs: Shell.right-tabs;
+                    vertical: true;
+                    open-id: root.flyout-edge == 1 ? root.flyout-tab.id : "";
+                    toggle(t) => { root.toggle-flyout(1, t); }
+                }
+            }
+            StatusBar { }
+        }
+    }
+    // The slid-out auto-hide panel, over the dock area along its edge (0 left, 1 right,
+    // 2 bottom; -1 none). Sliding out and back is not a layout change (ADR-0049).
+    property <int> flyout-edge: -1;
+    property <EdgeTabData> flyout-tab;
+    function toggle-flyout(edge: int, t: EdgeTabData) {
+        if flyout-edge == edge && flyout-tab.id == t.id {
+            hide-flyout();
+        } else {
+            flyout-tab = t;
+            flyout-edge = edge;
+        }
+    }
+    function hide-flyout() {
+        flyout-edge = -1;
+        Shell.flyout-open = false;
+    }
+    // Pinning, closing or adding an auto-hidden panel slides the flyout back.
+    property <string> edge-ids: Shell.edge-ids;
+    changed edge-ids => { hide-flyout(); }
+    // Opening an auto-hidden panel (its menu, or Properties from a source) slides
+    // it out. Any other command slides it back.
+    property <int> reveal-serial: Shell.reveal-serial;
+    changed reveal-serial => {
+        if Shell.reveal-edge >= 0 {
+            root.flyout-tab = Shell.reveal-tab;
+            root.flyout-edge = Shell.reveal-edge;
+        } else {
+            root.hide-flyout();
+        }
+    }
+    // A click on the dock, outside the slid-out panel, slides it back. The flyout
+    // is a later sibling, so it stays above this and keeps its own clicks.
+    if root.flyout-edge >= 0: TouchArea {
+        x: Shell.gap + (Shell.left-tabs.length > 0 ? Tokens.size-control-md + Shell.gap : 0px);
+        y: frame.height + Shell.gap;
+        width: dock.width;
+        height: dock.height;
+        clicked => { root.hide-flyout(); }
+    }
+    if flyout-edge >= 0: Flyout {
+        property <length> size: min(flyout-tab.size, flyout-edge == 2 ? dock.height : dock.width);
+        // The dock area's place in the window, from the layout around it.
+        property <length> dock-x: Shell.gap + (Shell.left-tabs.length > 0 ? Tokens.size-control-md + Shell.gap : 0px);
+        property <length> dock-y: frame.height + Shell.gap;
+        x: flyout-edge == 1 ? dock-x + dock.width - size : dock-x;
+        y: flyout-edge == 2 ? dock-y + dock.height - size : dock-y;
+        width: flyout-edge == 2 ? dock.width : size;
+        height: flyout-edge == 2 ? size : dock.height;
+        data: flyout-tab;
+        hide => { root.hide-flyout(); }
+    }
+    if Shell.toast-kind != 0: Toast {
+        x: (parent.width - self.width) / 2;
+        y: parent.height - self.height - Tokens.space-6;
+        text: Shell.toast-kind == 1 ? @tr("{} closed.", Shell.toast-subject) : @tr("Switched workspace automatically from {}.", Shell.toast-subject);
+        action: @tr("Undo");
+        action-icon: IconName.undo;
+        mark: IconName.undo;
+        generation: Shell.toast-generation;
+        act => { Shell.toast-undo(); }
+        dismiss => { Shell.toast-dismiss(); }
+    }
+    if Studio.deleted != "" && Shell.toast-kind == 0: Toast {
+        x: (parent.width - self.width) / 2;
+        y: parent.height - self.height - Tokens.space-6;
+        text: Studio.deleted-from-scene ? @tr("{} removed from this scene.", Studio.deleted) : @tr("{} deleted.", Studio.deleted);
+        action: @tr("Undo");
+        action-icon: IconName.undo;
+        generation: Studio.deleted-generation;
+        act => { Studio.undo-delete(); }
+        dismiss => { Studio.dismiss-deleted(); }
+    }
+    // The main output stopped and its vertical one runs on (ADR-0111 decision 6): once
+    // per such stop, not modal; Stop ends that output (a stream asks first, U4).
+    if Shell.vertical-left != 0 && Shell.toast-kind == 0 && Studio.deleted == "": Toast {
+        x: (parent.width - self.width) / 2;
+        y: parent.height - self.height - Tokens.space-6;
+        mark: IconName.canvas-vertical;
+        text: Shell.vertical-left == 1 ? @tr("Vertical recording still on")
+            : @tr("Vertical stream still live");
+        action: Shell.vertical-left == 1 ? @tr("Stop it") : @tr("End it");
+        action-icon: IconName.stop;
+        act => { Shell.vertical-left-stop(); }
+        dismiss => { Shell.vertical-left-dismiss(); }
+    }
+    // A marker was added (ADR-0089 decision 10): its name and place in the
+    // recording; Undo takes it back. The notices above take the place first.
+    if Studio.marker-note != "" && Shell.toast-kind == 0 && Studio.deleted == "" && Shell.vertical-left == 0: Toast {
+        x: (parent.width - self.width) / 2;
+        y: parent.height - self.height - Tokens.space-6;
+        mark: IconName.flag;
+        text: Studio.marker-note;
+        action: @tr("Undo");
+        action-icon: IconName.undo;
+        generation: Studio.marker-generation;
+        act => { Studio.undo-marker(); }
+        dismiss => { Studio.dismiss-marker(); }
+    }
+    // End stream asks first (U4), in a card under Go live and Record.
+    if (Shell.end-stream-confirm || Shell.end-vertical-confirm) && !Shell.quit-confirm: EndStreamCard {
+        x: parent.width - self.width - Tokens.space-2;
+        // Under the error bar while one shows, so neither covers the other.
+        y: Shell.error-kind != 0 || Shell.background-notice != 0
+            ? Shell.top-toast.y + Shell.top-toast.height + Tokens.space-2
+            : frame.height + Tokens.space-1;
+        vertical: !Shell.end-stream-confirm;
+    }
+    // Record or Go live without a heard microphone asks first, in the same place.
+    if Shell.silent-confirm != 0 && !Shell.end-stream-confirm && !Shell.end-vertical-confirm && !Shell.quit-confirm: SilentCard {
+        x: parent.width - self.width - Tokens.space-2;
+        y: Shell.error-kind != 0 || Shell.background-notice != 0
+            ? Shell.top-toast.y + Shell.top-toast.height + Tokens.space-2
+            : frame.height + Tokens.space-1;
+    }
+    // The first Close with Keep RBS running says once where RBS goes, in the error
+    // bar's place over the window (ADR-0056); OK (or Dismiss) hides the windows.
+    if Shell.background-notice != 0: Toast {
+        x: (parent.width - self.width) / 2;
+        y: frame.height + Tokens.space-2;
+        top: true;
+        // Closing this one hides the windows, so it waits for OK or Dismiss.
+        timed: false;
+        text: Shell.background-notice == 1 ? @tr("RBS keeps running in the Dock. Quit with Cmd+Q.")
+            : @tr("RBS keeps running in the notification area (under the ^ arrow until you pin it). Quit it from the RBS icon there.");
+        action: @tr("OK");
+        action-icon: IconName.check;
+        act => { Shell.background-notice-ok(); }
+        dismiss => { Shell.background-notice-ok(); }
+    }
+    if Shell.error-kind != 0 && Shell.background-notice == 0: Toast {
+        x: (parent.width - self.width) / 2;
+        y: frame.height + Tokens.space-2;
+        top: true;
+        generation: Shell.error-generation;
+        mark: Shell.error-kind == 3 ? IconName.info : IconName.warning;
+        text: Shell.error-kind == 1 ? @tr("The layout is locked. Unlock it from the workspace menu.")
+            : Shell.error-kind == 3 ? Shell.error-detail
+            : @tr("That did not work: {}", Shell.error-detail);
+        action: "";
+        dismiss => { Shell.dismiss-error(); }
+    }
+    // The RBS menu: a layer under the hint and tooltip layer; a click outside closes it.
+    if AppMenus.open: Rectangle {
+        width: parent.width;
+        height: parent.height;
+        TouchArea { clicked => { AppMenus.open = false; } }
+        AppMenu {
+            x: Tokens.space-2;
+            y: frame.height;
+        }
+    }
+    // The live chip's destinations (ADR-0127 decision 17), closed once the list empties.
+    if Overlays.live-open && Shell.live-dests.length > 1: LiveDestinations { width: parent.width; height: parent.height; }
+    // The transition options (ADR-0128), under the hint and tooltip layer.
+    if Overlays.transition-open: TransitionOptions { width: parent.width; height: parent.height; }
+    // A scene's transition card (ADR-0135), under the hint and tooltip layer.
+    if Overlays.scene-transition-open: SceneTransitionCard { width: parent.width; height: parent.height; }
+    // The info hint and tooltip layer, drawn last (ADR-0094).
+    OverlayHost { width: parent.width; height: parent.height; }
+}
+
+// A floating panel window. Its title names its panels for screen readers and F6-style switching.
+export component FloatWindow inherits Window {
+    default-font-family: Theme.font-family;
+    in property <int> window;
+    in property <string> panel-names;
+    in property <[StackData]> stacks;
+    in property <[HandleData]> handles;
+    title: @tr("RBS – {}", panel-names);
+    icon: @image-url("../assets/brand/icon-win-256.png");
+    forward-focus: edit-keys;
+    // BEGIN generated menu bar (menu_bar.rs; do not edit)
+    if Shell.native-menu-bar: MenuBar {
+        Menu {
+            title: @tr("File");
+            Menu {
+                title: Menus.titles[0];
+                icon: Menus.icons[0];
+                enabled: Menus.enabled[0];
+                for c in Menus.choices[0]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+            }
+            Menu {
+                title: Menus.titles[1];
+                icon: Menus.icons[1];
+                enabled: Menus.enabled[1];
+                for c in Menus.choices[1]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+            }
+            MenuSeparator { }
+            MenuItem { title: Menus.titles[2]; icon: Menus.icons[2]; enabled: Menus.enabled[2]; activated => { Menus.run("ui.settings.open"); } }
+        }
+        Menu {
+            title: @tr("Edit");
+            MenuItem { title: Menus.titles[3]; icon: Menus.icons[3]; enabled: Menus.enabled[3]; activated => { Menus.run("edit.undo"); } }
+            MenuItem { title: Menus.titles[4]; icon: Menus.icons[4]; enabled: Menus.enabled[4]; activated => { Menus.run("edit.redo"); } }
+        }
+        Menu {
+            title: @tr("View");
+            Menu {
+                title: Menus.titles[5];
+                icon: Menus.icons[5];
+                enabled: Menus.enabled[5];
+                for c in Menus.choices[2]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+            }
+            MenuSeparator { }
+            Menu {
+                title: Menus.titles[6];
+                icon: Menus.icons[6];
+                enabled: Menus.enabled[6];
+                for c in Menus.choices[3]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+            }
+            Menu {
+                title: Menus.titles[7];
+                icon: Menus.icons[7];
+                enabled: Menus.enabled[7];
+                for c in Menus.choices[4]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+            }
+            Menu {
+                title: Menus.titles[8];
+                icon: Menus.icons[8];
+                enabled: Menus.enabled[8];
+                for c in Menus.choices[5]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+            }
+            Menu {
+                title: Menus.titles[9];
+                icon: Menus.icons[9];
+                enabled: Menus.enabled[9];
+                for c in Menus.choices[6]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+            }
+            Menu {
+                title: Menus.titles[10];
+                icon: Menus.icons[10];
+                enabled: Menus.enabled[10];
+                for c in Menus.choices[7]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+            }
+        }
+        Menu {
+            title: @tr("Scene");
+            Menu {
+                title: Menus.titles[11];
+                icon: Menus.icons[11];
+                enabled: Menus.enabled[11];
+                for c in Menus.choices[8]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+            }
+            MenuItem { title: Menus.titles[12]; icon: Menus.icons[12]; enabled: Menus.enabled[12]; activated => { Menus.run("scene.previous"); } }
+            MenuItem { title: Menus.titles[13]; icon: Menus.icons[13]; enabled: Menus.enabled[13]; activated => { Menus.run("scene.next"); } }
+            MenuSeparator { }
+            MenuItem { title: Menus.titles[14]; icon: Menus.icons[14]; enabled: Menus.enabled[14]; activated => { Menus.run("scene.add"); } }
+            Menu {
+                title: Menus.titles[15];
+                icon: Menus.icons[15];
+                enabled: Menus.enabled[15];
+                for c in Menus.choices[9]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+            }
+            MenuItem { title: Menus.titles[16]; icon: Menus.icons[16]; enabled: Menus.enabled[16]; checkable: true; checked: Menus.checked[16]; activated => { Menus.run("scene.audio.own_levels.toggle"); } }
+            MenuSeparator { }
+            MenuItem { title: Menus.titles[17]; icon: Menus.icons[17]; enabled: Menus.enabled[17]; checkable: true; checked: Menus.checked[17]; activated => { Menus.run("canvas.studio_mode.toggle"); } }
+            MenuItem { title: Menus.titles[18]; icon: Menus.icons[18]; enabled: Menus.enabled[18]; activated => { Menus.run("canvas.transition"); } }
+        }
+        Menu {
+            title: @tr("Source");
+            Menu {
+                title: Menus.titles[19];
+                icon: Menus.icons[19];
+                enabled: Menus.enabled[19];
+                for c in Menus.choices[10]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+            }
+            MenuSeparator { }
+            Menu {
+                title: Menus.titles[20];
+                icon: Menus.icons[20];
+                enabled: Menus.enabled[20];
+                for c in Menus.choices[11]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+            }
+            Menu {
+                title: Menus.titles[21];
+                icon: Menus.icons[21];
+                enabled: Menus.enabled[21];
+                for c in Menus.choices[12]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+            }
+            Menu {
+                title: Menus.titles[22];
+                icon: Menus.icons[22];
+                enabled: Menus.enabled[22];
+                for c in Menus.choices[13]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+            }
+            Menu {
+                title: Menus.titles[23];
+                icon: Menus.icons[23];
+                enabled: Menus.enabled[23];
+                for c in Menus.choices[14]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+            }
+            Menu {
+                title: Menus.titles[24];
+                icon: Menus.icons[24];
+                enabled: Menus.enabled[24];
+                for c in Menus.choices[15]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+            }
+            MenuSeparator { }
+            MenuItem { title: Menus.titles[25]; icon: Menus.icons[25]; enabled: Menus.enabled[25]; activated => { Menus.run("item.remove"); } }
+            MenuItem { title: Menus.titles[26]; icon: Menus.icons[26]; enabled: Menus.enabled[26]; activated => { Menus.run("source.delete"); } }
+            MenuSeparator { }
+            Menu {
+                title: Menus.titles[27];
+                icon: Menus.icons[27];
+                enabled: Menus.enabled[27];
+                for c in Menus.choices[16]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+            }
+        }
+        Menu {
+            title: @tr("Output");
+            MenuItem { title: Menus.titles[28]; icon: Menus.icons[28]; enabled: Menus.enabled[28]; checkable: true; checked: Menus.checked[28]; activated => { Menus.run("stream.toggle"); } }
+            MenuItem { title: Menus.titles[29]; icon: Menus.icons[29]; enabled: Menus.enabled[29]; checkable: true; checked: Menus.checked[29]; activated => { Menus.run("record.toggle"); } }
+            MenuItem { title: Menus.titles[30]; icon: Menus.icons[30]; enabled: Menus.enabled[30]; activated => { Menus.run("record.pause_toggle"); } }
+            MenuItem { title: Menus.titles[31]; icon: Menus.icons[31]; enabled: Menus.enabled[31]; activated => { Menus.run("stream.hold_toggle"); } }
+            MenuItem { title: Menus.titles[32]; icon: Menus.icons[32]; enabled: Menus.enabled[32]; activated => { Menus.run("output.break_toggle"); } }
+            Menu {
+                title: Menus.titles[33];
+                icon: Menus.icons[33];
+                enabled: Menus.enabled[33];
+                for c in Menus.choices[17]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+            }
+            MenuSeparator { }
+            MenuItem { title: Menus.titles[34]; icon: Menus.icons[34]; enabled: Menus.enabled[34]; checkable: true; checked: Menus.checked[34]; activated => { Menus.run("vcam.toggle"); } }
+            MenuSeparator { }
+            MenuItem { title: Menus.titles[35]; icon: Menus.icons[35]; enabled: Menus.enabled[35]; checkable: true; checked: Menus.checked[35]; activated => { Menus.run("replay.toggle"); } }
+            MenuItem { title: Menus.titles[36]; icon: Menus.icons[36]; enabled: Menus.enabled[36]; activated => { Menus.run("replay.save"); } }
+            MenuSeparator { }
+            MenuItem { title: Menus.titles[37]; icon: Menus.icons[37]; enabled: Menus.enabled[37]; activated => { Menus.run("marker.add"); } }
+        }
+        Menu {
+            title: @tr("Window");
+            Menu {
+                title: Menus.titles[38];
+                icon: Menus.icons[38];
+                enabled: Menus.enabled[38];
+                for c in Menus.choices[18]: MenuItem { title: c.title; icon: c.icon; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+            }
+            MenuSeparator { }
+            MenuItem { title: Menus.titles[39]; icon: Menus.icons[39]; enabled: Menus.enabled[39]; checkable: true; checked: Menus.checked[39]; activated => { Menus.run("ui.panel.maximize?id=rbs.preview"); } }
+        }
+        Menu {
+            title: @tr("Help");
+            MenuItem { title: Menus.titles[40]; icon: Menus.icons[40]; enabled: Menus.enabled[40]; activated => { Menus.run("ui.app_menu.open"); } }
+        }
+    }
+    // END generated menu bar
+    preferred-width: Tokens.size-floating-w;
+    preferred-height: Tokens.size-floating-h;
+    // The window ground (ADR-0112 decision 1).
+    background: Theme.surface-base;
+    default-font-size: Tokens.type-body-size;
+    // Shortcuts (ADR-0060), as in the main window.
+    edit-keys := FocusScope {
+        focus-on-tab-navigation: false;
+        key-pressed(e) => {
+            // Escape answers the silent output question as Cancel.
+            if e.text == Key.Escape && Shell.silent-confirm != 0 {
+                Shell.silent-answer(false, false);
+                return accept;
+            }
+            if Shortcuts.press(e.text, e.modifiers.control, e.modifiers.alt, e.modifiers.shift, e.modifiers.meta, e.repeat) { return accept; }
+            reject
+        }
+        VerticalLayout {
+            Rectangle {
+                height: Tokens.size-control-md + 2 * Tokens.space-1;
+                HorizontalLayout {
+                    padding: Tokens.space-1;
+                    alignment: start;
+                    Button { lead: IconName.dock; text: @tr("Dock back"); clicked => { Shell.dock(root.window); } }
+                    if Shell.end-stream-confirm: EndStreamConfirm { }
+                    if Shell.end-vertical-confirm && !Shell.end-stream-confirm: EndStreamConfirm { vertical: true; }
+                }
+            }
+            // The silent output question asked from this window's menu bar.
+            if Shell.silent-confirm != 0 && !Shell.end-stream-confirm && !Shell.end-vertical-confirm: Rectangle {
+                background: Theme.surface-overlay;
+                border-color: Theme.border-strong;
+                border-width: Tokens.size-border;
+                HorizontalLayout {
+                    padding: Tokens.space-3;
+                    alignment: start;
+                    q := SilentQuestion { init => { q.focus-cancel(); } }
+                }
+            }
+            DockArea {
+                window: root.window;
+                stacks: root.stacks;
+                handles: root.handles;
+                floating: true;
+            }
+        }
+    }
+    // A scene's transition card (ADR-0135) when the Scenes panel floats here.
+    if Overlays.scene-transition-open: SceneTransitionCard { width: parent.width; height: parent.height; }
+    // The info hint and tooltip layer, drawn last (ADR-0094).
+    OverlayHost { width: parent.width; height: parent.height; }
+}

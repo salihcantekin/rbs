@@ -3,43 +3,10 @@
 // Rust (`vcam_page`) pushes state into the `VirtualCamera` global and handles its
 // callbacks; the texts it pushes come from `rbs_app::vcam_settings::Page::view`.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, DialogActions, IconName, Select, SegmentedControl, Toggle, SettingRow } from "components.slint";
+import { Button, DialogActions, Select, SegmentedControl, Toggle, SettingRow } from "components.slint";
 import { SettingsCard, SettingBlock, SettingsStatus, SettingsCallout, RevealOnShow } from "settings.slint";
-
-export global VirtualCamera {
-    // The camera can be added on this computer.
-    in property <bool> available;
-    // The toggle: added, or being added.
-    in property <bool> added;
-    in property <bool> can-toggle;
-    // The state in words; `tone` 0 neutral, 1 good, 2 problem.
-    in property <string> state;
-    in property <int> tone;
-    // The warning before adding is shown.
-    in property <bool> confirming;
-    in property <[string]> sizes;
-    in property <int> size;
-    in property <[string]> rates;
-    in property <int> rate;
-    // The default size and frame rate as indexes into `sizes` and `rates`.
-    in property <int> size-default;
-    in property <int> rate-default;
-    in property <bool> can-format;
-    in property <string> format-help;
-    in property <bool> sending;
-    in property <bool> can-send;
-    in property <string> sending-text;
-    in property <bool> can-remove-all;
-    // The toggle: on shows the warning, off removes the camera.
-    callback toggle(bool);
-    callback add();
-    callback cancel();
-    callback set-size(int);
-    callback set-rate(int);
-    // Start or stop sending.
-    callback send(bool);
-    callback remove-all();
-}
+import { VirtualCamera, IconName } from "base/types.slint";
+export { VirtualCamera }
 
 export component VirtualCameraSettings inherits Rectangle {
     form := VerticalLayout {
