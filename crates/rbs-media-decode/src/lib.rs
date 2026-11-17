@@ -309,7 +309,7 @@ pub trait MediaDecoder: Send {
 /// on one GPU (a shared D3D11 texture on Windows) can choose it. Built with
 /// [`DecodeTarget::none`] or [`DecodeTarget::adapter`], so fields can be added.
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DecodeTarget {
     /// The LUID of the render adapter (the `adapter_luid` of a `NativeSurface`), or
     /// `None` when it is not known: the adapter then gives system pictures, or native
@@ -334,8 +334,10 @@ impl DecodeTarget {
 /// Factory registered by a composition root. `open` is only called with a path
 /// [`accept_local_media_path`] already accepted.
 pub trait MediaDecoderFactory: AdapterFactory {
-    /// Opens `path`. The returned decoder is dropped by the caller when the probe or
-    /// the worker ends. A probe must not keep it.
+    /// Opens `path` with no known import device: the same as
+    /// [`MediaDecoderFactory::open_for`] with [`DecodeTarget::none`]. The returned
+    /// decoder is dropped by the caller when the probe or the worker ends. A probe must
+    /// not keep it.
     fn open(&self, path: &Path) -> Result<Box<dyn MediaDecoder>, DecodeError>;
 
     /// Opens `path` for pictures imported on `target`. The default ignores the target

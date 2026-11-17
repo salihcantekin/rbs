@@ -5032,6 +5032,7 @@ dependencies = [
 name = "rbs-media-mf"
 version = "0.0.1"
 dependencies = [
+ "rbs-capture",
  "rbs-core",
  "rbs-media-decode",
  "windows",

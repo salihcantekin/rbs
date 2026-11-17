@@ -12,7 +12,7 @@ use std::time::Duration;
 use rbs_audio::AudioGraphConfig;
 use rbs_core::media::AudioFormat;
 use rbs_core::time::{TestClock, Timestamp};
-use rbs_media_decode::InterleavedPcm;
+use rbs_media_decode::{DecodeTarget, InterleavedPcm};
 use rbs_media_decode_test::{ScriptClip, ScriptFactory, ScriptFrame};
 use rbs_nodes::{MEDIA_NATIVE_WAITING, MediaPair, media_pair};
 
@@ -96,6 +96,12 @@ impl Rig {
     fn peak(&self) -> u64 {
         self.factory.counts.native_peak.load(Ordering::Acquire)
     }
+
+    /// The target the worker opened with. Without a prepared picture node (these tests
+    /// have no GPU) it is none (port invariant 11).
+    fn opened_for(&self) -> Option<DecodeTarget> {
+        self.factory.counts.last_target.lock().unwrap().clone()
+    }
 }
 
 #[test]
@@ -120,6 +126,7 @@ fn queued_native_pictures_stay_within_the_surface_budget() {
         rig.peak()
     );
     assert!(rig.peak() > 0);
+    assert_eq!(rig.opened_for(), Some(DecodeTarget::none()));
     rig.pair.picture.standby();
     wait_until(|| rig.pair.picture.worker_joined());
     assert_eq!(rig.live(), 0, "every lease is released after standby");
@@ -150,6 +157,8 @@ fn unseen_native_pictures_stay_within_the_budget_while_only_the_sound_plays() {
     );
     // Unseen pictures are neither copied nor queued.
     assert_eq!(rig.pair.picture.stats().uploaded.load(Ordering::Relaxed), 0);
+    // A run the sound node started opens with no import device.
+    assert_eq!(rig.opened_for(), Some(DecodeTarget::none()));
     rig.pair.sound.detach();
     wait_until(|| rig.pair.picture.worker_joined());
     assert_eq!(rig.live(), 0);

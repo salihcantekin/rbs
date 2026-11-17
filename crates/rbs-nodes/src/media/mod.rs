@@ -65,9 +65,12 @@ pub const LEAD: Duration = Duration::from_millis(150);
 pub const PICTURE_SLOTS: usize = 16;
 
 /// Native pictures a source may hold, decoded and not yet imported, in `unseen` and on
-/// the ring. With the one the worker has just decoded, the shown texture, and the held
-/// texture, that is the surface budget of ADR-0108 decision 5 (18), counted against the
-/// importer's shared `MAX_SURFACES` of 64.
+/// the ring. With the one the worker has just decoded and two the importer holds (the
+/// shown and the held picture, while their leases wait for the importer's GPU work to
+/// retire), that is the surface budget of ADR-0108 decision 5 (18), counted against the
+/// importer's shared `MAX_SURFACES` of 64. An RGB surface is aliased, so the shown and
+/// held textures are the surfaces themselves; a 4:2:0 surface is decoded into a pool
+/// texture and its lease goes back once that decode retired.
 pub const NATIVE_WAITING: u32 = PICTURE_SLOTS as u32 - 1;
 
 /// The descriptor of the picture node: one video output.
@@ -345,12 +348,40 @@ pub fn media_pair(
     }
 }
 
+/// The render adapter's LUID as stored in `Shared::import_luid`: the LUID plus one, or
+/// 0 when there is none (not Direct3D 12, or never prepared).
+pub(crate) fn luid_slot(luid: Option<u64>) -> u64 {
+    luid.map_or(0, |l| l.wrapping_add(1))
+}
+
+/// The decode target of a stored `import_luid` value.
+fn target_of(slot: u64) -> rbs_media_decode::DecodeTarget {
+    match slot {
+        0 => rbs_media_decode::DecodeTarget::none(),
+        luid => rbs_media_decode::DecodeTarget::adapter(luid.wrapping_sub(1)),
+    }
+}
+
 impl Shared {
     /// Where the worker's native pictures will be imported (port invariant 11).
     pub(crate) fn decode_target(&self) -> rbs_media_decode::DecodeTarget {
-        match self.import_luid.load(Ordering::Acquire) {
-            0 => rbs_media_decode::DecodeTarget::none(),
-            luid => rbs_media_decode::DecodeTarget::adapter(luid.wrapping_sub(1)),
-        }
+        target_of(self.import_luid.load(Ordering::Acquire))
+    }
+}
+
+#[cfg(test)]
+mod luid_tests {
+    use super::{luid_slot, target_of};
+    use rbs_media_decode::DecodeTarget;
+
+    #[test]
+    fn the_stored_luid_gives_the_decode_target() {
+        assert_eq!(target_of(luid_slot(None)), DecodeTarget::none());
+        assert_eq!(target_of(luid_slot(Some(0))), DecodeTarget::adapter(0));
+        let luid = 0x0000_0001_0000_d2a5;
+        assert_eq!(
+            target_of(luid_slot(Some(luid))),
+            DecodeTarget::adapter(luid)
+        );
     }
 }

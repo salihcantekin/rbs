@@ -21,8 +21,8 @@ use rbs_core::time::Timestamp;
 use rbs_media_decode::caps::PIXEL;
 use rbs_media_decode::pixel::{CPU_UPLOAD, ZERO_COPY};
 use rbs_media_decode::{
-    DecodeError, InterleavedPcm, MediaDecoder, MediaDecoderFactory, Picture, PictureLayout,
-    PictureSample, SampleColor, SoundSample, frame_duration_rule,
+    DecodeError, DecodeTarget, InterleavedPcm, MediaDecoder, MediaDecoderFactory, Picture,
+    PictureLayout, PictureSample, SampleColor, SoundSample, frame_duration_rule,
 };
 
 /// One scripted picture. `bytes` is straight-alpha sRGB `Rgba8` unless `layout` says
@@ -142,6 +142,8 @@ pub struct ScriptCounts {
     pub native_live: AtomicU64,
     /// The most native pictures alive at once.
     pub native_peak: AtomicU64,
+    /// The target of the last `open_for` call (`open` records none).
+    pub last_target: Mutex<Option<DecodeTarget>>,
 }
 
 /// Counts the native pictures of a [`ScriptFactory::native`] decoder. The surfaces are
@@ -290,6 +292,17 @@ impl AdapterFactory for ScriptFactory {
 }
 
 impl MediaDecoderFactory for ScriptFactory {
+    fn open_for(
+        &self,
+        path: &Path,
+        target: &DecodeTarget,
+    ) -> Result<Box<dyn MediaDecoder>, DecodeError> {
+        if let Ok(mut last) = self.counts.last_target.lock() {
+            *last = Some(target.clone());
+        }
+        self.open(path)
+    }
+
     fn open(&self, _path: &Path) -> Result<Box<dyn MediaDecoder>, DecodeError> {
         self.counts.opens.fetch_add(1, Ordering::Relaxed);
         if let Some(text) = &self.clip.fail_open {

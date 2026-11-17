@@ -317,20 +317,28 @@ impl MediaPictureNode {
             return;
         }
         player.hold(&shared);
+        // The held picture is the last one that can be shown without the GPU: a system
+        // picture, or the texture of an imported one. A native picture never imported
+        // is dropped with its slot, and the hold keeps the picture shown before it, with
+        // that picture's mark, cursor and index.
+        let mut last = self.current.take();
+        let showable = |item: &Pending| !item.frame.as_ref().is_some_and(is_native);
         if let Some((rings, _)) = self.rings.as_mut() {
             while let Ok(item) = rings.pictures.pop() {
-                self.current = Some(item);
+                if showable(&item) {
+                    last = Some(item);
+                }
             }
         }
-        if let Some(item) = self.next.take() {
-            self.current = Some(item);
+        if let Some(item) = self.next.take()
+            && showable(&item)
+        {
+            last = Some(item);
         }
-        if let Some(current) = self.current.take() {
+        if let Some(current) = last {
             self.held_mark = current.mark;
             self.shared.set_cursor(current.media);
             self.published = Some(current.index);
-            // A native picture that was imported is held as its texture; one that
-            // never was is dropped with its slot.
             self.held = match current.frame {
                 Some(frame) if !is_native(&frame) => Some(frame),
                 _ => self.shown_texture.as_ref().and_then(VideoFrame::share),
@@ -500,6 +508,12 @@ impl MediaPictureNode {
                 match local.importer.import(gpu, &mut local.pool, source) {
                     Ok(texture) => {
                         self.shared.stats.imported.fetch_add(1, Ordering::Relaxed);
+                        // The current picture keeps a share of its texture, so it
+                        // repeats (paused, cued, held) after `cool` let go of the shown
+                        // texture.
+                        if let Some(current) = self.current.as_mut() {
+                            current.frame = texture.share();
+                        }
                         texture
                     }
                     Err(_) => {
@@ -535,7 +549,16 @@ impl MediaPictureNode {
 
     /// Hands a picture back to the worker, which frees it on its own thread. The return
     /// ring holds two more than the picture ring, so it is never full.
-    fn give_back(&mut self, item: Pending) {
+    fn give_back(&mut self, mut item: Pending) {
+        // An imported picture's texture belongs to this thread's pool: it is let go
+        // here, not on the worker.
+        if item
+            .frame
+            .as_ref()
+            .is_some_and(|f| matches!(f.payload(), FramePayload::Texture(_)))
+        {
+            item.frame = None;
+        }
         if let Some((rings, _)) = self.rings.as_mut() {
             let _ = rings.returns.push(item);
         }
@@ -556,10 +579,18 @@ impl Node<GpuRuntime> for MediaPictureNode {
     fn prepare(&mut self, ctx: &mut PrepareCtx<'_, GpuRuntime>) -> Result<(), NodeError> {
         // Native pictures must be on the render adapter (port invariant 11).
         let luid = match ctx.shared.adapter().get_info().backend {
-            wgpu::Backend::Dx12 => ctx.shared.adapter_luid().map_or(0, |l| l.wrapping_add(1)),
-            _ => 0,
+            wgpu::Backend::Dx12 => super::luid_slot(ctx.shared.adapter_luid()),
+            _ => super::luid_slot(None),
         };
-        self.shared.import_luid.store(luid, Ordering::Release);
+        let previous = self.shared.import_luid.swap(luid, Ordering::AcqRel);
+        if previous != 0 && previous != luid && self.phase == MediaPhase::Playing {
+            // The render device moved to another adapter (a device loss): a run opened
+            // for the old one hands out surfaces the new device cannot import, so it
+            // opens again at the cursor.
+            return self
+                .restart()
+                .map_err(|error| NodeError::Failed(error.to_string()));
+        }
         let now = self.shared.player().clock().now();
         self.wake(now)
             .map_err(|error| NodeError::Failed(error.to_string()))
