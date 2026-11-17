@@ -643,7 +643,7 @@ impl Transition {
 
 /// `transition.state` (protocol 1.81, ADR-0128 decision 13): published when a
 /// program change's transition starts and when it ends, never per frame.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TransitionStateChanged {
     /// The canvas.
     pub canvas: OutputCanvas,
@@ -659,6 +659,12 @@ pub struct TransitionStateChanged {
     pub to: u32,
     /// Engine time of this state, in nanoseconds.
     pub at: u64,
+    /// Driven by hand, a T-bar (protocol 1.87, ADR-0135); absent when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub manual: bool,
+    /// Where a manual transition holds (`holding`, protocol 1.87).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub t: Option<f32>,
 }
 
 /// Where a transition is (protocol 1.81).
@@ -669,6 +675,8 @@ pub enum TransitionPhase {
     Started,
     /// The new scene is fully on air.
     Ended,
+    /// A manual transition holds at `t` (protocol 1.87, ADR-0135 decision 6).
+    Holding,
 }
 
 /// A source of the collection, wherever it is placed (protocol 1.6).

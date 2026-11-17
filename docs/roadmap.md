@@ -9,7 +9,7 @@ What is in the tree today is [status.md](status.md). The phase table below is th
 | 2. Usable alpha (3-4 months) | Design tokens and component library first, then desktop UI, cameras and audio devices, basic filters, transitions, multiple canvases, OBS scene collection importer | External testers can replace OBS for a simple stream |
 | 3. Plugin SDK and beta (3-4 months) | Native, WASM and process plugin tiers, browser source, WHIP, virtual camera, first third-party plugins | SDK 1.0 frozen |
 | 4. 1.0 (2-3 months) | Stability, performance, HDR, accessibility, docs, packaging and auto-update | Success criteria in [vision.md](vision.md) met |
-| Post-1.0 | Remote guests (WebRTC, SFU, roles and moderation), NDI, Decklink, Teams/Zoom integrations | Delivered as plugins |
+| Post-1.0 | Remote guests beyond ADR-0139's built-in RBS-to-RBS version (browser guests, SFU, roles and moderation), NDI, Decklink, Teams/Zoom integrations | Delivered as plugins |
 
 ## Decisions needed before Phase 0 ends
 

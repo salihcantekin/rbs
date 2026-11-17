@@ -2297,3 +2297,151 @@ fn a_browser_page_is_heard_in_the_program_mix() {
     let (_, errors) = studio.shutdown();
     assert!(errors.is_empty(), "{errors:?}");
 }
+
+#[test]
+fn a_t_bar_holds_the_blend_then_takes_or_cancels() {
+    use rbs_record::{ManualStep, TransitionPhase, TransitionState};
+    use rbs_scene::{CollectionTransition, TransitionKind};
+
+    let Some(gpu) = gpu() else { return };
+    let r = rig();
+    let (mut col, canvas) = scene();
+    let live = col.canvas(canvas).unwrap().program.unwrap();
+    let other = camera_scene(&mut col);
+    col.set_transition(CollectionTransition {
+        kind: TransitionKind::Fade,
+        ..CollectionTransition::default()
+    })
+    .unwrap();
+    // Studio mode: the camera scene in preview.
+    col.set_preview(canvas, Some(other)).unwrap();
+    let (engine, clock) = engine_at_start();
+    let mut studio = Studio::start(
+        engine,
+        gpu,
+        &col,
+        &r.adapters.sources,
+        &StudioSettings::new(canvas),
+    )
+    .unwrap();
+    let out = studio
+        .start_output(
+            &r.adapters,
+            &OutputSettings::new("mem://t-bar", ContainerId::Matroska),
+        )
+        .unwrap();
+    let src = &r.adapters.sources;
+    // 0 with nothing held does nothing.
+    assert_eq!(
+        studio.transition_progress(canvas, 0.0, src).unwrap(),
+        ManualStep::Idle
+    );
+    assert_eq!(studio.transition_state(canvas), None);
+
+    // The first value above 0 starts it; it waits for the picture, then holds.
+    assert_eq!(
+        studio.transition_progress(canvas, 0.4, src).unwrap(),
+        ManualStep::Holding
+    );
+    assert_eq!(
+        studio.transition_state(canvas),
+        Some(TransitionState::Waiting)
+    );
+    assert!(studio.manual_transition(canvas));
+    assert!(run_until(&mut studio, &clock, |s| {
+        s.transition_state(canvas) == Some(TransitionState::Running)
+    }));
+    let events = studio.take_transition_events();
+    let phases: Vec<_> = events
+        .iter()
+        .map(|e| (e.phase, e.manual, e.progress))
+        .collect();
+    assert_eq!(
+        phases,
+        [
+            (TransitionPhase::Started, true, None),
+            (TransitionPhase::Holding, true, Some(0.4)),
+        ]
+    );
+    assert_eq!(events[0].duration, Duration::ZERO);
+    assert_eq!((events[0].from, events[0].to), (Some(live), Some(other)));
+    // Held, nothing is armed (P13) and the program has not changed.
+    assert_eq!(studio.transition_wait(clock.now()), None);
+    assert_eq!(
+        studio.transition_progress(canvas, 0.6, src).unwrap(),
+        ManualStep::Holding
+    );
+    assert_eq!(
+        studio.transition_progress(canvas, 0.7, src).unwrap(),
+        ManualStep::Holding
+    );
+    let held: Vec<_> = studio
+        .take_transition_events()
+        .iter()
+        .map(|e| (e.phase, e.progress))
+        .collect();
+    assert_eq!(
+        held,
+        [(TransitionPhase::Holding, Some(0.7))],
+        "the latest value only"
+    );
+    let t0 = studio.engine().worker_stats(RENDER).unwrap().ticks();
+    assert!(run_until(&mut studio, &clock, |s| {
+        s.engine().worker_stats(RENDER).unwrap().ticks() >= t0 + 3
+    }));
+
+    // 1 takes: the host changes the program, which ends it without a timed one.
+    assert_eq!(
+        studio.transition_progress(canvas, 1.0, src).unwrap(),
+        ManualStep::Take
+    );
+    col.set_program(canvas, Some(other)).unwrap();
+    col.set_preview(canvas, Some(live)).unwrap();
+    studio.update(&col, src).unwrap();
+    assert_eq!(
+        studio.transition_state(canvas),
+        Some(TransitionState::Ending)
+    );
+    let ended = studio.take_transition_events();
+    assert_eq!(ended.len(), 1, "{ended:?}");
+    assert_eq!(ended[0].phase, TransitionPhase::Ended);
+    assert!(ended[0].manual);
+    assert_eq!(ended[0].to, Some(other));
+    assert!(run_until(&mut studio, &clock, |s| {
+        s.transition_wait(clock.now()) == Some(Duration::ZERO)
+    }));
+    assert!(studio.take_transition_done());
+    studio.settle_transitions(src);
+    assert_eq!(studio.transition_state(canvas), None);
+
+    // Back to 0 cancels: `ended` with `to` equal to `from`, and the program stays.
+    assert_eq!(
+        studio.transition_progress(canvas, 0.5, src).unwrap(),
+        ManualStep::Holding
+    );
+    assert!(run_until(&mut studio, &clock, |s| {
+        s.transition_state(canvas) == Some(TransitionState::Running)
+    }));
+    studio.take_transition_events();
+    assert_eq!(
+        studio.transition_progress(canvas, 0.0, src).unwrap(),
+        ManualStep::Idle
+    );
+    assert!(!studio.manual_transition(canvas));
+    let cancelled = studio.take_transition_events();
+    assert_eq!(cancelled.len(), 1);
+    assert_eq!(
+        (cancelled[0].from, cancelled[0].to),
+        (Some(other), Some(other))
+    );
+    assert!(run_until(&mut studio, &clock, |s| {
+        s.transition_wait(clock.now()) == Some(Duration::ZERO)
+    }));
+    assert!(studio.take_transition_done());
+    studio.settle_transitions(src);
+    assert_eq!(studio.transition_state(canvas), None);
+    assert_eq!(col.canvas(canvas).unwrap().program, Some(other));
+    studio.stop_output(out).unwrap();
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+}

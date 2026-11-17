@@ -347,6 +347,12 @@ fn every_request() -> Vec<Request> {
             }),
             ..SetCollectionTransition::default()
         })),
+        c(Command::CanvasTransitionProgress(
+            rbs_api::request::TransitionProgress {
+                canvas: None,
+                t: 0.5,
+            },
+        )),
         c(Command::SceneSetTransition(
             rbs_api::request::SetSceneTransition {
                 scene: 2,
@@ -1139,6 +1145,19 @@ fn every_result_and_event_type_round_trips() {
             from: 1,
             to: 2,
             at: 5_000_000_000,
+            manual: false,
+            t: None,
+        }),
+        EventPayload::TransitionState(TransitionStateChanged {
+            canvas: OutputCanvas::Main,
+            state: TransitionPhase::Holding,
+            kind: TransitionKind::Fade,
+            duration_ms: 0,
+            from: 1,
+            to: 2,
+            at: 5_000_000_000,
+            manual: true,
+            t: Some(0.5),
         }),
     ] {
         round_trip(&Event {
