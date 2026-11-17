@@ -4,7 +4,7 @@
 - Date: 2026-11-17
 - Deciders: Salih (owner)
 - Spec: [scene-model](../specs/scene-model.md), [control-api](../specs/control-api.md)
-- Supersedes in part: [ADR-0096](0096-capture-audio-companions-and-camera-microphone.md) decision 2 (what Remove from scene does to companions); builds on [ADR-0065](0065-global-sources-and-safe-source-removal.md) decision 7 (Remove from scene) and [ADR-0133](0133-duplicate-reset-and-paste-source-attributes.md) decision 4 (Duplicate scene)
+- Supersedes in part: [ADR-0065](0065-global-sources-and-safe-source-removal.md) decision 7 (Remove from scene removes one item only). Builds on [ADR-0096](0096-capture-audio-companions-and-camera-microphone.md) decision 2 (a companion is heard only while its picture is drawn; deleting the picture deletes its companions, unchanged) and [ADR-0133](0133-duplicate-reset-and-paste-source-attributes.md) decision 4 (Duplicate scene)
 
 ## Context
 
@@ -19,28 +19,54 @@ The owner chose on 2026-11-17 that the companion sound leaves a scene together w
 
 ## Decision
 
-1. **Remove from scene takes the companions' items in that scene.** When Remove from scene removes an item of a picture source, and that scene has no other item of the same picture, the items in the same scene of every companion of that picture (`companion_of` equal to the picture) must be removed in the same undo record. Items of the companions in other scenes must not change. When the scene still has another item of the picture, only the picked item is removed.
-2. **One rule in the model.** The rule must live in `rbs-scene` (`SceneCollection`), so the host, the UI and the control API all get it from the same call. The host must not reimplement it. One undo record restores every removed item at its old index.
-3. **The last placement.** When the picked item was the picture's last placement in any scene (global scenes included), the picture is deleted as before. By decision 1 its companions' items in that scene are already gone. Its companions are deleted with it (ADR-0096 decision 2, unchanged), and that now only affects companion items the user placed on their own in a scene without the picture, where the sound was already silent.
-4. **What stays as it is.** Delete source (`source.delete`) keeps its meaning: the picture and its companions go from every scene. Removing a companion's item on its own removes only that item. Hide and show do not change items. Duplicate source and Duplicate scene are unchanged.
-5. **Control API.** `item.remove` keeps its parameters and its answer `{source_deleted}`; the extra items it removes are reported by the existing `scene.changed` and `source.changed` events. Because the meaning changes, the change takes the next free protocol minor at merge (main + 1) and `control-api.md` says what it removes. A client of an older minor only sees fewer rows after the call.
-6. **No scene format change.** Items and the `companion_of` hint are stored as before.
-7. **Zero cost (P13).** The extra work happens only inside the remove call: a scan of one scene's items and the sources' hints. Nothing is added to the render loop, the audio thread or `Node::process`; no hot path is touched.
+Words used here: a scene **draws** a picture when the picture has an item in that scene, or in a scene nested in it at any depth. A companion is a source whose `companion_of` names the picture.
+
+1. **Remove from scene takes the companions' items in that scene.** When Remove from scene removes an item of a picture source from scene S, and S no longer draws that picture afterwards, every item placed directly in S of every companion of that picture must be removed in the same undo record. When S still draws the picture (another item of it, directly or through a nested scene), only the picked item is removed.
+2. **Other scenes do not change.** Items in any other scene must not change, including scenes that nest S. Known limit: when the picture is removed from a nested scene N and its companion sits in a scene that nests N, that companion row stays and is silent. The user removes it by hand. Following nesting upwards would change scenes the user did not open.
+3. **A companion left placed nowhere is deleted.** When decision 1 removes a companion's last item in any scene (global scenes included), that companion is deleted in the same undo record, with its filters and fader, as ADR-0065 decision 7 already does for any source. Undo restores it exactly. The picture then has no companion, and "Capture audio too" shows off.
+4. **The picture's last placement.** When the picked item was the picture's last placement in any scene (global scenes included), the picture is deleted as before, and ADR-0096 decision 2 deletes its companions with every item they still have. Once the picture is gone those companions would be silent everywhere, so nothing that stays on air loses its sound.
+5. **The global scene.** Removing a global picture (`global.remove` without `keep`) is Remove from scene on the canvas's global scene and follows decisions 1 to 4: companion items in the global scene go with it. Today `global.add` moves only the picture into the global scene and leaves its companions' items in the scenes. Changing that is out of scope here and is listed as follow-up work.
+6. **One method in the model.** A new `SceneCollection` method (for example `remove_from_scene(item)`) must own decisions 1 to 4, including the last-placement rule that the host's `remove_from_scene` decides today. It returns whether the source was deleted and every item removed, and one undo record. The host, the UI and the control API must call it and must not reimplement any part of it. `SceneCollection::remove_item` stays as it is, because `global.add`, `global.remove` with `keep` and rollbacks use it to move single items.
+7. **Control API.** `item.remove` keeps its parameters. Its answer adds `removed_items: [item]`, every item removed including the picked one (an additive field). This changes what the call removes, so it takes the next free protocol minor at merge (main + 1), and `control-api.md` states the new meaning under that minor. A client of an older minor still gets correct `scene.changed` and `source.changed` events.
+8. **On-air check.** The extra items are in the same scene as the picked item, so they are on air exactly when it is, and the existing `item.remove` check covers them. In decision 4, deleting the companions can remove companion items in other scenes that are on air. That is the behaviour of today's last-placement delete, and this ADR does not change it.
+9. **Own levels.** A scene's own level entry for a removed companion is kept, as for any removed item (ADR-0091). Undo restores the scene exactly.
+10. **What stays as it is.** Delete source (`source.delete`) keeps its meaning. Removing a companion's item on its own removes only that item. Hide and show, Duplicate source and Duplicate scene are unchanged. No scene format change.
+11. **Zero cost (P13).** The extra work happens only inside the remove call: a walk over one scene, the scenes nested in it and the sources' hints. Nothing is added to the render loop, the audio thread or `Node::process`, and no hot path is touched.
 
 ## Consequences
 
-- The Sources list of a scene never keeps a silent companion row after its picture is removed, and removing a picture from one scene never changes another scene's items.
+- After its picture is removed, a scene's Sources list no longer keeps a silent companion row, apart from the nested case in decision 2. Removing a picture from one scene never changes another scene's items, except through the last-placement delete, which is unchanged.
 - Undo restores the picture and its companion items in one step, as the user saw them.
+- A companion placed only next to the removed picture is deleted with it (decision 3). Its fader and filters come back only through undo.
 - The confirm question "Remove X from this scene?" does not name the sound. The row's result and undo make it visible. Naming the sound in the question would be a visible text change that needs the owner's approval (rule 16), so it is left for a later UI proposal.
-- Follow-up work in the implementation PR: `SceneCollection::remove_item` (or a new `remove_from_scene` in the model) with property and unit tests in `rbs-scene` (picture in two scenes, picture placed twice in one scene, last placement, companion placed alone, global scene, undo and redo); host tests through `item.remove` and the Sources list command; `scene-model.md` and `control-api.md` updated; protocol minor main + 1.
+- Follow-up outside this ADR: `global.add` should move a picture's companions into the global scene with it.
+- The implementation PR must contain:
+  - The new model method, with unit and property tests in `rbs-scene` for these cases:
+    - a picture in two scenes;
+    - a picture placed twice in one scene;
+    - a picture in a scene nested in S, and a picture directly in S that is also in a nested scene;
+    - a companion in a scene that nests the picture's scene (the known limit);
+    - a global picture;
+    - two companions, and two items of one companion in S;
+    - the companion's last placement (decision 3);
+    - the picture's last placement;
+    - Own levels;
+    - undo, then redo, then undo, restoring every index;
+    - `remove_item`, `global.add` and `global.remove` with `keep` unchanged.
+  - Host tests through `item.remove` (`removed_items`) and through the Sources list command.
+  - `scene-model.md` and `control-api.md` updated, and the protocol minor set to main + 1.
 
 ## Alternatives considered
 
-- **Keep ADR-0096 as it is.** Leaves the silent row and the change to other scenes that the owner rejected.
-- **Do it in the host only.** The control API and the UI already share `remove_from_scene` in the host, but the model is where the undo record and the invariants are checked. A model rule keeps every caller, including future ones, consistent.
-- **Turn a companion that is still placed elsewhere into a normal sound source at the picture's deletion.** It would start making sound when its picture is deleted, which is surprising. With decision 1 the case only remains for companions placed alone, which were silent already.
-- **Remove the companion's items from every scene.** It changes scenes the user did not touch, the problem this ADR fixes.
+- **Keep today's behaviour.** It leaves the silent row and the change to other scenes, which the owner rejected.
+- **Do it in the host only.** The model is where the undo record and the invariants are checked. A model method keeps every caller, including future ones, consistent.
+- **Change `remove_item`.** It would drop companion items while `global.add` or `global.remove` with `keep` moves a picture.
+- **Use the picture's whole result, nesting upwards too.** It would change scenes that nest S, which the user did not touch.
+- **Keep a companion that is placed nowhere.** It would be a source the user cannot see in any Sources list. ADR-0065 decision 7 deletes such sources.
+- **Turn a still-placed companion into a normal sound source when its picture is deleted.** It would start making sound when its picture is deleted, which would surprise the user.
 
 ## Review
 
 Independent review per ADR-0014. Record: reviewer, date, verdict, main concerns and how each was resolved.
+
+Round 1, independent AI session (2026-11-17): changes requested, 9 concerns. 1: "same scene" did not match the audibility rule for nested scenes; now "draws", with the known limit stated (decisions 1, 2). 2: global scene; now decision 5, with `global.add` moving companions as follow-up, and decision 4 reworded. 3: a companion left placed nowhere; now deleted (decision 3). 4: changing `remove_item` would break moves; now a new model method that also owns the last-placement rule (decision 6). 5: the answer changes meaning; now `removed_items` and a new minor (decision 7). 6: on-air check; now stated (decision 8). 7: Own levels; now stated (decision 9). 8: header now supersedes ADR-0065 decision 7. 9: test list extended.
