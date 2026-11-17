@@ -65,17 +65,47 @@ export component WellShade inherits Rectangle {
     // The well's own border width and corner radius.
     in property <length> inset: Tokens.size-border;
     in property <length> radius: Tokens.radius-sm;
+    // The well shows its own state outline (focus, hover, open): no Glow rim then.
+    in property <bool> outlined;
     // Without a size of its own it fills the well (an element outside a layout does).
     accessible-role: none;
+    // The shadow: twice the buttons' blur and offset, so it reads on a dark well too;
+    // Tactile adds its key edge to the offset, so the top lip is deeper.
     Rectangle {
         x: root.inset;
         y: root.inset;
         width: root.width - 2 * root.inset;
         height: root.height - 2 * root.inset;
         border-radius: max(0px, root.radius - root.inset);
-        inner-shadow-blur: Theme.effects-shadow-blur;
-        inner-shadow-offset-y: Theme.effects-shadow-offset;
+        inner-shadow-blur: 2 * Theme.effects-shadow-blur;
+        inner-shadow-offset-y: 2 * Theme.effects-shadow-offset + Theme.effects-key-edge;
         inner-shadow-color: Theme.effects-shadow;
+    }
+    // Tactile: the cut's top wall, its key edge tall, in the shadow colour (a hard
+    // shadow, where Glass has a soft one).
+    if Theme.effects-key-edge > 0: Rectangle {
+        x: root.inset;
+        y: root.inset;
+        width: root.width - 2 * root.inset;
+        height: Theme.effects-key-edge;
+        border-top-left-radius: max(0px, root.radius - root.inset);
+        border-top-right-radius: max(0px, root.radius - root.inset);
+        background: Theme.effects-shadow;
+    }
+    // Glass and Tactile: light catches the lower edge of the cut, a hairline in the secondary
+    // face's gloss colour.
+    if Theme.effects-shade-secondary && !Theme.effects-rim-on: Rectangle {
+        x: root.radius;
+        y: root.height - root.inset - Tokens.size-border;
+        width: root.width - 2 * root.radius;
+        height: Tokens.size-border;
+        background: Theme.effects-top-secondary-rest;
+    }
+    // Glow: the secondary rim as the well's outline, also at rest.
+    if Theme.effects-rim-on && !root.outlined: Rectangle {
+        border-radius: root.radius;
+        border-width: root.inset;
+        border-color: Theme.effects-rim-secondary;
     }
 }
 
@@ -1248,7 +1278,7 @@ export component Select inherits Rectangle {
     background: !root.enabled ? transparent
         : touch.pressed ? Theme.surface-overlay : Theme.surface-sunken;
     // Effects: the sunken well (`WellShade`); Glow's rim on hover and while open.
-    if Theme.effects-on && root.enabled && !touch.pressed: WellShade { }
+    if Theme.effects-on && root.enabled && !touch.pressed: WellShade { outlined: touch.has-hover || root.list-open || focus.ring; }
     accessible-role: combobox;
     accessible-expandable: true;
     accessible-expanded: root.list-open;
@@ -1505,7 +1535,7 @@ export component Checkbox inherits Rectangle {
                             (touch.pressed ? Theme.effects-bottom-primary-pressed : touch.has-hover && !root.read-only ? Theme.effects-bottom-primary-hover : Theme.effects-bottom-primary-rest) 100%)
                         : parent.face-fill;
                 }
-                if Theme.effects-on && root.enabled && !root.checked && !touch.pressed: WellShade { }
+                if Theme.effects-on && root.enabled && !root.checked && !touch.pressed: WellShade { outlined: touch.has-hover && !root.read-only; }
                 Icon {
                     name: root.checked ? IconName.check : IconName.none;
                     ink: root.enabled ? Theme.text-inverse : Theme.text-disabled;
@@ -2244,7 +2274,7 @@ export component TextField inherits Rectangle {
     background: Theme.surface-sunken;
     forward-focus: input;
     // Effects: the sunken well, under the text.
-    if Theme.effects-on && root.enabled: WellShade { }
+    if Theme.effects-on && root.enabled: WellShade { outlined: input.has-focus; }
     if root.text == "" && root.placeholder != "": Text {
         x: Tokens.space-2;
         width: parent.width - 2 * Tokens.space-2 - root.end-inset;
@@ -2306,7 +2336,7 @@ export component TextArea inherits Rectangle {
     background: Theme.surface-sunken;
     forward-focus: input;
     // Effects: the sunken well, under the text.
-    if Theme.effects-on && root.enabled: WellShade { }
+    if Theme.effects-on && root.enabled: WellShade { outlined: input.has-focus; }
     if root.text == "" && root.placeholder != "": Text {
         x: Tokens.space-2;
         y: Tokens.space-1;
@@ -2942,7 +2972,7 @@ export component NumberField inherits Rectangle {
     border-color: input.has-focus ? Theme.border-focus : Theme.border-subtle;
     background: enabled ? Theme.surface-sunken : transparent;
     // Effects: the sunken well, under the value and the steppers.
-    if Theme.effects-on && root.enabled: WellShade { }
+    if Theme.effects-on && root.enabled: WellShade { outlined: input.has-focus; }
     forward-focus: input;
     accessible-role: spinbox;
     accessible-label: label;

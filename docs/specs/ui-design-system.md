@@ -150,14 +150,14 @@ One icon set ([ADR-0094](../adr/0094-ui-interaction-patterns-and-tabler-icon-set
 
     | Component | Glow | Glass | Tactile |
     | --- | --- | --- | --- |
-    | Wells: `TextField`, `TextArea`, `NumberField`, `Select`, an unchecked `Checkbox` (`WellShade`) | inner shadow; `Select` takes the secondary rim on hover and while open | inner shadow | inner shadow |
+    | Wells: `TextField`, `TextArea`, `NumberField`, `Select`, an unchecked `Checkbox` (`WellShade`) | inner shadow and the secondary rim as the outline at rest (the well's own focus, hover or open outline wins) | inner shadow and a `size.border` lip at the bottom in the secondary face's top colour | as Glass, plus a hard top wall `effects.key.edge` tall in the shadow colour |
     | Checked `Checkbox` | as a primary Button: shadow, key edge, face | as a primary Button | as a primary Button |
     | Thumb of `Slider` and `VSlider`, swatch of `ColorPicker` | soft shadow (none while the swatch is pressed) | soft shadow | soft shadow |
     | `SurfaceCard` (`SettingsCard`, the OBS import cards) | soft shadow | soft shadow | soft shadow |
     | `ChoiceCard` | soft shadow and the secondary rim when not chosen; no gradient (the face pairs are searched for button heights) | soft shadow | soft shadow |
     | `SettingsNavItem` of the section in use | the chosen plate's shadow | as Glow | as Glow |
 
-    The inner shadow of a well is `effects.shadow.blur`, offset down by `effects.shadow.offset`, in the shadow colour, inside the border, under the content; it is off while a `Select` or an unchecked box is pressed. Not yet measured on a device (ADR-0120 decision 14); `Tabs`, `PanelTab` and `ScrollArea` stay flat.
+    The inner shadow of a well is twice `effects.shadow.blur`, offset down by twice `effects.shadow.offset` plus `effects.key.edge` (owner 2026-11-17: the buttons' values did not show on a dark well), in the shadow colour, inside the border, under the content; it is off while a `Select` or an unchecked box is pressed. Not yet measured on a device (ADR-0120 decision 14); `Tabs`, `PanelTab` and `ScrollArea` stay flat.
 
 ### Toast
 
