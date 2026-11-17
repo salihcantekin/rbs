@@ -926,6 +926,13 @@ pub const SETTINGS: &[Setting] = &[
         AI_CONNECT,
         Simple,
     ),
+    row(
+        "ai-tools.config-file",
+        "AI tool's configuration file",
+        "mcp claude_desktop_config mcp.json show in folder open folder",
+        AI_CONNECT,
+        Simple,
+    ),
     c(
         "settings.ai-tools.actions",
         "Recent actions",

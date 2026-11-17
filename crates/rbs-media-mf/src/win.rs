@@ -14,7 +14,7 @@ use windows::Win32::Media::MediaFoundation::{
     MF_E_INVALIDMEDIATYPE, MF_E_TOPO_CODEC_NOT_FOUND, MF_E_UNSUPPORTED_BYTESTREAM_TYPE,
     MF_E_UNSUPPORTED_FORMAT, MF_MT_AUDIO_NUM_CHANNELS, MF_MT_AUDIO_SAMPLES_PER_SECOND,
     MF_MT_DEFAULT_STRIDE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_MAJOR_TYPE,
-    MF_MT_MINIMUM_DISPLAY_APERTURE, MF_MT_SUBTYPE, MF_PD_DURATION,
+    MF_MT_MINIMUM_DISPLAY_APERTURE, MF_MT_SUBTYPE, MF_MT_VIDEO_ROTATION, MF_PD_DURATION,
     MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, MF_SOURCE_READER_ALL_STREAMS,
     MF_SOURCE_READER_D3D_MANAGER, MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING,
     MF_SOURCE_READER_FIRST_AUDIO_STREAM, MF_SOURCE_READER_FIRST_VIDEO_STREAM,
@@ -29,10 +29,11 @@ use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
 use windows::core::{GUID, HRESULT, HSTRING, Interface};
 
 use rbs_media_decode::{
-    DecodeError, InterleavedPcm, MediaDecoder, Picture, PictureLayout, PictureSample, SampleColor,
-    SoundSample, frame_duration_rule, refuse_picture,
+    DecodeError, InterleavedPcm, MediaDecoder, Picture, PictureLayout, PictureSample, Rotation,
+    SampleColor, SoundSample, frame_duration_rule, refuse_picture, rotate_rgba,
 };
 
+use crate::edits::{SoundEdit, Trimmed};
 use crate::gpu::Gpu;
 use crate::{Crop, bgrx_to_rgba, f32_samples, hns, missing_codec, nominal_duration, to_hns};
 
@@ -220,14 +221,58 @@ struct Sound {
     channels: u16,
 }
 
+/// The turn still to apply to the reader's pictures (spec invariant 12).
+///
+/// The turn comes from the picture track's display matrix (`edits.rs`), or from
+/// `MF_MT_VIDEO_ROTATION` (counted counter-clockwise) for a file without one. The
+/// source reader's video processor applies a stated `MF_MT_VIDEO_ROTATION` itself
+/// (measured on Windows 11 for a quarter turn), so a quarter turn is left only when
+/// the output picture (its display aperture) still lies the way the stored one does;
+/// a half turn, which no size shows, is left only when the native type states none.
+fn left_to_turn(path: &Path, native: &IMFMediaType, shape: &VideoShape) -> Rotation {
+    // SAFETY: attribute reads on a native type.
+    let (stated, stored) = unsafe {
+        (
+            native.GetUINT32(&MF_MT_VIDEO_ROTATION).unwrap_or(0),
+            native.GetUINT64(&MF_MT_FRAME_SIZE).ok(),
+        )
+    };
+    let rotation = std::fs::File::open(path)
+        .ok()
+        .and_then(|mut file| crate::edits::video_rotation(&mut file))
+        .unwrap_or_else(|| Rotation::from_clockwise_degrees(-f64::from(stated)));
+    if rotation.swaps_sides() {
+        let lies_as_stored = stored.is_none_or(|size| {
+            let (w, h) = ((size >> 32) as u32, size as u32);
+            let (cw, ch) = (shape.crop.width, shape.crop.height);
+            w == h || cw == ch || (w > h) == (cw > ch)
+        });
+        if lies_as_stored {
+            rotation
+        } else {
+            Rotation::None
+        }
+    } else if stated != 0 {
+        Rotation::None
+    } else {
+        rotation
+    }
+}
+
 /// The decoder of one file.
 pub(crate) struct MfDecoder {
     path: std::path::PathBuf,
     video: IMFSourceReader,
     shape: VideoShape,
+    /// The turn that shows the track upright (spec invariant 12), applied to every
+    /// picture: by the video processor for a native picture, on the copy otherwise.
+    rotation: Rotation,
     sound: Option<Sound>,
     has_audio: bool,
     duration: Option<Duration>,
+    /// The sound track's edit list, which Media Foundation does not apply to AAC
+    /// (`edits.rs`); `None` when it changes nothing or the file has none.
+    sound_edit: Option<SoundEdit>,
     /// The last seek target, applied to a sound reader created after it.
     cursor: Duration,
     /// The previous picture's duration, to continue an unstated one.
@@ -288,6 +333,7 @@ impl MfDecoder {
             return Err(failed("video output type", &e));
         }
         let shape = VideoShape::read(&video)?;
+        let rotation = left_to_turn(path, &native, &shape);
         let (w, h) = (shape.crop.width, shape.crop.height);
         if let Some(refused) = refuse_picture(w, h, w as usize * h as usize * 4) {
             return Err(DecodeError::Failed(format!(
@@ -303,13 +349,23 @@ impl MfDecoder {
             .and_then(|value: PROPVARIANT| u64::try_from(&value).ok())
             .filter(|&v| v > 0)
             .and_then(|v| hns(i64::try_from(v).ok()?));
+        let sound_edit = if has_audio {
+            std::fs::File::open(path)
+                .ok()
+                .and_then(|mut file| crate::edits::sound_edit(&mut file))
+                .filter(|edit| !edit.is_identity())
+        } else {
+            None
+        };
         Ok(Self {
             path: path.to_owned(),
             video,
             shape,
+            rotation,
             sound: None,
             has_audio,
             duration,
+            sound_edit,
             cursor: Duration::ZERO,
             last_duration: None,
             gpu,
@@ -490,7 +546,7 @@ impl MediaDecoder for MfDecoder {
             return Err(DecodeError::NoTimestamp);
         }
         if let Some(gpu) = self.gpu.as_mut()
-            && let Some(picture) = gpu.picture(&sample, self.shape.crop)?
+            && let Some(picture) = gpu.picture(&sample, self.shape.crop, self.rotation)?
         {
             return Ok(Some(PictureSample {
                 pts,
@@ -498,13 +554,20 @@ impl MediaDecoder for MfDecoder {
                 picture,
             }));
         }
-        let bytes = picture_bytes(&sample, &self.shape)?;
+        let mut bytes = picture_bytes(&sample, &self.shape)?;
+        let (mut width, mut height) = (self.shape.crop.width, self.shape.crop.height);
+        if self.rotation != Rotation::None {
+            let mut turned = Vec::new();
+            (width, height) = rotate_rgba(&bytes, width, height, self.rotation, &mut turned)
+                .ok_or_else(|| DecodeError::Failed("a picture of the wrong size".into()))?;
+            bytes = turned;
+        }
         Ok(Some(PictureSample {
             pts,
             frame_duration,
             picture: Picture::system(
-                self.shape.crop.width,
-                self.shape.crop.height,
+                width,
+                height,
                 PictureLayout::Rgba8,
                 SampleColor::Srgb,
                 bytes,
@@ -516,33 +579,46 @@ impl MediaDecoder for MfDecoder {
         if !self.has_audio {
             return Ok(None);
         }
+        let edit = self.sound_edit;
         let sound = self.open_sound()?;
-        let Some((sample, stamp, _)) = read(&sound.reader, AUDIO)? else {
-            return Ok(None);
-        };
-        let mut samples = Vec::new();
-        // SAFETY: the buffer is locked and unlocked here; the pointer is only read
-        // inside the lock.
-        unsafe {
-            let buffer = sample
-                .ConvertToContiguousBuffer()
-                .map_err(|e| failed("sound buffer", &e))?;
-            let mut data = std::ptr::null_mut();
-            let mut len = 0u32;
-            buffer
-                .Lock(&mut data, None, Some(&mut len))
-                .map_err(|e| failed("lock sound", &e))?;
-            samples.extend(f32_samples(std::slice::from_raw_parts(data, len as usize)));
-            let _ = buffer.Unlock();
+        loop {
+            let Some((sample, stamp, _)) = read(&sound.reader, AUDIO)? else {
+                return Ok(None);
+            };
+            let mut samples = Vec::new();
+            // SAFETY: the buffer is locked and unlocked here; the pointer is only read
+            // inside the lock.
+            unsafe {
+                let buffer = sample
+                    .ConvertToContiguousBuffer()
+                    .map_err(|e| failed("sound buffer", &e))?;
+                let mut data = std::ptr::null_mut();
+                let mut len = 0u32;
+                buffer
+                    .Lock(&mut data, None, Some(&mut len))
+                    .map_err(|e| failed("lock sound", &e))?;
+                samples.extend(f32_samples(std::slice::from_raw_parts(data, len as usize)));
+                let _ = buffer.Unlock();
+            }
+            let mut pts = hns(stamp);
+            // The priming before the edit and the padding after it are not played.
+            if let (Some(edit), Some(at)) = (edit.as_ref(), pts) {
+                match crate::edits::trim(edit, at, sound.sample_rate, sound.channels, &mut samples)
+                {
+                    Trimmed::Play(start) => pts = Some(start),
+                    Trimmed::Skip => continue,
+                    Trimmed::End => return Ok(None),
+                }
+            }
+            return Ok(Some(SoundSample {
+                pts,
+                pcm: InterleavedPcm {
+                    sample_rate: sound.sample_rate,
+                    channels: sound.channels,
+                    samples,
+                },
+            }));
         }
-        Ok(Some(SoundSample {
-            pts: hns(stamp),
-            pcm: InterleavedPcm {
-                sample_rate: sound.sample_rate,
-                channels: sound.channels,
-                samples,
-            },
-        }))
     }
 
     fn has_audio(&self) -> bool {

@@ -1065,6 +1065,13 @@ pub enum Command {
     /// Remove a scene (one undo step). Refused for the last scene the canvas may show;
     /// the scene on air is first switched away from (not undone with the removal).
     RemoveScene(SceneId),
+    /// Set or clear a scene's transition into it (ADR-0135; one undo step).
+    SetSceneTransition {
+        /// The scene.
+        id: SceneId,
+        /// The override; `None` uses the collection's.
+        transition: Option<rbs_scene::SceneTransition>,
+    },
     /// Rename a scene (one undo step).
     RenameScene {
         /// The scene.
@@ -4853,6 +4860,10 @@ impl Host {
             }
             Command::RenameScene { id, name } => {
                 let done = self.rename_scene(id, &name);
+                self.answer(done, notify);
+            }
+            Command::SetSceneTransition { id, transition } => {
+                let done = self.set_scene_transition(id, transition);
                 self.answer(done, notify);
             }
             Command::SwitchScene(id) => {
