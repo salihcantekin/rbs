@@ -19,7 +19,7 @@ use rbs_remote_settings::{self as settings, Access, RemoteProfile};
 use serde_json::json;
 
 use crate::args::TokenCommand;
-use crate::control::{Reach, RunningApp};
+use crate::control::{ONLY_AI_TOOLS, Reach, RunningApp};
 
 /// What a running app does with a change made in the file.
 const APPLIES: &str =
@@ -40,6 +40,9 @@ pub fn run(
         match RunningApp::connect(endpoint, "tokens", "token management") {
             Reach::Connected(app) => return live(app, endpoint, command, out, notes),
             Reach::NotRunning => {}
+            // A running server would keep its tokens: nothing is changed in the files
+            // under it (ADR-0134 decision 2).
+            Reach::Unusable(why) if why == ONLY_AI_TOOLS => return Err(format!("{why}.")),
             // A revoke made only in the file would leave the token working in the
             // running RBS: refused, so a script does not take it as done.
             Reach::Unusable(why) if matches!(command, TokenCommand::Revoke { .. }) => {

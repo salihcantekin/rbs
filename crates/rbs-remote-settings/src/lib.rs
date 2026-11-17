@@ -10,6 +10,7 @@
 //! readable and writable by the current user only, because whoever can write it can add
 //! a token of their own.
 
+pub mod ai_tools;
 mod api;
 mod identity;
 
@@ -210,6 +211,9 @@ impl RemoteProfile {
             return Some(why);
         }
         for (i, t) in self.tokens.iter().enumerate() {
+            if t.kind != rbs_api::TokenKind::User {
+                return Some("an AI tools token belongs in ai-tools.toml".into());
+            }
             if let Some(why) = name_problem(&t.name) {
                 return Some(why);
             }
@@ -250,7 +254,7 @@ impl RemoteProfile {
         irreversible: bool,
     ) -> Result<Token, String> {
         let name = name.trim();
-        if let Some(why) = name_problem(name) {
+        if let Some(why) = name_problem(name).or_else(|| reserved_name(name)) {
             return Err(why);
         }
         if self.tokens.iter().any(|t| t.name == name) {
@@ -261,6 +265,7 @@ impl RemoteProfile {
         let token = Token::generate()
             .map_err(|e| format!("The system could not make a random token ({e}). Try again."))?;
         self.tokens.push(TokenEntry {
+            kind: rbs_api::TokenKind::User,
             irreversible,
             name: name.to_owned(),
             scopes: access.scopes(),
@@ -341,6 +346,17 @@ fn name_problem(name: &str) -> Option<String> {
         return Some("Use a name without tabs, line breaks or other control characters.".into());
     }
     None
+}
+
+/// Why a user token may not have this name: the AI tools token's (ADR-0134), or `None`.
+/// Existing tokens with it are renamed on the first Start of AI tools.
+pub(crate) fn reserved_name(name: &str) -> Option<String> {
+    (name.trim() == rbs_api::AI_TOOLS_NAME).then(|| {
+        format!(
+            "\"{}\" is the name of the token RBS makes for AI tools. Choose another name.",
+            rbs_api::AI_TOOLS_NAME
+        )
+    })
 }
 
 /// The settings file in `config`.

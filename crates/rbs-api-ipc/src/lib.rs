@@ -220,6 +220,9 @@ pub const fn close_code(reason: CloseReason) -> u16 {
         CloseReason::TooManyConnections => 4004,
         CloseReason::Revoked => 4005,
         CloseReason::TooSlow => 4006,
+        // "Going away" (ADR-0134 decision 2): AI tools stopped, the client may
+        // come back after Start. Read back as `ServerStopping`.
+        CloseReason::AiToolsStopped => 1001,
     }
 }
 
@@ -249,6 +252,7 @@ pub(crate) const fn close_text(reason: CloseReason) -> &'static str {
         CloseReason::TooManyConnections => "too_many_connections",
         CloseReason::Revoked => "revoked",
         CloseReason::TooSlow => "too_slow",
+        CloseReason::AiToolsStopped => "ai_tools_stopped",
     }
 }
 

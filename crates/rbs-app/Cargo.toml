@@ -192,6 +192,8 @@ rbs-codec = { path = "../rbs-codec" }
 rbs-mux = { path = "../rbs-mux" }
 rbs-codec-audiotoolbox = { path = "../rbs-codec-audiotoolbox" }
 rbs-codec-mf = { path = "../rbs-codec-mf", features = ["testing"] }
+# AI tools end to end: rbs-mcp's IPC session against the app's server (tests/ai_tools.rs).
+rbs-mcp = { path = "../rbs-mcp" }
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 # The meter layer test reads the bridge's sublayers.

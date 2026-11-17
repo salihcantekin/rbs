@@ -48,7 +48,7 @@ pub use session::{
     Action, AuditEvent, Input, Limits, PROTOCOL_VERSION, Sampler, Server, ServerConfig,
 };
 pub use thread::{ApiOptions, ApiServer, TokenHandle};
-pub use token::{Token, TokenEntry, TokenHash, TokenStore};
+pub use token::{AI_TOOLS_NAME, Token, TokenEntry, TokenHash, TokenKind, TokenSlot, TokenStore};
 pub use transport::{
     CloseReason, ConnectionHandle, ConnectionId, ConnectionSender, ControlTransport, MessageLimit,
     PeerInfo, ReadState, SendError, TransportEvent, TransportInbox, TransportKind,

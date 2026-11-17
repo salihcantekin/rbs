@@ -8,6 +8,7 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpStream};
+use std::sync::Arc;
 use std::time::Duration;
 
 use rbs_api_ws::{SUBPROTOCOL, close_code};
@@ -294,7 +295,7 @@ fn tokens_changed_over_local_ipc_take_effect_at_once() {
     )
     .unwrap();
     assert_eq!(server.ipc_problem(), None);
-    host.attach_api(api, Some(server.api_tokens(config.clone())));
+    host.attach_api(api, Some(server.api_tokens(config.clone(), Arc::default())));
 
     let mut cli = IpcClient::connect(&endpoint, LIMIT).unwrap();
     let mut call = |id: u32, method: &str, params: Value| -> Value {
@@ -345,7 +346,7 @@ fn tokens_changed_over_local_ipc_take_effect_at_once() {
     let list = call(3, "tokens.list", json!({}));
     assert_eq!(
         list["result"]["tokens"],
-        json!([{"name": "Deck", "scopes": ["read", "control"], "irreversible": true}])
+        json!([{"name": "Deck", "scopes": ["read", "control"], "irreversible": true, "kind": "user"}])
     );
     let taken = call(
         4,
@@ -422,6 +423,7 @@ fn restarting_the_websocket_transport_keeps_ipc_sessions() {
     let token = rbs_api::Token::generate().unwrap();
     let mut profile = RemoteProfile::new();
     profile.tokens.push(rbs_api::TokenEntry {
+        kind: rbs_api::TokenKind::User,
         irreversible: true,
         name: "Deck".into(),
         scopes: Access::Control.scopes(),
