@@ -1262,6 +1262,10 @@ pub enum Command {
     /// Save the vertical stream's key (`None` removes it) under the vertical account
     /// ([`stream_key::vertical_account`]); answered with [`Update::VerticalStreamKey`].
     SaveVerticalStreamKey(Option<Secret>),
+    /// Save the key of stream destination `id` (`None` removes it) under its account
+    /// ([`crate::stream_destinations::key_account`], ADR-0127 decision 1); answered
+    /// with [`Update::DestinationKey`].
+    SaveDestinationKey(u32, Option<Secret>),
     /// Remove the key saved for a deleted output profile's account (ADR-0051 decision
     /// 5). A failure is reported with [`Update::Error`].
     RemoveStreamKey(String),
@@ -2761,6 +2765,9 @@ pub enum Update {
     StreamKey(Result<bool, String>),
     /// [`Command::SaveVerticalStreamKey`] done, as [`Update::StreamKey`].
     VerticalStreamKey(Result<bool, String>),
+    /// [`Command::SaveDestinationKey`] done for destination `.0`, as
+    /// [`Update::StreamKey`].
+    DestinationKey(u32, Result<bool, String>),
     /// A control API client changed the recording settings; the UI shows and saves
     /// them.
     Profile(RecordProfile),
@@ -4998,6 +5005,15 @@ impl Host {
             Command::SaveVerticalStreamKey(key) => {
                 let result = self.save_key(OutputCanvas::Vertical, key.as_ref());
                 notify(Update::VerticalStreamKey(result));
+            }
+            Command::SaveDestinationKey(id, key) => {
+                let account = crate::stream_destinations::key_account(&self.key_account, id);
+                let result = match &key {
+                    Some(k) => self.keys.write(&account, k).map(|()| true),
+                    None => self.keys.remove(&account).map(|()| false),
+                }
+                .map_err(|e| format!("{} refused the stream key: {e}", self.keys.place()));
+                notify(Update::DestinationKey(id, result));
             }
             Command::SetKeyAccount(account) => self.key_account = account,
             Command::SaveImportedKey(account, key) => {

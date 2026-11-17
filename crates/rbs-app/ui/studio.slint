@@ -110,6 +110,9 @@ export struct LoudnessData {
 }
 // The encoder fields of one output (a recording or a stream): the options offered and
 // the one in use (rbs_app::encoder_form). `rate-kind`: 0 CBR, 1 VBR, 2 constant quality.
+// One destination of the stream in Settings, Stream (ADR-0127 decision 17).
+export struct DestinationRow { id: int, name: string, note: string, on: bool, warn: bool }
+
 export struct EncoderData {
     codecs: [string], codec: int,
     encoders: [string], encoder: int,
@@ -718,6 +721,48 @@ export global Studio {
     callback set-hold-scene(int);
     callback set-hold-sound(int);
     callback set-latency(int);
+    // The Destinations card (ADR-0127 decision 17): the picked canvas's destinations,
+    // the first one first; "3 of 6"; whether one can be added and the list changed
+    // (not while that canvas streams); the upload Go live needs and service limit
+    // warnings (one per line), "" when none.
+    in property <[DestinationRow]> st-dests;
+    in property <string> st-dest-count;
+    in property <bool> st-dest-can-add;
+    in property <bool> st-dest-editable: true;
+    in property <string> st-dest-upload;
+    in property <string> st-dest-warnings;
+    // Its inline editor, while open: a copy written on Save. The text fields show what
+    // Rust set last, re-read when the serial changes.
+    in property <bool> st-ed-open;
+    in property <bool> st-ed-new;
+    // The first destination: its server and key are the stream settings'.
+    in property <bool> st-ed-first;
+    in property <string> st-ed-title;
+    in property <[string]> st-ed-services;
+    in property <int> st-ed-service;
+    in property <string> st-ed-name;
+    in property <string> st-ed-server;
+    in property <int> st-ed-serial;
+    in property <string> st-ed-server-help;
+    in property <string> st-ed-key-help;
+    in property <bool> st-ed-key-saved;
+    in property <bool> st-ed-own;
+    in property <bool> st-ed-reconnect;
+    in property <string> st-ed-problem;
+    in property <EncoderData> st-ed-enc;
+    callback dest-set-enabled(int /* id */, bool);
+    callback dest-edit(int /* id */);
+    callback dest-add();
+    callback dest-set-service(int);
+    callback dest-set-name(string);
+    callback dest-set-server(string);
+    callback dest-save-key(string);
+    callback dest-remove-key();
+    callback dest-set-own(bool);
+    callback dest-set-reconnect(bool);
+    callback dest-save();
+    callback dest-cancel();
+    callback dest-remove();
 
     // The canvas (Settings, Video): tiles for the current orientation, the one in
     // use (-1 when the size matches none), the fields, and "W × H" for the status bar.
@@ -5300,6 +5345,223 @@ export component RecordingSettings inherits Rectangle {
     changed folder-serial => { folder.text = Studio.out-folder; }
 }
 
+// One destination in the Destinations card: Use on Go live, its name and what it is
+// (service, protocol, key, encoding), and its edit button (ADR-0127 decision 17).
+component DestinationItem inherits Rectangle {
+    in property <DestinationRow> dest;
+    in property <bool> divider: true;
+    in property <bool> editable: true;
+    min-height: Tokens.size-control-lg + Tokens.space-3;
+    if root.divider: Rectangle { y: 0; height: Tokens.size-border; background: Theme.border-subtle; }
+    HorizontalLayout {
+        spacing: Tokens.space-3;
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 0;
+            Toggle {
+                label: @tr("Use {} on Go live", root.dest.name);
+                checked: root.dest.on;
+                enabled: root.editable;
+                horizontal-stretch: 0;
+                toggled(on) => { Studio.dest-set-enabled(root.dest.id, on); }
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+            Text {
+                text: root.dest.name;
+                color: root.dest.on ? Theme.text-primary : Theme.text-secondary;
+                font-size: Tokens.type-body-size;
+                font-weight: Tokens.type-label-weight;
+                overflow: elide;
+                accessible-role: none;
+            }
+            Text {
+                text: root.dest.note;
+                color: root.dest.warn ? Theme.state-warning : Theme.text-secondary;
+                font-size: Tokens.type-caption-size;
+                overflow: elide;
+                accessible-role: none;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            IconButton {
+                icon: IconName.pencil;
+                name: @tr("Edit {}", root.dest.name);
+                enabled: root.editable;
+                clicked => { Studio.dest-edit(root.dest.id); }
+            }
+        }
+    }
+}
+
+// The inline editor of one destination: a copy, written on Save (ADR-0127 decision
+// 17). The first destination's server and key are the stream settings'; its reconnect
+// is in the Connection card.
+component DestinationEditor inherits Rectangle {
+    border-width: Tokens.size-border;
+    border-color: Theme.border-subtle;
+    border-radius: Tokens.radius-md;
+    background: Theme.surface-sunken;
+    accessible-role: groupbox;
+    accessible-label: Studio.st-ed-title;
+    VerticalLayout {
+        padding: Tokens.space-3;
+        spacing: 0;
+        Text {
+            text: Studio.st-ed-title;
+            color: Theme.text-primary;
+            font-size: Tokens.type-body-size;
+            font-weight: Tokens.type-label-weight;
+            accessible-role: none;
+        }
+        // find: none (inside the destination editor, open only after Edit).
+        SettingRow {
+            divider: false;
+            label: @tr("Service");
+            summary: @tr("Fills the server; it stays editable");
+            Select {
+                label: @tr("Service");
+                options: Studio.st-ed-services;
+                index: Studio.st-ed-service;
+                selected(i) => { Studio.dest-set-service(i); }
+            }
+        }
+        // find: none (inside the destination editor, open only after Edit).
+        SettingRow {
+            label: @tr("Name");
+            name := TextField {
+                label: @tr("Name");
+                accepted(t) => { Studio.dest-set-name(t); }
+                edited(t) => { Studio.dest-set-name(t); }
+            }
+        }
+        // find: none (inside the destination editor, open only after Edit).
+        SettingRow {
+            label: @tr("Server");
+            summary: Studio.st-ed-server-help == "" ? @tr("From your streaming service") : "";
+            help: Studio.st-ed-server-help;
+            hint: @tr("The address your streaming service gives you, starting with rtmp://, rtmps:// or srt://.");
+            control-width: Tokens.size-menu-md + Tokens.size-menu-sm / 2;
+            server := TextField {
+                label: @tr("Server");
+                accepted(t) => { Studio.dest-set-server(t); }
+                edited(t) => { Studio.dest-set-server(t); }
+            }
+        }
+        // find: none (inside the destination editor, open only after Edit).
+        SettingRow {
+            label: @tr("Stream key");
+            help: Studio.st-ed-key-saved ? @tr("A stream key is saved.") : Studio.st-ed-key-help;
+            control-width: Tokens.size-menu-md + Tokens.size-menu-sm / 2;
+            key := TextField {
+                label: @tr("Stream key");
+                password: true;
+                accepted(t) => { Studio.dest-save-key(t); }
+            }
+            Button {
+                lead: IconName.save;
+                horizontal-stretch: 0;
+                text: @tr("Save key");
+                kind: "secondary";
+                enabled: key.text != "";
+                clicked => { Studio.dest-save-key(key.text); }
+            }
+            if Studio.st-ed-key-saved: Button {
+                lead: IconName.trash;
+                horizontal-stretch: 0;
+                text: @tr("Remove key");
+                kind: "ghost";
+                dense: true;
+                clicked => { Studio.dest-remove-key(); }
+            }
+        }
+        // find: none (inside the destination editor, open only after Edit).
+        SettingRow {
+            label: @tr("Encoding");
+            help: Studio.st-ed-own ? @tr("Own settings encode the picture a second time: more CPU or GPU, and more upload.") : "";
+            help-is-warning: Studio.st-ed-own;
+            SegmentedControl {
+                label: @tr("Encoding");
+                options: [@tr("Same as the stream"), @tr("Own settings")];
+                index: Studio.st-ed-own ? 1 : 0;
+                selected(i) => { Studio.dest-set-own(i == 1); }
+            }
+        }
+        if Studio.st-ed-own: EncoderFields {
+            data: Studio.st-ed-enc;
+            idle: true;
+            stream: true;
+            set(field, value) => { Studio.set-encoding(2, field, value); }
+        }
+        // find: none (inside the destination editor, open only after Edit).
+        if !Studio.st-ed-first: SettingRow {
+            label: @tr("Reconnect when the connection drops");
+            summary: @tr("Up to 10 tries");
+            fill: false;
+            Toggle {
+                label: @tr("Reconnect when the connection drops");
+                checked: Studio.st-ed-reconnect;
+                toggled(on) => { Studio.dest-set-reconnect(on); }
+            }
+        }
+        if Studio.st-ed-problem != "": SettingsNotice { text: Studio.st-ed-problem; problem: true; }
+        Rectangle { height: Tokens.space-3; }
+        DialogActions {
+            confirm-text: Studio.st-ed-new ? @tr("Add") : @tr("Save");
+            extra-text: Studio.st-ed-new || Studio.st-ed-first ? "" : @tr("Remove destination");
+            cancelled => { Studio.dest-cancel(); }
+            confirmed => { Studio.dest-set-name(name.text); Studio.dest-set-server(server.text); Studio.dest-save(); }
+            extra-clicked => { Studio.dest-remove(); }
+        }
+    }
+    init => { name.text = Studio.st-ed-name; server.text = Studio.st-ed-server; }
+    property <int> serial: Studio.st-ed-serial;
+    changed serial => { name.text = Studio.st-ed-name; server.text = Studio.st-ed-server; }
+    // A key was saved or removed: the field is emptied (the key is never shown).
+    property <int> key-serial: Studio.st-key-serial;
+    changed key-serial => { key.text = ""; }
+}
+
+// Settings, Stream: where Go live sends the program (ADR-0127 decision 17). The
+// picked canvas's destinations, its first one from the stream settings; one editor at
+// a time, inline under the list.
+component DestinationsCard inherits SettingsCard {
+    in property <bool> idle;
+    title: @tr("Destinations");
+    id: "settings.stream.destinations";
+    for row[i] in Studio.st-dests: DestinationItem {
+        dest: row;
+        divider: i > 0;
+        editable: Studio.st-dest-editable && !Studio.st-ed-open;
+    }
+    if Studio.st-ed-open: DestinationEditor { }
+    if !Studio.st-ed-open: HorizontalLayout {
+        padding-top: Tokens.space-2;
+        spacing: Tokens.space-3;
+        Button {
+            lead: IconName.plus;
+            text: @tr("Add destination");
+            kind: "secondary";
+            horizontal-stretch: 0;
+            enabled: Studio.st-dest-can-add;
+            clicked => { Studio.dest-add(); }
+        }
+        Text {
+            text: Studio.st-dest-count;
+            color: Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
+        Rectangle { horizontal-stretch: 1; }
+    }
+    if Studio.st-dest-upload != "": SettingsNotice { text: Studio.st-dest-upload; }
+    if Studio.st-dest-warnings != "": SettingsNotice { text: Studio.st-dest-warnings; problem: true; }
+}
+
 // Where Go live sends the program and how it is encoded: the Stream section of the
 // Settings window (U17). Changes apply to the next stream and are saved at once. The
 // stream key is never shown: it goes to the system's credential store.
@@ -5311,69 +5573,7 @@ export component StreamSettings inherits Rectangle {
         if Studio.settings-canvases.length > 1: SettingsCanvasPicker { }
         if !idle: SettingsNotice { text: @tr("Changes apply to the next stream."); }
         if Studio.st-note != "": SettingsNotice { text: Studio.st-note; problem: true; }
-        SettingsCard {
-            title: @tr("Destination");
-            id: "settings.stream.destination";
-            SettingRow {
-                find: "stream.server";
-                divider: false;
-                label: @tr("Server");
-                summary: @tr("From your streaming service");
-                hint: @tr("The address your streaming service gives you, starting with rtmp://, rtmps:// or srt://.");
-                enabled: idle;
-                control-width: Tokens.size-menu-md + Tokens.size-menu-sm / 2;
-                server := TextField {
-                    label: @tr("Server");
-                    text: Studio.st-server;
-                    enabled: idle;
-                    accepted(t) => { Studio.set-server(t); }
-                    edited(t) => { Studio.server-edited(t); }
-                }
-            }
-            SettingRow {
-                find: "stream.key";
-                label: @tr("Stream key");
-                help: Studio.st-key-place;
-                enabled: idle;
-                control-width: Tokens.size-menu-md + Tokens.size-menu-sm / 2;
-                key := TextField {
-                    label: @tr("Stream key");
-                    password: true;
-                    enabled: idle;
-                    accepted(t) => { Studio.save-key(t); }
-                }
-                Button {
-                    lead: IconName.save;
-                    horizontal-stretch: 0;
-                    text: @tr("Save key");
-                    kind: "secondary";
-                    enabled: idle && key.text != "";
-                    clicked => { Studio.save-key(key.text); }
-                }
-            }
-            SettingRow {
-                divider: false;
-                fill: false;
-                label: "";
-                help: "";
-                control-width: Tokens.size-menu-md + Tokens.size-menu-sm / 2;
-                Text {
-                    text: Studio.st-key-saved ? @tr("A stream key is saved.") : @tr("No stream key yet.");
-                    color: Studio.st-key-saved ? Theme.text-primary : Theme.text-secondary;
-                    font-size: Tokens.type-body-size;
-                    vertical-alignment: center;
-                    horizontal-stretch: 1;
-                }
-                if Studio.st-key-saved: Button {
-                    lead: IconName.trash;
-                    text: @tr("Remove key");
-                    kind: "ghost";
-                    dense: true;
-                    enabled: idle;
-                    clicked => { Studio.remove-key(); }
-                }
-            }
-        }
+        DestinationsCard { idle: idle; }
         conn-card := SettingsCard {
             title: @tr("Connection");
             id: "settings.stream.connection";
@@ -5550,11 +5750,6 @@ export component StreamSettings inherits Rectangle {
     preferred-height: form.preferred-height;
     min-height: form.min-height;
     // The fields show what Rust set last; typing is never overwritten by a sync.
-    property <int> server-serial: Studio.st-server-serial;
-    changed server-serial => { server.text = Studio.st-server; }
-    // A key was saved or removed: the field is emptied (the key is never shown).
-    property <int> key-serial: Studio.st-key-serial;
-    changed key-serial => { key.text = ""; }
 }
 
 // The canvas's size and frame rate: the Video section of the Settings window (U17).
