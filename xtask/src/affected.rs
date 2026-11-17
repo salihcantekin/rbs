@@ -33,7 +33,8 @@ usage: cargo xtask affected [--base <rev>] [--head <rev>] [list|check|clippy|tes
   list    print the affected packages, one per line (default)
   check   cargo check --all-targets on them
   clippy  cargo clippy --all-targets -- -D warnings on them
-  test    cargo nextest run on them (cargo test when nextest is not installed)";
+  test    cargo nextest run on them (cargo test when nextest is not installed); when a
+          UI crate is selected, also checks the UI live preview build (ADR-0138)";
 
 /// Runs `cargo xtask affected` with the arguments after `affected`.
 pub fn run(root: &Path, args: &[String]) -> Result<ExitCode, String> {
@@ -406,6 +407,14 @@ fn git(root: &Path, args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+/// Whether the selection holds a crate of the generated UI code (ADR-0138).
+fn selects_ui(selection: &Selection) -> bool {
+    match selection {
+        Selection::All => true,
+        Selection::Some(set) => set.iter().any(|p| p.starts_with("rbs-app-ui")),
+    }
+}
+
 fn cargo(
     root: &Path,
     action: &str,
@@ -463,11 +472,27 @@ fn cargo(
     };
     eprintln!("affected: {action} on {count}");
     let status = command.status().map_err(|e| format!("run {cargo}: {e}"))?;
-    Ok(if status.success() {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::from(1)
-    })
+    if !status.success() {
+        return Ok(ExitCode::from(1));
+    }
+    if action == "test" && selects_ui(selection) {
+        // The live preview's single build must keep compiling with the split one
+        // (ADR-0138 decision 5); its own target directory keeps the normal build intact.
+        eprintln!("affected: checking the UI live preview build");
+        let target =
+            crate::ui_dev::target_dir(root, std::env::var_os("CARGO_TARGET_DIR").as_deref());
+        let live = Command::new(&cargo)
+            .current_dir(root)
+            .args(["check", "-p", "rbs-app", "--features", "ui-live-preview"])
+            .env("SLINT_LIVE_PREVIEW", "1")
+            .env("CARGO_TARGET_DIR", target)
+            .status()
+            .map_err(|e| format!("run {cargo}: {e}"))?;
+        if !live.success() {
+            return Ok(ExitCode::from(1));
+        }
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 #[cfg(test)]

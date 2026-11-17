@@ -4,16 +4,9 @@
 // and its control on the right (U2: every option explains itself), or under them for
 // wide content. Every value comes from the tokens (U6).
 import { Theme, Tokens } from "tokens.slint";
-import { FocusRing, RingFocus, Icon, IconName, SectionHeader, Sections, Experience, MoreHidden, Button, StatusLine, SettingsFind, FindMark } from "components.slint";
-
-// One result of the Settings window's search field (docs/specs/settings-search.md,
-// step 3): what was found, where it is ("Recording › Encoding"; empty for a section)
-// and the section number it opens, which gives its icon.
-export struct SettingsHit {
-    title: string,
-    path: string,
-    section: int,
-}
+import { FocusRing, RingFocus, Icon, SectionHeader, MoreHidden, Button, StatusLine, FindMark } from "components.slint";
+import { SettingsHit, SettingsScroll, IconName, Sections, Experience, SettingsFind } from "base/types.slint";
+export { SettingsHit, SettingsScroll }
 
 // One entry of the section list. The section in use has a quiet plate and the label
 // weight, and is marked checked for screen readers, so it is never shown by colour
@@ -337,28 +330,6 @@ export component SettingsNotice inherits StatusLine {
     tone: root.problem ? 3 : 0;
 }
 
-// The Settings page's scroll. A panel that opens inside the page (a confirmation, the
-// shortcut recorder) reports its place; the page moves so that place is on screen.
-export global SettingsScroll {
-    in-out property <int> serial: 0;
-    in-out property <length> y: 0px;
-    in-out property <length> h: 0px;
-    // The place goes to the top of the view, not only into it (a long panel such as the
-    // theme editor, whose start is what matters).
-    in-out property <bool> top: false;
-    public function reveal(ay: length, ah: length) {
-        self.y = ay;
-        self.h = ah;
-        self.top = false;
-        self.serial += 1;
-    }
-    public function reveal-top(ay: length) {
-        self.y = ay;
-        self.top = true;
-        self.serial += 1;
-    }
-}
-
 // Put one at the top of a panel that can open below the page: the page scrolls to it.
 export component RevealOnShow inherits Rectangle {
     height: 0px;
@@ -387,6 +358,23 @@ export component SettingsCallout inherits Rectangle {
     inner := VerticalLayout {
         padding: Tokens.space-3;
         spacing: Tokens.space-2;
+        @children
+    }
+}
+
+// Children shown only while `shown`; takes no room otherwise (layouts have no
+// `visible`, and an `if` would hide the popups' `open` from the form). The space
+// above (`lead`) is part of it, so a hidden one leaves no gap in a layout with no
+// spacing.
+export component Shown inherits Rectangle {
+    in property <bool> shown;
+    in property <length> gap: Tokens.space-1;
+    in property <length> lead: 0;
+    visible: shown;
+    height: shown ? inner.preferred-height : 0;
+    inner := VerticalLayout {
+        padding-top: root.lead;
+        spacing: root.gap;
         @children
     }
 }

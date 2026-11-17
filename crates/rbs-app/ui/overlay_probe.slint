@@ -1,10 +1,11 @@
 // A window for tests/overlays.rs: the info hint and the tooltip as the real library
 // components draw them (ADR-0094). Not shown by the app.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, SplitButton, InfoHint, IconButton, IconName, OverlayHost, FeatureSection, ColorPicker, Select, Tabs, ScrollArea, SettingRow, Toggle, NumberField, Experience, SegmentedControl, SettingValue } from "components.slint";
+import { Button, SplitButton, InfoHint, IconButton, OverlayHost, FeatureSection, ColorPicker, Select, Tabs, ScrollArea, SettingRow, Toggle, NumberField, SegmentedControl, SettingValue } from "components.slint";
 import { SettingsCard } from "settings.slint";
 import { PropertiesPanel } from "studio.slint";
 import { ReplayControls } from "replay.slint";
+import { IconName, Experience } from "base/types.slint";
 
 export component OverlayProbe inherits Window {
     // literal-begin: a test window; its size and the places of its two controls are test data

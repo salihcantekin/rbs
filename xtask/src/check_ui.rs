@@ -18,6 +18,8 @@ use std::process::Command;
 
 use toml::Value;
 
+use crate::ui_split;
+
 /// The checks, in the order they are printed and stored.
 pub const CHECKS: &[&str] = &["touch", "duplicate", "help", "effects", "row"];
 
@@ -143,8 +145,10 @@ pub fn edited_path(json: &str) -> Option<String> {
 pub fn check(root: &Path) -> Result<(), Vec<String>> {
     let baseline = read_baseline(&read(root, BASELINE)?)?;
     let exceptions = read_exceptions(&read(root, EXCEPTIONS)?)?;
-    let counts = count_tree(root, &baseline.library)?;
-    let mut errors = Vec::new();
+    let files = read_tree(root)?;
+    let counts = count_files(&files, &baseline.library);
+    let facade = read(root, ui_split::FACADE)?;
+    let mut errors = ui_split::check(&files, &facade);
     for check in CHECKS {
         let found = counts.get(*check).copied().unwrap_or(0);
         let allowed = allowed(&baseline, &exceptions, check);
@@ -485,6 +489,11 @@ fn quote(text: &str) -> String {
 
 /// Counts every check over the `.slint` files under the UI folder.
 pub fn count_tree(root: &Path, library: &[String]) -> Result<BTreeMap<String, u32>, Vec<String>> {
+    Ok(count_files(&read_tree(root)?, library))
+}
+
+/// Every `.slint` file under the UI folder as `(path relative to it, text)`, sorted.
+pub fn read_tree(root: &Path) -> Result<Vec<(String, String)>, Vec<String>> {
     let dir = root.join(UI_DIR);
     let mut paths: Vec<PathBuf> = Vec::new();
     collect(&dir, &mut paths)?;
@@ -500,7 +509,7 @@ pub fn count_tree(root: &Path, library: &[String]) -> Result<BTreeMap<String, u3
             fs::read_to_string(&path).map_err(|e| vec![format!("read {}: {e}", path.display())])?;
         files.push((name, text));
     }
-    Ok(count_files(&files, library))
+    Ok(files)
 }
 
 fn collect(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), Vec<String>> {

@@ -14,6 +14,7 @@
 mod affected;
 mod check_ui;
 mod ui_dev;
+mod ui_split;
 
 use std::env;
 use std::fs;
@@ -214,12 +215,7 @@ fn deny(from: &str, to: &str) -> Option<String> {
                 None
             }
         }
-        Class::AppUi => deny_named(
-            to,
-            to_class,
-            &["rbs-ui", "slint", "i-slint-core"],
-            "generated UI code depends on the UI model and Slint",
-        ),
+        Class::AppUi => deny_app_ui(from, to, to_class),
         Class::Settings => deny_named(
             to,
             to_class,
@@ -365,6 +361,28 @@ fn deny_adapter(from: &str, to: &str, to_class: Option<Class>) -> Option<String>
     }
 }
 
+/// The crates of the generated UI code (ADR-0138): the UI model, Slint, and each other
+/// only from the facade `rbs-app-ui` or towards the base library.
+fn deny_app_ui(from: &str, to: &str, to_class: Option<Class>) -> Option<String> {
+    if to_class == Some(Class::AppUi) {
+        if from == "rbs-app-ui" || to == "rbs-app-ui-base" {
+            None
+        } else {
+            Some(
+                "a UI crate depends on another only from the facade rbs-app-ui or on rbs-app-ui-base (ADR-0138)"
+                    .to_owned(),
+            )
+        }
+    } else {
+        deny_named(
+            to,
+            to_class,
+            &["rbs-ui", "slint", "i-slint-core"],
+            "generated UI code depends on the UI model and Slint",
+        )
+    }
+}
+
 fn deny_named(to: &str, to_class: Option<Class>, allowed: &[&str], why: &str) -> Option<String> {
     if allowed.contains(&to) {
         None
@@ -435,7 +453,8 @@ fn class(name: &str) -> Option<Class> {
         "rbs-api" => Class::Control,
         "rbs-api-ws" | "rbs-api-ipc" => Class::Transport,
         "rbs-ui" => Class::Ui,
-        "rbs-app-ui" => Class::AppUi,
+        "rbs-app-ui" | "rbs-app-ui-base" | "rbs-app-ui-main" | "rbs-app-ui-settings"
+        | "rbs-app-ui-dialogs" | "rbs-app-ui-probes" | "rbs-app-ui-single" => Class::AppUi,
         "rbs-remote-settings" => Class::Settings,
         "rbs-user-data" => Class::UserData,
         "rbs-import-obs" => Class::Import,

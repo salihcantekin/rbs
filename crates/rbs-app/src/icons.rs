@@ -1,9 +1,10 @@
 //! The icon set in Slint (spec `ui-design-system.md`, "Icons").
 //!
-//! The paths live in [`rbs_ui::icon::ICONS`]. The `IconName` enum, the `Icon`
-//! component's paths and `Icons.named` in `ui/components.slint` are generated from
-//! it by `slint_text` (tests only) between marker lines; a test fails when that copy
-//! is out of date (run it with `RBS_UPDATE_MENU_BAR=1` to rewrite it).
+//! The paths live in [`rbs_ui::icon::ICONS`]. The `IconName` enum and `Icons.named`
+//! in `ui/base/types.slint` (shared types, ADR-0138) and the `Icon` component's paths
+//! in `ui/components.slint` are generated from it by `types_text` and `icon_text`
+//! (tests only) between marker lines; a test fails when a copy is out of date (run it
+//! with `RBS_UPDATE_MENU_BAR=1` to rewrite it).
 //!
 //! Menus take their icons as images ([`menu_image`]): native menus (macOS, Windows)
 //! cannot draw a Slint path.
@@ -44,13 +45,21 @@ pub fn menu_image(name: &str) -> slint::Image {
 }
 
 #[cfg(test)]
-pub const BEGIN: &str = "// BEGIN generated icon set (icons.rs; do not edit)";
+/// The marker lines around the generated `IconName` and `Icons` in `ui/base/types.slint`.
+pub const TYPES_MARKERS: (&str, &str) = (
+    "// BEGIN generated icon names (icons.rs; do not edit)",
+    "// END generated icon names",
+);
 #[cfg(test)]
-pub const END: &str = "// END generated icon set";
+/// The marker lines around the generated `Icon` in `ui/components.slint`.
+pub const ICON_MARKERS: (&str, &str) = (
+    "// BEGIN generated icon (icons.rs; do not edit)",
+    "// END generated icon",
+);
 
 #[cfg(test)]
-/// The generated `IconName`, `Icon` and `Icons` (unindented).
-pub fn slint_text() -> String {
+/// The generated `IconName` and `Icons` (unindented).
+pub fn types_text() -> String {
     use rbs_ui::icon::ICONS;
     let mut out = String::new();
     out.push_str(
@@ -61,6 +70,32 @@ pub fn slint_text() -> String {
         out.push_str(&format!("    {},\n", i.name));
     }
     out.push_str("}\n\n");
+    out.push_str(
+        "// An icon by its name in the icon set, as Rust passes it (registry and panel icons).\n\
+         export global Icons {\n\
+         \x20   // Slint has no string to enum conversion; unknown names draw nothing.\n\
+         \x20   public pure function named(name: string) -> IconName {\n",
+    );
+    for (n, i) in ICONS.iter().enumerate() {
+        let lead = if n == 0 {
+            "        return "
+        } else {
+            "        : "
+        };
+        out.push_str(&format!(
+            "{lead}name == \"{}\" ? IconName.{}\n",
+            i.name, i.name
+        ));
+    }
+    out.push_str("        : IconName.none;\n    }\n}\n");
+    out
+}
+
+#[cfg(test)]
+/// The generated `Icon` component (unindented).
+pub fn icon_text() -> String {
+    use rbs_ui::icon::ICONS;
+    let mut out = String::new();
     out.push_str(
         "// Vector icon. Icons are paths, not font glyphs, so they look the same on every OS\n\
          // (a glyph missing from the system font shows as an empty box). Drawn in a 16 x 16\n\
@@ -104,38 +139,23 @@ pub fn slint_text() -> String {
          \x20       stroke-width: root.filled ? 0px : Tokens.size-icon-stroke;\n\
          \x20       commands: root.commands;\n\
          \x20   }\n\
-         }\n\n\
-         // An icon by its name in the icon set, as Rust passes it (registry and panel icons).\n\
-         export global Icons {\n\
-         \x20   // Slint has no string to enum conversion; unknown names draw nothing.\n\
-         \x20   public pure function named(name: string) -> IconName {\n",
+         }\n",
     );
-    for (n, i) in ICONS.iter().enumerate() {
-        let lead = if n == 0 {
-            "        return "
-        } else {
-            "        : "
-        };
-        out.push_str(&format!(
-            "{lead}name == \"{}\" ? IconName.{}\n",
-            i.name, i.name
-        ));
-    }
-    out.push_str("        : IconName.none;\n    }\n}\n");
     out
 }
 
 #[cfg(test)]
-/// `text` with the generated part replaced by the current one, or `None` without the
-/// marker pair.
-pub fn refreshed(text: &str) -> Option<String> {
-    let begin = text.find(BEGIN)?;
-    let after = begin + BEGIN.len();
-    let end = after + text[after..].find(END)?;
+/// `text` with the part between `markers` replaced by `generated`, or `None` without
+/// the marker pair.
+pub fn refreshed(text: &str, markers: (&str, &str), generated: &str) -> Option<String> {
+    let (begin_marker, end_marker) = markers;
+    let begin = text.find(begin_marker)?;
+    let after = begin + begin_marker.len();
+    let end = after + text[after..].find(end_marker)?;
     let mut out = String::with_capacity(text.len());
     out.push_str(&text[..after]);
     out.push('\n');
-    out.push_str(&slint_text());
+    out.push_str(generated);
     out.push_str(&text[end..]);
     Some(out)
 }
@@ -145,22 +165,27 @@ pub fn refreshed(text: &str) -> Option<String> {
 mod tests {
     use super::*;
 
-    const SLINT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/ui/components.slint");
-
-    #[test]
-    fn components_slint_has_the_current_icon_set() {
-        let text = std::fs::read_to_string(SLINT).expect("ui/components.slint is readable");
+    /// Checks (or with `RBS_UPDATE_MENU_BAR`, rewrites) one generated copy.
+    fn check_copy(file: &str, markers: (&str, &str), generated: &str) {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(file);
+        let text = std::fs::read_to_string(&path).expect("the UI file is readable");
         let text = text.replace("\r\n", "\n");
-        let fresh = refreshed(&text).expect("ui/components.slint has the icon markers");
+        let fresh = refreshed(&text, markers, generated).expect("the UI file has the icon markers");
         if fresh != text && std::env::var_os("RBS_UPDATE_MENU_BAR").is_some() {
-            std::fs::write(SLINT, &fresh).expect("ui/components.slint is writable");
+            std::fs::write(&path, &fresh).expect("the UI file is writable");
             return;
         }
         assert!(
             fresh == text,
-            "the icon set in ui/components.slint is out of date: run \
+            "the icon set in {file} is out of date: run \
              `RBS_UPDATE_MENU_BAR=1 cargo test -p rbs-app --bin rbs icons`"
         );
+    }
+
+    #[test]
+    fn the_ui_files_have_the_current_icon_set() {
+        check_copy("ui/base/types.slint", TYPES_MARKERS, &types_text());
+        check_copy("ui/components.slint", ICON_MARKERS, &icon_text());
     }
 
     #[test]
