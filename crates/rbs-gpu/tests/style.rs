@@ -362,3 +362,21 @@ fn an_arrow_points_right_and_leaves_the_corners() {
     assert_close(at(&px, W, 60, 32), RED, TOL);
     assert_close(at(&px, W, 32, 32), RED, TOL);
 }
+
+#[test]
+fn a_border_half_the_box_wide_covers_the_whole_box() {
+    // Scene transitions draw a "via" colour this way (ADR-0128): one layer, no node.
+    let Some(px) = render(|ctx, pool| {
+        let t = red(ctx, pool);
+        let mut layer = Layer::new(t, 0.0, 0.0, 64.0, 32.0);
+        layer.style = LayerStyle::new(LayerShape::Box, 64.0, [0, 0, 255, 255], [64.0, 32.0]);
+        vec![layer]
+    }) else {
+        return;
+    };
+    const BLUE: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
+    for (x, y) in [(0, 0), (32, 16), (63, 31), (10, 20), (50, 5)] {
+        assert_close(at(&px, W, x, y), BLUE, TOL);
+    }
+    assert_close(at(&px, W, 32, 40), NONE, TOL);
+}
