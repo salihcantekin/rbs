@@ -12,7 +12,7 @@ The [code quality audit of November 2026](../quality/audit-2026-11.md) measured 
 - **Size grows unchecked.** Three files carry most of the desktop app (`studio_host.rs` 16,732 lines with a 1,659-line function and a 97-field struct, `studio_ui.rs` 9,739, `main.rs` 6,368). They are edited by most feature PRs, so parallel work collides there.
 - **Logic sits in the toolkit crate.** The studio host never names Slint, but its tests link Slint and Skia because it lives in `rbs-app`.
 - **Two command paths.** The window and the control API have separate command enums and dispatchers (147 and 155 variants); principle U20 has no test.
-- **No automatic gate.** CI runs only by hand and the toolchain floats on `stable`. Main at `ab90f27` contains merge-conflict markers in two docs, and new stable lints have turned main red without a code change.
+- **No gate between CI runs.** CI runs by hand for now (it becomes automatic again later) and the toolchain floats on `stable`. Main at `ab90f27` contains merge-conflict markers in two docs, and new stable lints have turned main red without a code change.
 - **Copied test code.** The GPU-or-skip helper exists in 20+ files; there are no property tests and no Miri or loom runs for hand-written lock-free code.
 - **Docs drift.** Three Proposed ADRs are implemented, ADR states disagree between files, and the largest specs are too big to read.
 
@@ -96,7 +96,7 @@ A procedure that more than two PRs repeat by hand (a new API method, a new setti
 
 ## Alternatives considered
 
-- **Turn CI back on and rely on it.** The owner keeps CI off for cost now (2026-11-17). A local gate that CI later runs unchanged gives the same checks without the cost.
+- **Rely on CI alone.** CI runs by hand for now and becomes automatic again later (owner, 2026-11-17). Agents still need the same checks before they push, and one command that CI also runs keeps local and CI results identical.
 - **Hard limits that fail on today's tree.** Would block every PR until the god files are split. A ratchet stops growth now and lets the splits follow the plan.
 - **Leave quality to review.** Reviews are AI sessions that read only the diff; drift across files (ADR states, layer table, conflict markers) is exactly what diff review misses.
 - **Fold these rules into ADR-0143.** Performance and maintainability are reviewed by different checklists and owners of the checks; keeping two ADRs keeps each one short. They share the audit plan.
