@@ -1,7 +1,7 @@
 # Spec: Media-file decode port
 
 - Status: Draft
-- Owner crate(s): `rbs-media-decode` (port), `rbs-media-decode-test` (fake adapter); adapters `rbs-media-anim` (GIF, APNG, WebP; built), `rbs-media-mf`, `rbs-media-avf` (planned)
+- Owner crate(s): `rbs-media-decode` (port), `rbs-media-decode-test` (fake adapter); adapters `rbs-media-anim` (GIF, APNG, WebP), `rbs-media-mf` (Windows), `rbs-media-avf` (macOS); the last two are `cpu-upload` only for now
 - Related ADRs: [ADR-0108](../adr/0108-media-file-source.md), [ADR-0106](../adr/0106-picture-and-sound-on-one-source.md), [ADR-0007](../adr/0007-ffmpeg-as-optional-adapter.md)
 
 ## Purpose
@@ -72,3 +72,20 @@ On the fake adapter (`rbs-media-decode-test`), with no platform decoder: per-str
 ## Adapter: `rbs-media-anim`
 
 Pure Rust (`gif`, `png`, `image-webp`), on every platform, capability `cpu-upload`. It recognizes the container by its first bytes, so a renamed file still opens and anything else is `Unsupported` for the next adapter. Every picture is the composited canvas as straight-alpha sRGB `Rgba8` (GIF and APNG disposal and blending, WebP through its decoder). There is no keyframe: `seek` reopens the file and composes forward to the frame that covers the cursor. The length is the sum of the delays after the frame-duration rule, read from the frame headers without decoding pixels. A still image is one picture with no frame duration and no length, so the source holds it. There is no sound stream.
+
+## Adapters: `rbs-media-mf` and `rbs-media-avf`
+
+Platform video files: Media Foundation on Windows (`rbs-media-mf`, synchronous `IMFSourceReader`) and AVFoundation on macOS (`rbs-media-avf`, `AVAssetReader`). Both work the same way:
+
+- Each stream has its own reader on the file, with only that stream selected, so reading one stream never queues samples of the other (invariant 2 without a skew buffer). The sound reader is created on the first `next_sound`; a source that is never heard opens no second reader (P13).
+- Pictures are requested as 8-bit BGRA/BGRX (Media Foundation's advanced video processing converts and deinterlaces; VideoToolbox decodes) and copied once into `Rgba8`, cropped to the display aperture and turned upright when the rows are bottom-up. Sound is requested as interleaved 32-bit float at the track's own rate and channel count.
+- `seek`: Media Foundation moves both readers (`SetCurrentPosition`). An `AVAssetReader` cannot move once it reads, so the AVFoundation adapter replaces the picture reader with one whose time range starts at the cursor, and recreates the sound reader on the next `next_sound`.
+- A missing decoder is `Unsupported` and names it (for example: HEVC needs the HEVC Video Extensions from the Microsoft Store). A file with no picture stream is `Unsupported`, so the next adapter can try it.
+- A frame of unstated or zero duration continues by the track's nominal rate, then by the previous frame (invariant 4).
+- Not handled yet: a track's rotation (`preferredTransform`, the display matrix), colour beyond sRGB conversion by the platform, HDR. Media Foundation also returns the AAC encoder priming and end padding untrimmed (about 21 ms of sound before the picture at the start); trimming by the track's edit list comes with the play range work.
+
+Capability: `cpu-upload` only. This is the measured fallback of ADR-0108 decision 4. Each adapter's PR records its numbers from `examples/decode_bench.rs`: time per picture and real-time factor at 1080p60 and 4K60, and the process CPU measured outside the process.
+
+Exit criterion: once the picture node imports native surfaces (decision 5), each adapter adds `zero-copy`: a shared D3D11 texture on Windows (the decoder's texture-array slice copied on the GPU) and the `IOSurface` of the decoded `CVPixelBuffer` on macOS. From then on `cpu-upload` is used only for a file whose decoder gives no GPU surface.
+
+Conformance (`tests/conformance.rs`, run on its own platform; on other platforms the adapter only checks that it refuses): `fixtures/clip.mp4` (H.264 Main 160x90, coded 160x96, 10 fps, 5 frames, red with a green top-left quarter, and 0.5 s of 48 kHz stereo AAC). The tests check upright, cropped `Rgba8` pictures with 100 ms stamps and durations; a stated length near 0.5 s; a seek that moves both streams; interleaved float sound covering 0.5 s give or take one AAC frame; and the refusal of a file that is not media. A machine without the decoder skips with a reason.
