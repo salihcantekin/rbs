@@ -977,6 +977,62 @@ pub struct ReloadSource {
     pub source: u32,
 }
 
+/// `media.play`, `media.pause`, `media.restart` and `media.state` (protocol 1.83,
+/// ADR-0108 decision 10): one media-file source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MediaSource {
+    /// The source's id.
+    pub source: u32,
+}
+
+/// `media.seek` (protocol 1.83, ADR-0108 decision 10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MediaSeek {
+    /// The source's id.
+    pub source: u32,
+    /// The media time to move to, in milliseconds; past the file's stated duration it
+    /// is clamped to it.
+    pub position_ms: u64,
+}
+
+/// The play state of a media-file source (ADR-0108 decision 10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MediaPlayState {
+    /// Picture and sound advance.
+    Playing,
+    /// Stopped at the cursor.
+    Paused,
+    /// Only a preview scene draws it: it plays when a program or hold scene does.
+    Cued,
+    /// The end of the file without `loop`: the last picture holds.
+    Ended,
+    /// Asleep with no stored pause or end.
+    Standby,
+    /// A fault stopped playback.
+    Unavailable,
+    /// A state this client does not know (a newer server).
+    #[serde(other)]
+    Unknown,
+}
+
+/// The answer of every `media.*` method (protocol 1.83).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MediaStateInfo {
+    /// The source's id.
+    pub source: u32,
+    /// The play state after the command.
+    pub state: MediaPlayState,
+    /// The media cursor in milliseconds: where a pause stopped, else the picture
+    /// shown last.
+    pub cursor_ms: u64,
+    /// The file's stated duration in milliseconds, once it was opened.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+}
+
 /// `source.get_settings` (protocol 1.17, ADR-0077).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1523,6 +1579,55 @@ pub struct RecordStartToFile {
     pub canvas: Option<OutputCanvas>,
 }
 
+/// What `import.obs.check` and `import.obs.run` bring (protocol 1.82, ADR-0131
+/// decision 12): the parts the desktop wizard offers. Every part is on when absent.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ObsImportChoice {
+    /// The scenes to bring, by OBS name (and the scenes they nest); absent: all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scenes: Option<Vec<String>>,
+    /// OBS's desktop audio and microphones.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub global_audio: Option<bool>,
+    /// Audio filters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_filters: Option<bool>,
+    /// Video filters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_filters: Option<bool>,
+    /// The canvas size and frame rate of the profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canvas: Option<bool>,
+    /// Recording settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recording: Option<bool>,
+    /// The stream server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_server: Option<bool>,
+    /// The stream key (into the credential store only; needs `stream_server`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_key: Option<bool>,
+    /// Hotkeys (added; never replacing a shortcut of the user's).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hotkeys: Option<bool>,
+}
+
+/// `import.obs.check` and `import.obs.run` (protocol 1.82): a collection and a
+/// profile named as `import.obs.scan` found them, never by path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ObsImport {
+    /// A collection name from `import.obs.scan`.
+    pub collection: String,
+    /// A profile name from `import.obs.scan`; absent: no profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    /// What to bring; absent: everything.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub choose: Option<ObsImportChoice>,
+}
+
 /// `profile.switch` and `collection.switch` (protocol 1.4).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EntryRef {
@@ -1689,6 +1794,16 @@ pub enum Command {
     SourceReload(ReloadSource),
     /// `source.get_settings` (protocol 1.17).
     SourceGetSettings(GetSourceSettings),
+    /// `media.play` (protocol 1.83, ADR-0108).
+    MediaPlay(MediaSource),
+    /// `media.pause` (protocol 1.83).
+    MediaPause(MediaSource),
+    /// `media.seek` (protocol 1.83).
+    MediaSeek(MediaSeek),
+    /// `media.restart` (protocol 1.83).
+    MediaRestart(MediaSource),
+    /// `media.state` (protocol 1.83).
+    MediaState(MediaSource),
     /// `source.set_settings` (protocol 1.17).
     SourceSetSettings(SetSourceSettings),
     /// `source.set_companion_audio` (protocol 1.26).
@@ -1881,6 +1996,14 @@ pub enum Command {
     TokensCreate(CreateToken),
     /// `tokens.revoke`.
     TokensRevoke(TokenRef),
+    /// `import.obs.scan` (protocol 1.82): the OBS collections and profiles on this
+    /// computer, by name.
+    ImportObsScan,
+    /// `import.obs.check` (protocol 1.82): the report of an import, nothing written.
+    ImportObsCheck(ObsImport),
+    /// `import.obs.run` (protocol 1.82): imports as a new scene collection and output
+    /// profile.
+    ImportObsRun(ObsImport),
 }
 
 impl Command {
@@ -1936,6 +2059,11 @@ impl Command {
             Command::SourceRetarget(_) => "source.retarget",
             Command::SourceReload(_) => "source.reload",
             Command::SourceGetSettings(_) => "source.get_settings",
+            Command::MediaPlay(_) => "media.play",
+            Command::MediaPause(_) => "media.pause",
+            Command::MediaSeek(_) => "media.seek",
+            Command::MediaRestart(_) => "media.restart",
+            Command::MediaState(_) => "media.state",
             Command::SourceSetSettings(_) => "source.set_settings",
             Command::SourceSetCompanionAudio(_) => "source.set_companion_audio",
             Command::CanvasAddVertical(_) => "canvas.add_vertical",
@@ -2031,6 +2159,9 @@ impl Command {
             Command::TokensList => "tokens.list",
             Command::TokensCreate(_) => "tokens.create",
             Command::TokensRevoke(_) => "tokens.revoke",
+            Command::ImportObsScan => "import.obs.scan",
+            Command::ImportObsCheck(_) => "import.obs.check",
+            Command::ImportObsRun(_) => "import.obs.run",
         }
     }
 }
@@ -2235,6 +2366,11 @@ pub const METHODS: &[MethodInfo] = &[
     m("source.retarget", Some(Scope::Control), Effect::Edit),
     m("source.reload", Some(Scope::Control), Effect::Edit),
     m("source.get_settings", Some(Scope::Control), Effect::Read),
+    m("media.play", Some(Scope::Control), Effect::Edit),
+    m("media.pause", Some(Scope::Control), Effect::Edit),
+    m("media.seek", Some(Scope::Control), Effect::Edit),
+    m("media.restart", Some(Scope::Control), Effect::Edit),
+    m("media.state", Some(Scope::Read), Effect::Read),
     m("source.set_settings", Some(Scope::Control), Effect::Edit),
     m(
         "source.set_companion_audio",
@@ -2385,6 +2521,9 @@ pub const METHODS: &[MethodInfo] = &[
     m("tokens.list", Some(Scope::Tokens), Effect::Read),
     m("tokens.create", Some(Scope::Tokens), Effect::Destructive),
     m("tokens.revoke", Some(Scope::Tokens), Effect::Destructive),
+    m("import.obs.scan", Some(Scope::Admin), Effect::Read),
+    m("import.obs.check", Some(Scope::Admin), Effect::Read),
+    m("import.obs.run", Some(Scope::Admin), Effect::Destructive),
 ];
 
 /// The client-scoped `ui.*` methods (control API spec, "Client-scoped UI commands").
@@ -2409,6 +2548,7 @@ pub const UI_METHODS: &[&str] = &[
     "ui.collection.duplicate",
     "ui.collection.rename",
     "ui.collection.import",
+    "ui.collection.import_obs",
     "ui.collection.export",
     "ui.collection.delete",
     "ui.panel.open",
@@ -2589,6 +2729,16 @@ enum WireRequest {
     SourceReload(ReloadSource),
     #[serde(rename = "source.get_settings")]
     SourceGetSettings(GetSourceSettings),
+    #[serde(rename = "media.play")]
+    MediaPlay(MediaSource),
+    #[serde(rename = "media.pause")]
+    MediaPause(MediaSource),
+    #[serde(rename = "media.seek")]
+    MediaSeek(MediaSeek),
+    #[serde(rename = "media.restart")]
+    MediaRestart(MediaSource),
+    #[serde(rename = "media.state")]
+    MediaState(MediaSource),
     #[serde(rename = "source.set_settings")]
     SourceSetSettings(SetSourceSettings),
     #[serde(rename = "source.set_companion_audio")]
@@ -2781,6 +2931,12 @@ enum WireRequest {
     TokensCreate(CreateToken),
     #[serde(rename = "tokens.revoke")]
     TokensRevoke(TokenRef),
+    #[serde(rename = "import.obs.scan")]
+    ImportObsScan(Empty),
+    #[serde(rename = "import.obs.check")]
+    ImportObsCheck(ObsImport),
+    #[serde(rename = "import.obs.run")]
+    ImportObsRun(ObsImport),
 }
 
 impl From<WireRequest> for Request {
@@ -2842,6 +2998,11 @@ impl From<WireRequest> for Request {
             WireRequest::SourceRetarget(p) => Request::Command(C::SourceRetarget(p)),
             WireRequest::SourceReload(p) => Request::Command(C::SourceReload(p)),
             WireRequest::SourceGetSettings(p) => Request::Command(C::SourceGetSettings(p)),
+            WireRequest::MediaPlay(p) => Request::Command(C::MediaPlay(p)),
+            WireRequest::MediaPause(p) => Request::Command(C::MediaPause(p)),
+            WireRequest::MediaSeek(p) => Request::Command(C::MediaSeek(p)),
+            WireRequest::MediaRestart(p) => Request::Command(C::MediaRestart(p)),
+            WireRequest::MediaState(p) => Request::Command(C::MediaState(p)),
             WireRequest::SourceSetSettings(p) => Request::Command(C::SourceSetSettings(p)),
             WireRequest::SourceSetCompanionAudio(p) => {
                 Request::Command(C::SourceSetCompanionAudio(p))
@@ -2951,6 +3112,9 @@ impl From<WireRequest> for Request {
             WireRequest::TokensList(_) => Request::Command(C::TokensList),
             WireRequest::TokensCreate(p) => Request::Command(C::TokensCreate(p)),
             WireRequest::TokensRevoke(p) => Request::Command(C::TokensRevoke(p)),
+            WireRequest::ImportObsScan(_) => Request::Command(C::ImportObsScan),
+            WireRequest::ImportObsCheck(p) => Request::Command(C::ImportObsCheck(p)),
+            WireRequest::ImportObsRun(p) => Request::Command(C::ImportObsRun(p)),
         }
     }
 }
@@ -3011,6 +3175,11 @@ impl From<Request> for WireRequest {
                 C::SourceRetarget(p) => WireRequest::SourceRetarget(p),
                 C::SourceReload(p) => WireRequest::SourceReload(p),
                 C::SourceGetSettings(p) => WireRequest::SourceGetSettings(p),
+                C::MediaPlay(p) => WireRequest::MediaPlay(p),
+                C::MediaPause(p) => WireRequest::MediaPause(p),
+                C::MediaSeek(p) => WireRequest::MediaSeek(p),
+                C::MediaRestart(p) => WireRequest::MediaRestart(p),
+                C::MediaState(p) => WireRequest::MediaState(p),
                 C::SourceSetSettings(p) => WireRequest::SourceSetSettings(p),
                 C::SourceSetCompanionAudio(p) => WireRequest::SourceSetCompanionAudio(p),
                 C::CanvasAddVertical(p) => WireRequest::CanvasAddVertical(p),
@@ -3108,6 +3277,9 @@ impl From<Request> for WireRequest {
                 C::TokensList => WireRequest::TokensList(Empty {}),
                 C::TokensCreate(p) => WireRequest::TokensCreate(p),
                 C::TokensRevoke(p) => WireRequest::TokensRevoke(p),
+                C::ImportObsScan => WireRequest::ImportObsScan(Empty {}),
+                C::ImportObsCheck(p) => WireRequest::ImportObsCheck(p),
+                C::ImportObsRun(p) => WireRequest::ImportObsRun(p),
             },
         }
     }
@@ -3415,6 +3587,8 @@ pub enum Response {
     SyncMeasureStarted(SyncMeasureStarted),
     /// `sync.devices` (protocol 1.66).
     SyncDevices(SyncDeviceList),
+    /// Every `media.*` method (protocol 1.83).
+    MediaState(MediaStateInfo),
     /// `sync.apply_to_device_sources` (protocol 1.66).
     SyncAppliedToDeviceSources(SyncAppliedToDeviceSources),
     /// `monitor.status` (protocol 1.30).
@@ -3427,6 +3601,12 @@ pub enum Response {
     Settings(Snapshot<Settings>),
     /// `profile.list`, `collection.list` (protocol 1.4).
     Library(Library),
+    /// `import.obs.scan` (protocol 1.82).
+    ObsScan(crate::types::ObsScan),
+    /// `import.obs.check` (protocol 1.82).
+    ObsCheck(crate::types::ObsCheck),
+    /// `import.obs.run` (protocol 1.82).
+    ObsRun(crate::types::ObsRun),
     /// `events.subscribe`.
     Subscribed(Subscribed),
     /// `tokens.list`.

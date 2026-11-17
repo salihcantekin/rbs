@@ -190,6 +190,8 @@ struct App {
     open_attributes: Option<(i32, bool)>,
     /// `ui.app_menu.open` ran; the next sync opens the RBS menu in the main window.
     open_app_menu: bool,
+    /// `ui.collection.import_obs` ran; the next sync opens the Import from OBS window.
+    open_obs_import: bool,
     /// The Add vertical output dialog is asked for (`canvas.add_vertical`).
     open_vertical: bool,
     /// Ask for the name of a new workspace (Save as new) in the main window.
@@ -820,6 +822,7 @@ impl App {
             // Making the window needs the shell's context, which the next sync has.
             Run::OpenSettings(section, setting) => self.open_settings = Some((section, setting)),
             Run::OpenAppMenu => self.open_app_menu = true,
+            Run::OpenObsImport => self.open_obs_import = true,
             Run::Projector(canvas, true) => self.open_projector(canvas),
             Run::Projector(canvas, false) => self.close_projector(canvas),
             Run::ProjectorSize(canvas, size, display) => {
@@ -1732,6 +1735,9 @@ impl Ctx {
                     _ => projector::picture(canvas, picture),
                 }
             }
+            if applied.obs_imported == Some(true) {
+                shortcuts_page::load(&ctx, app);
+            }
             if let Some((collection, id)) = applied.switch {
                 let done = if collection {
                     app.dismiss_source_settings();
@@ -2554,6 +2560,10 @@ impl Ctx {
             self.show_all(&mut app);
             let s = app.main.global::<Shell>();
             s.set_app_menu_asked(s.get_app_menu_asked().wrapping_add(1));
+        }
+        if std::mem::take(&mut app.open_obs_import) {
+            self.show_all(&mut app);
+            obs_import_page::open(self, &mut app);
         }
         if std::mem::take(&mut app.open_vertical) {
             self.show_all(&mut app);
@@ -5065,6 +5075,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             open_source_settings: None,
             open_attributes: None,
             open_app_menu: false,
+            open_obs_import: false,
             open_vertical: false,
             ask_name: None,
             name_for: None,

@@ -1,7 +1,7 @@
 # Spec: Media-file decode port
 
 - Status: Draft
-- Owner crate(s): `rbs-media-decode` (port), `rbs-media-decode-test` (fake adapter); adapters `rbs-media-mf`, `rbs-media-avf`, `rbs-media-anim` (planned)
+- Owner crate(s): `rbs-media-decode` (port), `rbs-media-decode-test` (fake adapter); adapters `rbs-media-anim` (GIF, APNG, WebP; built), `rbs-media-mf`, `rbs-media-avf` (planned)
 - Related ADRs: [ADR-0108](../adr/0108-media-file-source.md), [ADR-0106](../adr/0106-picture-and-sound-on-one-source.md), [ADR-0007](../adr/0007-ffmpeg-as-optional-adapter.md)
 
 ## Purpose
@@ -66,3 +66,9 @@ Invariants:
 ## Conformance tests
 
 On the fake adapter (`rbs-media-decode-test`), with no platform decoder: per-stream reads and sound chunks in order (`tests/per_stream.rs`), seek moving both streams, a clip without sound, a zero-delay animation frame read as 100 ms; the frame-duration rule and size limits (`rbs-media-decode` unit tests); the local-only path checks (`path.rs`); adapter fallback and the most specific error (`rbs-sources/tests/media_path.rs`). Each real adapter adds a per-platform test with small fixture files; a codec the machine lacks is a skip with a reason.
+
+`rbs-media-anim` (`tests/conformance.rs`, fixtures in `tests/fixtures`): a GIF, an APNG and an animated WebP of three 8x8 frames each give the same pictures, timestamps and frame durations (a stated 0 ms delay reads as 100 ms, and the stated length includes it), compose a partial frame over the one before, seek into a frame by composing forward, and end after a seek past the end; a still PNG is one picture with no frame duration and no length; a file that is no image is refused by content, not by extension.
+
+## Adapter: `rbs-media-anim`
+
+Pure Rust (`gif`, `png`, `image-webp`), on every platform, capability `cpu-upload`. It recognizes the container by its first bytes, so a renamed file still opens and anything else is `Unsupported` for the next adapter. Every picture is the composited canvas as straight-alpha sRGB `Rgba8` (GIF and APNG disposal and blending, WebP through its decoder). There is no keyframe: `seek` reopens the file and composes forward to the frame that covers the cursor. The length is the sum of the delays after the frame-duration rule, read from the frame headers without decoding pixels. A still image is one picture with no frame duration and no length, so the source holds it. There is no sound stream.
