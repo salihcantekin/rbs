@@ -55,6 +55,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace            # or: cargo nextest run --workspace (CI uses nextest)
 cargo doc --workspace --no-deps
 cargo xtask check-ui              # after any change under crates/rbs-app/ui (rule 18)
+cargo xtask affected test         # before a push: changed crates and their dependents only
+cargo xtask affected clippy
 ```
 
 A task is done when all of them pass, the acceptance criteria are met, and specs are in sync. Saying it works is not evidence; show the command output.
@@ -78,7 +80,7 @@ A task is done when all of them pass, the acceptance criteria are met, and specs
 - Keep each change to one crate and one concern where possible. Prefer several small PRs over one large one.
 - Read the relevant spec and ADRs before writing code; cite them in the PR.
 - Write tests first for contracts: conformance tests for ports, property tests for pure logic.
-- Use the controllable `TestClock` from `rbs-core` in tests; never sleep for timing. While iterating, run `cargo test -p <crate>` for the crates you change; run the whole workspace before you push.
+- Use the controllable `TestClock` from `rbs-core` in tests; never sleep for timing. While iterating, run `cargo test -p <crate>` for the crates you change; before you push, run `cargo xtask affected clippy` and `cargo xtask affected test` (the changed crates and everything that depends on them). The whole workspace runs once after a batch of merges ([testing strategy](docs/specs/testing-strategy.md#which-tests-to-run)).
 - When a requirement is unclear or a spec seems wrong, stop and ask the human instead of guessing.
 - Read [docs/status.md](docs/status.md) before trusting the roadmap or a "planned" line in an index. If a spec's implementation status and an index disagree, the spec section written beside the code wins, and the index is fixed in the same change.
 - Do not implement a Proposed ADR. An ADR stays Proposed until an independent review is recorded and the owner approves (ADR-0014).
