@@ -644,6 +644,21 @@ fn every_request() -> Vec<Request> {
         c(Command::TokensRevoke(TokenRef {
             name: "Stream Deck".into(),
         })),
+        c(Command::ImportObsScan),
+        c(Command::ImportObsCheck(ObsImport {
+            collection: "Evening show".into(),
+            profile: None,
+            choose: None,
+        })),
+        c(Command::ImportObsRun(ObsImport {
+            collection: "Evening show".into(),
+            profile: Some("Advanced".into()),
+            choose: Some(ObsImportChoice {
+                scenes: Some(vec!["Main".into()]),
+                stream_key: Some(false),
+                ..ObsImportChoice::default()
+            }),
+        })),
         c(Command::FilterTypes(FilterTypesParams::default())),
         c(Command::FilterAdd(AddFilter {
             source: 3,
@@ -3055,4 +3070,41 @@ fn stream_destinations_have_a_stable_wire_form() {
             "connects": 1, "reconnect_attempts": 2, "dropped": 7, "on_air_ms": 60000,
         })
     );
+}
+
+#[test]
+fn obs_import_calls_name_sources_only_and_answers_round_trip() {
+    // A path field is unknown: collections and profiles are named, never located.
+    let bad = json!({"collection": "x", "path": "/etc/passwd"});
+    assert!(serde_json::from_value::<ObsImport>(bad).is_err());
+    let run = ObsRun {
+        collection: LibraryEntry {
+            id: "evening-show".into(),
+            name: "Evening show".into(),
+        },
+        profile: None,
+        shortcuts_added: 2,
+        report: ObsCheck {
+            name: "Evening show".into(),
+            exact: ObsCounts {
+                scenes: 3,
+                sources: 5,
+                items: 7,
+                filters: 1,
+            },
+            entries: vec![ObsReportEntry {
+                outcome: "skipped".into(),
+                area: "source".into(),
+                obs_name: "Chat".into(),
+                obs_type: "browser_source".into(),
+                scenes: vec!["Main".into()],
+                reason: "Browser sources are not in RBS yet.".into(),
+                hint: None,
+            }],
+        },
+        notes: Vec::new(),
+    };
+    let v = serde_json::to_value(&run).unwrap();
+    assert!(v.get("profile").is_none() && v.get("notes").is_none());
+    assert_eq!(serde_json::from_value::<ObsRun>(v).unwrap(), run);
 }

@@ -58,7 +58,7 @@ fn every_method_has_an_effect_and_read_scope_methods_only_read() {
     ] {
         assert_eq!(method_effect(live), Some(Effect::Live), "{live}");
     }
-    for destructive in ["tokens.create", "tokens.revoke"] {
+    for destructive in ["tokens.create", "tokens.revoke", "import.obs.run"] {
         assert_eq!(
             method_effect(destructive),
             Some(Effect::Destructive),
