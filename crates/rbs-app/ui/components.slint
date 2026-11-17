@@ -3292,6 +3292,15 @@ export global Overlays {
     in-out property <length> transition-h;
     in-out property <OverlayCover> transition-cover;
 
+    // The live chip's destinations list (ADR-0127 decision 17): drawn by the main
+    // window under the button that opened it, reported as a cover like the hint.
+    in-out property <bool> live-open;
+    in-out property <length> live-x;
+    in-out property <length> live-y;
+    in-out property <length> live-w;
+    in-out property <length> live-h;
+    in-out property <OverlayCover> live-cover;
+
     // The "Add vertical output" dialog (ADR-0093 decision 8): a small form over the
     // main window. Rust reads the chosen values when `vertical-accepted` fires and
     // sets `vertical-error` when the studio refuses. With a vertical canvas already
