@@ -340,6 +340,7 @@ component TokenEditorRow inherits Rectangle {
             if item.kind == 1: VerticalLayout {
                 alignment: center;
                 NumberField {
+                    live: false;
                     width: Tokens.size-menu-sm / 2;
                     label: item.label;
                     value: item.number;
@@ -368,6 +369,7 @@ component TokenEditorRow inherits Rectangle {
                 HorizontalLayout {
                     spacing: Tokens.space-2;
                     NumberField {
+                        live: false;
                         width: Tokens.size-menu-sm / 3;
                         label: @tr("{} size", item.label);
                         value: item.size;
@@ -378,6 +380,7 @@ component TokenEditorRow inherits Rectangle {
                         }
                     }
                     NumberField {
+                        live: false;
                         width: Tokens.size-menu-sm / 3;
                         label: @tr("{} line height", item.label);
                         value: item.line;
@@ -388,6 +391,7 @@ component TokenEditorRow inherits Rectangle {
                         }
                     }
                     NumberField {
+                        live: false;
                         width: Tokens.size-menu-sm / 3;
                         label: @tr("{} weight", item.label);
                         value: item.weight;
