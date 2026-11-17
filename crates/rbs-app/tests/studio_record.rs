@@ -281,6 +281,8 @@ fn spawn_host_hw(
             a.sources
                 .register_audio(Arc::new(TestAudioBackend::new()))
                 .unwrap();
+            a.sources
+                .register_text(Arc::new(rbs_text_test::FakeTextRenderer::new()));
             for (id, broken) in [(BROKEN, true), (WORKING, false)] {
                 a.video_encoders
                     .register(Arc::new(FakeVideoFactory {
@@ -972,6 +974,89 @@ fn a_marked_screen_records_its_own_video_file_next_to_the_master() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A text source's box cannot change while a take writes its separate picture track
+/// (ADR-0129 decision 5): an edit is refused with a reason, an undo that would change it
+/// is stepped back and refused; after the take both work again.
+#[test]
+fn a_text_box_is_locked_while_a_take_records_its_picture_separately() {
+    let Some(gpu) = gpu() else { return };
+    let dir = std::env::temp_dir().join(format!("rbs-app-text-box-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let clock = TestClock::new();
+    let (host, rx) = host(gpu, &clock);
+    next(&rx, |u| match u {
+        Update::Started { .. } => Some(()),
+        Update::Failed(e) => panic!("{e}"),
+        _ => None,
+    });
+    host.send(Command::AddText {
+        text: "Title".into(),
+    });
+    let rows = rows_where(&rx, |r| r.iter().any(|r| r.kind == Some(SourceKind::Text)));
+    let text = rows
+        .into_iter()
+        .find(|r| r.kind == Some(SourceKind::Text))
+        .unwrap();
+    let width = |w: i64| {
+        let mut patch = std::collections::BTreeMap::new();
+        patch.insert("width".to_owned(), serde_json::json!(w));
+        Command::SetSourceSettings { id: text.id, patch }
+    };
+    // A box change before the take, to undo during it.
+    host.send(width(300));
+    host.send(Command::SetRecordSeparately {
+        id: text.id,
+        patch: RecordPatch::enabled(true),
+    });
+    rows_where(&rx, |r| {
+        r.iter()
+            .any(|r| r.id == text.id && r.record_separately.video)
+    });
+    host.send(Command::StartRecording(with_tracks(
+        dir.join("take.mkv"),
+        None,
+    )));
+    match recording(&rx) {
+        RecordingUpdate::Started { separate, .. } => {
+            assert!(
+                separate.iter().any(|s| s.starts_with(&text.name)),
+                "{separate:?}"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+
+    host.send(width(320));
+    let why = next(&rx, |u| match u {
+        Update::Error(why) => Some(why),
+        _ => None,
+    });
+    assert!(why.contains("Stop recording to change the box"), "{why}");
+    // Undo the mark first, then the earlier box change: the box step is refused.
+    host.send(Command::Undo);
+    host.send(Command::Undo);
+    let why = next(&rx, |u| match u {
+        Update::Error(why) => Some(why),
+        _ => None,
+    });
+    assert!(why.contains("Stop recording to change the box"), "{why}");
+
+    match stop_recording(&host, &rx, &clock) {
+        RecordingUpdate::Stopped { failure, .. } => assert_eq!(failure, None),
+        other => panic!("{other:?}"),
+    }
+    // After the take the same edit goes through.
+    host.send(width(320));
+    host.send(Command::ListTargets(SourceKind::Screen));
+    next(&rx, |u| match u {
+        Update::Error(why) => panic!("refused after the take: {why}"),
+        Update::Targets(SourceKind::Screen, _) => Some(()),
+        _ => None,
+    });
+    drop(host);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Bytes after the header of a WAV file's `data` chunk, as written.
 fn wav_data_len(wav: &[u8]) -> usize {
     let mut at = 12;
@@ -1312,12 +1397,17 @@ impl rbs_api::transport::ConnectionSender for JsonSender {
 
 impl ApiClient {
     fn attach(host: &StudioHost) -> Self {
+        Self::attach_with(host, rbs_api::TokenStore::new())
+    }
+
+    /// [`ApiClient::attach`] with a server that accepts `tokens`.
+    fn attach_with(host: &StudioHost, tokens: rbs_api::TokenStore) -> Self {
         let server =
             rbs_api::session::ServerConfig::new(rbs_api::request::ClientInfo::new("rbs", "test"))
                 .unwrap();
         let (api, endpoint) = rbs_api::ApiServer::start(
             server,
-            rbs_api::TokenStore::new(),
+            tokens,
             rbs_api::thread::ApiOptions::new(host.api_waker()),
         )
         .unwrap();
@@ -2786,5 +2876,94 @@ fn the_window_pauses_and_resumes_the_recording() {
         why.starts_with("The recording could not pause or resume"),
         "{why}"
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// ADR-0052 decision 4 through the real target: while a recording runs, an IPC
+/// session narrowed to a token without "Allow actions that cannot be undone" may not
+/// change what is on air (`not_permitted`, reason `on_air`), may still edit what is
+/// off air, and is refused live calls; once the recording stops, the same edit passes.
+#[test]
+fn a_token_without_the_permission_cannot_change_what_is_on_air() {
+    let Some(gpu) = gpu() else { return };
+    let dir = std::env::temp_dir().join(format!("rbs-app-on-air-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let clock = TestClock::new();
+    let (host, rx) = host(gpu, &clock);
+    next(&rx, |u| match u {
+        Update::Started { .. } => Some(()),
+        Update::Failed(e) => panic!("{e}"),
+        _ => None,
+    });
+    host.send(Command::ListTargets(SourceKind::Screen));
+    let display = next(&rx, |u| match u {
+        Update::Targets(SourceKind::Screen, t) => Some(t[0].clone()),
+        _ => None,
+    });
+    host.send(Command::AddSource {
+        kind: SourceKind::Screen,
+        target: display,
+    });
+    let source = rows_where(&rx, |r| r.len() == 1)[0].id.get();
+
+    let token = rbs_api::token::Token::from_bytes(&[7; 32]);
+    let mut tokens = rbs_api::TokenStore::new();
+    tokens.insert(rbs_api::token::TokenEntry {
+        irreversible: false,
+        name: "agent".into(),
+        scopes: rbs_api::ScopeSet::PANEL,
+        hash: token.hash(),
+    });
+    let mut api = ApiClient::attach_with(&host, tokens);
+    let auth = api.call(
+        "session.authenticate",
+        serde_json::json!({"token": token.expose()}),
+    );
+    assert_eq!(auth["result"]["irreversible"], false, "{auth}");
+
+    // Nothing runs: an edit of the program scene's source passes.
+    let quiet = api.call(
+        "source.set_volume",
+        serde_json::json!({"source": source, "volume": 0.8}),
+    );
+    assert!(quiet.get("error").is_none(), "{quiet}");
+
+    host.send(Command::StartRecording(request(dir.join("take.mkv"), None)));
+    assert!(matches!(recording(&rx), RecordingUpdate::Started { .. }));
+
+    let louder = api.call(
+        "source.set_volume",
+        serde_json::json!({"source": source, "volume": 0.5}),
+    );
+    assert_eq!(error_kind(&louder), "not_permitted", "{louder}");
+    assert_eq!(louder["error"]["data"]["reason"], "on_air", "{louder}");
+    let switch = api.call("canvas.transition", serde_json::json!({}));
+    assert_eq!(error_kind(&switch), "not_permitted", "{switch}");
+
+    // Off air: a new scene, renamed.
+    let added = api.call("scene.add", serde_json::json!({"name": "Spare"}));
+    let spare = added["result"]["scene"].as_u64().unwrap();
+    let renamed = api.call(
+        "scene.rename",
+        serde_json::json!({"scene": spare, "name": "Next"}),
+    );
+    assert!(renamed.get("error").is_none(), "{renamed}");
+    // Placing the on-air source there still touches it.
+    let placed = api.call(
+        "item.add",
+        serde_json::json!({"scene": spare, "source": source}),
+    );
+    assert_eq!(error_kind(&placed), "not_permitted", "{placed}");
+
+    let stop = api.call("record.stop", serde_json::json!({}));
+    assert_eq!(error_kind(&stop), "not_permitted", "{stop}");
+    assert_eq!(stop["error"]["data"]["reason"], "irreversible", "{stop}");
+
+    stop_recording(&host, &rx, &clock);
+    let after = api.call(
+        "source.set_volume",
+        serde_json::json!({"source": source, "volume": 0.5}),
+    );
+    assert!(after.get("error").is_none(), "{after}");
     let _ = std::fs::remove_dir_all(&dir);
 }

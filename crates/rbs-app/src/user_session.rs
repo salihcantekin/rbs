@@ -485,6 +485,37 @@ impl UserSession {
         })?
     }
 
+    /// Writes an OBS import plan (ADR-0131 decision 9) on the writer thread: a new
+    /// scene collection, output profile and shortcuts. Returns what was written and
+    /// the stream key to save under the new profile's account, if any; the caller
+    /// hands that to the studio, which owns the key store.
+    pub fn import_obs(
+        &self,
+        plan: rbs_import_obs::ImportPlan,
+    ) -> Result<
+        (
+            crate::obs_import::Written,
+            Option<(String, rbs_transport::Secret)>,
+        ),
+        String,
+    > {
+        self.run(move |data, lock, _| {
+            let key = std::cell::RefCell::new(None);
+            let written = crate::obs_import::write(
+                data,
+                lock,
+                &plan,
+                &|account, secret| {
+                    *key.borrow_mut() = Some((account.to_owned(), secret));
+                    Ok(())
+                },
+                rbs_ui::shortcut::Platform::current(),
+                &|p| p.is_dir(),
+            )?;
+            Ok((written, key.into_inner()))
+        })?
+    }
+
     /// Deletes the scene collection `id`, which must not be the one in use (its file
     /// is moved to `deleted/`).
     pub fn delete_collection(&self, id: &EntryId) -> Result<(), String> {

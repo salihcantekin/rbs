@@ -67,7 +67,7 @@ pub enum Topic {
     /// The attribute clipboard (state, protocol 1.68, ADR-0133).
     #[serde(rename = "source.attributes_clipboard.changed")]
     AttributesClipboardChanged,
-    /// A program change's transition started or ended (protocol 1.74, ADR-0128).
+    /// A program change's transition started or ended (protocol 1.79, ADR-0128).
     #[serde(rename = "transition.state")]
     TransitionState,
 }
@@ -286,7 +286,7 @@ pub enum EventPayload {
     /// The attribute clipboard (protocol 1.68).
     #[serde(rename = "source.attributes_clipboard.changed")]
     AttributesClipboardChanged(crate::types::AttributesClipboardChanged),
-    /// A transition started or ended (protocol 1.74).
+    /// A transition started or ended (protocol 1.79).
     #[serde(rename = "transition.state")]
     TransitionState(crate::types::TransitionStateChanged),
 }

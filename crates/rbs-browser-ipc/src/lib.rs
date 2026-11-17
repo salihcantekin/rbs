@@ -11,10 +11,13 @@
 //! payload: u8 kind | body
 //! kind 1 configure: u16 url_len | url utf-8 | u32 width | u32 height | u32 fps | u8 transparent
 //!                   | u16 frames_len | frames section name utf-8
+//!                   | u16 sound_len | sound section name utf-8 (empty: no sound)
+//!                   | u32 sample_rate (the rate the studio asks the engine for)
 //! ```
 //!
 //! Frames do not cross the pipe. They cross the studio-allocated shared memory
-//! section named in `configure` ([`shm`]), which also carries the heartbeat. The studio
+//! section named in `configure` (`rbs_browser_shm`), which also carries the heartbeat;
+//! page sound crosses a second section. The studio
 //! allocates that section before it spawns the helper. Dropping it does not join the
 //! child. There is no JS binding and no device-permission field on the wire.
 
@@ -70,6 +73,12 @@ pub struct Configure {
     pub transparent: bool,
     /// Name of the studio-allocated frame section (`rbs_browser_shm::FrameRing`).
     pub frames: String,
+    /// Name of the studio-allocated sound section (`rbs_browser_shm::SoundRing`).
+    /// Empty: the studio takes no page sound, and the runner turns sound off.
+    pub sound: String,
+    /// Sample rate the runner asks its engine for, so the studio rarely resamples.
+    /// 0: the engine's own.
+    pub sample_rate: u32,
 }
 
 /// Encodes a configure payload, including the length prefix.
@@ -80,7 +89,12 @@ pub fn encode_configure(config: &Configure) -> Vec<u8> {
     let frames = config.frames.as_bytes();
     let frames_len = u16::try_from(frames.len()).unwrap_or(u16::MAX);
     let frames = &frames[..usize::from(frames_len)];
-    let mut body = Vec::with_capacity(1 + 2 + url.len() + 4 + 4 + 4 + 1 + 2 + frames.len());
+    let sound = config.sound.as_bytes();
+    let sound_len = u16::try_from(sound.len()).unwrap_or(u16::MAX);
+    let sound = &sound[..usize::from(sound_len)];
+    let mut body = Vec::with_capacity(
+        1 + 2 + url.len() + 4 + 4 + 4 + 1 + 2 + frames.len() + 2 + sound.len() + 4,
+    );
     body.push(KIND_CONFIGURE);
     body.extend_from_slice(&url_len.to_le_bytes());
     body.extend_from_slice(url);
@@ -90,6 +104,9 @@ pub fn encode_configure(config: &Configure) -> Vec<u8> {
     body.push(u8::from(config.transparent));
     body.extend_from_slice(&frames_len.to_le_bytes());
     body.extend_from_slice(frames);
+    body.extend_from_slice(&sound_len.to_le_bytes());
+    body.extend_from_slice(sound);
+    body.extend_from_slice(&config.sample_rate.to_le_bytes());
     prefix(body)
 }
 
@@ -115,6 +132,13 @@ pub fn decode_configure(bytes: &[u8]) -> Option<Configure> {
     let frames = std::str::from_utf8(tail.get(2..2 + frames_len)?)
         .ok()?
         .to_owned();
+    let tail = tail.get(2 + frames_len..)?;
+    let sound_len = u16::from_le_bytes([*tail.first()?, *tail.get(1)?]) as usize;
+    let sound = std::str::from_utf8(tail.get(2..2 + sound_len)?)
+        .ok()?
+        .to_owned();
+    let rate = tail.get(2 + sound_len..2 + sound_len + 4)?;
+    let sample_rate = u32::from_le_bytes(rate.try_into().ok()?);
     Some(Configure {
         url,
         width,
@@ -122,6 +146,8 @@ pub fn decode_configure(bytes: &[u8]) -> Option<Configure> {
         fps,
         transparent,
         frames,
+        sound,
+        sample_rate,
     })
 }
 
@@ -186,6 +212,8 @@ mod tests {
             fps: 30,
             transparent: false,
             frames: "/rbsb.1.0".into(),
+            sound: "/rbsb.1.1".into(),
+            sample_rate: 48_000,
         };
         let encoded = encode_configure(&config);
         assert_eq!(decode_configure(&encoded), Some(config));

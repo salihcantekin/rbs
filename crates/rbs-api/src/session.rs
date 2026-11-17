@@ -11,7 +11,7 @@ use std::time::Duration;
 use rbs_core::time::Timestamp;
 
 use crate::codec::{Codec, JsonCodec, RequestId};
-use crate::control::{Forwarded, Reply};
+use crate::control::{Caller, Forwarded, Reply};
 use crate::error::{ApiError, ErrorKind};
 use crate::event::{Event, EventPayload, StateKey, Topic, TopicSet};
 use crate::request::{
@@ -27,13 +27,23 @@ use crate::transport::{
 
 /// The protocol version this server speaks.
 ///
-/// 1.74 adds scene transitions (ADR-0128 decision 13): `collection.set_transition`,
+/// 1.79 adds scene transitions (ADR-0128 decision 13): `collection.set_transition`,
 /// `kind` and `duration_ms` on `scene.switch` and `canvas.transition`, `transition` on
 /// `scene.list`, and the topic `transition.state`.
 /// 1.63 adds pauses to markers (ADR-0124 decision 10): `pause_markers` in a recording
 /// profile's `markers`, `while_paused` on `marker.add`'s answer, and marker times in
 /// file time.
 /// 1.62 adds the marker settings (ADR-0089): `markers` on a recording profile.
+/// 1.77 adds filter latency (ADR-0130 decision 9): `latency_ms` on audio filter types;
+/// `filter_latency_ms`, `effective_offset_ms`, `uncompensated_ms`, and in `source.list`
+/// `input_late_frames` and `input_resyncs` on a source; `effective_offset_ms` of
+/// `sync.measure.changed` is the heard offset `h`.
+/// 1.75 adds text sources (ADR-0129 decision 8): `kind: "text"` with `text` on
+/// `source.add`, `source.set_text`, `text.fonts` and the error kinds `forbidden` (a
+/// text source's `file` cannot be written through the API) and `not_ready`.
+/// 1.74 adds the destinations of a stream (ADR-0127 decision 16): `stream.destinations`,
+/// `stream.destination.start`, `stream.destination.stop`,
+/// `stream.destination.set_enabled`, and `destinations` on a live stream's state.
 /// 1.68 adds duplicating, resetting and pasting attributes of sources (ADR-0133):
 /// `source.duplicate`, `source.reset`, `source.copy_attributes`,
 /// `source.attributes_clipboard`, `source.paste_attributes`, `sources` on
@@ -91,7 +101,7 @@ use crate::transport::{
 /// `record.start`, `tracks` on a running recording and `record_separately` on a source.
 /// 1.45 adds `"wav"` and `"flac"` on a recording profile (the mix with no picture).
 /// 1.44 is the vertical canvas layouts.
-pub const PROTOCOL_VERSION: &str = "1.74";
+pub const PROTOCOL_VERSION: &str = "1.79";
 
 /// Caps and timeouts (ADR-0044 decision 12). The defaults are the version 1 values in
 /// the control API spec.
@@ -223,6 +233,26 @@ pub enum AuditEvent {
         /// The explicit file path, for `record.start_to_file`.
         detail: Option<String>,
     },
+    /// A `live` or `destructive` call, admitted (ADR-0052 decision 5).
+    Irreversible {
+        /// The connection.
+        conn: ConnectionId,
+        /// The token's name; `None` for a same-user IPC peer.
+        token: Option<String>,
+        /// The method.
+        method: &'static str,
+    },
+    /// A call refused with `not_permitted` (ADR-0052 decision 5).
+    NotPermitted {
+        /// The connection.
+        conn: ConnectionId,
+        /// The token's name; `None` for a same-user IPC peer.
+        token: Option<String>,
+        /// The method.
+        method: &'static str,
+        /// `data.reason`: `irreversible`, later `on_air` and `network`.
+        reason: &'static str,
+    },
     /// The server closed a connection.
     Closed {
         /// The connection.
@@ -273,8 +303,11 @@ enum Phase {
     AwaitAuth,
     Ready {
         scopes: ScopeSet,
-        /// The token's name, hash and stored scopes (before channel limits).
-        token: Option<(String, TokenHash, ScopeSet)>,
+        /// "Allow actions that cannot be undone" (ADR-0052 decision 4).
+        irreversible: bool,
+        /// The token's name, hash, stored scopes (before channel limits) and
+        /// permission.
+        token: Option<(String, TokenHash, ScopeSet, bool)>,
     },
     Closed,
 }
@@ -340,6 +373,9 @@ struct Session {
     /// ADR-0052 decision 3).
     narrowable: bool,
     queue: VecDeque<Queued>,
+    /// The method of the request in flight, for auditing the control thread's
+    /// `not_permitted` refusals.
+    in_flight_method: Option<&'static str>,
     in_flight: bool,
     bucket: Bucket,
     /// `marker.add` only (protocol 1.50).
@@ -356,7 +392,7 @@ impl Session {
 
     fn token_name(&self) -> Option<String> {
         match &self.phase {
-            Phase::Ready { token, .. } => token.as_ref().map(|(n, _, _)| n.clone()),
+            Phase::Ready { token, .. } => token.as_ref().map(|(n, _, _, _)| n.clone()),
             _ => None,
         }
     }
@@ -445,13 +481,14 @@ impl Server {
                 // Revoked, renamed or re-scoped: the session ends; the client
                 // reconnects with what the token allows now.
                 Phase::Ready {
-                    token: Some((name, hash, scopes)),
+                    token: Some((name, hash, scopes, irreversible)),
                     ..
-                } => !self
-                    .tokens
-                    .entries()
-                    .iter()
-                    .any(|e| e.hash == *hash && e.name == *name && e.scopes == *scopes),
+                } => !self.tokens.entries().iter().any(|e| {
+                    e.hash == *hash
+                        && e.name == *name
+                        && e.scopes == *scopes
+                        && e.irreversible == *irreversible
+                }),
                 _ => false,
             })
             .map(|(c, _)| *c)
@@ -603,6 +640,7 @@ impl Server {
                 transport_closed: false,
                 pending_auth: None,
                 narrowable: false,
+                in_flight_method: None,
                 queue: VecDeque::new(),
                 in_flight: false,
                 bucket: Bucket {
@@ -714,6 +752,7 @@ impl Server {
                 if let Some(scopes) = scopes {
                     s.phase = Phase::Ready {
                         scopes,
+                        irreversible: true,
                         token: None,
                     };
                     s.narrowable = true;
@@ -766,14 +805,55 @@ impl Server {
                 s.narrowable = false;
                 self.narrow(conn, incoming.id, &auth.token);
             }
-            (Phase::Ready { scopes, token }, request) => {
+            (
+                Phase::Ready {
+                    scopes,
+                    irreversible,
+                    token,
+                },
+                request,
+            ) => {
                 s.narrowable = false;
                 if s.queue.len() >= limits.queue_len {
                     let e = ApiError::new(ErrorKind::Busy, "request queue full");
                     self.send_now(conn, Some(&incoming.id), Err(e));
                     return;
                 }
-                let queued = admit(incoming.id, request, scopes);
+                let mut queued = admit(incoming.id, request, scopes);
+                let token_name = token.map(|(n, _, _, _)| n);
+                if let Queued::Forward(id, command) = &queued {
+                    let method = command.method();
+                    // Checked after the scope: a caller learns of the permission only
+                    // for a method it could otherwise call (ADR-0052 decision 4).
+                    if command.effect().is_irreversible() {
+                        if irreversible {
+                            self.actions
+                                .push_back(Action::Audit(AuditEvent::Irreversible {
+                                    conn,
+                                    token: token_name.clone(),
+                                    method,
+                                }));
+                        } else {
+                            self.actions
+                                .push_back(Action::Audit(AuditEvent::NotPermitted {
+                                    conn,
+                                    token: token_name.clone(),
+                                    method,
+                                    reason: "irreversible",
+                                }));
+                            let mut data = serde_json::Map::new();
+                            data.insert("reason".into(), "irreversible".into());
+                            let e = ApiError::with_data(
+                                ErrorKind::NotPermitted,
+                                format!(
+                                    "{method} cannot be undone, and this token is not allowed actions that cannot be undone"
+                                ),
+                                data,
+                            );
+                            queued = Queued::Answer(id.clone(), Err(e));
+                        }
+                    }
+                }
                 if let Queued::Forward(_, command) = &queued {
                     let scope = method_scope_of(command.method());
                     if matches!(scope, Some(Scope::Admin | Scope::Plugins | Scope::Tokens)) {
@@ -786,7 +866,7 @@ impl Server {
                         self.actions
                             .push_back(Action::Audit(AuditEvent::Privileged {
                                 conn,
-                                token: token.map(|(n, _, _)| n),
+                                token: token_name,
                                 method: command.method(),
                                 detail,
                             }));
@@ -859,16 +939,17 @@ impl Server {
         let entry = self
             .tokens
             .verify(token)
-            .map(|e| (e.name.clone(), e.scopes, e.hash));
+            .map(|e| (e.name.clone(), e.scopes, e.hash, e.irreversible));
         let Some(s) = self.sessions.get_mut(&conn) else {
             return;
         };
         match entry {
-            Some((name, stored, hash)) => {
+            Some((name, stored, hash, irreversible)) => {
                 let scopes = stored.for_channel(s.peer.is_local(), allow_remote_admin);
                 s.phase = Phase::Ready {
                     scopes,
-                    token: Some((name.clone(), hash, stored)),
+                    irreversible,
+                    token: Some((name.clone(), hash, stored, irreversible)),
                 };
                 s.limit.set(max_message);
                 self.actions
@@ -879,6 +960,7 @@ impl Server {
                     }));
                 let result = AuthResult {
                     scopes,
+                    irreversible,
                     server: self.config.server.clone(),
                 };
                 self.send_now(conn, Some(&id), Ok(Response::Authenticated(result)));
@@ -907,16 +989,17 @@ impl Server {
         let entry = self
             .tokens
             .verify(token)
-            .map(|e| (e.name.clone(), e.scopes, e.hash));
+            .map(|e| (e.name.clone(), e.scopes, e.hash, e.irreversible));
         let Some(s) = self.sessions.get_mut(&conn) else {
             return;
         };
         match entry {
-            Some((name, stored, hash)) => {
+            Some((name, stored, hash, irreversible)) => {
                 let scopes = stored.for_channel(s.peer.is_local(), allow_remote_admin);
                 s.phase = Phase::Ready {
                     scopes,
-                    token: Some((name.clone(), hash, stored)),
+                    irreversible,
+                    token: Some((name.clone(), hash, stored, irreversible)),
                 };
                 self.actions
                     .push_back(Action::Audit(AuditEvent::Authenticated {
@@ -926,6 +1009,7 @@ impl Server {
                     }));
                 let result = AuthResult {
                     scopes,
+                    irreversible,
                     server: self.config.server.clone(),
                 };
                 self.send_now(conn, Some(&id), Ok(Response::Authenticated(result)));
@@ -1000,6 +1084,7 @@ impl Server {
                             .map(|m| MethodInfoOwned {
                                 name: m.name.into(),
                                 scope: m.scope,
+                                effect: Some(m.effect),
                             })
                             .collect(),
                         topics: Topic::ALL.to_vec(),
@@ -1029,11 +1114,28 @@ impl Server {
                         }
                         self.update_mask();
                     }
+                    let mut caller = Caller::local();
                     if let Some(s) = self.sessions.get_mut(&conn) {
                         s.in_flight = true;
+                        s.in_flight_method = Some(command.method());
+                        if let Phase::Ready {
+                            irreversible,
+                            token,
+                            ..
+                        } = &s.phase
+                        {
+                            caller = Caller {
+                                token: token.as_ref().map(|(n, _, _, _)| n.clone()),
+                                irreversible: *irreversible,
+                            };
+                        }
                     }
-                    self.actions
-                        .push_back(Action::Forward(Forwarded { conn, id, command }));
+                    self.actions.push_back(Action::Forward(Forwarded {
+                        conn,
+                        id,
+                        command,
+                        caller,
+                    }));
                     return;
                 }
             }
@@ -1046,6 +1148,34 @@ impl Server {
             return;
         };
         s.in_flight = false;
+        let method = s.in_flight_method.take();
+        // A refusal made on the control thread is audited here, as it is forwarded
+        // (ADR-0052 decision 5).
+        if let (Err(e), Some(method)) = (&result, method)
+            && e.kind == ErrorKind::NotPermitted
+        {
+            let reason = match e
+                .data
+                .as_ref()
+                .and_then(|d| d.get("reason"))
+                .and_then(|r| r.as_str())
+            {
+                Some("on_air") => "on_air",
+                Some("network") => "network",
+                _ => "irreversible",
+            };
+            let token = s.token_name();
+            self.actions
+                .push_back(Action::Audit(AuditEvent::NotPermitted {
+                    conn,
+                    token,
+                    method,
+                    reason,
+                }));
+        }
+        let Some(s) = self.sessions.get_mut(&conn) else {
+            return;
+        };
         if matches!(s.phase, Phase::Closed) {
             self.forget_if_done(conn);
             return;

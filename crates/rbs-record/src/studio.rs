@@ -371,11 +371,12 @@ struct Instance {
     sound: SoundHalf,
 }
 
-/// The sound node of a media source: held until the plan schedules the binder's
-/// sound node, then adopted into the audio partition.
+/// The sound node of a picture-and-sound source (a media file, a browser page): held
+/// until the plan schedules the binder's sound node, then adopted into the audio
+/// partition.
 enum SoundHalf {
     None,
-    Held(Box<rbs_nodes::MediaSoundNode>),
+    Held(Box<dyn Node<()>>),
     Adopted(NodeId, PartitionId),
 }
 
@@ -1242,7 +1243,7 @@ pub struct Studio {
     /// Helper tree wired by the composition root (`rbs-app`).
     browser_tree: Option<Arc<dyn BrowserTree>>,
     /// Control-thread handles that poll helper processes (ADR-0109).
-    browser_controls: Vec<Arc<BrowserControlSidecar>>,
+    browser_controls: BTreeMap<SourceId, Arc<BrowserControlSidecar>>,
     /// Draws text sources (ADR-0129); made on the first text instance.
     text: Option<TextWorker>,
     /// File access and wall clock of the text worker (real unless a host or test
@@ -1274,6 +1275,34 @@ pub enum TextDue {
     Late,
     /// Wait for the next service.
     Wait,
+}
+
+/// The text worker, made on first use with the registered renderers.
+fn text_worker<'a>(
+    text: &'a mut Option<TextWorker>,
+    io: &(Arc<dyn FileProbe>, Arc<dyn TextClock>),
+    clock: Arc<dyn rbs_core::time::Clock>,
+    sources: &SourceTypes,
+) -> &'a mut TextWorker {
+    text.get_or_insert_with(|| {
+        TextWorker::new(
+            sources.text_renderers(),
+            Arc::clone(&io.0),
+            clock,
+            Arc::clone(&io.1),
+        )
+    })
+}
+
+/// The answer of [`Studio::text_fonts`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TextFonts {
+    /// The installed families, sorted.
+    Ready(Arc<Vec<String>>),
+    /// The first list is being read; ask again shortly.
+    NotReady,
+    /// No text renderer is registered.
+    Unavailable,
 }
 
 /// Render ticks a scene change waits for its texts at most.
@@ -1605,7 +1634,7 @@ impl Studio {
             solo: BTreeSet::new(),
             browser_budget: BrowserBudget::shared(),
             browser_tree,
-            browser_controls: Vec::new(),
+            browser_controls: BTreeMap::new(),
             text: None,
             text_io: (Arc::new(RealFileProbe), Arc::new(SystemTextClock)),
             text_problems: BTreeMap::new(),
@@ -2354,7 +2383,15 @@ impl Studio {
         // Instances for the sources the plan schedules (only those are opened).
         let plan = self.graph.plan();
         let scheduled: BTreeSet<NodeId> = plan.order.iter().copied().collect();
-        self.browser_controls.clear();
+        // Sources that keep their instance keep their control; the others leave.
+        let instanced: BTreeSet<SourceId> = self
+            .entries
+            .iter()
+            .filter(|e| e.instance.is_some())
+            .map(|e| e.source)
+            .collect();
+        self.browser_controls
+            .retain(|source, _| instanced.contains(source));
         // One budget and one helper tree from the composition root (ADR-0109).
         let ctx = InstanceContext::new(self.engine.clock(), self.settings.audio_graph)
             .with_browser(Arc::clone(&self.browser_budget), self.browser_tree.clone());
@@ -2509,15 +2546,8 @@ impl Studio {
                     let t = *t;
                     self.engine
                         .adopt::<GpuRuntime>(RENDER, entry.state.node, Box::new(t.node))?;
-                    let (files, wall) = &self.text_io;
-                    let worker = self.text.get_or_insert_with(|| {
-                        TextWorker::new(
-                            sources.text_renderers(),
-                            Arc::clone(files),
-                            self.engine.clock(),
-                            Arc::clone(wall),
-                        )
-                    });
+                    let worker =
+                        text_worker(&mut self.text, &self.text_io, self.engine.clock(), sources);
                     worker.attach(entry.source, t.frames, t.settings);
                     self.text_attached.insert(entry.source);
                     entry.instance = Some(Instance {
@@ -2530,12 +2560,15 @@ impl Studio {
                     });
                 }
                 SourceInstance::Browser(b) => {
-                    // Render partition (ADR-0109). Size is known from the page settings.
+                    // The picture node in the render partition (ADR-0109); size is
+                    // known from the page settings. The sound node in the audio
+                    // partition at the binder's sound node, as for a media source
+                    // (ADR-0106).
                     let size = b.node.picture_size();
-                    self.browser_controls.push(b.node.control());
+                    self.browser_controls.insert(entry.source, b.node.control());
                     self.engine
                         .adopt::<GpuRuntime>(RENDER, entry.state.node, Box::new(b.node))?;
-                    entry.instance = Some(Instance {
+                    let instance = entry.instance.insert(Instance {
                         partition: RENDER,
                         gpu: true,
                         watch: Watch::Browser { size },
@@ -2543,6 +2576,17 @@ impl Studio {
                         sent_offset_ns: 0,
                         sound: SoundHalf::None,
                     });
+                    match self.binder.sound_node(entry.source) {
+                        Some(node) if scheduled.contains(&node) => {
+                            self.engine
+                                .adopt::<()>(audio_partition, node, Box::new(b.sound))?;
+                            instance.sound = SoundHalf::Adopted(node, audio_partition);
+                        }
+                        Some(_) => instance.sound = SoundHalf::Held(Box::new(b.sound)),
+                        // No audio partition: no sound node; the feed drops the page's
+                        // sound.
+                        None => {}
+                    }
                 }
                 _ => {
                     if strictness == Strictness::Strict {
@@ -2946,12 +2990,17 @@ impl Studio {
             .cloned()
     }
 
-    /// The installed font families (ADR-0129 decision 7): `None` until the worker has
-    /// a list or while no text renderer is in use.
-    pub fn text_families(&mut self) -> Option<Arc<Vec<String>>> {
-        match self.text.as_mut()?.families() {
-            rbs_sources::text_worker::Families::Ready(list) => Some(list),
-            _ => None,
+    /// The installed font families (ADR-0129 decision 7), from the worker's cache. The
+    /// first call starts the worker (it stops again when idle), so it never blocks:
+    /// `NotReady` until the first list exists, `Unavailable` with no text renderer.
+    pub fn text_fonts(&mut self, sources: &SourceTypes) -> TextFonts {
+        if sources.text_renderers().is_empty() {
+            return TextFonts::Unavailable;
+        }
+        let clock = self.engine.clock();
+        match text_worker(&mut self.text, &self.text_io, clock, sources).families() {
+            rbs_sources::text_worker::Families::Ready(list) => TextFonts::Ready(list),
+            _ => TextFonts::NotReady,
         }
     }
 
@@ -3359,7 +3408,7 @@ impl Studio {
     /// [`Studio::output_failure`] of every output using it.
     /// Call it again after `wait` (at most about 100 ms).
     pub fn service(&mut self) -> Serviced {
-        for control in &self.browser_controls {
+        for control in self.browser_controls.values() {
             control.control_tick();
         }
         self.service_text();
