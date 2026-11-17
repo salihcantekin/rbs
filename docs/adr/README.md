@@ -111,9 +111,9 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0100](0100-configurable-glide-duration-and-easing.md) | Configurable glide duration and easing (collection defaults + multi-scene source override) | Accepted |
 | [0101](0101-mixer-columns-panes-and-pinned-master.md) | Mixer columns use fixed strips, side-by-side clusters and horizontal scroll | Accepted |
 | [0102](0102-output-size-distinct-from-canvas.md) | Output size distinct from the canvas | Accepted (macOS done; Windows remains) |
-| [0103](0103-source-region.md) | A source may store a capture region distinct from the item crop | Proposed |
-| [0104](0104-display-chrome-insets.md) | Display chrome insets hide the taskbar or Dock via the source region | Proposed |
-| [0105](0105-timed-show.md) | Timed show draws a hidden item for a deadline without undo | Proposed |
+| [0103](0103-source-region.md) | A source may store a capture region distinct from the item crop | Accepted |
+| [0104](0104-display-chrome-insets.md) | Display chrome insets hide the taskbar or Dock via the source region | Accepted |
+| [0105](0105-timed-show.md) | Timed show draws a hidden item for a deadline without undo | Accepted |
 | [0106](0106-picture-and-sound-on-one-source.md) | A source that has both picture and sound is a picture node and a sound node fed by one producer | Accepted |
 | [0107](0107-temporal-sources-sleep-when-hidden.md) | Temporal sources sleep unless a shown scene draws them | Accepted |
 | [0108](0108-media-file-source.md) | A local media-file source for video and animated pictures | Accepted |

@@ -54,3 +54,12 @@ Forces: a fault or a hang in the UI must leave outputs running; the real-time pa
 ## Review
 
 Independent review per ADR-0014. Record: reviewer (human handle, or "independent AI session"), date, verdict (approve / changes requested), main concerns and how each was resolved.
+
+Round 1. Reviewer: independent AI session. Date: 2026-11-17. Verdict: changes requested. The main decision holds (the studio process owns devices, outputs and the user-data writer; the split stays off until measured). Blocking concerns, open:
+1. The UI endpoint would give all scopes to any same-user program on a bare `session.hello`, against ADR-0044 decision 15 and the stance of ADR-0134; "the local UI" is not defined, and a second launch has no rule. -> Give the UI channel to the UI only (inherited handle or per-launch secret), one UI session, a second launch brings the UI forward and exits.
+2. Decision 4 silently changes ADR-0044 decisions 3 and 5 (UI-first queue, per-session limits) and ADR-0035 (meters are in-process shared objects); "the pieces already exist" is not true for meters or command parity (U20 not started). -> Name the amendments, keep UI-first priority without remote limits, decide how meters cross (shared memory or `audio.levels`, measured), list U20 parity and plan WP-12/WP-13 as preconditions.
+3. The heartbeat relies on a per-session deadline that does not exist (only `handshake_deadline`), needs the API thread to exist, and a 1 Hz timer in a hidden UI conflicts with ADR-0056 decision 5; App Nap would make the studio kill healthy UIs. -> Heartbeat only while a window is shown, or a shared-memory counter as in ADR-0109; state the deadline in the spec.
+4. Restarts have no back-off or limit; Force Quit cannot stop RBS; the UI side of a dead or hung studio is undefined. -> Back-off like ADR-0024, stop after N failures with a stated way to quit, define studio liveness from the UI.
+Follow-ups: endpoint location and stale-socket handling are stated wrongly (the UI must never delete the socket); macOS TCC, Keychain and activation identity of two processes, Windows job breakaway; bounded quit and SIGTERM handling; the crash notice with two processes; layering (`rbs-studio` is a new composition root; depends on WP-09, WP-12, WP-13); decision 1 belongs in Context; decision 8 should also measure drag round trips, meter latency and idle wake-ups, and consider exiting the UI process while hidden.
+
+Status stays Proposed until a revision resolves the blocking concerns and a review approves it.
