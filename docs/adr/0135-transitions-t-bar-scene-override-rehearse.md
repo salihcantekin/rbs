@@ -52,15 +52,16 @@ What OBS does, and does badly:
    - The strip moves with the default mixer ramp, so a dragged T-bar sounds as smooth as a fader. Master, sends and monitor are untouched.
 5. **Reaching the end.**
    - `t = 1` applies the program change (the preview keeps or swaps its scene by the app's setting, ADR-0098). This change does not start a timed transition. The manual one goes straight to the two-step end of ADR-0128 decision 8 (`Ending`, then `settle_transitions`) with the incoming compositor it has.
-   - After the change the entry's `incoming_scene` is `None` (the incoming scene is now the program), so the same incoming node stays bound until the settle. When ADR-0063 makes a held copy at that change, the node is rebound to it within the same update.
-   - `transition.state` gets `started` once and `ended` once. Both carry `manual: true`, and `duration_ms` is the time between them.
+   - At the change the entry takes the outgoing scene's `drawn` and `heard` (the sources the program compositor drew and the mixer heard before the change), exactly as a timed transition's entry does, and keeps them until the settle. So no frame names a node the update unlinked, and no outgoing source leaves the mixer before the end (ADR-0128 decision 8).
+   - After the change the entry's `incoming_scene` is `None` (the incoming scene is now the program), so the same incoming node stays bound until the settle. When ADR-0063 makes a held copy at that change, the node is rebound to it within the same update. Its ready counter is not consulted again: the transition is already past its ready gate and the picture is the same, so the end does not wait.
+   - `transition.state` gets `started` once and `ended` once, both with `manual: true`. `duration_ms` is `0` on `started` and the time since `started` on `ended`. A client sees `started` (after the ready gate), then `holding` values, then `ended`. Nothing is published while it waits for the ready gate.
    - Followers (ADR-0093) cut at the end: a follower's own timed transition would trail a picture that is already over.
    - Recording markers (ADR-0089) are placed at the end, when the program changes.
    - A T-bar with Cut selected cuts when `t` reaches 1.
 6. **Going back, holding, observing.**
-   - `t = 0` cancels it: the outgoing layers alone, the strips back to their outgoing levels, the entry dropped and the incoming compositor released at the next settle. Nothing changed in the collection, so the only event is `transition.state` `ended` with `to` equal to `from`.
+   - `t = 0` cancels it: the outgoing layers alone and the strips back to their outgoing levels. The entry, and with it the preview-only sources' mixer inputs and the incoming compositor, is kept until the settle that follows the strips' ramps reaching their targets. So a jump from 0.7 to 0 ramps down instead of cutting. Nothing changed in the collection, so the only event is `transition.state` `ended` with `to` equal to `from`.
    - Between 0 and 1 the transition holds where it is, as OBS. A client that disconnects leaves it where it is.
-   - While it holds, `transition.state` is the latest-value state `holding` with `t` (the last applied value), published at most once per service step. A second client can show the T-bar's place.
+   - While it holds, `transition.state` is the latest-value state `holding` with `t` (the last applied value), published at most once per service step. A second client can show the T-bar's place. `holding` is a new value of `state` in an event, and `manual` and `t` are new fields: minor, and older clients treat the value generically.
    - A held T-bar keeps the incoming compositor (about 200 MB of canvases at 2160p, ADR-0128 decision 12) and both scenes' sources running, for as long as it holds.
 7. **Interplay.**
    - A `canvas.transition`, `scene.switch` or change of the preview scene while a manual transition holds first cancels it (decision 6), then acts as today.
@@ -95,7 +96,7 @@ What OBS does, and does badly:
     - Disabled for Cut and for a duration of 0.
 12. **How.**
     - A studio-owned compositor (not a binder role, so no binder change), sized to the preview display's picture rather than the canvas, so it costs a fraction of a canvas: at a 640×360 preview, 3 `Rgba16Float` textures of about 1.8 MB each.
-    - It has two layers: the program compositor's output and the preview compositor's output. A compositor output fans out (ADR-0128 Context). The blend runs as a timed transition on the node, with the same `Fade` and `Slide` values.
+    - It has two layers: the program compositor's output and the preview compositor's output. A compositor output fans out (ADR-0128 Context). The blend runs as a timed transition on the node, with the same `Fade` and `Slide` values. Swipe and Slide offsets are in the rehearsal compositor's size, not the canvas's.
     - Both pictures already contain the global scene. In a rehearsed Swipe or Slide the global layers move with the pictures, while on air they stay still above. Stated, not hidden; drawing both scenes' layers would need the binding that decision 3 avoids.
     - Move rehearses as a crossfade, as the T-bar draws it.
     - The studio adds the compositor and relinks the UI preview display's producer to it in one apply, and links the display back to the preview compositor and removes the node when the rehearsal ends. This happens outside the binder's reconcile, like the incoming compositor's adoption.
@@ -111,8 +112,8 @@ What OBS does, and does badly:
     - Keyboard: the T-bar is a `Slider` (arrows step it, Home and End go to 0 and 1), and End ends the transition.
 15. **Cost (P13).**
     - A T-bar at rest, an override not used, and no rehearsal add no node, layer, timer or per-frame check.
-     - A rehearsal adds one preview-sized compositor for its duration.
-   - A held T-bar costs what a waiting timed transition costs (decision 6), for as long as it holds.
+    - A rehearsal adds one preview-sized compositor for its duration.
+    - A held T-bar costs what a waiting timed transition costs (decision 6), for as long as it holds.
     - No change to `CompositorNode::process`, the shader or the mixer's per-sample path. The T-bar adds layer sends and strip updates on the control thread, at most one per service step, coalesced (decision 1).
 
 ### Phases
@@ -127,7 +128,9 @@ What OBS does, and does badly:
   - the binder with `incoming_scene` set: the preview scene drawn by the incoming compositor, its incoming-only sources heard, the program unchanged;
   - the ready gate on the first `t > 0`;
   - progress at 0, 0.5 and 1 for each kind (through a colour per half);
-  - the end: no second `started`, the same incoming node through the change, followers cut;
+  - the end: no second `started`, the same incoming node through the change, the outgoing `drawn` and `heard` kept until the settle (no frame names an unlinked node, as ADR-0128 decision 18's order test), followers cut;
+  - cancel by a jump from 0.7 to 0: the preview-only strips ramp down before their inputs leave;
+  - a binder update during a rehearsal (a preview item edit) keeps the relinked display, and the end links it back;
   - preview equal to program;
   - cancel at 0;
   - a timed transition interrupting a held T-bar;
@@ -170,4 +173,13 @@ What OBS does, and does badly:
     - effects and followers refused (decisions 1 and 10);
     - preview item edits (decision 7);
     - OBS import, duplicate and coalescing (decisions 1 and 9).
-- Round 2: pending.
+- Round 2 (same reviewer, 2026-11-17): all round-1 findings resolved; one new blocking finding and 7 non-blocking ones.
+  - N-B1: at `t = 1` the outgoing sources lost their binding. Resolved: the entry takes the outgoing `drawn` and `heard` at the change (decision 5).
+  - Non-blocking, all resolved:
+    - cancel by a jump keeps the entry until the ramps end (decision 6);
+    - `duration_ms` on `started` and `ended`, and the event order (decision 5);
+    - `holding` classified as minor (decision 6);
+    - Rehearse offsets in its own size (decision 12);
+    - the Rehearse relink test (Consequences);
+    - the held copy's ready counter (decision 5);
+    - list formatting (decision 15).
