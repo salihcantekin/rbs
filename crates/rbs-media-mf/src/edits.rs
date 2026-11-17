@@ -10,9 +10,14 @@
 //! Only the sound track's first edit is applied: a leading empty edit is a delay, and
 //! the first edit with media is where the sound starts and how long it plays. A list
 //! with more media edits (rare outside editing tools) keeps only its first.
+//!
+//! The picture track's header (`tkhd`) gives its display matrix, which says how the
+//! track is turned for showing (`video_rotation`).
 
 use std::io::{Read, Seek, SeekFrom};
 use std::time::Duration;
+
+use rbs_media_decode::Rotation;
 
 /// The largest `moov` box read. A two-hour file's sample tables are a few MiB.
 const MAX_MOOV: u64 = 64 << 20;
@@ -133,6 +138,55 @@ pub(crate) fn sound_edit(file: &mut (impl Read + Seek)) -> Option<SoundEdit> {
         });
     }
     None
+}
+
+/// The picture track's turn from its track header's display matrix, or `None` for a
+/// file that is no MP4 or QuickTime file or has no picture track. Media Foundation
+/// does not report it for every file (`MF_MT_VIDEO_ROTATION` stays unset), so the
+/// adapter reads it here, the way AVFoundation reads `preferredTransform`.
+pub(crate) fn video_rotation(file: &mut (impl Read + Seek)) -> Option<Rotation> {
+    let moov = find_moov(file)?;
+    Boxes(&moov)
+        .filter(|(kind, _)| kind == b"trak")
+        .find_map(|(_, trak)| picture_track_rotation(trak))
+}
+
+/// The rotation of `trak` when it is a picture track.
+fn picture_track_rotation(trak: &[u8]) -> Option<Rotation> {
+    let mut header = None;
+    let mut picture = false;
+    for (kind, body) in Boxes(trak) {
+        match &kind {
+            b"tkhd" => header = Some(body),
+            b"mdia" => {
+                picture = Boxes(body)
+                    .find(|(kind, _)| kind == b"hdlr")
+                    .is_some_and(|(_, hdlr)| hdlr.get(8..12) == Some(b"vide"));
+            }
+            _ => {}
+        }
+    }
+    if !picture {
+        return None;
+    }
+    let tkhd = header?;
+    // After the full box header: the times, track id and duration (20 bytes in
+    // version 0, 32 in version 1), then 16 bytes of reserved, layer, group and
+    // volume, then the 3 x 3 matrix of 32-bit values (a, b, u, c, d, v, x, y, w).
+    let at = match tkhd.first()? {
+        0 => 4 + 20 + 16,
+        1 => 4 + 32 + 16,
+        _ => return None,
+    };
+    let value = |i: usize| -> Option<f64> {
+        let start = at + i * 4;
+        Some(f64::from(i32::from_be_bytes(
+            tkhd.get(start..start + 4)?.try_into().ok()?,
+        )))
+    };
+    let (a, b) = (value(0)?, value(1)?);
+    // The matrix [a b; c d] turns by atan2(b, a), clockwise on screen (y down).
+    Some(Rotation::from_clockwise_degrees(b.atan2(a).to_degrees()))
 }
 
 /// Reads the `moov` box body: walks the top-level boxes by their headers.
@@ -413,6 +467,58 @@ mod tests {
         let mut after = vec![0.0f32; 8];
         let past = Duration::from_millis(530);
         assert_eq!(trim(&edit, past, 48_000, 2, &mut after), Trimmed::End);
+    }
+
+    /// A `trak` with a version 0 track header carrying `matrix` (a, b, c, d in 16.16).
+    fn turned_track(handler: &[u8; 4], matrix: [i32; 4]) -> Vec<u8> {
+        let mut tkhd = vec![0u8; 4 + 20 + 16];
+        let [a, b, c, d] = matrix;
+        for value in [a, b, 0, c, d, 0, 0, 0, 0x4000_0000] {
+            tkhd.extend_from_slice(&value.to_be_bytes());
+        }
+        tkhd.extend_from_slice(&[0u8; 8]);
+        let mut hdlr = vec![0u8; 8];
+        hdlr.extend_from_slice(handler);
+        let mdia = boxed(b"hdlr", &hdlr);
+        boxed(
+            b"trak",
+            &[boxed(b"tkhd", &tkhd), boxed(b"mdia", &mdia)].concat(),
+        )
+    }
+
+    #[test]
+    fn the_picture_track_header_gives_the_turn() {
+        const ONE: i32 = 0x1_0000;
+        let cases = [
+            ([ONE, 0, 0, ONE], Rotation::None),
+            ([0, ONE, -ONE, 0], Rotation::Clockwise90),
+            ([-ONE, 0, 0, -ONE], Rotation::Half),
+            ([0, -ONE, ONE, 0], Rotation::Clockwise270),
+        ];
+        for (matrix, want) in cases {
+            // A sound track first: only the picture track counts.
+            let bytes = file(
+                &[
+                    turned_track(b"soun", [0, ONE, -ONE, 0]),
+                    turned_track(b"vide", matrix),
+                ],
+                false,
+            );
+            assert_eq!(video_rotation(&mut Cursor::new(bytes)), Some(want));
+        }
+        let sound_only = file(&[turned_track(b"soun", [0, ONE, -ONE, 0])], false);
+        assert_eq!(video_rotation(&mut Cursor::new(sound_only)), None);
+    }
+
+    #[test]
+    fn the_rotated_fixture_turns_a_quarter_clockwise() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/rotated.mp4");
+        let mut file = std::fs::File::open(path).unwrap();
+        assert_eq!(video_rotation(&mut file), Some(Rotation::Clockwise90));
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/clip.mp4");
+        let mut file = std::fs::File::open(path).unwrap();
+        assert_eq!(video_rotation(&mut file), Some(Rotation::None));
     }
 
     #[test]

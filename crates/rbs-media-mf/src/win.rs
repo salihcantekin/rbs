@@ -14,7 +14,7 @@ use windows::Win32::Media::MediaFoundation::{
     MF_E_INVALIDMEDIATYPE, MF_E_TOPO_CODEC_NOT_FOUND, MF_E_UNSUPPORTED_BYTESTREAM_TYPE,
     MF_E_UNSUPPORTED_FORMAT, MF_MT_AUDIO_NUM_CHANNELS, MF_MT_AUDIO_SAMPLES_PER_SECOND,
     MF_MT_DEFAULT_STRIDE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_MAJOR_TYPE,
-    MF_MT_MINIMUM_DISPLAY_APERTURE, MF_MT_SUBTYPE, MF_MT_VIDEO_ROTATION, MF_PD_DURATION,
+    MF_MT_MINIMUM_DISPLAY_APERTURE, MF_MT_SUBTYPE, MF_PD_DURATION,
     MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, MF_SOURCE_READER_ALL_STREAMS,
     MF_SOURCE_READER_D3D_MANAGER, MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING,
     MF_SOURCE_READER_FIRST_AUDIO_STREAM, MF_SOURCE_READER_FIRST_VIDEO_STREAM,
@@ -294,11 +294,12 @@ impl MfDecoder {
             }
             return Err(failed("video output type", &e));
         }
-        // SAFETY: an attribute read on a native type; a file without it is upright.
-        let rotation = unsafe { native.GetUINT32(&MF_MT_VIDEO_ROTATION) }
-            .map_or(Rotation::None, |degrees| {
-                Rotation::from_clockwise_degrees(f64::from(degrees))
-            });
+        // The track header's display matrix: Media Foundation does not report it for
+        // every file and leaves the pictures as stored.
+        let rotation = std::fs::File::open(path)
+            .ok()
+            .and_then(|mut file| crate::edits::video_rotation(&mut file))
+            .unwrap_or_default();
         let shape = VideoShape::read(&video)?;
         let (w, h) = (shape.crop.width, shape.crop.height);
         if let Some(refused) = refuse_picture(w, h, w as usize * h as usize * 4) {
