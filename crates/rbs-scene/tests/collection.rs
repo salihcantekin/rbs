@@ -2294,3 +2294,51 @@ fn a_text_resize_changes_settings_and_layout_as_one_undo_step() {
         .unwrap();
     assert!(s.col.resize_text(nested, after, full(1.0, 1.0)).is_err());
 }
+
+#[test]
+fn a_scene_transition_is_set_cleared_undone_copied_and_bounded() {
+    // ADR-0135 decision 8.
+    use rbs_scene::{SceneTransition, TransitionKind};
+    let mut s = studio();
+    let (scene, _) = s.col.add_scene("Interview", SceneScope::Shared).unwrap();
+    assert_eq!(s.col.scene(scene).unwrap().transition_in, None);
+    let before = s.col.clone();
+    let fade = SceneTransition {
+        kind: Some(TransitionKind::Fade),
+        duration_ms: Some(800),
+    };
+    let undo = s.col.set_scene_transition(scene, Some(fade)).unwrap();
+    assert_eq!(s.col.scene(scene).unwrap().transition_in, Some(fade));
+    // A duplicate keeps it.
+    let (copy, _) = s.col.duplicate_scene(scene, "Interview 2").unwrap();
+    assert_eq!(s.col.scene(copy).unwrap().transition_in, Some(fade));
+    // An override of nothing is no override.
+    s.col
+        .set_scene_transition(scene, Some(SceneTransition::default()))
+        .unwrap();
+    assert_eq!(s.col.scene(scene).unwrap().transition_in, None);
+    s.col.set_scene_transition(scene, Some(fade)).unwrap();
+    // Only the duration: the collection's kind.
+    let slow = SceneTransition {
+        kind: None,
+        duration_ms: Some(MAX_GLIDE_MS),
+    };
+    s.col.set_scene_transition(scene, Some(slow)).unwrap();
+    assert_eq!(s.col.scene(scene).unwrap().transition_in, Some(slow));
+    let too_long = SceneTransition {
+        kind: None,
+        duration_ms: Some(MAX_GLIDE_MS + 1),
+    };
+    assert_eq!(
+        s.col.set_scene_transition(scene, Some(too_long)),
+        Err(SceneError::InvalidTransition)
+    );
+    // Clearing, then undo back to the first state.
+    s.col.set_scene_transition(scene, None).unwrap();
+    assert_eq!(s.col.scene(scene).unwrap().transition_in, None);
+    let mut col = before.clone();
+    let undo2 = col.set_scene_transition(scene, Some(fade)).unwrap();
+    col.undo(undo2).unwrap();
+    assert_eq!(col, before);
+    let _ = undo;
+}
