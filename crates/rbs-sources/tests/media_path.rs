@@ -250,3 +250,53 @@ fn a_play_range_with_end_not_after_start_is_refused() {
     assert!(rbs_sources::option_keys(&id).contains(&keys::START_MS));
     assert!(rbs_sources::option_keys(&id).contains(&keys::END_MS));
 }
+
+#[test]
+fn live_media_keys_reach_the_control_handle() {
+    let (dir, file) = temp_file("live");
+    let mut reg = SourceTypes::new();
+    reg.register_media(Arc::new(ScriptFactory::new(ScriptClip::silent_frames())))
+        .unwrap();
+    reg.probe();
+    let ctx = InstanceContext::new(
+        Arc::new(rbs_core::time::TestClock::new()),
+        rbs_audio::AudioGraphConfig::default(),
+    );
+    let SourceInstance::Media(media) = instantiate(&reg, &ctx, &file.to_string_lossy()).unwrap()
+    else {
+        panic!("media");
+    };
+    let id = rbs_graph::node::NodeTypeId::new(types::MEDIA_SOURCE);
+    use rbs_scene::binder::NodeTypes;
+    assert_eq!(
+        reg.node_types().live_keys(&id),
+        [
+            keys::LOOP,
+            keys::RESTART_WHEN_SHOWN,
+            keys::START_MS,
+            keys::END_MS
+        ]
+    );
+    let mut settings = Settings::new();
+    settings.insert(keys::START_MS.to_owned(), SettingValue::Int(100));
+    settings.insert(keys::LOOP.to_owned(), SettingValue::Bool(false));
+    let changed = [keys::START_MS.to_owned(), keys::LOOP.to_owned()];
+    rbs_sources::apply_media_live(&media.control, &settings, &changed).unwrap();
+    assert_eq!(
+        media.control.cursor(),
+        std::time::Duration::from_millis(100)
+    );
+    // A range the type refuses changes nothing and is reported.
+    settings.insert(keys::END_MS.to_owned(), SettingValue::Int(50));
+    let err = rbs_sources::apply_media_live(&media.control, &settings, &[keys::END_MS.to_owned()])
+        .unwrap_err();
+    assert!(
+        matches!(err, SourceError::InvalidSetting { key: "end_ms", .. }),
+        "{err}"
+    );
+    assert_eq!(
+        media.control.cursor(),
+        std::time::Duration::from_millis(100)
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
