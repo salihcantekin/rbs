@@ -4,7 +4,7 @@ import { Theme, Tokens } from "tokens.slint";
 import { DialogActions, Button, IconButton, NumberField, Select, SegmentedControl, SizeNest, TextField, Toggle, InfoHint, SettingRow, SettingValue } from "components.slint";
 import { SettingsCard, SettingBlock, SettingsStatus, SettingsNotice, SettingsCallout, RevealOnShow, Shown } from "settings.slint";
 import { ReplaySettings } from "replay.slint";
-import { DestinationRow, EncoderData, Studio, Experience, IconName } from "base/types.slint";
+import { DestinationRow, EncoderData, Studio, Experience, IconName, Overlays } from "base/types.slint";
 
 // The encoder fields of one output, shared by the Recording and Stream sections, as
 // rows of a settings card: the video encoder, its bitrate or quality level, the audio
@@ -2101,4 +2101,63 @@ export component RemoteControlSettings inherits Rectangle {
     // A token was made: the name field is ready for the next one.
     property <string> made: Studio.rc-new-token;
     changed made => { if made != "" { name.text = ""; } }
+}
+
+// Settings › Permissions (ADR-0141): what the computer lets RBS use, one action per
+// row, and which app the system gives the permissions to. Statuses are read when the
+// page shows, when its window becomes active again and on Check again; nothing polls.
+export component PermissionsSettings inherits Rectangle {
+    property <bool> active: Overlays.window-active;
+    changed active => {
+        if self.active { Studio.permission-check(); }
+    }
+    VerticalLayout {
+        spacing: Tokens.space-4;
+        alignment: start;
+        SettingsCard {
+            id: "settings.permissions.devices";
+            title: @tr("Devices and screen");
+            for r in Studio.permission-rows: SettingRow {
+                // find: none (a status the system reports, not a setting).
+                label: r.label;
+                help: r.status;
+                help-is-warning: r.tone == 1;
+                help-is-problem: r.tone == 2;
+                fill: false;
+                if r.action == 0: SettingValue { text: r.value; }
+                if r.action != 0: Button {
+                    text: r.action-text;
+                    accessible-name: @tr("{} for {}", r.action-text, r.label);
+                    kind: r.action == 1 ? "primary" : "secondary";
+                    clicked => { Studio.permission-action(r.kind, r.action); }
+                }
+            }
+        }
+        SettingsCard {
+            id: "settings.permissions.holder";
+            title: @tr("Who gets these permissions");
+            SettingRow {
+                // find: none (a fact about this copy of RBS).
+                label: @tr("This copy of RBS");
+                help: Studio.permission-holder-path;
+                fill: false;
+                SettingValue { text: Studio.permission-holder; }
+            }
+            SettingRow {
+                // find: none (a note and the Check again button).
+                divider: false;
+                label: "";
+                help: Studio.permission-holder-note;
+                help-is-warning: Studio.permission-holder-warn;
+                fill: false;
+                Button {
+                    text: @tr("Check again");
+                    lead: IconName.refresh;
+                    kind: "ghost";
+                    dense: true;
+                    clicked => { Studio.permission-check(); }
+                }
+            }
+        }
+    }
 }

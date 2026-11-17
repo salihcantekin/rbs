@@ -7,8 +7,8 @@ import { DialogActions, HScrollArea, ListBox, ScrollArea, Button, Checkbox, Colo
 import { SettingsCard, SettingBlock, SettingsStatus, SettingsNotice, SettingsCallout, RevealOnShow, Shown } from "settings.slint";
 import { CommandMenu } from "context_menu.slint";
 import { ReplayControls, ReplaySettings } from "replay.slint";
-import { FilterFieldData, FilterLevels, FilterData, SourceData, SceneData, LookData, SampleData, KindData, MarkData, ModeData, SyncMeasureData, AttributeGroupRow, AttributeTargetRow, AttributesData, TextData, SourceSettingsData, SourceTargetData, MeterRow, ScaleMark, LoudnessData, DestinationRow, EncoderData, TokenRow, AiActionRow, StatRow, EntryRow, Studio, Sections, Experience, IconName, Icons, SizeBand, Overlays } from "base/types.slint";
-export { FilterFieldData, FilterLevels, FilterData, SourceData, SceneData, LookData, SampleData, KindData, MarkData, ModeData, SyncMeasureData, AttributeGroupRow, AttributeTargetRow, AttributesData, TextData, SourceSettingsData, SourceTargetData, MeterRow, ScaleMark, LoudnessData, DestinationRow, EncoderData, TokenRow, AiActionRow, StatRow, EntryRow, Studio }
+import { FilterFieldData, FilterLevels, FilterData, SourceData, SceneData, LookData, SampleData, KindData, MarkData, ModeData, SyncMeasureData, AttributeGroupRow, AttributeTargetRow, AttributesData, TextData, SourceSettingsData, SourceTargetData, MeterRow, ScaleMark, LoudnessData, DestinationRow, EncoderData, TokenRow, AiActionRow, StatRow, EntryRow, PermissionRowData, Studio, Sections, Experience, IconName, Icons, SizeBand, Overlays } from "base/types.slint";
+export { FilterFieldData, FilterLevels, FilterData, SourceData, SceneData, LookData, SampleData, KindData, MarkData, ModeData, SyncMeasureData, AttributeGroupRow, AttributeTargetRow, AttributesData, TextData, SourceSettingsData, SourceTargetData, MeterRow, ScaleMark, LoudnessData, DestinationRow, EncoderData, TokenRow, AiActionRow, StatRow, EntryRow, PermissionRowData, Studio }
 
 // The audio-only strip above a program picture. The native picture starts below it, so
 // this stays visible. `size.control.md` high, matching the inset in the preview layer.
@@ -3365,10 +3365,28 @@ component SourceFields inherits VerticalLayout {
         }
         Text {
             horizontal-stretch: 1;
+            vertical-alignment: center;
             text: data.status;
             color: Theme.text-primary;
             font-size: Tokens.type-body-size;
             wrap: word-wrap;
+        }
+        // Refused access (ADR-0141 decision 8; here, never in the Sources list), right
+        // of the status: Allow shows the system's question, Fix permission opens
+        // Settings › Permissions.
+        if data.perm-action == 1: Button {
+            text: @tr("Allow");
+            accessible-name: @tr("Allow access for {}", data.name);
+            kind: "primary";
+            dense: true;
+            clicked => { Studio.permission-action(data.perm-kind, 1); }
+        }
+        if data.perm-action == 2: Button {
+            lead: IconName.lock;
+            text: @tr("Fix permission");
+            accessible-name: @tr("Fix permission for {}", data.name);
+            dense: true;
+            clicked => { Studio.open-permission-settings(); }
         }
     }
     HorizontalLayout {

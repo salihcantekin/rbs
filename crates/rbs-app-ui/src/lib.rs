@@ -25,11 +25,11 @@ macro_rules! reexport {
             FilterFieldData, FilterLevels, FocusReveal, HandleData, IconName, Icons, KindData,
             LiveDestinationRow, LookData, LoudnessData, MarkData, MenuChoice, MenuRow, Menus,
             MeterRow, ModeData, ObsReportRow, ObsSceneChoice, OverlayCover, Overlays, PanelEntry,
-            PickerRow, RailData, ReplayBuffer, SampleData, ScaleMark, SceneData, Sections,
-            SettingsFind, SettingsHit, SettingsScroll, Shell, ShortcutChip, ShortcutRow, Shortcuts,
-            SizeBand, SourceData, SourceSettingsData, SourceTargetData, StackData, StatRow, Studio,
-            SyncMeasureData, TabData, TextData, Theme, ThemeOption, ThemeSlot, ThemeTokenRow,
-            TokenRow, Tokens, ToolbarData, VirtualCamera, WorkspaceEntry,
+            PermissionRowData, PickerRow, RailData, ReplayBuffer, SampleData, ScaleMark, SceneData,
+            Sections, SettingsFind, SettingsHit, SettingsScroll, Shell, ShortcutChip, ShortcutRow,
+            Shortcuts, SizeBand, SourceData, SourceSettingsData, SourceTargetData, StackData,
+            StatRow, Studio, SyncMeasureData, TabData, TextData, Theme, ThemeOption, ThemeSlot,
+            ThemeTokenRow, TokenRow, Tokens, ToolbarData, VirtualCamera, WorkspaceEntry,
         };
     };
 }

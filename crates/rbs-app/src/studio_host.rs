@@ -10,7 +10,7 @@
 //! UI command waiting, and state changes are published as events with a `seq` per
 //! state key. With no API attached this costs a counter increment per change.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Weak;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
@@ -59,6 +59,7 @@ use rbs_scene::{
 };
 use rbs_scene::{COMPANION_OF_HINT, STANDBY_HINT, SceneCollection};
 use rbs_sources::BrowserTree;
+use rbs_sources::permissions::{PermissionInfo, PermissionKind, PermissionStatus};
 use rbs_sources::types::{self, keys};
 use rbs_sources::{SourceError, SourceTarget};
 use rbs_transport::{ReconnectPolicy, Secret, TransportInput};
@@ -76,6 +77,7 @@ mod obs_import_api;
 mod on_air;
 pub mod protection;
 pub mod replay;
+mod stinger;
 pub mod sync_measure;
 mod text_live;
 mod text_resize;
@@ -863,6 +865,9 @@ pub enum Command {
         /// A local regular file. The demo decoder ignores contents.
         path: std::path::PathBuf,
     },
+    /// Make a media file the stinger (ADR-0140): a new media source that no scene
+    /// places, and the transition set to Stinger with it, one undo step.
+    SetStingerFile(std::path::PathBuf),
     /// Add a browser page (ADR-0109), fitted to the canvas, one undo step.
     AddBrowser {
         /// `http`, `https`, or `file` URL.
@@ -1106,6 +1111,10 @@ pub enum Command {
     Transition,
     /// The T-bar's value (ADR-0135): applied once per round, the latest only.
     TransitionProgress(f32),
+    /// Rehearse on Preview (ADR-0135 decision 11): the transition on the Preview
+    /// picture only. Nothing happens outside studio mode, while a transition runs or
+    /// holds, during a rehearsal, and for Cut or a duration of 0.
+    Rehearse,
     /// Whether a transition also puts the old program scene in preview (ADR-0098; the
     /// app setting `swap_after_transition`, off by default).
     SetSwapAfterTransition(bool),
@@ -1406,6 +1415,13 @@ pub enum Command {
         /// The `seq` of the [`Update::SwitchRequested`] this answers, if any.
         answered: Option<u64>,
     },
+    /// Read the OS permission statuses ([`Update::Permissions`], ADR-0141). Fast, never
+    /// prompts.
+    ReadPermissions,
+    /// Show the OS prompt for a permission kind on a worker thread (ADR-0141 decision
+    /// 4); [`Update::Permissions`] follows when it is answered. Ignored while a prompt
+    /// for the kind is showing.
+    RequestPermission(PermissionKind),
 }
 
 /// A video encoder the user can pick.
@@ -2522,6 +2538,14 @@ pub struct SceneList {
     pub glide: rbs_scene::CollectionGlide,
     /// The collection's transition (ADR-0128).
     pub transition: rbs_scene::CollectionTransition,
+    /// The stinger's found cut point in ms (ADR-0140 decision 3); `None` until found.
+    pub stinger_cut_found_ms: Option<u32>,
+    /// The length of the stinger's play range in ms, once its file was looked at.
+    pub stinger_length_ms: Option<u32>,
+    /// The stinger's file is being looked at.
+    pub stinger_looking: bool,
+    /// The stinger's file has transparency no adapter here keeps (decision 9).
+    pub stinger_alpha_unsupported: bool,
     /// Every source of the collection, by name.
     pub sources: Vec<SourceEntry>,
 }
@@ -2554,7 +2578,9 @@ impl Refusal {
             | SceneError::UnknownScene(_)
             | SceneError::UnknownItem(_)
             | SceneError::UnknownFilter(_) => Self::NotFound(edit_error(e)),
-            SceneError::DuplicateName(_) => Self::Conflict(edit_error(e)),
+            SceneError::DuplicateName(_) | SceneError::StingerPlaced(_) => {
+                Self::Conflict(edit_error(e))
+            }
             SceneError::EmptyName
             | SceneError::InvalidVolume
             | SceneError::InvalidSyncOffset
@@ -2969,6 +2995,15 @@ pub enum Update {
         /// Untracked outputs stopped.
         stopped: usize,
     },
+    /// The OS permission statuses (ADR-0141), answering [`Command::ReadPermissions`]
+    /// and sent after every permission request. `waiting` is the kind whose OS prompt
+    /// is showing now, if any.
+    Permissions {
+        /// Every kind with an installed adapter, in page order.
+        rows: Vec<(PermissionKind, PermissionInfo)>,
+        /// The kind being asked for now.
+        waiting: Option<PermissionKind>,
+    },
 }
 
 /// Counters of one running output, for the Stats panel.
@@ -3096,6 +3131,13 @@ enum Msg {
     Calibration {
         id: u64,
         msg: calibration::WorkerMsg,
+    },
+    /// An OS permission prompt was answered (ADR-0141).
+    PermissionAnswered(PermissionKind),
+    /// The stinger's file look finished (ADR-0140 decision 3).
+    StingerLook {
+        key: stinger::LookKey,
+        result: Result<rbs_sources::stinger::StingerLook, rbs_sources::stinger::LookError>,
     },
 }
 
@@ -3528,6 +3570,8 @@ struct Host {
     /// This thread's own queue, for results from picker threads. Weak, so dropping
     /// the [`StudioHost`] still ends the thread.
     inbox: Weak<Sender<Msg>>,
+    /// The stinger's file look (ADR-0140 decision 3).
+    stinger: stinger::StingerFile,
     /// Saves the collection after a change ([`HostConfig::autosave`]).
     autosave: Option<CollectionSaver>,
     /// The recent targets per source type and the folder they are saved in.
@@ -3555,6 +3599,15 @@ struct Host {
     media_sent: Option<Vec<MediaTick>>,
     /// The generation of the thumbnail request that may still deliver (ADR-0077).
     thumbs: Arc<AtomicU64>,
+    /// OS permission prompts showing now, each with the commands waiting for its
+    /// answer (ADR-0141 decision 4). One prompt per kind at a time.
+    permission_asking: HashMap<PermissionKind, Vec<Command>>,
+    /// Kinds asked for in this run: adding a source prompts at most once per kind.
+    permission_asked: Vec<PermissionKind>,
+    /// The kinds some shown source was refused, when the UI last got the statuses for
+    /// them: a newly refused kind sends the statuses, so Properties offers Allow or Fix
+    /// permission.
+    permission_refused: Vec<PermissionKind>,
     /// The generation of the region-preview grab that may still deliver (ADR-0103).
     region_grabs: Arc<AtomicU64>,
     /// The collection as last handed to `autosave`.
@@ -3773,7 +3826,9 @@ fn run(
                     | Msg::ReplayWritten(_)
                     | Msg::Thumbnail { .. }
                     | Msg::RegionPreview { .. }
-                    | Msg::Calibration { .. } => {}
+                    | Msg::Calibration { .. }
+                    | Msg::PermissionAnswered(_)
+                    | Msg::StingerLook { .. } => {}
                 }
                 if let Some(api) = &api {
                     let mut events = EventPublisher::new();
@@ -3891,6 +3946,7 @@ fn round(
             host.api = None;
         }
         Some(Msg::PickFailed(why)) => notify(Update::Error(why)),
+        Some(Msg::PermissionAnswered(kind)) => host.permission_answered(kind, notify),
         Some(Msg::ReplayWritten(result)) => host.replay_written(result, notify),
         Some(Msg::Thumbnail {
             generation,
@@ -3921,6 +3977,11 @@ fn round(
             }
         }
         Some(Msg::Calibration { id, msg }) => host.calibration_msg(id, msg),
+        Some(Msg::StingerLook { key, result }) => {
+            if host.stinger_looked(key, result) {
+                host.publish(notify);
+            }
+        }
         Some(Msg::ApiWake) | None => {}
     }
     // One API request per round: a UI command that arrived meanwhile is taken by the
@@ -3996,6 +4057,13 @@ fn round(
         host.studio.settle_transitions(&host.adapters.sources);
     }
     host.publish_transitions();
+    // A rehearsal's time is over (ADR-0135 decision 12): the Preview picture shows the
+    // preview scene again.
+    if host.studio.rehearsal_done()
+        && let Err(e) = host.studio.end_rehearsal(&host.adapters.sources)
+    {
+        notify(Update::Error(format!("The rehearsal could not end: {e}")));
+    }
     // A held T-bar that ended other than by going to 0 (its take, a transition, a
     // switch or a preview change): the rail's T-bar goes back to 0.
     let manual = host.studio.manual_transition(host.canvas);
@@ -4082,6 +4150,10 @@ fn round(
     }
     // A running transition steps on the master clock; none arms nothing (P13).
     if let Some(left) = host.studio.transition_wait(now) {
+        wait = wait.min(left);
+    }
+    // A rehearsal ends on the master clock; none arms nothing (P13).
+    if let Some(left) = host.studio.rehearsal_wait(now) {
         wait = wait.min(left);
     }
     host.publish(notify);
@@ -4307,6 +4379,9 @@ fn start(
         media_pause_release: config.media_pause_release,
         media_sent: None,
         thumbs: Arc::new(AtomicU64::new(0)),
+        permission_asking: HashMap::new(),
+        permission_asked: Vec::new(),
+        permission_refused: Vec::new(),
         region_grabs: Arc::new(AtomicU64::new(0)),
         // A collection that had to be completed is saved at the first publish.
         saved: loaded,
@@ -4324,6 +4399,7 @@ fn start(
         switch_pending: None,
         switch_seq: 0,
         inbox: Weak::new(),
+        stinger: stinger::StingerFile::default(),
         levels,
     };
     // A vertical canvas saved with the collection runs again (ADR-0093 decision 9).
@@ -4390,6 +4466,15 @@ impl Host {
                 let targets = self.targets(kind);
                 notify(Update::Targets(kind, targets));
             }
+            Command::AddSourceWithAudio { ref kind, .. } | Command::AddSource { ref kind, .. }
+                if self.prompt_first(*kind).is_some() =>
+            {
+                if let Some(p) = self.prompt_first(*kind) {
+                    self.ask_permission(p, Some(c), notify);
+                }
+            }
+            Command::ReadPermissions => self.send_permissions(notify),
+            Command::RequestPermission(kind) => self.ask_permission(kind, None, notify),
             Command::AddSourceWithAudio { kind, target } => {
                 let done = self
                     .add(kind, &target)
@@ -4679,6 +4764,10 @@ impl Host {
                 Ok(_) => self.apply(notify),
                 Err(e) => notify(Update::Error(e.text().to_owned())),
             },
+            Command::SetStingerFile(path) => match self.set_stinger_file(&path) {
+                Ok(_) => self.apply(notify),
+                Err(e) => notify(Update::Error(e.text().to_owned())),
+            },
             Command::FitTextBox(id) => {
                 let done = self.fit_text_box(id);
                 self.answer(done, notify);
@@ -4918,6 +5007,13 @@ impl Host {
             Command::TransitionProgress(t) => {
                 if self.preview().is_some() {
                     self.pending_progress = Some(t.clamp(0.0, 1.0));
+                }
+            }
+            Command::Rehearse => {
+                if self.preview().is_some()
+                    && let Err(e) = self.studio.rehearse(&self.adapters.sources)
+                {
+                    notify(Update::Error(format!("The rehearsal could not start: {e}")));
                 }
             }
             Command::SetSwapAfterTransition(on) => self.swap_after_transition = on,
@@ -5518,6 +5614,108 @@ impl Host {
                 break;
             }
         }
+    }
+
+    /// The permission kind to ask for before adding a source of `kind`: one that was
+    /// not asked yet and can show a prompt, at most once per run (ADR-0141 decision 4).
+    fn prompt_first(&self, kind: SourceKind) -> Option<PermissionKind> {
+        let p = PermissionKind::of_type(&kind.type_id())?;
+        if self.permission_asked.contains(&p) {
+            return None;
+        }
+        let info = self.adapters.sources.permission(p);
+        (info.status == PermissionStatus::NotAsked && info.can_prompt).then_some(p)
+    }
+
+    /// Every kind with an installed adapter and its status.
+    fn permission_rows(&self) -> Vec<(PermissionKind, PermissionInfo)> {
+        PermissionKind::ALL
+            .into_iter()
+            .map(|k| (k, self.adapters.sources.permission(k)))
+            .filter(|(_, info)| info.status != PermissionStatus::Unavailable)
+            .collect()
+    }
+
+    fn send_permissions(&self, notify: &dyn Fn(Update)) {
+        notify(Update::Permissions {
+            rows: self.permission_rows(),
+            waiting: self.permission_asking.keys().next().copied(),
+        });
+    }
+
+    /// Shows the OS prompt for `kind` on a one-shot worker; `then` runs when it is
+    /// answered. A second request while one shows waits for the same answer.
+    fn ask_permission(
+        &mut self,
+        kind: PermissionKind,
+        then: Option<Command>,
+        notify: &dyn Fn(Update),
+    ) {
+        if let Some(waiting) = self.permission_asking.get_mut(&kind) {
+            waiting.extend(then);
+            return;
+        }
+        if !self.permission_asked.contains(&kind) {
+            self.permission_asked.push(kind);
+        }
+        let request = self.adapters.sources.permission_request(kind);
+        if request.is_empty() {
+            if let Some(c) = then {
+                self.post(Msg::Ui(c));
+            }
+            self.send_permissions(notify);
+            return;
+        }
+        self.permission_asking
+            .insert(kind, then.into_iter().collect());
+        self.send_permissions(notify);
+        let inbox = Weak::clone(&self.inbox);
+        // Blocks until the user answers; detached, so quitting never waits for it.
+        let spawned = std::thread::Builder::new()
+            .name("rbs-permission".into())
+            .spawn(move || {
+                request.run();
+                if let Some(tx) = inbox.upgrade() {
+                    let _ = tx.send(Msg::PermissionAnswered(kind));
+                }
+            });
+        if spawned.is_err() {
+            self.post(Msg::PermissionAnswered(kind));
+        }
+    }
+
+    /// A prompt was answered: run what waited for it, reopen sources of the kind that
+    /// were refused when it is allowed now (not for kinds that apply after a restart),
+    /// and tell the UI.
+    fn permission_answered(&mut self, kind: PermissionKind, notify: &dyn Fn(Update)) {
+        let waiting = self.permission_asking.remove(&kind).unwrap_or_default();
+        let info = self.adapters.sources.permission(kind);
+        if info.status == PermissionStatus::Allowed && !info.restart {
+            let refused: Vec<SourceId> = self
+                .studio
+                .sources()
+                .iter()
+                .filter(|st| st.fault == Some(SourceFault::PermissionDenied))
+                .map(|st| st.source)
+                .filter(|id| {
+                    self.collection
+                        .source(*id)
+                        .and_then(|s| PermissionKind::of_type(&s.type_id))
+                        == Some(kind)
+                })
+                .collect();
+            let reopen = !refused.is_empty();
+            for id in refused {
+                let _ = self.reload_source(id);
+            }
+            if reopen {
+                self.apply(notify);
+            }
+        }
+        for c in waiting {
+            self.post(Msg::Ui(c));
+        }
+        self.send_permissions(notify);
     }
 
     /// Shows the OS picker of `entry.adapter` on a thread of its own (it blocks while
@@ -9450,6 +9648,49 @@ impl Host {
         }
     }
 
+    /// A new media source for `path` that no scene places, made the stinger with the
+    /// transition set to Stinger (ADR-0140 decisions 1 and 10): one undo step.
+    fn set_stinger_file(&mut self, path: &std::path::Path) -> Result<SourceId, Refusal> {
+        let mut settings = Settings::new();
+        settings.insert(
+            keys::PATH.into(),
+            SettingValue::Text(path.display().to_string()),
+        );
+        rbs_sources::validate_settings(&SourceKind::Media.type_id(), &settings)
+            .map_err(|error| Refusal::Invalid(error.to_string()))?;
+        let base = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or("Stinger");
+        let name = unique_name(&self.collection, base);
+        let (source, undo_source) = self
+            .collection
+            .add_source(&name, SourceKind::Media.type_id(), settings)
+            .map_err(|e| Refusal::of(&e))?;
+        let mut t = self.collection.transition();
+        t.kind = rbs_scene::TransitionKind::Stinger;
+        t.stinger = rbs_scene::StingerSettings {
+            source: Some(source),
+            cut_ms: None,
+        };
+        match self.collection.set_transition(t) {
+            Ok(undo_transition) => {
+                self.history.record(
+                    EditKind::Transition,
+                    &name,
+                    0,
+                    vec![undo_source, undo_transition],
+                );
+                Ok(source)
+            }
+            Err(e) => {
+                let _ = self.collection.undo(undo_source);
+                Err(Refusal::of(&e))
+            }
+        }
+    }
+
     /// Settings and layout of a new text source showing `text` (ADR-0129 decision 4):
     /// the box fits the text with its padding, measured by the registered renderer, or
     /// is 640 x 160 when there is none, it fails or takes longer than
@@ -10807,6 +11048,12 @@ impl Host {
                 "Media source {raw} is not in a scene that is shown."
             )));
         };
+        if !matches!(op, MediaOp::State) && self.studio.stinger_armed(id) {
+            // Played by a transition until it ends (ADR-0140 decision 5).
+            return Err(Refusal::Conflict(format!(
+                "Media source {raw} is playing as the stinger."
+            )));
+        }
         let failed = |e: rbs_record::MediaNodeError| Refusal::Failed(e.to_string());
         match op {
             MediaOp::Play => control.play().map_err(failed)?,
@@ -10975,7 +11222,49 @@ impl Host {
         if let Some(s) = p.slide {
             t.slide = scene_swipe(s);
         }
+        if let Some(st) = p.stinger {
+            t.stinger = self.stinger_settings(st)?;
+        }
         self.put_transition(t)
+    }
+
+    /// The stinger settings `collection.set_transition` asks for, checked (ADR-0140
+    /// decision 9): the source exists and is a media file, and the cut point is within
+    /// the file's length when that is known. Placement is the model's check.
+    fn stinger_settings(
+        &self,
+        st: api::StingerTransition,
+    ) -> Result<rbs_scene::StingerSettings, Refusal> {
+        let source = match st.source {
+            None => None,
+            Some(raw) => {
+                let id = SourceId::from_raw(raw);
+                let s = self
+                    .collection
+                    .source(id)
+                    .ok_or_else(|| Refusal::NotFound(format!("There is no source {raw}.")))?;
+                if s.type_id.as_str() != types::MEDIA_SOURCE {
+                    return Err(Refusal::Invalid(format!(
+                        "Source {raw} is not a media file, so it cannot be the stinger."
+                    )));
+                }
+                Some(id)
+            }
+        };
+        if let (Some(cut), Some(id)) = (st.cut_ms, source) {
+            let length = (self.collection.transition().stinger.source == Some(id))
+                .then(|| self.stinger.duration())
+                .flatten();
+            if length.is_some_and(|l| u128::from(cut) > l.as_millis()) {
+                return Err(Refusal::Invalid(format!(
+                    "The cut point {cut} ms is past the end of the stinger's file."
+                )));
+            }
+        }
+        Ok(rbs_scene::StingerSettings {
+            source,
+            cut_ms: st.cut_ms,
+        })
     }
 
     /// `scene.set_transition` (ADR-0135 decision 10) and the Scenes panel's
@@ -11959,6 +12248,12 @@ impl Host {
                 .unwrap_or_default(),
             glide: self.collection.glide(),
             transition: self.collection.transition(),
+            stinger_cut_found_ms: self.stinger.cut_found_ms(),
+            stinger_length_ms: self
+                .stinger_length()
+                .map(|l| u32::try_from(l.as_millis()).unwrap_or(u32::MAX)),
+            stinger_looking: self.stinger.looking(),
+            stinger_alpha_unsupported: self.stinger.alpha_unsupported(),
             sources,
         }
     }
@@ -12579,6 +12874,7 @@ impl Host {
             Err(e) => notify(Update::Error(e.to_string())),
         }
         self.publish_transitions();
+        self.look_at_stinger();
         self.publish(notify);
     }
 
@@ -12688,6 +12984,24 @@ impl Host {
         }
         let rows = self.rows();
         if rows != self.rows {
+            let mut refused: Vec<PermissionKind> = rows
+                .iter()
+                .filter_map(|r| match r.status {
+                    SourceStatus::Unavailable {
+                        fault: SourceFault::PermissionDenied,
+                        ..
+                    } => PermissionKind::of_type(&r.kind?.type_id()),
+                    _ => None,
+                })
+                .collect();
+            refused.sort_by_key(|k| PermissionKind::ALL.iter().position(|a| a == k));
+            refused.dedup();
+            if refused != self.permission_refused {
+                if refused.iter().any(|k| !self.permission_refused.contains(k)) {
+                    self.send_permissions(notify);
+                }
+                self.permission_refused = refused;
+            }
             self.rows = rows.clone();
             notify(Update::Sources(rows));
         }
@@ -12973,6 +13287,9 @@ fn edit_error(e: &SceneError) -> String {
             "Only a display source can hide the taskbar or Dock.".to_owned()
         }
         SceneError::UnknownFilter(_) => "This filter is not there any more.".to_owned(),
+        SceneError::StingerPlaced(_) => {
+            "This source is the stinger, so it cannot be in a scene.".to_owned()
+        }
         other => format!("The scene could not be changed ({other:?}). Try again."),
     }
 }
@@ -14650,7 +14967,9 @@ impl ApiTarget<'_> {
                 if changed {
                     host.apply(notify);
                 }
-                Ok(Response::Done(Empty {}))
+                Ok(Response::TransitionSet(rbs_api::request::TransitionSet {
+                    alpha_unsupported: host.stinger_alpha_unsupported(),
+                }))
             }
             C::SourceSetGlide(p) => {
                 let (custom, duration_ms, easing) = match p.glide {
@@ -15731,6 +16050,7 @@ fn scene_transition_kind(k: api::TransitionKind) -> rbs_scene::TransitionKind {
         api::TransitionKind::Move => rbs_scene::TransitionKind::Move,
         api::TransitionKind::Swipe => rbs_scene::TransitionKind::Swipe,
         api::TransitionKind::Slide => rbs_scene::TransitionKind::Slide,
+        api::TransitionKind::Stinger => rbs_scene::TransitionKind::Stinger,
     }
 }
 
@@ -15740,6 +16060,7 @@ fn api_transition_kind(k: rbs_scene::TransitionKind) -> api::TransitionKind {
         rbs_scene::TransitionKind::Fade => api::TransitionKind::Fade,
         rbs_scene::TransitionKind::Swipe => api::TransitionKind::Swipe,
         rbs_scene::TransitionKind::Slide => api::TransitionKind::Slide,
+        rbs_scene::TransitionKind::Stinger => api::TransitionKind::Stinger,
         _ => api::TransitionKind::Move,
     }
 }
@@ -15777,8 +16098,12 @@ fn api_swipe(s: rbs_scene::SwipeSettings) -> api::SwipeTransition {
     }
 }
 
-/// The collection's transition as `scene.list` shows it (protocol 1.81).
-fn api_transition(t: rbs_scene::CollectionTransition) -> api::Transition {
+/// The collection's transition as `scene.list` shows it (protocol 1.81; the stinger
+/// since 1.89).
+fn api_transition(
+    t: rbs_scene::CollectionTransition,
+    cut_found_ms: Option<u32>,
+) -> api::Transition {
     api::Transition {
         kind: api_transition_kind(t.kind),
         fade: api::FadeTransition {
@@ -15791,6 +16116,11 @@ fn api_transition(t: rbs_scene::CollectionTransition) -> api::Transition {
         },
         swipe: api_swipe(t.swipe),
         slide: api_swipe(t.slide),
+        stinger: api::StingerTransition {
+            source: t.stinger.source.map(SourceId::get),
+            cut_ms: t.stinger.cut_ms,
+            cut_found_ms: t.stinger.source.and(cut_found_ms),
+        },
     }
 }
 
@@ -15846,7 +16176,7 @@ fn api_scenes(list: &SceneList) -> api::SceneList {
             muted: list.master.muted,
         },
         glide: api_glide(list.glide),
-        transition: api_transition(list.transition),
+        transition: api_transition(list.transition, list.stinger_cut_found_ms),
         sources: list
             .sources
             .iter()

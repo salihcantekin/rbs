@@ -27,6 +27,9 @@ use crate::transport::{
 
 /// The protocol version this server speaks.
 ///
+/// 1.89 adds the Stinger transition (ADR-0140): the kind `stinger`, `stinger` on
+/// `collection.set_transition` and on the collection's transition, and the
+/// `alpha_unsupported` warning.
 /// 1.88 changes `item.remove` (ADR-0142): a picture's companion sound items in the
 /// same scene go with it; the answer adds `removed_items` and `deleted_sources`.
 /// 1.84 adds live text kinds (ADR-0129 decision 11): `text.timer`, and the text
@@ -110,7 +113,7 @@ use crate::transport::{
 /// `record.start`, `tracks` on a running recording and `record_separately` on a source.
 /// 1.45 adds `"wav"` and `"flac"` on a recording profile (the mix with no picture).
 /// 1.44 is the vertical canvas layouts.
-pub const PROTOCOL_VERSION: &str = "1.88";
+pub const PROTOCOL_VERSION: &str = "1.89";
 
 /// Caps and timeouts (ADR-0044 decision 12). The defaults are the version 1 values in
 /// the control API spec.

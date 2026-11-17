@@ -558,6 +558,9 @@ pub enum TransitionKind {
     Swipe,
     /// The new scene pushes the old one out.
     Slide,
+    /// A media file plays over the change; the scenes switch at its cut point
+    /// (protocol 1.89, ADR-0140). Its duration is the file's play range.
+    Stinger,
 }
 
 /// Which way a Swipe or Slide moves (protocol 1.81, ADR-0128).
@@ -620,6 +623,31 @@ impl Default for SwipeTransition {
     }
 }
 
+/// Stinger settings (protocol 1.89, ADR-0140).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StingerTransition {
+    /// The media-file source played over the change; `null` for none (a Stinger change
+    /// then cuts). It must be placed in no scene.
+    #[serde(default)]
+    pub source: Option<u32>,
+    /// The cut point in milliseconds from the start of the source's play range;
+    /// absent or `null` uses the found point.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cut_ms: Option<u32>,
+    /// The cut point found from the file (ADR-0140 decision 3); absent until found.
+    /// Read only: `collection.set_transition` ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cut_found_ms: Option<u32>,
+}
+
+impl StingerTransition {
+    /// True when no source is chosen and nothing is set.
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 /// The collection's transition (protocol 1.81, ADR-0128): the kind and each kind's
 /// settings. Move's settings are the collection `glide`.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -632,6 +660,9 @@ pub struct Transition {
     pub swipe: SwipeTransition,
     /// Slide settings.
     pub slide: SwipeTransition,
+    /// Stinger settings (protocol 1.89, ADR-0140); absent while none is set.
+    #[serde(default, skip_serializing_if = "StingerTransition::is_default")]
+    pub stinger: StingerTransition,
 }
 
 impl Transition {

@@ -500,6 +500,36 @@ impl fmt::Debug for SourceTypes {
     }
 }
 
+/// The OS prompts for one permission kind, taken out of the registry so a host can
+/// show them on a worker thread (ADR-0141 decision 4).
+pub struct PermissionRequest {
+    kind: PermissionKind,
+    capture: Vec<(Arc<dyn CaptureFactory>, TargetKind)>,
+    audio: Vec<(Arc<dyn AudioBackend>, EndpointKind)>,
+}
+
+impl PermissionRequest {
+    /// The kind asked for.
+    pub fn kind(&self) -> PermissionKind {
+        self.kind
+    }
+
+    /// True when no adapter would prompt.
+    pub fn is_empty(&self) -> bool {
+        self.capture.is_empty() && self.audio.is_empty()
+    }
+
+    /// Shows the prompts, one after another; blocks until each is answered.
+    pub fn run(self) {
+        for (f, t) in self.capture {
+            let _ = f.request_permission(t);
+        }
+        for (b, e) in self.audio {
+            let _ = b.request_permission(e);
+        }
+    }
+}
+
 fn cap_flag(caps: &CapabilitySet, key: &rbs_core::capability::CapabilityKey) -> bool {
     matches!(caps.get(key), Some(CapabilityValue::Flag(true)))
 }
@@ -809,12 +839,27 @@ impl SourceTypes {
     /// reads the status again. Blocks while a prompt is shown: call it from a thread
     /// that is neither the UI thread nor a real-time thread (ADR-0141 decision 4).
     pub fn request_permission(&self, kind: PermissionKind) -> PermissionInfo {
+        self.permission_request(kind).run();
+        self.permission(kind)
+    }
+
+    /// The prompts [`request_permission`](Self::request_permission) would show, as a
+    /// value a host can run on its own worker thread without holding the registry.
+    pub fn permission_request(&self, kind: PermissionKind) -> PermissionRequest {
+        let mut request = PermissionRequest {
+            kind,
+            capture: Vec::new(),
+            audio: Vec::new(),
+        };
         for &t in kind.target_kinds() {
+            let prompt_key = capture_caps::permission_keys(t).2;
             for f in self.capture_candidates(t) {
-                let caps = self.capture.capabilities(&f.id());
-                let prompt = caps.is_some_and(|c| cap_flag(c, &capture_caps::permission_keys(t).2));
+                let prompt = self
+                    .capture
+                    .capabilities(&f.id())
+                    .is_some_and(|c| cap_flag(c, &prompt_key));
                 if prompt && f.permission(t) == rbs_capture::Permission::NotDetermined {
-                    let _ = f.request_permission(t);
+                    request.capture.push((f, t));
                 }
             }
         }
@@ -828,11 +873,11 @@ impl SourceTypes {
                     .capabilities(&b.id())
                     .is_some_and(|c| cap_flag(c, &prompt_key));
                 if prompt && b.permission(e) == rbs_audio_io::Permission::NotDetermined {
-                    let _ = b.request_permission(e);
+                    request.audio.push((b, e));
                 }
             }
         }
-        self.permission(kind)
+        request
     }
 
     fn permission_answers(&self, kind: PermissionKind) -> Vec<AdapterAnswer> {
@@ -1260,6 +1305,39 @@ impl SourceTypes {
         }
     }
 
+    /// What the stinger search needs of a media-file source (ADR-0140 decision 3): its
+    /// accepted path, its play range and the adapters to try, in the order a source
+    /// would try them. Reads no file contents.
+    #[allow(clippy::type_complexity)]
+    pub fn stinger_file(
+        &self,
+        source: &Source,
+    ) -> Result<
+        (
+            std::path::PathBuf,
+            (Duration, Option<Duration>),
+            Vec<Arc<dyn rbs_media_decode::MediaDecoderFactory>>,
+        ),
+        SourceError,
+    > {
+        validate_media(&source.settings)?;
+        let path_text = text(&source.settings, keys::PATH)?.ok_or(SourceError::InvalidSetting {
+            key: keys::PATH,
+            expected: "a local absolute path",
+        })?;
+        let path =
+            rbs_media_decode::accept_local_media_path(path_text).map_err(|error| match error {
+                rbs_media_decode::PathError::Invalid(expected) => SourceError::InvalidSetting {
+                    key: keys::PATH,
+                    expected,
+                },
+                rbs_media_decode::PathError::Media(text) => SourceError::Media(text),
+            })?;
+        let range = media_range(&source.settings)?;
+        let factories = self.media_candidates(text(&source.settings, keys::ADAPTER)?);
+        Ok((path, range, factories))
+    }
+
     fn media_candidates(
         &self,
         named: Option<&str>,
@@ -1347,6 +1425,17 @@ impl SourceTypes {
                 key: keys::END_MS,
                 expected: "greater than start_ms",
             })?;
+        // The candidates after the chosen one, tried in order when it cannot keep
+        // the file's alpha as the stinger (ADR-0140 decision 2).
+        let after: Vec<Arc<dyn rbs_media_decode::MediaDecoderFactory>> = candidates
+            .iter()
+            .skip_while(|f| !Arc::ptr_eq(f, &factory))
+            .skip(1)
+            .cloned()
+            .collect();
+        if !after.is_empty() {
+            pair.control.set_alpha_alternates(after);
+        }
         let stats = pair.picture.stats();
         Ok(SourceInstance::Media(Box::new(MediaSource {
             picture: pair.picture,

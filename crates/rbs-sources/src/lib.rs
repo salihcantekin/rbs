@@ -26,6 +26,7 @@ mod layers;
 pub mod permissions;
 mod registry;
 pub mod still;
+pub mod stinger;
 pub mod text;
 pub mod text_file;
 pub mod text_live;
@@ -47,9 +48,9 @@ pub use browser_sound::{
 pub use filters::{filter_settings, filter_values, filter_values_lenient};
 pub use layers::{GLIDE, glide_layers, glide_max_duration, gpu_easing, node_layers, resolve_slide};
 pub use registry::{
-    AudioSource, InstanceContext, MonitorDevice, NodeTypeTable, SourceError, SourceInstance,
-    SourceMode, SourcePicker, SourceTarget, SourceTypes, StillSource, TextSource, VideoSource,
-    apply_media_live, option_keys, validate_settings,
+    AudioSource, InstanceContext, MonitorDevice, NodeTypeTable, PermissionRequest, SourceError,
+    SourceInstance, SourceMode, SourcePicker, SourceTarget, SourceTypes, StillSource, TextSource,
+    VideoSource, apply_media_live, option_keys, validate_settings,
 };
 pub use types::{SourceClass, class_of};
 

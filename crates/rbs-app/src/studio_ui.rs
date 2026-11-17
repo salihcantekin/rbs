@@ -16,6 +16,7 @@ use rbs_app::canvas_profile::{self, CanvasProfile, RATES};
 use rbs_app::edit_history::{EditKind, StepInfo};
 use rbs_app::encoder_form::{Choices, EncoderForm};
 use rbs_app::network_access::{self, Source};
+use rbs_app::permission_text;
 use rbs_app::record_profile::{
     AUDIO_KBPS, Delivery, EditorProject, Encoding, Format, MAX_MARKER_LEAD_MS, OutputSize,
     RateMode, RecordProfile, SEPARATE_FILES_SECTION, SeparateFiles, VIDEO_KBPS, VideoCodec,
@@ -47,6 +48,7 @@ use rbs_scene::model::{
     Border, ChromeFill, DisplayChrome, ItemId, ItemStyle, Layout, SceneId, Shape, SourceId,
     SourceRegion, VideoAs,
 };
+use rbs_sources::permissions::PermissionKind;
 use rbs_transport::Secret;
 use rbs_ui::fader;
 use rbs_ui::meter::{self, Meter, SCALE_MARKS_DB};
@@ -248,6 +250,18 @@ fn vertical_why(why: &str) -> String {
 /// What the window knows of the studio.
 pub struct StudioUi {
     pub host: Option<StudioHost>,
+    /// The OS permission statuses as the host last sent them, and the kind whose
+    /// prompt shows (ADR-0141); Settings › Permissions reads them.
+    pub permissions: (
+        Vec<(
+            rbs_sources::permissions::PermissionKind,
+            rbs_sources::permissions::PermissionInfo,
+        )>,
+        Option<rbs_sources::permissions::PermissionKind>,
+    ),
+    /// Counts the statuses the host sent, so the first-run page knows an answer is
+    /// newer than its request.
+    pub permissions_serial: u64,
     /// 0 starting, 1 running, 2 failed.
     pub state: i32,
     pub failure: String,
@@ -378,6 +392,8 @@ pub struct StudioUi {
     glide: rbs_scene::CollectionGlide,
     /// The collection's transition (ADR-0128).
     transition: rbs_scene::CollectionTransition,
+    /// The stinger as its options show it (ADR-0140 decision 10).
+    stinger: StingerView,
     /// The preview scene's picture layer exists (studio mode).
     pub scene_preview_ready: bool,
     /// The preview scene's picture layer could not be made in this session.
@@ -656,6 +672,8 @@ impl StudioUi {
             media_ticks: Vec::new(),
             selected: -1,
             attributes_clipboard: None,
+            permissions: (Vec::new(), None),
+            permissions_serial: 0,
             inspected: Cell::new(-1),
             adding: false,
             reveal_shape: false,
@@ -708,6 +726,7 @@ impl StudioUi {
             tbar_resets: 0,
             glide: rbs_scene::CollectionGlide::default(),
             transition: rbs_scene::CollectionTransition::default(),
+            stinger: StingerView::default(),
             scene_preview_ready: false,
             scene_preview_failed: false,
             vertical: None,
@@ -892,6 +911,16 @@ impl StudioUi {
         g.set_slide_duration(t.slide.duration_ms as i32);
         g.set_slide_easing(i32::from(t.slide.easing != rbs_scene::GlideEasing::Linear));
         g.set_slide_direction(direction_index(t.slide.direction));
+        g.set_stinger_name(self.stinger.name.as_str().into());
+        g.set_stinger_cut_ms(
+            t.stinger
+                .cut_ms
+                .map_or(-1, |v| i32::try_from(v).unwrap_or(i32::MAX)),
+        );
+        g.set_stinger_found_ms(self.stinger.found_ms);
+        g.set_stinger_length_ms(self.stinger.length_ms);
+        g.set_stinger_looking(self.stinger.looking);
+        g.set_stinger_alpha_unsupported(self.stinger.alpha_unsupported);
         g.set_scene_preview_state(states.scene);
         g.set_vertical_preview_state(states.vertical);
         g.set_selected_source(self.selected);
@@ -2491,7 +2520,7 @@ impl StudioUi {
     }
 
     /// The transition kind from the rail (ADR-0128): `0` Cut, `1` Fade, `2` Move,
-    /// `3` Swipe, `4` Slide.
+    /// `3` Swipe, `4` Slide, `5` Stinger (ADR-0140).
     pub fn set_transition_kind(&mut self, index: i32) {
         let mut t = self.transition;
         t.kind = match index {
@@ -2499,6 +2528,7 @@ impl StudioUi {
             1 => rbs_scene::TransitionKind::Fade,
             3 => rbs_scene::TransitionKind::Swipe,
             4 => rbs_scene::TransitionKind::Slide,
+            5 => rbs_scene::TransitionKind::Stinger,
             _ => rbs_scene::TransitionKind::Move,
         };
         if t != self.transition {
@@ -2532,6 +2562,21 @@ impl StudioUi {
         }
     }
 
+    /// The stinger's cut point in ms from the start of its play range; `-1` uses the
+    /// found point (ADR-0140 decision 3).
+    pub fn set_stinger_cut(&mut self, ms: i32) {
+        let mut t = self.transition;
+        t.stinger.cut_ms = u32::try_from(ms).ok();
+        if t != self.transition {
+            self.send(Command::SetTransition(t));
+        }
+    }
+
+    /// Makes `path` the stinger: a new media source no scene places (ADR-0140).
+    pub fn set_stinger_file(&mut self, path: &std::path::Path) {
+        self.send(Command::SetStingerFile(path.to_owned()));
+    }
+
     /// Fade's options: easing (`0` linear, `1` ease-in-out) and an opaque colour to
     /// fade through (`"#rrggbb"`; empty keeps the colour, black when there is none).
     pub fn set_fade_options(&mut self, easing: i32, via: bool, color: &str) {
@@ -2557,6 +2602,7 @@ impl StudioUi {
             2 => Some(rbs_scene::TransitionKind::Move),
             3 => Some(rbs_scene::TransitionKind::Swipe),
             4 => Some(rbs_scene::TransitionKind::Slide),
+            5 => Some(rbs_scene::TransitionKind::Stinger),
             _ => None,
         };
         let duration_ms = u32::try_from(duration_ms).ok().map(|ms| ms.min(5_000));
@@ -2716,6 +2762,14 @@ impl StudioUi {
     pub fn transition_progress(&mut self, t: f32) {
         if self.studio_mode {
             self.send(Command::TransitionProgress(t));
+        }
+    }
+
+    /// Rehearse on Preview (ADR-0135 decision 11): the transition on the Preview
+    /// picture only.
+    pub fn rehearse(&mut self) {
+        if self.studio_mode {
+            self.send(Command::Rehearse);
         }
     }
 
@@ -6093,6 +6147,20 @@ impl StudioUi {
                 }
                 self.glide = list.glide;
                 self.transition = list.transition;
+                let ms = |v: Option<u32>| v.map_or(-1, |v| i32::try_from(v).unwrap_or(i32::MAX));
+                self.stinger = StingerView {
+                    name: list
+                        .transition
+                        .stinger
+                        .source
+                        .and_then(|id| list.sources.iter().find(|s| s.id == id))
+                        .map(|s| s.name.clone())
+                        .unwrap_or_default(),
+                    found_ms: ms(list.stinger_cut_found_ms),
+                    length_ms: ms(list.stinger_length_ms),
+                    looking: list.stinger_looking,
+                    alpha_unsupported: list.stinger_alpha_unsupported,
+                };
                 let data: Vec<SceneData> = list
                     .scenes
                     .iter()
@@ -6177,6 +6245,15 @@ impl StudioUi {
                 Some(v) => self.sync_measure.set_vec(vec![sync_measure_data(&v)]),
                 None => self.sync_measure.set_vec(Vec::new()),
             },
+            Update::Permissions { rows, waiting } => {
+                self.permissions = (rows, waiting);
+                self.permissions_serial += 1;
+                // A refused source's fix action follows the status (Allow or Fix
+                // permission).
+                if self.rows.iter().any(|r| refused(r).is_some()) {
+                    self.set_rows(self.rows.clone());
+                }
+            }
             Update::TextFonts(families) => {
                 if let Some(p) = &mut self.add_picker
                     && p.answer_fonts(&families, &self.font_current)
@@ -6599,7 +6676,10 @@ impl StudioUi {
                 };
                 let (media_state, media_pos_ms, media_len_ms) =
                     media_tick_fields(&self.media_ticks, r.id.get() as i32);
+                let (perm_kind, perm_action) = self.permission_fix(r);
                 SourceData {
+                    perm_kind,
+                    perm_action,
                     media: r.media.is_some(),
                     media_path: r.media.as_ref().map_or("", |m| m.path.as_str()).into(),
                     media_loop: r.media.as_ref().is_some_and(|m| m.looped),
@@ -6752,6 +6832,20 @@ impl StudioUi {
         self.rows = rows;
         // The Source tab marks the source's own target: it may have changed.
         self.refresh_source_targets();
+    }
+
+    /// A source refused access: its permission kind's page number and its fix action
+    /// (`permission_text::source_action`); `(-1, 0)` for any other source.
+    fn permission_fix(&self, r: &SourceRow) -> (i32, i32) {
+        let Some(kind) = refused(r) else {
+            return (-1, 0);
+        };
+        let (rows, waiting) = &self.permissions;
+        let info = rows.iter().find(|(k, _)| *k == kind).map(|(_, i)| *i);
+        (
+            permission_text::kind_code(kind),
+            permission_text::source_action(info, *waiting == Some(kind)),
+        )
     }
 
     /// The Mixer: what is heard, the program scene's audio (ADR-0061; the edited scene's
@@ -7665,7 +7759,17 @@ fn library_samples(height: u32) -> Vec<SampleData> {
         .collect()
 }
 
-/// The icon a source's row shows for its kind (design system icon set).
+/// The permission kind a source was refused, if it was (ADR-0141).
+fn refused(r: &SourceRow) -> Option<PermissionKind> {
+    match r.status {
+        SourceStatus::Unavailable {
+            fault: SourceFault::PermissionDenied,
+            ..
+        } => PermissionKind::of_type(&r.kind?.type_id()),
+        _ => None,
+    }
+}
+
 /// The reason a source is unavailable, in plain words for its kind (ADR-0077).
 fn unavailable_text(fault: SourceFault, kind: Option<SourceKind>) -> &'static str {
     use SourceKind as K;
@@ -7686,6 +7790,7 @@ fn unavailable_text(fault: SourceFault, kind: Option<SourceKind>) -> &'static st
     }
 }
 
+/// The icon a source's row shows for its kind (design system icon set).
 fn source_icon(kind: Option<SourceKind>) -> &'static str {
     match kind {
         Some(SourceKind::Screen) => "monitor",
@@ -8086,8 +8191,21 @@ fn transition_index(kind: rbs_scene::TransitionKind) -> i32 {
         rbs_scene::TransitionKind::Fade => 1,
         rbs_scene::TransitionKind::Swipe => 3,
         rbs_scene::TransitionKind::Slide => 4,
+        rbs_scene::TransitionKind::Stinger => 5,
         _ => 2,
     }
+}
+
+/// The stinger as the transition options show it (ADR-0140 decision 10): its
+/// source's name, the found cut and the play range's length in ms (`-1` unknown),
+/// whether its file is being looked at, and whether its alpha is kept here.
+#[derive(Debug, Clone, Default)]
+struct StingerView {
+    name: String,
+    found_ms: i32,
+    length_ms: i32,
+    looking: bool,
+    alpha_unsupported: bool,
 }
 
 /// The rail's index of a Swipe or Slide direction.

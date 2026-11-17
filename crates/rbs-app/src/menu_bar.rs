@@ -660,7 +660,7 @@ impl CommandState for Shown<'_> {
                     _ => Ok(()),
                 }
             }
-            "canvas.transition" => {
+            "canvas.transition" | "ui.transition.rehearse" => {
                 self.running()?;
                 if s.studio_mode {
                     Ok(())
@@ -1421,6 +1421,7 @@ pub fn settings_section(name: &str) -> Option<i32> {
         "virtual_camera" => 8,
         "audio" => 9,
         "ai_tools" => 10,
+        "permissions" => 11,
         _ => return None,
     })
 }
@@ -1752,6 +1753,8 @@ pub enum Run {
     StudioMode(bool),
     /// Put the preview scene on air (ADR-0061).
     Transition,
+    /// Rehearse on Preview (ADR-0135 decision 11).
+    Rehearse,
     /// Add a scene.
     AddScene,
     /// Copy a scene with the same sources and layouts.
@@ -2024,6 +2027,7 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
             })
         }
         "canvas.transition" => Run::Transition,
+        "ui.transition.rehearse" => Run::Rehearse,
         "scene.position" => Run::Scene(state.studio.scene_at(scene_position(&id)?)?),
         "scene.next" => Run::Scene(state.studio.scene_step(1)?),
         "scene.previous" => Run::Scene(state.studio.scene_step(-1)?),
@@ -2252,7 +2256,7 @@ mod tests {
             .map(|s| settings_section(s).expect("known section"))
             .collect();
         seen.sort_unstable();
-        assert_eq!(seen, (0..11).collect::<Vec<_>>());
+        assert_eq!(seen, (0..12).collect::<Vec<_>>());
         assert_eq!(settings_section("mixer"), None);
         let run = |t: &str| open_settings(&CommandId::parse(t).expect("id"));
         assert_eq!(run("ui.settings.open"), Some(Run::OpenSettings(None, None)));

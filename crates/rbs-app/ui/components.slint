@@ -4403,6 +4403,179 @@ export component SelectList inherits Rectangle {
     }
 }
 
+// One setting (ADR-0114): its name and explanation on the left, its control on the
+// right. When the row is narrower than `size.row.stack-below`, or the control needs
+// more than half the row, the control goes under the name instead (stacked). A
+// divider line separates it from the row above; the first row of a card without a
+// title sets `divider: false`. The two shapes are placed by geometry because
+// `@children` cannot sit under an `if`.
+export component SettingRow inherits Rectangle {
+    in property <string> label;
+    // Its key in the settings search index (docs/specs/settings-search.md), or "" for
+    // a row search does not find. A test checks the keys against the index.
+    in property <string> find;
+    // Off while a parent hides the row without removing it (`Shown`): search then
+    // shows the card instead. A test asks every keyed row in a `Shown` to set it.
+    in property <bool> findable: true;
+    // A few words under the name saying what the setting does, one line (owner
+    // decision 2026-11-14): with `hint`, the usual pair for a short setting.
+    in property <string> summary;
+    // A longer text under the name: a problem, a warning, or an explanation that does
+    // not fit in a summary and the hint.
+    in property <string> help;
+    // The longer explanation behind an info hint after the name (ADR-0094 row
+    // anatomy); empty: no hint. The (i) shows only while the pointer is over the row,
+    // it has the focus or its popover is open, so a page of settings shows no column
+    // of identical buttons; screen readers always get it.
+    in property <string> hint;
+    // The help is a problem (error colour), not an explanation.
+    in property <bool> help-is-problem;
+    // The help is a warning (warning colour). The words say so; colour is not
+    // the only signal (U7). A problem takes the error colour.
+    in property <bool> help-is-warning;
+    in property <bool> divider: true;
+    // Off: the label shows in the disabled colour (the control is disabled too).
+    in property <bool> enabled: true;
+    // The preferred width of the control column. Beside the name it never takes
+    // more than half the row.
+    in property <length> control-width: Tokens.size-menu-md;
+    // The control fills the column (fields, lists to pick from); off, it keeps its own
+    // width at the column's right edge (segmented controls, buttons), or at the left
+    // edge when stacked. A control that cannot grow (a `Toggle`, a `SettingValue`)
+    // keeps its own width at the right edge either way, so the author cannot leave it
+    // at the column's left edge (owner decision 2026-11-17).
+    in property <bool> fill: true;
+    // The value differs from its default (owner decision 2026-11-14): a reset button
+    // shows just before the control while the row has room for it (not stacked), and
+    // a double-click on the name resets too. Only rows whose default is known set it.
+    in property <bool> changed;
+    // The default in words, for the reset button's name ("Reset to 400 ms").
+    in property <string> default-text;
+    callback reset();
+    out property <bool> reset-shown: root.changed && !root.stacked;
+    property <length> reset-room: root.reset-shown ? Tokens.size-control-sm : 0px;
+    // The control is under the name.
+    out property <bool> stacked: root.width < Tokens.size-row-stack-below || controls.min-width > root.width / 2;
+    property <bool> has-info: root.label != "" || root.summary != "" || root.help != "" || root.hint != "";
+    property <bool> hint-focused;
+    property <bool> hint-open;
+    out property <bool> hint-shown: root.hint != "" && (hover.has-hover || root.hint-focused || root.hint-open);
+    property <length> column: max(controls.min-width, min(min(root.fill ? root.control-width : min(root.control-width, controls.preferred-width), root.width / 2), controls.max-width));
+    property <length> gap: root.has-info ? (root.stacked ? Tokens.space-2 : Tokens.space-4) : 0px;
+    property <length> inner: root.stacked ? info.preferred-height + root.gap + controls.preferred-height : max(info.preferred-height, controls.preferred-height);
+    min-width: max(info.min-width, controls.min-width);
+    min-height: Tokens.space-3 * 2 + root.inner;
+    preferred-height: Tokens.space-3 * 2 + root.inner;
+    // Focus that lands in this row shows the whole row (FocusReveal).
+    property <int> focus-serial: FocusReveal.serial;
+    changed focus-serial => {
+        let p = self.absolute-position;
+        if FocusReveal.x >= p.x && FocusReveal.x < p.x + self.width && FocusReveal.y >= p.y && FocusReveal.y < p.y + self.height {
+            FocusReveal.row(p.x, p.y, self.width, self.height);
+        }
+    }
+    // Settings search: this row answers when its key is asked for (SettingsFind).
+    property <int> find-serial: SettingsFind.serial;
+    changed find-serial => { root.answer-find(); }
+    init => { root.answer-find(); }
+    function answer-find() {
+        if root.findable && root.find != "" && root.find == SettingsFind.key {
+            SettingsFind.answer(root.find, self.absolute-position.x, self.absolute-position.y, self.width, self.height);
+        }
+    }
+    FindMark {
+        x: -Tokens.space-2;
+        y: 0px;
+        width: root.width + 2 * Tokens.space-2;
+        height: root.height;
+        on: root.find != "" && SettingsFind.marked == root.find;
+    }
+    if root.divider: Rectangle {
+        y: 0;
+        height: Tokens.size-border;
+        background: Theme.border-subtle;
+    }
+    // Holds the row's content, so the pointer anywhere on it, also over the
+    // control, shows the (i): a TouchArea under the content would lose the hover to
+    // the control.
+    hover := TouchArea {
+        width: parent.width;
+        height: parent.height;
+        // A double-click on the name or its summary resets a changed value.
+        double-clicked => {
+            if root.changed && (root.stacked || self.mouse-x < info.width) {
+                root.reset();
+            }
+        }
+        info := VerticalLayout {
+            x: 0;
+            width: root.stacked ? root.width : max(0px, root.width - root.column - root.gap - root.reset-room);
+            y: root.stacked ? Tokens.space-3 : Tokens.space-3 + (root.inner - self.height) / 2;
+            height: self.preferred-height;
+            spacing: Tokens.space-1;
+            // The name, and after it the (i). The (i) is placed, not laid out, so its
+            // button (taller than the text) does not make the name line taller; it
+            // always keeps its place, so showing it moves nothing.
+            Rectangle {
+                min-height: name.min-height;
+                preferred-height: name.preferred-height;
+                name := Text {
+                    x: 0;
+                    width: min(self.preferred-width, parent.width - (root.hint != "" ? Tokens.size-control-sm + Tokens.space-1 : 0px));
+                    height: parent.height;
+                    text: root.label;
+                    color: root.enabled ? Theme.text-primary : Theme.text-disabled;
+                    font-size: Tokens.type-label-size;
+                    font-weight: Tokens.type-label-weight;
+                    wrap: word-wrap;
+                    vertical-alignment: center;
+                    accessible-role: none;
+                }
+                // Opacity, not `visible`: a hidden (i) stays a focus stop and in the
+                // accessibility tree.
+                if root.hint != "": InfoHint {
+                    x: name.width + Tokens.space-1;
+                    y: (parent.height - self.height) / 2;
+                    opacity: root.hint-shown ? 1 : 0;
+                    label: root.label;
+                    text: root.hint;
+                    changed focused => { root.hint-focused = self.focused; }
+                    changed showing => { root.hint-open = self.showing; }
+                }
+            }
+            if root.summary != "": Text {
+                text: root.summary;
+                color: Theme.text-secondary;
+                font-size: Tokens.type-caption-size;
+                overflow: elide;
+                accessible-role: none;
+            }
+            if root.help != "": Text {
+                text: root.help;
+                color: root.help-is-problem ? Theme.state-error : root.help-is-warning ? Theme.state-warning : Theme.text-secondary;
+                font-size: Tokens.type-caption-size;
+                wrap: word-wrap;
+            }
+        }
+        if root.reset-shown: IconButton {
+            x: controls.x - self.width;
+            y: controls.y + (controls.height - self.height) / 2;
+            icon: IconName.reset;
+            name: root.default-text != "" ? @tr("Reset to {}", root.default-text) : @tr("Reset to the default");
+            clicked => { root.reset(); }
+        }
+        controls := HorizontalLayout {
+            width: root.stacked ? (root.fill ? root.width : min(root.width, self.preferred-width)) : root.column;
+            x: root.stacked ? 0px : root.width - self.width;
+            y: root.stacked ? Tokens.space-3 + info.preferred-height + root.gap : Tokens.space-3 + (root.inner - self.height) / 2;
+            height: self.preferred-height;
+            alignment: root.fill ? LayoutAlignment.stretch : LayoutAlignment.start;
+            spacing: Tokens.space-2;
+            @children
+        }
+    }
+}
+
 export component OverlayHost inherits Rectangle {
     // The tooltip, directly under its control (no gap, so the pointer can move onto it).
     if Overlays.tip-shown && !Overlays.hint-open: tip := Rectangle {
@@ -4516,7 +4689,7 @@ export component OverlayHost inherits Rectangle {
     }
     // The first-run page (ADR-0113 decision 5): modal over the whole window; Escape or
     // "Skip for now" skips (Standard), Start applies the choice.
-    if Overlays.first-run-open: first-run := Rectangle {
+    if Overlays.first-run-open && Overlays.first-run-step == 0: first-run := Rectangle {
         width: root.width;
         height: root.height;
         background: Theme.surface-base;
@@ -4614,6 +4787,83 @@ export component OverlayHost inherits Rectangle {
                         text: @tr("Start");
                         kind: "primary";
                         clicked => { Overlays.first-run-done(Overlays.first-run-choice, Overlays.first-run-theme); }
+                    }
+                }
+            }
+        }
+    }
+    // The first-run page's access step (ADR-0141 decision 11): the camera, microphone
+    // and screen rows with their actions. Nothing is asked without a press; Escape or
+    // Later closes it.
+    if Overlays.first-run-open && Overlays.first-run-step == 1: first-run-access := Rectangle {
+        width: root.width;
+        height: root.height;
+        background: Theme.surface-base;
+        property <bool> to-do: Overlays.first-run-access-to-do;
+        init => {
+            Overlays.first-run-cover = { x: 0, y: 0, width: self.width, height: self.height };
+            access-close.take-focus();
+        }
+        changed width => { Overlays.first-run-cover = { x: 0, y: 0, width: self.width, height: self.height }; }
+        changed height => { Overlays.first-run-cover = { x: 0, y: 0, width: self.width, height: self.height }; }
+        // Takes the clicks the card does not, so nothing under the page reacts.
+        TouchArea { }
+        FocusScope {
+            focus-on-click: false;
+            key-pressed(e) => {
+                if e.text == Key.Escape { Overlays.first-run-access-done(); return accept; }
+                reject
+            }
+        }
+        access-card := MenuSurface {
+            width: Tokens.size-first-run-w;
+            height: access-body.preferred-height;
+            x: (root.width - self.width) / 2;
+            y: max(Tokens.space-4, (root.height - self.height) / 3);
+            accessible-role: groupbox;
+            accessible-label: @tr("Camera, microphone and screen");
+            access-body := VerticalLayout {
+                padding: Tokens.space-6;
+                spacing: Tokens.space-3;
+                Text {
+                    text: @tr("Camera, microphone and screen");
+                    color: Theme.text-primary;
+                    font-size: Tokens.type-heading-size;
+                    font-weight: Tokens.type-heading-weight;
+                    accessible-role: none;
+                }
+                Text {
+                    text: @tr("RBS needs the system's permission to use these. You can also do this later in Settings, Permissions, or the first time you add a source.");
+                    color: Theme.text-secondary;
+                    font-size: Tokens.type-body-size;
+                    wrap: word-wrap;
+                    accessible-role: none;
+                }
+                VerticalLayout {
+                    for r[i] in Studio.permission-rows: SettingRow {
+                        // find: none (the first-run page, not a setting).
+                        divider: i > 0;
+                        label: r.label;
+                        help: r.status;
+                        help-is-warning: r.tone == 1;
+                        help-is-problem: r.tone == 2;
+                        fill: false;
+                        if r.action == 0: SettingValue { text: r.value; }
+                        if r.action != 0: Button {
+                            text: r.action-text;
+                            accessible-name: @tr("{} for {}", r.action-text, r.label);
+                            kind: r.action == 1 ? "primary" : "secondary";
+                            clicked => { Studio.permission-action(r.kind, r.action); }
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    padding-top: Tokens.space-2;
+                    alignment: end;
+                    access-close := Button {
+                        text: first-run-access.to-do ? @tr("Later") : @tr("Done");
+                        kind: first-run-access.to-do ? "ghost" : "primary";
+                        clicked => { Overlays.first-run-access-done(); }
                     }
                 }
             }
@@ -5153,179 +5403,6 @@ export component FeatureSection inherits VerticalLayout {
                     if root.id != "" { Experience.show(root.id); Experience.rev += 1; }
                 }
             }
-        }
-    }
-}
-
-// One setting (ADR-0114): its name and explanation on the left, its control on the
-// right. When the row is narrower than `size.row.stack-below`, or the control needs
-// more than half the row, the control goes under the name instead (stacked). A
-// divider line separates it from the row above; the first row of a card without a
-// title sets `divider: false`. The two shapes are placed by geometry because
-// `@children` cannot sit under an `if`.
-export component SettingRow inherits Rectangle {
-    in property <string> label;
-    // Its key in the settings search index (docs/specs/settings-search.md), or "" for
-    // a row search does not find. A test checks the keys against the index.
-    in property <string> find;
-    // Off while a parent hides the row without removing it (`Shown`): search then
-    // shows the card instead. A test asks every keyed row in a `Shown` to set it.
-    in property <bool> findable: true;
-    // A few words under the name saying what the setting does, one line (owner
-    // decision 2026-11-14): with `hint`, the usual pair for a short setting.
-    in property <string> summary;
-    // A longer text under the name: a problem, a warning, or an explanation that does
-    // not fit in a summary and the hint.
-    in property <string> help;
-    // The longer explanation behind an info hint after the name (ADR-0094 row
-    // anatomy); empty: no hint. The (i) shows only while the pointer is over the row,
-    // it has the focus or its popover is open, so a page of settings shows no column
-    // of identical buttons; screen readers always get it.
-    in property <string> hint;
-    // The help is a problem (error colour), not an explanation.
-    in property <bool> help-is-problem;
-    // The help is a warning (warning colour). The words say so; colour is not
-    // the only signal (U7). A problem takes the error colour.
-    in property <bool> help-is-warning;
-    in property <bool> divider: true;
-    // Off: the label shows in the disabled colour (the control is disabled too).
-    in property <bool> enabled: true;
-    // The preferred width of the control column. Beside the name it never takes
-    // more than half the row.
-    in property <length> control-width: Tokens.size-menu-md;
-    // The control fills the column (fields, lists to pick from); off, it keeps its own
-    // width at the column's right edge (segmented controls, buttons), or at the left
-    // edge when stacked. A control that cannot grow (a `Toggle`, a `SettingValue`)
-    // keeps its own width at the right edge either way, so the author cannot leave it
-    // at the column's left edge (owner decision 2026-11-17).
-    in property <bool> fill: true;
-    // The value differs from its default (owner decision 2026-11-14): a reset button
-    // shows just before the control while the row has room for it (not stacked), and
-    // a double-click on the name resets too. Only rows whose default is known set it.
-    in property <bool> changed;
-    // The default in words, for the reset button's name ("Reset to 400 ms").
-    in property <string> default-text;
-    callback reset();
-    out property <bool> reset-shown: root.changed && !root.stacked;
-    property <length> reset-room: root.reset-shown ? Tokens.size-control-sm : 0px;
-    // The control is under the name.
-    out property <bool> stacked: root.width < Tokens.size-row-stack-below || controls.min-width > root.width / 2;
-    property <bool> has-info: root.label != "" || root.summary != "" || root.help != "" || root.hint != "";
-    property <bool> hint-focused;
-    property <bool> hint-open;
-    out property <bool> hint-shown: root.hint != "" && (hover.has-hover || root.hint-focused || root.hint-open);
-    property <length> column: max(controls.min-width, min(min(root.fill ? root.control-width : min(root.control-width, controls.preferred-width), root.width / 2), controls.max-width));
-    property <length> gap: root.has-info ? (root.stacked ? Tokens.space-2 : Tokens.space-4) : 0px;
-    property <length> inner: root.stacked ? info.preferred-height + root.gap + controls.preferred-height : max(info.preferred-height, controls.preferred-height);
-    min-width: max(info.min-width, controls.min-width);
-    min-height: Tokens.space-3 * 2 + root.inner;
-    preferred-height: Tokens.space-3 * 2 + root.inner;
-    // Focus that lands in this row shows the whole row (FocusReveal).
-    property <int> focus-serial: FocusReveal.serial;
-    changed focus-serial => {
-        let p = self.absolute-position;
-        if FocusReveal.x >= p.x && FocusReveal.x < p.x + self.width && FocusReveal.y >= p.y && FocusReveal.y < p.y + self.height {
-            FocusReveal.row(p.x, p.y, self.width, self.height);
-        }
-    }
-    // Settings search: this row answers when its key is asked for (SettingsFind).
-    property <int> find-serial: SettingsFind.serial;
-    changed find-serial => { root.answer-find(); }
-    init => { root.answer-find(); }
-    function answer-find() {
-        if root.findable && root.find != "" && root.find == SettingsFind.key {
-            SettingsFind.answer(root.find, self.absolute-position.x, self.absolute-position.y, self.width, self.height);
-        }
-    }
-    FindMark {
-        x: -Tokens.space-2;
-        y: 0px;
-        width: root.width + 2 * Tokens.space-2;
-        height: root.height;
-        on: root.find != "" && SettingsFind.marked == root.find;
-    }
-    if root.divider: Rectangle {
-        y: 0;
-        height: Tokens.size-border;
-        background: Theme.border-subtle;
-    }
-    // Holds the row's content, so the pointer anywhere on it, also over the
-    // control, shows the (i): a TouchArea under the content would lose the hover to
-    // the control.
-    hover := TouchArea {
-        width: parent.width;
-        height: parent.height;
-        // A double-click on the name or its summary resets a changed value.
-        double-clicked => {
-            if root.changed && (root.stacked || self.mouse-x < info.width) {
-                root.reset();
-            }
-        }
-        info := VerticalLayout {
-            x: 0;
-            width: root.stacked ? root.width : max(0px, root.width - root.column - root.gap - root.reset-room);
-            y: root.stacked ? Tokens.space-3 : Tokens.space-3 + (root.inner - self.height) / 2;
-            height: self.preferred-height;
-            spacing: Tokens.space-1;
-            // The name, and after it the (i). The (i) is placed, not laid out, so its
-            // button (taller than the text) does not make the name line taller; it
-            // always keeps its place, so showing it moves nothing.
-            Rectangle {
-                min-height: name.min-height;
-                preferred-height: name.preferred-height;
-                name := Text {
-                    x: 0;
-                    width: min(self.preferred-width, parent.width - (root.hint != "" ? Tokens.size-control-sm + Tokens.space-1 : 0px));
-                    height: parent.height;
-                    text: root.label;
-                    color: root.enabled ? Theme.text-primary : Theme.text-disabled;
-                    font-size: Tokens.type-label-size;
-                    font-weight: Tokens.type-label-weight;
-                    wrap: word-wrap;
-                    vertical-alignment: center;
-                    accessible-role: none;
-                }
-                // Opacity, not `visible`: a hidden (i) stays a focus stop and in the
-                // accessibility tree.
-                if root.hint != "": InfoHint {
-                    x: name.width + Tokens.space-1;
-                    y: (parent.height - self.height) / 2;
-                    opacity: root.hint-shown ? 1 : 0;
-                    label: root.label;
-                    text: root.hint;
-                    changed focused => { root.hint-focused = self.focused; }
-                    changed showing => { root.hint-open = self.showing; }
-                }
-            }
-            if root.summary != "": Text {
-                text: root.summary;
-                color: Theme.text-secondary;
-                font-size: Tokens.type-caption-size;
-                overflow: elide;
-                accessible-role: none;
-            }
-            if root.help != "": Text {
-                text: root.help;
-                color: root.help-is-problem ? Theme.state-error : root.help-is-warning ? Theme.state-warning : Theme.text-secondary;
-                font-size: Tokens.type-caption-size;
-                wrap: word-wrap;
-            }
-        }
-        if root.reset-shown: IconButton {
-            x: controls.x - self.width;
-            y: controls.y + (controls.height - self.height) / 2;
-            icon: IconName.reset;
-            name: root.default-text != "" ? @tr("Reset to {}", root.default-text) : @tr("Reset to the default");
-            clicked => { root.reset(); }
-        }
-        controls := HorizontalLayout {
-            width: root.stacked ? (root.fill ? root.width : min(root.width, self.preferred-width)) : root.column;
-            x: root.stacked ? 0px : root.width - self.width;
-            y: root.stacked ? Tokens.space-3 + info.preferred-height + root.gap : Tokens.space-3 + (root.inner - self.height) / 2;
-            height: self.preferred-height;
-            alignment: root.fill ? LayoutAlignment.stretch : LayoutAlignment.start;
-            spacing: Tokens.space-2;
-            @children
         }
     }
 }

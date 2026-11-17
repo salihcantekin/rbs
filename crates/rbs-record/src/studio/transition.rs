@@ -186,6 +186,50 @@ pub(super) struct CanvasTransition {
     scenes: (Option<SceneId>, Option<SceneId>),
     /// Driven by hand (ADR-0135); `None` for a timed transition.
     manual: Option<Manual>,
+    /// The stinger it plays (main canvas of a Stinger change, ADR-0140).
+    pub(super) stinger: Option<stinger::StingerRun>,
+}
+
+impl CanvasTransition {
+    /// True while it waits for or plays `source` as its stinger.
+    pub(super) fn plays(&self, source: SourceId) -> bool {
+        self.stinger.is_some_and(|r| r.source == source)
+            && matches!(self.phase, Phase::Waiting(_) | Phase::Running(_))
+    }
+
+    /// Its stinger while it waits, with the time it started waiting.
+    pub(super) fn stinger_waiting(&self) -> Option<(Timestamp, stinger::StingerRun)> {
+        match (self.phase, self.stinger) {
+            (Phase::Waiting(since), Some(run)) => Some((since, run)),
+            _ => None,
+        }
+    }
+
+    /// True while a Stinger change (the main canvas's or a follower's) waits.
+    pub(super) fn stinger_waiting_any(&self) -> bool {
+        matches!(self.blend, Blend::Stinger { .. }) && matches!(self.phase, Phase::Waiting(_))
+    }
+
+    /// True once the incoming compositor drew every layer.
+    pub(super) fn incoming_ready(&self) -> bool {
+        self.incoming
+            .as_ref()
+            .is_some_and(|v| v.ready.load(Ordering::Acquire) != 0)
+    }
+
+    /// The stinger's source while the binder keeps it.
+    pub(super) fn stinger_source(&self) -> Option<SourceId> {
+        self.outgoing.stinger
+    }
+
+    /// Ends a Stinger change at once without its stinger: the plain layers go out
+    /// and the binder no longer keeps the source.
+    pub(super) fn end_stinger(&mut self, now: Timestamp) {
+        self.outgoing.stinger = None;
+        if matches!(self.phase, Phase::Waiting(_) | Phase::Running(_)) {
+            self.phase = Phase::Ending(now);
+        }
+    }
 }
 
 /// A manual transition's own state (ADR-0135 decisions 1 to 6).
@@ -221,6 +265,9 @@ pub(super) struct MixShape {
     outgoing: BTreeSet<SourceId>,
     from_mix: BTreeMap<SourceId, SourceAudio>,
     to_heard: BTreeSet<SourceId>,
+    /// A Stinger change: its source, left as it is, and its cut point, where every
+    /// other strip switches with the default ramp (ADR-0140 decision 6).
+    stinger: Option<(Option<SourceId>, Duration)>,
 }
 
 impl MixShape {
@@ -260,6 +307,17 @@ impl MixShape {
                     s.ramp = None;
                 }
                 Phase::Running(start) => {
+                    if let Some((stinger, cut)) = self.stinger {
+                        if stinger == Some(s.source) {
+                            s.ramp = None;
+                            continue;
+                        }
+                        if !self.to_heard.contains(&s.source) {
+                            s.audio = silent(s.audio);
+                        }
+                        s.ramp = Some((start + cut, rbs_audio::DEFAULT_RAMP));
+                        continue;
+                    }
                     if !self.to_heard.contains(&s.source) {
                         s.audio = silent(s.audio);
                     }
@@ -291,6 +349,10 @@ enum Blend {
     /// The program compositor draws the incoming layers (gliding) and, above them,
     /// the outgoing-only layers fading out. No incoming compositor.
     Move,
+    /// A stinger plays over the change; the incoming canvas replaces the outgoing
+    /// layers at `cut` under it (ADR-0140). A `follower` canvas switches at the main
+    /// canvas's cut without a stinger picture (decision 7).
+    Stinger { cut: Duration, follower: bool },
 }
 
 impl Blend {
@@ -300,6 +362,7 @@ impl Blend {
             Blend::Swipe { push: false, .. } => TransitionKind::Swipe,
             Blend::Swipe { push: true, .. } => TransitionKind::Slide,
             Blend::Move => TransitionKind::Move,
+            Blend::Stinger { .. } => TransitionKind::Stinger,
         }
     }
 }
@@ -347,6 +410,114 @@ fn move_of(effective: &Effective) -> Option<(Duration, GlideEasing, Blend)> {
             Blend::Move,
         )
     })
+}
+
+/// What a rehearsal plays (ADR-0135 decision 11): the transition a
+/// `canvas.transition` into `preview` would run now, with Move as a crossfade of the
+/// glide's duration and easing. `None` for Cut and a duration of 0.
+pub(super) fn rehearsal_plan(
+    collection: &SceneCollection,
+    preview: SceneId,
+) -> Option<(Duration, GlideEasing, TransitionKind)> {
+    let e = Studio::transition_into(collection, Some(preview), TransitionOnce::default());
+    let kind = e.kind();
+    if kind == TransitionKind::Move {
+        return (e.glide.duration_ms > 0).then(|| {
+            (
+                Duration::from_millis(u64::from(e.glide.duration_ms)),
+                e.glide.easing,
+                kind,
+            )
+        });
+    }
+    blend_of(e.transition).map(|(d, ease, blend)| (d, ease, blend.kind()))
+}
+
+/// The rehearsal compositor's layers (ADR-0135 decision 12): the program picture,
+/// and over it the preview picture coming in as the timed transition would bring it,
+/// from `start` for `duration`, in the rehearsal's own `size`. Move is a crossfade.
+pub(super) fn rehearsal_layers(
+    collection: &SceneCollection,
+    preview: SceneId,
+    (program, incoming): (NodeId, NodeId),
+    size: (u32, u32),
+    start: Timestamp,
+) -> Vec<rbs_gpu::node::NodeLayer> {
+    let e = Studio::transition_into(collection, Some(preview), TransitionOnce::default());
+    let plan = blend_of(e.transition).or_else(|| {
+        (e.kind() == TransitionKind::Move && e.glide.duration_ms > 0).then(|| {
+            (
+                Duration::from_millis(u64::from(e.glide.duration_ms)),
+                e.glide.easing,
+                Blend::Fade { via: None },
+            )
+        })
+    });
+    let (w, h) = (size.0 as f32, size.1 as f32);
+    let mut bottom = rbs_gpu::node::NodeLayer::new(program, 0, 0.0, 0.0, w, h);
+    bottom.opaque = true;
+    let Some((duration, ease, blend)) = plan else {
+        return vec![bottom];
+    };
+    let ease = easing(ease);
+    let mut top = rbs_gpu::node::NodeLayer::new(incoming, 0, 0.0, 0.0, w, h);
+    top.opaque = true;
+    let mut layers = Vec::with_capacity(3);
+    match blend {
+        // A Stinger is never rehearsed or held (ADR-0140 decision 8).
+        Blend::Fade { via: None } | Blend::Move | Blend::Stinger { .. } => {
+            top.fade = Some(Fade {
+                from: 0.0,
+                start,
+                duration,
+                easing: ease,
+            });
+            layers.push(bottom);
+        }
+        Blend::Fade {
+            via: Some([r, g, b]),
+        } => {
+            let half = duration / 2;
+            let mut colour = rbs_gpu::node::NodeLayer::new(incoming, 0, 0.0, 0.0, w, h);
+            colour.style = LayerStyle::new(LayerShape::Box, w.max(h), [r, g, b, 255], [w, h]);
+            colour.fade = Some(Fade {
+                from: 0.0,
+                start,
+                duration: half,
+                easing: ease,
+            });
+            top.fade = Some(Fade {
+                from: 0.0,
+                start: start + half,
+                duration: duration - half,
+                easing: ease,
+            });
+            layers.push(bottom);
+            layers.push(colour);
+        }
+        Blend::Swipe { direction, push } => {
+            let offset = swipe_offset(direction, size);
+            top.slide = Some(Slide {
+                from: shifted(top.transform, offset),
+                start,
+                duration,
+                easing: ease,
+            });
+            if push {
+                let at = bottom.transform;
+                bottom.transform = shifted(at, (-offset.0, -offset.1));
+                bottom.slide = Some(Slide {
+                    from: at,
+                    start,
+                    duration,
+                    easing: ease,
+                });
+            }
+            layers.push(bottom);
+        }
+    }
+    layers.push(top);
+    layers
 }
 
 /// The offset, in canvas pixels, the incoming canvas of a Swipe starts at: one canvas
@@ -437,7 +608,7 @@ fn frozen_blend(
     top.opaque = true;
     let mut out = Vec::with_capacity(2);
     match blend {
-        Blend::Fade { via: None } | Blend::Move => top.opacity = e(t),
+        Blend::Fade { via: None } | Blend::Move | Blend::Stinger { .. } => top.opacity = e(t),
         Blend::Fade {
             via: Some([r, g, b]),
         } => {
@@ -592,6 +763,14 @@ impl Studio {
         }
         let manual = self.manual_take;
         let blend = blend_of(effective.transition).or_else(|| move_of(effective));
+        // A Stinger plays when the main canvas changes; further canvases follow its
+        // cut (ADR-0140 decision 7). Otherwise a Stinger change is a Cut.
+        let main_changes = changed.iter().any(|(c, _, _)| *c == self.settings.canvas);
+        let stinger = if manual || !main_changes {
+            None
+        } else {
+            self.stinger_plan(collection, effective)
+        };
         let now = self.engine.clock().now();
         let cued = self.cues.items();
         let globals_of = |canvas: CanvasId| -> BTreeSet<ItemId> {
@@ -661,6 +840,17 @@ impl Studio {
                     .collect()
             };
             let run = blend.filter(|(_, _, b)| *b != Blend::Move || !leaving.is_empty());
+            let run = match &stinger {
+                Some(plan) => Some((
+                    plan.length,
+                    GlideEasing::Linear,
+                    Blend::Stinger {
+                        cut: plan.cut,
+                        follower: canvas != self.settings.canvas,
+                    },
+                )),
+                None => run,
+            };
             let Some((duration, easing, kind_blend)) = run else {
                 // No incoming picture: it starts now, and a Move ends after its glide.
                 let kind = effective.kind();
@@ -732,6 +922,26 @@ impl Studio {
             } else {
                 (OutgoingScene::new(drawn, heard), Phase::Waiting(now))
             };
+            // The main canvas's Stinger change keeps the stinger bound and arms it
+            // before the apply that makes it Active (ADR-0140 decision 4).
+            let run_stinger = match (&stinger, kind_blend) {
+                (
+                    Some(plan),
+                    Blend::Stinger {
+                        follower: false, ..
+                    },
+                ) => {
+                    self.stinger_arm = Some(plan.source);
+                    Some(stinger::StingerRun {
+                        source: plan.source,
+                        generation: None,
+                        failed: false,
+                        size: plan.size,
+                    })
+                }
+                _ => None,
+            };
+            let outgoing = outgoing.with_stinger(run_stinger.map(|r| r.source));
             self.transitions.insert(
                 canvas,
                 CanvasTransition {
@@ -746,9 +956,11 @@ impl Studio {
                     to_heard,
                     scenes: (from_scene, to_scene),
                     manual: None,
+                    stinger: run_stinger,
                 },
             );
         }
+        self.disarm_stale_stinger();
     }
 
     /// The outgoing scenes the binder keeps while their transition has not ended.
@@ -844,6 +1056,14 @@ impl Studio {
             .unwrap_or_default();
         let is_global = |l: &BoundLayer| l.path.first().is_some_and(|i| globals.contains(i));
         let now = self.engine.clock().now();
+        let stinger_layer = self.transitions.get(&canvas).and_then(|t| {
+            let (Phase::Running(at), Some(run), Some(source)) =
+                (t.phase, t.stinger, t.outgoing.stinger)
+            else {
+                return None;
+            };
+            self.stinger_layer(source, run.size, size, at)
+        });
         let t = self.transitions.get_mut(&canvas)?;
         if t.blend == Blend::Move {
             let Phase::Running(start) = t.phase else {
@@ -965,6 +1185,16 @@ impl Studio {
                         }
                         // Drawn above, without an incoming compositor.
                         Blend::Move => {}
+                        // The incoming canvas replaces the outgoing layers at the cut,
+                        // in one step, under the stinger (ADR-0140 decision 4).
+                        Blend::Stinger { cut, .. } => {
+                            top.fade = Some(Fade {
+                                from: 0.0,
+                                start: start + cut,
+                                duration: Duration::ZERO,
+                                easing: rbs_gpu::node::Easing::Linear,
+                            });
+                        }
                         Blend::Swipe { direction, push } => {
                             let offset = swipe_offset(direction, size);
                             top.slide = Some(Slide {
@@ -990,6 +1220,7 @@ impl Studio {
                     }
                     layers.push(top);
                 }
+                layers.extend(stinger_layer);
                 // The globals as they are now, above everything.
                 let mut above = program.clone();
                 above.layers.retain(|l| is_global(l));
@@ -1020,8 +1251,58 @@ impl Studio {
         let mut done = false;
         let layers_pending = self.layers.pending() && !self.layers.is_closed();
         let mut events = Vec::new();
+        // The Stinger gate of the main canvas and its followers (ADR-0140).
+        let gate = self.stinger_gate(now);
+        let stopped: Option<SourceId> = self
+            .transitions
+            .values()
+            .filter(|t| matches!(t.phase, Phase::Running(_)))
+            .find_map(|t| t.outgoing.stinger)
+            .filter(|s| self.stinger_stopped(*s));
         for (&canvas, t) in &mut self.transitions {
             let kind = t.manual.as_ref().map_or(t.blend.kind(), |m| m.kind);
+            if let (Phase::Waiting(_), Blend::Stinger { .. }, Some(gate)) =
+                (t.phase, t.blend, gate.as_ref())
+            {
+                match gate {
+                    stinger::Gate::Wait => {}
+                    stinger::Gate::Play(at) => {
+                        t.phase = Phase::Running(*at);
+                        resend = true;
+                        events.push(Step::new(
+                            canvas,
+                            TransitionPhase::Started,
+                            kind,
+                            t.duration,
+                            t.scenes,
+                        ));
+                    }
+                    stinger::Gate::Cut => {
+                        t.end_stinger(now);
+                        resend = true;
+                        for phase in [TransitionPhase::Started, TransitionPhase::Ended] {
+                            events.push(Step::new(canvas, phase, kind, Duration::ZERO, t.scenes));
+                        }
+                    }
+                }
+                continue;
+            }
+            // A stinger that faulted or reached its end hold ends its change at once
+            // (ADR-0140 decision 5).
+            if let (Phase::Running(_), Some(source)) = (t.phase, t.outgoing.stinger)
+                && stopped == Some(source)
+            {
+                t.end_stinger(now);
+                resend = true;
+                events.push(Step::new(
+                    canvas,
+                    TransitionPhase::Ended,
+                    kind,
+                    t.duration,
+                    t.scenes,
+                ));
+                continue;
+            }
             match t.phase {
                 Phase::Waiting(since) => {
                     let ready = t
@@ -1091,6 +1372,7 @@ impl Studio {
         }
         self.transition_events
             .extend(events.into_iter().map(|s| s.event(now)));
+        self.disarm_stale_stinger();
         if resend {
             let plan = self.graph.plan();
             self.send_program_layers(&plan);
@@ -1120,8 +1402,13 @@ impl Studio {
                 } else {
                     t.to_heard.clone()
                 },
+                stinger: None,
             });
         }
+        let stinger = match t.blend {
+            Blend::Stinger { cut, .. } => Some((t.outgoing.stinger, cut)),
+            _ => None,
+        };
         Some(MixShape {
             manual: None,
             phase: t.phase,
@@ -1129,6 +1416,7 @@ impl Studio {
             outgoing: t.outgoing.heard.clone(),
             from_mix: t.from_mix.clone(),
             to_heard: t.to_heard.clone(),
+            stinger,
         })
     }
 
@@ -1223,6 +1511,8 @@ impl Studio {
         if t <= 0.0 {
             return Ok(ManualStep::Idle);
         }
+        // A T-bar move ends a rehearsal at once (ADR-0135 decision 13).
+        self.drop_rehearsal();
         let collection = self.collection.clone();
         let Some(preview) = collection.canvas(canvas).and_then(|c| c.preview) else {
             return Ok(ManualStep::Idle);
@@ -1314,6 +1604,7 @@ impl Studio {
                     cancelled: false,
                     taken: false,
                 }),
+                stinger: None,
             },
         );
         self.update(&collection, sources)?;
@@ -1402,9 +1693,10 @@ impl Studio {
         std::mem::take(&mut self.transition_done)
     }
 
-    /// Ends every transition at once (leaving studio mode, a collection switch,
-    /// stopping): the next update binds without them.
+    /// Ends every transition and a rehearsal at once (leaving studio mode, a
+    /// collection switch, stopping): the next update binds without them.
     pub fn end_transitions(&mut self) {
+        self.drop_rehearsal();
         for t in self.transitions.values_mut() {
             t.phase = Phase::Done;
         }
@@ -1414,6 +1706,79 @@ impl Studio {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[allow(clippy::unwrap_used)] // Tests fail by panicking.
+    fn a_rehearsal_blends_the_two_pictures_in_its_own_size() {
+        use rbs_scene::model::SceneScope;
+        let mut col = SceneCollection::new();
+        let (scene, _) = col.add_scene("Next", SceneScope::Shared).unwrap();
+        let (program, incoming) = (any_node(), any_node());
+        let at = Timestamp::from_nanos(7);
+        // Cut and a duration of 0: nothing to rehearse, only the program picture.
+        let mut t = CollectionTransition {
+            kind: TransitionKind::Cut,
+            ..CollectionTransition::default()
+        };
+        col.set_transition(t).unwrap();
+        assert_eq!(rehearsal_plan(&col, scene), None);
+        let only = rehearsal_layers(&col, scene, (program, incoming), (64, 36), at);
+        assert_eq!(only.len(), 1);
+        // Fade: the preview picture fades in over the program picture, both filling
+        // the rehearsal's size.
+        t.kind = TransitionKind::Fade;
+        t.fade.duration_ms = 300;
+        col.set_transition(t).unwrap();
+        assert_eq!(
+            rehearsal_plan(&col, scene).map(|(d, _, k)| (d, k)),
+            Some((Duration::from_millis(300), TransitionKind::Fade))
+        );
+        let l = rehearsal_layers(&col, scene, (program, incoming), (64, 36), at);
+        assert_eq!(l.len(), 2);
+        assert_eq!((l[0].producer, l[1].producer), (program, incoming));
+        assert!(l[0].fade.is_none());
+        let fade = l[1].fade.unwrap();
+        assert_eq!(
+            (fade.from, fade.start, fade.duration),
+            (0.0, at, Duration::from_millis(300))
+        );
+        // Move rehearses as a crossfade of the glide's duration.
+        t.kind = TransitionKind::Move;
+        col.set_transition(t).unwrap();
+        let glide = col.glide().duration_ms;
+        assert_eq!(
+            rehearsal_plan(&col, scene).map(|(d, _, k)| (d, k)),
+            Some((
+                Duration::from_millis(u64::from(glide)),
+                TransitionKind::Move
+            ))
+        );
+        let l = rehearsal_layers(&col, scene, (program, incoming), (64, 36), at);
+        assert!(l[1].fade.is_some());
+        // Slide: the preview picture comes in from one rehearsal width away and the
+        // program picture leaves by the same offset.
+        t.kind = TransitionKind::Slide;
+        t.slide.duration_ms = 500;
+        t.slide.direction = SwipeDirection::Left;
+        col.set_transition(t).unwrap();
+        let l = rehearsal_layers(&col, scene, (program, incoming), (64, 36), at);
+        let (top, bottom) = (l[1], l[0]);
+        assert_eq!(top.slide.unwrap().from, shifted(top.transform, (64.0, 0.0)));
+        assert_eq!(
+            bottom.transform,
+            shifted(bottom.slide.unwrap().from, (-64.0, 0.0))
+        );
+        // The scene's own transition wins over the collection's.
+        col.set_scene_transition(
+            scene,
+            Some(rbs_scene::SceneTransition {
+                kind: Some(TransitionKind::Cut),
+                duration_ms: None,
+            }),
+        )
+        .unwrap();
+        assert_eq!(rehearsal_plan(&col, scene), None);
+    }
 
     #[test]
     fn fade_swipe_and_slide_with_a_duration_blend() {
@@ -1531,6 +1896,7 @@ mod tests {
             outgoing: BTreeSet::from([a, b]),
             from_mix: BTreeMap::from([(a, level(0.8, false)), (b, level(1.0, true))]),
             to_heard: BTreeSet::from([a, c]),
+            stinger: None,
         };
         let mut strips = [strip(a), strip(b), strip(c)];
         shape.apply(&mut strips);
@@ -1539,6 +1905,44 @@ mod tests {
         assert!(strips[1].audio.muted);
         assert!((strips[2].audio.volume - 0.25).abs() < 1e-6);
         assert!(strips.iter().all(|s| s.ramp.is_none()), "the default ramp");
+    }
+
+    #[test]
+    fn a_stinger_switches_the_scene_sound_at_its_cut_and_leaves_its_own() {
+        let (a, b, sting) = (
+            SourceId::from_raw(1),
+            SourceId::from_raw(2),
+            SourceId::from_raw(9),
+        );
+        let level = SourceAudio::new;
+        let strip = |source| MixStrip {
+            producer: any_node(),
+            source,
+            meter: None,
+            audio: level(1.0, false),
+            ramp: None,
+        };
+        let anchor = Timestamp::from_nanos(1_000_000_000);
+        let cut = Duration::from_millis(400);
+        let shape = MixShape {
+            manual: None,
+            phase: Phase::Running(anchor),
+            duration: Duration::from_secs(1),
+            outgoing: BTreeSet::from([a]),
+            from_mix: BTreeMap::from([(a, level(1.0, false))]),
+            to_heard: BTreeSet::from([b]),
+            stinger: Some((Some(sting), cut)),
+        };
+        let mut strips = [strip(a), strip(b), strip(sting)];
+        shape.apply(&mut strips);
+        let at = Some((anchor + cut, rbs_audio::DEFAULT_RAMP));
+        // a leaves at the cut, b comes in at the cut, the stinger plays as it is.
+        assert!(strips[0].audio.muted);
+        assert_eq!(strips[0].ramp, at);
+        assert!(!strips[1].audio.muted);
+        assert_eq!(strips[1].ramp, at);
+        assert!(!strips[2].audio.muted);
+        assert_eq!(strips[2].ramp, None);
     }
 
     #[test]

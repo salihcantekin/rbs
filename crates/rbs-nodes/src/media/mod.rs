@@ -200,6 +200,15 @@ pub(crate) struct Shared {
     range_end: AtomicU64,
     /// Where the worker's pause stopped, in nanoseconds plus one; 0 while playing.
     paused_cursor: AtomicU64,
+    /// The next worker opens keeping alpha: set while the source is armed as the
+    /// stinger (ADR-0140 decisions 2 and 4).
+    pub(crate) keep_alpha: AtomicBool,
+    /// The newest generation, plus one, whose first picture the worker queued; 0
+    /// before any (ADR-0140 decision 4). Set by the worker, read on the control path.
+    pub(crate) queued_generation: AtomicU32,
+    /// Further adapters to try, in order, when the source's adapter cannot keep alpha
+    /// (ADR-0140 decision 2). Set once by the host after the instance is made.
+    pub(crate) alpha_alternates: Mutex<Vec<Arc<dyn rbs_media_decode::MediaDecoderFactory>>>,
     /// Playback. Locked on the control path only.
     player: Mutex<player::Player>,
 }
@@ -235,6 +244,9 @@ impl Shared {
             range_start: AtomicU64::new(0),
             range_end: AtomicU64::new(0),
             paused_cursor: AtomicU64::new(0),
+            keep_alpha: AtomicBool::new(false),
+            queued_generation: AtomicU32::new(0),
+            alpha_alternates: Mutex::new(Vec::new()),
             player: Mutex::new(player),
         })
     }
@@ -403,7 +415,20 @@ fn target_of(slot: u64) -> rbs_media_decode::DecodeTarget {
 impl Shared {
     /// Where the worker's native pictures will be imported (port invariant 11).
     pub(crate) fn decode_target(&self) -> rbs_media_decode::DecodeTarget {
-        target_of(self.import_luid.load(Ordering::Acquire))
+        let target = target_of(self.import_luid.load(Ordering::Acquire));
+        if self.keep_alpha.load(Ordering::Acquire) {
+            target.with_keep_alpha()
+        } else {
+            target
+        }
+    }
+
+    /// The adapters to try after the source's own refused to keep alpha.
+    pub(crate) fn alternates(&self) -> Vec<Arc<dyn rbs_media_decode::MediaDecoderFactory>> {
+        self.alpha_alternates
+            .lock()
+            .map(|a| a.clone())
+            .unwrap_or_default()
     }
 }
 
