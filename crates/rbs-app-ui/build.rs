@@ -506,7 +506,23 @@ fn write_generated(path: &Path, text: &str, modified: SystemTime) {
     }
 }
 
+/// The `live-preview` feature and `SLINT_LIVE_PREVIEW` work together. The variable
+/// alone generates code that needs the feature, so it fails here with the fix. The
+/// feature alone (`cargo doc --all-features`) only compiles the unused interpreter.
+fn check_live_preview() {
+    println!("cargo:rerun-if-env-changed=SLINT_LIVE_PREVIEW");
+    let feature = std::env::var_os("CARGO_FEATURE_LIVE_PREVIEW").is_some();
+    let variable = std::env::var_os("SLINT_LIVE_PREVIEW").is_some();
+    if variable && !feature {
+        panic!(
+            "SLINT_LIVE_PREVIEW is set but the `live-preview` feature is off; \
+             use `cargo xtask ui-dev`"
+        );
+    }
+}
+
 fn main() {
+    check_live_preview();
     println!("cargo:rerun-if-changed=../rbs-ui/tokens.toml");
     // The token file's own time (older than this run); the epoch if it cannot be read.
     let modified = std::fs::metadata("../rbs-ui/tokens.toml")

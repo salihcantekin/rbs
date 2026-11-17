@@ -57,6 +57,7 @@ cargo doc --workspace --no-deps
 cargo xtask check-ui              # after any change under crates/rbs-app/ui (rule 18)
 cargo xtask affected test         # before a push: changed crates and their dependents only
 cargo xtask affected clippy
+cargo xtask ui-dev                # UI work: run the app; saving a .slint file reloads it (no Rust build)
 ```
 
 A task is done when all of them pass, the acceptance criteria are met, and specs are in sync. Saying it works is not evidence; show the command output.
