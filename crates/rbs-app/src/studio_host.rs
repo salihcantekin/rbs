@@ -10825,6 +10825,12 @@ impl Host {
                 "Media source {raw} is not in a scene that is shown."
             )));
         };
+        if !matches!(op, MediaOp::State) && self.studio.stinger_armed(id) {
+            // Played by a transition until it ends (ADR-0140 decision 5).
+            return Err(Refusal::Conflict(format!(
+                "Media source {raw} is playing as the stinger."
+            )));
+        }
         let failed = |e: rbs_record::MediaNodeError| Refusal::Failed(e.to_string());
         match op {
             MediaOp::Play => control.play().map_err(failed)?,

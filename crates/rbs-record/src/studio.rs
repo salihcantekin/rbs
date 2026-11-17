@@ -79,6 +79,7 @@ mod monitor;
 mod pause;
 mod rehearse;
 mod replay;
+mod stinger;
 mod sync_measure;
 mod transition;
 pub use hold::{HOLD_SCENE_TIMEOUT, HoldFallback, HoldRefused, HoldSound, HoldState};
@@ -91,6 +92,7 @@ pub use latency::{AudioLatency, compensate as compensate_filter_latency};
 pub use monitor::MonitorState;
 pub use pause::{PauseRefused, PauseState, SharedPause};
 pub use replay::ReplaySettings;
+pub use stinger::{STINGER_WAIT, StingerFacts};
 pub use sync_measure::{
     MEASURE_CLAPS, MEASURE_WINDOW, SyncMeasureFailure, SyncMeasureRefused, SyncMeasureResult,
     SyncMeasureSignals, SyncMeasureState, SyncMeasureStatus,
@@ -1195,6 +1197,14 @@ pub struct Studio {
     transition_events: Vec<TransitionEvent>,
     /// Ends of transitions without an incoming picture (Move), due at their time.
     transition_ends: Vec<TransitionEvent>,
+    /// What the host knows of the stinger's file (ADR-0140 decision 3).
+    stinger_facts: Option<StingerFacts>,
+    /// A Stinger change's source to arm before the next apply (decision 4).
+    stinger_arm: Option<SourceId>,
+    /// The source armed as the stinger now.
+    stinger_armed: Option<SourceId>,
+    /// Stinger changes that ran as a Cut because the stinger was late.
+    stinger_late_cuts: u64,
     /// The scene each following canvas showed last (the `KeepLast` fallback).
     last_follow: BTreeMap<CanvasId, SceneId>,
     entries: Vec<Entry>,
@@ -1663,6 +1673,10 @@ impl Studio {
             manual_take: false,
             transition_events: Vec::new(),
             transition_ends: Vec::new(),
+            stinger_facts: None,
+            stinger_arm: None,
+            stinger_armed: None,
+            stinger_late_cuts: 0,
             last_follow,
             entries: Vec::new(),
             problems: Vec::new(),
@@ -2252,6 +2266,7 @@ impl Studio {
         };
         let effective = self.effective_transition(collection);
         self.note_transitions(collection, &effective, old_main, &old_extra, &old_layers);
+        self.drop_gone_stinger(collection);
         self.manual_take = false;
         let report = self.sync_cued(collection).map_err(RecordError::Bind)?;
         // A canvas that cannot be attached leaves the studio as it was, but the sync
@@ -2369,6 +2384,14 @@ impl Studio {
             // apply follows the table with it (ADR-0107 decision 6). A failure shows
             // as the source's `Unavailable` play state.
             self.on_air = std::mem::take(&mut report.on_air_sources);
+            // Armed before its on-air membership is written (ADR-0140 decision 4).
+            stinger::arm(
+                &mut self.stinger_arm,
+                &mut self.stinger_armed,
+                &self.media_controls,
+                &mut self.transitions,
+                self.settings.canvas,
+            );
             for (id, control) in &self.media_controls {
                 let _ = control.set_on_air(self.on_air.contains(id));
             }
@@ -2692,6 +2715,15 @@ impl Studio {
                 }
             }
         }
+
+        // A stinger whose instance was made just now is armed before the apply.
+        stinger::arm(
+            &mut self.stinger_arm,
+            &mut self.stinger_armed,
+            &self.media_controls,
+            &mut self.transitions,
+            self.settings.canvas,
+        );
 
         // Instances for the filters the plan schedules, warmed for their source's size.
         let mut adjusted = Vec::new();

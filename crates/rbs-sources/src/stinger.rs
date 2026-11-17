@@ -46,6 +46,9 @@ pub struct StingerLook {
     /// The first picture that covers the canvas, from the start of the play range;
     /// `None` without alpha kept, or with no such picture in the span.
     pub cut: Option<Duration>,
+    /// The size of the range's first picture, which the stinger is fitted by;
+    /// `None` when no picture was decoded.
+    pub size: Option<(u32, u32)>,
 }
 
 /// Why [`look`] found nothing.
@@ -82,13 +85,15 @@ pub fn look(
                         duration,
                         alpha: StingerAlpha::None,
                         cut: None,
+                        size: first_size(&mut *decoder, range.0),
                     });
                 }
-                let cut = search(&mut *decoder, range, canvas, cancel)?;
+                let (cut, size) = search(&mut *decoder, range, canvas, cancel)?;
                 return Ok(StingerLook {
                     duration,
                     alpha: StingerAlpha::Kept,
                     cut,
+                    size,
                 });
             }
             Err(DecodeError::AlphaUnsupported) => alpha_refused = true,
@@ -109,6 +114,7 @@ pub fn look(
             duration,
             alpha: StingerAlpha::Unsupported,
             cut: None,
+            size: None,
         });
     }
     Err(LookError::Failed(refused.map_or_else(
@@ -134,24 +140,36 @@ pub fn alpha_here(factories: &[Arc<dyn MediaDecoderFactory>], path: &Path) -> Op
     refused.then_some(StingerAlpha::Unsupported)
 }
 
-/// The first picture of the range that covers the canvas, from the range's start.
+/// A picture's width and height.
+type PictureSize = (u32, u32);
+
+/// The size of the first picture at or after `start`; `None` when none decodes.
+fn first_size(decoder: &mut dyn MediaDecoder, start: Duration) -> Option<(u32, u32)> {
+    decoder.seek(start).ok()?;
+    let sample = decoder.next_picture().ok()??;
+    Some((sample.picture.width, sample.picture.height))
+}
+
+/// The first picture of the range that covers the canvas, from the range's start, and
+/// the size of the range's first picture.
 fn search(
     decoder: &mut dyn MediaDecoder,
     (start, end): (Duration, Option<Duration>),
     canvas: (u32, u32),
     cancel: &AtomicBool,
-) -> Result<Option<Duration>, LookError> {
+) -> Result<(Option<Duration>, Option<PictureSize>), LookError> {
     let failed = |e: DecodeError| LookError::Failed(e.to_string());
     decoder.seek(start).map_err(failed)?;
     let limit = start + SEARCH_SPAN;
     let limit = end.map_or(limit, |end| end.min(limit));
     let mut last: Option<Duration> = None;
+    let mut size = None;
     loop {
         if cancel.load(Ordering::Acquire) {
             return Err(LookError::Cancelled);
         }
         let Some(sample) = decoder.next_picture().map_err(failed)? else {
-            return Ok(None);
+            return Ok((None, size));
         };
         // A picture without a stamp continues from the last by its duration.
         let pts = sample
@@ -162,10 +180,11 @@ fn search(
         if pts < start {
             continue;
         }
-        if pts >= limit {
-            return Ok(None);
-        }
         let picture = &sample.picture;
+        size.get_or_insert((picture.width, picture.height));
+        if pts >= limit {
+            return Ok((None, size));
+        }
         if let PictureData::System {
             layout: PictureLayout::Rgba8,
             bytes,
@@ -173,7 +192,7 @@ fn search(
         } = picture.data()
             && covers(bytes, (picture.width, picture.height), canvas)
         {
-            return Ok(Some(pts - start));
+            return Ok((Some(pts - start), size));
         }
     }
 }

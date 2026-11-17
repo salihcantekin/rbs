@@ -85,6 +85,7 @@ impl Host {
         self.stinger.stop();
         self.stinger.found = None;
         self.stinger.key = key.clone();
+        self.push_stinger_facts();
         let Some(key) = key else {
             return;
         };
@@ -127,6 +128,7 @@ impl Host {
         match result {
             Ok(found) => {
                 self.stinger.found = Some(found);
+                self.push_stinger_facts();
                 true
             }
             Err(_) => false,
@@ -149,6 +151,31 @@ impl Host {
             return false;
         };
         rbs_sources::stinger::alpha_here(&factories, &path) == Some(StingerAlpha::Unsupported)
+    }
+
+    /// Gives the studio what is known of the stinger's file (ADR-0140 decision 3):
+    /// the play range's length, the found cut, the picture size and whether its alpha
+    /// is kept here. Unknown until the look finished; a change then runs as a Cut.
+    fn push_stinger_facts(&mut self) {
+        let facts = self.stinger.key.as_ref().map(|key| {
+            let found = self.stinger.found;
+            let (start, end) = key.range;
+            let duration = found.and_then(|f| f.duration);
+            let end = match (end, duration) {
+                (Some(end), Some(d)) => Some(end.min(d)),
+                (end, d) => end.or(d),
+            };
+            rbs_record::StingerFacts {
+                source: key.source,
+                length: end.map(|end| end.saturating_sub(start)),
+                found_cut: found.and_then(|f| f.cut),
+                size: found.and_then(|f| f.size),
+                alpha_unsupported: found.is_some_and(|f| f.alpha == StingerAlpha::Unsupported),
+            }
+        });
+        // Only once a look finished: before it, nothing is known.
+        let facts = facts.filter(|_| self.stinger.found.is_some());
+        self.studio.set_stinger(facts);
     }
 
     /// The key of the look the collection's stinger needs now.

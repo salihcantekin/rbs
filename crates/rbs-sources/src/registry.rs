@@ -1299,6 +1299,17 @@ impl SourceTypes {
                 key: keys::END_MS,
                 expected: "greater than start_ms",
             })?;
+        // The candidates after the chosen one, tried in order when it cannot keep
+        // the file's alpha as the stinger (ADR-0140 decision 2).
+        let after: Vec<Arc<dyn rbs_media_decode::MediaDecoderFactory>> = candidates
+            .iter()
+            .skip_while(|f| !Arc::ptr_eq(f, &factory))
+            .skip(1)
+            .cloned()
+            .collect();
+        if !after.is_empty() {
+            pair.control.set_alpha_alternates(after);
+        }
         let stats = pair.picture.stats();
         Ok(SourceInstance::Media(Box::new(MediaSource {
             picture: pair.picture,

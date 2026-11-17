@@ -2569,3 +2569,149 @@ fn without_a_preview_picture_nothing_is_rehearsed() {
     let (_, errors) = studio.shutdown();
     assert!(errors.is_empty(), "{errors:?}");
 }
+
+/// A Stinger change (ADR-0140 decisions 4 to 8): the stinger is armed before the
+/// apply that makes it Active, the change waits for its first picture and the
+/// incoming picture, plays it for the play range's length, and gives the source its
+/// keys back at the end. Without what the host knows of the file it is a Cut.
+#[test]
+fn a_stinger_waits_for_its_first_picture_plays_its_length_and_disarms() {
+    use std::sync::Arc;
+
+    use rbs_media_decode_test::{ScriptClip, ScriptFactory};
+    use rbs_record::{StingerFacts, TransitionState};
+    use rbs_scene::model::SettingValue;
+    use rbs_scene::{StingerSettings, TransitionKind};
+    use rbs_sources::types::keys;
+
+    let Some(gpu) = gpu() else { return };
+    let mut r = rig();
+    r.adapters
+        .sources
+        .register_media(Arc::new(
+            ScriptFactory::new(ScriptClip::silent_frames()).with_alpha(true),
+        ))
+        .unwrap();
+    r.adapters.probe();
+    let dir = std::env::temp_dir().join(format!(
+        "rbs-record-stinger-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("stinger.mov");
+    std::fs::write(&file, b"not-decoded").unwrap();
+    struct RemoveDir(std::path::PathBuf);
+    impl Drop for RemoveDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = RemoveDir(dir);
+
+    let (mut col, canvas) = scene();
+    let live = col.canvas(canvas).unwrap().program.unwrap();
+    let other = camera_scene(&mut col);
+    let mut settings = Settings::new();
+    settings.insert(
+        keys::PATH.to_owned(),
+        SettingValue::Text(file.to_string_lossy().into_owned()),
+    );
+    let (sting, _) = col
+        .add_source(
+            "Stinger",
+            NodeTypeId::new_static(types::MEDIA_SOURCE),
+            settings,
+        )
+        .unwrap();
+    let mut t = col.transition();
+    t.kind = TransitionKind::Stinger;
+    t.stinger = StingerSettings {
+        source: Some(sting),
+        cut_ms: None,
+    };
+    col.set_transition(t).unwrap();
+    let (engine, clock) = engine_at_start();
+    let mut studio = Studio::start(
+        engine,
+        gpu,
+        &col,
+        &r.adapters.sources,
+        &StudioSettings::new(canvas),
+    )
+    .unwrap();
+    let out = studio
+        .start_output(
+            &r.adapters,
+            &OutputSettings::new("mem://stinger", ContainerId::Matroska),
+        )
+        .unwrap();
+    assert!(
+        studio.media_control(sting).is_none(),
+        "Standby while unused (P13)"
+    );
+
+    // Nothing known of the file yet: the change is a Cut.
+    col.set_program(canvas, Some(other)).unwrap();
+    studio.update(&col, &r.adapters.sources).unwrap();
+    assert_eq!(studio.transition_state(canvas), None);
+    assert!(!studio.stinger_armed(sting));
+
+    let length = Duration::from_millis(300);
+    studio.set_stinger(Some(StingerFacts {
+        source: sting,
+        length: Some(length),
+        found_cut: Some(Duration::from_millis(100)),
+        size: Some((2, 2)),
+        alpha_unsupported: false,
+    }));
+    col.set_program(canvas, Some(live)).unwrap();
+    studio.update(&col, &r.adapters.sources).unwrap();
+    assert_eq!(
+        studio.transition_state(canvas),
+        Some(TransitionState::Waiting)
+    );
+    assert!(studio.stinger_armed(sting), "armed before the apply");
+    let control = studio.media_control(sting).cloned().unwrap();
+    assert!(control.is_armed());
+    let waited = clock.now();
+    assert!(run_until(&mut studio, &clock, |s| {
+        s.transition_state(canvas) == Some(TransitionState::Running)
+    }));
+    assert!(
+        clock.now().saturating_since(waited) < rbs_record::STINGER_WAIT,
+        "started on both pictures, not the timeout"
+    );
+    assert_eq!(studio.stinger_late_cuts(), 0);
+    let started = clock.now();
+    assert!(run_until(&mut studio, &clock, |s| {
+        s.transition_state(canvas) == Some(TransitionState::Ending)
+    }));
+    assert!(clock.now().saturating_since(started) >= length);
+    assert!(run_until(&mut studio, &clock, |s| {
+        s.transition_state(canvas) == Some(TransitionState::Ending)
+            && s.transition_wait(clock.now()) == Some(Duration::ZERO)
+    }));
+    assert!(studio.take_transition_done());
+    studio.settle_transitions(&r.adapters.sources);
+    assert_eq!(studio.transition_state(canvas), None, "settled");
+    assert!(!studio.stinger_armed(sting));
+    assert!(!control.is_armed(), "its own keys are back");
+
+    // A file whose alpha is not kept here runs as a Cut.
+    studio.set_stinger(Some(StingerFacts {
+        source: sting,
+        length: Some(length),
+        found_cut: None,
+        size: None,
+        alpha_unsupported: true,
+    }));
+    col.set_program(canvas, Some(other)).unwrap();
+    studio.update(&col, &r.adapters.sources).unwrap();
+    assert_eq!(studio.transition_state(canvas), None);
+    studio.stop_output(out).unwrap();
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+}
