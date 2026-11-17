@@ -488,6 +488,13 @@ pub const SETTINGS: &[Setting] = &[
         Simple,
     ),
     row(
+        "replay.save",
+        "Save replay clip",
+        "replay buffer save clip file write export",
+        RECORDING_REPLAY,
+        Simple,
+    ),
+    row(
         "replay.length",
         "Length",
         "replay buffer seconds minutes duration",

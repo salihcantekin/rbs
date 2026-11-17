@@ -4,6 +4,7 @@ import { Theme, Tokens } from "tokens.slint";
 import { Button, SplitButton, InfoHint, IconButton, IconName, OverlayHost, FeatureSection, ColorPicker, Select, Tabs, ScrollArea, SettingRow, Toggle, NumberField, Experience, SegmentedControl } from "components.slint";
 import { SettingsCard } from "settings.slint";
 import { PropertiesPanel } from "studio.slint";
+import { ReplayControls } from "replay.slint";
 
 export component OverlayProbe inherits Window {
     // literal-begin: a test window; its size and the places of its two controls are test data
@@ -324,5 +325,19 @@ export component PropertiesProbe inherits Window {
         width: parent.width;
         height: parent.height;
         live-state: 0;
+    }
+}
+
+// The Live controls' replay buffer part, for tests/replay_shots.rs (ADR-0088).
+export component ReplayProbe inherits Window {
+    // literal-begin: a test window; its size and padding are test data
+    width: 360px;
+    height: 160px;
+    background: Theme.surface-raised;
+    VerticalLayout {
+        padding: 16px;
+        // literal-end
+        alignment: start;
+        ReplayControls { }
     }
 }
