@@ -15,7 +15,8 @@ use rbs_media_decode::MediaDecoderFactory;
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    let path = PathBuf::from(args.next().expect("a file path"));
+    let path = std::path::absolute(PathBuf::from(args.next().expect("a file path")))
+        .expect("an absolute path");
     let limit = Duration::from_secs(args.next().map_or(10, |s| s.parse().expect("seconds")));
     let path =
         rbs_media_decode::accept_local_media_path(&path.to_string_lossy()).expect("a local file");
