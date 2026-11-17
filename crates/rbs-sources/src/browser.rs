@@ -24,7 +24,8 @@ use rbs_scene::model::{SettingValue, Settings, SourceId};
 
 use crate::types::keys;
 
-/// Node type id. Video only: a runner that cannot emit samples has no audio pin.
+/// Node type id of the picture node. Its sound is the second node,
+/// [`crate::BROWSER_SOUND_NODE_TYPE`] (ADR-0106).
 pub const BROWSER_NODE_TYPE: &str = "org.rbs.browser";
 /// At most two helper trees run.
 pub const MAX_HELPERS: usize = 2;
@@ -43,7 +44,7 @@ pub const DEFAULT_FPS: u32 = 30;
 /// Largest side.
 pub const MAX_SIDE: u32 = 8192;
 
-/// The one descriptor for `org.rbs.source.browser`. No audio pin.
+/// The descriptor of the picture node. No audio pin: the sound node has it.
 pub fn browser_descriptor() -> NodeDescriptor {
     NodeDescriptor::new(
         NodeTypeId::new_static(BROWSER_NODE_TYPE),
@@ -175,6 +176,8 @@ impl BrowserSettings {
             fps: self.fps,
             transparent: self.transparent,
             frames: String::new(),
+            sound: String::new(),
+            sample_rate: 0,
         }
     }
 }
@@ -480,11 +483,14 @@ impl BrowserControlSidecar {
 
 /// A helper the composition root starts. `rbs-sources` does not spawn it.
 pub trait BrowserTree: Send + Sync {
-    /// Starts the tree root. Called only when Active and a slot is held.
+    /// Starts the tree root. Called only when Active and a slot is held. With
+    /// `sound`, `config.sample_rate` is set and the tree hands the page's sound to a
+    /// [`crate::BrowserSoundFeed`] over it (ADR-0109 decision 6).
     fn start(
         &self,
         config: &Configure,
         sink: Arc<BrowserFrameSink>,
+        sound: Option<Arc<crate::BrowserSound>>,
     ) -> Result<Box<dyn BrowserSession>, String>;
 }
 
@@ -515,9 +521,16 @@ pub struct BrowserSourceNode {
     upload: SourceUpload,
     uploaded_generation: u32,
     ready: Option<VideoFrame>,
+    sound: Option<Arc<crate::BrowserSound>>,
 }
 
 impl BrowserSourceNode {
+    /// Hands the page's sound to the sound node over `sound` (ADR-0106).
+    pub fn with_sound(mut self, sound: Arc<crate::BrowserSound>) -> Self {
+        self.sound = Some(sound);
+        self
+    }
+
     /// Standby. Does not start a helper.
     pub fn new(
         settings: BrowserSettings,
@@ -539,6 +552,7 @@ impl BrowserSourceNode {
             upload: SourceUpload::new(),
             uploaded_generation: 0,
             ready: None,
+            sound: None,
         }
     }
 
@@ -593,7 +607,11 @@ impl BrowserSourceNode {
                 "the composition root has not set a browser helper".into(),
             ));
         };
-        match tree.start(&self.settings.configure(), self.control.sink()) {
+        let mut configure = self.settings.configure();
+        if let Some(sound) = self.sound.as_ref() {
+            configure.sample_rate = sound.sample_rate();
+        }
+        match tree.start(&configure, self.control.sink(), self.sound.clone()) {
             Ok(mut session) => {
                 self.starts = self.starts.saturating_add(1);
                 session.refresh_sink(self.control.sink().as_ref());

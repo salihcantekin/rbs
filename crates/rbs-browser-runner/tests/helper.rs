@@ -33,6 +33,8 @@ fn config() -> Configure {
         fps: 60,
         transparent: false,
         frames: String::new(),
+        sound: String::new(),
+        sample_rate: 0,
     }
 }
 
@@ -157,4 +159,71 @@ fn the_supervisor_publishes_frames_and_reports_an_exit() {
         assert!(start.elapsed() < GUARD, "hang guard");
         std::thread::yield_now();
     }
+}
+
+#[test]
+fn page_sound_crosses_the_sound_section_in_order() {
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Default)]
+    struct Heard {
+        frames: usize,
+        packets: Vec<(u64, usize)>,
+        loud: bool,
+        pumps: usize,
+        format: Option<(u32, u16)>,
+    }
+    struct Sink(Arc<Mutex<Heard>>);
+    impl rbs_browser_runner::PageSound for Sink {
+        fn packet(&mut self, packet: rbs_browser_shm::SoundPacket<'_>) {
+            let mut heard = self.0.lock().unwrap();
+            let frames = packet.samples.len() / usize::from(packet.channels);
+            heard.frames += frames;
+            heard.packets.push((packet.os_nanos, frames));
+            heard.loud |= packet.samples.iter().any(|s| s.abs() > 0.1);
+            heard.format = Some((packet.rate, packet.channels));
+        }
+        fn observe(&mut self, _os_now: u64) {}
+        fn pump(&mut self) {
+            self.0.lock().unwrap().pumps += 1;
+        }
+    }
+
+    let mut config = config();
+    config.sample_rate = 48_000;
+    let child = spawn_helper(
+        program().as_path(),
+        &["--hold", "--tone"],
+        &config,
+        SlotLayout::Rgba8Straight,
+    )
+    .unwrap();
+    assert!(child.has_sound());
+    let heard = Arc::new(Mutex::new(Heard::default()));
+    let mut sup =
+        Supervisor::start_with_sound(child, 60, |_, _, _| {}, Box::new(Sink(Arc::clone(&heard))))
+            .unwrap();
+    let start = Instant::now();
+    // A tenth of a second of sound, whatever the scheduling.
+    while heard.lock().unwrap().frames < 4_800 {
+        assert!(start.elapsed() < GUARD, "hang guard");
+        std::thread::yield_now();
+    }
+    sup.stop().unwrap();
+    let heard = heard.lock().unwrap();
+    assert_eq!(heard.format, Some((48_000, 2)));
+    assert!(heard.loud);
+    assert!(heard.pumps > 0);
+    // Each packet starts where the one before ended, on the OS clock.
+    for pair in heard.packets.windows(2) {
+        let ((t0, n0), (t1, _)) = (pair[0], pair[1]);
+        let end = t0 + (n0 as u64 * 1_000_000_000).div_ceil(48_000);
+        assert!(t1.abs_diff(end) <= 1, "{t0} {n0} {t1}");
+    }
+}
+
+#[test]
+fn no_sound_section_without_a_sample_rate() {
+    let child = spawn(&["--once"]);
+    assert!(!child.has_sound());
 }

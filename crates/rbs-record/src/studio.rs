@@ -369,11 +369,12 @@ struct Instance {
     sound: SoundHalf,
 }
 
-/// The sound node of a media source: held until the plan schedules the binder's
-/// sound node, then adopted into the audio partition.
+/// The sound node of a picture-and-sound source (a media file, a browser page): held
+/// until the plan schedules the binder's sound node, then adopted into the audio
+/// partition.
 enum SoundHalf {
     None,
-    Held(Box<rbs_nodes::MediaSoundNode>),
+    Held(Box<dyn Node<()>>),
     Adopted(NodeId, PartitionId),
 }
 
@@ -1234,7 +1235,7 @@ pub struct Studio {
     /// Helper tree wired by the composition root (`rbs-app`).
     browser_tree: Option<Arc<dyn BrowserTree>>,
     /// Control-thread handles that poll helper processes (ADR-0109).
-    browser_controls: Vec<Arc<BrowserControlSidecar>>,
+    browser_controls: BTreeMap<SourceId, Arc<BrowserControlSidecar>>,
     /// Draws text sources (ADR-0129); made on the first text instance.
     text: Option<TextWorker>,
     /// File access and wall clock of the text worker (real unless a host or test
@@ -1622,7 +1623,7 @@ impl Studio {
             solo: BTreeSet::new(),
             browser_budget: BrowserBudget::shared(),
             browser_tree,
-            browser_controls: Vec::new(),
+            browser_controls: BTreeMap::new(),
             text: None,
             text_io: (Arc::new(RealFileProbe), Arc::new(SystemTextClock)),
             text_problems: BTreeMap::new(),
@@ -2364,7 +2365,15 @@ impl Studio {
         // Instances for the sources the plan schedules (only those are opened).
         let plan = self.graph.plan();
         let scheduled: BTreeSet<NodeId> = plan.order.iter().copied().collect();
-        self.browser_controls.clear();
+        // Sources that keep their instance keep their control; the others leave.
+        let instanced: BTreeSet<SourceId> = self
+            .entries
+            .iter()
+            .filter(|e| e.instance.is_some())
+            .map(|e| e.source)
+            .collect();
+        self.browser_controls
+            .retain(|source, _| instanced.contains(source));
         // One budget and one helper tree from the composition root (ADR-0109).
         let ctx = InstanceContext::new(self.engine.clock(), self.settings.audio_graph)
             .with_browser(Arc::clone(&self.browser_budget), self.browser_tree.clone());
@@ -2533,12 +2542,15 @@ impl Studio {
                     });
                 }
                 SourceInstance::Browser(b) => {
-                    // Render partition (ADR-0109). Size is known from the page settings.
+                    // The picture node in the render partition (ADR-0109); size is
+                    // known from the page settings. The sound node in the audio
+                    // partition at the binder's sound node, as for a media source
+                    // (ADR-0106).
                     let size = b.node.picture_size();
-                    self.browser_controls.push(b.node.control());
+                    self.browser_controls.insert(entry.source, b.node.control());
                     self.engine
                         .adopt::<GpuRuntime>(RENDER, entry.state.node, Box::new(b.node))?;
-                    entry.instance = Some(Instance {
+                    let instance = entry.instance.insert(Instance {
                         partition: RENDER,
                         gpu: true,
                         watch: Watch::Browser { size },
@@ -2546,6 +2558,17 @@ impl Studio {
                         sent_offset_ns: 0,
                         sound: SoundHalf::None,
                     });
+                    match self.binder.sound_node(entry.source) {
+                        Some(node) if scheduled.contains(&node) => {
+                            self.engine
+                                .adopt::<()>(audio_partition, node, Box::new(b.sound))?;
+                            instance.sound = SoundHalf::Adopted(node, audio_partition);
+                        }
+                        Some(_) => instance.sound = SoundHalf::Held(Box::new(b.sound)),
+                        // No audio partition: no sound node; the feed drops the page's
+                        // sound.
+                        None => {}
+                    }
                 }
                 _ => {
                     if strictness == Strictness::Strict {
@@ -3367,7 +3390,7 @@ impl Studio {
     /// [`Studio::output_failure`] of every output using it.
     /// Call it again after `wait` (at most about 100 ms).
     pub fn service(&mut self) -> Serviced {
-        for control in &self.browser_controls {
+        for control in self.browser_controls.values() {
             control.control_tick();
         }
         self.service_text();

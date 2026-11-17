@@ -15,6 +15,8 @@
 /crates/rbs-params/          @salihcantekin
 /crates/rbs-graph/           @salihcantekin
 /crates/rbs-nodes/           @salihcantekin
+/crates/rbs-sources/src/browser_sound.rs @salihcantekin
+/crates/rbs-browser-shm/src/sound.rs @salihcantekin
 /crates/rbs-engine/src/worker.rs @salihcantekin
 /crates/rbs-codec*/          @salihcantekin
 /crates/rbs-mux*/            @salihcantekin
