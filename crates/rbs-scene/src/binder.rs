@@ -1224,10 +1224,14 @@ impl State {
             if let Some(h) = hold.get(&canvas.id) {
                 needed.insert((canvas.id, Role::Hold), h.scene);
             }
-            if let (Some(program), Some(o)) =
-                (canvas.program, outgoing.get(&canvas.id).filter(|o| o.incoming))
-            {
-                needed.insert((canvas.id, Role::Incoming), o.incoming_scene.unwrap_or(program));
+            if let (Some(program), Some(o)) = (
+                canvas.program,
+                outgoing.get(&canvas.id).filter(|o| o.incoming),
+            ) {
+                needed.insert(
+                    (canvas.id, Role::Incoming),
+                    o.incoming_scene.unwrap_or(program),
+                );
             }
         }
         let unneeded: Vec<(CanvasId, Role)> = self
