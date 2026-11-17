@@ -254,7 +254,7 @@ pub fn install(g: &ReplayBuffer<'_>, ctx: &Ctx) {
         entry::guard(|| {
             c.update(|app| {
                 if let Some(path) = &app.replay.saved {
-                    show_in_folder(path);
+                    crate::reveal::show_in_folder(path);
                 }
             })
         })
@@ -397,30 +397,6 @@ fn file_name(path: &Path) -> String {
     path.file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.display().to_string())
-}
-
-/// Opens the folder of `path` in the system's file manager with the file selected where
-/// the system can.
-fn show_in_folder(path: &Path) {
-    #[cfg(target_os = "macos")]
-    let spawned = std::process::Command::new("open")
-        .arg("-R")
-        .arg(path)
-        .spawn();
-    #[cfg(windows)]
-    let spawned = std::process::Command::new("explorer")
-        .arg(format!("/select,{}", path.display()))
-        .spawn();
-    #[cfg(not(any(target_os = "macos", windows)))]
-    let spawned = std::process::Command::new("xdg-open")
-        .arg(path.parent().unwrap_or(path))
-        .spawn();
-    if let Ok(mut child) = spawned {
-        // Reaped off the UI thread; it ends at once.
-        std::thread::spawn(move || {
-            let _ = child.wait();
-        });
-    }
 }
 
 #[cfg(test)]

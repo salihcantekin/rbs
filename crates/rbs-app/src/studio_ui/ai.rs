@@ -250,6 +250,22 @@ impl StudioUi {
         self.ai_tool = Tool::at(index);
     }
 
+    /// The picked AI tool's configuration file, from this user's environment.
+    fn ai_config_file(&self) -> Option<PathBuf> {
+        ai_tools::config_file(self.ai_tool, ai_tools::Os::native(), |v| {
+            std::env::var(v).ok()
+        })
+    }
+
+    /// "Show in folder" / "Open folder": the picked AI tool's configuration file, or
+    /// its folder while the file does not exist. RBS never writes it (ADR-0134
+    /// decision 5).
+    pub fn ai_show_config(&self) {
+        if let Some(file) = self.ai_config_file() {
+            crate::reveal::show_in_folder(&file);
+        }
+    }
+
     /// The status line.
     fn ai_status(&self) -> (i32, String) {
         if self.ai_started {
@@ -316,15 +332,34 @@ impl StudioUi {
         match self.ai_line() {
             Ok(line) => {
                 g.set_ai_where(line.place.into());
+                g.set_ai_line_help(line.help.into());
                 g.set_ai_line(line.text.into());
                 g.set_ai_line_note("".into());
             }
             Err(why) => {
                 g.set_ai_where("".into());
+                g.set_ai_line_help("".into());
                 g.set_ai_line("".into());
                 g.set_ai_line_note(why.into());
             }
         }
+        let config = self.ai_config_file();
+        let (name, folder) = config
+            .as_deref()
+            .map(|f| {
+                (
+                    f.file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                    f.parent()
+                        .map(|d| d.display().to_string())
+                        .unwrap_or_default(),
+                )
+            })
+            .unwrap_or_default();
+        g.set_ai_config_name(name.into());
+        g.set_ai_config_folder(folder.into());
+        g.set_ai_config_exists(config.is_some_and(|f| f.is_file()));
         let rows: Vec<AiActionRow> = actions
             .iter()
             .map(|a| AiActionRow {
