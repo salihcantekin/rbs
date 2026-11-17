@@ -3423,6 +3423,11 @@ impl Studio {
         self.media_controls.get(&source)
     }
 
+    /// Every media instance's playback handle, by source id.
+    pub fn media_controls(&self) -> impl Iterator<Item = (SourceId, &crate::MediaControl)> {
+        self.media_controls.iter().map(|(id, c)| (*id, c))
+    }
+
     /// How long the control thread may sleep before the soonest cue ends. `None`
     /// when no cue is running, so nothing is armed (P13).
     pub fn cue_wait(&self, now: Timestamp) -> Option<Duration> {
