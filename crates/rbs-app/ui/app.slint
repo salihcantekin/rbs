@@ -1002,6 +1002,102 @@ component TransitionOptions inherits PopoverLayer {
     }
 }
 
+// A scene's "Transition into this scene" card (ADR-0135 decision 14), under its row in
+// the Scenes panel: Type (Default, the collection's kind, or one of the kinds) and
+// Duration (the kind's own, or this scene's). Every change applies at once as one undo
+// step; a click outside or Escape closes it.
+component SceneTransitionCard inherits PopoverLayer {
+    // The kind the card shows: the scene's, else the collection's (rail index).
+    property <int> kind: Overlays.scene-transition-kind >= 0 ? Overlays.scene-transition-kind : Studio.transition-kind;
+    property <int> kind-ms: root.kind == 1 ? Studio.fade-duration
+        : root.kind == 2 ? Studio.glide-duration
+        : root.kind == 3 ? Studio.swipe-duration
+        : root.kind == 4 ? Studio.slide-duration : 0;
+    property <[string]> kinds: [@tr("Cut"), @tr("Fade"), @tr("Move"), @tr("Swipe"), @tr("Slide")];
+    function put(kind: int, ms: int) {
+        Overlays.scene-transition-kind = kind;
+        Overlays.scene-transition-ms = ms;
+        Studio.set-scene-transition(Overlays.scene-transition-id, kind, ms);
+    }
+    dismissed => { Overlays.scene-transition-open = false; }
+    card := PopoverCard {
+        width: max(Tokens.size-menu-md, body.preferred-width);
+        height: body.preferred-height;
+        x: clamp(Overlays.scene-transition-x, Tokens.space-1, max(Tokens.space-1, root.width - self.width - Tokens.space-1));
+        y: Overlays.scene-transition-y + Overlays.scene-transition-h + Tokens.space-1 + self.height > root.height
+            ? max(Tokens.space-1, Overlays.scene-transition-y - self.height - Tokens.space-1)
+            : Overlays.scene-transition-y + Overlays.scene-transition-h + Tokens.space-1;
+        accessible-role: groupbox;
+        accessible-label: @tr("Transition into {}", Overlays.scene-transition-name);
+        init => { Overlays.scene-transition-cover = { x: self.x, y: self.y, width: self.width, height: self.height }; keys.focus(); }
+        changed x => { Overlays.scene-transition-cover = { x: self.x, y: self.y, width: self.width, height: self.height }; }
+        changed y => { Overlays.scene-transition-cover = { x: self.x, y: self.y, width: self.width, height: self.height }; }
+        changed height => { Overlays.scene-transition-cover = { x: self.x, y: self.y, width: self.width, height: self.height }; }
+        keys := FocusScope {
+            key-pressed(e) => {
+                if e.text == Key.Escape { Overlays.scene-transition-open = false; return accept; }
+                reject
+            }
+        }
+        body := VerticalLayout {
+            padding: Tokens.space-3;
+            spacing: Tokens.space-2;
+            HorizontalLayout {
+                spacing: Tokens.space-1;
+                Text {
+                    text: @tr("Transition into “{}”", Overlays.scene-transition-name);
+                    color: Theme.text-primary;
+                    font-size: Tokens.type-body-size;
+                    font-weight: Tokens.type-label-weight;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    accessible-role: none;
+                }
+                InfoHint {
+                    label: @tr("About the transition into a scene");
+                    text: @tr("How the program changes to this scene. Default uses the scene collection's transition.");
+                    detail: @tr("A transition chosen for one change, such as by a control surface, still comes first.");
+                }
+                Rectangle { }
+            }
+            TransitionOptionRow {
+                label: @tr("Type");
+                Select {
+                    horizontal-stretch: 1;
+                    label: @tr("Type");
+                    options: [@tr("Default ({})", root.kinds[Studio.transition-kind]), @tr("Cut"), @tr("Fade"), @tr("Move"), @tr("Swipe"), @tr("Slide")];
+                    index: Overlays.scene-transition-kind + 1;
+                    selected(i) => { root.put(i - 1, Overlays.scene-transition-ms); }
+                }
+            }
+            if root.kind != 0: TransitionOptionRow {
+                label: @tr("Duration");
+                Toggle {
+                    label: @tr("Own duration");
+                    checked: Overlays.scene-transition-ms >= 0;
+                    toggled(on) => { root.put(Overlays.scene-transition-kind, on ? root.kind-ms : -1); }
+                }
+                Rectangle { horizontal-stretch: 1; }
+                Text {
+                    text: @tr("Own");
+                    color: Overlays.scene-transition-ms >= 0 ? Theme.text-secondary : Theme.text-disabled;
+                    font-size: Tokens.type-body-size;
+                    vertical-alignment: center;
+                    accessible-role: none;
+                }
+                NumberField {
+                    label: @tr("Own duration");
+                    unit: @tr("ms");
+                    value: Overlays.scene-transition-ms >= 0 ? Overlays.scene-transition-ms : root.kind-ms;
+                    step: 50;
+                    enabled: Overlays.scene-transition-ms >= 0;
+                    edited(v) => { root.put(Overlays.scene-transition-kind, max(0, min(5000, round(v)))); }
+                }
+            }
+        }
+    }
+}
+
 component TransitionGo inherits VerticalLayout {
     in property <bool> can;
     // A narrow rail shows an icon button; its name and shortcut appear under it while
@@ -2681,6 +2777,8 @@ export component MainWindow inherits Window {
     if Overlays.live-open && Shell.live-dests.length > 1: LiveDestinations { width: parent.width; height: parent.height; }
     // The transition options (ADR-0128), under the hint and tooltip layer.
     if Overlays.transition-open: TransitionOptions { width: parent.width; height: parent.height; }
+    // A scene's transition card (ADR-0135), under the hint and tooltip layer.
+    if Overlays.scene-transition-open: SceneTransitionCard { width: parent.width; height: parent.height; }
     // The info hint and tooltip layer, drawn last (ADR-0094).
     OverlayHost { width: parent.width; height: parent.height; }
 }
@@ -2917,6 +3015,8 @@ export component FloatWindow inherits Window {
             }
         }
     }
+    // A scene's transition card (ADR-0135) when the Scenes panel floats here.
+    if Overlays.scene-transition-open: SceneTransitionCard { width: parent.width; height: parent.height; }
     // The info hint and tooltip layer, drawn last (ADR-0094).
     OverlayHost { width: parent.width; height: parent.height; }
 }
