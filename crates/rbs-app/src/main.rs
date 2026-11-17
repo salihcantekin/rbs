@@ -265,6 +265,8 @@ struct App {
     settings: Option<SettingsWindow>,
     /// The Source settings window of a source (ADR-0077), open or not.
     source_settings: Option<SourceSettingsWindow>,
+    /// How the Source settings window follows its content's height.
+    source_settings_fit: SourceSettingsFit,
     /// The Measure sync offset window (ADR-0126 step 6), open or not.
     sync_measure: Option<SyncMeasureWindow>,
     /// The Import from OBS window while open (ADR-0131 step 3).
@@ -2714,6 +2716,7 @@ impl Ctx {
             self.show_all(&mut app);
             open_source_settings(self, &mut app, id);
         }
+        fit_source_settings(self, &mut app);
         if let Some((id, paste)) = app.open_attributes.take() {
             self.show_all(&mut app);
             open_attributes(self, &mut app, id, paste);
@@ -4269,11 +4272,90 @@ fn set_levels(g: &Experience<'_>, level: background::Experience) {
     g.set_expert(expert);
 }
 
+/// How the Source settings window follows its content (design system, "Source
+/// settings window size").
+#[derive(Default)]
+struct SourceSettingsFit {
+    /// Created, not shown yet: it shows once the settings arrived, at their height.
+    pending_show: bool,
+    /// The settings arrived; the window shows on the next turn of the event loop,
+    /// once the cards they add are built and measured.
+    arrived: bool,
+    /// The size the window was last given, in logical pixels.
+    last: Option<slint::LogicalSize>,
+    /// False once the user resized the window: their size stays.
+    follow: bool,
+}
+
+/// How long a new Source settings window waits for the settings before it shows
+/// anyway (with "Loading the settings…").
+const SOURCE_SETTINGS_SHOW_WAIT: Duration = Duration::from_millis(250);
+
+/// Shows a new Source settings window at its content's height, centred on the main
+/// window, and afterwards follows the content until the user resizes the window.
+fn fit_source_settings(ctx: &Ctx, app: &mut App) {
+    let Some(w) = &app.source_settings else {
+        return;
+    };
+    if !w.get_loaded() {
+        return;
+    }
+    let fit = w.get_fit_height();
+    let fitting = &mut app.source_settings_fit;
+    if fitting.pending_show && !fitting.arrived {
+        fitting.arrived = true;
+        let c = ctx.clone();
+        entry::single_shot(Duration::ZERO, move || c.update(|_| {}));
+        return;
+    }
+    if fitting.pending_show {
+        fitting.pending_show = false;
+        let size = slint::LogicalSize::new(w.global::<Tokens>().get_size_floating_w(), fit);
+        w.window().set_size(size);
+        w.set_fitted_height(fit);
+        fitting.last = Some(size);
+        fitting.follow = true;
+        let _ = window_place::show_centred(w, &app.main, size, app.hidden);
+        let _ = exclude_window_from_capture(w.window(), app.bg.exclude_own_window);
+        app.capture_applied.1 = usize::MAX;
+        return;
+    }
+    let Some(last) = fitting.last else {
+        return;
+    };
+    if !fitting.follow || (fit - last.height).abs() < 0.5 {
+        return;
+    }
+    let now = w.window().size().to_logical(w.window().scale_factor());
+    // A size other than the one given last: the user resized the window.
+    if (now.width - last.width).abs() > 1.0 || (now.height - last.height).abs() > 1.0 {
+        fitting.follow = false;
+        return;
+    }
+    // Grow or shrink about the same centre line, as the window was centred when it
+    // opened (it may have shown with "Loading the settings…" at the least height).
+    let scale = w.window().scale_factor();
+    let at = w.window().position();
+    let shift = ((fit - last.height) * scale / 2.0).round() as i32;
+    w.window()
+        .set_position(slint::PhysicalPosition::new(at.x, (at.y - shift).max(0)));
+    let size = slint::LogicalSize::new(now.width, fit);
+    w.window().set_size(size);
+    w.set_fitted_height(fit);
+    fitting.last = Some(size);
+}
+
 fn open_source_settings(ctx: &Ctx, app: &mut App, id: i32) {
     app.studio.request_source_settings(id);
     if let Some(w) = &app.source_settings {
-        // Already open: bring it forward; keep the place the user left it.
+        // Already open: bring it forward; keep the place the user left it. Another
+        // source's settings size the window again, from where it is.
         window_place::raise(w.window());
+        let fitting = &mut app.source_settings_fit;
+        if !fitting.pending_show {
+            fitting.follow = true;
+            fitting.last = Some(w.window().size().to_logical(w.window().scale_factor()));
+        }
         return;
     }
     let Ok(w) = SourceSettingsWindow::new() else {
@@ -4311,11 +4393,43 @@ fn open_source_settings(ctx: &Ctx, app: &mut App, id: i32) {
             });
         });
     });
+    let c = ctx.clone();
+    w.on_fit_changed(move || c.update(|_| {}));
+    // The width first: wrapped text measures against it, so `fit-height` read before
+    // the window has a width would be far too tall.
     let t = w.global::<Tokens>();
-    let size = slint::LogicalSize::new(t.get_size_floating_w(), t.get_size_floating_h());
+    w.window().set_size(slint::LogicalSize::new(
+        t.get_size_floating_w(),
+        t.get_size_floating_min_h(),
+    ));
     set_levels(&w.global::<Experience>(), app.bg.experience());
-    let _ = window_place::show_centred(&w, &app.main, size, app.hidden);
-    let _ = exclude_window_from_capture(w.window(), app.bg.exclude_own_window);
+    // Shown by `fit_source_settings` once the settings arrived, at their height.
+    app.source_settings_fit = SourceSettingsFit {
+        pending_show: true,
+        ..SourceSettingsFit::default()
+    };
+    let c = ctx.clone();
+    entry::single_shot(SOURCE_SETTINGS_SHOW_WAIT, move || {
+        c.update(|app| {
+            let Some(w) = &app.source_settings else {
+                return;
+            };
+            let fitting = &mut app.source_settings_fit;
+            if !std::mem::take(&mut fitting.pending_show) {
+                return;
+            }
+            let t = w.global::<Tokens>();
+            let size =
+                slint::LogicalSize::new(t.get_size_floating_w(), t.get_size_floating_min_h());
+            w.window().set_size(size);
+            w.set_fitted_height(size.height);
+            fitting.last = Some(size);
+            fitting.follow = true;
+            let _ = window_place::show_centred(w, &app.main, size, app.hidden);
+            let _ = exclude_window_from_capture(w.window(), app.bg.exclude_own_window);
+            app.capture_applied.1 = usize::MAX;
+        });
+    });
     app.capture_applied.1 = usize::MAX;
     app.capture_retry = None;
     app.source_settings = Some(w);
@@ -5673,6 +5787,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             tray: None,
             settings: None,
             source_settings: None,
+            source_settings_fit: SourceSettingsFit::default(),
             sync_measure: None,
             obs_import: None,
             attributes: None,

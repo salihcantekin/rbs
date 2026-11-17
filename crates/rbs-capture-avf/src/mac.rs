@@ -166,8 +166,15 @@ fn permission_now() -> Permission {
     match authorization() {
         AVAuthorizationStatus::Authorized => Permission::Granted,
         AVAuthorizationStatus::NotDetermined => Permission::NotDetermined,
+        AVAuthorizationStatus::Restricted => Permission::Restricted,
         _ => Permission::Denied,
     }
+}
+
+/// Whether the camera prompt can be shown without macOS ending the process: RBS is
+/// its own responsible app and declares `NSCameraUsageDescription` (ADR-0141).
+fn prompt_is_safe() -> bool {
+    rbs_system_probe::app_identity::cached().prompt_is_safe("NSCameraUsageDescription")
 }
 
 fn require_permission() -> Result<(), CaptureError> {
@@ -449,7 +456,16 @@ impl AdapterFactory for AvfCaptureFactory {
                 CapabilityValue::Int(FRAMES_IN_FLIGHT as i64),
             )
             .with(caps::HDR, CapabilityValue::Flag(false))
-            .with(HARDWARE, CapabilityValue::Flag(true)))
+            .with(HARDWARE, CapabilityValue::Flag(true))
+            .with(caps::PERMISSION_CAMERA, CapabilityValue::Flag(true))
+            .with(
+                caps::PERMISSION_CAMERA_RESTART,
+                CapabilityValue::Flag(false),
+            )
+            .with(
+                caps::PERMISSION_CAMERA_PROMPT,
+                CapabilityValue::Flag(prompt_is_safe()),
+            ))
     }
 }
 
@@ -527,7 +543,7 @@ impl CaptureFactory for AvfCaptureFactory {
             return Ok(Permission::Granted);
         }
         match permission_now() {
-            Permission::NotDetermined => {}
+            Permission::NotDetermined if prompt_is_safe() => {}
             other => return Ok(other),
         }
         // SAFETY: `AVMediaTypeVideo` is a framework constant.

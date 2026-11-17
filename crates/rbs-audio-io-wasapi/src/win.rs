@@ -58,7 +58,7 @@ use windows_core::{Ref, implement};
 use rbs_audio_io::ring::{self, I24, RingConsumer};
 use rbs_audio_io::{
     AudioBackend, AudioEndpoint, AudioInputStream, AudioIoError, AudioOutput, AudioRead,
-    EndpointKind, ErrorDomain, InputRequest, InputStats, OutputRequest, caps,
+    EndpointKind, ErrorDomain, InputRequest, InputStats, OutputRequest, Permission, caps,
 };
 use rbs_core::capability::{CapabilitySet, CapabilityValue};
 use rbs_core::media::{AudioFormat, ChannelLayout, MAX_CHANNELS};
@@ -506,7 +506,10 @@ impl AdapterFactory for WasapiAudioBackend {
                 caps::INPUT_CHANNELS_MAX,
                 CapabilityValue::Int(MAX_CHANNELS as i64),
             )
-            .with(caps::INPUT_PERMISSION, CapabilityValue::Flag(false))
+            // The microphone privacy switches (ADR-0141); desktop apps get no prompt.
+            .with(caps::INPUT_PERMISSION, CapabilityValue::Flag(true))
+            .with(caps::PERMISSION_INPUT, CapabilityValue::Flag(true))
+            .with(caps::PERMISSION_INPUT_PROMPT, CapabilityValue::Flag(false))
             .with(caps::OUTPUT, CapabilityValue::Flag(true))
             .with(caps::OUTPUT_ENUMERATE, CapabilityValue::Flag(true))
             .with(
@@ -518,6 +521,20 @@ impl AdapterFactory for WasapiAudioBackend {
 }
 
 impl AudioBackend for WasapiAudioBackend {
+    fn permission(&self, kind: EndpointKind) -> Permission {
+        use rbs_system_probe::privacy_consent::{Consent, ConsentKind, consent};
+        if kind != EndpointKind::Input {
+            return Permission::Granted;
+        }
+        // Four registry reads; anything unreadable counts as allowed and `open_input`
+        // still reports `E_ACCESSDENIED` as `PermissionDenied` (audio-io-port.md).
+        match consent(ConsentKind::Microphone) {
+            Consent::Allowed => Permission::Granted,
+            Consent::Denied => Permission::Denied,
+            Consent::Restricted => Permission::Restricted,
+        }
+    }
+
     fn enumerate(&self, kind: EndpointKind) -> Result<Vec<AudioEndpoint>, AudioIoError> {
         if kind == EndpointKind::Output {
             return render::endpoints();

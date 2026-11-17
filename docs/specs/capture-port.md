@@ -96,7 +96,9 @@ pub fn choose_framebuffer(reading: DisplayReading) -> Option<FramebufferChoice>;
 pub struct CameraMode { pub width, pub height, pub pixel_format,
     pub min_frame_rate: FrameRate, pub max_frame_rate: FrameRate } // + fixed / ranged
 
-#[non_exhaustive] pub enum Permission { Granted, Denied, NotDetermined }
+#[non_exhaustive] pub enum Permission { Granted, Denied, NotDetermined, Restricted, Unknown }
+// Restricted: the OS or an administrator forbids it and the user cannot change it.
+// Unknown: the OS has a permission but no way to read it before use. Both ADR-0141.
 ```
 
 ### Factory
@@ -120,7 +122,9 @@ pub trait CaptureFactory: AdapterFactory {
     /// Current permission state; fast, never prompts. Default: Granted.
     fn permission(&self, kind: TargetKind) -> Permission;
 
-    /// Shows the OS permission prompt if not determined; blocks (control thread only).
+    /// Shows the OS permission prompt if not determined and the adapter declares the
+    /// kind's `.prompt` capability; blocks. Any thread that is neither the UI thread
+    /// nor a real-time thread (ADR-0141).
     fn request_permission(&self, kind: TargetKind) -> Result<Permission, CaptureError>;
 
     /// One small sRGB RGBA8 picture of a target for a browsing list (ADR-0077; a
@@ -239,6 +243,10 @@ Constants in `rbs_capture::caps`.
 | `capture.frame_rate.max` | Int (frames per second) | Highest rate the adapter can deliver |
 | `capture.frames.in_flight` | Int | Frames the consumer may hold at once |
 | `capture.hdr` | Flag | Can deliver HDR (`rgba16f`, PQ or scRGB) for HDR displays |
+| `capture.permission.<camera\|display\|window>` | Flag | The OS has a user permission for this kind (ADR-0141). Absent: `permission` is always `Granted` and a UI says no permission is needed |
+| `capture.permission.<kind>.restart` | Flag | A grant made while the app runs applies only after it restarts (macOS screen recording) |
+| `capture.permission.<kind>.prompt` | Flag | `request_permission(kind)` can show the OS prompt in this process now. Absent: it never prompts |
+| `capture.pick.consent` | Flag | The OS asks the user in its own dialog on every `pick` (the desktop portal), so there is no standing permission for the picked kinds |
 | `adapter.hardware` | Flag | `true` for OS/GPU capture paths (from `rbs-core`) |
 
 Selection example: "display capture, zero-copy on D3D11" is `capture.target.kinds includes display` and `capture.memory includes d3d11`; whether frames are zero-copy on the engine's device is decided at `open` by `GpuImportTarget`.
@@ -390,6 +398,7 @@ Checks: probe returns within 1 s (the fastest of up to three calls, so one-time 
 
 ### ScreenCaptureKit adapter notes
 
+- Permission (ADR-0141 decision 5): `CGPreflightScreenCaptureAccess` cannot tell "not asked" from "denied", and `CGRequestScreenCaptureAccess` shows its alert once per app. So `permission` is `NotDetermined` until a request in this process is refused, and `Denied` after that. Display and window declare the permission, `.restart` (a grant applies after the app restarts) and `.prompt` only when this process is its own responsible app and declares `NSScreenCaptureUsageDescription`.
 - `thumbnail` (ADR-0077): one `SCScreenshotManager` grab, macOS 14 and later (`Unsupported` before), cursor off, within a 1 s budget. Without permission it returns `PermissionNotDetermined`, because macOS does not tell "not asked" from "denied". Known limits, to be checked on macOS 14 and 15 hardware: the periodic screen-recording re-approval alert of macOS 15 and the menu-bar indicator may appear on a grab (the adapter cannot prevent either); a grab that timed out keeps running inside ScreenCaptureKit until it ends, so a hung system can pile up abandoned requests (the host asks at most two at a time and only for the rows shown).
 - `region_grab` (ADR-0103): the same `SCScreenshotManager` grab, scaled to fit in a square of `min(max_long, 960)`. `THUMBNAIL_MAX` is not raised. An empty `max_long` is `FormatUnsupported`. The same permission, timeout and no-prompt rules as `thumbnail`.
 
@@ -407,7 +416,7 @@ Checks: probe returns within 1 s (the fastest of up to three calls, so one-time 
 - Targets: every video capture device (`devicesWithMediaType:`, which also lists external and Continuity cameras; discovery sessions renamed the external device type in macOS 14, and a constant missing on older systems would stop the binary from loading). Ids are `camera:<uniqueID>`, which Apple keeps stable across reconnections and reboots. Listing needs no permission and opens nothing. Each target's size is its largest mode.
 - Modes: every device format and frame-rate range, once as `nv12` and once as `bgra8`. AVFoundation's video data output delivers either from any device format (it converts on the way, in the capture pipeline), so the request order alone decides the pixel format. NV12 is `'420v'` (limited range), tagged `BT709_LIMITED`; reading the buffers' YCbCr matrix attachment instead is a follow-up. BGRA is tagged sRGB. Compressed formats stay out of scope (see Scope); AVFoundation decodes them before delivery, so a camera whose larger sizes are only MJPEG still offers them, decoded by the OS.
 - Memory: Metal only (IOSurface, `SurfaceSync::Ready`), like ScreenCaptureKit. The Metal importer aliases BGRA and decodes NV12 on the GPU. System memory is not offered.
-- Permission: `permission` maps `AVAuthorizationStatus` (restricted counts as denied). `open` and `start` refuse unless authorized, so creating the device input never shows the prompt; only `request_permission` does. Its process (or the app responsible for it, such as the terminal) needs `NSCameraUsageDescription` in its Info.plist, otherwise macOS ends the process at the request.
+- Permission: `permission` maps `AVAuthorizationStatus` (restricted is `Restricted`, ADR-0141). It declares `capture.permission.camera` and declares `.prompt` only when this process is its own responsible app and its bundle's `Info.plist` has `NSCameraUsageDescription` (`rbs_system_probe::app_identity`); without it `request_permission` returns the current state and shows nothing. `open` and `start` refuse unless authorized, so creating the device input never shows the prompt; only `request_permission` does. Its process (or the app responsible for it, such as the terminal) needs `NSCameraUsageDescription` in its Info.plist, otherwise macOS ends the process at the request.
 - `open` picks the device format and rate with `rbs_capture::camera::choose_mode` and creates nothing. `start` finds the same device format again (size, media subtype and a rate range containing the chosen rate), builds an `AVCaptureSession` with the device input and a video data output (late frames discarded), sets the active format and a fixed frame duration while the device is locked for configuration, and runs the session. `startRunning` blocks until the camera streams; cameras can take longer than the 500 ms `start` budget to wake up. This is an accepted exception, like the ScreenCaptureKit one, until measured on hardware.
 - Errors: a device in use by another application or session is `DeviceBusy`, an unauthorized application `PermissionDenied`, a device that is gone at `start` `TargetNotFound`; a session that did not run is a recoverable `Backend` error.
 - Target loss (invariant 7): `AVCaptureDeviceWasDisconnectedNotification` for the device and `AVCaptureSessionRuntimeErrorNotification` for the session set an atomic flag that `latest_frame` reads. Both observers are removed at `stop`.
@@ -423,7 +432,7 @@ Checks: probe returns within 1 s (the fastest of up to three calls, so one-time 
 - Modes: the native uncompressed types: NV12, YUY2, I420 (also IYUV) and RGB32 (delivered as `bgra8` with alpha set opaque during the copy). Compressed types (MJPEG, H.264) are out of scope (see Scope), so many USB cameras offer only their smaller sizes. The probe cannot ask devices, so it declares all four formats; which a camera offers is in its modes. The hardware conformance test narrows the declaration to the connected cameras (the invariant 10 exception, accepted by the owner on 2026-11-03).
 - Colour: from `MF_MT_YUV_MATRIX` and `MF_MT_VIDEO_NOMINAL_RANGE`; without them Media Foundation's defaults (BT.601 below 720 lines, BT.709 from 720 lines, limited range). RGB is sRGB.
 - Memory: system only. USB cameras deliver into system memory, so the one copy into the adapter's ring (counted in `cpu_copied`) stands in for the upload Media Foundation's Direct3D path would do; no GPU readback happens. A d3d11 path (frame-server textures, or the adapter uploading into NT shared textures like WGC's) is a follow-up once the importer decodes D3D YUV textures.
-- Permission: Windows has no fast, prompt-free query for desktop apps outside WinRT, so `permission` is `Granted` and a camera blocked by the privacy settings shows up as `PermissionDenied` from `open` or `start` (`E_ACCESSDENIED`). `request_permission` keeps the default.
+- Permission (ADR-0141 decision 6): `permission` reads the camera privacy switches from the registry (`rbs_system_probe::privacy_consent`: the `AppPrivacy` policy, the device-wide and the user's `ConsentStore\webcam` values and the desktop-apps `NonPackaged` value): a policy that forces deny is `Restricted`, `Deny` anywhere `Denied`, anything else or unreadable `Granted`. The layout is undocumented, so a camera blocked in a way the reads miss still shows up as `PermissionDenied` from `open` or `start` (`E_ACCESSDENIED`). Desktop apps get no prompt: `request_permission` keeps the default and `.prompt` is not declared. This replaced the earlier "always `Granted`" (a minor, behavioural change).
 - COM and runtime: the adapter keeps the process's implicit multithreaded apartment alive (`CoIncrementMTAUsage`, like WGC), so it never changes the apartment of the caller's thread. `MFStartup` is held only around `enumerate` and `open` and while a session is Active, balanced by `MFShutdown`.
 - `open` checks the device is listed, reads its types, picks one with `rbs_capture::camera::choose_mode` and shuts the source down (Standby holds strings only). `start` creates the media source and an asynchronous source reader with converters disabled (`MF_READWRITE_DISABLE_CONVERTERS`), sets the chosen native type with the chosen rate, and requests the first sample. It waits up to 2 s for the first sample or error, so a privacy block, a camera busy elsewhere or one already gone fails `start` itself (`PermissionDenied`, `DeviceBusy`, `TargetNotFound`); a camera slower than that starts anyway and later errors arrive as target loss. This exceeds the 500 ms `start` budget for cameras that wake slowly, an accepted exception like the AVFoundation one.
 - Hand-off: the reader callback runs on Media Foundation's work queue threads. It copies the picture (from `IMF2DBuffer2::Lock2DSize`, or a contiguous lock with the type's default stride, flipping bottom-up RGB) into the buffer of a claimed ring slot, publishes it and requests the next sample outside the producer lock. Slot buffers are reused; the producer allocates only the small shared header of each frozen buffer, never pixel memory. Planes after the first are taken to follow the first after the picture's height in rows (no padded heights); a sample whose layout does not fit its buffer is dropped and counted.
@@ -446,6 +455,8 @@ Checks: probe returns within 1 s (the fastest of up to three calls, so one-time 
 - Building needs the `libpipewire-0.3` and `libdbus-1` development headers and libclang (bindgen). The conformance test publishes its own test source node from a child process (so the adapter's threads and fds are counted alone) and needs a running daemon with WirePlumber; CI starts both and sets `RBS_REQUIRE_PIPEWIRE`. It covers shared memory only; the DMA-BUF path is untested until a Linux GPU runner exists.
 
 ### PipeWire screen-cast portal notes
+
+- `capture.pick.consent` is declared while the portal is present: the portal asks on every pick, so a UI shows "Asked each time" for screens and windows instead of a permission (ADR-0141).
 
 Screens and windows on Linux (Wayland, and X11 desktops that run the portal) come from the XDG desktop portal's ScreenCast interface (`org.freedesktop.portal.ScreenCast`, version 4 or later for restore tokens), which hands out a PipeWire node and a daemon connection that can see it. The adapter reuses the node stream above for them.
 

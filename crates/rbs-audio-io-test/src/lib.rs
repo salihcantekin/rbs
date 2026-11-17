@@ -25,7 +25,8 @@ use rbs_audio_io::output::{self as out_ring, OutputConsumer, OutputProducer};
 use rbs_audio_io::ring::{self, Push, RingConsumer, RingProducer};
 use rbs_audio_io::{
     AudioBackend, AudioEndpoint, AudioInputStream, AudioIoError, AudioOutput, AudioRead,
-    EndpointId, EndpointKind, InputRequest, InputStats, OutputRequest, OutputStats, caps,
+    EndpointId, EndpointKind, InputRequest, InputStats, OutputRequest, OutputStats, Permission,
+    caps,
 };
 use rbs_core::capability::{CapabilitySet, CapabilityValue};
 use rbs_core::media::{AudioFormat, ChannelLayout};
@@ -138,6 +139,10 @@ pub struct TestAudioBackend {
     endpoints: Vec<(AudioEndpoint, Arc<AtomicBool>)>,
     live: Arc<AtomicUsize>,
     outputs: Arc<Mutex<Vec<Weak<TestOutputInner>>>>,
+    /// Scripted permissions (ADR-0141): kind, now, prompt answer.
+    permissions: Mutex<Vec<(EndpointKind, Permission, Option<Permission>)>>,
+    /// `request_permission` calls that would have shown a prompt.
+    prompts: Arc<AtomicUsize>,
 }
 
 impl Default for TestAudioBackend {
@@ -156,7 +161,35 @@ impl TestAudioBackend {
                 .collect(),
             live: Arc::new(AtomicUsize::new(0)),
             outputs: Arc::new(Mutex::new(Vec::new())),
+            permissions: Mutex::new(Vec::new()),
+            prompts: Arc::new(AtomicUsize::new(0)),
         }
+    }
+
+    /// Gives `kind` a permission model (ADR-0141): it reads `now`; a prompt, when
+    /// `answer` is set, answers it (and declares the `.prompt` capability). Call
+    /// before probing.
+    pub fn with_permission(
+        self,
+        kind: EndpointKind,
+        now: Permission,
+        answer: Option<Permission>,
+    ) -> Self {
+        if let Ok(mut list) = self.permissions.lock() {
+            list.retain(|p| p.0 != kind);
+            list.push((kind, now, answer));
+        }
+        self
+    }
+
+    /// How many `request_permission` calls showed a (pretend) prompt.
+    pub fn prompts(&self) -> usize {
+        self.prompts.load(Ordering::Acquire)
+    }
+
+    fn scripted(&self, kind: EndpointKind) -> Option<(Permission, Option<Permission>)> {
+        let list = self.permissions.lock().ok()?;
+        list.iter().find(|p| p.0 == kind).map(|p| (p.1, p.2))
     }
 
     /// Plays the part of the device's render callback: every started output takes up
@@ -222,7 +255,7 @@ impl AdapterFactory for TestAudioBackend {
                 EndpointKind::OutputLoopback.as_str().into(),
             ])
         };
-        Ok(CapabilitySet::new()
+        let mut set = CapabilitySet::new()
             .with(caps::INPUT_KINDS, kinds())
             .with(caps::INPUT_ENUMERATE, kinds())
             .with(caps::INPUT_CHANNELS_MAX, CapabilityValue::Int(2))
@@ -233,11 +266,42 @@ impl AdapterFactory for TestAudioBackend {
             .with(caps::OUTPUT, CapabilityValue::Flag(true))
             .with(caps::OUTPUT_ENUMERATE, CapabilityValue::Flag(true))
             .with(caps::OUTPUT_LATENCY_NS, CapabilityValue::Int(20_000_000))
-            .with(HARDWARE, CapabilityValue::Flag(false)))
+            .with(HARDWARE, CapabilityValue::Flag(false));
+        for kind in EndpointKind::ALL {
+            if let (Some((_, answer)), Some((has, prompt))) =
+                (self.scripted(kind), caps::permission_keys(kind))
+            {
+                set = set
+                    .with(has, CapabilityValue::Flag(true))
+                    .with(prompt, CapabilityValue::Flag(answer.is_some()));
+                if kind == EndpointKind::Input {
+                    set = set.with(caps::INPUT_PERMISSION, CapabilityValue::Flag(true));
+                }
+            }
+        }
+        Ok(set)
     }
 }
 
 impl AudioBackend for TestAudioBackend {
+    fn permission(&self, kind: EndpointKind) -> Permission {
+        self.scripted(kind).map_or(Permission::Granted, |p| p.0)
+    }
+
+    fn request_permission(&self, kind: EndpointKind) -> Result<Permission, AudioIoError> {
+        let Ok(mut list) = self.permissions.lock() else {
+            return Ok(Permission::Granted);
+        };
+        let Some(p) = list.iter_mut().find(|p| p.0 == kind) else {
+            return Ok(Permission::Granted);
+        };
+        if let (Permission::NotDetermined, Some(answer)) = (p.1, p.2) {
+            self.prompts.fetch_add(1, Ordering::AcqRel);
+            p.1 = answer;
+        }
+        Ok(p.1)
+    }
+
     fn enumerate(&self, kind: EndpointKind) -> Result<Vec<AudioEndpoint>, AudioIoError> {
         if kind == EndpointKind::Application {
             return Err(AudioIoError::Unsupported("application capture"));
@@ -261,6 +325,11 @@ impl AudioBackend for TestAudioBackend {
         else {
             return Err(AudioIoError::EndpointNotFound);
         };
+        match self.scripted(endpoint.kind).map(|p| p.0) {
+            None | Some(Permission::Granted) => {}
+            Some(Permission::NotDetermined) => return Err(AudioIoError::PermissionNotDetermined),
+            Some(_) => return Err(AudioIoError::PermissionDenied),
+        }
         Ok(Box::new(TestStream {
             format: request.format_for(endpoint),
             clock: Arc::clone(&request.clock),

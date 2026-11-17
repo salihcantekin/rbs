@@ -255,7 +255,9 @@ pub trait AudioBackend: AdapterFactory {
     }
 
     /// Asks the user for permission to capture `kind` if it is not determined yet.
-    /// Blocks while the OS prompt is shown; call it from a control thread.
+    /// Blocks while the OS prompt is shown; call it from a thread that is neither the
+    /// UI thread nor a real-time thread (ADR-0141). Shows no prompt when the adapter
+    /// does not declare the permission's `.prompt` capability.
     fn request_permission(&self, kind: EndpointKind) -> Result<Permission, AudioIoError> {
         Ok(self.permission(kind))
     }

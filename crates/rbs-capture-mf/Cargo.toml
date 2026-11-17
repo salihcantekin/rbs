@@ -12,6 +12,8 @@ publish.workspace = true
 bytes = "1.9"
 rbs-capture = { path = "../rbs-capture" }
 rbs-core = { path = "../rbs-core" }
+# The Windows privacy switches (ADR-0141).
+rbs-system-probe = { path = "../rbs-system-probe" }
 
 [target.'cfg(windows)'.dependencies]
 # Microsoft's official bindings (MIT OR Apache-2.0), same version as rbs-capture-wgc.
