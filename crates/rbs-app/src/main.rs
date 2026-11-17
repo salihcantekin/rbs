@@ -805,6 +805,7 @@ impl App {
             Run::AddSource(what) => self.ask_add_source(what),
             Run::StudioMode(on) => self.studio.set_studio_mode(on),
             Run::Transition => self.studio.transition(),
+            Run::Rehearse => self.studio.rehearse(),
             Run::AddScene => self.studio.add_scene(),
             Run::DuplicateScene(id) => self.studio.duplicate_scene(id),
             Run::DuplicateSceneWithCopies(id) => self.studio.duplicate_scene_with_copies(id),
@@ -3896,6 +3897,28 @@ fn pick_png() {
     }
 }
 
+/// The stinger's file (ADR-0140 decision 10). The dialog is asynchronous.
+fn pick_stinger() {
+    let task = entry::spawn_local(async move {
+        let Some(ctx) = CTX.with(|c| c.borrow().clone()) else {
+            return;
+        };
+        let picked = file_dialog::open_media("Choose the stinger video").await;
+        ctx.update(move |app| match picked {
+            Ok(None) => {}
+            Err(why) => app.show_error(UiError::Other(why)),
+            Ok(Some(path)) => app.studio.set_stinger_file(&path),
+        });
+    });
+    if let Err(e) = task {
+        CTX.with(|c| {
+            if let Some(ctx) = c.borrow().clone() {
+                ctx.update(move |app| app.show_error(UiError::Other(e.to_string())));
+            }
+        });
+    }
+}
+
 /// Add source → Media file. The dialog is asynchronous (ADR-0055 / ADR-0108).
 fn pick_media() {
     let task = entry::spawn_local(async move {
@@ -4987,6 +5010,12 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     );
     on!(on_set_glide, |app, duration_ms: i32, easing: i32| {
         app.studio.set_glide(duration_ms, easing);
+    });
+    on!(on_set_stinger_cut, |app, ms: i32| {
+        app.studio.set_stinger_cut(ms);
+    });
+    on!(on_choose_stinger_file, |_app| {
+        pick_stinger();
     });
     on!(on_set_transition_kind, |app, index: i32| {
         app.studio.set_transition_kind(index);

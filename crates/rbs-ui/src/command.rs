@@ -1622,6 +1622,19 @@ pub const ENTRIES: &[Entry] = &[
         fixed: &[],
     },
     Entry {
+        id: "ui.transition.rehearse",
+        title: "Rehearse on Preview",
+        tooltip: "Play the transition on the Preview picture only; nothing goes on air",
+        icon: Some("play"),
+        shortcut: None,
+        menu: Menu::Scene,
+        // ADR-0135 decisions 11 and 12: a UI action, no control API method.
+        kind: action("ui.transition.rehearse"),
+        params: &[],
+        checkable: false,
+        fixed: &[],
+    },
+    Entry {
         id: "stream.toggle",
         title: "Go live",
         tooltip: "Start or end the stream; with \"Main + vertical\" also the vertical stream",
@@ -2245,6 +2258,7 @@ pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
             "|",
             "canvas.studio_mode.toggle",
             "canvas.transition",
+            "ui.transition.rehearse",
         ],
     ),
     (

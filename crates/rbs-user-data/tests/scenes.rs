@@ -1015,3 +1015,51 @@ fn a_scene_transition_round_trips_in_format_20_and_older_formats_refuse_it() {
     let col = document::parse::<SceneCollection>(&text).unwrap().document;
     assert_eq!(col.scenes().next().unwrap().transition_in, None);
 }
+
+#[test]
+fn a_stinger_round_trips_in_format_21_and_older_formats_refuse_it() {
+    // ADR-0140 decision 1.
+    use rbs_scene::{CollectionTransition, StingerSettings, TransitionKind};
+    let mut col = show();
+    let plain = document::render(&col, Some("Show")).unwrap();
+    assert!(!plain.contains("format = 21"), "{plain}");
+    let (clip, _) = col
+        .add_source("Stinger", ty("media-file"), Settings::new())
+        .unwrap();
+    for stinger in [
+        StingerSettings {
+            source: Some(clip),
+            cut_ms: Some(700),
+        },
+        StingerSettings {
+            source: None,
+            cut_ms: None,
+        },
+    ] {
+        col.set_transition(CollectionTransition {
+            kind: TransitionKind::Stinger,
+            stinger,
+            ..CollectionTransition::default()
+        })
+        .unwrap();
+        let text = document::render(&col, Some("Show")).unwrap();
+        assert!(text.contains("format = 21"), "{text}");
+        let back = document::parse::<SceneCollection>(&text).unwrap().document;
+        assert_eq!(back.transition().stinger, stinger);
+        assert_eq!(back, col);
+    }
+    for (format, bad) in [
+        (20, "[transition]\nstinger = { cut_ms = 500 }\n"),
+        (21, "[transition]\nstinger = { cut = 500 }\n"),
+        (21, "[transition]\nstinger = { source = 7 }\n"),
+    ] {
+        let text = format!("format = {format}\nkind = \"scene-collection\"\n{bad}");
+        assert!(
+            matches!(
+                document::parse::<SceneCollection>(&text),
+                Err(DataError::Invalid(_))
+            ),
+            "{format} {bad}"
+        );
+    }
+}

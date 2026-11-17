@@ -660,7 +660,7 @@ impl CommandState for Shown<'_> {
                     _ => Ok(()),
                 }
             }
-            "canvas.transition" => {
+            "canvas.transition" | "ui.transition.rehearse" => {
                 self.running()?;
                 if s.studio_mode {
                     Ok(())
@@ -1753,6 +1753,8 @@ pub enum Run {
     StudioMode(bool),
     /// Put the preview scene on air (ADR-0061).
     Transition,
+    /// Rehearse on Preview (ADR-0135 decision 11).
+    Rehearse,
     /// Add a scene.
     AddScene,
     /// Copy a scene with the same sources and layouts.
@@ -2025,6 +2027,7 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
             })
         }
         "canvas.transition" => Run::Transition,
+        "ui.transition.rehearse" => Run::Rehearse,
         "scene.position" => Run::Scene(state.studio.scene_at(scene_position(&id)?)?),
         "scene.next" => Run::Scene(state.studio.scene_step(1)?),
         "scene.previous" => Run::Scene(state.studio.scene_step(-1)?),

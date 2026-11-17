@@ -8,8 +8,10 @@ use rbs_core::timing::FrameRate;
 use rbs_graph::node::NodeTypeId;
 
 mod copies;
+mod removal;
 
 pub use copies::{Duplicated, SourceCopy, SourceFields};
+pub use removal::Removed;
 
 use crate::arrange::{AutoItem, AutoLayout, auto_layout};
 use crate::model::{
@@ -99,6 +101,9 @@ pub enum SceneError {
     /// The scene is in Shared levels, so it has no entries of its own to edit
     /// (ADR-0091).
     SharedLevels(SceneId),
+    /// The edit would place the stinger source in a scene, or make a placed source the
+    /// stinger (ADR-0140 decision 1).
+    StingerPlaced(SourceId),
 }
 
 /// Most levels of scenes in a nesting chain, counting the shown scene. Bounds the
@@ -181,6 +186,9 @@ impl fmt::Display for SceneError {
             }
             SceneError::ChromeNotDisplay => f.write_str("only a display source can store chrome"),
             SceneError::SharedLevels(id) => write!(f, "{id} uses the sources' own levels"),
+            SceneError::StingerPlaced(id) => {
+                write!(f, "{id} is the stinger and cannot be placed in a scene")
+            }
         }
     }
 }
@@ -486,6 +494,9 @@ impl SceneCollection {
         }
         let mut col = Self::from_parts_with_glide(canvases, sources, scenes, counters, glide)?;
         col.transition = transition;
+        if let Some(id) = transition.stinger.source {
+            col.get_source(id)?;
+        }
         Ok(col)
     }
 
@@ -1021,16 +1032,25 @@ impl SceneCollection {
             .filter(|s| s.companion_of() == Some(id))
             .map(|s| s.id)
             .collect();
-        if companions.is_empty() {
+        // Removing the stinger source clears the stinger in the same undo step
+        // (ADR-0140 decision 1).
+        let unsting = (self.transition.stinger.source == Some(id)).then(|| {
+            let mut new = self.transition;
+            new.stinger.source = None;
+            Op::SetTransition {
+                expected: self.transition,
+                new,
+            }
+        });
+        if companions.is_empty() && unsting.is_none() {
             return self.apply(Op::RemoveSource(id));
         }
         // The picture must exist; the companions are removed first so a failed
         // validation leaves the collection untouched (`apply_with` works on a copy).
         self.get_source(id)?;
-        let ops = companions
+        let ops = unsting
             .into_iter()
-            .chain([id])
-            .map(Op::RemoveSource)
+            .chain(companions.into_iter().chain([id]).map(Op::RemoveSource))
             .collect();
         self.apply(Op::Batch(ops))
     }
@@ -1832,6 +1852,13 @@ impl SceneCollection {
         draft.next = next;
         let inverse = draft.perform(op)?;
         draft.validate()?;
+        // A document loaded with its stinger placed stays editable (ADR-0140 decision
+        // 1); an edit may not make it so.
+        if let Some(id) = draft.placed_stinger()
+            && self.placed_stinger().is_none()
+        {
+            return Err(SceneError::StingerPlaced(id));
+        }
         *self = draft;
         Ok(Undo(inverse))
     }
@@ -2404,6 +2431,17 @@ impl SceneCollection {
             .ok_or(SceneError::UnknownItem(id))
     }
 
+    /// The stinger source when it is placed in a scene (ADR-0140 decision 1). A nested
+    /// or global scene adds no placement of its own, so a direct item is the only way.
+    pub fn placed_stinger(&self) -> Option<SourceId> {
+        let id = self.transition.stinger.source?;
+        self.scenes
+            .values()
+            .flat_map(|s| &s.items)
+            .any(|i| i.content == ItemContent::Source(id))
+            .then_some(id)
+    }
+
     /// Checks every invariant of the scene model spec.
     fn validate(&self) -> Result<(), SceneError> {
         if !self.glide.is_valid() {
@@ -2411,6 +2449,9 @@ impl SceneCollection {
         }
         if !self.transition.is_valid() {
             return Err(SceneError::InvalidTransition);
+        }
+        if let Some(id) = self.transition.stinger.source {
+            self.get_source(id)?;
         }
         let mut names = BTreeSet::new();
         for c in self.canvases.values() {

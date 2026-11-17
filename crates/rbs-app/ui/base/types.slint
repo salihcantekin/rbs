@@ -1726,7 +1726,7 @@ export global Studio {
     in property <int> glide-default-easing: 1;
     callback set-glide(int /* duration_ms */, int /* easing */);
     // The collection's transition (ADR-0128) as the rail shows it: 0 Cut, 1 Fade,
-    // 2 Move, 3 Swipe, 4 Slide. Move's duration and easing are the collection glide
+    // 2 Move, 3 Swipe, 4 Slide, 5 Stinger (ADR-0140). Move's duration and easing are the collection glide
     // above; the others have their own. Fade may pass through an opaque colour; Swipe
     // and Slide have a direction (0 left, 1 right, 2 up, 3 down).
     in property <int> transition-kind: 2;
@@ -1740,6 +1740,18 @@ export global Studio {
     in property <int> slide-duration: 500;
     in property <int> slide-easing: 1;
     in property <int> slide-direction;
+    // The stinger (ADR-0140 decision 10): its source's name ("" without one), the
+    // user's cut point in ms (-1 uses the found one), the found cut and the play
+    // range's length (-1 unknown), whether its file is being looked at, and whether
+    // its transparency cannot be kept here.
+    in property <string> stinger-name;
+    in property <int> stinger-cut-ms: -1;
+    in property <int> stinger-found-ms: -1;
+    in property <int> stinger-length-ms: -1;
+    in property <bool> stinger-looking;
+    in property <bool> stinger-alpha-unsupported;
+    callback set-stinger-cut(int /* ms; -1 the found point */);
+    callback choose-stinger-file();
     callback set-transition-kind(int);
     // The duration of the current kind (Move: the glide's).
     callback set-transition-duration(int /* ms */);

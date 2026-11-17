@@ -619,11 +619,21 @@ pub enum TransitionKind {
     Swipe,
     /// The incoming scene slides in and pushes the outgoing one out.
     Slide,
+    /// A media file plays over the change, and the scenes switch at its cut point
+    /// (ADR-0140). Its duration is the file's play range.
+    Stinger,
 }
 
 impl TransitionKind {
     /// Every kind, in the order the UI lists them.
-    pub const ALL: [Self; 5] = [Self::Cut, Self::Fade, Self::Move, Self::Swipe, Self::Slide];
+    pub const ALL: [Self; 6] = [
+        Self::Cut,
+        Self::Fade,
+        Self::Move,
+        Self::Swipe,
+        Self::Slide,
+        Self::Stinger,
+    ];
 
     /// The document and control-API name.
     pub const fn as_str(self) -> &'static str {
@@ -633,6 +643,7 @@ impl TransitionKind {
             Self::Move => "move",
             Self::Swipe => "swipe",
             Self::Slide => "slide",
+            Self::Stinger => "stinger",
         }
     }
 
@@ -720,6 +731,17 @@ impl Default for SwipeSettings {
     }
 }
 
+/// Stinger's settings (ADR-0140 decision 1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct StingerSettings {
+    /// The media-file source played over the change. It is placed in no scene. `None`
+    /// runs a Stinger change as a Cut.
+    pub source: Option<SourceId>,
+    /// The cut point, in milliseconds from the start of the source's play range;
+    /// `None` uses the point found from the file (ADR-0140 decision 3).
+    pub cut_ms: Option<u32>,
+}
+
 /// The collection's transition (ADR-0128 decision 1): the selected kind and each kind's
 /// own settings, so changing kind loses no tuned value. Move's settings are the
 /// collection glide (ADR-0100), not a copy.
@@ -733,6 +755,8 @@ pub struct CollectionTransition {
     pub swipe: SwipeSettings,
     /// Slide's settings.
     pub slide: SwipeSettings,
+    /// Stinger's settings (ADR-0140).
+    pub stinger: StingerSettings,
 }
 
 /// A scene's override of the transition into it (ADR-0135 decision 8): the kind, the
@@ -773,7 +797,8 @@ impl CollectionTransition {
         self == Self::default()
     }
 
-    /// The selected kind's duration, with `glide` for Move and 0 for Cut.
+    /// The selected kind's duration, with `glide` for Move and 0 for Cut. Stinger's
+    /// duration is its file's play range, which the model does not know: 0 here.
     pub fn duration_ms(self, glide: CollectionGlide) -> u32 {
         match self.kind {
             TransitionKind::Cut => 0,
@@ -781,6 +806,7 @@ impl CollectionTransition {
             TransitionKind::Move => glide.duration_ms,
             TransitionKind::Swipe => self.swipe.duration_ms,
             TransitionKind::Slide => self.slide.duration_ms,
+            TransitionKind::Stinger => 0,
         }
     }
 

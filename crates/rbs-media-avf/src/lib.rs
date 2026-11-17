@@ -99,7 +99,22 @@ impl AdapterFactory for AvfMediaFactory {
 impl MediaDecoderFactory for AvfMediaFactory {
     #[cfg(target_os = "macos")]
     fn open(&self, path: &Path) -> Result<Box<dyn MediaDecoder>, DecodeError> {
-        Ok(Box::new(mac::AvfDecoder::open(path, self.native)?))
+        Ok(Box::new(mac::AvfDecoder::open(path, self.native, false)?))
+    }
+
+    /// Keeps alpha through the copy path, whichever factory this is (ADR-0140
+    /// decision 2); the import device is not needed (an `IoSurface` opens anywhere).
+    #[cfg(target_os = "macos")]
+    fn open_for(
+        &self,
+        path: &Path,
+        target: &rbs_media_decode::DecodeTarget,
+    ) -> Result<Box<dyn MediaDecoder>, DecodeError> {
+        Ok(Box::new(mac::AvfDecoder::open(
+            path,
+            self.native,
+            target.keep_alpha,
+        )?))
     }
 
     #[cfg(not(target_os = "macos"))]

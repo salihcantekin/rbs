@@ -122,6 +122,14 @@ fn start() -> Option<(StudioHost, Receiver<Update>, ApiServer, Client)> {
 fn start_with(
     collection: Option<rbs_scene::SceneCollection>,
 ) -> Option<(StudioHost, Receiver<Update>, ApiServer, Client)> {
+    start_with_media(collection, None)
+}
+
+/// [`start_with`] with a media adapter.
+fn start_with_media(
+    collection: Option<rbs_scene::SceneCollection>,
+    media: Option<Arc<rbs_media_decode_test::ScriptFactory>>,
+) -> Option<(StudioHost, Receiver<Update>, ApiServer, Client)> {
     let gpu = gpu()?;
     let (tx, updates) = mpsc::channel();
     let mut config = HostConfig::desktop();
@@ -137,6 +145,9 @@ fn start_with(
             a.sources
                 .register_audio(Arc::new(TestAudioBackend::new()))
                 .unwrap();
+            if let Some(m) = media {
+                a.sources.register_media(m).unwrap();
+            }
             (a, Vec::new())
         },
         move || Ok(gpu),
@@ -1743,4 +1754,116 @@ fn a_t_bar_holds_then_puts_the_preview_on_air_and_refuses_when_wrong() {
         }
     }
     drop(host);
+}
+
+#[test]
+fn a_stinger_is_chosen_listed_found_and_refused_when_wrong() {
+    // Protocol 1.89, ADR-0140 decisions 1, 3 and 9.
+    use rbs_core::media::Size;
+    use rbs_core::timing::FrameRate;
+    use rbs_graph::node::NodeTypeId;
+    use rbs_media_decode_test::{ScriptClip, ScriptFactory, ScriptFrame};
+    use rbs_scene::model::{ItemContent, Layout, SceneScope, SettingValue, Settings};
+    // A file on disk; the scripted adapter does not read it.
+    let dir = std::env::temp_dir().join(format!("rbs-stinger-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("sting.mov");
+    std::fs::write(&file, b"sting").unwrap();
+    let media = |name: &str, doc: &mut rbs_scene::SceneCollection| {
+        let mut settings = Settings::new();
+        settings.insert(
+            "path".to_owned(),
+            SettingValue::Text(file.display().to_string()),
+        );
+        doc.add_source(name, NodeTypeId::new("org.rbs.source.media"), settings)
+            .unwrap()
+            .0
+    };
+    let mut doc = rbs_scene::SceneCollection::default();
+    let fps = FrameRate::new(30, 1).unwrap();
+    let (main, _) = doc.add_canvas("Main", Size::new(1280, 720), fps).unwrap();
+    let (scene, _) = doc.add_scene("Scene", SceneScope::Shared).unwrap();
+    doc.set_program(main, Some(scene)).unwrap();
+    let sting = media("Sting", &mut doc).get();
+    let placed = media("Clip", &mut doc);
+    doc.add_item(
+        scene,
+        ItemContent::Source(placed),
+        Layout::new([0.0, 0.0], [10.0, 10.0]),
+        None,
+    )
+    .unwrap();
+    // Clear for 4 pictures, then opaque: the cut is found at 400 ms.
+    let step = Duration::from_millis(100);
+    let mut clip = ScriptClip::silent_frames();
+    clip.frames = (0..10)
+        .map(|i| {
+            let mut f = ScriptFrame::rgba(16, 9, step * i, step, 1);
+            if i < 4 {
+                f.bytes.chunks_exact_mut(4).for_each(|p| p[3] = 0);
+            }
+            f
+        })
+        .collect();
+    clip.duration = Some(step * 10);
+    let factory = Arc::new(ScriptFactory::new(clip).with_alpha(true));
+    let Some((_host, updates, _api, mut c)) = start_with_media(Some(doc), Some(factory)) else {
+        return;
+    };
+    let answer = c.call(
+        "collection.set_transition",
+        json!({"kind": "stinger", "stinger": {"source": sting}}),
+    );
+    assert_eq!(ok(&answer), &json!({}));
+    let found = next(&updates, |u| match u {
+        Update::Scenes(list) => list.stinger_cut_found_ms,
+        _ => None,
+    });
+    assert_eq!(found, 400);
+    let listed = scenes(&mut c)["transition"].clone();
+    assert_eq!(listed["kind"], "stinger");
+    assert_eq!(
+        listed["stinger"],
+        json!({"source": sting, "cut_found_ms": 400})
+    );
+    // The stinger is never placed, and a placed source cannot be the stinger.
+    assert_eq!(
+        kind(&c.call("item.add", json!({"source": sting}))),
+        "conflict"
+    );
+    assert_eq!(
+        kind(&c.call(
+            "collection.set_transition",
+            json!({"stinger": {"source": placed.get()}})
+        )),
+        "conflict"
+    );
+    assert_eq!(
+        kind(&c.call(
+            "collection.set_transition",
+            json!({"stinger": {"source": 99}})
+        )),
+        "not_found"
+    );
+    // A cut point past the file's end, once known.
+    assert_eq!(
+        kind(&c.call(
+            "collection.set_transition",
+            json!({"stinger": {"source": sting, "cut_ms": 5000}})
+        )),
+        "invalid_params"
+    );
+    ok(&c.call(
+        "collection.set_transition",
+        json!({"stinger": {"source": sting, "cut_ms": 700}}),
+    ));
+    assert_eq!(scenes(&mut c)["transition"]["stinger"]["cut_ms"], 700);
+    // Removing the source clears the stinger, and one undo brings both back.
+    ok(&c.call("source.delete", json!({"source": sting})));
+    let after = scenes(&mut c)["transition"].clone();
+    assert_eq!(after["kind"], "stinger");
+    assert_eq!(after["stinger"]["source"], Value::Null);
+    ok(&c.call("edit.undo", json!({})));
+    assert_eq!(scenes(&mut c)["transition"]["stinger"]["source"], sting);
+    let _ = std::fs::remove_dir_all(&dir);
 }

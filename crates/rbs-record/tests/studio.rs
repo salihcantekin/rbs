@@ -2445,3 +2445,273 @@ fn a_t_bar_holds_the_blend_then_takes_or_cancels() {
     let (_, errors) = studio.shutdown();
     assert!(errors.is_empty(), "{errors:?}");
 }
+
+/// Rehearse (ADR-0135 decisions 11 to 13): the transition plays on the Preview picture
+/// only, the program never changes, and it ends after its time, when stopped, or when
+/// the preview scene changes; Cut has nothing to rehearse. The preview picture runs on
+/// Windows and macOS only.
+#[cfg(any(windows, target_vendor = "apple"))]
+#[test]
+fn a_rehearsal_plays_on_the_preview_picture_only_and_ends() {
+    use rbs_gpu::share::PreviewDesc;
+    use rbs_scene::{CollectionTransition, TransitionKind};
+
+    let Some(gpu) = gpu() else { return };
+    let r = rig();
+    let src = &r.adapters.sources;
+    let (mut col, canvas) = scene();
+    let live = col.canvas(canvas).unwrap().program.unwrap();
+    let other = camera_scene(&mut col);
+    let fade = |ms: u32| {
+        let mut t = CollectionTransition {
+            kind: TransitionKind::Fade,
+            ..CollectionTransition::default()
+        };
+        t.fade.duration_ms = ms;
+        t
+    };
+    col.set_transition(fade(5000)).unwrap();
+    col.set_preview(canvas, Some(other)).unwrap();
+    let (engine, clock) = engine_at_start();
+    let mut settings = StudioSettings::new(canvas);
+    settings.audio = false;
+    settings.preview = Some(PreviewDesc {
+        width: 32,
+        height: 18,
+        surfaces: 3,
+    });
+    settings.scene_preview = true;
+    let mut studio = Studio::start(engine, gpu, &col, src, &settings).unwrap();
+    assert!(studio.studio_mode());
+    // Render ticks: `run_until` fails on any node failure, so a picture whose input
+    // was relinked wrong shows here.
+    let more = |studio: &Studio, n: u64| {
+        let at = studio.engine().worker_stats(RENDER).unwrap().ticks();
+        move |s: &Studio| s.engine().worker_stats(RENDER).unwrap().ticks() >= at + n
+    };
+
+    // It plays on the Preview picture, which keeps running; nothing else moves.
+    assert!(studio.rehearse(src).unwrap());
+    assert!(studio.rehearsing());
+    assert!(!studio.rehearse(src).unwrap(), "one at a time");
+    let ticks = more(&studio, 10);
+    assert!(run_until(&mut studio, &clock, ticks));
+    assert!(studio.rehearsing());
+    assert_eq!(studio.transition_state(canvas), None);
+    assert!(studio.take_transition_events().is_empty());
+    assert_eq!(col.canvas(canvas).unwrap().program, Some(live));
+
+    // Stopped: the picture shows the preview scene again.
+    studio.end_rehearsal(src).unwrap();
+    assert!(!studio.rehearsing());
+    let ticks = more(&studio, 10);
+    assert!(run_until(&mut studio, &clock, ticks));
+
+    // A short one ends after its time.
+    col.set_transition(fade(300)).unwrap();
+    studio.update(&col, src).unwrap();
+    assert!(studio.rehearse(src).unwrap());
+    let wait = studio.rehearsal_wait(clock.now()).unwrap();
+    assert!(wait <= Duration::from_millis(300), "{wait:?}");
+    assert!(run_until(&mut studio, &clock, Studio::rehearsal_done));
+    studio.end_rehearsal(src).unwrap();
+    assert!(!studio.rehearsing());
+    assert_eq!(studio.rehearsal_wait(clock.now()), None);
+
+    // A change of the preview scene ends it at once.
+    assert!(studio.rehearse(src).unwrap());
+    col.set_preview(canvas, Some(live)).unwrap();
+    studio.update(&col, src).unwrap();
+    assert!(!studio.rehearsing());
+    let ticks = more(&studio, 10);
+    assert!(run_until(&mut studio, &clock, ticks));
+
+    // Cut has nothing to rehearse.
+    col.set_preview(canvas, Some(other)).unwrap();
+    col.set_transition(CollectionTransition {
+        kind: TransitionKind::Cut,
+        ..CollectionTransition::default()
+    })
+    .unwrap();
+    studio.update(&col, src).unwrap();
+    assert!(!studio.rehearse(src).unwrap());
+
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
+/// Without a Preview picture (no UI, or outside studio mode) there is nothing to
+/// rehearse on, and nothing is added (ADR-0135 decision 12).
+#[test]
+fn without_a_preview_picture_nothing_is_rehearsed() {
+    use rbs_scene::{CollectionTransition, TransitionKind};
+
+    let Some(gpu) = gpu() else { return };
+    let r = rig();
+    let src = &r.adapters.sources;
+    let (mut col, canvas) = scene();
+    let other = camera_scene(&mut col);
+    col.set_transition(CollectionTransition {
+        kind: TransitionKind::Fade,
+        ..CollectionTransition::default()
+    })
+    .unwrap();
+    let (engine, _clock) = engine_at_start();
+    let mut settings = StudioSettings::new(canvas);
+    settings.audio = false;
+    let mut studio = Studio::start(engine, gpu, &col, src, &settings).unwrap();
+    assert!(!studio.rehearse(src).unwrap(), "outside studio mode");
+    col.set_preview(canvas, Some(other)).unwrap();
+    studio.update(&col, src).unwrap();
+    assert!(!studio.rehearse(src).unwrap(), "no picture for a UI");
+    assert!(!studio.rehearsing());
+    assert_eq!(studio.rehearsal_wait(Timestamp::ZERO), None);
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
+/// A Stinger change (ADR-0140 decisions 4 to 8): the stinger is armed before the
+/// apply that makes it Active, the change waits for its first picture and the
+/// incoming picture, plays it for the play range's length, and gives the source its
+/// keys back at the end. Without what the host knows of the file it is a Cut.
+#[test]
+fn a_stinger_waits_for_its_first_picture_plays_its_length_and_disarms() {
+    use std::sync::Arc;
+
+    use rbs_media_decode_test::{ScriptClip, ScriptFactory};
+    use rbs_record::{StingerFacts, TransitionState};
+    use rbs_scene::model::SettingValue;
+    use rbs_scene::{StingerSettings, TransitionKind};
+    use rbs_sources::types::keys;
+
+    let Some(gpu) = gpu() else { return };
+    let mut r = rig();
+    r.adapters
+        .sources
+        .register_media(Arc::new(
+            ScriptFactory::new(ScriptClip::silent_frames()).with_alpha(true),
+        ))
+        .unwrap();
+    r.adapters.probe();
+    let dir = std::env::temp_dir().join(format!(
+        "rbs-record-stinger-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("stinger.mov");
+    std::fs::write(&file, b"not-decoded").unwrap();
+    struct RemoveDir(std::path::PathBuf);
+    impl Drop for RemoveDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = RemoveDir(dir);
+
+    let (mut col, canvas) = scene();
+    let live = col.canvas(canvas).unwrap().program.unwrap();
+    let other = camera_scene(&mut col);
+    let mut settings = Settings::new();
+    settings.insert(
+        keys::PATH.to_owned(),
+        SettingValue::Text(file.to_string_lossy().into_owned()),
+    );
+    let (sting, _) = col
+        .add_source(
+            "Stinger",
+            NodeTypeId::new_static(types::MEDIA_SOURCE),
+            settings,
+        )
+        .unwrap();
+    let mut t = col.transition();
+    t.kind = TransitionKind::Stinger;
+    t.stinger = StingerSettings {
+        source: Some(sting),
+        cut_ms: None,
+    };
+    col.set_transition(t).unwrap();
+    let (engine, clock) = engine_at_start();
+    let mut studio = Studio::start(
+        engine,
+        gpu,
+        &col,
+        &r.adapters.sources,
+        &StudioSettings::new(canvas),
+    )
+    .unwrap();
+    let out = studio
+        .start_output(
+            &r.adapters,
+            &OutputSettings::new("mem://stinger", ContainerId::Matroska),
+        )
+        .unwrap();
+    assert!(
+        studio.media_control(sting).is_none(),
+        "Standby while unused (P13)"
+    );
+
+    // Nothing known of the file yet: the change is a Cut.
+    col.set_program(canvas, Some(other)).unwrap();
+    studio.update(&col, &r.adapters.sources).unwrap();
+    assert_eq!(studio.transition_state(canvas), None);
+    assert!(!studio.stinger_armed(sting));
+
+    let length = Duration::from_millis(300);
+    studio.set_stinger(Some(StingerFacts {
+        source: sting,
+        length: Some(length),
+        found_cut: Some(Duration::from_millis(100)),
+        size: Some((2, 2)),
+        alpha_unsupported: false,
+    }));
+    col.set_program(canvas, Some(live)).unwrap();
+    studio.update(&col, &r.adapters.sources).unwrap();
+    assert_eq!(
+        studio.transition_state(canvas),
+        Some(TransitionState::Waiting)
+    );
+    assert!(studio.stinger_armed(sting), "armed before the apply");
+    let control = studio.media_control(sting).cloned().unwrap();
+    assert!(control.is_armed());
+    let waited = clock.now();
+    assert!(run_until(&mut studio, &clock, |s| {
+        s.transition_state(canvas) == Some(TransitionState::Running)
+    }));
+    assert!(
+        clock.now().saturating_since(waited) < rbs_record::STINGER_WAIT,
+        "started on both pictures, not the timeout"
+    );
+    assert_eq!(studio.stinger_late_cuts(), 0);
+    let started = clock.now();
+    assert!(run_until(&mut studio, &clock, |s| {
+        s.transition_state(canvas) == Some(TransitionState::Ending)
+    }));
+    assert!(clock.now().saturating_since(started) >= length);
+    assert!(run_until(&mut studio, &clock, |s| {
+        s.transition_state(canvas) == Some(TransitionState::Ending)
+            && s.transition_wait(clock.now()) == Some(Duration::ZERO)
+    }));
+    assert!(studio.take_transition_done());
+    studio.settle_transitions(&r.adapters.sources);
+    assert_eq!(studio.transition_state(canvas), None, "settled");
+    assert!(!studio.stinger_armed(sting));
+    assert!(!control.is_armed(), "its own keys are back");
+
+    // A file whose alpha is not kept here runs as a Cut.
+    studio.set_stinger(Some(StingerFacts {
+        source: sting,
+        length: Some(length),
+        found_cut: None,
+        size: None,
+        alpha_unsupported: true,
+    }));
+    col.set_program(canvas, Some(other)).unwrap();
+    studio.update(&col, &r.adapters.sources).unwrap();
+    assert_eq!(studio.transition_state(canvas), None);
+    studio.stop_output(out).unwrap();
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+}

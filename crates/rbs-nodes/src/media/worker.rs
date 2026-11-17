@@ -130,7 +130,18 @@ impl Drop for Released<'_> {
 /// Runs one worker until the end of the file (without `loop`), a fault, or shutdown.
 pub(crate) fn run(job: Job) {
     let target = job.shared.decode_target();
-    let mut decoder = match job.factory.open_for(&job.path, &target) {
+    let mut opened = job.factory.open_for(&job.path, &target);
+    // An adapter that cannot keep alpha passes the file to the next one that can
+    // (ADR-0140 decision 2).
+    if matches!(opened, Err(DecodeError::AlphaUnsupported)) {
+        for factory in job.shared.alternates() {
+            opened = factory.open_for(&job.path, &target);
+            if !matches!(opened, Err(DecodeError::AlphaUnsupported)) {
+                break;
+            }
+        }
+    }
+    let mut decoder = match opened {
         Ok(decoder) => decoder,
         Err(error) => {
             let _ = job
@@ -734,6 +745,9 @@ impl Run<'_> {
                     .fetch_add(bytes as u64, Ordering::Relaxed);
                 job.progress.enqueued.fetch_add(1, Ordering::Release);
                 job.shared.stats.uploaded.fetch_add(1, Ordering::Relaxed);
+                job.shared
+                    .queued_generation
+                    .store(self.generation.wrapping_add(1), Ordering::Release);
             }
             Err(_) => {
                 job.shared
