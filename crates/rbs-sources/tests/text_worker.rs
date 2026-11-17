@@ -561,3 +561,130 @@ fn problems_name_no_path() {
     let _ = Timestamp::ZERO;
     let _ = AtomicBool::new(false);
 }
+
+// ---- Live kinds (ADR-0129 decision 11) ------------------------------------------------
+
+fn live(kind: &str, extra: &[(&str, SettingValue)]) -> TextSettings {
+    let mut s = Settings::new();
+    s.insert(keys::WIDTH.into(), SettingValue::Int(120));
+    s.insert(keys::HEIGHT.into(), SettingValue::Int(40));
+    s.insert(keys::SIZE.into(), SettingValue::Float(20.0));
+    s.insert(keys::KIND.into(), SettingValue::Text(kind.into()));
+    for (k, v) in extra {
+        s.insert((*k).into(), v.clone());
+    }
+    validate_text(&s).unwrap()
+}
+
+/// Advances both clocks by `ms` and ticks.
+fn pass(r: &mut Rig, ms: u64) {
+    let by = Duration::from_millis(ms);
+    r.clock.advance(by);
+    *r.wall.0.lock().unwrap() += by;
+    r.worker.tick();
+}
+
+/// Waits until the render thread drew everything sent so far.
+fn settled(r: &mut Rig, rx: &mut ParamReceiver<Option<TextFrame>>) -> usize {
+    let probe = r.worker.refresh(src(1)).unwrap();
+    next_frame(rx, probe - 1);
+    r.renderer.renders.load(Ordering::SeqCst)
+}
+
+#[test]
+fn a_clock_on_air_is_drawn_again_each_second_and_not_off_air() {
+    let mut r = rig();
+    let (tx, mut rx) = channel(None);
+    // T0 is 08:00:00 UTC; the test wall clock has no time zone.
+    r.worker.attach(src(1), tx, live("clock", &[]));
+    shows(&mut rx, "08:00:00");
+    r.worker.set_on_air(BTreeSet::from([src(1)]));
+    pass(&mut r, 400);
+    pass(&mut r, 600);
+    shows(&mut rx, "08:00:01");
+    pass(&mut r, 1000);
+    shows(&mut rx, "08:00:02");
+
+    r.worker.set_on_air(BTreeSet::new());
+    let before = settled(&mut r, &mut rx);
+    pass(&mut r, 3000);
+    pass(&mut r, 3000);
+    assert_eq!(
+        settled(&mut r, &mut rx),
+        before + 1,
+        "only the probe refresh drew"
+    );
+    shows(&mut rx, "08:00:08");
+}
+
+#[test]
+fn a_stopwatch_follows_its_run_state_and_draws_only_on_a_change() {
+    let mut r = rig();
+    let (tx, mut rx) = channel(None);
+    r.worker.attach(src(1), tx, live("stopwatch", &[]));
+    r.worker.set_on_air(BTreeSet::from([src(1)]));
+    shows(&mut rx, "00:00");
+    assert_eq!(
+        r.renderer.renders.load(Ordering::SeqCst),
+        1,
+        "drawn once, never empty"
+    );
+    let start = rbs_core::time::Clock::now(&r.clock);
+    r.worker.set_timer(
+        src(1),
+        Some(rbs_sources::text_live::RunTime {
+            value: Duration::ZERO,
+            since: Some(start),
+        }),
+    );
+    pass(&mut r, 2000);
+    shows(&mut rx, "00:02");
+    // Paused at the same value: no new picture.
+    let before = settled(&mut r, &mut rx);
+    r.worker.set_timer(
+        src(1),
+        Some(rbs_sources::text_live::RunTime {
+            value: Duration::from_secs(2),
+            since: None,
+        }),
+    );
+    pass(&mut r, 5000);
+    assert_eq!(settled(&mut r, &mut rx), before + 1);
+    shows(&mut rx, "00:02");
+    r.worker.set_timer(src(1), None);
+    pass(&mut r, 1);
+    shows(&mut rx, "00:00");
+}
+
+#[test]
+fn fields_show_the_scene_and_the_recording_time() {
+    let mut r = rig();
+    let (tx, mut rx) = channel(None);
+    let s = live(
+        "text",
+        &[
+            (
+                keys::TEXT,
+                SettingValue::Text("{scene} {recording_time}".into()),
+            ),
+            (keys::FIELDS, SettingValue::Bool(true)),
+        ],
+    );
+    r.worker.set_scene("Intro");
+    r.worker.attach(src(1), tx, s);
+    r.worker.set_on_air(BTreeSet::from([src(1)]));
+    shows(&mut rx, "Intro ");
+    let now = rbs_core::time::Clock::now(&r.clock);
+    r.worker.set_elapsed(
+        Some(rbs_sources::text_live::RunTime {
+            value: Duration::from_secs(60),
+            since: Some(now),
+        }),
+        None,
+    );
+    r.worker.set_scene("Main");
+    pass(&mut r, 1);
+    shows(&mut rx, "Main 01:00");
+    pass(&mut r, 999);
+    shows(&mut rx, "Main 01:01");
+}

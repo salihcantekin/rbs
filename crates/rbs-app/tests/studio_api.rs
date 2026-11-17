@@ -782,6 +782,23 @@ fn a_control_api_client_adds_and_edits_a_text_source() {
         "{file}"
     );
 
+    // `text.timer` (protocol 1.84) runs a stopwatch, not a plain text.
+    let plain = c.call("text.timer", json!({"source": id, "action": "start"}));
+    assert_eq!(plain["error"]["data"]["kind"], "invalid_params", "{plain}");
+    let kind = c.call(
+        "source.set_settings",
+        json!({"source": id, "settings": {"kind": "stopwatch"}}),
+    );
+    assert!(kind["result"].is_object(), "{kind}");
+    let started = c.call("text.timer", json!({"source": id, "action": "start"}));
+    assert_eq!(started["result"]["kind"], "stopwatch", "{started}");
+    assert_eq!(started["result"]["running"], true, "{started}");
+    let reset = c.call("text.timer", json!({"source": id, "action": "reset"}));
+    assert_eq!(reset["result"]["running"], false, "{reset}");
+    assert_eq!(reset["result"]["value_ms"], 0, "{reset}");
+    let gone = c.call("text.timer", json!({"source": 999, "action": "pause"}));
+    assert_eq!(gone["error"]["data"]["kind"], "not_found", "{gone}");
+
     // The font list: `not_ready` until the worker has read it, then the families.
     let guard = std::time::Instant::now();
     let fonts = loop {

@@ -50,6 +50,8 @@ pub fn adapters() -> (RecordAdapters, Vec<String>) {
     // Text sources (ADR-0129): parley on the system's fonts, loaded on first use.
     a.sources
         .register_text(Arc::new(rbs_text_parley::ParleyRenderer::system()));
+    a.sources
+        .set_text_clock(Arc::new(crate::text_clock::LocalTextClock));
     #[cfg(windows)]
     {
         note(
