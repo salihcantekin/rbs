@@ -33,7 +33,10 @@ use rbs_graph::node::{LinkKind, NodeDescriptor, NodeKind, NodeTypeId};
 
 use crate::collection::{SceneCollection, SceneError};
 use crate::flatten::Affine2;
-use crate::model::{CanvasId, Crop, FilterId, ItemId, ItemStyle, SceneId, Settings, SourceId};
+use crate::flatten::ScrollKey;
+use crate::model::{
+    CanvasId, Crop, FilterId, ItemId, ItemStyle, SceneId, Scroll, Settings, SourceId,
+};
 
 /// Node type id of the canvas compositor.
 pub const COMPOSITOR_TYPE: &str = "org.rbs.compositor";
@@ -223,6 +226,11 @@ pub struct BoundLayer {
     pub style: ItemStyle,
     /// The item's own box size, the units of `style`.
     pub box_size: [f32; 2],
+    /// The scroll in canvas pixels, as in [`FlatLayer::scroll`](crate::FlatLayer::scroll)
+    /// (ADR-0150).
+    pub scroll: Option<Scroll>,
+    /// Its run, as in [`FlatLayer::scroll_key`](crate::FlatLayer::scroll_key).
+    pub scroll_key: Option<ScrollKey>,
 }
 
 /// A bound compositor and what it draws.
@@ -1319,6 +1327,8 @@ impl State {
                         opacity: layer.opacity,
                         style: layer.style,
                         box_size: layer.box_size,
+                        scroll: layer.scroll,
+                        scroll_key: layer.scroll_key,
                     });
                 }
             }

@@ -78,11 +78,12 @@ use rbs_core::media::Size;
 use rbs_core::timing::FrameRate;
 use rbs_graph::node::NodeTypeId;
 use rbs_scene::model::{
-    Border, Canvas, CanvasId, CollectionGlide, CollectionTransition, Crop, FadeSettings, Fallback,
-    Filter, FilterId, GlideEasing, ItemContent, ItemId, ItemStyle, Layout, MasterAudio,
-    RecordSeparately, Scene, SceneAudio, SceneId, SceneItem, SceneLevel, SceneScope, SettingValue,
-    Settings, Shadow, Shape, Source, SourceAudio, SourceGlide, SourceId, SourceMonitor,
-    SourceRegion, StingerSettings, SwipeDirection, SwipeSettings, TransitionKind, VideoAs,
+    Border, Canvas, CanvasId, CollectionGlide, CollectionTransition, Crop, DEFAULT_SCROLL_RAMP_MS,
+    FadeSettings, Fallback, Filter, FilterId, GlideEasing, ItemContent, ItemId, ItemStyle, Layout,
+    MasterAudio, RecordSeparately, Scene, SceneAudio, SceneId, SceneItem, SceneLevel, SceneScope,
+    Scroll, ScrollDirection, ScrollRepeat, ScrollStart, SettingValue, Settings, Shadow, Shape,
+    Source, SourceAudio, SourceGlide, SourceId, SourceMonitor, SourceRegion, StingerSettings,
+    SwipeDirection, SwipeSettings, TransitionKind, VideoAs,
 };
 use rbs_scene::{ChromeFill, DisplayChrome};
 use rbs_scene::{IdCounters, MAX_GLIDE_MS, SceneCollection, SceneTransition};
@@ -775,6 +776,116 @@ struct LayoutDoc {
     opacity: f64,
     #[serde(default, skip_serializing_if = "StyleDoc::is_plain")]
     style: StyleDoc,
+    /// Format 22 (ADR-0150).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    scroll: Option<ScrollDoc>,
+}
+
+#[derive(Serialize, Deserialize, Default, Clone, Copy, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum DirectionName {
+    #[default]
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+#[derive(Serialize, Deserialize, Default, Clone, Copy, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum RepeatName {
+    #[default]
+    Loop,
+    Once,
+}
+
+#[derive(Serialize, Deserialize, Default, Clone, Copy, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum StartName {
+    #[default]
+    Inside,
+    Outside,
+}
+
+fn is_default<T: Default + PartialEq>(v: &T) -> bool {
+    *v == T::default()
+}
+
+fn default_ramp_ms() -> u32 {
+    DEFAULT_SCROLL_RAMP_MS
+}
+
+fn is_default_ramp_ms(v: &u32) -> bool {
+    *v == DEFAULT_SCROLL_RAMP_MS
+}
+
+/// A layout's `scroll` (format 22, ADR-0150). Ranges are checked with the collection.
+#[derive(Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct ScrollDoc {
+    #[serde(default, skip_serializing_if = "is_default")]
+    direction: DirectionName,
+    speed: f64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    gap: f64,
+    #[serde(default, skip_serializing_if = "is_default")]
+    repeat: RepeatName,
+    #[serde(default, skip_serializing_if = "is_default")]
+    start: StartName,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    fade: f64,
+    #[serde(
+        default = "default_ramp_ms",
+        skip_serializing_if = "is_default_ramp_ms"
+    )]
+    ramp_ms: u32,
+}
+
+impl ScrollDoc {
+    fn of(s: &Scroll) -> Self {
+        Self {
+            direction: match s.direction {
+                ScrollDirection::Right => DirectionName::Right,
+                ScrollDirection::Up => DirectionName::Up,
+                ScrollDirection::Down => DirectionName::Down,
+                // Left, and a direction added by a newer build.
+                _ => DirectionName::Left,
+            },
+            speed: wide(s.speed),
+            gap: wide(s.gap),
+            repeat: match s.repeat {
+                ScrollRepeat::Once => RepeatName::Once,
+                _ => RepeatName::Loop,
+            },
+            start: match s.start {
+                ScrollStart::Outside => StartName::Outside,
+                _ => StartName::Inside,
+            },
+            fade: wide(s.fade),
+            ramp_ms: s.ramp_ms,
+        }
+    }
+
+    fn scroll(&self) -> Scroll {
+        let direction = match self.direction {
+            DirectionName::Left => ScrollDirection::Left,
+            DirectionName::Right => ScrollDirection::Right,
+            DirectionName::Up => ScrollDirection::Up,
+            DirectionName::Down => ScrollDirection::Down,
+        };
+        Scroll::new(direction, self.speed as f32)
+            .with_gap(self.gap as f32)
+            .with_repeat(match self.repeat {
+                RepeatName::Loop => ScrollRepeat::Loop,
+                RepeatName::Once => ScrollRepeat::Once,
+            })
+            .with_start(match self.start {
+                StartName::Inside => ScrollStart::Inside,
+                StartName::Outside => ScrollStart::Outside,
+            })
+            .with_fade(self.fade as f32)
+            .with_ramp_ms(self.ramp_ms)
+    }
 }
 
 #[derive(Serialize, Deserialize, Default, Clone, Copy, PartialEq)]
@@ -917,6 +1028,7 @@ impl LayoutDoc {
             crop: [c.left, c.top, c.right, c.bottom],
             opacity: wide(l.opacity),
             style: StyleDoc::of(&l.style),
+            scroll: l.scroll.as_ref().map(ScrollDoc::of),
         }
     }
 
@@ -927,7 +1039,8 @@ impl LayoutDoc {
                 .with_rotation(self.rotation as f32)
                 .with_crop(Crop::new(left, top, right, bottom))
                 .with_opacity(self.opacity as f32)
-                .with_style(self.style.style()?),
+                .with_style(self.style.style()?)
+                .with_scroll(self.scroll.as_ref().map(ScrollDoc::scroll)),
         )
     }
 }
@@ -961,11 +1074,41 @@ fn settings(s: BTreeMap<String, Value>) -> Settings {
         .collect()
 }
 
+/// True when an item layout or a per-canvas override in `body` has a `scroll` key.
+fn any_layout_scrolls(body: &toml::Table) -> bool {
+    let has = |v: &toml::Value| {
+        v.get("layout")
+            .and_then(toml::Value::as_table)
+            .is_some_and(|l| l.contains_key("scroll"))
+    };
+    body.get("scenes")
+        .and_then(toml::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|s| s.get("items").and_then(toml::Value::as_array))
+        .flatten()
+        .any(|item| {
+            has(item)
+                || item
+                    .get("overrides")
+                    .and_then(toml::Value::as_array)
+                    .is_some_and(|o| o.iter().any(has))
+        })
+}
+
 impl Document for SceneCollection {
     const KIND: &'static str = "scene-collection";
-    const FORMAT: u32 = 21;
+    const FORMAT: u32 = 22;
 
     fn write_format(&self) -> u32 {
+        let scrolls = self.scenes().any(|s| {
+            s.items.iter().any(|i| {
+                i.layout.scroll.is_some() || i.overrides.values().any(|l| l.scroll.is_some())
+            })
+        });
+        if scrolls {
+            return 22;
+        }
         let t = self.transition();
         let stinger = t.kind == TransitionKind::Stinger
             || t.stinger != StingerSettings::default()
@@ -1028,8 +1171,16 @@ impl Document for SceneCollection {
     /// without it, and a file is written as 20 only when a scene has it. Format 21 adds
     /// the Stinger kind and the optional `transition.stinger` (ADR-0140); a format 20 or
     /// older body is a format 21 body without them, and a file is written as 21 only
-    /// when it uses them.
+    /// when it uses them. Format 22 adds the optional layout `scroll` (ADR-0150); a
+    /// format 21 or older body is a format 22 body without it, and a file is written as
+    /// 22 only when a layout scrolls.
     fn upgrade(from: u32, body: &mut toml::Table) -> Result<(), String> {
+        if (1..=21).contains(&from) && any_layout_scrolls(body) {
+            return Err(format!("format {from} has no layout `scroll` (format 22)"));
+        }
+        if from == 21 {
+            return Ok(());
+        }
         let stung = body
             .get("transition")
             .and_then(toml::Value::as_table)
