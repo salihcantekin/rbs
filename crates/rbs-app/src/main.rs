@@ -5474,6 +5474,9 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_dest_remove, |app| {
         app.studio.dest_remove();
     });
+    on!(on_dest_remove_id, |app, id: i32| {
+        app.studio.dest_remove_id(id);
+    });
     on!(on_set_canvas_sides, |app, width: f32, height: f32| {
         app.studio.set_canvas_sides(width, height, close_preview);
     });

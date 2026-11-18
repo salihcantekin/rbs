@@ -1424,7 +1424,9 @@ export struct LoudnessData {
 // The encoder fields of one output (a recording or a stream): the options offered and
 // the one in use (rbs_app::encoder_form). `rate-kind`: 0 CBR, 1 VBR, 2 constant quality.
 // One destination of the stream in Settings, Stream (ADR-0127 decision 17).
-export struct DestinationRow { id: int, name: string, note: string, on: bool, warn: bool }
+// `removable`: the row has its own Remove (the first destination does not, ADR-0127
+// decision 1).
+export struct DestinationRow { id: int, name: string, note: string, on: bool, warn: bool, removable: bool }
 
 export struct EncoderData {
     codecs: [string], codec: int,
@@ -2204,6 +2206,7 @@ export global Studio {
     callback dest-save();
     callback dest-cancel();
     callback dest-remove();
+    callback dest-remove-id(int /* id */);
 
     // The canvas (Settings, Video): tiles for the current orientation, the one in
     // use (-1 when the size matches none), the fields, and "W × H" for the status bar.

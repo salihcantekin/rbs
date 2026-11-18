@@ -31,6 +31,9 @@ pub(crate) struct Row {
     pub on: bool,
     /// Something is missing (a server or a key): the note says what.
     pub warn: bool,
+    /// The row has its own Remove: every destination but the first (ADR-0127
+    /// decision 1).
+    pub removable: bool,
 }
 
 /// The service a destination shows: its saved one, else the one its server belongs to.
@@ -100,6 +103,7 @@ pub(crate) fn rows(all: &Destinations, canvas: Canvas, stream: &StreamProfile) -
                 note,
                 on: r.destination.enabled,
                 warn,
+                removable: !r.destination.is_first(),
             }
         })
         .collect()
@@ -332,6 +336,7 @@ pub(crate) fn row_model(rows: &[Row]) -> slint::ModelRc<crate::ui::DestinationRo
                 note: r.note.as_str().into(),
                 on: r.on,
                 warn: r.warn,
+                removable: r.removable,
             })
             .collect::<Vec<_>>(),
     ))
@@ -489,24 +494,50 @@ impl super::StudioUi {
         self.dest_serial += 1;
     }
 
-    /// "Remove destination": removes it and its key. The first one cannot be removed.
+    /// "Remove destination" in the editor: removes it and its key. The first one
+    /// cannot be removed.
     pub fn dest_remove(&mut self) {
         let Some(id) = self.dest_editor.as_ref().and_then(|e| e.id) else {
             self.dest_cancel();
             return;
         };
-        match self.destinations.remove(id) {
-            Ok(_) => {
-                self.save_destinations();
-                self.send(rbs_app::studio_host::Command::SaveDestinationKey(id, None));
-                self.dest_cancel();
+        if let Err(why) = self.remove_destination(id) {
+            if let Some(e) = &mut self.dest_editor {
+                e.problem = why;
             }
-            Err(why) => {
-                if let Some(e) = &mut self.dest_editor {
-                    e.problem = why;
-                }
-            }
+            return;
         }
+        self.dest_cancel();
+    }
+
+    /// A row's Remove, after its confirmation: removes that destination and its key.
+    /// Ignored while the destinations cannot change or an editor is open.
+    pub fn dest_remove_id(&mut self, id: i32) {
+        let Ok(id) = u32::try_from(id) else { return };
+        if !self.destinations_editable() || self.dest_editor.is_some() {
+            return;
+        }
+        if let Err(why) = self.remove_destination(id) {
+            self.stream_note = why;
+        }
+        self.dest_serial += 1;
+    }
+
+    /// Removes a destination of the picked canvas, saves, and deletes its key.
+    fn remove_destination(&mut self, id: u32) -> Result<(), String> {
+        let canvas = role(self.settings_canvas);
+        if !self
+            .destinations
+            .entries
+            .iter()
+            .any(|d| d.id == id && d.canvas == canvas)
+        {
+            return Err("That destination is no longer there.".into());
+        }
+        self.destinations.remove(id)?;
+        self.save_destinations();
+        self.send(rbs_app::studio_host::Command::SaveDestinationKey(id, None));
+        Ok(())
     }
 
     /// [`rbs_app::studio_host::Update::DestinationKey`].
@@ -837,7 +868,12 @@ mod tests {
             "Twitch · RTMP · Key saved · Same as the stream"
         );
         assert!(!rows[0].warn);
+        assert!(
+            !rows[0].removable,
+            "the first destination is only cleared or disabled"
+        );
         assert_eq!(rows[1].id, id);
+        assert!(rows[1].removable);
         assert_eq!(rows[1].name, "Kick");
         assert_eq!(rows[1].note, "Kick · No server yet · Same as the stream");
         assert!(rows[1].warn);
