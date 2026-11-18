@@ -8303,7 +8303,12 @@ impl Host {
             OutputCanvas::Main => DestinationCanvas::Main,
             OutputCanvas::Vertical => DestinationCanvas::Vertical,
         };
-        let profile = self.stream_profile_of(c).cloned().unwrap_or_default();
+        let mut profile = self.stream_profile_of(c).cloned().unwrap_or_default();
+        // A request that names a server is the first destination's (the UI or the API
+        // built it from the stream settings), also before those settings reached here.
+        if profile.server.is_empty() && !r.url.is_empty() {
+            profile.server = r.url.clone();
+        }
         let mut plans = Vec::new();
         let mut skipped = Vec::new();
         for d in self.destinations.of(role, &profile, &self.key_account) {
