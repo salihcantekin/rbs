@@ -81,6 +81,8 @@ rbs-codec-nvenc = { path = "../rbs-codec-nvenc" }
 rbs-codec-amf = { path = "../rbs-codec-amf" }
 rbs-mux-matroska = { path = "../rbs-mux-matroska" }
 rbs-transport-file = { path = "../rbs-transport-file" }
+# Process CPU time in the native encode measurement (examples/native_encode.rs).
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 # The macOS measurement of native encoder input (examples/native_encode.rs, ADR-0147).
 # Example-only: the library itself never depends on an adapter (P1).

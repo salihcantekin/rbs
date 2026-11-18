@@ -402,7 +402,7 @@ Tests: `crates/rbs-gpu/tests/motion.rs` (mean luma change between solid pictures
 
 ### Native export
 
-Implements [ADR-0025](../adr/0025-encoder-surface-export.md): encoders get the converted frame as a native frame they are the only consumer of, and never depend on `rbs-gpu`. Lives in `rbs_gpu::export`, a marked low-level module (P11). macOS only so far.
+Implements [ADR-0025](../adr/0025-encoder-surface-export.md): encoders get the converted frame as a native frame they are the only consumer of, and never depend on `rbs-gpu`. The IOSurface exporter lives in `rbs_gpu::export` (macOS), the shared D3D12 buffer exporter in `rbs_gpu::export_d3d12` (Windows, [ADR-0147](../adr/0147-native-encoder-input.md) decision 6), both marked low-level modules (P11). `rbs_gpu::native_export::PlatformExporter` names this platform's exporter; both have the calls below. Vulkan has none yet.
 
 ```rust
 impl SurfaceExporter {
@@ -431,9 +431,15 @@ impl SurfaceExporter {
     pub fn black(&mut self, ctx: &GpuContext, timestamp: Timestamp) -> Result<VideoFrame, GpuError>; // waits; not real time
 }
 
+// rbs_gpu::export_d3d12 (Windows): the same calls as `SurfaceExporter` from `scaled_tone` on
+// (`scaled_tone`, `export`, `take_ready`, `take_oldest`, `black`, `kernel`, `in_flight`,
+// `format`, `stats`, `held`, `lease_owner`).
+impl D3dBufferExporter { /* .. */ }
+
 // rbs_gpu::native_export: the readback's entry rules over an exporter
+pub type PlatformExporter = SurfaceExporter /* macOS */ | D3dBufferExporter /* Windows */;
 impl NativeDownload {
-    pub fn new(exporter: SurfaceExporter, entries: usize) -> Self;
+    pub fn new(exporter: PlatformExporter, entries: usize) -> Self;
     pub fn submit_at(..) / submit(..) / submit_repeat(t, seq) -> bool;
     pub fn take_ready(&mut self, ctx) / take_oldest(&mut self, ctx) -> Result<Option<VideoFrame>, GpuError>;
     pub fn in_flight(&self) -> usize; pub fn stats(&self) -> DownloadStats; pub fn forget_last(&mut self);
@@ -452,6 +458,15 @@ impl NativeDownload {
 - Consumer rules (encoder adapters): wrap the surface with `CVPixelBufferCreateWithIOSurface`, set the colour attachments from the frame's `ColorSpace`, and drop the frame once VideoToolbox has finished with it: after its output callback, including when the frame was dropped (`kVTEncodeInfo_FrameDropped`) or the session was invalidated. A cache of pixel buffers keyed by surface address is allowed only while it also holds the frame's lease or retains the surface; clear it when the encoder stops, so it never keeps a ring alive.
 - The export node puts each exporter's `lease_owner()` into the chain's `LeaseOwners`; the composition root keeps it until the chain's export and encoder nodes are released and drops it on the control thread (ADR-0147 decision 8), so the last ring reference, which releases the surfaces, is never dropped on a real-time thread.
 - Installed but unused costs nothing: an exporter exists only while an encoder that takes Metal memory is Active (P13). Dropping it frees its GPU objects; surfaces live on only while frames hold them.
+
+D3D12 buffer exporter (`D3dBufferExporter`, Windows; memory kind `d3d12_buffer`):
+
+- Ring: `surfaces` committed buffers in a shared default heap (`D3D12_HEAP_FLAG_SHARED`), each with an NT handle (`CreateSharedHandle`, `GENERIC_ALL`), plus one shared fence (`D3D12_FENCE_FLAG_SHARED`) with its own NT handle. The buffers are wrapped as wgpu buffers (`COPY_DST`) through the D3D12 HAL. The ring owns the buffers, the fence and every handle and is the lease owner (one atomic count per buffer, as for IOSurfaces); handles are closed when the last reference to the ring goes, which the composition root arranges off the real-time threads (ADR-0147 decision 8).
+- Layout, the readback's: luma rows from offset 0, the interleaved chroma rows right after `height` luma rows, both with the same stride, `width * sample` rounded up to 256 bytes (`COPY_BYTES_PER_ROW_ALIGNMENT`). NVENC reads a CUDA device pointer in exactly this shape. The frame's `NativeSurface::D3dSharedBuffer` carries the handle, the allocation size (`GetResourceAllocationInfo`), the adapter LUID and both plane layouts.
+- `export` converts into two plane render targets the exporter owns and copies them into a free buffer in the same submission (two GPU copies, no CPU readback), then signals the shared fence with the next value on the render queue (`ID3D12CommandQueue::Signal` right after `submit`, so it follows the copy). A buffer is written only when it is not queued and its count is zero.
+- `take_ready` hands the oldest queued conversion out at once, without polling: `VideoFrame::exported(format, t, NativeSurface::d3d_shared_buffer(..), SurfaceSync::timeline_fence(fence_handle, value), lease)`. The reader waits for `value` on its own GPU queue, so the render thread never waits for the GPU. A lost device (checked on each call) discards queued frames and returns `GpuError::DeviceLost`.
+- `black` writes the black picture (limited or full range codes, NV12 or P010) into a free buffer with `write_buffer`, submits and signals the fence; it allocates the picture once and does not wait.
+- Consumer rules: import each buffer once by handle (the handles stay open for the reader's session, decision 8), wait for the frame's fence value on the GPU before reading, never write the buffer, and drop the frame only after the encoder has read it.
 
 ### Preview export (cross-process)
 

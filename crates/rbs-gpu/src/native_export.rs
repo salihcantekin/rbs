@@ -6,7 +6,8 @@
 //! gives a native exporter the same calls: it keeps the exports and repeat entries in
 //! the order queued and hands frames out like the readback does, so the node's rules
 //! keep their meaning in native mode. The queue logic is platform-neutral and tested
-//! without a GPU; [`NativeDownload`] (macOS) joins it to the IOSurface exporter.
+//! without a GPU; [`NativeDownload`] (macOS and Windows) joins it to the platform's
+//! exporter ([`PlatformExporter`]).
 //!
 //! Hot path: no call allocates. The entry ring is sized once.
 
@@ -17,6 +18,30 @@ use rbs_core::time::Timestamp;
 
 use crate::GpuError;
 use crate::download::DownloadStats;
+
+/// Surfaces a native exporter may own. Encoders hold a few frames (look-ahead,
+/// B-frame reordering); more than this points at a consumer that never releases.
+pub const MAX_EXPORT_SURFACES: usize = 32;
+
+/// Counters of one native exporter.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ExportStats {
+    /// Frames converted into a surface.
+    pub converted: u64,
+    /// Frames handed out by `take_ready`.
+    pub delivered: u64,
+    /// `export` calls refused because every surface was pending or leased.
+    pub busy: u64,
+}
+
+/// The exporter of this platform's render API (ADR-0147 decision 6): IOSurfaces on
+/// macOS ([`crate::export::SurfaceExporter`]), shared D3D12 buffers on Windows
+/// ([`crate::export_d3d12::D3dBufferExporter`]). Both have the same calls.
+#[cfg(target_vendor = "apple")]
+pub type PlatformExporter = crate::export::SurfaceExporter;
+/// The exporter of this platform's render API (ADR-0147 decision 6).
+#[cfg(windows)]
+pub type PlatformExporter = crate::export_d3d12::D3dBufferExporter;
 
 /// One queued frame of the export.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -173,17 +198,17 @@ impl ExportQueue {
     }
 }
 
-/// The IOSurface exporter behind the readback's interface (macOS, ADR-0147).
-#[cfg(target_vendor = "apple")]
+/// The platform's exporter behind the readback's interface (ADR-0147).
+#[cfg(any(target_vendor = "apple", windows))]
 pub struct NativeDownload {
-    exporter: crate::export::SurfaceExporter,
+    exporter: PlatformExporter,
     queue: ExportQueue,
 }
 
-#[cfg(target_vendor = "apple")]
+#[cfg(any(target_vendor = "apple", windows))]
 impl NativeDownload {
     /// Wraps `exporter`; `entries` bounds exports and repeats in flight.
-    pub fn new(exporter: crate::export::SurfaceExporter, entries: usize) -> Self {
+    pub fn new(exporter: PlatformExporter, entries: usize) -> Self {
         Self {
             exporter,
             queue: ExportQueue::new(entries),
@@ -191,7 +216,7 @@ impl NativeDownload {
     }
 
     /// The exporter, for its format, kernel, black surface and lease owner.
-    pub fn exporter(&mut self) -> &mut crate::export::SurfaceExporter {
+    pub fn exporter(&mut self) -> &mut PlatformExporter {
         &mut self.exporter
     }
 

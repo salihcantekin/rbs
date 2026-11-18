@@ -45,9 +45,7 @@ use crate::yuv::{self, YuvConverter, YuvFormat};
 
 type Metal = wgpu::hal::api::Metal;
 
-/// Surfaces a [`SurfaceExporter`] may own. Encoders hold a few frames (look-ahead,
-/// B-frame reordering); more than this points at a consumer that never releases.
-pub const MAX_EXPORT_SURFACES: usize = 32;
+pub use crate::native_export::{ExportStats, MAX_EXPORT_SURFACES};
 
 /// `kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange` ('420v'): NV12, limited range.
 pub const FOURCC_NV12: u32 = u32::from_be_bytes(*b"420v");
@@ -61,17 +59,6 @@ pub const FOURCC_P010_FULL: u32 = u32::from_be_bytes(*b"xf20");
 
 /// Plane offsets are page aligned, like CoreVideo's own pixel buffers.
 const PLANE_ALIGN: usize = 4096;
-
-/// Counters of one exporter.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct ExportStats {
-    /// Frames converted into a surface.
-    pub converted: u64,
-    /// Frames handed out by `take_ready`.
-    pub delivered: u64,
-    /// `export` calls refused because every surface was pending or leased.
-    pub busy: u64,
-}
 
 /// A retained IOSurface that may be shared between threads.
 struct SharedSurface(CFRetained<IOSurfaceRef>);

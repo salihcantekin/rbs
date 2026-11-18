@@ -18,7 +18,8 @@
 //! `Compositor::render`, `YuvConverter::convert` / `convert_to_surface` and the pool
 //! are hot paths (`docs/architecture/hot-paths.md`): RBS code in them does not allocate.
 //! `unsafe` appears only in [`pool`] (the lease contract of `rbs_core::media`),
-//! [`interop`] (native surface import), `export` (native surface export), [`share`]
+//! [`interop`] (native surface import), `export` and `export_d3d12` (native surface
+//! export), [`share`]
 //! (cross-process preview) and `exit` (Linux: waits for submitted work before the
 //! process exits), all marked low-level modules (P11).
 
@@ -31,6 +32,8 @@ pub mod error;
 mod exit;
 #[cfg(target_vendor = "apple")]
 pub mod export;
+#[cfg(windows)]
+pub mod export_d3d12;
 pub mod interop;
 pub mod math;
 pub mod motion;

@@ -5307,6 +5307,7 @@ dependencies = [
  "rbs-vcam-test",
  "rtrb",
  "wgpu",
+ "windows",
 ]
 
 [[package]]

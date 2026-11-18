@@ -385,6 +385,7 @@ pub(crate) fn probe() -> Result<DeviceCaps, String> {
     Ok(DeviceCaps {
         name: "AMD AMF".into(),
         codecs,
+        native_memory: Vec::new(),
     })
 }
 
