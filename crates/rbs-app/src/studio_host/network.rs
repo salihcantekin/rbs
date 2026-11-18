@@ -250,7 +250,7 @@ mod tests {
             &patch(&[(keys::KEEP_SIGNED_IN, json!(true))])
         ));
         // Sign-in first, then the script.
-        let has_sign_in = settings(&[signed.clone()]);
+        let has_sign_in = settings(std::slice::from_ref(&signed));
         assert!(script_in_signed_in_account(
             &has_sign_in,
             &patch(&[
