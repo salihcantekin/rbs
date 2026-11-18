@@ -56,6 +56,9 @@ pub struct VirtualCameraNodeStats {
     pub refused: AtomicU64,
     /// Conversions that failed on the GPU.
     pub failed: AtomicU64,
+    /// Camera frames that repeated the canvas sent before them because it did not change
+    /// (render on change, R-03): no conversion and no readback.
+    pub repeated: AtomicU64,
 }
 
 /// Sends the canvas on its input to a virtual camera: at the camera's rate (or the
@@ -79,6 +82,9 @@ pub struct VirtualCameraNode {
     cadence: Option<Cadence>,
     /// The first camera frame index not yet due.
     next: u64,
+    /// `(timestamp, sequence)` of the last canvas converted: an unchanged canvas (render
+    /// on change, R-03) is sent again as a repeat, without conversion or readback.
+    last: Option<(Timestamp, u64)>,
     seen: DownloadStats,
     stats: Arc<VirtualCameraNodeStats>,
 }
@@ -102,6 +108,7 @@ impl VirtualCameraNode {
             tokens: VecDeque::with_capacity(SESSION_SLOTS),
             cadence: None,
             next: 0,
+            last: None,
             seen: DownloadStats::default(),
             stats: Arc::default(),
         }
@@ -159,10 +166,12 @@ impl Node<GpuRuntime> for VirtualCameraNode {
         self.tokens.clear();
         self.cadence = None;
         self.next = 0;
+        self.last = None;
         Ok(())
     }
 
     fn process(&mut self, ctx: &mut ProcessCtx<'_, GpuRuntime>) -> Result<(), NodeError> {
+        let now_tick = ctx.tick().time;
         let gpu = ctx.shared();
         let (inputs, _outputs, local) = ctx.parts();
         let Some(download) = self.download.as_mut() else {
@@ -204,19 +213,29 @@ impl Node<GpuRuntime> for VirtualCameraNode {
             Err(_) => {}
         }
 
+        // Paced on tick time: an unchanged canvas keeps its own timestamp (R-03).
         if let Some(canvas) = inputs.video(CANVAS_PIN, 0)
             && due(
                 &mut self.cadence,
                 &mut self.next,
                 self.config.format.rate,
-                canvas.timestamp(),
+                now_tick,
             )
         {
+            let picture = (canvas.timestamp(), canvas.sequence());
+            let repeat = self.last == Some(picture);
             // Reserve before any GPU work: a full session skips the conversion.
             if self.tokens.len() >= SESSION_SLOTS {
                 self.stats.consumer_busy.fetch_add(1, Ordering::Relaxed);
             } else if let Some(slot) = self.session.reserve() {
-                match download.submit(gpu, &local.pool, canvas) {
+                let submitted = if repeat {
+                    // The picture sent last, again with this tick's time (ADR-0143 R5).
+                    Ok(download.submit_repeat(now_tick, picture.1))
+                } else {
+                    self.last = Some(picture);
+                    download.submit_at(gpu, &local.pool, canvas, now_tick, picture.1)
+                };
+                match submitted {
                     Ok(true) => self.tokens.push_back(slot),
                     // The staging ring is full (counted in `busy` below), or the
                     // conversion failed: the token is dropped and frees its slot.
@@ -241,6 +260,17 @@ impl Node<GpuRuntime> for VirtualCameraNode {
                 + (now.failed - self.seen.failed),
             Ordering::Relaxed,
         );
+        self.stats
+            .repeated
+            .fetch_add(now.repeated - self.seen.repeated, Ordering::Relaxed);
+        if now.busy != self.seen.busy
+            || now.no_buffer != self.seen.no_buffer
+            || now.failed != self.seen.failed
+        {
+            // A conversion that never reached the session: convert the canvas again
+            // rather than repeat an older picture.
+            self.last = None;
+        }
         self.seen = now;
         // The camera never fails a tick (ADR-0066 decision 4).
         Ok(())

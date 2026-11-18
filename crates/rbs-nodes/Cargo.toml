@@ -64,6 +64,10 @@ harness = false
 name = "text"
 harness = false
 
+[[bench]]
+name = "render_on_change"
+harness = false
+
 [lints]
 workspace = true
 

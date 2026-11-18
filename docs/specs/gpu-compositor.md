@@ -302,14 +302,18 @@ impl YuvDownload {
     /// (`stale`). Hot path, never waits.
     pub fn take_ready(&mut self, ctx: &GpuContext) -> Result<Option<VideoFrame>, GpuError>;
     pub fn take_oldest(&mut self, ctx: &GpuContext) -> Result<Option<VideoFrame>, GpuError>; // ADR-0045
-    pub fn stats(&self) -> DownloadStats;  // converted, delivered, busy, stale, no_buffer, failed
-    pub fn in_flight(&self) -> usize;
+    /// Render on change (R-03): queues the picture of the entry before it again with this
+    /// stamp; no GPU work, no copy. `false` (counted `busy`) when every slot is in flight.
+    pub fn submit_repeat(&mut self, timestamp: Timestamp, sequence: u64) -> bool;
+    pub fn stats(&self) -> DownloadStats;  // converted, delivered, busy, stale, no_buffer, failed, repeated
+    pub fn in_flight(&self) -> usize;      // readbacks and repeat entries not yet taken
 }
 ```
 
 - `submit` records the conversion (the `YuvConverter` passes) into two plane textures the download owns, copies both planes into one staging buffer (luma rows, then chroma rows, both with `stride`), submits once and calls `map_async`; the callback only stores an atomic state.
 - `take_ready` walks the ring from the oldest slot while slots are complete, after `GpuContext::poll` (the render runtime polls at the end of each tick). The newest mapped slot is copied (one `memcpy` of the whole buffer) into a frame buffer that no consumer holds (`Bytes::is_unique`, then `try_into_mut`; the buffers are created in the shared representation, so this keeps their allocation), unmapped, and returned as a `System` frame with the canvas frame's timestamp and sequence and plane layouts at offsets `0` and `stride * height`. With every buffer held by consumers the frame is dropped (`no_buffer`). `take_oldest` does the same for the oldest completed slot and leaves newer completed slots for later calls (no `stale` drops), for the end of a stream (ADR-0045); both share one implementation chosen at compile time.
-- Every delivered frame increments `GpuMetrics::frames_cpu_copied` (P4).
+- **Repeat entries (render on change, R-03; ADR-0143 R5).** `submit_repeat` takes the next ring slot without GPU work and marks it complete at once, so it keeps its place behind readbacks still in flight. A taken repeat is the frame delivered before it again (the download keeps a shared copy of the frame it delivered last; it shares the buffer the consumer holds, so it pins no extra buffer until a newer frame replaces it), stamped with the repeat's timestamp and sequence, counted in `delivered` and `repeated`, and not in `frames_cpu_copied`. When `take_ready` finds a readback and repeats behind it complete in the same poll, it returns one frame: the readback's picture with the newest entry's stamp (the others count as `stale`). A repeat with no frame before it (the readback before it failed or found no buffer) delivers nothing and counts as `failed`.
+- Every frame copied from a staging buffer increments `GpuMetrics::frames_cpu_copied` (P4).
 - A map failure frees the slot and returns `GpuError::Readback` once.
 
 ### Image download (RGBA8)
@@ -642,13 +646,24 @@ pub struct Slide { pub from: Affine2, pub start: Timestamp, pub duration: Durati
 
 pub type LayerSender = ParamSender<Vec<NodeLayer>>;
 
-impl CompositorNode {
+pub trait Redraw { const ON_CHANGE: bool; }  // a type parameter: no flag tested per tick
+pub struct OnChange;   // the default: draw only when something changed (render on change)
+pub struct EveryTick;  // draw every tick (diagnostics, A/B measurements)
+pub const RENDER_EVERY_TICK_ENV: &str = "RBS_RENDER_EVERY_TICK";
+pub fn render_every_tick() -> bool;  // the variable is set (not empty, not "0"); read once per process
+pub struct CompositorStats { pub drawn: AtomicU64, pub unchanged: AtomicU64 }
+
+impl CompositorNode {   // CompositorNode<R: ReadySignal = NoReady, D: Redraw = OnChange>
     /// `capacity` is the most layers the node draws; it sizes the compositor in `prepare`.
     pub fn new(canvas: CanvasDesc, capacity: u32, layers: Vec<NodeLayer>) -> (CompositorNode, LayerSender);
     pub fn capacity(&self) -> u32;
     /// ADR-0128 decision 7: after each tick on which every layer had a texture frame
     /// from the pool, stores that tick's index (at least 1) with `Release`.
-    pub fn with_ready(self, ready: Arc<AtomicU64>) -> Self;
+    pub fn with_ready(self, ready: Arc<AtomicU64>) -> CompositorNode<ReadyCounter>;
+    pub fn every_tick(self) -> CompositorNode<R, EveryTick>;
+    /// Boxed for the graph: `OnChange`, or `EveryTick` when `render_every_tick()`.
+    pub fn into_node(self) -> Box<dyn Node<GpuRuntime>>;
+    pub fn stats(&self) -> Arc<CompositorStats>;
 }
 ```
 
@@ -662,8 +677,11 @@ impl CompositorNode {
   2. Builds the layer list in a reserved buffer. Each `NodeLayer` finds its link: the hint is used when `Inputs::source(LAYERS_PIN, link)` is its producer, else `Inputs::find(LAYERS_PIN, producer)` looks it up (a list can meet an older or newer schedule, and link positions shift when a producer leaves the plan). A layer whose producer is not scheduled, whose link has no frame, or whose frame is not a pool texture is skipped; native frames are imported by the source wrapper before they reach a link. Layers past `capacity` are not drawn.
   3. Converts the crop with the texture's size. The source transfer is `Srgb` when the frame's colour space says sRGB and the texture format does not decode it in the sampler.
   4. Evaluates a fade at the tick's time: before `start` the opacity is `from`, after `start + duration` it is `opacity`; between them the unit time `u` is mapped by the fade's `easing` (`Linear`: `u`, `EaseInOut`: smoothstep `u²(3−2u)`). A slide is evaluated the same way for the box. A program-scene change sets a slide on every source that was already on that canvas and whose box changed (duration and easing from the collection glide, or that source's override when set; ADR-0100), and a fade from 0 on a source that was not (collection **duration**, `Easing::Linear`, so fade-ins keep today's look). A source whose box is unchanged is left alone. The list is sent once; the node evaluates it (ADR-0023, decision 7).
-  5. Acquires a canvas texture, renders, and publishes it on "canvas": `Rgba16Float`, `ColorSpace::LINEAR_BT709`, the tick's time, and sequence = tick index. The pool slot is released at once, so the frame's lease keeps it alive.
-  6. RBS code allocates nothing here (hot path). A ring larger than three only grows when consumers hold more frames than that.
+  5. **Render on change (R-03, ADR-0143 R5; `OnChange` only).** The node keeps the key of its last draw: one entry per listed layer whose link resolves, the layer's `(TextureId, timestamp, sequence)` or none when it had no picture. When the list did not change this tick (`update` returned false), no layer has a fade or slide whose end was at or after the last draw's tick time, and every entry equals the last draw's, the node does not draw: the canvas frame of the last draw stays on "canvas" with its timestamp and sequence, the canvas description is touched in the pool so the ring is not trimmed, and the ready counter is still stored. It counts `unchanged`. The key lives in two buffers reserved in `prepare` (no allocation). A failed draw makes the next tick draw again.
+  6. Otherwise acquires a canvas texture, renders, and publishes it on "canvas": `Rgba16Float`, `ColorSpace::LINEAR_BT709`, the tick's time, and a new sequence from `next_generation()` (ADR-0117 decision 4), so a canvas's `(timestamp, sequence)` changes exactly when its picture does, and a node built anew never repeats an earlier key. It counts `drawn`. The pool slot is released at once, so the frame's lease keeps it alive.
+  7. RBS code allocates nothing here (hot path). A ring larger than three only grows when consumers hold more frames than that.
+- **Readers of a canvas.** A reader that only shows pictures (preview, a hold scene's export, a queue to another partition) keys on `(timestamp, sequence)` and does nothing for an unchanged canvas. A reader that must put out one frame per tick (the video export, the virtual camera) sends the last picture again with the tick's time without converting it ([io-nodes.md](io-nodes.md)). Every producer of a layer picture must change its key when its pixels change: capture sources take a new timestamp per frame; stills, text, browser pages and filters take a new generation per new picture (ADR-0117 decision 4).
+- **A/B switch.** `RBS_RENDER_EVERY_TICK=1` makes `into_node` build `EveryTick` compositors, which draw every tick as before render on change. It is read once per process and is a diagnostic, not a user setting.
 - Layer lists reach the node through the graph runtime's parameter channel ([ADR-0023](../adr/0023-node-parameter-channels.md)): the latest list wins, and the control side reuses the replaced list with `LayerSender::recycle` before `send`, so steady edits allocate nothing on either side. Fades are sent once as targets with timing (ADR-0023, decision 7), not as one list per frame.
 - Growing past `capacity` needs a new node (the compositor's layer buffer is sized in `prepare`, a non-real-time call). The application picks a capacity with room for the scene, for example the scene's layer count rounded up to a multiple of 16.
 
@@ -684,6 +702,7 @@ Device loss is reported by wgpu through the device-lost callback and surfaced as
 - `Compositor::render`, `YuvConverter::convert`, `YuvConverter::convert_to_surface`, `SurfaceExporter::export` and `take_ready`, `PreviewPublisher::publish` and `tick`, and the pool's `acquire` (reuse), `release` and `get` are hot paths ([hot-paths.md](../architecture/hot-paths.md)). RBS code inside them does not allocate. wgpu allocates internally while recording and submitting command buffers (about 130 allocations per frame for render + NV12 in the first measurement); the `alloc_per_frame` test asserts this does not grow over time and adds at most a small constant per layer. Reducing it (for example re-recorded render bundles) is follow-up work with its own measurements.
 - No CPU readback on the default path (P4).
 - Installed but unused: a `GpuContext` is created only when the first canvas becomes Active. A compositor or converter that is not Active is dropped, releasing its GPU objects (P13).
+- Render on change: an unchanged tick of the compositor node costs one compare per layer and no GPU work; a tick with every input new stays within 5 % of `EveryTick` (`benches/compositor.rs`, `node_*` cases).
 - Benchmarks: `benches/preview.rs` (macOS) measures the CPU time of `PreviewPublisher::publish` and `tick` and the GPU frame time of the preview pass (1080p canvas to 720p). `benches/compositor.rs` measures 1080p frame time (render, render + NV12, waiting for the GPU) with 1, 8 and 32 layers, plain and with every tile styled (`composite_styled`), and the CPU cost of recording and submitting 32 layers, plain and half styled.
 
 ## Conformance tests

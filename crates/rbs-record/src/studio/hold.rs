@@ -291,7 +291,7 @@ impl Studio {
                         Vec::new(),
                     );
                     self.engine
-                        .adopt::<GpuRuntime>(RENDER, bound.node, Box::new(compositor))?;
+                        .adopt::<GpuRuntime>(RENDER, bound.node, compositor.into_node())?;
                     for chain in self.chains.video.iter().flatten() {
                         if chain.canvas == canvas && chain.hold.is_some() {
                             self.graph

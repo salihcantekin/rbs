@@ -285,7 +285,10 @@ fn a_window_is_captured_composited_and_exported_as_nv12() {
         assert_eq!(format.pixel_format, PixelFormat::Nv12);
         assert_eq!(format.size, Size::new(W, H));
         assert_eq!(frame.timestamp(), Tick::of(&cadence, i as u64).time);
-        assert_eq!(frame.sequence(), i as u64);
+        // Each draw is a new generation (render on change, R-03).
+        if i > 0 {
+            assert!(frame.sequence() > frames[i - 1].sequence());
+        }
         // A grey sRGB window: limited-range luma near the grey level, neutral chroma.
         let (y, cb, cr) = centre(frame);
         let near = [32u8, 96, 160]

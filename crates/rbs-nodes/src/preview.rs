@@ -66,8 +66,15 @@ pub struct PreviewNode {
     desc: PreviewDesc,
     #[cfg(any(windows, target_vendor = "apple"))]
     publisher: Option<rbs_gpu::share::PreviewPublisher>,
+    /// `(timestamp, sequence)` of the canvas last handed to the UI, and the publisher's
+    /// subscription count then: an unchanged canvas (render on change, R-03) is not
+    /// converted again, but a new UI gets it once.
     #[cfg(any(windows, target_vendor = "apple"))]
-    last: Option<(Timestamp, u64)>,
+    last: Option<(Timestamp, u64, u64)>,
+    /// The publisher's `dropped` count after the last tick: a converted frame the UI
+    /// never got is converted again.
+    #[cfg(any(windows, target_vendor = "apple"))]
+    dropped: u64,
     stats: Arc<PreviewNodeStats>,
 }
 
@@ -82,6 +89,8 @@ impl PreviewNode {
             publisher: None,
             #[cfg(any(windows, target_vendor = "apple"))]
             last: None,
+            #[cfg(any(windows, target_vendor = "apple"))]
+            dropped: 0,
             stats: Arc::default(),
         }
     }
@@ -102,6 +111,7 @@ impl Node<GpuRuntime> for PreviewNode {
         let publisher = rbs_gpu::share::PreviewPublisher::new(ctx.shared, self.desc)
             .map_err(|e| NodeError::Failed(format!("preview: {e}")))?;
         self.stats.set_endpoint(Some(publisher.endpoint().clone()));
+        self.dropped = publisher.stats().dropped;
         self.publisher = Some(publisher);
         self.last = None;
         Ok(())
@@ -125,14 +135,21 @@ impl Node<GpuRuntime> for PreviewNode {
         let publisher = self.publisher.as_mut().ok_or(NodeError::NotReady)?;
         let mut result = Ok(());
         if let Some(canvas) = inputs.video(PREVIEW_CANVAS_PIN, 0) {
-            let key = (canvas.timestamp(), canvas.sequence());
+            let key = (
+                canvas.timestamp(),
+                canvas.sequence(),
+                publisher.stats().subscribes,
+            );
             if self.last != Some(key)
                 && let FramePayload::Texture(id) = *canvas.payload()
             {
-                self.last = Some(key);
                 match publisher.publish(gpu, &local.pool, id, key.0, key.1) {
                     Ok(()) => {
+                        // Kept only once a UI took it: a canvas that stays unchanged is
+                        // still handed to a UI that subscribes later, and a busy ring
+                        // retries it on the next tick.
                         if publisher.subscribed() {
+                            self.last = Some(key);
                             self.stats.published.fetch_add(1, Ordering::Relaxed);
                         }
                     }
@@ -157,6 +174,12 @@ impl Node<GpuRuntime> for PreviewNode {
             Err(_) => {
                 self.stats.errors.fetch_add(1, Ordering::Relaxed);
             }
+        }
+        let dropped = publisher.stats().dropped;
+        if dropped != self.dropped {
+            // The UI never got a converted frame: convert the canvas again.
+            self.dropped = dropped;
+            self.last = None;
         }
         self.stats
             .subscribed

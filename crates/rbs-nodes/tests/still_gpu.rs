@@ -176,6 +176,8 @@ fn a_still_is_uploaded_once_and_stays_on_the_canvas() {
         assert!(centre_luma(frame).abs_diff(235) <= 2);
     }
     assert_eq!(exec.health(export).unwrap().errors, 0);
+    // The probe takes the lock on every new frame, and the export puts one out each tick.
+    drop(frames);
 
     // Standby and back (the P13 contract): the texture goes back to the pool, and the
     // next activation uploads and publishes once more from the pixels the node kept.
@@ -273,4 +275,80 @@ fn every_upload_has_a_new_generation() {
         "{keys:?}"
     );
     assert_ne!(keys[0].1, keys[1].1, "{keys:?}");
+}
+
+#[test]
+fn an_unchanged_canvas_is_drawn_once_and_exported_every_tick() {
+    let Some(ctx) = gpu() else { return };
+    let (ctl, exec) = channel::<GpuRuntime>(Arc::clone(&ctx), RenderLocal::default());
+    let mut ctl: Controller<GpuRuntime> = ctl;
+    let mut exec: Executor<GpuRuntime> = exec;
+    let mut graph = GraphDescription::new();
+    let mut add = |node: Box<dyn Node<GpuRuntime>>| {
+        let id = graph.add_node(Arc::new(node.descriptor().clone())).unwrap();
+        graph.set_state(id, Lifecycle::Standby).unwrap();
+        graph.set_state(id, Lifecycle::Active).unwrap();
+        ctl.adopt(id, node).unwrap();
+        id
+    };
+    let still = add(Box::new(
+        StillSourceNode::new(4, 4, vec![255; 4 * 4 * 4]).unwrap(),
+    ));
+    let (comp, _layers) = CompositorNode::new(
+        CanvasDesc {
+            width: W,
+            height: H,
+        },
+        4,
+        vec![NodeLayer::new(still, 0, 0.0, 0.0, W as f32, H as f32)],
+    );
+    let drawn = comp.stats();
+    let comp = add(Box::new(comp));
+    let export = VideoExportNode::new(YuvFormat::Nv12, W, H, W, H);
+    let exported = export.stats();
+    let export = add(Box::new(export));
+    let frames = Arc::new(Mutex::new(Vec::new()));
+    let probe = add(Box::new(Probe {
+        desc: NodeDescriptor::new(
+            NodeTypeId::new_static("org.rbs.test.probe"),
+            NodeKind::Output,
+            vec![Pin::one("in", LinkKind::Video)],
+            vec![],
+        ),
+        frames: Arc::clone(&frames),
+        last: None,
+    }));
+    graph.connect(still, "video", comp, "layers").unwrap();
+    graph.connect(comp, "canvas", export, "canvas").unwrap();
+    graph.connect(export, "video", probe, "in").unwrap();
+    let report = ctl.apply(&graph).unwrap();
+    assert!(report.failed.is_empty(), "{report:?}");
+    exec.swap_pending();
+    let _ = ctl.collect();
+
+    let cadence = Cadence::frames(Timestamp::ZERO, FrameRate::FPS_30);
+    for i in 0..10 {
+        exec.run_tick(Tick::of(&cadence, i));
+        ctx.wait_idle().unwrap();
+        ctx.poll();
+        let _ = ctl.collect();
+    }
+    // One draw and one readback; every later tick repeats that picture (R-03).
+    assert_eq!(drawn.drawn.load(Ordering::Relaxed), 1);
+    assert!(drawn.unchanged.load(Ordering::Relaxed) >= 8);
+    let repeated = exported.repeated.load(Ordering::Relaxed);
+    assert!(repeated >= 7, "repeated {repeated}");
+    // Still one frame per tick, at the tick's time: a constant frame rate file.
+    let frames = frames.lock().unwrap();
+    assert!(frames.len() >= 8, "only {} frames", frames.len());
+    let first = frames[0].timestamp();
+    let start = (0..10)
+        .position(|i| Tick::of(&cadence, i).time == first)
+        .expect("the first frame is at a tick") as u64;
+    for (i, frame) in frames.iter().enumerate() {
+        assert_eq!(frame.timestamp(), Tick::of(&cadence, start + i as u64).time);
+        assert!(centre_luma(frame).abs_diff(235) <= 2);
+    }
+    assert_eq!(exec.health(export).unwrap().errors, 0);
+    assert_eq!(exec.health(comp).unwrap().errors, 0);
 }

@@ -109,6 +109,17 @@ fn rig(
     node: VirtualCameraConfig,
     stalled: bool,
 ) -> Option<Rig> {
+    rig_of(canvas_rate, session, node, stalled, false)
+}
+
+/// [`rig`] with a still in place of the capture when `still`: the canvas never changes.
+fn rig_of(
+    canvas_rate: FrameRate,
+    session: VirtualCameraConfig,
+    node: VirtualCameraConfig,
+    stalled: bool,
+    still: bool,
+) -> Option<Rig> {
     let ctx = gpu()?;
     let factory = TestVcamFactory::new();
     factory.install().unwrap();
@@ -135,12 +146,18 @@ fn rig(
         consumer,
         _factory: factory,
     };
-    let request = CaptureRequest::new(TargetId::new("test-window-0"), Arc::new(clock))
-        .with_frame_rate(canvas_rate);
-    let capture = rig.add(Box::new(CaptureSourceNode::new(
-        Arc::new(TestCaptureFactory::new()),
-        request,
-    )));
+    let capture = if still {
+        rig.add(Box::new(
+            rbs_nodes::StillSourceNode::new(4, 4, vec![200; 4 * 4 * 4]).unwrap(),
+        ))
+    } else {
+        let request = CaptureRequest::new(TargetId::new("test-window-0"), Arc::new(clock))
+            .with_frame_rate(canvas_rate);
+        rig.add(Box::new(CaptureSourceNode::new(
+            Arc::new(TestCaptureFactory::new()),
+            request,
+        )))
+    };
     let (comp, _layers) = CompositorNode::new(
         CanvasDesc {
             width: W,
@@ -192,9 +209,10 @@ fn a_60_fps_canvas_feeds_a_30_fps_camera_every_other_tick() {
     assert_eq!(rig.stat(|s| &s.refused), 0);
     assert_eq!(rig.stat(|s| &s.failed), 0);
     let got = wait_delivered(&rig.consumer, 1);
-    // Newest wins, in order, and only even canvas sequence numbers were due.
+    // Newest wins, in order. Each canvas draw is a new generation (render on change,
+    // R-03), so the sequences rise but are not tick indices; the count above checks the
+    // cadence.
     assert!(got.windows(2).all(|w| w[0] < w[1]), "{got:?}");
-    assert!(got.iter().all(|seq| seq % 2 == 0), "{got:?}");
     assert_eq!(rig.exec.health(rig.camera.unwrap()).unwrap().errors, 0);
 }
 
@@ -217,10 +235,13 @@ fn a_stalled_consumer_skips_camera_frames_before_conversion_and_never_fails_a_ti
     // Resumed, the sender takes the newest and drops the two older ones itself.
     rig.consumer.resume();
     let got = wait_delivered(&rig.consumer, 1);
-    assert_eq!(got[0], 2, "{got:?}");
+    assert_eq!(got.len(), 1, "{got:?}");
     rig.tick();
     rig.tick();
     assert!(rig.stat(|s| &s.sent) >= 4);
+    // Later frames come after the newest of the three (sequences are generations).
+    let later = wait_delivered(&rig.consumer, 2);
+    assert!(later.windows(2).all(|w| w[0] < w[1]), "{later:?}");
 }
 
 #[test]
@@ -239,4 +260,29 @@ fn a_frame_the_session_refuses_is_counted_never_an_error() {
     assert_eq!(rig.exec.health(rig.camera.unwrap()).unwrap().errors, 0);
     // Refused frames free their slots: no conversion was skipped for want of one.
     assert_eq!(rig.stat(|s| &s.consumer_busy), 0);
+}
+
+#[test]
+fn an_unchanged_canvas_is_sent_again_without_a_conversion() {
+    let cam = config(CAM_W, CAM_H, FrameRate::FPS_30);
+    let Some(mut rig) = rig_of(FrameRate::FPS_60, cam, cam, false, true) else {
+        return;
+    };
+    for _ in 0..21 {
+        rig.tick();
+    }
+    // Ten or eleven camera frames due (the cadence starts at the first canvas), as with
+    // a live canvas; each is sent or skipped and counted.
+    let sent = rig.stat(|s| &s.sent);
+    let skipped = rig.stat(|s| &s.consumer_busy) + rig.stat(|s| &s.busy) + rig.stat(|s| &s.lost);
+    assert!(
+        (10..=11).contains(&(sent + skipped)),
+        "sent {sent}, skipped {skipped}"
+    );
+    // The still canvas was converted once; every later frame repeats it (R-03).
+    let repeated = rig.stat(|s| &s.repeated);
+    assert!(repeated >= 1, "repeated {repeated}");
+    assert!(sent <= repeated + 1, "sent {sent}, repeated {repeated}");
+    assert_eq!(rig.stat(|s| &s.failed), 0);
+    assert_eq!(rig.exec.health(rig.camera.unwrap()).unwrap().errors, 0);
 }
