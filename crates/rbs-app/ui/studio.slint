@@ -2118,7 +2118,8 @@ export component LiveControlsPanel inherits Rectangle {
         HorizontalLayout {
             spacing: Tokens.space-2;
             alignment: start;
-            Button {
+            // While the main canvas does not stream, there is no Go live (ADR-0148).
+            if Studio.st-main-shows: Button {
                 lead: live || Studio.st-state == 3 ? IconName.stop : IconName.bolt;
                 // While the stream ends the button says so (disabled) until the
                 // output closed, so it never offers Go live too early.

@@ -106,6 +106,7 @@ component CommandRow inherits VerticalLayout {
     // name (ADR-0114 ListRow); its chips and buttons take the focus.
     ListRow {
         selectable: false;
+        dimmed: item.off;
         name: item.title;
         HorizontalLayout {
             horizontal-stretch: 0;
