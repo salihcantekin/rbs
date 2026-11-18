@@ -54,3 +54,5 @@ Independent review per ADR-0014, 2026-11-18, independent AI session given the AD
 8. Wording on whole-list expectation: decision 4.
 
 Owner acceptance, 2026-11-18: Salih approved the merge of PR #556 ("merge et"), which accepts this ADR, including the minor-version exception of decision 7.
+
+Follow-up, 2026-11-18 (owner report after the merge): entering or leaving studio mode played the collection's transition with the same picture (a Slide brought the same window in again), because the studio saw the program change between the scene and its held copy, two scene ids. This was not new with this ADR; it is a fix of ADR-0063's implementation, with no contract change. The host now runs such an update with `Studio::update_same_picture` (recording spec, transitions): a program change only between a scene and its held copy starts no transition, no glide and no `transition.state`. A transition of a scene to itself (one copy to the next, ADR-0063 decision 3) still runs.

@@ -3920,6 +3920,10 @@ struct Host {
     /// A program switch held back until its entering texts are uploaded, at most
     /// `TEXT_WAIT_TICKS` render ticks (ADR-0129 decision 7).
     held_switch: Option<SceneId>,
+    /// The program scene the studio ran at the last update, as (its id in the run
+    /// collection, the user's scene it shows): a held copy (ADR-0063) is the scene it
+    /// was taken from. `None` before the first update.
+    ran_program: Option<(SceneId, SceneId)>,
     /// The latest T-bar value not yet applied (ADR-0135 decision 1).
     pending_progress: Option<f32>,
     /// A T-bar's end is making the program change: it does not cancel itself.
@@ -4604,6 +4608,7 @@ fn start(
         history_shown: (None, None),
         waiting: false,
         held_switch: None,
+        ran_program: None,
         pending_progress: None,
         tbar_manual: false,
         tbar_zeroed: false,
@@ -13673,7 +13678,25 @@ impl Host {
         self.mark_scene_changes();
         let run = self.run_collection();
         let running = run.as_ref().unwrap_or(&self.collection);
-        match self.studio.update(running, &self.adapters.sources) {
+        let program = running
+            .canvas(self.canvas)
+            .and_then(|c| c.program)
+            .map(|id| {
+                let real = match &self.held {
+                    Some(h) if h.scene.id == id => h.from,
+                    _ => id,
+                };
+                (id, real)
+            });
+        let same = same_picture(self.ran_program, program);
+        self.ran_program = program;
+        let updated = if same {
+            self.studio
+                .update_same_picture(running, &self.adapters.sources)
+        } else {
+            self.studio.update(running, &self.adapters.sources)
+        };
+        match updated {
             Ok(u) => {
                 self.waiting = self.studio.waiting();
                 // Source failures show in the list; other failures need words.
@@ -17480,6 +17503,20 @@ fn copy_of(collection: &SceneCollection, program: SceneId, after: Option<SceneId
     })
 }
 
+/// Whether the program the studio runs changed only between a scene and its held copy
+/// (ADR-0151 follow-up): studio mode entered or left, or the scene on air previewed,
+/// with the same picture on air. Each side is (run id, the user's scene). From one
+/// copy to the next (a transition of a scene to itself, ADR-0063 decision 3) is a
+/// real change.
+fn same_picture(before: Option<(SceneId, SceneId)>, now: Option<(SceneId, SceneId)>) -> bool {
+    match (before, now) {
+        (Some((was, was_real)), Some((id, real))) => {
+            was != id && was_real == real && (was == was_real || id == real)
+        }
+        _ => false,
+    }
+}
+
 /// What is held after a change (ADR-0063, ADR-0098): nothing outside studio mode; the
 /// copy kept while its scene is on air, whatever the preview scene is, less the items
 /// whose source or nested scene is gone from the collection; a new copy when the
@@ -17725,6 +17762,21 @@ fn activity_return(o: api::ActivityReturn) -> rbs_scene::activity::OnReturn {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn only_a_scene_and_its_held_copy_show_the_same_picture() {
+        let id = SceneId::from_raw;
+        let (x, y, copy, next) = (id(3), id(4), id(HELD_IDS), id(HELD_IDS_NEXT));
+        // Studio mode entered (the hold starts) and left (the hold ends).
+        assert!(same_picture(Some((x, x)), Some((copy, x))));
+        assert!(same_picture(Some((copy, x)), Some((x, x))));
+        // A transition of the scene to itself, another scene, or nothing new.
+        assert!(!same_picture(Some((copy, x)), Some((next, x))));
+        assert!(!same_picture(Some((copy, x)), Some((y, y))));
+        assert!(!same_picture(Some((x, x)), Some((x, x))));
+        assert!(!same_picture(None, Some((x, x))));
+    }
+
     use super::*;
 
     #[allow(clippy::unwrap_used)] // Tests fail by panicking.
