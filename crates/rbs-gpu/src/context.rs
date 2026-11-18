@@ -112,6 +112,9 @@ pub struct GpuContext {
     metrics: Arc<GpuMetrics>,
     pub(crate) sampled_layout: wgpu::BindGroupLayout,
     pub(crate) linear_sampler: wgpu::Sampler,
+    /// A 4:2:0 picture's planes for the compositor's YUV pipelines (perf audit R-11 step
+    /// b): Y' (binding 0), the linear clamp sampler (1) and CbCr (2).
+    pub(crate) yuv_layout: wgpu::BindGroupLayout,
 }
 
 impl GpuContext {
@@ -247,6 +250,29 @@ impl GpuContext {
                 },
             ],
         });
+        let plane = |binding| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        };
+        let yuv_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("rbs-gpu sampled 4:2:0 planes"),
+            entries: &[
+                plane(0),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                plane(2),
+            ],
+        });
         let linear_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("rbs-gpu linear clamp"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -270,6 +296,7 @@ impl GpuContext {
             metrics,
             sampled_layout,
             linear_sampler,
+            yuv_layout,
         })
     }
 

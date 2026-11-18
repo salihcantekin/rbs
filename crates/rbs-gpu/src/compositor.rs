@@ -3,6 +3,11 @@
 //! Hot path: [`Compositor::render`] records one render pass with one draw call per
 //! layer. RBS code in it does not allocate; all pipelines, layouts and buffers are
 //! created in [`Compositor::new`] and [`Compositor::reserve_layers`].
+//!
+//! A layer whose texture is a 4:2:0 slot (NV12 or P010, a multi-planar texture or a
+//! plane pair) is sampled as it is: its own pipelines read Y' and CbCr and apply the
+//! layer's [`Layer::ycbcr`] colour space, so no decoded RGB copy exists (perf audit R-11
+//! step b).
 
 use bytemuck::{Pod, Zeroable};
 
@@ -10,7 +15,8 @@ use crate::context::GpuContext;
 use crate::error::GpuError;
 use crate::math::{Affine2, UvRect};
 use crate::pool::TexturePool;
-use rbs_core::media::TextureId;
+use crate::yuv_decode::{Params as YuvGpu, params as yuv_params};
+use rbs_core::media::{ColorSpace, TextureId};
 
 /// How a source texture encodes colour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -152,6 +158,10 @@ pub struct Layer {
     pub opaque: bool,
     /// Shape and border (ADR-0053).
     pub style: LayerStyle,
+    /// The colour space of a 4:2:0 texture (matrix, range, transfer, as
+    /// [`crate::YuvDecoder::decode`] takes it). Ignored for RGB textures, whose colour is
+    /// `source_transfer`. A colour space the decode cannot handle skips the layer.
+    pub ycbcr: ColorSpace,
 }
 
 impl Layer {
@@ -165,6 +175,7 @@ impl Layer {
             source_transfer: Transfer::Linear,
             opaque: false,
             style: LayerStyle::default(),
+            ycbcr: ColorSpace::BT709_LIMITED,
         }
     }
 }
@@ -174,7 +185,8 @@ impl Layer {
 pub struct RenderStats {
     /// Layers drawn.
     pub drawn_layers: u32,
-    /// Layers skipped because their texture was stale, unknown or not sampleable (P7).
+    /// Layers skipped because their texture was stale, unknown or not sampleable, or a
+    /// 4:2:0 texture's colour space cannot be decoded (P7).
     pub skipped_layers: u32,
     /// Layers skipped because their crop leaves no picture (`u1 <= u0` or `v1 <= v0`,
     /// ADR-0058).
@@ -204,6 +216,12 @@ const STYLE_GPU_SIZE: u64 = std::mem::size_of::<StyleGpu>() as u64;
 
 const LAYER_GPU_SIZE: u64 = std::mem::size_of::<LayerGpu>() as u64;
 
+const YUV_GPU_SIZE: u64 = std::mem::size_of::<YuvGpu>() as u64;
+
+/// A drawn layer's pipeline: bit 0 styled, bit 1 4:2:0.
+const STYLED: u8 = 1;
+const YUV: u8 = 2;
+
 /// The compositor of one canvas.
 pub struct Compositor {
     canvas: CanvasDesc,
@@ -211,14 +229,21 @@ pub struct Compositor {
     pipeline: wgpu::RenderPipeline,
     /// Draws styled layers: shape, border, a quad grown by one pixel.
     styled: wgpu::RenderPipeline,
+    /// Draws 4:2:0 layers without a style, sampling Y' and CbCr (R-11 step b).
+    yuv: wgpu::RenderPipeline,
+    /// Draws styled 4:2:0 layers.
+    yuv_styled: wgpu::RenderPipeline,
     layers_layout: wgpu::BindGroupLayout,
     layers_buffer: wgpu::Buffer,
     styles_buffer: wgpu::Buffer,
+    /// One colour record per drawn layer, read only by the 4:2:0 pipelines.
+    yuv_buffer: wgpu::Buffer,
     layers_bind_group: wgpu::BindGroup,
     staging: Vec<LayerGpu>,
     style_staging: Vec<StyleGpu>,
-    /// Per drawn layer: drawn by the styled pipeline. Room for `reserved`.
-    styled_flags: Vec<bool>,
+    yuv_staging: Vec<YuvGpu>,
+    /// Per drawn layer: its pipeline (`STYLED`, `YUV` bits). Room for `reserved`.
+    kinds: Vec<u8>,
     reserved: u32,
 }
 
@@ -290,6 +315,7 @@ impl Compositor {
             entries: &[
                 storage_entry(0, LAYER_GPU_SIZE),
                 storage_entry(1, STYLE_GPU_SIZE),
+                storage_entry(2, YUV_GPU_SIZE),
             ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -313,20 +339,44 @@ impl Compositor {
             "vs_styled",
             "fs_styled",
         );
+        let yuv_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("rbs-gpu composite 4:2:0"),
+            bind_group_layouts: &[Some(&layers_layout), Some(&ctx.yuv_layout)],
+            immediate_size: 0,
+        });
+        let yuv = pipeline(
+            device,
+            &yuv_layout,
+            &module,
+            "rbs-gpu composite 4:2:0",
+            "vs_main",
+            "fs_yuv",
+        );
+        let yuv_styled = pipeline(
+            device,
+            &yuv_layout,
+            &module,
+            "rbs-gpu composite 4:2:0 styled",
+            "vs_styled",
+            "fs_yuv_styled",
+        );
         let reserved = max_layers.max(1);
-        let (layers_buffer, styles_buffer, layers_bind_group) =
-            create_layers_buffer(ctx, &layers_layout, reserved);
+        let (buffers, layers_bind_group) = create_layers_buffer(ctx, &layers_layout, reserved);
         Ok(Self {
             canvas,
             pipeline: plain,
             styled,
+            yuv,
+            yuv_styled,
             layers_layout,
-            layers_buffer,
-            styles_buffer,
+            layers_buffer: buffers.layers,
+            styles_buffer: buffers.styles,
+            yuv_buffer: buffers.yuv,
             layers_bind_group,
             staging: Vec::with_capacity(reserved as usize),
             style_staging: Vec::with_capacity(reserved as usize),
-            styled_flags: Vec::with_capacity(reserved as usize),
+            yuv_staging: Vec::with_capacity(reserved as usize),
+            kinds: Vec::with_capacity(reserved as usize),
             reserved,
         })
     }
@@ -346,17 +396,19 @@ impl Compositor {
         if max_layers <= self.reserved {
             return Ok(());
         }
-        let (layers, styles, bind_group) =
-            create_layers_buffer(ctx, &self.layers_layout, max_layers);
-        self.layers_buffer = layers;
-        self.styles_buffer = styles;
+        let (buffers, bind_group) = create_layers_buffer(ctx, &self.layers_layout, max_layers);
+        self.layers_buffer = buffers.layers;
+        self.styles_buffer = buffers.styles;
+        self.yuv_buffer = buffers.yuv;
         self.layers_bind_group = bind_group;
         self.staging.clear();
         self.staging.reserve(max_layers as usize);
         self.style_staging.clear();
         self.style_staging.reserve(max_layers as usize);
-        self.styled_flags.clear();
-        self.styled_flags.reserve(max_layers as usize);
+        self.yuv_staging.clear();
+        self.yuv_staging.reserve(max_layers as usize);
+        self.kinds.clear();
+        self.kinds.reserve(max_layers as usize);
         self.reserved = max_layers;
         Ok(())
     }
@@ -393,12 +445,14 @@ impl Compositor {
         // Capacity is `reserved`, so these pushes never allocate.
         self.staging.clear();
         self.style_staging.clear();
-        self.styled_flags.clear();
+        self.yuv_staging.clear();
+        self.kinds.clear();
+        let mut any_yuv = false;
         for layer in layers {
-            if sampled(pool, layer.texture).is_none() {
+            let Some((_, colour)) = sampled(pool, layer) else {
                 stats.skipped_layers += 1;
                 continue;
-            }
+            };
             let t = &layer.transform;
             let c = &layer.crop;
             // A crop larger than the picture (a window that shrank under it) draws
@@ -419,7 +473,16 @@ impl Compositor {
                 }
                 None => 0.0,
             };
-            self.styled_flags.push(style.is_some());
+            let mut kind = if style.is_some() { STYLED } else { 0 };
+            if let Some(record) = colour {
+                kind |= YUV;
+                any_yuv = true;
+                self.yuv_staging.push(record);
+            } else {
+                // Keeps the records in step with the instances; never read.
+                self.yuv_staging.push(YuvGpu::zeroed());
+            }
+            self.kinds.push(kind);
             self.staging.push(LayerGpu {
                 m: [t.a, t.b, t.c, t.d],
                 t: [t.tx, t.ty, w, h],
@@ -440,6 +503,10 @@ impl Compositor {
         if !self.staging.is_empty() {
             ctx.queue()
                 .write_buffer(&self.layers_buffer, 0, bytemuck::cast_slice(&self.staging));
+        }
+        if any_yuv {
+            ctx.queue()
+                .write_buffer(&self.yuv_buffer, 0, bytemuck::cast_slice(&self.yuv_staging));
         }
         if !self.style_staging.is_empty() {
             ctx.queue().write_buffer(
@@ -474,19 +541,24 @@ impl Compositor {
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.layers_bind_group, &[]);
             let mut instance = 0u32;
-            let mut bound_styled = false;
+            let mut bound = 0u8;
             for layer in layers {
-                let Some(bind_group) = sampled(pool, layer.texture) else {
+                let Some((bind_group, _)) = sampled(pool, layer) else {
                     continue;
                 };
                 // Skipped in the loop above, so the record indices stay in step.
                 if !has_picture(&layer.crop) {
                     continue;
                 }
-                let styled = self.styled_flags[instance as usize];
-                if styled != bound_styled {
-                    pass.set_pipeline(if styled { &self.styled } else { &self.pipeline });
-                    bound_styled = styled;
+                let kind = self.kinds[instance as usize];
+                if kind != bound {
+                    pass.set_pipeline(match kind {
+                        0 => &self.pipeline,
+                        STYLED => &self.styled,
+                        YUV => &self.yuv,
+                        _ => &self.yuv_styled,
+                    });
+                    bound = kind;
                 }
                 pass.set_bind_group(1, bind_group, &[]);
                 pass.draw(0..6, instance..instance + 1);
@@ -503,15 +575,38 @@ fn has_picture(crop: &UvRect) -> bool {
     crop.u1 > crop.u0 && crop.v1 > crop.v0
 }
 
-fn sampled(pool: &TexturePool, id: TextureId) -> Option<&wgpu::BindGroup> {
-    pool.get(id)?.sampled_bind_group()
+/// The bind group a layer draws with and, for a 4:2:0 texture, its colour record; `None`
+/// when the layer cannot be drawn. Pure arithmetic for the record: no allocation.
+fn sampled<'p>(
+    pool: &'p TexturePool,
+    layer: &Layer,
+) -> Option<(&'p wgpu::BindGroup, Option<YuvGpu>)> {
+    let tex = pool.get(layer.texture)?;
+    if let Some(group) = tex.sampled_bind_group() {
+        return Some((group, None));
+    }
+    let group = tex.yuv_bind_group()?;
+    let bits = match tex.desc().format {
+        wgpu::TextureFormat::NV12 => 8,
+        wgpu::TextureFormat::P010 => 10,
+        _ => return None,
+    };
+    let record = yuv_params(layer.ycbcr, bits).ok()?;
+    Some((group, Some(record)))
+}
+
+/// The compositor's per-layer storage buffers.
+struct LayerBuffers {
+    layers: wgpu::Buffer,
+    styles: wgpu::Buffer,
+    yuv: wgpu::Buffer,
 }
 
 fn create_layers_buffer(
     ctx: &GpuContext,
     layout: &wgpu::BindGroupLayout,
     max_layers: u32,
-) -> (wgpu::Buffer, wgpu::Buffer, wgpu::BindGroup) {
+) -> (LayerBuffers, wgpu::BindGroup) {
     let buffer = |label: &str, size: u64| {
         ctx.device().create_buffer(&wgpu::BufferDescriptor {
             label: Some(label),
@@ -522,6 +617,7 @@ fn create_layers_buffer(
     };
     let layers = buffer("rbs-gpu layers", LAYER_GPU_SIZE);
     let styles = buffer("rbs-gpu layer styles", STYLE_GPU_SIZE);
+    let yuv = buffer("rbs-gpu layer 4:2:0 colour", YUV_GPU_SIZE);
     let bind_group = ctx.device().create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("rbs-gpu layers"),
         layout,
@@ -534,9 +630,20 @@ fn create_layers_buffer(
                 binding: 1,
                 resource: styles.as_entire_binding(),
             },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: yuv.as_entire_binding(),
+            },
         ],
     });
-    (layers, styles, bind_group)
+    (
+        LayerBuffers {
+            layers,
+            styles,
+            yuv,
+        },
+        bind_group,
+    )
 }
 
 #[cfg(test)]

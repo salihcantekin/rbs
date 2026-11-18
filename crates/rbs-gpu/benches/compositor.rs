@@ -246,6 +246,48 @@ fn bench(c: &mut Criterion) {
             ctx.wait_idle().expect("wait");
         });
     });
+    // The same four cameras sampled directly by the compositor (perf audit R-11 step b):
+    // each camera is a 4:2:0 plane pair, no decode pass, no decoded texture.
+    let direct: Vec<_> = (0..4)
+        .map(|_| {
+            let desc = TextureDesc::planar(W, H, wgpu::TextureFormat::NV12);
+            let slot = pool.acquire(&ctx, &desc).expect("camera planes");
+            let mut encoder = ctx
+                .device()
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            for (plane, from) in [(0, luma), (1, chroma)] {
+                let from = pool.get(from).expect("plane").texture();
+                let to = pool
+                    .get(slot)
+                    .and_then(|t| t.plane_texture(plane))
+                    .expect("camera plane");
+                encoder.copy_texture_to_texture(
+                    from.as_image_copy(),
+                    to.as_image_copy(),
+                    from.size(),
+                );
+            }
+            ctx.queue().submit(Some(encoder.finish()));
+            slot
+        })
+        .collect();
+    let direct_tiles: Vec<Layer> = direct
+        .iter()
+        .zip(&tiles)
+        .map(|(&id, tile)| Layer {
+            texture: id,
+            ..*tile
+        })
+        .collect();
+    group.bench_function("nv12_cameras_4_direct", |b| {
+        b.iter(|| {
+            comp.render(&ctx, &pool, &direct_tiles, canvas)
+                .expect("render");
+            conv.convert(&ctx, &pool, canvas, luma, chroma)
+                .expect("convert");
+            ctx.wait_idle().expect("wait");
+        });
+    });
     let has = |key: &rbs_core::capability::CapabilityKey| {
         ctx.capabilities().get(key) == Some(&rbs_core::capability::CapabilityValue::Flag(true))
     };
