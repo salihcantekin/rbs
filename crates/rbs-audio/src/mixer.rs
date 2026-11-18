@@ -269,6 +269,8 @@ struct StripState {
     present: bool,
     /// The input has a block this tick.
     seen: bool,
+    /// The strip's index in the params, where its meter is (no search per block).
+    index: usize,
 }
 
 /// Sums its inputs with per-strip gain and mute and a master gain.
@@ -342,7 +344,7 @@ impl MixerNode {
         let monitoring = self.monitoring;
         let solo = p.strips.iter().take(self.capacity).any(|s| s.solo);
         self.scratch.clear();
-        for strip in p.strips.iter().take(self.capacity) {
+        for (index, strip) in p.strips.iter().take(self.capacity).enumerate() {
             let target = strip.target();
             let send = if monitoring && strip.monitor == MonitorMode::Only {
                 0.0
@@ -368,6 +370,7 @@ impl MixerNode {
                     monitor: old.monitor.towards(monitor, t, ramp),
                     present: old.present,
                     seen: false,
+                    index,
                 },
                 Some(old) => StripState {
                     producer: strip.producer,
@@ -377,6 +380,7 @@ impl MixerNode {
                     monitor: Ramp::steady(monitor),
                     present: old.present,
                     seen: false,
+                    index,
                 },
                 None => StripState {
                     producer: strip.producer,
@@ -386,6 +390,7 @@ impl MixerNode {
                     monitor: Ramp::steady(monitor),
                     present: false,
                     seen: false,
+                    index,
                 },
             };
             self.scratch.push(state);
@@ -492,44 +497,30 @@ impl<X: Runtime> Node<X> for MixerNode {
                 .params
                 .get()
                 .strips
-                .iter()
-                .find(|s| s.producer == producer);
-            let meter = meter.and_then(|s| s.meter.as_deref());
+                .get(strip.index)
+                .and_then(|s| s.meter.as_deref());
             let dg = (g1 - g0) * inv;
             let (ds, dm) = ((s1 - s0) * inv, (m1 - m0) * inv);
             for (c, ch) in chans.iter_mut().enumerate().take(n) {
                 let Some(src) = block.channel(c) else {
                     continue;
                 };
-                let mut peak = 0.0f32;
-                let mut sum_sq = 0.0f32;
-                if plain && g0 == g1 {
-                    for (o, &x) in ch[..frames].iter_mut().zip(src) {
-                        let y = x * g0;
-                        peak = peak.max(y.abs());
-                        sum_sq += y * y;
-                        *o += y;
-                    }
+                let out = &mut ch[..frames];
+                let (peak, sum_sq) = if plain && g0 == 0.0 && g1 == 0.0 {
+                    // Muted and settled: adds nothing, and its meter reads silence.
+                    (0.0, 0.0)
+                } else if plain && g0 == g1 {
+                    mix_lanes(out, src, |_| g0, |_| 1.0)
                 } else if plain {
-                    for (f, (o, &x)) in ch[..frames].iter_mut().zip(src).enumerate() {
-                        let y = x * (g0 + dg * (f + 1) as f32);
-                        peak = peak.max(y.abs());
-                        sum_sq += y * y;
-                        *o += y;
-                    }
+                    mix_lanes(out, src, |w| g0 + dg * w, |_| 1.0)
                 } else if m0 == 0.0 && m1 == 0.0 {
                     // Off the monitor, with a send that is not 1 (`Only` ramping).
-                    for (f, (o, &x)) in ch[..frames].iter_mut().zip(src).enumerate() {
-                        let w = (f + 1) as f32;
-                        let y = x * (g0 + dg * w);
-                        peak = peak.max(y.abs());
-                        sum_sq += y * y;
-                        *o += y * (s0 + ds * w);
-                    }
+                    mix_lanes(out, src, |w| g0 + dg * w, |w| s0 + ds * w)
                 } else {
                     let mon = &mut self.monitor_mix[c * frames..(c + 1) * frames];
-                    for (f, ((o, mo), &x)) in ch[..frames].iter_mut().zip(mon).zip(src).enumerate()
-                    {
+                    let mut peak = 0.0f32;
+                    let mut sum_sq = 0.0f32;
+                    for (f, ((o, mo), &x)) in out.iter_mut().zip(mon).zip(src).enumerate() {
                         let w = (f + 1) as f32;
                         let y = x * (g0 + dg * w);
                         peak = peak.max(y.abs());
@@ -537,7 +528,8 @@ impl<X: Runtime> Node<X> for MixerNode {
                         *o += y * (s0 + ds * w);
                         *mo += y * (m0 + dm * w);
                     }
-                }
+                    (peak, sum_sq)
+                };
                 if let Some(m) = meter {
                     m.record_block(c, peak, sum_sq, frames as u32);
                 }
@@ -551,13 +543,7 @@ impl<X: Runtime> Node<X> for MixerNode {
         let dm = (m1 - m0) * inv;
         let meter = self.params.get().master_meter.as_deref();
         for (c, ch) in chans.iter_mut().enumerate().take(n) {
-            let mut peak = 0.0f32;
-            let mut sum_sq = 0.0f32;
-            for (f, y) in ch[..frames].iter_mut().enumerate() {
-                *y *= m0 + dm * (f + 1) as f32;
-                peak = peak.max(y.abs());
-                sum_sq += *y * *y;
-            }
+            let (peak, sum_sq) = scale_lanes(&mut ch[..frames], |w| m0 + dm * w);
             if let Some(m) = meter {
                 m.record_block(c, peak, sum_sq, frames as u32);
             }
@@ -575,9 +561,147 @@ impl<X: Runtime> Node<X> for MixerNode {
     }
 }
 
+/// Accumulator lanes of the mix loops. The loops keep this many partial peaks and
+/// sums, so the reductions vectorise (A-01 of the 2026-11 performance audit).
+const LANES: usize = 8;
+
+/// Adds `src * gain(w) * send(w)` to `out` and returns the peak and the sum of
+/// squares of `src * gain(w)`, where `w` is the frame number plus one as `f32` (the
+/// ramp position at the frame's end). The samples written are exactly those of a
+/// plain per-frame loop; only the meter sums add up in another order.
+#[inline(always)]
+fn mix_lanes(
+    out: &mut [f32],
+    src: &[f32],
+    gain: impl Fn(f32) -> f32,
+    send: impl Fn(f32) -> f32,
+) -> (f32, f32) {
+    let mut peak = [0.0f32; LANES];
+    let mut sum = [0.0f32; LANES];
+    let mut out_chunks = out.chunks_exact_mut(LANES);
+    let mut src_chunks = src.chunks_exact(LANES);
+    let mut base = 0.0f32;
+    for (o, x) in (&mut out_chunks).zip(&mut src_chunks) {
+        for l in 0..LANES {
+            // Frame numbers stay far below 2^24, so this is exact.
+            let w = base + (l + 1) as f32;
+            let y = x[l] * gain(w);
+            let a = y.abs();
+            peak[l] = if a > peak[l] { a } else { peak[l] };
+            sum[l] += y * y;
+            o[l] += y * send(w);
+        }
+        base += LANES as f32;
+    }
+    let mut p = 0.0f32;
+    let mut q = 0.0f32;
+    for (o, &x) in out_chunks
+        .into_remainder()
+        .iter_mut()
+        .zip(src_chunks.remainder())
+    {
+        base += 1.0;
+        let y = x * gain(base);
+        p = p.max(y.abs());
+        q += y * y;
+        *o += y * send(base);
+    }
+    (fold_peak(peak, p), fold_sum(sum, q))
+}
+
+/// Scales `out` by `gain(w)` in place (as [`mix_lanes`]) and returns the peak and the
+/// sum of squares of the result.
+#[inline(always)]
+fn scale_lanes(out: &mut [f32], gain: impl Fn(f32) -> f32) -> (f32, f32) {
+    let mut peak = [0.0f32; LANES];
+    let mut sum = [0.0f32; LANES];
+    let mut chunks = out.chunks_exact_mut(LANES);
+    let mut base = 0.0f32;
+    for o in &mut chunks {
+        for l in 0..LANES {
+            let y = o[l] * gain(base + (l + 1) as f32);
+            o[l] = y;
+            let a = y.abs();
+            peak[l] = if a > peak[l] { a } else { peak[l] };
+            sum[l] += y * y;
+        }
+        base += LANES as f32;
+    }
+    let mut p = 0.0f32;
+    let mut q = 0.0f32;
+    for o in chunks.into_remainder() {
+        base += 1.0;
+        *o *= gain(base);
+        p = p.max(o.abs());
+        q += *o * *o;
+    }
+    (fold_peak(peak, p), fold_sum(sum, q))
+}
+
+#[inline(always)]
+fn fold_peak(lanes: [f32; LANES], rest: f32) -> f32 {
+    lanes.into_iter().fold(rest, f32::max)
+}
+
+#[inline(always)]
+fn fold_sum(lanes: [f32; LANES], rest: f32) -> f32 {
+    lanes.into_iter().sum::<f32>() + rest
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The per-frame loops the lane loops replace.
+    fn mix_plain(out: &mut [f32], src: &[f32], g0: f32, dg: f32, s0: f32, ds: f32) -> (f32, f32) {
+        let (mut peak, mut sum) = (0.0f32, 0.0f32);
+        for (f, (o, &x)) in out.iter_mut().zip(src).enumerate() {
+            let w = (f + 1) as f32;
+            let y = x * (g0 + dg * w);
+            peak = peak.max(y.abs());
+            sum += y * y;
+            *o += y * (s0 + ds * w);
+        }
+        (peak, sum)
+    }
+
+    #[test]
+    fn the_lane_loops_write_the_same_samples_as_a_plain_loop() {
+        for frames in [0, 1, 7, 8, 9, 480, 483] {
+            let src: Vec<f32> = (0..frames)
+                .map(|i| ((i * 37 % 101) as f32 - 50.0) / 50.0)
+                .collect();
+            let start: Vec<f32> = (0..frames).map(|i| (i % 5) as f32 * 0.1).collect();
+            let (g0, dg, s0, ds) = (0.25, 0.75 / 480.0, 1.0, -1.0 / 480.0);
+            let mut want = start.clone();
+            let (wp, ws) = mix_plain(&mut want, &src, g0, dg, s0, ds);
+            let mut got = start.clone();
+            let (gp, gs) = mix_lanes(&mut got, &src, |w| g0 + dg * w, |w| s0 + ds * w);
+            assert_eq!(got, want, "{frames} frames");
+            assert_eq!(gp, wp, "{frames} frames");
+            assert!(
+                (gs - ws).abs() <= ws * 1e-5,
+                "{frames} frames: {gs} vs {ws}"
+            );
+
+            let mut want = src.clone();
+            let mut wsum = 0.0f32;
+            let mut wpeak = 0.0f32;
+            for (f, y) in want.iter_mut().enumerate() {
+                *y *= g0 + dg * (f + 1) as f32;
+                wpeak = wpeak.max(y.abs());
+                wsum += *y * *y;
+            }
+            let mut got = src.clone();
+            let (gp, gs) = scale_lanes(&mut got, |w| g0 + dg * w);
+            assert_eq!(got, want, "{frames} frames");
+            assert_eq!(gp, wpeak);
+            assert!(
+                (gs - wsum).abs() <= wsum * 1e-5,
+                "{frames} frames: {gs} vs {wsum}"
+            );
+        }
+    }
 
     #[test]
     fn taking_the_same_target_again_keeps_a_ramp_running() {

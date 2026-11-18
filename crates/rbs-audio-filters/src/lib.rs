@@ -193,6 +193,20 @@ pub(crate) fn amp_to_db(amp: f32) -> f32 {
     }
 }
 
+/// Writes the linked detector level of every frame, the largest absolute sample over
+/// `channels`, into `levels`. Frames a channel lacks count as silence for it. One
+/// pass per channel, so the loop vectorises (A-18 of the 2026-11 performance audit);
+/// like `f32::max`, a NaN sample is ignored. Real-time safe.
+#[inline]
+pub(crate) fn linked_levels<'a>(levels: &mut [f32], channels: impl IntoIterator<Item = &'a [f32]>) {
+    levels.fill(0.0);
+    for ch in channels {
+        for (l, x) in levels.iter_mut().zip(ch) {
+            *l = l.max(x.abs());
+        }
+    }
+}
+
 /// `y` if it is a normal finite number, else silence (NaN, infinity and denormals).
 #[inline]
 pub(crate) fn clean(y: f32) -> f32 {

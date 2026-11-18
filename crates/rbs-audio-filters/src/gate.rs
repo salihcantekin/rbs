@@ -164,12 +164,11 @@ impl AudioDsp for GateDsp {
         let frames = frames.min(self.gains.len());
         let s = self.s;
         let mut peak = 0.0f32;
-        // Pass 1: the linked detector and the gate's gain for every frame.
+        // Pass 1: the linked detector level of every frame (into `gains`).
+        crate::linked_levels(&mut self.gains[..frames], channels.iter().map(|c| &**c));
+        // Pass 2: the gate's gain for every frame.
         for f in 0..frames {
-            let mut level = 0.0f32;
-            for ch in channels.iter() {
-                level = level.max(ch[f].abs());
-            }
+            let level = self.gains[f];
             // NaN or infinity must not poison the envelope.
             let level = if level.is_finite() { level } else { 0.0 };
             peak = peak.max(level);
@@ -202,7 +201,7 @@ impl AudioDsp for GateDsp {
                 self.cached.1
             };
         }
-        // Pass 2: apply the gains to every channel.
+        // Pass 3: apply the gains to every channel.
         for ch in channels.iter_mut() {
             for (x, &g) in ch[..frames].iter_mut().zip(&self.gains[..frames]) {
                 *x = clean(*x * g);
