@@ -585,6 +585,43 @@ mod tests {
         );
     }
 
+    /// ADR-0132 decision 2 and ADR-0145 decision 3: the browser engine's pin names
+    /// the CEF version the runner's `cef` crate is built against (the build metadata
+    /// of its version in the runner's own lock file, `156.6.0+156.0.30` -> `156.0.30`).
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn the_cef_pin_matches_the_runner_lock_file() {
+        let dir = workspace_root().join("crates/rbs-browser-cef");
+        let pin: Value = fs::read_to_string(dir.join("cef-pin.toml"))
+            .expect("cef-pin.toml")
+            .parse()
+            .expect("cef-pin.toml is TOML");
+        let pinned = pin.get("version").and_then(Value::as_str).expect("version");
+        let lock: Value = fs::read_to_string(dir.join("Cargo.lock"))
+            .expect("runner Cargo.lock")
+            .parse()
+            .expect("runner Cargo.lock is TOML");
+        let cef = lock
+            .get("package")
+            .and_then(Value::as_array)
+            .and_then(|packages| {
+                packages
+                    .iter()
+                    .find(|p| p.get("name").and_then(Value::as_str) == Some("cef"))
+            })
+            .and_then(|p| p.get("version"))
+            .and_then(Value::as_str)
+            .expect("the cef crate in the runner lock file");
+        let built = cef
+            .split_once('+')
+            .map(|(_, cef)| cef)
+            .expect("cef version has +CEF");
+        assert_eq!(
+            pinned, built,
+            "cef-pin.toml pins CEF {pinned}, the runner's cef crate {cef} is built against {built}"
+        );
+    }
+
     #[test]
     fn core_cannot_see_an_adapter_or_wgpu() {
         assert!(deny("rbs-graph", "rbs-codec-nvenc").is_some());
