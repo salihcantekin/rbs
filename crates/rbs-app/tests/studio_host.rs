@@ -887,3 +887,55 @@ fn thumbnails_are_grabbed_off_the_control_thread_and_only_for_the_asked_rows() {
     }
     host.send(Command::StopThumbnails);
 }
+
+#[test]
+fn a_browser_page_keeps_its_page_settings_through_the_host() {
+    use rbs_scene::model::SettingValue;
+    use rbs_sources::types::keys;
+    let Some(gpu) = gpu() else { return };
+    let (host, rx) = host(gpu);
+    next(&rx, |u| match u {
+        Update::Started { .. } => Some(()),
+        Update::Failed(e) => panic!("{e}"),
+        _ => None,
+    });
+    host.send(Command::AddBrowser { url: String::new() });
+    let rows = rows_where(&rx, |r| r.iter().any(|r| r.browser.is_some()));
+    let id = rows.iter().find(|r| r.browser.is_some()).unwrap().id;
+    let set = |key: &str, value: serde_json::Value| {
+        let mut patch = std::collections::BTreeMap::new();
+        patch.insert(key.to_owned(), value);
+        host.send(Command::SetSourceSettings {
+            id,
+            patch,
+            gesture: 0,
+        });
+    };
+    set(keys::URL, serde_json::json!("https://example.com/"));
+    set(keys::TRANSPARENT, serde_json::json!(true));
+    set(keys::ZOOM_PERCENT, serde_json::json!(150));
+    // The Page tab reads the row: every edit reaches it, not only the first.
+    let rows = next(&rx, |u| match u {
+        Update::Error(e) => panic!("refused: {e}"),
+        Update::Sources(r)
+            if r.iter().any(|r| {
+                r.browser
+                    .as_ref()
+                    .is_some_and(|s| s.get(keys::ZOOM_PERCENT).is_some())
+            }) =>
+        {
+            Some(r)
+        }
+        _ => None,
+    });
+    let s = rows
+        .iter()
+        .find(|r| r.id == id)
+        .unwrap()
+        .browser
+        .clone()
+        .unwrap();
+    assert_eq!(s.get(keys::TRANSPARENT), Some(&SettingValue::Bool(true)));
+    assert_eq!(s.get(keys::ZOOM_PERCENT), Some(&SettingValue::Int(150)));
+    stop(host, &rx);
+}

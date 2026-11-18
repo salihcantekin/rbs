@@ -36,7 +36,7 @@ use std::time::{Duration, Instant};
 
 use cef::*;
 use rbs_browser_ipc::automation::{
-    Cycle, CycleOptions, Due, Start, css_script, file_dir, script_may_run, zoom_level,
+    Cycle, CycleOptions, Due, Start, css_script, file_dir, page_css, script_may_run, zoom_level,
 };
 use rbs_browser_ipc::control::Control;
 use rbs_browser_ipc::page::{bgra_premultiplied_to_rgba, file_scope, request_allowed};
@@ -76,6 +76,9 @@ struct Page {
     url: String,
     /// CSS, zoom, script and timers (ADR-0132, ADR-0149).
     options: PageOptions,
+    /// The style sheet added at each commit: the transparent-background rule and
+    /// the user's CSS (`page_css`); empty for none.
+    css: String,
     /// The main frame's load cycle: held frames, reloads, retries, script runs.
     cycle: Mutex<Cycle>,
     /// The runner started the next main-frame navigation itself (a reload or a
@@ -387,15 +390,15 @@ wrap_load_handler! {
             if let Some(host) = browser.host() {
                 host.set_zoom_level(zoom_level(page.options.zoom_percent));
             }
-            if !page.options.css.is_empty() {
-                let script = css_script(&page.options.css);
+            if !page.css.is_empty() {
+                let script = css_script(&page.css);
                 frame.execute_java_script(Some(&script.as_str().into()), None, 0);
             }
         }
 
         fn on_load_end(
             &self,
-            _browser: Option<&mut Browser>,
+            browser: Option<&mut Browser>,
             frame: Option<&mut Frame>,
             _http_status_code: ::std::os::raw::c_int,
         ) {
@@ -404,6 +407,14 @@ wrap_load_handler! {
             };
             if frame.is_main() == 0 {
                 return;
+            }
+            // Again at the end of the load: Chromium can put its own zoom back
+            // while the document commits.
+            if let Some(host) = browser.and_then(|b| b.host()) {
+                let level = zoom_level(page.options.zoom_percent);
+                if (host.zoom_level() - level).abs() > 1e-6 {
+                    host.set_zoom_level(level);
+                }
             }
             if page.with_cycle(|c| c.finished(page.now())).unwrap_or(false) {
                 page.run_script(frame, &page.options.script);
@@ -780,6 +791,7 @@ fn run_browser(args: &args::Args, app: &mut App, engine: &engine::Engine) -> i32
         stream_channels: AtomicU32::new(0),
         url: config.url.clone(),
         options: config.page.clone(),
+        css: page_css(&config.page.css, config.transparent),
         cycle: Mutex::new(Cycle::new(CycleOptions {
             reload_every_s: config.page.reload_every_s,
             script_every_s: if config.page.script.is_empty() {
@@ -789,7 +801,9 @@ fn run_browser(args: &args::Args, app: &mut App, engine: &engine::Engine) -> i32
             },
             script_on_load: config.page.script_on_load && !config.page.script.is_empty(),
             retry_on_error: config.page.retry_on_error,
-            restyles: !config.page.css.is_empty() || config.page.zoom_percent != 100,
+            restyles: config.transparent
+                || !config.page.css.is_empty()
+                || config.page.zoom_percent != 100,
         })),
         ours: AtomicBool::new(false),
         epoch: Instant::now(),
