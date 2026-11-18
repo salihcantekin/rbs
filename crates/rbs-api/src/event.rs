@@ -70,11 +70,15 @@ pub enum Topic {
     /// A program change's transition started or ended (protocol 1.81, ADR-0128).
     #[serde(rename = "transition.state")]
     TransitionState,
+    /// One add-on's status, one key per catalog entry (state, protocol 1.90,
+    /// ADR-0145).
+    #[serde(rename = "addon.changed")]
+    AddonChanged,
 }
 
 impl Topic {
     /// Every topic.
-    pub const ALL: [Topic; 17] = [
+    pub const ALL: [Topic; 18] = [
         Topic::SourceChanged,
         Topic::RecordState,
         Topic::CanvasChanged,
@@ -92,6 +96,7 @@ impl Topic {
         Topic::SyncMeasureChanged,
         Topic::AttributesClipboardChanged,
         Topic::TransitionState,
+        Topic::AddonChanged,
     ];
 
     /// Its name on the wire.
@@ -114,6 +119,7 @@ impl Topic {
             Topic::SyncMeasureChanged => "sync.measure.changed",
             Topic::AttributesClipboardChanged => "source.attributes_clipboard.changed",
             Topic::TransitionState => "transition.state",
+            Topic::AddonChanged => "addon.changed",
         }
     }
 
@@ -289,6 +295,9 @@ pub enum EventPayload {
     /// A transition started or ended (protocol 1.81).
     #[serde(rename = "transition.state")]
     TransitionState(crate::types::TransitionStateChanged),
+    /// One add-on's status (protocol 1.90).
+    #[serde(rename = "addon.changed")]
+    AddonChanged(crate::types::AddOnChanged),
 }
 
 impl EventPayload {
@@ -312,6 +321,7 @@ impl EventPayload {
             EventPayload::SyncMeasureChanged(_) => Topic::SyncMeasureChanged,
             EventPayload::AttributesClipboardChanged(_) => Topic::AttributesClipboardChanged,
             EventPayload::TransitionState(_) => Topic::TransitionState,
+            EventPayload::AddonChanged(_) => Topic::AddonChanged,
         }
     }
 }

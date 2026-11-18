@@ -1,0 +1,24 @@
+[package]
+name = "rbs-add-ons"
+description = "RBS add-ons: the built-in catalog, statuses, and the checked download, unpack and install of what RBS does not ship (ADR-0145)."
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Add-ons layer (ADR-0145, overview.md): no toolkit, engine or adapter crate. HTTP,
+# decompression and OS file operations come in through the traits this crate defines;
+# `rbs-add-ons-sys` implements them.
+[dependencies]
+rbs-core = { path = "../rbs-core" }
+serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"
+toml = "0.9"
+unicode-normalization = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

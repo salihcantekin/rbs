@@ -1259,6 +1259,15 @@ export global Shortcuts {
     in property <string> note;
     in-out property <string> search;
     callback set-search(string);
+    // The category filter: "All" first, then the categories (rbs_ui Category::ALL);
+    // `category` is the chosen index. `assigned-only` shows only commands with a
+    // shortcut. `filtered`: either filter hides rows.
+    in property <[string]> categories: ["All"];
+    in property <int> category;
+    callback set-category(int);
+    in property <bool> assigned-only;
+    callback set-assigned-only(bool);
+    in property <bool> filtered;
     callback remove(int, int);
     callback reset(int);
     in property <bool> confirm-reset-all;
@@ -1471,6 +1480,11 @@ export struct EntryRow { id: string, name: string, current: bool }
 // 1 microphone, 2 screen and windows, 3 system and app sound); `tone` 0 plain, 1 warning,
 // 2 problem; `action` 0 none, 1 Allow, 2 Open system settings, 3 Restart RBS.
 export struct PermissionRowData { kind: int, label: string, status: string, tone: int, value: string, action: int, action-text: string }
+
+// One row of Settings › Add-ons (ADR-0145). `action` 0 none, 1 Download, 2 Cancel,
+// 3 Remove, 4 Update, 5 Retry (`rbs_app::add_on_text::Action`); `value` is shown
+// beside the button when not empty.
+export struct AddOnRowData { id: string, label: string, help: string, problem: bool, value: string, action: int, action-text: string }
 
 export global Studio {
     // 0 starting, 1 running, 2 failed (`failure` says why).
@@ -2371,6 +2385,11 @@ export global Studio {
     in property <bool> permission-holder-warn;
     callback permission-action(int, int);
     callback permission-check();
+
+    // Settings › Add-ons (ADR-0145): one row per catalog entry, and its command
+    // (`id`, `action` as in `AddOnRowData`).
+    in property <[AddOnRowData]> add-on-rows;
+    callback add-on-action(string, int);
 }
 
 // From vcam.slint.
