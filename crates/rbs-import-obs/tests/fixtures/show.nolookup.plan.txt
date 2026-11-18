@@ -29,7 +29,7 @@ source "Logo" org.rbs.source.image
 source "Music" org.rbs.source.media
   loop = true
   path = "/Users/someone/music.mp3"
-  restart_when_shown = true
+  activity on_return restart
   filter org.rbs.audio-filter.ducker enabled true attack=10 key_source=11 release=3000 threshold=-30
 source "Frame" org.rbs.source.image
   path = "/Users/someone/frame.png"

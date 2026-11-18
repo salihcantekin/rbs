@@ -470,7 +470,8 @@ impl NodeTypes for NodeTypeTable {
     }
 
     /// A media file takes `loop`, `restart_when_shown` and its play range in place
-    /// (ADR-0108 decision 12).
+    /// (ADR-0108 decision 12); `restart_when_shown` is now the deprecated spelling
+    /// of the activity policy (ADR-0152 decision 10) and does nothing here.
     fn live_keys(&self, type_id: &NodeTypeId) -> &'static [&'static str] {
         match class_of(type_id) {
             Some(SourceClass::Media) => &[
@@ -664,12 +665,7 @@ pub fn option_keys(type_id: &NodeTypeId) -> &'static [&'static str] {
         Some(SourceClass::Capture(TargetKind::Camera)) => &[keys::WIDTH, keys::HEIGHT, keys::FPS],
         Some(SourceClass::Capture(_)) => &[keys::CURSOR, keys::WIDTH, keys::HEIGHT, keys::FPS],
         Some(SourceClass::Audio(EndpointKind::OutputLoopback)) => &[keys::EXCLUDE_OWN_PROCESS],
-        Some(SourceClass::Media) => &[
-            keys::LOOP,
-            keys::RESTART_WHEN_SHOWN,
-            keys::START_MS,
-            keys::END_MS,
-        ],
+        Some(SourceClass::Media) => &[keys::LOOP, keys::START_MS, keys::END_MS],
         Some(SourceClass::Browser) => &[keys::WIDTH, keys::HEIGHT, keys::FPS, keys::TRANSPARENT],
         Some(SourceClass::Audio(_) | SourceClass::Still) | None => &[],
         // Which text keys are options (font, colour, outline) and which are identity
@@ -1462,7 +1458,14 @@ impl SourceTypes {
                 .unwrap_or_else(|| SourceError::NoAdapter(source.type_id.clone())));
         };
         let loop_playback = flag(&source.settings, keys::LOOP)?.unwrap_or(true);
-        let restart = flag(&source.settings, keys::RESTART_WHEN_SHOWN)?.unwrap_or(true);
+        // The return edge comes from the activity policy (ADR-0152 decision 6); the
+        // old `restart_when_shown` key is mapped into it by the document upgrade and
+        // the host, and only validated here.
+        flag(&source.settings, keys::RESTART_WHEN_SHOWN)?;
+        let restart = activity_traits(&source.type_id)
+            .effective(Some(&source.activity))
+            .on_return
+            == Some(rbs_scene::activity::OnReturn::Restart);
         let (start, end) = media_range(&source.settings)?;
         let pair = rbs_nodes::media_pair(
             factory.clone(),
@@ -1606,10 +1609,11 @@ pub fn apply_media_live(
         }
     };
     let changed = |key: &str| keys.iter().any(|k| k == key);
+    // `restart_when_shown` is the deprecated spelling of the activity policy's
+    // `on_return` (ADR-0152 decision 10): the host maps it and delivers the policy
+    // through the binder's level changes, so a stray value only has to be valid.
     if changed(keys::RESTART_WHEN_SHOWN) {
-        keep(flag(settings, keys::RESTART_WHEN_SHOWN).map(|on| {
-            control.set_restart_when_shown(on.unwrap_or(true));
-        }));
+        keep(flag(settings, keys::RESTART_WHEN_SHOWN).map(|_| ()));
     }
     if changed(keys::START_MS) || changed(keys::END_MS) {
         keep(media_range(settings).and_then(|(start, end)| {

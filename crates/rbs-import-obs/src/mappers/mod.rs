@@ -68,6 +68,8 @@ pub struct MappedSource {
     pub has_audio: bool,
     /// Why the result is only approximate, one sentence each.
     pub notes: Vec<String>,
+    /// When the source runs and what it does on return (ADR-0152 decision 10).
+    pub activity: rbs_scene::activity::SourceActivity,
 }
 
 impl MappedSource {
@@ -80,6 +82,7 @@ impl MappedSource {
             native: None,
             has_audio: false,
             notes: Vec::new(),
+            activity: rbs_scene::activity::SourceActivity::default(),
         }
     }
 }
