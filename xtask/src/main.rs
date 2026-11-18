@@ -663,8 +663,12 @@ mod tests {
         let edges = read_edges(&manifest).unwrap_or_default();
         assert!(!edges.is_empty(), "rbs-browser-cef has dependencies");
         for (_, to) in edges {
-            let allowed = matches!(to.as_str(), "cef" | "rbs-browser-ipc" | "rbs-browser-shm")
-                || to.starts_with("objc2");
+            // `windows-sys` loads the downloaded engine on Windows (add-ons spec,
+            // "Browser engine consumer").
+            let allowed = matches!(
+                to.as_str(),
+                "cef" | "rbs-browser-ipc" | "rbs-browser-shm" | "windows-sys"
+            ) || to.starts_with("objc2");
             assert!(allowed, "rbs-browser-cef must not depend on {to}");
         }
     }

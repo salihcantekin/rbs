@@ -2715,3 +2715,125 @@ fn a_stinger_waits_for_its_first_picture_plays_its_length_and_disarms() {
     let (_, errors) = studio.shutdown();
     assert!(errors.is_empty(), "{errors:?}");
 }
+
+/// A browser source without its engine (add-ons spec "Browser engine consumer"):
+/// Unavailable with the engine's words, no slot, no back-off; once the engine is
+/// installed `browser_engine_changed` starts it at the next apply, with no restart.
+#[test]
+fn a_browser_source_waits_for_its_engine_and_starts_after_the_install() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicU32};
+
+    use rbs_browser_ipc::Configure;
+    use rbs_core::media::video::Size;
+    use rbs_scene::SceneCollection;
+    use rbs_scene::model::{SceneScope, SettingValue};
+    use rbs_sources::types::keys;
+    use rbs_sources::{BrowserFrameSink, BrowserSession, BrowserTree};
+
+    let Some(gpu) = gpu() else {
+        return;
+    };
+    let r = rig();
+    let mut col = SceneCollection::new();
+    let (canvas, _) = col.add_canvas("Main", Size::new(W, H), FPS).unwrap();
+    let (scene, _) = col.add_scene("Live", SceneScope::Shared).unwrap();
+    let mut settings = Settings::new();
+    settings.insert(
+        keys::URL.to_owned(),
+        SettingValue::Text("https://example.com/".to_owned()),
+    );
+    settings.insert(keys::WIDTH.to_owned(), SettingValue::Int(64));
+    settings.insert(keys::HEIGHT.to_owned(), SettingValue::Int(36));
+    let (page, _) = col
+        .add_source(
+            "Page",
+            NodeTypeId::new_static(types::BROWSER_SOURCE),
+            settings,
+        )
+        .unwrap();
+    col.add_item(
+        scene,
+        ItemContent::Source(page),
+        Layout::new([0.0, 0.0], [W as f32, H as f32]),
+        None,
+    )
+    .unwrap();
+    col.set_program(canvas, Some(scene)).unwrap();
+
+    struct Session;
+    impl BrowserSession for Session {
+        fn poll(&mut self) -> Option<i32> {
+            None
+        }
+        fn stop(&mut self) {}
+    }
+    struct Tree {
+        installed: AtomicBool,
+        starts: AtomicU32,
+    }
+    impl BrowserTree for Tree {
+        fn start(
+            &self,
+            _config: &Configure,
+            _sink: Arc<BrowserFrameSink>,
+            _sound: Option<Arc<rbs_sources::BrowserSound>>,
+        ) -> Result<Box<dyn BrowserSession>, String> {
+            self.starts.fetch_add(1, Ordering::Relaxed);
+            Ok(Box::new(Session))
+        }
+        fn unavailable(&self) -> Option<&'static str> {
+            (!self.installed.load(Ordering::Relaxed))
+                .then_some(rbs_sources::BROWSER_RUNTIME_MISSING)
+        }
+    }
+    let tree = Arc::new(Tree {
+        installed: AtomicBool::new(false),
+        starts: AtomicU32::new(0),
+    });
+
+    let (engine, clock) = engine_at_start();
+    let mut studio = Studio::start_with_tree(
+        engine,
+        gpu,
+        &col,
+        &r.adapters.sources,
+        &StudioSettings::new(canvas),
+        Some(Arc::clone(&tree) as Arc<dyn BrowserTree>),
+    )
+    .unwrap();
+    studio
+        .start_output(
+            &r.adapters,
+            &OutputSettings::new("mem://page", ContainerId::Matroska),
+        )
+        .unwrap();
+    let page_state = |s: &Studio| s.sources().into_iter().find(|st| st.source == page);
+    let missing = run_until(&mut studio, &clock, |s| {
+        page_state(s)
+            .and_then(|st| st.failed)
+            .is_some_and(|why| why.contains("browser engine is not installed"))
+    });
+    assert!(
+        missing,
+        "{:?} starts={}",
+        page_state(&studio),
+        tree.starts.load(Ordering::Relaxed)
+    );
+    assert_eq!(tree.starts.load(Ordering::Relaxed), 0, "nothing started");
+    // No back-off: the node waits for the studio, not for a timer.
+    assert!(run_until(&mut studio, &clock, |_| true));
+    assert_eq!(tree.starts.load(Ordering::Relaxed), 0);
+
+    tree.installed.store(true, Ordering::Relaxed);
+    assert_eq!(studio.browser_engine_changed(), 1);
+    let up = studio.update(&col, &r.adapters.sources).unwrap();
+    assert!(up.failed.is_empty(), "{:?}", up.failed);
+    let running = run_until(&mut studio, &clock, |s| {
+        page_state(s).is_some_and(|st| st.failed.is_none())
+    });
+    assert!(running, "{:?}", page_state(&studio));
+    assert_eq!(tree.starts.load(Ordering::Relaxed), 1);
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+}

@@ -232,3 +232,76 @@ fn no_sound_section_without_a_sample_rate() {
     let child = spawn(&["--once"]);
     assert!(!child.has_sound());
 }
+
+/// A runtime directory with a marker for `version` and an empty library directory.
+fn fake_runtime(name: &str, version: &str) -> std::path::PathBuf {
+    let root = std::env::temp_dir().join(format!("rbs-runner-rt-{}-{name}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("Release")).unwrap();
+    std::fs::write(
+        root.join(".complete"),
+        format!(
+            "version = \"{version}\"\nsha256 = \"00\"\nlibrary_dir = \"Release\"\nresources_dir = \"Resources\"\n"
+        ),
+    )
+    .unwrap();
+    root
+}
+
+fn spawn_with_runtime(runtime: Option<&std::path::Path>) -> HelperChild {
+    use rbs_browser_ipc::runtime::RUNTIME_ENV;
+    let env: Vec<(std::ffi::OsString, std::ffi::OsString)> = runtime
+        .map(|rt| (RUNTIME_ENV.into(), rt.as_os_str().to_owned()))
+        .into_iter()
+        .collect();
+    rbs_browser_runner::spawn_helper_with_env(
+        program().as_path(),
+        &["--needs-runtime", "--hold"],
+        &env,
+        &config(),
+        SlotLayout::Rgba8Straight,
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_runner_without_its_engine_exits_as_runtime_missing() {
+    use rbs_browser_ipc::exit::Cause;
+    // A runtime path with no marker: the install never finished.
+    let missing = std::env::temp_dir().join("rbs-runner-rt-none");
+    let mut child = spawn_with_runtime(Some(&missing));
+    wait_until(&mut child, |c| !c.process_alive());
+    assert_eq!(
+        child.exit_code,
+        Some(rbs_browser_ipc::exit::RUNTIME_MISSING)
+    );
+    assert!(!child.has_beaten());
+    assert_eq!(child.exit_cause(), Cause::RuntimeMissing);
+}
+
+#[test]
+fn a_runner_with_another_engine_version_exits_as_a_mismatch() {
+    use rbs_browser_ipc::exit::Cause;
+    let rt = fake_runtime("old", "155.0.1");
+    let sup = Supervisor::start(spawn_with_runtime(Some(&rt)), 60, |_, _, _, _| {}).unwrap();
+    let start = Instant::now();
+    while !sup.exited() {
+        assert!(start.elapsed() < GUARD, "hang guard");
+        std::thread::yield_now();
+    }
+    assert_eq!(sup.exit_cause(), Cause::RuntimeMismatch);
+    let _ = std::fs::remove_dir_all(rt);
+}
+
+#[test]
+fn a_runner_with_its_engine_runs_and_a_later_exit_is_not_the_engine() {
+    use rbs_browser_ipc::exit::Cause;
+    let rt = fake_runtime("ok", "156.0.30");
+    let mut child = spawn_with_runtime(Some(&rt));
+    wait_until(&mut child, |c| c.refresh());
+    assert!(child.process_alive());
+    assert!(child.has_beaten());
+    child.stop();
+    assert_eq!(child.exit_cause(), Cause::Other, "the studio's kill");
+    let _ = std::fs::remove_dir_all(rt);
+}

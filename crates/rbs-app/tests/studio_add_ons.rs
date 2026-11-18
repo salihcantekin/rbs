@@ -326,3 +326,128 @@ fn a_control_api_client_installs_and_removes_an_add_on() {
     drop(host);
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// A collection whose program scene shows one browser source.
+fn browser_collection() -> rbs_scene::SceneCollection {
+    use rbs_core::media::Size;
+    use rbs_core::timing::FrameRate;
+    use rbs_graph::node::NodeTypeId;
+    use rbs_scene::model::{ItemContent, Layout, SceneScope, SettingValue, Settings};
+    use rbs_sources::types::{self, keys};
+    let mut col = rbs_scene::SceneCollection::new();
+    let (canvas, _) = col
+        .add_canvas("Main", Size::new(1280, 720), FrameRate::FPS_30)
+        .unwrap();
+    let (scene, _) = col.add_scene("Live", SceneScope::Shared).unwrap();
+    let mut settings = Settings::new();
+    settings.insert(
+        keys::URL.into(),
+        SettingValue::Text("https://example.com/".into()),
+    );
+    settings.insert(keys::WIDTH.into(), SettingValue::Int(64));
+    settings.insert(keys::HEIGHT.into(), SettingValue::Int(64));
+    let (page, _) = col
+        .add_source(
+            "Page",
+            NodeTypeId::new_static(types::BROWSER_SOURCE),
+            settings,
+        )
+        .unwrap();
+    col.add_item(
+        scene,
+        ItemContent::Source(page),
+        Layout::new([0.0, 0.0], [64.0, 64.0]),
+        None,
+    )
+    .unwrap();
+    col.set_program(canvas, Some(scene)).unwrap();
+    col
+}
+
+/// The browser engine (add-ons spec "Browser engine consumer", conformance tests for
+/// `rbs-app`): without it Add Source › Browser leads to Settings › Add-ons and adds
+/// nothing; once it is installed Browser adds a page. The studio's side (the source's
+/// reason, no slot, the start after an install) is `rbs-record`'s
+/// `a_browser_source_waits_for_its_engine_and_starts_after_the_install`.
+#[test]
+fn add_source_browser_leads_to_the_engine_until_it_is_installed() {
+    use rbs_app::browser_tree::Runner;
+    use rbs_app::studio_host::{AddOnAction, Command};
+    let Some(gpu) = gpu() else { return };
+    let root = temp_root("engine");
+    let engine = rbs_app::add_ons::BROWSER_ENGINE;
+    let (tx, updates) = mpsc::channel();
+    let mut config = HostConfig::desktop();
+    config.preview = None;
+    config.collection = Some(browser_collection());
+    config.add_ons = Some(AddOnsSetup {
+        catalog: vec![entry(engine, "ok.tar.gz", true)],
+        root: root.clone(),
+        fs: Arc::new(rbs_add_ons_sys::SysFs),
+        fetch: Arc::new(FakeFetch),
+        unpack: Arc::new(FakeUnpack),
+        clock: Arc::new(TestClock::new()),
+    });
+    // Never started: nothing in this test draws the program.
+    config.browser_runner = Some(Runner {
+        program: root.join("rbs-browser-cef"),
+        args: Vec::new(),
+        needs_engine: true,
+    });
+    let host = StudioHost::spawn(
+        config,
+        || (RecordAdapters::new(), Vec::new()),
+        move || Ok(gpu),
+        || {
+            Engine::with_clock(
+                Arc::new(TestClock::new()),
+                EngineConfig::default().swap_timeout(LIMIT),
+            )
+        },
+        move |u| {
+            let _ = tx.send(u);
+        },
+    )
+    .unwrap();
+    next(&updates, |u| match u {
+        Update::Started { .. } => Some(()),
+        Update::Failed(e) => panic!("{e}"),
+        _ => None,
+    });
+
+    // No engine: Browser leads to the add-on and adds no source.
+    host.send(Command::AddBrowser {
+        url: "https://example.com/".into(),
+    });
+    let shown = next(&updates, |u| match u {
+        Update::OpenAddOn(id) => Some(id),
+        Update::Sources(rows) => {
+            assert_eq!(rows.len(), 1, "no source was added");
+            None
+        }
+        _ => None,
+    });
+    assert_eq!(shown, engine);
+
+    // Installed: Browser adds a page.
+    host.send(Command::AddOn {
+        id: engine.into(),
+        action: AddOnAction::Install,
+    });
+    next(&updates, |u| match u {
+        Update::AddOnChanged(c) if c.id == engine => {
+            matches!(c.status, rbs_api::types::AddOnStatus::Installed { .. }).then_some(())
+        }
+        _ => None,
+    });
+    host.send(Command::AddBrowser {
+        url: "https://example.com/two".into(),
+    });
+    next(&updates, |u| match u {
+        Update::OpenAddOn(_) => panic!("the engine is installed"),
+        Update::Sources(rows) => (rows.len() == 2).then_some(()),
+        _ => None,
+    });
+    drop(host);
+    let _ = std::fs::remove_dir_all(&root);
+}

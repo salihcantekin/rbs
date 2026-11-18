@@ -4,7 +4,7 @@
 
 use rbs_codec::caps;
 use rbs_core::capability::{CapabilitySet, CapabilityValue};
-use rbs_core::media::CodecId;
+use rbs_core::media::{CodecId, MemoryKind};
 
 use crate::plan::Profile;
 
@@ -108,13 +108,18 @@ impl CodecCaps {
     }
 }
 
-/// The probed device: its name and the codecs it encodes.
+/// The probed device: its name, the codecs it encodes and the native input memory it
+/// reads.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct DeviceCaps {
     /// Device name for logs and diagnostics.
     pub name: String,
     /// Codecs in the order H.264, HEVC, AV1; absent codecs are not listed.
     pub codecs: Vec<CodecCaps>,
+    /// Native input memory kinds the adapter reads in place besides system memory
+    /// (ADR-0147 decision 1), for example `d3d12_buffer` for NVENC through CUDA. Empty
+    /// for system memory only.
+    pub native_memory: Vec<MemoryKind>,
 }
 
 impl DeviceCaps {
@@ -135,7 +140,7 @@ pub fn padded_everywhere(device: &DeviceCaps) -> bool {
 }
 
 /// The capabilities an adapter declares for `device` (`adapter.hardware`, system
-/// memory input, no B-frames). Empty when the device encodes nothing. Width and
+/// memory input plus the device's native memory kinds, no B-frames). Empty when the device encodes nothing. Width and
 /// height are the range every declared codec supports, so a size in range works with
 /// each of them; a rate-control mode or bitrate change is declared only when every
 /// codec has it. `codec.video.fps.max` is the slowest codec's rate at the largest
@@ -221,7 +226,14 @@ pub fn capability_set(device: &DeviceCaps) -> CapabilitySet {
         // Frame reordering stays off until its depth is measured on hardware.
         .with(caps::VIDEO_B_FRAMES_MAX, CapabilityValue::Int(0))
         .with(caps::RECONFIGURE, set(reconfigure))
-        .with(caps::INPUT_MEMORY, set(["system"]))
+        .with(
+            caps::INPUT_MEMORY,
+            set(device
+                .native_memory
+                .iter()
+                .map(|m| m.as_str())
+                .chain(["system"])),
+        )
         .with(
             caps::INPUT_PIXEL_FORMAT,
             set(if ten_bit {
