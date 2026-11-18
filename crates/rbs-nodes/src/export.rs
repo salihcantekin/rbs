@@ -175,6 +175,23 @@ impl Conversion {
     }
 }
 
+/// The native memory kind and device this render device can export to encoders, if
+/// any (ADR-0147 decision 1): decided by the device's graphics API, never by vendor.
+/// Metal: IOSurfaces (macOS). Other APIs have no exporter yet (D3D12 and Vulkan follow,
+/// ADR-0147 order of work), so their chains read back.
+pub fn export_preference(
+    ctx: &rbs_gpu::GpuContext,
+) -> Option<(rbs_core::media::MemoryKind, rbs_core::media::GpuDeviceId)> {
+    match ctx.adapter().get_info().backend {
+        #[cfg(target_vendor = "apple")]
+        wgpu::Backend::Metal => Some((
+            rbs_core::media::MemoryKind::Metal,
+            rbs_core::media::GpuDeviceId::MetalRegistryId(0),
+        )),
+        _ => None,
+    }
+}
+
 /// Counters of a video export node, readable from any thread.
 #[derive(Debug, Default)]
 pub struct ExportNodeStats {
