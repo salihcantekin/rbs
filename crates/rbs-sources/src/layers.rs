@@ -10,13 +10,31 @@ use rbs_graph::description::SchedulePlan;
 use rbs_scene::binder::{BoundCompositor, BoundLayer, resolve};
 use rbs_scene::model::{CollectionGlide, GlideEasing, ItemStyle, Shape, SourceGlide, SourceId};
 
+use crate::scroll::{ScrollRuns, layer_scroll};
+
 /// The layer list for the compositor node of `compositor`, bottom first, with link
 /// hints for `plan` (pass the plan the runtime runs, `ApplyReport::plan`). Layers
 /// whose producer is not scheduled are left out (scene model spec, "Graph binding").
-pub fn node_layers(compositor: &BoundCompositor, plan: &SchedulePlan) -> Vec<NodeLayer> {
+/// A scrolling layer moves by its run in `runs` (ADR-0150); one whose key has no run
+/// is left out too, which the host must not let happen (a debug assertion).
+pub fn node_layers(
+    compositor: &BoundCompositor,
+    plan: &SchedulePlan,
+    runs: &ScrollRuns,
+) -> Vec<NodeLayer> {
     resolve(compositor, plan)
         .into_iter()
-        .map(|(link, layer)| {
+        .filter_map(|(link, layer)| {
+            let scroll = match (&layer.scroll, &layer.scroll_key) {
+                (Some(scroll), Some(key)) => {
+                    let Some(run) = runs.get(key) else {
+                        debug_assert!(false, "no scroll run for {key:?}");
+                        return None;
+                    };
+                    Some(layer_scroll(scroll, *run))
+                }
+                _ => None,
+            };
             let t = layer.transform;
             let mut out = NodeLayer::new(layer.producer, link, 0.0, 0.0, 1.0, 1.0);
             out.transform = Affine2 {
@@ -35,7 +53,8 @@ pub fn node_layers(compositor: &BoundCompositor, plan: &SchedulePlan) -> Vec<Nod
             };
             out.opacity = layer.opacity;
             out.style = layer_style(&layer.style, layer.box_size);
-            out
+            out.scroll = scroll;
+            Some(out)
         })
         .collect()
 }

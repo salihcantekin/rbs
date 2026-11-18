@@ -9,7 +9,7 @@ UI text uses these terms and no synonyms (rule U13). Code may use different inte
 | Look | A preset of a source's shape, border and filters, copied onto the selected source in one undoable step. Later edits to the source do not change the look | Preset, style, theme | `Look` |
 | Duplicate source | Make an independent copy of a source, with its own settings, placed above it (ADR-0133). A camera copy starts in standby | Clone, copy source | `source.duplicate` |
 | Duplicate scene with new sources | Copy a scene whose sources are copies too, so changing one scene does not change the other ("Duplicate scene" shares the sources) | Deep copy, clone scene | `scene.duplicate {sources: copied}` |
-| Attributes | The parts of a source and its placement that can be copied or reset on their own: Position and size, Crop, Opacity, Shape and border, Picture filters, Sound filters, Source options, Capture region, Glide, Record separately, Volume and monitoring, Sync offset | Properties, settings (for these groups) | `AttributeGroup` |
+| Attributes | The parts of a source and its placement that can be copied or reset on their own: Position and size, Crop, Opacity, Shape and border, Scroll, Picture filters, Sound filters, Source options, Capture region, Glide, Record separately, Volume and monitoring, Sync offset | Properties, settings (for these groups) | `AttributeGroup` |
 | Copy attributes | Remember a source's attributes to paste chosen ones onto other sources | Copy style, copy settings | `source.copy_attributes` |
 | Paste attributes | Write chosen copied attributes onto one or more sources, in one undo step | Paste style, apply settings | `source.paste_attributes` |
 | Reset source | Put chosen attributes of a source back to their defaults. A filter's "Reset to defaults" button is a different thing | Reset to defaults, factory reset | `source.reset` |
@@ -52,6 +52,7 @@ UI text uses these terms and no synonyms (rule U13). Code may use different inte
 | Solo in monitor | While any source is soloed, the monitor plays only soloed sources; the outputs are unchanged | Cue, PFL | Monitor solo (session state) |
 | Shortcut | A key combination for a command; "global shortcut" when it works outside RBS | Hotkey | - |
 | Stinger | A transition that plays a video over the change | Video transition | Stinger transition node |
+| Scroll | A source's picture moving through its box, like a news ticker or end credits: direction, speed, gap between copies, repeat or once, edge fade (ADR-0150) | Marquee, crawl, ticker (in UI text) | `Layout::scroll` |
 | Output profile | A saved set of output settings (service, encoder, bitrate, recording format, output size). It holds no scenes and no panel layout | Profile, workspace | Output configuration |
 | Remote control | Letting other apps (Stream Deck, panels, scripts) control and watch RBS through the control API. Off by default | API server, WebSocket server | Control API server (`rbs-api`, `rbs-api-ws`) |
 | Access token | A secret one app uses for remote control, with a name and an access level (View only, Control, Full control). Shown once; can be revoked | Password, key, API key | `rbs_api::Token` with its scopes |

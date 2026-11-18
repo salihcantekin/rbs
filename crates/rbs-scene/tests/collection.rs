@@ -10,8 +10,9 @@ use rbs_graph::node::NodeTypeId;
 use rbs_scene::model::{
     Border, CanvasId, CollectionGlide, Crop, DisplayChrome, FilterId, GlideEasing, ItemContent,
     ItemId, ItemStyle, Layout, MAX_GLIDE_MS, MAX_SHOW_FOR_MS, MAX_SOURCE_VOLUME,
-    MAX_SYNC_OFFSET_MS, MasterAudio, RecordSeparately, SceneId, SceneScope, SettingValue, Settings,
-    Shadow, Shape, SourceAudio, SourceGlide, SourceId, SourceMonitor, SourceRegion,
+    MAX_SYNC_OFFSET_MS, MasterAudio, RecordSeparately, SceneId, SceneScope, Scroll,
+    ScrollDirection, SettingValue, Settings, Shadow, Shape, SourceAudio, SourceGlide, SourceId,
+    SourceMonitor, SourceRegion,
 };
 use rbs_scene::{Affine2, MAX_LAYERS, MAX_NESTING_DEPTH, SceneCollection, SceneError, Undo};
 
@@ -344,6 +345,52 @@ fn invalid_edits_are_refused() {
         ),
         Err(SceneError::StyleOnScene(_))
     ));
+    // ADR-0150 decision 1: scroll is for sources, within its ranges.
+    let ticker = Scroll::new(ScrollDirection::Left, 120.0);
+    assert!(matches!(
+        s.col.add_item(
+            scene,
+            ItemContent::Scene(other),
+            full(1.0, 1.0).with_scroll(Some(ticker)),
+            None
+        ),
+        Err(SceneError::ScrollOnScene(_))
+    ));
+    for bad in [
+        Scroll::new(ScrollDirection::Left, 0.5),
+        Scroll::new(ScrollDirection::Left, 4000.5),
+        Scroll::new(ScrollDirection::Left, f32::NAN),
+        ticker.with_gap(-1.0),
+        ticker.with_gap(16384.5),
+        ticker.with_fade(f32::INFINITY),
+        ticker.with_fade(2049.0),
+        ticker.with_ramp_ms(5001),
+    ] {
+        assert_eq!(
+            s.col
+                .add_item(
+                    scene,
+                    ItemContent::Source(s.cam),
+                    full(1.0, 1.0).with_scroll(Some(bad)),
+                    None
+                )
+                .map(|_| ()),
+            Err(SceneError::InvalidLayout),
+            "{bad:?}"
+        );
+    }
+    // The ends of the ranges are valid (checked without an edit: this test ends with an
+    // unchanged collection).
+    assert!(
+        full(1.0, 1.0)
+            .with_scroll(Some(
+                Scroll::new(ScrollDirection::Down, 4000.0)
+                    .with_gap(16384.0)
+                    .with_fade(2048.0)
+                    .with_ramp_ms(5000),
+            ))
+            .is_valid()
+    );
     for bad in [
         ItemStyle::new(Shape::Rectangle { radius: -1.0 }),
         ItemStyle::new(Shape::Rectangle { radius: f32::NAN }),
@@ -2425,6 +2472,105 @@ fn a_loaded_collection_with_its_stinger_placed_stays_editable() {
     .unwrap();
     assert_eq!(col.placed_stinger(), Some(s.cam));
     col.rename_scene(a, "B").unwrap();
+}
+
+#[test]
+fn a_scroll_scales_with_its_box_and_is_stored_within_its_ranges() {
+    // ADR-0150 decision 2: speed, gap and fade are in layout units.
+    let ticker = Scroll::new(ScrollDirection::Left, 100.0)
+        .with_gap(40.0)
+        .with_fade(20.0);
+    let l = Layout::new([0.0, 980.0], [1920.0, 100.0]).with_scroll(Some(ticker));
+    // A 1920x1080 layout on a 960x540 canvas: half size.
+    let placed = l.placed_in((1920, 1080), (960, 540));
+    let s = placed.scroll.unwrap();
+    assert_eq!((s.speed, s.gap, s.fade), (50.0, 20.0, 10.0));
+    assert_eq!(s.ramp_ms, ticker.ramp_ms);
+    assert_eq!(placed.stored_in((1920, 1080), (960, 540)), l);
+    // Stored from a larger canvas, values are kept within the saved ranges.
+    let fast = Layout::new([0.0, 0.0], [10.0, 10.0]).with_scroll(Some(
+        Scroll::new(ScrollDirection::Up, 4000.0)
+            .with_gap(16384.0)
+            .with_fade(2048.0),
+    ));
+    let stored = fast.stored_in((1920, 1080), (960, 540));
+    let s = stored.scroll.unwrap();
+    assert_eq!((s.speed, s.gap, s.fade), (4000.0, 16384.0, 2048.0));
+    assert!(stored.is_valid());
+    assert_eq!(Layout::new([0.0, 0.0], [1.0, 1.0]).scroll, None);
+}
+
+#[test]
+fn scroll_layers_carry_canvas_pixels_and_one_key_per_run() {
+    // ADR-0150 decisions 2 and 5.
+    use rbs_scene::ScrollKey;
+    let mut s = studio();
+    let ticker = Scroll::new(ScrollDirection::Left, 100.0)
+        .with_gap(40.0)
+        .with_fade(10.0);
+    let bar = Layout::new([0.0, 980.0], [1920.0, 100.0]).with_scroll(Some(ticker));
+    let (a, _) = s.col.add_scene("A", SceneScope::Shared).unwrap();
+    let (b, _) = s.col.add_scene("B", SceneScope::Shared).unwrap();
+    s.col
+        .add_item(a, ItemContent::Source(s.screen), bar, None)
+        .unwrap();
+    // The same source and scroll in another scene, placed elsewhere along the
+    // direction and wider: same cross-axis size, so the same run.
+    s.col
+        .add_item(
+            b,
+            ItemContent::Source(s.screen),
+            Layout::new([100.0, 0.0], [1500.0, 100.0]).with_scroll(Some(ticker)),
+            None,
+        )
+        .unwrap();
+    let la = s.col.flatten(s.wide, a).unwrap();
+    let lb = s.col.flatten(s.wide, b).unwrap();
+    assert_eq!(la[0].scroll, Some(ticker));
+    assert!(la[0].scroll_key.is_some());
+    assert_eq!(la[0].scroll_key, lb[0].scroll_key);
+    let key = la[0].scroll_key.unwrap();
+    assert_eq!(key.canvas, s.wide);
+    assert_eq!(key.source, s.screen);
+
+    // Nested at half size: speed, gap and fade halve, and the cross size changes, so
+    // it is another run.
+    let (outer, _) = s.col.add_scene("Outer", SceneScope::Shared).unwrap();
+    s.col
+        .add_item(
+            outer,
+            ItemContent::Scene(a),
+            Layout::new([0.0, 0.0], [960.0, 540.0]),
+            None,
+        )
+        .unwrap();
+    let nested = s.col.flatten(s.wide, outer).unwrap();
+    let half = nested[0].scroll.unwrap();
+    assert_eq!((half.speed, half.gap, half.fade), (50.0, 20.0, 5.0));
+    assert_ne!(nested[0].scroll_key, Some(key));
+
+    // An item faded to 0 is not drawn, but its run is still listed.
+    let keys = |col: &SceneCollection, scene| {
+        col.scroll_keys_cued(s.wide, scene, &BTreeSet::new())
+            .unwrap()
+    };
+    assert_eq!(keys(&s.col, a), BTreeSet::from([key]));
+    let item = s.col.scene(a).unwrap().items[0].id;
+    s.col
+        .set_item_layout(item, None, bar.with_opacity(0.0))
+        .unwrap();
+    assert!(s.col.flatten(s.wide, a).unwrap().is_empty());
+    assert_eq!(keys(&s.col, a), BTreeSet::from([key]));
+    // A hidden item has no run.
+    s.col.set_item_visible(item, false).unwrap();
+    assert_eq!(keys(&s.col, a), BTreeSet::<ScrollKey>::new());
+    // A layer without scroll has no key.
+    let (plain, _) = s.col.add_scene("Plain", SceneScope::Shared).unwrap();
+    s.col
+        .add_item(plain, ItemContent::Source(s.cam), full(10.0, 10.0), None)
+        .unwrap();
+    let l = s.col.flatten(s.wide, plain).unwrap();
+    assert_eq!((l[0].scroll, l[0].scroll_key), (None, None));
 }
 
 #[test]

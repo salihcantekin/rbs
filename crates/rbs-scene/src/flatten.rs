@@ -5,7 +5,8 @@ use std::collections::BTreeSet;
 
 use crate::collection::{SceneCollection, SceneError, allowed_on};
 use crate::model::{
-    CanvasId, Crop, ItemContent, ItemId, ItemStyle, Layout, SceneId, SceneItem, SourceId,
+    CanvasId, Crop, ItemContent, ItemId, ItemStyle, Layout, SceneId, SceneItem, Scroll,
+    ScrollDirection, SourceId,
 };
 
 /// Media file source. Temporal: Active only while a shown scene draws it (ADR-0107).
@@ -109,6 +110,92 @@ pub struct FlatLayer {
     pub style: ItemStyle,
     /// The item's own box size (`|Layout::size|`), the units of `style`.
     pub box_size: [f32; 2],
+    /// The picture moving through the box (ADR-0150), with speed, gap and fade in
+    /// canvas pixels along the direction (scaled as the box is, nested scenes
+    /// included).
+    pub scroll: Option<Scroll>,
+    /// The run this layer's scroll belongs to; set exactly when `scroll` is.
+    pub scroll_key: Option<ScrollKey>,
+}
+
+/// The run a scrolling layer belongs to (ADR-0150 decision 5): canvas, source, the
+/// scaled scroll settings and the box's length across the direction, in canvas pixels.
+/// Every layer with an equal key on a canvas shows the same position. Floats compare
+/// by their bits, with `-0.0` taken as `0.0`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ScrollKey {
+    /// The canvas.
+    pub canvas: CanvasId,
+    /// The source scrolled.
+    pub source: SourceId,
+    /// Direction, repeat and start.
+    kind: [u8; 3],
+    /// Ramp in milliseconds.
+    ramp_ms: u32,
+    /// Speed, gap, fade and the cross-axis length, as bits.
+    bits: [u32; 4],
+}
+
+impl ScrollKey {
+    /// The key of `scroll` (already scaled to canvas pixels) on a box `cross` canvas
+    /// pixels long across the direction.
+    pub fn new(canvas: CanvasId, source: SourceId, scroll: &Scroll, cross: f32) -> Self {
+        let bits = |v: f32| if v == 0.0 { 0 } else { v.to_bits() };
+        Self {
+            canvas,
+            source,
+            kind: [
+                scroll.direction as u8,
+                scroll.repeat as u8,
+                scroll.start as u8,
+            ],
+            ramp_ms: scroll.ramp_ms,
+            bits: [
+                bits(scroll.speed),
+                bits(scroll.gap),
+                bits(scroll.fade),
+                bits(cross),
+            ],
+        }
+    }
+
+    /// The scaled speed, canvas pixels per second.
+    pub fn speed(&self) -> f32 {
+        f32::from_bits(self.bits[0])
+    }
+
+    /// How long a pause, resume or speed change eases.
+    pub fn ramp_ms(&self) -> u32 {
+        self.ramp_ms
+    }
+}
+
+/// `scroll` in canvas pixels for a box drawn by `placed` from a layout of `size`, with
+/// its key; `None` when the box has no length along or across the direction.
+fn placed_scroll(
+    canvas: CanvasId,
+    source: SourceId,
+    scroll: Scroll,
+    placed: &Affine2,
+    size: [f32; 2],
+) -> Option<(Scroll, ScrollKey)> {
+    let x_len = placed.a.hypot(placed.b);
+    let y_len = placed.c.hypot(placed.d);
+    let vertical = matches!(
+        scroll.direction,
+        ScrollDirection::Up | ScrollDirection::Down
+    );
+    let (along, cross, own) = if vertical {
+        (y_len, x_len, size[1].abs())
+    } else {
+        (x_len, y_len, size[0].abs())
+    };
+    let factor = along / own;
+    if !(factor.is_finite() && factor > 0.0 && cross.is_finite() && cross > 0.0) {
+        return None;
+    }
+    let scaled = scroll.scaled(factor);
+    Some((scaled, ScrollKey::new(canvas, source, &scaled, cross)))
 }
 
 impl SceneCollection {
@@ -164,6 +251,7 @@ impl SceneCollection {
             size,
             Affine2::IDENTITY,
             1.0,
+            false,
             cued,
             &mut path,
             &mut out,
@@ -178,12 +266,56 @@ impl SceneCollection {
                 size,
                 Affine2::IDENTITY,
                 1.0,
+                false,
                 cued,
                 &mut path,
                 &mut out,
             );
         }
         Ok(out)
+    }
+
+    /// The scroll runs `scene` draws on `canvas` with `cued` items (ADR-0150 decision
+    /// 5), as [`Self::flatten_cued`] would key them, and also those of items at opacity
+    /// 0, which flattening leaves out: their runs keep going while they are faded out.
+    pub fn scroll_keys_cued(
+        &self,
+        canvas: CanvasId,
+        scene: SceneId,
+        cued: &BTreeSet<ItemId>,
+    ) -> Result<BTreeSet<ScrollKey>, SceneError> {
+        let c = self
+            .canvas(canvas)
+            .ok_or(SceneError::UnknownCanvas(canvas))?;
+        let s = self.scene(scene).ok_or(SceneError::UnknownScene(scene))?;
+        if !allowed_on(s.scope, canvas) {
+            return Err(SceneError::ScopeViolation(scene));
+        }
+        let space = (c.layout_size.width, c.layout_size.height);
+        let current = (c.size.width, c.size.height);
+        let size = (c.size.width as f32, c.size.height as f32);
+        let mut out = Vec::new();
+        let mut path = Vec::new();
+        let cued = (!cued.is_empty()).then_some(cued);
+        for root in [Some(scene), c.globals.filter(|g| *g != scene)]
+            .into_iter()
+            .flatten()
+        {
+            self.flatten_into(
+                canvas,
+                root,
+                space,
+                current,
+                size,
+                Affine2::IDENTITY,
+                1.0,
+                true,
+                cued,
+                &mut path,
+                &mut out,
+            );
+        }
+        Ok(out.into_iter().filter_map(|l| l.scroll_key).collect())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -196,6 +328,7 @@ impl SceneCollection {
         size: (f32, f32),
         outer: Affine2,
         opacity: f32,
+        keep_clear: bool,
         cued: Option<&BTreeSet<ItemId>>,
         path: &mut Vec<ItemId>,
         out: &mut Vec<FlatLayer>,
@@ -207,7 +340,7 @@ impl SceneCollection {
         for item in s.items.iter().filter(|i| item_drawn(i, cued)) {
             let layout = item.layout_on(canvas).placed_in(space, current);
             let alpha = opacity * layout.opacity;
-            if alpha <= 0.0 {
+            if alpha <= 0.0 && !keep_clear {
                 continue;
             }
             let placed = Affine2::of_layout(&layout).then(&outer);
@@ -224,6 +357,9 @@ impl SceneCollection {
                         .and_then(|s| s.region)
                         .map(|region| region.intersect_crop(layout.crop))
                         .unwrap_or(layout.crop);
+                    let scroll = layout
+                        .scroll
+                        .and_then(|sc| placed_scroll(canvas, source, sc, &placed, layout.size));
                     out.push(FlatLayer {
                         source,
                         path: path.clone(),
@@ -232,12 +368,15 @@ impl SceneCollection {
                         opacity: alpha,
                         style: layout.style,
                         box_size: [layout.size[0].abs(), layout.size[1].abs()],
+                        scroll: scroll.map(|(sc, _)| sc),
+                        scroll_key: scroll.map(|(_, k)| k),
                     });
                 }
                 ItemContent::Scene(nested) => {
                     let inner = Affine2::scale(1.0 / size.0, 1.0 / size.1).then(&placed);
                     self.flatten_into(
-                        canvas, nested, space, current, size, inner, alpha, cued, path, out,
+                        canvas, nested, space, current, size, inner, alpha, keep_clear, cued, path,
+                        out,
                     );
                 }
             }

@@ -16,6 +16,8 @@ pub enum AttributeGroup {
     Opacity,
     /// The item's shape, border and shadow.
     Style,
+    /// The item's scroll (ADR-0150).
+    Scroll,
     /// The source's picture filters, in order.
     VideoFilters,
     /// The source's audio filters, in order.
@@ -36,11 +38,12 @@ pub enum AttributeGroup {
 
 impl AttributeGroup {
     /// Every group, in the order the dialogs list them.
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::Transform,
         Self::Crop,
         Self::Opacity,
         Self::Style,
+        Self::Scroll,
         Self::VideoFilters,
         Self::AudioFilters,
         Self::Options,
@@ -58,6 +61,7 @@ impl AttributeGroup {
             Self::Crop => "crop",
             Self::Opacity => "opacity",
             Self::Style => "style",
+            Self::Scroll => "scroll",
             Self::VideoFilters => "video_filters",
             Self::AudioFilters => "audio_filters",
             Self::Options => "options",
@@ -81,6 +85,7 @@ impl AttributeGroup {
             Self::Crop => "Crop",
             Self::Opacity => "Opacity",
             Self::Style => "Shape and border",
+            Self::Scroll => "Scroll",
             Self::VideoFilters => "Picture filters",
             Self::AudioFilters => "Sound filters",
             Self::Options => "Source options",
@@ -101,7 +106,7 @@ impl AttributeGroup {
     pub const fn on_item(self) -> bool {
         matches!(
             self,
-            Self::Transform | Self::Crop | Self::Opacity | Self::Style
+            Self::Transform | Self::Crop | Self::Opacity | Self::Style | Self::Scroll
         )
     }
 
@@ -114,7 +119,9 @@ impl AttributeGroup {
 #[cfg(test)]
 mod tests {
     use super::AttributeGroup;
-    use crate::model::{Crop, ItemStyle, Layout, RecordSeparately, SceneItem, Source, SourceAudio};
+    use crate::model::{
+        Crop, ItemStyle, Layout, RecordSeparately, SceneItem, Scroll, Source, SourceAudio,
+    };
 
     #[test]
     fn ids_round_trip_and_are_unique() {
@@ -184,6 +191,7 @@ mod tests {
                 crop,     // Crop
                 opacity,  // Opacity
                 style,    // Style
+                scroll,   // Scroll
             } = l;
         }
         #[allow(unused_variables, dead_code)]
@@ -200,6 +208,18 @@ mod tests {
                 shape,  // Style
                 border, // Style
                 shadow, // Style
+            } = s;
+        }
+        #[allow(unused_variables, dead_code)]
+        fn scroll(s: Scroll) {
+            let Scroll {
+                direction, // Scroll
+                speed,     // Scroll
+                gap,       // Scroll
+                repeat,    // Scroll
+                start,     // Scroll
+                fade,      // Scroll
+                ramp_ms,   // Scroll
             } = s;
         }
         #[allow(unused_variables, dead_code)]

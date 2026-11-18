@@ -671,7 +671,7 @@ fn a_bound_scene_instantiates_into_the_right_partitions() {
     );
     let plan = graph.plan();
     let bound = &report.compositors[&(canvas, Role::Program)];
-    let layers = node_layers(bound, &plan);
+    let layers = node_layers(bound, &plan, &rbs_sources::scroll::ScrollRuns::new());
     assert_eq!(layers.len(), 2, "the microphone is not a layer");
     let producers: Vec<NodeId> = layers.iter().map(|l| l.producer).collect();
     assert_eq!(
@@ -699,6 +699,73 @@ fn a_bound_scene_instantiates_into_the_right_partitions() {
             .collect();
         assert_eq!(inputs[layer.link], layer.producer);
     }
+    assert!(layers.iter().all(|l| l.scroll.is_none()));
+
+    // ADR-0150: a scrolling item's layer moves by the run of its key.
+    use rbs_scene::model::{Scroll, ScrollDirection};
+    use rbs_sources::scroll::ScrollRuns;
+    let ticker = Scroll::new(ScrollDirection::Left, 120.0).with_gap(30.0);
+    col.set_item_layout(
+        cam_item,
+        None,
+        layout(1400.0, 480.0).with_scroll(Some(ticker)),
+    )
+    .unwrap();
+    let report = binder.sync(&col, &mut graph).unwrap();
+    let bound = &report.compositors[&(canvas, Role::Program)];
+    let key = bound.layers[1].scroll_key.unwrap();
+    let keys = col
+        .scroll_keys_cued(canvas, scene, &std::collections::BTreeSet::new())
+        .unwrap();
+    assert_eq!(keys, [key].into());
+    let mut runs = ScrollRuns::new();
+    let at = rbs_core::time::Timestamp::from_nanos(5_000_000_000);
+    assert!(runs.keep(&keys, at));
+    assert!(!runs.keep(&keys, at));
+    let layers = node_layers(bound, &graph.plan(), &runs);
+    let scroll = layers[1].scroll.unwrap();
+    assert_eq!(scroll.gap, 30.0);
+    assert_eq!(scroll.run, *runs.get(&key).unwrap());
+    assert_eq!(scroll.run.anchor, at);
+    assert_eq!(scroll.run.to, 120.0);
+    assert!(layers[0].scroll.is_none());
+}
+
+/// A scrolling layer whose key has no run is a host bug: a debug assertion, and the
+/// layer is left out in release builds (ADR-0150 decision 5).
+#[test]
+#[cfg_attr(debug_assertions, should_panic(expected = "no scroll run"))]
+fn a_scrolling_layer_without_a_run_is_left_out() {
+    use rbs_scene::model::{Scroll, ScrollDirection};
+    let (reg, _) = registry();
+    let mut col = SceneCollection::new();
+    let (canvas, _) = col
+        .add_canvas("Main", Size::new(1920, 1080), FrameRate::FPS_60)
+        .unwrap();
+    let (screen, _) = col
+        .add_source("Screen", ty(types::DISPLAY_SOURCE), Settings::new())
+        .unwrap();
+    let (scene, _) = col.add_scene("Live", SceneScope::Shared).unwrap();
+    col.add_item(
+        scene,
+        ItemContent::Source(screen),
+        layout(0.0, 1920.0).with_scroll(Some(Scroll::new(ScrollDirection::Up, 60.0))),
+        None,
+    )
+    .unwrap();
+    col.set_program(canvas, Some(scene)).unwrap();
+    let mut graph = GraphDescription::new();
+    let mut binder = SceneBinder::new(reg.node_types()).with_audio(AUDIO);
+    let report = binder.sync(&col, &mut graph).unwrap();
+    let comp = binder.compositor(canvas, Role::Program).unwrap();
+    attach(&mut graph, comp, "canvas", LinkKind::Video);
+    let bound = &report.compositors[&(canvas, Role::Program)];
+    let layers = node_layers(
+        bound,
+        &graph.plan(),
+        &rbs_sources::scroll::ScrollRuns::new(),
+    );
+    assert!(layers.is_empty());
 }
 
 fn attach(graph: &mut GraphDescription, from: NodeId, pin: &str, kind: LinkKind) {

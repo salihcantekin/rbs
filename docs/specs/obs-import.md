@@ -121,7 +121,7 @@ ADR-0131 decision 7 is the first mapping table. Each mapper keeps its own row in
 | `DuplicateName` | "Name 2", "Name 3", ... |
 | `EmptyName` | the OBS type's readable name plus a number |
 | `TooManyLayers`, `NestingTooDeep`, `NestingCycle` | item left out, Skipped |
-| `CropOnScene`, `StyleOnScene` | crop or style dropped, item kept, Approximated |
+| `CropOnScene`, `StyleOnScene`, `ScrollOnScene` | crop, style or scroll dropped, item kept, Approximated (the importer sets no scroll today) |
 | `InvalidLayout`, `InvalidVolume`, `InvalidSyncOffset`, `InvalidSetting` | value clamped or the key dropped, Approximated |
 | `CanvasTooLarge`, `EmptyCanvas`, `FrameRateTooHigh` (also a zero rate or `FPSDen` 0) | 1920×1080 at 30, Profile entry |
 | `ScopeViolation`, `GlobalScene` | cannot arise: user scenes are shared; the global scene is scoped to its canvas and made only by the importer |
