@@ -19,7 +19,9 @@ use rbs_core::time::Timestamp;
 use crate::context::GpuContext;
 use crate::error::GpuError;
 use crate::pool::{TextureDesc, TexturePool};
-use crate::yuv_decode::{YuvDecoder, YuvSource, check_color, decoded_color, decoded_desc};
+use crate::yuv_decode::{
+    YuvDecoder, YuvSource, check_color, decoded_color, decoded_desc, decoded_pixel_format,
+};
 
 #[cfg(windows)]
 mod d3d12;
@@ -173,7 +175,7 @@ impl Importer {
                 }
                 let decoder = self.decoder.get_or_insert_with(|| YuvDecoder::new(ctx));
                 let (w, h) = (format.size.width, format.size.height);
-                let target = pool.acquire(ctx, &decoded_desc(w, h))?;
+                let target = pool.acquire(ctx, &decoded_desc(w, h, expected))?;
                 let decoded = decoder
                     .decode(
                         ctx,
@@ -185,7 +187,7 @@ impl Importer {
                     .and_then(|_| {
                         let rgb = VideoFormat::new(
                             format.size,
-                            PixelFormat::Rgba16Float,
+                            decoded_pixel_format(expected),
                             decoded_color(format.color),
                         );
                         pool.frame(target, rgb, timestamp)

@@ -160,7 +160,8 @@ impl RgbaDownload {
     /// Starts reading `picture` (a pool texture frame) back, stamped `timestamp` and
     /// `sequence`. Returns `Ok(false)` while the previous readback is in flight (counted
     /// in `busy`): the caller keeps the change and tries again later. `Rgba16Float`
-    /// input is taken as linear and premultiplied; `Rgba8` input must be sRGB with
+    /// input, and `Rgba8Srgb` input in an `Rgba8UnormSrgb` texture (a decoded NV12
+    /// frame), are taken as linear and premultiplied; `Rgba8` input must be sRGB with
     /// straight alpha and copyable. Never waits.
     pub fn submit_at(
         &mut self,
@@ -183,6 +184,12 @@ impl RgbaDownload {
         let d = *tex.desc();
         let direct = match d.format {
             wgpu::TextureFormat::Rgba16Float => false,
+            // A decoded 8-bit YUV frame: samples are linear, like the canvas format.
+            wgpu::TextureFormat::Rgba8UnormSrgb
+                if picture.format().pixel_format == PixelFormat::Rgba8Srgb =>
+            {
+                false
+            }
             wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Rgba8UnormSrgb
                 if picture.format().pixel_format == PixelFormat::Rgba8
                     && d.usage.contains(wgpu::TextureUsages::COPY_SRC) =>

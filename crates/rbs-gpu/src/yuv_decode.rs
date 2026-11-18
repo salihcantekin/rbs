@@ -1,10 +1,14 @@
-//! NV12 or P010 sources to linear `Rgba16Float` (spec `gpu-compositor.md`,
-//! "YUV source decode").
+//! NV12 or P010 sources to linear RGB (spec `gpu-compositor.md`, "YUV source decode").
 //!
 //! Cameras, hardware decoders and some capture paths deliver 4:2:0 frames. The compositor
-//! samples RGB, so [`YuvDecoder::decode`] renders the two planes into a canvas-format
-//! texture with the frame's matrix, range and transfer applied. The importer uses it for
-//! native NV12 / P010 surfaces; it works on any pool planes.
+//! samples RGB, so [`YuvDecoder::decode`] renders the two planes into an RGB texture with
+//! the frame's matrix, range and transfer applied. The importer uses it for native NV12 /
+//! P010 surfaces; it works on any pool planes.
+//!
+//! 8-bit NV12 decodes into [`DECODED_8BIT_FORMAT`] (`Rgba8UnormSrgb`): the GPU encodes the
+//! linear result to sRGB on store and decodes it back to linear on every sample, so the
+//! compositor still blends in linear light, at half the bytes of `Rgba16Float` (perf audit
+//! R-11 step a). 10-bit P010 decodes into the canvas format.
 //!
 //! Hot path: one render pass with one full-screen triangle, submitted once per frame. Bind
 //! groups and the per-source uniform are cached by plane ids, so steady-state decoding does
@@ -12,7 +16,9 @@
 //! Callers keep a source's plane slots stable across frames (as the importer does); new
 //! plane ids every frame would create a bind group every frame.
 
-use rbs_core::media::{ColorRange, ColorSpace, MatrixCoefficients, TextureId, TransferFunction};
+use rbs_core::media::{
+    ColorRange, ColorSpace, MatrixCoefficients, PixelFormat, TextureId, TransferFunction,
+};
 
 use crate::context::GpuContext;
 use crate::error::GpuError;
@@ -36,10 +42,41 @@ pub enum YuvSource {
     Surface(TextureId),
 }
 
-/// The output description for a decoded `width x height` source: the canvas format, so
-/// the compositor samples it directly.
-pub fn decoded_desc(width: u32, height: u32) -> TextureDesc {
-    TextureDesc::canvas(width, height)
+/// The texture format 8-bit (NV12) sources decode into: sRGB-encoded 8-bit, linear on
+/// sampling.
+pub const DECODED_8BIT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
+
+/// The output description for a decoded `width x height` source of `pixel_format`
+/// (`Nv12` or `P010`): [`DECODED_8BIT_FORMAT`] for NV12, the canvas format otherwise. The
+/// compositor samples either directly.
+pub fn decoded_desc(width: u32, height: u32, pixel_format: PixelFormat) -> TextureDesc {
+    let canvas = TextureDesc::canvas(width, height);
+    match pixel_format {
+        PixelFormat::Nv12 => TextureDesc {
+            format: DECODED_8BIT_FORMAT,
+            ..canvas
+        },
+        _ => canvas,
+    }
+}
+
+/// The pixel format of a decoded frame of a `pixel_format` source: `Rgba8Srgb` for NV12,
+/// `Rgba16Float` otherwise. Its colour space is [`decoded_color`] (linear), which is what
+/// a sample of the texture returns.
+pub fn decoded_pixel_format(pixel_format: PixelFormat) -> PixelFormat {
+    match pixel_format {
+        PixelFormat::Nv12 => PixelFormat::Rgba8Srgb,
+        _ => PixelFormat::Rgba16Float,
+    }
+}
+
+/// The target texture format for a source of `bits` per sample.
+fn target_format(bits: u32) -> wgpu::TextureFormat {
+    if bits == 8 {
+        DECODED_8BIT_FORMAT
+    } else {
+        crate::CANVAS_FORMAT
+    }
 }
 
 /// Uniform block of the decode shader (`Params` in `yuv_decode.wgsl`).
@@ -64,7 +101,10 @@ struct Cached {
 /// creates one on the first YUV surface (P13).
 pub struct YuvDecoder {
     layout: wgpu::BindGroupLayout,
-    pipeline: wgpu::RenderPipeline,
+    /// Writes [`DECODED_8BIT_FORMAT`] (NV12 sources).
+    pipeline_8bit: wgpu::RenderPipeline,
+    /// Writes the canvas format (P010 sources).
+    pipeline_canvas: wgpu::RenderPipeline,
     cache: Vec<Cached>,
     tick: u64,
 }
@@ -117,41 +157,45 @@ impl YuvDecoder {
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("rbs-gpu yuv decode"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &module,
-                entry_point: Some("vs_fullscreen"),
-                compilation_options: Default::default(),
-                buffers: &[],
-            },
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &module,
-                entry_point: Some("fs_decode"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: crate::CANVAS_FORMAT,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+        let pipeline = |format| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("rbs-gpu yuv decode"),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &module,
+                    entry_point: Some("vs_fullscreen"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &module,
+                    entry_point: Some("fs_decode"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
         Self {
+            pipeline_8bit: pipeline(DECODED_8BIT_FORMAT),
+            pipeline_canvas: pipeline(crate::CANVAS_FORMAT),
             layout,
-            pipeline,
             cache: Vec::with_capacity(MAX_DECODE_SOURCES),
             tick: 0,
         }
     }
 
     /// Decodes `source` with colour space `color` into `target`, a pool texture of
-    /// [`decoded_desc`] at the luma size, and returns the submission.
+    /// [`decoded_desc`] for the source's format at the luma size, and returns the
+    /// submission.
     ///
     /// `color` is the source's description: matrix BT.601, BT.709 or BT.2020 (NCL), full or
     /// limited range, transfer BT.709, sRGB or linear. PQ and HLG are
@@ -170,7 +214,7 @@ impl YuvDecoder {
         let (w, h) = (luma.texture().width(), luma.texture().height());
         let out = pool.get(target).ok_or(GpuError::StaleTexture(target))?;
         let d = out.desc();
-        if d.format != crate::CANVAS_FORMAT
+        if d.format != target_format(bits)
             || d.width != w
             || d.height != h
             || !d.usage.contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
@@ -204,7 +248,11 @@ impl YuvDecoder {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            pass.set_pipeline(&self.pipeline);
+            pass.set_pipeline(if bits == 8 {
+                &self.pipeline_8bit
+            } else {
+                &self.pipeline_canvas
+            });
             pass.set_bind_group(0, bind_group, &[]);
             pass.draw(0..3, 0..1);
         }

@@ -80,7 +80,9 @@ fn decode_allocations_are_bounded() {
         ctx.poll();
     });
     let (dec_a, dec_b) = per_frame(|| {
-        let target = pool.acquire(ctx, &decoded_desc(W, H)).unwrap();
+        let target = pool
+            .acquire(ctx, &decoded_desc(W, H, rbs_core::media::PixelFormat::Nv12))
+            .unwrap();
         dec.decode(
             ctx,
             &pool,
@@ -94,7 +96,7 @@ fn decode_allocations_are_bounded() {
                 target,
                 rbs_core::media::VideoFormat::new(
                     rbs_core::media::Size::new(W, H),
-                    rbs_core::media::PixelFormat::Rgba16Float,
+                    rbs_core::media::PixelFormat::Rgba8Srgb,
                     ColorSpace::LINEAR_BT709,
                 ),
                 rbs_core::time::Timestamp::ZERO,
