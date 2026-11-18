@@ -4638,14 +4638,18 @@ fn open_attributes(ctx: &Ctx, app: &mut App, id: i32, paste: bool) {
 fn install_meter_bridge(main: &MainWindow) {
     let g = main.global::<Studio>();
     g.on_meter_placed(|key, x, y, w, h, vertical, shown| {
-        meter_bridge::placed(key, Rect { x, y, w, h }, vertical, shown);
+        entry::guard(|| meter_bridge::placed(key, Rect { x, y, w, h }, vertical, shown));
     });
-    g.on_mixer_placed(|x, y, w, h| meter_bridge::viewport(Rect { x, y, w, h }));
+    g.on_mixer_placed(|x, y, w, h| {
+        entry::guard(|| meter_bridge::viewport(Rect { x, y, w, h }));
+    });
     let weak = main.as_weak();
     g.on_meters_relayout(move || {
-        if let Some(w) = weak.upgrade() {
-            meter_bridge::relayout(&w);
-        }
+        entry::guard(|| {
+            if let Some(w) = weak.upgrade() {
+                meter_bridge::relayout(&w);
+            }
+        });
     });
 }
 
