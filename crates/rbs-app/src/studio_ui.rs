@@ -1031,6 +1031,8 @@ impl StudioUi {
         g.set_rec_marker_lead(p.markers.lead_ms as f32 / 1000.0);
         g.set_rec_marker_scenes(p.markers.scene_changes);
         g.set_rec_marker_stream(p.markers.stream_events);
+        g.set_st_streaming(self.streaming_shows());
+        g.set_st_main_shows(self.stream_shows(OutputCanvas::Main));
         g.set_rec_marker_pauses(p.markers.pause_markers);
         let canvas = self.settings_canvas_size();
         let rec_size = self.recording_output_size();
@@ -4801,7 +4803,15 @@ impl StudioUi {
                 && self.st_bad
                 && !self.setup_note_stale(),
         );
-        g.set_st_needs_setup(self.stream.missing().is_some());
+        // Only while the main canvas streams and Go live would ask for a server or a
+        // key (ADR-0148: an empty first slot beside other destinations needs none).
+        g.set_st_needs_setup(
+            self.st_state == st_state::OFF
+                && self.stream_shows(OutputCanvas::Main)
+                && self
+                    .stream_request(OutputCanvas::Main)
+                    .is_err_and(|(_, setup)| setup),
+        );
         // End stream also ends the vertical stream: the question names both (ADR-0111).
         g.set_st_end_both(self.with_vertical(OutputKind::Stream) && self.vertical_st.on());
         if g.get_st_server_serial() != self.server_serial as i32 {

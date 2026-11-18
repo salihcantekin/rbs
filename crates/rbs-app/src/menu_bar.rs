@@ -1505,12 +1505,16 @@ pub struct Row {
 /// The commands of the frame's fixed group; a toolbar never draws them itself.
 pub const FIXED_COMMANDS: [&str; 2] = ["stream.toggle", "record.toggle"];
 
+/// A command that belongs to streaming: it leaves the menus while no canvas shows
+/// stream items, and Shortcuts dims it (ADR-0148 decision 8).
+pub fn is_stream_item(command: &str) -> bool {
+    command.starts_with("stream.") || command == "output.with_vertical?kind=stream"
+}
+
 /// A toolbar item that is not drawn while its command does not apply: a canvas's own
 /// toggle without the canvas, a stream item while streaming is off (ADR-0148).
 fn hidden_with_its_feature(command: &str) -> bool {
-    command == "canvas.vertical_preview.toggle"
-        || command.starts_with("stream.")
-        || command == "output.with_vertical?kind=stream"
+    command == "canvas.vertical_preview.toggle" || is_stream_item(command)
 }
 
 /// Splits items at the first flexible space (later ones are dropped) and drops the

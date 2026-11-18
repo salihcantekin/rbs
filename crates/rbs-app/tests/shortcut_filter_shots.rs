@@ -30,6 +30,7 @@ fn row(group: &str, title: &str, chip: Option<(&str, bool)>) -> ShortcutRow {
         changed: false,
         problem: SharedString::new(),
         note: SharedString::new(),
+        off: false,
     }
 }
 

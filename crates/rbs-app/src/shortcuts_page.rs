@@ -467,6 +467,7 @@ pub fn refresh(ctx: &Ctx, app: &App) {
     let Some(w) = &app.settings else { return };
     let mut keys = ctx.keys.borrow_mut();
     let all = rows(&keys, &app.shown());
+    let streaming_off = !app.studio.streaming_shows();
     let platform = keys.platform;
     let needle = keys.search.trim().to_lowercase();
     let mut shown: Vec<RowSrc> = Vec::new();
@@ -530,7 +531,10 @@ pub fn refresh(ctx: &Ctx, app: &App) {
             problems.insert(0, m.to_owned());
         }
         let global = keys.keymap.of(&r.command).any(|b| b.scope == Scope::Global);
+        // Streaming is off: the stream commands keep their keys, dimmed (ADR-0148).
+        let off = streaming_off && crate::menu_bar::is_stream_item(&r.command);
         let note = match (global, r.command.as_str()) {
+            _ if off => "Streaming is off",
             (true, "stream.toggle") => {
                 "Its global shortcut starts or ends the stream without asking."
             }
@@ -551,6 +555,7 @@ pub fn refresh(ctx: &Ctx, app: &App) {
             changed: keys.doc.changed(&r.command),
             problem: problems.join("\n").into(),
             note: note.into(),
+            off,
         });
         last_group = r.group;
         shown.push(r.clone());

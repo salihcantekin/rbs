@@ -2975,6 +2975,7 @@ impl Ctx {
             studio_ui::destinations::chip_rows(&app.studio.live_destination_rows()),
         );
         let dests = ModelRc::from(app.live_dests_model.clone());
+        let streaming = app.studio.streaming_shows();
         let push = |g: Shell<'_>| {
             g.set_live_state(view::live_code(live));
             g.set_live_duration(live.duration_text().into());
@@ -2985,6 +2986,7 @@ impl Ctx {
             g.set_live_outputs(live.outputs_text().into());
             g.set_audio_only(app.studio.record_button_audio());
             g.set_live_camera(live.camera);
+            g.set_streaming(streaming);
             g.set_panels(panels.clone());
             g.set_workspaces(workspaces.clone());
             g.set_workspace_name(ws.name.as_str().into());
