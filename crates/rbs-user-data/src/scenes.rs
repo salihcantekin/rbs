@@ -65,7 +65,7 @@
 //! Layouts may also have `rotation` (degrees), `crop` (`[left, top, right, bottom]`
 //! source pixels), `opacity` and `style` (ADR-0053, format 2: `shape = "rectangle" |
 //! "circle" | "ellipse"`, `radius` for rectangles, `border = { width, color =
-//! "#rrggbbaa" }`, `shadow = { offset = [x, y], blur, color }`) and `scroll` (format 22,
+//! "#rrggbbaa" }`, `shadow = { offset = [x, y], blur, color }`) and `scroll` (format 23,
 //! ADR-0150: `{ speed, direction?, gap?, repeat?, start?, fade?, ramp_ms? }`); items `visible = false`,
 //! `locked = true` (format 3), `show_for_ms` (1 to 600000, format 13, ADR-0105; omitted when unset) and `overrides = [{ canvas = 1, layout = {...} }]`; sources `filters = [{ id, type,
 //! enabled, settings }]`, `volume` (0 to 1, default 1) and `muted = true` (format 3,
@@ -777,7 +777,7 @@ struct LayoutDoc {
     opacity: f64,
     #[serde(default, skip_serializing_if = "StyleDoc::is_plain")]
     style: StyleDoc,
-    /// Format 22 (ADR-0150).
+    /// Format 23 (ADR-0150).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     scroll: Option<ScrollDoc>,
 }
@@ -820,7 +820,7 @@ fn is_default_ramp_ms(v: &u32) -> bool {
     *v == DEFAULT_SCROLL_RAMP_MS
 }
 
-/// A layout's `scroll` (format 22, ADR-0150). Ranges are checked with the collection.
+/// A layout's `scroll` (format 23, ADR-0150). Ranges are checked with the collection.
 #[derive(Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 struct ScrollDoc {
@@ -1061,6 +1061,31 @@ fn settings_doc(s: &Settings) -> Result<BTreeMap<String, Value>, String> {
         .collect()
 }
 
+/// The browser source type and the setting keys format 22 adds to it. The type and
+/// the keys are `rbs-sources` names, which this crate does not depend on.
+const BROWSER_SOURCE: &str = "org.rbs.source.browser";
+const BROWSER_PAGE_KEYS: [&str; 11] = [
+    "css",
+    "reload_on_file_change",
+    "keep_signed_in",
+    "profile_id",
+    "reload_every_s",
+    "script",
+    "script_on_load",
+    "script_every_s",
+    "zoom_percent",
+    "keep_running",
+    "retry_on_error",
+];
+
+/// True for a browser source that has a format 22 page setting.
+fn browser_page_settings(s: &Source) -> bool {
+    s.type_id.as_str() == BROWSER_SOURCE
+        && BROWSER_PAGE_KEYS
+            .iter()
+            .any(|k| s.settings.contains_key(*k))
+}
+
 fn settings(s: BTreeMap<String, Value>) -> Settings {
     s.into_iter()
         .map(|(k, v)| {
@@ -1099,7 +1124,7 @@ fn any_layout_scrolls(body: &toml::Table) -> bool {
 
 impl Document for SceneCollection {
     const KIND: &'static str = "scene-collection";
-    const FORMAT: u32 = 22;
+    const FORMAT: u32 = 23;
 
     fn write_format(&self) -> u32 {
         let scrolls = self.scenes().any(|s| {
@@ -1108,7 +1133,7 @@ impl Document for SceneCollection {
             })
         });
         if scrolls {
-            return 22;
+            return 23;
         }
         let t = self.transition();
         let stinger = t.kind == TransitionKind::Stinger
@@ -1118,7 +1143,9 @@ impl Document for SceneCollection {
                 .any(|s| s.transition_in.and_then(|t| t.kind) == Some(TransitionKind::Stinger));
         // Format 18 and older read a 0 ms glide as Cut, so such a collection is written
         // as 19 to keep its own transition (ADR-0128 decision 3).
-        if stinger {
+        if self.sources().any(browser_page_settings) {
+            22
+        } else if stinger {
             21
         } else if self.scenes().any(|s| s.transition_in.is_some()) {
             20
@@ -1172,13 +1199,23 @@ impl Document for SceneCollection {
     /// without it, and a file is written as 20 only when a scene has it. Format 21 adds
     /// the Stinger kind and the optional `transition.stinger` (ADR-0140); a format 20 or
     /// older body is a format 21 body without them, and a file is written as 21 only
-    /// when it uses them. Format 22 adds the optional layout `scroll` (ADR-0150); a
-    /// format 21 or older body is a format 22 body without it, and a file is written as
-    /// 22 only when a layout scrolls.
+    /// when it uses them. Format 22 adds the browser page settings `css`,
+    /// `reload_on_file_change`, `keep_signed_in`, `profile_id` (ADR-0132) and
+    /// `reload_every_s`, `script`, `script_on_load`, `script_every_s`, `zoom_percent`,
+    /// `keep_running`, `retry_on_error` (ADR-0149) of a browser source; a format 21 body
+    /// is a format 22 body without them, and a file is written as 22 only when a browser
+    /// source has one, so an older build refuses it instead of failing the source. Format
+    /// 23 adds the optional layout `scroll` (ADR-0150); a format 22 or older body is a
+    /// format 23 body without it, and a file is written as 23 only when a layout scrolls.
     fn upgrade(from: u32, body: &mut toml::Table) -> Result<(), String> {
-        if (1..=21).contains(&from) && any_layout_scrolls(body) {
-            return Err(format!("format {from} has no layout `scroll` (format 22)"));
+        if (1..=22).contains(&from) && any_layout_scrolls(body) {
+            return Err(format!("format {from} has no layout `scroll` (format 23)"));
         }
+        if from == 22 {
+            return Ok(());
+        }
+        // Format 22 adds browser page settings (ADR-0132, ADR-0149) inside the open
+        // `settings` table; a format 21 body is a format 22 body without them.
         if from == 21 {
             return Ok(());
         }

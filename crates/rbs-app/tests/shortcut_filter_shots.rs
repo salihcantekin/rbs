@@ -30,6 +30,7 @@ fn row(group: &str, title: &str, chip: Option<(&str, bool)>) -> ShortcutRow {
         changed: false,
         problem: SharedString::new(),
         note: SharedString::new(),
+        off: false,
     }
 }
 
@@ -83,6 +84,30 @@ fn shortcut_filter_screenshots() {
                     "Start or end the stream",
                     Some(("Ctrl+Alt+F9", true)),
                 ),
+                row("", "Start or stop recording", Some(("Ctrl+Alt+F10", true))),
+            ],
+        ),
+        // Streaming is off (ADR-0148): the stream commands keep their keys, dimmed.
+        (
+            "streaming-off",
+            0,
+            true,
+            vec![
+                row("EDIT", "Undo", Some(("Ctrl+Z", false))),
+                ShortcutRow {
+                    note: "Streaming is off".into(),
+                    off: true,
+                    ..row(
+                        "OUTPUT",
+                        "Start or end the stream",
+                        Some(("Ctrl+Alt+F9", true)),
+                    )
+                },
+                ShortcutRow {
+                    note: "Streaming is off".into(),
+                    off: true,
+                    ..row("", "Hold stream", Some(("Ctrl+Alt+H", false)))
+                },
                 row("", "Start or stop recording", Some(("Ctrl+Alt+F10", true))),
             ],
         ),

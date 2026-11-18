@@ -10,7 +10,8 @@ import { ProgramPanel, ScenesPanel, SourcesPanel, PropertiesPanel, MixerPanel, L
 import { LiveDestinationRow, TabData, StackData, RailData, HandleData, ToolbarData, EdgeTabData, Cover, Menus, Shell, Sections, IconName, Icons, Overlays, Shortcuts, AppMenus, Studio } from "base/types.slint";
 
 // Live indicator (rules U4, U21): the state in words, never colour alone. Compact on
-// purpose: idle it takes no room (the status bar says "Not live · not recording");
+// purpose: idle it takes no room (the status bar says "Not live · not recording", or
+// "Not recording" while streaming is off, ADR-0148);
 // live or recording a small chip in the live colour (U12) with a dot and "REC",
 // "LIVE" or "LIVE · REC", and "CAM" while RBS sends to the virtual camera (an app may
 // be showing it to other people).
@@ -2016,8 +2017,10 @@ component StatusBar inherits Rectangle {
         : Shell.live-state == 3 && paused ? @tr("Live {} · recording paused {}", Shell.live-duration, Shell.rec-paused-for) + outputs
         : Shell.live-state == 2 ? (Shell.audio-only ? @tr("Recording audio {}", Shell.live-duration) : @tr("Recording {}", Shell.live-duration)) + outputs
         : Shell.live-state == 3 ? (Shell.audio-only ? @tr("Live and recording audio {}", Shell.live-duration) : @tr("Live and recording {}", Shell.live-duration)) + outputs
-        : @tr("Not live · not recording");
+        : Shell.streaming ? @tr("Not live · not recording")
+        : @tr("Not recording");
     property <string> text-with-camera: !Shell.live-camera ? state-text
+        : Shell.live-state == 0 && !Shell.streaming ? @tr("Virtual camera on · not recording")
         : Shell.live-state == 0 ? @tr("Virtual camera on · not live · not recording")
         : @tr("{} · virtual camera on", state-text);
     property <bool> on: Shell.live-state != 0 || Shell.live-camera;

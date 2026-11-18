@@ -1065,12 +1065,12 @@ fn a_stinger_round_trips_in_format_21_and_older_formats_refuse_it() {
 }
 
 #[test]
-fn a_scroll_round_trips_in_format_22_and_older_formats_refuse_it() {
+fn a_scroll_round_trips_in_format_23_and_older_formats_refuse_it() {
     // ADR-0150 decision 1.
     use rbs_scene::model::{Scroll, ScrollDirection, ScrollRepeat, ScrollStart};
     let mut col = show();
     let plain = document::render(&col, Some("Show")).unwrap();
-    assert!(!plain.contains("format = 22"), "{plain}");
+    assert!(!plain.contains("format = 23"), "{plain}");
     assert!(!plain.contains("scroll"), "{plain}");
     let (text_source, _) = col
         .add_source("Ticker", ty("text"), Settings::new())
@@ -1108,7 +1108,7 @@ fn a_scroll_round_trips_in_format_22_and_older_formats_refuse_it() {
             .unwrap();
         }
         let text = document::render(&col, Some("Show")).unwrap();
-        assert!(text.contains("format = 22"), "{text}");
+        assert!(text.contains("format = 23"), "{text}");
         let back = document::parse::<SceneCollection>(&text).unwrap().document;
         assert_eq!(back, col);
     }
@@ -1129,6 +1129,10 @@ fn a_scroll_round_trips_in_format_22_and_older_formats_refuse_it() {
             "layout = { position = [0.0, 0.0], size = [10.0, 10.0], scroll = { speed = 10.0 } }\n",
         ),
         (
+            22,
+            "layout = { position = [0.0, 0.0], size = [10.0, 10.0], scroll = { speed = 10.0 } }\n",
+        ),
+        (
             15,
             "layout = { position = [0.0, 0.0], size = [10.0, 10.0], scroll = { speed = 10.0 } }\n",
         ),
@@ -1139,35 +1143,35 @@ fn a_scroll_round_trips_in_format_22_and_older_formats_refuse_it() {
         ),
         // Out of range, unknown names and keys.
         (
-            22,
+            23,
             "layout = { position = [0.0, 0.0], size = [10.0, 10.0], scroll = { speed = 0.5 } }\n",
         ),
         (
-            22,
+            23,
             "layout = { position = [0.0, 0.0], size = [10.0, 10.0], scroll = { speed = 4001.0 } }\n",
         ),
         (
-            22,
+            23,
             "layout = { position = [0.0, 0.0], size = [10.0, 10.0], scroll = { speed = 10.0, gap = -1.0 } }\n",
         ),
         (
-            22,
+            23,
             "layout = { position = [0.0, 0.0], size = [10.0, 10.0], scroll = { speed = 10.0, fade = 2049.0 } }\n",
         ),
         (
-            22,
+            23,
             "layout = { position = [0.0, 0.0], size = [10.0, 10.0], scroll = { speed = 10.0, ramp_ms = 5001 } }\n",
         ),
         (
-            22,
+            23,
             "layout = { position = [0.0, 0.0], size = [10.0, 10.0], scroll = { speed = 10.0, direction = \"sideways\" } }\n",
         ),
         (
-            22,
+            23,
             "layout = { position = [0.0, 0.0], size = [10.0, 10.0], scroll = { speed = 10.0, bounce = true } }\n",
         ),
         (
-            22,
+            23,
             "layout = { position = [0.0, 0.0], size = [10.0, 10.0], scroll = { direction = \"up\" } }\n",
         ),
     ] {
@@ -1187,4 +1191,35 @@ fn a_scroll_round_trips_in_format_22_and_older_formats_refuse_it() {
         "format = 21\nkind = \"scene-collection\"\n[next]\nscene = 1\nsource = 1\nitem = 1\ncanvas = 1\n{scene_doc}layout = {{ position = [0.0, 0.0], size = [10.0, 10.0] }}\n"
     );
     document::parse::<SceneCollection>(&ok).unwrap();
+}
+
+#[test]
+fn browser_page_settings_are_written_as_format_22() {
+    // ADR-0132 decision 11, ADR-0149 decision 1.
+    use rbs_scene::model::SettingValue;
+    let mut col = show();
+    let mut page = Settings::new();
+    page.insert(
+        "url".into(),
+        SettingValue::Text("https://example.com/".into()),
+    );
+    let (id, _) = col
+        .add_source(
+            "Page",
+            NodeTypeId::new("org.rbs.source.browser"),
+            page.clone(),
+        )
+        .unwrap();
+    let plain = document::render(&col, Some("Show")).unwrap();
+    assert!(!plain.contains("format = 22"), "{plain}");
+    page.insert("zoom_percent".into(), SettingValue::Int(150));
+    page.insert("script".into(), SettingValue::Text("1 + 1".into()));
+    col.set_source_settings(id, page).unwrap();
+    let text = document::render(&col, Some("Show")).unwrap();
+    assert!(text.contains("format = 22"), "{text}");
+    let back = document::parse::<SceneCollection>(&text).unwrap().document;
+    assert_eq!(back, col);
+    // A format 21 file reads as before.
+    let old = plain.replace("format = 15", "format = 21");
+    assert!(document::parse::<SceneCollection>(&old).is_ok());
 }

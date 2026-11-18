@@ -6,9 +6,10 @@ import { Theme, Tokens } from "tokens.slint";
 import { DialogActions, HScrollArea, ListBox, ScrollArea, Button, Checkbox, ColorPicker, FocusRing, RingFocus, SectionHeader, Tabs, Icon, IconButton, MenuItem, MenuSurface, EmptyState, NumberField, Select, SegmentedControl, SizeNest, Slider, VSlider, LevelText, ValueReadout, TextField, TextArea, Toggle, InfoHint, FeatureSection, SettingRow, ListRow, StatusLine, HintText as Hint, CaptionField as Field, MenuArea, SurfaceCard } from "components.slint";
 import { SettingsCard, SettingBlock, SettingsStatus, SettingsNotice, SettingsCallout, RevealOnShow, Shown } from "settings.slint";
 import { CommandMenu } from "context_menu.slint";
+import { Section, BrowserFields } from "browser_fields.slint";
 import { ReplayControls, ReplaySettings } from "replay.slint";
-import { FilterFieldData, FilterLevels, FilterData, SourceData, SceneData, LookData, SampleData, KindData, MarkData, ModeData, SyncMeasureData, AttributeGroupRow, AttributeTargetRow, AttributesData, TextData, SourceSettingsData, SourceTargetData, MeterRow, ScaleMark, LoudnessData, DestinationRow, EncoderData, TokenRow, AiActionRow, StatRow, EntryRow, PermissionRowData, Studio, Sections, Experience, IconName, Icons, SizeBand, Overlays } from "base/types.slint";
-export { FilterFieldData, FilterLevels, FilterData, SourceData, SceneData, LookData, SampleData, KindData, MarkData, ModeData, SyncMeasureData, AttributeGroupRow, AttributeTargetRow, AttributesData, TextData, SourceSettingsData, SourceTargetData, MeterRow, ScaleMark, LoudnessData, DestinationRow, EncoderData, TokenRow, AiActionRow, StatRow, EntryRow, PermissionRowData, Studio }
+import { FilterFieldData, FilterLevels, FilterData, SourceData, SceneData, LookData, SampleData, KindData, MarkData, ModeData, SyncMeasureData, AttributeGroupRow, AttributeTargetRow, AttributesData, TextData, BrowserData, SourceSettingsData, SourceTargetData, MeterRow, ScaleMark, LoudnessData, DestinationRow, EncoderData, TokenRow, AiActionRow, StatRow, EntryRow, PermissionRowData, Studio, Sections, Experience, IconName, Icons, SizeBand, Overlays } from "base/types.slint";
+export { FilterFieldData, FilterLevels, FilterData, SourceData, SceneData, LookData, SampleData, KindData, MarkData, ModeData, SyncMeasureData, AttributeGroupRow, AttributeTargetRow, AttributesData, TextData, BrowserData, SourceSettingsData, SourceTargetData, MeterRow, ScaleMark, LoudnessData, DestinationRow, EncoderData, TokenRow, AiActionRow, StatRow, EntryRow, PermissionRowData, Studio }
 
 // The audio-only strip above a program picture. The native picture starts below it, so
 // this stays visible. `size.control.md` high, matching the inset in the preview layer.
@@ -259,9 +260,10 @@ component SourceRowView inherits Rectangle {
         activated => { Studio.select-source(data.id); }
         double-clicked => {
             Studio.select-source(data.id);
-            // Screens, windows and cameras (kind-code 0–2) have a Source settings
-            // window; other kinds keep the selection only (Rename stays on F2 / menu).
-            if data.kind-code >= 0 && data.kind-code <= 2 { Studio.open-source-settings(data.id); }
+            // Screens, windows and cameras (kind-code 0–2) and browser pages have a
+            // Source settings window; other kinds keep the selection only (Rename
+            // stays on F2 / menu).
+            if (data.kind-code >= 0 && data.kind-code <= 2) || data.browser { Studio.open-source-settings(data.id); }
         }
         menu-asked(at) => { Studio.select-source(data.id); menu.open(at); }
         renamed(t) => { Studio.rename-source(data.id, t); }
@@ -2116,7 +2118,8 @@ export component LiveControlsPanel inherits Rectangle {
         HorizontalLayout {
             spacing: Tokens.space-2;
             alignment: start;
-            Button {
+            // While the main canvas does not stream, there is no Go live (ADR-0148).
+            if Studio.st-main-shows: Button {
                 lead: live || Studio.st-state == 3 ? IconName.stop : IconName.bolt;
                 // While the stream ends the button says so (disabled) until the
                 // output closed, so it never offers Go live too early.
@@ -2264,56 +2267,6 @@ component SectionTitle inherits HorizontalLayout {
         horizontal-stretch: 1;
         alignment: center;
         Rectangle { height: Tokens.size-border; background: Theme.border-subtle; }
-    }
-}
-
-// A collapsible group of fields under a SectionHeader. A closed section draws nothing and
-// takes no room. Its state is saved in the workspace file under `id` (ADR-0078).
-component Section inherits VerticalLayout {
-    in property <string> title;
-    in property <string> id;
-    // The explanation behind an info button at the end of the header (ADR-0094 rule A1);
-    // empty draws no button.
-    in property <string> hint;
-    // A section with one value and a known default (owner decision 2026-11-14, ADR-0114
-    // decision 4): while the value differs, a reset button sits at the trailing end of
-    // the header, before the info button. `default-text` names the default.
-    in property <bool> changed;
-    in property <string> default-text;
-    callback reset();
-    property <bool> closed: Sections.closed(root.id, Sections.rev);
-    spacing: Tokens.size-field-gap;
-    HorizontalLayout {
-        spacing: Tokens.size-field-gap;
-        SectionHeader {
-            horizontal-stretch: 1;
-            title: root.title;
-            collapsible: true;
-            open: !root.closed;
-            toggled(o) => { Sections.set-closed(root.id, !o); }
-        }
-        if root.changed && !root.closed: IconButton {
-            icon: IconName.reset;
-            name: @tr("Reset {} to {}", root.title, root.default-text);
-            clicked => { root.reset(); }
-        }
-        if root.hint != "" && !root.closed: InfoHint {
-            label: root.title;
-            text: root.hint;
-        }
-    }
-    // Slint cannot put @children in an `if`, so a closed section is hidden and takes
-    // no room (like Shown): it draws and handles no input. Width follows the section
-    // so a stretched slider (volume) fills the panel instead of staying at preferred width.
-    Rectangle {
-        visible: !root.closed;
-        width: 100%;
-        height: root.closed ? 0px : inner.preferred-height;
-        inner := VerticalLayout {
-            width: 100%;
-            spacing: Tokens.size-field-gap;
-            @children
-        }
     }
 }
 
@@ -4160,7 +4113,7 @@ component SourceProperties inherits VerticalLayout {
     property <bool> confirm;
     changed data => { if confirm && Studio.selected-source != data.id { confirm = false; } }
     in property <int> live-state;
-    // 0 Transform, 1 Filters, 2 Audio, 3 Source. The Source tab is the last one shown;
+    // 0 Transform, 1 Filters, 2 Audio, 3 Source, 4 Text, 5 Page (a browser source). The Source tab is the last one shown;
     // the first tab opens, except while the source is not running, when the Source tab
     // opens by itself (ADR-0077).
     // A media file has a Source tab too: its file, Loop, Restart when shown and play
@@ -4172,7 +4125,10 @@ component SourceProperties inherits VerticalLayout {
     property <int> want: Studio.properties-tab;
     // A text source (ADR-0129 decision 13): Text first, then Transform and Filters.
     property <bool> is-text: Studio.text-props.on && Studio.text-props.id == data.id;
+    // A browser source (ADR-0109): Page first, then Transform, Filters and Audio.
+    property <bool> is-browser: Studio.browser-props.on && Studio.browser-props.id == data.id;
     property <int> tab: is-text ? (want == 0 || want == 1 ? want : 4)
+        : is-browser ? (want == 0 || want == 1 || (want == 2 && data.audio) ? want : 5)
         : has-source && (!data.ok || want == 3) ? 3
         : !data.picture ? 2
         : want == 1 ? 1
@@ -4188,6 +4144,7 @@ component SourceProperties inherits VerticalLayout {
         + (tab == 2 ? "properties.sound,properties.sync," : "")
         + (tab == 2 && !data.picture ? "properties.recording,properties.audio-filters," + (root.filter-open ? "properties.filter-settings," : "") : "")
         + (tab == 4 ? "properties.text-outline,properties.text-shadow,properties.text-background," : "")
+        + (tab == 5 ? "properties.browser-css,properties.browser-automation,properties.browser-behaviour," : "")
         + (data.picture ? "properties.timed-show," : "")
         + "properties.scenes"
         + (data.picture ? ",properties.picture-recording" : "");
@@ -4256,14 +4213,16 @@ component SourceProperties inherits VerticalLayout {
     if data.picture || has-source: Tabs {
         label: @tr("Properties of {}", data.name);
         options: is-text ? [@tr("Text"), @tr("Transform"), @tr("Filters")]
+            : is-browser ? (data.audio ? [@tr("Page"), @tr("Transform"), @tr("Filters"), @tr("Audio")] : [@tr("Page"), @tr("Transform"), @tr("Filters")])
             : has-source
             ? (data.picture
                 ? (data.audio ? [@tr("Transform"), @tr("Filters"), @tr("Audio"), @tr("Source")] : [@tr("Transform"), @tr("Filters"), @tr("Source")])
                 : [@tr("Audio"), @tr("Source")])
             : (data.audio ? [@tr("Transform"), @tr("Filters"), @tr("Audio")] : [@tr("Transform"), @tr("Filters")]);
-        index: is-text ? (tab == 4 ? 0 : tab + 1) : tab == 3 ? before-source : data.picture ? tab : 0;
+        index: is-text ? (tab == 4 ? 0 : tab + 1) : is-browser ? (tab == 5 ? 0 : tab + 1) : tab == 3 ? before-source : data.picture ? tab : 0;
         selected(i) => {
             if is-text { Studio.properties-tab = i == 0 ? 4 : i - 1; }
+            else if is-browser { Studio.properties-tab = i == 0 ? 5 : i - 1; }
             else if has-source && i == before-source { Studio.properties-tab = 3; }
             else if data.picture { Studio.properties-tab = i; }
             else { Studio.properties-tab = 2; }
@@ -4297,6 +4256,7 @@ component SourceProperties inherits VerticalLayout {
     }
     if tab == 3: SourceFields { data: data; }
     if tab == 4: TextFields { data: data; }
+    if tab == 5: BrowserFields { name: data.name; }
     // Which canvas's layout the Transform fields edit (ADR-0093 decision 4): the
     // vertical canvas's own layout changes only that canvas.
     if tab == 0 && Studio.props-can-vertical: SegmentedControl {

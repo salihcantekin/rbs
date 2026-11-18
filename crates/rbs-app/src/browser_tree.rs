@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use rbs_browser_ipc::Configure;
+use rbs_browser_ipc::control::Control;
 use rbs_browser_ipc::exit::Cause;
 use rbs_browser_runner::{PageSound, Supervisor, runtime_env, spawn_helper_with_env};
 use rbs_browser_shm::SlotLayout;
@@ -121,6 +122,9 @@ pub struct RunnerBrowserTree {
     engine: Arc<EngineSlot>,
     /// Sessions alive now; the add-on is in use while it is above 0.
     live: Arc<AtomicUsize>,
+    /// `browser-profiles/` in the local data directory (ADR-0132 decision 10);
+    /// `None`: every page gets a fresh profile.
+    profiles: Option<PathBuf>,
 }
 
 impl RunnerBrowserTree {
@@ -131,7 +135,15 @@ impl RunnerBrowserTree {
             runner,
             engine,
             live: Arc::new(AtomicUsize::new(0)),
+            profiles: None,
         }
+    }
+
+    /// Keeps signed-in profiles under `dir` (`browser-profiles/` in the local data
+    /// directory).
+    pub fn with_profiles(mut self, dir: PathBuf) -> Self {
+        self.profiles = Some(dir);
+        self
     }
 
     /// True while a runner this tree started is alive (or still stopping).
@@ -158,6 +170,15 @@ impl BrowserTree for RunnerBrowserTree {
             return Some(HELPER_MISSING);
         }
         self.needs_engine().then_some(BROWSER_RUNTIME_MISSING)
+    }
+
+    fn profile_dir(&self, profile_id: &str) -> Option<String> {
+        // Only a server-made id names a directory, so no setting reaches another path.
+        if !rbs_sources::is_profile_id(profile_id) {
+            return None;
+        }
+        let dir = self.profiles.as_ref()?.join(profile_id);
+        Some(dir.to_string_lossy().into_owned())
     }
 
     fn start(
@@ -264,6 +285,10 @@ impl BrowserSession for RunnerSession {
         self.supervisor.stop_detached();
     }
 
+    fn send(&mut self, message: &Control) -> bool {
+        self.supervisor.send(message)
+    }
+
     fn exit_reason(&self) -> Option<&'static str> {
         match self.supervisor.exit_cause() {
             Cause::RuntimeMissing => Some(BROWSER_RUNTIME_MISSING),
@@ -308,6 +333,18 @@ mod tests {
         assert_eq!(tree(false).unavailable(), None);
         let none = RunnerBrowserTree::new(None, Arc::new(EngineSlot::default()));
         assert_eq!(none.unavailable(), Some(HELPER_MISSING));
+    }
+
+    #[test]
+    fn a_kept_profile_lives_under_the_profiles_directory() {
+        let id = "0123456789abcdef0123456789abcdef";
+        assert_eq!(tree(false).profile_dir(id), None);
+        let kept = tree(false).with_profiles(PathBuf::from("/data/browser-profiles"));
+        assert_eq!(
+            kept.profile_dir(id).map(PathBuf::from),
+            Some(PathBuf::from("/data/browser-profiles").join(id))
+        );
+        assert_eq!(kept.profile_dir("../escape"), None);
     }
 
     #[test]

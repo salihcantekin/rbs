@@ -720,6 +720,10 @@ pub struct SourceState {
     /// The cause of that failure, when the adapter tells it (ADR-0077); `None` while the
     /// source runs or when the cause is unknown.
     pub fault: Option<rbs_core::fault::SourceFault>,
+    /// The control-API reason of a browser source that is not running
+    /// (`browser_runtime_missing`, `browser_runtime_mismatch`, `browser_cap`); `None`
+    /// otherwise.
+    pub reason: Option<&'static str>,
 }
 
 /// What [`Recording::start`] chose and started.

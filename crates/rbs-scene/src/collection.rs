@@ -336,6 +336,13 @@ enum Op {
     },
     /// Several `ReplaceItem`s as one step (auto layout, ADR-0093).
     ReplaceItems(Vec<(SceneItem, SceneItem)>),
+    /// Replaces every item of a scene at once, in order (ADR-0151): the program's
+    /// items put back when studio mode ends.
+    SetSceneItems {
+        scene: SceneId,
+        expected: Vec<SceneItem>,
+        new: Vec<SceneItem>,
+    },
     MoveItem {
         item: ItemId,
         from: usize,
@@ -1789,6 +1796,23 @@ impl SceneCollection {
         self.apply(Op::ReplaceItems(pairs))
     }
 
+    /// Replaces every item of `scene`, in order (bottom first), as one undo step
+    /// (ADR-0151). Items keep their ids: one not in the scene now must have been
+    /// issued by this collection and be free (an item removed earlier). The
+    /// collection's invariants hold as for any edit.
+    pub fn set_scene_items(
+        &mut self,
+        scene: SceneId,
+        items: Vec<SceneItem>,
+    ) -> Result<Undo, SceneError> {
+        let expected = self.get_scene(scene)?.items.clone();
+        self.apply(Op::SetSceneItems {
+            scene,
+            expected,
+            new: items,
+        })
+    }
+
     /// Drops an item's layout for `canvas`, so it uses the default layout there.
     pub fn clear_item_layout(&mut self, id: ItemId, canvas: CanvasId) -> Result<Undo, SceneError> {
         let mut item = self.get_item(id)?.clone();
@@ -2405,6 +2429,40 @@ impl SceneCollection {
                 }
                 inverse.reverse();
                 Ok(Op::ReplaceItems(inverse))
+            }
+            Op::SetSceneItems {
+                scene,
+                expected,
+                new,
+            } => {
+                if self.get_scene(scene)?.items != expected {
+                    return Err(SceneError::UndoConflict);
+                }
+                // An item that comes back keeps its id: one that was issued, is not
+                // used elsewhere and is not given twice.
+                let mut ids = BTreeSet::new();
+                for item in &new {
+                    let was = expected.iter().find(|e| e.id == item.id);
+                    let kept = was.is_some();
+                    let elsewhere = !kept && self.item(item.id).is_some();
+                    // A kept item keeps what it places, as `ReplaceItem` requires.
+                    if !ids.insert(item.id) || was.is_some_and(|e| e.content != item.content) {
+                        return Err(SceneError::UndoConflict);
+                    }
+                    if !kept {
+                        Self::restorable(self.next.item, item.id.0, elsewhere)?;
+                    }
+                }
+                let s = self
+                    .scenes
+                    .get_mut(&scene)
+                    .ok_or(SceneError::UnknownScene(scene))?;
+                s.items = new.clone();
+                Ok(Op::SetSceneItems {
+                    scene,
+                    expected: new,
+                    new: expected,
+                })
             }
             Op::MoveItem { item, from, to } => {
                 let index = to;

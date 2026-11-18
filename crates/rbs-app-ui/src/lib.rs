@@ -20,17 +20,17 @@ macro_rules! reexport {
         pub use $settings::SettingsWindow;
         pub use $types::{
             AddOnRowData, AiActionRow, AppMenuChip, AppMenuRow, AppMenus, Appearance,
-            AttributeGroupRow, AttributeTargetRow, AttributesData, ContextChoice, ContextItem,
-            ContextMenus, Cover, DestinationRow, EdgeTabData, EncoderData, EntryRow, Experience,
-            FilterData, FilterFieldData, FilterLevels, FocusReveal, HandleData, IconName, Icons,
-            KindData, LiveDestinationRow, LookData, LoudnessData, MarkData, MenuChoice, MenuRow,
-            Menus, MeterRow, ModeData, ObsReportRow, ObsSceneChoice, OverlayCover, Overlays,
-            PanelEntry, PermissionRowData, PickerRow, RailData, ReplayBuffer, SampleData,
-            ScaleMark, SceneData, Sections, SettingsFind, SettingsHit, SettingsScroll, Shell,
-            ShortcutChip, ShortcutRow, Shortcuts, SizeBand, SourceData, SourceSettingsData,
-            SourceTargetData, StackData, StatRow, Studio, SyncMeasureData, TabData, TextData,
-            Theme, ThemeOption, ThemeSlot, ThemeTokenRow, TokenRow, Tokens, ToolbarData,
-            VirtualCamera, WorkspaceEntry,
+            AttributeGroupRow, AttributeTargetRow, AttributesData, BrowserData, ContextChoice,
+            ContextItem, ContextMenus, Cover, DestinationRow, EdgeTabData, EncoderData, EntryRow,
+            Experience, FilterData, FilterFieldData, FilterLevels, FocusReveal, HandleData,
+            IconName, Icons, KindData, LiveDestinationRow, LookData, LoudnessData, MarkData,
+            MenuChoice, MenuRow, Menus, MeterRow, ModeData, ObsReportRow, ObsSceneChoice,
+            OverlayCover, Overlays, PanelEntry, PermissionRowData, PickerRow, RailData,
+            ReplayBuffer, SampleData, ScaleMark, SceneData, Sections, SettingsFind, SettingsHit,
+            SettingsScroll, Shell, ShortcutChip, ShortcutRow, Shortcuts, SizeBand, SourceData,
+            SourceSettingsData, SourceTargetData, StackData, StatRow, Studio, SyncMeasureData,
+            TabData, TextData, Theme, ThemeOption, ThemeSlot, ThemeTokenRow, TokenRow, Tokens,
+            ToolbarData, VirtualCamera, WorkspaceEntry,
         };
     };
 }

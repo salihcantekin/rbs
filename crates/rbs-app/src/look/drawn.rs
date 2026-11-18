@@ -31,7 +31,7 @@ use std::rc::Rc;
 use rbs_ui::tokens::{CONTRAST_RULES, FIXED, LIVE_SURFACES, THEME_COLORS, THEME_CONTRAST_RULES};
 
 /// Every `.slint` file of the app (`every_slint_file_is_read` checks the list).
-const FILES: [(&str, &str); 20] = [
+const FILES: [(&str, &str); 21] = [
     ("app.slint", include_str!("../../ui/app.slint")),
     ("app_menu.slint", include_str!("../../ui/app_menu.slint")),
     (
@@ -43,6 +43,10 @@ const FILES: [(&str, &str); 20] = [
         include_str!("../../ui/attributes.slint"),
     ),
     ("audio.slint", include_str!("../../ui/audio.slint")),
+    (
+        "browser_fields.slint",
+        include_str!("../../ui/browser_fields.slint"),
+    ),
     (
         "components.slint",
         include_str!("../../ui/components.slint"),

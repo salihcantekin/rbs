@@ -128,7 +128,9 @@ fn frame(file: &TokenFile, base: Base, stream: bool, name: &str, dir: &std::path
     cells.push(cell("record.toggle", "Record", "dot"));
     w.global::<Shell>()
         .set_toolbar_fixed(std::rc::Rc::new(slint::VecModel::from(cells)).into());
-    w.window().set_size(slint::LogicalSize::new(1280.0, 300.0));
+    // The status text names the stream only while a canvas streams (ADR-0148).
+    w.global::<Shell>().set_streaming(stream);
+    w.window().set_size(slint::LogicalSize::new(1280.0, 720.0));
     w.show().expect("show");
     save(&w.window().take_snapshot().expect("a snapshot"), dir, name);
     w.hide().expect("hide");

@@ -1038,6 +1038,30 @@ pub struct ReloadSource {
     pub source: u32,
 }
 
+/// `browser.reload` (protocol 1.91, ADR-0132 decision 5): reloads a browser source's
+/// running page without a new process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrowserReload {
+    /// The browser source's id.
+    pub source: u32,
+    /// Load again from the network, not the cache.
+    #[serde(default)]
+    pub bypass_cache: bool,
+}
+
+/// `browser.run_script` (protocol 1.91, ADR-0149 decision 7): runs `script`, or the
+/// saved script when absent, once in the running page, on the saved origin only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrowserRunScript {
+    /// The browser source's id.
+    pub source: u32,
+    /// The script to run; absent for the saved one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub script: Option<String>,
+}
+
 /// `media.play`, `media.pause`, `media.restart` and `media.state` (protocol 1.83,
 /// ADR-0108 decision 10): one media-file source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1864,6 +1888,10 @@ pub enum Command {
     SourceRetarget(RetargetSource),
     /// `source.reload` (protocol 1.13).
     SourceReload(ReloadSource),
+    /// `browser.reload` (protocol 1.91, ADR-0132).
+    BrowserReload(BrowserReload),
+    /// `browser.run_script` (protocol 1.91, ADR-0149).
+    BrowserRunScript(BrowserRunScript),
     /// `source.get_settings` (protocol 1.17).
     SourceGetSettings(GetSourceSettings),
     /// `media.play` (protocol 1.83, ADR-0108).
@@ -2147,6 +2175,8 @@ impl Command {
             Command::SyncApplyToDeviceSources(_) => "sync.apply_to_device_sources",
             Command::SourceRetarget(_) => "source.retarget",
             Command::SourceReload(_) => "source.reload",
+            Command::BrowserReload(_) => "browser.reload",
+            Command::BrowserRunScript(_) => "browser.run_script",
             Command::SourceGetSettings(_) => "source.get_settings",
             Command::MediaPlay(_) => "media.play",
             Command::MediaPause(_) => "media.pause",
@@ -2464,6 +2494,10 @@ pub const METHODS: &[MethodInfo] = &[
     ),
     m("source.retarget", Some(Scope::Control), Effect::Edit),
     m("source.reload", Some(Scope::Control), Effect::Edit),
+    // They change what is on air, and a page can fetch (ADR-0132 decision 9,
+    // ADR-0149 decision 7).
+    m("browser.reload", Some(Scope::Control), Effect::Live),
+    m("browser.run_script", Some(Scope::Control), Effect::Live),
     m("source.get_settings", Some(Scope::Control), Effect::Read),
     m("media.play", Some(Scope::Control), Effect::Edit),
     m("media.pause", Some(Scope::Control), Effect::Edit),
@@ -2841,6 +2875,10 @@ enum WireRequest {
     SourceRetarget(RetargetSource),
     #[serde(rename = "source.reload")]
     SourceReload(ReloadSource),
+    #[serde(rename = "browser.reload")]
+    BrowserReload(BrowserReload),
+    #[serde(rename = "browser.run_script")]
+    BrowserRunScript(BrowserRunScript),
     #[serde(rename = "source.get_settings")]
     SourceGetSettings(GetSourceSettings),
     #[serde(rename = "media.play")]
@@ -3126,6 +3164,8 @@ impl From<WireRequest> for Request {
             }
             WireRequest::SourceRetarget(p) => Request::Command(C::SourceRetarget(p)),
             WireRequest::SourceReload(p) => Request::Command(C::SourceReload(p)),
+            WireRequest::BrowserReload(p) => Request::Command(C::BrowserReload(p)),
+            WireRequest::BrowserRunScript(p) => Request::Command(C::BrowserRunScript(p)),
             WireRequest::SourceGetSettings(p) => Request::Command(C::SourceGetSettings(p)),
             WireRequest::MediaPlay(p) => Request::Command(C::MediaPlay(p)),
             WireRequest::MediaPause(p) => Request::Command(C::MediaPause(p)),
@@ -3313,6 +3353,8 @@ impl From<Request> for WireRequest {
                 C::SyncApplyToDeviceSources(p) => WireRequest::SyncApplyToDeviceSources(p),
                 C::SourceRetarget(p) => WireRequest::SourceRetarget(p),
                 C::SourceReload(p) => WireRequest::SourceReload(p),
+                C::BrowserReload(p) => WireRequest::BrowserReload(p),
+                C::BrowserRunScript(p) => WireRequest::BrowserRunScript(p),
                 C::SourceGetSettings(p) => WireRequest::SourceGetSettings(p),
                 C::MediaPlay(p) => WireRequest::MediaPlay(p),
                 C::MediaPause(p) => WireRequest::MediaPause(p),

@@ -82,6 +82,9 @@ pub enum EditKind {
     Reset,
     /// Attributes were pasted onto sources (ADR-0133; the name is the copied source's).
     PasteAttributes,
+    /// Leaving studio mode put the program scene back as it was on air, dropping the
+    /// edits made in Preview (ADR-0151; the name is the scene's).
+    DiscardPreview,
 }
 
 /// The step the next undo or redo applies: its kind and the name of the source or

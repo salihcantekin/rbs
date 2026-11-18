@@ -731,6 +731,18 @@ fn every_request() -> Vec<Request> {
             target: "window:7".to_owned(),
         })),
         c(Command::SourceReload(ReloadSource { source: 3 })),
+        c(Command::BrowserReload(BrowserReload {
+            source: 3,
+            bypass_cache: true,
+        })),
+        c(Command::BrowserRunScript(BrowserRunScript {
+            source: 3,
+            script: Some("document.title = 'x'".to_owned()),
+        })),
+        c(Command::BrowserRunScript(BrowserRunScript {
+            source: 3,
+            script: None,
+        })),
         c(Command::SourceGetSettings(GetSourceSettings { source: 3 })),
         c(Command::MediaPlay(MediaSource { source: 3 })),
         c(Command::MediaPause(MediaSource { source: 3 })),
