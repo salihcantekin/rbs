@@ -899,19 +899,12 @@ component DestinationsCard inherits SettingsCard {
         }
     }
     if Studio.st-ed-open: DestinationEditor { }
+    // The count, then Add destination at the row's end.
     if !Studio.st-ed-open: HorizontalLayout {
         padding-top: Tokens.space-2;
         // Room between the button and the notes under it.
         padding-bottom: root.noted ? Tokens.space-3 : 0;
         spacing: Tokens.space-3;
-        Button {
-            lead: IconName.plus;
-            text: @tr("Add destination");
-            kind: "secondary";
-            horizontal-stretch: 0;
-            enabled: Studio.st-dest-can-add;
-            clicked => { Studio.dest-add(); }
-        }
         Text {
             text: Studio.st-dest-count;
             color: Theme.text-secondary;
@@ -920,6 +913,14 @@ component DestinationsCard inherits SettingsCard {
             accessible-role: none;
         }
         Rectangle { horizontal-stretch: 1; }
+        Button {
+            lead: IconName.plus;
+            text: @tr("Add destination");
+            kind: "secondary";
+            horizontal-stretch: 0;
+            enabled: Studio.st-dest-can-add;
+            clicked => { Studio.dest-add(); }
+        }
     }
     if Studio.st-dest-upload != "": SettingsNotice { text: Studio.st-dest-upload; }
     if Studio.st-dest-warnings != "": SettingsNotice { text: Studio.st-dest-warnings; problem: true; }
