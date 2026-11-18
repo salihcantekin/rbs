@@ -1334,7 +1334,9 @@ impl App {
                 Some(SourceKind::Browser) => {
                     // Without the browser engine the studio opens Settings › Add-ons
                     // instead and adds nothing (ADR-0145 decision 8).
-                    self.studio.add_browser_page("https://example.com/");
+                    // The page waits for its address: Properties opens on its
+                    // Page tab, where the address is typed or a file picked.
+                    self.studio.add_browser_page("");
                     return;
                 }
                 Some(SourceKind::Text) => {
@@ -1890,6 +1892,9 @@ impl Ctx {
             if let Some(source) = applied.focus_text {
                 app.show_source_properties(source, 4);
             }
+            if let Some(source) = applied.focus_browser {
+                app.show_source_properties(source, 5);
+            }
             if let Some(source) = applied.focus_shape {
                 let _ = app.session.set_section_closed("properties.shape", false);
                 app.show_source_properties(source, 0);
@@ -2358,6 +2363,9 @@ impl Ctx {
         }
         if let Some(w) = &app.settings {
             s.push(&w.global::<Studio>(), states, panel);
+        }
+        if let Some(w) = &app.source_settings {
+            s.push_source_settings(&w.global::<Studio>());
         }
 
         // The vertical canvas makes its picture only while its panel shows here: a
@@ -4032,6 +4040,28 @@ fn pick_media() {
     }
 }
 
+/// Asks for the page file of a browser source (ADR-0109 decision 4).
+fn pick_page_file(id: i32) {
+    let task = entry::spawn_local(async move {
+        let Some(ctx) = CTX.with(|c| c.borrow().clone()) else {
+            return;
+        };
+        let picked = file_dialog::open_page("Choose a page file").await;
+        ctx.update(move |app| match picked {
+            Ok(None) => {}
+            Err(why) => app.show_error(UiError::Other(why)),
+            Ok(Some(path)) => app.studio.set_browser_file(id, &path),
+        });
+    });
+    if let Err(e) = task {
+        CTX.with(|c| {
+            if let Some(ctx) = c.borrow().clone() {
+                ctx.update(move |app| app.show_error(UiError::Other(e.to_string())));
+            }
+        });
+    }
+}
+
 /// Asks for the file a text source reads (ADR-0129 decision 13).
 fn pick_text_file(id: i32) {
     let task = entry::spawn_local(async move {
@@ -4151,6 +4181,19 @@ mod file_dialog {
             .map(|f| f.path().to_owned()))
     }
 
+    /// A page file a browser source shows (ADR-0109 decision 4); `Ok(None)` when
+    /// cancelled.
+    #[cfg(any(target_os = "macos", windows))]
+    pub async fn open_page(title: &str) -> Result<Option<PathBuf>, String> {
+        Ok(rfd::AsyncFileDialog::new()
+            .set_title(title)
+            .add_filter("Web page", &["html", "htm", "svg"])
+            .add_filter("All files", &["*"])
+            .pick_file()
+            .await
+            .map(|f| f.path().to_owned()))
+    }
+
     /// Where to export; `Ok(None)` when cancelled.
     #[cfg(any(target_os = "macos", windows))]
     pub async fn save(title: &str, file_name: &str) -> Result<Option<PathBuf>, String> {
@@ -4188,6 +4231,11 @@ mod file_dialog {
 
     #[cfg(not(any(target_os = "macos", windows)))]
     pub async fn open_text(_title: &str) -> Result<Option<PathBuf>, String> {
+        Err(NONE.into())
+    }
+
+    #[cfg(not(any(target_os = "macos", windows)))]
+    pub async fn open_page(_title: &str) -> Result<Option<PathBuf>, String> {
         Err(NONE.into())
     }
 
@@ -5286,6 +5334,50 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     });
     on!(on_choose_text_file, |_app, id: i32| {
         pick_text_file(id);
+    });
+    // A browser source's Page tab (ADR-0109, ADR-0132, ADR-0149).
+    on!(
+        on_set_browser_value,
+        |app, id: i32, key: slint::SharedString, value: slint::SharedString| {
+            app.studio
+                .set_browser_value(id, key.as_str(), value.as_str());
+        }
+    );
+    on!(
+        on_set_browser_number,
+        |app, id: i32, key: slint::SharedString, value: f32| {
+            app.studio.set_browser_number(id, key.as_str(), value);
+        }
+    );
+    on!(
+        on_set_browser_flag,
+        |app, id: i32, key: slint::SharedString, value: bool| {
+            app.studio.set_browser_flag(id, key.as_str(), value);
+        }
+    );
+    on!(on_set_browser_local, |app, id: i32, local: bool| {
+        app.studio.set_browser_local(id, local);
+        if local {
+            pick_page_file(id);
+        }
+    });
+    on!(on_choose_browser_file, |_app, id: i32| {
+        pick_page_file(id);
+    });
+    on!(on_browser_reload, |app, id: i32, bypass: bool| {
+        app.studio.browser_reload(id, bypass);
+    });
+    on!(on_browser_run_script, |app, id: i32| {
+        app.studio.browser_run_script(id);
+    });
+    on!(on_browser_interact, |app, id: i32| {
+        app.studio.browser_interact(id);
+    });
+    on!(on_browser_forget_sign_in, |app, id: i32| {
+        app.studio.browser_forget_sign_in(id);
+    });
+    on!(on_open_browser_engine, |app| {
+        app.studio.open_add_on = Some(rbs_app::add_ons::BROWSER_ENGINE.to_owned());
     });
     on!(on_fit_text_box, |app, id: i32| {
         app.studio.fit_text_box(id);

@@ -23,6 +23,8 @@
 
 use std::time::Duration;
 
+pub mod automation;
+pub mod control;
 pub mod page;
 pub mod runtime;
 
@@ -84,7 +86,8 @@ pub const PIXEL_FORMAT: &str = "rgba8";
 /// Colour space of helper frames.
 pub const COLOR_SPACE: &str = "srgb";
 /// Largest control payload accepted, so a bad length cannot allocate without bound.
-pub const MAX_PAYLOAD: usize = 64 * 1024;
+/// A configure carries up to 64 KiB of CSS and 32 KiB of script (ADR-0149 decision 8).
+pub const MAX_PAYLOAD: usize = 128 * 1024;
 /// The helper beats at least this often.
 pub const HEARTBEAT_PERIOD: Duration = Duration::from_millis(500);
 /// No heartbeat for this long is a hang (ADR-0109 decision 8).
@@ -131,6 +134,104 @@ pub struct Configure {
     /// Sample rate the runner asks its engine for, so the studio rarely resamples.
     /// 0: the engine's own.
     pub sample_rate: u32,
+    /// CSS, zoom, the user's script, timers and retry (ADR-0132, ADR-0149).
+    pub page: PageOptions,
+}
+
+/// What the runner does to the page besides showing it (ADR-0132 decisions 4, 5 and 10,
+/// ADR-0149). The default is a plain page: no CSS, no script, no timers, zoom 100,
+/// retry on, a fresh profile.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PageOptions {
+    /// Custom CSS; empty for none.
+    pub css: String,
+    /// Page zoom in percent (25..=500).
+    pub zoom_percent: u16,
+    /// The user's script; empty for none.
+    pub script: String,
+    /// Run the script after each load.
+    pub script_on_load: bool,
+    /// Seconds between script runs; 0 for none.
+    pub script_every_s: u32,
+    /// Seconds between reloads; 0 for none.
+    pub reload_every_s: u32,
+    /// Keep error pages off air and retry.
+    pub retry_on_error: bool,
+    /// Reload a `file` page when its directory changes.
+    pub reload_on_file_change: bool,
+    /// The kept profile's directory; empty for a fresh temporary profile.
+    pub profile_dir: String,
+}
+
+impl Default for PageOptions {
+    fn default() -> Self {
+        Self {
+            css: String::new(),
+            zoom_percent: 100,
+            script: String::new(),
+            script_on_load: false,
+            script_every_s: 0,
+            reload_every_s: 0,
+            retry_on_error: true,
+            reload_on_file_change: false,
+            profile_dir: String::new(),
+        }
+    }
+}
+
+fn put_text(body: &mut Vec<u8>, text: &str) {
+    let bytes = text.as_bytes();
+    let len = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
+    body.extend_from_slice(&len.to_le_bytes());
+    body.extend_from_slice(&bytes[..usize::try_from(len).unwrap_or(bytes.len())]);
+}
+
+fn take_text(rest: &mut &[u8]) -> Option<String> {
+    let len = take_u32(rest)? as usize;
+    let text = std::str::from_utf8(rest.get(..len)?).ok()?.to_owned();
+    *rest = rest.get(len..)?;
+    Some(text)
+}
+
+fn take_u32(rest: &mut &[u8]) -> Option<u32> {
+    let v = u32::from_le_bytes(rest.get(..4)?.try_into().ok()?);
+    *rest = rest.get(4..)?;
+    Some(v)
+}
+
+fn take_u8(rest: &mut &[u8]) -> Option<u8> {
+    let v = *rest.first()?;
+    *rest = rest.get(1..)?;
+    Some(v)
+}
+
+impl PageOptions {
+    fn encode(&self, body: &mut Vec<u8>) {
+        put_text(body, &self.css);
+        body.extend_from_slice(&u32::from(self.zoom_percent).to_le_bytes());
+        put_text(body, &self.script);
+        body.push(u8::from(self.script_on_load));
+        body.extend_from_slice(&self.script_every_s.to_le_bytes());
+        body.extend_from_slice(&self.reload_every_s.to_le_bytes());
+        body.push(u8::from(self.retry_on_error));
+        body.push(u8::from(self.reload_on_file_change));
+        put_text(body, &self.profile_dir);
+    }
+
+    fn decode(mut rest: &[u8]) -> Option<Self> {
+        let rest = &mut rest;
+        Some(Self {
+            css: take_text(rest)?,
+            zoom_percent: u16::try_from(take_u32(rest)?).ok()?,
+            script: take_text(rest)?,
+            script_on_load: take_u8(rest)? != 0,
+            script_every_s: take_u32(rest)?,
+            reload_every_s: take_u32(rest)?,
+            retry_on_error: take_u8(rest)? != 0,
+            reload_on_file_change: take_u8(rest)? != 0,
+            profile_dir: take_text(rest)?,
+        })
+    }
 }
 
 /// Encodes a configure payload, including the length prefix.
@@ -159,6 +260,7 @@ pub fn encode_configure(config: &Configure) -> Vec<u8> {
     body.extend_from_slice(&sound_len.to_le_bytes());
     body.extend_from_slice(sound);
     body.extend_from_slice(&config.sample_rate.to_le_bytes());
+    config.page.encode(&mut body);
     prefix(body)
 }
 
@@ -191,6 +293,13 @@ pub fn decode_configure(bytes: &[u8]) -> Option<Configure> {
         .to_owned();
     let rate = tail.get(2 + sound_len..2 + sound_len + 4)?;
     let sample_rate = u32::from_le_bytes(rate.try_into().ok()?);
+    // An older studio sends no page block: a plain page.
+    let rest = tail.get(2 + sound_len + 4..)?;
+    let page = if rest.is_empty() {
+        PageOptions::default()
+    } else {
+        PageOptions::decode(rest)?
+    };
     Some(Configure {
         url,
         width,
@@ -200,6 +309,7 @@ pub fn decode_configure(bytes: &[u8]) -> Option<Configure> {
         frames,
         sound,
         sample_rate,
+        page,
     })
 }
 
@@ -266,10 +376,27 @@ mod tests {
             frames: "/rbsb.1.0".into(),
             sound: "/rbsb.1.1".into(),
             sample_rate: 48_000,
+            page: PageOptions::default(),
         };
         let encoded = encode_configure(&config);
-        assert_eq!(decode_configure(&encoded), Some(config));
+        assert_eq!(decode_configure(&encoded), Some(config.clone()));
         assert_eq!(decode_configure(&encoded[..encoded.len() - 1]), None);
+        let page = Configure {
+            page: PageOptions {
+                css: "body { background: none }".into(),
+                zoom_percent: 150,
+                script: "document.title = 'x'".into(),
+                script_on_load: true,
+                script_every_s: 30,
+                reload_every_s: 600,
+                retry_on_error: false,
+                reload_on_file_change: true,
+                profile_dir: "/data/browser-profiles/0123".into(),
+            },
+            ..config
+        };
+        let encoded = encode_configure(&page);
+        assert_eq!(decode_configure(&encoded), Some(page));
     }
 
     #[test]

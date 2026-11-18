@@ -3,6 +3,7 @@
 //! visible, the Program panel's preview layer, recording and streaming with their
 //! output settings.
 
+use rbs_browser_ipc::control::Control;
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -73,6 +74,7 @@ const REPORT_EVERY: u32 = 30;
 pub(crate) mod add_picker;
 pub(crate) mod ai;
 pub(crate) mod attributes;
+pub(crate) mod browser_props;
 pub(crate) mod destinations;
 pub(crate) mod filters;
 pub(crate) mod loudness;
@@ -313,6 +315,14 @@ pub struct StudioUi {
     focus_text: Option<i32>,
     /// The stored settings of each text source in the rows, by id: the Text tab's.
     text_settings: std::collections::BTreeMap<i32, rbs_scene::model::Settings>,
+    /// Taken by [`Self::apply`] when a browser page was just added: Properties opens
+    /// on its Page tab.
+    focus_browser: Option<i32>,
+    /// The stored settings of each browser source in the rows, by id, and how it
+    /// runs: the Page tab's (ADR-0109, ADR-0132, ADR-0149).
+    browser_rows: std::collections::BTreeMap<i32, (rbs_scene::model::Settings, browser_props::Run)>,
+    /// A file page whose Page tab shows Web address until an address is typed.
+    browser_web: Option<i32>,
     /// Moving and resizing on the picture panel (ADR-0048).
     edit: PreviewEdit,
     /// The selection as marks, panel coordinates; and as the toolkit draws them.
@@ -691,6 +701,9 @@ impl StudioUi {
             focus_text: None,
             font_current: String::new(),
             text_settings: std::collections::BTreeMap::new(),
+            focus_browser: None,
+            browser_rows: std::collections::BTreeMap::new(),
+            browser_web: None,
             edit: PreviewEdit::default(),
             mark_buf: Vec::with_capacity(MAX_MARKS),
             marks: Rc::new(VecModel::default()),
@@ -952,6 +965,7 @@ impl StudioUi {
                 .map(|s| text_props::text_data(shown, s))
                 .unwrap_or_default(),
         );
+        g.set_browser_props(self.browser_data(shown));
         g.set_profile_name(self.user.profile_name.as_str().into());
         g.set_collection_name(self.user.collection_name.as_str().into());
         g.set_switching(self.switching.is_some());
@@ -5172,7 +5186,120 @@ impl StudioUi {
         });
     }
 
-    /// Adds a browser page (ADR-0109). The helper paints synthetic frames until CEF ships.
+    /// The Page tab's data for the browser source `id`; off for any other source.
+    fn browser_data(&self, id: i32) -> crate::ui::BrowserData {
+        let Some((settings, run)) = self.browser_rows.get(&id) else {
+            return Default::default();
+        };
+        let (w, h) = (self.canvas.width, self.canvas.height);
+        let mut data = browser_props::browser_data(
+            id,
+            settings,
+            run,
+            crate::studio_host::attributes_browser_size(w, h),
+        );
+        if self.browser_web == Some(id) && data.file {
+            data.file = false;
+            data.url = Default::default();
+            data.file_name = Default::default();
+        }
+        data
+    }
+
+    /// The Page fields of the Source settings window's source (a browser source),
+    /// for that window's `Studio` global.
+    pub fn push_source_settings(&self, g: &Studio<'_>) {
+        let id = self.source_settings.row_data(0).map_or(-1, |s| s.id);
+        g.set_browser_props(self.browser_data(id));
+    }
+
+    fn patch_browser(&mut self, id: i32, patch: text_props::Patch) {
+        if patch.is_empty() || !self.browser_rows.contains_key(&id) {
+            return;
+        }
+        self.deleted.clear();
+        self.send(Command::SetSourceSettings {
+            id: SourceId::from_raw(id as u32),
+            patch,
+            gesture: ui_gesture(0),
+        });
+    }
+
+    /// A text setting of the Page tab (`url`, `css`, `script`).
+    pub fn set_browser_value(&mut self, id: i32, key: &str, value: &str) {
+        let patch = browser_props::value_patch(key, value);
+        if key == rbs_sources::types::keys::URL && !patch.is_empty() {
+            self.browser_web = None;
+        }
+        self.patch_browser(id, patch);
+    }
+
+    /// A number of the Page tab.
+    pub fn set_browser_number(&mut self, id: i32, key: &str, value: f32) {
+        if value.is_finite() {
+            self.patch_browser(id, browser_props::number_patch(key, f64::from(value)));
+        }
+    }
+
+    /// A switch of the Page tab.
+    pub fn set_browser_flag(&mut self, id: i32, key: &str, on: bool) {
+        self.patch_browser(id, browser_props::flag_patch(key, on));
+    }
+
+    /// Web address (false) or local file (true). A web page keeps its address until a
+    /// file is picked; a file page shows an empty address until one is typed.
+    pub fn set_browser_local(&mut self, id: i32, local: bool) {
+        if local {
+            self.browser_web = None;
+        } else {
+            self.browser_web = Some(id);
+        }
+    }
+
+    /// The page file picked for the browser source `id`.
+    pub fn set_browser_file(&mut self, id: i32, path: &std::path::Path) {
+        self.browser_web = None;
+        let mut patch = text_props::Patch::new();
+        patch.insert(
+            rbs_sources::types::keys::URL.to_owned(),
+            serde_json::Value::from(browser_props::file_url(path)),
+        );
+        self.patch_browser(id, patch);
+    }
+
+    /// Reload or Reload without cache on the Page tab (ADR-0132 decision 5). Until
+    /// the runner takes messages, a reload opens the page again.
+    pub fn browser_reload(&mut self, id: i32, bypass_cache: bool) {
+        if self.browser_rows.contains_key(&id) {
+            self.send(Command::BrowserControl {
+                id: SourceId::from_raw(id as u32),
+                message: Control::Reload { bypass_cache },
+            });
+        }
+    }
+
+    /// Run now on the Page tab (ADR-0149 decision 3): the saved script, once.
+    pub fn browser_run_script(&mut self, id: i32) {
+        if self.browser_rows.contains_key(&id) {
+            self.send(Command::BrowserControl {
+                id: SourceId::from_raw(id as u32),
+                message: Control::RunScript(None),
+            });
+        }
+    }
+
+    /// Interact… on the Page tab (ADR-0132 decision 6).
+    pub fn browser_interact(&mut self, id: i32) {
+        let _ = id;
+    }
+
+    /// Forget sign-in on the Page tab (ADR-0132 decision 10).
+    pub fn browser_forget_sign_in(&mut self, id: i32) {
+        let _ = id;
+    }
+
+    /// Adds a browser page (ADR-0109); an empty `url` adds one that waits for its
+    /// address, and Properties opens on its Page tab.
     pub fn add_browser_page(&mut self, url: &str) {
         self.deleted.clear();
         self.adding = true;
@@ -5531,7 +5658,12 @@ impl StudioUi {
             reloadable: row.kind.is_some(),
             has_settings: matches!(
                 row.kind,
-                Some(SourceKind::Screen | SourceKind::Window | SourceKind::Camera)
+                Some(
+                    SourceKind::Screen
+                        | SourceKind::Window
+                        | SourceKind::Camera
+                        | SourceKind::Browser
+                )
             ),
             sized: row.picture.is_some(),
             flip: row.layout.map(|l| l.flip_state()).unwrap_or_default(),
@@ -6162,6 +6294,7 @@ impl StudioUi {
                 self.set_rows(rows);
                 out.focus_shape = self.focus_shape.take();
                 out.focus_text = self.focus_text.take();
+                out.focus_browser = self.focus_browser.take();
                 self.refresh_existing();
                 self.refresh_marks();
             }
@@ -6746,6 +6879,7 @@ impl StudioUi {
                     id: r.id.get() as i32,
                     name: r.name.as_str().into(),
                     kind: r.kind.map_or("Unknown type", SourceKind::label).into(),
+                    browser: r.kind == Some(SourceKind::Browser),
                     kind_code: r
                         .kind
                         .and_then(|k| SourceKind::ALL.iter().position(|a| *a == k))
@@ -6868,6 +7002,12 @@ impl StudioUi {
             {
                 self.focus_text = Some(added.id);
             }
+            if rows
+                .iter()
+                .any(|r| r.id.get() as i32 == added.id && r.kind == Some(SourceKind::Browser))
+            {
+                self.focus_browser = Some(added.id);
+            }
         } else if !data.iter().any(|d| d.id == self.selected) {
             self.selected = -1;
         }
@@ -6875,6 +7015,21 @@ impl StudioUi {
         self.text_settings = rows
             .iter()
             .filter_map(|r| Some((r.id.get() as i32, r.text.clone()?)))
+            .collect();
+        self.browser_rows = rows
+            .iter()
+            .filter_map(|r| {
+                let run = browser_props::Run {
+                    running: matches!(r.status, SourceStatus::Running),
+                    reason: r.browser_reason,
+                    failed: match &r.status {
+                        SourceStatus::Failed(why) => why.clone(),
+                        SourceStatus::Unavailable { detail, .. } => detail.clone(),
+                        _ => String::new(),
+                    },
+                };
+                Some((r.id.get() as i32, (r.browser.clone()?, run)))
+            })
             .collect();
         self.rows = rows;
         // The Source tab marks the source's own target: it may have changed.
@@ -7256,6 +7411,8 @@ pub struct Applied {
     pub focus_shape: Option<i32>,
     /// A text source was just added and selected: open Properties on its Text tab.
     pub focus_text: Option<i32>,
+    /// A browser page was just added and selected: open Properties on its Page tab.
+    pub focus_browser: Option<i32>,
     /// A control API client asked to switch: scene collections (`true`) or output
     /// profiles to the entry with this id. The caller switches as the File menu
     /// does and then calls [`StudioUi::refresh_library`], which answers the host.

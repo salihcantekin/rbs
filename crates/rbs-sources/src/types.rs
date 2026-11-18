@@ -95,6 +95,29 @@ pub mod keys {
     pub const URL: &str = "url";
     /// Bool, browser: keep straight alpha. Default false, which forces opaque alpha.
     pub const TRANSPARENT: &str = "transparent";
+    /// Text, browser: custom CSS, at most 64 KiB (ADR-0132 decision 4). Default empty.
+    pub const CSS: &str = "css";
+    /// Bool, browser: reload a `file` page when its directory changes (ADR-0132 decision 5).
+    pub const RELOAD_ON_FILE_CHANGE: &str = "reload_on_file_change";
+    /// Bool, browser: keep this source's sign-in in its own profile (ADR-0132 decision 10).
+    pub const KEEP_SIGNED_IN: &str = "keep_signed_in";
+    /// Text, browser: 32 lowercase hex digits naming the kept profile; set by the
+    /// server only, never by a client (ADR-0132 decision 10).
+    pub const PROFILE_ID: &str = "profile_id";
+    /// Int, browser: reload every N seconds, 0 or 10..=86400 (ADR-0149 decision 2).
+    pub const RELOAD_EVERY_S: &str = "reload_every_s";
+    /// Text, browser: the user's own script, at most 32 768 bytes (ADR-0149 decision 3).
+    pub const SCRIPT: &str = "script";
+    /// Bool, browser: run `script` after each load (ADR-0149 decision 3).
+    pub const SCRIPT_ON_LOAD: &str = "script_on_load";
+    /// Int, browser: run `script` every N seconds, 0 or 1..=86400 (ADR-0149 decision 3).
+    pub const SCRIPT_EVERY_S: &str = "script_every_s";
+    /// Int, browser: page zoom in percent, 25..=500. Default 100 (ADR-0149 decision 4).
+    pub const ZOOM_PERCENT: &str = "zoom_percent";
+    /// Bool, browser: stay Active while placed anywhere (ADR-0149 decision 5).
+    pub const KEEP_RUNNING: &str = "keep_running";
+    /// Bool, browser: keep error pages off air and retry (ADR-0149 decision 6). Default true.
+    pub const RETRY_ON_ERROR: &str = "retry_on_error";
 
     // Text source (ADR-0129 decisions 3 and 11; ranges in `rbs_text`). `width` and
     // `height` are the box, `color`, `color2` and `angle` the fill, `target` a

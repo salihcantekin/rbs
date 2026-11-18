@@ -340,6 +340,20 @@ pub enum SourceStatus {
     },
 }
 
+/// A new kept-profile id: 128 random bits as 32 lowercase hex digits (ADR-0132
+/// decision 10).
+fn new_profile_id() -> Result<String, Refusal> {
+    let token = rbs_api::token::Token::generate()
+        .map_err(|e| Refusal::Invalid(format!("No random id for the profile: {e}.")))?;
+    Ok(token.hash().to_hex().chars().take(32).collect())
+}
+
+/// A new browser page's size on a `w` x `h` canvas: the canvas, at most 1920x1080,
+/// even ("Use canvas size" on the Page tab sets it).
+pub fn attributes_browser_size(w: u32, h: u32) -> (i64, i64) {
+    attributes::browser_size(w, h)
+}
+
 /// One source of the program scene, as the UI shows it.
 #[derive(Debug, Clone)]
 pub struct SourceRow {
@@ -402,6 +416,12 @@ pub struct SourceRow {
     /// A text source's stored settings (ADR-0129 decision 13: the Text tab shows
     /// them); `None` for every other kind.
     pub text: Option<Settings>,
+    /// A browser source's stored settings (the Page tab shows them, ADR-0109,
+    /// ADR-0132, ADR-0149); `None` for every other kind.
+    pub browser: Option<Settings>,
+    /// Why a browser source is not running, as the control API says it
+    /// (`browser_runtime_missing`, `browser_runtime_mismatch`, `browser_cap`).
+    pub browser_reason: Option<&'static str>,
     /// Capture region in full-picture pixels (ADR-0103); absent when `cap_has` is false.
     pub cap_has: bool,
     /// Left edge of the capture region.
@@ -1003,6 +1023,15 @@ pub enum Command {
     },
     /// Try a source that is not running again with its stored settings (ADR-0077).
     ReloadSource(SourceId),
+    /// A message to a browser source's running page: reload it, or run a script
+    /// (ADR-0132 decision 5, ADR-0149 decision 3). A reload of a page that does not
+    /// run is [`Command::ReloadSource`].
+    BrowserControl {
+        /// The browser source.
+        id: SourceId,
+        /// What to send.
+        message: rbs_browser_ipc::control::Control,
+    },
     /// Play, pause, seek or restart a media file (ADR-0108 decision 10): a live action,
     /// not an undo step.
     Media {
@@ -4279,6 +4308,12 @@ fn start(
         .map_or((config.size, config.fps), |c| (c.size, c.frame_rate));
     // The runner ships with the app; the engine it loads is an add-on, resolved now
     // only when the collection has a browser source (ADR-0145 decision 6).
+    // Signed-in profiles sit beside the add-ons, in the local data directory.
+    let profiles = config
+        .add_ons
+        .as_ref()
+        .and_then(|setup| setup.root.parent())
+        .map(|data| data.join("browser-profiles"));
     let add_ons = add_ons::AddOnsHost::new(config.add_ons);
     let engine_slot = Arc::new(crate::browser_tree::EngineSlot::default());
     if collection
@@ -4287,12 +4322,16 @@ fn start(
     {
         engine_slot.set(add_ons.browser_engine());
     }
-    let browser = Arc::new(crate::browser_tree::RunnerBrowserTree::new(
+    let mut tree = crate::browser_tree::RunnerBrowserTree::new(
         config
             .browser_runner
             .or_else(crate::browser_tree::resolve_runner),
         Arc::clone(&engine_slot),
-    ));
+    );
+    if let Some(dir) = profiles {
+        tree = tree.with_profiles(dir);
+    }
+    let browser = Arc::new(tree);
     let browser_tree: Option<Arc<dyn BrowserTree>> =
         Some(Arc::clone(&browser) as Arc<dyn BrowserTree>);
     let mut settings = StudioSettings::new(canvas);
@@ -4996,6 +5035,27 @@ impl Host {
                 Ok(Reload::Restarted(done)) => self.answer_live(Ok(done), notify),
                 Err(e) => self.answer_live(Err(e), notify),
             },
+            Command::BrowserControl { id, message } => {
+                let browser = self
+                    .collection
+                    .source(id)
+                    .is_some_and(|s| s.type_id.as_str() == types::BROWSER_SOURCE);
+                if !browser {
+                    let e = Refusal::NotFound(format!("There is no browser source {}.", id.get()));
+                    self.answer_live(Err(e), notify);
+                } else if self.studio.browser_control(id, &message) {
+                    self.answer_live(Ok(true), notify);
+                } else if matches!(message, rbs_browser_ipc::control::Control::Reload { .. }) {
+                    match self.reload_source(id) {
+                        Ok(Reload::Retargeted) => self.answer(Ok(true), notify),
+                        Ok(Reload::Restarted(done)) => self.answer_live(Ok(done), notify),
+                        Err(e) => self.answer_live(Err(e), notify),
+                    }
+                } else {
+                    // No page runs: nothing to run the script in.
+                    self.answer_live(Ok(false), notify);
+                }
+            }
             Command::SetCompanionAudio { source, on } => {
                 let has = self
                     .collection
@@ -9748,7 +9808,11 @@ impl Host {
             .ok_or_else(|| Refusal::NotFound("The canvas is gone.".into()))?;
         let (w, h) = attributes::browser_size(canvas.size.width, canvas.size.height);
         let mut settings = Settings::new();
-        settings.insert(keys::URL.into(), SettingValue::Text(url.trim().to_owned()));
+        // An empty address adds a page that waits for one (Add source › Browser:
+        // Properties opens on its address); it starts nothing until then.
+        if !url.trim().is_empty() {
+            settings.insert(keys::URL.into(), SettingValue::Text(url.trim().to_owned()));
+        }
         settings.insert(keys::WIDTH.into(), SettingValue::Int(w));
         settings.insert(keys::HEIGHT.into(), SettingValue::Int(h));
         rbs_sources::validate_settings(&SourceKind::Browser.type_id(), &settings)
@@ -11090,6 +11154,13 @@ impl Host {
         let (name, type_id) = (source.name.clone(), source.type_id.clone());
         let old_device = device_sync::device_key(source);
         let mut settings = source.settings.clone();
+        let browser = SourceKind::of(&type_id) == Some(SourceKind::Browser);
+        // A kept profile's id is RBS's to set, never a client's (ADR-0132 decision 10).
+        if browser && patch.contains_key(keys::PROFILE_ID) {
+            return Err(Refusal::Invalid(
+                "\"profile_id\" is set by RBS when \"keep_signed_in\" turns on.".to_owned(),
+            ));
+        }
         for (key, value) in patch {
             match value {
                 serde_json::Value::Null => {
@@ -11119,6 +11190,15 @@ impl Host {
                     )));
                 }
             }
+        }
+        if browser
+            && settings.get(keys::KEEP_SIGNED_IN) == Some(&SettingValue::Bool(true))
+            && !settings.contains_key(keys::PROFILE_ID)
+        {
+            settings.insert(
+                keys::PROFILE_ID.to_owned(),
+                SettingValue::Text(new_profile_id()?),
+            );
         }
         rbs_sources::validate_settings(&type_id, &settings)
             .map_err(|e| Refusal::Invalid(e.to_string()))?;
@@ -11270,6 +11350,37 @@ impl Host {
             notify(Update::Media(ticks));
         }
         playing.then_some(MEDIA_TICK)
+    }
+
+    /// `browser.reload` and `browser.run_script`: a message to the source's running
+    /// page. No running page is `conflict` with reason `browser_not_running`; an
+    /// agent cannot wake a hidden page (ADR-0132 decision 5, ADR-0149 decision 7).
+    fn browser_message(
+        &mut self,
+        source: u32,
+        message: &rbs_sources::BrowserMessage,
+    ) -> Result<(), ApiError> {
+        let id = SourceId::from_raw(source);
+        let browser = self
+            .collection
+            .source(id)
+            .is_some_and(|s| s.type_id.as_str() == types::BROWSER_SOURCE);
+        if !browser {
+            return Err(ApiError::new(
+                ErrorKind::NotFound,
+                format!("there is no browser source {source}"),
+            ));
+        }
+        if self.studio.browser_control(id, message) {
+            return Ok(());
+        }
+        let mut data = serde_json::Map::new();
+        data.insert("reason".into(), "browser_not_running".into());
+        Err(ApiError::with_data(
+            ErrorKind::Conflict,
+            "the page is not running: it runs while a scene on Program or Preview shows it",
+            data,
+        ))
     }
 
     fn reload_source(&mut self, id: SourceId) -> Result<Reload, Refusal> {
@@ -13336,6 +13447,8 @@ impl Host {
                     ),
                     text: (SourceKind::of(&s.type_id) == Some(SourceKind::Text))
                         .then(|| s.settings.clone()),
+                    browser: (kind == Some(SourceKind::Browser)).then(|| s.settings.clone()),
+                    browser_reason: state.and_then(|st| st.reason),
                     cap_has,
                     cap_l,
                     cap_t,
@@ -13465,6 +13578,8 @@ impl ControlTarget for ApiTarget<'_> {
     ) -> Result<Response, ApiError> {
         self.host.check_on_air(caller.irreversible, &command)?;
         self.host.check_network(caller.irreversible, &command)?;
+        self.host
+            .check_local_only(caller.token.is_some(), &command)?;
         self.handle(command, events)
     }
 
@@ -14351,6 +14466,17 @@ impl ApiTarget<'_> {
                 .media_command(p.source, MediaOp::State)
                 .map(Response::MediaState)
                 .map_err(|e| refused(&e)),
+            C::BrowserReload(p) => host
+                .browser_message(
+                    p.source,
+                    &rbs_sources::BrowserMessage::Reload {
+                        bypass_cache: p.bypass_cache,
+                    },
+                )
+                .map(|()| Response::Done(Empty {})),
+            C::BrowserRunScript(p) => host
+                .browser_message(p.source, &rbs_sources::BrowserMessage::RunScript(p.script))
+                .map(|()| Response::Done(Empty {})),
             C::SourceReload(p) => {
                 if host
                     .reload_source(SourceId::from_raw(p.source))
