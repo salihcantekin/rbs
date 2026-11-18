@@ -38,16 +38,17 @@ format = "tar.bz2"                # tar.bz2 | tar.gz
 strip = 1                         # leading path parts removed when unpacking
 library_dir = "Release"           # holds libcef / the macOS framework, icudtl.dat and the V8 snapshots, after strip
 resources_dir = "Resources"       # holds the .pak files and locales/ (may equal library_dir)
+required = ["libcef.so", "icudtl.dat", "snapshot_blob.bin", "v8_context_snapshot.bin"]  # must end up in library_dir
 ```
 
 ```rust
 pub struct AddOnId(String);           // validated: [a-z0-9.-], 3..=64 bytes, has a dot
 pub enum Kind { Runtime }             // later: Plugin, data kinds
 pub struct Entry { id, kind, name, summary, version, hosts, notices, platform: Option<Artifact> }
-pub struct Artifact { url, size: u64, sha256: [u8; 32], unpacked_size: u64, format, strip: u8, library_dir, resources_dir }
+pub struct Artifact { url, size: u64, sha256: [u8; 32], unpacked_size: u64, format, strip: u8, library_dir: RelPath, resources_dir: RelPath, required: Vec<RelPath> }
 pub struct Version(Vec<u32>);         // dotted numbers; 156.6.0 < 156.10.0; anything else does not parse
 
-pub fn parse_entry(toml: &str, target: &str) -> Result<Option<Entry>, CatalogError>;
+pub fn parse_entry(text: &str, target: &str) -> Result<Option<Entry>, CatalogError>;
 ```
 
 Invariants:
@@ -59,37 +60,48 @@ Invariants:
 ### Fetch and Unpack
 
 ```rust
+pub enum Response { Redirect(String), Body(Box<dyn Read + Send>) }
 pub trait Fetch: Send + Sync {
-    /// Starts a GET. Every hop must be https and `allow(host)` must be true.
-    /// Connect timeout 15 s; a read that receives no byte for 30 s is `Stalled`.
-    fn get(&self, url: &Url, allow: &dyn Fn(&str) -> bool) -> Result<Box<dyn Read + Send>, FetchError>;
+    /// One GET. Never follows a redirect: it returns it, and `rbs-add-ons` checks
+    /// `https` and the host list before the next hop (at most 5 hops).
+    /// Connect timeout 15 s; a body read that receives no byte for 30 s fails with
+    /// an io error whose kind is `TimedOut` or whose inner error is `FetchError::Stalled`.
+    fn get(&self, url: &str) -> Result<Response, FetchError>;
 }
-pub enum FetchError { Network(String), HostNotAllowed(String), NotHttps, Stalled }
+pub enum FetchError { Network(String), Stalled }
 
 pub trait Unpack: Send + Sync {
-    /// Decompresses `format` and yields tar entries in archive order; it never writes to disk.
-    fn entries<'a>(&self, format: Format, file: &'a mut File) -> Result<Box<dyn Iterator<Item = Result<ArchiveEntry<'a>, UnpackError>> + 'a>, UnpackError>;
+    /// Decodes `format` and calls `visit` for each entry in archive order; it never
+    /// writes to disk and checks nothing. It stops when `visit` breaks.
+    fn unpack(&self, format: Format, input: &mut dyn Read,
+              visit: &mut dyn FnMut(ArchiveEntry<'_>) -> ControlFlow<()>) -> Result<(), UnpackError>;
 }
-pub struct ArchiveEntry<'a> { pub name: Vec<u8>, pub kind: EntryKind, pub mode: u32, pub link: Option<Vec<u8>>, pub data: Box<dyn Read + 'a> }
+pub struct ArchiveEntry<'a> { pub name: Vec<u8>, pub kind: EntryKind, pub mode: u32, pub link: Option<Vec<u8>>, pub data: &'a mut dyn Read }
 pub enum EntryKind { File, Dir, Symlink, HardLink, Other }
 ```
 
 ```rust
 pub trait AddOnFs: Send + Sync {
     fn lock(&self, path: &Path) -> Result<Box<dyn LockGuard>, FsError>;          // OS advisory lock; Busy if held
-    fn create_file_beneath(&self, root: &Path, rel: &Path, mode: u32) -> Result<File, FsError>; // never follows links
-    fn create_dir_beneath(&self, root: &Path, rel: &Path) -> Result<(), FsError>;
-    fn symlink_beneath(&self, root: &Path, rel: &Path, target: &Path) -> Result<(), FsError>;
-    fn hard_link_beneath(&self, root: &Path, rel: &Path, existing: &Path) -> Result<(), FsError>;
+    fn create_file_beneath(&self, root: &Path, rel: &RelPath, mode: u32) -> Result<File, FsError>; // never follows links
+    fn create_dir_beneath(&self, root: &Path, rel: &RelPath) -> Result<(), FsError>;
+    fn symlink_beneath(&self, root: &Path, rel: &RelPath, target: &str) -> Result<(), FsError>;
+    fn hard_link_beneath(&self, root: &Path, rel: &RelPath, existing: &RelPath) -> Result<(), FsError>;
+    fn open_read(&self, path: &Path) -> Result<File, FsError>;
     fn sync_file(&self, file: &File) -> Result<(), FsError>;
     fn sync_dir(&self, dir: &Path) -> Result<(), FsError>;
     fn free_space(&self, dir: &Path) -> Result<u64, FsError>;
     fn rename(&self, from: &Path, to: &Path) -> Result<(), FsError>;              // SharingViolation is its own error
-    fn remove_all(&self, dir: &Path) -> Result<(), FsError>;
+    fn remove_file(&self, path: &Path) -> Result<(), FsError>;                   // NotFound when absent
+    fn remove_all(&self, dir: &Path) -> Result<(), FsError>;                     // never follows links; Ok when absent
+    fn list_dir(&self, dir: &Path) -> Result<Vec<String>, FsError>;               // empty when absent
+    fn exists(&self, path: &Path) -> bool;                                       // does not follow a final link
+    fn pause(&self, duration: Duration);                                         // the rename retry; tests advance a TestClock
 }
+pub enum FsError { Busy, SharingViolation, NotFound, Link, Io(String) }
 ```
 
-`rbs-add-ons-sys` implements all three traits: `Fetch` with `ureq` (HTTP/1.1, automatic redirects off) on `rustls` with `rustls-platform-verifier` (the OS trust roots); `*_beneath` with `openat2` and `RESOLVE_BENEATH` on Linux 5.6 and later (before that, a walk of `openat` with `O_NOFOLLOW | O_DIRECTORY` per component), `O_NOFOLLOW` opens on macOS, `FILE_FLAG_OPEN_REPARSE_POINT` checks on Windows. `rbs-add-ons` holds every rule in this spec; the implementations only decode, transfer and perform. `rbs-add-ons` tests use in-memory versions: a `Fetch` that serves bytes, redirects, failures and stalls, an `Unpack` over listed entries, and an `AddOnFs` that can hold a lock, fail a rename with a sharing violation or report little space. `rbs-add-ons-sys` tests cover the timeouts against a local test server and the OS operations in a temporary directory.
+`rbs-add-ons-sys` implements all three traits: `Fetch` with `ureq` (HTTP/1.1, automatic redirects off) on `rustls` with `rustls-platform-verifier` (the OS trust roots); `*_beneath` with `openat2` and `RESOLVE_BENEATH` on Linux 5.6 and later (before that, a walk of `openat` with `O_NOFOLLOW | O_DIRECTORY` per component), `O_NOFOLLOW` opens on macOS, `FILE_FLAG_OPEN_REPARSE_POINT` checks on Windows. `rbs-add-ons` holds every rule in this spec; the implementations only decode, transfer and perform. `rbs-add-ons` tests use in-memory versions: a `Fetch` that serves bytes, redirects, failures and stalls, an `Unpack` over listed entries, and an `AddOnFs` over a temporary directory that can hold a lock for "another process", fail a rename with a sharing violation or report little space. `rbs-add-ons-sys` tests cover the timeouts against a local test server and the OS operations in a temporary directory.
 
 ### Entry names
 
@@ -103,7 +115,7 @@ One check, the same on every OS, applied to each entry name and each link target
 - equals an earlier name after Unicode NFC followed by `str::to_lowercase` (exact duplicates are refused too);
 - has a parent component that an earlier entry created as a link.
 
-`library_dir` and `resources_dir` must name directories the archive created. After unpacking, `icudtl.dat`, `snapshot_blob.bin` and `v8_context_snapshot.bin` (Windows and Linux) are moved from `resources_dir` to `library_dir` when only the former has them; an install whose `library_dir` then lacks the library or one of these files is `unsafe_archive`.
+`library_dir` and `resources_dir` must name directories the archive created. After unpacking, each name in `required` that is not in `library_dir` but is in `resources_dir` is moved into `library_dir`; one in neither is `unsafe_archive`. The browser engine's entry lists the library, `icudtl.dat` and the V8 snapshots there on Windows and Linux, because CEF loads them from the module directory.
 
 ### Transfer and install
 

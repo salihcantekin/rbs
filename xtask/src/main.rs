@@ -265,6 +265,12 @@ fn deny(from: &str, to: &str) -> Option<String> {
             ],
             "user data sees the scene model, not an adapter or a toolkit",
         ),
+        Class::AddOns => deny_named(
+            to,
+            to_class,
+            &["rbs-core", "serde", "sha2", "toml", "unicode-normalization"],
+            "add-ons hold the rules; HTTP, archives and OS file operations come through rbs-add-ons-sys (ADR-0145)",
+        ),
         Class::Import => deny_named(
             to,
             to_class,
@@ -343,6 +349,7 @@ fn deny_engine(from: &str, to: &str, to_class: Option<Class>) -> Option<String> 
             | Class::Ui
             | Class::Settings
             | Class::UserData
+            | Class::AddOns
             | Class::Import
             | Class::Tool
             | Class::Plugin
@@ -380,6 +387,7 @@ fn deny_adapter(from: &str, to: &str, to_class: Option<Class>) -> Option<String>
             | Class::Ui
             | Class::Settings
             | Class::UserData
+            | Class::AddOns
             | Class::Import
             | Class::Tool
             | Class::Plugin
@@ -461,6 +469,7 @@ enum Class {
     AppUi,
     Settings,
     UserData,
+    AddOns,
     Import,
     App,
     Tool,
@@ -487,6 +496,7 @@ fn class(name: &str) -> Option<Class> {
         | "rbs-app-ui-dialogs" | "rbs-app-ui-probes" | "rbs-app-ui-single" => Class::AppUi,
         "rbs-remote-settings" => Class::Settings,
         "rbs-user-data" => Class::UserData,
+        "rbs-add-ons" => Class::AddOns,
         "rbs-import-obs" => Class::Import,
         "rbs-app" | "rbs-cli" | "rbs-mcp" => Class::App,
         "rbs-plugin-sdk" => Class::PluginSdk,
