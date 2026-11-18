@@ -769,9 +769,11 @@ impl CommandState for Shown<'_> {
             "stream.main.toggle" if !s.stream_shows(OutputCanvas::Main) => {
                 Err(STREAMING_OFF.to_owned())
             }
-            "stream.toggle" if s.go_live_is_vertical() => CommandId::parse("stream.vertical.toggle")
-                .map_err(|e| e.to_string())
-                .and_then(|v| self.enabled(&v)),
+            "stream.toggle" if s.go_live_is_vertical() => {
+                CommandId::parse("stream.vertical.toggle")
+                    .map_err(|e| e.to_string())
+                    .and_then(|v| self.enabled(&v))
+            }
             "stream.toggle" | "stream.main.toggle" => match s.st_state {
                 st_state::LIVE | st_state::STARTING => Ok(()),
                 st_state::ENDING => Err("The stream is ending.".to_owned()),
@@ -1344,9 +1346,7 @@ impl CommandState for Shown<'_> {
             // frame's Go live and Hold while either canvas does.
             "stream.toggle" | "stream.hold_toggle" => self.studio.streaming_shows(),
             "stream.main.toggle" if !self.studio.stream_shows(OutputCanvas::Main) => false,
-            "stream.vertical.toggle" if !self.studio.stream_shows(OutputCanvas::Vertical) => {
-                false
-            }
+            "stream.vertical.toggle" if !self.studio.stream_shows(OutputCanvas::Vertical) => false,
             "output.with_vertical"
                 if id.param("kind") == Some("stream")
                     && !(self.studio.stream_shows(OutputCanvas::Main)

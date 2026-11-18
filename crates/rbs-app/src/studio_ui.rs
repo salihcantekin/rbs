@@ -8830,6 +8830,61 @@ mod tests {
         assert!(next > id);
     }
 
+    /// ADR-0148 decision 8: the stream items show while a destination is on or the
+    /// stream runs; only Go live is refused, never End stream.
+    #[test]
+    fn stream_items_follow_streaming_availability() {
+        use crate::menu_bar::{Shown, toolbar};
+        use rbs_app::stream_destinations::Canvas;
+        use rbs_ui::command::{CommandId, CommandState};
+        let (mut ui, d) = ui("stream-items");
+        let ws = rbs_ui::builtin::edit();
+        let fixed = |ui: &StudioUi| -> (Vec<String>, bool, Result<(), String>) {
+            let shown = Shown {
+                workspace: &ws,
+                workspaces: &[],
+                studio: ui,
+                panels: Vec::new(),
+                themes: Vec::new(),
+                experience: crate::background::Experience::Pro,
+                density: Default::default(),
+                maximized: None,
+                camera: Default::default(),
+                replay: Default::default(),
+                can_undo: true,
+                can_redo: false,
+                projectors: Vec::new(),
+                displays: Vec::new(),
+            };
+            let go_live = CommandId::parse("stream.toggle").unwrap();
+            let ids = toolbar(&shown).0.fixed.into_iter().map(|t| t.id).collect();
+            (ids, shown.applies(&go_live), shown.enabled(&go_live))
+        };
+        // A new profile has no destination: Record only, and Go live says why.
+        assert!(!ui.streaming_shows());
+        let (ids, applies, enabled) = fixed(&ui);
+        assert_eq!(ids, ["record.toggle"]);
+        assert!(!applies);
+        assert_eq!(enabled, Err(rbs_app::studio_host::STREAMING_OFF.to_owned()));
+        // A first destination: Go live is back.
+        ui.stream.server = "rtmp://live.example.com/app".into();
+        assert!(ui.stream_available(OutputCanvas::Main));
+        let (ids, applies, _) = fixed(&ui);
+        assert_eq!(ids, ["stream.toggle", "record.toggle"]);
+        assert!(applies);
+        // Turned off: hidden again.
+        assert!(ui.destinations.set_enabled(Canvas::Main.first(), false));
+        assert!(!ui.streaming_shows());
+        assert_eq!(fixed(&ui).0, ["record.toggle"]);
+        // A running stream keeps End stream however the list changed.
+        ui.st_state = st_state::LIVE;
+        let (ids, applies, enabled) = fixed(&ui);
+        assert_eq!(ids, ["stream.toggle", "record.toggle"]);
+        assert!(applies);
+        assert_eq!(enabled, Ok(()));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     #[test]
     fn removing_the_first_destination_waits_for_its_key_then_clears_the_slot() {
         use rbs_app::stream_destinations::Canvas;
@@ -9276,7 +9331,9 @@ mod tests {
         };
         use slint::ComponentHandle;
 
-        let (ui, d) = ui("frame-fits");
+        let (mut ui, d) = ui("frame-fits");
+        // A destination, so the fixed group has Go live too (ADR-0148).
+        ui.stream.server = "rtmp://live.example.com/app".into();
         let ws = rbs_ui::builtin::edit();
         let shown = Shown {
             workspace: &ws,
