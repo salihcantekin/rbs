@@ -17,6 +17,7 @@
 //!   the GPU (write, and for NV12 the decode).
 //!
 //! On software adapters (CI) the GPU part is CPU-bound; compare against `main` only.
+//! `RBS_BENCH_POWER=low` prefers the integrated adapter.
 
 use std::time::{Duration, Instant};
 
@@ -46,9 +47,14 @@ fn canvas_frame(pool: &TexturePool, id: rbs_gpu::TextureId, i: u64) -> VideoFram
 }
 
 fn bench(c: &mut Criterion) {
+    // `RBS_BENCH_POWER=low` measures on the integrated GPU of a hybrid machine.
+    let power = match std::env::var("RBS_BENCH_POWER").as_deref() {
+        Ok("low") => rbs_gpu::context::PowerPreference::LowPower,
+        _ => rbs_gpu::context::PowerPreference::HighPerformance,
+    };
     let ctx = match GpuContext::new(&GpuRequest {
         allow_software: true,
-        ..GpuRequest::default()
+        power,
     }) {
         Ok(ctx) => ctx,
         Err(e) => {
