@@ -781,6 +781,9 @@ export global Shell {
     in property <bool> audio-only;
     // RBS sends the program to the virtual camera (ADR-0066 decision 12).
     in property <bool> live-camera;
+    // A canvas shows stream items (ADR-0148 decision 8): the status text names the
+    // stream only then ("Not recording" otherwise).
+    in property <bool> streaming: true;
     in property <[PanelEntry]> panels;
     in property <[WorkspaceEntry]> workspaces;
     in property <string> workspace-name;
@@ -1247,6 +1250,8 @@ export struct ShortcutRow {
     changed: bool,
     problem: string,
     note: string,
+    // Its feature is off (streaming, ADR-0148): the name is dimmed, keys still edit.
+    off: bool,
 }
 
 export global Shortcuts {
@@ -2212,6 +2217,11 @@ export global Studio {
     // a stream show only then.
     in property <int> st-dest-on-count;
     in property <bool> st-available: true;
+    // Either canvas shows stream items (ADR-0148 decision 8): Recording's "Mark stream
+    // start and end" shows only then.
+    in property <bool> st-streaming: true;
+    // The main canvas shows stream items: Live controls' Go live shows only then.
+    in property <bool> st-main-shows: true;
     in property <bool> st-dest-can-add;
     in property <bool> st-dest-editable: true;
     in property <string> st-dest-upload;
