@@ -119,7 +119,9 @@ pub fn browser_data(id: i32, settings: &Settings, run: &Run, canvas: (i64, i64))
         script: text_of(settings, keys::SCRIPT).into(),
         script_on_load: flag_of(settings, keys::SCRIPT_ON_LOAD, false),
         script_every: int_of(settings, keys::SCRIPT_EVERY_S, 0),
-        keep_running: flag_of(settings, keys::KEEP_RUNNING, false),
+        // Filled in from the source's activity policy by the caller (ADR-0152).
+        run: -1,
+        on_return: -1,
         retry_on_error: flag_of(settings, keys::RETRY_ON_ERROR, true),
         running: run.running,
         state,
@@ -184,7 +186,6 @@ pub fn flag_patch(key: &str, on: bool) -> Patch {
         keys::RELOAD_ON_FILE_CHANGE,
         keys::KEEP_SIGNED_IN,
         keys::SCRIPT_ON_LOAD,
-        keys::KEEP_RUNNING,
         keys::RETRY_ON_ERROR,
     ]
     .contains(&key)
@@ -239,7 +240,7 @@ mod tests {
         let d = browser_data(3, &page("https://example.com/"), &run, (1920, 1080));
         assert!(d.on && !d.file && d.running);
         assert_eq!((d.width, d.height, d.fps, d.zoom), (1920, 1080, 30, 100));
-        assert!(d.retry_on_error && !d.keep_running);
+        assert!(d.retry_on_error);
         assert_eq!(d.state, state::OK);
         let missing = Run {
             reason: Some(BROWSER_RUNTIME_MISSING),
@@ -295,10 +296,8 @@ mod tests {
             flag_patch(keys::RETRY_ON_ERROR, false)[keys::RETRY_ON_ERROR],
             Value::from(false)
         );
-        assert_eq!(
-            flag_patch(keys::KEEP_RUNNING, false)[keys::KEEP_RUNNING],
-            Value::Null
-        );
+        // "Runs" replaced the switch (ADR-0152): not a Page tab flag any more.
+        assert!(flag_patch(keys::KEEP_RUNNING, true).is_empty());
         assert!(flag_patch(keys::PROFILE_ID, true).is_empty());
         assert_eq!(
             file_url(std::path::Path::new("C:\\o\\a b.html")),

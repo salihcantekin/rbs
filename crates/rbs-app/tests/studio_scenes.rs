@@ -2086,6 +2086,96 @@ fn a_film_restart_when_shown_setting_is_written_to_its_activity_policy() {
 }
 
 #[test]
+fn properties_activity_choice_is_stored_without_type_defaults_and_shown_in_the_rows() {
+    // ADR-0152 phase 2: Properties' "Runs" and "When it comes back" send the policy
+    // in force; the type's defaults are stored as absent and the UI rows follow.
+    use rbs_app::studio_host::{ActivityChoice, Command};
+    use rbs_core::media::Size;
+    use rbs_core::timing::FrameRate;
+    use rbs_graph::node::NodeTypeId;
+    use rbs_scene::activity::{OnReturn, Run};
+    use rbs_scene::model::{ItemContent, Layout, SceneScope, SettingValue, Settings};
+    let dir = std::env::temp_dir().join(format!("rbs-film-choice-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("film.mov");
+    std::fs::write(&file, b"film").unwrap();
+    let mut settings = Settings::new();
+    settings.insert(
+        "path".to_owned(),
+        SettingValue::Text(file.display().to_string()),
+    );
+    let mut doc = rbs_scene::SceneCollection::default();
+    let fps = FrameRate::new(30, 1).unwrap();
+    let (main, _) = doc.add_canvas("Main", Size::new(1280, 720), fps).unwrap();
+    let (scene, _) = doc.add_scene("Scene", SceneScope::Shared).unwrap();
+    doc.set_program(main, Some(scene)).unwrap();
+    let film = doc
+        .add_source("Film", NodeTypeId::new("org.rbs.source.media"), settings)
+        .unwrap()
+        .0;
+    doc.add_item(
+        scene,
+        ItemContent::Source(film),
+        Layout::new([0.0, 0.0], [640.0, 360.0]),
+        None,
+    )
+    .unwrap();
+    let Some((host, updates, _api, mut c)) = start_with_media(Some(doc), None) else {
+        return;
+    };
+    let activity = |c: &mut Client| {
+        c.call("source.get_activity", json!({"source": film.get()}))["result"].clone()
+    };
+    let row_shows = |want: ActivityChoice| {
+        next(&updates, |u| match u {
+            Update::Sources(r) if r.iter().any(|r| r.id == film && r.activity == Some(want)) => {
+                Some(())
+            }
+            _ => None,
+        })
+    };
+    // Only `on_return`: nothing else in the row changes, so the row must say it.
+    host.send(Command::SetSourceActivity {
+        id: film,
+        run: Run::Shown,
+        on_return: Some(OnReturn::Resume),
+    });
+    row_shows(ActivityChoice {
+        run: Run::Shown,
+        on_return: Some(OnReturn::Resume),
+    });
+    let a = activity(&mut c);
+    assert_eq!(a.get("run"), None);
+    assert_eq!(a["on_return"], json!("resume"));
+    host.send(Command::SetSourceActivity {
+        id: film,
+        run: Run::OnAir,
+        on_return: Some(OnReturn::Resume),
+    });
+    row_shows(ActivityChoice {
+        run: Run::OnAir,
+        on_return: Some(OnReturn::Resume),
+    });
+    assert_eq!(activity(&mut c)["run"], json!("on_air"));
+    // Back to the type's defaults: nothing is stored.
+    host.send(Command::SetSourceActivity {
+        id: film,
+        run: Run::Shown,
+        on_return: Some(OnReturn::Restart),
+    });
+    row_shows(ActivityChoice {
+        run: Run::Shown,
+        on_return: Some(OnReturn::Restart),
+    });
+    let a = activity(&mut c);
+    assert_eq!(a.get("run"), None);
+    assert_eq!(a.get("on_return"), None);
+    // One undo step brings the last choice back.
+    ok(&c.call("edit.undo", json!({})));
+    assert_eq!(activity(&mut c)["run"], json!("on_air"));
+}
+
+#[test]
 fn a_page_keep_running_setting_is_written_to_its_activity_policy() {
     // ADR-0152 decision 10: `keep_running` is the deprecated spelling of `run: placed`.
     use rbs_core::media::Size;
