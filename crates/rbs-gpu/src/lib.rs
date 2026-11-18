@@ -42,13 +42,15 @@ pub mod node;
 pub mod pool;
 pub mod readback;
 pub mod rgba;
+pub mod scroll;
 pub mod share;
 pub mod upload;
 pub mod yuv;
 pub mod yuv_decode;
 
 pub use compositor::{
-    CanvasDesc, Compositor, Layer, LayerShape, LayerStyle, RenderStats, Transfer,
+    CanvasDesc, Compositor, Layer, LayerShape, LayerStyle, MAX_SCROLL_LAYERS, RenderStats,
+    ScrollBinding, Transfer,
 };
 pub use context::{GpuContext, GpuMetrics, GpuRequest, PowerPreference};
 pub use download::{DownloadShare, DownloadStats, YuvDownload};
@@ -56,9 +58,11 @@ pub use error::GpuError;
 pub use interop::Importer;
 pub use math::{Affine2, UvRect};
 pub use motion::{MOTION_GRID_H, MOTION_GRID_W, MOTION_RING, MotionProbe, MotionStats};
+pub use node::ScrollSender;
 pub use pool::{DEFAULT_POOL_SLOTS, PooledTexture, TextureDesc, TexturePool};
 pub use rbs_core::media::TextureId;
 pub use rgba::{RgbaDownload, RgbaStats};
+pub use scroll::{LayerScroll, ScrollDirection, ScrollGpu, ScrollRepeat, ScrollRun, ScrollStart};
 pub use upload::SourceUpload;
 pub use yuv::{ScaleKernel, YuvConverter, YuvFormat};
 pub use yuv_decode::{YuvDecoder, YuvSource};

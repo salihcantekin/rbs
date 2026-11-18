@@ -246,3 +246,44 @@ fn rgb_of_a_yuv_frame_is_decoded_once_per_picture() {
     assert_eq!(next_rgb.sequence(), 8);
     rgb.release();
 }
+
+#[test]
+fn scrolling_yuv_layers_wrap_with_their_gap() {
+    use rbs_gpu::{
+        LayerScroll, ScrollBinding, ScrollDirection, ScrollRepeat, ScrollRun, ScrollStart, UvRect,
+    };
+    let Some(ctx) = common::gpu() else { return };
+    let mut pool = TexturePool::new();
+    let mut conv = YuvConverter::new(ctx, YuvFormat::Nv12, W, H).unwrap();
+    let red = picture(ctx, &mut pool, &mut conv, YuvFormat::Nv12, [1.0, 0.0, 0.0]);
+    let mut l = layer(red);
+    // The picture is 16 long, the gap 16: 8 travelled shows picture then gap.
+    let spec = LayerScroll {
+        direction: ScrollDirection::Left,
+        repeat: ScrollRepeat::Loop,
+        start: ScrollStart::Inside,
+        gap: 16.0,
+        fade: 0.0,
+        run: ScrollRun::start(Timestamp::ZERO, 8.0),
+    };
+    let frame = spec
+        .frame(
+            &l.transform,
+            &UvRect::FULL,
+            W,
+            H,
+            Timestamp::from_nanos(1_000_000_000),
+        )
+        .unwrap();
+    l.scroll = Some(frame.gpu(spec.direction, spec.repeat, spec.fade));
+    let mut binding = ScrollBinding::new(ctx);
+    let mut comp = compositor(ctx, 1);
+    let canvas = pool.acquire(ctx, &TextureDesc::canvas(W, H)).unwrap();
+    let stats = comp
+        .render_scrolled(ctx, &pool, &[l], canvas, Some(&mut binding))
+        .unwrap();
+    assert_eq!(stats.drawn_layers, 1);
+    let px = readback::read_linear(ctx, &pool, canvas).unwrap();
+    assert_close(at(&px, W, 3, 4), [1.0, 0.0, 0.0, 1.0], 0.02);
+    assert_close(at(&px, W, 12, 4), [0.0; 4], 0.02);
+}
