@@ -740,6 +740,11 @@ impl SourceMapper for Browser {
         if s.contains_key("css") && css.trim() != OBS_DEFAULT_CSS {
             m.notes.push("Custom CSS is not in RBS.".to_owned());
         }
+        // "Refresh browser when scene becomes active" (ADR-0152 decision 10); off
+        // is the type's default, `continue`.
+        if flag(s, "restart_when_active", false) {
+            m.activity.on_return = Some(OnReturn::Restart);
+        }
         if flag(s, "reroute_audio", false) {
             m.notes
                 .push("RBS does not take sound from browser pages yet.".to_owned());

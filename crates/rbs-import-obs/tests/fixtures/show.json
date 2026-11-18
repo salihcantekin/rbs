@@ -77,7 +77,7 @@
     {"id": "color_source_v3", "versioned_id": "color_source_v3", "name": "Badge colour", "settings": {"color": 4278190335, "width": 300, "height": 100}},
     {"id": "image_source", "versioned_id": "image_source", "name": "Badge logo", "settings": {"file": "C:/Users/someone/Pictures/badge.png"}},
     {"id": "browser_source", "versioned_id": "browser_source", "name": "Alerts",
-     "settings": {"url": "https://widgets.example.com/alerts?token=SECRET-TOKEN-123", "width": 400, "height": 301, "css": "body { color: red; }"}},
+     "settings": {"url": "https://widgets.example.com/alerts?token=SECRET-TOKEN-123", "width": 400, "height": 301, "css": "body { color: red; }", "restart_when_active": true}},
     {"id": "color_source_v3", "versioned_id": "color_source_v3", "name": "Background", "settings": {"color": 4280295456}},
     {"id": "image_source", "versioned_id": "image_source", "name": "Logo", "settings": {"file": "/Users/someone/logo.png"}},
     {"id": "image_source", "versioned_id": "image_source", "name": "Old photo", "settings": {"file": "/Users/someone/photo.jpg"}},
