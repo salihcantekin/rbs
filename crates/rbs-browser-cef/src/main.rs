@@ -90,6 +90,9 @@ struct Page {
     ours: AtomicBool,
     /// The runner's clock for `cycle`.
     epoch: Instant,
+    /// The paint rate the studio asked for; a hidden background page paints once per
+    /// second instead (ADR-0149 decision 5).
+    fps: i32,
 }
 
 impl Page {
@@ -821,6 +824,7 @@ fn run_browser(args: &args::Args, app: &mut App, engine: &engine::Engine) -> i32
         cycle: Mutex::new(Cycle::new(CycleOptions::of(&config.page, config.transparent))),
         ours: AtomicBool::new(false),
         epoch: Instant::now(),
+        fps: i32::try_from(config.fps.clamp(1, 60)).unwrap_or(30),
     });
 
     // Control messages, then stdin closing: the studio's stop (ADR-0109 decision 8,
@@ -994,7 +998,7 @@ fn browse(
     page.ours.store(true, Ordering::Release);
     let window = WindowInfo::default().set_as_windowless(Default::default());
     let browser_settings = BrowserSettings {
-        windowless_frame_rate: i32::try_from(config.fps.clamp(1, 60)).unwrap_or(30),
+        windowless_frame_rate: page.fps,
         // 0 is fully transparent; otherwise an opaque black page background.
         background_color: if config.transparent { 0 } else { 0xFF00_0000 },
         javascript_access_clipboard: State::DISABLED,
@@ -1108,6 +1112,13 @@ fn apply_control(page: &Page, browser: &Browser, message: &Control) {
                     host.set_focus(1);
                 }
                 input::send(&host, event);
+            }
+        }
+        // Hidden: one paint per second, and the page is not told it is hidden, so its
+        // timers and sockets keep running (ADR-0149 decision 5).
+        Control::Shown(shown) => {
+            if let Some(host) = browser.host() {
+                host.set_windowless_frame_rate(if *shown { page.fps } else { 1 });
             }
         }
     }

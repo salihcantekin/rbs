@@ -77,6 +77,9 @@ pub enum ShowClass {
     Program,
     /// Preview only.
     Preview,
+    /// Placed but drawn by no shown scene, with `run: placed` (ADR-0149 decision 5,
+    /// ADR-0152): a background page. It never takes a slot from a shown page.
+    Background,
 }
 
 /// One source competing for a helper slot.
@@ -84,7 +87,7 @@ pub enum ShowClass {
 pub struct BrowserClaim {
     /// Source id. Lower wins inside a class.
     pub source: SourceId,
-    /// Program or preview.
+    /// Program, preview or background.
     pub class: ShowClass,
 }
 
@@ -745,6 +748,33 @@ pub struct BrowserControlSidecar {
     /// Page options changed in place since this node was made (live keys): the next
     /// start uses them instead of the node's own.
     page: Mutex<Option<PageOptions>>,
+    /// What a start needs: the node's settings, tree and sound, so the studio can
+    /// start a background page whose picture node is not scheduled.
+    starter: Mutex<Option<Starter>>,
+    /// False while no shown scene draws the page (ADR-0149 decision 5).
+    shown: AtomicBool,
+    /// The page is a background page: a release of the picture node keeps its helper.
+    background: AtomicBool,
+    /// A background page that lost its slot to a shown page (`browser_cap`).
+    capped: AtomicBool,
+}
+
+/// The parts of a browser node a start needs (see [`BrowserControlSidecar::start`]).
+struct Starter {
+    settings: BrowserSettings,
+    tree: Option<Arc<dyn BrowserTree>>,
+    sound: Option<Arc<crate::BrowserSound>>,
+}
+
+/// Why [`BrowserControlSidecar::start`] started no helper.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartFailure {
+    /// The error the node's prepare reports.
+    pub error: BrowserStartError,
+    /// The source reason (`browser_cap`, `browser_no_address`, ...).
+    pub reason: &'static str,
+    /// The helper exited or could not be started: counts toward back-off.
+    pub exit: bool,
 }
 
 fn encode_engine(reason: Option<&'static str>) -> u8 {
@@ -766,7 +796,162 @@ impl BrowserControlSidecar {
             exited: AtomicBool::new(false),
             engine: AtomicU8::new(0),
             page: Mutex::new(None),
+            starter: Mutex::new(None),
+            shown: AtomicBool::new(true),
+            background: AtomicBool::new(false),
+            capped: AtomicBool::new(false),
         }
+    }
+
+    fn set_starter(&self, starter: Starter) {
+        if let Ok(mut slot) = self.starter.lock() {
+            *slot = Some(starter);
+        }
+    }
+
+    fn set_sound(&self, sound: Arc<crate::BrowserSound>) {
+        if let Ok(mut slot) = self.starter.lock()
+            && let Some(starter) = slot.as_mut()
+        {
+            starter.sound = Some(sound);
+        }
+    }
+
+    /// Starts the helper when this source holds a slot (the node's prepare, or the
+    /// studio for a background page). `Ok(true)` when it started one now, `Ok(false)`
+    /// when one already runs. Control path; never waits on the page.
+    pub fn start(&self) -> Result<bool, StartFailure> {
+        if self.helper_running() {
+            return Ok(false);
+        }
+        let fail = |error, reason, exit| StartFailure {
+            error,
+            reason,
+            exit,
+        };
+        let Ok(guard) = self.starter.lock() else {
+            return Err(fail(
+                BrowserStartError::Failed("the browser node is gone".into()),
+                HELPER_MISSING,
+                false,
+            ));
+        };
+        let Some(starter) = guard.as_ref() else {
+            return Err(fail(
+                BrowserStartError::Failed("the browser node is gone".into()),
+                HELPER_MISSING,
+                false,
+            ));
+        };
+        if starter.settings.url.is_empty() {
+            self.budget.release(self.source);
+            return Err(fail(
+                BrowserStartError::Unavailable(BROWSER_NO_ADDRESS),
+                BROWSER_NO_ADDRESS,
+                false,
+            ));
+        }
+        let Some(tree) = starter.tree.clone() else {
+            return Err(fail(
+                BrowserStartError::Failed(
+                    "the composition root has not set a browser helper".into(),
+                ),
+                HELPER_MISSING,
+                false,
+            ));
+        };
+        // Before the slot: a source that cannot start holds none and does not back
+        // off (add-ons spec "Browser engine consumer").
+        if let Some(reason) = tree.unavailable() {
+            self.budget.release(self.source);
+            self.set_engine_reason(Some(reason));
+            return Err(fail(BrowserStartError::Unavailable(reason), reason, false));
+        }
+        if !self.budget.holds(self.source) {
+            return Err(fail(BrowserStartError::Cap, BROWSER_CAP, false));
+        }
+        let mut configure = starter.settings.configure();
+        if let Some(page) = self.page() {
+            configure.page = page;
+        }
+        if let Some(id) = starter.settings.profile_id.as_deref() {
+            configure.page.profile_dir = tree.profile_dir(id).unwrap_or_default();
+        }
+        if let Some(sound) = starter.sound.as_ref() {
+            configure.sample_rate = sound.sample_rate();
+        }
+        let sound = starter.sound.clone();
+        drop(guard);
+        match tree.start(&configure, self.sink(), sound) {
+            Ok(mut session) => {
+                session.refresh_sink(&self.sink);
+                if session.poll().is_some() {
+                    let engine = session.exit_reason();
+                    self.budget.release(self.source);
+                    self.set_engine_reason(engine);
+                    return Err(fail(
+                        BrowserStartError::Exited,
+                        engine.unwrap_or(HELPER_EXIT),
+                        true,
+                    ));
+                }
+                if !self.shown.load(Ordering::Acquire) {
+                    session.set_shown(false);
+                }
+                self.set_session(session);
+                self.set_engine_reason(None);
+                self.capped.store(false, Ordering::Release);
+                Ok(true)
+            }
+            Err(error) => {
+                self.budget.release(self.source);
+                Err(fail(BrowserStartError::Failed(error), HELPER_EXIT, true))
+            }
+        }
+    }
+
+    /// Whether a shown scene draws the page (ADR-0149 decision 5): hidden, a running
+    /// helper paints once per second and its sound is dropped; the next start begins
+    /// hidden. Control path.
+    pub fn set_shown(&self, shown: bool) {
+        if self.shown.swap(shown, Ordering::AcqRel) == shown {
+            return;
+        }
+        if let Ok(mut guard) = self.session.lock()
+            && let Some(session) = guard.as_mut()
+        {
+            session.set_shown(shown);
+        }
+    }
+
+    /// False while no shown scene draws the page.
+    pub fn shown(&self) -> bool {
+        self.shown.load(Ordering::Acquire)
+    }
+
+    /// Marks the page as a background page (ADR-0149 decision 5, ADR-0152 `run:
+    /// placed`): a release of its picture node then keeps the helper. Control path.
+    pub fn set_background(&self, background: bool) {
+        self.background.store(background, Ordering::Release);
+    }
+
+    /// True while the page is a background page.
+    pub fn background(&self) -> bool {
+        self.background.load(Ordering::Acquire)
+    }
+
+    /// Stops a background page that lost its slot to a shown page, or that is no
+    /// longer wanted (`capped` true reports `browser_cap`). Control path.
+    pub fn stop_background(&self, capped: bool) {
+        self.clear_session();
+        self.frames().clear();
+        self.budget.release(self.source);
+        self.capped.store(capped, Ordering::Release);
+    }
+
+    /// True while a background page is stopped because a shown page took its slot.
+    pub fn capped(&self) -> bool {
+        self.capped.load(Ordering::Acquire)
     }
 
     /// New page options (live keys): kept for the next start and sent to a running
@@ -916,6 +1101,11 @@ pub trait BrowserSession: Send {
         let _ = message;
         false
     }
+    /// Hides (false) or shows (true) a background page (ADR-0149 decision 5): hidden,
+    /// it paints once per second and its sound is dropped. Control path.
+    fn set_shown(&mut self, shown: bool) {
+        let _ = self.send(&Control::Shown(shown));
+    }
 }
 
 /// The browser node. Standby holds no helper.
@@ -924,7 +1114,6 @@ pub struct BrowserSourceNode {
     settings: BrowserSettings,
     budget: Arc<BrowserBudget>,
     source: SourceId,
-    tree: Option<Arc<dyn BrowserTree>>,
     control: Arc<BrowserControlSidecar>,
     attempts: u32,
     reason: Option<&'static str>,
@@ -937,6 +1126,7 @@ pub struct BrowserSourceNode {
 impl BrowserSourceNode {
     /// Hands the page's sound to the sound node over `sound` (ADR-0106).
     pub fn with_sound(mut self, sound: Arc<crate::BrowserSound>) -> Self {
+        self.control.set_sound(Arc::clone(&sound));
         self.sound = Some(sound);
         self
     }
@@ -948,13 +1138,18 @@ impl BrowserSourceNode {
         source: SourceId,
         tree: Option<Arc<dyn BrowserTree>>,
     ) -> Self {
+        let control = Arc::new(BrowserControlSidecar::new(source, Arc::clone(&budget)));
+        control.set_starter(Starter {
+            settings: settings.clone(),
+            tree,
+            sound: None,
+        });
         Self {
             descriptor: browser_descriptor(),
             settings,
-            budget: Arc::clone(&budget),
+            budget,
             source,
-            tree,
-            control: Arc::new(BrowserControlSidecar::new(source, budget)),
+            control,
             attempts: 0,
             reason: None,
             retry_after: None,
@@ -1003,62 +1198,23 @@ impl BrowserSourceNode {
     /// Starts the helper when this source holds a slot. Otherwise `browser_cap` and
     /// no process.
     pub fn activate(&mut self) -> Result<(), BrowserStartError> {
-        if self.control.helper_running() {
-            return Ok(());
-        }
-        if self.settings.url.is_empty() {
-            self.budget.release(self.source);
-            self.reason = Some(BROWSER_NO_ADDRESS);
-            return Err(BrowserStartError::Unavailable(BROWSER_NO_ADDRESS));
-        }
-        let Some(tree) = self.tree.clone() else {
-            self.reason = Some(HELPER_MISSING);
-            return Err(BrowserStartError::Failed(
-                "the composition root has not set a browser helper".into(),
-            ));
-        };
-        // Before the slot: a source that cannot start holds none and does not back
-        // off (add-ons spec "Browser engine consumer").
-        if let Some(reason) = tree.unavailable() {
-            self.budget.release(self.source);
-            self.reason = Some(reason);
-            self.control.set_engine_reason(Some(reason));
-            return Err(BrowserStartError::Unavailable(reason));
-        }
-        if !self.budget.holds(self.source) {
-            self.reason = Some(BROWSER_CAP);
-            return Err(BrowserStartError::Cap);
-        }
-        let mut configure = self.settings.configure();
-        if let Some(page) = self.control.page() {
-            configure.page = page;
-        }
-        if let Some(id) = self.settings.profile_id.as_deref() {
-            configure.page.profile_dir = tree.profile_dir(id).unwrap_or_default();
-        }
-        if let Some(sound) = self.sound.as_ref() {
-            configure.sample_rate = sound.sample_rate();
-        }
-        match tree.start(&configure, self.control.sink(), self.sound.clone()) {
-            Ok(mut session) => {
-                self.starts = self.starts.saturating_add(1);
-                session.refresh_sink(self.control.sink().as_ref());
-                if session.poll().is_some() {
-                    let engine = session.exit_reason();
-                    self.note_exit();
-                    self.control.set_engine_reason(engine);
-                    self.reason = Some(engine.unwrap_or(HELPER_EXIT));
-                    return Err(BrowserStartError::Exited);
+        match self.control.start() {
+            Ok(started) => {
+                if started {
+                    self.starts = self.starts.saturating_add(1);
                 }
-                self.control.set_session(session);
-                self.control.set_engine_reason(None);
                 self.reason = None;
                 Ok(())
             }
-            Err(error) => {
-                self.budget.release(self.source);
-                self.note_exit();
-                Err(BrowserStartError::Failed(error))
+            Err(failure) => {
+                if failure.exit {
+                    if failure.error == BrowserStartError::Exited {
+                        self.starts = self.starts.saturating_add(1);
+                    }
+                    self.note_exit();
+                }
+                self.reason = Some(failure.reason);
+                Err(failure.error)
             }
         }
     }
@@ -1072,8 +1228,13 @@ impl BrowserSourceNode {
         }
     }
 
-    /// Standby. Kills the helper. No process remains.
+    /// Standby. Kills the helper, so no process remains, unless the page is a
+    /// background page (ADR-0149 decision 5): its picture node leaves the schedule
+    /// and its helper keeps running for the studio.
     pub fn standby(&mut self) {
+        if self.control.background() {
+            return;
+        }
         self.control.clear_session();
         self.control.frames().clear();
         self.budget.release(self.source);

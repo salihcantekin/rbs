@@ -197,6 +197,16 @@ fn control_messages_reach_the_running_helper_in_order() {
         assert!(sup.send(message));
         wait_for([u8::try_from(n + 1).unwrap(), control_mark(message)]);
     }
+    // A background page is hidden and shown again (ADR-0149 decision 5); asking for
+    // the state it is in sends nothing.
+    let n = u8::try_from(messages.len()).unwrap();
+    assert!(sup.shown());
+    assert!(sup.set_shown(false));
+    assert!(!sup.shown());
+    wait_for([n + 1, control_mark(&Control::Shown(false))]);
+    assert!(sup.set_shown(false));
+    assert!(sup.set_shown(true));
+    wait_for([n + 2, control_mark(&Control::Shown(true))]);
     let child = sup.stop().unwrap();
     assert!(child.unavailable);
     assert!(
@@ -259,17 +269,32 @@ fn page_sound_crosses_the_sound_section_in_order() {
         assert!(start.elapsed() < GUARD, "hang guard");
         std::thread::yield_now();
     }
+    // Hidden, the sound is dropped; shown again, it comes back from the present
+    // (ADR-0149 decision 5), still in order.
+    assert!(sup.set_shown(false));
+    assert!(sup.set_shown(true));
+    let resumed = heard.lock().unwrap().frames + 4_800;
+    while heard.lock().unwrap().frames < resumed {
+        assert!(start.elapsed() < GUARD, "hang guard");
+        std::thread::yield_now();
+    }
     sup.stop().unwrap();
     let heard = heard.lock().unwrap();
     assert_eq!(heard.format, Some((48_000, 2)));
     assert!(heard.loud);
     assert!(heard.pumps > 0);
-    // Each packet starts where the one before ended, on the OS clock.
+    // Each packet starts where the one before ended, on the OS clock, except once:
+    // across the dropped sound of the hidden page, which only moves forward.
+    let mut gaps = 0;
     for pair in heard.packets.windows(2) {
         let ((t0, n0), (t1, _)) = (pair[0], pair[1]);
         let end = t0 + (n0 as u64 * 1_000_000_000).div_ceil(48_000);
-        assert!(t1.abs_diff(end) <= 1, "{t0} {n0} {t1}");
+        if t1.abs_diff(end) > 1 {
+            assert!(t1 > end, "{t0} {n0} {t1}");
+            gaps += 1;
+        }
     }
+    assert!(gaps <= 1, "{gaps} gaps");
 }
 
 #[test]

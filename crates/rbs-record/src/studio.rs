@@ -1282,6 +1282,10 @@ pub struct Studio {
     /// decision 2): the binder runs them, and their page takes a preview slot. Empty
     /// while no Interact window is open.
     shown_by: BTreeSet<SourceId>,
+    /// Browser sources that are background pages after the last sync: placed, drawn by
+    /// no shown scene, with `run: placed` (ADR-0149 decision 5, ADR-0152 decision 4).
+    /// Empty while no source asks for it, so nothing is scanned for it (P13).
+    browser_background: BTreeSet<SourceId>,
     /// Boxes on screen before the latest program-scene change, so a source that is in
     /// both scenes moves instead of jumping. Empty once `max_duration` has passed.
     glide: Option<Glide>,
@@ -1796,6 +1800,7 @@ impl Studio {
             pictures: Vec::new(),
             next_picture: 0,
             shown_by: BTreeSet::new(),
+            browser_background: BTreeSet::new(),
             glide: None,
             transitions: BTreeMap::new(),
             transition_done: false,
@@ -2754,6 +2759,7 @@ impl Studio {
                     control.set_restart_when_shown(on_return == OnReturn::Restart);
                 }
             }
+            self.browser_background = browser_background(collection, &self.binder);
             // Armed before its on-air membership is written (ADR-0140 decision 4).
             stinger::arm(
                 &mut self.stinger_arm,
@@ -2906,7 +2912,10 @@ impl Studio {
                 entry.state.name = source.name.clone();
             }
             entry.scheduled = in_plan(&self.binder, entry, &scheduled);
-            if !entry.scheduled || entry.instance.is_some() {
+            // A background page needs its instance while its picture node is not
+            // scheduled: the control handle runs its helper (ADR-0149 decision 5).
+            let background = self.browser_background.contains(&entry.source);
+            if !(entry.scheduled || background) || entry.instance.is_some() {
                 continue;
             }
             // Break before make: the instance it replaces still holds the device.
@@ -3228,8 +3237,12 @@ impl Studio {
         }
 
         // Program-shown pages take a helper slot before preview-only ones (ADR-0109).
-        self.browser_budget
-            .grant(&browser_claims(&self.collection, &self.shown_by));
+        self.browser_budget.grant(&browser_claims(
+            &self.collection,
+            &self.shown_by,
+            &self.browser_background,
+        ));
+        self.drive_background_pages();
         let applied = self.engine.apply(&self.graph);
         if applied.is_ok()
             && let Some(report) = report.as_mut()
@@ -3486,6 +3499,14 @@ impl Studio {
                     state.failed = Some(browser_engine_message(reason).to_owned());
                     state.fault = None;
                     state.reason = Some(reason);
+                } else if self
+                    .browser_controls
+                    .get(&e.source)
+                    .is_some_and(|c| c.capped())
+                {
+                    // A shown page took the background page's slot (ADR-0149
+                    // decision 5).
+                    state.reason = Some(rbs_sources::BROWSER_CAP);
                 } else if self.browser_controls.contains_key(&e.source) {
                     // Both page slots are taken (ADR-0109 decision 7), or the page
                     // has no address yet.
@@ -3936,6 +3957,33 @@ impl Studio {
         self.engine.retry(node)
     }
 
+    /// Runs the background pages after a slot grant, before the apply (ADR-0149
+    /// decision 5): each browser control learns whether a shown scene draws its page
+    /// and whether it is a background page. A background page with a slot is started
+    /// hidden by its control handle; one without a slot is stopped (`browser_cap`); a
+    /// page that stopped being one and that nothing shows is stopped. The picture
+    /// node of a shown page is prepared by the engine as before. Control path.
+    fn drive_background_pages(&self) {
+        for (id, control) in &self.browser_controls {
+            let level = self.binder.level_of(*id).0;
+            let shown = level >= Level::Shown || self.shown_by.contains(id);
+            let background = self.browser_background.contains(id);
+            let was_background = control.background();
+            control.set_background(background);
+            control.set_shown(shown);
+            if background {
+                if self.browser_budget.holds(*id) {
+                    // A refusal shows on the source; the next grant tries again.
+                    let _ = control.start();
+                } else if control.helper_running() {
+                    control.stop_background(true);
+                }
+            } else if was_background && !shown && control.helper_running() {
+                control.stop_background(false);
+            }
+        }
+    }
+
     /// True while browser source `source` has a running page (a helper process).
     pub fn browser_running(&self, source: SourceId) -> bool {
         self.browser_controls
@@ -3958,8 +4006,12 @@ impl Studio {
     /// engine is prepared again at the next apply, with no restart. Returns how many
     /// were. The caller applies.
     pub fn browser_engine_changed(&mut self) -> usize {
-        self.browser_budget
-            .grant(&browser_claims(&self.collection, &self.shown_by));
+        self.browser_budget.grant(&browser_claims(
+            &self.collection,
+            &self.shown_by,
+            &self.browser_background,
+        ));
+        self.drive_background_pages();
         // Every browser source that is not running: one that waited for the engine
         // failed for good, and retrying a node without a failure does nothing.
         let waiting: Vec<NodeId> = self
@@ -5465,6 +5517,7 @@ impl Studio {
 fn browser_claims(
     collection: &SceneCollection,
     shown_by: &BTreeSet<SourceId>,
+    background: &BTreeSet<SourceId>,
 ) -> Vec<BrowserClaim> {
     let mut claims = Vec::new();
     for source in collection.sources() {
@@ -5500,6 +5553,10 @@ fn browser_claims(
         if class.is_none() && shown_by.contains(&source.id) {
             class = Some(ShowClass::Preview);
         }
+        // A background page claims a slot after every shown page (ADR-0149 decision 5).
+        if class.is_none() && background.contains(&source.id) {
+            class = Some(ShowClass::Background);
+        }
         if let Some(class) = class {
             claims.push(BrowserClaim {
                 source: source.id,
@@ -5508,6 +5565,25 @@ fn browser_claims(
         }
     }
     claims
+}
+
+/// The browser sources that are background pages (ADR-0149 decision 5, ADR-0152
+/// decision 4): Active at level `Placed` because their effective `run` is `placed`.
+/// A page without an address is not one.
+fn browser_background(collection: &SceneCollection, binder: &SceneBinder) -> BTreeSet<SourceId> {
+    collection
+        .sources()
+        .filter(|s| s.type_id.as_str() == rbs_sources::types::BROWSER_SOURCE)
+        .filter(|s| s.settings.contains_key(rbs_sources::types::keys::URL))
+        .filter(|s| {
+            binder.level_of(s.id).0 == Level::Placed
+                && rbs_sources::activity_traits(&s.type_id)
+                    .effective(Some(&s.activity))
+                    .run
+                    == rbs_scene::activity::Run::Placed
+        })
+        .map(|s| s.id)
+        .collect()
 }
 
 /// Plain text for a source capture or media node failure (not `Debug` dumps).

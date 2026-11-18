@@ -43,8 +43,9 @@ pub use browser::{
     DEFAULT_FPS as BROWSER_DEFAULT_FPS, DEFAULT_SIZE as BROWSER_DEFAULT_SIZE, DEFAULT_ZOOM,
     HELPER_EXIT, HELPER_MISSING, MAX_CSS_BYTES, MAX_HELPERS, MAX_SCRIPT_BYTES,
     NETWORK_KEYS as BROWSER_NETWORK_KEYS, NOT_PERMITTED, ShowClass, SourceReach,
-    agent_may_set_browser_url, apply_browser_live, browser_descriptor, browser_scheme,
-    browser_settings, browser_url_is_network, file_directory_scope, is_profile_id,
+    StartFailure as BrowserStartFailure, agent_may_set_browser_url, apply_browser_live,
+    browser_descriptor, browser_scheme, browser_settings, browser_url_is_network,
+    file_directory_scope, is_profile_id,
 };
 pub use browser_sound::{
     ARRIVAL as BROWSER_SOUND_ARRIVAL, BROWSER_SOUND_NODE_TYPE, BrowserSound, BrowserSoundFeed,
