@@ -879,33 +879,40 @@ impl Node<GpuRuntime> for VideoExportNode {
             // again as a repeat entry: stamped with the tick, no conversion, no readback
             // (R-03, E-02; ADR-0143 R5).
             let fresh = self.last != Some(picture);
-            // An ISO track stamps the tick, so it takes every tick.
+            // An ISO track stamps the tick, so it takes every tick. A canvas drawn this
+            // tick keeps its own key. Any other frame (a repeat, or an older canvas
+            // converted again after a hold or a lost readback) takes the tick's time and
+            // a new sequence, so stamps never go back.
             let key = if every_tick {
                 (tick.time, tick.index)
-            } else if fresh {
+            } else if fresh && picture.0 >= tick.time {
                 picture
             } else {
-                (tick.time, picture.1)
+                (tick.time, next_generation())
             };
             let place = match window {
                 Some(w) => w.place(key.0.as_nanos()),
                 None => Place::Kept(self.shift),
             };
             if key.0.as_nanos() <= end {
-                self.last = Some(picture);
                 if place == Place::Cut {
                     // Inside a pause window: nothing is converted (ADR-0124).
                 } else if give_way {
                     self.stats.gave_way.fetch_add(1, Ordering::Relaxed);
                 } else if fresh {
-                    if download
-                        .submit_at(gpu, &local.pool, canvas, shifted(key.0, place), key.1)
-                        .is_err()
+                    match download.submit_at(gpu, &local.pool, canvas, shifted(key.0, place), key.1)
                     {
-                        result = Err(NodeError::Backend("video export conversion failed"));
+                        // Only a picture on its way to the encoder is repeated later.
+                        Ok(true) => self.last = Some(picture),
+                        // A full ring (counted in `busy`): converted on the next tick.
+                        Ok(false) => {}
+                        Err(_) => {
+                            result = Err(NodeError::Backend("video export conversion failed"));
+                        }
                     }
                 } else {
-                    // A full ring drops the repeat (counted in `busy`).
+                    // A new frame of the same picture. A full ring drops it (counted in
+                    // `busy`); the picture before it is still the one to repeat.
                     download.submit_repeat(shifted(key.0, place), key.1);
                 }
             }
@@ -928,13 +935,9 @@ impl Node<GpuRuntime> for VideoExportNode {
         self.stats
             .repeated
             .fetch_add(now.repeated - self.seen.repeated, Ordering::Relaxed);
-        if now.busy != self.seen.busy
-            || now.no_buffer != self.seen.no_buffer
-            || now.failed != self.seen.failed
-        {
-            // A conversion that never reached the encoder (a stale one was replaced by
-            // a newer picture): the next tick converts the canvas again instead of
-            // repeating a picture before it.
+        if now.no_buffer != self.seen.no_buffer || now.failed != self.seen.failed {
+            // A readback that never reached the encoder: the next tick converts the
+            // canvas again instead of repeating a picture before it.
             self.last = None;
         }
         self.seen = now;

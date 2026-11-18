@@ -201,8 +201,8 @@ fn a_repeat_comes_out_after_the_readback_before_it() {
         "the repeat shows the picture before it"
     );
 
-    // Newest first: a readback and the repeat behind it completing in one poll give
-    // one frame, the readback's picture with the repeat's stamp.
+    // Newest first: a repeat is never merged into the readback before it. Each is one
+    // frame of a constant frame rate output, so the repeat waits for the next take.
     let white_y = first_luma(&c).0;
     drop((a, b, c));
     assert!(
@@ -213,10 +213,13 @@ fn a_repeat_comes_out_after_the_readback_before_it() {
     ctx.wait_idle().unwrap();
     ctx.poll();
     let d = down.take_ready(ctx).unwrap().unwrap();
-    assert_eq!(d.timestamp(), Timestamp::from_nanos(5));
+    assert_eq!(d.timestamp(), Timestamp::from_nanos(4));
     assert_ne!(first_luma(&d).0, white_y, "grey, not the white before it");
+    let e = down.take_ready(ctx).unwrap().unwrap();
+    assert_eq!(e.timestamp(), Timestamp::from_nanos(5));
+    assert_eq!(first_luma(&e), first_luma(&d), "the repeat shows grey");
     assert!(down.take_ready(ctx).unwrap().is_none());
-    assert_eq!(down.stats().stale, 1);
+    assert_eq!(down.stats().stale, 0, "nothing dropped");
 }
 
 #[test]

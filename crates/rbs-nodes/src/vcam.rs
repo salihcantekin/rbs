@@ -6,7 +6,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use rbs_core::media::PixelFormat;
+use rbs_core::media::{PixelFormat, next_generation};
 use rbs_core::time::Timestamp;
 use rbs_core::timing::{Cadence, FrameRate};
 use rbs_gpu::YuvFormat;
@@ -229,14 +229,27 @@ impl Node<GpuRuntime> for VirtualCameraNode {
                 self.stats.consumer_busy.fetch_add(1, Ordering::Relaxed);
             } else if let Some(slot) = self.session.reserve() {
                 let submitted = if repeat {
-                    // The picture sent last, again with this tick's time (ADR-0143 R5).
-                    Ok(download.submit_repeat(now_tick, picture.1))
+                    // The picture sent last, again with this tick's time and a new sequence, as a
+                    // new frame (ADR-0143 R5).
+                    Ok(download.submit_repeat(now_tick, next_generation()))
                 } else {
-                    self.last = Some(picture);
-                    download.submit_at(gpu, &local.pool, canvas, now_tick, picture.1)
+                    // A canvas drawn this tick keeps its sequence; an older one converted
+                    // again (its readback was lost) takes a new one, so sequences only rise.
+                    let sequence = if picture.0 >= now_tick {
+                        picture.1
+                    } else {
+                        next_generation()
+                    };
+                    download.submit_at(gpu, &local.pool, canvas, now_tick, sequence)
                 };
                 match submitted {
-                    Ok(true) => self.tokens.push_back(slot),
+                    Ok(true) => {
+                        // Only a picture on its way to the session is repeated later.
+                        if !repeat {
+                            self.last = Some(picture);
+                        }
+                        self.tokens.push_back(slot);
+                    }
                     // The staging ring is full (counted in `busy` below), or the
                     // conversion failed: the token is dropped and frees its slot.
                     Ok(false) => drop(slot),
@@ -263,10 +276,7 @@ impl Node<GpuRuntime> for VirtualCameraNode {
         self.stats
             .repeated
             .fetch_add(now.repeated - self.seen.repeated, Ordering::Relaxed);
-        if now.busy != self.seen.busy
-            || now.no_buffer != self.seen.no_buffer
-            || now.failed != self.seen.failed
-        {
+        if now.no_buffer != self.seen.no_buffer || now.failed != self.seen.failed {
             // A conversion that never reached the session: convert the canvas again
             // rather than repeat an older picture.
             self.last = None;

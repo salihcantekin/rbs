@@ -314,7 +314,7 @@ impl YuvDownload {
         self.stats
     }
 
-    /// Readbacks in flight.
+    /// Readbacks and repeat entries in flight (not taken yet).
     pub fn in_flight(&self) -> usize {
         self.slots
             .iter()
@@ -397,7 +397,7 @@ impl YuvDownload {
     /// `sequence`, for a canvas that did not change (render on change, R-03; ADR-0143
     /// R5). No GPU work, no copy: once taken it is the previous frame's buffer again.
     /// Its place in the ring keeps the output in order behind readbacks in flight.
-    /// Returns `Ok(false)` when every staging slot is in flight (counted in `busy`).
+    /// Returns `false` when every slot is in flight (counted in `busy`).
     /// Hot path; never waits.
     pub fn submit_repeat(&mut self, timestamp: Timestamp, sequence: u64) -> bool {
         let slot = &mut self.slots[self.head];
@@ -432,7 +432,10 @@ impl YuvDownload {
         ctx: &GpuContext,
     ) -> Result<Option<VideoFrame>, GpuError> {
         // The newest completed entry's stamp, and the newest readback at or before it,
-        // whose picture that entry shows (a repeat shows the picture before it).
+        // whose picture that entry shows (a repeat shows the picture before it). A repeat
+        // is never merged into another entry: each is one frame of a constant frame rate
+        // output, so a take returns at most one repeat, and a repeat behind a readback
+        // waits for the next take.
         let mut stamp = None;
         let mut picture = None;
         let mut failed = false;
@@ -440,28 +443,37 @@ impl YuvDownload {
         while self.tail != self.head || self.state(self.tail) != IDLE {
             let index = self.tail;
             match self.state(index) {
-                state @ (MAPPED | REPEAT) => {
+                MAPPED => {
                     let slot = &self.slots[index];
                     if stamp.replace((slot.timestamp, slot.sequence)).is_some() {
                         self.stats.stale += 1;
                     }
-                    if state == MAPPED {
-                        if let Some(older) = picture.replace(index) {
-                            self.recycle(older);
-                        }
-                    } else {
-                        // Nothing to unmap: the slot is free at once.
-                        self.recycle(index);
+                    if let Some(older) = picture.replace(index) {
+                        self.recycle(older);
                     }
                     if !NEWEST {
                         self.tail = (self.tail + 1) % self.slots.len();
                         break;
                     }
                 }
+                REPEAT => {
+                    if stamp.is_some() {
+                        // Left for the next take.
+                        break;
+                    }
+                    let slot = &self.slots[index];
+                    stamp = Some((slot.timestamp, slot.sequence));
+                    // Nothing to unmap: the slot is free at once.
+                    self.recycle(index);
+                    self.tail = (self.tail + 1) % self.slots.len();
+                    break;
+                }
                 FAILED => {
                     self.recycle(index);
                     self.stats.failed += 1;
                     failed = true;
+                    // A repeat behind it must not show the picture before the lost one.
+                    self.last = None;
                 }
                 _ => break,
             }
