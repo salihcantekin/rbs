@@ -39,6 +39,18 @@ fn reaches_network<'a>(
     }
 }
 
+/// True when an activity policy would keep a page of `kind` running while nothing
+/// shows it, so it opens connections on its own (ADR-0149 decision 5, ADR-0152
+/// decision 5): a browser's `run: placed` or a linger above 0.
+fn activity_reaches_network(
+    kind: Option<SourceKind>,
+    activity: &rbs_api::request::SetSourceActivity,
+) -> bool {
+    kind == Some(SourceKind::Browser)
+        && (activity.run == Some(rbs_api::types::ActivityRun::Placed)
+            || activity.linger_s.is_some_and(|s| s > 0))
+}
+
 fn refusal(method: &str) -> ApiError {
     let mut data = serde_json::Map::new();
     data.insert("reason".into(), "network".into());
@@ -160,6 +172,11 @@ impl Host {
             // A click or a key can do anything in a page, a sign-up or a purchase
             // included (ADR-0132 decision 9).
             Command::BrowserInput(p) => self.source_kind(p.source).is_some(),
+            // A page that runs while nothing shows it opens connections on its own
+            // (ADR-0149 decision 5, ADR-0152 decision 5): `run: placed` and a linger.
+            Command::SourceSetActivity(p) => self
+                .source_kind(p.source)
+                .is_some_and(|kind| activity_reaches_network(kind, p)),
             _ => false,
         };
         if reaches {
@@ -179,6 +196,7 @@ impl Host {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)] // Tests fail by panicking.
     use super::*;
     use serde_json::{Value, json};
 
@@ -189,6 +207,31 @@ mod tests {
     fn check(kind: Option<SourceKind>, pairs: &[(&'static str, Value)]) -> bool {
         let p = patch(pairs);
         reaches_network(kind, p.iter().map(|(k, v)| (*k, v)))
+    }
+
+    #[test]
+    fn a_page_that_runs_while_hidden_reaches_the_network() {
+        let policy = |v: Value| -> rbs_api::request::SetSourceActivity {
+            serde_json::from_value(v).unwrap()
+        };
+        let page = Some(SourceKind::Browser);
+        assert!(activity_reaches_network(
+            page,
+            &policy(json!({"source": 1, "run": "placed"}))
+        ));
+        assert!(activity_reaches_network(
+            page,
+            &policy(json!({"source": 1, "linger_s": 5}))
+        ));
+        assert!(!activity_reaches_network(
+            page,
+            &policy(json!({"source": 1, "run": "on_air", "linger_s": 0}))
+        ));
+        // A film that keeps running reaches nothing.
+        assert!(!activity_reaches_network(
+            Some(SourceKind::Media),
+            &policy(json!({"source": 1, "run": "placed"}))
+        ));
     }
 
     #[test]
