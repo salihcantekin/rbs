@@ -25,6 +25,34 @@ pub fn next_generation() -> u64 {
     GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
+/// The identity of a picture's pixels (ADR-0146): two frames with the same picture id
+/// other than [`PictureId::NONE`] have identical pixels and the same [`VideoFormat`].
+/// Lets a consumer that still holds a picture (an encoder's input buffer) use it again
+/// instead of copying it. [`PictureId::NONE`] means unknown and promises nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct PictureId(u64);
+
+impl PictureId {
+    /// Unknown: promises nothing about the pixels.
+    pub const NONE: Self = Self(0);
+
+    /// A picture id no earlier call returned (from [`next_generation`]); never `NONE`.
+    /// The producer attaches it where the pixels are created and never to other pixels.
+    pub fn next() -> Self {
+        Self(next_generation())
+    }
+
+    /// Whether this is [`PictureId::NONE`].
+    pub const fn is_none(self) -> bool {
+        self.0 == 0
+    }
+
+    /// The raw value (diagnostics).
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
 /// Width and height in pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Size {
@@ -828,6 +856,7 @@ pub struct VideoFrame {
     format: VideoFormat,
     timestamp: Timestamp,
     sequence: u64,
+    picture: PictureId,
     source_time: Option<u64>,
     payload: FramePayload,
     lease: Option<Lease>,
@@ -846,6 +875,7 @@ impl VideoFrame {
             format,
             timestamp,
             sequence: 0,
+            picture: PictureId::NONE,
             source_time: None,
             payload: FramePayload::Texture(texture),
             lease,
@@ -859,6 +889,7 @@ impl VideoFrame {
             format: frame.format,
             timestamp,
             sequence: 0,
+            picture: PictureId::NONE,
             source_time: None,
             payload: FramePayload::System(frame),
             lease,
@@ -884,6 +915,7 @@ impl VideoFrame {
             format,
             timestamp,
             sequence: 0,
+            picture: PictureId::NONE,
             source_time: None,
             payload: FramePayload::Native {
                 surface,
@@ -915,6 +947,7 @@ impl VideoFrame {
             format,
             timestamp,
             sequence: 0,
+            picture: PictureId::NONE,
             source_time: None,
             payload: FramePayload::Native {
                 surface,
@@ -934,6 +967,14 @@ impl VideoFrame {
     /// timestamp (a still source, a filter re-rendering) passes [`next_generation`].
     pub fn with_sequence(mut self, sequence: u64) -> Self {
         self.sequence = sequence;
+        self
+    }
+
+    /// Sets the picture identity (ADR-0146). Only the producer that created the pixels
+    /// sets it, with [`PictureId::next`]; [`VideoFrame::share`], [`VideoFrame::with_timestamp`]
+    /// and [`VideoFrame::with_sequence`] keep it.
+    pub fn with_picture(mut self, picture: PictureId) -> Self {
+        self.picture = picture;
         self
     }
 
@@ -964,6 +1005,11 @@ impl VideoFrame {
     /// show dropped frames.
     pub fn sequence(&self) -> u64 {
         self.sequence
+    }
+
+    /// The picture identity (ADR-0146); [`PictureId::NONE`] unless the producer set it.
+    pub fn picture(&self) -> PictureId {
+        self.picture
     }
 
     /// The producer's own timestamp in its clock domain, in nanoseconds, for
@@ -1009,6 +1055,7 @@ impl VideoFrame {
             format: self.format,
             timestamp: self.timestamp,
             sequence: self.sequence,
+            picture: self.picture,
             source_time: self.source_time,
             payload,
             lease: self.lease.clone(),
@@ -1030,6 +1077,15 @@ impl VideoFrame {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn picture_ids_are_new_and_never_none() {
+        let a = super::PictureId::next();
+        let b = super::PictureId::next();
+        assert!(!a.is_none());
+        assert_ne!(a, b);
+        assert!(super::PictureId::default().is_none());
+    }
 
     #[test]
     fn generations_are_never_zero_and_never_repeat() {
@@ -1167,6 +1223,7 @@ mod tests {
             Some(owner.lease(2)),
         )
         .with_sequence(9)
+        .with_picture(PictureId(5))
         .with_source_time(77);
         assert_eq!(gpu.memory_kind(), MemoryKind::Gpu);
         assert_eq!((gpu.sequence(), gpu.source_time()), (9, Some(77)));
@@ -1175,6 +1232,11 @@ mod tests {
             panic!("texture frames can be shared");
         };
         assert_eq!(queued.payload(), gpu.payload());
+        assert_eq!(queued.picture(), PictureId(5));
+        let restamped = queued
+            .share()
+            .map(|f| f.with_timestamp(Timestamp::from_nanos(2)).with_sequence(10));
+        assert_eq!(restamped.map(|f| f.picture()), Some(PictureId(5)));
         assert_eq!(owner.count(2), 2);
         drop(gpu);
         assert_eq!(owner.count(2), 1);

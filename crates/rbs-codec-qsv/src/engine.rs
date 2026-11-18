@@ -661,12 +661,10 @@ impl Engine for QsvEngine {
         FRAMES_IN_FLIGHT
     }
 
-    fn upload(
-        &mut self,
-        slot: usize,
-        frame: &rbs_core::media::SystemFrame,
-    ) -> Result<(), EngineError> {
-        let (pitch, luma_rows) = (self.pitch, self.luma_rows);
+    // `keeps_input` stays `false` until the bit-exact hardware test of ADR-0146
+    // decision 4 passes on an Intel GPU.
+
+    fn prepare(&mut self, slot: usize) -> Result<(), EngineError> {
         let s = &mut self.slots[slot];
         // The runtime updates `Locked` from its own threads: read it atomically.
         // SAFETY: the field is a live, aligned `u16` inside the boxed surface, and the
@@ -679,6 +677,17 @@ impl Engine for QsvEngine {
             // The runtime still reads this surface.
             return Err(EngineError::Busy);
         }
+        Ok(())
+    }
+
+    fn upload(
+        &mut self,
+        slot: usize,
+        frame: &rbs_core::media::SystemFrame,
+    ) -> Result<(), EngineError> {
+        let (pitch, luma_rows) = (self.pitch, self.luma_rows);
+        // `prepare` checked that the runtime no longer reads this surface.
+        let s = &mut self.slots[slot];
         let (luma, chroma) = s.pixels.split_at_mut(pitch * luma_rows);
         if !copy_420(
             frame,
