@@ -47,8 +47,27 @@ struct State {
     dirty: bool,
     /// What `Studio.native-meters` says: the bridge draws the moving parts.
     native: bool,
+    /// Where the check for bars that went away stands (see [`relayout`]).
+    sweep: Sweep,
+    /// The bars that told where they are since the check asked them.
+    seen: Vec<i32>,
     #[cfg(any(target_os = "macos", windows))]
     layer: Option<imp::Layer>,
+}
+
+/// The check for bars that went away. Slint tells nothing when it drops a bar (a group
+/// folds, a source goes away), and a bar about to be dropped can still answer: Slint
+/// drops it only when it next lays the window out. So the check asks every bar to tell
+/// again after that, and keeps only the bars that did.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum Sweep {
+    #[default]
+    Idle,
+    /// Bars may have been made or dropped: ask them after the next redraw.
+    Pending,
+    /// The bars were asked; `asked` once they have been (the answers come before the
+    /// next redraw).
+    Asking { asked: bool },
 }
 
 thread_local! {
@@ -64,6 +83,9 @@ pub fn placed(key: i32, rect: Rect, vertical: bool, shown: bool) {
     with(move |st| {
         let usable = shown && rect.w > 0.0 && rect.h > 0.0;
         let changed = if usable {
+            if matches!(st.sweep, Sweep::Asking { .. }) && !st.seen.contains(&key) {
+                st.seen.push(key);
+            }
             st.bars.insert(key, Bar { rect, vertical }) != Some(Bar { rect, vertical })
         } else {
             st.bars.remove(&key).is_some()
@@ -86,15 +108,67 @@ pub fn viewport(rect: Rect) {
     });
 }
 
-/// The Mixer's bars were made again: forgets them all and asks each to tell again
-/// (bars that went away tell nothing).
+/// The Mixer's bars may have been made or dropped (a group folded or opened, the
+/// arrangement or the sources changed). Bars that are made tell where they are; a
+/// dropped bar tells nothing, so after the next redraw, when Slint has dropped it, every
+/// bar is asked again and the bridge keeps only the bars that answer ([`Sweep`]).
 pub fn relayout(window: &MainWindow) {
-    with(|st| {
-        st.bars.clear();
-        st.dirty = true;
+    let wanted = STATE.with(|s| {
+        let Ok(mut st) = s.try_borrow_mut() else {
+            return false;
+        };
+        if st.wanted {
+            st.sweep = Sweep::Pending;
+        }
+        st.wanted
     });
-    let studio = slint::ComponentHandle::global::<crate::ui::Studio>(window);
-    studio.set_meter_epoch(studio.get_meter_epoch().wrapping_add(1));
+    if wanted {
+        slint::ComponentHandle::window(window).request_redraw();
+    }
+}
+
+/// After every redraw of the main window: a pending check asks the bars to tell where
+/// they are. Slint has made and dropped the bars by now.
+#[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
+pub fn rendered(window: &MainWindow) {
+    let ask = STATE.with(|s| {
+        let Ok(mut st) = s.try_borrow_mut() else {
+            return false;
+        };
+        if st.sweep != Sweep::Pending {
+            return false;
+        }
+        st.sweep = Sweep::Asking { asked: false };
+        st.seen.clear();
+        true
+    });
+    if !ask {
+        return;
+    }
+    // Not from inside the rendering notifier: the bars answer from Slint's change
+    // handlers, which run right after this timer and before the next redraw.
+    let weak = slint::ComponentHandle::as_weak(window);
+    let timer = slint::Timer::default();
+    crate::entry::start(
+        &timer,
+        slint::TimerMode::SingleShot,
+        std::time::Duration::ZERO,
+        move || {
+            let Some(w) = weak.upgrade() else { return };
+            STATE.with(|s| {
+                if let Ok(mut st) = s.try_borrow_mut()
+                    && st.sweep == (Sweep::Asking { asked: false })
+                {
+                    st.sweep = Sweep::Asking { asked: true };
+                }
+            });
+            let studio = slint::ComponentHandle::global::<crate::ui::Studio>(&w);
+            studio.set_meter_epoch(studio.get_meter_epoch().wrapping_add(1));
+            // The redraw that ends the check.
+            slint::ComponentHandle::window(&w).request_redraw();
+        },
+    );
+    std::mem::forget(timer);
 }
 
 /// Whether the Mixer shows in the main window. When it stops showing the bridge goes
@@ -111,6 +185,8 @@ pub fn set_wanted(window: &MainWindow, wanted: bool) {
         st.wanted = wanted;
         if !wanted {
             st.bars.clear();
+            st.sweep = Sweep::Idle;
+            st.seen.clear();
             st.viewport = None;
             st.keys.clear();
             st.views.clear();
@@ -178,6 +254,7 @@ pub fn place(window: &MainWindow) {
                 return None;
             };
             let st = &mut *st;
+            st.end_sweep();
             let was = st.native;
             st.native = st.wanted && imp::place(st, window);
             (st.native != was).then_some(st.native)
@@ -229,6 +306,22 @@ fn with(f: impl FnOnce(&mut State) + Send + 'static) {
 }
 
 impl State {
+    /// Ends an asked check: the bars that did not answer went away.
+    #[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
+    fn end_sweep(&mut self) {
+        if self.sweep != (Sweep::Asking { asked: true }) {
+            return;
+        }
+        self.sweep = Sweep::Idle;
+        let before = self.bars.len();
+        let seen = &self.seen;
+        self.bars.retain(|k, _| seen.contains(k));
+        self.seen.clear();
+        if self.bars.len() != before {
+            self.dirty = true;
+        }
+    }
+
     /// The bars relative to the viewport, in key order, and the keys and views to match.
     /// The views of bars that stay keep their last value.
     #[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
@@ -732,5 +825,37 @@ mod tests {
             STATE.with(|s| s.borrow().bars.is_empty()),
             "bars are not kept while the Mixer is not wanted (P13)"
         );
+    }
+
+    #[test]
+    fn bars_that_do_not_answer_the_check_go_away() {
+        STATE.with(|s| {
+            *s.borrow_mut() = State {
+                wanted: true,
+                ..State::default()
+            }
+        });
+        placed(3, rect(0.0), false, true);
+        placed(7, rect(20.0), false, true);
+        // A group folds: the check is asked for, and nothing goes before it is asked.
+        STATE.with(|s| {
+            let mut st = s.borrow_mut();
+            st.sweep = Sweep::Asking { asked: false };
+            st.end_sweep();
+            assert_eq!(st.bars.len(), 2, "no bar goes before the bars are asked");
+            st.sweep = Sweep::Asking { asked: true };
+            st.dirty = false;
+        });
+        // Only bar 7 still exists, so only it answers.
+        placed(7, rect(20.0), false, true);
+        STATE.with(|s| {
+            let mut st = s.borrow_mut();
+            st.end_sweep();
+            assert_eq!(st.bars.keys().copied().collect::<Vec<_>>(), vec![7]);
+            assert!(st.dirty, "the bridge is told the bar went away");
+            assert_eq!(st.sweep, Sweep::Idle);
+            assert!(st.seen.is_empty());
+        });
+        STATE.with(|s| *s.borrow_mut() = State::default());
     }
 }
