@@ -15,6 +15,7 @@ use crate::context::GpuContext;
 use crate::error::GpuError;
 use crate::math::{Affine2, UvRect};
 use crate::pool::TexturePool;
+use crate::scroll::ScrollGpu;
 use crate::yuv_decode::{Params as YuvGpu, params as yuv_params};
 use rbs_core::media::{ColorSpace, TextureId};
 
@@ -162,6 +163,10 @@ pub struct Layer {
     /// [`crate::YuvDecoder::decode`] takes it). Ignored for RGB textures, whose colour is
     /// `source_transfer`. A colour space the decode cannot handle skips the layer.
     pub ycbcr: ColorSpace,
+    /// The box is a window onto a scrolling strip of the picture (ADR-0150). Drawn by the
+    /// wrap pipelines; without a [`ScrollBinding`] or the device's wrap pipelines the
+    /// layer draws nothing for that call (counted), never the squeezed picture.
+    pub scroll: Option<ScrollGpu>,
 }
 
 impl Layer {
@@ -176,6 +181,7 @@ impl Layer {
             opaque: false,
             style: LayerStyle::default(),
             ycbcr: ColorSpace::BT709_LIMITED,
+            scroll: None,
         }
     }
 }
@@ -191,6 +197,9 @@ pub struct RenderStats {
     /// Layers skipped because their crop leaves no picture (`u1 <= u0` or `v1 <= v0`,
     /// ADR-0058).
     pub empty_crop_layers: u32,
+    /// Scrolling layers not drawn: no [`ScrollBinding`], no wrap pipelines yet, or more
+    /// than [`MAX_SCROLL_LAYERS`] (ADR-0150 decision 7).
+    pub unscrolled_layers: u32,
 }
 
 #[repr(C)]
@@ -218,9 +227,18 @@ const LAYER_GPU_SIZE: u64 = std::mem::size_of::<LayerGpu>() as u64;
 
 const YUV_GPU_SIZE: u64 = std::mem::size_of::<YuvGpu>() as u64;
 
-/// A drawn layer's pipeline: bit 0 styled, bit 1 4:2:0.
+/// A drawn layer's pipeline: bit 0 styled, bit 1 4:2:0, bit 2 scrolling (wrap).
 const STYLED: u8 = 1;
 const YUV: u8 = 2;
+const WRAP: u8 = 4;
+
+/// The most scrolling layers one compositor draws per call (ADR-0150 decision 7).
+pub const MAX_SCROLL_LAYERS: u32 = 64;
+
+/// Bytes between two scroll records: the dynamic offset alignment WebGPU guarantees.
+const SCROLL_STRIDE: u64 = 256;
+
+const SCROLL_GPU_SIZE: u64 = std::mem::size_of::<ScrollGpu>() as u64;
 
 /// The compositor of one canvas.
 pub struct Compositor {
@@ -233,7 +251,6 @@ pub struct Compositor {
     yuv: wgpu::RenderPipeline,
     /// Draws styled 4:2:0 layers.
     yuv_styled: wgpu::RenderPipeline,
-    layers_layout: wgpu::BindGroupLayout,
     layers_buffer: wgpu::Buffer,
     styles_buffer: wgpu::Buffer,
     /// One colour record per drawn layer, read only by the 4:2:0 pipelines.
@@ -242,8 +259,10 @@ pub struct Compositor {
     staging: Vec<LayerGpu>,
     style_staging: Vec<StyleGpu>,
     yuv_staging: Vec<YuvGpu>,
-    /// Per drawn layer: its pipeline (`STYLED`, `YUV` bits). Room for `reserved`.
+    /// Per drawn layer: its pipeline (`STYLED`, `YUV`, `WRAP` bits). Room for `reserved`.
     kinds: Vec<u8>,
+    /// Per drawn layer: its index in the call's layer slice. Room for `reserved`.
+    order: Vec<u32>,
     reserved: u32,
 }
 
@@ -257,6 +276,157 @@ fn storage_entry(binding: u32, min: u64) -> wgpu::BindGroupLayoutEntry {
             min_binding_size: wgpu::BufferSize::new(min),
         },
         count: None,
+    }
+}
+
+/// The compositor's group 0 layout: layers (0), styles (1), 4:2:0 colour records (2).
+/// One per device, on [`GpuContext`].
+pub(crate) fn layers_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("rbs-gpu layers"),
+        entries: &[
+            storage_entry(0, LAYER_GPU_SIZE),
+            storage_entry(1, STYLE_GPU_SIZE),
+            storage_entry(2, YUV_GPU_SIZE),
+        ],
+    })
+}
+
+/// The scrolling pipelines of one device (ADR-0150 decision 7): a wrap variant of the
+/// plain, styled, 4:2:0 and styled 4:2:0 pipelines, with group 2 holding one scroll
+/// record bound at a dynamic offset. Built once, by
+/// [`GpuContext::prepare_scrolling`].
+pub(crate) struct WrapSet {
+    scroll_layout: wgpu::BindGroupLayout,
+    /// Indexed by `STYLED | YUV` bits.
+    pipelines: [wgpu::RenderPipeline; 4],
+}
+
+impl WrapSet {
+    pub(crate) fn new(ctx: &GpuContext) -> Self {
+        let device = ctx.device();
+        let source = concat!(
+            include_str!("shaders/composite.wgsl"),
+            "\n",
+            include_str!("shaders/wrap.wgsl")
+        );
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("rbs-gpu composite wrap"),
+            source: wgpu::ShaderSource::Wgsl(source.into()),
+        });
+        let scroll_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("rbs-gpu scroll record"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: true,
+                    min_binding_size: wgpu::BufferSize::new(SCROLL_GPU_SIZE),
+                },
+                count: None,
+            }],
+        });
+        let rgb = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("rbs-gpu composite wrap"),
+            bind_group_layouts: &[
+                Some(&ctx.layers_layout),
+                Some(&ctx.sampled_layout),
+                Some(&scroll_layout),
+            ],
+            immediate_size: 0,
+        });
+        let yuv = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("rbs-gpu composite wrap 4:2:0"),
+            bind_group_layouts: &[
+                Some(&ctx.layers_layout),
+                Some(&ctx.yuv_layout),
+                Some(&scroll_layout),
+            ],
+            immediate_size: 0,
+        });
+        let pipelines = [
+            pipeline(device, &rgb, &module, "rbs-gpu wrap", "vs_wrap", "fs_wrap"),
+            pipeline(
+                device,
+                &rgb,
+                &module,
+                "rbs-gpu wrap styled",
+                "vs_styled",
+                "fs_wrap_styled",
+            ),
+            pipeline(
+                device,
+                &yuv,
+                &module,
+                "rbs-gpu wrap 4:2:0",
+                "vs_wrap",
+                "fs_yuv_wrap",
+            ),
+            pipeline(
+                device,
+                &yuv,
+                &module,
+                "rbs-gpu wrap 4:2:0 styled",
+                "vs_styled",
+                "fs_yuv_wrap_styled",
+            ),
+        ];
+        Self {
+            scroll_layout,
+            pipelines,
+        }
+    }
+}
+
+/// One compositor's scroll records (ADR-0150 decision 7): a uniform buffer of
+/// [`MAX_SCROLL_LAYERS`] records 256 bytes apart and its group 2 bind group. Built on
+/// the control thread with [`ScrollBinding::new`] and handed to the compositor's node,
+/// with a staging array so a draw writes every record in one queue write.
+#[derive(Debug)]
+pub struct ScrollBinding {
+    buffer: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
+    /// Room for every record, 256 bytes apart; reserved here, never grown.
+    staging: Vec<u8>,
+}
+
+impl ScrollBinding {
+    /// Builds the scrolling pipelines of `ctx`'s device if needed
+    /// ([`GpuContext::prepare_scrolling`]) and a record buffer for one compositor.
+    /// Allocates and may compile shaders: control thread only.
+    pub fn new(ctx: &GpuContext) -> Self {
+        ctx.prepare_scrolling();
+        let device = ctx.device();
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("rbs-gpu scroll records"),
+            size: SCROLL_STRIDE * u64::from(MAX_SCROLL_LAYERS),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let layout = match ctx.wrap.get() {
+            Some(set) => &set.scroll_layout,
+            // `prepare_scrolling` just filled it; kept total for the type system.
+            None => &ctx.layers_layout,
+        };
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("rbs-gpu scroll records"),
+            layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &buffer,
+                    offset: 0,
+                    size: wgpu::BufferSize::new(SCROLL_GPU_SIZE),
+                }),
+            }],
+        });
+        let staging = Vec::with_capacity((SCROLL_STRIDE * u64::from(MAX_SCROLL_LAYERS)) as usize);
+        Self {
+            buffer,
+            bind_group,
+            staging,
+        }
     }
 }
 
@@ -310,17 +480,10 @@ impl Compositor {
             label: Some("rbs-gpu composite"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/composite.wgsl").into()),
         });
-        let layers_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("rbs-gpu layers"),
-            entries: &[
-                storage_entry(0, LAYER_GPU_SIZE),
-                storage_entry(1, STYLE_GPU_SIZE),
-                storage_entry(2, YUV_GPU_SIZE),
-            ],
-        });
+        let layers_layout = &ctx.layers_layout;
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("rbs-gpu composite"),
-            bind_group_layouts: &[Some(&layers_layout), Some(&ctx.sampled_layout)],
+            bind_group_layouts: &[Some(layers_layout), Some(&ctx.sampled_layout)],
             immediate_size: 0,
         });
         let plain = pipeline(
@@ -341,7 +504,7 @@ impl Compositor {
         );
         let yuv_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("rbs-gpu composite 4:2:0"),
-            bind_group_layouts: &[Some(&layers_layout), Some(&ctx.yuv_layout)],
+            bind_group_layouts: &[Some(layers_layout), Some(&ctx.yuv_layout)],
             immediate_size: 0,
         });
         let yuv = pipeline(
@@ -361,14 +524,13 @@ impl Compositor {
             "fs_yuv_styled",
         );
         let reserved = max_layers.max(1);
-        let (buffers, layers_bind_group) = create_layers_buffer(ctx, &layers_layout, reserved);
+        let (buffers, layers_bind_group) = create_layers_buffer(ctx, layers_layout, reserved);
         Ok(Self {
             canvas,
             pipeline: plain,
             styled,
             yuv,
             yuv_styled,
-            layers_layout,
             layers_buffer: buffers.layers,
             styles_buffer: buffers.styles,
             yuv_buffer: buffers.yuv,
@@ -377,6 +539,7 @@ impl Compositor {
             style_staging: Vec::with_capacity(reserved as usize),
             yuv_staging: Vec::with_capacity(reserved as usize),
             kinds: Vec::with_capacity(reserved as usize),
+            order: Vec::with_capacity(reserved as usize),
             reserved,
         })
     }
@@ -396,7 +559,7 @@ impl Compositor {
         if max_layers <= self.reserved {
             return Ok(());
         }
-        let (buffers, bind_group) = create_layers_buffer(ctx, &self.layers_layout, max_layers);
+        let (buffers, bind_group) = create_layers_buffer(ctx, &ctx.layers_layout, max_layers);
         self.layers_buffer = buffers.layers;
         self.styles_buffer = buffers.styles;
         self.yuv_buffer = buffers.yuv;
@@ -409,11 +572,14 @@ impl Compositor {
         self.yuv_staging.reserve(max_layers as usize);
         self.kinds.clear();
         self.kinds.reserve(max_layers as usize);
+        self.order.clear();
+        self.order.reserve(max_layers as usize);
         self.reserved = max_layers;
         Ok(())
     }
 
-    /// Clears `target` to transparent black and draws `layers` bottom to top.
+    /// Clears `target` to transparent black and draws `layers` bottom to top. Layers with
+    /// a scroll draw nothing here (counted); see [`Compositor::render_scrolled`].
     ///
     /// Hot path. Layers whose texture is stale or not sampleable are skipped and counted.
     pub fn render(
@@ -422,6 +588,24 @@ impl Compositor {
         pool: &TexturePool,
         layers: &[Layer],
         target: TextureId,
+    ) -> Result<RenderStats, GpuError> {
+        self.render_scrolled(ctx, pool, layers, target, None)
+    }
+
+    /// [`Compositor::render`] with this compositor's scroll records (ADR-0150): layers
+    /// with [`Layer::scroll`] are drawn by the device's wrap pipelines, each with its
+    /// record. Without `scroll`, without the device's wrap pipelines
+    /// ([`GpuContext::prepare_scrolling`]) or past [`MAX_SCROLL_LAYERS`], a scrolling
+    /// layer draws nothing and counts in `unscrolled_layers`.
+    ///
+    /// Hot path: one queue write for all scroll records, no allocation in RBS code.
+    pub fn render_scrolled(
+        &mut self,
+        ctx: &GpuContext,
+        pool: &TexturePool,
+        layers: &[Layer],
+        target: TextureId,
+        mut scroll: Option<&mut ScrollBinding>,
     ) -> Result<RenderStats, GpuError> {
         let count = u32::try_from(layers.len()).unwrap_or(u32::MAX);
         if count > self.reserved {
@@ -439,6 +623,13 @@ impl Compositor {
         {
             return Err(GpuError::TargetMismatch(target));
         }
+        let wrap = ctx.wrap.get();
+        if wrap.is_none() {
+            scroll = None;
+        }
+        if let Some(binding) = scroll.as_deref_mut() {
+            binding.staging.clear();
+        }
 
         let (w, h) = (self.canvas.width as f32, self.canvas.height as f32);
         let mut stats = RenderStats::default();
@@ -447,8 +638,10 @@ impl Compositor {
         self.style_staging.clear();
         self.yuv_staging.clear();
         self.kinds.clear();
+        self.order.clear();
         let mut any_yuv = false;
-        for layer in layers {
+        let mut scrolled = 0u32;
+        for (index, layer) in layers.iter().enumerate() {
             let Some((_, colour)) = sampled(pool, layer) else {
                 stats.skipped_layers += 1;
                 continue;
@@ -460,6 +653,25 @@ impl Compositor {
             if !has_picture(c) {
                 stats.empty_crop_layers += 1;
                 continue;
+            }
+            let mut kind = 0;
+            if let Some(record) = layer.scroll {
+                // Draws nothing rather than the whole picture squeezed into the window.
+                let Some(binding) = scroll
+                    .as_deref_mut()
+                    .filter(|_| scrolled < MAX_SCROLL_LAYERS)
+                else {
+                    stats.unscrolled_layers += 1;
+                    continue;
+                };
+                // Within the capacity reserved in `ScrollBinding::new`: no allocation.
+                binding
+                    .staging
+                    .extend_from_slice(bytemuck::bytes_of(&record));
+                let pad = SCROLL_STRIDE as usize - std::mem::size_of::<ScrollGpu>();
+                binding.staging.resize(binding.staging.len() + pad, 0);
+                scrolled += 1;
+                kind |= WRAP;
             }
             // A singular transform (a nested scene of no size) has no pixel to grow
             // the quad by: the plain pipeline draws it, which draws nothing.
@@ -473,7 +685,9 @@ impl Compositor {
                 }
                 None => 0.0,
             };
-            let mut kind = if style.is_some() { STYLED } else { 0 };
+            if style.is_some() {
+                kind |= STYLED;
+            }
             if let Some(record) = colour {
                 kind |= YUV;
                 any_yuv = true;
@@ -483,6 +697,7 @@ impl Compositor {
                 self.yuv_staging.push(YuvGpu::zeroed());
             }
             self.kinds.push(kind);
+            self.order.push(index as u32);
             self.staging.push(LayerGpu {
                 m: [t.a, t.b, t.c, t.d],
                 t: [t.tx, t.ty, w, h],
@@ -515,6 +730,13 @@ impl Compositor {
                 bytemuck::cast_slice(&self.style_staging),
             );
         }
+        if let Some(binding) = scroll.as_deref()
+            && !binding.staging.is_empty()
+        {
+            ctx.queue()
+                .write_buffer(&binding.buffer, 0, &binding.staging);
+        }
+        let records = scroll.as_deref();
 
         let mut encoder = ctx
             .device()
@@ -540,29 +762,42 @@ impl Compositor {
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.layers_bind_group, &[]);
-            let mut instance = 0u32;
             let mut bound = 0u8;
-            for layer in layers {
-                let Some((bind_group, _)) = sampled(pool, layer) else {
+            let mut slot = 0u32;
+            for (instance, (&kind, &index)) in self.kinds.iter().zip(&self.order).enumerate() {
+                let Some((bind_group, _)) = layers
+                    .get(index as usize)
+                    .and_then(|layer| sampled(pool, layer))
+                else {
                     continue;
                 };
-                // Skipped in the loop above, so the record indices stay in step.
-                if !has_picture(&layer.crop) {
-                    continue;
-                }
-                let kind = self.kinds[instance as usize];
                 if kind != bound {
-                    pass.set_pipeline(match kind {
-                        0 => &self.pipeline,
-                        STYLED => &self.styled,
-                        YUV => &self.yuv,
-                        _ => &self.yuv_styled,
-                    });
+                    let wrap_pipeline =
+                        |bits: u8| wrap.map(|set| &set.pipelines[usize::from(bits & 3)]);
+                    let next = match kind {
+                        0 => Some(&self.pipeline),
+                        STYLED => Some(&self.styled),
+                        YUV => Some(&self.yuv),
+                        3 => Some(&self.yuv_styled),
+                        bits => wrap_pipeline(bits),
+                    };
+                    let Some(next) = next else {
+                        continue;
+                    };
+                    pass.set_pipeline(next);
                     bound = kind;
                 }
                 pass.set_bind_group(1, bind_group, &[]);
+                if kind & WRAP != 0 {
+                    let Some(binding) = records else {
+                        continue;
+                    };
+                    let offset = slot * SCROLL_STRIDE as u32;
+                    pass.set_bind_group(2, &binding.bind_group, &[offset]);
+                    slot += 1;
+                }
+                let instance = instance as u32;
                 pass.draw(0..6, instance..instance + 1);
-                instance += 1;
             }
         }
         ctx.queue().submit(Some(encoder.finish()));

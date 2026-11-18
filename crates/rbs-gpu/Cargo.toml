@@ -60,6 +60,10 @@ harness = false
 name = "motion"
 harness = false
 
+[[bench]]
+name = "scroll"
+harness = false
+
 [[test]]
 name = "share_layer_metal"
 required-features = ["preview-layer"]

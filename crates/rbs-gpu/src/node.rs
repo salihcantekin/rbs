@@ -15,12 +15,13 @@ use rbs_graph::node::{LinkKind, NodeDescriptor, NodeKind, NodeTypeId, Pin};
 use rbs_graph::runtime::param::{self, ParamReceiver, ParamSender};
 use rbs_graph::runtime::{Inputs, Node, NodeError, PrepareCtx, ProcessCtx, Runtime, Tick, WarmCtx};
 
-use crate::compositor::{CanvasDesc, Compositor, Layer, LayerStyle, Transfer};
+use crate::compositor::{CanvasDesc, Compositor, Layer, LayerStyle, ScrollBinding, Transfer};
 use crate::context::GpuContext;
 use crate::error::GpuError;
 use crate::interop::Importer;
 use crate::math::{Affine2, UvRect};
 use crate::pool::{TextureDesc, TexturePool};
+use crate::scroll::LayerScroll;
 
 /// Node type id of the compositor (scene-model spec, "Graph binding").
 pub const COMPOSITOR_NODE_TYPE: &str = "org.rbs.compositor";
@@ -188,6 +189,9 @@ pub struct NodeLayer {
     pub opaque: bool,
     /// Shape and border (ADR-0053).
     pub style: LayerStyle,
+    /// The box is a window onto a scrolling strip of the picture (ADR-0150), evaluated
+    /// against tick time like `fade` and `slide`.
+    pub scroll: Option<LayerScroll>,
 }
 
 impl NodeLayer {
@@ -204,12 +208,18 @@ impl NodeLayer {
             slide: None,
             opaque: false,
             style: LayerStyle::default(),
+            scroll: None,
         }
     }
 }
 
 /// The control-thread end of a compositor node's layer list.
 pub type LayerSender = ParamSender<Vec<NodeLayer>>;
+
+/// The control-thread end of a compositor node's scroll records (ADR-0150 decision 7):
+/// send a [`ScrollBinding`] before the first list with a scrolling layer. Idempotent; a
+/// skipped update only leaves a scrolling layer blank for a tick.
+pub type ScrollSender = ParamSender<Option<ScrollBinding>>;
 
 /// The link of `layer` on the layers pin: the hint if it still names the producer,
 /// otherwise a lookup.
@@ -338,6 +348,8 @@ pub struct CompositorNode<R: ReadySignal = NoReady, D: Redraw = OnChange> {
     drawn_valid: bool,
     /// Tick time of the last draw: a fade or slide that had not ended then draws again.
     drawn_at: Timestamp,
+    /// Scroll records, when the node was built [`CompositorNode::with_scroll`].
+    scroll: Option<ParamReceiver<Option<ScrollBinding>>>,
     stats: Arc<CompositorStats>,
     redraw: std::marker::PhantomData<D>,
 }
@@ -359,6 +371,7 @@ impl CompositorNode {
             key: Vec::new(),
             drawn_valid: false,
             drawn_at: Timestamp::ZERO,
+            scroll: None,
             stats: Arc::default(),
             redraw: std::marker::PhantomData,
         };
@@ -406,9 +419,19 @@ impl<R: ReadySignal, D: Redraw> CompositorNode<R, D> {
             key: self.key,
             drawn_valid: false,
             drawn_at: Timestamp::ZERO,
+            scroll: self.scroll,
             stats: self.stats,
             redraw: std::marker::PhantomData,
         }
+    }
+
+    /// This node with a channel for its scroll records (ADR-0150 decision 7). No GPU
+    /// object exists until a [`ScrollBinding`] is sent; a node built without it draws
+    /// scrolling layers blank.
+    pub fn with_scroll(mut self) -> (Self, ScrollSender) {
+        let (sender, receiver) = param::channel(None);
+        self.scroll = Some(receiver);
+        (self, sender)
     }
 
     /// The node's counters.
@@ -487,6 +510,14 @@ impl<R: ReadySignal, D: Redraw> Node<GpuRuntime> for CompositorNode<R, D> {
         let (inputs, outputs, local) = ctx.parts();
 
         let listed = self.layers.update();
+        // Scroll records arrive once; a change of binding needs no redraw by itself.
+        let binding = match self.scroll.as_mut() {
+            Some(rx) => {
+                rx.update();
+                rx.get_mut().as_mut()
+            }
+            None => None,
+        };
         self.scratch.clear();
         if D::ON_CHANGE {
             self.key.clear();
@@ -522,6 +553,27 @@ impl<R: ReadySignal, D: Redraw> Node<GpuRuntime> for CompositorNode<R, D> {
                 missing = R::TRACKS;
                 continue;
             };
+            let transform = match &spec.slide {
+                Some(slide) => slide.at(spec.transform, tick.time),
+                None => spec.transform,
+            };
+            let crop = uv(spec.crop, d.width, d.height);
+            let scroll = match &spec.scroll {
+                None => None,
+                Some(sc) => {
+                    if D::ON_CHANGE {
+                        let ended = sc
+                            .frame(&transform, &crop, d.width, d.height, self.drawn_at)
+                            .is_some_and(|f| f.ended);
+                        moving |= sc.moving_at(self.drawn_at, ended);
+                    }
+                    // No length, or a Once picture that has left: nothing to draw.
+                    match sc.frame(&transform, &crop, d.width, d.height, tick.time) {
+                        Some(f) if !f.ended => Some(f.gpu(sc.direction, sc.repeat, sc.fade)),
+                        _ => continue,
+                    }
+                }
+            };
             let source_transfer =
                 if frame.format().color.transfer == TransferFunction::Srgb && !d.format.is_srgb() {
                     Transfer::Srgb
@@ -532,11 +584,8 @@ impl<R: ReadySignal, D: Redraw> Node<GpuRuntime> for CompositorNode<R, D> {
             // allocate.
             self.scratch.push(Layer {
                 texture: id,
-                transform: match &spec.slide {
-                    Some(slide) => slide.at(spec.transform, tick.time),
-                    None => spec.transform,
-                },
-                crop: uv(spec.crop, d.width, d.height),
+                transform,
+                crop,
                 opacity: match &spec.fade {
                     Some(fade) => fade.at(spec.opacity, tick.time),
                     None => spec.opacity,
@@ -546,6 +595,7 @@ impl<R: ReadySignal, D: Redraw> Node<GpuRuntime> for CompositorNode<R, D> {
                 style: spec.style,
                 // A 4:2:0 picture is sampled as it is, with its own colour space (R-11).
                 ycbcr: frame.format().color,
+                scroll,
             });
         }
 
@@ -565,7 +615,7 @@ impl<R: ReadySignal, D: Redraw> Node<GpuRuntime> for CompositorNode<R, D> {
         self.drawn_valid = false;
 
         let canvas = local.pool.acquire(gpu, &desc).map_err(backend)?;
-        let drawn = compositor.render(gpu, &local.pool, &self.scratch, canvas);
+        let drawn = compositor.render_scrolled(gpu, &local.pool, &self.scratch, canvas, binding);
         let format = VideoFormat::new(
             Size::new(desc.width, desc.height),
             PixelFormat::Rgba16Float,
