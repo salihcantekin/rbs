@@ -1,5 +1,6 @@
 //! The value types of a scene collection.
 
+use crate::activity::SourceActivity;
 use std::collections::BTreeMap;
 use std::fmt;
 
@@ -447,6 +448,10 @@ pub struct Source {
     /// left out of the file. The binder does not read it: a set flag adds no node
     /// until an ISO recording starts.
     pub record_separately: RecordSeparately,
+    /// When the source runs and what it does when it returns (ADR-0152). Every key
+    /// absent is the type's default, left out of the file. Not settings: the binder
+    /// does not compare it, so changing it never replaces the source's node.
+    pub activity: SourceActivity,
 }
 
 /// Which of a source's feeds are recorded as their own files (ADR-0086).
@@ -986,6 +991,7 @@ impl Source {
             region: None,
             chrome: None,
             record_separately: RecordSeparately::default(),
+            activity: SourceActivity::default(),
         }
     }
 }

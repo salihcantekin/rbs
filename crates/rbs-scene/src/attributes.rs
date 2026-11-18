@@ -158,6 +158,7 @@ mod tests {
                 region,            // Region
                 chrome,            // Region
                 record_separately, // RecordSeparately
+                activity,          // never (ADR-0152; Duplicate copies it)
             } = s;
         }
         #[allow(unused_variables, dead_code)]

@@ -6,7 +6,9 @@ use std::collections::BTreeSet;
 
 use rbs_core::media::Size;
 use rbs_core::timing::FrameRate;
-use rbs_graph::node::NodeTypeId;
+use rbs_graph::node::{NodeDescriptor, NodeTypeId};
+use rbs_scene::activity::{ActivityTraits, MAX_LINGER_S, OnReturn, Run, SourceActivity};
+use rbs_scene::binder::NodeTypes;
 use rbs_scene::model::{
     Border, CanvasId, CollectionGlide, Crop, DisplayChrome, FilterId, GlideEasing, ItemContent,
     ItemId, ItemStyle, Layout, MAX_GLIDE_MS, MAX_SHOW_FOR_MS, MAX_SOURCE_VOLUME,
@@ -15,6 +17,28 @@ use rbs_scene::model::{
     SourceMonitor, SourceRegion,
 };
 use rbs_scene::{Affine2, MAX_LAYERS, MAX_NESTING_DEPTH, SceneCollection, SceneError, Undo};
+
+/// Node types that declare only activity (ADR-0152): media and browser run while a
+/// shown scene draws them, as `rbs-sources` declares; every other type while placed.
+struct Activity;
+
+impl NodeTypes for Activity {
+    fn descriptor(&self, _: &NodeTypeId) -> Option<std::sync::Arc<NodeDescriptor>> {
+        None
+    }
+    fn activity(&self, type_id: &NodeTypeId) -> ActivityTraits {
+        match type_id.as_str() {
+            "org.rbs.source.media" | "org.rbs.source.browser" => ActivityTraits::new(
+                &[Run::Placed, Run::Shown, Run::OnAir],
+                &[OnReturn::Resume, OnReturn::Restart],
+                Run::Shown,
+                Some(OnReturn::Restart),
+                false,
+            ),
+            _ => ActivityTraits::PLACED,
+        }
+    }
+}
 
 fn ty(name: &str) -> NodeTypeId {
     NodeTypeId::new(format!("org.rbs.source.{name}"))
@@ -509,15 +533,15 @@ fn temporal_sources_run_only_when_a_shown_scene_draws_them() {
 
     // Hidden media and browser are not running. A hidden camera and a hidden
     // still stay running. Placement alone still counts as wanted.
-    assert!(!s.col.running_sources().contains(&media));
-    assert!(!s.col.running_sources().contains(&browser));
-    assert!(s.col.running_sources().contains(&s.cam));
-    assert!(s.col.running_sources().contains(&logo));
+    assert!(!s.col.running_sources(&Activity).contains(&media));
+    assert!(!s.col.running_sources(&Activity).contains(&browser));
+    assert!(s.col.running_sources(&Activity).contains(&s.cam));
+    assert!(s.col.running_sources(&Activity).contains(&logo));
     assert!(s.col.wanted_sources().contains(&media));
-    assert!(!s.col.warm_sources(s.wide).contains(&media));
-    assert!(!s.col.warm_sources(s.wide).contains(&browser));
-    assert!(s.col.warm_sources(s.wide).contains(&s.cam));
-    assert!(s.col.warm_sources(s.wide).contains(&logo));
+    assert!(!s.col.warm_sources(s.wide, &Activity).contains(&media));
+    assert!(!s.col.warm_sources(s.wide, &Activity).contains(&browser));
+    assert!(s.col.warm_sources(s.wide, &Activity).contains(&s.cam));
+    assert!(s.col.warm_sources(s.wide, &Activity).contains(&logo));
 
     // Opacity 0 with visible true still counts, for both temporal type ids.
     s.col.set_item_visible(hidden_media, true).unwrap();
@@ -528,8 +552,8 @@ fn temporal_sources_run_only_when_a_shown_scene_draws_them() {
     s.col
         .set_item_layout(hidden_page, None, full(1.0, 1.0).with_opacity(0.0))
         .unwrap();
-    assert!(s.col.running_sources().contains(&media));
-    assert!(s.col.running_sources().contains(&browser));
+    assert!(s.col.running_sources(&Activity).contains(&media));
+    assert!(s.col.running_sources(&Activity).contains(&browser));
     assert!(
         !s.col
             .flatten(s.wide, live)
@@ -547,8 +571,8 @@ fn temporal_sources_run_only_when_a_shown_scene_draws_them() {
     s.col
         .add_item(shelf, ItemContent::Source(browser), full(1.0, 1.0), None)
         .unwrap();
-    assert!(!s.col.running_sources().contains(&media));
-    assert!(!s.col.running_sources().contains(&browser));
+    assert!(!s.col.running_sources(&Activity).contains(&media));
+    assert!(!s.col.running_sources(&Activity).contains(&browser));
     assert!(s.col.wanted_sources().contains(&media));
 
     // The preview scene counts. One visible placement on any canvas is enough.
@@ -556,14 +580,14 @@ fn temporal_sources_run_only_when_a_shown_scene_draws_them() {
         .add_item(preview, ItemContent::Source(browser), full(1.0, 1.0), None)
         .unwrap();
     s.col.set_preview(s.wide, Some(preview)).unwrap();
-    assert!(s.col.running_sources().contains(&browser));
-    assert!(!s.col.running_sources().contains(&media));
+    assert!(s.col.running_sources(&Activity).contains(&browser));
+    assert!(!s.col.running_sources(&Activity).contains(&media));
     let (tall_live, _) = s.col.add_scene("Tall live", SceneScope::Shared).unwrap();
     s.col
         .add_item(tall_live, ItemContent::Source(media), full(1.0, 1.0), None)
         .unwrap();
     s.col.set_program(s.tall, Some(tall_live)).unwrap();
-    assert!(s.col.running_sources().contains(&media));
+    assert!(s.col.running_sources(&Activity).contains(&media));
 }
 
 #[test]
@@ -648,12 +672,12 @@ fn timed_show_draws_a_hidden_item_without_writing_visible() {
     assert_eq!(s.col.cued_drawn_sources(&cued), BTreeSet::from([media]));
     assert!(
         s.col
-            .running_sources_cued(&BTreeSet::from([media]))
+            .running_sources_cued(&Activity, &BTreeSet::from([media]))
             .contains(&media)
     );
-    assert!(!s.col.running_sources().contains(&media));
+    assert!(!s.col.running_sources(&Activity).contains(&media));
     // A still stays on the warm rule whether or not a cue names it.
-    assert!(s.col.running_sources().contains(&logo));
+    assert!(s.col.running_sources(&Activity).contains(&logo));
 
     // A cue on a scene that is not the program does not appear on program output.
     let shelf_cue = BTreeSet::from([shelf_item]);
@@ -2182,12 +2206,12 @@ fn a_following_canvas_does_not_keep_its_own_scenes_sources_warm() {
     s.col.set_program(s.wide, Some(shared)).unwrap();
     s.col.set_program(s.tall, Some(own)).unwrap();
     // On its own, the vertical canvas keeps the camera of its own scene warm.
-    assert!(s.col.warm_sources(s.tall).contains(&s.cam));
+    assert!(s.col.warm_sources(s.tall, &Activity).contains(&s.cam));
     // Following, it shows only what the horizontal canvas puts on air.
     s.col
         .set_canvas_follow(s.tall, Some(s.wide), Default::default())
         .unwrap();
-    let warm = s.col.warm_sources(s.tall);
+    let warm = s.col.warm_sources(s.tall, &Activity);
     assert!(!warm.contains(&s.cam), "{warm:?}");
     assert!(warm.contains(&s.screen), "{warm:?}");
 }
@@ -2661,4 +2685,73 @@ fn a_scene_never_gets_an_item_id_that_is_unissued_or_used() {
         Err(SceneError::UndoConflict)
     );
     assert_eq!(s.col, before, "a refused edit changes nothing");
+}
+
+#[test]
+fn source_activity_is_one_undo_step_and_linger_is_bounded() {
+    let mut col = SceneCollection::new();
+    let (cam, _) = col
+        .add_source(
+            "Camera",
+            NodeTypeId::new("org.rbs.source.camera"),
+            Default::default(),
+        )
+        .unwrap();
+    let policy = SourceActivity::new(Some(Run::Shown), Some(OnReturn::Resume), Some(10));
+    let undo = col.set_source_activity(cam, policy).unwrap();
+    assert_eq!(col.source(cam).unwrap().activity, policy);
+    col.undo(undo).unwrap();
+    assert!(col.source(cam).unwrap().activity.is_default());
+    let too_long = SourceActivity::new(None, None, Some(MAX_LINGER_S + 1));
+    assert_eq!(
+        col.set_source_activity(cam, too_long),
+        Err(SceneError::InvalidActivity)
+    );
+    assert!(col.source(cam).unwrap().activity.is_default());
+}
+
+#[test]
+fn levels_follow_program_preview_and_placement() {
+    let mut col = SceneCollection::new();
+    let canvas = col
+        .add_canvas("Main", Size::new(1920, 1080), FrameRate::FPS_30)
+        .unwrap()
+        .0;
+    let film = |col: &mut SceneCollection, name: &str| {
+        col.add_source(
+            name,
+            NodeTypeId::new("org.rbs.source.media"),
+            Default::default(),
+        )
+        .unwrap()
+        .0
+    };
+    let (a, b, c) = (
+        film(&mut col, "A"),
+        film(&mut col, "B"),
+        film(&mut col, "C"),
+    );
+    let scene_with = |col: &mut SceneCollection, name: &str, src| {
+        let (scene, _) = col.add_scene(name, SceneScope::Shared).unwrap();
+        col.add_item(
+            scene,
+            ItemContent::Source(src),
+            Layout::new([0.0, 0.0], [10.0, 10.0]),
+            None,
+        )
+        .unwrap();
+        scene
+    };
+    let pa = scene_with(&mut col, "Program", a);
+    let pb = scene_with(&mut col, "Preview", b);
+    scene_with(&mut col, "Shelf", c);
+    col.set_program(canvas, Some(pa)).unwrap();
+    col.set_preview(canvas, Some(pb)).unwrap();
+    let levels = col.source_levels(&BTreeSet::new());
+    use rbs_scene::activity::Level;
+    assert_eq!(levels.get(&a), Some(&Level::OnAir));
+    assert_eq!(levels.get(&b), Some(&Level::Shown));
+    assert_eq!(levels.get(&c), Some(&Level::Placed));
+    let running = col.running_sources(&Activity);
+    assert!(running.contains(&a) && running.contains(&b) && !running.contains(&c));
 }
