@@ -1573,6 +1573,8 @@ fn a_fade_waits_for_the_incoming_picture_blends_and_settles() {
     let other = camera_scene(&mut col);
     let mut fade = CollectionTransition {
         kind: TransitionKind::Fade,
+        // The same kind outside studio mode (ADR-0153).
+        direct: TransitionKind::Fade,
         ..CollectionTransition::default()
     };
     fade.fade.duration_ms = 100;
@@ -1643,6 +1645,7 @@ fn a_fade_waits_for_the_incoming_picture_blends_and_settles() {
     // Back with a Cut: no transition at all.
     let mut t = col.transition();
     t.kind = TransitionKind::Cut;
+    t.direct = TransitionKind::Cut;
     col.set_transition(t).unwrap();
     col.set_program(canvas, Some(live)).unwrap();
     studio.update(&col, &r.adapters.sources).unwrap();
@@ -1666,6 +1669,8 @@ fn a_change_during_a_fade_starts_a_new_one_and_ending_drops_it() {
     let other = camera_scene(&mut col);
     let mut fade = CollectionTransition {
         kind: TransitionKind::Fade,
+        // The same kind outside studio mode (ADR-0153).
+        direct: TransitionKind::Fade,
         ..CollectionTransition::default()
     };
     fade.fade.duration_ms = 1000;
@@ -1789,6 +1794,8 @@ fn during_a_fade_the_sound_follows_the_picture() {
     let other = camera_scene(&mut col);
     let mut fade = CollectionTransition {
         kind: TransitionKind::Fade,
+        // The same kind outside studio mode (ADR-0153).
+        direct: TransitionKind::Fade,
         ..CollectionTransition::default()
     };
     fade.fade.duration_ms = 1000;
@@ -1868,6 +1875,8 @@ fn transitions_report_their_start_and_end_and_take_a_one_off_kind() {
     let other = camera_scene(&mut col);
     col.set_transition(CollectionTransition {
         kind: TransitionKind::Cut,
+        // The same kind outside studio mode (ADR-0153).
+        direct: TransitionKind::Cut,
         ..CollectionTransition::default()
     })
     .unwrap();
@@ -1991,6 +2000,8 @@ fn a_move_fades_out_what_leaves_and_needs_nothing_when_nothing_leaves() {
     let other = camera_scene(&mut col);
     col.set_transition(CollectionTransition {
         kind: TransitionKind::Move,
+        // The same kind outside studio mode (ADR-0153).
+        direct: TransitionKind::Move,
         ..CollectionTransition::default()
     })
     .unwrap();
@@ -2087,18 +2098,24 @@ fn a_fade_through_a_colour_a_swipe_and_a_slide_run_and_settle() {
         .unwrap();
     let mut via = CollectionTransition {
         kind: TransitionKind::Fade,
+        // The same kind outside studio mode (ADR-0153).
+        direct: TransitionKind::Fade,
         ..CollectionTransition::default()
     };
     via.fade.duration_ms = 100;
     via.fade.via = Some([0, 0, 0]);
     let mut swipe = CollectionTransition {
         kind: TransitionKind::Swipe,
+        // The same kind outside studio mode (ADR-0153).
+        direct: TransitionKind::Swipe,
         ..CollectionTransition::default()
     };
     swipe.swipe.duration_ms = 100;
     swipe.swipe.direction = SwipeDirection::Up;
     let mut slide = CollectionTransition {
         kind: TransitionKind::Slide,
+        // The same kind outside studio mode (ADR-0153).
+        direct: TransitionKind::Slide,
         ..CollectionTransition::default()
     };
     slide.slide.duration_ms = 100;
@@ -2152,6 +2169,8 @@ fn the_incoming_scenes_override_comes_between_a_one_off_and_the_collection() {
     let other = camera_scene(&mut col);
     col.set_transition(CollectionTransition {
         kind: TransitionKind::Cut,
+        // The same kind outside studio mode (ADR-0153).
+        direct: TransitionKind::Cut,
         ..CollectionTransition::default()
     })
     .unwrap();
@@ -2368,6 +2387,8 @@ fn a_t_bar_holds_the_blend_then_takes_or_cancels() {
     let other = camera_scene(&mut col);
     col.set_transition(CollectionTransition {
         kind: TransitionKind::Fade,
+        // The same kind outside studio mode (ADR-0153).
+        direct: TransitionKind::Fade,
         ..CollectionTransition::default()
     })
     .unwrap();
@@ -2523,6 +2544,8 @@ fn a_rehearsal_plays_on_the_preview_picture_only_and_ends() {
     let fade = |ms: u32| {
         let mut t = CollectionTransition {
             kind: TransitionKind::Fade,
+            // The same kind outside studio mode (ADR-0153).
+            direct: TransitionKind::Fade,
             ..CollectionTransition::default()
         };
         t.fade.duration_ms = ms;
@@ -2588,6 +2611,8 @@ fn a_rehearsal_plays_on_the_preview_picture_only_and_ends() {
     col.set_preview(canvas, Some(other)).unwrap();
     col.set_transition(CollectionTransition {
         kind: TransitionKind::Cut,
+        // The same kind outside studio mode (ADR-0153).
+        direct: TransitionKind::Cut,
         ..CollectionTransition::default()
     })
     .unwrap();
@@ -2611,6 +2636,8 @@ fn without_a_preview_picture_nothing_is_rehearsed() {
     let other = camera_scene(&mut col);
     col.set_transition(CollectionTransition {
         kind: TransitionKind::Fade,
+        // The same kind outside studio mode (ADR-0153).
+        direct: TransitionKind::Fade,
         ..CollectionTransition::default()
     })
     .unwrap();
@@ -2686,6 +2713,7 @@ fn a_stinger_waits_for_its_first_picture_plays_its_length_and_disarms() {
         .unwrap();
     let mut t = col.transition();
     t.kind = TransitionKind::Stinger;
+    t.direct = TransitionKind::Stinger;
     t.stinger = StingerSettings {
         source: Some(sting),
         cut_ms: None,
@@ -3192,6 +3220,8 @@ fn the_same_picture_under_another_scene_id_starts_no_transition() {
     let other = camera_scene(&mut col);
     col.set_transition(CollectionTransition {
         kind: TransitionKind::Cut,
+        // The same kind outside studio mode (ADR-0153).
+        direct: TransitionKind::Cut,
         ..CollectionTransition::default()
     })
     .unwrap();
@@ -3216,4 +3246,83 @@ fn the_same_picture_under_another_scene_id_starts_no_transition() {
     col.set_program(canvas, Some(live)).unwrap();
     studio.update(&col, &r.adapters.sources).unwrap();
     assert_eq!(studio.take_transition_events().len(), 2, "a Cut again");
+}
+
+#[test]
+fn outside_studio_mode_a_change_uses_the_collections_own_kind_for_it() {
+    // ADR-0153: `direct` outside studio mode, `kind` (the rail's) in it.
+    use rbs_record::TransitionOnce;
+    use rbs_scene::{CollectionTransition, TransitionKind};
+
+    let Some(gpu) = gpu() else { return };
+    let r = rig();
+    let (mut col, canvas) = scene();
+    let live = col.canvas(canvas).unwrap().program.unwrap();
+    let other = camera_scene(&mut col);
+    col.set_transition(CollectionTransition {
+        kind: TransitionKind::Fade,
+        direct: TransitionKind::Cut,
+        ..CollectionTransition::default()
+    })
+    .unwrap();
+    let (engine, _clock) = engine_at_start();
+    let mut studio = Studio::start(
+        engine,
+        gpu,
+        &col,
+        &r.adapters.sources,
+        &StudioSettings::new(canvas),
+    )
+    .unwrap();
+
+    // Outside studio mode: a Cut, started and ended at once.
+    col.set_program(canvas, Some(other)).unwrap();
+    studio.update(&col, &r.adapters.sources).unwrap();
+    let kinds: Vec<_> = studio
+        .take_transition_events()
+        .into_iter()
+        .map(|e| e.kind)
+        .collect();
+    assert_eq!(kinds, [TransitionKind::Cut, TransitionKind::Cut]);
+
+    // A one-off kind still wins over `direct`.
+    studio.set_transition_once(TransitionOnce::new(Some(TransitionKind::Swipe), Some(100)));
+    col.set_program(canvas, Some(live)).unwrap();
+    studio.update(&col, &r.adapters.sources).unwrap();
+    assert_eq!(
+        studio.transition_state(canvas),
+        Some(rbs_record::TransitionState::Waiting)
+    );
+    studio.end_transitions();
+    studio.update(&col, &r.adapters.sources).unwrap();
+    let _ = studio.take_transition_events();
+
+    // So does the incoming scene's own transition.
+    col.set_scene_transition(
+        other,
+        Some(rbs_scene::SceneTransition {
+            kind: Some(TransitionKind::Slide),
+            duration_ms: None,
+        }),
+    )
+    .unwrap();
+    col.set_program(canvas, Some(other)).unwrap();
+    studio.update(&col, &r.adapters.sources).unwrap();
+    assert_eq!(
+        studio.transition_state(canvas),
+        Some(rbs_record::TransitionState::Waiting)
+    );
+    studio.end_transitions();
+    studio.update(&col, &r.adapters.sources).unwrap();
+    let _ = studio.take_transition_events();
+
+    // In studio mode: the rail's Fade.
+    col.set_preview(canvas, Some(live)).unwrap();
+    studio.update(&col, &r.adapters.sources).unwrap();
+    col.set_program(canvas, Some(live)).unwrap();
+    studio.update(&col, &r.adapters.sources).unwrap();
+    assert_eq!(
+        studio.transition_state(canvas),
+        Some(rbs_record::TransitionState::Waiting)
+    );
 }

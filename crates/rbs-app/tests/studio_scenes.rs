@@ -935,7 +935,10 @@ fn entering_and_leaving_studio_mode_play_no_transition() {
         .as_u64()
         .unwrap();
     add(&mut c, "screen", "Main screen");
-    ok(&c.call("collection.set_transition", json!({"kind": "cut"})));
+    ok(&c.call(
+        "collection.set_transition",
+        json!({"kind": "cut", "direct_kind": "cut"}),
+    ));
     // The program is held and given back (ADR-0063): the same picture, no transition
     // (ADR-0151 follow-up), with and without an edit in Preview.
     ok(&c.call("canvas.set_preview", json!({"scene": one})));
@@ -945,6 +948,42 @@ fn entering_and_leaving_studio_mode_play_no_transition() {
     ok(&c.call("canvas.set_preview", json!({"scene": null})));
     // The first transition reported is the real one.
     ok(&c.call("scene.switch", json!({"scene": two})));
+    let e = c.event("transition.state", |d| d["state"] == "ended");
+    let d = &e["params"]["data"];
+    assert_eq!(
+        (d["from"].clone(), d["to"].clone()),
+        (json!(one), json!(two)),
+        "{e}"
+    );
+    while let Ok(u) = updates.try_recv() {
+        if let Update::Error(e) = u {
+            panic!("{e}");
+        }
+    }
+    drop(host);
+}
+
+#[test]
+fn leaving_studio_mode_with_move_outside_it_plays_no_transition() {
+    // ADR-0153: the default kind outside studio mode is Move; giving the held
+    // program back still starts nothing (ADR-0151 follow-up).
+    let Some((host, updates, _api, mut c)) = start() else {
+        return;
+    };
+    ok(&c.call("events.subscribe", json!({"topics": ["transition.state"]})));
+    let one = scenes(&mut c)["program"].as_u64().unwrap();
+    let two = ok(&c.call("scene.add", json!({"name": "Game"})))["scene"]
+        .as_u64()
+        .unwrap();
+    add(&mut c, "screen", "Main screen");
+    ok(&c.call("collection.set_transition", json!({"kind": "cut"})));
+    ok(&c.call("canvas.set_preview", json!({"scene": one})));
+    ok(&c.call("canvas.set_preview", json!({"scene": null})));
+    ok(&c.call("canvas.set_preview", json!({"scene": one})));
+    add(&mut c, "audio_input", "Mic");
+    ok(&c.call("canvas.set_preview", json!({"scene": null})));
+    // A one-off Cut reports at once; it is the first transition reported.
+    ok(&c.call("scene.switch", json!({"scene": two, "kind": "cut"})));
     let e = c.event("transition.state", |d| d["state"] == "ended");
     let d = &e["params"]["data"];
     assert_eq!(
@@ -1715,6 +1754,18 @@ fn the_collection_transition_is_set_and_undone_and_a_one_off_cut_is_reported() {
         None,
         "back to the default"
     );
+
+    // The kind outside studio mode (protocol 1.97, ADR-0153): its own field, one undo
+    // step, left out while Move.
+    ok(&c.call("collection.set_transition", json!({"direct_kind": "slide"})));
+    let t = scenes(&mut c)["transition"].clone();
+    assert_eq!(
+        (t["kind"].clone(), t["direct_kind"].clone()),
+        (json!("move"), json!("slide")),
+        "{t}"
+    );
+    ok(&c.call("edit.undo", json!({})));
+    assert_eq!(scenes(&mut c).get("transition"), None);
 
     // Refusals change nothing.
     for bad in [

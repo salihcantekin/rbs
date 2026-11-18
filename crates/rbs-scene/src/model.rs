@@ -752,8 +752,11 @@ pub struct StingerSettings {
 /// collection glide (ADR-0100), not a copy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct CollectionTransition {
-    /// The kind a program change uses.
+    /// The kind a program change uses in studio mode (the Transition rail's choice).
     pub kind: TransitionKind,
+    /// The kind a program change uses outside studio mode (ADR-0153; default Move).
+    /// Each kind's settings below are shared by both.
+    pub direct: TransitionKind,
     /// Fade's settings.
     pub fade: FadeSettings,
     /// Swipe's settings.
@@ -816,16 +819,24 @@ impl CollectionTransition {
     }
 
     /// What a document of format 18 or older means (ADR-0128 decision 3): Move, or Cut
-    /// when its glide was 0 ms, so an existing show looks the same.
+    /// when its glide was 0 ms, in studio mode; Move outside it (ADR-0153).
     pub fn from_legacy(glide: CollectionGlide) -> Self {
+        let kind = if glide.duration_ms == 0 {
+            TransitionKind::Cut
+        } else {
+            TransitionKind::Move
+        };
+        // Outside studio mode it is Move, like every older document (ADR-0153).
         Self {
-            kind: if glide.duration_ms == 0 {
-                TransitionKind::Cut
-            } else {
-                TransitionKind::Move
-            },
+            kind,
             ..Self::default()
         }
+    }
+
+    /// The kind a program change uses: `kind` in studio mode, `direct` outside it
+    /// (ADR-0153).
+    pub fn kind_for(self, studio_mode: bool) -> TransitionKind {
+        if studio_mode { self.kind } else { self.direct }
     }
 }
 

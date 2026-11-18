@@ -460,7 +460,10 @@ impl CommandState for Shown<'_> {
                 }
                 Ok(())
             }
-            "canvas.studio_mode.toggle" | "scene.add" | "canvas.add_vertical" => self.running(),
+            "canvas.studio_mode.toggle"
+            | "collection.direct_transition"
+            | "scene.add"
+            | "canvas.add_vertical" => self.running(),
             // An open panel can always be closed.
             "canvas.vertical_preview.toggle" if self.vertical_panel_open() => Ok(()),
             "canvas.vertical_preview.toggle" => {
@@ -1040,6 +1043,7 @@ impl CommandState for Shown<'_> {
             }
             "profile.select" => self.studio.library_choices(false),
             "collection.select" => self.studio.library_choices(true),
+            "collection.direct_transition" => direct_choices(self.studio.direct_transition()),
             "ui.theme.select" => self.themes.clone(),
             "ui.experience.select" => {
                 use crate::background::Experience;
@@ -1773,6 +1777,8 @@ pub enum Run {
     Profile(String),
     /// Run the scene collection with this id.
     Collection(String),
+    /// The kind a scene switch uses outside studio mode (ADR-0153).
+    DirectTransition(rbs_scene::TransitionKind),
     /// Put the scene with this id on air.
     Scene(i32),
     /// A layout change.
@@ -1923,6 +1929,25 @@ fn output_kind(id: &CommandId) -> Option<OutputKind> {
     }
 }
 
+/// The kinds Scene › Transition outside studio mode offers, in the rail's order
+/// (ADR-0153 decision 6).
+const DIRECT_KINDS: [(rbs_scene::TransitionKind, &str); 6] = [
+    (rbs_scene::TransitionKind::Cut, "Cut"),
+    (rbs_scene::TransitionKind::Fade, "Fade"),
+    (rbs_scene::TransitionKind::Move, "Move"),
+    (rbs_scene::TransitionKind::Swipe, "Swipe"),
+    (rbs_scene::TransitionKind::Slide, "Slide"),
+    (rbs_scene::TransitionKind::Stinger, "Stinger"),
+];
+
+/// Scene › Transition outside studio mode: `(title, kind, current)`.
+fn direct_choices(now: rbs_scene::TransitionKind) -> Vec<(String, String, bool)> {
+    DIRECT_KINDS
+        .into_iter()
+        .map(|(k, title)| (title.to_owned(), k.as_str().to_owned(), k == now))
+        .collect()
+}
+
 /// What `text` runs in this state; `None` for ids that cannot run (unknown, bad
 /// parameters, a bare picker, disabled).
 pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
@@ -1953,6 +1978,9 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
             "ui.mixer.orientation" => Run::MixerOrientation(MixerOrientation::parse(&value)?),
             "profile.select" => Run::Profile(value),
             "collection.select" => Run::Collection(value),
+            "collection.direct_transition" => {
+                Run::DirectTransition(rbs_scene::TransitionKind::parse(&value)?)
+            }
             "ui.theme.select" => Run::SelectTheme(value),
             "ui.experience.select" => {
                 Run::SelectExperience(crate::background::Experience::from_id(&value)?)
@@ -2298,6 +2326,22 @@ mod tests {
         }
         assert_eq!(v.enabled.len(), v.titles.len());
         assert_eq!(v.checked.len(), v.titles.len());
+    }
+
+    #[test]
+    fn the_transition_outside_studio_mode_checks_the_current_kind() {
+        use rbs_scene::TransitionKind as K;
+        let choices = direct_choices(K::Move);
+        let titles: Vec<_> = choices.iter().map(|(t, _, _)| t.as_str()).collect();
+        assert_eq!(titles, ["Cut", "Fade", "Move", "Swipe", "Slide", "Stinger"]);
+        let checked: Vec<_> = choices.iter().filter(|c| c.2).collect();
+        assert_eq!(checked.len(), 1);
+        assert_eq!(checked[0].1, "move");
+        // Every value names a kind the run parses back (the picker's `direct_kind`).
+        for (_, value, _) in &choices {
+            assert!(K::parse(value).is_some(), "{value}");
+        }
+        assert!(direct_choices(K::Fade)[1].2);
     }
 
     #[test]

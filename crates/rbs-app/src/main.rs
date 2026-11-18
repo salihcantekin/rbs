@@ -833,6 +833,7 @@ impl App {
             Run::StudioMode(on) => self.studio.set_studio_mode(on),
             Run::Transition => self.studio.transition(),
             Run::Rehearse => self.studio.rehearse(),
+            Run::DirectTransition(kind) => self.studio.set_direct_transition(kind),
             Run::AddScene => self.studio.add_scene(),
             Run::DuplicateScene(id) => self.studio.duplicate_scene(id),
             Run::DuplicateSceneWithCopies(id) => self.studio.duplicate_scene_with_copies(id),

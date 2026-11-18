@@ -107,6 +107,7 @@ const CATEGORY_RULES: &[(&str, Category)] = &[
     ("ui.mixer.", Category::Audio),
     ("loudness.", Category::Audio),
     ("profile.", Category::Profiles),
+    ("collection.direct_transition", Category::Scene),
     ("collection.", Category::Profiles),
     ("ui.profile.", Category::Profiles),
     ("ui.collection.", Category::Profiles),
@@ -1725,6 +1726,21 @@ pub const ENTRIES: &[Entry] = &[
         fixed: &[],
     },
     Entry {
+        id: "collection.direct_transition",
+        title: "Transition outside studio mode",
+        tooltip: "How the picture changes when you switch scenes while studio mode is off",
+        icon: Some("transition"),
+        shortcut: None,
+        menu: Menu::Scene,
+        kind: Kind::Picker {
+            method: "collection.set_transition",
+            param: "direct_kind",
+        },
+        params: &[choice("direct_kind")],
+        checkable: false,
+        fixed: &[],
+    },
+    Entry {
         id: "canvas.transition",
         title: "Transition",
         tooltip: "Put the preview scene on air (studio mode)",
@@ -2374,6 +2390,7 @@ pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
             "canvas.studio_mode.toggle",
             "canvas.transition",
             "ui.transition.rehearse",
+            "collection.direct_transition",
         ],
     ),
     (

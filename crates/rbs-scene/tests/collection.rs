@@ -2327,6 +2327,8 @@ fn legacy_documents_map_to_move_or_cut() {
         easing: GlideEasing::EaseInOut,
     });
     assert_eq!(still.kind, TransitionKind::Cut);
+    // Outside studio mode every older document is Move (ADR-0153).
+    assert_eq!(still.direct, TransitionKind::Move);
     for kind in TransitionKind::ALL {
         assert_eq!(TransitionKind::parse(kind.as_str()), Some(kind));
     }

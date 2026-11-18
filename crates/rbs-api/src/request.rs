@@ -167,9 +167,12 @@ pub struct SetCollectionGlide {
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SetCollectionTransition {
-    /// The kind a program change uses.
+    /// The kind a program change uses in studio mode (in every mode before 1.97).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<crate::types::TransitionKind>,
+    /// The kind a program change uses outside studio mode (protocol 1.97, ADR-0153).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direct_kind: Option<crate::types::TransitionKind>,
     /// Fade settings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fade: Option<crate::types::FadeTransition>,
