@@ -7635,10 +7635,7 @@ pub fn active_content(
 
 /// A line for the developer log (stderr; nothing is shown to the user).
 pub fn log(line: &str) {
-    #[allow(clippy::print_stderr)]
-    {
-        eprintln!("rbs: {line}");
-    }
+    rbs_crash::errln!("rbs: {line}");
 }
 
 fn whole_fps(rate: rbs_core::timing::FrameRate) -> u32 {

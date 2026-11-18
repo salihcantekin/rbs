@@ -129,7 +129,7 @@ impl Host {
         if text_timers::merge(&mut self.text_timer_file, &collection, &timers, exists)
             && let Err(e) = text_timers::save(&dir, &self.text_timer_file)
         {
-            eprintln!("rbs: text timers were not saved: {e}");
+            rbs_crash::errln!("rbs: text timers were not saved: {e}");
         }
     }
 

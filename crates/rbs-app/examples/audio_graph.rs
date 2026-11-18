@@ -124,7 +124,7 @@ fn main() -> ExitCode {
         .and_then(|s| s.parse().ok())
         .unwrap_or(20);
     let Some((backend, aac)) = platform() else {
-        eprintln!("audio_graph runs on Windows and macOS only");
+        rbs_crash::errln!("audio_graph runs on Windows and macOS only");
         return ExitCode::SUCCESS;
     };
     let config = AudioGraphConfig::default();
@@ -139,7 +139,7 @@ fn main() -> ExitCode {
     let mut nodes: Vec<(NodeId, InputNode)> = Vec::new();
     for kind in [EndpointKind::Input, EndpointKind::OutputLoopback] {
         let Some(ep) = pick(backend.as_ref(), kind) else {
-            println!("no {} endpoint", kind.as_str());
+            rbs_crash::outln!("no {} endpoint", kind.as_str());
             continue;
         };
         let request = InputRequest::new(ep.id.clone(), Arc::clone(&clock))
@@ -147,12 +147,12 @@ fn main() -> ExitCode {
         let stream = match backend.open_input(&request) {
             Ok(s) => s,
             Err(e) => {
-                println!("{}: cannot open {}: {e}", kind.as_str(), ep.name);
+                rbs_crash::outln!("{}: cannot open {}: {e}", kind.as_str(), ep.name);
                 continue;
             }
         };
         let f = stream.format();
-        println!(
+        rbs_crash::outln!(
             "{}: {} ({} Hz, {} ch)",
             kind.as_str(),
             ep.name,
@@ -170,7 +170,7 @@ fn main() -> ExitCode {
         nodes.push((id, node));
     }
     if inputs.is_empty() {
-        eprintln!("no audio input could be opened");
+        rbs_crash::errln!("no audio input could be opened");
         return ExitCode::FAILURE;
     }
 
@@ -190,7 +190,7 @@ fn main() -> ExitCode {
     )) {
         Ok(e) => e,
         Err(e) => {
-            eprintln!("cannot create the AAC encoder: {e}");
+            rbs_crash::errln!("cannot create the AAC encoder: {e}");
             return ExitCode::FAILURE;
         }
     };
@@ -256,13 +256,13 @@ fn main() -> ExitCode {
     let applied = match engine.apply(&g) {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("apply failed: {e}");
+            rbs_crash::errln!("apply failed: {e}");
             return ExitCode::FAILURE;
         }
     };
     for (p, r) in &applied.reports {
         if !r.failed.is_empty() {
-            eprintln!("partition {p:?}: nodes failed to prepare: {:?}", r.failed);
+            rbs_crash::errln!("partition {p:?}: nodes failed to prepare: {:?}", r.failed);
             return ExitCode::FAILURE;
         }
     }
@@ -273,9 +273,14 @@ fn main() -> ExitCode {
         .map(|c| Arc::clone(&c.stats));
     let audio_worker = engine.worker_stats(AUDIO).expect("audio worker");
 
-    println!(
+    rbs_crash::outln!(
         "{:>4} {:>44} {:>14} {:>8} {:>6} {:>5}",
-        "s", "per input: dB peak / ppm / late / resyncs", "master dB", "packets", "lost", "late"
+        "s",
+        "per input: dB peak / ppm / late / resyncs",
+        "master dB",
+        "packets",
+        "lost",
+        "late"
     );
     let start = Instant::now();
     let mut settled: Vec<InputCounters> = Vec::new();
@@ -298,7 +303,7 @@ fn main() -> ExitCode {
             ));
         }
         let m = master.take();
-        println!(
+        rbs_crash::outln!(
             "{s:>4} {line} {:>14} {:>8} {:>6} {:>5}",
             db(m.peak(0).max(m.peak(1))),
             packets.load(Ordering::Relaxed),
@@ -314,31 +319,31 @@ fn main() -> ExitCode {
     let grant = audio_worker.thread_grant();
     let _ = engine.shutdown();
 
-    println!("--- summary after {seconds} s");
+    rbs_crash::outln!("--- summary after {seconds} s");
     let mut ok = true;
     for (i, (name, _, stats, _)) in inputs.iter().enumerate() {
         let c = stats.read();
         let base = settled.get(i).copied().unwrap_or_default();
-        println!("{name}: {c:?}");
+        rbs_crash::outln!("{name}: {c:?}");
         if c.resyncs > base.resyncs || c.read_errors > 0 {
-            println!("  FAIL: resyncs or read errors after start-up");
+            rbs_crash::outln!("  FAIL: resyncs or read errors after start-up");
             ok = false;
         }
     }
-    println!(
+    rbs_crash::outln!(
         "mixer: invalid inputs {}, unknown inputs {}",
         mixer_stats.invalid_inputs(),
         mixer_stats.unknown_inputs()
     );
     let expected = seconds * 48_000 / 1024;
     let got = packets.load(Ordering::Relaxed);
-    println!(
+    rbs_crash::outln!(
         "encoder: {got} packets ({} kbit/s), {} irregular, about {expected} expected",
         bytes.load(Ordering::Relaxed) * 8 / 1000 / seconds.max(1),
         irregular.load(Ordering::Relaxed)
     );
     if let Some(q) = &queue {
-        println!(
+        rbs_crash::outln!(
             "queue: sent {} received {} overflows {} filled {}",
             q.sent(),
             q.received(),
@@ -347,15 +352,17 @@ fn main() -> ExitCode {
         );
         ok &= q.overflows() == 0;
     }
-    println!("audio worker: late {late_ticks}, caught up {caught_up}, thread grant {grant:?}");
+    rbs_crash::outln!(
+        "audio worker: late {late_ticks}, caught up {caught_up}, thread grant {grant:?}"
+    );
     ok &= late_ticks == 0 && irregular.load(Ordering::Relaxed) == 0;
     // Allow the latency and the encoder's priming at the start.
     ok &= got + 10 >= expected.saturating_sub(5);
     if ok {
-        println!("PASS");
+        rbs_crash::outln!("PASS");
         ExitCode::SUCCESS
     } else {
-        println!("FAIL");
+        rbs_crash::outln!("FAIL");
         ExitCode::FAILURE
     }
 }

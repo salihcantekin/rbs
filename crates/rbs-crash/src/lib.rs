@@ -7,6 +7,8 @@
 //!   exit, whatever ended it.
 //! - [`report_panics_on_this_thread`]: only threads that opt in get reports, so a panic
 //!   on a real-time thread never does file I/O there (P6).
+//! - [`outln!`] and [`errln!`]: lines to standard output and error that are dropped,
+//!   not a panic, when the pipe or terminal behind them went away.
 //!
 //! Nothing here sends data anywhere.
 
@@ -18,6 +20,8 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+pub mod out;
 
 /// The error bar's text for a caught panic.
 pub const CAUGHT_TEXT: &str = "Something went wrong in RBS. The recording and the stream keep running; a report was saved in the crash-reports folder of the settings folder.";

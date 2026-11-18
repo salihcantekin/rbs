@@ -47,7 +47,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(not(any(target_os = "macos", windows)))]
 fn main() {
-    eprintln!(
+    rbs_crash::errln!(
         "remote_preview: cross-process preview is implemented on macOS and Windows only (ADR-0028, ADR-0036)"
     );
 }
@@ -460,7 +460,7 @@ mod demo {
                     Ok(layer) => {
                         let needed = layer.surfaces_needed(Duration::from_nanos(16_666_667));
                         if layer.surfaces() < needed {
-                            eprintln!(
+                            rbs_crash::errln!(
                                 "remote_preview: the engine's ring has {} surfaces, the layer needs {needed} at 60 fps; frames will be dropped",
                                 layer.surfaces()
                             );
@@ -468,7 +468,7 @@ mod demo {
                         Some(layer)
                     }
                     Err(e) => {
-                        eprintln!(
+                        rbs_crash::errln!(
                             "remote_preview: no preview layer ({e}); Slint draws the preview"
                         );
                         mode = Mode::Slint;
@@ -478,7 +478,7 @@ mod demo {
             }
             Mode::Slint => None,
         };
-        eprintln!(
+        rbs_crash::errln!(
             "remote_preview: shared {ids} (no copies), mode {}",
             match mode {
                 Mode::Layer => "layer",
@@ -642,7 +642,7 @@ mod demo {
                                 .as_ref()
                                 .map_or((0, 0), |st| (st.counters.measured_frames, st.counters.late))
                         });
-                        println!(
+                        rbs_crash::outln!(
                             "MEASURE mode={} meters={} meter_mode={} seconds={wall:.1} fps={:.1} late={late} cpu_pct={:.1} peak_rss_mib={:.0}",
                             match mode {
                                 Mode::Layer => "layer",
@@ -739,7 +739,7 @@ mod demo {
                     unsafe { layer.attach_to_hwnd(win32.hwnd) }
                 };
                 if let Err(e) = attach {
-                    eprintln!("remote_preview: cannot attach the preview layer: {e}");
+                    rbs_crash::errln!("remote_preview: cannot attach the preview layer: {e}");
                     return;
                 }
                 attached.set(true);
@@ -786,7 +786,7 @@ mod demo {
                 };
                 // SAFETY: as in `place_layer`.
                 if let Err(e) = unsafe { bridge.attach_to_ns_view(appkit.ns_view) } {
-                    eprintln!(
+                    rbs_crash::errln!(
                         "remote_preview: cannot attach the meter layer, Slint draws the meters: {e}"
                     );
                     fallback(st);

@@ -211,7 +211,7 @@ fn model(v: &[SharedString]) -> ModelRc<SharedString> {
 fn main() -> Result<(), slint::PlatformError> {
     let main = SpikeMain::new()?;
     let second = SpikeSecond::new()?;
-    println!("SPIKE start");
+    rbs_crash::outln!("SPIKE start");
     let tabs = Rc::new(RefCell::new(Tabs {
         left: vec!["Scenes".into(), "Sources".into(), "Mixer".into()],
         right: vec!["Inspector".into()],
@@ -232,9 +232,11 @@ fn main() -> Result<(), slint::PlatformError> {
             if let Some(s) = sw.upgrade() {
                 s.set_tabs(model(&t.second));
             }
-            println!(
+            rbs_crash::outln!(
                 "STATE {status} | left {:?} right {:?} second {:?}",
-                t.left, t.right, t.second
+                t.left,
+                t.right,
+                t.second
             );
         })
     };
@@ -244,14 +246,14 @@ fn main() -> Result<(), slint::PlatformError> {
         let (tabs, refresh) = (tabs.clone(), refresh.clone());
         move |d: DataTransfer, stack: SharedString, target: SharedString| {
             let name = d.plain_text().unwrap_or_default();
-            println!("DROP {name} on {stack}, target {target}");
+            rbs_crash::outln!("DROP {name} on {stack}, target {target}");
             tabs.borrow_mut().place(&name, &stack, &target);
             refresh(format!("{name} dropped on {stack} ({target})"));
         }
     };
     main.on_make_data(payload);
     main.on_dropped_on(on_drop.clone());
-    main.on_log(|s| println!("LOG {s}"));
+    main.on_log(|s| rbs_crash::outln!("LOG {s}"));
     {
         let (tabs, refresh, mw) = (tabs.clone(), refresh.clone(), main_weak.clone());
         main.on_tear(move |name, x, y, up| {
@@ -260,7 +262,7 @@ fn main() -> Result<(), slint::PlatformError> {
             let size = w.window().size().to_logical(scale);
             let outside = x < 0.0 || y < 0.0 || x > size.width || y > size.height;
             if up {
-                println!("TEAR released {name} at ({x:.0}, {y:.0}) outside={outside}");
+                rbs_crash::outln!("TEAR released {name} at ({x:.0}, {y:.0}) outside={outside}");
                 if outside {
                     tabs.borrow_mut().place(&name, "Second window", "centre");
                     refresh(format!("{name} torn off into the second window"));
@@ -270,7 +272,7 @@ fn main() -> Result<(), slint::PlatformError> {
                     );
                 }
             } else if outside {
-                println!("TEAR moving {name} outside the window at ({x:.0}, {y:.0})");
+                rbs_crash::outln!("TEAR moving {name} outside the window at ({x:.0}, {y:.0})");
                 w.set_status(format!("pointer outside the window at ({x:.0}, {y:.0})").into());
             }
         });
@@ -286,10 +288,10 @@ fn main() -> Result<(), slint::PlatformError> {
 
     second.on_make_data(payload);
     second.on_dropped_on(on_drop);
-    second.on_log(|s| println!("LOG {s}"));
+    second.on_log(|s| rbs_crash::outln!("LOG {s}"));
     second.on_tear(|name, x, y, up| {
         if up {
-            println!("TEAR released {name} in second window at ({x:.0}, {y:.0})");
+            rbs_crash::outln!("TEAR released {name} in second window at ({x:.0}, {y:.0})");
         }
     });
     second.show()?;

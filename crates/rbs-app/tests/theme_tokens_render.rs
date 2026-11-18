@@ -402,7 +402,7 @@ fn slow_every_themeable_token_changes_a_pixel() {
     if let Some(d) = &dir {
         std::fs::write(d.join("tokens.tsv"), &table).unwrap();
     }
-    println!("{table}");
+    rbs_crash::outln!("{table}");
     assert!(
         dead.is_empty(),
         "tokens that change nothing in any view: {dead:?}"

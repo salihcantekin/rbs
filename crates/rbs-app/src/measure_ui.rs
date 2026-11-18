@@ -135,7 +135,7 @@ pub fn install(main: &crate::ui::MainWindow, seconds: u64) {
         let installed =
             crate::entry::set_rendering_notifier(main.window(), move |s, _| record(&st, &s));
         if let Err(e) = installed {
-            eprintln!("rbs measure: this renderer gives no frame notifications: {e:?}");
+            rbs_crash::errln!("rbs measure: this renderer gives no frame notifications: {e:?}");
         }
     }
     let weak = main.as_weak();
@@ -246,7 +246,7 @@ fn report(phases: &[Phase], scale: f32) {
     for p in phases {
         let r = spread(&p.renders);
         let i = spread(&p.intervals);
-        println!(
+        rbs_crash::outln!(
             "rbs measure: effects={effects} scale={scale} phase={} frames={} meter_writes={} render_ms p50={:.2} p95={:.2} p99={:.2} max={:.2} interval_ms p50={:.2} p95={:.2} p99={:.2} max={:.2}",
             p.name,
             p.renders.len(),
