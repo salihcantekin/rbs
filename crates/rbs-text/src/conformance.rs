@@ -3,7 +3,7 @@
 //! the renderer's default font, so they hold for the fake and for a real renderer with
 //! any font; they compare pictures with each other, never with stored pixels.
 
-use crate::{Align, Outline, TextBlock, TextError, TextPicture, TextRenderer};
+use crate::{Align, Outline, Overflow, TextBlock, TextError, TextPicture, TextRenderer};
 
 /// Runs every check; the first failure is returned as a sentence.
 pub fn run(renderer: &dyn TextRenderer) -> Result<(), String> {
@@ -13,6 +13,7 @@ pub fn run(renderer: &dyn TextRenderer) -> Result<(), String> {
     background_fills_the_box(renderer)?;
     alignment_moves_the_ink(renderer)?;
     fit_keeps_the_ink_inside(renderer)?;
+    a_cut_is_reported(renderer)?;
     outline_adds_ink(renderer)?;
     invalid_block_is_refused(renderer)?;
     measure_is_stable_and_wraps(renderer)?;
@@ -119,6 +120,33 @@ fn fit_keeps_the_ink_inside(r: &dyn TextRenderer) -> Result<(), String> {
     // Fit shrinks to at least FIT_MIN_SCALE; the ink must not be cut on both sides.
     if ink[0] == 0 && ink[2] == 200 && ink[1] == 0 && ink[3] == 60 {
         return Err("Fit did not shrink the text".to_owned());
+    }
+    Ok(())
+}
+
+fn a_cut_is_reported(r: &dyn TextRenderer) -> Result<(), String> {
+    let notes = |block: &TextBlock| {
+        r.render(block)
+            .map(|(_, notes)| notes)
+            .map_err(|e| format!("render failed: {e}"))
+    };
+    let mut b = TextBlock::new("A much too long line for this box", [200, 60]);
+    b.size = 40.0;
+    b.wrap = false;
+    b.overflow = Overflow::Clip;
+    if !notes(&b)?.cut_to_fit {
+        return Err("a clipped line did not report cut_to_fit".to_owned());
+    }
+    let [w, h] = r
+        .measure(&b, None)
+        .map_err(|e| format!("measure failed: {e}"))?;
+    b.box_size = [w, h];
+    if notes(&b)?.cut_to_fit {
+        return Err("a line in a box of its measured size reported cut_to_fit".to_owned());
+    }
+    b.text.clear();
+    if notes(&b)?.cut_to_fit {
+        return Err("an empty text reported cut_to_fit".to_owned());
     }
     Ok(())
 }

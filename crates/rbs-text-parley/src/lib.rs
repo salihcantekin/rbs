@@ -366,6 +366,8 @@ impl TextRenderer for ParleyRenderer {
                 .ok_or_else(|| TextError::Render("picture size".to_owned()))?;
             let mut notes = RenderNotes::default();
             notes.font_missing = font_missing;
+            notes.cut_to_fit = !block.text.is_empty()
+                && (layout.width() > area_w + 0.5 || layout.height() > area_h + 0.5);
             Ok((picture, notes))
         })
     }

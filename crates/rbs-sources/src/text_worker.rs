@@ -89,6 +89,9 @@ pub enum TextProblem {
     CouldNotDraw,
     /// The font family is not installed; the system font was used (a note).
     FontMissing,
+    /// A `single_line` text is wider than the widest picture and its end is cut (a
+    /// note, ADR-0150 decision 10).
+    CutToFit,
 }
 
 impl TextProblem {
@@ -103,6 +106,7 @@ impl TextProblem {
             TextProblem::FontMissing => {
                 "The font is not installed; the system font is used".to_owned()
             }
+            TextProblem::CutToFit => "The line is too long and its end is cut".to_owned(),
         }
     }
 
@@ -110,7 +114,7 @@ impl TextProblem {
     pub fn fault(&self) -> Option<SourceFault> {
         match self {
             TextProblem::FileNotFound => Some(SourceFault::TargetGone),
-            TextProblem::FontMissing => None,
+            TextProblem::FontMissing | TextProblem::CutToFit => None,
             _ => Some(SourceFault::Other),
         }
     }
@@ -1033,6 +1037,9 @@ fn draw(
     } else if !d.settings.is_still() {
         block.text = d.live_text.clone().unwrap_or_default();
     }
+    if d.settings.single_line {
+        block = crate::text::single_line_block(block);
+    }
     let Some(renderer) = pick_renderer(renderers, &block) else {
         shared.post((
             source,
@@ -1051,7 +1058,14 @@ fn draw(
         .render_source
         .store(u64::from(source.get()) + 1, Ordering::Release);
     shared.render_busy.store(shared.stamp(), Ordering::Release);
-    let result = catch_unwind(AssertUnwindSafe(|| renderer.render(&block)));
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        if d.settings.single_line {
+            // The box follows the text (ADR-0150 decision 10): measure, then draw.
+            let [natural, _] = renderer.measure(&block, None)?;
+            block.box_size[0] = crate::text::single_line_width(natural, block.box_size[1]);
+        }
+        renderer.render(&block)
+    }));
     shared.render_busy.store(0, Ordering::Release);
     shared.render_source.store(0, Ordering::Release);
     match result {
@@ -1063,7 +1077,15 @@ fn draw(
                 drop(frames.send(Some(frame.clone())));
             }
             d.last = Some(frame);
-            let note = notes.font_missing.then_some(TextProblem::FontMissing);
+            // A single line longer than the widest picture is cut; any other cut is
+            // what the overflow setting asked for.
+            let note = if notes.font_missing {
+                Some(TextProblem::FontMissing)
+            } else if d.settings.single_line && notes.cut_to_fit {
+                Some(TextProblem::CutToFit)
+            } else {
+                None
+            };
             shared.post((source, ProblemSlot::Render, note));
             false
         }
