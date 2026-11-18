@@ -61,7 +61,7 @@ impl SourcePicker {
     pub fn adapter_name(&self) -> &str;
     pub fn pick(&self) -> Result<SourceTarget, SourceError>; // blocks while the OS dialog is up
 }
-pub struct InstanceContext { clock, audio: AudioGraphConfig, max_audio_offset }  // new(), with_max_audio_offset()
+pub struct InstanceContext { clock, audio: AudioGraphConfig, max_audio_offset, browser_budget, browser_tree, canvas: Option<(Size, FrameRate)> }  // new(), with_max_audio_offset(), with_browser(), with_canvas()
 pub enum SourceInstance {
     Video(VideoSource { node: CaptureSourceNode, stats, adapter, target }),
     Audio(AudioSource { node: InputNode, offset: ParamSender<InputParams>, stats, adapter, endpoint }),
@@ -84,8 +84,8 @@ pub fn node_layers(compositor: &BoundCompositor, plan: &SchedulePlan) -> Vec<Nod
 | `adapter` | Text | all | Adapter id. Missing: the best probed adapter for the kind (registry order: user choice, preference, hardware, registration) |
 | `target` | Text | all | Capture target id or audio endpoint id. Ids are adapter-defined, so a stored target is stored with its adapter |
 | `cursor` | Bool | display, window | Draw the cursor; default true |
-| `width`, `height` | Int > 0 | display, window, camera, color | Requested size; both or neither. For `color` it is the picture size, default 1920 x 1080, at most 8192 |
-| `fps` | Int > 0 | display, window, camera | Requested frame rate |
+| `width`, `height` | Int > 0 | display, window, camera, color | Requested size; both or neither. For `color` it is the picture size, default 1920 x 1080, at most 8192. A camera without them asks for the context's canvas size (the nearest mode, not the largest; audit C-21); a display or window keeps its own size |
+| `fps` | Int > 0 | display, window, camera | Requested frame rate. With a canvas in the `InstanceContext` (the studio passes the main canvas), a capture never runs faster than the canvas rate, and without `fps` it runs at the canvas rate (audit C-02) |
 | `path` | Text | image | A PNG file (straight alpha, any colour type; a side over 8192 pixels or a decoder buffer over 128 MiB is refused; gamma and colour profiles are ignored, pixels are sRGB). Wins over `sample` |
 | `sample` | Text | image | A built-in sample picture id (below) at 1920 x 1080 |
 | `color` | Text | color | `#rrggbb` or `#rrggbbaa`; default `#000000` |

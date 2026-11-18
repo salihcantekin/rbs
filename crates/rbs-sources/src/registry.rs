@@ -246,6 +246,11 @@ pub struct InstanceContext {
     pub browser_budget: Arc<crate::browser::BrowserBudget>,
     /// Helper tree the composition root wires. `None` until it sets a path.
     pub browser_tree: Option<Arc<dyn crate::browser::BrowserTree>>,
+    /// The main canvas's size and frame rate, when the caller knows them. Captures
+    /// never run faster than this rate, and a capture without an `fps` setting runs at
+    /// it; a camera without a size setting asks for this size (audit C-02, C-21).
+    /// `None`: settings alone decide (the device's largest size and fastest rate).
+    pub canvas: Option<(Size, FrameRate)>,
 }
 
 impl InstanceContext {
@@ -257,7 +262,14 @@ impl InstanceContext {
             max_audio_offset: DEFAULT_MAX_AUDIO_OFFSET,
             browser_budget: crate::browser::BrowserBudget::shared(),
             browser_tree: None,
+            canvas: None,
         }
+    }
+
+    /// Sets the main canvas's size and frame rate (see [`Self::canvas`]).
+    pub fn with_canvas(mut self, size: Size, rate: FrameRate) -> Self {
+        self.canvas = Some((size, rate));
+        self
     }
 
     /// Sets the largest sync offset an audio source may ask for.
@@ -1229,6 +1241,7 @@ impl SourceTypes {
                     None => default_capture_target(&candidates, kind)
                         .ok_or_else(|| SourceError::NoTarget(type_id.clone()))?,
                 };
+                let (size, fps) = capture_shape(kind, size, fps, ctx.canvas);
                 let mut request =
                     CaptureRequest::new(target.clone(), Arc::clone(&ctx.clock)).with_cursor(cursor);
                 if let Some(size) = size {
@@ -1687,6 +1700,36 @@ fn still_pixels(type_id: &str, settings: &Settings) -> Result<crate::still::Pict
     Ok((w, h, still::color_picture(w, h, first, second, angle)))
 }
 
+/// The size and rate a capture asks for, from its settings and the canvas: it never
+/// runs faster than the canvas draws it, runs at the canvas rate without an `fps`
+/// setting, and a camera without a size setting takes the mode nearest the canvas
+/// instead of the largest (audit C-02, C-21). Displays and windows without a size keep
+/// their own size (OS-side scaling is a separate decision).
+fn capture_shape(
+    kind: TargetKind,
+    size: Option<Size>,
+    fps: Option<FrameRate>,
+    canvas: Option<(Size, FrameRate)>,
+) -> (Option<Size>, Option<FrameRate>) {
+    let fps = match (fps, canvas.map(|(_, rate)| rate)) {
+        (Some(fps), Some(rate)) => Some(slower(fps, rate)),
+        (fps, rate) => fps.or(rate),
+    };
+    let size = match (size, canvas) {
+        (None, Some((canvas_size, _))) if kind == TargetKind::Camera => Some(canvas_size),
+        (size, _) => size,
+    };
+    (size, fps)
+}
+
+/// The slower of two frame rates (`a` on a tie).
+fn slower(a: FrameRate, b: FrameRate) -> FrameRate {
+    let (x, y) = (a.per_second(), b.per_second());
+    let x_rate = u64::from(x.num()) * u64::from(y.den());
+    let y_rate = u64::from(y.num()) * u64::from(x.den());
+    if y_rate < x_rate { b } else { a }
+}
+
 fn default_capture_target(
     candidates: &[Arc<dyn CaptureFactory>],
     kind: TargetKind,
@@ -1813,5 +1856,60 @@ mod option_key_tests {
         }
         assert!(option_keys(&NodeTypeId::new("org.example.plugin")).is_empty());
         assert!(option_keys(&NodeTypeId::new(types::IMAGE_SOURCE)).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod capture_shape_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
+    use super::*;
+
+    const HD: Size = Size::new(1920, 1080);
+
+    fn fps(n: u32) -> FrameRate {
+        FrameRate::new(n, 1).unwrap()
+    }
+
+    #[test]
+    fn a_capture_without_a_rate_runs_at_the_canvas_rate() {
+        let (_, rate) = capture_shape(TargetKind::Display, None, None, Some((HD, fps(60))));
+        assert_eq!(rate, Some(fps(60)));
+    }
+
+    #[test]
+    fn a_stored_rate_above_the_canvas_rate_is_capped() {
+        let canvas = Some((HD, fps(30)));
+        let (_, rate) = capture_shape(TargetKind::Window, None, Some(fps(60)), canvas);
+        assert_eq!(rate, Some(fps(30)));
+        let (_, rate) = capture_shape(TargetKind::Window, None, Some(fps(24)), canvas);
+        assert_eq!(rate, Some(fps(24)));
+        // 59.94 is slower than 60, so it stays.
+        let (_, rate) = capture_shape(
+            TargetKind::Display,
+            None,
+            Some(FrameRate::FPS_59_94),
+            Some((HD, fps(60))),
+        );
+        assert_eq!(rate, Some(FrameRate::FPS_59_94));
+    }
+
+    #[test]
+    fn a_camera_without_a_size_asks_for_the_canvas_size() {
+        let canvas = Some((HD, fps(30)));
+        let (size, _) = capture_shape(TargetKind::Camera, None, None, canvas);
+        assert_eq!(size, Some(HD));
+        let small = Size::new(1280, 720);
+        let (size, _) = capture_shape(TargetKind::Camera, Some(small), None, canvas);
+        assert_eq!(size, Some(small));
+    }
+
+    #[test]
+    fn displays_keep_their_own_size_and_nothing_changes_without_a_canvas() {
+        let (size, _) = capture_shape(TargetKind::Display, None, None, Some((HD, fps(30))));
+        assert_eq!(size, None);
+        assert_eq!(
+            capture_shape(TargetKind::Camera, None, None, None),
+            (None, None)
+        );
     }
 }

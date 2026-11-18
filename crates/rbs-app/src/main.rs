@@ -1578,8 +1578,12 @@ struct Ctx {
     save_timer: Rc<slint::Timer>,
     /// Refreshes the meters; runs only while the Mixer shows audio sources (U5, U16).
     meter_timer: Rc<slint::Timer>,
-    /// Ticks the live duration once a second while live or recording.
+    /// Ticks the live duration once a second while live or recording. Every 1 Hz
+    /// change (times, Stats, the meters' dB values) is made on this tick while it
+    /// runs, so the window redraws once a second for all of them (perf plan P2).
     live_timer: Rc<slint::Timer>,
+    /// The newest Stats from the studio, held for the next one-second tick.
+    held_stats: Rc<Cell<Option<studio_host::Stats>>>,
 }
 
 /// Shows the Settings window the first time, centred on the main window. Every way to
@@ -1742,6 +1746,14 @@ impl Ctx {
         let Ok(mut app) = self.app.try_borrow_mut() else {
             return;
         };
+        // The other 1 Hz changes ride this tick: Stats held since the last one, and the
+        // meters' dB values while the meters run.
+        if let Some(stats) = self.held_stats.take() {
+            let _ = app.studio.apply(studio_host::Update::Stats(stats));
+        }
+        if self.meter_timer.running() {
+            app.studio.report_meters();
+        }
         // Since going live while live, else since the recording started.
         // The vertical chips' times (ADR-0111), also while the main canvas is idle.
         let rec = app.studio.vertical_rec_chip().map(|c| c.time_text());
@@ -1805,6 +1817,15 @@ impl Ctx {
 
     /// Applies an update from the studio.
     fn studio_update(&self, u: studio_host::Update) {
+        // Stats come once a second while an output runs: held for the one-second tick,
+        // which shows them with the times in one turn and without a full sync.
+        let u = match u {
+            studio_host::Update::Stats(stats) if self.live_timer.running() => {
+                self.held_stats.set(Some(stats));
+                return;
+            }
+            u => u,
+        };
         let ctx = self.clone();
         self.update(move |app| {
             let applied = app.studio.apply(u);
@@ -2115,7 +2136,8 @@ impl Ctx {
     /// One meter refresh (the timer runs only while the Mixer shows meters).
     fn meter_tick(&self) {
         if let Ok(mut app) = self.app.try_borrow_mut() {
-            app.studio.tick_meters();
+            // While the one-second tick runs, it writes the dB values.
+            app.studio.tick_meters(!self.live_timer.running());
         }
     }
 
@@ -2173,6 +2195,10 @@ impl Ctx {
             }
         } else {
             self.live_timer.stop();
+            // Stats held for a tick that will not come (the last ones are empty).
+            if let Some(stats) = self.held_stats.take() {
+                let _ = app.studio.apply(studio_host::Update::Stats(stats));
+            }
         }
     }
 
@@ -4638,14 +4664,18 @@ fn open_attributes(ctx: &Ctx, app: &mut App, id: i32, paste: bool) {
 fn install_meter_bridge(main: &MainWindow) {
     let g = main.global::<Studio>();
     g.on_meter_placed(|key, x, y, w, h, vertical, shown| {
-        meter_bridge::placed(key, Rect { x, y, w, h }, vertical, shown);
+        entry::guard(|| meter_bridge::placed(key, Rect { x, y, w, h }, vertical, shown));
     });
-    g.on_mixer_placed(|x, y, w, h| meter_bridge::viewport(Rect { x, y, w, h }));
+    g.on_mixer_placed(|x, y, w, h| {
+        entry::guard(|| meter_bridge::viewport(Rect { x, y, w, h }));
+    });
     let weak = main.as_weak();
     g.on_meters_relayout(move || {
-        if let Some(w) = weak.upgrade() {
-            meter_bridge::relayout(&w);
-        }
+        entry::guard(|| {
+            if let Some(w) = weak.upgrade() {
+                meter_bridge::relayout(&w);
+            }
+        });
     });
 }
 
@@ -5949,6 +5979,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
         save_timer: Rc::new(slint::Timer::default()),
         meter_timer: Rc::new(slint::Timer::default()),
         live_timer: Rc::new(slint::Timer::default()),
+        held_stats: Rc::new(Cell::new(None)),
     };
     {
         let mut app = ctx.app.borrow_mut();

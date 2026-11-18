@@ -7025,11 +7025,14 @@ impl StudioUi {
         self.filter_ui.levels(filter)
     }
 
-    /// One meter refresh: takes each source's peaks since the last call.
-    pub fn tick_meters(&mut self) {
+    /// One meter refresh: takes each source's peaks since the last call. `readouts`:
+    /// the accessible dB values are due here once a second; false while the shell's
+    /// one-second tick writes them ([`Self::report_meters`]), so they change in the
+    /// same turn as the other 1 Hz texts and cost no extra redraw.
+    pub fn tick_meters(&mut self, readouts: bool) {
         let now = self.meter_start.elapsed();
         self.meter_ticks = self.meter_ticks.wrapping_add(1);
-        let report = self.meter_ticks.is_multiple_of(REPORT_EVERY);
+        let report = readouts && self.meter_ticks.is_multiple_of(REPORT_EVERY);
         for s in self.slots.iter_mut() {
             let levels = s.level.take();
             let db = (0..levels.channels())
@@ -7075,6 +7078,40 @@ impl StudioUi {
         }
         crate::meter_bridge::flush();
         self.tick_loudness();
+    }
+
+    /// The accessible dB value of every meter (the highest level since the last
+    /// report), written only where it changed; called by the shell's one-second tick
+    /// while the meters run.
+    pub fn report_meters(&mut self) {
+        for s in self.slots.iter_mut() {
+            let id = s.source.get() as i32;
+            let value: slint::SharedString = s.ballistics.take_report().english().into();
+            for i in 0..self.meters.row_count() {
+                let Some(mut row) = self.meters.row_data(i) else {
+                    continue;
+                };
+                if row.id != id {
+                    continue;
+                }
+                if row.value != value {
+                    row.value = value;
+                    self.meters.set_row_data(i, row);
+                    crate::measure_ui::count_meter_write();
+                }
+                break;
+            }
+        }
+        if let Some((_, ballistics)) = &mut self.master_slot {
+            let value: slint::SharedString = ballistics.take_report().english().into();
+            if let Some(mut row) = self.master_meter.row_data(0)
+                && row.value != value
+            {
+                row.value = value;
+                self.master_meter.set_row_data(0, row);
+                crate::measure_ui::count_meter_write();
+            }
+        }
     }
 }
 
