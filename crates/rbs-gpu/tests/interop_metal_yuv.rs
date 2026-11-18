@@ -1,7 +1,8 @@
-//! Import of bi-planar 4:2:0 IOSurfaces ('420v', 'x420') on Metal, decoded to RGB (spec
-//! `gpu-compositor.md`, "Native import", rule 6, and "YUV source decode"). The producer
-//! is the engine's own `SurfaceExporter`, so the test is a full round trip: canvas, NV12 or
-//! P010 IOSurface, import, decode, canvas again.
+//! Import of bi-planar 4:2:0 IOSurfaces ('420v', 'x420') on Metal, sampled as they are by
+//! the compositor (spec `gpu-compositor.md`, "Native import", rule 6, and "Compositor";
+//! perf audit R-11 step b). The producer is the engine's own `SurfaceExporter`, so the
+//! test is a full round trip: canvas, NV12 or P010 IOSurface, import, composite, canvas
+//! again.
 #![cfg(target_vendor = "apple")]
 #![allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
 
@@ -9,7 +10,7 @@ mod common;
 
 use common::{assert_close, at, solid};
 use rbs_core::capability::CapabilityValue;
-use rbs_core::media::{FramePayload, PixelFormat, VideoFrame};
+use rbs_core::media::{FramePayload, VideoFrame};
 use rbs_core::time::Timestamp;
 use rbs_gpu::context::CAP_P010;
 use rbs_gpu::export::SurfaceExporter;
@@ -22,6 +23,30 @@ const W: u32 = 64;
 const H: u32 = 32;
 const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
 const GREY: [f32; 4] = [0.2, 0.2, 0.2, 1.0];
+
+/// The imported 4:2:0 frame drawn full size, read back linear.
+fn drawn(ctx: &GpuContext, pool: &mut TexturePool, frame: &VideoFrame) -> Vec<[f32; 4]> {
+    let FramePayload::Texture(id) = *frame.payload() else {
+        panic!("import must return a texture frame");
+    };
+    let mut comp = Compositor::new(
+        ctx,
+        CanvasDesc {
+            width: W,
+            height: H,
+        },
+        1,
+    )
+    .unwrap();
+    let out = pool.acquire(ctx, &TextureDesc::canvas(W, H)).unwrap();
+    let mut layer = Layer::new(id, 0.0, 0.0, W as f32, H as f32);
+    layer.ycbcr = frame.format().color;
+    let stats = comp.render(ctx, pool, &[layer], out).unwrap();
+    assert_eq!(stats.drawn_layers, 1);
+    let px = readback::read_linear(ctx, pool, out).unwrap();
+    pool.release(out).unwrap();
+    px
+}
 
 /// Red on the left half, grey on the right.
 fn canvas(ctx: &GpuContext, pool: &mut TexturePool) -> TextureId {
@@ -76,16 +101,10 @@ fn round_trip(format: YuvFormat, tol: f32) {
         let native = exported(ctx, &pool, &mut exporter, canvas, n);
         assert_eq!(native.format().pixel_format, format.pixel_format());
         let imported = importer.import(ctx, &mut pool, native).unwrap();
-        let decoded = match format {
-            YuvFormat::Nv12 => PixelFormat::Rgba8Srgb,
-            YuvFormat::P010 => PixelFormat::Rgba16Float,
-        };
-        assert_eq!(imported.format().pixel_format, decoded);
+        // The frame stays 4:2:0: no decoded copy exists.
+        assert_eq!(imported.format().pixel_format, format.pixel_format());
         assert_eq!(imported.sequence(), n);
-        let FramePayload::Texture(id) = *imported.payload() else {
-            panic!("import must return a texture frame");
-        };
-        let px = readback::read_linear(ctx, &pool, id).unwrap();
+        let px = drawn(ctx, &mut pool, &imported);
         assert_close(at(&px, W, 4, 4), RED, tol);
         assert_close(at(&px, W, W - 5, H - 5), GREY, tol);
 
@@ -93,7 +112,11 @@ fn round_trip(format: YuvFormat, tol: f32) {
         importer.retire(ctx, &mut pool, Timestamp::ZERO);
         ctx.wait_idle().unwrap();
         importer.retire(ctx, &mut pool, Timestamp::ZERO);
-        assert_eq!(exporter.held(), 0, "surface handed back after the decode");
+        assert_eq!(
+            exporter.held(),
+            0,
+            "surface handed back once the frame is gone"
+        );
     }
     // The metric is shared by tests running in parallel on the same device, so the
     // importer's own count shows the reuse: three frames, two cached surfaces.
@@ -105,17 +128,17 @@ fn round_trip(format: YuvFormat, tol: f32) {
 }
 
 #[test]
-fn nv12_io_surface_is_decoded() {
+fn nv12_io_surface_is_sampled() {
     round_trip(YuvFormat::Nv12, 0.02);
 }
 
 #[test]
-fn p010_io_surface_is_decoded() {
+fn p010_io_surface_is_sampled() {
     round_trip(YuvFormat::P010, 0.01);
 }
 
 #[test]
-fn decoded_frame_outlives_the_surface_lease() {
+fn the_surface_is_held_while_its_frame_lives() {
     let Some(ctx) = common::gpu() else { return };
     let mut pool = TexturePool::new();
     let canvas = canvas(ctx, &mut pool);
@@ -123,14 +146,17 @@ fn decoded_frame_outlives_the_surface_lease() {
     let mut importer = Importer::new();
     let native = exported(ctx, &pool, &mut exporter, canvas, 1);
     let imported = importer.import(ctx, &mut pool, native).unwrap();
-    // The decoded frame is a copy: the producer's surface goes back while it is held.
+    // The frame is the surface itself: the producer gets it back only after the frame
+    // (and every read of it) is gone.
+    let px = drawn(ctx, &mut pool, &imported);
+    importer.retire(ctx, &mut pool, Timestamp::ZERO);
+    ctx.wait_idle().unwrap();
+    importer.retire(ctx, &mut pool, Timestamp::ZERO);
+    assert_eq!(exporter.held(), 1);
+    assert_close(at(&px, W, 4, 4), RED, 0.02);
+    drop(imported);
     importer.retire(ctx, &mut pool, Timestamp::ZERO);
     ctx.wait_idle().unwrap();
     importer.retire(ctx, &mut pool, Timestamp::ZERO);
     assert_eq!(exporter.held(), 0);
-    let FramePayload::Texture(id) = *imported.payload() else {
-        panic!("texture frame");
-    };
-    let px = readback::read_linear(ctx, &pool, id).unwrap();
-    assert_close(at(&px, W, 4, 4), RED, 0.02);
 }

@@ -312,7 +312,7 @@ fn upload_writes_bgra_with_padded_rows() {
 }
 
 #[test]
-fn upload_decodes_nv12_to_linear_rgb() {
+fn upload_keeps_nv12_and_decodes_on_demand() {
     let Some(ctx) = common::gpu() else { return };
     let mut pool = TexturePool::new();
     // Limited-range grey: Y = 126 (about 0.5 after the inverse OETF... checked loosely),
@@ -341,15 +341,21 @@ fn upload_decodes_nv12_to_linear_rgb() {
     );
     let mut up = SourceUpload::new();
     let out = up.upload(ctx, &mut pool, frame).unwrap();
-    assert_eq!(out.format().pixel_format, PixelFormat::Rgba8Srgb);
-    let FramePayload::Texture(id) = *out.payload() else {
+    // The frame stays 4:2:0 with its colour (perf audit R-11 step b); RGB consumers
+    // decode it, the compositor samples it as it is.
+    assert_eq!(out.format().pixel_format, PixelFormat::Nv12);
+    assert_eq!(out.format().color, ColorSpace::BT709_LIMITED);
+    let mut rgb = rbs_gpu::yuv_decode::YuvToRgb::new();
+    let decoded = rgb.rgb(ctx, &mut pool, &out).unwrap();
+    let FramePayload::Texture(id) = *decoded.payload() else {
         panic!("not a texture");
     };
     let px = readback::read_linear(ctx, &pool, id).unwrap();
     let g = px[0][0];
     assert_close(px[0], [g, g, g, 1.0], 0.01);
     assert!(g > 0.1 && g < 0.4, "grey {g}");
-    // The second frame reuses the plane textures.
+    rgb.release();
+    // The second frame reuses the freed 4:2:0 slot.
     let allocated = pool.allocated();
     let mut data = vec![126u8; w * h];
     data.extend(std::iter::repeat_n(128u8, w * h / 2));
