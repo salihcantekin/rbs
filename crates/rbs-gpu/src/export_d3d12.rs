@@ -12,7 +12,8 @@
 //! thread never waits for the GPU and no byte crosses to the CPU.
 //!
 //! The lease owner is the ring: it keeps every buffer, its NT handle and the fence (and its
-//! handle) alive, so an exported frame stays valid whatever is dropped first. The engine
+//! handle) alive, so an exported frame stays valid whatever is dropped first. It also keeps
+//! the wgpu device, so d3d12.dll stays loaded until those objects are released. The engine
 //! keeps the owner until the encoder session is gone (ADR-0147 decision 8).
 //!
 //! This is a marked low-level module (principle P11): every `unsafe` block states its
@@ -80,9 +81,16 @@ struct Entry {
 /// encoder threads through leases.
 struct Ring {
     entries: Box<[Entry]>,
-    // Kept alive while any frame may still name its handle.
-    _fence: ID3D12Fence,
+    // Signalled by the render queue after each copy; kept alive while any frame may
+    // still name its handle.
+    fence: ID3D12Fence,
     fence_handle: OwnedHandle,
+    // Declared last so it drops last: the D3D12 objects above are released through
+    // d3d12.dll, which wgpu unloads when its last device and instance go away. Leases can
+    // outlive the render device (the composition root drops lease owners on the control
+    // thread), so the ring keeps the device, and with it the library, loaded until the
+    // last lease is gone.
+    _device: wgpu::Device,
 }
 
 // SAFETY: an entry's buffer is written by the exporter only while its count is zero
@@ -179,7 +187,6 @@ pub struct D3dBufferExporter {
     /// wgpu wrappers of the ring buffers, by entry.
     buffers: Vec<wgpu::Buffer>,
     ring: Arc<Ring>,
-    fence: ID3D12Fence,
     /// Last value the fence was told to signal.
     fence_value: u64,
     /// Converted entries not handed out yet, in submission order (capacity: ring size).
@@ -348,10 +355,10 @@ impl D3dBufferExporter {
             buffers,
             ring: Arc::new(Ring {
                 entries: entries.into_boxed_slice(),
-                _fence: fence.clone(),
+                fence,
                 fence_handle,
+                _device: ctx.device().clone(),
             }),
-            fence,
             fence_value: 0,
             pending: VecDeque::with_capacity(surfaces),
             queued: vec![false; surfaces],
@@ -433,7 +440,7 @@ impl D3dBufferExporter {
                 .queue()
                 .as_hal::<Dx12>()
                 .ok_or(GpuError::Unsupported("render queue is not D3D12"))?;
-            queue.as_raw().Signal(&self.fence, value)
+            queue.as_raw().Signal(&self.ring.fence, value)
         };
         if signalled.is_err() || ctx.metrics().device_lost() {
             return Err(GpuError::DeviceLost);
