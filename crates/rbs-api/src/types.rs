@@ -1655,9 +1655,17 @@ pub enum StreamState {
     Idle {
         /// How the last stream of this server run ended, if one ran.
         last: Option<StreamSummary>,
+        /// Streaming is available on the canvas (protocol 1.92, ADR-0148): one of its
+        /// destinations is on. Absent from an older server: read as true.
+        #[serde(default = "crate::types::yes")]
+        available: bool,
     },
     /// A stream runs; it connects, and reconnects, in the background.
     Live {
+        /// Streaming is available on the canvas (protocol 1.92, ADR-0148). A running
+        /// stream goes on when it turns false.
+        #[serde(default = "crate::types::yes")]
+        available: bool,
         /// How it reaches the server.
         protocol: StreamProtocol,
         /// The server takes the stream now.
@@ -1706,6 +1714,40 @@ pub enum StreamState {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         destinations: Vec<LiveDestination>,
     },
+}
+
+impl StreamState {
+    /// An idle stream that never ran, streaming available.
+    pub fn idle() -> Self {
+        StreamState::Idle {
+            last: None,
+            available: true,
+        }
+    }
+
+    /// Whether streaming is available on the canvas (protocol 1.92).
+    pub fn available(&self) -> bool {
+        match self {
+            StreamState::Idle { available, .. } | StreamState::Live { available, .. } => {
+                *available
+            }
+        }
+    }
+
+    /// The state with `available` set.
+    pub fn with_available(mut self, on: bool) -> Self {
+        match &mut self {
+            StreamState::Idle { available, .. } | StreamState::Live { available, .. } => {
+                *available = on;
+            }
+        }
+        self
+    }
+}
+
+/// Serde's default for a flag that an older peer leaves out and that means "yes".
+pub(crate) fn yes() -> bool {
+    true
 }
 
 /// One destination of a live stream (protocol 1.77, ADR-0127 decision 16). Never its
