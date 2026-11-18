@@ -10,8 +10,6 @@ use rbs_core::media::MAX_CHANNELS;
 
 /// Taps per phase of the interpolation filter.
 pub(crate) const TAPS: usize = 12;
-/// The most phases (the factor below 96 kHz).
-const LANES: usize = 4;
 /// Kaiser window shape.
 const BETA: f64 = 7.0;
 
@@ -30,18 +28,16 @@ pub(crate) fn factor(rate: u32) -> usize {
 #[derive(Debug, Clone)]
 pub(crate) struct TruePeak {
     factor: usize,
-    /// Per tap (newest sample first), the coefficient of each phase; lanes past
-    /// `factor` are 0. Tap-major, so one sample feeds all phases in one vector step.
-    coeffs: [[f32; LANES]; TAPS],
+    /// `factor` phases of `TAPS` coefficients, phase-major, newest sample first.
+    coeffs: Box<[f32]>,
     /// The largest gain any phase can have (the largest sum of absolute
-    /// coefficients), with a margin for rounding: no interpolated value of a block
-    /// exceeds its sample peak times this.
+    /// coefficients), with a margin for rounding: no interpolated value exceeds the
+    /// largest absolute sample in its window times this.
     bound: f32,
-    /// Per channel, the last `TAPS` samples, oldest first. A block is copied behind
-    /// them in a stack buffer, so every window is a contiguous slice read well after
-    /// it was written (a ring written one sample before each read stalls store
-    /// forwarding; measured on the M4).
-    history: [[f32; TAPS]; MAX_CHANNELS],
+    /// Per channel, the last `TAPS` samples written twice (`2 * TAPS`), so a window
+    /// is always one contiguous slice.
+    history: Box<[f32]>,
+    pos: [usize; MAX_CHANNELS],
 }
 
 impl TruePeak {
@@ -59,23 +55,24 @@ impl TruePeak {
                 sinc(t) * w
             })
             .collect();
-        let mut coeffs = [[0.0f32; LANES]; TAPS];
+        let mut coeffs = vec![0.0f32; n];
         let mut l1 = 0.0f64;
-        for p in 0..factor.min(LANES) {
+        for p in 0..factor {
             let sum: f64 = (0..TAPS).map(|k| proto[p + factor * k]).sum();
             let mut abs = 0.0;
-            for (k, tap) in coeffs.iter_mut().enumerate() {
-                tap[p] = (proto[p + factor * k] / sum) as f32;
-                abs += f64::from(tap[p].abs());
+            for k in 0..TAPS {
+                coeffs[p * TAPS + k] = (proto[p + factor * k] / sum) as f32;
+                abs += f64::from(coeffs[p * TAPS + k].abs());
             }
             l1 = l1.max(abs);
         }
         Self {
             factor,
-            coeffs,
+            coeffs: coeffs.into_boxed_slice(),
             // f32 rounding of a 12-term sum stays far below 1e-4 relative.
             bound: (l1 * (1.0 + 1e-4)) as f32,
-            history: [[0.0; TAPS]; MAX_CHANNELS],
+            history: vec![0.0; MAX_CHANNELS * 2 * TAPS].into_boxed_slice(),
+            pos: [0; MAX_CHANNELS],
         }
     }
 
@@ -86,7 +83,8 @@ impl TruePeak {
 
     /// Forgets the signal history.
     pub(crate) fn clear(&mut self) {
-        self.history = [[0.0; TAPS]; MAX_CHANNELS];
+        self.history.fill(0.0);
+        self.pos = [0; MAX_CHANNELS];
     }
 
     /// The highest absolute interpolated value of `x` on `channel`. Real-time safe.
@@ -99,79 +97,68 @@ impl TruePeak {
     /// larger than `floor` when the block cannot exceed `floor`. The interpolation
     /// runs only when the sample peak of the block and the history before it, times
     /// the filter's largest gain, is above `floor`, so a meter that keeps its
-    /// maximum skips the work exactly: the skipped values could not have raised it. Real-time safe.
+    /// maximum skips the work exactly: the skipped values could not have raised it.
+    /// Real-time safe.
     #[inline]
     pub(crate) fn peak_above(&mut self, channel: usize, x: &[f32], floor: f32) -> f32 {
         if channel >= MAX_CHANNELS {
             return 0.0;
         }
-        let sample_peak = x.iter().fold(0.0f32, |m, v| m.max(v.abs()));
         if self.factor == 1 {
-            return sample_peak;
+            return x.iter().fold(0.0f32, |m, v| m.max(v.abs()));
         }
-        let Some(hist) = self.history.get_mut(channel) else {
-            return 0.0;
-        };
-        // The first windows of the block still reach into the previous block's
-        // samples, so they count towards the bound as well.
-        let reach = hist.iter().fold(sample_peak, |m, v| m.max(v.abs()));
-        if reach * self.bound <= floor {
-            // Only the history moves: the last `TAPS` samples are all a later block
-            // reads.
-            let n = x.len();
-            if n >= TAPS {
-                hist.copy_from_slice(&x[n - TAPS..]);
-            } else {
-                hist.copy_within(n.., 0);
-                hist[TAPS - n..].copy_from_slice(x);
+        let hist = &mut self.history[channel * 2 * TAPS..(channel + 1) * 2 * TAPS];
+        let mut pos = self.pos[channel];
+        if floor > 0.0 {
+            // The first windows of the block still reach into the previous block's
+            // samples, so they count towards the bound as well.
+            let reach = abs_max(x).max(abs_max(&hist[..TAPS]));
+            if reach * self.bound <= floor {
+                // Only the history moves: the last `TAPS` samples are all a later
+                // block reads.
+                let skip = x.len().saturating_sub(TAPS);
+                pos = (pos + TAPS - skip % TAPS) % TAPS;
+                for &v in &x[skip..] {
+                    pos = if pos == 0 { TAPS - 1 } else { pos - 1 };
+                    hist[pos] = v;
+                    hist[pos + TAPS] = v;
+                }
+                self.pos[channel] = pos;
+                return reach;
             }
-            return sample_peak;
         }
-        if self.factor == 2 {
-            interpolate::<2>(&self.coeffs, hist, x)
-        } else {
-            interpolate::<LANES>(&self.coeffs, hist, x)
+        let mut peak = 0.0f32;
+        for &v in x {
+            pos = if pos == 0 { TAPS - 1 } else { pos - 1 };
+            hist[pos] = v;
+            hist[pos + TAPS] = v;
+            let window = &hist[pos..pos + TAPS];
+            for phase in self.coeffs.chunks_exact(TAPS) {
+                let y: f32 = phase.iter().zip(window).map(|(c, s)| c * s).sum();
+                peak = peak.max(y.abs());
+            }
         }
+        self.pos[channel] = pos;
+        peak
     }
 }
 
-/// Runs the `P` phases over `x` after the history `hist` (updated), and returns the
-/// highest absolute interpolated value. Each phase adds its taps in the same order as a
-/// plain dot product, newest sample first, so the values are bit-exact; the phases
-/// advance together, one sample feeding all of them in one vector step.
-#[inline(always)]
-fn interpolate<const P: usize>(
-    coeffs: &[[f32; LANES]; TAPS],
-    hist: &mut [f32; TAPS],
-    x: &[f32],
-) -> f32 {
-    /// Samples copied behind the history at a time.
-    const CHUNK: usize = 256;
-    let mut buf = [0.0f32; TAPS + CHUNK];
-    buf[..TAPS].copy_from_slice(hist);
-    let mut peak = 0.0f32;
-    for chunk in x.chunks(CHUNK) {
-        let n = chunk.len();
-        buf[TAPS..TAPS + n].copy_from_slice(chunk);
-        for i in 0..n {
-            // The window ending at the new sample `buf[TAPS + i]`, oldest first.
-            let Ok(win) = <&[f32; TAPS]>::try_from(&buf[i + 1..i + 1 + TAPS]) else {
-                break;
-            };
-            for l in 0..P {
-                let y: f32 = coeffs
-                    .iter()
-                    .zip(win.iter().rev())
-                    .map(|(tap, &s)| tap[l] * s)
-                    .sum();
-                let a = y.abs();
-                peak = if a > peak { a } else { peak };
-            }
+/// The largest absolute value of `x` (NaN ignored), in 8 lanes so it vectorises.
+#[inline]
+fn abs_max(x: &[f32]) -> f32 {
+    let mut lanes = [0.0f32; 8];
+    let mut chunks = x.chunks_exact(8);
+    for c in &mut chunks {
+        for (m, v) in lanes.iter_mut().zip(c) {
+            let a = v.abs();
+            *m = if a > *m { a } else { *m };
         }
-        buf.copy_within(n..n + TAPS, 0);
     }
-    hist.copy_from_slice(&buf[..TAPS]);
-    peak
+    let rest = chunks
+        .remainder()
+        .iter()
+        .fold(0.0f32, |m, v| m.max(v.abs()));
+    lanes.into_iter().fold(rest, f32::max)
 }
 
 fn sinc(t: f64) -> f64 {
@@ -257,6 +244,7 @@ mod tests {
                 assert!(got <= 0.5, "len {len} amp {amp}: {got}");
             }
             assert_eq!(full.history, skipping.history);
+            assert_eq!(full.pos, skipping.pos);
         }
     }
 
