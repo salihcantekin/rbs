@@ -7,8 +7,8 @@ import { DialogActions, HScrollArea, ListBox, ScrollArea, Button, Checkbox, Colo
 import { SettingsCard, SettingBlock, SettingsStatus, SettingsNotice, SettingsCallout, RevealOnShow, Shown } from "settings.slint";
 import { CommandMenu } from "context_menu.slint";
 import { ReplayControls, ReplaySettings } from "replay.slint";
-import { FilterFieldData, FilterLevels, FilterData, SourceData, SceneData, LookData, SampleData, KindData, MarkData, ModeData, SyncMeasureData, AttributeGroupRow, AttributeTargetRow, AttributesData, TextData, SourceSettingsData, SourceTargetData, MeterRow, ScaleMark, LoudnessData, DestinationRow, EncoderData, TokenRow, AiActionRow, StatRow, EntryRow, PermissionRowData, Studio, Sections, Experience, IconName, Icons, SizeBand, Overlays } from "base/types.slint";
-export { FilterFieldData, FilterLevels, FilterData, SourceData, SceneData, LookData, SampleData, KindData, MarkData, ModeData, SyncMeasureData, AttributeGroupRow, AttributeTargetRow, AttributesData, TextData, SourceSettingsData, SourceTargetData, MeterRow, ScaleMark, LoudnessData, DestinationRow, EncoderData, TokenRow, AiActionRow, StatRow, EntryRow, PermissionRowData, Studio }
+import { FilterFieldData, FilterLevels, FilterData, SourceData, SceneData, LookData, SampleData, KindData, MarkData, ModeData, SyncMeasureData, AttributeGroupRow, AttributeTargetRow, AttributesData, TextData, BrowserData, SourceSettingsData, SourceTargetData, MeterRow, ScaleMark, LoudnessData, DestinationRow, EncoderData, TokenRow, AiActionRow, StatRow, EntryRow, PermissionRowData, Studio, Sections, Experience, IconName, Icons, SizeBand, Overlays } from "base/types.slint";
+export { FilterFieldData, FilterLevels, FilterData, SourceData, SceneData, LookData, SampleData, KindData, MarkData, ModeData, SyncMeasureData, AttributeGroupRow, AttributeTargetRow, AttributesData, TextData, BrowserData, SourceSettingsData, SourceTargetData, MeterRow, ScaleMark, LoudnessData, DestinationRow, EncoderData, TokenRow, AiActionRow, StatRow, EntryRow, PermissionRowData, Studio }
 
 // The audio-only strip above a program picture. The native picture starts below it, so
 // this stays visible. `size.control.md` high, matching the inset in the preview layer.
@@ -4154,13 +4154,317 @@ component MediaPlayback inherits Section {
     }
 }
 
+// The Page tab of a browser source (ADR-0109, ADR-0132, ADR-0149): the page, its size
+// and rate, then Custom CSS, Automation and Behaviour. Every change is one undo step and
+// reaches a running page without a restart, except Keep running when hidden.
+component BrowserFields inherits VerticalLayout {
+    in property <SourceData> data;
+    property <BrowserData> b: Studio.browser-props;
+    // A section's gap between rows, so a tall tab reads top to bottom (owner 2026-11-17).
+    spacing: Tokens.size-section-gap;
+    // Why the page is not on air, with the action that fixes it (U9).
+    if b.state == 1: SettingsCallout {
+        label: @tr("Browser engine not installed");
+        Text {
+            text: @tr("Pages need the browser engine. Install it once in Settings › Add-ons.");
+            color: Theme.text-primary;
+            font-size: Tokens.type-body-size;
+            wrap: word-wrap;
+        }
+        HorizontalLayout {
+            alignment: start;
+            Button {
+                lead: IconName.gear;
+                text: @tr("Open Add-ons");
+                kind: "primary";
+                dense: true;
+                clicked => { Studio.open-browser-engine(); }
+            }
+        }
+    }
+    if b.state == 2 || b.state == 3: SettingsCallout {
+        label: b.state == 2 ? @tr("No page slot free") : @tr("The page did not load");
+        Text {
+            text: b.state == 2
+                ? @tr("Two pages already run. This page starts when one of them is hidden.")
+                : b.status;
+            color: Theme.text-primary;
+            font-size: Tokens.type-body-size;
+            wrap: word-wrap;
+        }
+    }
+    SegmentedControl {
+        label: @tr("Page of {}", data.name);
+        options: [@tr("Web address"), @tr("Local file")];
+        index: b.file ? 1 : 0;
+        selected(i) => { if (i == 1) != b.file { Studio.set-browser-local(b.id, i == 1); } }
+    }
+    if !b.file: Field {
+        label: @tr("Address");
+        TextField {
+            label: @tr("Web address of {}", data.name);
+            text: b.url;
+            placeholder: "https://";
+            accepted(v) => { if v != b.url { Studio.set-browser-value(b.id, "url", v); } }
+        }
+    }
+    if b.file: Field {
+        label: @tr("File");
+        HorizontalLayout {
+            spacing: Tokens.space-1;
+            Text {
+                horizontal-stretch: 1;
+                text: b.file-name == "" ? @tr("No file") : b.file-name;
+                color: b.file-name == "" ? Theme.text-secondary : Theme.text-primary;
+                font-size: Tokens.type-body-size;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            Button {
+                lead: IconName.folder;
+                text: @tr("Choose…");
+                accessible-name: @tr("Choose a page file for {}", data.name);
+                dense: true;
+                clicked => { Studio.choose-browser-file(b.id); }
+            }
+        }
+    }
+    if b.file: Toggle {
+        text: @tr("Reload when the file changes");
+        label: @tr("Reload {} when its file changes", data.name);
+        checked: b.reload-on-file-change;
+        toggled(on) => { Studio.set-browser-flag(b.id, "reload_on_file_change", on); }
+    }
+    // Live actions on the running page: not undo steps (ADR-0132 decisions 5 and 6).
+    HorizontalLayout {
+        spacing: Tokens.space-1;
+        alignment: start;
+        Button {
+            lead: IconName.refresh;
+            text: @tr("Reload");
+            accessible-name: @tr("Reload {}", data.name);
+            dense: true;
+            enabled: b.running;
+            clicked => { Studio.browser-reload(b.id, false); }
+        }
+        Button {
+            lead: IconName.refresh;
+            text: @tr("Reload without cache");
+            accessible-name: @tr("Reload {} without the cache", data.name);
+            dense: true;
+            enabled: b.running;
+            clicked => { Studio.browser-reload(b.id, true); }
+        }
+    }
+    HorizontalLayout {
+        alignment: start;
+        Button {
+            lead: IconName.window;
+            text: @tr("Interact…");
+            accessible-name: @tr("Interact with {}", data.name);
+            dense: true;
+            enabled: b.state == 0 || b.state == 4;
+            clicked => { Studio.browser-interact(b.id); }
+        }
+    }
+    HorizontalLayout {
+        spacing: Tokens.size-field-gap;
+        Field {
+            horizontal-stretch: 1;
+            label: @tr("Width");
+            NumberField {
+                live: false;
+                label: @tr("Page width of {}", data.name);
+                unit: @tr("px");
+                value: b.width;
+                edited(v) => { Studio.set-browser-number(b.id, "width", max(2, min(8192, 2 * round(v / 2)))); }
+            }
+        }
+        Field {
+            horizontal-stretch: 1;
+            label: @tr("Height");
+            NumberField {
+                live: false;
+                label: @tr("Page height of {}", data.name);
+                unit: @tr("px");
+                value: b.height;
+                edited(v) => { Studio.set-browser-number(b.id, "height", max(2, min(8192, 2 * round(v / 2)))); }
+            }
+        }
+    }
+    if b.width != b.canvas-w || b.height != b.canvas-h: HorizontalLayout {
+        alignment: start;
+        Button {
+            lead: IconName.fill-canvas;
+            text: @tr("Use canvas size");
+            accessible-name: @tr("Use the canvas size for {}", data.name);
+            dense: true;
+            clicked => {
+                Studio.set-browser-number(b.id, "width", b.canvas-w);
+                Studio.set-browser-number(b.id, "height", b.canvas-h);
+            }
+        }
+    }
+    HorizontalLayout {
+        spacing: Tokens.size-field-gap;
+        Field {
+            horizontal-stretch: 1;
+            label: @tr("Frame rate");
+            NumberField {
+                live: false;
+                label: @tr("Frame rate of {}", data.name);
+                unit: @tr("fps");
+                value: b.fps;
+                edited(v) => { Studio.set-browser-number(b.id, "fps", max(1, min(60, round(v)))); }
+            }
+        }
+        Field {
+            horizontal-stretch: 1;
+            label: @tr("Zoom");
+            NumberField {
+                live: false;
+                label: @tr("Page zoom of {}", data.name);
+                unit: "%";
+                value: b.zoom;
+                edited(v) => { Studio.set-browser-number(b.id, "zoom_percent", max(25, min(500, round(v)))); }
+            }
+        }
+    }
+    Toggle {
+        text: @tr("Transparent background");
+        label: @tr("Transparent background for {}", data.name);
+        checked: b.transparent;
+        toggled(on) => { Studio.set-browser-flag(b.id, "transparent", on); }
+    }
+    Section {
+        title: @tr("Custom CSS");
+        id: "properties.browser-css";
+        hint: @tr("Added to the page as a style sheet when it loads, and at once while it runs. For example: body {{ background-color: rgba(0, 0, 0, 0); overflow: hidden; }}");
+        TextArea {
+            label: @tr("Custom CSS of {}", data.name);
+            text: b.css;
+            lines: 4;
+            placeholder: @tr("No custom CSS");
+            accepted(v) => { if v != b.css { Studio.set-browser-value(b.id, "css", v); } }
+        }
+    }
+    Section {
+        title: @tr("Automation");
+        id: "properties.browser-automation";
+        hint: @tr("Reloads the page or runs your script on a timer. The script runs inside the page with the page's own rights; it cannot reach RBS.");
+        Field {
+            label: @tr("Reload every");
+            NumberField {
+                live: false;
+                label: @tr("Reload {} every so many seconds, 0 for never", data.name);
+                unit: @tr("s");
+                value: b.reload-every;
+                edited(v) => { Studio.set-browser-number(b.id, "reload_every_s", v < 10 ? 0 : min(86400, round(v))); }
+            }
+        }
+        Field {
+            label: @tr("Script");
+            TextArea {
+                label: @tr("JavaScript for {}", data.name);
+                text: b.script;
+                lines: 4;
+                placeholder: @tr("No script");
+                accepted(v) => { if v != b.script { Studio.set-browser-value(b.id, "script", v); } }
+            }
+        }
+        Toggle {
+            text: @tr("Run when the page loads");
+            label: @tr("Run the script of {} when the page loads", data.name);
+            checked: b.script-on-load;
+            enabled: b.script != "";
+            toggled(on) => { Studio.set-browser-flag(b.id, "script_on_load", on); }
+        }
+        Field {
+            label: @tr("Run every");
+            NumberField {
+                live: false;
+                label: @tr("Run the script of {} every so many seconds, 0 for never", data.name);
+                unit: @tr("s");
+                value: b.script-every;
+                enabled: b.script != "";
+                edited(v) => { Studio.set-browser-number(b.id, "script_every_s", max(0, min(86400, round(v)))); }
+            }
+        }
+        HorizontalLayout {
+            alignment: start;
+            Button {
+                lead: IconName.play;
+                text: @tr("Run now");
+                accessible-name: @tr("Run the script of {} now", data.name);
+                dense: true;
+                enabled: b.running && b.script != "";
+                clicked => { Studio.browser-run-script(b.id); }
+            }
+        }
+    }
+    Section {
+        title: @tr("Behaviour");
+        id: "properties.browser-behaviour";
+        HorizontalLayout {
+            spacing: Tokens.space-1;
+            Toggle {
+                horizontal-stretch: 1;
+                text: @tr("Keep running when hidden");
+                label: @tr("Keep {} running when hidden", data.name);
+                checked: b.keep-running;
+                toggled(on) => { Studio.set-browser-flag(b.id, "keep_running", on); }
+            }
+            VerticalLayout {
+                alignment: center;
+                InfoHint {
+                    label: @tr("Keep running when hidden");
+                    text: @tr("Chat and timers keep their state across scene changes. Costs one browser process and one of the two page slots while the source is in any scene; a shown page takes that slot first.");
+                }
+            }
+        }
+        HorizontalLayout {
+            spacing: Tokens.space-1;
+            Toggle {
+                horizontal-stretch: 1;
+                text: @tr("Retry when the page fails");
+                label: @tr("Retry {} when the page fails to load", data.name);
+                checked: b.retry-on-error;
+                toggled(on) => { Studio.set-browser-flag(b.id, "retry_on_error", on); }
+            }
+            VerticalLayout {
+                alignment: center;
+                InfoHint {
+                    label: @tr("Retry when the page fails");
+                    text: @tr("The last good picture stays on air while RBS loads the page again, never an error page.");
+                }
+            }
+        }
+        Toggle {
+            text: @tr("Keep signed in");
+            label: @tr("Keep {} signed in", data.name);
+            checked: b.keep-signed-in;
+            toggled(on) => { Studio.set-browser-flag(b.id, "keep_signed_in", on); }
+        }
+        if b.keep-signed-in: HorizontalLayout {
+            alignment: start;
+            Button {
+                lead: IconName.eraser;
+                text: @tr("Forget sign-in");
+                accessible-name: @tr("Forget the sign-in of {}", data.name);
+                dense: true;
+                clicked => { Studio.browser-forget-sign-in(b.id); }
+            }
+        }
+    }
+}
+
 component SourceProperties inherits VerticalLayout {
     in property <SourceData> data;
     // Delete source asks first (ADR-0065).
     property <bool> confirm;
     changed data => { if confirm && Studio.selected-source != data.id { confirm = false; } }
     in property <int> live-state;
-    // 0 Transform, 1 Filters, 2 Audio, 3 Source. The Source tab is the last one shown;
+    // 0 Transform, 1 Filters, 2 Audio, 3 Source, 4 Text, 5 Page (a browser source). The Source tab is the last one shown;
     // the first tab opens, except while the source is not running, when the Source tab
     // opens by itself (ADR-0077).
     // A media file has a Source tab too: its file, Loop, Restart when shown and play
@@ -4172,7 +4476,10 @@ component SourceProperties inherits VerticalLayout {
     property <int> want: Studio.properties-tab;
     // A text source (ADR-0129 decision 13): Text first, then Transform and Filters.
     property <bool> is-text: Studio.text-props.on && Studio.text-props.id == data.id;
+    // A browser source (ADR-0109): Page first, then Transform, Filters and Audio.
+    property <bool> is-browser: Studio.browser-props.on && Studio.browser-props.id == data.id;
     property <int> tab: is-text ? (want == 0 || want == 1 ? want : 4)
+        : is-browser ? (want == 0 || want == 1 || (want == 2 && data.audio) ? want : 5)
         : has-source && (!data.ok || want == 3) ? 3
         : !data.picture ? 2
         : want == 1 ? 1
@@ -4188,6 +4495,7 @@ component SourceProperties inherits VerticalLayout {
         + (tab == 2 ? "properties.sound,properties.sync," : "")
         + (tab == 2 && !data.picture ? "properties.recording,properties.audio-filters," + (root.filter-open ? "properties.filter-settings," : "") : "")
         + (tab == 4 ? "properties.text-outline,properties.text-shadow,properties.text-background," : "")
+        + (tab == 5 ? "properties.browser-css,properties.browser-automation,properties.browser-behaviour," : "")
         + (data.picture ? "properties.timed-show," : "")
         + "properties.scenes"
         + (data.picture ? ",properties.picture-recording" : "");
@@ -4256,14 +4564,16 @@ component SourceProperties inherits VerticalLayout {
     if data.picture || has-source: Tabs {
         label: @tr("Properties of {}", data.name);
         options: is-text ? [@tr("Text"), @tr("Transform"), @tr("Filters")]
+            : is-browser ? (data.audio ? [@tr("Page"), @tr("Transform"), @tr("Filters"), @tr("Audio")] : [@tr("Page"), @tr("Transform"), @tr("Filters")])
             : has-source
             ? (data.picture
                 ? (data.audio ? [@tr("Transform"), @tr("Filters"), @tr("Audio"), @tr("Source")] : [@tr("Transform"), @tr("Filters"), @tr("Source")])
                 : [@tr("Audio"), @tr("Source")])
             : (data.audio ? [@tr("Transform"), @tr("Filters"), @tr("Audio")] : [@tr("Transform"), @tr("Filters")]);
-        index: is-text ? (tab == 4 ? 0 : tab + 1) : tab == 3 ? before-source : data.picture ? tab : 0;
+        index: is-text ? (tab == 4 ? 0 : tab + 1) : is-browser ? (tab == 5 ? 0 : tab + 1) : tab == 3 ? before-source : data.picture ? tab : 0;
         selected(i) => {
             if is-text { Studio.properties-tab = i == 0 ? 4 : i - 1; }
+            else if is-browser { Studio.properties-tab = i == 0 ? 5 : i - 1; }
             else if has-source && i == before-source { Studio.properties-tab = 3; }
             else if data.picture { Studio.properties-tab = i; }
             else { Studio.properties-tab = 2; }
@@ -4297,6 +4607,7 @@ component SourceProperties inherits VerticalLayout {
     }
     if tab == 3: SourceFields { data: data; }
     if tab == 4: TextFields { data: data; }
+    if tab == 5: BrowserFields { data: data; }
     // Which canvas's layout the Transform fields edit (ADR-0093 decision 4): the
     // vertical canvas's own layout changes only that canvas.
     if tab == 0 && Studio.props-can-vertical: SegmentedControl {

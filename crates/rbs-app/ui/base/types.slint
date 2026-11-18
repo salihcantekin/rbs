@@ -1377,6 +1377,12 @@ export struct AttributesData { paste: bool, name: string, picture: [AttributeGro
 // pattern used while `format` is empty. Colours are `#rrggbb[aa]` with their swatch.
 export struct TextData { on: bool, id: int, kind: int, text: string, file: string, file-name: string, file-lines: int, fields: bool, font: string, size: float, bold: bool, italic: bool, color: string, swatch: color, align: int, format: string, format-default: string, until: bool, target: string, minutes: int, seconds: int, end-text: string, outline: bool, outline-width: float, outline-color: string, outline-swatch: color, shadow: bool, shadow-color: string, shadow-swatch: color, shadow-x: float, shadow-y: float, shadow-blur: float, background: bool, background-color: string, background-swatch: color, padding: float }
 
+// A browser source's Page tab (ADR-0109, ADR-0132, ADR-0149). `file` is true for a local
+// file (`url` is then its `file:` address and `file-name` its name). `state`: 0 the page
+// runs or will run when shown, 1 the browser engine is not installed, 2 both page slots
+// are taken, 3 the page failed to load (`status` says why), 4 hidden and not running.
+export struct BrowserData { on: bool, id: int, file: bool, url: string, file-name: string, width: int, height: int, canvas-w: int, canvas-h: int, fps: int, zoom: int, transparent: bool, css: string, reload-on-file-change: bool, keep-signed-in: bool, reload-every: int, script: string, script-on-load: bool, script-every: int, keep-running: bool, retry-on-error: bool, running: bool, state: int, status: string }
+
 export struct SourceSettingsData { id: int, name: string, kind-code: int, modes: [ModeData], mode-labels: [string], mode-index: int, rates: [string], rate-index: int, has-cursor: bool, cursor: bool, cap-has: bool, cap-l: int, cap-t: int, cap-r: int, cap-b: int, chrome-on: bool, chrome-t: int, chrome-r: int, chrome-b: int, chrome-l: int, chrome-fill: int, has-work-rect: bool, pic-w: int, pic-h: int, has-region-preview: bool, region-preview: image }
 
 // `heading` is set on the first row of a group ("Same application", "Other").
@@ -1820,6 +1826,21 @@ export global Studio {
     callback choose-text-file(int /* id */);
     callback fit-text-box(int /* id */);
     callback text-timer(int /* id */, int /* 0 start, 1 pause, 2 reset */);
+    // A browser source (ADR-0109, ADR-0132, ADR-0149): what the Page tab shows, and its
+    // edits. Each edit is one undo step; `key` is a setting key of the browser source type.
+    in property <BrowserData> browser-props;
+    callback set-browser-value(int /* id */, string /* key */, string /* value */);
+    callback set-browser-number(int /* id */, string /* key */, float /* value */);
+    callback set-browser-flag(int /* id */, string /* key */, bool /* value */);
+    // Web address (false) or local file (true); a file opens the file picker.
+    callback set-browser-local(int /* id */, bool /* local file */);
+    callback choose-browser-file(int /* id */);
+    callback browser-reload(int /* id */, bool /* bypass the cache */);
+    callback browser-run-script(int /* id */);
+    callback browser-interact(int /* id */);
+    callback browser-forget-sign-in(int /* id */);
+    // Settings › Add-ons with the browser engine's row shown (ADR-0145).
+    callback open-browser-engine();
     callback set-source-filled(int /* id */, bool /* draw the fill */);
     callback open-filter-settings(int /* source */, int /* filter */);
     callback open-shape-settings(int /* source */);
