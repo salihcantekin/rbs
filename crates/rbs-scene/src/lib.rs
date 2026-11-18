@@ -14,6 +14,7 @@
 //! format lives with the user data layer (`rbs-user-data`, ADR-0051). Spec:
 //! `docs/specs/scene-model.md`.
 
+pub mod activity;
 mod arrange;
 mod attributes;
 pub mod binder;
