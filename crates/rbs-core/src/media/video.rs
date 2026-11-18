@@ -792,6 +792,10 @@ pub enum FramePayload {
         surface: NativeSurface,
         /// How to synchronise before reading it.
         sync: SurfaceSync,
+        /// Built by an exporter through [`VideoFrame::exported`]: the frame may be
+        /// shared between holders that never touch its pixels (ADR-0147 decision 2).
+        /// Capture and decoder surfaces are not marked and are imported exactly once.
+        exported: bool,
     },
     /// System memory.
     System(SystemFrame),
@@ -816,7 +820,9 @@ impl FramePayload {
 /// A frame passed to a call (`&VideoFrame`) is lent for that call only. To keep a GPU
 /// or system-memory frame longer (for example in an encoder queue), use
 /// [`VideoFrame::share`]: the copy holds its own [`Lease`] reference. Frames with a
-/// native payload cannot be shared; `rbs-gpu` imports them once and shares the result.
+/// native payload cannot be shared, except those an exporter built with
+/// [`VideoFrame::exported`] (ADR-0147 decision 2); `rbs-gpu` imports the others once
+/// and shares the result.
 #[derive(Debug)]
 pub struct VideoFrame {
     format: VideoFormat,
@@ -879,9 +885,49 @@ impl VideoFrame {
             timestamp,
             sequence: 0,
             source_time: None,
-            payload: FramePayload::Native { surface, sync },
+            payload: FramePayload::Native {
+                surface,
+                sync,
+                exported: false,
+            },
             lease: Some(lease),
         }
+    }
+
+    /// A native frame built by an exporter for a native encoder input (ADR-0147
+    /// decision 2). Unlike [`VideoFrame::native`], the frame can be shared: every
+    /// [`VideoFrame::share`] copy holds its own lease reference.
+    ///
+    /// # Safety
+    ///
+    /// Everything [`VideoFrame::native`] requires, for as long as any shared copy's
+    /// lease lives. In addition, the caller guarantees that exactly one holder reads the
+    /// pixels (the encoder that takes the frame): every other holder (an output slot, a
+    /// queue mailbox, a held picture) only keeps the surface alive.
+    pub unsafe fn exported(
+        format: VideoFormat,
+        timestamp: Timestamp,
+        surface: NativeSurface,
+        sync: SurfaceSync,
+        lease: Lease,
+    ) -> Self {
+        Self {
+            format,
+            timestamp,
+            sequence: 0,
+            source_time: None,
+            payload: FramePayload::Native {
+                surface,
+                sync,
+                exported: true,
+            },
+            lease: Some(lease),
+        }
+    }
+
+    /// Whether this is a native frame built by [`VideoFrame::exported`].
+    pub const fn is_exported(&self) -> bool {
+        matches!(self.payload, FramePayload::Native { exported: true, .. })
     }
 
     /// Sets the sequence number. A producer whose picture changes without a new
@@ -942,11 +988,21 @@ impl VideoFrame {
     }
 
     /// A second reference to the same pixels, holding its own lease reference.
-    /// `None` for native payloads, which have exactly one consumer (`rbs-gpu`).
+    /// `None` for native payloads that an exporter did not mark (capture and decoder
+    /// surfaces), which have exactly one consumer (`rbs-gpu`).
     pub fn share(&self) -> Option<Self> {
         let payload = match &self.payload {
             FramePayload::Texture(id) => FramePayload::Texture(*id),
             FramePayload::System(frame) => FramePayload::System(frame.clone()),
+            FramePayload::Native {
+                surface,
+                sync,
+                exported: true,
+            } => FramePayload::Native {
+                surface: *surface,
+                sync: *sync,
+                exported: true,
+            },
             FramePayload::Native { .. } => return None,
         };
         Some(Self {
@@ -964,7 +1020,9 @@ impl VideoFrame {
     /// check [`VideoFrame::payload`] first.
     pub fn into_native(self) -> Option<(NativeSurface, SurfaceSync, Lease)> {
         match (self.payload, self.lease) {
-            (FramePayload::Native { surface, sync }, Some(lease)) => Some((surface, sync, lease)),
+            (FramePayload::Native { surface, sync, .. }, Some(lease)) => {
+                Some((surface, sync, lease))
+            }
             _ => None,
         }
     }
@@ -1139,6 +1197,7 @@ mod tests {
             )
         };
         assert_eq!(frame.memory_kind(), MemoryKind::D3d12);
+        assert!(!frame.is_exported());
         assert!(frame.share().is_none());
         let Some((s, sync, lease)) = frame.into_native() else {
             panic!("frame is native");
@@ -1152,6 +1211,41 @@ mod tests {
         let texture =
             VideoFrame::texture(nv12_1080p(), Timestamp::ZERO, TextureId::new(0, 0), None);
         assert!(texture.into_native().is_none());
+    }
+
+    #[test]
+    fn exported_frames_share_by_lease() {
+        let owner = Arc::new(CountingOwner::default());
+        let surface = NativeSurface::io_surface(0x1000);
+        // SAFETY: test only; the pointer is never dereferenced.
+        let frame = unsafe {
+            VideoFrame::exported(
+                nv12_1080p(),
+                Timestamp::from_nanos(5),
+                surface,
+                SurfaceSync::Ready,
+                owner.lease(3),
+            )
+        }
+        .with_sequence(9);
+        assert!(frame.is_exported());
+        assert_eq!(frame.memory_kind(), MemoryKind::Metal);
+        let Some(copy) = frame.share() else {
+            panic!("exported frames are shareable");
+        };
+        assert!(copy.is_exported());
+        assert_eq!(copy.payload(), frame.payload());
+        assert_eq!(copy.timestamp(), Timestamp::from_nanos(5));
+        assert_eq!(copy.sequence(), 9);
+        assert_eq!(owner.count(3), 2);
+        drop(frame);
+        assert_eq!(owner.count(3), 1);
+        let Some((s, sync, lease)) = copy.into_native() else {
+            panic!("frame is native");
+        };
+        assert_eq!((s, sync), (surface, SurfaceSync::Ready));
+        drop(lease);
+        assert_eq!(owner.count(3), 0);
     }
 
     #[test]

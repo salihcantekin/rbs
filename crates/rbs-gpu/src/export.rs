@@ -421,9 +421,11 @@ impl SurfaceExporter {
         let ptr = std::ptr::from_ref::<IOSurfaceRef>(&self.ring.surfaces[i].0.0) as usize;
         // SAFETY: as in `take_ready`: a live IOSurfaceRef of `self.format`, retained by the
         // ring that `lease` keeps alive; its count is now above zero, so the exporter does
-        // not write it while the frame lives; the clear has completed (waited above).
+        // not write it while the frame lives; the clear has completed (waited above). Only
+        // the encoder reads it: the native export output pin is exclusive (ADR-0147
+        // decision 3), so other holders only keep the surface alive.
         let frame = unsafe {
-            VideoFrame::native(
+            VideoFrame::exported(
                 self.format,
                 timestamp,
                 NativeSurface::io_surface(ptr),
@@ -480,9 +482,10 @@ impl SurfaceExporter {
         // lease lives, whatever else is dropped. The exporter writes a surface only when its
         // count is zero, so it does not write while this frame exists. The GPU writes of
         // this frame have completed (polled above, device not lost), so the surface is
-        // ready on delivery.
+        // ready on delivery. Only the encoder reads it: the native export output pin is
+        // exclusive (ADR-0147 decision 3), so other holders only keep the surface alive.
         let frame = unsafe {
-            VideoFrame::native(
+            VideoFrame::exported(
                 self.format,
                 p.timestamp,
                 NativeSurface::io_surface(ptr),
