@@ -1,5 +1,5 @@
-//! Screenshots of a browser source's Page tab in Properties (ADR-0109, ADR-0132,
-//! ADR-0149), in Dark and Light, for the owner's approval of the visual change
+//! Screenshots of a browser source's Page tab in Properties and in the Source settings
+//! window (ADR-0109, ADR-0132, ADR-0149), in Dark and Light, for the owner's approval of the visual change
 //! (CLAUDE.md rule 16). It writes raw RGBA files to `RBS_SHOTS_DIR` with Skia's real
 //! pixels; it is not a check, so it is ignored and run by hand:
 //!
@@ -8,7 +8,10 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)] // A tool run by hand.
 
 use rbs_app_ui::tokens_apply::{apply_tokens, slot};
-use rbs_app_ui::{BrowserData, PropertiesProbe, SourceData, Studio, Theme, Tokens};
+use rbs_app_ui::{
+    BrowserData, PropertiesProbe, SourceData, SourceSettingsData, SourceSettingsWindow, Studio,
+    Theme, Tokens,
+};
 use rbs_ui::tokens::{Base, ThemeBody, Tokens as TokenFile};
 use slint::{ComponentHandle, ModelRc, VecModel};
 
@@ -77,6 +80,37 @@ fn shot(file: &TokenFile, base: Base, name: &str, data: BrowserData, dir: &std::
     w.hide().expect("hide");
 }
 
+fn window_shot(file: &TokenFile, base: Base, name: &str, data: BrowserData, dir: &std::path::Path) {
+    let theme = file
+        .resolve(&ThemeBody::new(base))
+        .expect("the theme resolves");
+    let s = slot(&theme, "").expect("a slot");
+    let w = SourceSettingsWindow::new().expect("the window");
+    apply_tokens(
+        &w.global::<Theme>(),
+        &w.global::<Tokens>(),
+        file,
+        [s.clone(), s],
+    )
+    .expect("the tokens apply");
+    let g = w.global::<Studio>();
+    g.set_source_settings(ModelRc::new(VecModel::from(vec![SourceSettingsData {
+        id: 7,
+        name: "Chat".into(),
+        kind_code: -1,
+        mode_index: -1,
+        rate_index: -1,
+        ..Default::default()
+    }])));
+    g.set_browser_props(data);
+    w.window().set_size(slint::LogicalSize::new(440.0, 1460.0));
+    w.show().expect("show");
+    let px = w.window().take_snapshot().expect("a snapshot");
+    let path = dir.join(format!("{name}-{}x{}.rgba", px.width(), px.height()));
+    std::fs::write(&path, px.as_bytes()).expect("written");
+    w.hide().expect("hide");
+}
+
 #[test]
 #[ignore = "a tool: writes screenshots for the owner's approval"]
 fn page_tab_screenshots() {
@@ -101,5 +135,6 @@ fn page_tab_screenshots() {
         local.width = 1920;
         local.height = 1080;
         shot(&file, base, &format!("page-file-{b}"), local, &dir);
+        window_shot(&file, base, &format!("window-{b}"), page(0), &dir);
     }
 }

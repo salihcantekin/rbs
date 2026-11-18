@@ -1,6 +1,6 @@
 # ADR-0149: Browser page automation, zoom, background pages and load-error retry
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-18
 - Deciders: Salih (owner)
 - Builds on: [ADR-0052](0052-ai-agent-control-through-mcp.md), [ADR-0107](0107-temporal-sources-sleep-when-hidden.md), [ADR-0109](0109-browser-source.md), [ADR-0132](0132-browser-engine-css-interaction.md), [ADR-0143](0143-performance-rules-for-every-change.md), [ADR-0145](0145-add-ons-one-place-to-download-and-install.md)
@@ -132,3 +132,5 @@ Round 2 (same independent AI session, 2026-11-18): changes requested. Round-1 co
 Round 3 (same independent AI session, 2026-11-18): changes requested, minor (three text edits, then approve without another design round). Round-2 concerns all resolved. (1) Decision 7 said "agents" where decision 3 says any token. -> Fixed. (2) A 100 ms drain needs a ring that holds it, and a backlog must not play. -> Drain at most a quarter of the ring apart, skip to the present on show, both checked (decisions 5, 9). (3) `ran` claimed more than the runner knows. -> Renamed `sent` (decisions 3, 7).
 
 Round 3 confirm (same independent AI session, 2026-11-18): **approve**, no open concerns. Acceptance waits on the owner.
+
+Owner acceptance: Salih, 2026-11-18 ("ADR onaylanabilir"); the Page tab screenshots approved the same day, with the request that the Source Settings window shows the same fields.
