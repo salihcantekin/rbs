@@ -9,7 +9,7 @@ use rbs_api::types::{DestinationState, LiveDestination, OutputCanvas};
 use rbs_app::record_profile::Encoding;
 use rbs_app::stream_destinations::{
     CUSTOM, Canvas, Destination, DestinationEncoding, Destinations, MAX_DESTINATIONS_PER_CANVAS,
-    Resolved,
+    Resolved, first_exists,
 };
 use rbs_app::stream_profile::{StreamProfile, parse_server};
 use rbs_app::stream_services::{self, Service};
@@ -103,7 +103,8 @@ pub(crate) fn rows(all: &Destinations, canvas: Canvas, stream: &StreamProfile) -
                 note,
                 on: r.destination.enabled,
                 warn,
-                removable: !r.destination.is_first(),
+                // Every destination, the first one too (ADR-0148 decision 3).
+                removable: true,
             }
         })
         .collect()
@@ -164,6 +165,20 @@ pub(crate) struct Editor {
     pub draft: Destination,
     /// The draft's server field changed and differs from what was saved.
     pub problem: String,
+    /// While adding: the key typed and saved with Add, never before (ADR-0148
+    /// decision 4).
+    pub key: Option<rbs_transport::Secret>,
+}
+
+/// A change that waits for the credential store first (ADR-0148 decisions 3 and 4):
+/// the key is deleted, and only once that worked is the list changed.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Pending {
+    /// Remove destination `.0`.
+    Remove(u32),
+    /// Write the editor's new destination into its canvas's empty first slot, then
+    /// save its key.
+    FillFirst(Editor),
 }
 
 impl Editor {
@@ -174,6 +189,7 @@ impl Editor {
             canvas,
             draft: r.destination.clone(),
             problem: String::new(),
+            key: None,
         }
     }
 
@@ -185,6 +201,7 @@ impl Editor {
             canvas,
             draft: draft.clone(),
             problem: String::new(),
+            key: None,
         };
         if let Some(first) = stream_services::all().first() {
             e.set_service(first);
@@ -197,6 +214,11 @@ impl Editor {
     /// The first destination of its canvas (its server and key are the stream's).
     pub fn first(&self) -> bool {
         self.draft.is_first()
+    }
+
+    /// A new destination that Save writes into the canvas's empty first slot.
+    pub fn fills_first(&self, stream: &StreamProfile) -> bool {
+        self.id.is_none() && !first_exists(stream)
     }
 
     /// The preset's index in [`stream_services::all`].
@@ -271,13 +293,29 @@ impl Editor {
     /// Writes the draft into `all` (and, for a first destination, its server,
     /// reconnect and SRT latency into `stream`). Returns the destination's id, or why
     /// it cannot be saved.
+    /// A new destination goes into the canvas's empty first slot ([`Editor::fills_first`])
+    /// or gets a new id, listed last either way; every destination needs a server
+    /// (ADR-0148 decisions 2, 4 and 5).
     pub fn save(&self, all: &mut Destinations, stream: &mut StreamProfile) -> Result<u32, String> {
         if !self.problem.is_empty() {
             return Err(self.problem.clone());
         }
+        if self.draft.server.trim().is_empty() {
+            return Err("Enter the server first.".into());
+        }
         let mut next = all.clone();
+        let order = self
+            .id
+            .is_none()
+            .then(|| next.next_order(self.canvas, stream));
+        let fills_first = self.fills_first(stream);
         let id = match self.id {
             Some(id) => id,
+            None if fills_first => {
+                // A leftover entry of the empty slot is replaced (ADR-0148 decision 2).
+                let _ = next.remove(self.canvas.first());
+                self.canvas.first()
+            }
             None => next.add(self.canvas, &self.draft.name, &self.draft.service)?,
         };
         let entry = next
@@ -286,14 +324,18 @@ impl Editor {
         let key_saved = entry.key_saved;
         *entry = Destination {
             id,
-            key_saved,
+            key_saved: if fills_first { false } else { key_saved },
+            order: order.or(entry.order),
             ..self.draft.clone()
         };
-        if self.first() {
+        if entry.is_first() {
             // The stream section keeps these for the first destination.
             stream.server = self.draft.server.clone();
             stream.reconnect = self.draft.reconnect;
             stream.srt_latency_ms = self.draft.srt_latency_ms;
+            if fills_first {
+                stream.key_saved = false;
+            }
             entry.server.clear();
             entry.key_saved = false;
         }
@@ -305,24 +347,15 @@ impl Editor {
     }
 }
 
-/// A new destination can be added to `canvas`.
-pub(crate) fn can_add(all: &Destinations, canvas: Canvas) -> bool {
-    all.entries
-        .iter()
-        .filter(|d| d.canvas == canvas && !d.is_first())
-        .count()
-        + 1
-        < MAX_DESTINATIONS_PER_CANVAS
+/// A new destination can be added to `canvas`: fewer than six exist (ADR-0148
+/// decision 2; an empty first slot is not counted and is where the next one goes).
+pub(crate) fn can_add(all: &Destinations, canvas: Canvas, stream: &StreamProfile) -> bool {
+    all.of(canvas, stream, "").len() < MAX_DESTINATIONS_PER_CANVAS
 }
 
-/// "3 of 6".
-pub(crate) fn count(all: &Destinations, canvas: Canvas) -> String {
-    let n = all
-        .entries
-        .iter()
-        .filter(|d| d.canvas == canvas && !d.is_first())
-        .count()
-        + 1;
+/// "3 of 6": the existing destinations.
+pub(crate) fn count(all: &Destinations, canvas: Canvas, stream: &StreamProfile) -> String {
+    let n = all.of(canvas, stream, "").len();
     format!("{n} of {MAX_DESTINATIONS_PER_CANVAS}")
 }
 
@@ -389,7 +422,10 @@ impl super::StudioUi {
     /// "Add destination".
     pub fn dest_add(&mut self) {
         let canvas = role(self.settings_canvas);
-        if self.destinations_editable() && can_add(&self.destinations, canvas) {
+        if self.destinations_editable()
+            && self.dest_pending.is_none()
+            && can_add(&self.destinations, canvas, self.stream_form())
+        {
             self.dest_editor = Some(Editor::add(canvas));
             self.dest_serial += 1;
         }
@@ -442,7 +478,15 @@ impl super::StudioUi {
             Some(k) => Some(rbs_transport::Secret::new(k)),
             None => None,
         };
-        let Some(e) = &self.dest_editor else { return };
+        let Some(e) = &mut self.dest_editor else {
+            return;
+        };
+        if e.id.is_none() {
+            // Kept until Add (ADR-0148 decision 4): Cancel then saves nothing.
+            e.key = key;
+            self.key_serial += 1;
+            return;
+        }
         if e.first() {
             let is_main = self.settings_canvas == OutputCanvas::Main;
             self.send(match is_main {
@@ -451,13 +495,7 @@ impl super::StudioUi {
             });
             return;
         }
-        let id = match e.id {
-            Some(id) => id,
-            None => match self.dest_commit() {
-                Some(id) => id,
-                None => return,
-            },
-        };
+        let Some(id) = e.id else { return };
         self.send(rbs_app::studio_host::Command::SaveDestinationKey(id, key));
     }
 
@@ -490,10 +528,45 @@ impl super::StudioUi {
         Some(id)
     }
 
-    /// The editor's Save: writes the draft and closes it.
+    /// The editor's Save (Add): writes the draft and closes it. A new destination for
+    /// the empty first slot waits until that slot's old key is deleted (ADR-0148
+    /// decision 4); any other new one saves its key once written.
     pub fn dest_save(&mut self) {
-        if self.dest_commit().is_some() {
+        let fills = self
+            .dest_editor
+            .as_ref()
+            .is_some_and(|e| e.fills_first(self.stream_form()));
+        if fills {
+            let Some(mut e) = self.dest_editor.clone() else {
+                return;
+            };
+            let check = e.save(
+                &mut self.destinations.clone(),
+                &mut self.stream_form().clone(),
+            );
+            if let Err(why) = check {
+                e.problem = why;
+                self.dest_editor = Some(e);
+                self.dest_serial += 1;
+                return;
+            }
+            let id = e.canvas.first();
             self.dest_editor = None;
+            self.dest_pending = Some(Pending::FillFirst(e));
+            self.send(rbs_app::studio_host::Command::SaveDestinationKey(id, None));
+            self.dest_serial += 1;
+            return;
+        }
+        let key = self
+            .dest_editor
+            .as_mut()
+            .filter(|e| e.id.is_none())
+            .and_then(|e| e.key.take());
+        if let Some(id) = self.dest_commit() {
+            self.dest_editor = None;
+            if key.is_some() {
+                self.send(rbs_app::studio_host::Command::SaveDestinationKey(id, key));
+            }
         }
         self.dest_serial += 1;
     }
@@ -503,8 +576,8 @@ impl super::StudioUi {
         self.dest_serial += 1;
     }
 
-    /// "Remove destination" in the editor: removes it and its key. The first one
-    /// cannot be removed.
+    /// "Remove destination" in the editor: removes it and its key (ADR-0148
+    /// decision 3).
     pub fn dest_remove(&mut self) {
         let Some(id) = self.dest_editor.as_ref().and_then(|e| e.id) else {
             self.dest_cancel();
@@ -532,28 +605,108 @@ impl super::StudioUi {
         self.dest_serial += 1;
     }
 
-    /// Removes a destination of the picked canvas, saves, and deletes its key.
+    /// Removes a listed destination of the picked canvas: its key is deleted first,
+    /// and the list changes once that worked ([`Self::dest_key_saved`]).
     fn remove_destination(&mut self, id: u32) -> Result<(), String> {
+        if self.dest_pending.is_some() {
+            return Err("Wait until the last change is saved.".into());
+        }
         let canvas = role(self.settings_canvas);
         if !self
             .destinations
-            .entries
+            .of(canvas, self.stream_form(), "")
             .iter()
-            .any(|d| d.id == id && d.canvas == canvas)
+            .any(|r| r.destination.id == id)
         {
             return Err("That destination is no longer there.".into());
         }
-        self.destinations.remove(id)?;
-        self.save_destinations();
+        self.dest_pending = Some(Pending::Remove(id));
         self.send(rbs_app::studio_host::Command::SaveDestinationKey(id, None));
         Ok(())
     }
 
-    /// [`rbs_app::studio_host::Update::DestinationKey`].
+    /// The stream section of first destination `id`'s canvas, made when missing.
+    fn first_stream_mut(&mut self, id: u32) -> &mut StreamProfile {
+        if id == Canvas::Vertical.first() {
+            self.vertical_stream.get_or_insert_with(StreamProfile::new)
+        } else {
+            &mut self.stream
+        }
+    }
+
+    /// Saves the stream section of first destination `id`'s canvas.
+    fn save_first_stream(&mut self, id: u32) {
+        if id == Canvas::Vertical.first() {
+            self.save_vertical_stream();
+        } else {
+            self.save_stream();
+        }
+    }
+
+    /// [`rbs_app::studio_host::Update::DestinationKey`]: a key saved or deleted, and
+    /// a removal or a fill of the first slot that waited for it (ADR-0148).
     pub(crate) fn dest_key_saved(&mut self, id: u32, result: Result<bool, String>) {
-        match result {
-            Ok(saved) => {
-                if let Some(d) = self.destinations.entry_mut(id) {
+        let pending = match &self.dest_pending {
+            Some(Pending::Remove(p)) if *p == id => self.dest_pending.take(),
+            Some(Pending::FillFirst(e)) if e.canvas.first() == id && result != Ok(true) => {
+                self.dest_pending.take()
+            }
+            _ => None,
+        };
+        let saved = match result {
+            Ok(saved) => saved,
+            Err(why) => {
+                // Nothing changed: the key could not be deleted.
+                self.stream_note = why;
+                self.dest_serial += 1;
+                return;
+            }
+        };
+        let first = id == Canvas::Main.first() || id == Canvas::Vertical.first();
+        match pending {
+            Some(Pending::Remove(id)) => {
+                let _ = self.destinations.remove(id);
+                self.save_destinations();
+                if first {
+                    let s = self.first_stream_mut(id);
+                    s.server.clear();
+                    s.key_saved = false;
+                    s.reconnect = true;
+                    s.srt_latency_ms = None;
+                    self.server_serial += 1;
+                    self.save_first_stream(id);
+                }
+            }
+            Some(Pending::FillFirst(mut e)) => {
+                let key = e.key.take();
+                let mut all = self.destinations.clone();
+                let mut stream = if id == Canvas::Vertical.first() {
+                    self.vertical_stream
+                        .clone()
+                        .unwrap_or_else(StreamProfile::new)
+                } else {
+                    self.stream.clone()
+                };
+                stream.key_saved = false;
+                match e.save(&mut all, &mut stream) {
+                    Ok(_) => {
+                        self.destinations = all;
+                        self.save_destinations();
+                        *self.first_stream_mut(id) = stream;
+                        self.server_serial += 1;
+                        self.save_first_stream(id);
+                        if key.is_some() {
+                            self.send(rbs_app::studio_host::Command::SaveDestinationKey(id, key));
+                        }
+                    }
+                    Err(why) => self.stream_note = why,
+                }
+            }
+            None => {
+                if first {
+                    self.first_stream_mut(id).key_saved = saved;
+                    self.save_first_stream(id);
+                } else if let Some(d) = self.destinations.entry_mut(id) {
                     d.key_saved = saved;
                     self.save_destinations();
                 }
@@ -562,10 +715,10 @@ impl super::StudioUi {
                 {
                     e.draft.key_saved = saved;
                 }
-                self.key_serial += 1;
             }
-            Err(why) => self.stream_note = why,
         }
+        self.key_serial += 1;
+        self.dest_serial += 1;
     }
 
     /// The editor's draft encoding while "Own settings", for the encoder fields.
@@ -591,9 +744,19 @@ impl super::StudioUi {
         let stream = self.stream_form();
         let list = rows(&self.destinations, canvas, stream);
         g.set_st_dest_together(together(&list).into());
+        let on = list.iter().filter(|r| r.on).count();
+        g.set_st_dest_on_count(i32::try_from(on).unwrap_or(i32::MAX));
+        // A section that did not load is not "off" (ADR-0148 decision 1).
+        g.set_st_available(
+            on > 0 || !self.stream_form_idle() || !self.destinations_note.is_empty(),
+        );
         g.set_st_dests(row_model(&list));
-        g.set_st_dest_count(count(&self.destinations, canvas).into());
-        g.set_st_dest_can_add(self.destinations_editable() && can_add(&self.destinations, canvas));
+        g.set_st_dest_count(count(&self.destinations, canvas, stream).into());
+        g.set_st_dest_can_add(
+            self.destinations_editable()
+                && self.dest_pending.is_none()
+                && can_add(&self.destinations, canvas, stream),
+        );
         g.set_st_dest_editable(self.destinations_editable());
         let (upload, warnings) = notes(&self.destinations, canvas, stream);
         g.set_st_dest_upload(upload.into());
@@ -614,7 +777,9 @@ impl super::StudioUi {
         g.set_st_ed_service(e.service_index() as i32);
         g.set_st_ed_server_help(e.server_help().into());
         g.set_st_ed_key_help(e.key_help().into());
-        let key_saved = if e.first() {
+        let key_saved = if e.id.is_none() {
+            e.key.is_some()
+        } else if e.first() {
             stream.key_saved
         } else {
             e.draft.key_saved
@@ -880,8 +1045,8 @@ mod tests {
         );
         assert!(!rows[0].warn);
         assert!(
-            !rows[0].removable,
-            "the first destination is only cleared or disabled"
+            rows[0].removable,
+            "every destination can be removed (ADR-0148)"
         );
         assert_eq!(rows[1].id, id);
         assert!(rows[1].removable);
@@ -890,7 +1055,7 @@ mod tests {
         assert_eq!(rows[1].name, "Kick");
         assert_eq!(rows[1].note, "Kick · No server yet · Same as the stream");
         assert!(rows[1].warn);
-        assert_eq!(count(&all, Canvas::Main), "2 of 6");
+        assert_eq!(count(&all, Canvas::Main, &s), "2 of 6");
     }
 
     #[test]
@@ -922,6 +1087,37 @@ mod tests {
         assert_eq!(s.server, "rtmp://a.rtmp.youtube.com/live2");
         assert_eq!(all.get(0).map(|d| d.name.as_str()), Some("Main"));
         assert_eq!(all.get(0).map(|d| d.server.as_str()), Some(""));
+    }
+
+    #[test]
+    fn add_needs_a_server_and_fills_an_empty_first_slot_listed_last() {
+        let mut all = Destinations::default();
+        let twitch = all.add(Canvas::Main, "Twitch", "twitch").unwrap();
+        let mut s = stream("");
+        s.key_saved = true; // A stale flag: the slot does not exist without a server.
+        assert_eq!(rows(&all, Canvas::Main, &s).len(), 1);
+        let mut e = Editor::add(Canvas::Main);
+        e.set_service(stream_services::get("kick").unwrap());
+        assert!(e.fills_first(&s));
+        assert_eq!(
+            e.save(&mut all.clone(), &mut s.clone()),
+            Err("Enter the server first.".into())
+        );
+        e.set_server("rtmps://fa723fc1b171.global-contribute.live-video.net/app");
+        let id = e.save(&mut all, &mut s).unwrap();
+        assert_eq!(id, Canvas::Main.first());
+        assert!(
+            !s.key_saved,
+            "an old key never belongs to the new destination"
+        );
+        let list = rows(&all, Canvas::Main, &s);
+        assert_eq!(
+            list.iter().map(|r| r.id).collect::<Vec<_>>(),
+            vec![twitch, id]
+        );
+        assert_eq!(list[1].name, "Kick");
+        assert!(list.iter().all(|r| r.removable));
+        assert_eq!(count(&all, Canvas::Main, &s), "2 of 6");
     }
 
     #[test]

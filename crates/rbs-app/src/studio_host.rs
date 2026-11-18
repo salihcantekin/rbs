@@ -2437,6 +2437,11 @@ pub enum RecordingUpdate {
     },
 }
 
+/// Why Go live and `stream.start` are refused while no destination of the canvas is
+/// on (ADR-0148 decision 8).
+pub const STREAMING_OFF: &str =
+    "Streaming is off. Add a destination or turn one on in Settings, Stream.";
+
 /// Where and how to stream.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StreamRequest {
@@ -2473,13 +2478,30 @@ impl StreamRequest {
             return Err("Enter the server in Settings, Stream.".into());
         }
         let server = parse_server(&p.server)?;
-        let e = &p.encoding;
         Ok(Self {
             url: p.server.clone(),
             input: server.protocol.input(),
             needs_key: server.protocol.needs_key(),
             reconnect: p.reconnect_policy(),
             transport_options: p.transport_options(),
+            ..Self::from_settings(p, encoder)?
+        })
+    }
+
+    /// The stream's shared settings (encoding, output size) without a server: the
+    /// base each destination's request is built on when the canvas's first slot does
+    /// not exist (ADR-0148 decision 6). Its own URL is empty and never used.
+    pub fn from_settings(p: &StreamProfile, encoder: Option<String>) -> Result<Self, String> {
+        if let Some(why) = p.problem() {
+            return Err(why);
+        }
+        let e = &p.encoding;
+        Ok(Self {
+            url: String::new(),
+            input: Protocol::Rtmp.input(),
+            needs_key: false,
+            reconnect: p.reconnect_policy(),
+            transport_options: Vec::new(),
             encoder,
             video: e.video_settings(),
             audio_bitrate_bps: e.audio_bps(),
@@ -8354,6 +8376,24 @@ impl Host {
             (None, Some(_)) => self.stream_profile.clone().unwrap_or_default(),
             (None, None) => return Err(no_server()),
         };
+        // The first slot removed: the other destinations go live on the stream's
+        // shared settings (ADR-0148 decision 6), or streaming is off.
+        if other.is_none() && !crate::stream_destinations::first_exists(&profile) {
+            if !self.stream_available(c) {
+                return Err(failed(STREAMING_OFF));
+            }
+            let encoder = profile
+                .encoding
+                .encoder
+                .clone()
+                .filter(|id| self.encoders.iter().any(|e| e.id == *id));
+            let request = StreamRequest::from_settings(&profile, encoder).map_err(|_| {
+                failed(format!(
+                    "the saved stream settings{which} cannot be used: see Settings, Stream"
+                ))
+            })?;
+            return Ok((request, Vec::new()));
+        }
         // The saved servers are settings (`admin`): a `control` caller never gets one
         // back, also not inside an error text.
         let mut hidden: Vec<String> = Vec::new();
@@ -8400,10 +8440,30 @@ impl Host {
             VERTICAL_FIRST => DestinationCanvas::Vertical,
             _ => self.destinations.get(id)?.canvas,
         };
-        Some(match canvas {
+        let c = match canvas {
             DestinationCanvas::Main => OutputCanvas::Main,
             DestinationCanvas::Vertical => OutputCanvas::Vertical,
-        })
+        };
+        // A first slot that was removed is no destination (ADR-0148 decisions 2, 10).
+        if (id == MAIN_FIRST || id == VERTICAL_FIRST)
+            && !self
+                .stream_profile_of(c)
+                .is_some_and(crate::stream_destinations::first_exists)
+        {
+            return None;
+        }
+        Some(c)
+    }
+
+    /// Streaming is available on `c` (ADR-0148 decision 1): one of its existing
+    /// destinations is on.
+    fn stream_available(&self, c: OutputCanvas) -> bool {
+        let role = match c {
+            OutputCanvas::Main => DestinationCanvas::Main,
+            OutputCanvas::Vertical => DestinationCanvas::Vertical,
+        };
+        let profile = self.stream_profile_of(c).cloned().unwrap_or_default();
+        self.destinations.available(role, &profile)
     }
 
     /// The destinations of `c` with their first one's settings filled in.

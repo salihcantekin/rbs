@@ -654,11 +654,17 @@ component DestinationItem inherits Rectangle {
     in property <bool> divider: true;
     in property <bool> editable: true;
     callback remove-asked();
+    // Turning off the last destination that is on asks first (ADR-0148 decision 7).
+    callback off-asked();
+    in property <bool> last-on;
     min-height: Tokens.size-control-lg + Tokens.space-3;
     if root.divider: Rectangle { y: 0; height: Tokens.size-border; background: Theme.border-subtle; }
     HorizontalLayout {
         spacing: Tokens.space-3;
+        // One em wide, so every row's name starts at the same place.
         Text {
+            width: Tokens.type-caption-size;
+            horizontal-alignment: center;
             text: root.number;
             color: root.dest.on ? Theme.text-secondary : Theme.text-disabled;
             font-size: Tokens.type-caption-size;
@@ -695,7 +701,8 @@ component DestinationItem inherits Rectangle {
                 clicked => { Studio.dest-edit(root.dest.id); }
             }
         }
-        // The first destination has no Remove; its place stays so the buttons line up.
+        // Every destination has Remove (ADR-0148 decision 3); a row without one keeps
+        // its place so the buttons line up.
         VerticalLayout {
             alignment: center;
             IconButton {
@@ -714,7 +721,9 @@ component DestinationItem inherits Rectangle {
                 checked: root.dest.on;
                 enabled: root.editable;
                 horizontal-stretch: 0;
-                toggled(on) => { Studio.dest-set-enabled(root.dest.id, on); }
+                toggled(on) => {
+                    if !on && root.last-on { root.off-asked(); } else { Studio.dest-set-enabled(root.dest.id, on); }
+                }
             }
         }
     }
@@ -843,7 +852,7 @@ component DestinationEditor inherits Rectangle {
         Rectangle { height: Tokens.space-3; }
         DialogActions {
             confirm-text: Studio.st-ed-new ? @tr("Add") : @tr("Save");
-            extra-text: Studio.st-ed-new || Studio.st-ed-first ? "" : @tr("Remove destination");
+            extra-text: Studio.st-ed-new ? "" : @tr("Remove destination");
             cancelled => { Studio.dest-cancel(); }
             confirmed => { Studio.dest-set-name(name.text); Studio.dest-set-server(server.text); Studio.dest-save(); }
             extra-clicked => { Studio.dest-remove(); }
@@ -862,11 +871,21 @@ component DestinationEditor inherits Rectangle {
 // a time, inline under the list.
 component DestinationsCard inherits SettingsCard {
     in property <bool> idle;
-    // A row's Remove asks first. -1 while none does.
+    // A row's Remove, or turning off the last destination that is on, asks first.
+    // -1 while none does; `confirm-off`: the question is about turning it off.
     property <int> confirm-id: -1;
-    property <bool> noted: Studio.st-dest-upload != "" || Studio.st-dest-warnings != "";
+    property <bool> confirm-off;
+    property <bool> noted: Studio.st-dest-upload != "" || Studio.st-dest-warnings != ""
+        || (Studio.st-dests.length > 0 && Studio.st-dest-on-count == 0);
     title: @tr("Destinations");
     id: "settings.stream.destinations";
+    // No destination: streaming is off (ADR-0148 decisions 1 and 8).
+    if Studio.st-dests.length == 0 && !Studio.st-ed-open: SettingRow {
+        // find: none (an empty state).
+        divider: false;
+        label: @tr("Streaming is off");
+        help: @tr("Add a destination and Go live shows in the main window.");
+    }
     if Studio.st-dest-together != "": Text {
         text: Studio.st-dest-together;
         color: Theme.text-secondary;
@@ -879,22 +898,33 @@ component DestinationsCard inherits SettingsCard {
             number: i + 1;
             divider: i > 0;
             editable: Studio.st-dest-editable && !Studio.st-ed-open && root.confirm-id == -1;
-            remove-asked => { root.confirm-id = row.id; }
+            last-on: row.on && Studio.st-dest-on-count == 1;
+            remove-asked => { root.confirm-off = false; root.confirm-id = row.id; }
+            off-asked => { root.confirm-off = true; root.confirm-id = row.id; }
         }
         if root.confirm-id == row.id: SettingsCallout {
-            label: @tr("Remove {}?", row.name);
+            property <bool> last: row.on && Studio.st-dest-on-count == 1;
+            label: root.confirm-off ? @tr("Turn off {}?", row.name) : @tr("Remove {}?", row.name);
             Text {
-                text: @tr("Remove {}? Its saved stream key is deleted too.", row.name);
+                text: root.confirm-off
+                    ? @tr("{} is the last destination that is on. Streaming turns off and Go live leaves the main window. You can turn a destination on again at any time.", row.name)
+                    : last
+                    ? @tr("Remove {}? It is the last destination that is on, so streaming turns off and Go live leaves the main window. Its saved stream key is deleted too.", row.name)
+                    : @tr("Remove {}? Its saved stream key is deleted too.", row.name);
                 color: Theme.text-primary;
                 font-size: Tokens.type-body-size;
                 wrap: word-wrap;
             }
             DialogActions {
                 dense: true;
-                confirm-text: @tr("Remove");
-                confirm-kind: "danger";
+                confirm-text: root.confirm-off ? @tr("Turn off") : @tr("Remove");
+                // Turning off can be undone with the switch; removing cannot.
+                confirm-kind: root.confirm-off ? "primary" : "danger";
                 cancelled => { root.confirm-id = -1; }
-                confirmed => { root.confirm-id = -1; Studio.dest-remove-id(row.id); }
+                confirmed => {
+                    root.confirm-id = -1;
+                    if root.confirm-off { Studio.dest-set-enabled(row.id, false); } else { Studio.dest-remove-id(row.id); }
+                }
             }
         }
     }
@@ -905,7 +935,7 @@ component DestinationsCard inherits SettingsCard {
         // Room between the button and the notes under it.
         padding-bottom: root.noted ? Tokens.space-3 : 0;
         spacing: Tokens.space-3;
-        Text {
+        if Studio.st-dests.length > 0: Text {
             text: Studio.st-dest-count;
             color: Theme.text-secondary;
             font-size: Tokens.type-caption-size;
@@ -921,6 +951,9 @@ component DestinationsCard inherits SettingsCard {
             enabled: Studio.st-dest-can-add;
             clicked => { Studio.dest-add(); }
         }
+    }
+    if Studio.st-dests.length > 0 && Studio.st-dest-on-count == 0: SettingsNotice {
+        text: @tr("Every destination is off, so Go live is hidden.");
     }
     if Studio.st-dest-upload != "": SettingsNotice { text: Studio.st-dest-upload; }
     if Studio.st-dest-warnings != "": SettingsNotice { text: Studio.st-dest-warnings; problem: true; }
@@ -938,177 +971,182 @@ export component StreamSettings inherits Rectangle {
         if !idle: SettingsNotice { text: @tr("Changes apply to the next stream."); }
         if Studio.st-note != "": SettingsNotice { text: Studio.st-note; problem: true; }
         DestinationsCard { idle: idle; }
-        conn-card := SettingsCard {
-            title: @tr("Connection");
-            id: "settings.stream.connection";
-            more-hidden: Studio.st-srt && !Experience.advanced;
-            SettingRow {
-                find: "stream.reconnect";
-                divider: false;
-                label: @tr("Reconnect when the connection drops");
-                summary: @tr("Up to 10 tries");
-                hint: @tr("Tries up to 10 times, waiting longer each time. On by default.");
-                enabled: idle;
-                fill: false;
-                Toggle {
-                    label: @tr("Reconnect when the connection drops");
-                    checked: Studio.st-reconnect;
-                    enabled: idle;
-                    toggled(on) => { Studio.set-reconnect(on); }
-                }
-            }
-            if Experience.advanced || conn-card.show-all: Shown {
-                shown: Studio.st-srt;
-                gap: 0;
+        // The stream's own cards, while the picked canvas can stream or its stream runs
+        // (ADR-0148 decision 8).
+        if Studio.st-available: VerticalLayout {
+            spacing: Tokens.space-4;
+            conn-card := SettingsCard {
+                title: @tr("Connection");
+                id: "settings.stream.connection";
+                more-hidden: Studio.st-srt && !Experience.advanced;
                 SettingRow {
-                    find: "stream.srt-latency";
-                    // Hidden with its Shown: search shows the card instead.
-                    findable: Studio.st-srt;
-                    label: @tr("SRT latency");
-                    summary: @tr("More survives a worse network");
-                    hint: @tr("More latency survives a worse network; viewers see the picture a little later.");
+                    find: "stream.reconnect";
+                    divider: false;
+                    label: @tr("Reconnect when the connection drops");
+                    summary: @tr("Up to 10 tries");
+                    hint: @tr("Tries up to 10 times, waiting longer each time. On by default.");
                     enabled: idle;
-                    // The first choice is the protocol's own default.
-                    changed: idle && Studio.st-srt && Studio.st-latency != 0;
-                    default-text: Studio.st-latencies[0];
-                    reset => { Studio.set-latency(0); }
-                    latency := Select {
-                        label: @tr("SRT latency");
-                        options: Studio.st-latencies;
-                        index: Studio.st-latency;
-                        enabled: idle && Studio.st-srt;
-                        selected(i) => { Studio.set-latency(i); }
-                    }
-                }
-            }
-        }
-        SettingsCard {
-            title: @tr("While live");
-            id: "settings.stream.while-live";
-            SettingRow {
-                find: "stream.record-on-start";
-                divider: false;
-                label: @tr("Record when the stream starts");
-                summary: @tr("Uses the Recording settings");
-                hint: @tr("Uses the Recording settings. Ending the stream stops this recording. Off by default.");
-                enabled: idle;
-                fill: false;
-                Toggle {
-                    label: @tr("Record when the stream starts");
-                    checked: Studio.st-auto-record;
-                    enabled: idle;
-                    toggled(on) => { Studio.set-auto-record(on); }
-                }
-            }
-            if Studio.st-auto-record: SettingsNotice { text: Studio.st-auto-record-note; }
-            SettingRow {
-                find: "stream.hold-picture";
-                label: @tr("While on hold");
-                summary: @tr("What viewers see");
-                hint: @tr("What viewers see while the stream is on hold. Last frame and Black go out with silence. It applies to the next hold.");
-                changed: Studio.st-hold-picture != 0;
-                default-text: @tr("Last frame");
-                reset => { Studio.set-hold-picture(0); }
-                Select {
-                    label: @tr("While on hold");
-                    options: [@tr("Last frame"), @tr("Black"), @tr("A scene")];
-                    index: Studio.st-hold-picture;
-                    selected(i) => { Studio.set-hold-picture(i); }
-                }
-            }
-            if Studio.st-hold-picture == 2: SettingRow {
-                find: "stream.hold-scene";
-                label: @tr("Hold scene");
-                summary: @tr("Opens only while on hold");
-                hint: @tr("The scene viewers see while the stream is on hold. Its sources open only then. If it cannot open, the last frame is shown.");
-                Select {
-                    label: @tr("Hold scene");
-                    options: Studio.st-hold-scenes;
-                    index: Studio.st-hold-scene;
-                    placeholder: @tr("Choose a scene");
-                    selected(i) => { Studio.set-hold-scene(i); }
-                }
-            }
-            if Studio.st-hold-picture == 2: SettingRow {
-                find: "stream.hold-sound";
-                label: @tr("Sound while on hold");
-                summary: @tr("Silence or the scene's sound");
-                hint: @tr("The scene's sound mixes its own sources at their levels.");
-                changed: Studio.st-hold-sound-scene;
-                default-text: @tr("Silence");
-                reset => { Studio.set-hold-sound(0); }
-                Select {
-                    label: @tr("Sound while on hold");
-                    options: [@tr("Silence"), @tr("The scene's sound")];
-                    index: Studio.st-hold-sound-scene ? 1 : 0;
-                    selected(i) => { Studio.set-hold-sound(i); }
-                }
-            }
-        }
-        enc-card := SettingsCard {
-            title: @tr("Encoding");
-            id: "settings.stream.encoding";
-            more-hidden: !Experience.expert;
-            SettingBlock {
-                find: "encoding.output-size";
-                divider: false;
-                label: @tr("Output size");
-                help: @tr("Same as canvas keeps this canvas's size. Turn it off to pick another, or type a long side. It applies to the next stream.");
-                HorizontalLayout {
-                    alignment: start;
-                    spacing: Tokens.space-3;
+                    fill: false;
                     Toggle {
-                        label: @tr("Same as canvas");
-                        text: @tr("Same as canvas");
-                        checked: Studio.st-same;
+                        label: @tr("Reconnect when the connection drops");
+                        checked: Studio.st-reconnect;
                         enabled: idle;
-                        toggled(on) => { Studio.set-output-same(1, on); }
-                    }
-                    if Studio.st-same: Text {
-                        text: Studio.st-value;
-                        color: Theme.text-primary;
-                        font-size: Tokens.type-caption-size;
-                        vertical-alignment: center;
-                        accessible-role: none;
+                        toggled(on) => { Studio.set-reconnect(on); }
                     }
                 }
-                if !Studio.st-same: SizeNest {
-                    label: @tr("Output size");
-                    bands: Studio.st-bands;
-                    extras: Studio.st-extras;
-                    index: Studio.st-choice;
-                    portrait: Studio.out-portrait;
-                    value: Studio.st-value;
+                if Experience.advanced || conn-card.show-all: Shown {
+                    shown: Studio.st-srt;
+                    gap: 0;
+                    SettingRow {
+                        find: "stream.srt-latency";
+                        // Hidden with its Shown: search shows the card instead.
+                        findable: Studio.st-srt;
+                        label: @tr("SRT latency");
+                        summary: @tr("More survives a worse network");
+                        hint: @tr("More latency survives a worse network; viewers see the picture a little later.");
+                        enabled: idle;
+                        // The first choice is the protocol's own default.
+                        changed: idle && Studio.st-srt && Studio.st-latency != 0;
+                        default-text: Studio.st-latencies[0];
+                        reset => { Studio.set-latency(0); }
+                        latency := Select {
+                            label: @tr("SRT latency");
+                            options: Studio.st-latencies;
+                            index: Studio.st-latency;
+                            enabled: idle && Studio.st-srt;
+                            selected(i) => { Studio.set-latency(i); }
+                        }
+                    }
+                }
+            }
+            SettingsCard {
+                title: @tr("While live");
+                id: "settings.stream.while-live";
+                SettingRow {
+                    find: "stream.record-on-start";
+                    divider: false;
+                    label: @tr("Record when the stream starts");
+                    summary: @tr("Uses the Recording settings");
+                    hint: @tr("Uses the Recording settings. Ending the stream stops this recording. Off by default.");
                     enabled: idle;
-                    selected(i, w, h) => { Studio.set-output-size(1, i); }
+                    fill: false;
+                    Toggle {
+                        label: @tr("Record when the stream starts");
+                        checked: Studio.st-auto-record;
+                        enabled: idle;
+                        toggled(on) => { Studio.set-auto-record(on); }
+                    }
+                }
+                if Studio.st-auto-record: SettingsNotice { text: Studio.st-auto-record-note; }
+                SettingRow {
+                    find: "stream.hold-picture";
+                    label: @tr("While on hold");
+                    summary: @tr("What viewers see");
+                    hint: @tr("What viewers see while the stream is on hold. Last frame and Black go out with silence. It applies to the next hold.");
+                    changed: Studio.st-hold-picture != 0;
+                    default-text: @tr("Last frame");
+                    reset => { Studio.set-hold-picture(0); }
+                    Select {
+                        label: @tr("While on hold");
+                        options: [@tr("Last frame"), @tr("Black"), @tr("A scene")];
+                        index: Studio.st-hold-picture;
+                        selected(i) => { Studio.set-hold-picture(i); }
+                    }
+                }
+                if Studio.st-hold-picture == 2: SettingRow {
+                    find: "stream.hold-scene";
+                    label: @tr("Hold scene");
+                    summary: @tr("Opens only while on hold");
+                    hint: @tr("The scene viewers see while the stream is on hold. Its sources open only then. If it cannot open, the last frame is shown.");
+                    Select {
+                        label: @tr("Hold scene");
+                        options: Studio.st-hold-scenes;
+                        index: Studio.st-hold-scene;
+                        placeholder: @tr("Choose a scene");
+                        selected(i) => { Studio.set-hold-scene(i); }
+                    }
+                }
+                if Studio.st-hold-picture == 2: SettingRow {
+                    find: "stream.hold-sound";
+                    label: @tr("Sound while on hold");
+                    summary: @tr("Silence or the scene's sound");
+                    hint: @tr("The scene's sound mixes its own sources at their levels.");
+                    changed: Studio.st-hold-sound-scene;
+                    default-text: @tr("Silence");
+                    reset => { Studio.set-hold-sound(0); }
+                    Select {
+                        label: @tr("Sound while on hold");
+                        options: [@tr("Silence"), @tr("The scene's sound")];
+                        index: Studio.st-hold-sound-scene ? 1 : 0;
+                        selected(i) => { Studio.set-hold-sound(i); }
+                    }
+                }
+            }
+            enc-card := SettingsCard {
+                title: @tr("Encoding");
+                id: "settings.stream.encoding";
+                more-hidden: !Experience.expert;
+                SettingBlock {
+                    find: "encoding.output-size";
+                    divider: false;
+                    label: @tr("Output size");
+                    help: @tr("Same as canvas keeps this canvas's size. Turn it off to pick another, or type a long side. It applies to the next stream.");
                     HorizontalLayout {
                         alignment: start;
-                        spacing: Tokens.space-2;
-                        Text {
-                            text: @tr("Long side");
-                            color: idle ? Theme.text-secondary : Theme.text-disabled;
+                        spacing: Tokens.space-3;
+                        Toggle {
+                            label: @tr("Same as canvas");
+                            text: @tr("Same as canvas");
+                            checked: Studio.st-same;
+                            enabled: idle;
+                            toggled(on) => { Studio.set-output-same(1, on); }
+                        }
+                        if Studio.st-same: Text {
+                            text: Studio.st-value;
+                            color: Theme.text-primary;
                             font-size: Tokens.type-caption-size;
                             vertical-alignment: center;
                             accessible-role: none;
                         }
-                        NumberField {
-                            live: false;
-                            label: @tr("Long side");
-                            preferred-width: Tokens.size-field-compact;
-                            value: Studio.st-long;
-                            step: 2;
-                            enabled: idle;
-                            edited(v) => { Studio.set-output-long-side(1, v); }
+                    }
+                    if !Studio.st-same: SizeNest {
+                        label: @tr("Output size");
+                        bands: Studio.st-bands;
+                        extras: Studio.st-extras;
+                        index: Studio.st-choice;
+                        portrait: Studio.out-portrait;
+                        value: Studio.st-value;
+                        enabled: idle;
+                        selected(i, w, h) => { Studio.set-output-size(1, i); }
+                        HorizontalLayout {
+                            alignment: start;
+                            spacing: Tokens.space-2;
+                            Text {
+                                text: @tr("Long side");
+                                color: idle ? Theme.text-secondary : Theme.text-disabled;
+                                font-size: Tokens.type-caption-size;
+                                vertical-alignment: center;
+                                accessible-role: none;
+                            }
+                            NumberField {
+                                live: false;
+                                label: @tr("Long side");
+                                preferred-width: Tokens.size-field-compact;
+                                value: Studio.st-long;
+                                step: 2;
+                                enabled: idle;
+                                edited(v) => { Studio.set-output-long-side(1, v); }
+                            }
                         }
                     }
                 }
-            }
-            fields := EncoderFields {
-                data: Studio.st-enc;
-                idle: idle;
-                stream: true;
-                show-all: enc-card.show-all;
-                set(field, value) => { Studio.set-encoding(1, field, value); }
+                fields := EncoderFields {
+                    data: Studio.st-enc;
+                    idle: idle;
+                    stream: true;
+                    show-all: enc-card.show-all;
+                    set(field, value) => { Studio.set-encoding(1, field, value); }
+                }
             }
         }
     }
