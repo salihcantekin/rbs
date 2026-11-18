@@ -456,6 +456,9 @@ impl EqualiserDsp {
 /// Runs `N` channels of equal length through the active sections `coefs` (whose states
 /// are `z[..][index[j]]`), sanitising input and output. Indexed by lane and frame on
 /// purpose: the lanes of one frame must sit side by side in the inner loop.
+/// Section states below this are flushed to 0 at the end of a block.
+const TINY: f32 = 1.0e-30;
+
 #[allow(clippy::needless_range_loop)]
 fn run_lanes<const N: usize>(
     coefs: &[Coefs],
@@ -500,10 +503,13 @@ fn run_lanes<const N: usize>(
     for (j, &i) in index.iter().enumerate() {
         for lane in 0..N {
             // A state driven out of range (it cannot be, for finite input and stable
-            // coefficients) restarts clean rather than ringing forever.
+            // coefficients) restarts clean rather than ringing forever. A state that
+            // has decayed below `TINY` after silence is flushed to 0 before it turns
+            // into denormals, which cost x86 a microcode assist per operation (A-04
+            // of the 2026-11 performance audit); it is far below any audible level.
             let s = [st[j][0][lane], st[j][1][lane]];
             z[lane][i] = if s[0].is_finite() && s[1].is_finite() {
-                s
+                s.map(|v| if v.abs() < TINY { 0.0 } else { v })
             } else {
                 [0.0; 2]
             };

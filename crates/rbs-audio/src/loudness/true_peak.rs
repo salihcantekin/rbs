@@ -30,6 +30,10 @@ pub(crate) struct TruePeak {
     factor: usize,
     /// `factor` phases of `TAPS` coefficients, phase-major, newest sample first.
     coeffs: Box<[f32]>,
+    /// The largest gain any phase can have (the largest sum of absolute
+    /// coefficients), with a margin for rounding: no interpolated value exceeds the
+    /// largest absolute sample in its window times this.
+    bound: f32,
     /// Per channel, the last `TAPS` samples written twice (`2 * TAPS`), so a window
     /// is always one contiguous slice.
     history: Box<[f32]>,
@@ -52,15 +56,21 @@ impl TruePeak {
             })
             .collect();
         let mut coeffs = vec![0.0f32; n];
+        let mut l1 = 0.0f64;
         for p in 0..factor {
             let sum: f64 = (0..TAPS).map(|k| proto[p + factor * k]).sum();
+            let mut abs = 0.0;
             for k in 0..TAPS {
                 coeffs[p * TAPS + k] = (proto[p + factor * k] / sum) as f32;
+                abs += f64::from(coeffs[p * TAPS + k].abs());
             }
+            l1 = l1.max(abs);
         }
         Self {
             factor,
             coeffs: coeffs.into_boxed_slice(),
+            // f32 rounding of a 12-term sum stays far below 1e-4 relative.
+            bound: (l1 * (1.0 + 1e-4)) as f32,
             history: vec![0.0; MAX_CHANNELS * 2 * TAPS].into_boxed_slice(),
             pos: [0; MAX_CHANNELS],
         }
@@ -78,8 +88,19 @@ impl TruePeak {
     }
 
     /// The highest absolute interpolated value of `x` on `channel`. Real-time safe.
-    #[inline]
+    #[cfg(test)]
     pub(crate) fn peak(&mut self, channel: usize, x: &[f32]) -> f32 {
+        self.peak_above(channel, x, 0.0)
+    }
+
+    /// The highest absolute interpolated value of `x` on `channel`, or a value no
+    /// larger than `floor` when the block cannot exceed `floor`. The interpolation
+    /// runs only when the sample peak of the block and the history before it, times
+    /// the filter's largest gain, is above `floor`, so a meter that keeps its
+    /// maximum skips the work exactly: the skipped values could not have raised it.
+    /// Real-time safe.
+    #[inline]
+    pub(crate) fn peak_above(&mut self, channel: usize, x: &[f32], floor: f32) -> f32 {
         if channel >= MAX_CHANNELS {
             return 0.0;
         }
@@ -88,6 +109,24 @@ impl TruePeak {
         }
         let hist = &mut self.history[channel * 2 * TAPS..(channel + 1) * 2 * TAPS];
         let mut pos = self.pos[channel];
+        if floor > 0.0 {
+            // The first windows of the block still reach into the previous block's
+            // samples, so they count towards the bound as well.
+            let reach = abs_max(x).max(abs_max(&hist[..TAPS]));
+            if reach * self.bound <= floor {
+                // Only the history moves: the last `TAPS` samples are all a later
+                // block reads.
+                let skip = x.len().saturating_sub(TAPS);
+                pos = (pos + TAPS - skip % TAPS) % TAPS;
+                for &v in &x[skip..] {
+                    pos = if pos == 0 { TAPS - 1 } else { pos - 1 };
+                    hist[pos] = v;
+                    hist[pos + TAPS] = v;
+                }
+                self.pos[channel] = pos;
+                return reach;
+            }
+        }
         let mut peak = 0.0f32;
         for &v in x {
             pos = if pos == 0 { TAPS - 1 } else { pos - 1 };
@@ -102,6 +141,24 @@ impl TruePeak {
         self.pos[channel] = pos;
         peak
     }
+}
+
+/// The largest absolute value of `x` (NaN ignored), in 8 lanes so it vectorises.
+#[inline]
+fn abs_max(x: &[f32]) -> f32 {
+    let mut lanes = [0.0f32; 8];
+    let mut chunks = x.chunks_exact(8);
+    for c in &mut chunks {
+        for (m, v) in lanes.iter_mut().zip(c) {
+            let a = v.abs();
+            *m = if a > *m { a } else { *m };
+        }
+    }
+    let rest = chunks
+        .remainder()
+        .iter()
+        .fold(0.0f32, |m, v| m.max(v.abs()));
+    lanes.into_iter().fold(rest, f32::max)
 }
 
 fn sinc(t: f64) -> f64 {
@@ -156,5 +213,53 @@ mod tests {
         let mut tp = TruePeak::new(192_000);
         assert_eq!(tp.peak(1, &[0.1, -0.7, 0.3]), 0.7);
         assert_eq!(tp.peak(MAX_CHANNELS, &[1.0]), 0.0);
+    }
+
+    /// A deterministic test signal with inter-sample peaks (a tone near fs/4).
+    fn tone(len: usize, amp: f32, phase: f32) -> Vec<f32> {
+        (0..len)
+            .map(|i| amp * (i as f32 * 1.4 + phase).sin())
+            .collect()
+    }
+
+    #[test]
+    fn a_skipped_block_keeps_the_history_of_a_computed_one() {
+        let mut full = TruePeak::new(48_000);
+        let mut skipping = TruePeak::new(48_000);
+        for (len, amp) in [
+            (480, 0.9),
+            (7, 0.1),
+            (480, 0.2),
+            (300, 0.95),
+            (5, 0.3),
+            (480, 0.99),
+        ] {
+            let x = tone(len, amp, len as f32);
+            let want = full.peak(0, &x);
+            // A high floor skips the quiet blocks; the loud ones still compute.
+            let got = skipping.peak_above(0, &x, 0.5);
+            if want > 0.5 {
+                assert_eq!(got, want, "len {len} amp {amp}");
+            } else {
+                assert!(got <= 0.5, "len {len} amp {amp}: {got}");
+            }
+            assert_eq!(full.history, skipping.history);
+            assert_eq!(full.pos, skipping.pos);
+        }
+    }
+
+    #[test]
+    fn the_bound_covers_every_interpolated_value() {
+        let mut tp = TruePeak::new(44_100);
+        for seed in 0..20 {
+            let x = tone(480, 1.0, seed as f32 * 0.37);
+            let sample_peak = x.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+            let p = tp.peak(0, &x);
+            assert!(
+                p <= sample_peak * tp.bound,
+                "{p} > {sample_peak} * {}",
+                tp.bound
+            );
+        }
     }
 }

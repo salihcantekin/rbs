@@ -197,10 +197,12 @@ fn input(c: &mut Criterion) {
 }
 
 fn mixer(c: &mut Criterion) {
-    // `monitored` strips on the monitor (`Also`), its output read when non-zero.
-    for (label, monitored) in [
-        ("16_stereo_inputs_with_meters", 0),
-        ("16_stereo_inputs_with_meters_4_monitored", 4),
+    // `monitored` strips on the monitor (`Also`), its output read when non-zero;
+    // the last `muted` strips muted.
+    for (label, monitored, muted) in [
+        ("16_stereo_inputs_with_meters", 0, 0),
+        ("16_stereo_inputs_with_meters_4_monitored", 4, 0),
+        ("16_stereo_inputs_with_meters_8_muted", 0, 8),
     ] {
         let config = AudioGraphConfig::default();
         let (mut ctl, mut exec) = channel::<()>(Arc::new(()), ());
@@ -230,7 +232,8 @@ fn mixer(c: &mut Criterion) {
             strips.push(
                 Strip::new(id, 0.7)
                     .with_meter(Arc::new(LevelMeter::new(2)))
-                    .with_monitor(mode),
+                    .with_monitor(mode)
+                    .with_muted(k >= 16 - muted),
             );
             ids.push(id);
         }

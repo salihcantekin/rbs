@@ -141,7 +141,8 @@ struct State {
     nominal: f64,
     /// Device frames per second, nominal.
     rate: f64,
-    kernel: Kernel,
+    /// Shared with every node of the same rate pair (read-only).
+    kernel: std::sync::Arc<Kernel>,
     matrix: [[f32; MAX_CHANNELS]; MAX_CHANNELS],
     /// Interleaved device frames of one push.
     scratch: Box<[f32]>,
@@ -186,7 +187,7 @@ impl State {
             p: BEFORE as f64,
             nominal,
             rate,
-            kernel: Kernel::new(config.format.sample_rate, device.sample_rate),
+            kernel: Kernel::shared(config.format.sample_rate, device.sample_rate),
             matrix: matrix(config.format.channels, device.channels),
             scratch: vec![0.0; scratch_frames * dev_channels].into_boxed_slice(),
             target,
