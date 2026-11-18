@@ -3455,6 +3455,14 @@ impl StudioUi {
         let mut buf = std::mem::take(&mut self.mark_buf);
         self.edit
             .marks(self.canvas_px(), &placed, self.selected, &mut buf);
+        // A web page with no address draws nothing: outline where it sits (ADR-0149).
+        let empty = |id: i32| {
+            self.browser_rows
+                .get(&id)
+                .is_some_and(|(s, _)| !browser_props::has_address(s))
+        };
+        self.edit
+            .placeholders(self.canvas_px(), &placed, empty, self.selected, &mut buf);
         set_rows(&self.marks, mark_data(&buf));
         self.mark_buf = buf;
         // The vertical picture shows the same selection.
@@ -3463,6 +3471,13 @@ impl StudioUi {
             Some(canvas) => {
                 let placed = self.placed_vertical(false);
                 self.vedit.marks(canvas, &placed, self.selected, &mut buf);
+                let empty = |id: i32| {
+                    self.browser_rows
+                        .get(&id)
+                        .is_some_and(|(s, _)| !browser_props::has_address(s))
+                };
+                self.vedit
+                    .placeholders(canvas, &placed, empty, self.selected, &mut buf);
             }
             None => buf.clear(),
         }
@@ -7892,6 +7907,7 @@ fn mark_data(marks: &[Mark]) -> Vec<MarkData> {
                 MarkKind::Outline => 0,
                 MarkKind::HandleBorder => 1,
                 MarkKind::HandleFill => 2,
+                MarkKind::Placeholder => 3,
             },
         })
         .collect()

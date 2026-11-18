@@ -193,7 +193,7 @@ export component ProgramPanel inherits Rectangle {
             y: m.y;
             width: m.w;
             height: m.h;
-            background: m.kind == 2 ? Theme.surface-raised : Theme.accent;
+            background: m.kind == 2 ? Theme.surface-raised : m.kind == 3 ? Theme.border-strong : Theme.accent;
         }
     }
 }
