@@ -284,3 +284,57 @@ fn cbr_padded_reaches_the_target_on_a_still_picture() {
         );
     }
 }
+
+/// ADR-0146 decision 4: the input sequence (a static picture, a change, static again,
+/// a new picture id with old content, frames without an id) encoded with picture ids
+/// (slots reused) must give the same bitstream as without them (every frame copied).
+/// The copied run goes twice first: an encoder that is not deterministic cannot be
+/// tested this way, and says so instead of failing.
+#[test]
+#[ignore = "slow: hardware, about 200 encoded 720p frames per run"]
+fn slow_reused_input_encodes_bit_exact() {
+    use rbs_core::media::{Bytes, PictureId};
+    if !encodes("h264") {
+        return;
+    }
+    let config = config(CodecId::H264, PixelFormat::Nv12);
+    let (a, b, c) = (PictureId::next(), PictureId::next(), PictureId::next());
+    let mut plan = Vec::new();
+    plan.extend(std::iter::repeat_n((1, a), 40));
+    plan.extend(std::iter::repeat_n((2, b), 3));
+    plan.extend(std::iter::repeat_n((1, a), 21));
+    plan.extend(std::iter::repeat_n((1, c), 19));
+    plan.extend((0..5).map(|i| (10 + i, PictureId::NONE)));
+    plan.extend(std::iter::repeat_n((2, b), 37));
+    let run = |with_ids: bool| -> Vec<Bytes> {
+        let mut session = NvencFactory::new().create_session(&config).unwrap();
+        let mut source = SystemFrameSource::new();
+        let cadence = Cadence::frames(Timestamp::from_nanos(1_000_000_000), FrameRate::FPS_60);
+        let mut packets = Vec::new();
+        for (i, &(content, id)) in plan.iter().enumerate() {
+            let frame = source
+                .frame(&config.format, content, cadence.time_of(i as u64))
+                .unwrap()
+                .with_picture(if with_ids { id } else { PictureId::NONE });
+            match session.submit(&frame) {
+                Err(EncodeError::Busy) => {
+                    session.drain(&mut packets).unwrap();
+                    session.submit(&frame).unwrap();
+                }
+                other => other.unwrap(),
+            }
+            session.drain(&mut packets).unwrap();
+        }
+        session.flush(&mut packets).unwrap();
+        assert_eq!(packets.len(), plan.len());
+        packets.iter().map(|p| p.data().clone()).collect()
+    };
+    let copied = run(false);
+    if run(false) != copied {
+        eprintln!("NVENC output is not deterministic here; reuse not testable, skipped");
+        return;
+    }
+    let reused = run(true);
+    let first_diff = copied.iter().zip(&reused).position(|(x, y)| x != y);
+    assert_eq!(first_diff, None, "reused input changed the bitstream");
+}

@@ -348,6 +348,10 @@ fn an_unchanged_canvas_is_drawn_once_and_exported_every_tick() {
     for (i, frame) in frames.iter().enumerate() {
         assert_eq!(frame.timestamp(), Tick::of(&cadence, start + i as u64).time);
         assert!(centre_luma(frame).abs_diff(235) <= 2);
+        // One readback: every frame carries its picture id, so an encoder copies the
+        // picture once per input buffer and then reuses it (ADR-0146).
+        assert!(!frame.picture().is_none());
+        assert_eq!(frame.picture(), frames[0].picture());
     }
     assert_eq!(exec.health(export).unwrap().errors, 0);
     assert_eq!(exec.health(comp).unwrap().errors, 0);

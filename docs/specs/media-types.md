@@ -39,13 +39,14 @@ Encoders and muxers convert master time to container ticks with `Timebase::ticks
 - `PixelFormat` (non-exhaustive): `Bgra8`, `Bgra8Srgb`, `Rgba8`, `Rgba8Srgb`, `Rgb10a2`, `Rgba16Float` (canvas working format), `Nv12`, `P010` (encoder hand-off), `I420`, `I444`, `Yuy2`, `Uyvy`. Each format reports plane count, bit depth, minimum row bytes and rows per plane; chroma sizes round up for odd dimensions.
 - `ColorSpace { primaries, transfer, matrix, range }`, with constants `SRGB`, `LINEAR_BT709` (SDR working space), `LINEAR_BT2020` (HDR working space), `BT709_LIMITED`, `BT709_FULL`, `SRGB_VIDEO` (sRGB transfer, BT.709 matrix, full range: a desktop picture stored as Y'CbCr), `BT2100_PQ`, `BT2100_HLG`.
 - `MemoryKind` (non-exhaustive): `System`, `Gpu` (engine device texture), `D3d11`, `D3d12`, `Vulkan`, `Metal`, `DmaBuf`. `as_str()` gives the values used for the `input.memory` style capabilities.
-- `VideoFrame` has private fields and accessors (`format`, `timestamp`, `sequence`, `source_time`, `payload`, `lease`), so the format always matches the payload and a native surface is never separated from its lease:
+- `VideoFrame` has private fields and accessors (`format`, `timestamp`, `sequence`, `picture`, `source_time`, `payload`, `lease`), so the format always matches the payload and a native surface is never separated from its lease:
 
 | Accessor | Meaning |
 | --- | --- |
 | `format()` | `VideoFormat` |
 | `timestamp()` | Presentation time in master-clock time |
-| `sequence()` | Per-producer counter, +1 per emitted frame; gaps are drops |
+| `sequence()` | Per-producer key of the picture shown: a capture counts +1 per emitted frame (gaps are drops); a still source, filter, compositor draw or a frame sent again on a later tick takes `next_generation()`, so a `(timestamp, sequence)` key never repeats (ADR-0117) |
+| `picture()` | `PictureId` (ADR-0146): two frames with the same id other than `PictureId::NONE` have identical pixels and the same format, so a consumer that still holds that picture may use it again instead of copying it. `NONE` (the default of every constructor) promises nothing. Set with `with_picture(PictureId::next())` only by the producer that creates the pixels, never moved to other pixels; `share`, `with_timestamp` and `with_sequence` keep it. Today `YuvDownload` (each readback, kept by its repeats and by downloads joining a shared readback) and the export's black hold picture set it |
 | `source_time()` | Producer-domain ns, diagnostics only, never used for timing |
 | `payload()` | Where the pixels are (below) |
 | `lease()` | The `Lease` keeping the memory alive, if any |
