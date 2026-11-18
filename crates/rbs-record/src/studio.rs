@@ -17,7 +17,7 @@ use rbs_audio_filters::{
 };
 use rbs_codec::{EncoderTuning, VideoEncoderConfig};
 use rbs_core::lifecycle::Lifecycle;
-use rbs_core::media::{ContainerId, MemoryKind, PixelFormat, StreamDescriptor};
+use rbs_core::media::{ContainerId, MemoryKind, PixelFormat, Size, StreamDescriptor};
 use rbs_core::pause::{HoldSwitch, PauseWindow};
 use rbs_core::time::Timestamp;
 use rbs_core::timing::{Cadence, FrameRate};
@@ -2502,8 +2502,11 @@ impl Studio {
         self.browser_controls
             .retain(|source, _| instanced.contains(source));
         // One budget and one helper tree from the composition root (ADR-0109).
+        // Captures follow the main canvas's size and rate (every canvas runs at it).
+        let (width, height) = self.size;
         let ctx = InstanceContext::new(self.engine.clock(), self.settings.audio_graph)
-            .with_browser(Arc::clone(&self.browser_budget), self.browser_tree.clone());
+            .with_browser(Arc::clone(&self.browser_budget), self.browser_tree.clone())
+            .with_canvas(Size::new(width, height), self.fps);
         let audio_partition = self.settings.partitions.audio;
         for entry in &mut self.entries {
             // The sound half of a media source joins once its sound node is scheduled.

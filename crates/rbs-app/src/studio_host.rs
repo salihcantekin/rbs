@@ -102,6 +102,11 @@ use crate::vertical_outputs::VerticalFlags;
 /// The longest the control thread sleeps between two rounds of the engine's control
 /// loop (the studio asks for at most about 100 ms).
 const MAX_WAIT: Duration = Duration::from_millis(50);
+/// The longest the control thread sleeps while no output runs, ends or waits (perf
+/// audit G-05): nothing is polled then, and every timed driver (media, transitions,
+/// cues, rehearsal, replay, monitor, calibration) still asks for its own deadline. Four
+/// rounds a second instead of twenty; the engine asks for the same while a worker runs.
+const IDLE_WAIT: Duration = Duration::from_millis(250);
 /// How often the Stats panel gets new counters while an output runs (its redraw rate,
 /// design system: `rbs.stats` 1 Hz).
 const STATS_INTERVAL: Duration = Duration::from_secs(1);
@@ -4012,7 +4017,8 @@ fn round(
     }
     host.feed_text_live();
     let serviced = host.studio.service();
-    let mut wait = serviced.wait.unwrap_or(MAX_WAIT).min(MAX_WAIT);
+    let cap = round_cap(&host.outs, host.waiting || host.held_switch.is_some());
+    let mut wait = serviced.wait.unwrap_or(cap).min(cap);
     if served_api {
         // More may wait; look again right after any UI command.
         wait = Duration::ZERO;
@@ -4158,6 +4164,17 @@ fn round(
     }
     host.publish(notify);
     wait
+}
+
+/// The longest sleep after a round: [`MAX_WAIT`] while an output runs or ends on any
+/// canvas, or a replacement or switch waits (`busy`), since those are checked each
+/// round without a deadline of their own (failures, tails, links, holds); otherwise
+/// [`IDLE_WAIT`].
+fn round_cap(outs: &[CanvasOutputs], busy: bool) -> Duration {
+    let running = outs
+        .iter()
+        .any(|o| o.recording.is_some() || o.streaming.is_some() || o.ending);
+    if running || busy { MAX_WAIT } else { IDLE_WAIT }
 }
 
 fn start(
@@ -16643,6 +16660,17 @@ fn in_scene(id: SourceId) -> rbs_api::request::SourceInScene {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// At idle the control thread sleeps up to a quarter second; anything that is
+    /// checked each round keeps the short sleep (perf audit G-05).
+    #[test]
+    fn the_control_thread_sleeps_longer_while_nothing_runs() {
+        let mut outs = [CanvasOutputs::default(), CanvasOutputs::default()];
+        assert_eq!(round_cap(&outs, false), IDLE_WAIT);
+        assert_eq!(round_cap(&outs, true), MAX_WAIT);
+        outs[1].ending = true;
+        assert_eq!(round_cap(&outs, false), MAX_WAIT);
+    }
 
     #[allow(clippy::unwrap_used)] // Tests fail by panicking.
     #[test]

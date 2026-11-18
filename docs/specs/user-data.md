@@ -111,7 +111,7 @@ A document that fails any of these is `DataError::Invalid` with the reason. A ch
 
 ## Performance requirements
 
-User-paced; never on a hot path. The app saves collections on a writer thread (ADR-0051 decision 8). Measured by `slow_save_cost_of_a_large_collection` (release): 2000 sources and items save in about 45 ms and load in about 25 ms; a library of 20 such collections lists in about 4 ms. Nothing runs while the user does nothing: no watching, no polling (P13).
+User-paced; never on a hot path. The app saves collections on a writer thread (ADR-0051 decision 8). A collection save waits 1 s after the last change before it is written (`rbs-app` `user_session::COLLECTION_DELAY`), at most 5 s after the first change it holds (`COLLECTION_MAX_DELAY`), so a drag, a fader move or a run of nudges is one write with its fsyncs instead of one per step (perf audit G-03). It waits only while nothing is queued behind it: a switch, rename, delete, import, `current.toml` write, flush or close writes it first, in order. A crash can lose at most the changes of that window. Measured by `slow_save_cost_of_a_large_collection` (release): 2000 sources and items save in about 45 ms and load in about 25 ms; a library of 20 such collections lists in about 4 ms. Nothing runs while the user does nothing: no watching, no polling (P13).
 
 ## Conformance tests
 

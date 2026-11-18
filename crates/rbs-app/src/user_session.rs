@@ -8,6 +8,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use rbs_core::media::Size;
 use rbs_core::timing::FrameRate;
@@ -89,17 +90,50 @@ impl Job {
     }
 }
 
+/// A collection save waits this long after the last change before it is written, so
+/// a drag, a fader move or a run of nudges is one write instead of one per step (perf
+/// audit G-03).
+pub const COLLECTION_DELAY: Duration = Duration::from_secs(1);
+/// A collection save never waits longer than this after the first change it holds,
+/// so a long gesture still reaches the disk.
+pub const COLLECTION_MAX_DELAY: Duration = Duration::from_secs(5);
+
 #[derive(Default)]
 struct Queue {
     jobs: VecDeque<Job>,
     busy: bool,
     stop: bool,
+    /// [`Saver::flush`] waits: a held collection save is written at once.
+    hurry: bool,
+    /// When the collection save last in the queue is due, when it is held.
+    due: Option<Instant>,
+    /// When the first change that save holds was asked for.
+    since: Option<Instant>,
+}
+
+impl Queue {
+    /// How long the job at the front still waits: only a collection save that nothing
+    /// is queued behind, while no one flushes or stops (anything queued behind it,
+    /// a switch, rename, delete or close, writes it first, in order).
+    fn hold(&self, now: Instant) -> Option<Duration> {
+        let held = self.jobs.len() == 1
+            && matches!(self.jobs.front(), Some(Job::Collection(..)))
+            && !self.stop
+            && !self.hurry;
+        if !held {
+            return None;
+        }
+        let wait = self.due?.saturating_duration_since(now);
+        (!wait.is_zero()).then_some(wait)
+    }
 }
 
 struct Shared {
     queue: Mutex<Queue>,
     changed: Condvar,
     names: Names,
+    /// [`COLLECTION_DELAY`], shorter or longer in tests.
+    delay: Duration,
 }
 
 impl Shared {
@@ -107,8 +141,19 @@ impl Shared {
         let Ok(mut q) = self.queue.lock() else {
             return;
         };
-        if q.jobs.back().is_some_and(|last| job.replaces(last)) {
+        let replaced = q.jobs.back().is_some_and(|last| job.replaces(last));
+        if replaced {
             q.jobs.pop_back();
+        }
+        if matches!(job, Job::Collection(..)) {
+            let now = Instant::now();
+            // A replaced save keeps the time of the first change it held.
+            let since = match q.since {
+                Some(since) if replaced => since,
+                _ => now,
+            };
+            q.since = Some(since);
+            q.due = Some((now + self.delay).min(since + COLLECTION_MAX_DELAY.max(self.delay)));
         }
         q.jobs.push_back(job);
         self.changed.notify_all();
@@ -126,10 +171,21 @@ pub struct Saver {
 
 impl Saver {
     fn start(data: UserData, lock: WriterLock, on_error: OnError) -> std::io::Result<Self> {
+        Self::start_with(data, lock, on_error, COLLECTION_DELAY)
+    }
+
+    /// [`Self::start`] with another collection delay (tests).
+    fn start_with(
+        data: UserData,
+        lock: WriterLock,
+        on_error: OnError,
+        delay: Duration,
+    ) -> std::io::Result<Self> {
         let shared = Arc::new(Shared {
             queue: Mutex::new(Queue::default()),
             changed: Condvar::new(),
             names: Names::default(),
+            delay,
         });
         let thread = std::thread::Builder::new()
             .name("rbs-user-data".into())
@@ -143,11 +199,16 @@ impl Saver {
         })
     }
 
-    /// Waits until every save asked for so far is written (or has failed).
+    /// Waits until every save asked for so far is written (or has failed); a held
+    /// collection save is written at once.
     pub fn flush(&self) {
         let Ok(mut q) = self.shared.queue.lock() else {
             return;
         };
+        if !q.jobs.is_empty() {
+            q.hurry = true;
+            self.shared.changed.notify_all();
+        }
         while !q.jobs.is_empty() || q.busy {
             q = match self.shared.changed.wait(q) {
                 Ok(q) => q,
@@ -176,10 +237,23 @@ fn write_jobs(shared: &Shared, data: &UserData, lock: &WriterLock, on_error: &dy
                 return;
             };
             loop {
+                if let Some(wait) = q.hold(Instant::now()) {
+                    // A newer change, a job behind it, a flush or the stop wakes it.
+                    q = match shared.changed.wait_timeout(q, wait) {
+                        Ok((q, _)) => q,
+                        Err(_) => return,
+                    };
+                    continue;
+                }
                 if let Some(job) = q.jobs.pop_front() {
+                    if matches!(job, Job::Collection(..)) && q.jobs.is_empty() {
+                        q.due = None;
+                        q.since = None;
+                    }
                     q.busy = true;
                     break job;
                 }
+                q.hurry = false;
                 if q.stop {
                     return;
                 }
@@ -1110,6 +1184,77 @@ mod tests {
         let (s, loaded) = open(&d.0, quiet());
         assert_eq!(loaded, col);
         assert_eq!(s.section::<RecordProfile>(RECORDING).unwrap().unwrap(), rec);
+    }
+
+    fn collection_job() -> Job {
+        Job::Collection(EntryId::parse("c").unwrap(), SceneCollection::new())
+    }
+
+    /// A held save, as the writer sees it: waits until due, then not at all; never
+    /// while a job is queued behind it, a flush waits or the writer stops (G-03).
+    #[test]
+    fn only_a_lone_collection_save_is_held_until_due() {
+        let now = Instant::now();
+        let mut q = Queue {
+            due: Some(now + COLLECTION_DELAY),
+            ..Queue::default()
+        };
+        q.jobs.push_back(collection_job());
+        assert_eq!(q.hold(now), Some(COLLECTION_DELAY));
+        assert_eq!(q.hold(now + COLLECTION_DELAY), None);
+        q.jobs.push_back(Job::Current(Current::new(None, None)));
+        assert_eq!(q.hold(now), None, "a job behind it writes it first");
+        q.jobs.pop_back();
+        q.hurry = true;
+        assert_eq!(q.hold(now), None, "a flush writes it");
+        q.hurry = false;
+        q.stop = true;
+        assert_eq!(q.hold(now), None, "closing writes it");
+        q.stop = false;
+        q.jobs.clear();
+        q.jobs.push_back(Job::Current(Current::new(None, None)));
+        assert_eq!(q.hold(now), None, "other jobs never wait");
+    }
+
+    /// Changes in a burst move the due time, up to the longest delay after the first.
+    #[test]
+    fn a_burst_of_saves_is_due_after_the_last_change_within_a_bound() {
+        let d = Dir::new("burst");
+        let data = UserData::new(&d.0);
+        let lock = data.try_lock().unwrap().unwrap();
+        let saver = Saver::start_with(data, lock, quiet(), Duration::from_secs(3600)).unwrap();
+        saver.shared.push(collection_job());
+        let first = saver.shared.queue.lock().unwrap().due.unwrap();
+        saver.shared.push(collection_job());
+        let q = saver.shared.queue.lock().unwrap();
+        assert_eq!(q.jobs.len(), 1, "the newer save replaced the waiting one");
+        let since = q.since.unwrap();
+        // With a delay longer than the bound, the bound is the delay itself.
+        assert!(q.due.unwrap() >= first);
+        assert!(q.due.unwrap() <= since + Duration::from_secs(3600));
+    }
+
+    /// A held save is written by a flush at once, not after its delay.
+    #[test]
+    fn a_flush_writes_a_held_collection_save_at_once() {
+        let d = Dir::new("held");
+        let data = UserData::new(&d.0);
+        let lock = data.try_lock().unwrap().unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&seen);
+        let on_error: OnError = Arc::new(move |why| sink.lock().unwrap().push(why));
+        let saver = Saver::start_with(data, lock, on_error, Duration::from_secs(3600)).unwrap();
+        let id = EntryId::parse("held").unwrap();
+        Names::set(&saver.shared.names.collections, &id, "Held");
+        saver
+            .shared
+            .push(Job::Collection(id.clone(), SceneCollection::new()));
+        saver.flush();
+        // The entry was never created, so the write that ran reports that: it ran
+        // within the flush, an hour before its delay ended.
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1, "{seen:?}");
+        assert!(seen[0].contains("does not exist"), "{seen:?}");
     }
 
     #[test]
