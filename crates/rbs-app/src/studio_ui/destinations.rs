@@ -178,7 +178,7 @@ pub(crate) enum Pending {
     Remove(u32),
     /// Write the editor's new destination into its canvas's empty first slot, then
     /// save its key.
-    FillFirst(Editor),
+    FillFirst(Box<Editor>),
 }
 
 impl Editor {
@@ -552,7 +552,7 @@ impl super::StudioUi {
             }
             let id = e.canvas.first();
             self.dest_editor = None;
-            self.dest_pending = Some(Pending::FillFirst(e));
+            self.dest_pending = Some(Pending::FillFirst(Box::new(e)));
             self.send(rbs_app::studio_host::Command::SaveDestinationKey(id, None));
             self.dest_serial += 1;
             return;
@@ -681,9 +681,7 @@ impl super::StudioUi {
                 let key = e.key.take();
                 let mut all = self.destinations.clone();
                 let mut stream = if id == Canvas::Vertical.first() {
-                    self.vertical_stream
-                        .clone()
-                        .unwrap_or_else(StreamProfile::new)
+                    self.vertical_stream.clone().unwrap_or_default()
                 } else {
                     self.stream.clone()
                 };
