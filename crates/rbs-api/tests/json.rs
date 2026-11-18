@@ -618,6 +618,13 @@ fn every_request() -> Vec<Request> {
                 easing: GlideEasing::Linear,
             }),
         })),
+        c(Command::SourceSetActivity(SetSourceActivity {
+            source: 3,
+            run: Some(ActivityRun::OnAir),
+            on_return: None,
+            linger_s: Some(5),
+        })),
+        c(Command::SourceGetActivity(SourceRef { source: 3 })),
         c(Command::SourceSetRegion(SetSourceRegion {
             source: 3,
             region: Some([10, 20, 30, 40]),
@@ -3408,4 +3415,62 @@ fn add_on_calls_and_statuses_have_a_stable_wire_form() {
             }),
         });
     }
+}
+
+#[test]
+fn source_activity_is_a_minor_addition_and_an_empty_call_resets() {
+    // ADR-0152 decision 10, protocol 1.95.
+    let set: Request = serde_json::from_value(json!({
+        "method": "source.set_activity",
+        "params": {"source": 4, "run": "on_air", "on_return": "resume", "linger_s": 10}
+    }))
+    .unwrap();
+    assert_eq!(set.scope(), Some(Scope::Control));
+    assert_eq!(
+        set,
+        Request::Command(Command::SourceSetActivity(SetSourceActivity {
+            source: 4,
+            run: Some(ActivityRun::OnAir),
+            on_return: Some(ActivityReturn::Resume),
+            linger_s: Some(10),
+        }))
+    );
+    let reset: SetSourceActivity = serde_json::from_value(json!({"source": 4})).unwrap();
+    assert_eq!(
+        (reset.run, reset.on_return, reset.linger_s),
+        (None, None, None)
+    );
+    assert_eq!(serde_json::to_value(reset).unwrap(), json!({"source": 4}));
+    assert!(
+        serde_json::from_value::<SetSourceActivity>(json!({"source": 4, "run": "always"})).is_err()
+    );
+    assert!(
+        serde_json::from_value::<SetSourceActivity>(json!({"source": 4, "keep": true})).is_err()
+    );
+    let get: Request = serde_json::from_value(json!({
+        "method": "source.get_activity", "params": {"source": 4}
+    }))
+    .unwrap();
+    assert_eq!(get.scope(), Some(Scope::Read));
+    let info = SourceActivityInfo {
+        source: 4,
+        run: None,
+        on_return: Some(ActivityReturn::Resume),
+        linger_s: None,
+        effective: EffectiveActivity {
+            run: ActivityRun::Shown,
+            on_return: Some(ActivityReturn::Resume),
+            linger_s: 0,
+        },
+        supported: true,
+        runs: vec![ActivityRun::Placed, ActivityRun::Shown, ActivityRun::OnAir],
+        on_returns: vec![ActivityReturn::Resume, ActivityReturn::Restart],
+    };
+    assert_eq!(
+        serde_json::to_value(&info).unwrap(),
+        json!({"source": 4, "on_return": "resume",
+               "effective": {"run": "shown", "on_return": "resume", "linger_s": 0},
+               "supported": true, "runs": ["placed", "shown", "on_air"],
+               "on_returns": ["resume", "restart"]})
+    );
 }

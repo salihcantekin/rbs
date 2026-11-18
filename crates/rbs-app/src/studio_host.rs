@@ -452,6 +452,9 @@ pub struct SourceRow {
     pub show_for_ms: u32,
     /// Milliseconds left on a running Show cue; 0 when none.
     pub cue_remaining_ms: u32,
+    /// A live pause holds the item's scroll run on the main canvas, then on the
+    /// vertical one (ADR-0150 decision 12: Properties shows Resume).
+    pub scroll_paused: [bool; 2],
     /// Which feeds are marked to record separately, and the picture's form
     /// (ADR-0086, ADR-0117).
     pub record_separately: RecordSeparately,
@@ -568,6 +571,7 @@ impl PartialEq for SourceRow {
             && self.has_work_rect == other.has_work_rect
             && self.show_for_ms == other.show_for_ms
             && self.cue_remaining_ms == other.cue_remaining_ms
+            && self.scroll_paused == other.scroll_paused
             && match (&self.meter, &other.meter) {
                 (Some(a), Some(b)) => Arc::ptr_eq(a, b),
                 (None, None) => true,
@@ -1283,6 +1287,29 @@ pub enum Command {
         /// The canvas whose layout changes: the vertical canvas's own layout only while
         /// it shows the scene being edited (ADR-0093 decision 4).
         canvas: OutputCanvas,
+    },
+    /// Sets or clears the scroll of a video source's picture (ADR-0150) on the layout
+    /// the canvas shows; refused with [`Update::Error`] when out of range.
+    SetSourceScroll {
+        /// Edits with the same number other than 0 that follow each other are one undo
+        /// step (one field drag); 0 is a step of its own.
+        gesture: u64,
+        /// The source.
+        id: SourceId,
+        /// The scroll, or `None` to stop scrolling.
+        scroll: Option<Scroll>,
+        /// The canvas whose layout changes, as for [`Command::SetSourceStyle`].
+        canvas: OutputCanvas,
+    },
+    /// A live call on a source's scroll run (ADR-0150 decision 11): not saved, not
+    /// undone.
+    ScrollLive {
+        /// The source.
+        id: SourceId,
+        /// The canvas whose run it acts on.
+        canvas: OutputCanvas,
+        /// Pause, resume, restart or a speed.
+        control: ScrollControl,
     },
     /// Start recording the program ([`Update::Recording`] says how it went).
     StartRecording(RecordRequest),
@@ -2671,6 +2698,7 @@ impl Refusal {
             | SceneError::InvalidVolume
             | SceneError::InvalidSyncOffset
             | SceneError::InvalidShowFor
+            | SceneError::InvalidActivity
             | SceneError::InvalidTransition
             | SceneError::ChromeNotDisplay
             | SceneError::IndexOutOfRange(_) => Self::Invalid(edit_error(e)),
@@ -5359,6 +5387,49 @@ impl Host {
                 match edit {
                     Ok(true) => self.apply(notify),
                     Ok(false) => {}
+                    Err(e) => notify(Update::Error(e)),
+                }
+            }
+            Command::SetSourceScroll {
+                gesture,
+                id,
+                scroll,
+                canvas,
+            } => {
+                let edit = if scroll.is_some_and(|s| !s.is_valid()) {
+                    Err(SCROLL_ERROR.to_owned())
+                } else {
+                    self.item_of(id)
+                        .map(|(_, item)| item.id)
+                        .and_then(|item| self.set_item_scroll(item, scroll, gesture, canvas))
+                };
+                match edit {
+                    Ok(true) => self.apply(notify),
+                    Ok(false) => {}
+                    Err(e) => notify(Update::Error(e)),
+                }
+            }
+            Command::ScrollLive {
+                id,
+                canvas,
+                control,
+            } => {
+                let target = self.item_of(id).map(|(_, item)| item.id).and_then(|item| {
+                    self.edit_canvas(canvas)
+                        .map(|c| (item, c))
+                        .map_err(|e| e.text().to_owned())
+                });
+                match target {
+                    Ok((item, c)) => match self.studio.scroll_control(item, c, control) {
+                        Ok(_) => self.publish(notify),
+                        Err(ScrollRefused::NoScroll) => notify(Update::Error(
+                            "This source does not scroll on that canvas.".into(),
+                        )),
+                        Err(_) => notify(Update::Error(
+                            "This source is not on a scene a canvas shows, so its scroll is not running."
+                                .into(),
+                        )),
+                    },
                     Err(e) => notify(Update::Error(e)),
                 }
             }
@@ -11143,6 +11214,20 @@ impl Host {
         )
     }
 
+    /// Whether a live pause holds `item`'s scroll on the main and the vertical canvas.
+    fn scroll_paused_of(&self, item: &SceneItem) -> [bool; 2] {
+        let paused = |canvas: Option<CanvasId>| {
+            canvas.is_some_and(|c| {
+                self.collection
+                    .placed_layout(c, item.layout_on(c))
+                    .scroll
+                    .is_some()
+                    && self.studio.scroll_paused(item.id, c)
+            })
+        };
+        [paused(Some(self.canvas)), paused(self.vertical_edits())]
+    }
+
     /// A source's stored settings as JSON values (`source.get_settings`).
     fn source_settings_json(
         &self,
@@ -11643,6 +11728,38 @@ impl Host {
             .set_source_glide(id, glide)
             .map_err(|e| Refusal::of(&e))?;
         self.history.record(EditKind::Glide, &name, 0, vec![undo]);
+        Ok(true)
+    }
+
+    /// Replaces a source's activity policy (ADR-0152). One undo step (recorded as a
+    /// settings change). A value the source's type does not allow is refused as
+    /// invalid; the same policy again changes nothing.
+    fn set_source_activity(
+        &mut self,
+        id: SourceId,
+        activity: rbs_scene::activity::SourceActivity,
+    ) -> Result<bool, Refusal> {
+        let source = self
+            .collection
+            .source(id)
+            .ok_or_else(|| Refusal::NotFound(format!("There is no source {}.", id.get())))?;
+        let traits = rbs_sources::activity_traits(&source.type_id);
+        if !traits.allows(&activity) {
+            return Err(Refusal::Invalid(format!(
+                "Source {} does not allow that activity.",
+                id.get()
+            )));
+        }
+        if source.activity == activity {
+            return Ok(false);
+        }
+        let name = source.name.clone();
+        let undo = self
+            .collection
+            .set_source_activity(id, activity)
+            .map_err(|e| Refusal::of(&e))?;
+        self.history
+            .record(EditKind::SourceSettings, &name, 0, vec![undo]);
         Ok(true)
     }
 
@@ -13644,6 +13761,7 @@ impl Host {
                     has_work_rect,
                     show_for_ms,
                     cue_remaining_ms,
+                    scroll_paused: self.scroll_paused_of(item),
                 }
             })
             .collect()
@@ -15584,6 +15702,50 @@ impl ApiTarget<'_> {
                 }
                 Ok(Response::Done(Empty {}))
             }
+            C::SourceSetActivity(p) => {
+                let activity = rbs_scene::activity::SourceActivity::new(
+                    p.run.map(activity_run),
+                    p.on_return.map(activity_return),
+                    p.linger_s,
+                );
+                if host
+                    .set_source_activity(SourceId::from_raw(p.source), activity)
+                    .map_err(|e| refused(&e))?
+                {
+                    host.apply(notify);
+                }
+                Ok(Response::Done(Empty {}))
+            }
+            C::SourceGetActivity(p) => {
+                let source = host
+                    .collection
+                    .source(SourceId::from_raw(p.source))
+                    .ok_or_else(|| {
+                        ApiError::new(
+                            ErrorKind::NotFound,
+                            format!("There is no source {}.", p.source),
+                        )
+                    })?;
+                let traits = rbs_sources::activity_traits(&source.type_id);
+                let saved = source.activity;
+                let effective = traits.effective(Some(&saved));
+                Ok(Response::SourceActivity(
+                    rbs_api::request::SourceActivityInfo {
+                        source: p.source,
+                        run: saved.run.map(api_run),
+                        on_return: saved.on_return.map(api_return),
+                        linger_s: saved.linger_s,
+                        effective: rbs_api::request::EffectiveActivity {
+                            run: api_run(effective.run),
+                            on_return: effective.on_return.map(api_return),
+                            linger_s: effective.linger_s,
+                        },
+                        supported: saved.is_default() || traits.allows(&saved),
+                        runs: traits.runs.iter().copied().map(api_run).collect(),
+                        on_returns: traits.on_returns.iter().copied().map(api_return).collect(),
+                    },
+                ))
+            }
             C::SourceGetChrome(p) => {
                 let source = host
                     .collection
@@ -17234,6 +17396,46 @@ fn in_scene(id: SourceId) -> rbs_api::request::SourceInScene {
         source: id.get(),
         scene: None,
         canvas: OutputCanvas::default(),
+    }
+}
+
+/// The control API's spelling of a `run` value (ADR-0152).
+fn api_run(r: rbs_scene::activity::Run) -> api::ActivityRun {
+    use rbs_scene::activity::Run;
+    match r {
+        Run::Placed => api::ActivityRun::Placed,
+        Run::Shown => api::ActivityRun::Shown,
+        _ => api::ActivityRun::OnAir,
+    }
+}
+
+/// The scene model's `run` value for the control API's spelling (ADR-0152).
+fn activity_run(r: api::ActivityRun) -> rbs_scene::activity::Run {
+    use rbs_scene::activity::Run;
+    match r {
+        api::ActivityRun::Placed => Run::Placed,
+        api::ActivityRun::Shown => Run::Shown,
+        api::ActivityRun::OnAir => Run::OnAir,
+    }
+}
+
+/// The control API's spelling of an `on_return` value (ADR-0152).
+fn api_return(o: rbs_scene::activity::OnReturn) -> api::ActivityReturn {
+    use rbs_scene::activity::OnReturn;
+    match o {
+        OnReturn::Continue => api::ActivityReturn::Continue,
+        OnReturn::Resume => api::ActivityReturn::Resume,
+        _ => api::ActivityReturn::Restart,
+    }
+}
+
+/// The scene model's `on_return` value for the control API's spelling (ADR-0152).
+fn activity_return(o: api::ActivityReturn) -> rbs_scene::activity::OnReturn {
+    use rbs_scene::activity::OnReturn;
+    match o {
+        api::ActivityReturn::Continue => OnReturn::Continue,
+        api::ActivityReturn::Resume => OnReturn::Resume,
+        api::ActivityReturn::Restart => OnReturn::Restart,
     }
 }
 

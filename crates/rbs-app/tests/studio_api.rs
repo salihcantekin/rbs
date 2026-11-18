@@ -801,6 +801,39 @@ fn a_control_api_client_adds_and_edits_a_text_source() {
     assert_eq!(list["result"]["data"][0]["kind"], "text", "{list}");
     assert_eq!(list["result"]["data"][0]["name"], "Text", "{list}");
 
+    // Source activity (ADR-0152, protocol 1.95): a text source runs while placed and
+    // has no return choice; a value it does not allow is refused, a linger is kept and
+    // an empty call resets.
+    let activity = c.call("source.get_activity", json!({"source": id}));
+    assert_eq!(
+        activity["result"],
+        json!({"source": id, "effective": {"run": "placed", "linger_s": 0},
+               "supported": true, "runs": ["placed"], "on_returns": []}),
+        "{activity}"
+    );
+    let refused = c.call(
+        "source.set_activity",
+        json!({"source": id, "run": "on_air"}),
+    );
+    assert_eq!(
+        refused["error"]["data"]["kind"], "invalid_params",
+        "{refused}"
+    );
+    let lingered = c.call("source.set_activity", json!({"source": id, "linger_s": 30}));
+    assert!(lingered["result"].is_object(), "{lingered}");
+    let activity = c.call("source.get_activity", json!({"source": id}));
+    assert_eq!(activity["result"]["linger_s"], 30, "{activity}");
+    assert_eq!(
+        activity["result"]["effective"]["linger_s"], 30,
+        "{activity}"
+    );
+    let reset = c.call("source.set_activity", json!({"source": id}));
+    assert!(reset["result"].is_object(), "{reset}");
+    let activity = c.call("source.get_activity", json!({"source": id}));
+    assert!(activity["result"].get("linger_s").is_none(), "{activity}");
+    let missing = c.call("source.get_activity", json!({"source": 999}));
+    assert_eq!(missing["error"]["data"]["kind"], "not_found", "{missing}");
+
     // `text` is only for a text source.
     let bad = c.call(
         "source.add",

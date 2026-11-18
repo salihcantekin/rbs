@@ -2739,6 +2739,120 @@ component CropFields inherits Section {
 }
 
 // The Transform tab: where the picture is on the canvas, its crop, shape and border.
+// Scroll (ADR-0150 decision 12): the picture moves through its box. The switch turns
+// it on at 100 px/s to the left; off keeps the values for the next on. Each change is
+// one undo step; Pause, Resume and Restart are live and act on the run every picture of
+// this item shares, the program's too.
+component ScrollFields inherits FeatureSection {
+    in property <SourceData> data;
+    title: @tr("Scroll");
+    id: "properties.scroll";
+    hint: @tr("Moves the picture through its box, like a news ticker. For a long text, turn on One line on the Text tab.");
+    on: data.scroll-on;
+    toggled(on) => { root.set(on, data.scroll-dir, data.scroll-speed, data.scroll-gap, data.scroll-repeat, data.scroll-start, data.scroll-fade, 0); }
+    function set(on: bool, dir: int, speed: float, gap: float, repeat: int, start: int, fade: float, gesture: int) {
+        Studio.set-source-scroll(data.id, on, dir, speed, gap, repeat, start, fade, gesture);
+    }
+    Field {
+        label: @tr("Direction");
+        SegmentedControl {
+            label: @tr("Scroll direction of {}", data.name);
+            options: [@tr("Left"), @tr("Right"), @tr("Up"), @tr("Down")];
+            index: data.scroll-dir;
+            enabled: data.scroll-on && !data.locked;
+            selected(i) => { if i != data.scroll-dir { root.set(true, i, data.scroll-speed, data.scroll-gap, data.scroll-repeat, data.scroll-start, data.scroll-fade, 0); } }
+        }
+    }
+    HorizontalLayout {
+        spacing: Tokens.size-field-gap;
+        Field {
+            horizontal-stretch: 1;
+            label: @tr("Speed");
+            NumberField {
+                label: @tr("Scroll speed of {} in pixels per second", data.name);
+                unit: @tr("px/s");
+                value: data.scroll-speed;
+                enabled: data.scroll-on && !data.locked;
+                edited(v) => { root.set(true, data.scroll-dir, max(1, min(4000, v)), data.scroll-gap, data.scroll-repeat, data.scroll-start, data.scroll-fade, self.gesture); }
+            }
+        }
+        Field {
+            horizontal-stretch: 1;
+            label: @tr("Gap");
+            NumberField {
+                label: @tr("Gap between copies of {} in pixels", data.name);
+                unit: @tr("px");
+                value: data.scroll-gap;
+                enabled: data.scroll-on && !data.locked;
+                edited(v) => { root.set(true, data.scroll-dir, data.scroll-speed, max(0, min(16384, v)), data.scroll-repeat, data.scroll-start, data.scroll-fade, self.gesture); }
+            }
+        }
+        Field {
+            horizontal-stretch: 1;
+            label: @tr("Edge fade");
+            NumberField {
+                label: @tr("Edge fade of {} in pixels", data.name);
+                unit: @tr("px");
+                value: data.scroll-fade;
+                enabled: data.scroll-on && !data.locked;
+                edited(v) => { root.set(true, data.scroll-dir, data.scroll-speed, data.scroll-gap, data.scroll-repeat, data.scroll-start, max(0, min(2048, v)), self.gesture); }
+            }
+        }
+    }
+    HorizontalLayout {
+        spacing: Tokens.size-field-gap;
+        Field {
+            horizontal-stretch: 1;
+            label: @tr("Repeat");
+            SegmentedControl {
+                label: @tr("Scroll repeat of {}", data.name);
+                options: [@tr("Loop"), @tr("Once")];
+                index: data.scroll-repeat;
+                enabled: data.scroll-on && !data.locked;
+                selected(i) => { if i != data.scroll-repeat { root.set(true, data.scroll-dir, data.scroll-speed, data.scroll-gap, i, data.scroll-start, data.scroll-fade, 0); } }
+            }
+        }
+        Field {
+            horizontal-stretch: 1;
+            label: @tr("Start");
+            SegmentedControl {
+                label: @tr("Where the scroll of {} starts", data.name);
+                options: [@tr("Inside"), @tr("Outside")];
+                index: data.scroll-start;
+                enabled: data.scroll-on && !data.locked;
+                selected(i) => { if i != data.scroll-start { root.set(true, data.scroll-dir, data.scroll-speed, data.scroll-gap, data.scroll-repeat, i, data.scroll-fade, 0); } }
+            }
+        }
+    }
+    HorizontalLayout {
+        spacing: Tokens.space-1;
+        alignment: start;
+        Button {
+            lead: data.scroll-paused ? IconName.play : IconName.pause;
+            text: data.scroll-paused ? @tr("Resume") : @tr("Pause");
+            kind: "secondary";
+            enabled: data.scroll-on;
+            accessible-name: data.scroll-paused ? @tr("Resume the scroll of {}", data.name) : @tr("Pause the scroll of {}", data.name);
+            clicked => { Studio.scroll-live(data.id, data.scroll-paused ? 1 : 0); }
+        }
+        Button {
+            lead: IconName.reset;
+            text: @tr("Restart");
+            kind: "secondary";
+            enabled: data.scroll-on;
+            accessible-name: @tr("Restart the scroll of {}", data.name);
+            clicked => { Studio.scroll-live(data.id, 2); }
+        }
+        VerticalLayout {
+            alignment: center;
+            InfoHint {
+                label: @tr("Pause and Restart");
+                text: @tr("Live, not undone. They also move the same scroll on the program.");
+            }
+        }
+    }
+}
+
 component TransformFields inherits VerticalLayout {
     in property <SourceData> data;
     spacing: Tokens.size-section-gap;
@@ -2796,7 +2910,9 @@ component TransformFields inherits VerticalLayout {
     if data.picture: ArrangeFields { data: data; }
     if data.picture: CropFields { data: data; }
     if data.picture: StyleFields { data: data; }
+    if data.picture: ScrollFields { data: data; }
 }
+
 
 // One filter in the chain: its on/off Checkbox named after it, then Move up, Move down
 // and Remove. A click on the row selects it, so its fields show below the list.
@@ -3867,6 +3983,24 @@ component TextFields inherits VerticalLayout {
             }
         }
     }
+    // One line (ADR-0150 decision 10): the picture is as wide as the text, for Scroll.
+    HorizontalLayout {
+        spacing: Tokens.space-1;
+        Toggle {
+            horizontal-stretch: 1;
+            text: @tr("One line");
+            label: @tr("One line for {}", data.name);
+            checked: t.single-line;
+            toggled(on) => { Studio.set-text-flag(t.id, "single_line", on); }
+        }
+        VerticalLayout {
+            alignment: center;
+            InfoHint {
+                label: @tr("One line");
+                text: @tr("Keeps the text on one line, as wide as the text. Use it with Scroll on the Transform tab.");
+            }
+        }
+    }
     // Effects: each kept while off; its switch draws it.
     FeatureSection {
         title: @tr("Outline");
@@ -4139,7 +4273,7 @@ component SourceProperties inherits VerticalLayout {
     // Filter settings show for the selected filter (an unknown type has none).
     property <bool> filter-open: data.selected-filter >= 0 && data.filters.length > 0;
     property <string> folds: (data.media ? "properties.playback," : "")
-        + (tab == 0 && data.picture ? "properties.position,properties.arrange,properties.crop,properties.shape," : "")
+        + (tab == 0 && data.picture ? "properties.position,properties.arrange,properties.crop,properties.shape,properties.scroll," : "")
         + (tab == 1 && root.filter-open ? "properties.filter-settings," : "")
         + (tab == 2 ? "properties.sound,properties.sync," : "")
         + (tab == 2 && !data.picture ? "properties.recording,properties.audio-filters," + (root.filter-open ? "properties.filter-settings," : "") : "")

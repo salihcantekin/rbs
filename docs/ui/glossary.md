@@ -52,6 +52,7 @@ UI text uses these terms and no synonyms (rule U13). Code may use different inte
 | Solo in monitor | While any source is soloed, the monitor plays only soloed sources; the outputs are unchanged | Cue, PFL | Monitor solo (session state) |
 | Shortcut | A key combination for a command; "global shortcut" when it works outside RBS | Hotkey | - |
 | Stinger | A transition that plays a video over the change | Video transition | Stinger transition node |
+| One line | A text source drawn on a single line as wide as its text, for Scroll (ADR-0150) | Single line, no wrap (in UI text) | `single_line` |
 | Scroll | A source's picture moving through its box, like a news ticker or end credits: direction, speed, gap between copies, repeat or once, edge fade (ADR-0150) | Marquee, crawl, ticker (in UI text) | `Layout::scroll` |
 | Output profile | A saved set of output settings (service, encoder, bitrate, recording format, output size). It holds no scenes and no panel layout | Profile, workspace | Output configuration |
 | Remote control | Letting other apps (Stream Deck, panels, scripts) control and watch RBS through the control API. Off by default | API server, WebSocket server | Control API server (`rbs-api`, `rbs-api-ws`) |

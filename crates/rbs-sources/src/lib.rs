@@ -56,7 +56,7 @@ pub use rbs_browser_ipc::control::Control as BrowserMessage;
 pub use registry::{
     AudioSource, InstanceContext, MonitorDevice, NodeTypeTable, PermissionRequest, SourceError,
     SourceInstance, SourceMode, SourcePicker, SourceTarget, SourceTypes, StillSource, TextSource,
-    VideoSource, apply_media_live, option_keys, validate_settings,
+    VideoSource, activity_traits, apply_media_live, option_keys, validate_settings,
 };
 pub use types::{SourceClass, class_of};
 
