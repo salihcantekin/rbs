@@ -8,9 +8,9 @@ mod common;
 
 use common::{assert_close, at, solid};
 use rbs_core::capability::CapabilityValue;
-use rbs_core::media::{ColorSpace, TextureId};
+use rbs_core::media::{ColorSpace, PixelFormat, TextureId};
 use rbs_gpu::context::{CAP_NV12_SURFACE, CAP_P010};
-use rbs_gpu::yuv_decode::decoded_desc;
+use rbs_gpu::yuv_decode::{DECODED_8BIT_FORMAT, decoded_desc};
 use rbs_gpu::{
     CanvasDesc, Compositor, GpuContext, GpuError, Layer, TextureDesc, TexturePool, YuvConverter,
     YuvDecoder, YuvFormat, YuvSource, readback, yuv,
@@ -66,7 +66,11 @@ fn round_trip(format: YuvFormat, tol: f32) {
     let mut dec = YuvDecoder::new(ctx);
     let luma = pool.acquire(ctx, &yuv::luma_desc(format, W, H)).unwrap();
     let chroma = pool.acquire(ctx, &yuv::chroma_desc(format, W, H)).unwrap();
-    let out = pool.acquire(ctx, &decoded_desc(W, H)).unwrap();
+    let pixel = match format {
+        YuvFormat::Nv12 => PixelFormat::Nv12,
+        YuvFormat::P010 => PixelFormat::P010,
+    };
+    let out = pool.acquire(ctx, &decoded_desc(W, H, pixel)).unwrap();
     for rgb in COLOURS {
         let canvas = canvas(ctx, &mut pool, rgb);
         conv.convert(ctx, &pool, canvas, luma, chroma).unwrap();
@@ -78,7 +82,7 @@ fn round_trip(format: YuvFormat, tol: f32) {
             out,
         )
         .unwrap();
-        let px = readback::read_rgba16f(ctx, &pool, out).unwrap();
+        let px = readback::read_linear(ctx, &pool, out).unwrap();
         for (x, y) in [(0, 0), (7, 3), (W - 1, H - 1)] {
             assert_close(at(&px, W, x, y), [rgb[0], rgb[1], rgb[2], 1.0], tol);
         }
@@ -99,7 +103,9 @@ fn srgb_full_range_round_trips() {
     let chroma = pool
         .acquire(ctx, &yuv::chroma_desc(YuvFormat::Nv12, W, H))
         .unwrap();
-    let out = pool.acquire(ctx, &decoded_desc(W, H)).unwrap();
+    let out = pool
+        .acquire(ctx, &decoded_desc(W, H, PixelFormat::Nv12))
+        .unwrap();
     for rgb in [
         [0.0_f32, 0.0, 0.0],
         [1.0, 1.0, 1.0],
@@ -116,7 +122,7 @@ fn srgb_full_range_round_trips() {
             out,
         )
         .unwrap();
-        let px = readback::read_rgba16f(ctx, &pool, out).unwrap();
+        let px = readback::read_linear(ctx, &pool, out).unwrap();
         assert_close(at(&px, W, 4, 2), [rgb[0], rgb[1], rgb[2], 1.0], 0.02);
     }
 }
@@ -148,7 +154,9 @@ fn full_range_and_bt601_codes() {
             &TextureDesc::source(W / 2, H / 2, wgpu::TextureFormat::Rg8Unorm),
         )
         .unwrap();
-    let out = pool.acquire(ctx, &decoded_desc(W, H)).unwrap();
+    let out = pool
+        .acquire(ctx, &decoded_desc(W, H, PixelFormat::Nv12))
+        .unwrap();
     // BT.601 full range red: Y' 76, Cb 85, Cr 255 (JPEG / webcam MJPEG levels).
     let fill = |id, w: u32, h: u32, texel: &[u8]| {
         let data: Vec<u8> = (0..w * h).flat_map(|_| texel.iter().copied()).collect();
@@ -170,7 +178,7 @@ fn full_range_and_bt601_codes() {
         out,
     )
     .unwrap();
-    let px = readback::read_rgba16f(ctx, &pool, out).unwrap();
+    let px = readback::read_linear(ctx, &pool, out).unwrap();
     assert_close(at(&px, W, 3, 3), [1.0, 0.0, 0.0, 1.0], 0.02);
 }
 
@@ -187,7 +195,9 @@ fn surface_source_matches_planes() {
     let mut desc = yuv::surface_desc(YuvFormat::Nv12, W, H);
     desc.usage |= wgpu::TextureUsages::TEXTURE_BINDING;
     let surface = pool.acquire(ctx, &desc).unwrap();
-    let out = pool.acquire(ctx, &decoded_desc(W, H)).unwrap();
+    let out = pool
+        .acquire(ctx, &decoded_desc(W, H, PixelFormat::Nv12))
+        .unwrap();
     let rgb = COLOURS[5];
     let canvas = canvas(ctx, &mut pool, rgb);
     conv.convert_to_surface(ctx, &pool, canvas, surface)
@@ -200,7 +210,7 @@ fn surface_source_matches_planes() {
         out,
     )
     .unwrap();
-    let px = readback::read_rgba16f(ctx, &pool, out).unwrap();
+    let px = readback::read_linear(ctx, &pool, out).unwrap();
     assert_close(at(&px, W, 5, 5), [rgb[0], rgb[1], rgb[2], 1.0], 0.02);
 }
 
@@ -216,12 +226,23 @@ fn wrong_targets_and_colour_spaces_are_rejected() {
         .acquire(ctx, &yuv::chroma_desc(YuvFormat::Nv12, W, H))
         .unwrap();
     let src = YuvSource::Planes { luma, chroma };
-    let small = pool.acquire(ctx, &decoded_desc(W / 2, H)).unwrap();
+    let small = pool
+        .acquire(ctx, &decoded_desc(W / 2, H, PixelFormat::Nv12))
+        .unwrap();
     assert!(matches!(
         dec.decode(ctx, &pool, src, ColorSpace::BT709_LIMITED, small),
         Err(GpuError::TargetMismatch(_))
     ));
-    let out = pool.acquire(ctx, &decoded_desc(W, H)).unwrap();
+    // 8-bit planes into a canvas-format (16-bit) target: not the NV12 output format.
+    let wide = pool.acquire(ctx, &TextureDesc::canvas(W, H)).unwrap();
+    assert!(matches!(
+        dec.decode(ctx, &pool, src, ColorSpace::BT709_LIMITED, wide),
+        Err(GpuError::TargetMismatch(_))
+    ));
+    let out = pool
+        .acquire(ctx, &decoded_desc(W, H, PixelFormat::Nv12))
+        .unwrap();
+    assert_eq!(pool.get(out).unwrap().desc().format, DECODED_8BIT_FORMAT);
     assert!(matches!(
         dec.decode(ctx, &pool, src, ColorSpace::BT2100_PQ, out),
         Err(GpuError::Unsupported(_))
@@ -247,7 +268,9 @@ fn released_planes_leave_the_cache() {
     let Some(ctx) = common::gpu() else { return };
     let mut pool = TexturePool::new();
     let mut dec = YuvDecoder::new(ctx);
-    let out = pool.acquire(ctx, &decoded_desc(W, H)).unwrap();
+    let out = pool
+        .acquire(ctx, &decoded_desc(W, H, PixelFormat::Nv12))
+        .unwrap();
     let planes = |pool: &mut TexturePool| {
         let luma = pool
             .acquire(ctx, &yuv::luma_desc(YuvFormat::Nv12, W, H))

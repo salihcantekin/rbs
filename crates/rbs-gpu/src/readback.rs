@@ -176,6 +176,37 @@ pub fn read_rgba16f(
         .collect())
 }
 
+/// Reads a texture as linear `f32` texels: `Rgba16Float` as stored, `Rgba8UnormSrgb`
+/// decoded from sRGB as a sample of it would be (alpha as stored). Test and tool use.
+pub fn read_linear(
+    ctx: &GpuContext,
+    pool: &TexturePool,
+    id: TextureId,
+) -> Result<Vec<[f32; 4]>, GpuError> {
+    match pool.get(id).map(|t| t.desc().format) {
+        Some(wgpu::TextureFormat::Rgba8UnormSrgb) => {
+            let bytes = read_bytes(ctx, pool, id)?;
+            Ok(bytes
+                .chunks_exact(4)
+                .map(|t| {
+                    let c = |v: u8| srgb_to_linear(f32::from(v) / 255.0);
+                    [c(t[0]), c(t[1]), c(t[2]), f32::from(t[3]) / 255.0]
+                })
+                .collect())
+        }
+        _ => read_rgba16f(ctx, pool, id),
+    }
+}
+
+/// The sRGB EOTF (IEC 61966-2-1), as GPU sRGB views apply it.
+pub fn srgb_to_linear(v: f32) -> f32 {
+    if v <= 0.04045 {
+        v / 12.92
+    } else {
+        ((v + 0.055) / 1.055).powf(2.4)
+    }
+}
+
 /// Converts an IEEE 754 half-precision value to `f32`.
 pub fn f16_to_f32(h: u16) -> f32 {
     let sign = if h & 0x8000 != 0 { -1.0 } else { 1.0 };

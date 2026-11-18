@@ -21,7 +21,9 @@ use rbs_core::media::{FramePayload, PixelFormat, SystemFrame, VideoFormat, Video
 use crate::context::GpuContext;
 use crate::error::GpuError;
 use crate::pool::{TextureDesc, TexturePool};
-use crate::yuv_decode::{YuvDecoder, YuvSource, check_color, decoded_color, decoded_desc};
+use crate::yuv_decode::{
+    YuvDecoder, YuvSource, check_color, decoded_color, decoded_desc, decoded_pixel_format,
+};
 use rbs_core::media::TextureId;
 
 /// Plane textures kept for 4:2:0 frames of one size.
@@ -154,7 +156,7 @@ impl SourceUpload {
                 if self.decoder.is_none() {
                     self.decoder = Some(YuvDecoder::new(ctx));
                 }
-                ring(ctx, pool, &decoded_desc(w, h))
+                ring(ctx, pool, &decoded_desc(w, h, format.pixel_format))
             }
             pf => match rgb_format(pf) {
                 Some(f) => ring(ctx, pool, &rgb_desc(w, h, f)),
@@ -188,7 +190,7 @@ impl SourceUpload {
                 write_plane(ctx, pool, system, 0, planes.luma)?;
                 write_plane(ctx, pool, system, 1, planes.chroma)?;
                 let decoder = self.decoder.get_or_insert_with(|| YuvDecoder::new(ctx));
-                let target = pool.acquire(ctx, &decoded_desc(w, h))?;
+                let target = pool.acquire(ctx, &decoded_desc(w, h, format.pixel_format))?;
                 let decoded = decoder
                     .decode(
                         ctx,
@@ -203,7 +205,7 @@ impl SourceUpload {
                     .and_then(|_| {
                         let rgb = VideoFormat::new(
                             format.size,
-                            PixelFormat::Rgba16Float,
+                            decoded_pixel_format(format.pixel_format),
                             decoded_color(format.color),
                         );
                         pool.frame(target, rgb, frame.timestamp())

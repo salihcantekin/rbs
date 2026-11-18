@@ -220,11 +220,11 @@ fn upload_decodes_nv12_to_linear_rgb() {
     );
     let mut up = SourceUpload::new();
     let out = up.upload(ctx, &mut pool, frame).unwrap();
-    assert_eq!(out.format().pixel_format, PixelFormat::Rgba16Float);
+    assert_eq!(out.format().pixel_format, PixelFormat::Rgba8Srgb);
     let FramePayload::Texture(id) = *out.payload() else {
         panic!("not a texture");
     };
-    let px = readback::read_rgba16f(ctx, &pool, id).unwrap();
+    let px = readback::read_linear(ctx, &pool, id).unwrap();
     let g = px[0][0];
     assert_close(px[0], [g, g, g, 1.0], 0.01);
     assert!(g > 0.1 && g < 0.4, "grey {g}");

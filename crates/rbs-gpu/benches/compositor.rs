@@ -182,7 +182,10 @@ fn bench(c: &mut Criterion) {
     // Source decode (camera / native NV12 import): planes back to a canvas-format texture.
     let mut decoder = rbs_gpu::YuvDecoder::new(&ctx);
     let decoded = pool
-        .acquire(&ctx, &rbs_gpu::yuv_decode::decoded_desc(W, H))
+        .acquire(
+            &ctx,
+            &rbs_gpu::yuv_decode::decoded_desc(W, H, rbs_core::media::PixelFormat::Nv12),
+        )
         .expect("decoded");
     group.bench_function("nv12_decode", |b| {
         b.iter(|| {
@@ -195,6 +198,45 @@ fn bench(c: &mut Criterion) {
                     decoded,
                 )
                 .expect("decode");
+            ctx.wait_idle().expect("wait");
+        });
+    });
+    // Four 1080p NV12 cameras decoded and drawn as 2x2 tiles, then converted for the
+    // encoder: what a camera scene costs per frame. The decoded textures are what the
+    // compositor reads (perf audit R-11).
+    let cams: Vec<_> = (0..4)
+        .map(|_| {
+            pool.acquire(
+                &ctx,
+                &rbs_gpu::yuv_decode::decoded_desc(W, H, rbs_core::media::PixelFormat::Nv12),
+            )
+            .expect("decoded camera")
+        })
+        .collect();
+    let tiles: Vec<Layer> = cams
+        .iter()
+        .enumerate()
+        .map(|(i, &id)| {
+            let (x, y) = ((i % 2) as f32 * 960.0, (i / 2) as f32 * 540.0);
+            Layer::new(id, x, y, 960.0, 540.0)
+        })
+        .collect();
+    group.bench_function("nv12_cameras_4", |b| {
+        b.iter(|| {
+            for &id in &cams {
+                decoder
+                    .decode(
+                        &ctx,
+                        &pool,
+                        rbs_gpu::YuvSource::Planes { luma, chroma },
+                        rbs_core::media::ColorSpace::BT709_LIMITED,
+                        id,
+                    )
+                    .expect("decode");
+            }
+            comp.render(&ctx, &pool, &tiles, canvas).expect("render");
+            conv.convert(&ctx, &pool, canvas, luma, chroma)
+                .expect("convert");
             ctx.wait_idle().expect("wait");
         });
     });
