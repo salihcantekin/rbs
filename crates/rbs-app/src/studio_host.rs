@@ -6117,6 +6117,8 @@ impl Host {
             self.canvas_changed(self.api_canvas(), notify);
             return Err(why);
         }
+        // The pages of the collection before go: their Interact windows close.
+        self.close_all_interacts(notify);
         let before = self.api_canvas();
         let loaded = next.clone();
         let mut next = next;
@@ -17467,6 +17469,58 @@ fn in_scene(id: SourceId) -> rbs_api::request::SourceInScene {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[allow(clippy::unwrap_used)] // Tests fail by panicking.
+    #[test]
+    fn browser_input_from_the_api_is_checked_and_becomes_wire_events() {
+        use rbs_api::request::{BrowserInputEvent as E, BrowserModifiers, BrowserMouseButton};
+        use rbs_browser_ipc::input::{self as wire, InputEvent, Key, NamedKey};
+        let shift = BrowserModifiers {
+            shift: true,
+            ..BrowserModifiers::default()
+        };
+        let click = |clicks| E::Button {
+            x: 3,
+            y: 4,
+            button: BrowserMouseButton::Right,
+            down: true,
+            clicks,
+            modifiers: shift,
+        };
+        assert_eq!(
+            browser_input_event(&click(2)).unwrap(),
+            InputEvent::Button {
+                x: 3,
+                y: 4,
+                button: wire::Button::Right,
+                down: true,
+                clicks: 2,
+                modifiers: wire::SHIFT,
+            }
+        );
+        assert!(browser_input_event(&click(0)).is_err());
+        assert!(browser_input_event(&click(4)).is_err());
+        let key = |name: &str| E::Key {
+            key: name.to_owned(),
+            down: true,
+            modifiers: BrowserModifiers::default(),
+        };
+        assert_eq!(
+            browser_input_event(&key("Enter")).unwrap(),
+            InputEvent::Key {
+                key: Key::Named(NamedKey::Enter),
+                down: true,
+                modifiers: 0,
+            }
+        );
+        assert!(browser_input_event(&key("NoSuchKey")).is_err());
+        let text = |t: String| E::Text { text: t };
+        assert_eq!(
+            browser_input_event(&text("hi".into())).unwrap(),
+            InputEvent::Text("hi".into())
+        );
+        assert!(browser_input_event(&text("x".repeat(257))).is_err());
+    }
 
     /// At idle the control thread sleeps up to a quarter second; anything that is
     /// checked each round keeps the short sleep (perf audit G-05).

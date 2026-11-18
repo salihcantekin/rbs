@@ -323,6 +323,9 @@ pub struct StudioUi {
     browser_rows: std::collections::BTreeMap<i32, (rbs_scene::model::Settings, browser_props::Run)>,
     /// A file page whose Page tab shows Web address until an address is typed.
     browser_web: Option<i32>,
+    /// The script the Page tab last saved, so Run now right after the field saved it
+    /// as it lost focus does not save it twice.
+    script_sent: Option<(i32, String)>,
     /// Moving and resizing on the picture panel (ADR-0048).
     edit: PreviewEdit,
     /// The selection as marks, panel coordinates; and as the toolkit draws them.
@@ -704,6 +707,7 @@ impl StudioUi {
             focus_browser: None,
             browser_rows: std::collections::BTreeMap::new(),
             browser_web: None,
+            script_sent: None,
             edit: PreviewEdit::default(),
             mark_buf: Vec::with_capacity(MAX_MARKS),
             marks: Rc::new(VecModel::default()),
@@ -5340,6 +5344,9 @@ impl StudioUi {
     /// A text setting of the Page tab (`url`, `css`, `script`).
     pub fn set_browser_value(&mut self, id: i32, key: &str, value: &str) {
         let patch = browser_props::value_patch(key, value);
+        if key == rbs_sources::types::keys::SCRIPT {
+            self.script_sent = Some((id, value.to_owned()));
+        }
         if key == rbs_sources::types::keys::URL && !patch.is_empty() {
             self.browser_web = None;
         }
@@ -5390,19 +5397,68 @@ impl StudioUi {
         }
     }
 
-    /// Run now on the Page tab (ADR-0149 decision 3): the saved script, once.
-    pub fn browser_run_script(&mut self, id: i32) {
-        if self.browser_rows.contains_key(&id) {
+    /// Run now on the Page tab (ADR-0149 decision 3): the script as typed, saved
+    /// first when it changed (a live setting, so the page does not restart), then run
+    /// once. The field may have saved it already as it lost focus to the button.
+    pub fn browser_run_script(&mut self, id: i32, script: &str) {
+        let Some((settings, _)) = self.browser_rows.get(&id) else {
+            return;
+        };
+        if script.trim().is_empty() {
+            return;
+        }
+        let stored = matches!(
+            settings.get(rbs_sources::types::keys::SCRIPT),
+            Some(rbs_scene::model::SettingValue::Text(t)) if t == script
+        );
+        let sent = self
+            .script_sent
+            .as_ref()
+            .is_some_and(|(at, s)| *at == id && s == script);
+        if !stored && !sent {
+            self.set_browser_value(id, rbs_sources::types::keys::SCRIPT, script);
+        }
+        {
             self.send(Command::BrowserControl {
                 id: SourceId::from_raw(id as u32),
-                message: Control::RunScript(None),
+                message: Control::RunScript(Some(script.to_owned())),
             });
         }
     }
 
     /// Interact… on the Page tab (ADR-0132 decision 6).
+    /// Opens the page's Interact window, or brings it to the front when it is open;
+    /// the window opens once the studio answers.
     pub fn browser_interact(&mut self, id: i32) {
-        let _ = id;
+        if !self.browser_rows.contains_key(&id) {
+            return;
+        }
+        let source = SourceId::from_raw(id as u32);
+        if crate::interact::is_open(source) {
+            crate::interact::raise(source);
+        } else {
+            self.send(Command::OpenInteract(source));
+        }
+    }
+
+    /// What the Interact window of `source` shows: its name, page size and why the
+    /// page does not run. `None` once it is no browser source.
+    pub fn interact_view(&self, source: SourceId) -> Option<crate::interact::View> {
+        let id = source.get() as i32;
+        if !self.browser_rows.contains_key(&id) {
+            return None;
+        }
+        let name = self.rows.iter().find(|r| r.id == source)?.name.clone();
+        let data = self.browser_data(id);
+        Some(crate::interact::View {
+            title: format!("Interact – {name}"),
+            page: (
+                u32::try_from(data.width).unwrap_or(1),
+                u32::try_from(data.height).unwrap_or(1),
+            ),
+            state: data.state,
+            status: data.status.to_string(),
+        })
     }
 
     /// Forget sign-in on the Page tab, after its question (ADR-0132 decision 10): the
@@ -6404,6 +6460,11 @@ impl StudioUi {
             Update::Projector { id, picture, state } => {
                 out.projectors.push((id, picture, state));
             }
+            Update::Interact {
+                source,
+                picture,
+                state,
+            } => out.interacts.push((source, picture, state)),
             Update::Media(ticks) => {
                 self.media_ticks = ticks;
                 self.apply_media_ticks();
@@ -7551,6 +7612,13 @@ pub struct Applied {
         u32,
         Option<rbs_gpu::share::PreviewEndpoint>,
         rbs_app::studio_host::ProjectorState,
+    )>,
+    /// Interact window news (ADR-0132 decision 6): a source, its picture and its
+    /// state, for the shell's Interact windows.
+    pub interacts: Vec<(
+        SourceId,
+        Option<rbs_gpu::share::PreviewEndpoint>,
+        rbs_app::studio_host::InteractState,
     )>,
 }
 

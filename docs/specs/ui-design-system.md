@@ -574,6 +574,17 @@ A projector ([ADR-0125](../adr/0125-projector-windows.md)) shows the program of 
 - **Waiting and limits.** A projector of the vertical canvas has no window while there is no vertical canvas and opens again when it comes back; the workspace keeps it. The studio host refuses a fifth projector, or one past the surface budget ("Too many projectors are open. Close one first."); the workspace then drops it and the error bar says why.
 - **Zero cost.** With no projector open nothing runs: no window, layer, thread, timer or picture. An open projector costs one canvas-size picture per frame, also while its window is covered or put away by the OS.
 
+### Interact window
+
+An Interact window ([ADR-0132](../adr/0132-browser-engine-css-interaction.md) decision 6) shows one browser page in a window of its own, to log in to it, click a button on it or scroll it while it stays on air. Code: `rbs-app` `interact.rs` (the window, layer and input), `studio_host/interact.rs` (its picture), `ui/interact.slint`.
+
+- **Opening.** Interact… on the Page tab (Properties and the Source settings window), enabled while the page runs or is hidden. Opening it again brings the window to the front. Two at most: a third is refused with "Two pages can be interacted with at a time. Close one first." in the error bar. A window closes when its source is deleted ("That page is gone.") or another scene collection opens.
+- **Window.** An ordinary window with the system's title bar, titled "Interact – <source name>", opened at the page's size in logical pixels; any size after that. Its background is `Theme.projector-backdrop`; the page's picture is a native layer over the whole window in the page's shape (as a projector).
+- **Why it does not run.** While the browser engine is missing, no page slot is free or the page failed, the layer hides and a `SettingsCallout` in the middle (`space.6` around it) says why with the Page tab's words: "Browser engine not installed" with Open Add-ons (`primary`, dense), "No page slot free", or "The page did not load" with the reason. Nothing is sent to the page then.
+- **Input.** Only while the window has focus: pointer moves, buttons (with double and triple clicks), the wheel, keys and typed text go to the page, mapped through the letterbox to page pixels; a point outside the page goes to its nearest edge. No key is a shortcut in this window: Escape goes to the page; the window closes with its close button. Text is never logged.
+- **Cost.** While it is open the page is held at Shown and takes a page slot, and the studio makes one page-size picture per frame. With no window open nothing runs.
+- **Forget sign-in** (Page tab, under Keep me signed in) asks inline first: "Forget the sign-in? The page opens again signed out." with Forget (`danger`, dense) and Keep. Another source, or turning the switch off, closes the question.
+
 ## Core flows (contract for U1)
 
 Interactions are counted as defined in the UI principles. "Max" is the limit for the whole flow with default choices. The table also holds two U21 flows (switch workspace, hide a panel), marked as such, held to the same counting.

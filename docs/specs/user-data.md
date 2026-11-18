@@ -37,7 +37,7 @@ Out of scope, later changes: workspaces (ADR-0017 and ADR-0049, owned by `rbs-ui
 
 Add-ons (ADR-0145) are not in this folder: they are machine data of this computer, kept under `%LOCALAPPDATA%\RBS\add-ons`, `~/Library/Application Support/RBS/add-ons` or `$XDG_DATA_HOME/rbs/add-ons` (default `~/.local/share/rbs/add-ons`), one directory per add-on id and version with the `.complete` marker written last ([add-ons spec](add-ons.md#storage)). They are never part of a profile or collection and never exported, imported or synced; removing the folder only makes the add-ons not installed.
 
-Signed-in browser profiles (ADR-0132 decision 10) are machine data too: `browser-profiles/<profile_id>/` beside `add-ons` (the parent of that folder), one directory per browser source with `keep_signed_in`, created private to the user by the runner and kept across runs. They are never exported, imported or synced; a collection carries only the id. Forget sign-in and the startup sweep of unreferenced profiles are not built yet.
+Signed-in browser profiles (ADR-0132 decision 10) are machine data too: `browser-profiles/<profile_id>/` beside `add-ons` (the parent of that folder), one directory per browser source with `keep_signed_in`, created private to the user by the runner and kept across runs. They are never exported, imported or synced; a collection carries only the id. Forget sign-in deletes the source's directory once its page has let go; at app start the directories no saved collection names are deleted, and the sweep is skipped when any collection cannot be read (`rbs-app` `browser_profiles`).
 
 `current()` returns an unset selection and the reason when `current.toml` cannot be read; an id that names no entry is treated as unset by the caller.
 

@@ -272,7 +272,7 @@ export component BrowserFields inherits VerticalLayout {
         }
         Field {
             label: @tr("Script");
-            TextArea {
+            script := TextArea {
                 label: @tr("JavaScript for {}", root.name);
                 text: b.script;
                 lines: 4;
@@ -305,8 +305,9 @@ export component BrowserFields inherits VerticalLayout {
                 text: @tr("Run now");
                 accessible-name: @tr("Run the script of {} now", root.name);
                 dense: true;
-                enabled: b.running && b.script != "";
-                clicked => { Studio.browser-run-script(b.id); }
+                // The text as typed: Run now saves it (no restart, ADR-0149) and runs it.
+                enabled: b.running && script.text != "";
+                clicked => { Studio.browser-run-script(b.id, script.text); }
             }
         }
     }

@@ -1,0 +1,53 @@
+// An Interact window (ADR-0132 decision 6): one browser page in a window of its own,
+// to log in, click or scroll it. The picture is a native layer the shell places over
+// the whole window in the page's shape; around it is the backdrop. While the page
+// cannot run, the shell hides the layer and the window says why, with the action that
+// fixes it (U9). It has no menu, so it needs no OverlayHost.
+
+import { Theme, Tokens } from "tokens.slint";
+import { Button } from "components.slint";
+import { SettingsCallout } from "settings.slint";
+import { IconName } from "base/types.slint";
+
+export component InteractWindow inherits Window {
+    // "Interact – <source name>": the OS lists the window by it.
+    in property <string> window-title;
+    // Why the page does not run, as the Page tab's `state` (types.slint `BrowserData`):
+    // 0 runs, 1 no browser engine, 2 no page slot, 3 failed (`status` says why).
+    in property <int> state;
+    in property <string> status;
+    // Open Add-ons, for a missing browser engine.
+    callback open-engine();
+    title: root.window-title;
+    background: Theme.projector-backdrop;
+    icon: @image-url("../assets/brand/icon-win-256.png");
+    if root.state >= 1 && root.state <= 3: VerticalLayout {
+        alignment: center;
+        padding: Tokens.space-6;
+        SettingsCallout {
+            label: root.state == 1 ? @tr("Browser engine not installed")
+                : root.state == 2 ? @tr("No page slot free")
+                : @tr("The page did not load");
+            Text {
+                text: root.state == 1
+                    ? @tr("Pages need the browser engine. Install it once in Settings › Add-ons.")
+                    : root.state == 2
+                    ? @tr("Two pages already run. This page starts when one of them is hidden.")
+                    : root.status;
+                color: Theme.text-primary;
+                font-size: Tokens.type-body-size;
+                wrap: word-wrap;
+            }
+            if root.state == 1: HorizontalLayout {
+                alignment: start;
+                Button {
+                    lead: IconName.gear;
+                    text: @tr("Open Add-ons");
+                    kind: "primary";
+                    dense: true;
+                    clicked => { root.open-engine(); }
+                }
+            }
+        }
+    }
+}

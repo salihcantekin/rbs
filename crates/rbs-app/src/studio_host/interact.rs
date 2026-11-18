@@ -24,7 +24,8 @@ pub enum InteractState {
     /// window shows why (the source's own reason).
     Open,
     /// Closed by the studio, with the reason to tell the user (the source is gone,
-    /// or too many are open). The UI closes the window.
+    /// or too many are open); empty when there is nothing to tell (another scene
+    /// collection). The UI closes the window.
     Closed(String),
 }
 
@@ -99,6 +100,20 @@ impl Host {
                 .studio
                 .remove_picture(running, &self.adapters.sources, picture);
             self.waiting = self.studio.waiting();
+        }
+    }
+
+    /// Closes every Interact window (another scene collection): the UI closes them
+    /// without a message.
+    pub(super) fn close_all_interacts(&mut self, notify: &dyn Fn(Update)) {
+        let open: Vec<SourceId> = self.interacts.iter().map(|r| r.source).collect();
+        for source in open {
+            self.close_interact(source);
+            notify(Update::Interact {
+                source,
+                picture: None,
+                state: InteractState::Closed(String::new()),
+            });
         }
     }
 

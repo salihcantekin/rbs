@@ -13,7 +13,7 @@
 macro_rules! reexport {
     ($types:ident, $main:ident, $settings:ident, $dialogs:ident) => {
         pub use $dialogs::{
-            AttributesWindow, ObsImportWindow, ProjectorWindow, SourceSettingsWindow,
+            AttributesWindow, InteractWindow, ObsImportWindow, ProjectorWindow, SourceSettingsWindow,
             SyncMeasureWindow,
         };
         pub use $main::{FloatWindow, MainWindow};

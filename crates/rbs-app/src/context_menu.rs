@@ -256,7 +256,7 @@ mod tests {
                 let uses_menus = ["CommandMenu", "Select", "PropertiesPanel"]
                     .iter()
                     .any(|w| body.contains(w));
-                if name == "ProjectorWindow" || (name.ends_with("Probe") && !uses_menus) {
+                if name == "ProjectorWindow" || name == "InteractWindow" || (name.ends_with("Probe") && !uses_menus) {
                     continue;
                 }
                 assert!(

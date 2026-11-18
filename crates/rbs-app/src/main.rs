@@ -23,6 +23,7 @@ mod config;
 mod context_menu;
 mod entry;
 mod icons;
+mod interact;
 mod look;
 mod measure_ui;
 mod menu_bar;
@@ -1924,6 +1925,34 @@ impl Ctx {
                     _ => projector::picture(canvas, picture),
                 }
             }
+            for (source, picture, state) in applied.interacts {
+                match state {
+                    studio_host::InteractState::Closed(why) => {
+                        interact::close(source);
+                        if !why.is_empty() {
+                            app.show_error(UiError::Other(why));
+                        }
+                    }
+                    studio_host::InteractState::Open => {
+                        if !interact::is_open(source)
+                            && let Some(view) = app.studio.interact_view(source)
+                        {
+                            ctx.open_interact(source, view);
+                        }
+                        interact::picture(source, picture);
+                    }
+                }
+            }
+            // An open Interact window follows its source: name, page size, reason.
+            for source in interact::open_sources() {
+                match app.studio.interact_view(source) {
+                    Some(view) => interact::set_view(source, view),
+                    None => {
+                        interact::close(source);
+                        app.studio.send(studio_host::Command::CloseInteract(source));
+                    }
+                }
+            }
             if applied.obs_imported == Some(true) {
                 shortcuts_page::load(&ctx, app);
             }
@@ -3125,6 +3154,15 @@ impl Ctx {
         app.host_projectors = open;
     }
 
+    /// Opens the Interact window of `source` with the look of the app.
+    fn open_interact(&self, source: rbs_scene::model::SourceId, view: interact::View) {
+        let look = self.look.borrow();
+        let make = |w: &ui::InteractWindow| {
+            look::apply(&w.global::<Theme>(), &w.global::<Tokens>(), look.as_ref());
+        };
+        interact::open(source, view, &make);
+    }
+
     fn sync_floats(&self, app: &mut App) {
         let ws = app.session.workspace();
         let wanted: Vec<(usize, Vec<PanelId>)> = ws
@@ -4253,6 +4291,7 @@ fn close_preview() {
     #[cfg(any(target_os = "macos", windows))]
     preview::close();
     projector::drop_pictures();
+    interact::drop_pictures();
 }
 
 /// Sections that start closed (ADR-0078): the workspace lists them when the user
@@ -5369,8 +5408,8 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_browser_reload, |app, id: i32, bypass: bool| {
         app.studio.browser_reload(id, bypass);
     });
-    on!(on_browser_run_script, |app, id: i32| {
-        app.studio.browser_run_script(id);
+    on!(on_browser_run_script, |app, id: i32, script: slint::SharedString| {
+        app.studio.browser_run_script(id, script.as_str());
     });
     on!(on_browser_interact, |app, id: i32| {
         app.studio.browser_interact(id);
@@ -6132,6 +6171,25 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
         let c = ctx.clone();
         projector::install(move |e| c.update(move |app| app.projector_event(e)));
     }
+    {
+        let c = ctx.clone();
+        interact::install(move |e| {
+            c.update(move |app| match e {
+                interact::Event::Close(source) => {
+                    interact::close(source);
+                    app.studio
+                        .send(studio_host::Command::CloseInteract(source));
+                }
+                interact::Event::Input(source, event) => {
+                    app.studio
+                        .send(studio_host::Command::InteractInput { source, event });
+                }
+                interact::Event::OpenEngine => {
+                    app.studio.open_add_on = Some(rbs_app::add_ons::BROWSER_ENGINE.to_owned());
+                }
+            });
+        });
+    }
     install_picker(&main.global::<Overlays>(), &ctx);
     install_name_prompt(&main.global::<Overlays>(), &ctx);
     install_vertical_prompt(&main.global::<Overlays>(), &ctx);
@@ -6376,6 +6434,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
     #[cfg(any(target_os = "macos", windows))]
     preview::close();
     projector::close_all();
+    interact::close_all();
     if let Ok(mut app) = ctx.app.try_borrow_mut() {
         if app.save_due {
             app.persist_now();
