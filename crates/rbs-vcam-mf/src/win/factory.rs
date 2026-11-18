@@ -354,6 +354,10 @@ impl VirtualCameraSession for MfSession {
             self.handoff.counters(),
         )))
     }
+
+    fn consumer_present(&self) -> bool {
+        self.handoff.consumer_present()
+    }
 }
 
 impl Drop for MfSession {

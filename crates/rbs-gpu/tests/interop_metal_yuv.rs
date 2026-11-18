@@ -76,12 +76,16 @@ fn round_trip(format: YuvFormat, tol: f32) {
         let native = exported(ctx, &pool, &mut exporter, canvas, n);
         assert_eq!(native.format().pixel_format, format.pixel_format());
         let imported = importer.import(ctx, &mut pool, native).unwrap();
-        assert_eq!(imported.format().pixel_format, PixelFormat::Rgba16Float);
+        let decoded = match format {
+            YuvFormat::Nv12 => PixelFormat::Rgba8Srgb,
+            YuvFormat::P010 => PixelFormat::Rgba16Float,
+        };
+        assert_eq!(imported.format().pixel_format, decoded);
         assert_eq!(imported.sequence(), n);
         let FramePayload::Texture(id) = *imported.payload() else {
             panic!("import must return a texture frame");
         };
-        let px = readback::read_rgba16f(ctx, &pool, id).unwrap();
+        let px = readback::read_linear(ctx, &pool, id).unwrap();
         assert_close(at(&px, W, 4, 4), RED, tol);
         assert_close(at(&px, W, W - 5, H - 5), GREY, tol);
 
@@ -127,6 +131,6 @@ fn decoded_frame_outlives_the_surface_lease() {
     let FramePayload::Texture(id) = *imported.payload() else {
         panic!("texture frame");
     };
-    let px = readback::read_rgba16f(ctx, &pool, id).unwrap();
+    let px = readback::read_linear(ctx, &pool, id).unwrap();
     assert_close(at(&px, W, 4, 4), RED, 0.02);
 }

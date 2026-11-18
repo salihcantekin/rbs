@@ -6,7 +6,8 @@
 //! Each iteration renders one 1080p frame, converts it to NV12 and waits for the GPU,
 //! so the numbers are frame time on the adapter in use. On software adapters (CI)
 //! this is CPU-bound and only useful for relative comparisons against `main`.
-//! Prints a skip message and measures nothing when no adapter exists.
+//! Prints a skip message and measures nothing when no adapter exists. Set
+//! `RBS_BENCH_POWER=low` to prefer the integrated adapter.
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use rbs_gpu::{
@@ -18,9 +19,14 @@ const W: u32 = 1920;
 const H: u32 = 1080;
 
 fn bench(c: &mut Criterion) {
+    // `RBS_BENCH_POWER=low` measures on the integrated GPU of a hybrid machine.
+    let power = match std::env::var("RBS_BENCH_POWER").as_deref() {
+        Ok("low") => rbs_gpu::context::PowerPreference::LowPower,
+        _ => rbs_gpu::context::PowerPreference::HighPerformance,
+    };
     let ctx = match GpuContext::new(&GpuRequest {
         allow_software: true,
-        ..GpuRequest::default()
+        power,
     }) {
         Ok(ctx) => ctx,
         Err(e) => {
@@ -182,7 +188,10 @@ fn bench(c: &mut Criterion) {
     // Source decode (camera / native NV12 import): planes back to a canvas-format texture.
     let mut decoder = rbs_gpu::YuvDecoder::new(&ctx);
     let decoded = pool
-        .acquire(&ctx, &rbs_gpu::yuv_decode::decoded_desc(W, H))
+        .acquire(
+            &ctx,
+            &rbs_gpu::yuv_decode::decoded_desc(W, H, rbs_core::media::PixelFormat::Nv12),
+        )
         .expect("decoded");
     group.bench_function("nv12_decode", |b| {
         b.iter(|| {
@@ -198,7 +207,53 @@ fn bench(c: &mut Criterion) {
             ctx.wait_idle().expect("wait");
         });
     });
-    if let Ok(surface) = pool.acquire(&ctx, &yuv::surface_desc(YuvFormat::Nv12, W, H)) {
+    // Four 1080p NV12 cameras decoded and drawn as 2x2 tiles, then converted for the
+    // encoder: what a camera scene costs per frame. The decoded textures are what the
+    // compositor reads (perf audit R-11).
+    let cams: Vec<_> = (0..4)
+        .map(|_| {
+            pool.acquire(
+                &ctx,
+                &rbs_gpu::yuv_decode::decoded_desc(W, H, rbs_core::media::PixelFormat::Nv12),
+            )
+            .expect("decoded camera")
+        })
+        .collect();
+    let tiles: Vec<Layer> = cams
+        .iter()
+        .enumerate()
+        .map(|(i, &id)| {
+            let (x, y) = ((i % 2) as f32 * 960.0, (i / 2) as f32 * 540.0);
+            Layer::new(id, x, y, 960.0, 540.0)
+        })
+        .collect();
+    group.bench_function("nv12_cameras_4", |b| {
+        b.iter(|| {
+            for &id in &cams {
+                decoder
+                    .decode(
+                        &ctx,
+                        &pool,
+                        rbs_gpu::YuvSource::Planes { luma, chroma },
+                        rbs_core::media::ColorSpace::BT709_LIMITED,
+                        id,
+                    )
+                    .expect("decode");
+            }
+            comp.render(&ctx, &pool, &tiles, canvas).expect("render");
+            conv.convert(&ctx, &pool, canvas, luma, chroma)
+                .expect("convert");
+            ctx.wait_idle().expect("wait");
+        });
+    });
+    let has = |key: &rbs_core::capability::CapabilityKey| {
+        ctx.capabilities().get(key) == Some(&rbs_core::capability::CapabilityValue::Flag(true))
+    };
+    // The one-texture NV12 surface, where the device has it (Metal does not).
+    if has(&rbs_gpu::context::CAP_NV12_SURFACE) {
+        let surface = pool
+            .acquire(&ctx, &yuv::surface_desc(YuvFormat::Nv12, W, H))
+            .expect("nv12 surface");
         group.bench_function("nv12_surface", |b| {
             b.iter(|| {
                 conv.convert_to_surface(&ctx, &pool, canvas, surface)
@@ -208,9 +263,6 @@ fn bench(c: &mut Criterion) {
         });
     }
     // P010 conversion alone, where the device has 16-bit normalized targets.
-    let has = |key: &rbs_core::capability::CapabilityKey| {
-        ctx.capabilities().get(key) == Some(&rbs_core::capability::CapabilityValue::Flag(true))
-    };
     if has(&rbs_gpu::context::CAP_P010) {
         let mut p010 = YuvConverter::new(&ctx, YuvFormat::P010, W, H).expect("p010");
         let luma = pool

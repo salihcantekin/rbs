@@ -263,8 +263,8 @@ impl VirtualCameraNode {
     pub fn session_stats(&self) -> VcamStats;
 }
 pub struct VirtualCameraNodeStats {                   // relaxed atomics
-    pub sent: AtomicU64, pub consumer_busy: AtomicU64, pub busy: AtomicU64,
-    pub lost: AtomicU64, pub refused: AtomicU64, pub failed: AtomicU64,
+    pub sent: AtomicU64, pub consumer_busy: AtomicU64, pub no_reader: AtomicU64,
+    pub busy: AtomicU64, pub lost: AtomicU64, pub refused: AtomicU64, pub failed: AtomicU64,
     pub repeated: AtomicU64,                          // unchanged canvas sent again (R-03)
 }
 ```
@@ -274,7 +274,7 @@ Render partition, `GpuRuntime`, not essential. The session is opened by the stud
 | Call | Does |
 | --- | --- |
 | `prepare` | Refuses anything but NV12 (`Failed`). Creates `YuvDownload::scaled` from the canvas size to the camera size with `CAMERA_BUFFERS` frame buffers; resets the cadence. Equal sizes stay the 1:1 `textureLoad` path. A different size uses the ADR-0102 kernel (box, Catmull-Rom or the existing bilinear) on ADR-0066's fitted rectangle |
-| `process` | 1. `take_ready`: each submission that ended this tick (delivered, stale, no buffer, failed) gives its reserved token back in submission order; the delivered frame goes to `session.send` with the last one (`sent`, or `refused` when `send` errs), the others are dropped and free their slots (`lost`). 2. The newest canvas is taken only when a camera frame is due on `Cadence::frames(first tick time, camera rate)` (index at or before the tick's time past the last one taken; tick time, because an unchanged canvas keeps its own time, R-03): a 60 fps canvas feeds a 30 fps camera every other tick, a slower canvas every tick. 3. A due frame first reserves a session slot; none free skips it before any GPU work (`consumer_busy`). Then `submit_at` with the tick's time, or, for the canvas converted last, `submit_repeat` (no GPU work; only a conversion the ring took is repeated later, and a lost readback makes the next one convert again; an older canvas converted again takes a new sequence); a full staging ring (`busy`) or a failed conversion (`failed`) drops the token. Always returns `Ok` |
+| `process` | 1. `take_ready`: each submission that ended this tick (delivered, stale, no buffer, failed) gives its reserved token back in submission order; the delivered frame goes to `session.send` with the last one (`sent`, or `refused` when `send` errs), the others are dropped and free their slots (`lost`). 2. The newest canvas is taken only when a camera frame is due on `Cadence::frames(first tick time, camera rate)` (index at or before the tick's time past the last one taken; tick time, because an unchanged canvas keeps its own time, R-03): a 60 fps canvas feeds a 30 fps camera every other tick, a slower canvas every tick. 3. A due frame is skipped before any GPU work while `session.consumer_present()` is `false`: no app reads the camera, so nothing is converted, read back or copied (`no_reader`; audit R-02). Otherwise it first reserves a session slot; none free skips it before any GPU work (`consumer_busy`). Then `submit_at` with the tick's time, or, for the canvas converted last, `submit_repeat` (no GPU work; only a conversion the ring took is repeated later, and a lost readback makes the next one convert again; an older canvas converted again takes a new sequence); a full staging ring (`busy`) or a failed conversion (`failed`) drops the token. Always returns `Ok` |
 | `release` | Counts readbacks still in flight in `lost`, drops the download and the tokens |
 
 Invariants:
