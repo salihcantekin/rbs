@@ -452,6 +452,9 @@ pub struct SourceRow {
     pub show_for_ms: u32,
     /// Milliseconds left on a running Show cue; 0 when none.
     pub cue_remaining_ms: u32,
+    /// A live pause holds the item's scroll run on the main canvas, then on the
+    /// vertical one (ADR-0150 decision 12: Properties shows Resume).
+    pub scroll_paused: [bool; 2],
     /// Which feeds are marked to record separately, and the picture's form
     /// (ADR-0086, ADR-0117).
     pub record_separately: RecordSeparately,
@@ -566,6 +569,7 @@ impl PartialEq for SourceRow {
             && self.has_work_rect == other.has_work_rect
             && self.show_for_ms == other.show_for_ms
             && self.cue_remaining_ms == other.cue_remaining_ms
+            && self.scroll_paused == other.scroll_paused
             && match (&self.meter, &other.meter) {
                 (Some(a), Some(b)) => Arc::ptr_eq(a, b),
                 (None, None) => true,
@@ -1281,6 +1285,29 @@ pub enum Command {
         /// The canvas whose layout changes: the vertical canvas's own layout only while
         /// it shows the scene being edited (ADR-0093 decision 4).
         canvas: OutputCanvas,
+    },
+    /// Sets or clears the scroll of a video source's picture (ADR-0150) on the layout
+    /// the canvas shows; refused with [`Update::Error`] when out of range.
+    SetSourceScroll {
+        /// Edits with the same number other than 0 that follow each other are one undo
+        /// step (one field drag); 0 is a step of its own.
+        gesture: u64,
+        /// The source.
+        id: SourceId,
+        /// The scroll, or `None` to stop scrolling.
+        scroll: Option<Scroll>,
+        /// The canvas whose layout changes, as for [`Command::SetSourceStyle`].
+        canvas: OutputCanvas,
+    },
+    /// A live call on a source's scroll run (ADR-0150 decision 11): not saved, not
+    /// undone.
+    ScrollLive {
+        /// The source.
+        id: SourceId,
+        /// The canvas whose run it acts on.
+        canvas: OutputCanvas,
+        /// Pause, resume, restart or a speed.
+        control: ScrollControl,
     },
     /// Start recording the program ([`Update::Recording`] says how it went).
     StartRecording(RecordRequest),
@@ -5357,6 +5384,49 @@ impl Host {
                 match edit {
                     Ok(true) => self.apply(notify),
                     Ok(false) => {}
+                    Err(e) => notify(Update::Error(e)),
+                }
+            }
+            Command::SetSourceScroll {
+                gesture,
+                id,
+                scroll,
+                canvas,
+            } => {
+                let edit = if scroll.is_some_and(|s| !s.is_valid()) {
+                    Err(SCROLL_ERROR.to_owned())
+                } else {
+                    self.item_of(id)
+                        .map(|(_, item)| item.id)
+                        .and_then(|item| self.set_item_scroll(item, scroll, gesture, canvas))
+                };
+                match edit {
+                    Ok(true) => self.apply(notify),
+                    Ok(false) => {}
+                    Err(e) => notify(Update::Error(e)),
+                }
+            }
+            Command::ScrollLive {
+                id,
+                canvas,
+                control,
+            } => {
+                let target = self.item_of(id).map(|(_, item)| item.id).and_then(|item| {
+                    self.edit_canvas(canvas)
+                        .map(|c| (item, c))
+                        .map_err(|e| e.text().to_owned())
+                });
+                match target {
+                    Ok((item, c)) => match self.studio.scroll_control(item, c, control) {
+                        Ok(_) => self.publish(notify),
+                        Err(ScrollRefused::NoScroll) => notify(Update::Error(
+                            "This source does not scroll on that canvas.".into(),
+                        )),
+                        Err(_) => notify(Update::Error(
+                            "This source is not on a scene a canvas shows, so its scroll is not running."
+                                .into(),
+                        )),
+                    },
                     Err(e) => notify(Update::Error(e)),
                 }
             }
@@ -11141,6 +11211,20 @@ impl Host {
         )
     }
 
+    /// Whether a live pause holds `item`'s scroll on the main and the vertical canvas.
+    fn scroll_paused_of(&self, item: &SceneItem) -> [bool; 2] {
+        let paused = |canvas: Option<CanvasId>| {
+            canvas.is_some_and(|c| {
+                self.collection
+                    .placed_layout(c, item.layout_on(c))
+                    .scroll
+                    .is_some()
+                    && self.studio.scroll_paused(item.id, c)
+            })
+        };
+        [paused(Some(self.canvas)), paused(self.vertical_edits())]
+    }
+
     /// A source's stored settings as JSON values (`source.get_settings`).
     fn source_settings_json(
         &self,
@@ -13642,6 +13726,7 @@ impl Host {
                     has_work_rect,
                     show_for_ms,
                     cue_remaining_ms,
+                    scroll_paused: self.scroll_paused_of(item),
                 }
             })
             .collect()

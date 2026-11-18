@@ -102,6 +102,7 @@ pub fn text_data(id: i32, settings: &Settings) -> TextData {
         size: b.size,
         bold: b.weight >= 600,
         italic: b.italic,
+        single_line: parsed.single_line,
         swatch: swatch(&color),
         color: color.into(),
         align: match b.align {
