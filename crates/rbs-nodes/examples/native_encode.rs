@@ -1,11 +1,14 @@
-//! Measures the encode path of one 1080p60 H.264 chain on macOS with system memory (GPU
-//! readback, CPU copy into VideoToolbox's pool) and with native input (exported
-//! IOSurfaces, no copy; ADR-0147): synthetic capture -> compositor -> video export ->
-//! VideoToolbox encoder node -> sink, ticked at 60 fps in real time.
+//! Measures the encode path of one 1080p60 H.264 chain with system memory (GPU readback,
+//! CPU copy into the encoder's input) and with native input (no copy; ADR-0147):
+//! synthetic capture -> compositor -> video export -> encoder node -> sink, ticked at
+//! 60 fps in real time. macOS: VideoToolbox reads exported IOSurfaces. Windows: NVENC
+//! reads exported D3D12 buffers through CUDA (the render device must be the NVIDIA GPU).
 //!
 //! Prints per mode: render-thread time per tick (mean, p95), process CPU time (user +
-//! system, which includes VideoToolbox's own threads), frames and drops. A hardware
-//! measurement (P15, ADR-0147), not a test.
+//! system, which includes the encoder's own threads), frames and drops, and a hash of the
+//! encoded stream. The synthetic picture depends only on the tick, so with no drops in
+//! either mode equal hashes mean the encoder read the same pixels from the exported
+//! surface as from the readback. A hardware measurement (P15, ADR-0147), not a test.
 //!
 //! ```text
 //! cargo run -p rbs-nodes --example native_encode --release -- [seconds per mode, default 5]
@@ -16,26 +19,27 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)] // A hardware check fails by panicking.
 
-#[cfg(not(target_vendor = "apple"))]
+#[cfg(not(any(target_vendor = "apple", windows)))]
 fn main() {
-    eprintln!("native_encode: this example measures VideoToolbox; run it on macOS.");
+    eprintln!(
+        "native_encode: this example measures VideoToolbox or NVENC; run it on macOS or Windows."
+    );
 }
 
-#[cfg(target_vendor = "apple")]
+#[cfg(any(target_vendor = "apple", windows))]
 fn main() {
-    mac::run();
+    hw::run();
 }
 
-#[cfg(target_vendor = "apple")]
-mod mac {
-    use std::sync::Arc;
-    use std::sync::atomic::Ordering;
+#[cfg(any(target_vendor = "apple", windows))]
+mod hw {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
     use rbs_capture::{CaptureRequest, TargetId};
     use rbs_capture_test::TestCaptureFactory;
-    use rbs_codec::{RateControl, VideoEncoderConfig};
-    use rbs_codec_videotoolbox::VideoToolboxFactory;
+    use rbs_codec::{RateControl, VideoEncoderConfig, VideoEncoderFactory};
     use rbs_core::lifecycle::Lifecycle;
     use rbs_core::media::{CodecId, MemoryKind, PixelFormat};
     use rbs_core::time::{TestClock, Timestamp};
@@ -53,22 +57,72 @@ mod mac {
     const W: u32 = 1920;
     const H: u32 = 1080;
 
-    /// Takes the encoder's packets and lets them go.
-    struct Sink(NodeDescriptor);
+    /// The encoder of this platform.
+    #[cfg(target_vendor = "apple")]
+    fn factory() -> Arc<dyn VideoEncoderFactory> {
+        Arc::new(rbs_codec_videotoolbox::VideoToolboxFactory::new())
+    }
+
+    /// The encoder of this platform.
+    #[cfg(windows)]
+    fn factory() -> Arc<dyn VideoEncoderFactory> {
+        Arc::new(rbs_codec_nvenc::NvencFactory::new())
+    }
+
+    /// Hashes the encoder's packets (FNV-1a over the bytes) and lets them go. It runs in
+    /// the tick, the same work in both modes.
+    struct Sink {
+        descriptor: NodeDescriptor,
+        hash: Arc<Mutex<(u64, u64)>>,
+    }
 
     impl Node<GpuRuntime> for Sink {
         fn descriptor(&self) -> &NodeDescriptor {
-            &self.0
+            &self.descriptor
         }
         fn prepare(&mut self, _: &mut PrepareCtx<'_, GpuRuntime>) -> Result<(), NodeError> {
             Ok(())
         }
-        fn process(&mut self, _: &mut ProcessCtx<'_, GpuRuntime>) -> Result<(), NodeError> {
+        fn process(&mut self, ctx: &mut ProcessCtx<'_, GpuRuntime>) -> Result<(), NodeError> {
+            let mut state = self.hash.lock().unwrap();
+            for p in ctx.inputs().packets(0) {
+                for b in p.data().iter() {
+                    state.0 = (state.0 ^ u64::from(*b)).wrapping_mul(0x100_0000_01b3);
+                }
+                state.1 += 1;
+            }
             Ok(())
         }
         fn release(&mut self, _: &mut PrepareCtx<'_, GpuRuntime>) {}
     }
 
+    #[cfg(windows)]
+    fn cpu_time() -> Duration {
+        use windows::Win32::Foundation::FILETIME;
+        use windows::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
+        let (mut create, mut exit, mut kernel, mut user) = (
+            FILETIME::default(),
+            FILETIME::default(),
+            FILETIME::default(),
+            FILETIME::default(),
+        );
+        // SAFETY: GetProcessTimes fills the four FILETIMEs it is given for our own process.
+        unsafe {
+            GetProcessTimes(
+                GetCurrentProcess(),
+                &mut create,
+                &mut exit,
+                &mut kernel,
+                &mut user,
+            )
+        }
+        .expect("GetProcessTimes");
+        let ticks = |t: FILETIME| (u64::from(t.dwHighDateTime) << 32) | u64::from(t.dwLowDateTime);
+        // 100 ns units.
+        Duration::from_nanos((ticks(kernel) + ticks(user)) * 100)
+    }
+
+    #[cfg(target_vendor = "apple")]
     fn cpu_time() -> Duration {
         // SAFETY: `getrusage` writes into the zeroed struct we pass and reads nothing else.
         let usage = unsafe {
@@ -137,8 +191,7 @@ mod mac {
             config = config.with_device(device);
             config.memory = kind;
         }
-        let factory = Arc::new(VideoToolboxFactory::new());
-        let encoder = VideoEncoderNode::open(factory, config).expect("VideoToolbox refused");
+        let encoder = VideoEncoderNode::open(factory(), config).expect("the encoder refused");
         let export = if native {
             export.native(NativeExport {
                 encoder_frames: encoder.frames_held(),
@@ -151,16 +204,21 @@ mod mac {
         let encoder_stats = encoder.stats();
         let export = add(&mut graph, &mut ctl, Box::new(export));
         let encoder = add(&mut graph, &mut ctl, Box::new(encoder));
+        let hash = Arc::new(Mutex::new((0xcbf2_9ce4_8422_2325_u64, 0_u64)));
         let sink = add(
             &mut graph,
             &mut ctl,
-            Box::new(Sink(NodeDescriptor::new(
-                NodeTypeId::new_static("org.rbs.example.sink"),
-                NodeKind::Output,
-                vec![Pin::one("packets", LinkKind::Packets)],
-                vec![],
-            ))),
+            Box::new(Sink {
+                descriptor: NodeDescriptor::new(
+                    NodeTypeId::new_static("org.rbs.example.sink"),
+                    NodeKind::Output,
+                    vec![Pin::one("packets", LinkKind::Packets)],
+                    vec![],
+                ),
+                hash: Arc::clone(&hash),
+            }),
         );
+        let copies = Arc::new(AtomicU64::new(ctx.metrics().frames_cpu_copied()));
         graph.connect(capture, "video", comp, "layers").unwrap();
         graph.connect(comp, "canvas", export, "canvas").unwrap();
         graph.connect(export, "video", encoder, "video").unwrap();
@@ -196,6 +254,7 @@ mod mac {
             }
         }
         let cpu = cpu_time() - cpu_start;
+        let copied = ctx.metrics().frames_cpu_copied() - copies.load(Ordering::Relaxed);
         times.sort_unstable();
         let mean = times.iter().sum::<Duration>() / times.len() as u32;
         let p95 = times[times.len() * 95 / 100];
@@ -215,6 +274,8 @@ mod mac {
             encoder_stats.busy_drops.load(Ordering::Relaxed),
             encoder_stats.refused.load(Ordering::Relaxed),
         );
+        let (h, n) = *hash.lock().unwrap();
+        println!("        stream hash {h:016x} over {n} packets, CPU readbacks {copied}");
         // Nodes go first; the exporters' lease owners are dropped after them (ADR-0147
         // decision 8).
         drop(exec);
@@ -228,6 +289,8 @@ mod mac {
             .and_then(|s| s.parse().ok())
             .unwrap_or(5);
         let ctx = Arc::new(GpuContext::new(&GpuRequest::default()).expect("no GPU"));
+        let info = ctx.adapter().get_info();
+        println!("render device: {} ({:?})", info.name, info.backend);
         println!(
             "1080p60 H.264 CBR 8 Mbit/s, synthetic window, {seconds} s per mode after 1 s warm-up"
         );

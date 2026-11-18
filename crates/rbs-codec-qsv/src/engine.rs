@@ -430,6 +430,7 @@ pub(crate) fn probe() -> Result<DeviceCaps, String> {
     Ok(DeviceCaps {
         name: device.name.clone(),
         codecs,
+        native_memory: Vec::new(),
     })
 }
 

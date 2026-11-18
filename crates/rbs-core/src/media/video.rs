@@ -421,6 +421,10 @@ pub enum MemoryKind {
     Metal,
     /// Linux DMA-BUF file descriptors.
     DmaBuf,
+    /// A shared Direct3D 12 linear buffer holding the planes one after another
+    /// ([`NativeSurface::D3dSharedBuffer`], ADR-0147 decision 1). Native encoders that
+    /// read linear device memory (NVENC through CUDA) take it.
+    D3d12Buffer,
 }
 
 impl MemoryKind {
@@ -434,6 +438,7 @@ impl MemoryKind {
             MemoryKind::Vulkan => "vulkan",
             MemoryKind::Metal => "metal",
             MemoryKind::DmaBuf => "dmabuf",
+            MemoryKind::D3d12Buffer => "d3d12_buffer",
         }
     }
 }
@@ -580,6 +585,21 @@ pub enum NativeSurface {
         /// LUID of the adapter the resource lives on; must match the engine adapter.
         adapter_luid: u64,
     },
+    /// Windows: a shared Direct3D 12 buffer (an NT handle from `CreateSharedHandle` on a
+    /// committed buffer in a shared heap) holding a 4:2:0 frame as linear planes, laid out
+    /// like a system frame (ADR-0147 decision 6).
+    #[non_exhaustive]
+    D3dSharedBuffer {
+        /// The NT handle value.
+        handle: u64,
+        /// Size of the resource's allocation in bytes (what an importer such as
+        /// `cuImportExternalMemory` asks for).
+        size: u64,
+        /// LUID of the adapter the buffer lives on.
+        adapter_luid: u64,
+        /// Offset and stride of the luma and the interleaved chroma plane.
+        planes: [PlaneLayout; 2],
+    },
     /// macOS: an `IOSurfaceRef`.
     #[non_exhaustive]
     IoSurface {
@@ -626,6 +646,21 @@ impl NativeSurface {
         }
     }
 
+    /// A shared Direct3D 12 buffer with the luma and chroma planes at `planes`.
+    pub const fn d3d_shared_buffer(
+        handle: u64,
+        size: u64,
+        adapter_luid: u64,
+        planes: [PlaneLayout; 2],
+    ) -> Self {
+        Self::D3dSharedBuffer {
+            handle,
+            size,
+            adapter_luid,
+            planes,
+        }
+    }
+
     /// An IOSurface.
     pub const fn io_surface(surface: usize) -> Self {
         Self::IoSurface { surface }
@@ -648,6 +683,7 @@ impl NativeSurface {
                 D3dApi::D3d12 => MemoryKind::D3d12,
             },
             NativeSurface::D3d12Resource { .. } => MemoryKind::D3d12,
+            NativeSurface::D3dSharedBuffer { .. } => MemoryKind::D3d12Buffer,
             NativeSurface::IoSurface { .. } | NativeSurface::MetalTexture { .. } => {
                 MemoryKind::Metal
             }
@@ -1308,6 +1344,36 @@ mod tests {
         assert_eq!((s, sync), (surface, SurfaceSync::Ready));
         drop(lease);
         assert_eq!(owner.count(3), 0);
+    }
+
+    #[test]
+    fn shared_d3d12_buffers_are_their_own_memory_kind() {
+        let planes = [
+            PlaneLayout {
+                offset: 0,
+                stride: 2048,
+            },
+            PlaneLayout {
+                offset: 2048 * 1080,
+                stride: 2048,
+            },
+        ];
+        let surface = NativeSurface::d3d_shared_buffer(0x40, 4 << 20, 7, planes);
+        assert_eq!(surface.memory_kind(), MemoryKind::D3d12Buffer);
+        assert_eq!(MemoryKind::D3d12Buffer.as_str(), "d3d12_buffer");
+        let owner = Arc::new(CountingOwner::default());
+        // SAFETY: test only; the handle is never opened.
+        let frame = unsafe {
+            VideoFrame::exported(
+                nv12_1080p(),
+                Timestamp::from_nanos(1),
+                surface,
+                SurfaceSync::timeline_fence(0x44, 3),
+                owner.lease(1),
+            )
+        };
+        assert_eq!(frame.memory_kind(), MemoryKind::D3d12Buffer);
+        assert!(frame.share().is_some());
     }
 
     #[test]

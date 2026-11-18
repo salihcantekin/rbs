@@ -643,26 +643,29 @@ export component RecordingSettings inherits Rectangle {
     changed folder-serial => { folder.text = Studio.out-folder; }
 }
 
-// One destination in the Destinations card: Use on Go live, its name and what it is
-// (service, protocol, key, encoding), and its edit button (ADR-0127 decision 17).
+// One destination in the Destinations card: its place in the list, its name and what
+// it is (service, protocol, key, encoding), its edit button, for every destination but
+// the first its remove button, and at the end Use on Go live (ADR-0127 decisions 1
+// and 17). Every destination that is on streams at once; the number is the list's
+// order.
 component DestinationItem inherits Rectangle {
     in property <DestinationRow> dest;
+    in property <int> number;
     in property <bool> divider: true;
     in property <bool> editable: true;
+    callback remove-asked();
     min-height: Tokens.size-control-lg + Tokens.space-3;
     if root.divider: Rectangle { y: 0; height: Tokens.size-border; background: Theme.border-subtle; }
     HorizontalLayout {
         spacing: Tokens.space-3;
-        VerticalLayout {
-            alignment: center;
+        Text {
+            text: root.number;
+            color: root.dest.on ? Theme.text-secondary : Theme.text-disabled;
+            font-size: Tokens.type-caption-size;
+            font-weight: Tokens.type-label-weight;
+            vertical-alignment: center;
             horizontal-stretch: 0;
-            Toggle {
-                label: @tr("Use {} on Go live", root.dest.name);
-                checked: root.dest.on;
-                enabled: root.editable;
-                horizontal-stretch: 0;
-                toggled(on) => { Studio.dest-set-enabled(root.dest.id, on); }
-            }
+            accessible-role: none;
         }
         VerticalLayout {
             alignment: center;
@@ -676,8 +679,8 @@ component DestinationItem inherits Rectangle {
                 accessible-role: none;
             }
             Text {
-                text: root.dest.note;
-                color: root.dest.warn ? Theme.state-warning : Theme.text-secondary;
+                text: root.dest.on ? root.dest.note : @tr("Skipped on Go live · {}", root.dest.note);
+                color: root.dest.warn && root.dest.on ? Theme.state-warning : Theme.text-secondary;
                 font-size: Tokens.type-caption-size;
                 overflow: elide;
                 accessible-role: none;
@@ -690,6 +693,28 @@ component DestinationItem inherits Rectangle {
                 name: @tr("Edit {}", root.dest.name);
                 enabled: root.editable;
                 clicked => { Studio.dest-edit(root.dest.id); }
+            }
+        }
+        // The first destination has no Remove; its place stays so the buttons line up.
+        VerticalLayout {
+            alignment: center;
+            IconButton {
+                visible: root.dest.removable;
+                icon: IconName.trash;
+                name: @tr("Remove {}", root.dest.name);
+                enabled: root.editable && root.dest.removable;
+                clicked => { root.remove-asked(); }
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 0;
+            Toggle {
+                label: @tr("Use {} on Go live", root.dest.name);
+                checked: root.dest.on;
+                enabled: root.editable;
+                horizontal-stretch: 0;
+                toggled(on) => { Studio.dest-set-enabled(root.dest.id, on); }
             }
         }
     }
@@ -837,25 +862,49 @@ component DestinationEditor inherits Rectangle {
 // a time, inline under the list.
 component DestinationsCard inherits SettingsCard {
     in property <bool> idle;
+    // A row's Remove asks first. -1 while none does.
+    property <int> confirm-id: -1;
+    property <bool> noted: Studio.st-dest-upload != "" || Studio.st-dest-warnings != "";
     title: @tr("Destinations");
     id: "settings.stream.destinations";
-    for row[i] in Studio.st-dests: DestinationItem {
-        dest: row;
-        divider: i > 0;
-        editable: Studio.st-dest-editable && !Studio.st-ed-open;
+    if Studio.st-dest-together != "": Text {
+        text: Studio.st-dest-together;
+        color: Theme.text-secondary;
+        font-size: Tokens.type-caption-size;
+        wrap: word-wrap;
+    }
+    for row[i] in Studio.st-dests: VerticalLayout {
+        DestinationItem {
+            dest: row;
+            number: i + 1;
+            divider: i > 0;
+            editable: Studio.st-dest-editable && !Studio.st-ed-open && root.confirm-id == -1;
+            remove-asked => { root.confirm-id = row.id; }
+        }
+        if root.confirm-id == row.id: SettingsCallout {
+            label: @tr("Remove {}?", row.name);
+            Text {
+                text: @tr("Remove {}? Its saved stream key is deleted too.", row.name);
+                color: Theme.text-primary;
+                font-size: Tokens.type-body-size;
+                wrap: word-wrap;
+            }
+            DialogActions {
+                dense: true;
+                confirm-text: @tr("Remove");
+                confirm-kind: "danger";
+                cancelled => { root.confirm-id = -1; }
+                confirmed => { root.confirm-id = -1; Studio.dest-remove-id(row.id); }
+            }
+        }
     }
     if Studio.st-ed-open: DestinationEditor { }
+    // The count, then Add destination at the row's end.
     if !Studio.st-ed-open: HorizontalLayout {
         padding-top: Tokens.space-2;
+        // Room between the button and the notes under it.
+        padding-bottom: root.noted ? Tokens.space-3 : 0;
         spacing: Tokens.space-3;
-        Button {
-            lead: IconName.plus;
-            text: @tr("Add destination");
-            kind: "secondary";
-            horizontal-stretch: 0;
-            enabled: Studio.st-dest-can-add;
-            clicked => { Studio.dest-add(); }
-        }
         Text {
             text: Studio.st-dest-count;
             color: Theme.text-secondary;
@@ -864,6 +913,14 @@ component DestinationsCard inherits SettingsCard {
             accessible-role: none;
         }
         Rectangle { horizontal-stretch: 1; }
+        Button {
+            lead: IconName.plus;
+            text: @tr("Add destination");
+            kind: "secondary";
+            horizontal-stretch: 0;
+            enabled: Studio.st-dest-can-add;
+            clicked => { Studio.dest-add(); }
+        }
     }
     if Studio.st-dest-upload != "": SettingsNotice { text: Studio.st-dest-upload; }
     if Studio.st-dest-warnings != "": SettingsNotice { text: Studio.st-dest-warnings; problem: true; }

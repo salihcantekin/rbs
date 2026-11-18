@@ -168,7 +168,7 @@ pub fn rate_control(rc: &RateControl) -> Result<Rc, String> {
 /// Validates `config` against `device` and maps it.
 ///
 /// Refused as `Unsupported`: a codec the device does not encode, input memory other
-/// than system, a pixel format other than NV12 (or P010 with 10-bit HEVC), odd or
+/// than system or a native kind of the device (which also needs `config.device`), a pixel format other than NV12 (or P010 with 10-bit HEVC), odd or
 /// out-of-range sizes, a profile the device does not have, a rate-control mode the
 /// device does not have (`cbr_padded` needs it on every codec, as declared), and
 /// colours without H.273 code points. Refused as `InvalidConfig`: invalid bitrates or
@@ -181,7 +181,17 @@ pub fn plan(config: &VideoEncoderConfig, device: &DeviceCaps) -> Result<Plan, Cr
         .codec(codec)
         .ok_or_else(|| unsupported(format!("codec {codec} on {}", device.name)))?;
     if config.memory != MemoryKind::System {
-        return Err(unsupported(format!("input memory {}", config.memory)));
+        // A native kind the device reads in place, on a named GPU (ADR-0147 decision 1);
+        // the adapter checks that the GPU is its own.
+        if !device.native_memory.contains(&config.memory) {
+            return Err(unsupported(format!("input memory {}", config.memory)));
+        }
+        if config.device.is_none() {
+            return Err(unsupported(format!(
+                "input memory {} without a device",
+                config.memory
+            )));
+        }
     }
     let ten_bit = match config.format.pixel_format {
         PixelFormat::Nv12 => false,
@@ -368,6 +378,21 @@ mod tests {
         let mut gpu = config(CodecId::H264, PixelFormat::Nv12);
         gpu.memory = MemoryKind::D3d12;
         assert!(matches!(refused(gpu), CreateError::Unsupported { .. }));
+        // A native kind the device lists: accepted with a device, refused without.
+        let mut native = discrete_gpu();
+        native.native_memory = vec![MemoryKind::D3d12Buffer];
+        let mut buffer = config(CodecId::H264, PixelFormat::Nv12);
+        buffer.memory = MemoryKind::D3d12Buffer;
+        assert!(matches!(
+            plan(&buffer, &native),
+            Err(CreateError::Unsupported { .. })
+        ));
+        let buffer = buffer.with_device(rbs_core::media::GpuDeviceId::Luid([1; 8]));
+        assert!(plan(&buffer, &native).is_ok());
+        assert!(matches!(
+            plan(&buffer, &discrete_gpu()),
+            Err(CreateError::Unsupported { .. })
+        ));
         let mut rgb = config(CodecId::H264, PixelFormat::Nv12);
         rgb.format.color = ColorSpace::SRGB;
         assert!(matches!(refused(rgb), CreateError::Unsupported { .. }));

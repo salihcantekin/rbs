@@ -23,7 +23,8 @@
 //!
 //! Limits shared by every hardware adapter for now: H.264, HEVC and AV1 Main
 //! (8-bit; a device lists AV1 only when its probe finds it), system-memory input
-//! only (native surfaces come with the `rbs-gpu` exporters, ADR-0025), no B-frames.
+//! only unless an adapter lists a native kind (ADR-0147: the session then takes exported
+//! frames and the engine reads them in place), no B-frames.
 
 pub mod copy;
 pub mod device;
@@ -47,4 +48,6 @@ pub struct SessionStats {
     /// Frames encoded from a slot that already held their picture, without a copy
     /// (ADR-0146). Counted like `copied`: a refused frame counts each time.
     pub reused: u64,
+    /// Exported native frames the encoder read in place, without a copy (ADR-0147).
+    pub native: u64,
 }
