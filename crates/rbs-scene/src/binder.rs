@@ -27,7 +27,7 @@ use std::sync::Arc;
 
 use rbs_core::lifecycle::Lifecycle;
 
-use crate::activity::{ActivityTraits, Level};
+use crate::activity::{ActivityTraits, Level, OnReturn};
 use rbs_graph::description::{
     GraphDescription, GraphError, Link, NodeId, PartitionId, SchedulePlan,
 };
@@ -394,9 +394,19 @@ pub struct BindReport {
     /// program scene (with its cued items) or a bound hold scene draws on some canvas,
     /// with `visible` true. A temporal source that is Active but not in this set is
     /// drawn only by a preview scene: a media source is then cued (ADR-0108 decision
-    /// 10). The host writes each media source's membership to its control handle
-    /// before it applies this sync. Listed on every sync.
+    /// 10). Listed on every sync. The host writes a media source's on-air state from
+    /// its level ([`Self::level_changes`], [`SceneBinder::level_of`]), which also
+    /// counts a source whose `run` is `placed`.
     pub on_air_sources: BTreeSet<SourceId>,
+    /// The sources whose level or effective `on_return` changed since the last sync
+    /// (ADR-0152 decision 7): `(source, level, on_return)`, in source id order,
+    /// `on_return` `None` for a type without one. A source that left every scene, or
+    /// was deactivated, is listed once as [`Level::Unplaced`]; a deleted one is not.
+    /// Empty when nothing changed. The host writes each to the source's control
+    /// handle on the control path before it applies this sync, and writes a created
+    /// or replaced node's current values when it adopts it
+    /// ([`SceneBinder::level_of`]).
+    pub level_changes: Vec<(SourceId, Level, Option<OnReturn>)>,
 }
 
 /// Why binding failed. The graph and the binder are unchanged.
@@ -564,6 +574,9 @@ struct State {
     compositors: BTreeMap<(CanvasId, Role), BoundComp>,
     mixers: BTreeMap<CanvasId, BoundMix>,
     hold_mixers: BTreeMap<CanvasId, BoundMix>,
+    /// Each source's last delivered level and effective `on_return` (ADR-0152
+    /// decision 7); a source absent here is Unplaced or Off.
+    levels: BTreeMap<SourceId, (Level, Option<OnReturn>)>,
 }
 
 impl fmt::Debug for SceneBinder {
@@ -745,6 +758,18 @@ impl SceneBinder {
             hold,
             &BTreeMap::new(),
         )
+    }
+
+    /// A source's level and effective `on_return` as of the last successful sync
+    /// (ADR-0152 decision 7): what the host writes to a node it adopts, so a new node
+    /// never runs on a handle default. `(Unplaced, None)` for a source that no scene
+    /// places, that is deactivated, or that the binder has not seen.
+    pub fn level_of(&self, source: SourceId) -> (Level, Option<OnReturn>) {
+        self.state
+            .levels
+            .get(&source)
+            .copied()
+            .unwrap_or((Level::Unplaced, None))
     }
 
     /// Like [`Self::sync_held`], also binding a running transition per canvas in
@@ -975,13 +1000,15 @@ impl State {
         // Which sources are Active and which temporal ones are on air (ADR-0152
         // decisions 1 to 3). Computed first so the preview leaves out a source that
         // is Standby there (`run: on_air`).
-        let (running, on_air) = activity_states(
+        let (running, on_air, levels) = activity_states(
             types,
             collection,
             (cued_items, cued_sources),
             (&hold, &outgoing),
             &mut report,
         )?;
+        report.level_changes = level_changes(&self.levels, &levels, collection);
+        self.levels = levels;
         let compositor_desc = types
             .descriptor(&NodeTypeId::new(COMPOSITOR_TYPE))
             .filter(|d| d.kind == NodeKind::Compositor)
@@ -1618,7 +1645,7 @@ fn activity_states(
         &BTreeMap<CanvasId, &OutgoingScene>,
     ),
     report: &mut BindReport,
-) -> Result<(BTreeSet<SourceId>, BTreeSet<SourceId>), BindError> {
+) -> Result<ActivityStates, BindError> {
     let mut levels = collection.source_levels(cued_items);
     for id in cued_sources {
         if collection.source(*id).is_some_and(|s| !s.standby()) {
@@ -1641,6 +1668,7 @@ fn activity_states(
     }
     let mut running = BTreeSet::new();
     let mut on_air = BTreeSet::new();
+    let mut delivered = BTreeMap::new();
     for (id, level) in levels {
         let Some(source) = collection.source(id) else {
             continue;
@@ -1650,6 +1678,7 @@ fn activity_states(
             report.problems.push(BindProblem::ActivityUnsupported(id));
         }
         let policy = traits.effective(Some(&source.activity));
+        delivered.insert(id, (level, policy.on_return));
         if forced.contains(&id) || policy.active_at(level) {
             running.insert(id);
             // Only an Active temporal source has a membership that matters.
@@ -1658,7 +1687,38 @@ fn activity_states(
             }
         }
     }
-    Ok((running, on_air))
+    Ok((running, on_air, delivered))
+}
+
+/// The running set, the on-air set and each placed source's level with its
+/// effective `on_return`, from [`activity_states`].
+type ActivityStates = (
+    BTreeSet<SourceId>,
+    BTreeSet<SourceId>,
+    BTreeMap<SourceId, (Level, Option<OnReturn>)>,
+);
+
+/// The sources whose level or effective `on_return` differs from the last sync
+/// (ADR-0152 decision 7), in source id order. A source that left every level still
+/// exists and is reported as [`Level::Unplaced`] with its effective `on_return`; a
+/// deleted source is not reported.
+fn level_changes(
+    old: &BTreeMap<SourceId, (Level, Option<OnReturn>)>,
+    new: &BTreeMap<SourceId, (Level, Option<OnReturn>)>,
+    collection: &SceneCollection,
+) -> Vec<(SourceId, Level, Option<OnReturn>)> {
+    let mut changes: Vec<(SourceId, Level, Option<OnReturn>)> = new
+        .iter()
+        .filter(|(id, now)| old.get(id) != Some(now))
+        .map(|(id, (level, on_return))| (*id, *level, *on_return))
+        .collect();
+    for (id, (_, on_return)) in old {
+        if !new.contains_key(id) && collection.source(*id).is_some() {
+            changes.push((*id, Level::Unplaced, *on_return));
+        }
+    }
+    changes.sort_by_key(|c| c.0);
+    changes
 }
 
 /// Links `mix` to the sources in `heard` that have sound (ADR-0039, ADR-0106):

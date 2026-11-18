@@ -2,6 +2,7 @@
 
 use std::path::Path;
 
+use rbs_scene::activity::OnReturn;
 use rbs_scene::model::SettingValue;
 use serde_json::{Map, Value};
 
@@ -67,14 +68,12 @@ pub mod rbs {
         pub const COLOR: &str = "color";
         /// Loop a media file.
         pub const LOOP: &str = "loop";
-        /// Restart a media file when shown.
-        pub const RESTART_WHEN_SHOWN: &str = "restart_when_shown";
         /// Browser URL.
         pub const URL: &str = "url";
         /// Browser page keeps its transparency.
         pub const TRANSPARENT: &str = "transparent";
         /// Every key a source mapper may write.
-        pub const ALL: [&str; 12] = [
+        pub const ALL: [&str; 11] = [
             ADAPTER,
             TARGET,
             CURSOR,
@@ -84,7 +83,6 @@ pub mod rbs {
             PATH,
             COLOR,
             LOOP,
-            RESTART_WHEN_SHOWN,
             URL,
             TRANSPARENT,
         ];
@@ -661,10 +659,12 @@ impl SourceMapper for Media {
             keys::LOOP.to_owned(),
             SettingValue::Bool(flag(s, "looping", false)),
         );
-        m.settings.insert(
-            keys::RESTART_WHEN_SHOWN.to_owned(),
-            SettingValue::Bool(flag(s, "restart_on_activate", true)),
-        );
+        // "Restart playback when source becomes active" (ADR-0152 decision 10).
+        m.activity.on_return = Some(if flag(s, "restart_on_activate", true) {
+            OnReturn::Restart
+        } else {
+            OnReturn::Resume
+        });
         if !ctx.lookup().file_exists(Path::new(file)) {
             m.notes.push(
                 "The media file was not found on this computer; pick it again in the source's settings."

@@ -547,6 +547,7 @@ impl Ctx<'_> {
         }
         let mut source = Source::new(id, &name, NodeTypeId::new(m.type_id), m.settings.clone());
         source.hints = m.hints.clone();
+        source.activity = m.activity;
         source.audio = self.audio_of(src, &m, &mut notes);
         let audio_only = matches!(
             m.type_id,
