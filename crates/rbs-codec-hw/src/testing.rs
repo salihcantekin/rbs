@@ -9,6 +9,7 @@ use crate::device::{CodecCaps, DeviceCaps, Profiles};
 pub fn discrete_gpu() -> DeviceCaps {
     DeviceCaps {
         name: "Test GPU".into(),
+        native_memory: Vec::new(),
         codecs: vec![
             CodecCaps {
                 codec: CodecId::H264,

@@ -11,6 +11,7 @@
 //! the copy never joins the child. A process exit or a lost heartbeat is Unavailable
 //! and counts toward back-off.
 
+use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -46,6 +47,9 @@ pub struct HelperChild {
     pub painted: u64,
     /// The helper is not running (exited, killed, or lost its heartbeat).
     pub unavailable: bool,
+    /// Exit status once the process ended by itself (`None`: running, killed by the
+    /// studio, or ended by a signal).
+    pub exit_code: Option<i32>,
     /// Exits counted toward back-off. A live child stays at 0.
     pub attempts: u32,
     /// ADR-0024 delay after `attempts`.
@@ -57,7 +61,8 @@ impl HelperChild {
     pub fn process_alive(&mut self) -> bool {
         match self.child.as_mut().and_then(|child| child.try_wait().ok()) {
             Some(None) => true,
-            Some(Some(_)) => {
+            Some(Some(status)) => {
+                self.exit_code = status.code();
                 self.note_exit();
                 false
             }
@@ -120,6 +125,17 @@ impl HelperChild {
         true
     }
 
+    /// True once the helper beat its heartbeat: its first hello.
+    pub fn has_beaten(&self) -> bool {
+        self.last_beat != 0 || self.ring.heartbeat() != 0
+    }
+
+    /// The engine-level cause of the exit (add-ons spec "Browser engine
+    /// consumer"). Meaningful once the helper is unavailable.
+    pub fn exit_cause(&self) -> rbs_browser_ipc::exit::Cause {
+        rbs_browser_ipc::exit::cause(self.exit_code, self.has_beaten())
+    }
+
     /// Frames the helper has published so far.
     pub fn frames_written(&self) -> u64 {
         self.ring.frames_written()
@@ -176,6 +192,26 @@ impl Drop for HelperChild {
     }
 }
 
+/// The child environment that points a CEF runner at an installed engine (add-ons
+/// spec "Browser engine consumer"): [`rbs_browser_ipc::runtime::RUNTIME_ENV`] names
+/// the runtime directory, and on Linux `LD_LIBRARY_PATH` names its library directory,
+/// because release runners have no `rpath` and `libcef.so` is a load-time dependency.
+/// Set on the runner child only; every CEF process inherits it.
+pub fn runtime_env(runtime: &Path, library_dir: &Path) -> Vec<(OsString, OsString)> {
+    let mut env = vec![(
+        OsString::from(rbs_browser_ipc::runtime::RUNTIME_ENV),
+        runtime.as_os_str().to_owned(),
+    )];
+    if cfg!(target_os = "linux") {
+        env.push((
+            OsString::from("LD_LIBRARY_PATH"),
+            library_dir.as_os_str().to_owned(),
+        ));
+    }
+    let _ = library_dir;
+    env
+}
+
 /// Allocates the frame section, and the sound section when `config.sample_rate` is not
 /// 0 (the studio takes page sound), then spawns `program` with `configure` on its
 /// stdin. Returns at once: frames and exits are seen by later polls. Never panics when
@@ -183,6 +219,18 @@ impl Drop for HelperChild {
 pub fn spawn_helper(
     program: &Path,
     args: &[&str],
+    config: &Configure,
+    layout: SlotLayout,
+) -> Result<HelperChild, String> {
+    spawn_helper_with_env(program, args, &[], config, layout)
+}
+
+/// As [`spawn_helper`], with `env` added to the child's environment (the browser
+/// engine's [`rbs_browser_ipc::runtime::RUNTIME_ENV`] and the loader path).
+pub fn spawn_helper_with_env(
+    program: &Path,
+    args: &[&str],
+    env: &[(OsString, OsString)],
     config: &Configure,
     layout: SlotLayout,
 ) -> Result<HelperChild, String> {
@@ -200,6 +248,7 @@ pub fn spawn_helper(
         .map_or_else(String::new, |sound| sound.name().to_owned());
     let mut child = Command::new(program)
         .args(args)
+        .envs(env.iter().map(|(k, v)| (k, v)))
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -226,6 +275,7 @@ pub fn spawn_helper(
         width: 0,
         height: 0,
         unavailable: false,
+        exit_code: None,
         attempts: 0,
         retry_after: Duration::ZERO,
     })
@@ -233,6 +283,15 @@ pub fn spawn_helper(
 
 /// How long a stopped helper may take to exit on its own before it is killed.
 pub const STOP_GRACE: Duration = Duration::from_secs(1);
+
+fn encode_cause(cause: rbs_browser_ipc::exit::Cause) -> u8 {
+    use rbs_browser_ipc::exit::Cause;
+    match cause {
+        Cause::Other => 0,
+        Cause::RuntimeMissing => 1,
+        Cause::RuntimeMismatch => 2,
+    }
+}
 
 /// Studio-side supervisor thread for one running helper (ADR-0109 decision 8). It
 /// exists only while the source is Active (P13). At the page's frame rate it copies the
@@ -243,6 +302,8 @@ pub const STOP_GRACE: Duration = Duration::from_secs(1);
 pub struct Supervisor {
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     exited: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// The cause of the exit, set before `exited` (0 other, 1 missing, 2 mismatch).
+    cause: std::sync::Arc<std::sync::atomic::AtomicU8>,
     thread: Option<std::thread::JoinHandle<HelperChild>>,
 }
 
@@ -293,7 +354,9 @@ impl Supervisor {
         use std::sync::atomic::{AtomicBool, Ordering};
         let stop = Arc::new(AtomicBool::new(false));
         let exited = Arc::new(AtomicBool::new(false));
+        let cause = Arc::new(std::sync::atomic::AtomicU8::new(0));
         let (stop_flag, exited_flag) = (Arc::clone(&stop), Arc::clone(&exited));
+        let cause_flag = Arc::clone(&cause);
         // Poll twice per page frame so a new frame waits at most half a period.
         let mut period = Duration::from_secs(1) / fps.clamp(1, 60) / 2;
         if sound.is_some() && child.has_sound() {
@@ -316,6 +379,7 @@ impl Supervisor {
                         publish(&child.frame, child.width, child.height, child.painted);
                     }
                     if !child.process_alive() || !child.check_heartbeat(Instant::now()) {
+                        cause_flag.store(encode_cause(child.exit_cause()), Ordering::Release);
                         exited_flag.store(true, Ordering::Release);
                         break;
                     }
@@ -332,6 +396,7 @@ impl Supervisor {
         Ok(Self {
             stop,
             exited,
+            cause,
             thread: Some(thread),
         })
     }
@@ -339,6 +404,16 @@ impl Supervisor {
     /// True once the helper exited or lost its heartbeat. Never waits.
     pub fn exited(&self) -> bool {
         self.exited.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Why the helper exited, once [`Supervisor::exited`] is true. Never waits.
+    pub fn exit_cause(&self) -> rbs_browser_ipc::exit::Cause {
+        use rbs_browser_ipc::exit::Cause;
+        match self.cause.load(std::sync::atomic::Ordering::Acquire) {
+            1 => Cause::RuntimeMissing,
+            2 => Cause::RuntimeMismatch,
+            _ => Cause::Other,
+        }
     }
 
     /// Stops the helper and waits for the thread, up to [`STOP_GRACE`] plus one

@@ -1,6 +1,7 @@
 //! The NVENC engine: one CUDA context and one NVENC session in synchronous mode
 //! (Linux has no asynchronous mode; one code path for both platforms), with
-//! NVENC-allocated input buffers that system-memory frames are copied into.
+//! NVENC-allocated input buffers that system-memory frames are copied into, or, for
+//! native input, exported D3D12 buffers read in place (`crate::native`, ADR-0147).
 //!
 //! Every call that touches the session pushes the session's CUDA context on the
 //! calling thread and pops it afterwards, so the session can move between threads
@@ -10,7 +11,7 @@ use core::ffi::{c_char, c_int, c_void};
 use std::ptr;
 
 use rbs_codec::CreateError;
-use rbs_core::media::{CodecId, PixelFormat, SystemFrame};
+use rbs_core::media::{CodecId, PixelFormat, SystemFrame, VideoFrame};
 
 use rbs_codec_hw::copy::{DstPlane, copy_420, plane_sizes};
 use rbs_codec_hw::device::{CodecCaps, DeviceCaps, Profiles};
@@ -19,6 +20,7 @@ use rbs_codec_hw::session::{Engine, EngineError, Output};
 
 use crate::FRAMES_IN_FLIGHT;
 use crate::loader::{Api, api};
+use crate::native::{Attached, Native};
 use crate::sys::{self, cuda};
 
 /// Returns the function pointer, or a typed error when the driver did not fill it.
@@ -356,6 +358,13 @@ pub(crate) fn probe(ordinal: c_int) -> Result<DeviceCaps, String> {
     Ok(DeviceCaps {
         name: device.name(ordinal),
         codecs,
+        // Exported D3D12 buffers through CUDA external memory (ADR-0147). Linux reads
+        // Vulkan memory later (opaque file descriptors).
+        native_memory: if cfg!(windows) && api.interop.is_some() {
+            vec![rbs_core::media::MemoryKind::D3d12Buffer]
+        } else {
+            Vec::new()
+        },
     })
 }
 
@@ -407,8 +416,13 @@ fn apply_vui(vui: &mut sys::NV_ENC_CONFIG_H264_VUI_PARAMETERS, plan: &Plan) {
 
 /// One NVENC session with its buffers.
 pub(crate) struct NvencEngine {
-    /// Input buffers (system memory, NVENC-allocated), one per slot.
+    /// Input buffers (system memory, NVENC-allocated), one per slot; null for native
+    /// input.
     inputs: [sys::NV_ENC_INPUT_PTR; FRAMES_IN_FLIGHT],
+    /// Native input (ADR-0147): imported buffers and fences; `None` for system memory.
+    native: Option<Native>,
+    /// The mapped native buffer each slot encodes, until its output was read.
+    attached: [Option<Attached>; FRAMES_IN_FLIGHT],
     /// Bitstream buffers, one per slot.
     outputs: [sys::NV_ENC_OUTPUT_PTR; FRAMES_IN_FLIGHT],
     /// Pitch the last lock of each input buffer reported.
@@ -438,8 +452,13 @@ unsafe impl Send for NvencEngine {}
 
 impl NvencEngine {
     /// Opens a session for `plan` on CUDA device `ordinal`. Returns the engine and the
-    /// Annex B parameter sets (extradata).
-    pub(crate) fn open(ordinal: c_int, plan: &Plan) -> Result<(Self, Vec<u8>), CreateError> {
+    /// Annex B parameter sets (extradata). With `native`, the session reads exported D3D12
+    /// buffers in place (ADR-0147) and allocates no input buffers.
+    pub(crate) fn open(
+        ordinal: c_int,
+        plan: &Plan,
+        native: bool,
+    ) -> Result<(Self, Vec<u8>), CreateError> {
         let api = api().map_err(|e| CreateError::Unsupported { what: e.into() })?;
         let device = Device::open(api, ordinal)?;
         let funcs = &api.nvenc.0;
@@ -574,6 +593,8 @@ impl NvencEngine {
 
         let mut engine = NvencEngine {
             inputs: [ptr::null_mut(); FRAMES_IN_FLIGHT],
+            native: None,
+            attached: [None; FRAMES_IN_FLIGHT],
             outputs: [ptr::null_mut(); FRAMES_IN_FLIGHT],
             pitches: [0; FRAMES_IN_FLIGHT],
             pending: [false; FRAMES_IN_FLIGHT],
@@ -594,7 +615,31 @@ impl NvencEngine {
             f(funcs.nvEncCreateInputBuffer, "").map_err(|_| missing("nvEncCreateInputBuffer"))?;
         let create_output = f(funcs.nvEncCreateBitstreamBuffer, "")
             .map_err(|_| missing("nvEncCreateBitstreamBuffer"))?;
+        if native {
+            engine.native = Some(Native::open(
+                api,
+                engine.device.encoder,
+                ordinal,
+                plan.width,
+                plan.height,
+                buffer_format,
+            )?);
+        }
         for slot in 0..FRAMES_IN_FLIGHT {
+            let mut output = sys::NV_ENC_CREATE_BITSTREAM_BUFFER {
+                version: sys::NV_ENC_CREATE_BITSTREAM_BUFFER_VER,
+                ..Default::default()
+            };
+            // SAFETY: initialised session; versioned block the call fills. On error the
+            // engine's `Drop` destroys the buffers created so far.
+            let s = unsafe { create_output(engine.device.encoder, &mut output) };
+            if s != sys::NV_ENC_SUCCESS {
+                return Err(create_error("nvEncCreateBitstreamBuffer", s));
+            }
+            engine.outputs[slot] = output.bitstreamBuffer;
+            if native {
+                continue;
+            }
             let mut input = sys::NV_ENC_CREATE_INPUT_BUFFER {
                 version: sys::NV_ENC_CREATE_INPUT_BUFFER_VER,
                 width: plan.width,
@@ -609,16 +654,6 @@ impl NvencEngine {
                 return Err(create_error("nvEncCreateInputBuffer", s));
             }
             engine.inputs[slot] = input.inputBuffer;
-            let mut output = sys::NV_ENC_CREATE_BITSTREAM_BUFFER {
-                version: sys::NV_ENC_CREATE_BITSTREAM_BUFFER_VER,
-                ..Default::default()
-            };
-            // SAFETY: as above.
-            let s = unsafe { create_output(engine.device.encoder, &mut output) };
-            if s != sys::NV_ENC_SUCCESS {
-                return Err(create_error("nvEncCreateBitstreamBuffer", s));
-            }
-            engine.outputs[slot] = output.bitstreamBuffer;
         }
 
         let get_params =
@@ -713,6 +748,14 @@ impl NvencEngine {
         })
     }
 
+    /// The slot's native buffer is no longer read: one use fewer (unmapped after the
+    /// last). The context must be current.
+    fn detach(&mut self, slot: usize) {
+        if let (Some(native), Some(a)) = (self.native.as_mut(), self.attached[slot].take()) {
+            native.release(self.device.encoder, a.handle);
+        }
+    }
+
     fn send_eos(&mut self) -> Result<(), EngineError> {
         let encode = f(
             self.device.api.nvenc.0.nvEncEncodePicture,
@@ -794,12 +837,37 @@ impl Engine for NvencEngine {
         Ok(())
     }
 
+    /// Maps the exported buffer of `frame` for `slot` and makes NVENC's input stream wait
+    /// for the frame's fence (ADR-0147 decision 7). Each buffer is imported once.
+    fn attach_native(&mut self, slot: usize, frame: &VideoFrame) -> Result<(), EngineError> {
+        let encoder = self.device.encoder;
+        let Some(native) = self.native.as_mut() else {
+            return Err(EngineError::Unsupported);
+        };
+        let _current = self.device.push()?;
+        // A slot is attached once per encode; one left over from a failed encode goes.
+        if let Some(old) = self.attached[slot].take() {
+            native.release(encoder, old.handle);
+        }
+        let attached = native.attach(encoder, frame)?;
+        self.pitches[slot] = attached.pitch;
+        self.attached[slot] = Some(attached);
+        Ok(())
+    }
+
     fn encode(&mut self, slot: usize, token: u64, idr: bool) -> Result<(), EngineError> {
         let encode = f(
             self.device.api.nvenc.0.nvEncEncodePicture,
             "nvEncEncodePicture",
         )?;
         let _current = self.device.push()?;
+        let input = match self.attached[slot] {
+            Some(a) => a.input,
+            None => self.inputs[slot],
+        };
+        if input.is_null() {
+            return Err(EngineError::Broken("encode without an input"));
+        }
         let mut pic = sys::NV_ENC_PIC_PARAMS {
             version: sys::NV_ENC_PIC_PARAMS_VER,
             inputWidth: self.width,
@@ -812,7 +880,7 @@ impl Engine for NvencEngine {
             },
             frameIdx: token as u32,
             inputTimeStamp: token,
-            inputBuffer: self.inputs[slot],
+            inputBuffer: input,
             outputBitstream: self.outputs[slot],
             bufferFmt: self.buffer_format,
             pictureStruct: sys::NV_ENC_PIC_STRUCT_FRAME,
@@ -829,7 +897,11 @@ impl Engine for NvencEngine {
             self.tokens[slot] = token;
             return Err(EngineError::Broken("NVENC buffered a frame (reordering)"));
         }
-        status("nvEncEncodePicture", s)?;
+        if let Err(e) = status("nvEncEncodePicture", s) {
+            // NVENC did not take the picture: its native buffer is not read.
+            self.detach(slot);
+            return Err(e);
+        }
         self.pending[slot] = true;
         self.tokens[slot] = token;
         Ok(())
@@ -844,7 +916,10 @@ impl Engine for NvencEngine {
             return Ok(None);
         }
         let _current = self.device.push()?;
-        self.lock_output(slot).map(Some)
+        let output = self.lock_output(slot)?;
+        // The picture is encoded: NVENC no longer reads the slot's native buffer.
+        self.detach(slot);
+        Ok(Some(output))
     }
 
     fn end_of_stream(&mut self) -> Result<(), EngineError> {
@@ -913,6 +988,14 @@ impl Drop for NvencEngine {
                     self.pending[slot] = false;
                 }
             }
+        }
+        // Native input: every picture was read, so no buffer is read any more.
+        for slot in 0..FRAMES_IN_FLIGHT {
+            self.detach(slot);
+        }
+        let encoder = self.device.encoder;
+        if let Some(native) = self.native.as_mut() {
+            native.close(encoder);
         }
         let funcs = &self.device.api.nvenc.0;
         for input in self.inputs.iter().filter(|p| !p.is_null()) {

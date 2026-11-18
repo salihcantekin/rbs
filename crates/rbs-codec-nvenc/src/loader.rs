@@ -35,10 +35,47 @@ pub(crate) struct Cuda {
     pub ctx_pop: cuda::CtxPopCurrentFn,
 }
 
+/// CUDA entry points for native input (ADR-0147 decision 7): device LUIDs, a stream,
+/// and D3D12 buffers and fences imported as external memory and semaphores. A driver
+/// without one of them leaves native input off; system memory still works.
+pub(crate) struct Interop {
+    pub device_get_luid: cuda::DeviceGetLuidFn,
+    pub stream_create: cuda::StreamCreateFn,
+    pub stream_destroy: cuda::StreamDestroyFn,
+    pub mem_free: cuda::MemFreeFn,
+    pub import_memory: cuda::ImportExternalMemoryFn,
+    pub mapped_buffer: cuda::ExternalMemoryGetMappedBufferFn,
+    pub destroy_memory: cuda::DestroyExternalMemoryFn,
+    pub import_semaphore: cuda::ImportExternalSemaphoreFn,
+    pub wait_semaphores: cuda::WaitExternalSemaphoresAsyncFn,
+    pub destroy_semaphore: cuda::DestroyExternalSemaphoreFn,
+}
+
+fn load_interop(lib: &Library) -> Option<Interop> {
+    // SAFETY: each type is the prototype from cuda.h (`_v2` entry points as the
+    // unversioned macros name them since CUDA 4.0).
+    unsafe {
+        Some(Interop {
+            device_get_luid: symbol(lib, b"cuDeviceGetLuid\0").ok()?,
+            stream_create: symbol(lib, b"cuStreamCreate\0").ok()?,
+            stream_destroy: symbol(lib, b"cuStreamDestroy_v2\0").ok()?,
+            mem_free: symbol(lib, b"cuMemFree_v2\0").ok()?,
+            import_memory: symbol(lib, b"cuImportExternalMemory\0").ok()?,
+            mapped_buffer: symbol(lib, b"cuExternalMemoryGetMappedBuffer\0").ok()?,
+            destroy_memory: symbol(lib, b"cuDestroyExternalMemory\0").ok()?,
+            import_semaphore: symbol(lib, b"cuImportExternalSemaphore\0").ok()?,
+            wait_semaphores: symbol(lib, b"cuWaitExternalSemaphoresAsync\0").ok()?,
+            destroy_semaphore: symbol(lib, b"cuDestroyExternalSemaphore\0").ok()?,
+        })
+    }
+}
+
 /// The loaded driver.
 pub(crate) struct Api {
     pub nvenc: Functions,
     pub cuda: Cuda,
+    /// Native input entry points; `None` on drivers without them.
+    pub interop: Option<Interop>,
     // Kept loaded for the life of the process: the function pointers above point
     // into these libraries.
     _nvenc_lib: Library,
@@ -136,9 +173,11 @@ fn load() -> Result<Api, String> {
     if status != cuda::CUDA_SUCCESS {
         return Err(format!("cuInit failed ({status})"));
     }
+    let interop = load_interop(&cuda_lib);
     Ok(Api {
         nvenc: Functions(list),
         cuda,
+        interop,
         _nvenc_lib: nvenc_lib,
         _cuda_lib: cuda_lib,
     })

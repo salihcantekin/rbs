@@ -2784,6 +2784,9 @@ pub enum Update {
     AddOnChanged(api::AddOnChanged),
     /// Every add-on, answering [`Command::ListAddOns`].
     AddOns(api::AddOnList),
+    /// Show this add-on in Settings › Add-ons: Add Source › Browser was chosen while
+    /// the browser engine is missing, and no source was added (ADR-0145 decision 8).
+    OpenAddOn(String),
     /// The play state of every media source the studio runs (ADR-0108 decision 10).
     Media(Vec<MediaTick>),
     /// The monitor output (ADR-0097): device, volume, whether it is wanted and plays,
@@ -3241,6 +3244,8 @@ pub struct HostConfig {
     /// [`crate::add_ons::AddOnsSetup::system`] in the app). `None`: `addon.list`
     /// shows the built-in catalog as not installed and installs are refused.
     pub add_ons: Option<crate::add_ons::AddOnsSetup>,
+    /// The browser runner (tests); `None`: [`crate::browser_tree::resolve_runner`].
+    pub browser_runner: Option<crate::browser_tree::Runner>,
     /// A step to panic at once (tests only, ADR-0055).
     #[cfg(feature = "fault-injection")]
     #[doc(hidden)]
@@ -3287,6 +3292,7 @@ impl HostConfig {
             read_free_space: None,
             calibration_setup: None,
             add_ons: None,
+            browser_runner: None,
             #[cfg(feature = "fault-injection")]
             fault: None,
         }
@@ -3754,8 +3760,12 @@ struct Host {
     /// Makes an engine for a restart.
     engine: Box<dyn Fn() -> Engine>,
     gpu: Arc<GpuContext>,
-    /// The browser helper tree when `rbs-browser-helper` was found (ADR-0109).
+    /// The browser runner tree (ADR-0109), as the studio takes it.
     browser_tree: Option<Arc<dyn BrowserTree>>,
+    /// The same tree: whether it needs the engine and whether a runner is alive.
+    browser: Arc<crate::browser_tree::RunnerBrowserTree>,
+    /// The installed browser engine the tree passes to each runner (ADR-0145).
+    engine_slot: Arc<crate::browser_tree::EngineSlot>,
     /// The add-on catalog and running installs (ADR-0145).
     add_ons: add_ons::AddOnsHost,
     /// The preview's ring size from the canvas rate at the last start, when this
@@ -4245,9 +4255,24 @@ fn start(
     let (run_size, run_fps) = collection
         .canvas(canvas)
         .map_or((config.size, config.fps), |c| (c.size, c.frame_rate));
-    let browser_tree: Option<Arc<dyn BrowserTree>> = crate::browser_tree::HelperBrowserTree::new()
-        .ok()
-        .map(|tree| Arc::new(tree) as Arc<dyn BrowserTree>);
+    // The runner ships with the app; the engine it loads is an add-on, resolved now
+    // only when the collection has a browser source (ADR-0145 decision 6).
+    let add_ons = add_ons::AddOnsHost::new(config.add_ons);
+    let engine_slot = Arc::new(crate::browser_tree::EngineSlot::default());
+    if collection
+        .sources()
+        .any(|s| s.type_id.as_str() == types::BROWSER_SOURCE)
+    {
+        engine_slot.set(add_ons.browser_engine());
+    }
+    let browser = Arc::new(crate::browser_tree::RunnerBrowserTree::new(
+        config
+            .browser_runner
+            .or_else(crate::browser_tree::resolve_runner),
+        Arc::clone(&engine_slot),
+    ));
+    let browser_tree: Option<Arc<dyn BrowserTree>> =
+        Some(Arc::clone(&browser) as Arc<dyn BrowserTree>);
     let mut settings = StudioSettings::new(canvas);
     // Width and height stay as configured. The ring follows the canvas that runs:
     // a saved collection can use another rate than the one the descriptor was built with.
@@ -4300,7 +4325,6 @@ fn start(
             .into_iter()
             .filter(|k| installed.contains(&k.type_id())),
         )
-        .filter(|k| *k != SourceKind::Browser || browser_tree.is_some())
         .collect();
     let encoders: Vec<EncoderInfo> = adapters
         .video_encoders
@@ -4411,6 +4435,8 @@ fn start(
         engine: Box::new(engine),
         gpu,
         browser_tree,
+        browser,
+        engine_slot,
         preview_surfaces: settings.preview.map(|p| p.surfaces),
         dead: None,
         restarting: false,
@@ -4462,7 +4488,7 @@ fn start(
         switch_seq: 0,
         inbox: Weak::new(),
         stinger: stinger::StingerFile::default(),
-        add_ons: add_ons::AddOnsHost::new(config.add_ons),
+        add_ons,
         levels,
     };
     // A vertical canvas saved with the collection runs again (ADR-0093 decision 9).
@@ -4849,6 +4875,11 @@ impl Host {
                 Ok(_) => self.apply(notify),
                 Err(e) => notify(Update::Error(e.text().to_owned())),
             },
+            // Without its engine Browser leads to Settings › Add-ons and adds nothing
+            // (ADR-0145 decision 8).
+            Command::AddBrowser { .. } if self.browser_needs_engine() => {
+                notify(Update::OpenAddOn(crate::add_ons::BROWSER_ENGINE.to_owned()));
+            }
             Command::AddBrowser { url } => match self.add_browser_page(&url) {
                 Ok(_) => self.apply(notify),
                 Err(e) => notify(Update::Error(e.text().to_owned())),
@@ -9646,11 +9677,6 @@ impl Host {
 
     /// Adds a local media file as a source, centred at half the canvas.
     fn add_browser_page(&mut self, url: &str) -> Result<SourceId, Refusal> {
-        if self.browser_tree.is_none() {
-            return Err(Refusal::Invalid(
-                "Browser sources need rbs-browser-helper next to the app.".into(),
-            ));
-        }
         let canvas = self
             .collection
             .canvas(self.canvas)
