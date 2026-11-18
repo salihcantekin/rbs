@@ -3179,3 +3179,41 @@ fn a_page_with_restart_reloads_on_its_on_air_edge_and_a_waking_page_loads_once()
     let (_, errors) = studio.shutdown();
     assert!(errors.is_empty(), "{errors:?}");
 }
+
+#[test]
+fn the_same_picture_under_another_scene_id_starts_no_transition() {
+    // ADR-0151 follow-up: the desktop app's held program copy taken or given back.
+    use rbs_scene::{CollectionTransition, TransitionKind};
+
+    let Some(gpu) = gpu() else { return };
+    let r = rig();
+    let (mut col, canvas) = scene();
+    let live = col.canvas(canvas).unwrap().program.unwrap();
+    let other = camera_scene(&mut col);
+    col.set_transition(CollectionTransition {
+        kind: TransitionKind::Cut,
+        ..CollectionTransition::default()
+    })
+    .unwrap();
+    let (engine, _clock) = engine_at_start();
+    let mut studio = Studio::start(
+        engine,
+        gpu,
+        &col,
+        &r.adapters.sources,
+        &StudioSettings::new(canvas),
+    )
+    .unwrap();
+
+    col.set_program(canvas, Some(other)).unwrap();
+    studio
+        .update_same_picture(&col, &r.adapters.sources)
+        .unwrap();
+    assert!(studio.take_transition_events().is_empty());
+    assert_eq!(studio.transition_state(canvas), None);
+
+    // The next update notes changes again.
+    col.set_program(canvas, Some(live)).unwrap();
+    studio.update(&col, &r.adapters.sources).unwrap();
+    assert_eq!(studio.take_transition_events().len(), 2, "a Cut again");
+}

@@ -925,6 +925,42 @@ fn leaving_studio_mode_without_a_transition_keeps_the_program_as_it_was() {
 }
 
 #[test]
+fn entering_and_leaving_studio_mode_play_no_transition() {
+    let Some((host, updates, _api, mut c)) = start() else {
+        return;
+    };
+    ok(&c.call("events.subscribe", json!({"topics": ["transition.state"]})));
+    let one = scenes(&mut c)["program"].as_u64().unwrap();
+    let two = ok(&c.call("scene.add", json!({"name": "Game"})))["scene"]
+        .as_u64()
+        .unwrap();
+    add(&mut c, "screen", "Main screen");
+    ok(&c.call("collection.set_transition", json!({"kind": "cut"})));
+    // The program is held and given back (ADR-0063): the same picture, no transition
+    // (ADR-0151 follow-up), with and without an edit in Preview.
+    ok(&c.call("canvas.set_preview", json!({"scene": one})));
+    ok(&c.call("canvas.set_preview", json!({"scene": null})));
+    ok(&c.call("canvas.set_preview", json!({"scene": one})));
+    add(&mut c, "audio_input", "Mic");
+    ok(&c.call("canvas.set_preview", json!({"scene": null})));
+    // The first transition reported is the real one.
+    ok(&c.call("scene.switch", json!({"scene": two})));
+    let e = c.event("transition.state", |d| d["state"] == "ended");
+    let d = &e["params"]["data"];
+    assert_eq!(
+        (d["from"].clone(), d["to"].clone()),
+        (json!(one), json!(two)),
+        "{e}"
+    );
+    while let Ok(u) = updates.try_recv() {
+        if let Update::Error(e) = u {
+            panic!("{e}");
+        }
+    }
+    drop(host);
+}
+
+#[test]
 fn a_vertical_canvas_is_added_follows_the_main_program_and_is_removed() {
     use rbs_app::studio_host::{Command, VerticalCanvas};
     use rbs_core::media::Size;

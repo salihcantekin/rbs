@@ -1296,6 +1296,9 @@ pub struct Studio {
     /// Boxes on screen before the latest program-scene change, so a source that is in
     /// both scenes moves instead of jumping. Empty once `max_duration` has passed.
     glide: Option<Glide>,
+    /// The update now running shows the same picture under another program scene id
+    /// ([`Studio::update_same_picture`]): no program change is noted.
+    same_picture: bool,
     /// Transitions running, by canvas (ADR-0128). Empty while none runs (P13).
     transitions: BTreeMap<CanvasId, transition::CanvasTransition>,
     /// A transition is done since the host last asked: it calls
@@ -1810,6 +1813,7 @@ impl Studio {
             browser_background: BTreeSet::new(),
             on_air_levels: BTreeSet::new(),
             glide: None,
+            same_picture: false,
             transitions: BTreeMap::new(),
             transition_done: false,
             transition_once: None,
@@ -1916,6 +1920,22 @@ impl Studio {
         sources: &SourceTypes,
     ) -> Result<Updated, RecordError> {
         self.update_with(collection, sources, None)
+    }
+
+    /// [`Studio::update`] for a collection whose program scenes show the same picture
+    /// under other scene ids (ADR-0151 follow-up): the desktop app's held program copy
+    /// (ADR-0063) taken or given back. A program scene that changes in this update
+    /// starts no transition and no glide, as if it had not changed; everything else
+    /// is updated as usual.
+    pub fn update_same_picture(
+        &mut self,
+        collection: &SceneCollection,
+        sources: &SourceTypes,
+    ) -> Result<Updated, RecordError> {
+        self.same_picture = true;
+        let updated = self.update_with(collection, sources, None);
+        self.same_picture = false;
+        updated
     }
 
     /// Starts running a further canvas while the studio runs (ADR-0093 decision 1,
@@ -2641,11 +2661,18 @@ impl Studio {
         // A new program or preview scene ends a rehearsal at once (ADR-0135 decision 13).
         self.end_rehearsal_for(collection);
         let old_layers = self.layer_snapshot();
-        let old_main = program_scene(&self.collection, self.settings.canvas);
+        // The same picture under another id: the "old" program is the new one, so no
+        // change is noted (`update_same_picture`).
+        let was = if self.same_picture {
+            collection
+        } else {
+            &self.collection
+        };
+        let old_main = program_scene(was, self.settings.canvas);
         let old_extra: BTreeMap<CanvasId, Option<SceneId>> = self
             .extras
             .iter()
-            .map(|extra| (extra.canvas, program_scene(&self.collection, extra.canvas)))
+            .map(|extra| (extra.canvas, program_scene(was, extra.canvas)))
             .collect();
         self.check_collection(collection)?;
         self.check_hold_scenes_in(collection);
