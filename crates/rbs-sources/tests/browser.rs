@@ -3,7 +3,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use rbs_browser_ipc::Configure;
 use rbs_scene::model::{SettingValue, Settings, SourceId};
@@ -17,11 +17,16 @@ use rbs_sources::{
 struct FakeTree {
     starts: AtomicU32,
     exit_immediately: bool,
+    /// The engine is not installed: `unavailable` says so.
+    missing: AtomicBool,
+    /// What an exit maps to.
+    exit_reason: Option<&'static str>,
 }
 
 struct FakeSession {
     alive: bool,
     stopped: Arc<AtomicU32>,
+    exit_reason: Option<&'static str>,
 }
 
 impl BrowserSession for FakeSession {
@@ -31,6 +36,9 @@ impl BrowserSession for FakeSession {
     fn stop(&mut self) {
         self.alive = false;
         self.stopped.fetch_add(1, Ordering::Relaxed);
+    }
+    fn exit_reason(&self) -> Option<&'static str> {
+        self.exit_reason
     }
 }
 
@@ -45,7 +53,14 @@ impl BrowserTree for FakeTree {
         Ok(Box::new(FakeSession {
             alive: !self.exit_immediately,
             stopped: Arc::new(AtomicU32::new(0)),
+            exit_reason: self.exit_reason,
         }))
+    }
+
+    fn unavailable(&self) -> Option<&'static str> {
+        self.missing
+            .load(Ordering::Relaxed)
+            .then_some(rbs_sources::BROWSER_RUNTIME_MISSING)
     }
 }
 
@@ -167,6 +182,8 @@ fn no_helper_while_standby() {
     let tree = Arc::new(FakeTree {
         starts: AtomicU32::new(0),
         exit_immediately: false,
+        missing: AtomicBool::new(false),
+        exit_reason: None,
     });
     let reg = SourceTypes::new();
     let ctx = rbs_sources::InstanceContext::new(
@@ -223,6 +240,8 @@ fn a_third_active_browser_is_refused_without_cef() {
     let tree = Arc::new(FakeTree {
         starts: AtomicU32::new(0),
         exit_immediately: false,
+        missing: AtomicBool::new(false),
+        exit_reason: None,
     });
     let mut third = browser_node(3, &budget, tree.clone());
     let error = third.activate().unwrap_err();
@@ -243,6 +262,8 @@ fn helper_exit_leaves_the_host_running() {
     let tree = Arc::new(FakeTree {
         starts: AtomicU32::new(0),
         exit_immediately: true,
+        missing: AtomicBool::new(false),
+        exit_reason: None,
     });
     let mut node = browser_node(4, &budget, tree);
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| node.activate()));
@@ -252,6 +273,79 @@ fn helper_exit_leaves_the_host_running() {
     assert!(!node.helper_running());
     assert!(!budget.holds(source));
     assert!(node.retry_after().is_some());
+}
+
+#[test]
+fn no_engine_makes_the_source_runtime_missing_with_no_slot_until_it_is_installed() {
+    let budget = BrowserBudget::shared();
+    let source = SourceId::from_raw(5);
+    let claim = [BrowserClaim {
+        source,
+        class: ShowClass::Program,
+    }];
+    budget.grant(&claim);
+    let tree = Arc::new(FakeTree {
+        starts: AtomicU32::new(0),
+        exit_immediately: false,
+        missing: AtomicBool::new(true),
+        exit_reason: None,
+    });
+    let mut node = browser_node(5, &budget, tree.clone());
+    let error = node.activate().unwrap_err();
+    assert_eq!(
+        error,
+        BrowserStartError::Unavailable(rbs_sources::BROWSER_RUNTIME_MISSING)
+    );
+    assert_eq!(node.reason(), Some(rbs_sources::BROWSER_RUNTIME_MISSING));
+    assert_eq!(
+        node.control().engine_reason(),
+        Some(rbs_sources::BROWSER_RUNTIME_MISSING)
+    );
+    assert!(!budget.holds(source), "no slot");
+    assert_eq!(node.attempts(), 0, "no back-off");
+    assert!(node.retry_after().is_none());
+    assert_eq!(tree.starts.load(Ordering::Relaxed), 0, "nothing started");
+
+    // Installed: the studio grants again and the next start runs.
+    tree.missing.store(false, Ordering::Relaxed);
+    budget.grant(&claim);
+    node.activate().unwrap();
+    assert!(node.helper_running());
+    assert_eq!(node.reason(), None);
+    assert_eq!(node.control().engine_reason(), None);
+}
+
+#[test]
+fn a_runner_exit_maps_to_its_engine_reason() {
+    for (exit, reason) in [
+        (
+            Some(rbs_sources::BROWSER_RUNTIME_MISSING),
+            rbs_sources::BROWSER_RUNTIME_MISSING,
+        ),
+        (
+            Some(rbs_sources::BROWSER_RUNTIME_MISMATCH),
+            rbs_sources::BROWSER_RUNTIME_MISMATCH,
+        ),
+        (None, rbs_sources::HELPER_EXIT),
+    ] {
+        let budget = BrowserBudget::shared();
+        let source = SourceId::from_raw(6);
+        budget.grant(&[BrowserClaim {
+            source,
+            class: ShowClass::Program,
+        }]);
+        let tree = Arc::new(FakeTree {
+            starts: AtomicU32::new(0),
+            exit_immediately: true,
+            missing: AtomicBool::new(false),
+            exit_reason: exit,
+        });
+        let mut node = browser_node(6, &budget, tree);
+        assert_eq!(node.activate(), Err(BrowserStartError::Exited));
+        assert_eq!(node.reason(), Some(reason));
+        assert_eq!(node.control().engine_reason(), exit);
+        assert!(!budget.holds(source));
+    }
 }
 
 #[test]

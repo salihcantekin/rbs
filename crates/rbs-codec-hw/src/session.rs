@@ -10,8 +10,8 @@
 
 use rbs_codec::{EncodeError, EncoderChange, RateControl, VideoEncoder};
 use rbs_core::media::{
-    Bytes, CodecId, EncodedPacket, FramePayload, PictureId, StreamDescriptor, SystemFrame,
-    VideoFormat, VideoFrame,
+    Bytes, CodecId, EncodedPacket, FramePayload, MemoryKind, PictureId, StreamDescriptor,
+    SystemFrame, VideoFormat, VideoFrame,
 };
 use rbs_core::time::Timestamp;
 
@@ -101,6 +101,17 @@ pub trait Engine: Send {
     /// in flight.
     fn upload(&mut self, slot: usize, frame: &SystemFrame) -> Result<(), EngineError>;
 
+    /// Makes `slot` read the exported native `frame` in place (ADR-0147 decision 7): the
+    /// engine imports the surface once and caches it, and waits on the frame's sync on
+    /// the GPU before the encoder reads. Called instead of [`Engine::upload`] for a
+    /// session opened with a native memory kind. The session keeps a share of `frame`
+    /// until the slot's output was taken, so the engine must be done reading the surface
+    /// when `output` returns it (and when `encode` fails). Not called for a slot that is
+    /// in flight. The default refuses: system memory only.
+    fn attach_native(&mut self, _slot: usize, _frame: &VideoFrame) -> Result<(), EngineError> {
+        Err(EngineError::Unsupported)
+    }
+
     /// Queues `slot` for encoding; `token` comes back in its [`Output`]. `idr` forces
     /// an IDR picture with parameter sets.
     fn encode(&mut self, slot: usize, token: u64, idr: bool) -> Result<(), EngineError>;
@@ -120,13 +131,16 @@ pub trait Engine: Send {
     fn set_rate_control(&mut self, rc: Rc) -> Result<(), EngineError>;
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Default)]
 struct Slot {
     pts: Timestamp,
     token: u64,
     /// The picture the slot's input buffer holds (ADR-0146): `NONE` before an upload
     /// starts, the frame's id once it returned `Ok`, whatever `encode` does next.
     picture: PictureId,
+    /// The native frame the encoder reads in place, held until the slot's output was
+    /// taken (ADR-0147 decision 7). Dropping it only hands a ring slot back.
+    held: Option<VideoFrame>,
 }
 
 /// Set to a non-empty value other than `0`, every frame is copied even where the
@@ -146,6 +160,9 @@ pub struct Session<E: Engine> {
     rate_control: RateControl,
     dynamic_bitrate: bool,
     slots: Box<[Slot]>,
+    /// Where input frames live: system memory, or the native kind the engine reads in
+    /// place (ADR-0147).
+    memory: MemoryKind,
     /// The engine keeps its input and copies are not forced (ADR-0146).
     reuse: bool,
     /// Oldest slot in flight.
@@ -170,7 +187,10 @@ impl<E: Engine> Session<E> {
         dynamic_bitrate: bool,
         stream: StreamDescriptor,
     ) -> Self {
-        let slots = vec![Slot::default(); engine.slots().max(1)].into_boxed_slice();
+        let slots = (0..engine.slots().max(1))
+            .map(|_| Slot::default())
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
         let reuse = engine.keeps_input() && !copy_always();
         Self {
             engine,
@@ -180,6 +200,7 @@ impl<E: Engine> Session<E> {
             rate_control,
             dynamic_bitrate,
             slots,
+            memory: MemoryKind::System,
             reuse,
             head: 0,
             in_flight: 0,
@@ -189,6 +210,15 @@ impl<E: Engine> Session<E> {
             broken: None,
             stats: SessionStats::default(),
         }
+    }
+
+    /// The session takes exported native frames of `memory` instead of system memory
+    /// (ADR-0147): the engine was opened for that kind and reads each frame in place
+    /// through [`Engine::attach_native`].
+    #[must_use]
+    pub fn with_memory(mut self, memory: MemoryKind) -> Self {
+        self.memory = memory;
+        self
     }
 
     /// Counters of this session.
@@ -251,19 +281,21 @@ impl<E: Engine> Session<E> {
             }
             Err(_) => return Err(self.fail(EngineError::Broken("reading a picture failed"))),
         };
-        let expected = self.slots[slot];
-        if output.token != expected.token {
+        let (expected_pts, expected_token) = (self.slots[slot].pts, self.slots[slot].token);
+        if output.token != expected_token {
             // A picture out of submission order: frames were reordered, which this
             // session does not support.
             return Err(self.fail(EngineError::Broken("encoder output out of order")));
         }
+        // The encoder is done with the slot's native frame: hand its surface back.
+        drop(self.slots[slot].held.take());
         self.head = self.wrap(self.head + 1);
         self.in_flight -= 1;
         let packet = EncodedPacket::new(
             self.codec,
             self.stream.bitstream,
-            expected.pts,
-            expected.pts,
+            expected_pts,
+            expected_pts,
             output.keyframe,
             Bytes::from(output.data),
         )
@@ -279,14 +311,42 @@ impl<E: Engine> VideoEncoder for Session<E> {
         &self.stream
     }
 
+    fn max_frames_held(&self) -> usize {
+        // System frames are copied in `submit`; native frames are held until their slot's
+        // output was taken, so every slot may hold one (ADR-0147 decision 4).
+        if self.memory == MemoryKind::System {
+            0
+        } else {
+            self.slots.len()
+        }
+    }
+
     fn submit(&mut self, frame: &VideoFrame) -> Result<(), EncodeError> {
         self.check()?;
-        let FramePayload::System(system) = frame.payload() else {
-            return Err(EncodeError::InvalidInput(
-                "the session takes system-memory frames".into(),
-            ));
+        let system = match frame.payload() {
+            FramePayload::System(system) if self.memory == MemoryKind::System => {
+                if *system.format() != self.format {
+                    return Err(EncodeError::InvalidInput(
+                        "frame format differs from the session format".into(),
+                    ));
+                }
+                Some(system)
+            }
+            FramePayload::Native { .. }
+                if self.memory != MemoryKind::System
+                    && frame.is_exported()
+                    && frame.memory_kind() == self.memory =>
+            {
+                None
+            }
+            _ => {
+                return Err(EncodeError::InvalidInput(format!(
+                    "the session takes {} frames",
+                    self.memory
+                )));
+            }
         };
-        if *frame.format() != self.format || *system.format() != self.format {
+        if *frame.format() != self.format {
             return Err(EncodeError::InvalidInput(
                 "frame format differs from the session format".into(),
             ));
@@ -306,6 +366,32 @@ impl<E: Engine> VideoEncoder for Session<E> {
         }
         // ADR-0146: a slot that holds this frame's picture is encoded again as it is.
         let picture = frame.picture();
+        let Some(system) = system else {
+            // ADR-0147: the encoder reads the exported surface in place; no copy.
+            let Some(held) = frame.share() else {
+                return Err(EncodeError::InvalidInput(
+                    "native frame is not shared".into(),
+                ));
+            };
+            self.slots[slot].picture = PictureId::NONE;
+            if let Err(e) = self.engine.attach_native(slot, frame) {
+                return Err(self.fail(e));
+            }
+            let token = self.next_token;
+            if let Err(e) = self.engine.encode(slot, token, self.keyframe_pending) {
+                return Err(self.fail(e));
+            }
+            self.slots[slot].held = Some(held);
+            self.slots[slot].pts = pts;
+            self.slots[slot].token = token;
+            self.next_token += 1;
+            self.in_flight += 1;
+            self.last_pts = Some(pts);
+            self.keyframe_pending = false;
+            self.stats.submitted += 1;
+            self.stats.native += 1;
+            return Ok(());
+        };
         if self.reuse && !picture.is_none() && self.slots[slot].picture == picture {
             self.stats.reused += 1;
         } else {
@@ -487,6 +573,13 @@ mod fake {
             assert!(!self.slots[slot].busy, "upload into a slot in flight");
             let (luma, _) = frame.plane(0).ok_or(EngineError::Broken("no luma"))?;
             self.slots[slot].held = luma.first().copied();
+            Ok(())
+        }
+
+        fn attach_native(&mut self, slot: usize, frame: &VideoFrame) -> Result<(), EngineError> {
+            assert!(!self.slots[slot].busy, "attach to a slot in flight");
+            assert!(frame.is_exported(), "attach of a frame no exporter built");
+            self.slots[slot].held = Some(0xAA);
             Ok(())
         }
 
@@ -1064,5 +1157,120 @@ mod tests {
             run.session.drain(&mut run.packets).unwrap();
         }
         assert_eq!(run.session.stats().reused, 0);
+    }
+
+    mod native {
+        //! Exported native frames (ADR-0147 decision 7): read in place, held until their
+        //! output was taken.
+        use super::*;
+        use rbs_core::media::{Lease, LeaseOwner, NativeSurface, PlaneLayout, SurfaceSync};
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        #[derive(Default)]
+        struct Owner(AtomicU32);
+
+        // SAFETY: test owner; it only counts.
+        unsafe impl LeaseOwner for Owner {
+            fn retain(&self, _: u64) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+            fn release(&self, _: u64) {
+                self.0.fetch_sub(1, Ordering::Release);
+            }
+        }
+
+        fn native_session(script: Script) -> Session<FakeEngine> {
+            let mut config = config();
+            config.memory = MemoryKind::D3d12Buffer;
+            let config = config.with_device(rbs_core::media::GpuDeviceId::Luid([1; 8]));
+            let mut device = geforce();
+            device.native_memory = vec![MemoryKind::D3d12Buffer];
+            session(&config, &device, script)
+                .unwrap()
+                .with_memory(MemoryKind::D3d12Buffer)
+        }
+
+        fn exported(owner: &Arc<Owner>, t: u64) -> VideoFrame {
+            owner.retain(0);
+            let lease_owner: Arc<dyn LeaseOwner> = owner.clone();
+            // SAFETY: one reference was counted just above and is handed over.
+            let lease = unsafe { Lease::adopt(lease_owner, 0) };
+            let planes = [
+                PlaneLayout {
+                    offset: 0,
+                    stride: 512,
+                },
+                PlaneLayout {
+                    offset: 512 * 240,
+                    stride: 512,
+                },
+            ];
+            // SAFETY: test only; the handle is never opened.
+            unsafe {
+                VideoFrame::exported(
+                    config().format,
+                    Timestamp::from_nanos(t * 33_333_333 + 1),
+                    NativeSurface::d3d_shared_buffer(0x40, 1 << 20, 1, planes),
+                    SurfaceSync::timeline_fence(0x44, t + 1),
+                    lease,
+                )
+            }
+        }
+
+        #[test]
+        fn native_frames_are_held_until_their_output_is_taken() {
+            let mut s = native_session(Script {
+                latency: 1000,
+                ..Script::default()
+            });
+            assert_eq!(s.max_frames_held(), FRAMES_IN_FLIGHT);
+            let owner = Arc::new(Owner::default());
+            for t in 0..3 {
+                let frame = exported(&owner, t);
+                s.submit(&frame).unwrap();
+                // The caller's frame goes; the session keeps its own share.
+            }
+            assert_eq!(owner.0.load(Ordering::Acquire), 3);
+            let mut out = Vec::new();
+            s.flush(&mut out).unwrap();
+            assert_eq!(out.len(), 3);
+            assert_eq!(owner.0.load(Ordering::Acquire), 0);
+            let stats = s.stats();
+            assert_eq!((stats.native, stats.copied), (3, 0));
+        }
+
+        #[test]
+        fn a_native_session_refuses_other_memory() {
+            let mut s = native_session(Script::default());
+            let mut source = SystemFrameSource::new();
+            let system = source
+                .frame(&config().format, 0, Timestamp::from_nanos(1))
+                .unwrap();
+            assert!(matches!(
+                s.submit(&system),
+                Err(EncodeError::InvalidInput(_))
+            ));
+            // A system session refuses exported frames.
+            let mut sys = session(&config(), &geforce(), Script::default()).unwrap();
+            assert_eq!(sys.max_frames_held(), 0);
+            let owner = Arc::new(Owner::default());
+            assert!(matches!(
+                sys.submit(&exported(&owner, 0)),
+                Err(EncodeError::InvalidInput(_))
+            ));
+            assert_eq!(owner.0.load(Ordering::Acquire), 0);
+        }
+
+        #[test]
+        fn a_failed_encode_does_not_keep_the_frame() {
+            let mut s = native_session(Script {
+                encode_errors: vec![(0, EngineError::Busy)],
+                ..Script::default()
+            });
+            let owner = Arc::new(Owner::default());
+            assert!(s.submit(&exported(&owner, 0)).is_err());
+            assert_eq!(owner.0.load(Ordering::Acquire), 0);
+        }
     }
 }

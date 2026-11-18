@@ -116,7 +116,7 @@ pub const NATIVE_HOLDERS: usize = 6;
 #[allow(clippy::large_enum_variant)]
 enum Conversion {
     Readback(YuvDownload),
-    #[cfg(target_vendor = "apple")]
+    #[cfg(any(target_vendor = "apple", windows))]
     Native(rbs_gpu::native_export::NativeDownload),
 }
 
@@ -124,7 +124,7 @@ macro_rules! each {
     ($conv:expr, $d:ident => $body:expr) => {
         match $conv {
             Conversion::Readback($d) => $body,
-            #[cfg(target_vendor = "apple")]
+            #[cfg(any(target_vendor = "apple", windows))]
             Conversion::Native($d) => $body,
         }
     };
@@ -177,8 +177,9 @@ impl Conversion {
 
 /// The native memory kind and device this render device can export to encoders, if
 /// any (ADR-0147 decision 1): decided by the device's graphics API, never by vendor.
-/// Metal: IOSurfaces (macOS). Other APIs have no exporter yet (D3D12 and Vulkan follow,
-/// ADR-0147 order of work), so their chains read back.
+/// Metal: IOSurfaces (macOS). D3D12: shared linear buffers (`d3d12_buffer`) on the
+/// render adapter, named by its LUID. Vulkan has no exporter yet (ADR-0147 order of
+/// work), so its chains read back.
 pub fn export_preference(
     ctx: &rbs_gpu::GpuContext,
 ) -> Option<(rbs_core::media::MemoryKind, rbs_core::media::GpuDeviceId)> {
@@ -188,6 +189,13 @@ pub fn export_preference(
             rbs_core::media::MemoryKind::Metal,
             rbs_core::media::GpuDeviceId::MetalRegistryId(0),
         )),
+        #[cfg(windows)]
+        wgpu::Backend::Dx12 => ctx.adapter_luid().map(|luid| {
+            (
+                rbs_core::media::MemoryKind::D3d12Buffer,
+                rbs_core::media::GpuDeviceId::Luid(luid.to_le_bytes()),
+            )
+        }),
         _ => None,
     }
 }
@@ -986,21 +994,20 @@ impl VideoExportNode {
     /// decision 4), hands its lease owner to the composition root (decision 8), and
     /// clears the black hold surface when the export has a hold. Every failure is
     /// permanent (decision 9).
-    #[cfg(target_vendor = "apple")]
+    #[cfg(any(target_vendor = "apple", windows))]
     fn prepare_native(
         &mut self,
         ctx: &mut PrepareCtx<'_, GpuRuntime>,
         native: &NativeExport,
     ) -> Result<(), NodeError> {
-        use rbs_gpu::export::{MAX_EXPORT_SURFACES, SurfaceExporter};
-        use rbs_gpu::native_export::NativeDownload;
+        use rbs_gpu::native_export::{MAX_EXPORT_SURFACES, NativeDownload, PlatformExporter};
         // The hold's pinned picture and its black surface.
         let hold = if self.hold.is_some() { 2 } else { 0 };
         let surfaces = NATIVE_HOLDERS + native.encoder_frames + hold;
         if surfaces > MAX_EXPORT_SURFACES {
             return Err(NodeError::Permanent("native export ring too large"));
         }
-        let mut exporter = SurfaceExporter::scaled_tone(
+        let mut exporter = PlatformExporter::scaled_tone(
             ctx.shared,
             self.format,
             self.canvas_width,
@@ -1029,7 +1036,7 @@ impl VideoExportNode {
     }
 
     /// Native mode has no exporter on this platform yet (ADR-0147 order of work).
-    #[cfg(not(target_vendor = "apple"))]
+    #[cfg(not(any(target_vendor = "apple", windows)))]
     fn prepare_native(
         &mut self,
         _ctx: &mut PrepareCtx<'_, GpuRuntime>,

@@ -16,6 +16,9 @@
 //! sound section, each packet goes there with the OS monotonic time of its first frame
 //! (ADR-0109 decision 6); otherwise it is dropped.
 //!
+//! The CEF runtime is not shipped with the runner: it is the browser engine add-on,
+//! loaded from the directory the studio names (`engine`, ADR-0145).
+//!
 //! Not yet: the GPU texture path, CSS, reload, input and the sandbox (ADR-0132 steps).
 
 use std::io::Read;
@@ -30,14 +33,11 @@ use rbs_browser_shm::{
     FrameRing, MAX_SOUND_CHANNELS, RingWriter, SlotLayout, SoundRing, os_monotonic_nanos,
 };
 
-/// Exit codes the studio may log. Any exit is Unavailable to the studio.
-mod exit {
-    pub const BAD_CONFIGURE: i32 = 2;
-    pub const NO_SECTION: i32 = 3;
-    pub const INIT_FAILED: i32 = 4;
-    pub const NO_BROWSER: i32 = 5;
-    pub const RENDERER_GONE: i32 = 6;
-}
+mod engine;
+
+// Exit codes, numbered in `rbs-browser-ipc`. Any exit is Unavailable to the studio;
+// the runtime ones name why (add-ons spec "Browser engine consumer").
+use rbs_browser_ipc::exit;
 
 /// Everything the CEF callbacks share. CEF calls them on its UI thread, which is
 /// the thread that runs `main`'s message loop.
@@ -559,16 +559,10 @@ mod mac {
 }
 
 fn main() {
-    #[cfg(target_os = "macos")]
-    let _loader = {
-        let Ok(exe) = std::env::current_exe() else {
-            std::process::exit(exit::INIT_FAILED);
-        };
-        let loader = library_loader::LibraryLoader::new(&exe, false);
-        if !loader.load() {
-            std::process::exit(exit::INIT_FAILED);
-        }
-        loader
+    // Every process type loads and checks the downloaded engine before any CEF call.
+    let engine = match engine::load(false) {
+        Ok(engine) => engine,
+        Err(code) => std::process::exit(code),
     };
     let _ = api_hash(sys::CEF_API_VERSION_LAST, 0);
     let args = args::Args::new();
@@ -583,10 +577,12 @@ fn main() {
     if code >= 0 {
         std::process::exit(code);
     }
-    std::process::exit(run_browser(&args, &mut app));
+    let code = run_browser(&args, &mut app, &engine);
+    drop(engine);
+    std::process::exit(code);
 }
 
-fn run_browser(args: &args::Args, app: &mut App) -> i32 {
+fn run_browser(args: &args::Args, app: &mut App, engine: &engine::Engine) -> i32 {
     #[cfg(target_os = "macos")]
     if !mac::setup() {
         return exit::INIT_FAILED;
@@ -642,6 +638,19 @@ fn run_browser(args: &args::Args, app: &mut App) -> i32 {
         persist_session_cookies: 0,
         log_severity: LogSeverity::ERROR,
         log_file: profile.join("cef.log").to_string_lossy().as_ref().into(),
+        resources_dir_path: engine
+            .resources_dir()
+            .map(|dir| dir.to_string_lossy().as_ref().into())
+            .unwrap_or_default(),
+        locales_dir_path: engine
+            .locales_dir()
+            .map(|dir| dir.to_string_lossy().as_ref().into())
+            .unwrap_or_default(),
+        #[cfg(target_os = "macos")]
+        framework_dir_path: engine
+            .framework_dir()
+            .map(|dir| dir.to_string_lossy().as_ref().into())
+            .unwrap_or_default(),
         ..Default::default()
     };
     if initialize(
