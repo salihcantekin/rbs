@@ -289,6 +289,12 @@ impl BrowserSession for RunnerSession {
         self.supervisor.send(message)
     }
 
+    fn set_shown(&mut self, shown: bool) {
+        // The supervisor tells the helper and changes its own read rates (ADR-0149
+        // decision 5).
+        let _ = self.supervisor.set_shown(shown);
+    }
+
     fn exit_reason(&self) -> Option<&'static str> {
         match self.supervisor.exit_cause() {
             Cause::RuntimeMissing => Some(BROWSER_RUNTIME_MISSING),

@@ -2897,6 +2897,138 @@ fn a_browser_source_waits_for_its_engine_and_starts_after_the_install() {
 }
 
 #[test]
+fn a_background_page_runs_hidden_while_placed_and_stops_when_it_no_longer_is_one() {
+    // ADR-0149 decision 5, ADR-0152 decisions 4 and 7: `run: placed` keeps the page's
+    // helper running, hidden, while its picture node is not scheduled; shown, the same
+    // helper paints at full rate; back to the type's default, it stops.
+    use std::sync::atomic::AtomicU32;
+    use std::sync::{Arc, Mutex};
+
+    use rbs_browser_ipc::Configure;
+    use rbs_browser_ipc::control::Control;
+    use rbs_core::media::video::Size;
+    use rbs_scene::SceneCollection;
+    use rbs_scene::activity::{Run, SourceActivity};
+    use rbs_scene::model::{SceneScope, SettingValue};
+    use rbs_sources::types::keys;
+    use rbs_sources::{BrowserFrameSink, BrowserSession, BrowserTree};
+
+    let Some(gpu) = gpu() else {
+        return;
+    };
+    let r = rig();
+    let mut col = SceneCollection::new();
+    let (canvas, _) = col.add_canvas("Main", Size::new(W, H), FPS).unwrap();
+    let (live, _) = col.add_scene("Live", SceneScope::Shared).unwrap();
+    let (shelf, _) = col.add_scene("Shelf", SceneScope::Shared).unwrap();
+    let mut settings = Settings::new();
+    settings.insert(
+        keys::URL.to_owned(),
+        SettingValue::Text("https://example.com/".to_owned()),
+    );
+    settings.insert(keys::WIDTH.to_owned(), SettingValue::Int(64));
+    settings.insert(keys::HEIGHT.to_owned(), SettingValue::Int(36));
+    let (page, _) = col
+        .add_source(
+            "Page",
+            NodeTypeId::new_static(types::BROWSER_SOURCE),
+            settings,
+        )
+        .unwrap();
+    let full = Layout::new([0.0, 0.0], [W as f32, H as f32]);
+    col.add_item(shelf, ItemContent::Source(page), full, None)
+        .unwrap();
+    col.set_source_activity(page, SourceActivity::new(Some(Run::Placed), None, None))
+        .unwrap();
+    col.set_program(canvas, Some(live)).unwrap();
+
+    type Log = Arc<Mutex<Vec<Control>>>;
+    struct Session {
+        sent: Log,
+        stops: Arc<AtomicU32>,
+    }
+    impl BrowserSession for Session {
+        fn poll(&mut self) -> Option<i32> {
+            None
+        }
+        fn stop(&mut self) {
+            self.stops.fetch_add(1, Ordering::Relaxed);
+        }
+        fn send(&mut self, message: &Control) -> bool {
+            self.sent.lock().unwrap().push(message.clone());
+            true
+        }
+    }
+    struct Tree {
+        starts: AtomicU32,
+        stops: Arc<AtomicU32>,
+        sent: Log,
+    }
+    impl BrowserTree for Tree {
+        fn start(
+            &self,
+            _config: &Configure,
+            _sink: Arc<BrowserFrameSink>,
+            _sound: Option<Arc<rbs_sources::BrowserSound>>,
+        ) -> Result<Box<dyn BrowserSession>, String> {
+            self.starts.fetch_add(1, Ordering::Relaxed);
+            Ok(Box::new(Session {
+                sent: Arc::clone(&self.sent),
+                stops: Arc::clone(&self.stops),
+            }))
+        }
+    }
+    let tree = Arc::new(Tree {
+        starts: AtomicU32::new(0),
+        stops: Arc::new(AtomicU32::new(0)),
+        sent: Arc::new(Mutex::new(Vec::new())),
+    });
+    let sent = || tree.sent.lock().unwrap().clone();
+
+    let (engine, _clock) = engine_at_start();
+    let mut studio = Studio::start_with_tree(
+        engine,
+        gpu,
+        &col,
+        &r.adapters.sources,
+        &StudioSettings::new(canvas),
+        Some(Arc::clone(&tree) as Arc<dyn BrowserTree>),
+    )
+    .unwrap();
+    // Placed on a scene nothing shows: started by the studio, hidden.
+    assert!(studio.browser_running(page));
+    assert_eq!(tree.starts.load(Ordering::Relaxed), 1);
+    assert_eq!(sent(), vec![Control::Shown(false)]);
+
+    // On the program: the same helper, shown.
+    let item = col
+        .add_item(live, ItemContent::Source(page), full, None)
+        .unwrap()
+        .0;
+    studio.update(&col, &r.adapters.sources).unwrap();
+    assert!(studio.browser_running(page));
+    assert_eq!(tree.starts.load(Ordering::Relaxed), 1);
+    assert_eq!(sent(), vec![Control::Shown(false), Control::Shown(true)]);
+
+    // Off the program again: the node leaves the schedule, the helper stays, hidden.
+    col.remove_item(item).unwrap();
+    studio.update(&col, &r.adapters.sources).unwrap();
+    assert!(studio.browser_running(page));
+    assert_eq!(tree.starts.load(Ordering::Relaxed), 1);
+    assert_eq!(tree.stops.load(Ordering::Relaxed), 0);
+    assert_eq!(sent().last(), Some(&Control::Shown(false)));
+
+    // Back to the type's default (`run: shown`): nothing shows it, so it stops.
+    col.set_source_activity(page, SourceActivity::default())
+        .unwrap();
+    studio.update(&col, &r.adapters.sources).unwrap();
+    assert!(!studio.browser_running(page));
+    assert_eq!(tree.stops.load(Ordering::Relaxed), 1);
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
+#[test]
 fn the_same_picture_under_another_scene_id_starts_no_transition() {
     // ADR-0151 follow-up: the desktop app's held program copy taken or given back.
     use rbs_scene::{CollectionTransition, TransitionKind};

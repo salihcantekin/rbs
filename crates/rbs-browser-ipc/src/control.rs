@@ -15,6 +15,8 @@ pub const KIND_RUN_SCRIPT: u8 = 3;
 pub const KIND_PAGE: u8 = 4;
 /// One input event (`crate::input`).
 pub const KIND_INPUT: u8 = 5;
+/// Whether a shown scene draws the page (ADR-0149 decision 5); body: one byte, 1 shown.
+pub const KIND_SHOWN: u8 = 6;
 
 /// A message to a running runner.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,6 +32,9 @@ pub enum Control {
     Page(Box<PageOptions>),
     /// An input event for the page (ADR-0132 decision 6).
     Input(InputEvent),
+    /// A background page is hidden (false) or shown again (true) (ADR-0149 decision
+    /// 5): hidden, the runner paints once per second without telling the page.
+    Shown(bool),
 }
 
 /// Encodes a control message with its length prefix.
@@ -51,6 +56,10 @@ pub fn encode(message: &Control) -> Vec<u8> {
         Control::Input(event) => {
             body.push(KIND_INPUT);
             event.encode(&mut body);
+        }
+        Control::Shown(shown) => {
+            body.push(KIND_SHOWN);
+            body.push(u8::from(*shown));
         }
     }
     let mut out = Vec::with_capacity(4 + body.len());
@@ -77,6 +86,7 @@ pub fn decode(body: &[u8]) -> Option<Control> {
         }
         KIND_PAGE => PageOptions::decode(body.get(1..)?).map(|p| Control::Page(Box::new(p))),
         KIND_INPUT => InputEvent::decode(body.get(1..)?).map(Control::Input),
+        KIND_SHOWN => Some(Control::Shown(*body.get(1)? != 0)),
         _ => None,
     }
 }
@@ -124,6 +134,8 @@ mod tests {
                 profile_dir: String::new(),
             })),
             Control::Input(InputEvent::Text("ğ".into())),
+            Control::Shown(false),
+            Control::Shown(true),
         ] {
             let bytes = encode(&m);
             assert_eq!(read(&mut bytes.as_slice()).unwrap(), Some(m));

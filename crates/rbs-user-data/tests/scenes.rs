@@ -1327,3 +1327,44 @@ fn format_24_restart_when_shown_becomes_the_media_on_return() {
             .contains_key("restart_when_shown")
     );
 }
+
+#[test]
+fn format_25_keep_running_becomes_the_page_run_placed() {
+    // ADR-0152 decision 10: true is `run = "placed"`, false the default, the key is
+    // dropped; a saved `run` wins.
+    use rbs_scene::activity::Run;
+    let head = "kind = \"scene-collection\"\nformat = 25\n[[canvases]]\nid = 0\nname = \"C\"\n\
+                width = 1920\nheight = 1080\nframe_rate = [30, 1]\n";
+    let page = |id: u32, extra: &str| {
+        format!(
+            "[[sources]]\nid = {id}\nname = \"P{id}\"\ntype = \"org.rbs.source.browser\"\n{extra}"
+        )
+    };
+    let url = "url = \"https://example.com/\"";
+    let text = format!(
+        "{head}{}{}{}",
+        page(0, &format!("settings = {{ {url}, keep_running = true }}\n")),
+        page(
+            1,
+            &format!("settings = {{ {url}, keep_running = false }}\n")
+        ),
+        page(
+            2,
+            &format!(
+                "settings = {{ {url}, keep_running = true }}\nactivity = {{ run = \"on_air\" }}\n"
+            )
+        ),
+    );
+    let col = document::parse::<SceneCollection>(&text).unwrap().document;
+    let run = |id: u32| {
+        let s = col.sources().find(|s| s.name == format!("P{id}")).unwrap();
+        assert!(!s.settings.contains_key("keep_running"));
+        s.activity.run
+    };
+    assert_eq!(run(0), Some(Run::Placed));
+    assert_eq!(run(1), None);
+    assert_eq!(run(2), Some(Run::OnAir));
+    let out = document::render(&col, Some("Show")).unwrap();
+    assert!(out.contains("format = 26"), "{out}");
+    assert!(!out.contains("keep_running"), "{out}");
+}

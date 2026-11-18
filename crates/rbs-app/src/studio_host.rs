@@ -11393,6 +11393,16 @@ impl Host {
                     )
                 }),
             )
+            .chain(
+                // The deprecated spelling of a page's `run: placed` (ADR-0152 decision
+                // 10, ADR-0149 decision 5).
+                (SourceKind::of(&source.type_id) == Some(SourceKind::Browser)).then(|| {
+                    (
+                        keys::KEEP_RUNNING.to_owned(),
+                        serde_json::Value::Bool(keeps_running(source)),
+                    )
+                }),
+            )
             .collect())
     }
 
@@ -11480,6 +11490,32 @@ impl Host {
                 }
                 None if patch.get(keys::RESTART_WHEN_SHOWN) == Some(&serde_json::Value::Null) => {
                     activity.on_return = None;
+                }
+                None => {}
+            }
+        }
+        // A page's `keep_running` is the deprecated spelling of `run: placed`
+        // (ADR-0152 decision 10): true sets it; false or null takes it back to the
+        // type's default, and leaves any other `run` alone.
+        if browser {
+            match settings.remove(keys::KEEP_RUNNING) {
+                Some(SettingValue::Bool(true)) => {
+                    activity.run = Some(rbs_scene::activity::Run::Placed);
+                }
+                Some(SettingValue::Bool(false)) => {
+                    if activity.run == Some(rbs_scene::activity::Run::Placed) {
+                        activity.run = None;
+                    }
+                }
+                Some(_) => {
+                    return Err(Refusal::Invalid(
+                        "\"keep_running\" must be a flag.".to_owned(),
+                    ));
+                }
+                None if patch.get(keys::KEEP_RUNNING) == Some(&serde_json::Value::Null)
+                    && activity.run == Some(rbs_scene::activity::Run::Placed) =>
+                {
+                    activity.run = None;
                 }
                 None => {}
             }
@@ -14035,7 +14071,7 @@ impl Host {
                     ),
                     text: (SourceKind::of(&s.type_id) == Some(SourceKind::Text))
                         .then(|| s.settings.clone()),
-                    browser: (kind == Some(SourceKind::Browser)).then(|| s.settings.clone()),
+                    browser: (kind == Some(SourceKind::Browser)).then(|| browser_page_settings(s)),
                     browser_reason: state.and_then(|st| st.reason),
                     cap_has,
                     cap_l,
@@ -17712,6 +17748,25 @@ fn in_scene(id: SourceId) -> rbs_api::request::SourceInScene {
 }
 
 /// The control API's spelling of a `run` value (ADR-0152).
+/// A page's deprecated `keep_running`, computed from its activity policy (ADR-0152
+/// decision 10): true when its effective `run` is `placed`.
+fn keeps_running(source: &Source) -> bool {
+    rbs_sources::activity_traits(&source.type_id)
+        .effective(Some(&source.activity))
+        .run
+        == rbs_scene::activity::Run::Placed
+}
+
+/// A page's settings as the Page tab reads them: the stored keys and the computed
+/// `keep_running` (true only), which is no longer stored (ADR-0152 decision 10).
+fn browser_page_settings(source: &Source) -> Settings {
+    let mut settings = source.settings.clone();
+    if keeps_running(source) {
+        settings.insert(keys::KEEP_RUNNING.to_owned(), SettingValue::Bool(true));
+    }
+    settings
+}
+
 /// A film's deprecated `restart_when_shown`, computed from its activity policy
 /// (ADR-0152 decision 10): true unless its effective `on_return` is not `restart`.
 fn restarts_when_shown(source: &Source) -> bool {

@@ -2084,3 +2084,64 @@ fn a_film_restart_when_shown_setting_is_written_to_its_activity_policy() {
     ok(&c.call("edit.undo", json!({})));
     assert_eq!(on_return(&mut c), Value::Null);
 }
+
+#[test]
+fn a_page_keep_running_setting_is_written_to_its_activity_policy() {
+    // ADR-0152 decision 10: `keep_running` is the deprecated spelling of `run: placed`.
+    use rbs_core::media::Size;
+    use rbs_core::timing::FrameRate;
+    use rbs_graph::node::NodeTypeId;
+    use rbs_scene::model::{SceneScope, SettingValue, Settings};
+    let mut settings = Settings::new();
+    settings.insert(
+        "url".to_owned(),
+        SettingValue::Text("https://example.com/".into()),
+    );
+    let mut doc = rbs_scene::SceneCollection::default();
+    let fps = FrameRate::new(30, 1).unwrap();
+    let (main, _) = doc.add_canvas("Main", Size::new(1280, 720), fps).unwrap();
+    let (scene, _) = doc.add_scene("Scene", SceneScope::Shared).unwrap();
+    doc.set_program(main, Some(scene)).unwrap();
+    let page = doc
+        .add_source("Page", NodeTypeId::new("org.rbs.source.browser"), settings)
+        .unwrap()
+        .0
+        .get();
+    let Some((_host, _updates, _api, mut c)) = start_with_media(Some(doc), None) else {
+        return;
+    };
+    let set = |c: &mut Client, value: Value| {
+        c.call(
+            "source.set_settings",
+            json!({"source": page, "settings": {"keep_running": value}}),
+        )
+    };
+    let run = |c: &mut Client| {
+        c.call("source.get_activity", json!({"source": page}))["result"]["run"].clone()
+    };
+    let kept = |c: &mut Client| {
+        c.call("source.get_settings", json!({"source": page}))["result"]["settings"]["keep_running"]
+            .clone()
+    };
+    assert_eq!(kept(&mut c), json!(false));
+    ok(&set(&mut c, json!(true)));
+    assert_eq!(run(&mut c), json!("placed"));
+    assert_eq!(kept(&mut c), json!(true));
+    ok(&set(&mut c, json!(false)));
+    assert_eq!(run(&mut c), Value::Null);
+    // `false` leaves another `run` alone.
+    ok(&c.call(
+        "source.set_activity",
+        json!({"source": page, "run": "on_air"}),
+    ));
+    ok(&set(&mut c, json!(false)));
+    assert_eq!(run(&mut c), json!("on_air"));
+    assert_eq!(kept(&mut c), json!(false));
+    assert_eq!(kind(&set(&mut c, json!(1))), "invalid_params");
+    // The policy takes `placed` directly too.
+    ok(&c.call(
+        "source.set_activity",
+        json!({"source": page, "run": "placed"}),
+    ));
+    assert_eq!(kept(&mut c), json!(true));
+}

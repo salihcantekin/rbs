@@ -321,6 +321,8 @@ pub struct Supervisor {
     /// Control messages for the supervisor thread to write; bounded, so a helper
     /// that stops reading never makes the sender wait.
     outbox: std::sync::mpsc::SyncSender<Control>,
+    /// False while the page is a hidden background page (ADR-0149 decision 5).
+    shown: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Control messages that may wait for the supervisor thread.
@@ -341,6 +343,15 @@ pub trait PageSound: Send + 'static {
 /// How often the supervisor reads page sound: often enough that a block is pushed
 /// well inside the audio graph's latency.
 pub const SOUND_POLL: Duration = Duration::from_millis(5);
+
+/// How often the supervisor drains and drops a hidden background page's sound
+/// (ADR-0149 decision 5): a quarter of the 65 536-sample ring's length at 48 kHz
+/// stereo is about 170 ms, so 100 ms keeps the helper from ever finding it full.
+pub const HIDDEN_SOUND_DRAIN: Duration = Duration::from_millis(100);
+
+/// How often the supervisor polls a hidden background page without sound: twice per
+/// second, as for a page painting once per second.
+pub const HIDDEN_POLL: Duration = Duration::from_millis(500);
 
 impl Supervisor {
     /// Moves `child` onto a new supervisor thread.
@@ -377,6 +388,8 @@ impl Supervisor {
         let (stop_flag, exited_flag) = (Arc::clone(&stop), Arc::clone(&exited));
         let cause_flag = Arc::clone(&cause);
         let (outbox, inbox) = std::sync::mpsc::sync_channel::<Control>(OUTBOX);
+        let shown = Arc::new(AtomicBool::new(true));
+        let shown_flag = Arc::clone(&shown);
         // Poll twice per page frame so a new frame waits at most half a period.
         let mut period = Duration::from_secs(1) / fps.clamp(1, 60) / 2;
         if sound.is_some() && child.has_sound() {
@@ -384,6 +397,12 @@ impl Supervisor {
         } else {
             sound = None;
         }
+        let hidden_period = if sound.is_some() {
+            HIDDEN_SOUND_DRAIN
+        } else {
+            HIDDEN_POLL
+        };
+        let mut was_shown = true;
         let thread = std::thread::Builder::new()
             .name("rbs-browser-supervisor".into())
             .spawn(move || {
@@ -393,11 +412,20 @@ impl Supervisor {
                     while let Ok(message) = inbox.try_recv() {
                         child.send(&message);
                     }
+                    let shown = shown_flag.load(Ordering::Acquire);
                     if let Some(sound) = sound.as_mut() {
-                        sound.observe(rbs_browser_shm::os_monotonic_nanos());
-                        child.read_sound(|packet| sound.packet(packet));
-                        sound.pump();
+                        if shown && was_shown {
+                            sound.observe(rbs_browser_shm::os_monotonic_nanos());
+                            child.read_sound(|packet| sound.packet(packet));
+                            sound.pump();
+                        } else {
+                            // Hidden, or shown again just now: drop what the ring
+                            // holds, so a shown page plays from the present with no
+                            // backlog (ADR-0149 decision 5).
+                            child.read_sound(|_| {});
+                        }
                     }
+                    was_shown = shown;
                     if child.refresh() {
                         publish(&child.frame, child.width, child.height, child.painted);
                     }
@@ -406,7 +434,7 @@ impl Supervisor {
                         exited_flag.store(true, Ordering::Release);
                         break;
                     }
-                    std::thread::park_timeout(period);
+                    std::thread::park_timeout(if shown { period } else { hidden_period });
                 }
                 // A stop, not an exit: let the helper shut down cleanly, here and not
                 // on the caller's thread.
@@ -422,7 +450,26 @@ impl Supervisor {
             cause,
             thread: Some(thread),
             outbox,
+            shown,
         })
+    }
+
+    /// Hides (false) or shows (true) a background page (ADR-0149 decision 5): tells
+    /// the helper, which paints once per second while hidden, and has the supervisor
+    /// read its frames at that rate and drain and drop its sound every
+    /// [`HIDDEN_SOUND_DRAIN`]. Shown again, the sound skips to the present. True when
+    /// the helper took the message. Never waits.
+    pub fn set_shown(&self, shown: bool) -> bool {
+        use std::sync::atomic::Ordering;
+        if self.shown.swap(shown, Ordering::AcqRel) == shown {
+            return true;
+        }
+        self.send(&Control::Shown(shown))
+    }
+
+    /// False while the page is a hidden background page. Never waits.
+    pub fn shown(&self) -> bool {
+        self.shown.load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// Queues a control message for the running helper (ADR-0132 decision 8); the
@@ -656,6 +703,8 @@ pub fn control_mark(message: &Control) -> u8 {
         Control::RunScript(Some(_)) => 4,
         Control::Page(_) => 5,
         Control::Input(_) => 6,
+        Control::Shown(false) => 7,
+        Control::Shown(true) => 8,
     }
 }
 

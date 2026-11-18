@@ -530,3 +530,110 @@ fn browser_node(
         Some(tree),
     )
 }
+
+#[test]
+fn a_background_page_never_takes_a_slot_from_a_shown_page() {
+    // ADR-0149 decision 5: background after program and preview, lower id first.
+    let budget = BrowserBudget::shared();
+    let claim = |id: u32, class| BrowserClaim {
+        source: SourceId::from_raw(id),
+        class,
+    };
+    let grants = budget.grant(&[
+        claim(1, ShowClass::Background),
+        claim(7, ShowClass::Preview),
+        claim(2, ShowClass::Background),
+    ]);
+    let slot = |id: u32| {
+        grants
+            .iter()
+            .find(|g| g.source == SourceId::from_raw(id))
+            .unwrap()
+            .slot
+    };
+    assert!(slot(7) && slot(1) && !slot(2));
+    // A second shown page takes the background page's slot.
+    budget.grant(&[
+        claim(1, ShowClass::Background),
+        claim(7, ShowClass::Preview),
+        claim(9, ShowClass::Program),
+    ]);
+    assert!(!budget.holds(SourceId::from_raw(1)));
+    assert!(budget.holds(SourceId::from_raw(9)) && budget.holds(SourceId::from_raw(7)));
+}
+
+#[test]
+fn the_studio_starts_a_background_page_hidden_and_a_release_keeps_it() {
+    // ADR-0149 decision 5, ADR-0152 decision 4: the picture node is not scheduled, so
+    // the control handle starts the page; a release of the node keeps a background
+    // page's helper, and stopping it frees the slot.
+    let budget = BrowserBudget::shared();
+    let source = SourceId::from_raw(11);
+    let tree = Arc::new(FakeTree {
+        starts: AtomicU32::new(0),
+        exit_immediately: false,
+        missing: AtomicBool::new(false),
+        exit_reason: None,
+    });
+    // A width no other test uses tells this test's messages apart.
+    let width = 1288;
+    let mut node = rbs_sources::BrowserSourceNode::new(
+        rbs_sources::BrowserSettings {
+            width,
+            height: 720,
+            ..rbs_sources::BrowserSettings::page("https://example.com/")
+        },
+        Arc::clone(&budget),
+        source,
+        Some(tree.clone()),
+    );
+    let control = node.control();
+    let sent = || -> Vec<BrowserMessage> {
+        SENT.lock()
+            .unwrap()
+            .iter()
+            .filter(|(w, _)| *w == width)
+            .map(|(_, m)| m.clone())
+            .collect()
+    };
+    control.set_shown(false);
+    control.set_background(true);
+    // No slot yet: refused as capped, nothing started.
+    let refused = control.start().unwrap_err();
+    assert_eq!(refused.error, BrowserStartError::Cap);
+    assert_eq!(tree.starts.load(Ordering::Relaxed), 0);
+    budget.grant(&[BrowserClaim {
+        source,
+        class: ShowClass::Background,
+    }]);
+    assert_eq!(control.start(), Ok(true));
+    assert_eq!(control.start(), Ok(false), "one helper only");
+    assert!(control.helper_running());
+    assert_eq!(sent(), vec![BrowserMessage::Shown(false)], "starts hidden");
+    // The picture node's release keeps the background page.
+    node.standby();
+    assert!(control.helper_running());
+    // Shown: the page is told once; a prepare finds it running.
+    control.set_shown(true);
+    control.set_shown(true);
+    assert_eq!(
+        sent(),
+        vec![BrowserMessage::Shown(false), BrowserMessage::Shown(true)]
+    );
+    node.activate().unwrap();
+    assert_eq!(tree.starts.load(Ordering::Relaxed), 1);
+    // A shown page took the slot: stopped, reported, slot free.
+    control.stop_background(true);
+    assert!(!control.helper_running() && control.capped());
+    assert!(!budget.holds(source));
+    // Not a background page any more: a release stops the helper as before.
+    control.set_background(false);
+    budget.grant(&[BrowserClaim {
+        source,
+        class: ShowClass::Program,
+    }]);
+    node.activate().unwrap();
+    assert!(!control.capped());
+    node.standby();
+    assert!(!control.helper_running());
+}
