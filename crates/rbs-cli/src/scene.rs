@@ -98,7 +98,7 @@ fn choose_display(types: &SourceTypes) -> Result<SourceTarget, String> {
         .into_iter()
         .next()
         .ok_or("no display can be captured on this system")?;
-    println!("choose the display to record in the system dialog");
+    rbs_crash::outln!("choose the display to record in the system dialog");
     picker.pick().map_err(|e| match e {
         SourceError::Capture(CaptureError::Cancelled) => {
             "the display dialog was closed without a choice".to_owned()

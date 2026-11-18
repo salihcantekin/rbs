@@ -104,7 +104,7 @@ fn main() {
     let (mut adapters, notes) = rbs_app::platform::adapters();
     adapters.probe();
     for n in notes {
-        eprintln!("note: {n}");
+        rbs_crash::errln!("note: {n}");
     }
     // `RBS_BENCH_SOFTWARE=1` accepts a CPU adapter (lavapipe), only to check the demo
     // runs on a machine without a GPU; its numbers mean nothing.
@@ -113,7 +113,7 @@ fn main() {
         ..rbs_gpu::GpuRequest::default()
     };
     let gpu = Arc::new(rbs_gpu::GpuContext::new(&request).expect("a GPU"));
-    println!("gpu: {}", gpu.adapter_name());
+    rbs_crash::outln!("gpu: {}", gpu.adapter_name());
     let mut engine = rbs_engine::Engine::new();
     engine.set_thread_policy(Some(Arc::new(rbs_thread_os::OsThreadPolicy::new())));
     let mut settings = StudioSettings::new(main);
@@ -148,14 +148,14 @@ fn main() {
             .expect("the separate files start")
             .tracks
     };
-    println!("tracks: {} ({marked:?})", iso.len());
+    rbs_crash::outln!("tracks: {} ({marked:?})", iso.len());
 
     let cpu_start = cpu_time();
     let start = Instant::now();
     while start.elapsed() < Duration::from_secs(seconds) {
         let serviced = studio.service();
         for (partition, event) in &serviced.events {
-            eprintln!("event on {partition:?}: {event:?}");
+            rbs_crash::errln!("event on {partition:?}: {event:?}");
         }
         std::thread::sleep(
             serviced
@@ -166,7 +166,7 @@ fn main() {
     }
     let wall = start.elapsed();
     let cpu = cpu_time().saturating_sub(cpu_start);
-    println!(
+    rbs_crash::outln!(
         "wall {:.1} s, process CPU {:.1} % of one core, peak memory {:.0} MiB",
         wall.as_secs_f64(),
         100.0 * cpu.as_secs_f64() / wall.as_secs_f64(),
@@ -178,7 +178,7 @@ fn main() {
         } else {
             t.sum / u32::try_from(t.ticks).unwrap_or(u32::MAX)
         };
-        println!(
+        rbs_crash::outln!(
             "render ticks {}: mean {:.2} ms, max {:.2} ms, 50 % under {} % and 99 % under {} % of the period, by quarter {:?}",
             t.ticks,
             mean.as_secs_f64() * 1e3,
@@ -189,7 +189,7 @@ fn main() {
         );
     }
     let p = studio.output_progress(master).expect("the master runs");
-    println!(
+    rbs_crash::outln!(
         "master: exported {} (drops {}), encoded {} (skipped {}, drops {}), late render ticks {}",
         p.frames_exported,
         p.export_drops,
@@ -200,7 +200,7 @@ fn main() {
     );
     for t in &iso {
         use std::sync::atomic::Ordering::Relaxed;
-        println!(
+        rbs_crash::outln!(
             "file {} {}x{}: exported {}, encoded {}, skipped {}, gave way {}, lost {}",
             t.file_name,
             t.size.0,
@@ -216,11 +216,11 @@ fn main() {
     let (reports, errors) = studio.shutdown();
     for (_, r) in reports {
         if let Some(f) = r.failure {
-            eprintln!("failure: {f}");
+            rbs_crash::errln!("failure: {f}");
         }
     }
     if !errors.is_empty() {
-        eprintln!("shutdown errors: {errors:?}");
+        rbs_crash::errln!("shutdown errors: {errors:?}");
     }
 }
 

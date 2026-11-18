@@ -209,13 +209,21 @@ impl TraceLanes {
         let mean = tail.iter().map(ms).sum::<f64>() / tail.len().max(1) as f64;
         let max = s.rounds.iter().map(ms).fold(0.0, f64::max);
         let call = s.call.iter().map(ms).sum::<f64>() / s.call.len().max(1) as f64;
-        println!(
+        rbs_crash::outln!(
             "  step {:2}: {:4} rounds, last-120 mean {:6.2} ms (P {:.2}), max {:7.2} ms, \
              backlog max {:?}, busy-late {}, lost {}, mean call {:.2} ms",
-            s.sessions, n, mean, p, max, s.backlog_max, s.busy_late, s.lost, call
+            s.sessions,
+            n,
+            mean,
+            p,
+            max,
+            s.backlog_max,
+            s.busy_late,
+            s.lost,
+            call
         );
         for (d, b, o) in &s.last {
-            println!("      last: {:6.2} ms backlog {b:?} {o:?}", ms(d));
+            rbs_crash::outln!("      last: {:6.2} ms backlog {b:?} {o:?}", ms(d));
         }
     }
 }
@@ -246,7 +254,7 @@ impl Lanes for TraceLanes {
                 Ok(Ok(()))
             }
             Ok(Ans::Opened(Err(e))) => {
-                println!("  open {} refused: {e:?}", self.order.len() + 1);
+                rbs_crash::outln!("  open {} refused: {e:?}", self.order.len() + 1);
                 Ok(Err(e))
             }
             _ => Err(LanesFailure),
@@ -317,7 +325,7 @@ impl Lanes for TraceLanes {
             }
         }
         self.order.clear();
-        println!("  closed: {out:?}");
+        rbs_crash::outln!("  closed: {out:?}");
         Ok(out)
     }
 }
@@ -351,12 +359,12 @@ fn main() {
     request.outputs = vec![PlannedOutput::new(&out, None)];
     let full = studio.calibration_plan(&adapters, &col, &request, std::env::temp_dir());
     let Some(class) = full.classes.first() else {
-        eprintln!("no class to measure");
+        rbs_crash::errln!("no class to measure");
         return;
     };
     let mut class = class.clone();
     class.candidates.retain(|c| c.likely);
-    println!(
+    rbs_crash::outln!(
         "class {:?}; candidate {:?}; config {:?}",
         class.key,
         class
@@ -376,7 +384,7 @@ fn main() {
     let pacer: Arc<dyn Pacer> = Arc::new(RealPacer(Arc::clone(&clock)));
     let period = FrameRate::FPS_60.frame_duration();
     for content in [Content::Moving, Content::Noise, Content::Flat] {
-        println!("== {content:?}");
+        rbs_crash::outln!("== {content:?}");
         let mut lanes = TraceLanes::new(&clock, &pacer, content, period);
         let stop = AtomicBool::new(false);
         let begun = Instant::now();
@@ -388,15 +396,17 @@ fn main() {
             &stop,
             clock.now(),
             &mut |e| match e {
-                CalibrationEvent::Series(r) => println!(
+                CalibrationEvent::Series(r) => rbs_crash::outln!(
                     "  RESULT sessions {} stopped_by {:?} frame_time {:?}",
-                    r.sessions, r.stopped_by, r.frame_time
+                    r.sessions,
+                    r.stopped_by,
+                    r.frame_time
                 ),
-                CalibrationEvent::Skipped(s) => println!("  SKIPPED {s:?}"),
+                CalibrationEvent::Skipped(s) => rbs_crash::outln!("  SKIPPED {s:?}"),
                 _ => {}
             },
         );
-        println!(
+        rbs_crash::outln!(
             "  outcome {outcome:?} after {:.1} s",
             begun.elapsed().as_secs_f64()
         );

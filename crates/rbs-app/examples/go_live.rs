@@ -44,12 +44,12 @@ fn main() -> ExitCode {
     let server = match stream_profile::parse_server(&url) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("{e}");
+            rbs_crash::errln!("{e}");
             return ExitCode::FAILURE;
         }
     };
     let keys = stream_key::system();
-    println!("key store: {}", keys.place());
+    rbs_crash::outln!("key store: {}", keys.place());
     let new_key = std::env::var("RBS_STREAM_KEY")
         .ok()
         .filter(|k| !k.trim().is_empty());
@@ -83,16 +83,16 @@ fn main() -> ExitCode {
         match wait(&rx) {
             Ok(Update::Started { encoders, .. }) => {
                 let names: Vec<_> = encoders.iter().map(|e| e.name.as_str()).collect();
-                println!("studio started; video encoders: {names:?}");
+                rbs_crash::outln!("studio started; video encoders: {names:?}");
                 break;
             }
             Ok(Update::Failed(e)) => {
-                eprintln!("the studio did not start: {e}");
+                rbs_crash::errln!("the studio did not start: {e}");
                 return ExitCode::FAILURE;
             }
             Ok(_) => {}
             Err(_) => {
-                eprintln!("the studio did not answer");
+                rbs_crash::errln!("the studio did not answer");
                 return ExitCode::FAILURE;
             }
         }
@@ -114,10 +114,10 @@ fn main() -> ExitCode {
         };
         match target {
             Some(target) => {
-                println!("adding {:?}: {}", kind, target.name);
+                rbs_crash::outln!("adding {:?}: {}", kind, target.name);
                 host.send(Command::AddSource { kind, target });
             }
-            None => println!("no {kind:?} to add"),
+            None => rbs_crash::outln!("no {kind:?} to add"),
         }
     }
 
@@ -126,7 +126,7 @@ fn main() -> ExitCode {
         loop {
             match wait(&rx) {
                 Ok(Update::StreamKey(r)) => {
-                    println!("key saved: {r:?}");
+                    rbs_crash::outln!("key saved: {r:?}");
                     if r.is_err() {
                         return ExitCode::FAILURE;
                     }
@@ -168,7 +168,7 @@ fn main() -> ExitCode {
     while !ended {
         let left = Duration::from_secs(seconds).saturating_sub(start.elapsed());
         if record_state == Some(1) && left < Duration::from_secs(seconds) / 4 {
-            println!(
+            rbs_crash::outln!(
                 "{:.1} s: stopping the recording",
                 start.elapsed().as_secs_f64()
             );
@@ -176,7 +176,7 @@ fn main() -> ExitCode {
             record_state = Some(2);
         }
         if left.is_zero() && !sent_end {
-            println!("{:.1} s: ending the stream", start.elapsed().as_secs_f64());
+            rbs_crash::outln!("{:.1} s: ending the stream", start.elapsed().as_secs_f64());
             host.send(Command::EndStream);
             sent_end = true;
         }
@@ -187,7 +187,7 @@ fn main() -> ExitCode {
         };
         match rx.recv_timeout(timeout) {
             Ok(Update::Recording(u)) => {
-                println!("{:.1} s: recording {u:?}", start.elapsed().as_secs_f64());
+                rbs_crash::outln!("{:.1} s: recording {u:?}", start.elapsed().as_secs_f64());
                 match u {
                     RecordingUpdate::Stopped {
                         failure, frames, ..
@@ -197,11 +197,11 @@ fn main() -> ExitCode {
                 }
             }
             Ok(Update::Stream(u)) => {
-                println!("{:.1} s: {u:?}", start.elapsed().as_secs_f64());
+                rbs_crash::outln!("{:.1} s: {u:?}", start.elapsed().as_secs_f64());
                 if let (StreamUpdate::Started { .. }, Some(0), Some(path)) =
                     (&u, record_state, &also_record)
                 {
-                    println!("recording to {} as well", path.display());
+                    rbs_crash::outln!("recording to {} as well", path.display());
                     host.send(Command::StartRecording(RecordRequest {
                         path: path.clone(),
                         container: ContainerId::Matroska,
@@ -231,13 +231,13 @@ fn main() -> ExitCode {
             }
             Ok(Update::Sources(rows)) => {
                 for r in rows {
-                    println!("source {}: {:?}", r.name, r.status);
+                    rbs_crash::outln!("source {}: {:?}", r.name, r.status);
                 }
             }
-            Ok(Update::Error(e)) => println!("error: {e}"),
+            Ok(Update::Error(e)) => rbs_crash::outln!("error: {e}"),
             Ok(_) => {}
             Err(mpsc::RecvTimeoutError::Timeout) if sent_end => {
-                eprintln!("the stream did not end in time");
+                rbs_crash::errln!("the stream did not end in time");
                 break;
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -248,7 +248,7 @@ fn main() -> ExitCode {
         host.send(Command::SaveStreamKey(None));
         while let Ok(u) = wait(&rx) {
             if let Update::StreamKey(r) = u {
-                println!("key removed: {r:?}");
+                rbs_crash::outln!("key removed: {r:?}");
                 break;
             }
         }

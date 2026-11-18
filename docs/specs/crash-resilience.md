@@ -104,6 +104,19 @@ pub const MAX_REPORTS_PER_PROCESS: u32 = 5;
 - The app calls `end_clean_at_exit` right after `install`, and shows one notice per start when `unclean()` is not empty, with the newest report's path and a note that reports may contain file names. When `install` fails, the app goes on and says so on stderr.
 - Nothing in this crate sends data anywhere.
 
+### Standard output and error (`rbs-crash::out`)
+
+```rust
+/// `println!` / `eprintln!` that drop the line when the write fails.
+macro_rules! outln { ... }
+macro_rules! errln { ... }
+```
+
+- `println!` and `eprintln!` panic when the write fails. It fails when the reader of a pipe or the terminal went away: a parent that closed its end (Windows `ERROR_NO_DATA`, Unix `EPIPE`; Rust ignores `SIGPIPE`, so the process is not killed), a closed terminal, `| head`. The app and the command-line programs never end for that: their lines are dropped instead.
+- `rbs-app` and `rbs-cli` write every stdout and stderr line with `rbs_crash::outln!` and `rbs_crash::errln!`, including examples and tests. `rbs-mcp` (stdout is its MCP channel) writes stdout with `writeln!` and ends when that fails, and its stderr lines go through a `note` function that drops a failed line.
+- `clippy.toml` of `rbs-app`, `rbs-cli` and `rbs-mcp` lists `std::println`, `std::eprintln`, `std::print`, `std::eprint` and `std::dbg` in `disallowed-macros`. A build script, whose stdout cargo reads, allows them.
+- The default panic hook, which the crash hook calls last, already ignores a failed write. Slint's debug log does too.
+
 ### Nested event loops and blocking (`rbs-app/clippy.toml`)
 
 `disallowed-methods` in the app crate bans: the Slint functions wrapped by `entry.rs` (allowed inside it only); `rfd::FileDialog::{pick_file, pick_files, pick_folder, pick_folders, save_file}` and `rfd::MessageDialog::show`; `slint::run_event_loop`; `slint::ComponentHandle::run` (allowed once, in `main`); `std::thread::sleep` (allowed at the studio thread's shutdown, with a comment). Examples that are measurement tools allow them at file level. UI code uses `rfd::AsyncFileDialog` (or `AsyncMessageDialog`) under `entry::spawn_local`.
@@ -149,6 +162,10 @@ None on hot paths: `contain` is used on the UI and control threads only, and the
 7. `redact` hides the home directory (only as a whole path, ignoring case on Windows) and stream URLs; registered secrets are hidden.
 9. A marker that says `clean` and a leftover `starting-*.tmp` are deleted without a notice; the report a notice points to survives pruning.
 8. With the hook installed, a panic on a thread that did not opt in writes no report; one on a thread that did writes one with `Kind: caught`.
+
+`rbs-crash` (`src/out.rs`): a line to a writer whose every write fails is dropped; a line ends with a line end.
+
+`rbs-cli` (`tests/closed_output.rs`) and `rbs-mcp` (`tests/closed_output.rs`): with stdout and stderr writing into a pipe whose reader was dropped before the child started, `rbs-cli help` exits 0, a `rbs-cli` usage error exits 2 and a `rbs-mcp` usage error exits 2 (a panic would be 101).
 
 `rbs-app`:
 

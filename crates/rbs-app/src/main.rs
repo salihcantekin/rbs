@@ -5695,12 +5695,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // system forces from inside the event loop without returning here; an
             // uncaught panic on this thread is not clean.
             if !session.end_clean_at_exit() {
-                eprintln!("rbs: crash detection is off: no exit handler");
+                rbs_crash::errln!("rbs: crash detection is off: no exit handler");
             }
             notice
         }
         Err(e) => {
-            eprintln!("rbs: crash detection is off: {e}");
+            rbs_crash::errln!("rbs: crash detection is off: {e}");
             None
         }
     };
@@ -6037,20 +6037,20 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
         // read gives System default at full volume and is left as it is.
         let (monitor, note) = rbs_app::monitor_settings::load(&ctx.app.borrow().config);
         if let Some(why) = note {
-            eprintln!("rbs: monitor settings: {why}");
+            rbs_crash::errln!("rbs: monitor settings: {why}");
         }
         config.monitor = monitor;
         // Show loudness, the target and the true-peak limit (ADR-0092; `loudness.toml`).
         let (loudness, note) = rbs_app::loudness_settings::load(&ctx.app.borrow().config);
         if let Some(why) = note {
-            eprintln!("rbs: loudness settings: {why}");
+            rbs_crash::errln!("rbs: loudness settings: {why}");
         }
         config.loudness = loudness;
         // This computer's calibration (ADR-0087 decision 4), read with `app.toml`
         // before the control thread serves anything.
         let (calibration, note) = rbs_app::calibration_file::load(&ctx.app.borrow().config);
         if let Some(why) = note {
-            eprintln!("rbs: calibration: {why}");
+            rbs_crash::errln!("rbs: calibration: {why}");
         }
         config.calibration = calibration;
         config.read_free_space = Some(studio_host::FreeSpaceReader(std::sync::Arc::new(
@@ -6194,7 +6194,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
     // they ask while live, save and stop the studio before the process ends.
     #[cfg(target_os = "macos")]
     if !rbs_app::native::route_quit(quit_from_system) {
-        eprintln!("rbs: Quit ends the app without closing the studio first");
+        rbs_crash::errln!("rbs: Quit ends the app without closing the studio first");
     }
 
     // The Dock icon shows the RBS logo also without an app bundle (brand assets). Set
@@ -6203,7 +6203,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
     #[cfg(target_os = "macos")]
     entry::single_shot(std::time::Duration::ZERO, || {
         if !rbs_app::native::set_icon(include_bytes!("../assets/brand/icon-mac-1024.png")) {
-            eprintln!("rbs: could not set the Dock icon");
+            rbs_crash::errln!("rbs: could not set the Dock icon");
         }
     });
 
@@ -6219,7 +6219,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
         WAY_BACK.with(|w| w.set(true));
     }
     if !WAY_BACK.with(Cell::get) && OnClose::KeepRunning.supported() {
-        eprintln!("rbs: no way back to a hidden window here; closing the window quits");
+        rbs_crash::errln!("rbs: no way back to a hidden window here; closing the window quits");
     }
 
     // Hiding every window keeps the event loop (ADR-0056 decision 4); only Quit ends it.

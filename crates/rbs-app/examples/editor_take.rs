@@ -33,7 +33,7 @@ const WAIT: Duration = Duration::from_secs(60);
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
     let Some(folder) = args.next().map(PathBuf::from) else {
-        eprintln!("usage: editor_take <folder> [seconds] [mp4,mov,mkv]");
+        rbs_crash::errln!("usage: editor_take <folder> [seconds] [mp4,mov,mkv]");
         return ExitCode::FAILURE;
     };
     let seconds: u64 = args.next().and_then(|s| s.parse().ok()).unwrap_or(15);
@@ -73,16 +73,16 @@ fn main() -> ExitCode {
         match rx.recv_timeout(WAIT) {
             Ok(Update::Started { encoders, .. }) => {
                 let names: Vec<_> = encoders.iter().map(|e| e.name.as_str()).collect();
-                println!("studio started; video encoders: {names:?}");
+                rbs_crash::outln!("studio started; video encoders: {names:?}");
                 break;
             }
             Ok(Update::Failed(e)) => {
-                eprintln!("the studio did not start: {e}");
+                rbs_crash::errln!("the studio did not start: {e}");
                 return ExitCode::FAILURE;
             }
             Ok(_) => {}
             Err(_) => {
-                eprintln!("the studio did not answer");
+                rbs_crash::errln!("the studio did not answer");
                 return ExitCode::FAILURE;
             }
         }
@@ -104,10 +104,10 @@ fn main() -> ExitCode {
         };
         match target {
             Some(target) => {
-                println!("adding {kind:?}: {}", target.name);
+                rbs_crash::outln!("adding {kind:?}: {}", target.name);
                 host.send(Command::AddSource { kind, target });
             }
-            None => println!("no {kind:?} to add"),
+            None => rbs_crash::outln!("no {kind:?} to add"),
         }
     }
     let mut profile = RecordProfile::new();
@@ -127,14 +127,14 @@ fn main() -> ExitCode {
             "mov" => (ContainerId::Mov, "mov"),
             "mkv" => (ContainerId::Matroska, "mkv"),
             other => {
-                eprintln!("unknown container {other}: mp4, mov or mkv");
+                rbs_crash::errln!("unknown container {other}: mp4, mov or mkv");
                 ok = false;
                 continue;
             }
         };
         let path = folder.join(format!("rbs-take-{ext}.{ext}"));
         if path.exists() {
-            eprintln!("{} exists; nothing replaced", path.display());
+            rbs_crash::errln!("{} exists; nothing replaced", path.display());
             ok = false;
             continue;
         }
@@ -158,7 +158,7 @@ fn take(
     container: ContainerId,
     seconds: u64,
 ) -> bool {
-    println!("recording {}", path.display());
+    rbs_crash::outln!("recording {}", path.display());
     host.send(Command::StartRecording(RecordRequest {
         path: path.to_path_buf(),
         container,
@@ -190,7 +190,7 @@ fn take(
                     "marker.add",
                     serde_json::json!({"label": label, "color": color}),
                 );
-                println!(
+                rbs_crash::outln!(
                     "{:.1} s: marker {label}: {answer}",
                     start.elapsed().as_secs_f64()
                 );
@@ -198,13 +198,13 @@ fn take(
             }
         }
         if !stop_sent && start.elapsed() >= length {
-            println!("{:.1} s: stopping", start.elapsed().as_secs_f64());
+            rbs_crash::outln!("{:.1} s: stopping", start.elapsed().as_secs_f64());
             host.send(Command::StopRecording);
             stop_sent = true;
         }
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(Update::Recording(u)) => {
-                println!("{:.1} s: {u:?}", start.elapsed().as_secs_f64());
+                rbs_crash::outln!("{:.1} s: {u:?}", start.elapsed().as_secs_f64());
                 match u {
                     RecordingUpdate::NotStarted(_) => return false,
                     RecordingUpdate::Stopped {
@@ -219,26 +219,26 @@ fn take(
                             "project.export",
                             serde_json::json!({"recording": file_name, "format": "fcpxml"}),
                         );
-                        println!("project.export fcpxml: {fcpxml}");
-                        println!("manifest: {}", manifest.display());
-                        println!("project:  {}", project.display());
+                        rbs_crash::outln!("project.export fcpxml: {fcpxml}");
+                        rbs_crash::outln!("manifest: {}", manifest.display());
+                        rbs_crash::outln!("project:  {}", project.display());
                         let fine = failure.is_none()
                             && frames > 0
                             && manifest.exists()
                             && project.exists();
                         if !fine {
-                            eprintln!("the take did not end cleanly");
+                            rbs_crash::errln!("the take did not end cleanly");
                         }
                         return fine;
                     }
                     _ => {}
                 }
             }
-            Ok(Update::Error(e)) => println!("error: {e}"),
+            Ok(Update::Error(e)) => rbs_crash::outln!("error: {e}"),
             Ok(_) => {}
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 if stop_sent && start.elapsed() > length + WAIT {
-                    eprintln!("the recording did not stop in time");
+                    rbs_crash::errln!("the recording did not stop in time");
                     return false;
                 }
             }

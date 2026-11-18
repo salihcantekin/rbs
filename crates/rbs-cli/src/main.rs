@@ -15,8 +15,6 @@
 //! `stream` sends the same program live: H.264 and AAC packets over RTMP, or MPEG-TS
 //! over SRT, with the stream key from an environment variable.
 
-#![allow(clippy::print_stdout, clippy::print_stderr)] // A command-line program prints.
-
 mod app;
 mod args;
 mod control;
@@ -58,9 +56,9 @@ fn project(p: &args::ProjectArgs) -> Result<(), String> {
         return Err(format!("{} is not a manifest file", p.manifest.display()));
     };
     let done = rbs_project::export(folder, name, p.format, p.strict).map_err(|e| e.to_string())?;
-    println!("wrote {}", done.path.display());
+    rbs_crash::outln!("wrote {}", done.path.display());
     for file in &done.missing {
-        println!("left out (not in the folder): {file}");
+        rbs_crash::outln!("left out (not in the folder): {file}");
     }
     Ok(())
 }
@@ -69,7 +67,7 @@ fn main() -> ExitCode {
     let raw: Vec<String> = std::env::args().skip(1).collect();
     match args::parse(raw.iter().map(String::as_str)) {
         Ok(Command::Help) => {
-            println!("{}", args::USAGE);
+            rbs_crash::outln!("{}", args::USAGE);
             ExitCode::SUCCESS
         }
         Ok(Command::Devices) => devices(),
@@ -85,7 +83,7 @@ fn main() -> ExitCode {
             match token::run(&config, ipc.as_ref(), &t, &mut out, &mut notes) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => {
-                    eprintln!("token: {e}");
+                    rbs_crash::errln!("token: {e}");
                     ExitCode::FAILURE
                 }
             }
@@ -108,7 +106,7 @@ fn main() -> ExitCode {
             match result {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => {
-                    eprintln!("{what}: {e}");
+                    rbs_crash::errln!("{what}: {e}");
                     ExitCode::FAILURE
                 }
             }
@@ -118,7 +116,7 @@ fn main() -> ExitCode {
             match vcam::run(factory.as_deref(), c, &mut std::io::stdout()) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => {
-                    eprintln!("vcam: {e}");
+                    rbs_crash::errln!("vcam: {e}");
                     ExitCode::FAILURE
                 }
             }
@@ -126,7 +124,7 @@ fn main() -> ExitCode {
         Ok(Command::Project(p)) => match project(&p) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
-                eprintln!("project: {e}");
+                rbs_crash::errln!("project: {e}");
                 ExitCode::FAILURE
             }
         },
@@ -135,7 +133,7 @@ fn main() -> ExitCode {
             match obs_import::run(&c, &config, &mut std::io::stdout()) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => {
-                    eprintln!("obs-import: {e}");
+                    rbs_crash::errln!("obs-import: {e}");
                     ExitCode::FAILURE
                 }
             }
@@ -144,7 +142,7 @@ fn main() -> ExitCode {
             match remote::fingerprint(&rbs_remote_settings::config_dir(), &mut std::io::stdout()) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => {
-                    eprintln!("remote fingerprint: {e}");
+                    rbs_crash::errln!("remote fingerprint: {e}");
                     ExitCode::FAILURE
                 }
             }
@@ -157,12 +155,12 @@ fn main() -> ExitCode {
                 } else {
                     "record"
                 };
-                eprintln!("{what} failed: {e}");
+                rbs_crash::errln!("{what} failed: {e}");
                 ExitCode::FAILURE
             }
         },
         Err(e) => {
-            eprintln!("{e}\n\n{}", args::USAGE);
+            rbs_crash::errln!("{e}\n\n{}", args::USAGE);
             ExitCode::from(2)
         }
     }
@@ -171,17 +169,17 @@ fn main() -> ExitCode {
 fn probed() -> RecordAdapters {
     let (mut adapters, errors) = platform::adapters();
     for e in errors {
-        eprintln!("warning: {e}");
+        rbs_crash::errln!("warning: {e}");
     }
     adapters.probe();
     adapters
 }
 
 fn list_registry<F: ?Sized + AdapterFactory>(title: &str, registry: &Registry<F>) {
-    println!("{title}:");
+    rbs_crash::outln!("{title}:");
     let ids: Vec<&AdapterId> = registry.ids().collect();
     if ids.is_empty() {
-        println!("  (none on this platform yet)");
+        rbs_crash::outln!("  (none on this platform yet)");
     }
     for id in ids {
         // An adapter that probes to nothing (no driver, no device) cannot be used.
@@ -190,18 +188,18 @@ fn list_registry<F: ?Sized + AdapterFactory>(title: &str, registry: &Registry<F>
         } else {
             "unavailable"
         };
-        println!("  {id} ({state})");
+        rbs_crash::outln!("  {id} ({state})");
     }
 }
 
 fn devices() -> ExitCode {
     let adapters = probed();
-    println!("sources:");
+    rbs_crash::outln!("sources:");
     for t in adapters.sources.installed() {
-        println!("  {t}");
+        rbs_crash::outln!("  {t}");
         let targets = adapters.sources.targets(&t).unwrap_or_default();
         for (i, target) in targets.iter().enumerate() {
-            println!(
+            rbs_crash::outln!(
                 "    {i}: {} [{}]{}",
                 target.name,
                 target.adapter,
@@ -209,7 +207,7 @@ fn devices() -> ExitCode {
             );
         }
         for picker in adapters.sources.pickers(&t).unwrap_or_default() {
-            println!("    chosen in the system dialog [{}]", picker.adapter());
+            rbs_crash::outln!("    chosen in the system dialog [{}]", picker.adapter());
         }
     }
     list_registry("video encoders", &adapters.video_encoders);
@@ -268,7 +266,7 @@ fn line(elapsed: Duration, p: &Progress) -> String {
 fn record(a: &RecordArgs) -> Result<(), String> {
     let (mut adapters, errors) = platform::adapters();
     for e in errors {
-        eprintln!("warning: {e}");
+        rbs_crash::errln!("warning: {e}");
     }
     let wanted = match &a.encoder {
         Some(name) => Some(resolve(&adapters.video_encoders, name)?),
@@ -312,7 +310,7 @@ fn record(a: &RecordArgs) -> Result<(), String> {
     let permissions = permissions::Permissions::new(&mut adapters.sources);
     let built = scene::build(&adapters.sources, a, &|t, id| permissions.check(t, id))?;
     for s in &built.skipped {
-        println!("left out: {s}");
+        rbs_crash::outln!("left out: {s}");
     }
     if a.duration.is_none() && !std::io::stdin().is_terminal() {
         return Err("without a terminal nothing can press Enter: pass --seconds".into());
@@ -359,16 +357,16 @@ fn record(a: &RecordArgs) -> Result<(), String> {
         ("system audio", a.system_audio_offset_ms),
     ] {
         if ms != 0 {
-            println!("{name} sync offset: {ms} ms");
+            rbs_crash::outln!("{name} sync offset: {ms} ms");
         }
     }
 
-    println!("video: {}", args::describe_video(a));
+    rbs_crash::outln!("video: {}", args::describe_video(a));
 
     let gpu = Arc::new(
         GpuContext::new(&GpuRequest::default()).map_err(|e| format!("no usable GPU: {e}"))?,
     );
-    println!("gpu: {}", gpu.adapter_name());
+    rbs_crash::outln!("gpu: {}", gpu.adapter_name());
     let mut engine = Engine::new();
     engine.set_thread_policy(Some(Arc::new(rbs_thread_os::OsThreadPolicy::new())));
     let mut recording = match Recording::start(engine, gpu, &built.collection, &adapters, &settings)
@@ -383,7 +381,7 @@ fn record(a: &RecordArgs) -> Result<(), String> {
         }
     };
     let started = recording.started().clone();
-    println!(
+    rbs_crash::outln!(
         "video encoder: {} | audio encoder: {} | muxer: {} | transport: {}",
         started
             .video_encoder
@@ -398,8 +396,8 @@ fn record(a: &RecordArgs) -> Result<(), String> {
     );
     for s in &started.sources {
         match &s.failed {
-            None => println!("source {}: {} [{}]", s.name, s.target, s.adapter),
-            Some(why) => println!("source {}: did not start: {why}", s.name),
+            None => rbs_crash::outln!("source {}: {} [{}]", s.name, s.target, s.adapter),
+            Some(why) => rbs_crash::outln!("source {}: did not start: {why}", s.name),
         }
     }
 
@@ -422,11 +420,11 @@ fn record(a: &RecordArgs) -> Result<(), String> {
         "recording"
     };
     match a.duration {
-        Some(d) => println!(
+        Some(d) => rbs_crash::outln!(
             "{verb} {} s to {destination} (press Enter or Ctrl+C to stop early)",
             d.as_secs(),
         ),
-        None => println!("{verb} to {destination}; press Enter or Ctrl+C to stop"),
+        None => rbs_crash::outln!("{verb} to {destination}; press Enter or Ctrl+C to stop"),
     }
     interrupt::install();
     {
@@ -455,11 +453,11 @@ fn record(a: &RecordArgs) -> Result<(), String> {
         let serviced = recording.service();
         for (_, event) in &serviced.events {
             if let Some(text) = describe_event(event, &recording.started().sources) {
-                println!("{text}");
+                rbs_crash::outln!("{text}");
             }
         }
         for e in &serviced.errors {
-            println!("engine error: {e}");
+            rbs_crash::outln!("engine error: {e}");
         }
         if let Some(why) = recording.failure() {
             failure = Some(why);
@@ -468,7 +466,7 @@ fn record(a: &RecordArgs) -> Result<(), String> {
         let progress = recording.progress();
         if let Some(target) = &a.stream {
             for change in link.update(&progress) {
-                println!("{}", change.describe(&target.url));
+                rbs_crash::outln!("{}", change.describe(&target.url));
             }
         }
         if start.elapsed() >= next {
@@ -484,13 +482,13 @@ fn record(a: &RecordArgs) -> Result<(), String> {
             if let Some(state) = recording.virtual_camera() {
                 text.push_str(&format!(" | camera {}", camera_line(&state)));
             }
-            println!("{text}");
+            rbs_crash::outln!("{text}");
         }
         let wait = serviced.wait.unwrap_or(Duration::from_millis(50));
         std::thread::sleep(wait.min(Duration::from_millis(50)));
     }
     let elapsed = start.elapsed();
-    println!("stopping...");
+    rbs_crash::outln!("stopping...");
     if failure.is_none() {
         // Ends the video now and lets the frames still read back reach the encoder
         // (ADR-0045); the recording gives up on them after `END_TAIL_LIMIT` itself.
@@ -504,7 +502,7 @@ fn record(a: &RecordArgs) -> Result<(), String> {
     let camera_end = recording.virtual_camera();
     let report = recording.finish();
     let p = &report.progress;
-    println!(
+    rbs_crash::outln!(
         "--- {:.1} s {}",
         elapsed.as_secs_f64(),
         if a.stream.is_some() {
@@ -513,17 +511,24 @@ fn record(a: &RecordArgs) -> Result<(), String> {
             "recorded"
         }
     );
-    println!(
+    rbs_crash::outln!(
         "video: {} frames exported, {} encoded, {} dropped at export, {} skipped before the encoder, {} dropped at the encoder",
-        p.frames_exported, p.frames_encoded, p.export_drops, p.encoder_skipped, p.encoder_drops
+        p.frames_exported,
+        p.frames_encoded,
+        p.export_drops,
+        p.encoder_skipped,
+        p.encoder_drops
     );
     for s in &p.sources {
-        println!(
+        rbs_crash::outln!(
             "{}: {} frames, {} resyncs, {} errors",
-            s.name, s.frames, s.resyncs, s.errors
+            s.name,
+            s.frames,
+            s.resyncs,
+            s.errors
         );
     }
-    println!(
+    rbs_crash::outln!(
         "output: {} packets muxed, {} muxer drops, backlog peak {}, {} lost at finish, {} lost in the video encoder; audio drops {} (queue) {} (encoder); late ticks render {} audio {}",
         p.packets_muxed(),
         p.mux_drops,
@@ -535,28 +540,32 @@ fn record(a: &RecordArgs) -> Result<(), String> {
         p.late_render_ticks,
         p.late_audio_ticks
     );
-    println!(
+    rbs_crash::outln!(
         "audio tail: {} encoder flushes, {} lost at the end; {} packets dropped before the first video packet",
-        p.audio_flushes, p.audio_tail_lost, p.start_drops
+        p.audio_flushes,
+        p.audio_tail_lost,
+        p.start_drops
     );
     if a.stream.is_some() {
-        println!(
+        rbs_crash::outln!(
             "stream: connected {} times, {} reconnect attempts, {} items dropped by the transport",
-            p.connects, p.reconnect_attempts, p.transport_drops
+            p.connects,
+            p.reconnect_attempts,
+            p.transport_drops
         );
     }
     if let (Some(_), Some(state)) = (&camera, &camera_end) {
-        println!("virtual camera: {}", camera_line(state));
+        rbs_crash::outln!("virtual camera: {}", camera_line(state));
         if let Some(why) = &state.failure {
-            println!("virtual camera failed: {why}");
+            rbs_crash::outln!("virtual camera failed: {why}");
         }
     }
     if let Some(out) = &file {
         let size = std::fs::metadata(out).map(|m| m.len()).unwrap_or(0);
-        println!("file: {} ({size} bytes)", out.display());
+        rbs_crash::outln!("file: {} ({size} bytes)", out.display());
     }
     for e in &report.shutdown_errors {
-        println!("shutdown error: {e}");
+        rbs_crash::outln!("shutdown error: {e}");
     }
     let failure = failure.or(report.failure);
     let url = a.stream.as_ref().map_or("", |t| t.url.as_str());
@@ -589,7 +598,7 @@ fn start_camera(
         .set_format(&format)
         .map_err(|e| format!("--vcam: {e}"))?
     {
-        println!(
+        rbs_crash::outln!(
             "virtual camera: an app is using the camera; it shows the still picture until it opens the camera again"
         );
     }
@@ -599,9 +608,11 @@ fn start_camera(
             rbs_record::VirtualCameraSettings::new(f.size.width, f.size.height, format.rate),
         )
         .map_err(|e| format!("--vcam: {e}"))?;
-    println!(
+    rbs_crash::outln!(
         "virtual camera: sending {}x{} at {} fps",
-        f.size.width, f.size.height, f.fps
+        f.size.width,
+        f.size.height,
+        f.fps
     );
     Ok(factory)
 }
@@ -692,11 +703,11 @@ fn stream_secret(target: &StreamTarget) -> Result<Option<Secret>, String> {
             target.key_env
         )),
         (None, _) => {
-            println!("no stream id ({} is not set)", target.key_env);
+            rbs_crash::outln!("no stream id ({} is not set)", target.key_env);
             Ok(None)
         }
         (Some(_), _) => {
-            println!("stream key: from {}", target.key_env);
+            rbs_crash::outln!("stream key: from {}", target.key_env);
             Ok(key.map(Secret::new))
         }
     }

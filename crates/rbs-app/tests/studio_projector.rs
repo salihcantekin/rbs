@@ -74,7 +74,7 @@ mod with_pictures {
                 std::env::var_os("RBS_REQUIRE_GPU").is_none_or(|v| v.is_empty()),
                 "RBS_REQUIRE_GPU is set but no adapter was found"
             );
-            eprintln!("SKIPPED: no GPU adapter");
+            rbs_crash::errln!("SKIPPED: no GPU adapter");
         }
         ctx.clone()
     }
