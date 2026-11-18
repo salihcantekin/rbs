@@ -122,11 +122,11 @@ fn render_with(
         8,
     )
     .unwrap();
-    let binding = with_binding.then(|| ScrollBinding::new(ctx));
+    let mut binding = with_binding.then(|| ScrollBinding::new(ctx));
     let target = pool.acquire(ctx, &TextureDesc::canvas(W, H)).unwrap();
     let layers = build(ctx, &mut pool);
     let stats = comp
-        .render_scrolled(ctx, &pool, &layers, target, binding.as_ref())
+        .render_scrolled(ctx, &pool, &layers, target, binding.as_mut())
         .unwrap();
     Some((readback::read_rgba16f(ctx, &pool, target).unwrap(), stats))
 }

@@ -276,11 +276,11 @@ fn scrolling_yuv_layers_wrap_with_their_gap() {
         )
         .unwrap();
     l.scroll = Some(frame.gpu(spec.direction, spec.repeat, spec.fade));
-    let binding = ScrollBinding::new(ctx);
+    let mut binding = ScrollBinding::new(ctx);
     let mut comp = compositor(ctx, 1);
     let canvas = pool.acquire(ctx, &TextureDesc::canvas(W, H)).unwrap();
     let stats = comp
-        .render_scrolled(ctx, &pool, &[l], canvas, Some(&binding))
+        .render_scrolled(ctx, &pool, &[l], canvas, Some(&mut binding))
         .unwrap();
     assert_eq!(stats.drawn_layers, 1);
     let px = readback::read_linear(ctx, &pool, canvas).unwrap();

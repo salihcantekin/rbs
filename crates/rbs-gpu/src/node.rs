@@ -219,7 +219,7 @@ pub type LayerSender = ParamSender<Vec<NodeLayer>>;
 /// The control-thread end of a compositor node's scroll records (ADR-0150 decision 7):
 /// send a [`ScrollBinding`] before the first list with a scrolling layer. Idempotent; a
 /// skipped update only leaves a scrolling layer blank for a tick.
-pub type ScrollSender = ParamSender<Option<Arc<ScrollBinding>>>;
+pub type ScrollSender = ParamSender<Option<ScrollBinding>>;
 
 /// The link of `layer` on the layers pin: the hint if it still names the producer,
 /// otherwise a lookup.
@@ -349,7 +349,7 @@ pub struct CompositorNode<R: ReadySignal = NoReady, D: Redraw = OnChange> {
     /// Tick time of the last draw: a fade or slide that had not ended then draws again.
     drawn_at: Timestamp,
     /// Scroll records, when the node was built [`CompositorNode::with_scroll`].
-    scroll: Option<ParamReceiver<Option<Arc<ScrollBinding>>>>,
+    scroll: Option<ParamReceiver<Option<ScrollBinding>>>,
     stats: Arc<CompositorStats>,
     redraw: std::marker::PhantomData<D>,
 }
@@ -514,7 +514,7 @@ impl<R: ReadySignal, D: Redraw> Node<GpuRuntime> for CompositorNode<R, D> {
         let binding = match self.scroll.as_mut() {
             Some(rx) => {
                 rx.update();
-                rx.get().as_deref()
+                rx.get_mut().as_mut()
             }
             None => None,
         };

@@ -381,11 +381,14 @@ impl WrapSet {
 
 /// One compositor's scroll records (ADR-0150 decision 7): a uniform buffer of
 /// [`MAX_SCROLL_LAYERS`] records 256 bytes apart and its group 2 bind group. Built on
-/// the control thread with [`ScrollBinding::new`] and handed to the compositor's node.
+/// the control thread with [`ScrollBinding::new`] and handed to the compositor's node,
+/// with a staging array so a draw writes every record in one queue write.
 #[derive(Debug)]
 pub struct ScrollBinding {
     buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
+    /// Room for every record, 256 bytes apart; reserved here, never grown.
+    staging: Vec<u8>,
 }
 
 impl ScrollBinding {
@@ -418,7 +421,12 @@ impl ScrollBinding {
                 }),
             }],
         });
-        Self { buffer, bind_group }
+        let staging = Vec::with_capacity((SCROLL_STRIDE * u64::from(MAX_SCROLL_LAYERS)) as usize);
+        Self {
+            buffer,
+            bind_group,
+            staging,
+        }
     }
 }
 
@@ -590,14 +598,14 @@ impl Compositor {
     /// ([`GpuContext::prepare_scrolling`]) or past [`MAX_SCROLL_LAYERS`], a scrolling
     /// layer draws nothing and counts in `unscrolled_layers`.
     ///
-    /// Hot path: one queue write per scrolling layer, no allocation in RBS code.
+    /// Hot path: one queue write for all scroll records, no allocation in RBS code.
     pub fn render_scrolled(
         &mut self,
         ctx: &GpuContext,
         pool: &TexturePool,
         layers: &[Layer],
         target: TextureId,
-        scroll: Option<&ScrollBinding>,
+        mut scroll: Option<&mut ScrollBinding>,
     ) -> Result<RenderStats, GpuError> {
         let count = u32::try_from(layers.len()).unwrap_or(u32::MAX);
         if count > self.reserved {
@@ -616,7 +624,12 @@ impl Compositor {
             return Err(GpuError::TargetMismatch(target));
         }
         let wrap = ctx.wrap.get();
-        let records = scroll.filter(|_| wrap.is_some());
+        if wrap.is_none() {
+            scroll = None;
+        }
+        if let Some(binding) = scroll.as_deref_mut() {
+            binding.staging.clear();
+        }
 
         let (w, h) = (self.canvas.width as f32, self.canvas.height as f32);
         let mut stats = RenderStats::default();
@@ -644,15 +657,19 @@ impl Compositor {
             let mut kind = 0;
             if let Some(record) = layer.scroll {
                 // Draws nothing rather than the whole picture squeezed into the window.
-                let Some(binding) = records.filter(|_| scrolled < MAX_SCROLL_LAYERS) else {
+                let Some(binding) = scroll
+                    .as_deref_mut()
+                    .filter(|_| scrolled < MAX_SCROLL_LAYERS)
+                else {
                     stats.unscrolled_layers += 1;
                     continue;
                 };
-                ctx.queue().write_buffer(
-                    &binding.buffer,
-                    u64::from(scrolled) * SCROLL_STRIDE,
-                    bytemuck::bytes_of(&record),
-                );
+                // Within the capacity reserved in `ScrollBinding::new`: no allocation.
+                binding
+                    .staging
+                    .extend_from_slice(bytemuck::bytes_of(&record));
+                let pad = SCROLL_STRIDE as usize - std::mem::size_of::<ScrollGpu>();
+                binding.staging.resize(binding.staging.len() + pad, 0);
                 scrolled += 1;
                 kind |= WRAP;
             }
@@ -713,6 +730,13 @@ impl Compositor {
                 bytemuck::cast_slice(&self.style_staging),
             );
         }
+        if let Some(binding) = scroll.as_deref()
+            && !binding.staging.is_empty()
+        {
+            ctx.queue()
+                .write_buffer(&binding.buffer, 0, &binding.staging);
+        }
+        let records = scroll.as_deref();
 
         let mut encoder = ctx
             .device()

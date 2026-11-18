@@ -85,7 +85,7 @@ fn allocs_per_frame_of(layer_count: usize, planar: bool, scrolling: bool) -> Opt
     let mut layers: Vec<Layer> = (0..layer_count)
         .map(|i| Layer::new(src, i as f32, i as f32, 64.0, 36.0))
         .collect();
-    let binding = scrolling.then(|| rbs_gpu::ScrollBinding::new(ctx));
+    let mut binding = scrolling.then(|| rbs_gpu::ScrollBinding::new(ctx));
     if scrolling {
         let spec = rbs_gpu::LayerScroll {
             direction: rbs_gpu::ScrollDirection::Left,
@@ -110,7 +110,7 @@ fn allocs_per_frame_of(layer_count: usize, planar: bool, scrolling: bool) -> Opt
     }
 
     let mut frame = || {
-        comp.render_scrolled(ctx, &pool, &layers, canvas, binding.as_ref())
+        comp.render_scrolled(ctx, &pool, &layers, canvas, binding.as_mut())
             .unwrap();
         conv.convert(ctx, &pool, canvas, luma, chroma).unwrap();
         ctx.poll();

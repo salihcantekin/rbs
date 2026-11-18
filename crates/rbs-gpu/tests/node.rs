@@ -237,7 +237,7 @@ impl Rig {
         let stats = node.stats();
         let (node, scroll) = if scroll {
             let (node, mut sender) = node.with_scroll();
-            sender.send(Some(Arc::new(ScrollBinding::new(&self.ctx))));
+            sender.send(Some(ScrollBinding::new(&self.ctx)));
             (node, Some(sender))
         } else {
             (node, None)

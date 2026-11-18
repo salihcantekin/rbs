@@ -82,7 +82,7 @@ fn bench(c: &mut Criterion) {
     let started = Instant::now();
     ctx.prepare_scrolling();
     eprintln!("wrap pipelines built in {:?}", started.elapsed());
-    let binding = ScrollBinding::new(&ctx);
+    let mut binding = ScrollBinding::new(&ctx);
 
     let mut pool = TexturePool::new();
     let canvas = pool
@@ -154,7 +154,7 @@ fn bench(c: &mut Criterion) {
     ] {
         group.bench_with_input(BenchmarkId::new("composite", name), layers, |b, layers| {
             b.iter(|| {
-                comp.render_scrolled(&ctx, &pool, layers, canvas, Some(&binding))
+                comp.render_scrolled(&ctx, &pool, layers, canvas, Some(&mut binding))
                     .expect("render");
                 ctx.wait_idle().expect("wait");
             });
