@@ -127,12 +127,11 @@ impl TruePeak {
             }
             return sample_peak;
         }
-        let peak = if self.factor == 2 {
+        if self.factor == 2 {
             interpolate::<2>(&self.coeffs, hist, x)
         } else {
             interpolate::<LANES>(&self.coeffs, hist, x)
-        };
-        peak
+        }
     }
 }
 
