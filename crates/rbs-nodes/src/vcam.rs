@@ -47,6 +47,9 @@ pub struct VirtualCameraNodeStats {
     /// Camera frames due but skipped before conversion because no session slot was
     /// free (the consumer is behind).
     pub consumer_busy: AtomicU64,
+    /// Camera frames due but skipped before conversion because no app reads the camera
+    /// (the session's `consumer_present` is `false`; audit R-02).
+    pub no_reader: AtomicU64,
     /// Camera frames due but skipped because every readback was in flight.
     pub busy: AtomicU64,
     /// Converted camera frames lost before `send` (stale, no free buffer, a failed
@@ -212,8 +215,11 @@ impl Node<GpuRuntime> for VirtualCameraNode {
                 canvas.timestamp(),
             )
         {
+            // Nobody reads the camera: no conversion, readback or copy (audit R-02).
             // Reserve before any GPU work: a full session skips the conversion.
-            if self.tokens.len() >= SESSION_SLOTS {
+            if !self.session.consumer_present() {
+                self.stats.no_reader.fetch_add(1, Ordering::Relaxed);
+            } else if self.tokens.len() >= SESSION_SLOTS {
                 self.stats.consumer_busy.fetch_add(1, Ordering::Relaxed);
             } else if let Some(slot) = self.session.reserve() {
                 match download.submit(gpu, &local.pool, canvas) {

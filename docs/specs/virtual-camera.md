@@ -96,6 +96,10 @@ pub trait VirtualCameraSession: Send {
     // The counters shared with the sender thread, for a status line after the session
     // moved into the node; default None.
     fn counters(&self) -> Option<VcamCountersReader> { None }   // snapshot() == stats()
+    // Whether an app may be reading the camera now: false only when the adapter knows
+    // no app reads it, and the node then skips the frame before any GPU work (audit
+    // R-02, ADR-0143). One relaxed atomic load on the render thread; default true.
+    fn consumer_present(&self) -> bool { true }
 }
 // Drop stops the sender thread and joins it (on the control thread, never on the
 // render thread); the camera shows its still picture within 1 s. Thread count returns to its value before `open`.
@@ -112,6 +116,9 @@ impl VcamStats {
     pub fn consumer_busy(&self) -> u64;   // no free slot: camera frame skipped before conversion
     pub fn consumer_absent(&self) -> u64; // frames taken while no app reads the camera
     pub fn format_pending(&self) -> u64;  // frames sent in the announced (old) format while a change waits for apps to close the camera
+    // While `consumer_present` is false the node skips frames before conversion, so
+    // `consumer_absent` and `format_pending` count only the few frames already in
+    // flight when an app stops reading; the skipped ones are the node's `no_reader`.
     pub fn os_errors(&self) -> u64;
     /// The last OS error, stored as a non-zero `u32` code in an atomic (0 = none).
     pub fn last_os_error(&self) -> Option<u32>;
@@ -128,7 +135,7 @@ Invariants (each a conformance test):
 
 ### Shared hand-off (`rbs_vcam::Handoff`)
 
-Every adapter builds `reserve`, `send` and `stats` on `Handoff` and its `HandoffReceiver`: the three-slot mailbox (`rbs_vcam::mailbox`, a marked low-level module), the frame check against the configuration (size, pixel format, memory kind; a token of another session is refused too), the counters, and the sender thread's wake (`Thread::unpark`). The adapter's sender thread loops on `HandoffReceiver::take_newest` and `wait`.
+Every adapter builds `reserve`, `send` and `stats` on `Handoff` and its `HandoffReceiver`: the three-slot mailbox (`rbs_vcam::mailbox`, a marked low-level module), the frame check against the configuration (size, pixel format, memory kind; a token of another session is refused too), the counters, and the sender thread's wake (`Thread::unpark`). The adapter's sender thread loops on `HandoffReceiver::take_newest` and `wait`. The sender thread publishes whether an app reads the camera with `VcamCounters::set_consumer_present` (`Handoff::consumer_present` reads it; `true` until the first word). The Windows sender says `false` while no ring is mapped, the ring announces another size, or the ring's reader heartbeat is older than `STALE_MS` (1 s, the hysteresis); it says it on every frame and on every idle wake (at most `RETRY_MS`, 250 ms, apart), so the first frame after an app opens the camera (or resumes after more than 1 s without reading) is converted within about 250 ms plus one readback; until then the app shows the camera's still picture.
 
 ### Capabilities
 
@@ -193,6 +200,8 @@ The node never fails a tick because of the camera; the studio reports the camera
 ## Performance requirements
 
 `send` is on the render thread's hot path ([hot-paths.md](../architecture/hot-paths.md)): no allocation, lock, system call or wait; one atomic swap into the mailbox and a doorbell. The adapter's sender thread is not real-time but must keep up at 1920 x 1080 at 60 fps. The node's cost (scale, convert, export or readback) is measured per ADR-0066.
+
+Cost (ADR-0143): camera off, nothing (no node, session or thread). Sending with no app reading the camera: one virtual call and one relaxed atomic load per due frame on the render thread, no conversion, readback or copy; the sender thread wakes at most every 250 ms. Sending with an app reading: the full scale, convert, readback and two CPU copies per camera frame.
 
 ## Conformance tests
 

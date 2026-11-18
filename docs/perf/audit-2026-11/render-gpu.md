@@ -44,7 +44,7 @@ Reference sizes used below:
 
   All of it drops to zero while no app reads the camera.
 - Effort: S
-- Risk: Low. The first frame after a consumer appears is late by at most one frame. To verify: the macOS side has no `rbs-vcam` sender adapter here.
+- Risk: Low. The first frame after a consumer appears is late by up to the sender's idle wake (250 ms) plus one readback; the app shows the still picture until then (as built, 2026-11-18). To verify: the macOS side has no `rbs-vcam` sender adapter here.
 - Kind: quick-win ; Hot path: yes (P15)
 
 ### R-03 Render on change: skip compositing, conversion and readback when no input changed

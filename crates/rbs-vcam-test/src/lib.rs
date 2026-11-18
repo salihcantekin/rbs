@@ -26,6 +26,11 @@ pub struct TestConsumer {
     stalled: AtomicBool,
     /// Whether an app "reads" the camera (a format change then stays pending).
     reading: AtomicBool,
+    /// Whether the session reports that no app reads the camera
+    /// (`VirtualCameraSession::consumer_present` is `false`), so the node skips frames.
+    /// Separate from `reading`, which only keeps a format change pending: the default
+    /// (`false`) means an app may read, so existing tests see every frame.
+    absent: AtomicBool,
     delivered: Mutex<Vec<u64>>,
 }
 
@@ -33,6 +38,12 @@ impl TestConsumer {
     /// Simulates an app opening or closing the camera.
     pub fn set_reading(&self, reading: bool) {
         self.reading.store(reading, Ordering::Release);
+    }
+
+    /// Makes the session report that no app reads the camera (`absent`) or that one may
+    /// (the default).
+    pub fn set_absent(&self, absent: bool) {
+        self.absent.store(absent, Ordering::Release);
     }
 }
 
@@ -174,6 +185,7 @@ impl VirtualCameraFactory for TestVcamFactory {
 #[derive(Debug)]
 pub struct TestSession {
     handoff: Handoff,
+    consumer: Arc<TestConsumer>,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
@@ -186,7 +198,10 @@ impl TestSession {
             let stop = Arc::clone(&stop);
             std::thread::Builder::new()
                 .name("rbs-vcam-test".into())
-                .spawn(move || sender(rx, consumer, stop))
+                .spawn({
+                    let consumer = Arc::clone(&consumer);
+                    move || sender(rx, consumer, stop)
+                })
                 .map_err(|e| VcamError::Os {
                     code: 0,
                     message: format!("spawn: {e}"),
@@ -195,6 +210,7 @@ impl TestSession {
         handoff.set_sender(thread.thread().clone());
         Ok(Self {
             handoff,
+            consumer,
             stop,
             thread: Some(thread),
         })
@@ -238,6 +254,10 @@ impl VirtualCameraSession for TestSession {
         Some(rbs_vcam::VcamCountersReader::new(std::sync::Arc::clone(
             self.handoff.counters(),
         )))
+    }
+
+    fn consumer_present(&self) -> bool {
+        !self.consumer.absent.load(Ordering::Acquire)
     }
 }
 

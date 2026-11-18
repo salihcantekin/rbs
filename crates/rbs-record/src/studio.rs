@@ -529,11 +529,13 @@ impl VirtualCameraSettings {
 pub struct VirtualCameraState {
     /// The configuration its session was opened with.
     pub config: VirtualCameraConfig,
-    /// Its node's counters: frames handed to the session.
+    /// Its node's counters: frames handed to the session, and frames skipped before
+    /// conversion (`no_reader` while no app reads the camera).
     pub stats: Arc<VirtualCameraNodeStats>,
     /// The session's counters, when the adapter shares them: what its sender did with
-    /// the frames (`sent` to the consumer side, `consumer_absent` while no app reads,
-    /// `format_pending`; its `consumer_busy` includes the node's own skips).
+    /// the frames (`sent` to the consumer side, `consumer_absent` and `format_pending`
+    /// for the few frames in flight when an app stops reading, since the node skips
+    /// frames nobody reads; its `consumer_busy` includes the node's own skips).
     pub session: Option<rbs_vcam::VcamCountersReader>,
     /// Why its node failed, until it runs again. The studio runs on either way.
     pub failure: Option<String>,

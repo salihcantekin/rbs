@@ -110,6 +110,12 @@ impl Handoff {
         Ok(())
     }
 
+    /// See [`crate::VirtualCameraSession::consumer_present`]: the sender thread's last
+    /// word, one relaxed load.
+    pub fn consumer_present(&self) -> bool {
+        self.counters.consumer_present()
+    }
+
     /// The counters.
     pub fn stats(&self) -> VcamStats {
         self.counters.snapshot()
@@ -141,5 +147,29 @@ impl HandoffReceiver {
     /// The counters, shared with the session.
     pub fn counters(&self) -> &Arc<VcamCounters> {
         &self.counters
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rbs_core::media::{MemoryKind, PixelFormat};
+    use rbs_core::timing::FrameRate;
+
+    use super::*;
+    use crate::session::CameraFormat;
+
+    #[test]
+    fn consumer_presence_is_true_until_the_sender_says_otherwise() {
+        let config = VirtualCameraConfig::new(
+            CameraFormat::new(64, 36, FrameRate::FPS_30, PixelFormat::Nv12),
+            MemoryKind::System,
+        );
+        let (handoff, rx) = Handoff::new(config);
+        // Before the sender looks, an app may read: frames are produced (fails open).
+        assert!(handoff.consumer_present());
+        rx.counters().set_consumer_present(false);
+        assert!(!handoff.consumer_present());
+        rx.counters().set_consumer_present(true);
+        assert!(handoff.consumer_present());
     }
 }
