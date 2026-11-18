@@ -1290,6 +1290,9 @@ pub struct Studio {
     /// no shown scene, with `run: placed` (ADR-0149 decision 5, ADR-0152 decision 4).
     /// Empty while no source asks for it, so nothing is scanned for it (P13).
     browser_background: BTreeSet<SourceId>,
+    /// The sources at level `OnAir` after the last sync, for the on-air edge of
+    /// browser `on_return: restart` (ADR-0152 decision 6). Control side only.
+    on_air_levels: BTreeSet<SourceId>,
     /// Boxes on screen before the latest program-scene change, so a source that is in
     /// both scenes moves instead of jumping. Empty once `max_duration` has passed.
     glide: Option<Glide>,
@@ -1808,6 +1811,7 @@ impl Studio {
             next_picture: 0,
             shown_by: BTreeSet::new(),
             browser_background: BTreeSet::new(),
+            on_air_levels: BTreeSet::new(),
             glide: None,
             same_picture: false,
             transitions: BTreeMap::new(),
@@ -2809,12 +2813,31 @@ impl Studio {
             // Levels are written before the apply, so a source that wakes in this
             // apply follows the table with them (ADR-0107 decision 6, ADR-0152
             // decision 7). A failure shows as the source's `Unavailable` play state.
-            for &(id, _, on_return) in &report.level_changes {
+            for &(id, level, on_return) in &report.level_changes {
                 // `restart` starts at the range start on the return edge; `resume`
                 // where it stopped (ADR-0152 decision 6, ADR-0108 decision 10).
                 if let (Some(control), Some(on_return)) = (self.media_controls.get(&id), on_return)
                 {
                     control.set_restart_when_shown(on_return == OnReturn::Restart);
+                }
+                // A running page with `restart` reloads on its on-air edge; the
+                // runner keeps the last picture until the new first paint, at most
+                // 2 s (ADR-0152 decisions 6 and 9, ADR-0149 decision 2). A page that
+                // wakes on this edge is not running yet and loads once.
+                let was_on_air = self.on_air_levels.contains(&id);
+                if level == Level::OnAir {
+                    self.on_air_levels.insert(id);
+                } else {
+                    self.on_air_levels.remove(&id);
+                }
+                if let (false, Level::OnAir, Some(OnReturn::Restart), Some(control)) =
+                    (was_on_air, level, on_return, self.browser_controls.get(&id))
+                {
+                    if control.helper_running() {
+                        control.send(&rbs_sources::BrowserMessage::Reload {
+                            bypass_cache: false,
+                        });
+                    }
                 }
             }
             self.browser_background = browser_background(collection, &self.binder);
