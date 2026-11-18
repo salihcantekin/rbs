@@ -195,6 +195,11 @@ impl NativeDownload {
         &mut self.exporter
     }
 
+    /// The scale kernel of the conversion.
+    pub fn kernel(&self) -> crate::ScaleKernel {
+        self.exporter.kernel()
+    }
+
     /// Counters, with the readback's meaning.
     pub fn stats(&self) -> DownloadStats {
         self.queue.stats()

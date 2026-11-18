@@ -265,6 +265,11 @@ impl SurfaceExporter {
         self.stats
     }
 
+    /// The scale kernel of the conversion (ADR-0102).
+    pub fn kernel(&self) -> crate::yuv::ScaleKernel {
+        self.converter.kernel()
+    }
+
     /// Surfaces in the ring.
     pub fn surfaces(&self) -> usize {
         self.planes.len()
