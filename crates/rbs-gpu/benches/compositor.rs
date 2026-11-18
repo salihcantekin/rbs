@@ -27,7 +27,6 @@ fn bench(c: &mut Criterion) {
     let ctx = match GpuContext::new(&GpuRequest {
         allow_software: true,
         power,
-        ..GpuRequest::default()
     }) {
         Ok(ctx) => ctx,
         Err(e) => {
