@@ -15,7 +15,7 @@ pub(super) struct Rehearsal {
     /// Its compositor, between the two compositors and the Preview picture.
     node: NodeId,
     /// Kept so the compositor's layers stay sent while it runs.
-    _layers: LayerSender,
+    _layers: rbs_gpu::node::LayerSender,
     /// The engine time it ends.
     until: Timestamp,
     /// The program and preview scenes it was started for: a change of either ends it.

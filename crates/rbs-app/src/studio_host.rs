@@ -6694,6 +6694,8 @@ impl Host {
             self.forget_vertical_outputs();
         }
         let run = self.run_collection();
+        // Tickers go on where they were (ADR-0150 decision 5).
+        settings.scroll_runs = Some(self.studio.scroll_handover());
         // Timers and elapsed times run on across the restart (ADR-0129 decision 11).
         let timers = self.studio.text_timers();
         let old_now = self.clock.now();
@@ -13623,6 +13625,9 @@ fn edit_error(e: &SceneError) -> String {
     match e {
         SceneError::StyleOnScene(_) => {
             "Shape and border are for sources, not for scenes placed in a scene.".to_owned()
+        }
+        SceneError::ScrollOnScene(_) => {
+            "Scroll is for sources, not for scenes placed in a scene.".to_owned()
         }
         SceneError::InvalidLayout => {
             "Position and size must be numbers, and the size cannot be 0.".to_owned()

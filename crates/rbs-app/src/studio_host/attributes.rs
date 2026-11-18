@@ -98,11 +98,12 @@ pub struct Duplicate {
 }
 
 /// The order groups are written in: crop before transform (ADR-0133 decision 1).
-const WRITE_ORDER: [AttributeGroup; 12] = [
+const WRITE_ORDER: [AttributeGroup; 13] = [
     AttributeGroup::Crop,
     AttributeGroup::Transform,
     AttributeGroup::Opacity,
     AttributeGroup::Style,
+    AttributeGroup::Scroll,
     AttributeGroup::VideoFilters,
     AttributeGroup::AudioFilters,
     AttributeGroup::Options,
@@ -542,6 +543,7 @@ impl Host {
             AttributeGroup::Crop => s.layout.is_some_and(|l| l.crop != Crop::new(0, 0, 0, 0)),
             AttributeGroup::Opacity => s.layout.is_some_and(|l| l.opacity != 1.0),
             AttributeGroup::Style => s.layout.is_some_and(|l| l.style != default_style()),
+            AttributeGroup::Scroll => s.layout.is_some_and(|l| l.scroll.is_some()),
             AttributeGroup::VideoFilters => audio_filters(false),
             AttributeGroup::AudioFilters => audio_filters(true),
             AttributeGroup::Options => {
@@ -830,6 +832,11 @@ impl Host {
             AttributeGroup::Style => {
                 let mut out = old;
                 out.style = from.map_or_else(default_style, |l| l.style);
+                out
+            }
+            AttributeGroup::Scroll => {
+                let mut out = old;
+                out.scroll = from.and_then(|l| l.scroll);
                 out
             }
             _ => return Ok(Err(Skip::NotApplicable)),

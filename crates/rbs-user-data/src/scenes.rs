@@ -65,7 +65,8 @@
 //! Layouts may also have `rotation` (degrees), `crop` (`[left, top, right, bottom]`
 //! source pixels), `opacity` and `style` (ADR-0053, format 2: `shape = "rectangle" |
 //! "circle" | "ellipse"`, `radius` for rectangles, `border = { width, color =
-//! "#rrggbbaa" }`, `shadow = { offset = [x, y], blur, color }`); items `visible = false`,
+//! "#rrggbbaa" }`, `shadow = { offset = [x, y], blur, color }`) and `scroll` (format 23,
+//! ADR-0150: `{ speed, direction?, gap?, repeat?, start?, fade?, ramp_ms? }`); items `visible = false`,
 //! `locked = true` (format 3), `show_for_ms` (1 to 600000, format 13, ADR-0105; omitted when unset) and `overrides = [{ canvas = 1, layout = {...} }]`; sources `filters = [{ id, type,
 //! enabled, settings }]`, `volume` (0 to 1, default 1) and `muted = true` (format 3,
 //! ADR-0059), `sync_offset_ms` (-200 to 200, default 0; format 4, ADR-0062), `hints = { target_app = "...", target_title = "..." }` (format 8, ADR-0077). Setting values are TOML booleans, integers, floats or
@@ -78,11 +79,12 @@ use rbs_core::media::Size;
 use rbs_core::timing::FrameRate;
 use rbs_graph::node::NodeTypeId;
 use rbs_scene::model::{
-    Border, Canvas, CanvasId, CollectionGlide, CollectionTransition, Crop, FadeSettings, Fallback,
-    Filter, FilterId, GlideEasing, ItemContent, ItemId, ItemStyle, Layout, MasterAudio,
-    RecordSeparately, Scene, SceneAudio, SceneId, SceneItem, SceneLevel, SceneScope, SettingValue,
-    Settings, Shadow, Shape, Source, SourceAudio, SourceGlide, SourceId, SourceMonitor,
-    SourceRegion, StingerSettings, SwipeDirection, SwipeSettings, TransitionKind, VideoAs,
+    Border, Canvas, CanvasId, CollectionGlide, CollectionTransition, Crop, DEFAULT_SCROLL_RAMP_MS,
+    FadeSettings, Fallback, Filter, FilterId, GlideEasing, ItemContent, ItemId, ItemStyle, Layout,
+    MasterAudio, RecordSeparately, Scene, SceneAudio, SceneId, SceneItem, SceneLevel, SceneScope,
+    Scroll, ScrollDirection, ScrollRepeat, ScrollStart, SettingValue, Settings, Shadow, Shape,
+    Source, SourceAudio, SourceGlide, SourceId, SourceMonitor, SourceRegion, StingerSettings,
+    SwipeDirection, SwipeSettings, TransitionKind, VideoAs,
 };
 use rbs_scene::{ChromeFill, DisplayChrome};
 use rbs_scene::{IdCounters, MAX_GLIDE_MS, SceneCollection, SceneTransition};
@@ -775,6 +777,116 @@ struct LayoutDoc {
     opacity: f64,
     #[serde(default, skip_serializing_if = "StyleDoc::is_plain")]
     style: StyleDoc,
+    /// Format 23 (ADR-0150).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    scroll: Option<ScrollDoc>,
+}
+
+#[derive(Serialize, Deserialize, Default, Clone, Copy, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum DirectionName {
+    #[default]
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+#[derive(Serialize, Deserialize, Default, Clone, Copy, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum RepeatName {
+    #[default]
+    Loop,
+    Once,
+}
+
+#[derive(Serialize, Deserialize, Default, Clone, Copy, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum StartName {
+    #[default]
+    Inside,
+    Outside,
+}
+
+fn is_default<T: Default + PartialEq>(v: &T) -> bool {
+    *v == T::default()
+}
+
+fn default_ramp_ms() -> u32 {
+    DEFAULT_SCROLL_RAMP_MS
+}
+
+fn is_default_ramp_ms(v: &u32) -> bool {
+    *v == DEFAULT_SCROLL_RAMP_MS
+}
+
+/// A layout's `scroll` (format 23, ADR-0150). Ranges are checked with the collection.
+#[derive(Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct ScrollDoc {
+    #[serde(default, skip_serializing_if = "is_default")]
+    direction: DirectionName,
+    speed: f64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    gap: f64,
+    #[serde(default, skip_serializing_if = "is_default")]
+    repeat: RepeatName,
+    #[serde(default, skip_serializing_if = "is_default")]
+    start: StartName,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    fade: f64,
+    #[serde(
+        default = "default_ramp_ms",
+        skip_serializing_if = "is_default_ramp_ms"
+    )]
+    ramp_ms: u32,
+}
+
+impl ScrollDoc {
+    fn of(s: &Scroll) -> Self {
+        Self {
+            direction: match s.direction {
+                ScrollDirection::Right => DirectionName::Right,
+                ScrollDirection::Up => DirectionName::Up,
+                ScrollDirection::Down => DirectionName::Down,
+                // Left, and a direction added by a newer build.
+                _ => DirectionName::Left,
+            },
+            speed: wide(s.speed),
+            gap: wide(s.gap),
+            repeat: match s.repeat {
+                ScrollRepeat::Once => RepeatName::Once,
+                _ => RepeatName::Loop,
+            },
+            start: match s.start {
+                ScrollStart::Outside => StartName::Outside,
+                _ => StartName::Inside,
+            },
+            fade: wide(s.fade),
+            ramp_ms: s.ramp_ms,
+        }
+    }
+
+    fn scroll(&self) -> Scroll {
+        let direction = match self.direction {
+            DirectionName::Left => ScrollDirection::Left,
+            DirectionName::Right => ScrollDirection::Right,
+            DirectionName::Up => ScrollDirection::Up,
+            DirectionName::Down => ScrollDirection::Down,
+        };
+        Scroll::new(direction, self.speed as f32)
+            .with_gap(self.gap as f32)
+            .with_repeat(match self.repeat {
+                RepeatName::Loop => ScrollRepeat::Loop,
+                RepeatName::Once => ScrollRepeat::Once,
+            })
+            .with_start(match self.start {
+                StartName::Inside => ScrollStart::Inside,
+                StartName::Outside => ScrollStart::Outside,
+            })
+            .with_fade(self.fade as f32)
+            .with_ramp_ms(self.ramp_ms)
+    }
 }
 
 #[derive(Serialize, Deserialize, Default, Clone, Copy, PartialEq)]
@@ -917,6 +1029,7 @@ impl LayoutDoc {
             crop: [c.left, c.top, c.right, c.bottom],
             opacity: wide(l.opacity),
             style: StyleDoc::of(&l.style),
+            scroll: l.scroll.as_ref().map(ScrollDoc::of),
         }
     }
 
@@ -927,7 +1040,8 @@ impl LayoutDoc {
                 .with_rotation(self.rotation as f32)
                 .with_crop(Crop::new(left, top, right, bottom))
                 .with_opacity(self.opacity as f32)
-                .with_style(self.style.style()?),
+                .with_style(self.style.style()?)
+                .with_scroll(self.scroll.as_ref().map(ScrollDoc::scroll)),
         )
     }
 }
@@ -986,11 +1100,41 @@ fn settings(s: BTreeMap<String, Value>) -> Settings {
         .collect()
 }
 
+/// True when an item layout or a per-canvas override in `body` has a `scroll` key.
+fn any_layout_scrolls(body: &toml::Table) -> bool {
+    let has = |v: &toml::Value| {
+        v.get("layout")
+            .and_then(toml::Value::as_table)
+            .is_some_and(|l| l.contains_key("scroll"))
+    };
+    body.get("scenes")
+        .and_then(toml::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|s| s.get("items").and_then(toml::Value::as_array))
+        .flatten()
+        .any(|item| {
+            has(item)
+                || item
+                    .get("overrides")
+                    .and_then(toml::Value::as_array)
+                    .is_some_and(|o| o.iter().any(has))
+        })
+}
+
 impl Document for SceneCollection {
     const KIND: &'static str = "scene-collection";
-    const FORMAT: u32 = 22;
+    const FORMAT: u32 = 23;
 
     fn write_format(&self) -> u32 {
+        let scrolls = self.scenes().any(|s| {
+            s.items.iter().any(|i| {
+                i.layout.scroll.is_some() || i.overrides.values().any(|l| l.scroll.is_some())
+            })
+        });
+        if scrolls {
+            return 23;
+        }
         let t = self.transition();
         let stinger = t.kind == TransitionKind::Stinger
             || t.stinger != StingerSettings::default()
@@ -1060,8 +1204,16 @@ impl Document for SceneCollection {
     /// `reload_every_s`, `script`, `script_on_load`, `script_every_s`, `zoom_percent`,
     /// `keep_running`, `retry_on_error` (ADR-0149) of a browser source; a format 21 body
     /// is a format 22 body without them, and a file is written as 22 only when a browser
-    /// source has one, so an older build refuses it instead of failing the source.
+    /// source has one, so an older build refuses it instead of failing the source. Format
+    /// 23 adds the optional layout `scroll` (ADR-0150); a format 22 or older body is a
+    /// format 23 body without it, and a file is written as 23 only when a layout scrolls.
     fn upgrade(from: u32, body: &mut toml::Table) -> Result<(), String> {
+        if (1..=22).contains(&from) && any_layout_scrolls(body) {
+            return Err(format!("format {from} has no layout `scroll` (format 23)"));
+        }
+        if from == 22 {
+            return Ok(());
+        }
         // Format 22 adds browser page settings (ADR-0132, ADR-0149) inside the open
         // `settings` table; a format 21 body is a format 22 body without them.
         if from == 21 {

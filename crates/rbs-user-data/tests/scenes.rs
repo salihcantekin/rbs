@@ -1065,6 +1065,135 @@ fn a_stinger_round_trips_in_format_21_and_older_formats_refuse_it() {
 }
 
 #[test]
+fn a_scroll_round_trips_in_format_23_and_older_formats_refuse_it() {
+    // ADR-0150 decision 1.
+    use rbs_scene::model::{Scroll, ScrollDirection, ScrollRepeat, ScrollStart};
+    let mut col = show();
+    let plain = document::render(&col, Some("Show")).unwrap();
+    assert!(!plain.contains("format = 23"), "{plain}");
+    assert!(!plain.contains("scroll"), "{plain}");
+    let (text_source, _) = col
+        .add_source("Ticker", ty("text"), Settings::new())
+        .unwrap();
+    let (scene, _) = col.add_scene("News", SceneScope::Shared).unwrap();
+    let tall = col.canvases().nth(1).unwrap().id;
+    let full = Scroll::new(ScrollDirection::Up, 120.5)
+        .with_gap(48.0)
+        .with_repeat(ScrollRepeat::Once)
+        .with_start(ScrollStart::Outside)
+        .with_fade(24.5)
+        .with_ramp_ms(0);
+    for (default, over) in [
+        (Some(Scroll::new(ScrollDirection::Left, 80.0)), None),
+        (None, Some(full)),
+        (
+            Some(full),
+            Some(Scroll::new(ScrollDirection::Right, 4000.0)),
+        ),
+    ] {
+        let (item, _) = col
+            .add_item(
+                scene,
+                ItemContent::Source(text_source),
+                Layout::new([0.0, 980.0], [1920.0, 100.0]).with_scroll(default),
+                None,
+            )
+            .unwrap();
+        if over.is_some() {
+            col.set_item_layout(
+                item,
+                Some(tall),
+                Layout::new([0.0, 1800.0], [1080.0, 100.0]).with_scroll(over),
+            )
+            .unwrap();
+        }
+        let text = document::render(&col, Some("Show")).unwrap();
+        assert!(text.contains("format = 23"), "{text}");
+        let back = document::parse::<SceneCollection>(&text).unwrap().document;
+        assert_eq!(back, col);
+    }
+    // Defaults are left out: a plain left scroll is only its speed.
+    let text = document::render(&col, Some("Show")).unwrap();
+    assert!(
+        text.contains("[scenes.items.layout.scroll]\nspeed = 80.0\n\n"),
+        "{text}"
+    );
+
+    let scene_doc = "[[canvases]]\nid = 0\nname = \"C\"\nwidth = 1920\nheight = 1080\nframe_rate = [30, 1]\n\
+                     [[sources]]\nid = 0\nname = \"T\"\ntype = \"org.rbs.source.text\"\n\
+                     [[scenes]]\nid = 0\nname = \"S\"\n[[scenes.items]]\nid = 0\nsource = 0\n";
+    for (format, bad) in [
+        // Older formats have no scroll.
+        (
+            21,
+            "layout = { position = [0.0, 0.0], size = [10.0, 10.0], scroll = { speed = 10.0 } }\n",
+        ),
+        (
+            22,
+            "layout = { position = [0.0, 0.0], size = [10.0, 10.0], scroll = { speed = 10.0 } }\n",
+        ),
+        (
+            15,
+            "layout = { position = [0.0, 0.0], size = [10.0, 10.0], scroll = { speed = 10.0 } }\n",
+        ),
+        (
+            21,
+            "layout = { position = [0.0, 0.0], size = [10.0, 10.0] }\n\
+              overrides = [{ canvas = 0, layout = { position = [0.0, 0.0], size = [10.0, 10.0], scroll = { speed = 10.0 } } }]\n",
+        ),
+        // Out of range, unknown names and keys.
+        (
+            23,
+            "layout = { position = [0.0, 0.0], size = [10.0, 10.0], scroll = { speed = 0.5 } }\n",
+        ),
+        (
+            23,
+            "layout = { position = [0.0, 0.0], size = [10.0, 10.0], scroll = { speed = 4001.0 } }\n",
+        ),
+        (
+            23,
+            "layout = { position = [0.0, 0.0], size = [10.0, 10.0], scroll = { speed = 10.0, gap = -1.0 } }\n",
+        ),
+        (
+            23,
+            "layout = { position = [0.0, 0.0], size = [10.0, 10.0], scroll = { speed = 10.0, fade = 2049.0 } }\n",
+        ),
+        (
+            23,
+            "layout = { position = [0.0, 0.0], size = [10.0, 10.0], scroll = { speed = 10.0, ramp_ms = 5001 } }\n",
+        ),
+        (
+            23,
+            "layout = { position = [0.0, 0.0], size = [10.0, 10.0], scroll = { speed = 10.0, direction = \"sideways\" } }\n",
+        ),
+        (
+            23,
+            "layout = { position = [0.0, 0.0], size = [10.0, 10.0], scroll = { speed = 10.0, bounce = true } }\n",
+        ),
+        (
+            23,
+            "layout = { position = [0.0, 0.0], size = [10.0, 10.0], scroll = { direction = \"up\" } }\n",
+        ),
+    ] {
+        let text = format!(
+            "format = {format}\nkind = \"scene-collection\"\n[next]\nscene = 1\nsource = 1\nitem = 1\ncanvas = 1\n{scene_doc}{bad}"
+        );
+        assert!(
+            matches!(
+                document::parse::<SceneCollection>(&text),
+                Err(DataError::Invalid(_))
+            ),
+            "{format} {bad}"
+        );
+    }
+    // The same document without the scroll loads in format 21.
+    let ok = format!(
+        "format = 21\nkind = \"scene-collection\"\n[next]\nscene = 1\nsource = 1\nitem = 1\ncanvas = 1\n{scene_doc}layout = {{ position = [0.0, 0.0], size = [10.0, 10.0] }}\n"
+    );
+    document::parse::<SceneCollection>(&ok).unwrap();
+}
+
+#[test]
 fn browser_page_settings_are_written_as_format_22() {
     // ADR-0132 decision 11, ADR-0149 decision 1.
     use rbs_scene::model::SettingValue;
