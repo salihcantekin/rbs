@@ -6,11 +6,15 @@
 //! The first destination of each canvas (id [`MAIN_FIRST`] or [`VERTICAL_FIRST`]) is the
 //! server, key, reconnect and SRT latency of `stream` or `stream-vertical`, so an older
 //! profile is a one-destination stream and reads unchanged. Its name, service, enabled
-//! flag and encoding mode are kept here. It cannot be removed, only cleared or disabled.
+//! flag and encoding mode are kept here. It exists while its stream section has a
+//! server ([`first_exists`], ADR-0148 decision 2); removing it empties the section, and
+//! the next destination added to that canvas fills the slot again (decision 4).
 //! Every other destination is kept here whole, apart from its key, which lives in the
 //! credential store under [`key_account`]. Ids are unique across the profile and never
-//! reused ([`Destinations::next_id`]), so a removed destination's key can never attach
-//! to a new one. Toolkit-free and tested without a window.
+//! reused ([`Destinations::next_id`]), apart from the two fixed first ids, so a removed
+//! destination's key can never attach to a new one. Streaming is available on a canvas
+//! while one of its existing destinations is on ([`Destinations::available`]).
+//! Toolkit-free and tested without a window.
 
 use rbs_transport::ReconnectPolicy;
 use serde::{Deserialize, Serialize};
@@ -125,6 +129,10 @@ pub struct Destination {
     /// Shared with the stream, or its own.
     #[serde(default)]
     pub encoding: DestinationEncoding,
+    /// Its place in the list (ADR-0148 decision 5); `None` in sections written before
+    /// it: those keep their place in id order, the first slot first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order: Option<u32>,
 }
 
 fn custom() -> String {
@@ -146,6 +154,7 @@ impl Destination {
             reconnect: true,
             srt_latency_ms: None,
             encoding: DestinationEncoding::Shared,
+            order: None,
         }
     }
 
@@ -235,6 +244,12 @@ pub fn key_account(main_account: &str, id: u32) -> String {
     }
 }
 
+/// The first destination of a canvas exists while its stream section has a server
+/// (ADR-0148 decision 2). A saved key alone does not make it exist.
+pub fn first_exists(stream: &StreamProfile) -> bool {
+    !stream.server.trim().is_empty()
+}
+
 impl Destinations {
     /// The destinations a saved section gives: none when it is absent or does not load.
     /// `Err` when it was written by a newer RBS: it is then read as none and must not be
@@ -318,33 +333,69 @@ impl Destinations {
         None
     }
 
-    /// The destinations of `canvas`, its first one first (from `stream`, which is that
-    /// canvas's stream section), then the others in the order they were added.
-    /// `main_account` is the profile's key account (`stream_key::account`).
+    /// The existing destinations of `canvas` in list order (ADR-0148 decision 5): its
+    /// first one (from `stream`, that canvas's stream section) only while it exists,
+    /// and the others. `main_account` is the profile's key account
+    /// (`stream_key::account`).
     pub fn of(&self, canvas: Canvas, stream: &StreamProfile, main_account: &str) -> Vec<Resolved> {
         let first_id = canvas.first();
-        let mut first = self
-            .entries
-            .iter()
-            .find(|d| d.id == first_id)
-            .cloned()
-            .unwrap_or_else(|| Destination::new(first_id, canvas, "", CUSTOM));
-        first.server = stream.server.clone();
-        first.key_saved = stream.key_saved;
-        first.reconnect = stream.reconnect;
-        first.srt_latency_ms = stream.srt_latency_ms;
-        std::iter::once(first)
+        let first = first_exists(stream).then(|| {
+            let mut first = self
+                .entries
+                .iter()
+                .find(|d| d.id == first_id)
+                .cloned()
+                .unwrap_or_else(|| Destination::new(first_id, canvas, "", CUSTOM));
+            first.server = stream.server.clone();
+            first.key_saved = stream.key_saved;
+            first.reconnect = stream.reconnect;
+            first.srt_latency_ms = stream.srt_latency_ms;
+            first
+        });
+        let mut list: Vec<Destination> = first
+            .into_iter()
             .chain(
                 self.entries
                     .iter()
                     .filter(|d| d.canvas == canvas && !d.is_first())
                     .cloned(),
             )
-            .map(|destination| Resolved {
+            .collect();
+        // An entry without an order (written before ADR-0148 decision 5) has its
+        // place in id order, the first slot first; every new one gets a higher order.
+        list.sort_by_key(|d| (!d.is_first(), d.id));
+        let mut keyed: Vec<(u32, Destination)> = list
+            .into_iter()
+            .enumerate()
+            .map(|(i, d)| (d.order.unwrap_or(u32::try_from(i).unwrap_or(u32::MAX)), d))
+            .collect();
+        keyed.sort_by_key(|(o, d)| (*o, d.id));
+        keyed
+            .into_iter()
+            .map(|(_, destination)| Resolved {
                 account: key_account(main_account, destination.id),
                 destination,
             })
             .collect()
+    }
+
+    /// Streaming is available on `canvas`: one of its existing destinations is on
+    /// (ADR-0148 decision 1). The caller treats a section that failed to load as
+    /// available.
+    pub fn available(&self, canvas: Canvas, stream: &StreamProfile) -> bool {
+        self.of(canvas, stream, "")
+            .iter()
+            .any(|r| r.destination.enabled)
+    }
+
+    /// The order a destination added to `canvas` now gets: after every one, listed
+    /// or not (an entry without an order counts by its place, so at most the count).
+    pub fn next_order(&self, canvas: Canvas, stream: &StreamProfile) -> u32 {
+        let of_canvas = self.entries.iter().filter(|d| d.canvas == canvas);
+        let top = of_canvas.clone().filter_map(|d| d.order).max().unwrap_or(0);
+        let places = u32::try_from(of_canvas.count() + usize::from(first_exists(stream)))
+            .unwrap_or(u32::MAX);
+        top.max(places).saturating_add(1)
     }
 
     /// The entry of `id`, if saved here.
@@ -375,18 +426,20 @@ impl Destinations {
         Ok(id)
     }
 
-    /// Removes destination `id` and returns it (its key is the caller's to delete).
-    /// A first destination cannot be removed, only cleared or disabled.
-    pub fn remove(&mut self, id: u32) -> Result<Destination, String> {
+    /// Removes destination `id`'s entry and returns it (its key is the caller's to
+    /// delete). For a first destination the entry may be missing (`Ok(None)`); the
+    /// caller empties its stream section (ADR-0148 decision 3).
+    pub fn remove(&mut self, id: u32) -> Result<Option<Destination>, String> {
         if id == MAIN_FIRST || id == VERTICAL_FIRST {
-            return Err("The first destination cannot be removed; clear or disable it.".into());
+            let at = self.entries.iter().position(|d| d.id == id);
+            return Ok(at.map(|at| self.entries.remove(at)));
         }
         let at = self
             .entries
             .iter()
             .position(|d| d.id == id)
             .ok_or_else(|| format!("there is no destination {id}"))?;
-        Ok(self.entries.remove(at))
+        Ok(Some(self.entries.remove(at)))
     }
 
     /// The entry of `id`, made for a first destination when it has none yet. `None`
@@ -474,10 +527,58 @@ mod tests {
         assert_eq!(first.destination.server, "rtmp://live.example.com/app");
         assert!(first.configured());
         assert_eq!(first.account, "stream key");
-        let vertical = d.of(Canvas::Vertical, &stream("", false), "stream key");
+        let vertical = d.of(
+            Canvas::Vertical,
+            &stream("srt://v.example.com:9000", false),
+            "stream key",
+        );
         assert_eq!(vertical[0].destination.id, VERTICAL_FIRST);
         assert_eq!(vertical[0].account, "stream key/vertical");
-        assert!(!vertical[0].configured());
+        // No server: the first slot does not exist and streaming is off (ADR-0148).
+        assert!(d.of(Canvas::Vertical, &stream("", true), "k").is_empty());
+        assert!(!d.available(Canvas::Vertical, &stream("", true)));
+        assert!(d.available(Canvas::Main, &stream("rtmp://a/b", false)));
+    }
+
+    #[test]
+    fn a_removed_first_slot_is_not_listed_and_the_others_keep_streaming_available() {
+        let mut d = Destinations::default();
+        let a = d.add(Canvas::Main, "Twitch", "twitch").unwrap();
+        let empty = stream("", false);
+        let list = d.of(Canvas::Main, &empty, "k");
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].destination.id, a);
+        assert!(d.available(Canvas::Main, &empty));
+        // Every one off: not available, still listed.
+        assert!(d.set_enabled(a, false));
+        assert!(!d.available(Canvas::Main, &empty));
+        assert_eq!(d.of(Canvas::Main, &empty, "k").len(), 1);
+        // A first slot that exists but is off counts as off too.
+        let full = stream("rtmp://a/b", true);
+        assert!(d.set_enabled(MAIN_FIRST, false));
+        assert!(!d.available(Canvas::Main, &full));
+    }
+
+    #[test]
+    fn saved_order_lists_a_refilled_first_slot_last() {
+        let mut d = Destinations::default();
+        let a = d.add(Canvas::Main, "Twitch", "twitch").unwrap();
+        let b = d.add(Canvas::Main, "Kick", "kick").unwrap();
+        let empty = stream("", false);
+        let ids = |d: &Destinations, s: &StreamProfile| -> Vec<u32> {
+            d.of(Canvas::Main, s, "")
+                .iter()
+                .map(|r| r.destination.id)
+                .collect()
+        };
+        // Sections from before the order: by id, the first slot first.
+        let full = stream("rtmp://a/b", true);
+        assert_eq!(ids(&d, &full), vec![MAIN_FIRST, a, b]);
+        // The slot refilled while empty gets the next order and lists last.
+        let order = d.next_order(Canvas::Main, &empty);
+        d.entry_mut(MAIN_FIRST).unwrap().order = Some(order);
+        assert_eq!(ids(&d, &full), vec![a, b, MAIN_FIRST]);
+        assert!(order > 2);
     }
 
     #[test]
@@ -489,8 +590,10 @@ mod tests {
         d.remove(a).unwrap();
         let c = d.add(Canvas::Main, "Kick", "kick").unwrap();
         assert_eq!(c, 4);
-        assert!(d.remove(MAIN_FIRST).is_err());
-        assert!(d.remove(VERTICAL_FIRST).is_err());
+        // A first slot is cleared, not refused (ADR-0148 decision 3); with no entry
+        // there is nothing to take out of this section.
+        assert_eq!(d.remove(MAIN_FIRST), Ok(None));
+        assert_eq!(d.remove(VERTICAL_FIRST), Ok(None));
         assert!(d.remove(a).is_err());
         assert_eq!(key_account("stream-key/p7", c), "stream-key/p7/dest-4");
         assert_eq!(key_account("stream-key/p7", MAIN_FIRST), "stream-key/p7");

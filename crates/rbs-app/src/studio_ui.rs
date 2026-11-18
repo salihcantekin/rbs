@@ -566,6 +566,8 @@ pub struct StudioUi {
     destinations_note: String,
     /// The Destinations card's editor, while open (ADR-0127 decision 17).
     dest_editor: Option<destinations::Editor>,
+    /// A removal or a fill of a first slot waiting for its key to be deleted.
+    dest_pending: Option<destinations::Pending>,
     /// Bumped when Rust sets the editor's text fields.
     dest_serial: u32,
     /// The main canvas's running destinations, each with when it arrived (the live
@@ -828,6 +830,7 @@ impl StudioUi {
             destinations: rbs_app::stream_destinations::Destinations::default(),
             destinations_note: String::new(),
             dest_editor: None,
+            dest_pending: None,
             dest_serial: 0,
             live_dests: Vec::new(),
             vertical_flags: VerticalFlags::default(),
@@ -4280,26 +4283,20 @@ impl StudioUi {
             // Live controls already say why (the button is disabled).
             return;
         }
-        if let Some(why) = self.stream.missing() {
-            fail(self, why.to_owned());
-            self.st_setup_note = true;
-            return;
-        }
-        self.st_setup_note = false;
-        if let Some(why) = self.stream.problem() {
-            return fail(self, why);
-        }
-        let Some(server) = self.stream.parsed() else {
-            return fail(self, "Enter the server in Settings, Stream.".to_owned());
+        let request = match self.stream_request(OutputCanvas::Main) {
+            Ok(r) => r,
+            Err((why, setup)) => {
+                fail(self, why);
+                self.st_setup_note = setup;
+                return;
+            }
         };
-        let request =
-            match StreamRequest::from_profile(&self.stream, self.encoder_id(&self.stream.encoding))
-            {
-                Ok(r) => r,
-                Err(why) => return fail(self, why),
-            };
+        self.st_setup_note = false;
+        let host = stream_profile::parse_server(&request.url)
+            .map(|s| s.host)
+            .unwrap_or_default();
         self.st_state = st_state::STARTING;
-        self.st_live = Some((server.host, Instant::now()));
+        self.st_live = Some((host, Instant::now()));
         self.st_link = Link::default();
         self.st_note.clear();
         self.st_bad = false;
@@ -4390,11 +4387,50 @@ impl StudioUi {
         })
     }
 
-    /// A vertical server is saved ("Vertical stream not set up" otherwise).
+    /// The vertical stream can go live: its first slot has a server, or another of
+    /// its destinations is on ("Vertical stream not set up" otherwise, ADR-0148
+    /// decision 6).
     pub fn vertical_stream_set_up(&self) -> bool {
-        self.vertical_stream
-            .as_ref()
-            .is_some_and(|p| !p.server.trim().is_empty())
+        self.vertical_stream.as_ref().is_some_and(|p| {
+            !p.server.trim().is_empty()
+                || self
+                    .destinations
+                    .available(rbs_app::stream_destinations::Canvas::Vertical, p)
+        })
+    }
+
+    /// The request Go live of `c` sends (ADR-0148 decision 6): from the stream
+    /// settings and the first destination's server while it exists and is on, else
+    /// from the shared settings alone, the host taking each other destination's server.
+    /// `Err((why, setup))`: why not, and whether it is a missing server or key.
+    fn stream_request(&self, c: OutputCanvas) -> Result<StreamRequest, (String, bool)> {
+        use rbs_app::stream_destinations::{Canvas, first_exists};
+        let (p, canvas) = match c {
+            OutputCanvas::Main => (&self.stream, Canvas::Main),
+            OutputCanvas::Vertical => match &self.vertical_stream {
+                Some(p) => (p, Canvas::Vertical),
+                None => return Err((VERTICAL_SETUP.to_owned(), true)),
+            },
+        };
+        if let Some(why) = p.problem() {
+            return Err((why, false));
+        }
+        let first_on = first_exists(p)
+            && self
+                .destinations
+                .get(canvas.first())
+                .is_none_or(|d| d.enabled);
+        if first_on || !self.destinations.available(canvas, p) {
+            if !first_exists(p) {
+                return Err((rbs_app::studio_host::STREAMING_OFF.to_owned(), true));
+            }
+            if let Some(why) = p.missing() {
+                return Err((why.to_owned(), true));
+            }
+            return StreamRequest::from_profile(p, self.encoder_id(&p.encoding))
+                .map_err(|why| (why, false));
+        }
+        StreamRequest::from_settings(p, self.encoder_id(&p.encoding)).map_err(|why| (why, false))
     }
 
     /// "Record vertical": records the vertical canvas with its own recording settings
@@ -4446,15 +4482,11 @@ impl StudioUi {
         if let Some(why) = &self.cannot_record {
             return Err(vertical_why(why));
         }
-        let p = match &self.vertical_stream {
-            Some(p) if p.missing().is_none() => p,
-            _ => return Err(vertical_why(VERTICAL_SETUP)),
+        let request = match self.stream_request(OutputCanvas::Vertical) {
+            Ok(r) => r,
+            Err((_, true)) => return Err(vertical_why(VERTICAL_SETUP)),
+            Err((why, false)) => return Err(vertical_why(&why)),
         };
-        if let Some(why) = p.problem() {
-            return Err(vertical_why(&why));
-        }
-        let request = StreamRequest::from_profile(p, self.encoder_id(&p.encoding))
-            .map_err(|why| vertical_why(&why))?;
         self.vertical_st = VerticalOut::Starting;
         self.send(Command::StartVerticalStream(request));
         Ok(())
@@ -6961,9 +6993,7 @@ impl StudioUi {
         match (stream, main) {
             (false, true) => self.rec_state == rec_state::OFF,
             (true, true) => {
-                self.st_state == st_state::OFF
-                    && self.stream.missing().is_none()
-                    && self.stream.problem().is_none()
+                self.st_state == st_state::OFF && self.stream_request(OutputCanvas::Main).is_ok()
             }
             (false, false) => self.vertical.is_some() && self.vertical_rec == VerticalOut::Off,
             (true, false) => {
@@ -8740,6 +8770,91 @@ mod tests {
             .add(rbs_app::stream_destinations::Canvas::Main, "", "custom")
             .unwrap();
         assert!(next > id);
+    }
+
+    #[test]
+    fn removing_the_first_destination_waits_for_its_key_then_clears_the_slot() {
+        use rbs_app::stream_destinations::Canvas;
+        let (mut ui, _d) = ui("dest-remove-first");
+        ui.stream.server = "rtmp://live.example.com/app".into();
+        ui.stream.key_saved = true;
+        ui.stream.reconnect = false;
+        let other = ui
+            .destinations
+            .add(Canvas::Main, "Twitch", "twitch")
+            .unwrap();
+        ui.dest_remove_id(0);
+        // Nothing changes until the key store answers.
+        assert_eq!(ui.stream.server, "rtmp://live.example.com/app");
+        assert!(ui.dest_pending.is_some());
+        // A refused delete changes nothing and says why.
+        ui.dest_key_saved(0, Err("locked".into()));
+        assert!(ui.dest_pending.is_none());
+        assert_eq!(ui.stream.server, "rtmp://live.example.com/app");
+        assert_eq!(ui.stream_note, "locked");
+        // Deleted: the slot is emptied and no longer listed; streaming stays available
+        // through the other destination.
+        ui.dest_remove_id(0);
+        ui.dest_key_saved(0, Ok(false));
+        assert!(ui.stream.server.is_empty());
+        assert!(!ui.stream.key_saved);
+        assert!(ui.stream.reconnect);
+        let list = ui.destinations.of(Canvas::Main, &ui.stream, "");
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].destination.id, other);
+        assert!(ui.destinations.available(Canvas::Main, &ui.stream));
+        // Go live builds its request from the shared settings alone.
+        let r = ui.stream_request(OutputCanvas::Main).unwrap();
+        assert!(r.url.is_empty());
+        // Removing the last one turns streaming off, and Go live says so.
+        ui.dest_remove_id(i32::try_from(other).unwrap());
+        ui.dest_key_saved(other, Ok(false));
+        assert!(!ui.destinations.available(Canvas::Main, &ui.stream));
+        assert_eq!(
+            ui.stream_request(OutputCanvas::Main).unwrap_err().0,
+            rbs_app::studio_host::STREAMING_OFF
+        );
+    }
+
+    #[test]
+    fn adding_into_the_empty_first_slot_deletes_the_old_key_first() {
+        use rbs_app::stream_destinations::Canvas;
+        let (mut ui, _d) = ui("dest-fill-first");
+        ui.stream.server.clear();
+        ui.dest_add();
+        ui.dest_set_server("rtmp://live.example.com/app");
+        ui.dest_save_key(Some("secret"));
+        // The key waits for Add.
+        assert!(ui.dest_editor.as_ref().is_some_and(|e| e.key.is_some()));
+        ui.dest_save();
+        assert!(matches!(
+            ui.dest_pending,
+            Some(destinations::Pending::FillFirst(_))
+        ));
+        assert!(
+            ui.stream.server.is_empty(),
+            "written only after the old key is gone"
+        );
+        ui.dest_key_saved(0, Ok(false));
+        assert!(ui.dest_pending.is_none());
+        assert_eq!(ui.stream.server, "rtmp://live.example.com/app");
+        assert_eq!(ui.destinations.of(Canvas::Main, &ui.stream, "").len(), 1);
+        // The new key's own answer marks it saved.
+        ui.dest_key_saved(0, Ok(true));
+        assert!(ui.stream.key_saved);
+    }
+
+    #[test]
+    fn cancel_while_adding_saves_no_key() {
+        let (mut ui, _d) = ui("dest-cancel-add");
+        ui.stream.server = "rtmp://live.example.com/app".into();
+        let before = ui.destinations.clone();
+        ui.dest_add();
+        ui.dest_set_server("rtmp://other.example.com/app");
+        ui.dest_save_key(Some("secret"));
+        ui.dest_cancel();
+        assert_eq!(ui.destinations, before);
+        assert!(ui.dest_pending.is_none());
     }
 
     #[test]

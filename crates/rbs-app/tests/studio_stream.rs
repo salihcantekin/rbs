@@ -1022,13 +1022,14 @@ fn a_control_api_client_goes_live_and_ends_the_stream() {
     // answer from the control thread, so the settings are in place before the call.
     host.send(Command::SetStreamProfile(StreamProfile::new()));
     add_display(&host, &rx);
+    // No server and no other destination: streaming is off (ADR-0148 decision 10).
     let refused = c.call("stream.start", none.clone());
     assert_eq!(refused["error"]["data"]["kind"], "failed", "{refused}");
     assert!(
         refused["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("server"),
+            .contains("Streaming is off"),
         "{refused}"
     );
 
