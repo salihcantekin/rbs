@@ -36,8 +36,8 @@ sha256 = "..."                    # lowercase hex
 unpacked_size = 260000000         # for the free-space check
 format = "tar.bz2"                # tar.bz2 | tar.gz
 strip = 1                         # leading path parts removed when unpacking
-library_dir = "Release"           # holds libcef / the macOS framework, after strip
-resources_dir = "Resources"       # holds paks, icudtl.dat, locales/ (may equal library_dir)
+library_dir = "Release"           # holds libcef / the macOS framework, icudtl.dat and the V8 snapshots, after strip
+resources_dir = "Resources"       # holds the .pak files and locales/ (may equal library_dir)
 ```
 
 ```rust
@@ -89,7 +89,7 @@ pub trait AddOnFs: Send + Sync {
 }
 ```
 
-`rbs-add-ons-sys` implements all three traits (`*_beneath` with `openat2` and `RESOLVE_BENEATH` on Linux, `O_NOFOLLOW` opens on macOS, `FILE_FLAG_OPEN_REPARSE_POINT` checks on Windows). `rbs-add-ons` holds every rule in this spec; the implementations only decode, transfer and perform. `rbs-add-ons` tests use in-memory versions: a `Fetch` that serves bytes, redirects, failures and stalls, an `Unpack` over listed entries, and an `AddOnFs` that can hold a lock, fail a rename with a sharing violation or report little space. `rbs-add-ons-sys` tests cover the timeouts against a local test server and the OS operations in a temporary directory.
+`rbs-add-ons-sys` implements all three traits: `Fetch` with `ureq` (HTTP/1.1, automatic redirects off) on `rustls` with `rustls-platform-verifier` (the OS trust roots); `*_beneath` with `openat2` and `RESOLVE_BENEATH` on Linux 5.6 and later (before that, a walk of `openat` with `O_NOFOLLOW | O_DIRECTORY` per component), `O_NOFOLLOW` opens on macOS, `FILE_FLAG_OPEN_REPARSE_POINT` checks on Windows. `rbs-add-ons` holds every rule in this spec; the implementations only decode, transfer and perform. `rbs-add-ons` tests use in-memory versions: a `Fetch` that serves bytes, redirects, failures and stalls, an `Unpack` over listed entries, and an `AddOnFs` that can hold a lock, fail a rename with a sharing violation or report little space. `rbs-add-ons-sys` tests cover the timeouts against a local test server and the OS operations in a temporary directory.
 
 ### Entry names
 
@@ -100,10 +100,10 @@ One check, the same on every OS, applied to each entry name and each link target
 - has a `.` or `..` component, or a component ending in `.` or a space;
 - contains `:`, a control character or one of `*?"<>|`;
 - has a component that is a Windows reserved name (`CON`, `PRN`, `AUX`, `NUL`, `COM1` to `COM9`, `LPT1` to `LPT9`), in any case, with or without an extension;
-- equals an earlier name after Unicode NFC and case folding (duplicates are refused too);
+- equals an earlier name after Unicode NFC followed by `str::to_lowercase` (exact duplicates are refused too);
 - has a parent component that an earlier entry created as a link.
 
-`library_dir` and `resources_dir` must name directories the archive created.
+`library_dir` and `resources_dir` must name directories the archive created. After unpacking, `icudtl.dat`, `snapshot_blob.bin` and `v8_context_snapshot.bin` (Windows and Linux) are moved from `resources_dir` to `library_dir` when only the former has them; an install whose `library_dir` then lacks the library or one of these files is `unsafe_archive`.
 
 ### Transfer and install
 
@@ -116,8 +116,8 @@ One check, the same on every OS, applied to each entry name and each link target
 5. Compare the SHA-256 (`hash_mismatch`). Keep the same file handle and seek to 0; the path is never reopened.
 6. Read entries through `Unpack` into `.staging/out/`: check each name; files and directories are created with `AddOnFs::*_beneath` and modes with setuid, setgid and sticky bits cleared; `Other` entries (devices, FIFOs) are refused; more than 20 000 entries or more bytes than `unpacked_size` is `unsafe_archive`.
 7. Create links last. A symlink target must be relative. It is resolved by name through the archive's own entries: join it to the link's parent, then walk it component by component; when a component is another link of this archive, continue through that link's target (at most 16 links in all, else `unsafe_archive`). Every intermediate path must stay inside `out/`, and the final path must name an entry of the archive. A hard link may point only to a regular file this archive created earlier. Any violation is `unsafe_archive` and nothing is kept. (The macOS framework's `Versions/Current` links pass this rule.)
-8. Sync every file, write `.staging/out/.complete` (version, SHA-256, `library_dir`, `resources_dir`) and sync it, rename `out/` to `<root>/<id>/<version>/`, sync `<root>/<id>/`. A rename that fails with a sharing violation is retried up to 10 times, 200 ms apart on the injected clock (a scanner holds new DLLs), then `io`. If `<version>/` exists without a marker it is deleted first.
-9. Empty `.staging/` and release the lock. Install never removes another version.
+8. Sync every file, write `.staging/out/.complete` (version, SHA-256, `library_dir`, `resources_dir`) and sync it, rename `out/` to `<root>/<id>/<version>/`, sync `<root>/<id>/`. A rename that fails with a sharing violation is retried up to 10 times, 200 ms apart on the injected clock (a scanner holds new DLLs), then `io`. If `<version>/` exists without a marker (an unfinished, never-usable directory of the same version) it is deleted first.
+9. Empty `.staging/` and release the lock. Install never removes or replaces a version with a marker.
 
 Cancel is checked between reads and between entries; it empties `.staging/` and returns `Cancelled`, leaving any installed version as it was.
 
@@ -142,7 +142,7 @@ pub enum InstallError {
 
 ### Clean
 
-`AddOns::clean(id)` takes the lock and removes every version lower than the highest version below the catalog's (it keeps the catalog's version, the one before it, every higher version and every version that does not parse), marker first as in Remove. The desktop Update command runs install, then clean.
+`AddOns::clean(id)` takes the lock and removes every version lower than the highest version below the catalog's (it keeps the catalog's version, the one before it, every higher version and every version that does not parse), marker first as in Remove. The desktop Update command runs clean only after an install that succeeded.
 
 ### Storage
 
@@ -180,16 +180,16 @@ pub enum FailReason { Network, HostNotAllowed, TooLarge, HashMismatch, UnsafeArc
 
 ### Browser engine consumer
 
-- The runner `rbs-browser-cef` ships with the app (macOS: with its helper bundles inside the signed `RBS.app`). The studio sets `RBS_CEF_RUNTIME=<absolute runtime path>` in the runner's environment; every CEF child process inherits it. Every process type (browser, renderer, GPU, utility, and the macOS helper binary) reads it, loads the library and checks the version before `api_hash` or `execute_process`. `<lib>` below is `<runtime>/<library_dir>` and `<res>` is `<runtime>/<resources_dir>`, read from the marker.
+- The runner `rbs-browser-cef` ships with the app (macOS: with its helper bundles inside the signed `RBS.app`). The studio sets `RBS_CEF_RUNTIME=<absolute runtime path>` in the runner's environment; every CEF child process inherits it. Every process type (browser, renderer, GPU, utility, and the macOS helper binary) reads it, loads the library and checks the version before `api_hash` or `execute_process` (on Linux the loader has already loaded it, see below). `<lib>` below is `<runtime>/<library_dir>` and `<res>` is `<runtime>/<resources_dir>`, read from the marker.
 - Windows: `libcef.dll` is delay-loaded; before the first CEF call each process calls `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS)`, `AddDllDirectory(<lib>)` and `LoadLibraryExW(<lib>\libcef.dll)`. The studio starts the runner with critical-error dialogs off. A failed load exits with `runtime_missing`.
-- Linux: release builds of the runner have no `rpath=$ORIGIN`; the studio also sets `LD_LIBRARY_PATH=<lib>` for the runner child only. The sandbox is the namespace sandbox only.
+- Linux: `libcef.so` is a load-time dependency, so the loader brings it in at exec. Release builds of the runner have no `rpath=$ORIGIN`; the studio sets `LD_LIBRARY_PATH=<lib>` for the runner child only. A missing or broken library ends the process before `main` with exit status 127; the studio maps 127, and any exit before the runner's first IPC hello, to `browser_runtime_missing`. `RBS_CEF_RUNTIME` gives the resources and locales paths and the version check. The sandbox is the namespace sandbox only.
 - macOS: each process calls `cef_load_library` with `<lib>/Chromium Embedded Framework.framework/Chromium Embedded Framework`; the browser process sets `framework_dir_path`, `main_bundle_path` and `browser_subprocess_path`. Public releases load only an RBS-signed runtime under the hardened runtime, with no library-validation exception.
 - Every platform sets `resources_dir_path` to `<res>` and `locales_dir_path` to `<res>/locales`. After loading, the runner compares the library's CEF version with its own and with the marker and exits with `runtime_mismatch` on a difference.
-- Runner exits map to source reasons: `runtime_missing` to `browser_runtime_missing`, `runtime_mismatch` to `browser_runtime_mismatch` (the add-on row then offers Reinstall).
+- The exit codes `runtime_missing` and `runtime_mismatch` are numbered in `rbs-browser-ipc` next to today's codes. Runner exits map to source reasons: `runtime_missing`, 127 and an exit before the first hello to `browser_runtime_missing`, `runtime_mismatch` to `browser_runtime_mismatch` (the add-on row then offers Reinstall).
 - Runner choice: `RBS_BROWSER_HELPER` overrides; the test-only `CARGO_BIN_EXE_rbs-browser-helper` fallback stays; otherwise `rbs-browser-cef` next to the app. `rbs-browser-helper` (test double) next to the app is no longer picked up.
 - No installed engine: browser sources are Unavailable with `browser_runtime_missing`, hold no slot, start no download. Add Source lists Browser whenever the type is registered; choosing it then opens Settings › Add-ons with `org.rbs.browser-engine` selected and adds no source.
 - The browser tree resolves the runtime at each source start. When the engine becomes installed, the app tells the studio and every source Unavailable with `browser_runtime_missing` is re-evaluated at once, with no restart.
-- Release builds, until the runner runs sandboxed (ADR-0132), do not list the browser engine, do not list Browser in Add Source and show no start-up notice; a loaded browser source is `browser_runtime_missing` with no link. Where unprivileged user namespaces are blocked on Linux, the source is `browser_sandbox_unavailable` in a release build.
+- Release builds, until the runner runs sandboxed (ADR-0132), do not list the browser engine, do not list Browser in Add Source and show no start-up notice; a loaded browser source is `browser_runtime_missing` with no link. The API follows: `addon.list` omits the engine and `addon.install` answers `not_found` for it. Where unprivileged user namespaces are blocked on Linux, the source is `browser_sandbox_unavailable` in a release build.
 
 ### Control API
 
@@ -201,7 +201,7 @@ pub enum FailReason { Network, HostNotAllowed, TooLarge, HashMismatch, UnsafeArc
 | `addon.clean {id}` | `plugins` | `destructive` | See Clean. `busy` while a consumer uses a version it would remove |
 | `addon.remove {id}` | `plugins` | `destructive` | `busy` while a consumer uses it |
 
-The `plugins` scope (loopback and IPC only, never on remote tokens) is described as "Plugin and add-on management"; a remote call is `scope_denied`. Topic `addon.changed {id, status}` (`read`). These replace ADR-0132's `browser.runtime.*`, which are never built.
+An unknown id (or the engine in a gated release build) is `not_found`; an entry with no artifact for this computer is `invalid_params` with `data.reason` `not_available`. `install`'s `edit` effect: it never removes or replaces a version with a marker; the `edit` definition in the control API spec gains this case at implementation. The `plugins` scope (loopback and IPC only, never on remote tokens) is described as "Plugin and add-on management"; a remote call is `scope_denied`. Topic `addon.changed {id, status}` (`read`). These replace ADR-0132's `browser.runtime.*`, which are never built.
 
 ## Errors and failure behaviour
 
@@ -221,12 +221,12 @@ All in `rbs-add-ons` with the in-memory `Fetch` and `Unpack`, no network or CEF:
 - A directory without `.complete` is never `installed`; one with a marker for another version is not `installed` for this catalog; a newer version is left alone and the status is `not_installed`.
 - A held lock makes a second install, a clean and a remove `busy`; an install of an already complete version fetches nothing; remove and clean delete the marker before the files.
 - Install never removes a version; clean keeps the catalog's version, the previous one, higher ones and unparsable ones, and removes the rest; `Version` orders `156.6.0 < 156.10.0`.
-- A link chain that resolves inside passes (a framework-style `Versions/Current` layout); a chain of 17 links fails; `library_dir` or `resources_dir` naming no created directory fails.
+- A link chain that resolves inside passes (a framework-style `Versions/Current` layout); a chain of 17 links fails; `library_dir` or `resources_dir` naming no created directory fails; ICU data and snapshots only in `resources_dir` are moved to `library_dir`; a `library_dir` without them fails; names differing only in case (`A.pak`, `a.pak`) or only in NFC form clash.
 - A rename that fails with a sharing violation is retried on `TestClock` and then `io`.
 - Progress is published at most four times a second on `TestClock`.
 - `rbs-add-ons-sys` (adapter tests, local server and temporary directory): connect and stall timeouts, a redirect hop to `http`, `*_beneath` refusing an existing link, the lock between two handles.
 - Every entry of the built-in catalog parses with a known kind (an unknown kind fails this test); an unknown kind in a test entry is skipped and the others still parse.
-- `rbs-app`: no engine makes browser sources `browser_runtime_missing` with no slot; an install re-evaluates them without a restart; Add Source Browser with no engine adds no source; `addon.remove` while a tree runs is `busy`; `addon.install`, `addon.clean` and `addon.remove` from a remote session are `scope_denied`; a test runner child started without `RBS_CEF_RUNTIME` exits `runtime_missing`; `addon.install` without the network permission is `not_permitted`/`network`.
+- `rbs-app`: no engine makes browser sources `browser_runtime_missing` with no slot; an install re-evaluates them without a restart; Add Source Browser with no engine adds no source; `addon.remove` while a tree runs is `busy`; `addon.install`, `addon.clean` and `addon.remove` from a remote session are `scope_denied`; the studio maps each runner exit code, 127 and an exit before the first hello to the right source reason (real-runner loading is the wiring PR's device check); in a release-gated build `addon.list` omits the engine and `addon.install` is `not_found`; `addon.install` without the network permission is `not_permitted`/`network`.
 
 ## Open questions
 
