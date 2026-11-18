@@ -336,6 +336,17 @@ impl TexturePool {
                 height: desc.height,
             });
         }
+        // A format behind an optional device feature (NV12, P010, 16-bit normalized) would
+        // make wgpu's validation panic in `create_texture`; return an error instead.
+        if !ctx
+            .device()
+            .features()
+            .contains(desc.format.required_features())
+        {
+            return Err(GpuError::Unsupported(
+                "texture format needs a device feature this GPU does not have",
+            ));
+        }
         if self.empty.is_empty() && self.slots.len() >= self.capacity as usize && !self.evict(desc)
         {
             return Err(GpuError::PoolFull {
