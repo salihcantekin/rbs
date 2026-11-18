@@ -9836,21 +9836,22 @@ mod tests {
             follow: true,
         });
         // The with-main choice comes first (ADR-0111 decision 6), then each output.
+        // Only the main canvas has a destination: no vertical stream items and no
+        // with-main choice for streams (ADR-0148 decision 8).
+        ui.stream.server = "rtmp://live.example.com/app".into();
         assert_eq!(
             titles(&ui),
             [
                 ("When recording".to_owned(), true, false),
-                ("When going live".to_owned(), true, false),
                 (String::new(), true, false),
                 ("Record main only".to_owned(), true, false),
                 ("Record vertical".to_owned(), true, false),
                 ("Go live main only".to_owned(), true, false),
-                ("Go live vertical".to_owned(), true, false),
                 (String::new(), true, false),
                 ("Set up vertical stream...".to_owned(), true, false),
             ]
         );
-        // "Main + vertical" by default: Record and Go live act on both canvases, and
+        // "Main + vertical" by default: Record acts on both canvases, and the
         // their main-only twins on the main one.
         {
             let s = Shown {
@@ -9870,7 +9871,8 @@ mod tests {
                 displays: Vec::new(),
             };
             assert_eq!(run("record.toggle", &s), Some(Run::Record(true)));
-            assert_eq!(run("stream.toggle", &s), Some(Run::GoLive(true)));
+            // Go live acts on the main canvas alone: the vertical one has no destination.
+            assert_eq!(run("stream.toggle", &s), Some(Run::GoLive(false)));
             assert_eq!(run("record.main.toggle", &s), Some(Run::Record(false)));
             assert_eq!(run("stream.main.toggle", &s), Some(Run::GoLive(false)));
             assert_eq!(
@@ -9898,7 +9900,8 @@ mod tests {
         }
         ui.vertical_flags = ui.vertical_flags.set(OutputKind::Record, false);
         assert!(!ui.with_vertical(OutputKind::Record));
-        assert!(ui.with_vertical(OutputKind::Stream));
+        // Streams need a destination on both canvases for "Main + vertical".
+        assert!(!ui.with_vertical(OutputKind::Stream));
         // Go live with "Main + vertical" and no vertical server: the vertical stream is
         // skipped without an error (ADR-0111 decision 2).
         assert!(!ui.vertical_stream_set_up());
