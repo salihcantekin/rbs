@@ -1728,9 +1728,7 @@ impl StreamState {
     /// Whether streaming is available on the canvas (protocol 1.92).
     pub fn available(&self) -> bool {
         match self {
-            StreamState::Idle { available, .. } | StreamState::Live { available, .. } => {
-                *available
-            }
+            StreamState::Idle { available, .. } | StreamState::Live { available, .. } => *available,
         }
     }
 

@@ -1030,6 +1030,7 @@ fn every_result_and_event_type_round_trips() {
     round_trip(&Snapshot {
         seq: seq.clone(),
         data: StreamState::Idle {
+            available: true,
             last: Some(StreamSummary {
                 failure: Some("the server closed the connection".into()),
                 frames: 1800,
@@ -1076,6 +1077,7 @@ fn every_result_and_event_type_round_trips() {
             rms_db: vec![-18.0, -19.25],
         }]),
         EventPayload::StreamState(StreamState::Live {
+            available: true,
             protocol: StreamProtocol::Srt,
             connected: true,
             connects: 1,
@@ -1129,7 +1131,7 @@ fn every_result_and_event_type_round_trips() {
         }),
         EventPayload::StreamCanvasState(CanvasStreamState {
             canvas: OutputCanvas::Vertical,
-            state: StreamState::Idle { last: None },
+            state: StreamState::idle(),
         }),
         EventPayload::CalibrationState(calibration_done()),
         EventPayload::CalibrationState(CalibrationState::Idle),
@@ -1673,6 +1675,7 @@ fn authenticate_debug_hides_the_token() {
 #[test]
 fn stream_state_has_a_stable_wire_form() {
     let live = StreamState::Live {
+        available: true,
         protocol: StreamProtocol::Rtmp,
         connected: false,
         connects: 0,
@@ -1729,7 +1732,7 @@ fn stream_state_has_a_stable_wire_form() {
     let event = Event {
         object: None,
         seq: 3,
-        payload: EventPayload::StreamState(StreamState::Idle { last: None }),
+        payload: EventPayload::StreamState(StreamState::idle()),
     };
     let v: Value = serde_json::from_str(&JsonCodec.encode_event(&event)).unwrap();
     assert_eq!(

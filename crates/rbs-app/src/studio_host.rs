@@ -1303,8 +1303,9 @@ pub enum Command {
     /// start and after each change.
     SetVerticalStreamProfile(Option<StreamProfile>),
     /// The output profile's stream destinations (ADR-0127 decision 1): the next Go
-    /// live of each canvas sends to every enabled, configured one.
-    SetStreamDestinations(Destinations),
+    /// live of each canvas sends to every enabled, configured one. `true`: the section
+    /// did not load, so streaming counts as available (ADR-0148 decision 1).
+    SetStreamDestinations(Destinations, bool),
     /// Whether Record and Go live also act on the vertical outputs (ADR-0111), as the
     /// output profile saved them. Sent at start and after each change.
     SetVerticalFlags(VerticalFlags),
@@ -2420,7 +2421,7 @@ impl Default for CanvasOutputs {
             destinations_shown: Vec::new(),
             protection_stop: None,
             record_state: api::RecordState::Idle { last: None },
-            stream_state: api::StreamState::Idle { last: None },
+            stream_state: api::StreamState::idle(),
             markers: None,
             hold: HoldPlan::default(),
         }
@@ -3856,6 +3857,9 @@ struct Host {
     vertical_stream_profile: Option<StreamProfile>,
     /// The output profile's stream destinations as the UI sent them (ADR-0127).
     destinations: Destinations,
+    /// The destinations section did not load (ADR-0148 decision 1): streaming counts
+    /// as available on both canvases.
+    destinations_unloaded: bool,
     /// The output profiles and scene collections as the UI listed them last; `None`
     /// until the UI sent them.
     library: Option<(api::Library, api::Library)>,
@@ -4544,6 +4548,7 @@ fn start(
         vertical_profile: None,
         vertical_stream_profile: None,
         destinations: Destinations::default(),
+        destinations_unloaded: false,
         library: None,
         switch_pending: None,
         switch_seq: 0,
@@ -5367,8 +5372,15 @@ impl Host {
                 self.publish(notify);
             }
             Command::SetVerticalProfile(profile) => self.vertical_profile = profile,
-            Command::SetVerticalStreamProfile(profile) => self.vertical_stream_profile = profile,
-            Command::SetStreamDestinations(destinations) => self.destinations = destinations,
+            Command::SetVerticalStreamProfile(profile) => {
+                self.vertical_stream_profile = profile;
+                self.availability_changed();
+            }
+            Command::SetStreamDestinations(destinations, unloaded) => {
+                self.destinations = destinations;
+                self.destinations_unloaded = unloaded;
+                self.availability_changed();
+            }
             Command::SetVerticalFlags(flags) => {
                 if flags != self.vertical_flags {
                     self.vertical_flags = flags;
@@ -5511,6 +5523,7 @@ impl Host {
                 if self.stream_profile.as_ref() != Some(&profile) {
                     self.stream_profile = Some(profile);
                     self.settings_changed();
+                    self.availability_changed();
                 }
             }
             Command::SaveStreamKey(key) => {
@@ -6435,6 +6448,9 @@ impl Host {
     }
 
     fn set_stream_state(&mut self, c: OutputCanvas, state: api::StreamState) {
+        // Every state says whether streaming is available on the canvas (control API
+        // 1.92, ADR-0148 decision 10).
+        let state = state.with_available(self.stream_available(c));
         if state == self.outs[slot(c)].stream_state {
             return;
         }
@@ -8324,6 +8340,8 @@ impl Host {
         self.set_stream_state(
             c,
             api::StreamState::Live {
+                // `set_stream_state` sets it from the destinations.
+                available: true,
                 protocol,
                 connected: false,
                 connects: 0,
@@ -8520,9 +8538,22 @@ impl Host {
         Some(c)
     }
 
+    /// The stream settings or destinations changed: each canvas's stream state says
+    /// again whether streaming is available, and publishes when that changed (control
+    /// API 1.92, ADR-0148 decision 10). A removed vertical canvas publishes nothing.
+    fn availability_changed(&mut self) {
+        for c in self.output_canvases() {
+            let state = self.outs[slot(c)].stream_state.clone();
+            self.set_stream_state(c, state);
+        }
+    }
+
     /// Streaming is available on `c` (ADR-0148 decision 1): one of its existing
-    /// destinations is on.
+    /// destinations is on, or the destinations section did not load.
     fn stream_available(&self, c: OutputCanvas) -> bool {
+        if self.destinations_unloaded {
+            return true;
+        }
         let role = match c {
             OutputCanvas::Main => DestinationCanvas::Main,
             OutputCanvas::Vertical => DestinationCanvas::Vertical,
@@ -9074,6 +9105,8 @@ impl Host {
         self.set_stream_state(
             c,
             api::StreamState::Idle {
+                // `set_stream_state` sets it from the destinations.
+                available: true,
                 last: Some(api::StreamSummary {
                     failure: failure.clone(),
                     frames,

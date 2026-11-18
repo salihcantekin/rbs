@@ -2203,7 +2203,7 @@ fn go_live_sends_to_every_enabled_destination_with_its_own_key() {
     let server = Arc::new(Server::default());
     let (host, rx) = host(gpu, keys.clone(), Arc::clone(&server), &TestClock::new());
     add_display(&host, &rx);
-    host.send(Command::SetStreamDestinations(destinations(&keys)));
+    host.send(Command::SetStreamDestinations(destinations(&keys), false));
     host.send(Command::StartStream(request()));
     match stream(&rx) {
         StreamUpdate::Started { url, .. } => assert_eq!(url, URL),
@@ -2249,7 +2249,7 @@ fn a_destination_that_drops_ends_alone_and_the_stream_goes_on() {
     let server = Arc::new(Server::default());
     let (host, rx) = host(gpu, keys.clone(), Arc::clone(&server), &TestClock::new());
     add_display(&host, &rx);
-    host.send(Command::SetStreamDestinations(destinations(&keys)));
+    host.send(Command::SetStreamDestinations(destinations(&keys), false));
     host.send(Command::StartStream(request()));
     assert!(matches!(stream(&rx), StreamUpdate::Started { .. }));
     link_where(&rx, |l| l.connected && l.connects == 2);
@@ -2303,7 +2303,7 @@ fn a_control_api_client_lists_starts_and_stops_destinations() {
     let saved = destinations(&keys);
     let [second, off, refused] = [2, 3, 4];
     assert_eq!(saved.get(off).map(|d| d.enabled), Some(false));
-    host.send(Command::SetStreamDestinations(saved));
+    host.send(Command::SetStreamDestinations(saved, false));
     add_display(&host, &rx);
 
     // The list: the first destination, then the others; never a server or a key.
