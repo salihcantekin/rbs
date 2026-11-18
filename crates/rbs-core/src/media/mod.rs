@@ -7,6 +7,7 @@
 
 pub mod audio;
 pub mod container;
+pub mod device;
 pub mod lease;
 pub mod packet;
 pub mod video;
@@ -20,14 +21,16 @@ pub use audio::{
 /// Reference-counted, sliceable byte buffer used for packet payloads and CPU frames.
 pub use bytes::Bytes;
 pub use container::{ChunkKind, ContainerId, MuxChunk, StreamIndex};
+pub use device::GpuDeviceId;
 pub use lease::{Lease, LeaseOwner};
 pub use packet::{
     BitstreamFormat, CodecId, EncodedPacket, MediaKind, StreamDescriptor, StreamParams,
 };
 pub use video::{
     ColorPrimaries, ColorRange, ColorSpace, D3dApi, DmaBufPlane, DmaBufSurface, FramePayload,
-    MatrixCoefficients, MemoryKind, NativeSurface, PixelFormat, PlaneLayout, Size, SurfaceSync,
-    SystemFrame, TextureId, TransferFunction, VideoFormat, VideoFrame, next_generation,
+    MatrixCoefficients, MemoryKind, NativeSurface, PictureId, PixelFormat, PlaneLayout, Size,
+    SurfaceSync, SystemFrame, TextureId, TransferFunction, VideoFormat, VideoFrame,
+    next_generation,
 };
 
 /// Why a media value could not be built. Never allocates.

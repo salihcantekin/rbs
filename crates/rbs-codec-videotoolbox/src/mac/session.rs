@@ -53,7 +53,7 @@ use rbs_codec::{
 };
 use rbs_core::media::{
     BitstreamFormat, Bytes, CodecId, ColorPrimaries, ColorRange, EncodedPacket, FramePayload,
-    Lease, MatrixCoefficients, MemoryKind, NativeSurface, PixelFormat, StreamDescriptor,
+    Lease, MatrixCoefficients, MemoryKind, NativeSurface, PictureId, PixelFormat, StreamDescriptor,
     StreamParams, SurfaceSync, TransferFunction, VideoFormat, VideoFrame,
 };
 use rbs_core::time::Timestamp;
@@ -461,7 +461,19 @@ pub struct VideoToolboxSession {
     dropped: u64,
     copied: u64,
     wrapped: u64,
+    /// Encode a repeated picture from the buffer it was copied into (ADR-0146): on
+    /// unless `RBS_ENCODER_COPY_ALWAYS` is set, read once per session.
+    reuse: bool,
+    /// The buffer of the last system-memory copy and its picture id. Only read by
+    /// VideoToolbox, never written again; dropped before any new copy, on a refused
+    /// frame and on `flush`.
+    kept: Option<(PictureId, CFRetained<CVPixelBuffer>)>,
+    reused: u64,
 }
+
+/// Set to a non-empty value other than `0`, every system-memory frame is copied
+/// (ADR-0146 A/B measurements). Read once per session.
+pub const ENCODER_COPY_ALWAYS_ENV: &str = "RBS_ENCODER_COPY_ALWAYS";
 
 // SAFETY: the session is driven by one thread at a time (port rule). VideoToolbox
 // sessions, pixel buffers and dictionaries may be used from any thread; the retained
@@ -762,6 +774,10 @@ impl VideoToolboxSession {
             dropped: 0,
             copied: 0,
             wrapped: 0,
+            reuse: !std::env::var_os(ENCODER_COPY_ALWAYS_ENV)
+                .is_some_and(|v| !v.is_empty() && v != "0"),
+            kept: None,
+            reused: 0,
         })
     }
 
@@ -773,6 +789,7 @@ impl VideoToolboxSession {
             dropped: self.dropped,
             copied: self.copied,
             wrapped: self.wrapped,
+            reused: self.reused,
         }
     }
 
@@ -858,6 +875,32 @@ impl VideoToolboxSession {
             // A ring larger than the cache: replace round-robin. Never allocates.
             let index = self.cache_clock % SURFACE_CACHE;
             self.cache[index] = entry;
+        }
+        Ok(buffer)
+    }
+
+    /// The pixel buffer for a system-memory frame: the kept buffer again when it holds
+    /// this frame's picture (ADR-0146), else a new copy. The kept buffer is not touched
+    /// (no attachments): VideoToolbox may still be reading it for an earlier frame.
+    fn system_buffer(
+        &mut self,
+        frame: &VideoFrame,
+    ) -> Result<CFRetained<CVPixelBuffer>, EncodeError> {
+        let picture = frame.picture();
+        if let Some((id, buffer)) = &self.kept
+            && self.reuse
+            && !picture.is_none()
+            && *id == picture
+        {
+            self.reused += 1;
+            return Ok(buffer.clone());
+        }
+        // Released before a new pool buffer is taken, so the kept buffer never pushes
+        // the pool past its threshold.
+        self.kept = None;
+        let buffer = self.copy_system(frame)?;
+        if self.reuse && !picture.is_none() {
+            self.kept = Some((picture, buffer.clone()));
         }
         Ok(buffer)
     }
@@ -1241,6 +1284,17 @@ impl VideoEncoder for VideoToolboxSession {
         &self.stream
     }
 
+    fn max_frames_held(&self) -> usize {
+        // System frames are copied into the session's own pool in `submit`. IOSurface
+        // frames are held (their lease) until their output callback; without B-frames
+        // the hardware returns them within about two frames, so three cover steady state.
+        // More in flight makes the export busy (a counted drop), never unsafe.
+        match self.memory {
+            MemoryKind::Metal => 3,
+            _ => 0,
+        }
+    }
+
     fn submit(&mut self, frame: &VideoFrame) -> Result<(), EncodeError> {
         self.failure()?;
         if *frame.format() != self.format || frame.memory_kind() != self.memory {
@@ -1285,7 +1339,7 @@ impl VideoEncoder for VideoToolboxSession {
                 })?;
                 (self.wrap_surface(surface)?, Some(lease))
             }
-            None => (self.copy_system(frame)?, None),
+            None => (self.system_buffer(frame)?, None),
         };
         let index = self.free_slot().ok_or(EncodeError::Busy)?;
 
@@ -1342,6 +1396,8 @@ impl VideoEncoder for VideoToolboxSession {
                 let tail = (self.order_head + self.order_len - 1) % FRAMES_IN_FLIGHT;
                 self.order[tail].2 = true;
             }
+            // The buffer is not trusted for a later repeat.
+            self.kept = None;
             return Err(status_error(status, true));
         }
         self.first_ns = Some(first);
@@ -1412,6 +1468,7 @@ impl VideoEncoder for VideoToolboxSession {
     }
 
     fn flush(&mut self, out: &mut Vec<EncodedPacket>) -> Result<(), EncodeError> {
+        self.kept = None;
         // SAFETY: the session is valid; this waits until every pending frame was emitted.
         let status = unsafe { self.handle.0.complete_frames(kCMTimeInvalid) };
         self.drain(out)?;

@@ -80,6 +80,11 @@ pub struct Pin {
     /// types, one per node, on a video filter (video) or an encoder (audio), and
     /// never linked by a scene binder or plugin.
     pub host_only: bool,
+    /// An output whose frames have one reader (ADR-0147 decision 3): at most one link,
+    /// and its consumer is an `Encoder` node, on the same partition or through a video
+    /// queue. A native-mode video export uses it, so exported surfaces reach only the
+    /// encoder. Outputs only.
+    pub exclusive: bool,
 }
 
 impl Pin {
@@ -90,6 +95,7 @@ impl Pin {
             kind,
             many: false,
             host_only: false,
+            exclusive: false,
         }
     }
 
@@ -100,6 +106,7 @@ impl Pin {
             kind,
             many: true,
             host_only: false,
+            exclusive: false,
         }
     }
 
@@ -110,6 +117,18 @@ impl Pin {
             kind,
             many: false,
             host_only: true,
+            exclusive: false,
+        }
+    }
+
+    /// An exclusive output (see [`Pin::exclusive`]).
+    pub const fn exclusive(name: &'static str, kind: LinkKind) -> Self {
+        Self {
+            name: Cow::Borrowed(name),
+            kind,
+            many: false,
+            host_only: false,
+            exclusive: true,
         }
     }
 
@@ -120,6 +139,7 @@ impl Pin {
             kind,
             many,
             host_only: false,
+            exclusive: false,
         }
     }
 }
@@ -202,6 +222,8 @@ pub enum DescriptorError {
     /// `org.rbs.`, or a kind or link kind other than a video filter's video or an
     /// encoder's audio.
     HostOnlyPin(Cow<'static, str>),
+    /// An exclusive pin on an input (ADR-0147 decision 3).
+    ExclusiveInput(Cow<'static, str>),
 }
 
 impl fmt::Display for DescriptorError {
@@ -211,6 +233,9 @@ impl fmt::Display for DescriptorError {
             DescriptorError::DuplicatePin(name) => write!(f, "duplicate pin name {name:?}"),
             DescriptorError::HostOnlyPin(name) => {
                 write!(f, "pin {name:?} cannot be host-only on this node")
+            }
+            DescriptorError::ExclusiveInput(name) => {
+                write!(f, "input {name:?} cannot be exclusive")
             }
             DescriptorError::ShapeMismatch { kind, requires } => {
                 write!(f, "{kind:?} requires {requires}")
@@ -245,6 +270,9 @@ impl NodeDescriptor {
                     return Err(DescriptorError::DuplicatePin(pin.name.clone()));
                 }
             }
+        }
+        if let Some(p) = self.inputs.iter().find(|p| p.exclusive) {
+            return Err(DescriptorError::ExclusiveInput(p.name.clone()));
         }
         if let Some(p) = self.outputs.iter().find(|p| p.host_only) {
             return Err(DescriptorError::HostOnlyPin(p.name.clone()));

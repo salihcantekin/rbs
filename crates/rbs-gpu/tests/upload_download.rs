@@ -158,12 +158,25 @@ fn a_repeat_delivers_the_picture_before_it_without_a_copy() {
         first_luma(&first),
         "the same buffer, no copy"
     );
+    // The same picture id, so an encoder may reuse its input (ADR-0146).
+    assert!(!first.picture().is_none());
+    assert_eq!(again.picture(), first.picture());
+    // A new readback of the same canvas is new bytes: a new id.
+    assert!(
+        down.submit(ctx, &pool, &canvas_frame(&pool, canvas, 3))
+            .unwrap()
+    );
+    ctx.wait_idle().unwrap();
+    ctx.poll();
+    let fresh = down.take_ready(ctx).unwrap().expect("a completed frame");
+    assert!(!fresh.picture().is_none());
+    assert_ne!(fresh.picture(), first.picture());
     // Not a copy: `converted` stays at one (the shared device's `frames_cpu_copied` is
     // also counted by the other tests of this binary).
     let stats = down.stats();
     assert_eq!(
         (stats.delivered, stats.repeated, stats.converted),
-        (2, 1, 1)
+        (3, 1, 2)
     );
     assert_eq!(down.in_flight(), 0);
 }
@@ -329,12 +342,14 @@ fn downloads_of_one_share_read_a_picture_back_once_with_their_own_stamps() {
         (Timestamp::from_nanos(3), 42)
     );
     assert_eq!(first_luma(&fa), first_luma(&fb), "one buffer, one copy");
+    assert_eq!(fa.picture(), fb.picture(), "one buffer, one picture id");
     assert_eq!(ctx.metrics().frames_cpu_copied() - copied, 1);
     assert_eq!((a.in_flight(), b.in_flight()), (0, 0));
     // Each repeats its own last frame afterwards.
     assert!(b.submit_repeat(Timestamp::from_nanos(4), 43));
     let again = b.take_ready(ctx).unwrap().expect("b's repeat");
     assert_eq!(first_luma(&again), first_luma(&fb));
+    assert_eq!(again.picture(), fb.picture());
 }
 
 #[test]

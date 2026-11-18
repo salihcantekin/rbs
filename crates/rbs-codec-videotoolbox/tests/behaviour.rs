@@ -344,3 +344,58 @@ fn a_ring_larger_than_the_cache_still_releases_every_surface() {
     );
     assert!(stats.wrapped <= count);
 }
+
+/// ADR-0146 decisions 4 and 5: frames with picture ids (a repeated picture is encoded
+/// from the buffer it was copied into) give the same bitstream as frames without ids
+/// (every frame copied). The copied run goes twice first: an encoder that is not
+/// deterministic cannot be tested this way, and says so instead of failing.
+#[test]
+#[ignore = "slow: hardware, three runs of 125 encoded frames"]
+fn slow_reused_input_encodes_bit_exact() {
+    use rbs_core::media::{Bytes, PictureId};
+    let config = config(CodecId::H264, PixelFormat::Nv12, MemoryKind::System);
+    let (a, b, c) = (PictureId::next(), PictureId::next(), PictureId::next());
+    let mut plan = Vec::new();
+    plan.extend(std::iter::repeat_n((1, a), 40));
+    plan.extend(std::iter::repeat_n((2, b), 3));
+    plan.extend(std::iter::repeat_n((1, a), 21));
+    plan.extend(std::iter::repeat_n((1, c), 19));
+    plan.extend((0..5).map(|i| (10 + i, PictureId::NONE)));
+    plan.extend(std::iter::repeat_n((2, b), 37));
+    let run = |with_ids: bool| -> Option<(Vec<Bytes>, u64)> {
+        let mut session = session(&config)?;
+        let mut source = SystemFrameSource::new();
+        let cadence = Cadence::frames(ORIGIN, FrameRate::FPS_30);
+        let mut packets = Vec::new();
+        for (i, &(content, id)) in plan.iter().enumerate() {
+            let frame = source
+                .frame(&config.format, content, cadence.time_of(i as u64))
+                .unwrap()
+                .with_picture(if with_ids { id } else { PictureId::NONE });
+            match session.submit(&frame) {
+                Err(EncodeError::Busy) => {
+                    session.flush(&mut packets).unwrap();
+                    session.submit(&frame).unwrap();
+                }
+                other => other.unwrap(),
+            }
+            session.drain(&mut packets).unwrap();
+        }
+        session.flush(&mut packets).unwrap();
+        assert_eq!(packets.len(), plan.len());
+        let reused = session.stats().reused;
+        Some((packets.iter().map(|p| p.data().clone()).collect(), reused))
+    };
+    let Some((copied, none_reused)) = run(false) else {
+        return;
+    };
+    assert_eq!(none_reused, 0);
+    if run(false).map(|r| r.0) != Some(copied.clone()) {
+        eprintln!("VideoToolbox output is not deterministic here; reuse not testable, skipped");
+        return;
+    }
+    let (reused, count) = run(true).unwrap();
+    assert!(count > 0, "no frame was reused");
+    let first_diff = copied.iter().zip(&reused).position(|(x, y)| x != y);
+    assert_eq!(first_diff, None, "reused input changed the bitstream");
+}

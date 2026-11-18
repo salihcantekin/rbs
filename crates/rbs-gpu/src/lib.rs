@@ -34,6 +34,7 @@ pub mod export;
 pub mod interop;
 pub mod math;
 pub mod motion;
+pub mod native_export;
 pub mod node;
 pub mod pool;
 pub mod readback;

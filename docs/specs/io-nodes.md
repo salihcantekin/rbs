@@ -42,7 +42,17 @@ impl VideoExportNode {                                        // Node<GpuRuntime
     pub fn every_tick(self) -> Self;                          // ADR-0086: every tick, stamped with the tick
     pub fn stats(&self) -> Arc<ExportNodeStats>;              // frames, busy, lost, gave_way
     pub fn end(&self) -> Arc<ExportEnd>;                      // ADR-0045
+    pub fn native(self, native: NativeExport) -> Self;        // ADR-0147: exported surfaces, exclusive "video"
+    pub fn is_native(&self) -> bool;
 }
+pub struct NativeExport { pub encoder_frames: usize, pub owners: Arc<LeaseOwners> } // ADR-0147
+impl LeaseOwners {                                            // kept by the composition root
+    pub fn keep(&self, owner: Arc<dyn LeaseOwner>);           // one per native `prepare`
+    pub fn kept(&self) -> usize;
+    pub fn take_all(&self) -> Vec<Arc<dyn LeaseOwner>>;       // dropped on the control thread
+}
+pub const NATIVE_HOLDERS: usize = 6;                          // ADR-0147 decision 4
+pub fn export_preference(ctx: &GpuContext) -> Option<(MemoryKind, GpuDeviceId)>; // by graphics API
 impl ExportEnd {                                              // shared with the control thread
     pub fn end_at(&self, at: Timestamp);                      // no canvas after `at`; earliest wins
     pub fn requested(&self) -> Option<Timestamp>;
@@ -56,6 +66,7 @@ impl VideoEncoderNode {                                       // Node<X> for eve
     pub fn open(factory: Arc<dyn VideoEncoderFactory>, config: VideoEncoderConfig)
         -> Result<Self, CreateError>;                         // probes a session, then drops it
     pub fn stream(&self) -> &StreamDescriptor;
+    pub fn frames_held(&self) -> usize;                       // the probe's max_frames_held (ADR-0147)
     pub fn stats(&self) -> Arc<EncoderNodeStats>;             // submitted, packets, busy_drops, refused,
                                                               // overflow_drops, flush_lost, flushes
 }
@@ -183,6 +194,14 @@ Invariants:
 
 Built (ADR-0124; `VideoExportNode::with_pause`, `with_hold`): the run-path atomic is `next`, the earliest of the end time and the next pause window instant (lowered by compare-and-swap; only the export raises it again, by compare-and-swap from the value it observed; only the end path sets `ended`), so the run path keeps one load and one compare. With `PauseGate` the export takes no canvas with a time in `[pause_at, resume_at)` and stamps later frames `t - paused_total`. With `with_hold(Arc<ExportHold>)` the export reads the hold switch only when `next` is lowered (`Studio::hold_output` lowers it to zero), so the run path is unchanged. While held it submits nothing; on the hold's first tick the newest readback goes out as on the run path and is pinned as the frozen picture (no copy), and on every later tick the hold picture (frozen, or the `ExportHold`'s black frame, made on the control thread by `black_frame(format)` for NV12 or P010 in either range) goes out with the previous tick's time and a new sequence. The ring works one buffer short. On the first tick after the hold it sends the hold picture once more when no readback is ready, drops the pin and raises `next` by compare-and-swap (and lowers it again if a hold was taken between its read and the swap). **Hold scene (phase 2b).** `with_hold` also gives the export the host-only input "hold" (`HOLD_PIN`, `video_export_hold_descriptor`), linked only while a hold scene is bound. While the switch says `Scene`, each hold tick submits the canvas on "hold" (once per timestamp and sequence) instead of the program's, and each scene frame read back becomes the held picture (the frozen program frame's buffer goes back then); until the first one, and on a tick whose readback is late, the last picture goes out again, always with the previous tick's time and a new sequence. The export knows which pin a ring slot came from by counting: slots complete in submission order, so it keeps how many program slots were in flight when the hold began and drops that many before taking a scene frame, with no change to `rbs-gpu`. On release every readback still in flight came from the hold path: the export counts them and drops them as they complete, staying on its slow path (`wake_at(0)`) until they are gone; the first tick after the hold sends the last held picture once, as above. A test (`pipeline_gpu`, `a_scene_hold_sends_the_scene_with_running_times_across_both_edges`) checks strictly increasing times one frame apart across both edges, with readbacks left in flight there, and no program frame inside the scene run. `cargo bench -p rbs-nodes --bench export` measures one tick for `run`, `freeze` and `scene`.
 
+**Native mode** ([ADR-0147](../adr/0147-native-encoder-input.md); `VideoExportNode::native`, built on macOS). The composition root chooses it on the control thread when `export_preference` names a native memory kind of the render device (Metal: IOSurfaces) and the encoder node's `open` probe accepts a config with that kind and `device` (decision 1); otherwise the chain reads back as above. Then:
+
+- The "video" output pin is exclusive (`Pin::exclusive`, decision 3): one link, to an encoder node only. Native mode is not combined with a shared readback (`with_share`); each native chain has its own exporter (decision 11).
+- `prepare` creates an `rbs-gpu` `SurfaceExporter` (scaled when the output size differs) with a ring of `NATIVE_HOLDERS + encoder_frames` surfaces, plus two (the pinned picture and a black surface) when the export has a hold (decision 4). More than `MAX_EXPORT_SURFACES` fails permanently. The exporter's lease owner goes into `NativeExport::owners`, which the root drops on the control thread after the chain's nodes are released (decision 8). The black surface is cleared once in `prepare` (`SurfaceExporter::black`), not on the control thread.
+- `process` follows the same rules as the readback (`NativeDownload` over `ExportQueue`): busy, repeat entries for an unchanged canvas (the previous exported frame shared again with the tick's time and a new sequence), hold freeze, hold scene and black, and the ending path (`take_oldest`, `in_flight`). Frames on "video" are exported native frames (`VideoFrame::exported`, `SurfaceSync::Ready`) of `frame_format()`, never system memory.
+- Every failure in native mode (an export or conversion refused, a lost surface) is `NodeError::Permanent` (decision 9). The studio then stops the outputs on that chain and builds the next chain with system memory.
+- Other platforms have no exporter yet: `prepare` in native mode fails permanently, and `export_preference` returns `None`, so the root never chooses it there.
+
 ### Video encoder node
 
 | Call | Does |
@@ -198,6 +217,7 @@ Invariants:
 2. Packets leave in the order the session produced them. At most `PER_TICK_EVENTS` per tick go on "packets"; up to `CARRY_PACKETS` more wait for the next ticks.
 3. The packet stream is always decodable: when the carry-over is full, packets are dropped up to the next keyframe and `EncoderChange::RequestKeyframe` is sent.
 4. A refused frame (`EncodeError::InvalidInput`) is counted and does not fail the tick: a failed tick discards the packets the node already pushed in it, which would break the stream. A device loss or non-recoverable failure is permanent.
+5. With a native input memory kind (ADR-0147 decision 9), every failure is permanent: a refused native frame fails the next tick before it submits anything, so the refusing tick's packets are kept, and recoverable errors are not restarted. `open` keeps the probe's `max_frames_held()` (`frames_held`) for the export's ring.
 
 Keyframe at a time (ADR-0124 decision 7): `with_keyframe_requests()` returns the node and a `KeyframeAt` handle for the control thread. `KeyframeAt::request(t)` asks for a keyframe at the first frame whose time is at or after `t` (of two waiting requests the earlier wins; `pending()` shows one not yet served). For each new frame, before its `submit`, the node takes a due request (one acquire load, a compare-and-swap only when due) and sends `EncoderChange::RequestKeyframe`, counted in `keyframes_requested`, or `keyframes_refused` when the session refuses (the stream goes on). Only a node built with it reads the request; the studio builds it for a pausable recording's own video encoder and requests a keyframe at each join (a refusal is only counted). `cargo bench -p rbs-nodes --bench encoder` (cloud container, 2026-11-15, fake encoder, one packet a tick): `plain` 259.5 and 269.8 ns on main, 269.0 and 265.8 ns with this change; `keyframe_requests` 270.5 and 270.7 ns; within run-to-run noise. Tests: `crates/rbs-nodes/tests/encode_output.rs` (`a_keyframe_request_*`, `a_time_*`, `of_two_waiting_requests_*`, `a_refused_keyframe_request_*`, `keyframe_requests_add_no_allocation_per_tick`).
 
@@ -307,5 +327,5 @@ Nodes report through `NodeError` (ADR-0020): `Permanent` for what retrying canno
 - Encoders with deep look-ahead or B-frames flush more packets than one final tick on a cadence partition can pass (`PER_TICK_EVENTS`); the rest is counted in `flush_lost`. Today's hardware adapters hold at most their few slots (ADR-0043). More final ticks while a node has output pending would close this.
 - Transport feedback (`KeyframeRequested`, `BitrateHint`) to the encoder goes through the control plane; not wired yet.
 - Outputs that may restart safely (network transports) need a transport capability; until then every output that wrote media is single-use ([#84](https://github.com/salihcantekin/rbs/issues/84)).
-- Native export across the partition queue (move instead of share), D3D11/D3D12 input for NVENC and AMF, and a D3D12 exporter remove the readback; the export node then chooses by the encoder's memory kinds (ADR-0038, [#83](https://github.com/salihcantekin/rbs/issues/83)).
+- Native export is built for Metal (IOSurface, VideoToolbox). D3D12 texture and buffer exporters for NVENC, AMF and QSV, and Vulkan, follow ([ADR-0147](../adr/0147-native-encoder-input.md) order of work, [#83](https://github.com/salihcantekin/rbs/issues/83)).
 - YUY2 and I420 system frames (common on webcams) are not uploaded yet; a camera that offers only those fails `prepare` with `FormatUnsupported` ([#85](https://github.com/salihcantekin/rbs/issues/85)).

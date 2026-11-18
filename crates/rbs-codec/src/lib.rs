@@ -19,5 +19,7 @@ pub use config::{
     AudioEncoderConfig, EncoderChange, EncoderPreset, EncoderTuning, KeyframeInterval, RateControl,
     VideoEncoderConfig,
 };
-pub use encoder::{AudioEncoder, AudioEncoderFactory, VideoEncoder, VideoEncoderFactory};
+pub use encoder::{
+    AudioEncoder, AudioEncoderFactory, DEFAULT_FRAMES_HELD, VideoEncoder, VideoEncoderFactory,
+};
 pub use error::{CreateError, EncodeError};

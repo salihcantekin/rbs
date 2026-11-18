@@ -44,4 +44,7 @@ pub struct SessionStats {
     /// System-memory frames copied into an encoder input buffer. A frame the
     /// encoder refused with `Busy` and that is submitted again counts each time.
     pub copied: u64,
+    /// Frames encoded from a slot that already held their picture, without a copy
+    /// (ADR-0146). Counted like `copied`: a refused frame counts each time.
+    pub reused: u64,
 }

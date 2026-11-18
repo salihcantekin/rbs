@@ -40,7 +40,20 @@ pub trait VideoEncoder: Send {
     /// pending it returns at once, and a second flush is allowed and emits nothing.
     /// Called on the encoder node's final tick (ADR-0043) and again in `release`.
     fn flush(&mut self, out: &mut Vec<EncodedPacket>) -> Result<(), EncodeError>;
+
+    /// Input frames this session keeps after `submit` returns while it runs steadily
+    /// (look-ahead, B-frame reordering, frames the hardware still reads), drained once
+    /// per tick. An exporter sizes its ring from it (ADR-0147 decision 4). Holding more
+    /// is safe: the export is then busy and drops a frame (counted). The default,
+    /// [`DEFAULT_FRAMES_HELD`], is conservative; an adapter that copies its input in
+    /// `submit` holds none and may return 0.
+    fn max_frames_held(&self) -> usize {
+        DEFAULT_FRAMES_HELD
+    }
 }
+
+/// Default of [`VideoEncoder::max_frames_held`].
+pub const DEFAULT_FRAMES_HELD: usize = 4;
 
 /// Creates audio encoder sessions.
 pub trait AudioEncoderFactory: AdapterFactory {
