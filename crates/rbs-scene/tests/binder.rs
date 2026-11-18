@@ -11,6 +11,7 @@ use rbs_core::timing::FrameRate;
 use rbs_graph::description::{GraphDescription, NodeId, PartitionId};
 use rbs_graph::node::{LinkKind, NodeDescriptor, NodeKind, NodeTypeId, Pin};
 use rbs_scene::SceneCollection;
+use rbs_scene::activity::{ActivityTraits, OnReturn, Run, SourceActivity};
 use rbs_scene::binder::{BindError, BindProblem, HoldScene, NodeTypes, Role, SceneBinder, resolve};
 use rbs_scene::model::{
     CanvasId, Crop, DisplayChrome, ItemContent, Layout, SceneId, SceneScope, SettingValue,
@@ -91,6 +92,21 @@ fn types(id: &NodeTypeId) -> Option<Arc<NodeDescriptor>> {
     }
 }
 
+/// The activity traits of the test types (ADR-0152): media and browser run while a
+/// shown scene draws them, as `rbs-sources` declares; everything else while placed.
+fn activity_of(type_id: &NodeTypeId) -> ActivityTraits {
+    match type_id.as_str() {
+        "org.rbs.source.media" | "org.rbs.source.browser" => ActivityTraits::new(
+            &[Run::Placed, Run::Shown, Run::OnAir],
+            &[OnReturn::Resume, OnReturn::Restart],
+            Run::Shown,
+            Some(OnReturn::Restart),
+            false,
+        ),
+        _ => ActivityTraits::PLACED,
+    }
+}
+
 /// [`types`] with the sound node types of the picture-and-sound types (ADR-0106).
 struct Types;
 
@@ -106,6 +122,10 @@ impl NodeTypes for Types {
             "org.example.unsounded" => Some(ty("org.example.missing-sound")),
             _ => None,
         }
+    }
+
+    fn activity(&self, type_id: &NodeTypeId) -> ActivityTraits {
+        activity_of(type_id)
     }
 }
 
@@ -937,6 +957,9 @@ fn a_sound_type_that_is_not_installed_refuses_the_source() {
         fn sound_type(&self, picture: &NodeTypeId) -> Option<NodeTypeId> {
             Types.sound_type(picture)
         }
+        fn activity(&self, type_id: &NodeTypeId) -> ActivityTraits {
+            activity_of(type_id)
+        }
     }
     let mut s = setup();
     s.binder = SceneBinder::new(WithUnsounded).with_audio(AUDIO);
@@ -1044,8 +1067,8 @@ fn a_hidden_temporal_source_is_standby() {
     assert!(!linked.contains(&media_node));
     assert!(!linked.contains(&browser_node));
     assert!(linked.contains(&cam_node));
-    assert!(!s.col.warm_sources(s.wide).contains(&media));
-    assert!(s.col.warm_sources(s.wide).contains(&s.cam));
+    assert!(!s.col.warm_sources(s.wide, &Types).contains(&media));
+    assert!(s.col.warm_sources(s.wide, &Types).contains(&s.cam));
 }
 
 #[test]
@@ -1164,6 +1187,102 @@ fn temporal_sources_run_when_a_shown_scene_draws_them() {
     let preview_comp = s.binder.compositor(s.wide, Role::Preview).unwrap();
     assert!(links_into(&s, preview_comp).contains(&browser_node));
     assert!(!links_into(&s, comp).contains(&browser_node));
+}
+
+/// Adds a film to a new scene `name` and returns (film, scene).
+fn film_in_new_scene(s: &mut Setup, name: &str) -> (SourceId, SceneId) {
+    let (film, _) = s
+        .col
+        .add_source("Film", ty("org.rbs.source.media"), Settings::new())
+        .unwrap();
+    let (scene, _) = s.col.add_scene(name, SceneScope::Shared).unwrap();
+    s.col
+        .add_item(scene, ItemContent::Source(film), full(), None)
+        .unwrap();
+    (film, scene)
+}
+
+#[test]
+fn run_on_air_keeps_a_previewed_film_standby_and_out_of_the_preview() {
+    let mut s = setup();
+    let (film, next) = film_in_new_scene(&mut s, "Next");
+    s.col
+        .set_source_activity(film, SourceActivity::new(Some(Run::OnAir), None, None))
+        .unwrap();
+    s.col.set_preview(s.wide, Some(next)).unwrap();
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    let node = s.binder.source_node(film).unwrap();
+    assert_eq!(state(&s, node), Lifecycle::Standby);
+    let preview = s.binder.compositor(s.wide, Role::Preview).unwrap();
+    assert!(!links_into(&s, preview).contains(&node));
+    let layers = &report.compositors[&(s.wide, Role::Preview)].layers;
+    assert!(layers.iter().all(|l| l.source != film));
+    assert!(!report.on_air_sources.contains(&film));
+
+    // The take puts it on air: Active and in the on-air set.
+    s.col.set_program(s.wide, Some(next)).unwrap();
+    s.col.set_preview(s.wide, None).unwrap();
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert_eq!(state(&s, node), Lifecycle::Active);
+    assert!(report.on_air_sources.contains(&film));
+}
+
+#[test]
+fn run_placed_keeps_a_hidden_film_warm_but_unlinked_and_off_air() {
+    let mut s = setup();
+    let (film, _) = film_in_new_scene(&mut s, "Shelf");
+    s.col
+        .set_source_activity(film, SourceActivity::new(Some(Run::Placed), None, None))
+        .unwrap();
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    let node = s.binder.source_node(film).unwrap();
+    assert_eq!(state(&s, node), Lifecycle::Active);
+    let program = s.binder.compositor(s.wide, Role::Program).unwrap();
+    assert!(!links_into(&s, program).contains(&node));
+    assert!(!s.col.warm_sources(s.wide, &Types).contains(&film));
+    assert!(!report.on_air_sources.contains(&film));
+}
+
+#[test]
+fn a_policy_the_type_does_not_allow_is_reported_and_the_default_kept() {
+    let mut s = setup();
+    s.col
+        .set_source_activity(s.cam, SourceActivity::new(Some(Run::OnAir), None, None))
+        .unwrap();
+    s.col
+        .set_item_visible(item_of(&s, s.live, s.cam), false)
+        .unwrap();
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert!(
+        report
+            .problems
+            .contains(&BindProblem::ActivityUnsupported(s.cam))
+    );
+    // The camera keeps the placed default: hidden, still open.
+    let node = s.binder.source_node(s.cam).unwrap();
+    assert_eq!(state(&s, node), Lifecycle::Active);
+    assert_eq!(
+        s.col.source(s.cam).unwrap().activity.run,
+        Some(Run::OnAir),
+        "the saved value is kept"
+    );
+}
+
+#[test]
+fn a_deactivated_source_stays_standby_whatever_its_policy() {
+    let mut s = setup();
+    s.col
+        .set_source_activity(s.cam, SourceActivity::new(Some(Run::Placed), None, None))
+        .unwrap();
+    let source = s.col.source(s.cam).unwrap().clone();
+    let mut hints = source.hints.clone();
+    hints.insert(rbs_scene::STANDBY_HINT.to_owned(), "1".to_owned());
+    s.col
+        .set_source_settings_and_hints(s.cam, source.settings, hints)
+        .unwrap();
+    s.binder.sync(&s.col, &mut s.graph).unwrap();
+    let node = s.binder.source_node(s.cam).unwrap();
+    assert_eq!(state(&s, node), Lifecycle::Standby);
 }
 
 #[test]
@@ -1319,6 +1438,9 @@ impl rbs_scene::binder::NodeTypes for LiveCamera {
     fn live_settings(&self, type_id: &NodeTypeId) -> bool {
         type_id.as_str() == "org.rbs.source.camera"
     }
+    fn activity(&self, type_id: &NodeTypeId) -> ActivityTraits {
+        activity_of(type_id)
+    }
 }
 
 #[test]
@@ -1364,6 +1486,9 @@ impl rbs_scene::binder::NodeTypes for LiveKeysCamera {
         } else {
             &[]
         }
+    }
+    fn activity(&self, type_id: &NodeTypeId) -> ActivityTraits {
+        activity_of(type_id)
     }
 }
 
@@ -1738,7 +1863,7 @@ fn direct_globals(s: &Setup, canvas: rbs_scene::model::CanvasId) -> Vec<SourceId
 /// Checks the graph against the collection without using the binder's own report for
 /// the expectations.
 fn check_consistent(s: &Setup, report: &rbs_scene::binder::BindReport, seed: u64, step: usize) {
-    let wanted = s.col.running_sources();
+    let wanted = s.col.running_sources(&Types);
     let mut accounted = std::collections::BTreeSet::new();
     let tail_of = |src: SourceId| -> Option<NodeId> {
         if !has_video(s, src) {
@@ -1862,7 +1987,7 @@ fn check_consistent(s: &Setup, report: &rbs_scene::binder::BindReport, seed: u64
             // shows (ADR-0107); preview only the visible ones.
             let mut expected: Vec<NodeId> = match role {
                 Role::Program => {
-                    let mut all = s.col.warm_sources(canvas.id);
+                    let mut all = s.col.warm_sources(canvas.id, &Types);
                     all.extend(s.col.visible_sources(canvas.id, scene).unwrap());
                     all.into_iter().collect()
                 }

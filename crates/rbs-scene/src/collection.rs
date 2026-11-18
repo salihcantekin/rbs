@@ -1,5 +1,6 @@
 //! The scene collection: validated edits, each returning its own undo.
 
+use crate::activity::{MAX_LINGER_S, SourceActivity};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
@@ -92,6 +93,8 @@ pub enum SceneError {
     InvalidSyncOffset,
     /// A glide duration is above [`MAX_GLIDE_MS`] (ADR-0100).
     InvalidGlide,
+    /// A source's linger is above [`MAX_LINGER_S`] (ADR-0152).
+    InvalidActivity,
     /// `show_for_ms` is set and is not in `1..=MAX_SHOW_FOR_MS` (ADR-0105).
     InvalidShowFor,
     /// A transition duration is above [`MAX_GLIDE_MS`] (ADR-0128).
@@ -183,6 +186,9 @@ impl fmt::Display for SceneError {
             ),
             SceneError::InvalidGlide => {
                 write!(f, "glide duration must be from 0 to {MAX_GLIDE_MS} ms")
+            }
+            SceneError::InvalidActivity => {
+                write!(f, "linger must be from 0 to {MAX_LINGER_S} s")
             }
             SceneError::InvalidTransition => {
                 write!(f, "transition duration must be from 0 to {MAX_GLIDE_MS} ms")
@@ -287,6 +293,12 @@ enum Op {
         source: SourceId,
         expected: RecordSeparately,
         new: RecordSeparately,
+    },
+    /// Replaces a source's activity policy (ADR-0152).
+    SetSourceActivity {
+        source: SourceId,
+        expected: SourceActivity,
+        new: SourceActivity,
     },
     /// Replaces a display source's chrome and the region it writes (ADR-0104).
     SetSourceChrome {
@@ -1022,6 +1034,7 @@ impl SceneCollection {
             region: None,
             chrome: None,
             record_separately: RecordSeparately::default(),
+            activity: SourceActivity::default(),
         };
         let undo = self.apply_with(
             Op::InsertSource {
@@ -1284,6 +1297,27 @@ impl SceneCollection {
             source: id,
             expected,
             new: record_separately,
+        })
+    }
+
+    /// Sets a source's activity policy (ADR-0152). One undo step. Keys left `None`
+    /// are the type's default. The collection does not know the type's traits: the
+    /// host checks the values before it calls this, and the binder ignores a policy
+    /// the type does not allow (`BindProblem::ActivityUnsupported`). A linger over
+    /// [`MAX_LINGER_S`] is refused here.
+    pub fn set_source_activity(
+        &mut self,
+        id: SourceId,
+        activity: SourceActivity,
+    ) -> Result<Undo, SceneError> {
+        if activity.linger_s.is_some_and(|s| s > MAX_LINGER_S) {
+            return Err(SceneError::InvalidActivity);
+        }
+        let expected = self.get_source(id)?.activity;
+        self.apply(Op::SetSourceActivity {
+            source: id,
+            expected,
+            new: activity,
         })
     }
 
@@ -2191,6 +2225,25 @@ impl SceneCollection {
                 }
                 slot.region = new;
                 Ok(Op::SetSourceRegion {
+                    source,
+                    expected: new,
+                    new: expected,
+                })
+            }
+            Op::SetSourceActivity {
+                source,
+                expected,
+                new,
+            } => {
+                let slot = self
+                    .sources
+                    .get_mut(&source)
+                    .ok_or(SceneError::UnknownSource(source))?;
+                if slot.activity != expected {
+                    return Err(SceneError::UndoConflict);
+                }
+                slot.activity = new;
+                Ok(Op::SetSourceActivity {
                     source,
                     expected: new,
                     new: expected,

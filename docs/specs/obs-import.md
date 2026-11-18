@@ -130,7 +130,7 @@ ADR-0131 decision 7 is the first mapping table. Each mapper keeps its own row in
 | `DuplicateId`, `DuplicateFilter`, `IdsExhausted` | cannot arise: the importer issues ids from one counter per kind |
 | `BadTypeId` | cannot arise: mapper type ids are checked by the catalogue test in `rbs-cli` (`obs_import::tests`) |
 | `InvalidFollow`, `SharedLevels` | cannot arise: one canvas, no follow, no scene levels imported |
-| `InvalidGlide`, `InvalidTransition`, `InvalidShowFor` | cannot arise: default glide and transition (ADR-0128), no timed show imported |
+| `InvalidGlide`, `InvalidTransition`, `InvalidShowFor`, `InvalidActivity` | cannot arise: default glide and transition (ADR-0128), no timed show imported, no activity policy imported yet (ADR-0152) |
 | `ChromeNotDisplay` | cannot arise: chrome is never imported |
 | `StingerPlaced` | cannot arise: no stinger is imported, so the transition never names a source (ADR-0140 decision 1) |
 
