@@ -770,6 +770,10 @@ pub struct Progress {
     pub sources: Vec<SourceProgress>,
     /// Canvas frames handed to the video encoder.
     pub frames_exported: u64,
+    /// Canvas frames the export queued without a conversion and readback of its own:
+    /// another output of the same canvas, size, pixel format and colour read that
+    /// picture back for both (perf audit R-01). 0 while no such output runs.
+    pub frames_joined: u64,
     /// Canvas frames the export dropped (readback ring full) or lost.
     pub export_drops: u64,
     /// Frames the video encoder took.

@@ -13,7 +13,7 @@ use rbs_core::media::{
 };
 use rbs_core::time::Timestamp;
 use rbs_gpu::download::{DOWNLOAD_BUFFERS, DOWNLOAD_RING};
-use rbs_gpu::{SourceUpload, TexturePool, YuvDownload, YuvFormat, readback};
+use rbs_gpu::{DownloadShare, SourceUpload, TexturePool, YuvDownload, YuvFormat, readback};
 
 const W: u32 = 32;
 const H: u32 = 16;
@@ -279,6 +279,133 @@ fn download_drops_frames_while_consumers_hold_every_buffer_and_reuses_them_after
         panic!()
     };
     assert!(ptrs.contains(&sys.data().as_ptr()), "a recycled buffer");
+}
+
+fn shared(ctx: &rbs_gpu::GpuContext, share: &DownloadShare, w: u32, h: u32) -> YuvDownload {
+    YuvDownload::scaled_tone_shared(
+        ctx,
+        share,
+        YuvFormat::Nv12,
+        W,
+        H,
+        w,
+        h,
+        DOWNLOAD_BUFFERS,
+        ColorSpace::BT709_LIMITED,
+        false,
+    )
+    .unwrap()
+}
+
+#[test]
+fn downloads_of_one_share_read_a_picture_back_once_with_their_own_stamps() {
+    let Some(ctx) = common::gpu() else { return };
+    let mut pool = TexturePool::new();
+    let canvas = solid(ctx, &mut pool, W, H, [0.5, 0.5, 0.5, 1.0]);
+    let share = DownloadShare::new();
+    let mut a = shared(ctx, &share, W, H);
+    let mut b = shared(ctx, &share, W, H);
+    assert_eq!(share.users(), 2);
+    let copied = ctx.metrics().frames_cpu_copied();
+    let frame = canvas_frame(&pool, canvas, 5);
+    // The recording's own stamp, and a stream's shifted one, of one canvas picture.
+    assert!(a.submit(ctx, &pool, &frame).unwrap());
+    assert!(
+        b.submit_at(ctx, &pool, &frame, Timestamp::from_nanos(3), 42)
+            .unwrap()
+    );
+    assert_eq!((a.stats().joined, b.stats().joined), (0, 1));
+    assert_eq!((a.stats().converted, b.stats().converted), (1, 1));
+    ctx.wait_idle().unwrap();
+    ctx.poll();
+    let fa = a.take_ready(ctx).unwrap().expect("a's frame");
+    let fb = b.take_ready(ctx).unwrap().expect("b's frame");
+    assert_eq!(
+        (fa.timestamp(), fa.sequence()),
+        (Timestamp::from_nanos(5), 5)
+    );
+    assert_eq!(
+        (fb.timestamp(), fb.sequence()),
+        (Timestamp::from_nanos(3), 42)
+    );
+    assert_eq!(first_luma(&fa), first_luma(&fb), "one buffer, one copy");
+    assert_eq!(ctx.metrics().frames_cpu_copied() - copied, 1);
+    assert_eq!((a.in_flight(), b.in_flight()), (0, 0));
+    // Each repeats its own last frame afterwards.
+    assert!(b.submit_repeat(Timestamp::from_nanos(4), 43));
+    let again = b.take_ready(ctx).unwrap().expect("b's repeat");
+    assert_eq!(first_luma(&again), first_luma(&fb));
+}
+
+#[test]
+fn a_shared_download_converts_a_picture_the_other_did_not_queue() {
+    let Some(ctx) = common::gpu() else { return };
+    let mut pool = TexturePool::new();
+    let canvas = solid(ctx, &mut pool, W, H, [0.2, 0.4, 0.6, 1.0]);
+    let share = DownloadShare::new();
+    let mut a = shared(ctx, &share, W, H);
+    let mut b = shared(ctx, &share, W, H);
+    let copied = ctx.metrics().frames_cpu_copied();
+    // `a` is paused (takes nothing); `b` takes two pictures.
+    assert!(
+        b.submit(ctx, &pool, &canvas_frame(&pool, canvas, 1))
+            .unwrap()
+    );
+    assert!(
+        a.submit(ctx, &pool, &canvas_frame(&pool, canvas, 2))
+            .unwrap()
+    );
+    assert!(
+        b.submit(ctx, &pool, &canvas_frame(&pool, canvas, 2))
+            .unwrap()
+    );
+    assert_eq!((a.stats().joined, b.stats().joined), (0, 1));
+    ctx.wait_idle().unwrap();
+    ctx.poll();
+    // `b` keeps the newest; picture 1 is stale and never copied.
+    let fb = b.take_ready(ctx).unwrap().unwrap();
+    assert_eq!(fb.sequence(), 2);
+    assert_eq!(b.stats().stale, 1);
+    let fa = a.take_ready(ctx).unwrap().unwrap();
+    assert_eq!(fa.sequence(), 2);
+    assert_eq!(first_luma(&fa), first_luma(&fb));
+    assert_eq!(ctx.metrics().frames_cpu_copied() - copied, 1);
+}
+
+#[test]
+fn a_share_joins_only_downloads_of_the_same_shape_and_frees_slots_on_drop() {
+    let Some(ctx) = common::gpu() else { return };
+    let mut pool = TexturePool::new();
+    let canvas = solid(ctx, &mut pool, W, H, [0.2, 0.4, 0.6, 1.0]);
+    let share = DownloadShare::new();
+    let mut a = shared(ctx, &share, W, H);
+    // Another size: a readback of its own, which later downloads of that size join.
+    let mut small = shared(ctx, &share, W / 2, H / 2);
+    let frame = canvas_frame(&pool, canvas, 7);
+    assert!(a.submit(ctx, &pool, &frame).unwrap());
+    assert!(small.submit(ctx, &pool, &frame).unwrap());
+    assert_eq!(small.stats().joined, 0);
+    assert_eq!(small.format().size, Size::new(W / 2, H / 2));
+    drop(small);
+    // `a`'s readback is not reachable from the share any more; a new one is made.
+    let mut c = shared(ctx, &share, W, H);
+    assert!(c.submit(ctx, &pool, &frame).unwrap());
+    assert_eq!(c.stats().joined, 0);
+    // Joined downloads fill the ring together; one dropped hands its slots back.
+    let mut d = shared(ctx, &share, W, H);
+    for t in 10..10 + DOWNLOAD_RING as u64 - 1 {
+        let f = canvas_frame(&pool, canvas, t);
+        assert!(c.submit(ctx, &pool, &f).unwrap());
+        assert!(d.submit(ctx, &pool, &f).unwrap());
+    }
+    assert_eq!(d.stats().joined, DOWNLOAD_RING as u64 - 1);
+    drop(c);
+    ctx.wait_idle().unwrap();
+    ctx.poll();
+    let last = d.take_ready(ctx).unwrap().unwrap();
+    assert_eq!(last.sequence(), 10 + DOWNLOAD_RING as u64 - 2);
+    assert_eq!(d.in_flight(), 0);
+    drop(a);
 }
 
 fn system(format: VideoFormat, data: Vec<u8>, planes: &[PlaneLayout]) -> VideoFrame {
