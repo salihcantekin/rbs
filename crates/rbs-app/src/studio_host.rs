@@ -340,6 +340,20 @@ pub enum SourceStatus {
     },
 }
 
+/// A new kept-profile id: 128 random bits as 32 lowercase hex digits (ADR-0132
+/// decision 10).
+fn new_profile_id() -> Result<String, Refusal> {
+    let token = rbs_api::token::Token::generate()
+        .map_err(|e| Refusal::Invalid(format!("No random id for the profile: {e}.")))?;
+    Ok(token.hash().to_hex().chars().take(32).collect())
+}
+
+/// A new browser page's size on a `w` x `h` canvas: the canvas, at most 1920x1080,
+/// even ("Use canvas size" on the Page tab sets it).
+pub fn attributes_browser_size(w: u32, h: u32) -> (i64, i64) {
+    attributes::browser_size(w, h)
+}
+
 /// One source of the program scene, as the UI shows it.
 #[derive(Debug, Clone)]
 pub struct SourceRow {
@@ -402,6 +416,12 @@ pub struct SourceRow {
     /// A text source's stored settings (ADR-0129 decision 13: the Text tab shows
     /// them); `None` for every other kind.
     pub text: Option<Settings>,
+    /// A browser source's stored settings (the Page tab shows them, ADR-0109,
+    /// ADR-0132, ADR-0149); `None` for every other kind.
+    pub browser: Option<Settings>,
+    /// Why a browser source is not running, as the control API says it
+    /// (`browser_runtime_missing`, `browser_runtime_mismatch`, `browser_cap`).
+    pub browser_reason: Option<&'static str>,
     /// Capture region in full-picture pixels (ADR-0103); absent when `cap_has` is false.
     pub cap_has: bool,
     /// Left edge of the capture region.
@@ -9683,7 +9703,11 @@ impl Host {
             .ok_or_else(|| Refusal::NotFound("The canvas is gone.".into()))?;
         let (w, h) = attributes::browser_size(canvas.size.width, canvas.size.height);
         let mut settings = Settings::new();
-        settings.insert(keys::URL.into(), SettingValue::Text(url.trim().to_owned()));
+        // An empty address adds a page that waits for one (Add source › Browser:
+        // Properties opens on its address); it starts nothing until then.
+        if !url.trim().is_empty() {
+            settings.insert(keys::URL.into(), SettingValue::Text(url.trim().to_owned()));
+        }
         settings.insert(keys::WIDTH.into(), SettingValue::Int(w));
         settings.insert(keys::HEIGHT.into(), SettingValue::Int(h));
         rbs_sources::validate_settings(&SourceKind::Browser.type_id(), &settings)
@@ -11025,6 +11049,13 @@ impl Host {
         let (name, type_id) = (source.name.clone(), source.type_id.clone());
         let old_device = device_sync::device_key(source);
         let mut settings = source.settings.clone();
+        let browser = SourceKind::of(&type_id) == Some(SourceKind::Browser);
+        // A kept profile's id is RBS's to set, never a client's (ADR-0132 decision 10).
+        if browser && patch.contains_key(keys::PROFILE_ID) {
+            return Err(Refusal::Invalid(
+                "\"profile_id\" is set by RBS when \"keep_signed_in\" turns on.".to_owned(),
+            ));
+        }
         for (key, value) in patch {
             match value {
                 serde_json::Value::Null => {
@@ -11054,6 +11085,15 @@ impl Host {
                     )));
                 }
             }
+        }
+        if browser
+            && settings.get(keys::KEEP_SIGNED_IN) == Some(&SettingValue::Bool(true))
+            && !settings.contains_key(keys::PROFILE_ID)
+        {
+            settings.insert(
+                keys::PROFILE_ID.to_owned(),
+                SettingValue::Text(new_profile_id()?),
+            );
         }
         rbs_sources::validate_settings(&type_id, &settings)
             .map_err(|e| Refusal::Invalid(e.to_string()))?;
@@ -13271,6 +13311,8 @@ impl Host {
                     ),
                     text: (SourceKind::of(&s.type_id) == Some(SourceKind::Text))
                         .then(|| s.settings.clone()),
+                    browser: (kind == Some(SourceKind::Browser)).then(|| s.settings.clone()),
+                    browser_reason: state.and_then(|st| st.reason),
                     cap_has,
                     cap_l,
                     cap_t,

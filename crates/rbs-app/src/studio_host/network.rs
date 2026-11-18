@@ -23,7 +23,13 @@ fn reaches_network<'a>(
     match kind {
         // A type this build does not know: it may open anything.
         None => true,
-        Some(SourceKind::Browser) => patch.any(|(k, _)| k == keys::URL),
+        // The address, CSS and the user's script reach hosts; keeping a hidden page
+        // running starts a process nothing shows (ADR-0132 decision 4, ADR-0149
+        // decisions 3 and 5).
+        Some(SourceKind::Browser) => patch.any(|(k, v)| {
+            rbs_sources::BROWSER_NETWORK_KEYS.contains(&k)
+                && (k != keys::KEEP_RUNNING || v.as_bool() == Some(true))
+        }),
         Some(SourceKind::Image | SourceKind::Media) => {
             patch.any(|(k, v)| k == keys::PATH && v.as_str().is_some_and(|p| !is_local_path(p)))
         }
@@ -103,6 +109,29 @@ mod tests {
         assert!(!check(
             Some(SourceKind::Browser),
             &[(keys::TRANSPARENT, json!(true))]
+        ));
+        for key in [
+            keys::CSS,
+            keys::SCRIPT,
+            keys::SCRIPT_ON_LOAD,
+            keys::SCRIPT_EVERY_S,
+        ] {
+            assert!(
+                check(Some(SourceKind::Browser), &[(key, json!("x"))]),
+                "{key}"
+            );
+        }
+        assert!(check(
+            Some(SourceKind::Browser),
+            &[(keys::KEEP_RUNNING, json!(true))]
+        ));
+        assert!(!check(
+            Some(SourceKind::Browser),
+            &[(keys::KEEP_RUNNING, json!(false))]
+        ));
+        assert!(!check(
+            Some(SourceKind::Browser),
+            &[(keys::ZOOM_PERCENT, json!(150))]
         ));
         assert!(check(None, &[]));
     }

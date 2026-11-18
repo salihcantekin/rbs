@@ -60,6 +60,7 @@ fn shot(file: &TokenFile, base: Base, name: &str, data: BrowserData, dir: &std::
         id: 7,
         name: "Chat".into(),
         kind: "Browser".into(),
+        browser: true,
         icon: "globe".into(),
         ok: data.state == 0,
         picture: true,

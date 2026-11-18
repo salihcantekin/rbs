@@ -31,6 +31,9 @@ use crate::types::keys;
 pub const BROWSER_NODE_TYPE: &str = "org.rbs.browser";
 /// At most two helper trees run.
 pub const MAX_HELPERS: usize = 2;
+/// Control-API reason for a page that has no address yet: it starts no process and
+/// holds no slot (Add source › Browser adds one, and the Page tab asks for it).
+pub const BROWSER_NO_ADDRESS: &str = "browser_no_address";
 /// Control-API reason when a source does not get a slot.
 pub const BROWSER_CAP: &str = "browser_cap";
 /// Reason when the browser engine add-on is not installed, or the runner could not
@@ -352,7 +355,8 @@ pub fn validate_browser(settings: &Settings) -> Result<(), (&'static str, &'stat
         }
     }
     match settings.get(keys::URL) {
-        None => return Err((keys::URL, "an http, https, or file URL")),
+        // No address yet: the page starts nothing (`BROWSER_NO_ADDRESS`).
+        None => {}
         Some(SettingValue::Text(url)) => {
             browser_scheme(url).map_err(|expected| (keys::URL, expected))?;
         }
@@ -458,6 +462,7 @@ pub fn browser_settings(
     validate_browser(settings)?;
     let url = match settings.get(keys::URL) {
         Some(SettingValue::Text(url)) => url.clone(),
+        None => String::new(),
         _ => return Err((keys::URL, "an http, https, or file URL")),
     };
     let (width, height) = match (
@@ -920,6 +925,11 @@ impl BrowserSourceNode {
     pub fn activate(&mut self) -> Result<(), BrowserStartError> {
         if self.control.helper_running() {
             return Ok(());
+        }
+        if self.settings.url.is_empty() {
+            self.budget.release(self.source);
+            self.reason = Some(BROWSER_NO_ADDRESS);
+            return Err(BrowserStartError::Unavailable(BROWSER_NO_ADDRESS));
         }
         let Some(tree) = self.tree.clone() else {
             self.reason = Some(HELPER_MISSING);

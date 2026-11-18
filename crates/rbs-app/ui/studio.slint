@@ -260,9 +260,10 @@ component SourceRowView inherits Rectangle {
         activated => { Studio.select-source(data.id); }
         double-clicked => {
             Studio.select-source(data.id);
-            // Screens, windows and cameras (kind-code 0–2) have a Source settings
-            // window; other kinds keep the selection only (Rename stays on F2 / menu).
-            if data.kind-code >= 0 && data.kind-code <= 2 { Studio.open-source-settings(data.id); }
+            // Screens, windows and cameras (kind-code 0–2) and browser pages have a
+            // Source settings window; other kinds keep the selection only (Rename
+            // stays on F2 / menu).
+            if (data.kind-code >= 0 && data.kind-code <= 2) || data.browser { Studio.open-source-settings(data.id); }
         }
         menu-asked(at) => { Studio.select-source(data.id); menu.open(at); }
         renamed(t) => { Studio.rename-source(data.id, t); }

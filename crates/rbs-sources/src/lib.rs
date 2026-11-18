@@ -35,13 +35,14 @@ pub mod text_worker;
 pub mod types;
 
 pub use browser::{
-    BROWSER_CAP, BROWSER_KEYS, BROWSER_NODE_TYPE, BROWSER_RUNTIME_MISMATCH,
+    BROWSER_CAP, BROWSER_KEYS, BROWSER_NO_ADDRESS, BROWSER_NODE_TYPE, BROWSER_RUNTIME_MISMATCH,
     BROWSER_RUNTIME_MISSING, BrowserBudget, BrowserClaim, BrowserControlSidecar, BrowserFrameSink,
     BrowserGrant, BrowserPictureEdge, BrowserScheme, BrowserSession, BrowserSettings,
-    BrowserSourceNode, BrowserStartError, BrowserTree, DEFAULT_ZOOM, HELPER_EXIT, HELPER_MISSING,
-    MAX_CSS_BYTES, MAX_HELPERS, MAX_SCRIPT_BYTES, NETWORK_KEYS as BROWSER_NETWORK_KEYS,
-    NOT_PERMITTED, ShowClass, SourceReach, agent_may_set_browser_url, browser_descriptor,
-    browser_scheme, browser_settings, browser_url_is_network, file_directory_scope, is_profile_id,
+    BrowserSourceNode, BrowserStartError, BrowserTree, DEFAULT_FPS as BROWSER_DEFAULT_FPS,
+    DEFAULT_SIZE as BROWSER_DEFAULT_SIZE, DEFAULT_ZOOM, HELPER_EXIT, HELPER_MISSING, MAX_CSS_BYTES,
+    MAX_HELPERS, MAX_SCRIPT_BYTES, NETWORK_KEYS as BROWSER_NETWORK_KEYS, NOT_PERMITTED, ShowClass,
+    SourceReach, agent_may_set_browser_url, browser_descriptor, browser_scheme, browser_settings,
+    browser_url_is_network, file_directory_scope, is_profile_id,
 };
 pub use browser_sound::{
     ARRIVAL as BROWSER_SOUND_ARRIVAL, BROWSER_SOUND_NODE_TYPE, BrowserSound, BrowserSoundFeed,
