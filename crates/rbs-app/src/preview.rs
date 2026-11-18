@@ -26,7 +26,7 @@ use crate::studio_ui::log;
 use crate::ui::{MainWindow, Overlays, Shell, Studio, Theme};
 
 // Every mark of a selection reaches the layer.
-const _: () = assert!(transform::MAX_MARKS <= MAX_MARKS);
+const _: () = assert!(transform::MAX_MARKS + 4 * transform::MAX_PLACEHOLDERS <= MAX_MARKS);
 
 /// How long connecting to the in-process publisher may take before it is given up.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -402,6 +402,7 @@ pub fn set_marks(window: &MainWindow, which: Picture, marks: &[transform::Mark])
     };
     let accent = rgba(theme.get_accent());
     let fill = rgba(theme.get_surface_raised());
+    let placeholder = rgba(theme.get_border_strong());
     #[cfg(target_os = "macos")]
     let scale = 1.0;
     #[cfg(windows)]
@@ -429,10 +430,10 @@ pub fn set_marks(window: &MainWindow, which: Picture, marks: &[transform::Mark])
                 y: f64::from(area[1] + y0) * scale,
                 width: f64::from(x1 - x0) * scale,
                 height: f64::from(y1 - y0) * scale,
-                rgba: if m.kind == MarkKind::HandleFill {
-                    fill
-                } else {
-                    accent
+                rgba: match m.kind {
+                    MarkKind::HandleFill => fill,
+                    MarkKind::Placeholder => placeholder,
+                    MarkKind::Outline | MarkKind::HandleBorder => accent,
                 },
             };
             match st.marks.get_mut(n) {

@@ -3575,6 +3575,14 @@ impl StudioUi {
             let placed = self.placed();
             self.edit
                 .marks(self.canvas_px(), &placed, self.selected, &mut buf);
+            // A web page with no address draws nothing: outline where it sits (ADR-0149).
+            let empty = |id: i32| {
+                self.browser_rows
+                    .get(&id)
+                    .is_some_and(|(s, _)| !browser_props::has_address(s))
+            };
+            self.edit
+                .placeholders(self.canvas_px(), &placed, empty, self.selected, &mut buf);
         } else {
             buf.clear();
         }
@@ -3589,6 +3597,13 @@ impl StudioUi {
             Some(canvas) => {
                 let placed = self.placed_vertical(false);
                 self.vedit.marks(canvas, &placed, self.selected, &mut buf);
+                let empty = |id: i32| {
+                    self.browser_rows
+                        .get(&id)
+                        .is_some_and(|(s, _)| !browser_props::has_address(s))
+                };
+                self.vedit
+                    .placeholders(canvas, &placed, empty, self.selected, &mut buf);
             }
             None => buf.clear(),
         }
@@ -8050,6 +8065,7 @@ fn mark_data(marks: &[Mark]) -> Vec<MarkData> {
                 MarkKind::Outline => 0,
                 MarkKind::HandleBorder => 1,
                 MarkKind::HandleFill => 2,
+                MarkKind::Placeholder => 3,
             },
         })
         .collect()

@@ -60,6 +60,12 @@ fn flag_of(settings: &Settings, key: &str, default: bool) -> bool {
     }
 }
 
+/// True when the page has an address to load; a page without one draws nothing, so
+/// editing pictures show a placeholder outline where it sits.
+pub fn has_address(settings: &Settings) -> bool {
+    !text_of(settings, keys::URL).trim().is_empty()
+}
+
 /// True for a `file:` address.
 fn is_file(url: &str) -> bool {
     url.trim().to_ascii_lowercase().starts_with("file:")
