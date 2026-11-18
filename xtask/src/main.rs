@@ -368,6 +368,10 @@ fn deny_engine(from: &str, to: &str, to_class: Option<Class>) -> Option<String> 
 }
 
 fn deny_adapter(from: &str, to: &str, to_class: Option<Class>) -> Option<String> {
+    // The add-ons adapter implements the traits of rbs-add-ons, its port (ADR-0145).
+    if from == "rbs-add-ons-sys" && to == "rbs-add-ons" {
+        return None;
+    }
     match to_class {
         Some(Class::Adapter) => {
             if (from.starts_with("rbs-codec-") && to == "rbs-codec-hw")
@@ -539,6 +543,7 @@ fn class(name: &str) -> Option<Class> {
         | "rbs-text-test"
         | "rbs-text-parley"
         | "rbs-browser-runner"
+        | "rbs-add-ons-sys"
         // Outside the workspace (ADR-0132 decision 1), so check-layers never walks
         // it; `the_cef_runner_depends_only_on_its_allow_list` checks its manifest.
         | "rbs-browser-cef" => Class::Adapter,

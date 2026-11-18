@@ -52,7 +52,7 @@ pub trait AddOnFs: Send + Sync {
     /// Creates (or truncates) a regular file for reading and writing, with `mode`
     /// (Unix permission bits; setuid, setgid and sticky are already cleared).
     fn create_file_beneath(&self, root: &Path, rel: &RelPath, mode: u32) -> Result<File, FsError>;
-    /// Creates a directory and its missing parents.
+    /// Creates a directory and its missing parents (`root` too, when missing).
     fn create_dir_beneath(&self, root: &Path, rel: &RelPath) -> Result<(), FsError>;
     /// Creates a symbolic link at `rel` whose text is `target`.
     fn symlink_beneath(&self, root: &Path, rel: &RelPath, target: &str) -> Result<(), FsError>;
