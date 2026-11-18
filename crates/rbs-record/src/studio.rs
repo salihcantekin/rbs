@@ -61,6 +61,7 @@ use rbs_sources::{
 use rbs_transport::{ReconnectPolicy, Secret, TransportConfig, TransportInput};
 use rbs_vcam::{CameraFormat, VcamError, VirtualCameraConfig, VirtualCameraFactory};
 use scroll::CompositorPort;
+pub use scroll::{ScrollControl, ScrollFinished, ScrollRefused};
 
 use crate::timed_show::ShowCues;
 
@@ -1251,6 +1252,8 @@ pub struct Studio {
     /// The scroll run of every key a list draws (ADR-0150 decision 5). Empty while
     /// nothing scrolls.
     scroll_runs: ScrollRuns,
+    /// Ends of `Once` runs not taken yet ([`Studio::take_scroll_finished`]).
+    scroll_finished: Vec<ScrollFinished>,
     mixer: Option<Mixer>,
     bound_mixer: Option<BoundMixer>,
     meters: BTreeMap<SourceId, Arc<LevelMeter>>,
@@ -1772,6 +1775,7 @@ impl Studio {
             layers,
             gpu: Arc::clone(&gpu),
             scroll_runs,
+            scroll_finished: Vec::new(),
             bound,
             mixer,
             bound_mixer: None,
@@ -3971,6 +3975,12 @@ impl Studio {
         let mut serviced = self.engine.service();
         // A live text on air wakes the control loop on its whole second.
         if let Some(due) = self.text.as_ref().and_then(TextWorker::next_due) {
+            serviced.wait = Some(serviced.wait.map_or(due, |w| w.min(due)));
+        }
+        // A `Once` scroll wakes it when its picture leaves (ADR-0150 decision 11).
+        if !self.scroll_runs.is_empty()
+            && let Some(due) = self.service_scroll()
+        {
             serviced.wait = Some(serviced.wait.map_or(due, |w| w.min(due)));
         }
         if self.step_transitions() {
