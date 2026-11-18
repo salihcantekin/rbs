@@ -22,13 +22,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use std::time::Instant;
 
+use rbs_browser_ipc::input::{self as wire, Button, InputEvent, Key, NamedKey};
 #[cfg(any(target_os = "macos", windows))]
 use rbs_core::time::Clock;
 use rbs_core::time::MonotonicClock;
-use rbs_browser_ipc::input::{self as wire, Button, InputEvent, Key, NamedKey};
+use rbs_gpu::share::PreviewEndpoint;
 #[cfg(any(target_os = "macos", windows))]
 use rbs_gpu::share::{PreviewFrame, PreviewSubscriber};
-use rbs_gpu::share::PreviewEndpoint;
 use rbs_scene::model::SourceId;
 use slint::ComponentHandle;
 use slint::winit_030::winit;
@@ -164,7 +164,7 @@ pub fn open(source: SourceId, view: View, make: &dyn Fn(&InteractWindow)) {
             w.max(1) as f32,
             h.max(1) as f32,
         )));
-    window.on_open_engine(|| emit(Event::OpenEngine));
+    window.on_open_engine(|| entry::guard(|| emit(Event::OpenEngine)));
     install_events(&window, source);
     let place = window.as_weak();
     let set = entry::set_rendering_notifier(window.window(), move |state, _| {
@@ -780,7 +780,10 @@ mod tests {
     fn a_point_maps_into_the_letterboxed_page() {
         // A 1000 x 1000 window shows a 1920 x 1080 page 1000 x 562.5, centred.
         let page = (1920, 1080);
-        assert_eq!(to_page((500.0, 500.0), (1000, 1000), page), Some((960, 540)));
+        assert_eq!(
+            to_page((500.0, 500.0), (1000, 1000), page),
+            Some((960, 540))
+        );
         assert_eq!(to_page((0.0, 218.75), (1000, 1000), page), Some((0, 0)));
         // Outside the page clamps to its edge.
         assert_eq!(to_page((-5.0, 0.0), (1000, 1000), page), Some((0, 0)));
@@ -807,7 +810,10 @@ mod tests {
             wire_key(&WKey::Named(WNamed::Enter)),
             Some(Key::Named(NamedKey::Enter))
         );
-        assert_eq!(wire_key(&WKey::Named(WNamed::F12)), Some(Key::Named(NamedKey::F(12))));
+        assert_eq!(
+            wire_key(&WKey::Named(WNamed::F12)),
+            Some(Key::Named(NamedKey::F(12)))
+        );
         assert_eq!(wire_key(&WKey::Named(WNamed::Space)), Some(Key::Char(' ')));
         assert_eq!(wire_key(&WKey::Character("a".into())), Some(Key::Char('a')));
         assert_eq!(wire_key(&WKey::Named(WNamed::Shift)), None);
@@ -818,6 +824,9 @@ mod tests {
         );
         assert_eq!(typed_text(&a, Some("a"), ModifiersState::CONTROL), None);
         let enter = WKey::Named(WNamed::Enter);
-        assert_eq!(typed_text(&enter, Some("\r"), ModifiersState::empty()), None);
+        assert_eq!(
+            typed_text(&enter, Some("\r"), ModifiersState::empty()),
+            None
+        );
     }
 }

@@ -2183,13 +2183,20 @@ impl Studio {
         let stats = picture.stats();
         let added = (|| {
             let pin = iso_video::video_pin(&self.graph, node)?;
-            let id = add_active(&mut self.graph, Node::<GpuRuntime>::descriptor(&picture), RENDER)?;
+            let id = add_active(
+                &mut self.graph,
+                Node::<GpuRuntime>::descriptor(&picture),
+                RENDER,
+            )?;
             if let Err(e) = self.graph.connect(node, &pin, id, "canvas") {
                 let _ = self.graph.set_state(id, Lifecycle::Standby);
                 let _ = self.graph.remove_node(id);
                 return Err(RecordError::from(e));
             }
-            if let Err(e) = self.engine.adopt::<GpuRuntime>(RENDER, id, Box::new(picture)) {
+            if let Err(e) = self
+                .engine
+                .adopt::<GpuRuntime>(RENDER, id, Box::new(picture))
+            {
                 let _ = self.graph.set_state(id, Lifecycle::Standby);
                 let _ = self.graph.remove_node(id);
                 return Err(RecordError::from(e));
@@ -2805,9 +2812,10 @@ impl Studio {
                 }
                 // Browser page options reach the running page without a restart
                 // (ADR-0149 decision 1).
-                if let (Some(s), Some(control)) =
-                    (collection.source(*source), self.browser_controls.get(source))
-                {
+                if let (Some(s), Some(control)) = (
+                    collection.source(*source),
+                    self.browser_controls.get(source),
+                ) {
                     let _ = rbs_sources::apply_browser_live(control, &s.settings);
                 }
             }
@@ -3220,7 +3228,8 @@ impl Studio {
         }
 
         // Program-shown pages take a helper slot before preview-only ones (ADR-0109).
-        self.browser_budget.grant(&browser_claims(&self.collection, &self.shown_by));
+        self.browser_budget
+            .grant(&browser_claims(&self.collection, &self.shown_by));
         let applied = self.engine.apply(&self.graph);
         if applied.is_ok()
             && let Some(report) = report.as_mut()
@@ -3949,7 +3958,8 @@ impl Studio {
     /// engine is prepared again at the next apply, with no restart. Returns how many
     /// were. The caller applies.
     pub fn browser_engine_changed(&mut self) -> usize {
-        self.browser_budget.grant(&browser_claims(&self.collection, &self.shown_by));
+        self.browser_budget
+            .grant(&browser_claims(&self.collection, &self.shown_by));
         // Every browser source that is not running: one that waited for the engine
         // failed for good, and retrying a node without a failure does nothing.
         let waiting: Vec<NodeId> = self

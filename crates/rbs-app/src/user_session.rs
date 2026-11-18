@@ -497,7 +497,8 @@ impl UserSession {
         if crate::browser_profiles::renew(collection, &taken, false).unwrap_or(0) > 0
             && let Some(s) = &self.saver
         {
-            s.shared.push(Job::Collection(id.clone(), collection.clone()));
+            s.shared
+                .push(Job::Collection(id.clone(), collection.clone()));
         }
     }
 
@@ -523,7 +524,9 @@ impl UserSession {
         }
         let mut ids = std::collections::BTreeSet::new();
         for entry in listing.entries {
-            ids.extend(crate::browser_profiles::ids(&lib.load(&entry.id).ok()?.document));
+            ids.extend(crate::browser_profiles::ids(
+                &lib.load(&entry.id).ok()?.document,
+            ));
         }
         Some(ids)
     }

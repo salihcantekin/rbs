@@ -2758,7 +2758,11 @@ pub const METHODS: &[MethodInfo] = &[
     // A click can do anything in a page (ADR-0132 decision 9); a forgotten sign-in
     // cannot come back (decision 10).
     m("browser.input", Some(Scope::Control), Effect::Live),
-    m("browser.forget_sign_in", Some(Scope::Control), Effect::Destructive),
+    m(
+        "browser.forget_sign_in",
+        Some(Scope::Control),
+        Effect::Destructive,
+    ),
     m("source.get_settings", Some(Scope::Control), Effect::Read),
     m("media.play", Some(Scope::Control), Effect::Edit),
     m("media.pause", Some(Scope::Control), Effect::Edit),

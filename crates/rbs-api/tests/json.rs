@@ -794,7 +794,9 @@ fn every_request() -> Vec<Request> {
             source: 3,
             script: None,
         })),
-        c(Command::BrowserForgetSignIn(BrowserForgetSignIn { source: 3 })),
+        c(Command::BrowserForgetSignIn(BrowserForgetSignIn {
+            source: 3,
+        })),
         c(Command::BrowserInput(BrowserInput {
             source: 3,
             events: vec![

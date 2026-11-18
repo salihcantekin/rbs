@@ -119,7 +119,9 @@ impl Key {
             0x12_0000..=0x12_00ff => NAMED_KEYS
                 .get(usize::try_from(code - 0x12_0000).ok()?)
                 .map(|(k, _)| Key::Named(*k)),
-            _ => char::from_u32(code).filter(|c| !c.is_control()).map(Key::Char),
+            _ => char::from_u32(code)
+                .filter(|c| !c.is_control())
+                .map(Key::Char),
         }
     }
 }
@@ -196,8 +198,8 @@ pub fn mac_key_code(key: Key) -> Option<i32> {
         },
         Key::Char(c) => {
             const LETTERS: [i32; 26] = [
-                0x00, 0x0B, 0x08, 0x02, 0x0E, 0x03, 0x05, 0x04, 0x22, 0x26, 0x28, 0x25, 0x2E,
-                0x2D, 0x1F, 0x23, 0x0C, 0x0F, 0x01, 0x11, 0x20, 0x09, 0x0D, 0x07, 0x10, 0x06,
+                0x00, 0x0B, 0x08, 0x02, 0x0E, 0x03, 0x05, 0x04, 0x22, 0x26, 0x28, 0x25, 0x2E, 0x2D,
+                0x1F, 0x23, 0x0C, 0x0F, 0x01, 0x11, 0x20, 0x09, 0x0D, 0x07, 0x10, 0x06,
             ];
             let lower = c.to_ascii_lowercase();
             if !lower.is_ascii_lowercase() {
@@ -333,7 +335,12 @@ impl InputEvent {
             } => {
                 body.push(BUTTON);
                 xy(body, *x, *y);
-                body.extend_from_slice(&[button_code(*button), u8::from(*down), *clicks, *modifiers]);
+                body.extend_from_slice(&[
+                    button_code(*button),
+                    u8::from(*down),
+                    *clicks,
+                    *modifiers,
+                ]);
             }
             InputEvent::Wheel {
                 x,
@@ -385,9 +392,7 @@ impl InputEvent {
                 y: i32_at(4)?,
                 modifiers: rest[8],
             },
-            LEAVE if rest.len() == 1 => InputEvent::Leave {
-                modifiers: rest[0],
-            },
+            LEAVE if rest.len() == 1 => InputEvent::Leave { modifiers: rest[0] },
             BUTTON if rest.len() == 12 => InputEvent::Button {
                 x: i32_at(0)?,
                 y: i32_at(4)?,
@@ -473,12 +478,17 @@ mod tests {
         assert_eq!(InputEvent::decode(&[]), None);
         assert_eq!(InputEvent::decode(&[MOVE, 1, 2]), None);
         assert_eq!(InputEvent::decode(&[99]), None);
-        assert_eq!(InputEvent::decode(&[BUTTON, 0, 0, 0, 0, 0, 0, 0, 0, 7, 1, 1, 0]), None);
+        assert_eq!(
+            InputEvent::decode(&[BUTTON, 0, 0, 0, 0, 0, 0, 0, 0, 7, 1, 1, 0]),
+            None
+        );
         let long = "é".repeat(MAX_TEXT_BYTES);
         let mut body = Vec::new();
         InputEvent::Text(long).encode(&mut body);
         assert!(body.len() <= MAX_TEXT_BYTES + 1);
-        assert!(matches!(InputEvent::decode(&body), Some(InputEvent::Text(t)) if t.chars().all(|c| c == 'é')));
+        assert!(
+            matches!(InputEvent::decode(&body), Some(InputEvent::Text(t)) if t.chars().all(|c| c == 'é'))
+        );
     }
 
     #[test]

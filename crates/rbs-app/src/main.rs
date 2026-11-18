@@ -5409,9 +5409,12 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_browser_reload, |app, id: i32, bypass: bool| {
         app.studio.browser_reload(id, bypass);
     });
-    on!(on_browser_run_script, |app, id: i32, script: slint::SharedString| {
-        app.studio.browser_run_script(id, script.as_str());
-    });
+    on!(
+        on_browser_run_script,
+        |app, id: i32, script: slint::SharedString| {
+            app.studio.browser_run_script(id, script.as_str());
+        }
+    );
     on!(on_browser_interact, |app, id: i32| {
         app.studio.browser_interact(id);
     });
@@ -6197,8 +6200,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             c.update(move |app| match e {
                 interact::Event::Close(source) => {
                     interact::close(source);
-                    app.studio
-                        .send(studio_host::Command::CloseInteract(source));
+                    app.studio.send(studio_host::Command::CloseInteract(source));
                 }
                 interact::Event::Input(source, event) => {
                     app.studio

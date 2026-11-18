@@ -31,10 +31,7 @@ pub const DIR_NAME: &str = "browser-profiles";
 
 /// The start-up sweep on a thread of its own, when `dir` holds anything: `referenced`
 /// is asked only then (it reads every saved collection) and `None` skips the sweep.
-pub fn sweep_at_start(
-    dir: PathBuf,
-    referenced: impl FnOnce() -> Option<BTreeSet<String>>,
-) {
+pub fn sweep_at_start(dir: PathBuf, referenced: impl FnOnce() -> Option<BTreeSet<String>>) {
     let has_any = std::fs::read_dir(&dir).is_ok_and(|mut e| e.next().is_some());
     if !has_any {
         return;
@@ -52,8 +49,8 @@ pub fn sweep_at_start(
 
 /// A new random profile id: 32 lowercase hex digits (128 bits).
 pub fn new_id() -> Result<String, String> {
-    let token =
-        rbs_api::token::Token::generate().map_err(|e| format!("No random id for the profile: {e}."))?;
+    let token = rbs_api::token::Token::generate()
+        .map_err(|e| format!("No random id for the profile: {e}."))?;
     Ok(token.hash().to_hex().chars().take(32).collect())
 }
 
@@ -166,7 +163,9 @@ fn remove_with_retries(path: &Path, tries: u32, pause: Duration) -> bool {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return true,
             Err(_) if attempt + 1 == tries => {}
             // Bounded retry of a file the closing page still holds, on a thread of its
-            // own; never in a test (tests pass `tries` 1).
+            // own (never the UI or control thread); never in a test (tests pass `tries`
+            // 1).
+            #[allow(clippy::disallowed_methods)]
             Err(_) => std::thread::sleep(pause),
         }
     }
@@ -189,7 +188,9 @@ pub fn sweep(dir: &Path, referenced: &BTreeSet<String>) -> Vec<PathBuf> {
         if !rbs_sources::is_profile_id(name) || referenced.contains(name) {
             continue;
         }
-        if entry.file_type().is_ok_and(|t| t.is_dir()) && remove_with_retries(&entry.path(), 1, Duration::ZERO) {
+        if entry.file_type().is_ok_and(|t| t.is_dir())
+            && remove_with_retries(&entry.path(), 1, Duration::ZERO)
+        {
             removed.push(entry.path());
         }
     }
@@ -205,7 +206,10 @@ mod tests {
 
     fn page(c: &mut SceneCollection, name: &str, id: Option<&str>) -> SourceId {
         let mut settings = Settings::new();
-        settings.insert(keys::URL.into(), SettingValue::Text("https://example.com".into()));
+        settings.insert(
+            keys::URL.into(),
+            SettingValue::Text("https://example.com".into()),
+        );
         if let Some(id) = id {
             settings.insert(keys::KEEP_SIGNED_IN.into(), SettingValue::Bool(true));
             settings.insert(keys::PROFILE_ID.into(), SettingValue::Text(id.into()));
@@ -265,7 +269,10 @@ mod tests {
         assert!(dir.join(A).exists() && dir.join("not-a-profile").exists());
         assert!(!dir.join(B).exists());
         assert!(remove_with_retries(&dir.join(A), 1, Duration::ZERO));
-        assert!(remove_with_retries(&dir.join(A), 1, Duration::ZERO), "gone counts");
+        assert!(
+            remove_with_retries(&dir.join(A), 1, Duration::ZERO),
+            "gone counts"
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

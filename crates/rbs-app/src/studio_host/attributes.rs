@@ -150,10 +150,7 @@ fn own_profile(copy: SourceCopy, source: &Source) -> Result<SourceCopy, Refusal>
         return Ok(copy);
     }
     let id = crate::browser_profiles::new_id().map_err(Refusal::Invalid)?;
-    Ok(copy.with_setting(
-        rbs_sources::types::keys::PROFILE_ID,
-        SettingValue::Text(id),
-    ))
+    Ok(copy.with_setting(rbs_sources::types::keys::PROFILE_ID, SettingValue::Text(id)))
 }
 
 /// A free source name from `base`, avoiding `also` (names chosen in the same step).
@@ -292,7 +289,10 @@ impl Host {
         let camera = SourceKind::of(&source.type_id) == Some(SourceKind::Camera);
         let standby = source.standby() || camera;
         let mut names = vec![free_name(self, &source.name, &[])];
-        let mut copies = vec![own_profile(SourceCopy::new(id, &names[0], standby), &source)?];
+        let mut copies = vec![own_profile(
+            SourceCopy::new(id, &names[0], standby),
+            &source,
+        )?];
         if source.companion_of().is_none() {
             let companions: Vec<Source> = self
                 .collection

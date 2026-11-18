@@ -568,7 +568,11 @@ mod tests {
         );
         assert_eq!(c.tick(ms(14_999)), None);
         assert_eq!(c.tick(ms(15_000)), Some(Due::RunScript));
-        assert_eq!(c.tick(ms(61_000)), Some(Due::Reload), "the reload kept its time");
+        assert_eq!(
+            c.tick(ms(61_000)),
+            Some(Due::Reload),
+            "the reload kept its time"
+        );
         // Turned off while loading: nothing is due after the next load either.
         c.navigate(ms(61_000), Start::Reload);
         c.set_options(ms(61_500), opts());
@@ -580,7 +584,10 @@ mod tests {
             ..crate::PageOptions::default()
         };
         let o = CycleOptions::of(&page, false);
-        assert_eq!((o.script_every_s, o.script_on_load, o.restyles), (0, false, false));
+        assert_eq!(
+            (o.script_every_s, o.script_on_load, o.restyles),
+            (0, false, false)
+        );
         assert!(CycleOptions::of(&crate::PageOptions::default(), true).restyles);
     }
 
