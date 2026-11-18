@@ -3,91 +3,131 @@
 - Status: Proposed
 - Date: 2026-11-18
 - Deciders: Salih (owner)
-- Builds on: [ADR-0013](0013-zero-cost-when-unused.md), [ADR-0024](0024-node-restart-with-back-off.md), [ADR-0105](0105-timed-show.md), [ADR-0107](0107-temporal-sources-sleep-when-hidden.md), [ADR-0108](0108-media-file-source.md), [ADR-0109](0109-browser-source.md), [ADR-0124](0124-pause-recording-and-hold-stream.md), [ADR-0128](0128-scene-transitions.md), [ADR-0143](0143-performance-rules-for-every-change.md), [ADR-0149](0149-browser-page-automation-zoom-and-background-pages.md), [ADR-0150](0150-scrolling-layers-in-the-compositor.md)
-- Changes (on acceptance): ADR-0107 decisions 7 and 8 (classification by type id, no keep-warm override) are superseded by decisions 3 and 4 here. ADR-0108's `restart_when_shown` and ADR-0149's `keep_running` become values of the common policy (decision 6); their behaviour does not change.
+- Builds on: [ADR-0013](0013-zero-cost-when-unused.md), [ADR-0024](0024-node-restart-with-back-off.md), [ADR-0086](0086-recording-sources-separately-iso.md), [ADR-0105](0105-timed-show.md), [ADR-0107](0107-temporal-sources-sleep-when-hidden.md), [ADR-0108](0108-media-file-source.md), [ADR-0109](0109-browser-source.md), [ADR-0124](0124-pause-recording-and-hold-stream.md), [ADR-0128](0128-scene-transitions.md), [ADR-0129](0129-text-source.md), [ADR-0135](0135-transitions-t-bar-scene-override-rehearse.md), [ADR-0139](0139-remote-guests-rbs-to-rbs-over-webrtc.md), [ADR-0140](0140-stinger-transition.md), [ADR-0143](0143-performance-rules-for-every-change.md), [ADR-0149](0149-browser-page-automation-zoom-and-background-pages.md), [ADR-0150](0150-scrolling-layers-in-the-compositor.md)
+- Changes (on acceptance): ADR-0107 decisions 7 and 8 (classification by type id, no keep-warm override) are superseded by decisions 3 and 5 here. ADR-0108's `restart_when_shown`, ADR-0149's `keep_running` and ADR-0140's `arm()` override of `restart_when_shown` are restated on the common policy (decisions 6 and 10); their behaviour does not change.
 
 ## Context
 
-Which sources keep running when nobody sees them is decided today in five places, each for one type:
+Which sources keep running when nobody sees them is decided today in many places, each for one type or one feature:
 
 | Where | Rule today |
 | --- | --- |
-| Scene model `wanted_sources` (capture, still, text, audio, plugins) | Runs while placed in any scene, hidden or off air. Released only by **Deactivate** (`source.set_active false`, the `standby` hint). |
-| ADR-0107 (media, browser by type id) | Runs only while a shown scene (program, studio-mode preview, bound hold scene, any canvas) draws it with `visible` true. Otherwise Standby: no thread, no decoder, no process. |
-| ADR-0108 `restart_when_shown` (media, default true) | Back on air starts at the range start, or resumes at the stored cursor. Preview only cues. |
-| ADR-0149 `keep_running` (browser, default false) | Keeps the page process while placed, 1 picture per second while hidden. Needs the network permission. |
-| ADR-0150 scroll runs (any source with a scroll) | A run ends when no list on the canvas contains it; seen again it starts over. Shared by program, preview and transitions. |
+| Scene model `wanted_sources` / `warm_sources` (capture, still, text, audio, plugins) | Active and linked to the program compositor while placed in any scene, hidden or off air. Released only by **Deactivate** (`source.set_active false`, the `standby` hint). |
+| ADR-0107 (media, browser, by type id) | Active only while a shown scene (program, studio-mode preview, bound hold scene, any canvas) draws it with `visible` true. Otherwise Standby: no thread, decoder or process. |
+| ADR-0108 decision 10 (media) | Preview only cues. `restart_when_shown` (default true) moves the cursor to the range start when it leaves air. Paused sources release the decoder after `pause_release_s`. |
+| ADR-0149 decision 5 (browser `keep_running`, not built yet) | Keeps the page process while placed, 1 picture per second, picture node unscheduled. Needs the network permission. |
+| ADR-0139 decision 12 (guest) | Capture class: connected while placed; video decode stops while no shown scene draws it. |
+| ADR-0150 decision 5 (scroll) | A run starts when the first list on a canvas (program, preview, incoming) contains its key, ends when none does. |
+| ADR-0128 / ADR-0140 / ADR-0135 (transitions) | The outgoing scene's sources and the stinger stay on air until the transition ends; a manual T-bar's incoming scene stays cued until it lands. `arm()` overrides `restart_when_shown` for the stinger. |
+| ADR-0086 decision 8 (ISO tracks) | A source with a separate track stays Active for the whole recording. |
+| ADR-0129 decision 7 (text) | Its own "on-air set" decides which text sources are polled and re-rendered. |
 
-Each rule is right for its type, but the user sees five different words for one question ("what happens when this is not on screen?"), a plugin cannot choose, and the next types (NDI, remote guests of ADR-0139, a slide show, an audition player) would each add a sixth. The owner asked for one structure that every source uses, with a recommended default per type and an override per source (2026-11-18).
+Each rule is right for its case, but the user meets a different word per type, a plugin cannot choose, and each new type (NDI, slide show, audition player) would add another rule. The owner asked for one structure every source uses, with a recommended default per type and an override per source (2026-11-18).
 
-**What OBS does.** libobs counts two things per source: *active* (drawn by the program output) and *showing* (drawn anywhere: program, studio-mode preview, projectors, multiview). Types react with their own checkboxes: media "Restart playback when source becomes active" and "Close file when inactive"; browser "Shutdown source when not visible" and "Refresh browser when scene becomes active"; VLC and image slide show "Visibility behavior" (stop and restart, pause and unpause, always play); image "Unload image when not showing"; video capture "Deactivate when not showing". Known weak spots: every type spells the rule differently; the multiview renders every scene, so it marks every source as showing and wakes every page and file the user placed; a camera that sleeps shows black for its warm-up on the next cut; "always play" keeps decoding a film nobody sees.
+**What OBS does.** libobs counts *active* (drawn by the program) and *showing* (drawn anywhere: program, preview, projectors, multiview). Types add their own checkboxes: media "Restart playback when source becomes active" and "Close file when inactive"; browser "Shutdown source when not visible" and "Refresh browser when scene becomes active"; VLC and slide show "Visibility behavior"; image "Unload image when not showing"; video capture "Deactivate when not showing". Weak spots: a different word per type; the multiview marks every source as showing and wakes every page and file; a sleeping camera is black for its warm-up; "always play" decodes a film nobody sees.
 
-Forces: P13 and ADR-0143 (nothing placed but unused may cost a thread, a device, a process or per-frame work); rule 4 (capabilities, not type names, in engine code); the owner's feature-parameters rule (a choice the user cares about is a saved setting reachable from the control API); warm-up of devices (USB cameras and capture cards take about 0.3 to 2 s to their first picture, browser cold start about 0.25 to 2.4 s measured in the browser thread); exclusive devices that another app may take while released.
+Forces: P13 and ADR-0143 (nothing placed but unused may cost a thread, device, process or per-frame work); P3 (no type names in engine code); P7 (a failed wake is isolated); the owner's feature-parameters rule (a choice the user cares about is a saved setting reachable from the control API); device warm-up (about 0.3 to 2 s for USB cameras and capture cards, 0.25 to 2.4 s for a cold browser); exclusive devices another app may take while released.
 
 ## Decision
 
-1. **Four presence levels, computed by the binder on each sync.** For every source the binder derives one level, highest first:
-   - **On air**: a program scene or a bound hold scene (ADR-0124) of any canvas draws it with `visible` true, counting timed-show cues (ADR-0105) and the incoming scene of a running transition (ADR-0128). This is ADR-0107's on-air set.
-   - **Shown**: not on air, but a shown scene draws it: a canvas's studio-mode `preview`, an open Interact window (ADR-0132), and a scene or source projector once one exists (ADR-0125 later work). The multiview, when it exists, never counts: its tiles show the last picture or the type's placeholder.
+1. **Four levels, computed by the binder on each sync, plus Off.** For each source, highest first:
+   - **On air**: exactly today's `BindReport::on_air_sources`, extended to every type: drawn with `visible` true by a canvas's program scene (with its global scene and timed-show cues), by a bound hold scene (ADR-0124), or by the outgoing `drawn`/`heard` set or the stinger of a running transition (ADR-0128 decision 6, ADR-0140 decision 4). The incoming scene of a manual T-bar (ADR-0135) is not on air until it lands, as today.
+   - **Shown**: not on air, but drawn with `visible` true by a canvas's studio-mode `preview` scene (a cue there counts here, not as on air), the incoming scene of a manual T-bar or timed transition before the cut, or an open Interact window (ADR-0132). Scene and source projectors join this level when they exist (ADR-0125 later work). A multiview never counts: its tiles show the type's placeholder.
    - **Placed**: an item in any scene of the open collection, hidden or off air.
    - **Unplaced**: in no scene.
 
-   Opacity does not lower a level (ADR-0107 decision 3). Levels are the union over every canvas (main and vertical). Program projectors, the virtual camera and outputs show a program, so they add nothing; whether anything streams or records does not change a level. **Off** (the user's Deactivate, the `standby` hint) wins over every level.
+   Opacity does not lower a level (ADR-0107 decision 3). Every canvas in the collection counts, as `running_sources` does today. Program projectors, the virtual camera and outputs show a program, so they add nothing. **Off** (Deactivate, the `standby` hint) wins over every level and every forced cause.
 
-2. **Each source has one saved activity policy.** `Source.activity: Option<SourceActivity>`, a field beside `audio`, not a type setting, so changing it never replaces the node (ADR-0039) and every type, plugins included, has the same three keys. Absent means the type's default (decision 3).
+2. **Forced causes.** These keep a source Active whatever its policy, never over Off: an ISO track in a running recording (ADR-0086 decision 8), an open Interact window (ADR-0132), monitoring (`source.set_monitor`), and an armed or playing stinger (ADR-0140). Each is an input set to `sync` that is empty when unused, so it adds no scan (as `running_sources_cued` today). ADR-0129's text set keeps its meaning but is named the **text live set** in the specs, so "on air" has one meaning.
+
+3. **Each source has one saved activity policy.** `Source.activity: Option<SourceActivity>`, a field beside `audio`, not a type setting, so changing it never replaces the node (ADR-0039). Absent means the type's default (decision 5).
 
    | Key | Values | Meaning |
    | --- | --- | --- |
    | `run` | `placed`, `shown`, `on_air` | The lowest level at which the source is Active. Below it, Standby: no thread, device, process, timer or per-frame work (P13). |
-   | `on_return` | `continue`, `resume`, `restart` | What the source does when it goes on air again after it was not on air. `continue`: as if it had kept running (a film or a ticker is where it would be now). `resume`: where it stopped. `restart`: from the beginning (rewind, reload the page, restart the ticker). |
-   | `linger_s` | 0..=600, default 0 | Seconds a source stays Active after its level drops below `run`, so a quick switch back does not pay the start again. |
+   | `on_return` | `continue`, `resume`, `restart` | What the source does at its type's return edge (decision 6). `continue`: as if it had kept running. `resume`: where it stopped. `restart`: from the beginning. |
+   | `linger_s` | 0..=600, default 0 | Seconds a source stays Active after its level drops below `run`. |
 
-   `on_return` acts on the on-air edge, as ADR-0108 already does: entering the preview does not restart anything, the Take does. A source that slept and cannot keep its state (a browser page) restarts whatever `on_return` says; `continue` for a film is a seek to the computed position, not decoding while asleep, so it costs nothing while asleep.
+4. **What Active means below Shown.** A source Active at Placed (its `run` is `placed`, or it lingers, or a forced cause holds it) is **warm**. Only Shown and On air link a source to a compositor through `visible_sources`; at warm, `warm_sources` keeps the program link only for types whose traits say `linked_while_warm` (capture and stills, as today). Warm is ADR-0013's "Standby kept warm by user policy" row (or Active and unscheduled), and it is counted in the ADR-0087 estimate. Per built-in type:
+   - Capture, still, audio, text: as today (open, linked, processed).
+   - Media: ADR-0108 decision 10's table: cued at the stored cursor, or paused or ended; `pause_release_s` still releases the decoder, so a `placed` film starts at once only within that time.
+   - Browser: ADR-0149 decision 5's background page: process running, picture node unscheduled, 1 picture per second, sound drained, background slot class after program and preview (ADR-0109 decision 7).
+   - Guest: connected, video decode stopped (ADR-0139 decision 12).
 
-3. **The type declares what it supports, not the engine.** `rbs-scene`'s `NodeTypes` gains `activity(type_id) -> ActivityTraits` (default method), listing the `run` and `on_return` values the type supports and its default policy. The default method answers `run: placed` only and no `on_return`: today's wanted rule, so every existing plugin keeps its behaviour. `rbs-sources` answers for the built-in types, and the plugin SDK manifest gains the same optional field at its next version. This replaces ADR-0107 decision 7: the binder never tests a type id; "temporal" means "default `run` is not `placed`". A policy value the type does not support is `invalid_params`.
+   A lingering source does what a warm one of its type does.
 
-4. **Recommended defaults per type.**
+5. **The type declares what it supports.** `rbs-scene`'s `NodeTypes` gains `activity(type_id) -> ActivityTraits` (default method), with: the allowed `run` and `on_return` values, the default policy, the return edge (decision 6), `linked_while_warm`, and the permission each value needs. The default method answers `run: placed` only, no `on_return`, linked while warm: today's wanted rule, so every existing plugin behaves as now. `rbs-sources` answers for the built-in types. The binder never tests a type id; "temporal" means "default `run` is not `placed`". A type may offer `run` above `placed` only if its Active transition starts the open and returns without waiting (ADR-0107 decision 5, now for every type), shown by a conformance test where a fake `open` that never returns does not block `sync` (a hang guard only, ADR-0032). A failed wake is ADR-0024 restart with back-off and `Unavailable` with a reason (`device_busy` for an exclusive device another app holds); the layer stays empty meanwhile.
+
+   Recommended defaults and allowed values now:
 
    | Type | `run` default (allowed) | `on_return` default (allowed) | Why |
    | --- | --- | --- | --- |
-   | Camera, capture card | `placed` (`placed`, `shown`, `on_air`) | none | Warm-up and exclusive devices: a camera that sleeps is black on the next cut, and another app can take it. Users who want the light off use `shown` with a linger, or Deactivate. |
-   | Display, window and screen capture | `placed` (`placed`, `shown`, `on_air`) | none | Same as today. `shown` is offered for heavy captures (two native-rate display captures are a large part of the measured idle cost, perf audit 2026-11); it becomes the recommendation once decision 9 exists. |
-   | Audio input, audio output, application audio | `placed` (`placed`, `shown`) | none | Meters and the mixer need them; sleeping a microphone loses the first syllable. |
-   | Image | `placed` (`placed`, `shown`) | none | A logo must be on the next frame. `shown` frees the texture of large images (OBS "Unload image when not showing"). |
-   | Colour, text (static and live) | `placed` only | text timers: `continue` only | Cost is one texture. Countdown and stopwatch run state is live state and keeps counting (ADR-0129 decision 11). |
-   | Media file | `shown` (`placed`, `shown`, `on_air`) | `restart` (`continue`, `resume`, `restart`) | ADR-0107 and ADR-0108 as today. `placed` keeps the decoder ready but paused, for an instant start. `continue` gives OBS's "always play" at no cost while hidden. |
-   | Browser | `shown` (`placed`, `shown`, `on_air`) | `continue` (`continue`, `restart`) | ADR-0107 and ADR-0109 as today. `placed` is ADR-0149's `keep_running`, with its network-permission rule and 1 picture per second while hidden. `restart` with `placed` is OBS's "Refresh browser when scene becomes active". |
-   | Scroll (an item's layout, any source) | follows its source | `restart` (`continue`, `restart`), saved as `Scroll.on_return` | ADR-0150 decision 5 as today. `continue` keeps the run's anchor while the item is placed on that canvas: a number in a map, no work. |
-   | Remote guest (ADR-0139), NDI (plugin) | `placed` (`placed`, `shown`) | none | Reconnecting takes seconds and may need the other side. |
+   | Camera, capture card, display, window, screen capture | `placed` (`placed`) | none | Warm-up and exclusive devices. `CaptureSourceNode::prepare` opens synchronously, so `shown` and `on_air` wait for an async open (phase 4). Deactivate stays the way to release a device. |
+   | Audio input, audio output, application audio | `placed` (`placed`) | none | Meters and the mixer need them; a sleeping microphone loses the first syllable. |
+   | Image, colour, text | `placed` (`placed`) | text timers keep counting | Cost is one texture. Countdown and stopwatch run state is live state (ADR-0129 decision 11). Image `shown` waits for an async load. |
+   | Media file | `shown` (`placed`, `shown`, `on_air`) | `restart` (`continue`, `resume`, `restart`) | ADR-0107 and ADR-0108 as today. `continue` gives OBS's "always play" with no work while hidden. |
+   | Browser | `shown` (`placed`, `shown`, `on_air`) | `continue` (`continue`, `restart`) | ADR-0107 and ADR-0109 as today. `placed` is ADR-0149's `keep_running`. `restart` reloads the page when it goes on air (OBS's "Refresh browser when scene becomes active"). A page that slept always loads fresh. |
+   | Guest (ADR-0139), NDI (plugin) | `placed` (`placed`) | none | Reconnecting takes seconds and may need the other side. |
+   | Scroll (an item's layout) | follows its source | `restart` (`continue`, `restart`), saved as `Scroll.on_return` | ADR-0150 as today; see decision 6. |
 
-5. **Cost (P13, ADR-0143).** Levels and policies are evaluated on the control side in `sync`, which already walks the shown scenes; no per-frame check is added and inactive nodes stay out of the scheduled graph (rule 10). A source whose policy is its type's default costs exactly what it costs today. `linger_s` 0 adds nothing; above 0 it arms one control-side wake per lingering source on the injected clock, cancelled when the level comes back, never a poll. `continue` stores an anchor (engine timestamp and position), no thread.
+   The permission column of the traits: browser `run: placed` and browser `linger_s` > 0 need the network permission (ADR-0149 decision 5), so `source.set_activity` without it is `not_permitted` with reason `network`.
 
-6. **Migration.** The next scene-format version maps media `restart_when_shown` true to `on_return: restart` and false to `resume`, and browser `keep_running` true to `run: placed`, then drops both keys. `source.set_settings` keeps accepting the two old keys for one protocol minor and maps them, with a deprecation note in `api.describe`. Behaviour of every existing document is unchanged.
+6. **Return edges, per type, as today.**
+   - **Media.** ADR-0108 decision 10's table, with `restart_when_shown` true read as `on_return: restart` and false as `resume`; the cursor moves on the off-air edge, so the preview shows the first picture before the next Take. `continue` adds rows: leaving air stores an anchor (engine time and position); going on air again seeks to the anchored position plus the time since, clamped to the play range, wrapped when `loop` is true, `ended` past the end when false. A source never on air anchors at the range start. Nothing decodes while away. After an app restart `continue` behaves as `resume`. ADR-0140's `arm()` overrides `on_return` (as `resume` from the range start) for that run only.
+   - **Browser.** The on-air edge: `restart` reloads when the page goes on air and was not on air before.
+   - **Scroll.** ADR-0150's run-key edge per canvas (a list on that canvas, preview included, contains the key). `restart` is today's rule. `continue` keeps a run's anchor while the item stays placed on that canvas after no list contains it, so it resumes at the computed position; a change of cross-axis size still makes a new key and a new run.
 
-7. **Studio mode and canvases.** The studio-mode preview is Shown, so `run: shown` warms a camera, opens a file (cued, ADR-0108) or starts a page (ADR-0109's slot priority keeps program first) before the Take; the Take then pays nothing. `run: on_air` keeps the preview empty for that source (the layer draws its last picture if it has one) and is meant for costly sources whose preview the operator does not need. A source placed on both canvases has one node and one policy; its level is the highest across canvases.
+7. **Delivery to the source.** Each sync reports `BindReport::level_changes: Vec<(SourceId, Level)>`, only for sources whose level changed, and no work when none did. The host writes each to the source's control handle on the control path (media `set_on_air` and the guest's shown set become this), never through `process`. Plugins get a non-real-time `on_level(level)` call in the plugin SDK, and the manifest gains a per-type table (`[[source_type]] id = ..., activity = { run = [...], on_return = [...], default = {...} }`). This is a minor SDK version: an older host ignores the table, so the plugin runs at `placed` as today.
 
-8. **Control API (next minor).** `source.set_activity {source, run?, on_return?, linger_s?}` (one undo step, `source.changed`, `null` resets to the type default), `item.set_scroll` gains `on_return`. `source.status` reports `activity: off | asleep | lingering | warm | shown | on_air` and `warm_up_ms` (decision 9). `api.describe` lists each type's `ActivityTraits` so the UI, the MCP server and Stream Deck read the same allowed values. The Properties UI is a separate, visual step (rule 16).
+8. **Cost (P13, ADR-0143).** Levels, forced causes and policies are evaluated on the control side in `sync`, which already walks the shown scenes; no per-frame check is added and inactive nodes stay out of the scheduled graph (rule 10). A source with its type's default policy costs what it costs today. `linger_s` 0 adds nothing; above 0 it arms one control-side wake per lingering source on the injected clock, cancelled when the level returns. Linger ends at once on Off, source delete, collection switch and studio stop; across a studio restart its wake and every `continue` anchor are rebased by the signed clock difference, as ADR-0150 does for scroll runs.
 
-9. **Warm-up is measured and can hold a cut (separately acceptable).** The host records each source's last time from Active to first picture (`warm_up_ms`, live state, not saved). A collection setting `transitions.ready_wait_ms` (0..=3000, default 0 = off) lets a Take or scene switch whose incoming scene draws an Active source without a first picture wait up to that long before the transition starts; with every source warm (the usual case) it waits nothing. This is beyond OBS, which cuts to black. The owner may accept decisions 1 to 8 without this one.
+9. **Studio mode and canvases.** The studio-mode preview is Shown, so a `shown` source opens before the Take (ADR-0128 decision 7's ready gate then has nothing to wait for), media is cued, and a page takes a slot after program pages. With `run: on_air` the preview shows nothing for that source (Standby holds no texture, ADR-0107 decision 5); it is meant for costly sources whose preview the operator does not need. A source placed on both canvases has one node and one policy; its level is the highest across canvases.
+
+10. **Saved files, API and migration.**
+    - Scene format 23 (the next after 22; confirmed at merge) maps media `restart_when_shown` true to `on_return: restart` and false to `resume`, and browser `keep_running` true to `run: placed`, and drops both keys. Every existing document keeps its behaviour.
+    - A saved policy that the type's current traits do not allow (plugin missing or updated, imported file) is not a load error: the type default is used, the saved value stays in the file, and a warning `activity_unsupported` is reported.
+    - Control API, next protocol minor (confirmed at merge): `source.set_activity {source, run?, on_return?, linger_s?}` (one undo step, `source.changed`, `null` resets a key to the type default); `item.set_scroll` gains `on_return`; `source.list` rows and `source.changed` carry `activity` (`off`, `asleep`, `lingering`, `warm`, `shown`, `on_air`) and `warm_up_ms` (the last time from Active to first picture, live state, for types that report a first picture); `api.describe` lists each type's traits. For one minor, `source.set_settings` still accepts `restart_when_shown` and `keep_running` and maps them, and `source.get_settings` still returns them computed from the policy, marked deprecated.
+    - The OBS importer (ADR-0131) maps "Restart playback when source becomes active", "Close file when inactive", "Shutdown source when not visible", "Refresh browser when scene becomes active" and "Unload image when not showing" to the policy where the type allows the value, and reports the rest.
+
+11. **rbs-scene signatures.** `is_temporal`, `running_sources` and `warm_sources` need the traits, so they take `&dyn NodeTypes` (or move onto `SceneBinder`). The closure `NodeTypes` used by tests gains a way to declare traits, and the existing ADR-0107 tests declare media and browser explicitly so they do not silently fall back to `placed`.
 
 ## Consequences
 
-- One question, one place: Properties shows "When not on screen" (`run`) and "When it comes back" (`on_return`) for every source, with only the values its type allows. Plugins get the same choice by declaring traits.
-- Defaults keep today's behaviour exactly, so this is a refactor plus new choices, not a behaviour change.
-- The binder's `running_sources` becomes "every source whose level reaches its `run`, or lingers"; ADR-0107's tests stay and gain policy cases. The media control handle reads `on_return` instead of `restart_when_shown`; the browser supervisor reads `run` instead of `keep_running`.
-- Negative: one more top-level `Source` field and a scene-format bump; `continue` for media needs a seek on wake, so a long GOP may show the cued picture for a moment longer than `resume`.
-- Specs to update in the implementing PRs: scene model (levels, `running_sources`, `SourceActivity`), scene sources (traits per type, migration), control API, plugin SDK manifest, glossary ("Deactivate", "On air", "Shown").
-- Phases: (1) model, traits, binder, migration, API, no UI; (2) Properties UI with dark and light screenshots; (3) linger and `warm_up_ms`; (4) the ready wait (decision 9); (5) media and scroll `continue`. Phases 1 and 3 touch no hot path; phase 4 touches transitions and needs measurements (P15).
-- Tests: binder property test that a source is Active exactly when its level reaches `run` or it lingers, for random collections, canvases and policies; Standby holds nothing (existing conformance); linger on `TestClock` without sleeping; migration round trip.
+- One question, one place: Properties shows "When not on screen" (`run`), "When it comes back" (`on_return`) and "Keep running for" (`linger_s`) for every source, with only the values its type allows. Plugins join by declaring traits.
+- Defaults keep today's behaviour; the new choices are opt-in.
+- Negative: one more top-level `Source` field and a format bump; the SDK gains a call and a manifest table; `continue` for media needs a seek on return, so a long GOP shows the cued picture a moment longer than `resume`.
+- Specs to update in the implementing PRs: scene model (levels, forced causes, `SourceActivity`, signatures), scene sources (traits per type, warm behaviour, migration), control API, plugin SDK, text spec ("text live set"), glossary ("On air", "Shown", "Deactivate").
+- Phases: (1) model, traits, levels, forced causes, delivery, migration, API, and ADR-0149's `keep_running` behaviour, which is not built yet, as `run: placed` for browser; no UI. (2) Properties UI, with dark and light screenshots for approval. (3) linger and `warm_up_ms`. (4) async open for capture and images, then `shown`/`on_air` for them (warm-up shown next to the setting). (5) media and scroll `continue`. No phase edits a hot path except phase 4's capture open, which is measured (P15).
+- Tests: a binder property test that a source is Active exactly when Off is unset and (its level reaches `run`, or it lingers, or a forced cause holds it), over random collections, canvases, policies and cause sets; each forced cause; the T-bar and stinger edges; ISO with `run: on_air`; the non-blocking open conformance; linger on `TestClock` without sleeping, including its teardown cases and a studio-restart rebase; media `continue` positions (never on air, loop, end, range clamp); load of an unsupported value; migration round trip.
+- Split off: making ADR-0128 decision 7's 250 ms `READY_WAIT` a collection setting is a separate decision if measurements of `warm_up_ms` ask for it.
 
 ## Alternatives considered
 
-- **Keep adding a checkbox per type (OBS's way).** Cheapest per feature, but the user meets a new word for each type and plugins cannot join.
+- **Keep adding a checkbox per type (OBS's way).** Cheapest per feature, but a new word per type and no way for plugins to join.
 - **One "visibility behaviour" list (stop, pause, always play).** Mixes when a source runs with what it does on return; it cannot say "keep the page running but reload it on air".
+- **Two keys without `linger_s`.** Simpler, but a quick back-and-forth would reopen a page or a file each time; linger is cheap when 0, so it stays.
 - **Sleep every hidden source, cameras included.** Black cuts and lost exclusive devices; rejected again as in ADR-0107.
 - **Let the multiview count as shown.** Repeats OBS's problem of waking every placed page and film.
-- **Scripted events per source (on show: reload, seek, run a script).** Too general for a setting; automation can do it later through the control API.
+- **Scripted events per source (on show: reload, seek, run a script).** Too general for a setting; automation can do it through the control API later.
 
 ## Review
 
-Independent review per ADR-0014 is pending. This ADR stays Proposed until it is recorded and the owner approves.
+Round 1, independent AI session, 2026-11-18, changes requested (`/mnt/project-files/source-activity/review-round1.md`). Resolutions (author, 2026-11-18):
+
+1. Active below Shown undefined. -> Decision 4: warm and lingering per type, linking rule (`visible_sources` at Shown and On air, `linked_while_warm` trait for `warm_sources`), ADR-0013 row, estimate; media "instant" corrected to within `pause_release_s`.
+2. No runtime signal for types and plugins. -> Decision 7: `BindReport::level_changes`, control handles, SDK `on_level`, manifest `[[source_type]]` table, minor SDK version.
+3. Blocking capture open. -> Decision 5: non-blocking Active transition is a trait condition with a conformance test; capture, image and audio offer `placed` only until phase 4; wake failure stated.
+4. On air differs from today. -> Decision 1: On air is today's `on_air_sources` (outgoing, stinger, hold); T-bar incoming stays Shown; `arm()` in decision 6.
+5. Edges not as today. -> Decision 6: media on ADR-0108's table (off-air cursor move), scroll on ADR-0150's run-key edge.
+6. Missing causes. -> Decision 2: forced causes (ISO, Interact, monitoring, stinger); text set renamed "text live set"; guest in decision 4; context table extended.
+7. Decision 9 vs ADR-0128's gate. -> Removed; split off in Consequences.
+8. `source.status`. -> Decision 10: `source.list` rows and `source.changed`.
+9. Permissions. -> Decision 5: permission per value in the traits; browser `placed` and linger need `network`.
+10. Slots, Interact, last picture. -> Decision 4 (background slot class), decision 2 (Interact forced), decision 9 (preview shows nothing).
+11. Load of unsupported values. -> Decision 10.
+12. Signatures and test `NodeTypes`. -> Decision 11.
+13. Migration details. -> Decision 10 (format 23, minor, old keys both ways for one minor, OBS import); `keep_running` built in phase 1.
+14. Edges. -> Decision 1 (cues by scene, globals with program, every canvas as today), decision 8 (linger teardown and rebase), decision 6 (media `continue`), tests in Consequences.
+15. Context table. -> Extended.
+
+This ADR stays Proposed until a further review round approves and the owner accepts.
