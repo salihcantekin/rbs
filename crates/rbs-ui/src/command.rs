@@ -74,6 +74,120 @@ impl Menu {
     }
 }
 
+/// What a command is about, for filtering long command lists (Settings › Shortcuts).
+/// Unlike [`Menu`], it follows the thing a command acts on: output profiles and scene
+/// collections are under File in the menu bar, but have a category of their own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Category {
+    /// Scenes, studio mode and transitions.
+    Scene,
+    /// Sources, their items on the canvas and their filters.
+    Source,
+    /// Sound: mute, monitoring, the mixer and loudness.
+    Audio,
+    /// Stream, recording, replay buffer, virtual camera, markers and canvases.
+    Output,
+    /// Output profiles and scene collections.
+    Profiles,
+    /// Workspaces, areas, panels, projectors, the toolbar and the look.
+    Layout,
+    /// The rest: edit history, Settings, the RBS menu, and commands of plugins.
+    App,
+}
+
+/// Command id prefixes (ending in `.`) or whole base ids, first match wins, so the
+/// sound commands of sources and scenes come before `source.` and `scene.`.
+const CATEGORY_RULES: &[(&str, Category)] = &[
+    ("source.muted.toggle", Category::Audio),
+    ("source.mixer_hidden.toggle", Category::Audio),
+    ("source.monitor", Category::Audio),
+    ("source.monitor_solo.toggle", Category::Audio),
+    ("scene.audio.", Category::Audio),
+    ("mixer.", Category::Audio),
+    ("ui.mixer.", Category::Audio),
+    ("loudness.", Category::Audio),
+    ("profile.", Category::Profiles),
+    ("collection.", Category::Profiles),
+    ("ui.profile.", Category::Profiles),
+    ("ui.collection.", Category::Profiles),
+    ("scene.", Category::Scene),
+    ("ui.scene.", Category::Scene),
+    ("canvas.studio_mode.toggle", Category::Scene),
+    ("canvas.transition", Category::Scene),
+    ("ui.transition.", Category::Scene),
+    ("source.", Category::Source),
+    ("item.", Category::Source),
+    ("filter.", Category::Source),
+    ("ui.source.", Category::Source),
+    ("ui.properties.", Category::Source),
+    ("stream.", Category::Output),
+    ("record.", Category::Output),
+    ("output.", Category::Output),
+    ("replay.", Category::Output),
+    ("vcam.", Category::Output),
+    ("marker.", Category::Output),
+    ("canvas.", Category::Output),
+    ("ui.workspace.", Category::Layout),
+    ("ui.area.", Category::Layout),
+    ("ui.layout.", Category::Layout),
+    ("ui.panel.", Category::Layout),
+    ("ui.projector.", Category::Layout),
+    ("ui.toolbar.", Category::Layout),
+    ("ui.theme.", Category::Layout),
+    ("ui.experience.", Category::Layout),
+    ("ui.density.", Category::Layout),
+    ("edit.", Category::App),
+    ("ui.settings.", Category::App),
+    ("ui.app_menu.", Category::App),
+];
+
+impl Category {
+    /// Every category, in the order a filter row shows them.
+    pub const ALL: [Category; 7] = [
+        Category::Scene,
+        Category::Source,
+        Category::Audio,
+        Category::Output,
+        Category::Profiles,
+        Category::Layout,
+        Category::App,
+    ];
+
+    /// The category's title.
+    pub fn title(self) -> &'static str {
+        match self {
+            Category::Scene => "Scene",
+            Category::Source => "Source",
+            Category::Audio => "Audio",
+            Category::Output => "Output",
+            Category::Profiles => "Profiles",
+            Category::Layout => "Layout",
+            Category::App => "App",
+        }
+    }
+
+    /// The category of a command id, with or without parameters. Ids of plugins and
+    /// ids this version does not know are [`Category::App`].
+    pub fn of(id: &str) -> Category {
+        Self::rule(id).unwrap_or(Category::App)
+    }
+
+    /// The rule that matches `id`'s base, if any.
+    fn rule(id: &str) -> Option<Category> {
+        let base = id.split('?').next().unwrap_or(id);
+        CATEGORY_RULES
+            .iter()
+            .find(|(p, _)| {
+                if p.ends_with('.') {
+                    base.starts_with(p)
+                } else {
+                    base == *p
+                }
+            })
+            .map(|(_, c)| *c)
+    }
+}
+
 /// The type of a command parameter, used to check an id's parameters.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ParamType {
@@ -3521,6 +3635,48 @@ pub fn default_toolbar() -> Toolbar {
 #[allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_entry_has_a_category_rule() {
+        for e in ENTRIES {
+            assert!(
+                Category::rule(e.id).is_some(),
+                "{} has no category rule",
+                e.id
+            );
+        }
+    }
+
+    #[test]
+    fn categories_follow_what_a_command_acts_on() {
+        assert_eq!(Category::of("scene.next"), Category::Scene);
+        assert_eq!(
+            Category::of("scene.select?scene=a&collection=b"),
+            Category::Scene
+        );
+        assert_eq!(
+            Category::of("scene.audio.own_levels.toggle"),
+            Category::Audio
+        );
+        assert_eq!(Category::of("source.muted.toggle"), Category::Audio);
+        assert_eq!(Category::of("source.monitor?monitor=off"), Category::Audio);
+        assert_eq!(Category::of("source.rename"), Category::Source);
+        assert_eq!(Category::of("profile.select?profile=x"), Category::Profiles);
+        assert_eq!(Category::of("ui.collection.new"), Category::Profiles);
+        assert_eq!(Category::of("stream.toggle"), Category::Output);
+        assert_eq!(Category::of("canvas.transition"), Category::Scene);
+        assert_eq!(Category::of("canvas.add_vertical"), Category::Output);
+        assert_eq!(Category::of("ui.panel.close?id=x"), Category::Layout);
+        assert_eq!(Category::of("edit.undo"), Category::App);
+        assert_eq!(Category::of("com.example.thing"), Category::App);
+        // Every category has a command, so no filter shows an empty list by design.
+        for c in Category::ALL {
+            assert!(
+                ENTRIES.iter().any(|e| Category::of(e.id) == c),
+                "{c:?} is empty"
+            );
+        }
+    }
 
     struct Fake;
 
