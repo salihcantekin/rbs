@@ -2543,6 +2543,7 @@ impl Studio {
                         target: String::new(),
                         failed: None,
                         fault: None,
+                        reason: None,
                     },
                     instance: None,
                     scheduled: false,
@@ -3176,6 +3177,14 @@ impl Studio {
                 {
                     state.failed = Some(browser_engine_message(reason).to_owned());
                     state.fault = None;
+                    state.reason = Some(reason);
+                } else if self.browser_controls.contains_key(&e.source) {
+                    // Both page slots are taken (ADR-0109 decision 7), or the page
+                    // has no address yet.
+                    let failed = state.failed.as_deref().unwrap_or_default();
+                    state.reason = [rbs_sources::BROWSER_CAP, rbs_sources::BROWSER_NO_ADDRESS]
+                        .into_iter()
+                        .find(|r| failed.contains(r));
                 }
                 // A text source shows its worker's problem (ADR-0129 decision 7).
                 if state.failed.is_none()
@@ -3617,6 +3626,16 @@ impl Studio {
             return false;
         };
         self.engine.retry(node)
+    }
+
+    /// Sends a control message to the running page of browser source `source`
+    /// (`browser.reload`, `browser.run_script`; ADR-0132 decision 8, ADR-0149).
+    /// False when the source has no running page. Control path, never waits on the
+    /// page.
+    pub fn browser_control(&self, source: SourceId, message: &rbs_sources::BrowserMessage) -> bool {
+        self.browser_controls
+            .get(&source)
+            .is_some_and(|control| control.send(message))
     }
 
     /// The browser engine add-on was installed or removed (ADR-0145 decision 8):
@@ -5114,6 +5133,10 @@ fn browser_claims(collection: &SceneCollection) -> Vec<BrowserClaim> {
     let mut claims = Vec::new();
     for source in collection.sources() {
         if source.type_id.as_str() != rbs_sources::types::BROWSER_SOURCE {
+            continue;
+        }
+        // A page without an address starts nothing, so it takes no slot.
+        if !source.settings.contains_key(rbs_sources::types::keys::URL) {
             continue;
         }
         let mut class = None;

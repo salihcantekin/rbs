@@ -106,11 +106,9 @@ fn every_page_picture_goes_on_air_at_its_stamp() {
     let tree = Arc::new(Tree(Mutex::new(None)));
     let node = BrowserSourceNode::new(
         BrowserSettings {
-            url: "https://example.com/".into(),
             width: W,
             height: H,
-            fps: 30,
-            transparent: false,
+            ..BrowserSettings::page("https://example.com/")
         },
         budget,
         source,

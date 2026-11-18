@@ -17,6 +17,7 @@ use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::time::{Duration, Instant};
 
+use rbs_browser_ipc::control::Control;
 use rbs_browser_ipc::{
     Configure, HEARTBEAT_PERIOD, MAX_PAYLOAD, encode_configure, heartbeat_lost, restart_delay,
     startup_lost,
@@ -27,7 +28,8 @@ use rbs_browser_shm::{FrameRing, RingReader, SlotLayout, SoundPacket, SoundRing}
 #[derive(Debug)]
 pub struct HelperChild {
     child: Option<Child>,
-    /// Kept open: the helper runs until its stdin closes.
+    /// Kept open: the helper runs until its stdin closes. Control messages follow
+    /// `configure` on it (ADR-0132 decision 8).
     stdin: Option<ChildStdin>,
     ring: FrameRing,
     reader: RingReader,
@@ -134,6 +136,17 @@ impl HelperChild {
     /// consumer"). Meaningful once the helper is unavailable.
     pub fn exit_cause(&self) -> rbs_browser_ipc::exit::Cause {
         rbs_browser_ipc::exit::cause(self.exit_code, self.has_beaten())
+    }
+
+    /// Writes a control message (ADR-0132 decision 8); false when stdin is closed or
+    /// the write failed. Can wait while the pipe is full, so the studio calls it on
+    /// the supervisor thread, never on the control or UI thread.
+    pub fn send(&mut self, message: &Control) -> bool {
+        let Some(stdin) = self.stdin.as_mut() else {
+            return false;
+        };
+        let bytes = rbs_browser_ipc::control::encode(message);
+        stdin.write_all(&bytes).is_ok() && stdin.flush().is_ok()
     }
 
     /// Frames the helper has published so far.
@@ -305,7 +318,13 @@ pub struct Supervisor {
     /// The cause of the exit, set before `exited` (0 other, 1 missing, 2 mismatch).
     cause: std::sync::Arc<std::sync::atomic::AtomicU8>,
     thread: Option<std::thread::JoinHandle<HelperChild>>,
+    /// Control messages for the supervisor thread to write; bounded, so a helper
+    /// that stops reading never makes the sender wait.
+    outbox: std::sync::mpsc::SyncSender<Control>,
 }
+
+/// Control messages that may wait for the supervisor thread.
+const OUTBOX: usize = 8;
 
 /// Where the supervisor hands page sound (ADR-0109 decision 6). Runs on the supervisor
 /// thread, never on the render or audio thread.
@@ -357,6 +376,7 @@ impl Supervisor {
         let cause = Arc::new(std::sync::atomic::AtomicU8::new(0));
         let (stop_flag, exited_flag) = (Arc::clone(&stop), Arc::clone(&exited));
         let cause_flag = Arc::clone(&cause);
+        let (outbox, inbox) = std::sync::mpsc::sync_channel::<Control>(OUTBOX);
         // Poll twice per page frame so a new frame waits at most half a period.
         let mut period = Duration::from_secs(1) / fps.clamp(1, 60) / 2;
         if sound.is_some() && child.has_sound() {
@@ -370,6 +390,9 @@ impl Supervisor {
                 // A control thread, not a real-time one (ADR-0055).
                 rbs_crash::report_panics_on_this_thread();
                 while !stop_flag.load(Ordering::Acquire) {
+                    while let Ok(message) = inbox.try_recv() {
+                        child.send(&message);
+                    }
                     if let Some(sound) = sound.as_mut() {
                         sound.observe(rbs_browser_shm::os_monotonic_nanos());
                         child.read_sound(|packet| sound.packet(packet));
@@ -398,7 +421,22 @@ impl Supervisor {
             exited,
             cause,
             thread: Some(thread),
+            outbox,
         })
+    }
+
+    /// Queues a control message for the running helper (ADR-0132 decision 8); the
+    /// supervisor thread writes it at its next poll. False once the helper stopped or
+    /// when [`OUTBOX`] messages already wait. Never waits.
+    pub fn send(&self, message: &Control) -> bool {
+        if self.exited() || self.thread.is_none() {
+            return false;
+        }
+        let queued = self.outbox.try_send(message.clone()).is_ok();
+        if let Some(thread) = self.thread.as_ref() {
+            thread.thread().unpark();
+        }
+        queued
     }
 
     /// True once the helper exited or lost its heartbeat. Never waits.
@@ -492,10 +530,21 @@ pub fn helper_main_with(mode: HelperMode, tone: bool) -> Result<(), String> {
     let mut writer = ring.writer();
     let width = config.width as usize;
     let mut shift = 0usize;
-    let mut paint = |shift: usize| {
-        ring.publish_with(&mut writer, |rgba| checker(rgba, width, shift));
+    // The count and code of the last control message, shown in the first pixel once
+    // one arrived, so tests can see it.
+    let mut mark = [0u8; 2];
+    let mut paint = |shift: usize, mark: [u8; 2]| {
+        ring.publish_with(&mut writer, |rgba| {
+            checker(rgba, width, shift);
+            if mark[0] == 0 {
+                return;
+            }
+            if let Some(first) = rgba.get_mut(..4) {
+                first.copy_from_slice(&[mark[0], mark[1], 0, 255]);
+            }
+        });
     };
-    paint(shift);
+    paint(shift, mark);
     ring.beat();
     match mode {
         HelperMode::Once => Ok(()),
@@ -505,12 +554,23 @@ pub fn helper_main_with(mode: HelperMode, tone: bool) -> Result<(), String> {
             Ok(())
         }
         HelperMode::Run => {
-            let (closed_tx, closed_rx) = std::sync::mpsc::channel::<()>();
+            // `None` when stdin closed: the stop signal.
+            let (closed_tx, closed_rx) = std::sync::mpsc::channel::<Option<Control>>();
             std::thread::spawn(move || {
-                let mut rest = [0u8; 64];
-                while matches!(stdin.read(&mut rest), Ok(n) if n > 0) {}
-                let _ = closed_tx.send(());
+                loop {
+                    match rbs_browser_ipc::control::read(&mut stdin) {
+                        Ok(Some(message)) => {
+                            if closed_tx.send(Some(message)).is_err() {
+                                return;
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(_) => break,
+                    }
+                }
+                let _ = closed_tx.send(None);
             });
+            let mut count = 0u8;
             let period = Duration::from_secs(1) / config.fps.clamp(1, 60);
             let mut since_beat = Duration::ZERO;
             let mut tone = (tone && !config.sound.is_empty())
@@ -520,13 +580,17 @@ pub fn helper_main_with(mode: HelperMode, tone: bool) -> Result<(), String> {
             loop {
                 match closed_rx.recv_timeout(period) {
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                    Ok(Some(message)) => {
+                        count = count.wrapping_add(1).max(1);
+                        mark = [count, control_mark(&message)];
+                    }
                     _ => return Ok(()),
                 }
                 if let Some(tone) = tone.as_mut() {
                     tone.write(rbs_browser_shm::os_monotonic_nanos());
                 }
                 shift = shift.wrapping_add(4);
-                paint(shift);
+                paint(shift, mark);
                 since_beat += period;
                 if since_beat >= HEARTBEAT_PERIOD / 2 {
                     ring.beat();
@@ -578,6 +642,18 @@ impl Tone {
             .write_planar(self.next_os, self.rate, &[&self.left, &self.left], frames);
         self.frame += frames as u64;
         self.next_os += (frames as u128 * 1_000_000_000 / u128::from(self.rate)) as u64;
+    }
+}
+
+/// The test double's code for a control message in its first pixel's green byte.
+pub fn control_mark(message: &Control) -> u8 {
+    match message {
+        Control::Reload {
+            bypass_cache: false,
+        } => 1,
+        Control::Reload { bypass_cache: true } => 2,
+        Control::RunScript(None) => 3,
+        Control::RunScript(Some(_)) => 4,
     }
 }
 
