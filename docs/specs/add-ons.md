@@ -1,7 +1,7 @@
 # Spec: Add-ons
 
 - Status: Draft
-- Owner crate(s): `rbs-add-ons` (catalog, statuses, transfer, installers), `rbs-add-ons-http` (HTTPS and decompression adapter), `rbs-app` (built-in catalog, wiring, Settings › Add-ons)
+- Owner crate(s): `rbs-add-ons` (catalog, statuses, transfer, installers), `rbs-add-ons-sys` (HTTPS, decompression and file system adapter), `rbs-app` (built-in catalog, wiring, Settings › Add-ons)
 - Related ADRs: [0145](../adr/0145-add-ons-one-place-to-download-and-install.md), [0132](../adr/0132-browser-engine-css-interaction.md), [0109](../adr/0109-browser-source.md), [0051](../adr/0051-user-data-profiles-and-scene-collections.md), [0052](../adr/0052-ai-agent-control-through-mcp.md), [0013](../adr/0013-zero-cost-when-unused.md)
 
 ## Purpose
@@ -36,13 +36,16 @@ sha256 = "..."                    # lowercase hex
 unpacked_size = 260000000         # for the free-space check
 format = "tar.bz2"                # tar.bz2 | tar.gz
 strip = 1                         # leading path parts removed when unpacking
+library_dir = "Release"           # holds libcef / the macOS framework, after strip
+resources_dir = "Resources"       # holds paks, icudtl.dat, locales/ (may equal library_dir)
 ```
 
 ```rust
 pub struct AddOnId(String);           // validated: [a-z0-9.-], 3..=64 bytes, has a dot
 pub enum Kind { Runtime }             // later: Plugin, data kinds
 pub struct Entry { id, kind, name, summary, version, hosts, notices, platform: Option<Artifact> }
-pub struct Artifact { url, size: u64, sha256: [u8; 32], unpacked_size: u64, format, strip: u8 }
+pub struct Artifact { url, size: u64, sha256: [u8; 32], unpacked_size: u64, format, strip: u8, library_dir, resources_dir }
+pub struct Version(Vec<u32>);         // dotted numbers; 156.6.0 < 156.10.0; anything else does not parse
 
 pub fn parse_entry(toml: &str, target: &str) -> Result<Option<Entry>, CatalogError>;
 ```
@@ -50,7 +53,7 @@ pub fn parse_entry(toml: &str, target: &str) -> Result<Option<Entry>, CatalogErr
 Invariants:
 
 - An entry whose `kind` is unknown parses to `Ok(None)` (skipped and logged), never an error that hides the other entries.
-- `url` must be `https://` and its host must be in `hosts`; otherwise `CatalogError::Invalid`.
+- `url` must be `https://` and its host must be in `hosts`; `version` must parse as a `Version`; `library_dir` and `resources_dir` must pass the entry-name rules; otherwise `CatalogError::Invalid`.
 - An entry with no artifact for this target is listed with status `not_installed` and its Download command is unavailable, with the reason "Not available for this computer".
 
 ### Fetch and Unpack
@@ -71,7 +74,22 @@ pub struct ArchiveEntry<'a> { pub name: Vec<u8>, pub kind: EntryKind, pub mode: 
 pub enum EntryKind { File, Dir, Symlink, HardLink, Other }
 ```
 
-`rbs-add-ons-http` implements both. `rbs-add-ons` does every check in this spec; an `Unpack` implementation only decodes. Tests use an in-memory `Fetch` that serves bytes, redirects, failures and stalls, and an in-memory `Unpack`.
+```rust
+pub trait AddOnFs: Send + Sync {
+    fn lock(&self, path: &Path) -> Result<Box<dyn LockGuard>, FsError>;          // OS advisory lock; Busy if held
+    fn create_file_beneath(&self, root: &Path, rel: &Path, mode: u32) -> Result<File, FsError>; // never follows links
+    fn create_dir_beneath(&self, root: &Path, rel: &Path) -> Result<(), FsError>;
+    fn symlink_beneath(&self, root: &Path, rel: &Path, target: &Path) -> Result<(), FsError>;
+    fn hard_link_beneath(&self, root: &Path, rel: &Path, existing: &Path) -> Result<(), FsError>;
+    fn sync_file(&self, file: &File) -> Result<(), FsError>;
+    fn sync_dir(&self, dir: &Path) -> Result<(), FsError>;
+    fn free_space(&self, dir: &Path) -> Result<u64, FsError>;
+    fn rename(&self, from: &Path, to: &Path) -> Result<(), FsError>;              // SharingViolation is its own error
+    fn remove_all(&self, dir: &Path) -> Result<(), FsError>;
+}
+```
+
+`rbs-add-ons-sys` implements all three traits (`*_beneath` with `openat2` and `RESOLVE_BENEATH` on Linux, `O_NOFOLLOW` opens on macOS, `FILE_FLAG_OPEN_REPARSE_POINT` checks on Windows). `rbs-add-ons` holds every rule in this spec; the implementations only decode, transfer and perform. `rbs-add-ons` tests use in-memory versions: a `Fetch` that serves bytes, redirects, failures and stalls, an `Unpack` over listed entries, and an `AddOnFs` that can hold a lock, fail a rename with a sharing violation or report little space. `rbs-add-ons-sys` tests cover the timeouts against a local test server and the OS operations in a temporary directory.
 
 ### Entry names
 
@@ -85,31 +103,46 @@ One check, the same on every OS, applied to each entry name and each link target
 - equals an earlier name after Unicode NFC and case folding (duplicates are refused too);
 - has a parent component that an earlier entry created as a link.
 
+`library_dir` and `resources_dir` must name directories the archive created.
+
 ### Transfer and install
 
 `AddOns::install(id, fetch, unpack, progress, cancel, clock) -> Result<Installed, InstallError>` runs on a thread the caller made for that install. In order:
 
-1. Take the advisory lock `<root>/<id>/.lock` (OS file lock, not a lock file's existence). If another process holds it, `busy`.
+1. Take the advisory lock `<root>/<id>/.lock` (OS file lock, not a lock file's existence). If another process holds it, `busy`. If `<root>/<id>/<version>/.complete` already names this version, release the lock and return `Ok` without fetching.
 2. Empty and recreate `<root>/<id>/.staging/`. It is inside `<root>/<id>/`, so it is on the same volume as the target.
 3. Check free space for `size + unpacked_size` (`no_space`).
 4. Stream the body into `.staging/download`, hashing as it goes; more than `size` bytes is `too_large`; fewer, or a stall, is `network`.
 5. Compare the SHA-256 (`hash_mismatch`). Keep the same file handle and seek to 0; the path is never reopened.
-6. Read entries through `Unpack` into `.staging/out/`: check each name; files and directories are created with `O_NOFOLLOW`-style opens (Linux `openat2` with `RESOLVE_BENEATH` where available) and modes stripped of setuid, setgid and sticky bits; `Other` entries (devices, FIFOs) are refused; more than 20 000 entries or more bytes than `unpacked_size` is `unsafe_archive`.
-7. Create links last. A symlink target, joined to the link's parent and normalised by name, must stay inside `out/`. A hard link may point only to a regular file this archive created earlier. Any violation is `unsafe_archive` and nothing is kept.
-8. Sync every file, write `.staging/out/.complete` (version and SHA-256) and sync it, rename `out/` to `<root>/<id>/<version>/`, sync `<root>/<id>/`. On Windows a rename that fails with a sharing violation is retried up to 10 times, 200 ms apart (a scanner holds new DLLs), then `io`. If `<version>/` exists without a marker it is deleted first; with a marker the install is a no-op.
-9. Remove versions other than this one and the one before it, then empty `.staging/`. A failure here is logged and does not fail the install.
-10. Release the lock.
+6. Read entries through `Unpack` into `.staging/out/`: check each name; files and directories are created with `AddOnFs::*_beneath` and modes with setuid, setgid and sticky bits cleared; `Other` entries (devices, FIFOs) are refused; more than 20 000 entries or more bytes than `unpacked_size` is `unsafe_archive`.
+7. Create links last. A symlink target must be relative. It is resolved by name through the archive's own entries: join it to the link's parent, then walk it component by component; when a component is another link of this archive, continue through that link's target (at most 16 links in all, else `unsafe_archive`). Every intermediate path must stay inside `out/`, and the final path must name an entry of the archive. A hard link may point only to a regular file this archive created earlier. Any violation is `unsafe_archive` and nothing is kept. (The macOS framework's `Versions/Current` links pass this rule.)
+8. Sync every file, write `.staging/out/.complete` (version, SHA-256, `library_dir`, `resources_dir`) and sync it, rename `out/` to `<root>/<id>/<version>/`, sync `<root>/<id>/`. A rename that fails with a sharing violation is retried up to 10 times, 200 ms apart on the injected clock (a scanner holds new DLLs), then `io`. If `<version>/` exists without a marker it is deleted first.
+9. Empty `.staging/` and release the lock. Install never removes another version.
 
 Cancel is checked between reads and between entries; it empties `.staging/` and returns `Cancelled`, leaving any installed version as it was.
 
 ```rust
 pub enum InstallError {
-    Busy, Cancelled, NoSpace, Network(String), HostNotAllowed(String), NotHttps,
+    Busy, Cancelled, NoSpace, Network(String), Stalled, HostNotAllowed(String), NotHttps,
     TooLarge, HashMismatch, UnsafeArchive(String), Io(String), NotAvailable,
 }
 ```
 
-Each maps to one `FailReason` (`Cancelled` maps to none: the status returns to what it was; `NotHttps` maps to `host_not_allowed`; `NotAvailable` means no artifact for this computer).
+| Error | Status afterwards |
+| --- | --- |
+| `Busy`, `NotAvailable` | Unchanged (refused before anything starts; the caller gets the error) |
+| `Cancelled` | The status before the install |
+| `Network`, `Stalled` | `failed {network}` |
+| `HostNotAllowed`, `NotHttps` | `failed {host_not_allowed}` |
+| `TooLarge` | `failed {too_large}` |
+| `HashMismatch` | `failed {hash_mismatch}` |
+| `UnsafeArchive` | `failed {unsafe_archive}` |
+| `NoSpace` | `failed {no_space}` |
+| `Io` | `failed {io}` |
+
+### Clean
+
+`AddOns::clean(id)` takes the lock and removes every version lower than the highest version below the catalog's (it keeps the catalog's version, the one before it, every higher version and every version that does not parse), marker first as in Remove. The desktop Update command runs install, then clean.
 
 ### Storage
 
@@ -139,7 +172,7 @@ pub enum Status {
 pub enum FailReason { Network, HostNotAllowed, TooLarge, HashMismatch, UnsafeArchive, NoSpace, Io }
 ```
 
-`UpdateAvailable` means only an older version with a marker is on disk. A newer version (left by a newer RBS build) is `NotInstalled` for this build and is never removed by it. Progress updates are published at most four times a second on the injected clock, plus once at each state change.
+`UpdateAvailable` means only a lower version with a marker is on disk. A newer version (left by a newer RBS build) is `NotInstalled` for this build and is never removed by it. Progress updates are published at most four times a second on the injected clock, plus once at each state change.
 
 ### Remove
 
@@ -147,26 +180,28 @@ pub enum FailReason { Network, HostNotAllowed, TooLarge, HashMismatch, UnsafeArc
 
 ### Browser engine consumer
 
-- The runner `rbs-browser-cef` ships with the app (macOS: with its helper bundles inside the signed `RBS.app`). The studio passes the runtime directory as `--runtime <absolute path>`.
-- Windows: `libcef.dll` is delay-loaded; before the first CEF call the runner calls `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS)`, `AddDllDirectory(runtime)` and `LoadLibraryExW(<runtime>\libcef.dll)`. The studio starts the runner with critical-error dialogs off. A failed load exits with `runtime_missing`.
-- Linux: release builds of the runner have no `rpath=$ORIGIN`; the studio sets `LD_LIBRARY_PATH=<runtime>` for the runner child only.
-- macOS: the runner and its helpers call `cef_load_library` with `<runtime>/Chromium Embedded Framework.framework/Chromium Embedded Framework` and set `framework_dir_path`, `main_bundle_path` and `browser_subprocess_path`. Public releases load only an RBS-signed runtime under the hardened runtime, with no library-validation exception.
-- Every platform sets `resources_dir_path` and `locales_dir_path` to the runtime. After loading, the runner compares the library's CEF version with its own and with the marker and exits with `runtime_mismatch` on a difference.
-- Runner choice: `RBS_BROWSER_HELPER` overrides; otherwise `rbs-browser-cef` next to the app. `rbs-browser-helper` (test double) runs only when named.
+- The runner `rbs-browser-cef` ships with the app (macOS: with its helper bundles inside the signed `RBS.app`). The studio sets `RBS_CEF_RUNTIME=<absolute runtime path>` in the runner's environment; every CEF child process inherits it. Every process type (browser, renderer, GPU, utility, and the macOS helper binary) reads it, loads the library and checks the version before `api_hash` or `execute_process`. `<lib>` below is `<runtime>/<library_dir>` and `<res>` is `<runtime>/<resources_dir>`, read from the marker.
+- Windows: `libcef.dll` is delay-loaded; before the first CEF call each process calls `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS)`, `AddDllDirectory(<lib>)` and `LoadLibraryExW(<lib>\libcef.dll)`. The studio starts the runner with critical-error dialogs off. A failed load exits with `runtime_missing`.
+- Linux: release builds of the runner have no `rpath=$ORIGIN`; the studio also sets `LD_LIBRARY_PATH=<lib>` for the runner child only. The sandbox is the namespace sandbox only.
+- macOS: each process calls `cef_load_library` with `<lib>/Chromium Embedded Framework.framework/Chromium Embedded Framework`; the browser process sets `framework_dir_path`, `main_bundle_path` and `browser_subprocess_path`. Public releases load only an RBS-signed runtime under the hardened runtime, with no library-validation exception.
+- Every platform sets `resources_dir_path` to `<res>` and `locales_dir_path` to `<res>/locales`. After loading, the runner compares the library's CEF version with its own and with the marker and exits with `runtime_mismatch` on a difference.
+- Runner exits map to source reasons: `runtime_missing` to `browser_runtime_missing`, `runtime_mismatch` to `browser_runtime_mismatch` (the add-on row then offers Reinstall).
+- Runner choice: `RBS_BROWSER_HELPER` overrides; the test-only `CARGO_BIN_EXE_rbs-browser-helper` fallback stays; otherwise `rbs-browser-cef` next to the app. `rbs-browser-helper` (test double) next to the app is no longer picked up.
 - No installed engine: browser sources are Unavailable with `browser_runtime_missing`, hold no slot, start no download. Add Source lists Browser whenever the type is registered; choosing it then opens Settings › Add-ons with `org.rbs.browser-engine` selected and adds no source.
 - The browser tree resolves the runtime at each source start. When the engine becomes installed, the app tells the studio and every source Unavailable with `browser_runtime_missing` is re-evaluated at once, with no restart.
-- Release builds do not list the browser engine until the runner runs sandboxed (ADR-0132).
+- Release builds, until the runner runs sandboxed (ADR-0132), do not list the browser engine, do not list Browser in Add Source and show no start-up notice; a loaded browser source is `browser_runtime_missing` with no link. Where unprivileged user namespaces are blocked on Linux, the source is `browser_sandbox_unavailable` in a release build.
 
 ### Control API
 
 | Method | Scope | Effect | Notes |
 | --- | --- | --- | --- |
 | `addon.list` | `read` | `read` | Every entry: `id`, `kind`, `name`, `summary`, `version`, `size`, `unpacked_size`, `available` (artifact for this computer), `status` |
-| `addon.install {id}` | `admin`, loopback and IPC only | `edit` | Network permission (ADR-0052, `not_permitted`/`network`). Only kinds allowed under `admin` (`runtime`). Answers at once; progress through `addon.changed`. `busy` while an install of that id runs |
-| `addon.cancel {id}` | `admin`, loopback and IPC only | `edit` | No-op when nothing runs |
-| `addon.remove {id}` | `admin`, loopback and IPC only | `destructive` | `busy` while a consumer uses it |
+| `addon.install {id}` | `plugins` | `edit` | Network permission (ADR-0052, `not_permitted`/`network`). Never removes a version. Answers at once; progress through `addon.changed`. `busy` while an install of that id runs |
+| `addon.cancel {id}` | `plugins` | `edit` | No-op when nothing runs |
+| `addon.clean {id}` | `plugins` | `destructive` | See Clean. `busy` while a consumer uses a version it would remove |
+| `addon.remove {id}` | `plugins` | `destructive` | `busy` while a consumer uses it |
 
-Topic `addon.changed {id, status}` (`read`). These replace ADR-0132's `browser.runtime.*`, which are never built. A future `plugin` kind gets its own methods under the `plugins` scope.
+The `plugins` scope (loopback and IPC only, never on remote tokens) is described as "Plugin and add-on management"; a remote call is `scope_denied`. Topic `addon.changed {id, status}` (`read`). These replace ADR-0132's `browser.runtime.*`, which are never built.
 
 ## Errors and failure behaviour
 
@@ -184,11 +219,14 @@ All in `rbs-add-ons` with the in-memory `Fetch` and `Unpack`, no network or CEF:
 - Each name rule of "Entry names" (absolute, drive, `\\?\`, backslash, `..`, trailing dot or space, `:`, reserved name with and without extension, control character, case-fold and NFC duplicate, exact duplicate, a component under an earlier link) is `unsafe_archive`.
 - An escaping symlink, a chain of links that escapes, a write through an earlier link, a hard link to a file not in the archive, a device entry, too many entries and too many bytes are `unsafe_archive`; setuid bits are cleared.
 - A directory without `.complete` is never `installed`; one with a marker for another version is not `installed` for this catalog; a newer version is left alone and the status is `not_installed`.
-- A held lock makes a second install and a remove `busy`; remove deletes the marker before the files.
-- A successful install keeps this version and the previous one and removes older ones; a failing clean-up still returns `Ok`.
+- A held lock makes a second install, a clean and a remove `busy`; an install of an already complete version fetches nothing; remove and clean delete the marker before the files.
+- Install never removes a version; clean keeps the catalog's version, the previous one, higher ones and unparsable ones, and removes the rest; `Version` orders `156.6.0 < 156.10.0`.
+- A link chain that resolves inside passes (a framework-style `Versions/Current` layout); a chain of 17 links fails; `library_dir` or `resources_dir` naming no created directory fails.
+- A rename that fails with a sharing violation is retried on `TestClock` and then `io`.
 - Progress is published at most four times a second on `TestClock`.
+- `rbs-add-ons-sys` (adapter tests, local server and temporary directory): connect and stall timeouts, a redirect hop to `http`, `*_beneath` refusing an existing link, the lock between two handles.
 - Every entry of the built-in catalog parses with a known kind (an unknown kind fails this test); an unknown kind in a test entry is skipped and the others still parse.
-- `rbs-app`: no engine makes browser sources `browser_runtime_missing` with no slot; an install re-evaluates them without a restart; Add Source Browser with no engine adds no source; `addon.remove` while a tree runs is `busy`; `addon.install` and `addon.remove` from a remote session are refused; `addon.install` without the network permission is `not_permitted`/`network`.
+- `rbs-app`: no engine makes browser sources `browser_runtime_missing` with no slot; an install re-evaluates them without a restart; Add Source Browser with no engine adds no source; `addon.remove` while a tree runs is `busy`; `addon.install`, `addon.clean` and `addon.remove` from a remote session are `scope_denied`; a test runner child started without `RBS_CEF_RUNTIME` exits `runtime_missing`; `addon.install` without the network permission is `not_permitted`/`network`.
 
 ## Open questions
 
