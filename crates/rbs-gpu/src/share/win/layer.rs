@@ -686,59 +686,7 @@ impl PreviewLayer {
         if let Some((_, s)) = self.mark_colors.iter().find(|(c, _)| *c == rgba) {
             return Some(s.clone());
         }
-        let a = f32::from(rgba[3]) / 255.0;
-        // Premultiplied, values as stored (the surface is sRGB-encoded 8-bit).
-        let color = [
-            f32::from(rgba[0]) / 255.0 * a,
-            f32::from(rgba[1]) / 255.0 * a,
-            f32::from(rgba[2]) / 255.0 * a,
-            a,
-        ];
-        // SAFETY: a surface of our own device, drawn once: `BeginDraw` gives a texture
-        // and the offset of our 1 x 1 area in it (it may be part of a larger atlas), so
-        // only that pixel is cleared; `EndDraw` hands it back. Every out pointer is valid
-        // for its call.
-        let surface = unsafe {
-            let surface = self
-                .dcomp
-                .CreateSurface(
-                    1,
-                    1,
-                    DXGI_FORMAT_B8G8R8A8_UNORM,
-                    DXGI_ALPHA_MODE_PREMULTIPLIED,
-                )
-                .ok()?;
-            let mut offset = POINT::default();
-            let texture: ID3D11Texture2D = surface.BeginDraw(None, &mut offset).ok()?;
-            let mut rtv: Option<ID3D11RenderTargetView> = None;
-            // The surface's texture belongs to the composition device's D3D device,
-            // which may be another layer's.
-            let d3d = &self.composition.d3d;
-            let drawn = d3d
-                .CreateRenderTargetView(&texture, None, Some(&mut rtv))
-                .ok()
-                .and(rtv)
-                .zip(
-                    d3d.GetImmediateContext()
-                        .ok()
-                        .and_then(|c| c.cast::<ID3D11DeviceContext1>().ok()),
-                )
-                .map(|(rtv, ctx)| {
-                    let at = RECT {
-                        left: offset.x,
-                        top: offset.y,
-                        right: offset.x + 1,
-                        bottom: offset.y + 1,
-                    };
-                    ctx.ClearView(&rtv, &color, Some(&[at]));
-                })
-                .is_some();
-            let ended = surface.EndDraw().is_ok();
-            if !(drawn && ended) {
-                return None;
-            }
-            surface
-        };
+        let surface = self.composition.solid_surface(rgba)?;
         // Bounded: a selection uses two colours; a theme change adds two more.
         if self.mark_colors.len() >= 8 {
             self.mark_colors.remove(0);
@@ -931,13 +879,13 @@ impl Drop for PreviewLayer {
 /// The DirectComposition device shared by every layer of the UI thread, and the topmost
 /// target of each window with a layer. A window has at most one topmost target, so the
 /// layers of one window are child visuals of its one root. Kept while a layer holds it.
-struct Composition {
+pub(super) struct Composition {
     /// The engine adapter's LUID the device was made on.
     luid: u64,
     /// The device behind `dcomp`: it owns the textures of `dcomp`'s own surfaces (the
     /// marks' colours).
     d3d: ID3D11Device,
-    dcomp: IDCompositionDevice,
+    pub(super) dcomp: IDCompositionDevice,
     windows: RefCell<Vec<WindowTarget>>,
 }
 
@@ -981,12 +929,81 @@ impl Composition {
         })
     }
 
+    /// The thread's device if a layer made one and it still works: layers that show no
+    /// engine surface (the meters, ADR-0035) share it, so the window keeps one target.
+    pub(super) fn current() -> Option<Rc<Self>> {
+        COMPOSITION.with(|c| c.borrow().upgrade().filter(|shared| !shared.lost()))
+    }
+
+    /// The device behind it was removed (driver reset, adapter change).
+    pub(super) fn lost(&self) -> bool {
+        // SAFETY: a plain query of a live device.
+        unsafe { self.d3d.GetDeviceRemovedReason() }.is_err()
+    }
+
+    /// A 1 x 1 surface of this device filled with `rgba` (sRGB, straight alpha), for
+    /// solid rectangles: a visual scales it to the rectangle. `None` if DirectComposition
+    /// refuses one.
+    pub(super) fn solid_surface(&self, rgba: [u8; 4]) -> Option<IDCompositionSurface> {
+        let a = f32::from(rgba[3]) / 255.0;
+        // Premultiplied, values as stored (the surface is sRGB-encoded 8-bit).
+        let color = [
+            f32::from(rgba[0]) / 255.0 * a,
+            f32::from(rgba[1]) / 255.0 * a,
+            f32::from(rgba[2]) / 255.0 * a,
+            a,
+        ];
+        // SAFETY: a surface of our own device, drawn once: `BeginDraw` gives a texture
+        // and the offset of our 1 x 1 area in it (it may be part of a larger atlas), so
+        // only that pixel is cleared; `EndDraw` hands it back. Every out pointer is valid
+        // for its call.
+        unsafe {
+            let surface = self
+                .dcomp
+                .CreateSurface(
+                    1,
+                    1,
+                    DXGI_FORMAT_B8G8R8A8_UNORM,
+                    DXGI_ALPHA_MODE_PREMULTIPLIED,
+                )
+                .ok()?;
+            let mut offset = POINT::default();
+            let texture: ID3D11Texture2D = surface.BeginDraw(None, &mut offset).ok()?;
+            let mut rtv: Option<ID3D11RenderTargetView> = None;
+            let d3d = &self.d3d;
+            let drawn = d3d
+                .CreateRenderTargetView(&texture, None, Some(&mut rtv))
+                .ok()
+                .and(rtv)
+                .zip(
+                    d3d.GetImmediateContext()
+                        .ok()
+                        .and_then(|c| c.cast::<ID3D11DeviceContext1>().ok()),
+                )
+                .map(|(rtv, ctx)| {
+                    let at = RECT {
+                        left: offset.x,
+                        top: offset.y,
+                        right: offset.x + 1,
+                        bottom: offset.y + 1,
+                    };
+                    ctx.ClearView(&rtv, &color, Some(&[at]));
+                })
+                .is_some();
+            let ended = surface.EndDraw().is_ok();
+            if !(drawn && ended) {
+                return None;
+            }
+            Some(surface)
+        }
+    }
+
     /// One more layer in window `hwnd`: the window's root, its target made on the first.
     ///
     /// # Safety
     ///
     /// As [`PreviewLayer::attach_to_hwnd`].
-    unsafe fn join(&self, hwnd: isize) -> Result<IDCompositionVisual, GpuError> {
+    pub(super) unsafe fn join(&self, hwnd: isize) -> Result<IDCompositionVisual, GpuError> {
         let mut windows = self.windows.borrow_mut();
         if let Some(w) = windows.iter_mut().find(|w| w.hwnd == hwnd) {
             w.layers += 1;
@@ -1019,7 +1036,7 @@ impl Composition {
 
     /// One layer fewer in window `hwnd`; the last one clears and drops the target. The
     /// caller commits.
-    fn leave(&self, hwnd: isize) {
+    pub(super) fn leave(&self, hwnd: isize) {
         let mut windows = self.windows.borrow_mut();
         let Some(i) = windows.iter().position(|w| w.hwnd == hwnd) else {
             return;

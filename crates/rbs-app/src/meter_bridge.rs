@@ -9,8 +9,9 @@
 //! bars' backgrounds; [`set_view`] then takes each meter's view for the bridge and the
 //! meter rows keep only what Slint still draws (the clip box and the readout).
 //!
-//! Only macOS has the layer (`rbs_app::native::MeterBridgeLayer`). Elsewhere, in a
-//! floating window, and while covered, Slint draws the meters as before (decision 6).
+//! macOS has the layer `rbs_app::native::MeterBridgeLayer` (Core Animation), Windows
+//! `rbs_gpu::share::SolidLayer` (DirectComposition, on the device the preview layer
+//! made). Elsewhere, in a floating window, and while covered, Slint draws the meters as before (decision 6).
 //! Zero cost when unused (P13): the bridge exists only while the Mixer shows in the main
 //! window; it adds no thread and no timer.
 //!
@@ -46,8 +47,8 @@ struct State {
     dirty: bool,
     /// What `Studio.native-meters` says: the bridge draws the moving parts.
     native: bool,
-    #[cfg(target_os = "macos")]
-    layer: Option<mac::Layer>,
+    #[cfg(any(target_os = "macos", windows))]
+    layer: Option<imp::Layer>,
 }
 
 thread_local! {
@@ -55,7 +56,7 @@ thread_local! {
 }
 
 /// Whether this platform has a meter layer.
-const PLATFORM: bool = cfg!(target_os = "macos");
+const PLATFORM: bool = cfg!(any(target_os = "macos", windows));
 
 /// A bar in the main window's Mixer was placed (or moved). `shown: false` (a zero-wide
 /// cell) or an empty size takes it out.
@@ -113,7 +114,7 @@ pub fn set_wanted(window: &MainWindow, wanted: bool) {
             st.viewport = None;
             st.keys.clear();
             st.views.clear();
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             {
                 st.layer = None;
             }
@@ -153,7 +154,7 @@ pub fn set_view(key: i32, view: &rbs_ui::meter::MeterView) -> bool {
 
 /// Shows the views [`set_view`] took, in one transaction.
 pub fn flush() {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     STATE.with(|s| {
         if let Ok(mut st) = s.try_borrow_mut() {
             let st = &mut *st;
@@ -170,7 +171,7 @@ pub fn flush() {
 /// Slint draws the meters.
 #[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
 pub fn place(window: &MainWindow) {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     {
         let native = STATE.with(|s| {
             let Ok(mut st) = s.try_borrow_mut() else {
@@ -178,7 +179,7 @@ pub fn place(window: &MainWindow) {
             };
             let st = &mut *st;
             let was = st.native;
-            st.native = st.wanted && mac::place(st, window);
+            st.native = st.wanted && imp::place(st, window);
             (st.native != was).then_some(st.native)
         });
         if let Some(native) = native {
@@ -199,7 +200,7 @@ pub fn place(window: &MainWindow) {
             std::mem::forget(timer);
         }
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     let _ = window;
 }
 
@@ -230,7 +231,7 @@ fn with(f: impl FnOnce(&mut State) + Send + 'static) {
 impl State {
     /// The bars relative to the viewport, in key order, and the keys and views to match.
     /// The views of bars that stay keep their last value.
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    #[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
     fn sync_keys(&mut self) {
         if self.keys.iter().copied().eq(self.bars.keys().copied()) {
             return;
@@ -250,12 +251,17 @@ impl State {
 
     /// Gives a changed layout to the bridge at once (it redraws without Slint).
     fn apply(&mut self) {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         if self.dirty && self.layer.is_some() {
-            mac::apply(self);
+            imp::apply(self);
         }
     }
 }
+
+#[cfg(target_os = "macos")]
+use mac as imp;
+#[cfg(windows)]
+use win as imp;
 
 #[cfg(target_os = "macos")]
 mod mac {
@@ -265,7 +271,7 @@ mod mac {
     use rbs_ui::meter::Orientation;
     use slint::ComponentHandle;
 
-    use super::State;
+    use super::{State, overlaps};
     use crate::ui::{MainWindow, Theme, Tokens};
 
     pub(super) struct Layer {
@@ -384,14 +390,277 @@ mod mac {
         layer.bridge.set_meters(&layer.geometry);
         layer.bridge.show(&st.views);
     }
+}
 
-    fn overlaps(a: Rect, b: Rect) -> bool {
-        a.w > 0.0
-            && a.h > 0.0
-            && a.x < b.x + b.w
-            && b.x < a.x + a.w
-            && a.y < b.y + b.h
-            && b.y < a.y + a.h
+/// Whether `a` (not empty) overlaps `b`.
+#[cfg(any(target_os = "macos", windows))]
+fn overlaps(a: Rect, b: Rect) -> bool {
+    a.w > 0.0
+        && a.h > 0.0
+        && a.x < b.x + b.w
+        && b.x < a.x + a.w
+        && a.y < b.y + b.h
+        && b.y < a.y + a.h
+}
+
+/// Windows: the moving parts as DirectComposition visuals in the window's one topmost
+/// target, on the composition device the preview layer made (ADR-0036); while there is
+/// none, Slint draws.
+#[cfg(windows)]
+mod win {
+    use std::num::NonZeroIsize;
+
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use rbs_gpu::share::{LayerRect, Solid, SolidGroup, SolidLayer};
+    use rbs_ui::layout::Rect;
+    use rbs_ui::meter::{MeterView, Orientation};
+    use slint::ComponentHandle;
+
+    use super::{State, overlaps};
+    use crate::ui::{MainWindow, Theme, Tokens};
+
+    /// One bar: where it is relative to the viewport (logical pixels), which way it grows
+    /// and what it shows now.
+    struct Meter {
+        bar: Rect,
+        orientation: Orientation,
+        shown: Option<MeterView>,
+    }
+
+    /// The bars on a [`SolidLayer`], one clipped group each: the three zones and the
+    /// peak line.
+    pub(super) struct Bridge {
+        solids: SolidLayer,
+        meters: Vec<Meter>,
+        /// `color.meter.low`, `.mid`, `.high`.
+        zones: [[u8; 4]; 3],
+        /// Window scale factor: logical to physical pixels.
+        scale: f32,
+        /// The bar's rounded ends (`radius.sm`, logical pixels).
+        radius: f32,
+        groups: Vec<SolidGroup>,
+        scratch: Vec<Solid>,
+    }
+
+    impl Bridge {
+        /// Shows one update: `views[i]` on bar `i`, in one commit; bars whose view did
+        /// not change cost nothing. No heap allocation once the visuals exist.
+        pub(super) fn show(&mut self, views: &[MeterView]) {
+            let mut changed = false;
+            for (i, (m, v)) in self.meters.iter_mut().zip(views).enumerate() {
+                if m.shown == Some(*v) {
+                    continue;
+                }
+                m.shown = Some(*v);
+                changed = true;
+                draw(
+                    &mut self.solids,
+                    &mut self.scratch,
+                    i,
+                    m,
+                    *v,
+                    self.zones,
+                    self.scale,
+                );
+            }
+            if changed {
+                self.solids.commit();
+            }
+        }
+
+        /// Draws every bar again (geometry, scale or colour change).
+        fn redraw(&mut self) {
+            for (i, m) in self.meters.iter().enumerate() {
+                if let Some(v) = m.shown {
+                    draw(
+                        &mut self.solids,
+                        &mut self.scratch,
+                        i,
+                        m,
+                        v,
+                        self.zones,
+                        self.scale,
+                    );
+                }
+            }
+        }
+    }
+
+    fn physical(r: Rect, scale: f32) -> LayerRect {
+        LayerRect {
+            x: f64::from(r.x * scale),
+            y: f64::from(r.y * scale),
+            width: f64::from(r.w * scale),
+            height: f64::from(r.h * scale),
+        }
+    }
+
+    fn draw(
+        solids: &mut SolidLayer,
+        scratch: &mut Vec<Solid>,
+        i: usize,
+        m: &Meter,
+        v: MeterView,
+        zones: [[u8; 4]; 3],
+        scale: f32,
+    ) {
+        let f = v.frames(m.bar, m.orientation);
+        scratch.clear();
+        for (r, rgba) in f.zones.iter().zip(zones) {
+            scratch.push(Solid {
+                rect: physical(*r, scale),
+                rgba,
+            });
+        }
+        if let Some(p) = f.peak {
+            scratch.push(Solid {
+                rect: physical(p, scale),
+                rgba: zones.get(f.peak_zone).copied().unwrap_or(zones[0]),
+            });
+        }
+        solids.set_solids(i, scratch);
+    }
+
+    pub(super) struct Layer {
+        pub(super) bridge: Bridge,
+        attached: bool,
+        covers: Vec<Rect>,
+    }
+
+    fn zone_colors(window: &MainWindow) -> [[u8; 4]; 3] {
+        let theme = window.global::<Theme>();
+        let c = |c: slint::Color| {
+            let c = c.to_argb_u8();
+            [c.red, c.green, c.blue, c.alpha]
+        };
+        [
+            c(theme.get_meter_low()),
+            c(theme.get_meter_mid()),
+            c(theme.get_meter_high()),
+        ]
+    }
+
+    /// Places the bridge; true when it shows (attached, over a viewport, not covered).
+    pub(super) fn place(st: &mut State, window: &MainWindow) -> bool {
+        if st.layer.as_ref().is_some_and(|l| l.bridge.solids.lost()) {
+            // The device went away: Slint draws until the preview makes a new one.
+            st.layer = None;
+        }
+        let Some(viewport) = st.viewport.filter(|v| v.w > 0.0 && v.h > 0.0) else {
+            if let Some(l) = st.layer.as_ref() {
+                l.bridge.solids.set_hidden(true);
+            }
+            return false;
+        };
+        if st.layer.is_none() {
+            // No composition device yet (the preview makes it): Slint draws for now.
+            let Ok(solids) = SolidLayer::new() else {
+                return false;
+            };
+            st.layer = Some(Layer {
+                bridge: Bridge {
+                    solids,
+                    meters: Vec::new(),
+                    zones: zone_colors(window),
+                    scale: 1.0,
+                    radius: 0.0,
+                    groups: Vec::new(),
+                    scratch: Vec::with_capacity(4),
+                },
+                attached: false,
+                covers: Vec::new(),
+            });
+        }
+        let Some(layer) = st.layer.as_mut() else {
+            return false;
+        };
+        if !layer.attached {
+            let window_handle = window.window().window_handle();
+            let Ok(handle) = window_handle.window_handle() else {
+                return false;
+            };
+            let RawWindowHandle::Win32(win32) = handle.as_raw() else {
+                return false;
+            };
+            let hwnd: NonZeroIsize = win32.hwnd;
+            // SAFETY: the handle is the live top-level window of this process; this runs
+            // on the UI thread that owns it.
+            if let Err(e) = unsafe { layer.bridge.solids.attach_to_hwnd(hwnd) } {
+                crate::studio_ui::log(&format!("meters: cannot attach the layer: {e}"));
+                st.layer = None;
+                return false;
+            }
+            layer.attached = true;
+            st.dirty = true;
+        }
+        let zones = zone_colors(window);
+        let scale = window.window().scale_factor();
+        let radius = window.global::<Tokens>().get_radius_sm();
+        let bridge = &mut layer.bridge;
+        if bridge.zones != zones {
+            bridge.zones = zones;
+            for m in &mut bridge.meters {
+                m.shown = None;
+            }
+            st.dirty = true;
+        }
+        if bridge.scale != scale || bridge.radius != radius {
+            bridge.scale = scale;
+            bridge.radius = radius;
+            st.dirty = true;
+        }
+        crate::preview::covers(window, &mut layer.covers);
+        let covered = layer.covers.iter().any(|c| overlaps(*c, viewport));
+        layer.bridge.solids.set_hidden(covered);
+        if covered {
+            return false;
+        }
+        if st.dirty {
+            apply(st);
+        }
+        true
+    }
+
+    /// Gives the viewport and the bars to the bridge.
+    pub(super) fn apply(st: &mut State) {
+        st.sync_keys();
+        let Some(viewport) = st.viewport else { return };
+        let Some(layer) = st.layer.as_mut() else {
+            return;
+        };
+        st.dirty = false;
+        let b = &mut layer.bridge;
+        let scale = b.scale;
+        b.solids.set_rect(physical(viewport, scale));
+        b.meters.clear();
+        b.meters.extend(st.bars.values().map(|bar| {
+            let rel = Rect {
+                x: bar.rect.x - viewport.x,
+                y: bar.rect.y - viewport.y,
+                w: bar.rect.w,
+                h: bar.rect.h,
+            };
+            Meter {
+                bar: rel,
+                orientation: if bar.vertical {
+                    Orientation::Vertical
+                } else {
+                    Orientation::Horizontal
+                },
+                shown: None,
+            }
+        }));
+        b.groups.clear();
+        b.groups.extend(b.meters.iter().map(|m| SolidGroup {
+            clip: physical(m.bar, scale),
+            radius: f64::from(b.radius * scale),
+        }));
+        b.solids.set_groups(&b.groups);
+        for (m, v) in b.meters.iter_mut().zip(&st.views) {
+            m.shown = Some(*v);
+        }
+        b.redraw();
+        b.solids.commit();
     }
 }
 
