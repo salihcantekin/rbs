@@ -8206,7 +8206,7 @@ fn marks_picture(studio_mode: bool, vertical_shown: bool, edited: OutputCanvas) 
 /// scene's levels (ADR-0091; the name is the scene's), 25 a source duplicated, 26 a
 /// source reset, 27 attributes pasted (ADR-0133; the copied source's name), 28 the
 /// collection's transition, 29 Preview edits dropped when studio mode ended (ADR-0151;
-/// the scene's name).
+/// the scene's name), 30 the scroll (ADR-0150).
 fn step_view(step: Option<&StepInfo>) -> (i32, &str) {
     match step {
         None => (0, ""),
@@ -8241,6 +8241,7 @@ fn step_view(step: Option<&StepInfo>) -> (i32, &str) {
                 EditKind::PasteAttributes => 27,
                 EditKind::Transition => 28,
                 EditKind::DiscardPreview => 29,
+                EditKind::Scroll => 30,
             },
             s.name.as_str(),
         ),

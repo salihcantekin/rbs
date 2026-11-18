@@ -38,8 +38,15 @@ fn number(settings: &Settings, key: &str, default: f64) -> f64 {
 
 /// The resize of a text whose item shows `crop` of its box and is now `size` canvas
 /// pixels (absolute values). `None` when the box would not change (a cap reached
-/// already, or the same size) or the picture shows nothing.
+/// already, or the same size) or the picture shows nothing, and for a `single_line`
+/// text, whose picture is as wide as its text, not as its box (it stretches for now).
 pub fn resized(settings: &Settings, crop: Crop, size: [f32; 2]) -> Option<Resized> {
+    if matches!(
+        settings.get(keys::SINGLE_LINE),
+        Some(SettingValue::Bool(true))
+    ) {
+        return None;
+    }
     let w = number(settings, keys::WIDTH, f64::from(DEFAULT_BOX[0])).max(1.0);
     let h = number(settings, keys::HEIGHT, f64::from(DEFAULT_BOX[1])).max(1.0);
     let vis_w = w - f64::from(crop.left) - f64::from(crop.right);
@@ -137,6 +144,12 @@ mod tests {
 
     fn f(s: &Settings, key: &str) -> f64 {
         number(s, key, -1.0)
+    }
+
+    #[test]
+    fn a_single_line_stretches() {
+        let s = text(200, 50, &[(keys::SINGLE_LINE, SettingValue::Bool(true))]);
+        assert_eq!(resized(&s, Crop::default(), [400.0, 100.0]), None);
     }
 
     #[test]

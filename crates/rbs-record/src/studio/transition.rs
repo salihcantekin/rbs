@@ -1037,6 +1037,19 @@ impl Studio {
         Ok(())
     }
 
+    /// Every layer the transitions draw: the outgoing pictures and the incoming
+    /// compositors.
+    pub(super) fn transition_layers_all(&self) -> Vec<&BoundLayer> {
+        let mut out = Vec::new();
+        for t in self.transitions.values() {
+            out.extend(&t.from);
+            if let Some(view) = &t.incoming {
+                out.extend(&view.bound.layers);
+            }
+        }
+        out
+    }
+
     /// The scroll runs the transitions draw: the outgoing pictures and the incoming
     /// compositors (ADR-0150 decision 5).
     pub(super) fn transition_scroll_keys(&self, out: &mut BTreeSet<rbs_scene::ScrollKey>) {

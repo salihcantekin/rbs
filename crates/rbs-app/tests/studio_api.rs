@@ -307,6 +307,66 @@ fn a_control_api_client_drives_the_studio() {
         d[0]["layout"]["style"]["shape"] == "rectangle"
     });
 
+    // Scrolling (protocol 1.94, ADR-0150): a scroll is set on the item, published in
+    // its layout with the defaults left out, refused out of range, and undone like any
+    // edit. The live calls refuse an item without a scroll and a speed out of range.
+    let set = c.call(
+        "item.set_scroll",
+        json!({"item": item, "scroll": {"speed": 120.0, "repeat": "once"}}),
+    );
+    assert!(set["result"].is_object(), "{set}");
+    let scrolled = c.event("source.changed", |d| !d[0]["layout"]["scroll"].is_null());
+    assert_eq!(
+        scrolled["params"]["data"][0]["layout"]["scroll"],
+        json!({"speed": 120.0, "repeat": "once"})
+    );
+    for (method, params) in [
+        ("item.scroll_pause", json!({"item": item})),
+        ("item.scroll_speed", json!({"item": item, "speed": 60.0})),
+        ("item.scroll_resume", json!({"item": item})),
+        (
+            "item.scroll_restart",
+            json!({"item": item, "canvas": "main"}),
+        ),
+    ] {
+        let done = c.call(method, params);
+        assert!(done["result"].is_object(), "{method}: {done}");
+    }
+    for (method, params, kind) in [
+        (
+            "item.set_scroll",
+            json!({"item": item, "scroll": {"speed": 0.0}}),
+            "invalid_params",
+        ),
+        (
+            "item.set_scroll",
+            json!({"item": item, "scroll": {"speed": 10.0, "gap": -1.0}}),
+            "invalid_params",
+        ),
+        (
+            "item.set_scroll",
+            json!({"item": 999, "scroll": null}),
+            "not_found",
+        ),
+        (
+            "item.scroll_speed",
+            json!({"item": item, "speed": 5000.0}),
+            "invalid_params",
+        ),
+        ("item.scroll_restart", json!({"item": 999}), "not_found"),
+    ] {
+        let bad = c.call(method, params.clone());
+        assert_eq!(
+            bad["error"]["data"]["kind"], kind,
+            "{method} {params}: {bad}"
+        );
+    }
+    let undo = c.call("edit.undo", json!({}));
+    assert!(undo["result"].is_object(), "{undo}");
+    c.event("source.changed", |d| d[0]["layout"]["scroll"].is_null());
+    let none = c.call("item.scroll_resume", json!({"item": item}));
+    assert_eq!(none["error"]["data"]["kind"], "invalid_params", "{none}");
+
     // Crop (protocol 1.5, ADR-0058). Nothing shows or records the display here, so
     // its picture size was never seen: keeping the scale is refused, a plain crop is
     // taken and undone like any edit.

@@ -345,6 +345,10 @@ impl std::error::Error for TextError {}
 pub struct RenderNotes {
     /// The requested family is not installed; the system UI font was used.
     pub font_missing: bool,
+    /// The text, at the size it was drawn, is larger than the layout area, so part of
+    /// it is cut at the box: `Clip` or `Ellipsis` with too much text, or `Fit` at
+    /// [`FIT_MIN_SCALE`] (ADR-0150 decision 10).
+    pub cut_to_fit: bool,
 }
 
 /// Lays out and draws text. Off the render thread only.
