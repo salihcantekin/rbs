@@ -173,7 +173,11 @@ fn probe_descriptor(kind: NodeKind) -> NodeDescriptor {
         NodeTypeId::new_static("org.rbs.test.native-probe"),
         kind,
         vec![Pin::one("video", LinkKind::Video)],
-        vec![],
+        match kind {
+            // An encoder has one packet output (graph shape rule).
+            NodeKind::Encoder => vec![Pin::one("packets", LinkKind::Packets)],
+            _ => vec![],
+        },
     )
 }
 
