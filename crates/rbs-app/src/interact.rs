@@ -18,9 +18,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-#[cfg(any(target_os = "macos", windows))]
-use std::time::Duration;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use rbs_browser_ipc::input::{self as wire, Button, InputEvent, Key, NamedKey};
 #[cfg(any(target_os = "macos", windows))]
@@ -51,6 +49,9 @@ const CLICK_SLOP: f64 = 4.0;
 
 /// Page pixels one wheel line scrolls (as Chromium scrolls a line).
 const LINE_PX: f64 = 40.0;
+
+/// A page larger than this share of its display opens smaller, in its shape.
+const MOST_OF_DISPLAY: f64 = 0.8;
 
 /// The Page tab's `state` that runs (`browser_props::state::OK`).
 const STATE_OK: i32 = 0;
@@ -85,6 +86,8 @@ struct Layer {
     #[cfg(any(target_os = "macos", windows))]
     layer: rbs_gpu::share::PreviewLayer,
     attached: bool,
+    /// A frame was shown (logged once).
+    shown: bool,
     clock: MonotonicClock,
     timer: slint::Timer,
 }
@@ -98,6 +101,8 @@ struct Pointer {
     modifiers: ModifiersState,
     held: u8,
     last: Option<(MouseButton, Instant, (f64, f64), u8)>,
+    /// Input reached the page (logged once, never what it was).
+    sent: bool,
 }
 
 struct Slot {
@@ -185,7 +190,14 @@ pub fn open(source: SourceId, view: View, make: &dyn Fn(&InteractWindow)) {
         log(&format!("interact: cannot show: {e}"));
         return;
     }
-    log("interact: a window opened");
+    log(&format!("interact: a window opened, page {w} x {h}"));
+    // A page larger than most of its display opens smaller, in its shape.
+    let weak = window.as_weak();
+    entry::single_shot(Duration::ZERO, move || {
+        if let Some(w) = weak.upgrade() {
+            fit_to_display(&w, view_page(source));
+        }
+    });
     SLOTS.with(|slots| {
         slots.borrow_mut().push(Slot {
             source,
@@ -195,6 +207,38 @@ pub fn open(source: SourceId, view: View, make: &dyn Fn(&InteractWindow)) {
             generation: Arc::new(AtomicU64::new(0)),
             endpoint: None,
         });
+    });
+}
+
+fn view_page(source: SourceId) -> (u32, u32) {
+    SLOTS.with(|slots| {
+        slots
+            .borrow()
+            .iter()
+            .find(|s| s.source == source)
+            .map_or((0, 0), |s| s.view.page)
+    })
+}
+
+/// Shrinks a window whose page is larger than [`MOST_OF_DISPLAY`] of its display.
+fn fit_to_display(window: &InteractWindow, page: (u32, u32)) {
+    window.window().with_winit_window(|w| {
+        let Some(m) = w.current_monitor() else {
+            return;
+        };
+        let (dw, dh) = (f64::from(m.size().width), f64::from(m.size().height));
+        let scale = w.scale_factor();
+        let (pw, ph) = (f64::from(page.0) * scale, f64::from(page.1) * scale);
+        if pw <= 0.0 || ph <= 0.0 {
+            return;
+        }
+        let k = (dw * MOST_OF_DISPLAY / pw).min(dh * MOST_OF_DISPLAY / ph);
+        if k < 1.0 {
+            let _ = w.request_inner_size(winit::dpi::PhysicalSize::new(
+                (pw * k).round() as u32,
+                (ph * k).round() as u32,
+            ));
+        }
     });
 }
 
@@ -292,6 +336,11 @@ pub fn picture(source: SourceId, endpoint: Option<PreviewEndpoint>) {
         if s.endpoint == endpoint {
             return;
         }
+        log(if endpoint.is_some() {
+            "interact: has a picture"
+        } else {
+            "interact: has no picture"
+        });
         s.generation.fetch_add(1, Ordering::Relaxed);
         s.layer = None;
         s.endpoint.clone_from(&endpoint);
@@ -432,6 +481,11 @@ fn on_event(
     let mut p = pointer.borrow_mut();
     match event {
         WindowEvent::Focused(on) => {
+            log(if *on {
+                "interact: focused"
+            } else {
+                "interact: not focused"
+            });
             p.focused = *on;
             if !*on {
                 p.held = 0;
@@ -463,6 +517,10 @@ fn on_event(
         return;
     };
     let modifiers = modifier_bits(p.modifiers, p.held);
+    if !p.sent {
+        p.sent = true;
+        log("interact: input goes to the page");
+    }
     let send = |e: InputEvent| emit(Event::Input(source, e));
     match event {
         WindowEvent::CursorMoved { .. } => send(InputEvent::Move { x, y, modifiers }),
@@ -615,12 +673,14 @@ fn setup(source: SourceId, mut sub: PreviewSubscriber, generation: Arc<AtomicU64
         s.layer = Some(Layer {
             layer,
             attached: false,
+            shown: false,
             clock: MonotonicClock::new(),
             timer: slint::Timer::default(),
         });
         Some(s.window.as_weak())
     });
     if let Some(w) = window.and_then(|w| w.upgrade()) {
+        log("interact: picture connected");
         place_layer(source, &w);
         w.window().request_redraw();
     }
@@ -735,6 +795,10 @@ fn show(source: SourceId, frame: PreviewFrame) {
             .find(|s| s.source == source)
             .and_then(|s| s.layer.as_mut())
         {
+            if !st.shown {
+                st.shown = true;
+                log("interact: first frame");
+            }
             let now = st.clock.now();
             st.layer.show(frame, now);
         }

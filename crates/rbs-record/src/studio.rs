@@ -22,7 +22,7 @@ use rbs_core::pause::{HoldSwitch, PauseWindow};
 use rbs_core::time::Timestamp;
 use rbs_core::timing::{Cadence, FrameRate};
 use rbs_engine::{Applied, DEFAULT_DOORBELL_TIMER, Engine, Pacing, Serviced, WorkerStats};
-use rbs_filters::{FilterNode, FilterStats, FilterType, Values};
+use rbs_filters::{FilterNode, FilterStats, FilterType, Normalise, Values};
 use rbs_gpu::download::DownloadShare;
 use rbs_gpu::node::{CompositorNode, GpuRuntime, RenderLocal};
 use rbs_gpu::share::{PreviewDesc, PreviewEndpoint};
@@ -589,6 +589,10 @@ struct AddedPicture {
     /// source's own node, before its filters.
     source: Option<SourceId>,
     node: NodeId,
+    /// A source picture's normalisation pass: the source node's picture (8-bit RGB
+    /// of the source's own size) drawn into the canvas format the preview node takes
+    /// (as for separate video files, ADR-0086 decision 9).
+    normalise: Option<NodeId>,
     stats: Arc<PreviewNodeStats>,
     failure: Option<String>,
 }
@@ -2097,6 +2101,7 @@ impl Studio {
             canvas: Some(canvas),
             source: None,
             node,
+            normalise: None,
             stats,
             failure: None,
         });
@@ -2139,15 +2144,23 @@ impl Studio {
             let _ = self.graph.set_state(picture.node, Lifecycle::Standby);
             let _ = self.graph.remove_node(picture.node);
         }
+        if let Some(n) = picture.normalise
+            && self.graph.node(n).is_some()
+        {
+            let _ = self.graph.set_state(n, Lifecycle::Standby);
+            let _ = self.graph.remove_node(n);
+        }
         self.release_shown_by(picture.source);
         let updated = self.update_with(collection, sources, None);
-        let leaving = Added {
-            node: picture.node,
-            partition: RENDER,
-            gpu: true,
-        };
-        if !take(&mut self.engine, leaving) {
-            self.pending_takes.push((leaving, None));
+        for node in std::iter::once(picture.node).chain(picture.normalise) {
+            let leaving = Added {
+                node,
+                partition: RENDER,
+                gpu: true,
+            };
+            if !take(&mut self.engine, leaving) {
+                self.pending_takes.push((leaving, None));
+            }
         }
         updated
     }
@@ -2186,31 +2199,40 @@ impl Studio {
         };
         let picture = PreviewNode::new(desc);
         let stats = picture.stats();
+        let mut made: Vec<NodeId> = Vec::new();
         let added = (|| {
             let pin = iso_video::video_pin(&self.graph, node)?;
+            // The source's picture into the canvas format first (the preview takes
+            // only that), at the picture's size.
+            let ty: Arc<dyn FilterType> = Arc::new(Normalise);
+            let values = Values::defaults(ty.as_ref());
+            let (pass, _, _) = FilterNode::new(ty, values, Some([desc.width, desc.height]));
+            let norm = add_active(
+                &mut self.graph,
+                Node::<GpuRuntime>::descriptor(&pass),
+                RENDER,
+            )?;
+            made.push(norm);
+            self.graph.connect(node, &pin, norm, "in")?;
+            self.engine
+                .adopt::<GpuRuntime>(RENDER, norm, Box::new(pass))?;
             let id = add_active(
                 &mut self.graph,
                 Node::<GpuRuntime>::descriptor(&picture),
                 RENDER,
             )?;
-            if let Err(e) = self.graph.connect(node, &pin, id, "canvas") {
-                let _ = self.graph.set_state(id, Lifecycle::Standby);
-                let _ = self.graph.remove_node(id);
-                return Err(RecordError::from(e));
-            }
-            if let Err(e) = self
-                .engine
-                .adopt::<GpuRuntime>(RENDER, id, Box::new(picture))
-            {
-                let _ = self.graph.set_state(id, Lifecycle::Standby);
-                let _ = self.graph.remove_node(id);
-                return Err(RecordError::from(e));
-            }
-            Ok(id)
+            made.push(id);
+            self.graph.connect(norm, "out", id, "canvas")?;
+            self.engine
+                .adopt::<GpuRuntime>(RENDER, id, Box::new(picture))?;
+            Ok::<_, RecordError>((id, norm))
         })();
-        let node = match added {
-            Ok(node) => node,
+        let (node, normalise) = match added {
+            Ok(nodes) => nodes,
             Err(e) => {
+                for n in made {
+                    self.take_out(n);
+                }
                 self.forget_shown_by(fresh, source, collection, sources);
                 return Err(e);
             }
@@ -2222,6 +2244,7 @@ impl Studio {
             canvas: None,
             source: Some(source),
             node,
+            normalise: Some(normalise),
             stats,
             failure: None,
         });
@@ -2279,7 +2302,7 @@ impl Studio {
         let pairs: Vec<(SourceId, NodeId)> = self
             .pictures
             .iter()
-            .filter_map(|p| Some((p.source?, p.node)))
+            .filter_map(|p| Some((p.source?, p.normalise?)))
             .collect();
         for (source, to) in pairs {
             let Some(node) = self.binder.source_node(source) else {
@@ -2298,7 +2321,7 @@ impl Studio {
                 self.graph.disconnect(link);
             }
             if let Ok(pin) = iso_video::video_pin(&self.graph, node) {
-                let _ = self.graph.connect(node, &pin, to, "canvas");
+                let _ = self.graph.connect(node, &pin, to, "in");
             }
         }
     }
@@ -2310,13 +2333,21 @@ impl Studio {
             return;
         };
         let picture = self.pictures.remove(at);
-        if self.graph.node(picture.node).is_some() {
-            let _ = self.graph.set_state(picture.node, Lifecycle::Standby);
-            let _ = self.graph.remove_node(picture.node);
-        }
         self.release_shown_by(picture.source);
+        self.take_out(picture.node);
+        if let Some(n) = picture.normalise {
+            self.take_out(n);
+        }
+    }
+
+    /// Takes one node of a picture out of the graph and the engine, without an update.
+    fn take_out(&mut self, node: NodeId) {
+        if self.graph.node(node).is_some() {
+            let _ = self.graph.set_state(node, Lifecycle::Standby);
+            let _ = self.graph.remove_node(node);
+        }
         let leaving = Added {
-            node: picture.node,
+            node,
             partition: RENDER,
             gpu: true,
         };
@@ -3293,7 +3324,11 @@ impl Studio {
                     };
                     self.failed_nodes.insert(*node, failure.clone());
                     failed.push(failure);
-                } else if let Some(p) = self.pictures.iter_mut().find(|p| p.node == *node) {
+                } else if let Some(p) = self
+                    .pictures
+                    .iter_mut()
+                    .find(|p| p.node == *node || p.normalise == Some(*node))
+                {
                     // Not essential (ADR-0125 decision 2): only that picture stops.
                     p.failure = Some(why.to_string());
                 } else if let Some(e) = self.entries.iter_mut().find(|e| e.state.node == *node) {
@@ -4291,7 +4326,11 @@ impl Studio {
                                 }
                             }
                         }
-                    } else if let Some(p) = self.pictures.iter_mut().find(|p| p.node == *node) {
+                    } else if let Some(p) = self
+                        .pictures
+                        .iter_mut()
+                        .find(|p| p.node == *node || p.normalise == Some(*node))
+                    {
                         // Not essential (ADR-0125 decision 2): the owner removes it.
                         if retry_at.is_none() && p.failure.is_none() {
                             p.failure = Some(format!("{cause:?}"));
