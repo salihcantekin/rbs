@@ -496,7 +496,7 @@ impl MediaSettings {
                 _ => String::new(),
             },
             looped: flag(keys::LOOP),
-            restart_when_shown: flag(keys::RESTART_WHEN_SHOWN),
+            restart_when_shown: restarts_when_shown(source),
             start_ms: match source.settings.get(keys::START_MS) {
                 Some(SettingValue::Int(ms)) => (*ms).max(0),
                 _ => 0,
@@ -11248,6 +11248,16 @@ impl Host {
                 };
                 (k.clone(), v)
             })
+            .chain(
+                // The deprecated spelling of a film's `on_return`, computed from the
+                // policy until the next major protocol (ADR-0152 decision 10).
+                (source.type_id.as_str() == types::MEDIA_SOURCE).then(|| {
+                    (
+                        keys::RESTART_WHEN_SHOWN.to_owned(),
+                        serde_json::Value::Bool(restarts_when_shown(source)),
+                    )
+                }),
+            )
             .collect())
     }
 
@@ -11279,6 +11289,7 @@ impl Host {
         let (name, type_id) = (source.name.clone(), source.type_id.clone());
         let old_device = device_sync::device_key(source);
         let mut settings = source.settings.clone();
+        let mut activity = source.activity;
         let browser = SourceKind::of(&type_id) == Some(SourceKind::Browser);
         // A kept profile's id is RBS's to set, never a client's (ADR-0132 decision 10).
         if browser && patch.contains_key(keys::PROFILE_ID) {
@@ -11316,6 +11327,28 @@ impl Host {
                 }
             }
         }
+        // A film's `restart_when_shown` is the deprecated spelling of its activity
+        // `on_return` (ADR-0152 decision 10): written to the policy, never stored.
+        if type_id.as_str() == types::MEDIA_SOURCE {
+            match settings.remove(keys::RESTART_WHEN_SHOWN) {
+                Some(SettingValue::Bool(restart)) => {
+                    activity.on_return = Some(if restart {
+                        rbs_scene::activity::OnReturn::Restart
+                    } else {
+                        rbs_scene::activity::OnReturn::Resume
+                    });
+                }
+                Some(_) => {
+                    return Err(Refusal::Invalid(
+                        "\"restart_when_shown\" must be a flag.".to_owned(),
+                    ));
+                }
+                None if patch.get(keys::RESTART_WHEN_SHOWN) == Some(&serde_json::Value::Null) => {
+                    activity.on_return = None;
+                }
+                None => {}
+            }
+        }
         if browser
             && settings.get(keys::KEEP_SIGNED_IN) == Some(&SettingValue::Bool(true))
             && !settings.contains_key(keys::PROFILE_ID)
@@ -11327,11 +11360,11 @@ impl Host {
         }
         rbs_sources::validate_settings(&type_id, &settings)
             .map_err(|e| Refusal::Invalid(e.to_string()))?;
-        if self
-            .collection
-            .source(id)
-            .is_some_and(|s| s.settings == settings)
-        {
+        let (settings_changed, activity_changed) =
+            self.collection.source(id).map_or((false, false), |s| {
+                (s.settings != settings, s.activity != activity)
+            });
+        if !settings_changed && !activity_changed {
             return Ok(false);
         }
         // A separate picture track keeps its size for the whole take (ADR-0129
@@ -11349,11 +11382,24 @@ impl Host {
         {
             return Err(Refusal::Invalid(format!("{name}: {STOP_TO_CHANGE_BOX}")));
         }
-        let undo = self
-            .collection
-            .set_source_settings(id, settings)
-            .map_err(|e| Refusal::of(&e))?;
-        let mut undos = vec![undo];
+        let mut undos = Vec::new();
+        if activity_changed {
+            undos.push(
+                self.collection
+                    .set_source_activity(id, activity)
+                    .map_err(|e| Refusal::of(&e))?,
+            );
+        }
+        if !settings_changed {
+            self.history
+                .record(EditKind::SourceSettings, &name, gesture, undos);
+            return Ok(true);
+        }
+        undos.push(
+            self.collection
+                .set_source_settings(id, settings)
+                .map_err(|e| Refusal::of(&e))?,
+        );
         // Marks follow stillness (ADR-0129 decision 1): a text that starts to move
         // loses its `video_as: image` in the same undo step.
         if let Some(mark) = self.collection.source(id).and_then(|s| {
@@ -11371,10 +11417,6 @@ impl Host {
         Ok(true)
     }
 
-    /// Tries a source again with its stored settings. Only when a closed and reopened
-    /// window is found by its hints is something edited: the source is re-pointed (one
-    /// "retarget" undo step) and the caller applies the collection, which replaces the
-    /// node; otherwise it is no edit and no undo step.
     /// Runs one playback command on a media-file source and reports its state
     /// (protocol 1.74, ADR-0108 decision 10). Live actions: the document does not
     /// change and nothing is an undo step. A source of another type is refused.
@@ -11508,6 +11550,10 @@ impl Host {
         ))
     }
 
+    /// Tries a source again with its stored settings. Only when a closed and reopened
+    /// window is found by its hints is something edited: the source is re-pointed (one
+    /// "retarget" undo step) and the caller applies the collection, which replaces the
+    /// node; otherwise it is no edit and no undo step.
     fn reload_source(&mut self, id: SourceId) -> Result<Reload, Refusal> {
         if self.collection.source(id).is_none() {
             return Err(Refusal::NotFound(format!(
@@ -17398,6 +17444,15 @@ fn in_scene(id: SourceId) -> rbs_api::request::SourceInScene {
 }
 
 /// The control API's spelling of a `run` value (ADR-0152).
+/// A film's deprecated `restart_when_shown`, computed from its activity policy
+/// (ADR-0152 decision 10): true unless its effective `on_return` is not `restart`.
+fn restarts_when_shown(source: &Source) -> bool {
+    rbs_sources::activity_traits(&source.type_id)
+        .effective(Some(&source.activity))
+        .on_return
+        .is_none_or(|r| r == rbs_scene::activity::OnReturn::Restart)
+}
+
 fn api_run(r: rbs_scene::activity::Run) -> api::ActivityRun {
     use rbs_scene::activity::Run;
     match r {

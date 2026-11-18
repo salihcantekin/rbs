@@ -1989,3 +1989,62 @@ fn a_stinger_is_chosen_listed_found_and_refused_when_wrong() {
     assert_eq!(scenes(&mut c)["transition"]["stinger"]["source"], sting);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_film_restart_when_shown_setting_is_written_to_its_activity_policy() {
+    // ADR-0152 decision 10: the old key is the deprecated spelling of `on_return`.
+    use rbs_core::media::Size;
+    use rbs_core::timing::FrameRate;
+    use rbs_graph::node::NodeTypeId;
+    use rbs_scene::model::{SceneScope, SettingValue, Settings};
+    let dir = std::env::temp_dir().join(format!("rbs-film-return-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("film.mov");
+    std::fs::write(&file, b"film").unwrap();
+    let mut settings = Settings::new();
+    settings.insert(
+        "path".to_owned(),
+        SettingValue::Text(file.display().to_string()),
+    );
+    let mut doc = rbs_scene::SceneCollection::default();
+    let fps = FrameRate::new(30, 1).unwrap();
+    let (main, _) = doc.add_canvas("Main", Size::new(1280, 720), fps).unwrap();
+    let (scene, _) = doc.add_scene("Scene", SceneScope::Shared).unwrap();
+    doc.set_program(main, Some(scene)).unwrap();
+    let film = doc
+        .add_source("Film", NodeTypeId::new("org.rbs.source.media"), settings)
+        .unwrap()
+        .0
+        .get();
+    let Some((_host, _updates, _api, mut c)) = start_with_media(Some(doc), None) else {
+        return;
+    };
+    let set = |c: &mut Client, value: Value| {
+        c.call(
+            "source.set_settings",
+            json!({"source": film, "settings": {"restart_when_shown": value}}),
+        )
+    };
+    let on_return = |c: &mut Client| {
+        c.call("source.get_activity", json!({"source": film}))["result"]["on_return"].clone()
+    };
+    let shown_key = |c: &mut Client| {
+        c.call("source.get_settings", json!({"source": film}))["result"]["settings"]
+            ["restart_when_shown"]
+            .clone()
+    };
+    assert_eq!(shown_key(&mut c), json!(true));
+    ok(&set(&mut c, json!(false)));
+    assert_eq!(on_return(&mut c), json!("resume"));
+    assert_eq!(shown_key(&mut c), json!(false));
+    ok(&set(&mut c, json!(true)));
+    assert_eq!(on_return(&mut c), json!("restart"));
+    ok(&set(&mut c, Value::Null));
+    assert_eq!(on_return(&mut c), Value::Null);
+    assert_eq!(shown_key(&mut c), json!(true));
+    assert_eq!(kind(&set(&mut c, json!(1))), "invalid_params");
+    // One undo step brings the policy back.
+    ok(&set(&mut c, json!(false)));
+    ok(&c.call("edit.undo", json!({})));
+    assert_eq!(on_return(&mut c), Value::Null);
+}

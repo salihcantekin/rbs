@@ -145,6 +145,9 @@ fn summary(p: &ImportPlan) -> String {
         for (k, v) in &src.hints {
             writeln!(s, "  hint {k} = {v:?}").unwrap();
         }
+        if let Some(on_return) = src.activity.on_return {
+            writeln!(s, "  activity on_return {}", on_return.as_str()).unwrap();
+        }
         let a = src.audio;
         if !a.is_default() {
             writeln!(
