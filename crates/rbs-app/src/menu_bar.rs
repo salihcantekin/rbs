@@ -17,7 +17,7 @@ use rbs_ui::panel::PanelId;
 use rbs_ui::projector::{ProjectorCanvas, ProjectorSize};
 use rbs_ui::workspace::{MixerOrientation, Side, Workspace};
 
-use crate::studio_host::{OutputCanvas, TransformOp};
+use crate::studio_host::{OutputCanvas, STREAMING_OFF, TransformOp};
 use crate::studio_ui::filters::filter_types;
 use crate::studio_ui::{SourceFacts, StudioUi, VerticalOut, rec_state, st_state};
 
@@ -763,6 +763,15 @@ impl CommandState for Shown<'_> {
                 Some(_) => Ok(()),
                 None => Err("The toolbar already has its default items.".to_owned()),
             },
+            // Only Go live is refused while streaming is off; End stream never is
+            // (ADR-0148 decision 8).
+            "stream.toggle" if !s.streaming_shows() => Err(STREAMING_OFF.to_owned()),
+            "stream.main.toggle" if !s.stream_shows(OutputCanvas::Main) => {
+                Err(STREAMING_OFF.to_owned())
+            }
+            "stream.toggle" if s.go_live_is_vertical() => CommandId::parse("stream.vertical.toggle")
+                .map_err(|e| e.to_string())
+                .and_then(|v| self.enabled(&v)),
             "stream.toggle" | "stream.main.toggle" => match s.st_state {
                 st_state::LIVE | st_state::STARTING => Ok(()),
                 st_state::ENDING => Err("The stream is ending.".to_owned()),
@@ -888,6 +897,9 @@ impl CommandState for Shown<'_> {
                 VerticalOut::Off => {
                     self.running()?;
                     self.has_vertical()?;
+                    if !s.stream_available(OutputCanvas::Vertical) {
+                        return Err(STREAMING_OFF.to_owned());
+                    }
                     s.cannot_record.clone().map_or(Ok(()), Err)
                 }
             },
@@ -953,6 +965,9 @@ impl CommandState for Shown<'_> {
             "source.monitor_solo.toggle" => self.source(id).is_ok_and(|f| f.soloed),
             "loudness.shown.toggle" => self.studio.loudness_shown(),
             // The resolved toggles show the main canvas's state (ADR-0111 decision 5).
+            // With only the vertical canvas showing stream items, Go live is its toggle
+            // (ADR-0148 decision 8).
+            "stream.toggle" if self.studio.go_live_is_vertical() => self.studio.vertical_st.on(),
             "stream.toggle" | "stream.main.toggle" => {
                 matches!(self.studio.st_state, st_state::LIVE | st_state::STARTING)
             }
@@ -1325,6 +1340,20 @@ impl CommandState for Shown<'_> {
                 (Ok(scene), Some(source)) => self.studio.has_scene_level(scene, source),
                 _ => false,
             },
+            // Stream items while their canvas shows them (ADR-0148 decision 8): the
+            // frame's Go live and Hold while either canvas does.
+            "stream.toggle" | "stream.hold_toggle" => self.studio.streaming_shows(),
+            "stream.main.toggle" if !self.studio.stream_shows(OutputCanvas::Main) => false,
+            "stream.vertical.toggle" if !self.studio.stream_shows(OutputCanvas::Vertical) => {
+                false
+            }
+            "output.with_vertical"
+                if id.param("kind") == Some("stream")
+                    && !(self.studio.stream_shows(OutputCanvas::Main)
+                        && self.studio.stream_shows(OutputCanvas::Vertical)) =>
+            {
+                false
+            }
             // A vertical canvas's outputs, while it exists (or one of them still runs).
             "stream.vertical.toggle"
             | "record.vertical.toggle"
@@ -1476,6 +1505,14 @@ pub struct Row {
 /// The commands of the frame's fixed group; a toolbar never draws them itself.
 pub const FIXED_COMMANDS: [&str; 2] = ["stream.toggle", "record.toggle"];
 
+/// A toolbar item that is not drawn while its command does not apply: a canvas's own
+/// toggle without the canvas, a stream item while streaming is off (ADR-0148).
+fn hidden_with_its_feature(command: &str) -> bool {
+    command == "canvas.vertical_preview.toggle"
+        || command.starts_with("stream.")
+        || command == "output.with_vertical?kind=stream"
+}
+
 /// Splits items at the first flexible space (later ones are dropped) and drops the
 /// separators that would lead, end or double within a group. Without a space, every
 /// item leads.
@@ -1553,9 +1590,11 @@ fn build_items(state: &Shown<'_>, bar: &rbs_ui::workspace::Toolbar) -> Vec<ToolI
             is_fixed_bar
                 || !matches!(item, ToolbarItem::Command(c) if FIXED_COMMANDS.contains(&c.as_str()))
         })
-        // A canvas's own toggle shows only while that canvas exists.
+        // A canvas's own toggle shows only while that canvas exists, and a stream item
+        // only while its canvas shows stream items (ADR-0148 decision 8: a placed item
+        // stays saved but is not drawn).
         .filter(|item| match item {
-            ToolbarItem::Command(c) if c.as_str() == "canvas.vertical_preview.toggle" => {
+            ToolbarItem::Command(c) if hidden_with_its_feature(c) => {
                 CommandId::parse(c).is_ok_and(|id| state.applies(&id))
             }
             _ => true,
@@ -2118,6 +2157,13 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
         "mixer.hide_all" => Run::MixerBulk(MixerBulk::HideAll),
         "mixer.hide_muted" => Run::MixerBulk(MixerBulk::HideMuted),
         "mixer.unhide_all" => Run::MixerBulk(MixerBulk::ShowAll),
+        "stream.toggle" if state.studio.go_live_is_vertical() => {
+            if on {
+                Run::AskEndVerticalStream
+            } else {
+                Run::GoLiveVertical
+            }
+        }
         "stream.toggle" | "stream.main.toggle" => {
             let all =
                 id.base() == "stream.toggle" && state.studio.with_vertical(OutputKind::Stream);

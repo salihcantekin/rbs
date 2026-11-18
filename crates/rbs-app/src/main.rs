@@ -5418,6 +5418,11 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
         app.studio.set_output_same(out, on);
     });
     on!(on_go_live, |app| {
+        // Only the vertical canvas streams: Go live is its own (ADR-0148 decision 8).
+        if app.studio.go_live_is_vertical() {
+            app.start_output(SilentStart::GoLiveVertical, true);
+            return;
+        }
         let all = app.studio.with_vertical(OutputKind::Stream);
         app.start_output(SilentStart::GoLive(all), true);
     });

@@ -4314,7 +4314,14 @@ impl StudioUi {
     /// Whether Record or Go live also acts on the vertical canvas now: its flag is on
     /// and a vertical canvas exists (ADR-0111 decisions 2 and 5).
     pub fn with_vertical(&self, kind: OutputKind) -> bool {
-        vertical_outputs::resolve_toggle(kind, self.vertical_flags, self.vertical.is_some())
+        let both = match kind {
+            OutputKind::Record => true,
+            // The with-main choice of streams needs both canvases (ADR-0148 decision 8).
+            OutputKind::Stream => {
+                self.stream_shows(OutputCanvas::Main) && self.stream_shows(OutputCanvas::Vertical)
+            }
+        };
+        both && vertical_outputs::resolve_toggle(kind, self.vertical_flags, self.vertical.is_some())
             == OutputTarget::All
     }
 
@@ -4397,6 +4404,47 @@ impl StudioUi {
                     .destinations
                     .available(rbs_app::stream_destinations::Canvas::Vertical, p)
         })
+    }
+
+    /// Streaming is available on `c` (ADR-0148 decision 1): one of its existing
+    /// destinations is on. A destinations section that did not load counts as
+    /// available, so a load error never reads as "streaming is off".
+    pub fn stream_available(&self, c: OutputCanvas) -> bool {
+        use rbs_app::stream_destinations::Canvas;
+        if !self.destinations_note.is_empty() {
+            return true;
+        }
+        match c {
+            OutputCanvas::Main => self.destinations.available(Canvas::Main, &self.stream),
+            OutputCanvas::Vertical => {
+                self.vertical.is_some()
+                    && self
+                        .vertical_stream
+                        .as_ref()
+                        .is_some_and(|p| self.destinations.available(Canvas::Vertical, p))
+            }
+        }
+    }
+
+    /// `c` shows its stream items (ADR-0148 decision 8): streaming is available on it,
+    /// or its stream is not off (End stream and Hold never leave a running stream).
+    pub fn stream_shows(&self, c: OutputCanvas) -> bool {
+        self.stream_available(c)
+            || match c {
+                OutputCanvas::Main => self.st_state != st_state::OFF,
+                OutputCanvas::Vertical => self.vertical_st.busy(),
+            }
+    }
+
+    /// Either canvas shows its stream items: the frame's Go live shows.
+    pub fn streaming_shows(&self) -> bool {
+        self.stream_shows(OutputCanvas::Main) || self.stream_shows(OutputCanvas::Vertical)
+    }
+
+    /// The frame's Go live acts on the vertical canvas alone: only it shows stream
+    /// items (ADR-0148 decision 8, "vertical only").
+    pub fn go_live_is_vertical(&self) -> bool {
+        !self.stream_shows(OutputCanvas::Main) && self.stream_shows(OutputCanvas::Vertical)
     }
 
     /// The request Go live of `c` sends (ADR-0148 decision 6): from the stream
