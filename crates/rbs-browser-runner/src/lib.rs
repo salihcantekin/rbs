@@ -24,36 +24,13 @@ use rbs_browser_ipc::{
 };
 use rbs_browser_shm::{FrameRing, RingReader, SlotLayout, SoundPacket, SoundRing};
 
-/// The helper's stdin: `configure`, then control messages; dropping it stops the
-/// helper.
-type ControlPipe = std::sync::Arc<std::sync::Mutex<Option<ChildStdin>>>;
-
-fn close_pipe(pipe: &ControlPipe) {
-    if let Ok(mut stdin) = pipe.lock() {
-        stdin.take();
-    }
-}
-
-/// Writes one control message; false when the helper's stdin is closed or the write
-/// failed. Control path only: it can wait while the pipe is full.
-fn send_on(pipe: &ControlPipe, message: &rbs_browser_ipc::control::Control) -> bool {
-    let Ok(mut guard) = pipe.lock() else {
-        return false;
-    };
-    let Some(stdin) = guard.as_mut() else {
-        return false;
-    };
-    let bytes = rbs_browser_ipc::control::encode(message);
-    stdin.write_all(&bytes).is_ok() && stdin.flush().is_ok()
-}
-
 /// A running (or exited) helper as the studio sees it.
 #[derive(Debug)]
 pub struct HelperChild {
     child: Option<Child>,
-    /// Kept open: the helper runs until its stdin closes. Shared with the
-    /// supervisor's owner, which sends control messages on it (ADR-0132 decision 8).
-    stdin: ControlPipe,
+    /// Kept open: the helper runs until its stdin closes. Control messages follow
+    /// `configure` on it (ADR-0132 decision 8).
+    stdin: Option<ChildStdin>,
     ring: FrameRing,
     reader: RingReader,
     /// The page's sound section, when the studio asked for sound.
@@ -161,9 +138,15 @@ impl HelperChild {
         rbs_browser_ipc::exit::cause(self.exit_code, self.has_beaten())
     }
 
-    /// Sends a control message (ADR-0132 decision 8); false when the helper is gone.
-    pub fn send(&self, message: &rbs_browser_ipc::control::Control) -> bool {
-        send_on(&self.stdin, message)
+    /// Writes a control message (ADR-0132 decision 8); false when stdin is closed or
+    /// the write failed. Can wait while the pipe is full, so the studio calls it on
+    /// the supervisor thread, never on the control or UI thread.
+    pub fn send(&mut self, message: &Control) -> bool {
+        let Some(stdin) = self.stdin.as_mut() else {
+            return false;
+        };
+        let bytes = rbs_browser_ipc::control::encode(message);
+        stdin.write_all(&bytes).is_ok() && stdin.flush().is_ok()
     }
 
     /// Frames the helper has published so far.
@@ -175,7 +158,7 @@ impl HelperChild {
     /// own (an engine removes its temporary profile then); kills it after that. Not
     /// for the render thread: it can wait up to `grace`.
     pub fn close(&mut self, grace: Duration) {
-        close_pipe(&self.stdin);
+        self.stdin.take();
         if let Some(child) = self.child.as_mut() {
             let deadline = Instant::now() + grace;
             while matches!(child.try_wait(), Ok(None)) && Instant::now() < deadline {
@@ -187,7 +170,7 @@ impl HelperChild {
 
     /// Kills and reaps the child on the control path. A dead child holds no slot.
     pub fn stop(&mut self) {
-        close_pipe(&self.stdin);
+        self.stdin.take();
         if let Some(mut child) = self.child.take() {
             let _ = child.kill();
             let _ = child.wait();
@@ -214,7 +197,7 @@ impl HelperChild {
 
 impl Drop for HelperChild {
     fn drop(&mut self) {
-        close_pipe(&self.stdin);
+        self.stdin.take();
         if let Some(mut child) = self.child.take() {
             let _ = child.kill();
             let _ = child.wait();
@@ -293,7 +276,7 @@ pub fn spawn_helper_with_env(
     let reader = ring.reader();
     Ok(HelperChild {
         child: Some(child),
-        stdin: std::sync::Arc::new(std::sync::Mutex::new(Some(stdin))),
+        stdin: Some(stdin),
         ring,
         reader,
         sound,
@@ -335,8 +318,13 @@ pub struct Supervisor {
     /// The cause of the exit, set before `exited` (0 other, 1 missing, 2 mismatch).
     cause: std::sync::Arc<std::sync::atomic::AtomicU8>,
     thread: Option<std::thread::JoinHandle<HelperChild>>,
-    pipe: ControlPipe,
+    /// Control messages for the supervisor thread to write; bounded, so a helper
+    /// that stops reading never makes the sender wait.
+    outbox: std::sync::mpsc::SyncSender<Control>,
 }
+
+/// Control messages that may wait for the supervisor thread.
+const OUTBOX: usize = 8;
 
 /// Where the supervisor hands page sound (ADR-0109 decision 6). Runs on the supervisor
 /// thread, never on the render or audio thread.
@@ -388,7 +376,7 @@ impl Supervisor {
         let cause = Arc::new(std::sync::atomic::AtomicU8::new(0));
         let (stop_flag, exited_flag) = (Arc::clone(&stop), Arc::clone(&exited));
         let cause_flag = Arc::clone(&cause);
-        let pipe = Arc::clone(&child.stdin);
+        let (outbox, inbox) = std::sync::mpsc::sync_channel::<Control>(OUTBOX);
         // Poll twice per page frame so a new frame waits at most half a period.
         let mut period = Duration::from_secs(1) / fps.clamp(1, 60) / 2;
         if sound.is_some() && child.has_sound() {
@@ -402,6 +390,9 @@ impl Supervisor {
                 // A control thread, not a real-time one (ADR-0055).
                 rbs_crash::report_panics_on_this_thread();
                 while !stop_flag.load(Ordering::Acquire) {
+                    while let Ok(message) = inbox.try_recv() {
+                        child.send(&message);
+                    }
                     if let Some(sound) = sound.as_mut() {
                         sound.observe(rbs_browser_shm::os_monotonic_nanos());
                         child.read_sound(|packet| sound.packet(packet));
@@ -430,14 +421,22 @@ impl Supervisor {
             exited,
             cause,
             thread: Some(thread),
-            pipe,
+            outbox,
         })
     }
 
-    /// Sends a control message to the running helper (ADR-0132 decision 8); false
-    /// once it stopped. Control path: it can wait while the pipe is full.
-    pub fn send(&self, message: &rbs_browser_ipc::control::Control) -> bool {
-        !self.exited() && send_on(&self.pipe, message)
+    /// Queues a control message for the running helper (ADR-0132 decision 8); the
+    /// supervisor thread writes it at its next poll. False once the helper stopped or
+    /// when [`OUTBOX`] messages already wait. Never waits.
+    pub fn send(&self, message: &Control) -> bool {
+        if self.exited() || self.thread.is_none() {
+            return false;
+        }
+        let queued = self.outbox.try_send(message.clone()).is_ok();
+        if let Some(thread) = self.thread.as_ref() {
+            thread.thread().unpark();
+        }
+        queued
     }
 
     /// True once the helper exited or lost its heartbeat. Never waits.
