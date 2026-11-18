@@ -1510,7 +1510,9 @@ export global Studio {
     callback meter-placed(/* key */ int, /* x */ length, /* y */ length, /* w */ length, /* h */ length, /* vertical */ bool, /* shown */ bool);
     // The Mixer's viewport in the window, which the native layer clips to.
     callback mixer-placed(/* x */ length, /* y */ length, /* w */ length, /* h */ length);
-    // The Mixer's bars were made again (arrangement or a group opened or closed).
+    // The Mixer's bars may have been made or dropped (arrangement, a group opened or
+    // closed, a source added or removed): after the next redraw every bar is asked again
+    // and the native layer keeps only the bars that answer.
     callback meters-relayout();
     // The program scene (the scene the Mixer hears), and its name while it is in Own
     // levels (ADR-0091): empty in Shared levels. The Mixer's "This scene" header and

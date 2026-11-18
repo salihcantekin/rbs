@@ -5639,6 +5639,11 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
                     preview::place(&main);
                     meter_bridge::place(&main);
                 }
+                if matches!(state, slint::RenderingState::AfterRendering)
+                    && let Some(main) = main.upgrade()
+                {
+                    meter_bridge::rendered(&main);
+                }
             });
             if let Err(e) = set {
                 studio_ui::log(&format!("preview: no rendering notifier: {e:?}"));
