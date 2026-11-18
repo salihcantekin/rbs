@@ -1,6 +1,6 @@
 # ADR-0152: Source activity: one rule for when a source runs and what it does when it returns
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-18
 - Deciders: Salih (owner)
 - Builds on: [ADR-0013](0013-zero-cost-when-unused.md), [ADR-0024](0024-node-restart-with-back-off.md), [ADR-0086](0086-recording-sources-separately-iso.md), [ADR-0105](0105-timed-show.md), [ADR-0107](0107-temporal-sources-sleep-when-hidden.md), [ADR-0108](0108-media-file-source.md), [ADR-0109](0109-browser-source.md), [ADR-0124](0124-pause-recording-and-hold-stream.md), [ADR-0128](0128-scene-transitions.md), [ADR-0129](0129-text-source.md), [ADR-0135](0135-transitions-t-bar-scene-override-rehearse.md), [ADR-0139](0139-remote-guests-rbs-to-rbs-over-webrtc.md), [ADR-0140](0140-stinger-transition.md), [ADR-0143](0143-performance-rules-for-every-change.md), [ADR-0149](0149-browser-page-automation-zoom-and-background-pages.md), [ADR-0150](0150-scrolling-layers-in-the-compositor.md)
@@ -151,4 +151,4 @@ Round 2, independent AI session, 2026-11-18, changes requested (`/mnt/project-fi
 
 Round 3, independent AI session, 2026-11-18, **approve with changes** (`/mnt/project-files/source-activity/review-round3.md`): all round-2 findings resolved, no blocking finding. Minor findings resolved (author, 2026-11-18): 1 forced causes Active whatever `run`, test fixed (decision 2, Consequences); 2 one worker per plugin, timeout per tier (decision 5); 3 ADR-0132 and the narrowed ADR-0107 clause in the Changes line; 4 `continue` anchors only a playing film (decision 6); 5 lingering in preview, linger on removal (decision 4); 6 one load on the wake edge (decision 6); 7 `BindProblem` and `invalid_params` (decision 10); 8 manifest defaults (decision 7); 9 `Option<OnReturn>`, undo step, scheduling of forced sources (decisions 7, 10, 2).
 
-Owner acceptance: pending.
+Owner acceptance: Salih, 2026-11-18 (after review round 3).
