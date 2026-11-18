@@ -57,7 +57,7 @@ pub use subscriber::{
     PREVIEW_TEXTURE_FORMAT, PREVIEW_TEXTURE_USAGE, PreviewFrame, PreviewSubscriber,
 };
 #[cfg(all(windows, feature = "preview-layer"))]
-pub use win::{DEFAULT_RETIRE_POLL, LayerRect, PreviewLayer};
+pub use win::{DEFAULT_RETIRE_POLL, LayerRect, PreviewLayer, Solid, SolidGroup, SolidLayer};
 #[cfg(windows)]
 pub use win::{
     PREVIEW_TEXTURE_FORMAT, PREVIEW_TEXTURE_USAGE, PreviewFrame, PreviewPublisher,

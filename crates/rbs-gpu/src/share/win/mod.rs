@@ -6,11 +6,15 @@
 mod layer;
 mod pipe;
 mod publisher;
+#[cfg(feature = "preview-layer")]
+mod solid;
 mod subscriber;
 
 #[cfg(feature = "preview-layer")]
 pub use layer::{DEFAULT_RETIRE_POLL, LayerRect, PreviewLayer};
 pub use publisher::PreviewPublisher;
+#[cfg(feature = "preview-layer")]
+pub use solid::{Solid, SolidGroup, SolidLayer};
 pub use subscriber::{
     PREVIEW_TEXTURE_FORMAT, PREVIEW_TEXTURE_USAGE, PreviewFrame, PreviewSubscriber,
 };
