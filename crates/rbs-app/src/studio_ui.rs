@@ -75,6 +75,7 @@ const NEW_SCROLL_SPEED: f32 = 100.0;
 const REPORT_EVERY: u32 = 30;
 
 /// Codes of `Studio.rec-state`.
+pub(crate) mod activity_choice;
 pub(crate) mod add_picker;
 pub(crate) mod ai;
 pub(crate) mod attributes;
@@ -5413,6 +5414,15 @@ impl StudioUi {
             run,
             crate::studio_host::attributes_browser_size(w, h),
         );
+        let row = self.rows.iter().find(|r| r.id.get() as i32 == id);
+        data.run = activity_choice::run_index(
+            Some(crate::studio_host::SourceKind::Browser),
+            row.and_then(|r| r.activity),
+        );
+        data.on_return = activity_choice::return_index(
+            Some(crate::studio_host::SourceKind::Browser),
+            row.and_then(|r| r.activity),
+        );
         if self.browser_web == Some(id) && data.file {
             data.file = false;
             data.url = Default::default();
@@ -5457,6 +5467,36 @@ impl StudioUi {
         if value.is_finite() {
             self.patch_browser(id, browser_props::number_patch(key, f64::from(value)));
         }
+    }
+
+    /// Properties' "Runs" picked position `index` for source `id` (ADR-0152).
+    pub fn set_source_run(&mut self, id: i32, index: i32) {
+        let Some(row) = self.rows.iter().find(|r| r.id.get() as i32 == id) else {
+            return;
+        };
+        if let Some(choice) = activity_choice::with_run(row.kind, row.activity, index) {
+            self.send_activity(row.id, choice);
+        }
+    }
+
+    /// Properties' "When it comes back" picked position `index` for source `id`
+    /// (ADR-0152).
+    pub fn set_source_on_return(&mut self, id: i32, index: i32) {
+        let Some(row) = self.rows.iter().find(|r| r.id.get() as i32 == id) else {
+            return;
+        };
+        if let Some(choice) = activity_choice::with_return(row.kind, row.activity, index) {
+            self.send_activity(row.id, choice);
+        }
+    }
+
+    fn send_activity(&mut self, id: SourceId, choice: crate::studio_host::ActivityChoice) {
+        self.deleted.clear();
+        self.send(Command::SetSourceActivity {
+            id,
+            run: choice.run,
+            on_return: choice.on_return,
+        });
     }
 
     /// A switch of the Page tab.
@@ -7159,7 +7199,9 @@ impl StudioUi {
                     media: r.media.is_some(),
                     media_path: r.media.as_ref().map_or("", |m| m.path.as_str()).into(),
                     media_loop: r.media.as_ref().is_some_and(|m| m.looped),
-                    media_restart: r.media.as_ref().is_some_and(|m| m.restart_when_shown),
+                    act_on: r.activity.is_some(),
+                    act_run: activity_choice::run_index(r.kind, r.activity),
+                    act_return: activity_choice::return_index(r.kind, r.activity),
                     media_start_ms: r
                         .media
                         .as_ref()
