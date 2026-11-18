@@ -65,7 +65,8 @@
 //! Layouts may also have `rotation` (degrees), `crop` (`[left, top, right, bottom]`
 //! source pixels), `opacity` and `style` (ADR-0053, format 2: `shape = "rectangle" |
 //! "circle" | "ellipse"`, `radius` for rectangles, `border = { width, color =
-//! "#rrggbbaa" }`, `shadow = { offset = [x, y], blur, color }`); items `visible = false`,
+//! "#rrggbbaa" }`, `shadow = { offset = [x, y], blur, color }`) and `scroll` (format 22,
+//! ADR-0150: `{ speed, direction?, gap?, repeat?, start?, fade?, ramp_ms? }`); items `visible = false`,
 //! `locked = true` (format 3), `show_for_ms` (1 to 600000, format 13, ADR-0105; omitted when unset) and `overrides = [{ canvas = 1, layout = {...} }]`; sources `filters = [{ id, type,
 //! enabled, settings }]`, `volume` (0 to 1, default 1) and `muted = true` (format 3,
 //! ADR-0059), `sync_offset_ms` (-200 to 200, default 0; format 4, ADR-0062), `hints = { target_app = "...", target_title = "..." }` (format 8, ADR-0077). Setting values are TOML booleans, integers, floats or

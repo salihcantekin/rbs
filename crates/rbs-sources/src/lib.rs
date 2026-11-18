@@ -25,6 +25,7 @@ mod filters;
 mod layers;
 pub mod permissions;
 mod registry;
+pub mod scroll;
 pub mod still;
 pub mod stinger;
 pub mod text;

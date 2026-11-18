@@ -388,7 +388,11 @@ mod windows_check {
                 height: HEIGHT,
             },
             16,
-            node_layers(bound, &graph.plan()),
+            node_layers(
+                bound,
+                &graph.plan(),
+                &rbs_sources::scroll::ScrollRuns::new(),
+            ),
         );
         let (mixer, _mix_params, mixer_stats) = MixerNode::new(audio, 16, MixerParams::new(strips));
 

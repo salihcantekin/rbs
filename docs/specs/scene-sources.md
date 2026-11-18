@@ -74,7 +74,11 @@ pub fn color_picture(w, h, first, second: Option<[u8; 4]>, angle: f32) -> Vec<u8
 pub fn decode_png(path: &Path) -> Result<(u32, u32, Vec<u8>), String>;
 pub const SAMPLES: [Sample; 8];                                      // { id, name, kind: Background | Frame }
 pub fn sample_picture(id: &str, w: u32, h: u32) -> Option<Vec<u8>>;
-pub fn node_layers(compositor: &BoundCompositor, plan: &SchedulePlan) -> Vec<NodeLayer>;
+pub fn node_layers(
+    compositor: &BoundCompositor,
+    plan: &SchedulePlan,
+    runs: &ScrollRuns,
+) -> Vec<NodeLayer>;
 ```
 
 ### Settings
@@ -107,7 +111,7 @@ Unknown keys are ignored. A wrong value type or value is `InvalidSetting`.
 4. A `Video` instance opens nothing until `prepare` (ADR-0038). An `Audio` instance holds a stream opened in Standby: the port guarantees no device activity before `start` (audio input port spec).
 5. `instantiate` and `targets` run on the control thread and may enumerate (up to 100 ms per adapter); they never prompt.
 6. `pickers` returns, best first, the probed capture adapters whose `capture.target.picker` includes the type's kind (none for audio types). `SourcePicker::pick` calls the port's `pick` and returns the choice as a `SourceTarget` (`is_default` false) to store like a listed one; a closed dialog is `Capture(Cancelled)`. Some systems offer displays and windows only this way (the PipeWire screen-cast portal lists nothing), so hosts show a "choose" entry per picker next to the listed targets, and a headless host with no listed display picks one. `pick` blocks while the dialog is up: hosts call it off the threads that must keep running (a picker is `Send` and holds no resources).
-7. `node_layers` returns the bound layers whose producer `plan` schedules, bottom first, each with the index of its link among the compositor's scheduled links (scene model spec, `resolve`), the transform, crop and opacity unchanged.
+7. `node_layers` returns the bound layers whose producer `plan` schedules, bottom first, each with the index of its link among the compositor's scheduled links (scene model spec, `resolve`), the transform, crop and opacity unchanged. A layer with `scroll` gets `NodeLayer::scroll` from its `Scroll` and the run of its `scroll_key` in `runs` (ADR-0150); a scrolling layer whose key has no run is left out (a host bug: a debug assertion). `glide_layers` takes `node_layers`' output, so its layers keep their scroll.
 
 ### How the composition root uses it
 
@@ -152,6 +156,19 @@ Windows result (SC-PC, RTX 4090, 2026-11-03), PASS: every type installed with WG
 - Sources with picture and sound are two nodes ([ADR-0106](../adr/0106-picture-and-sound-on-one-source.md), implemented for media files and browser pages): `NodeTypeTable::insert_sound` names the sound node type, and the binder links the mixer from the sound node. A camera's microphone stays an [ADR-0096](../adr/0096-capture-audio-companions-and-camera-microphone.md) companion. A browser page's sound node is `org.rbs.browser.sound` (audio graph spec, "Browser sound node").
 - Audio that does not depend on the scene (a global microphone or system audio in every scene).
 - Restore tokens for picker-only targets (PipeWire portal): the application stores `CaptureSession::target_to_store` back into the `target` setting, which today makes a new node.
+
+## Scrolling layers (ADR-0150)
+
+`rbs_sources::scroll` holds the control side of scrolling. `ScrollRuns` maps each `rbs_scene::ScrollKey` to an `rbs_gpu::scroll::ScrollRun`:
+
+- `keep(keys, now)` keeps exactly the runs of `keys`: a new key starts a run at `now`, at the key's speed, from its start (`ScrollRun::start`, held until its anchor); a run whose key is not listed ends, and a key seen again starts over. Returns whether a run started or ended.
+- `moved(old_now, new_now)` moves every run to another clock (a studio restart; either sign).
+- `change_speed(key, now, speed, ramp)` and `restart(key, now)` act on one run (the live calls of ADR-0150 decision 11 build on them). Both return false for a key without a run.
+- `layer_scroll(scroll, run)` is the node's `LayerScroll` for a layer.
+
+`rbs-record`'s `Studio` owns the runs. Before it sends lists it calls `keep` with the keys of every list it draws (program and further canvases, the studio-mode preview, hold scenes, a transition's outgoing picture and incoming compositor) and `scroll_keys_cued` of each canvas's program scene and, in studio mode, the preview scene, so an item faded to 0 keeps its run. Every compositor the studio builds has a scroll channel (`CompositorNode::with_scroll`); its port sends a `ScrollBinding` (which builds the device's wrap pipelines on first use) before the first list with a scrolling layer, and never otherwise, so a device on which nothing scrolls builds nothing (P13). `Studio::scroll_runs` reads the runs; `Studio::scroll_handover` takes them with the engine time, and `StudioSettings::scroll_runs` gives them to the studio that replaces it, which moves them to its clock before its first lists, so a ticker goes on where it was. A restart that changes the canvas size changes the keys (lengths are canvas pixels), so those runs start again.
+
+Tests: `src/scroll.rs` (runs start and end with their keys, a pause is continuous and a restart starts over, runs move to a new clock either way), `tests/sources.rs` (a scrolling layer moves by its key's run; one without a run is left out), `rbs-record/tests/scroll.rs` (one run across a scene change, kept while faded to 0, ended when no list draws it, carried across a restart; no wrap pipelines until something scrolls).
 
 ## Identity and option keys (ADR-0133 decision 2)
 

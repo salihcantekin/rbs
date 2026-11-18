@@ -24,7 +24,7 @@ use rbs_core::timing::{Cadence, FrameRate};
 use rbs_engine::{Applied, DEFAULT_DOORBELL_TIMER, Engine, Pacing, Serviced, WorkerStats};
 use rbs_filters::{FilterNode, FilterStats, FilterType, Values};
 use rbs_gpu::download::DownloadShare;
-use rbs_gpu::node::{CompositorNode, GpuRuntime, LayerSender, RenderLocal};
+use rbs_gpu::node::{CompositorNode, GpuRuntime, RenderLocal};
 use rbs_gpu::share::{PreviewDesc, PreviewEndpoint};
 use rbs_gpu::{CanvasDesc, GpuContext};
 use rbs_graph::description::{GraphDescription, NodeId, PartitionId};
@@ -48,6 +48,7 @@ use rbs_scene::binder::{
 use rbs_scene::model::{
     CanvasId, FilterId, ItemId, MasterAudio, SceneId, SourceAudio, SourceId, SourceMonitor,
 };
+use rbs_sources::scroll::ScrollRuns;
 use rbs_sources::text::TextKind;
 use rbs_sources::text_file::{FileProbe, RealFileProbe};
 use rbs_sources::text_live::{Language, LiveInputs, RunTime};
@@ -59,6 +60,7 @@ use rbs_sources::{
 };
 use rbs_transport::{ReconnectPolicy, Secret, TransportConfig, TransportInput};
 use rbs_vcam::{CameraFormat, VcamError, VirtualCameraConfig, VirtualCameraFactory};
+use scroll::CompositorPort;
 
 use crate::timed_show::ShowCues;
 
@@ -80,6 +82,7 @@ mod monitor;
 mod pause;
 mod rehearse;
 mod replay;
+mod scroll;
 mod stinger;
 mod sync_measure;
 mod transition;
@@ -178,6 +181,19 @@ pub struct StudioSettings {
     /// How long a paused or cued media source keeps its decoder (ADR-0108 decision 10,
     /// the `pause_release_s` app setting); 30 s by default.
     pub media_pause_release: Duration,
+    /// The scroll runs of the studio this one replaces, so tickers go on where they
+    /// were (ADR-0150 decision 5). `None`: every run starts at its start.
+    pub scroll_runs: Option<ScrollHandover>,
+}
+
+/// Scroll runs handed from a studio to the one that replaces it (ADR-0150 decision 5).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScrollHandover {
+    /// The runs, on the old studio's clock.
+    pub runs: ScrollRuns,
+    /// The old clock's time when they were taken; the new studio's start time is the
+    /// same instant on its clock, so the runs move by the difference (either sign).
+    pub at: Timestamp,
 }
 
 impl StudioSettings {
@@ -193,6 +209,7 @@ impl StudioSettings {
             audio_offsets: BTreeMap::new(),
             extra_canvases: Vec::new(),
             media_pause_release: rbs_nodes::MEDIA_PAUSE_RELEASE,
+            scroll_runs: None,
         }
     }
 }
@@ -1180,8 +1197,9 @@ fn paint_layers(
     glide: Option<&Glide>,
     now: Timestamp,
     canvas: CanvasId,
+    runs: &ScrollRuns,
 ) -> Vec<rbs_gpu::node::NodeLayer> {
-    let layers = node_layers(bound, plan);
+    let layers = node_layers(bound, plan, runs);
     let Some(glide) = glide else {
         return layers;
     };
@@ -1226,8 +1244,13 @@ pub struct Studio {
     /// Timed-show cues (ADR-0105). Session only: not saved, empty after a restart.
     cues: ShowCues,
     compositor: NodeId,
-    layers: LayerSender,
+    layers: CompositorPort,
     bound: BoundCompositor,
+    /// The render device, for scroll bindings (ADR-0150 decision 7).
+    gpu: Arc<GpuContext>,
+    /// The scroll run of every key a list draws (ADR-0150 decision 5). Empty while
+    /// nothing scrolls.
+    scroll_runs: ScrollRuns,
     mixer: Option<Mixer>,
     bound_mixer: Option<BoundMixer>,
     meters: BTreeMap<SourceId, Arc<LevelMeter>>,
@@ -1651,8 +1674,11 @@ impl Studio {
             }
         }
 
-        let (compositor, layers) =
-            CompositorNode::new(CanvasDesc { width, height }, MAX_LAYERS as u32, Vec::new());
+        let (compositor, layers) = CompositorPort::of_new(CompositorNode::new(
+            CanvasDesc { width, height },
+            MAX_LAYERS as u32,
+            Vec::new(),
+        ));
         engine.adopt::<GpuRuntime>(RENDER, compositor_id, compositor.into_node())?;
 
         let mut preview = None;
@@ -1720,6 +1746,19 @@ impl Studio {
 
         let render_worker = engine.worker_stats(RENDER);
         let audio_worker = engine.worker_stats(parts.audio);
+        // Runs of the studio this one replaces go on from where they were, moved to
+        // this engine's clock (ADR-0150 decision 5).
+        let scroll_runs = match &settings.scroll_runs {
+            Some(h) => {
+                let mut runs = h.runs.clone();
+                runs.moved(h.at, engine.clock().now());
+                runs
+            }
+            None => ScrollRuns::new(),
+        };
+        let mut settings = settings.clone();
+        settings.scroll_runs = None;
+        let settings = &settings;
         let mut studio = Self {
             engine,
             settings: settings.clone(),
@@ -1731,6 +1770,8 @@ impl Studio {
             cues: ShowCues::new(),
             compositor: compositor_id,
             layers,
+            gpu: Arc::clone(&gpu),
+            scroll_runs,
             bound,
             mixer,
             bound_mixer: None,
@@ -2267,7 +2308,70 @@ impl Studio {
 
     /// Sends each program compositor's layers, gliding a scene change that is still
     /// moving. The preview picture is not glided.
+    /// The scroll run of every key a list draws (ADR-0150 decision 5).
+    pub fn scroll_runs(&self) -> &ScrollRuns {
+        &self.scroll_runs
+    }
+
+    /// The scroll runs to hand to the studio that replaces this one
+    /// ([`StudioSettings::scroll_runs`]), taken at the engine's time now.
+    pub fn scroll_handover(&self) -> ScrollHandover {
+        ScrollHandover {
+            runs: self.scroll_runs.clone(),
+            at: self.engine.clock().now(),
+        }
+    }
+
+    /// The run key of every scrolling layer a list draws, and of every item a shown
+    /// program or preview scene fades to 0 (ADR-0150 decision 5).
+    fn scroll_keys(&self) -> BTreeSet<rbs_scene::ScrollKey> {
+        let mut keys = BTreeSet::new();
+        scroll::keys_of(&self.bound.layers, &mut keys);
+        for extra in &self.extras {
+            scroll::keys_of(&extra.view.bound.layers, &mut keys);
+        }
+        if let Some(sp) = &self.scene_preview {
+            scroll::keys_of(&sp.bound.layers, &mut keys);
+        }
+        for run in self.hold_scenes.values() {
+            run.scroll_keys_into(&mut keys);
+        }
+        self.transition_scroll_keys(&mut keys);
+        // Items at opacity 0 are not in the lists; their runs go on (decision 5).
+        let cued = self.cues.items();
+        let canvases =
+            std::iter::once(self.settings.canvas).chain(self.extras.iter().map(|e| e.canvas));
+        for canvas in canvases {
+            let Some(c) = self.collection.canvas(canvas) else {
+                continue;
+            };
+            let preview = if canvas == self.settings.canvas && self.scene_preview.is_some() {
+                c.preview
+            } else {
+                None
+            };
+            for scene in [c.program, preview].into_iter().flatten() {
+                if let Ok(found) = self.collection.scroll_keys_cued(canvas, scene, &cued) {
+                    keys.extend(found);
+                }
+            }
+        }
+        keys
+    }
+
+    /// Starts the runs of keys new to the lists and ends those no list draws any more,
+    /// at the engine's time now.
+    fn keep_scroll_runs(&mut self) {
+        let keys = self.scroll_keys();
+        if keys.is_empty() && self.scroll_runs.is_empty() {
+            return;
+        }
+        let now = self.engine.clock().now();
+        self.scroll_runs.keep(&keys, now);
+    }
+
     fn send_program_layers(&mut self, plan: &rbs_graph::description::SchedulePlan) {
+        self.keep_scroll_runs();
         let now = self.engine.clock().now();
         let program = self.bound.clone();
         let main = match self.transition_layers(self.settings.canvas, plan, &program) {
@@ -2278,6 +2382,7 @@ impl Studio {
                 self.glide.as_ref(),
                 now,
                 self.settings.canvas,
+                &self.scroll_runs,
             ),
         };
         let views: Vec<(CanvasId, BoundCompositor)> = self
@@ -2289,22 +2394,33 @@ impl Studio {
         for (canvas, bound) in views {
             let layers = match self.transition_layers(canvas, plan, &bound) {
                 Some(layers) => layers,
-                None => paint_layers(&bound, plan, self.glide.as_ref(), now, canvas),
+                None => paint_layers(
+                    &bound,
+                    plan,
+                    self.glide.as_ref(),
+                    now,
+                    canvas,
+                    &self.scroll_runs,
+                ),
             };
             extras.push((canvas, layers));
         }
-        let _ = self.layers.send(main);
+        self.layers.send(main, &self.gpu);
         if let Some(preview) = &mut self.scene_preview {
-            let _ = preview.layers.send(node_layers(&preview.bound, plan));
+            preview.layers.send(
+                node_layers(&preview.bound, plan, &self.scroll_runs),
+                &self.gpu,
+            );
         }
         for run in self.hold_scenes.values_mut() {
             if let Some(view) = run.view_mut() {
-                let _ = view.layers.send(node_layers(&view.bound, plan));
+                view.layers
+                    .send(node_layers(&view.bound, plan, &self.scroll_runs), &self.gpu);
             }
         }
         for (canvas, layers) in extras {
             if let Some(extra) = self.extras.iter_mut().find(|extra| extra.canvas == canvas) {
-                let _ = extra.view.layers.send(layers);
+                extra.view.layers.send(layers, &self.gpu);
             }
         }
     }
@@ -3069,8 +3185,11 @@ impl Studio {
             return Ok(());
         }
         let (width, height) = self.size;
-        let (compositor, layers) =
-            CompositorNode::new(CanvasDesc { width, height }, MAX_LAYERS as u32, Vec::new());
+        let (compositor, layers) = CompositorPort::of_new(CompositorNode::new(
+            CanvasDesc { width, height },
+            MAX_LAYERS as u32,
+            Vec::new(),
+        ));
         self.engine
             .adopt::<GpuRuntime>(RENDER, bound.node, compositor.into_node())?;
         let node = PreviewNode::new(desc);
@@ -5352,7 +5471,7 @@ fn mix_of(collection: &SceneCollection, canvas: CanvasId) -> BTreeMap<SourceId, 
 /// The preview scene's compositor and its picture for a UI (studio mode, ADR-0061).
 struct ScenePreview {
     compositor: NodeId,
-    layers: LayerSender,
+    layers: CompositorPort,
     bound: BoundCompositor,
     /// The preview node and its counters.
     picture: (NodeId, Arc<PreviewNodeStats>),
@@ -5389,7 +5508,7 @@ struct ExtraRun {
 /// A further canvas's compositor and, for a UI, its picture.
 struct ExtraView {
     compositor: NodeId,
-    layers: LayerSender,
+    layers: CompositorPort,
     bound: BoundCompositor,
     picture: Option<(NodeId, Arc<PreviewNodeStats>)>,
 }
@@ -5427,14 +5546,14 @@ fn attach_compositor(
     size: (u32, u32),
     desc: Option<PreviewDesc>,
 ) -> Result<ExtraView, RecordError> {
-    let (compositor, layers) = CompositorNode::new(
+    let (compositor, layers) = CompositorPort::of_new(CompositorNode::new(
         CanvasDesc {
             width: size.0,
             height: size.1,
         },
         MAX_LAYERS as u32,
         Vec::new(),
-    );
+    ));
     engine.adopt::<GpuRuntime>(RENDER, bound.node, compositor.into_node())?;
     let mut picture = None;
     if let Some(desc) = desc {

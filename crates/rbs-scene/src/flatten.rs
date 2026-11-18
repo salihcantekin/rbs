@@ -158,6 +158,16 @@ impl ScrollKey {
             ],
         }
     }
+
+    /// The scaled speed, canvas pixels per second.
+    pub fn speed(&self) -> f32 {
+        f32::from_bits(self.bits[0])
+    }
+
+    /// How long a pause, resume or speed change eases.
+    pub fn ramp_ms(&self) -> u32 {
+        self.ramp_ms
+    }
 }
 
 /// `scroll` in canvas pixels for a box drawn by `placed` from a layout of `size`, with
