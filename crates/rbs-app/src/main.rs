@@ -5971,6 +5971,12 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
         std::sync::Arc::new(|why| deliver(studio_host::Update::Error(why))),
     );
     let mut user_notes = user.notes.clone();
+    // Kept browser sign-ins no saved collection names any more (ADR-0132 decision 10).
+    if let Some(dir) = rbs_app::add_ons::default_root()
+        .and_then(|root| rbs_app::browser_profiles::dir_beside(&root))
+    {
+        rbs_app::browser_profiles::sweep_at_start(dir, || user.all_profile_ids());
+    }
     // What closing the main window does (ADR-0056); a bad file means the default.
     let (mut bg, bg_note) = background::load(&config);
     user_notes.extend(bg_note);

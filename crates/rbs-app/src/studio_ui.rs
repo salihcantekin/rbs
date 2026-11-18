@@ -5405,9 +5405,12 @@ impl StudioUi {
         let _ = id;
     }
 
-    /// Forget sign-in on the Page tab (ADR-0132 decision 10).
+    /// Forget sign-in on the Page tab, after its question (ADR-0132 decision 10): the
+    /// page opens again with a fresh profile and the kept one is deleted.
     pub fn browser_forget_sign_in(&mut self, id: i32) {
-        let _ = id;
+        if self.browser_rows.contains_key(&id) {
+            self.send(Command::ForgetBrowserSignIn(SourceId::from_raw(id as u32)));
+        }
     }
 
     /// Adds a browser page (ADR-0109); an empty `url` adds one that waits for its

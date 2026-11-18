@@ -3,12 +3,18 @@
 //! little-endian length, then a kind byte and its body. Closing the pipe still means
 //! stop.
 
-use crate::MAX_PAYLOAD;
+use crate::input::InputEvent;
+use crate::{MAX_PAYLOAD, PageOptions};
 
 /// Reload the main frame; body: one byte, 1 to bypass the cache.
 pub const KIND_RELOAD: u8 = 2;
 /// Run a script once; body: the script's UTF-8 bytes, empty for the saved script.
 pub const KIND_RUN_SCRIPT: u8 = 3;
+/// New page options (CSS, zoom, script, timers, retry); body: the options as in
+/// `configure` (the profile directory is ignored).
+pub const KIND_PAGE: u8 = 4;
+/// One input event (`crate::input`).
+pub const KIND_INPUT: u8 = 5;
 
 /// A message to a running runner.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,6 +26,10 @@ pub enum Control {
     },
     /// `browser.run_script` (ADR-0149 decision 3): `None` runs the saved script.
     RunScript(Option<String>),
+    /// Live page options (ADR-0149 decision 1): applied without a restart.
+    Page(Box<PageOptions>),
+    /// An input event for the page (ADR-0132 decision 6).
+    Input(InputEvent),
 }
 
 /// Encodes a control message with its length prefix.
@@ -33,6 +43,14 @@ pub fn encode(message: &Control) -> Vec<u8> {
         Control::RunScript(script) => {
             body.push(KIND_RUN_SCRIPT);
             body.extend_from_slice(script.as_deref().unwrap_or_default().as_bytes());
+        }
+        Control::Page(page) => {
+            body.push(KIND_PAGE);
+            page.encode(&mut body);
+        }
+        Control::Input(event) => {
+            body.push(KIND_INPUT);
+            event.encode(&mut body);
         }
     }
     let mut out = Vec::with_capacity(4 + body.len());
@@ -57,6 +75,8 @@ pub fn decode(body: &[u8]) -> Option<Control> {
                 (!text.is_empty()).then(|| text.to_owned()),
             ))
         }
+        KIND_PAGE => PageOptions::decode(body.get(1..)?).map(|p| Control::Page(Box::new(p))),
+        KIND_INPUT => InputEvent::decode(body.get(1..)?).map(Control::Input),
         _ => None,
     }
 }
@@ -92,6 +112,18 @@ mod tests {
             },
             Control::RunScript(None),
             Control::RunScript(Some("document.title = 'é'".into())),
+            Control::Page(Box::new(PageOptions {
+                css: "body { margin: 0 }".into(),
+                zoom_percent: 150,
+                script: "x()".into(),
+                script_on_load: true,
+                script_every_s: 5,
+                reload_every_s: 60,
+                retry_on_error: false,
+                reload_on_file_change: true,
+                profile_dir: String::new(),
+            })),
+            Control::Input(InputEvent::Text("ğ".into())),
         ] {
             let bytes = encode(&m);
             assert_eq!(read(&mut bytes.as_slice()).unwrap(), Some(m));

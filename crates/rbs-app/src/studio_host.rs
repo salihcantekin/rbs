@@ -72,6 +72,8 @@ pub use attributes::{AttributeTargetView, AttributesView};
 mod calibration;
 mod device_sync;
 pub mod filters;
+mod interact;
+pub use interact::{InteractState, MAX_INTERACT};
 mod loudness;
 mod monitor;
 mod network;
@@ -343,10 +345,90 @@ pub enum SourceStatus {
 
 /// A new kept-profile id: 128 random bits as 32 lowercase hex digits (ADR-0132
 /// decision 10).
+/// One `browser.input` event on the runner's wire, or why it is not valid.
+fn browser_input_event(
+    e: &rbs_api::request::BrowserInputEvent,
+) -> Result<rbs_browser_ipc::input::InputEvent, String> {
+    use rbs_api::request::{BrowserInputEvent as E, BrowserModifiers, BrowserMouseButton};
+    use rbs_browser_ipc::input::{self as wire, InputEvent, Key};
+    let bits = |m: &BrowserModifiers| {
+        [
+            (m.shift, wire::SHIFT),
+            (m.ctrl, wire::CTRL),
+            (m.alt, wire::ALT),
+            (m.meta, wire::META),
+        ]
+        .into_iter()
+        .filter(|(on, _)| *on)
+        .fold(0, |acc, (_, bit)| acc | bit)
+    };
+    Ok(match e {
+        E::Move { x, y, modifiers } => InputEvent::Move {
+            x: *x,
+            y: *y,
+            modifiers: bits(modifiers),
+        },
+        E::Leave => InputEvent::Leave { modifiers: 0 },
+        E::Button {
+            x,
+            y,
+            button,
+            down,
+            clicks,
+            modifiers,
+        } => {
+            if !(1..=3).contains(clicks) {
+                return Err("\"clicks\" must be 1, 2 or 3".into());
+            }
+            InputEvent::Button {
+                x: *x,
+                y: *y,
+                button: match button {
+                    BrowserMouseButton::Left => wire::Button::Left,
+                    BrowserMouseButton::Middle => wire::Button::Middle,
+                    BrowserMouseButton::Right => wire::Button::Right,
+                },
+                down: *down,
+                clicks: *clicks,
+                modifiers: bits(modifiers),
+            }
+        }
+        E::Wheel {
+            x,
+            y,
+            dx,
+            dy,
+            modifiers,
+        } => InputEvent::Wheel {
+            x: *x,
+            y: *y,
+            dx: *dx,
+            dy: *dy,
+            modifiers: bits(modifiers),
+        },
+        E::Key {
+            key,
+            down,
+            modifiers,
+        } => InputEvent::Key {
+            key: Key::parse(key).ok_or_else(|| format!("{key:?} is not a key name"))?,
+            down: *down,
+            modifiers: bits(modifiers),
+        },
+        E::Text { text } => {
+            if text.chars().count() > rbs_api::request::BrowserInput::MAX_TEXT {
+                return Err(format!(
+                    "\"text\" is longer than {} characters",
+                    rbs_api::request::BrowserInput::MAX_TEXT
+                ));
+            }
+            InputEvent::Text(text.clone())
+        }
+    })
+}
+
 fn new_profile_id() -> Result<String, Refusal> {
-    let token = rbs_api::token::Token::generate()
-        .map_err(|e| Refusal::Invalid(format!("No random id for the profile: {e}.")))?;
-    Ok(token.hash().to_hex().chars().take(32).collect())
+    crate::browser_profiles::new_id().map_err(Refusal::Invalid)
 }
 
 /// A new browser page's size on a `w` x `h` canvas: the canvas, at most 1920x1080,
@@ -1035,6 +1117,9 @@ pub enum Command {
         /// What to send.
         message: rbs_browser_ipc::control::Control,
     },
+    /// Forget sign-in on the Page tab (ADR-0132 decision 10): the page restarts with a
+    /// fresh profile and the kept one is deleted.
+    ForgetBrowserSignIn(SourceId),
     /// Play, pause, seek or restart a media file (ADR-0108 decision 10): a live action,
     /// not an undo step.
     Media {
@@ -1332,6 +1417,18 @@ pub enum Command {
     },
     /// Close projector `id`: its picture goes. Unknown ids change nothing.
     CloseProjector(u32),
+    /// Open the Interact window of a browser source (ADR-0132 decision 6): its page is
+    /// held at Shown and the UI gets an [`Update::Interact`].
+    OpenInteract(SourceId),
+    /// Close the Interact window of a browser source.
+    CloseInteract(SourceId),
+    /// Input from a focused Interact window to its page (never logged).
+    InteractInput {
+        /// The browser source.
+        source: SourceId,
+        /// The event, in page pixels.
+        event: rbs_browser_ipc::input::InputEvent,
+    },
     /// Change the canvas's size and rate (Settings, Video). The studio restarts with
     /// it (ADR-0041: a running studio's canvas does not change); the program scene's
     /// items are placed again for the new size. Refused while recording. Always
@@ -2940,6 +3037,16 @@ pub enum Update {
         /// Its state.
         state: ProjectorState,
     },
+    /// An Interact window's picture (ADR-0132 decision 6): where the UI connects, or
+    /// that the studio closed it. Sent when either changes.
+    Interact {
+        /// The browser source.
+        source: SourceId,
+        /// Where to connect, once the picture runs.
+        picture: Option<PreviewEndpoint>,
+        /// Its state.
+        state: InteractState,
+    },
     /// What a kind can capture, in OS order.
     Targets(SourceKind, Vec<Target>),
     /// One target's picture ([`Command::GrabThumbnails`]); `None` when the adapter has
@@ -3750,6 +3857,8 @@ struct Host {
     vertical_preview_sent: Option<PreviewEndpoint>,
     /// Open and suspended projectors (ADR-0125 decision 3). Empty: nothing of them.
     projectors: Vec<ProjectorRun>,
+    /// Open Interact windows (ADR-0132 decision 6). Empty: nothing of them.
+    interacts: Vec<interact::InteractRun>,
     /// The scene list as last sent.
     scenes_shown: Option<SceneList>,
     /// The second canvas that runs, and what was last sent about it (ADR-0093).
@@ -3821,6 +3930,9 @@ struct Host {
     browser: Arc<crate::browser_tree::RunnerBrowserTree>,
     /// The installed browser engine the tree passes to each runner (ADR-0145).
     engine_slot: Arc<crate::browser_tree::EngineSlot>,
+    /// `browser-profiles/`, where kept sign-ins live (ADR-0132 decision 10); `None`
+    /// when this run keeps none.
+    profiles_dir: Option<std::path::PathBuf>,
     /// The add-on catalog and running installs (ADR-0145).
     add_ons: add_ons::AddOnsHost,
     /// The preview's ring size from the canvas rate at the last start, when this
@@ -4319,8 +4431,7 @@ fn start(
     let profiles = config
         .add_ons
         .as_ref()
-        .and_then(|setup| setup.root.parent())
-        .map(|data| data.join("browser-profiles"));
+        .and_then(|setup| crate::browser_profiles::dir_beside(&setup.root));
     let add_ons = add_ons::AddOnsHost::new(config.add_ons);
     let engine_slot = Arc::new(crate::browser_tree::EngineSlot::default());
     if collection
@@ -4335,7 +4446,7 @@ fn start(
             .or_else(crate::browser_tree::resolve_runner),
         Arc::clone(&engine_slot),
     );
-    if let Some(dir) = profiles {
+    if let Some(dir) = profiles.clone() {
         tree = tree.with_profiles(dir);
     }
     let browser = Arc::new(tree);
@@ -4449,6 +4560,7 @@ fn start(
         vertical_picture: false,
         vertical_preview_sent: None,
         projectors: Vec::new(),
+        interacts: Vec::new(),
         scenes_shown: None,
         vertical: None,
         vertical_restore_error: None,
@@ -4505,6 +4617,7 @@ fn start(
         browser_tree,
         browser,
         engine_slot,
+        profiles_dir: profiles,
         preview_surfaces: settings.preview.map(|p| p.surfaces),
         dead: None,
         restarting: false,
@@ -5043,6 +5156,13 @@ impl Host {
                 Ok(Reload::Restarted(done)) => self.answer_live(Ok(done), notify),
                 Err(e) => self.answer_live(Err(e), notify),
             },
+            Command::ForgetBrowserSignIn(id) => {
+                let done = self
+                    .forget_sign_in(id, true)
+                    .map(|()| true)
+                    .map_err(|e| Refusal::Conflict(e.message));
+                self.answer(done, notify);
+            }
             Command::BrowserControl { id, message } => {
                 let browser = self
                     .collection
@@ -5409,6 +5529,12 @@ impl Host {
                 self.open_projector(id, canvas, notify);
                 self.publish(notify);
             }
+            Command::OpenInteract(source) => self.open_interact(source, notify),
+            Command::CloseInteract(source) => {
+                self.close_interact(source);
+                self.publish(notify);
+            }
+            Command::InteractInput { source, event } => self.interact_input(source, event),
             Command::CloseProjector(id) => {
                 self.close_projector(id);
                 self.publish(notify);
@@ -11402,27 +11528,119 @@ impl Host {
         source: u32,
         message: &rbs_sources::BrowserMessage,
     ) -> Result<(), ApiError> {
-        let id = SourceId::from_raw(source);
+        if self
+            .studio
+            .browser_control(SourceId::from_raw(source), message)
+        {
+            return Ok(());
+        }
+        Err(self.browser_refusal(source))
+    }
+
+    /// Why a message to `source`'s page was not sent: `not_found` when it is not a
+    /// browser source, else `conflict` with reason `browser_not_running`.
+    fn browser_refusal(&self, source: u32) -> ApiError {
         let browser = self
             .collection
-            .source(id)
+            .source(SourceId::from_raw(source))
             .is_some_and(|s| s.type_id.as_str() == types::BROWSER_SOURCE);
         if !browser {
-            return Err(ApiError::new(
+            return ApiError::new(
                 ErrorKind::NotFound,
                 format!("there is no browser source {source}"),
-            ));
-        }
-        if self.studio.browser_control(id, message) {
-            return Ok(());
+            );
         }
         let mut data = serde_json::Map::new();
         data.insert("reason".into(), "browser_not_running".into());
-        Err(ApiError::with_data(
+        ApiError::with_data(
             ErrorKind::Conflict,
             "the page is not running: it runs while a scene on Program or Preview shows it",
             data,
-        ))
+        )
+    }
+
+    /// `browser.input` (ADR-0132 decisions 6 and 9): the events, in order, to the
+    /// source's running page. Checked first, so a bad event sends none of them. No
+    /// running page is `conflict` with reason `browser_not_running`. Text is never
+    /// logged.
+    fn browser_input(
+        &mut self,
+        source: u32,
+        events: &[rbs_api::request::BrowserInputEvent],
+    ) -> Result<(), ApiError> {
+        if events.len() > rbs_api::request::BrowserInput::MAX_EVENTS {
+            return Err(ApiError::new(
+                ErrorKind::InvalidParams,
+                format!(
+                    "at most {} events per call",
+                    rbs_api::request::BrowserInput::MAX_EVENTS
+                ),
+            ));
+        }
+        let wire = events
+            .iter()
+            .map(browser_input_event)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|why| ApiError::new(ErrorKind::InvalidParams, why))?;
+        let id = SourceId::from_raw(source);
+        if !self.studio.browser_running(id) {
+            // Not a browser source (`not_found`) or no running page (`conflict`).
+            return Err(self.browser_refusal(source));
+        }
+        for event in wire {
+            if !self
+                .studio
+                .browser_control(id, &rbs_sources::BrowserMessage::Input(event))
+            {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    /// Forget sign-in (ADR-0132 decision 10): the source gets a new kept-profile id,
+    /// so its page starts again signed out at once, and the old profile's directory is
+    /// deleted once the page that used it has closed. One undo step, which brings back
+    /// only the id: the profile itself is gone. `stop_first` is the desktop app's
+    /// button, which stops the running page itself; a client is refused with `busy`
+    /// while the page runs (decision 9). The caller applies the collection.
+    fn forget_sign_in(&mut self, id: SourceId, stop_first: bool) -> Result<(), ApiError> {
+        let Some(source) = self
+            .collection
+            .source(id)
+            .filter(|s| s.type_id.as_str() == types::BROWSER_SOURCE)
+        else {
+            return Err(ApiError::new(
+                ErrorKind::NotFound,
+                format!("there is no browser source {}", id.get()),
+            ));
+        };
+        let (name, mut settings) = (source.name.clone(), source.settings.clone());
+        let Some(old) = crate::browser_profiles::id_of(source).map(str::to_owned) else {
+            return Err(ApiError::new(
+                ErrorKind::InvalidParams,
+                format!("{name} keeps no sign-in"),
+            ));
+        };
+        if !stop_first && self.studio.browser_running(id) {
+            return Err(ApiError::new(
+                ErrorKind::Busy,
+                format!("{name} is running: its sign-in is forgotten once the page stops"),
+            ));
+        }
+        let new = crate::browser_profiles::new_id()
+            .map_err(|e| ApiError::new(ErrorKind::Internal, e))?;
+        settings.insert(keys::PROFILE_ID.to_owned(), SettingValue::Text(new));
+        let undo = self
+            .collection
+            .set_source_settings(id, settings)
+            .map_err(|e| ApiError::new(ErrorKind::Internal, e.to_string()))?;
+        self.history
+            .record(EditKind::SourceSettings, &name, 0, vec![undo]);
+        if let Some(dir) = &self.profiles_dir {
+            crate::browser_profiles::remove_soon(dir, &old);
+        }
+        Ok(())
     }
 
     fn reload_source(&mut self, id: SourceId) -> Result<Reload, Refusal> {
@@ -13378,6 +13596,7 @@ impl Host {
     /// write behind it, never a wait here).
     fn publish(&mut self, notify: &dyn Fn(Update)) {
         self.sync_projectors(notify);
+        self.sync_interacts(notify);
         self.publish_save();
         self.refresh_sizes();
         if self.vertical_sent != Some(self.vertical) {
@@ -14660,6 +14879,14 @@ impl ApiTarget<'_> {
                 .map(|()| Response::Done(Empty {})),
             C::BrowserRunScript(p) => host
                 .browser_message(p.source, &rbs_sources::BrowserMessage::RunScript(p.script))
+                .map(|()| Response::Done(Empty {})),
+            C::BrowserForgetSignIn(p) => {
+                host.forget_sign_in(SourceId::from_raw(p.source), false)?;
+                host.apply(notify);
+                Ok(Response::Done(Empty {}))
+            }
+            C::BrowserInput(p) => host
+                .browser_input(p.source, &p.events)
                 .map(|()| Response::Done(Empty {})),
             C::SourceReload(p) => {
                 if host

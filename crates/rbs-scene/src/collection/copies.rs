@@ -26,6 +26,9 @@ pub struct SourceCopy {
     /// `Some` sets the copy's mute (a companion copy starts muted); `None` keeps the
     /// original's.
     pub muted: Option<bool>,
+    /// Settings the copy gets instead of the original's values, such as a browser
+    /// page's new kept-profile id (ADR-0132 decision 10). Empty: all copied.
+    pub settings: Vec<(String, SettingValue)>,
 }
 
 impl SourceCopy {
@@ -36,7 +39,14 @@ impl SourceCopy {
             name: name.to_owned(),
             standby,
             muted: None,
+            settings: Vec::new(),
         }
+    }
+
+    /// The same copy with `key` set to `value` instead of the original's value.
+    pub fn with_setting(mut self, key: &str, value: SettingValue) -> Self {
+        self.settings.push((key.to_owned(), value));
+        self
     }
 
     /// The same copy with this mute.
@@ -288,6 +298,9 @@ impl SceneCollection {
             }
             if let Some(m) = c.muted {
                 s.audio.muted = m;
+            }
+            for (key, value) in &c.settings {
+                s.settings.insert(key.clone(), value.clone());
             }
             for f in &mut s.filters {
                 f.id = FilterId(issue(&mut next.filter)?);

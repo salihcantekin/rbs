@@ -185,6 +185,13 @@ fn control_messages_reach_the_running_helper_in_order() {
         Control::Reload { bypass_cache: true },
         Control::RunScript(Some("document.title = 'x'".into())),
         Control::RunScript(None),
+        // Live page options and input keep the same process (ADR-0149 decision 9).
+        Control::Page(Box::new(rbs_browser_ipc::PageOptions {
+            zoom_percent: 150,
+            css: "body{margin:0}".into(),
+            ..rbs_browser_ipc::PageOptions::default()
+        })),
+        Control::Input(rbs_browser_ipc::input::InputEvent::Text("a".into())),
     ];
     for (n, message) in messages.iter().enumerate() {
         assert!(sup.send(message));

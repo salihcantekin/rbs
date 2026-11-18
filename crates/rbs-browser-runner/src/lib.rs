@@ -654,6 +654,8 @@ pub fn control_mark(message: &Control) -> u8 {
         Control::Reload { bypass_cache: true } => 2,
         Control::RunScript(None) => 3,
         Control::RunScript(Some(_)) => 4,
+        Control::Page(_) => 5,
+        Control::Input(_) => 6,
     }
 }
 

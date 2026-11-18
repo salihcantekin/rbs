@@ -1062,6 +1062,138 @@ pub struct BrowserRunScript {
     pub script: Option<String>,
 }
 
+/// `browser.forget_sign_in` (protocol 1.95, ADR-0132 decision 10): deletes the kept
+/// profile of a browser source that keeps signed in. Cannot be undone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrowserForgetSignIn {
+    /// The browser source's id.
+    pub source: u32,
+}
+
+/// `browser.input` (protocol 1.95, ADR-0132 decisions 6 and 9): pointer, wheel, key
+/// and text events for a browser source's running page, in page pixels.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrowserInput {
+    /// The browser source's id.
+    pub source: u32,
+    /// The events, in order; at most [`BrowserInput::MAX_EVENTS`].
+    pub events: Vec<BrowserInputEvent>,
+}
+
+impl BrowserInput {
+    /// The most events one call may carry.
+    pub const MAX_EVENTS: usize = 64;
+    /// The most characters one `text` event may carry.
+    pub const MAX_TEXT: usize = 256;
+}
+
+/// A mouse button of [`BrowserInputEvent::Button`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserMouseButton {
+    /// The primary button.
+    Left,
+    /// The wheel button.
+    Middle,
+    /// The secondary button.
+    Right,
+}
+
+/// Modifier keys held during a [`BrowserInputEvent`]; absent fields are false.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrowserModifiers {
+    /// Shift.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub shift: bool,
+    /// Control.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ctrl: bool,
+    /// Alt (Option on macOS).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub alt: bool,
+    /// The Windows key or Command.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub meta: bool,
+}
+
+/// One event of `browser.input`. Coordinates are page pixels, `0..width` and
+/// `0..height` of the source's page.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum BrowserInputEvent {
+    /// The pointer moved to `x`, `y`.
+    Move {
+        /// Page x.
+        x: i32,
+        /// Page y.
+        y: i32,
+        /// Held modifiers.
+        #[serde(default)]
+        modifiers: BrowserModifiers,
+    },
+    /// The pointer left the page.
+    Leave,
+    /// A button went down or up at `x`, `y`; `clicks` counts a double click as 2.
+    Button {
+        /// Page x.
+        x: i32,
+        /// Page y.
+        y: i32,
+        /// Which button.
+        button: BrowserMouseButton,
+        /// Pressed (true) or released.
+        down: bool,
+        /// 1 for a click, 2 for a double click, 3 for a triple click.
+        #[serde(default = "one_click")]
+        clicks: u8,
+        /// Held modifiers.
+        #[serde(default)]
+        modifiers: BrowserModifiers,
+    },
+    /// The wheel turned at `x`, `y` by `dx`, `dy` pixels (positive `dy` scrolls up).
+    Wheel {
+        /// Page x.
+        x: i32,
+        /// Page y.
+        y: i32,
+        /// Horizontal pixels.
+        #[serde(default)]
+        dx: i32,
+        /// Vertical pixels.
+        #[serde(default)]
+        dy: i32,
+        /// Held modifiers.
+        #[serde(default)]
+        modifiers: BrowserModifiers,
+    },
+    /// A key went down or up. `key` is a key name of the DOM `KeyboardEvent.key`
+    /// list that has no text (`Enter`, `Tab`, `Backspace`, `Escape`, `Delete`,
+    /// `Insert`, `Home`, `End`, `PageUp`, `PageDown`, `ArrowLeft`, `ArrowRight`,
+    /// `ArrowUp`, `ArrowDown`, `F1` to `F12`), or one character for a shortcut
+    /// (`a` with `ctrl`). Text is typed with `text`.
+    Key {
+        /// The key.
+        key: String,
+        /// Pressed (true) or released.
+        down: bool,
+        /// Held modifiers.
+        #[serde(default)]
+        modifiers: BrowserModifiers,
+    },
+    /// Typed text, as the keyboard and input method produced it.
+    Text {
+        /// The characters.
+        text: String,
+    },
+}
+
+fn one_click() -> u8 {
+    1
+}
+
 /// `media.play`, `media.pause`, `media.restart` and `media.state` (protocol 1.83,
 /// ADR-0108 decision 10): one media-file source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1933,6 +2065,10 @@ pub enum Command {
     BrowserReload(BrowserReload),
     /// `browser.run_script` (protocol 1.91, ADR-0149).
     BrowserRunScript(BrowserRunScript),
+    /// `browser.forget_sign_in` (protocol 1.95, ADR-0132).
+    BrowserForgetSignIn(BrowserForgetSignIn),
+    /// `browser.input` (protocol 1.95, ADR-0132).
+    BrowserInput(BrowserInput),
     /// `source.get_settings` (protocol 1.17).
     SourceGetSettings(GetSourceSettings),
     /// `media.play` (protocol 1.83, ADR-0108).
@@ -2228,6 +2364,8 @@ impl Command {
             Command::SourceReload(_) => "source.reload",
             Command::BrowserReload(_) => "browser.reload",
             Command::BrowserRunScript(_) => "browser.run_script",
+            Command::BrowserForgetSignIn(_) => "browser.forget_sign_in",
+            Command::BrowserInput(_) => "browser.input",
             Command::SourceGetSettings(_) => "source.get_settings",
             Command::MediaPlay(_) => "media.play",
             Command::MediaPause(_) => "media.pause",
@@ -2554,6 +2692,10 @@ pub const METHODS: &[MethodInfo] = &[
     // ADR-0149 decision 7).
     m("browser.reload", Some(Scope::Control), Effect::Live),
     m("browser.run_script", Some(Scope::Control), Effect::Live),
+    // A click can do anything in a page (ADR-0132 decision 9); a forgotten sign-in
+    // cannot come back (decision 10).
+    m("browser.input", Some(Scope::Control), Effect::Live),
+    m("browser.forget_sign_in", Some(Scope::Control), Effect::Destructive),
     m("source.get_settings", Some(Scope::Control), Effect::Read),
     m("media.play", Some(Scope::Control), Effect::Edit),
     m("media.pause", Some(Scope::Control), Effect::Edit),
@@ -2940,6 +3082,10 @@ enum WireRequest {
     BrowserReload(BrowserReload),
     #[serde(rename = "browser.run_script")]
     BrowserRunScript(BrowserRunScript),
+    #[serde(rename = "browser.forget_sign_in")]
+    BrowserForgetSignIn(BrowserForgetSignIn),
+    #[serde(rename = "browser.input")]
+    BrowserInput(BrowserInput),
     #[serde(rename = "source.get_settings")]
     SourceGetSettings(GetSourceSettings),
     #[serde(rename = "media.play")]
@@ -3237,6 +3383,8 @@ impl From<WireRequest> for Request {
             WireRequest::SourceReload(p) => Request::Command(C::SourceReload(p)),
             WireRequest::BrowserReload(p) => Request::Command(C::BrowserReload(p)),
             WireRequest::BrowserRunScript(p) => Request::Command(C::BrowserRunScript(p)),
+            WireRequest::BrowserForgetSignIn(p) => Request::Command(C::BrowserForgetSignIn(p)),
+            WireRequest::BrowserInput(p) => Request::Command(C::BrowserInput(p)),
             WireRequest::SourceGetSettings(p) => Request::Command(C::SourceGetSettings(p)),
             WireRequest::MediaPlay(p) => Request::Command(C::MediaPlay(p)),
             WireRequest::MediaPause(p) => Request::Command(C::MediaPause(p)),
@@ -3431,6 +3579,8 @@ impl From<Request> for WireRequest {
                 C::SourceReload(p) => WireRequest::SourceReload(p),
                 C::BrowserReload(p) => WireRequest::BrowserReload(p),
                 C::BrowserRunScript(p) => WireRequest::BrowserRunScript(p),
+                C::BrowserForgetSignIn(p) => WireRequest::BrowserForgetSignIn(p),
+                C::BrowserInput(p) => WireRequest::BrowserInput(p),
                 C::SourceGetSettings(p) => WireRequest::SourceGetSettings(p),
                 C::MediaPlay(p) => WireRequest::MediaPlay(p),
                 C::MediaPause(p) => WireRequest::MediaPause(p),

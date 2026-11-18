@@ -199,6 +199,33 @@ pub const BROWSER_KEYS: [&str; 16] = [
     keys::RETRY_ON_ERROR,
 ];
 
+/// Keys a running page takes in place (ADR-0132 decision 4, ADR-0149 decision 1): a
+/// change of only these keeps the node and its process, and reaches the runner over
+/// IPC ([`apply_browser_live`]). Every other key opens the page again.
+pub const BROWSER_LIVE_KEYS: [&str; 8] = [
+    keys::CSS,
+    keys::RELOAD_ON_FILE_CHANGE,
+    keys::RELOAD_EVERY_S,
+    keys::SCRIPT,
+    keys::SCRIPT_ON_LOAD,
+    keys::SCRIPT_EVERY_S,
+    keys::ZOOM_PERCENT,
+    keys::RETRY_ON_ERROR,
+];
+
+/// Hands a browser source's new live settings to its control handle: a running page
+/// gets them at once, and the next start of this node uses them. `settings` passed
+/// `validate_settings` before the document write, so a refusal here changes nothing.
+/// Control thread.
+pub fn apply_browser_live(
+    control: &BrowserControlSidecar,
+    settings: &Settings,
+) -> Result<(), (&'static str, &'static str)> {
+    let page = browser_settings(settings)?.configure().page;
+    control.set_page(page);
+    Ok(())
+}
+
 /// Keys whose value can make the page reach the network on its own, so a session
 /// without the network permission may not write them (ADR-0052, ADR-0132 decision 4,
 /// ADR-0149 decisions 3 and 5). `keep_running` counts only when set to true.
@@ -715,6 +742,9 @@ pub struct BrowserControlSidecar {
     /// mismatch), read by the studio to word the source and to start it again after
     /// an install.
     engine: AtomicU8,
+    /// Page options changed in place since this node was made (live keys): the next
+    /// start uses them instead of the node's own.
+    page: Mutex<Option<PageOptions>>,
 }
 
 fn encode_engine(reason: Option<&'static str>) -> u8 {
@@ -735,7 +765,23 @@ impl BrowserControlSidecar {
             source,
             exited: AtomicBool::new(false),
             engine: AtomicU8::new(0),
+            page: Mutex::new(None),
         }
+    }
+
+    /// New page options (live keys): kept for the next start and sent to a running
+    /// page. True when a running page took them.
+    pub fn set_page(&self, page: PageOptions) -> bool {
+        let sent = self.send(&Control::Page(Box::new(page.clone())));
+        if let Ok(mut slot) = self.page.lock() {
+            *slot = Some(page);
+        }
+        sent
+    }
+
+    /// The page options set in place since this node was made, if any.
+    fn page(&self) -> Option<PageOptions> {
+        self.page.lock().ok().and_then(|slot| slot.clone())
     }
 
     /// The sink helpers fill and the render path reads.
@@ -984,6 +1030,9 @@ impl BrowserSourceNode {
             return Err(BrowserStartError::Cap);
         }
         let mut configure = self.settings.configure();
+        if let Some(page) = self.control.page() {
+            configure.page = page;
+        }
         if let Some(id) = self.settings.profile_id.as_deref() {
             configure.page.profile_dir = tree.profile_dir(id).unwrap_or_default();
         }

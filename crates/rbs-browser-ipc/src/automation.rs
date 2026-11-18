@@ -67,11 +67,15 @@ pub fn zoom_level(percent: u16) -> f64 {
 
 /// The one fixed script that applies custom CSS (ADR-0132 decision 4): a constructed
 /// stylesheet added to `document.adoptedStyleSheets`, with the CSS only as an escaped
-/// string value.
+/// string value. The sheet is kept on the document under a fixed symbol, so a CSS
+/// change on a running page replaces its rules instead of adding a second sheet; an
+/// empty `css` empties it.
 pub fn css_script(css: &str) -> String {
     format!(
-        "(()=>{{const s=new CSSStyleSheet();s.replaceSync({});\
-         document.adoptedStyleSheets=[...document.adoptedStyleSheets,s];}})();",
+        "(()=>{{const k=Symbol.for(\"rbs.css\");let s=document[k];\
+         if(!s){{s=new CSSStyleSheet();Object.defineProperty(document,k,{{value:s}});\
+         document.adoptedStyleSheets=[...document.adoptedStyleSheets,s];}}\
+         s.replaceSync({});}})();",
         js_string(css)
     )
 }
@@ -197,6 +201,21 @@ enum Phase {
     Loaded,
 }
 
+impl CycleOptions {
+    /// The cycle settings of a page's options; `transparent` adds a style to apply.
+    /// An empty script never runs.
+    pub fn of(page: &crate::PageOptions, transparent: bool) -> Self {
+        let script = !page.script.is_empty();
+        Self {
+            reload_every_s: page.reload_every_s,
+            script_every_s: if script { page.script_every_s } else { 0 },
+            script_on_load: page.script_on_load && script,
+            retry_on_error: page.retry_on_error,
+            restyles: transparent || !page.css.is_empty() || page.zoom_percent != 100,
+        }
+    }
+}
+
 /// The main frame's load cycle as the runner sees it (ADR-0132 decision 4, ADR-0149
 /// decisions 2, 3 and 6): which frames are held, when to reload, retry and run the
 /// script. Times are the runner's own clock since any fixed start; no clock is read
@@ -220,6 +239,23 @@ pub struct Cycle {
 }
 
 impl Cycle {
+    /// New settings while the page runs (ADR-0149 decision 1): a changed reload or
+    /// script interval counts from `now` while the page is loaded; the other settings
+    /// apply from the next load.
+    pub fn set_options(&mut self, now: Duration, options: CycleOptions) {
+        let old = std::mem::replace(&mut self.options, options);
+        if !matches!(self.phase, Phase::Loaded) {
+            return;
+        }
+        let after = |s: u32| (s > 0).then(|| now + Duration::from_secs(u64::from(s)));
+        if old.reload_every_s != options.reload_every_s {
+            self.reload_due = after(options.reload_every_s);
+        }
+        if old.script_every_s != options.script_every_s {
+            self.script_due = after(options.script_every_s);
+        }
+    }
+
     /// A cycle before the first load.
     pub fn new(options: CycleOptions) -> Self {
         Self {
@@ -514,9 +550,45 @@ mod tests {
     }
 
     #[test]
+    fn a_changed_interval_counts_from_the_change_and_others_wait_for_the_next_load() {
+        let mut c = Cycle::new(CycleOptions {
+            reload_every_s: 60,
+            ..opts()
+        });
+        c.navigate(ms(0), Start::Load);
+        c.finished(ms(1_000));
+        // Same reload interval, a script interval added: only the script timer moves.
+        c.set_options(
+            ms(5_000),
+            CycleOptions {
+                reload_every_s: 60,
+                script_every_s: 10,
+                ..opts()
+            },
+        );
+        assert_eq!(c.tick(ms(14_999)), None);
+        assert_eq!(c.tick(ms(15_000)), Some(Due::RunScript));
+        assert_eq!(c.tick(ms(61_000)), Some(Due::Reload), "the reload kept its time");
+        // Turned off while loading: nothing is due after the next load either.
+        c.navigate(ms(61_000), Start::Reload);
+        c.set_options(ms(61_500), opts());
+        c.finished(ms(62_000));
+        assert_eq!(c.tick(ms(500_000)), None);
+        let page = crate::PageOptions {
+            script_every_s: 5,
+            script_on_load: true,
+            ..crate::PageOptions::default()
+        };
+        let o = CycleOptions::of(&page, false);
+        assert_eq!((o.script_every_s, o.script_on_load, o.restyles), (0, false, false));
+        assert!(CycleOptions::of(&crate::PageOptions::default(), true).restyles);
+    }
+
+    #[test]
     fn css_is_only_ever_a_string_value() {
         let s = css_script("body{background:none}\"); alert(1); (\"\n\u{2028}</script>");
-        assert!(s.starts_with("(()=>{const s=new CSSStyleSheet();s.replaceSync(\""));
+        assert!(s.starts_with("(()=>{const k=Symbol.for(\"rbs.css\");let s=document[k];"));
+        assert!(s.contains("s.replaceSync(\"body{background:none}"));
         assert!(s.contains(r#"\"); alert(1); (\""#));
         assert!(s.contains(r"\n\u2028"));
         assert_eq!(js_string("a\\b\u{1}"), r#""a\\b\u0001""#);
