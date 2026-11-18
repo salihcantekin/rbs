@@ -1006,7 +1006,7 @@ impl Studio {
                     );
                     let compositor = compositor.with_ready(Arc::clone(&ready));
                     self.engine
-                        .adopt::<GpuRuntime>(RENDER, bound.node, Box::new(compositor))?;
+                        .adopt::<GpuRuntime>(RENDER, bound.node, compositor.into_node())?;
                     t.incoming = Some(IncomingView {
                         compositor: bound.node,
                         layers,

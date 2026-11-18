@@ -5,7 +5,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use rbs_core::media::{ColorSpace, FramePayload, PixelFormat, Size, TransferFunction, VideoFormat};
+use rbs_core::media::{
+    ColorSpace, FramePayload, PixelFormat, Size, TextureId, TransferFunction, VideoFormat,
+    next_generation,
+};
 use rbs_core::time::Timestamp;
 use rbs_graph::description::NodeId;
 use rbs_graph::node::{LinkKind, NodeDescriptor, NodeKind, NodeTypeId, Pin};
@@ -226,6 +229,8 @@ pub trait ReadySignal: Send + 'static {
     const TRACKS: bool;
     /// Called after a tick at which every linked layer had a texture frame.
     fn mark(&self, tick: u64);
+    /// The same signal (shares the counter).
+    fn clone_signal(&self) -> Self;
 }
 
 /// No ready counter: every compositor except a transition's incoming one.
@@ -236,6 +241,9 @@ impl ReadySignal for NoReady {
     const TRACKS: bool = false;
     #[inline(always)]
     fn mark(&self, _: u64) {}
+    fn clone_signal(&self) -> Self {
+        Self
+    }
 }
 
 /// A ready counter: stores the tick index (at least 1) with `Release`.
@@ -248,10 +256,66 @@ impl ReadySignal for ReadyCounter {
     fn mark(&self, tick: u64) {
         self.0.store(tick.max(1), Ordering::Release);
     }
+    fn clone_signal(&self) -> Self {
+        Self(Arc::clone(&self.0))
+    }
 }
 
+/// When a compositor draws (R-03 of the November 2026 performance audit; spec
+/// `docs/specs/gpu-compositor.md`, "Render on change"). A type parameter, so the hot loop
+/// never tests a flag: [`OnChange`] compiles the key check in, [`EveryTick`] compiles it
+/// away and draws every tick as before.
+pub trait Redraw: Send + 'static {
+    /// True for [`OnChange`]: an unchanged tick leaves the canvas slot as it is.
+    const ON_CHANGE: bool;
+}
+
+/// Draws only when a layer's picture, the layer list or an animation changed; otherwise
+/// the canvas frame of the last draw stays on "canvas" with its timestamp and sequence.
+/// The default.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct OnChange;
+
+impl Redraw for OnChange {
+    const ON_CHANGE: bool = true;
+}
+
+/// Draws every tick (diagnostics and A/B measurements: `RBS_RENDER_EVERY_TICK=1`).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct EveryTick;
+
+impl Redraw for EveryTick {
+    const ON_CHANGE: bool = false;
+}
+
+/// The environment variable that makes [`CompositorNode::into_node`] build compositors
+/// that draw every tick: `1` (anything but empty or `0`).
+pub const RENDER_EVERY_TICK_ENV: &str = "RBS_RENDER_EVERY_TICK";
+
+/// Whether [`RENDER_EVERY_TICK_ENV`] is set. Read once per process, on the first call
+/// (the control thread building a graph), never on the render thread.
+pub fn render_every_tick() -> bool {
+    static EVERY: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *EVERY.get_or_init(|| {
+        std::env::var_os(RENDER_EVERY_TICK_ENV).is_some_and(|v| !v.is_empty() && v != "0")
+    })
+}
+
+/// Counters of one compositor node, read by diagnostics. One relaxed add per tick.
+#[derive(Debug, Default)]
+pub struct CompositorStats {
+    /// Ticks that drew the canvas.
+    pub drawn: AtomicU64,
+    /// Ticks that found every input unchanged and kept the last canvas ([`OnChange`]).
+    pub unchanged: AtomicU64,
+}
+
+/// What a layer showed at the last draw: its texture and the picture's key, or `None`
+/// for a layer that had no picture.
+type LayerKey = Option<(TextureId, Timestamp, u64)>;
+
 /// Draws the frames on its "layers" links into a canvas and publishes it on "canvas".
-pub struct CompositorNode<R: ReadySignal = NoReady> {
+pub struct CompositorNode<R: ReadySignal = NoReady, D: Redraw = OnChange> {
     descriptor: NodeDescriptor,
     canvas: CanvasDesc,
     capacity: u32,
@@ -264,6 +328,18 @@ pub struct CompositorNode<R: ReadySignal = NoReady> {
     /// which every layer of its list whose link resolves had a texture frame.
     /// [`NoReady`] for every other compositor, which then does no more work.
     ready: R,
+    /// The key of the last draw, one entry per listed layer; room for `capacity` entries
+    /// reserved in `prepare` ([`OnChange`] only).
+    drawn_key: Vec<LayerKey>,
+    /// This tick's key, built beside `scratch`; swapped with `drawn_key` after a draw.
+    key: Vec<LayerKey>,
+    /// `drawn_key` describes the frame on "canvas" (false until the first draw and after
+    /// a failed one).
+    drawn_valid: bool,
+    /// Tick time of the last draw: a fade or slide that had not ended then draws again.
+    drawn_at: Timestamp,
+    stats: Arc<CompositorStats>,
+    redraw: std::marker::PhantomData<D>,
 }
 
 impl CompositorNode {
@@ -279,6 +355,12 @@ impl CompositorNode {
             compositor: None,
             scratch: Vec::new(),
             ready: NoReady,
+            drawn_key: Vec::new(),
+            key: Vec::new(),
+            drawn_valid: false,
+            drawn_at: Timestamp::ZERO,
+            stats: Arc::default(),
+            redraw: std::marker::PhantomData,
         };
         (node, sender)
     }
@@ -287,6 +369,31 @@ impl CompositorNode {
     /// tick index (Release) on each tick at which every listed layer whose link resolves
     /// had a texture frame; an empty list counts as ready. 0 means never.
     pub fn with_ready(self, ready: Arc<AtomicU64>) -> CompositorNode<ReadyCounter> {
+        self.rebuild(ReadyCounter(ready))
+    }
+}
+
+impl<R: ReadySignal> CompositorNode<R> {
+    /// This compositor drawing every tick, as before render on change ([`EveryTick`]).
+    pub fn every_tick(self) -> CompositorNode<R, EveryTick> {
+        let ready = self.ready.clone_signal();
+        self.rebuild(ready)
+    }
+
+    /// The node for the graph: [`OnChange`], or [`EveryTick`] when
+    /// [`render_every_tick`] says so (read once per process).
+    pub fn into_node(self) -> Box<dyn Node<GpuRuntime>> {
+        if render_every_tick() {
+            Box::new(self.every_tick())
+        } else {
+            Box::new(self)
+        }
+    }
+}
+
+impl<R: ReadySignal, D: Redraw> CompositorNode<R, D> {
+    /// The same node with another ready signal and redraw policy.
+    fn rebuild<R2: ReadySignal, D2: Redraw>(self, ready: R2) -> CompositorNode<R2, D2> {
         CompositorNode {
             descriptor: self.descriptor,
             canvas: self.canvas,
@@ -294,12 +401,23 @@ impl CompositorNode {
             layers: self.layers,
             compositor: self.compositor,
             scratch: self.scratch,
-            ready: ReadyCounter(ready),
+            ready,
+            drawn_key: self.drawn_key,
+            key: self.key,
+            drawn_valid: false,
+            drawn_at: Timestamp::ZERO,
+            stats: self.stats,
+            redraw: std::marker::PhantomData,
         }
+    }
+
+    /// The node's counters.
+    pub fn stats(&self) -> Arc<CompositorStats> {
+        Arc::clone(&self.stats)
     }
 }
 
-impl<R: ReadySignal> CompositorNode<R> {
+impl<R: ReadySignal, D: Redraw> CompositorNode<R, D> {
     /// The most layers this node draws.
     pub fn capacity(&self) -> u32 {
         self.capacity
@@ -331,7 +449,7 @@ fn uv(crop: PixelCrop, width: u32, height: u32) -> UvRect {
     }
 }
 
-impl<R: ReadySignal> Node<GpuRuntime> for CompositorNode<R> {
+impl<R: ReadySignal, D: Redraw> Node<GpuRuntime> for CompositorNode<R, D> {
     fn descriptor(&self) -> &NodeDescriptor {
         &self.descriptor
     }
@@ -341,6 +459,11 @@ impl<R: ReadySignal> Node<GpuRuntime> for CompositorNode<R> {
             .map_err(|e| NodeError::Failed(e.to_string()))?;
         self.compositor = Some(compositor);
         self.scratch = Vec::with_capacity(self.capacity as usize);
+        if D::ON_CHANGE {
+            self.drawn_key = Vec::with_capacity(self.capacity as usize);
+            self.key = Vec::with_capacity(self.capacity as usize);
+        }
+        self.drawn_valid = false;
         Ok(())
     }
 
@@ -363,27 +486,42 @@ impl<R: ReadySignal> Node<GpuRuntime> for CompositorNode<R> {
         let compositor = self.compositor.as_mut().ok_or(NodeError::NotReady)?;
         let (inputs, outputs, local) = ctx.parts();
 
-        self.layers.update();
+        let listed = self.layers.update();
         self.scratch.clear();
+        if D::ON_CHANGE {
+            self.key.clear();
+        }
+        // A fade or slide that had not ended at the last draw: this tick moves it.
+        let mut moving = false;
         // A linked layer without a picture this tick (ADR-0128 decision 7).
         let mut missing = false;
         for spec in self.layers.get().iter().take(self.capacity as usize) {
             let Some(link) = link_of(&inputs, spec) else {
                 continue;
             };
-            let Some(frame) = inputs.video(LAYERS_PIN, link) else {
+            let picture = inputs.video(LAYERS_PIN, link).and_then(|frame| {
+                let FramePayload::Texture(id) = *frame.payload() else {
+                    return None;
+                };
+                let tex = local.pool.get(id)?;
+                Some((frame, id, tex.desc()))
+            });
+            if D::ON_CHANGE {
+                // Room for `capacity` entries was reserved in `prepare`: no allocation.
+                self.key
+                    .push(picture.map(|(f, id, _)| (id, f.timestamp(), f.sequence())));
+                let ends = |start: Timestamp, length: Duration| start + length;
+                moving |= spec
+                    .fade
+                    .is_some_and(|f| self.drawn_at <= ends(f.start, f.duration))
+                    || spec
+                        .slide
+                        .is_some_and(|m| self.drawn_at <= ends(m.start, m.duration));
+            }
+            let Some((frame, id, d)) = picture else {
                 missing = R::TRACKS;
                 continue;
             };
-            let FramePayload::Texture(id) = *frame.payload() else {
-                missing = R::TRACKS;
-                continue;
-            };
-            let Some(tex) = local.pool.get(id) else {
-                missing = R::TRACKS;
-                continue;
-            };
-            let d = tex.desc();
             let source_transfer =
                 if frame.format().color.transfer == TransferFunction::Srgb && !d.format.is_srgb() {
                     Transfer::Srgb
@@ -409,6 +547,21 @@ impl<R: ReadySignal> Node<GpuRuntime> for CompositorNode<R> {
             });
         }
 
+        // Render on change (R-03): nothing new to draw, so the canvas frame of the last
+        // draw stays on "canvas" with its timestamp and sequence, and every reader that
+        // keys on them skips its work too. The canvas description is touched so its
+        // ring is not trimmed while unchanged.
+        if D::ON_CHANGE && self.drawn_valid && !listed && !moving && self.key == self.drawn_key {
+            local.pool.touch(&desc);
+            self.stats.unchanged.fetch_add(1, Ordering::Relaxed);
+            if R::TRACKS && !missing {
+                self.ready.mark(tick.index);
+            }
+            return Ok(());
+        }
+        // A failed draw below leaves the key invalid, so the next tick draws again.
+        self.drawn_valid = false;
+
         let canvas = local.pool.acquire(gpu, &desc).map_err(backend)?;
         let drawn = compositor.render(gpu, &local.pool, &self.scratch, canvas);
         let format = VideoFormat::new(
@@ -421,8 +574,16 @@ impl<R: ReadySignal> Node<GpuRuntime> for CompositorNode<R> {
         let released = local.pool.release(canvas);
         let frame = frame.map_err(backend)?;
         released.map_err(backend)?;
-        // Dropping the previous frame only releases its lease.
-        drop(outputs.set_video(CANVAS_PIN, Some(frame.with_sequence(tick.index)))?);
+        // A new generation per draw: an unchanged canvas keeps its key, so the key
+        // changes exactly when the picture does (ADR-0117 decision 4), and a node built
+        // anew never repeats an earlier instance's key.
+        drop(outputs.set_video(CANVAS_PIN, Some(frame.with_sequence(next_generation())))?);
+        self.stats.drawn.fetch_add(1, Ordering::Relaxed);
+        if D::ON_CHANGE {
+            std::mem::swap(&mut self.key, &mut self.drawn_key);
+            self.drawn_valid = true;
+            self.drawn_at = tick.time;
+        }
         if R::TRACKS && !missing {
             self.ready.mark(tick.index);
         }
@@ -432,6 +593,9 @@ impl<R: ReadySignal> Node<GpuRuntime> for CompositorNode<R> {
     fn release(&mut self, _ctx: &mut PrepareCtx<'_, GpuRuntime>) {
         self.compositor = None;
         self.scratch = Vec::new();
+        self.drawn_key = Vec::new();
+        self.key = Vec::new();
+        self.drawn_valid = false;
     }
 }
 

@@ -123,6 +123,127 @@ fn take_oldest_passes_every_completed_frame_in_order() {
     assert_eq!((stats.stale, stats.delivered), (0, DOWNLOAD_RING as u64));
 }
 
+/// The first luma byte of a system frame and where its plane starts.
+fn first_luma(frame: &VideoFrame) -> (u8, *const u8) {
+    let FramePayload::System(sys) = frame.payload() else {
+        panic!("not a system frame");
+    };
+    let (luma, _) = sys.plane(0).unwrap();
+    (luma[0], luma.as_ptr())
+}
+
+#[test]
+fn a_repeat_delivers_the_picture_before_it_without_a_copy() {
+    let Some(ctx) = common::gpu() else { return };
+    let mut pool = TexturePool::new();
+    let canvas = solid(ctx, &mut pool, W, H, [0.5, 0.5, 0.5, 1.0]);
+    let mut down = YuvDownload::new(ctx, YuvFormat::Nv12, W, H).unwrap();
+    assert!(
+        down.submit(ctx, &pool, &canvas_frame(&pool, canvas, 1))
+            .unwrap()
+    );
+    ctx.wait_idle().unwrap();
+    ctx.poll();
+    let first = down.take_ready(ctx).unwrap().expect("a completed frame");
+    // A canvas that did not change: queued again with the next tick's stamp (R-03).
+    assert!(down.submit_repeat(Timestamp::from_nanos(2), 1));
+    assert_eq!(down.in_flight(), 1);
+    let again = down.take_ready(ctx).unwrap().expect("the repeat");
+    assert_eq!(
+        (again.timestamp(), again.sequence()),
+        (Timestamp::from_nanos(2), 1)
+    );
+    assert_eq!(
+        first_luma(&again),
+        first_luma(&first),
+        "the same buffer, no copy"
+    );
+    // Not a copy: `converted` stays at one (the shared device's `frames_cpu_copied` is
+    // also counted by the other tests of this binary).
+    let stats = down.stats();
+    assert_eq!(
+        (stats.delivered, stats.repeated, stats.converted),
+        (2, 1, 1)
+    );
+    assert_eq!(down.in_flight(), 0);
+}
+
+#[test]
+fn a_repeat_comes_out_after_the_readback_before_it() {
+    let Some(ctx) = common::gpu() else { return };
+    let mut pool = TexturePool::new();
+    let grey = solid(ctx, &mut pool, W, H, [0.5, 0.5, 0.5, 1.0]);
+    let white = solid(ctx, &mut pool, W, H, [1.0, 1.0, 1.0, 1.0]);
+    let mut down = YuvDownload::new(ctx, YuvFormat::Nv12, W, H).unwrap();
+    // In order: grey, white, white again.
+    assert!(
+        down.submit(ctx, &pool, &canvas_frame(&pool, grey, 1))
+            .unwrap()
+    );
+    assert!(
+        down.submit(ctx, &pool, &canvas_frame(&pool, white, 2))
+            .unwrap()
+    );
+    assert!(down.submit_repeat(Timestamp::from_nanos(3), 2));
+    ctx.wait_idle().unwrap();
+    ctx.poll();
+    let a = down.take_oldest(ctx).unwrap().unwrap();
+    let b = down.take_oldest(ctx).unwrap().unwrap();
+    let c = down.take_oldest(ctx).unwrap().unwrap();
+    assert_eq!(
+        [a.timestamp(), b.timestamp(), c.timestamp()].map(Timestamp::as_nanos),
+        [1, 2, 3]
+    );
+    assert_ne!(first_luma(&a).0, first_luma(&b).0);
+    assert_eq!(
+        first_luma(&c),
+        first_luma(&b),
+        "the repeat shows the picture before it"
+    );
+
+    // Newest first: a repeat is never merged into the readback before it. Each is one
+    // frame of a constant frame rate output, so the repeat waits for the next take.
+    let white_y = first_luma(&c).0;
+    drop((a, b, c));
+    assert!(
+        down.submit(ctx, &pool, &canvas_frame(&pool, grey, 4))
+            .unwrap()
+    );
+    assert!(down.submit_repeat(Timestamp::from_nanos(5), 4));
+    ctx.wait_idle().unwrap();
+    ctx.poll();
+    let d = down.take_ready(ctx).unwrap().unwrap();
+    assert_eq!(d.timestamp(), Timestamp::from_nanos(4));
+    assert_ne!(first_luma(&d).0, white_y, "grey, not the white before it");
+    let e = down.take_ready(ctx).unwrap().unwrap();
+    assert_eq!(e.timestamp(), Timestamp::from_nanos(5));
+    assert_eq!(first_luma(&e), first_luma(&d), "the repeat shows grey");
+    assert!(down.take_ready(ctx).unwrap().is_none());
+    assert_eq!(down.stats().stale, 0, "nothing dropped");
+}
+
+#[test]
+fn a_repeat_with_no_picture_before_it_is_counted_as_failed() {
+    let Some(ctx) = common::gpu() else { return };
+    let mut down = YuvDownload::new(ctx, YuvFormat::Nv12, W, H).unwrap();
+    assert!(down.submit_repeat(Timestamp::from_nanos(1), 1));
+    assert!(down.take_ready(ctx).unwrap().is_none());
+    let stats = down.stats();
+    assert_eq!((stats.failed, stats.delivered, stats.repeated), (1, 0, 0));
+    assert_eq!(down.in_flight(), 0);
+}
+
+#[test]
+fn a_full_ring_refuses_a_repeat() {
+    let Some(ctx) = common::gpu() else { return };
+    let mut down = YuvDownload::new(ctx, YuvFormat::Nv12, W, H).unwrap();
+    for t in 0..DOWNLOAD_RING as u64 {
+        assert!(down.submit_repeat(Timestamp::from_nanos(t), t));
+    }
+    assert!(!down.submit_repeat(Timestamp::from_nanos(9), 9));
+    assert_eq!(down.stats().busy, 1);
+}
+
 #[test]
 fn download_drops_frames_while_consumers_hold_every_buffer_and_reuses_them_after() {
     let Some(ctx) = common::gpu() else { return };

@@ -363,9 +363,18 @@ fn record(a: &RecordArgs) -> Result<(), String> {
 
     rbs_crash::outln!("video: {}", args::describe_video(a));
 
-    let gpu = Arc::new(
-        GpuContext::new(&GpuRequest::default()).map_err(|e| format!("no usable GPU: {e}"))?,
-    );
+    // `RBS_GPU_POWER=low` prefers the integrated GPU of a hybrid machine: a diagnostic
+    // for measuring the weak hardware tier on a desktop (performance audit, R-03).
+    let low_power = std::env::var_os("RBS_GPU_POWER").is_some_and(|v| v == "low");
+    let request = GpuRequest {
+        power: if low_power {
+            rbs_gpu::PowerPreference::LowPower
+        } else {
+            rbs_gpu::PowerPreference::HighPerformance
+        },
+        ..GpuRequest::default()
+    };
+    let gpu = Arc::new(GpuContext::new(&request).map_err(|e| format!("no usable GPU: {e}"))?);
     rbs_crash::outln!("gpu: {}", gpu.adapter_name());
     let mut engine = Engine::new();
     engine.set_thread_policy(Some(Arc::new(rbs_thread_os::OsThreadPolicy::new())));

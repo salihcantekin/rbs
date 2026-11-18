@@ -6,15 +6,19 @@
 
 mod common;
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use common::{assert_close, at};
 use rbs_core::lifecycle::Lifecycle;
-use rbs_core::media::{ColorSpace, FramePayload, PixelFormat, Size, VideoFormat, VideoFrame};
+use rbs_core::media::{
+    ColorSpace, FramePayload, PixelFormat, Size, VideoFormat, VideoFrame, next_generation,
+};
 use rbs_core::time::Timestamp;
 use rbs_core::timing::{Cadence, FrameRate};
 use rbs_gpu::node::{
-    CompositorNode, Fade, GpuRuntime, LayerSender, NodeLayer, PixelCrop, RenderLocal,
+    CompositorNode, CompositorStats, Fade, GpuRuntime, LayerSender, NodeLayer, PixelCrop,
+    RenderLocal,
 };
 use rbs_gpu::{CanvasDesc, GpuContext, GpuError, GpuRequest, TextureDesc, readback};
 use rbs_graph::description::{GraphDescription, NodeId};
@@ -27,11 +31,13 @@ use std::time::Duration;
 const W: u32 = 64;
 const H: u32 = 32;
 
-/// A source publishing one 2x2 pool texture of a solid colour (sRGB bytes).
+/// A source publishing one 2x2 pool texture of a solid colour (sRGB bytes): a new frame
+/// each tick (a live source), or, as a still, once and again only when `repaint` is set.
 struct Solid {
     desc: NodeDescriptor,
     rgba: [u8; 4],
     id: Option<rbs_core::media::TextureId>,
+    still: Option<Arc<AtomicBool>>,
 }
 
 impl Solid {
@@ -45,6 +51,15 @@ impl Solid {
             ),
             rgba,
             id: None,
+            still: None,
+        }
+    }
+
+    /// A still that publishes on its first tick and whenever `repaint` is set.
+    fn still(rgba: [u8; 4], repaint: Arc<AtomicBool>) -> Self {
+        Self {
+            still: Some(repaint),
+            ..Self::new(rgba)
         }
     }
 }
@@ -68,8 +83,15 @@ impl Node<GpuRuntime> for Solid {
         let time = ctx.tick().time;
         let format = VideoFormat::new(Size::new(2, 2), PixelFormat::Rgba8, ColorSpace::SRGB);
         let (_, outputs, local) = ctx.parts();
+        if let Some(repaint) = &self.still {
+            // The slot keeps the frame; a repaint is a new generation (ADR-0117).
+            let first = outputs.video(0).is_none();
+            if !first && !repaint.swap(false, Ordering::Relaxed) {
+                return Ok(());
+            }
+        }
         let frame = local.pool.frame(id, format, time).unwrap();
-        drop(outputs.set_video(0, Some(frame))?);
+        drop(outputs.set_video(0, Some(frame.with_sequence(next_generation())))?);
         Ok(())
     }
     fn release(&mut self, _: &mut PrepareCtx<'_, GpuRuntime>) {}
@@ -162,8 +184,33 @@ impl Rig {
         capacity: u32,
         layers: impl FnOnce(NodeId, NodeId) -> Vec<NodeLayer>,
     ) -> Scene {
-        let red = self.add(Box::new(Solid::new([255, 0, 0, 255])));
-        let blue = self.add(Box::new(Solid::new([0, 0, 255, 255])));
+        let red = Solid::new([255, 0, 0, 255]);
+        let blue = Solid::new([0, 0, 255, 255]);
+        self.scene_of(red, blue, capacity, false, layers)
+    }
+
+    /// [`Self::scene`] with still sources: `repaint` makes red publish once more.
+    fn still_scene(
+        &mut self,
+        every_tick: bool,
+        layers: impl FnOnce(NodeId, NodeId) -> Vec<NodeLayer>,
+    ) -> (Scene, Arc<AtomicBool>) {
+        let repaint = Arc::new(AtomicBool::new(false));
+        let red = Solid::still([255, 0, 0, 255], Arc::clone(&repaint));
+        let blue = Solid::still([0, 0, 255, 255], Arc::new(AtomicBool::new(false)));
+        (self.scene_of(red, blue, 4, every_tick, layers), repaint)
+    }
+
+    fn scene_of(
+        &mut self,
+        red: Solid,
+        blue: Solid,
+        capacity: u32,
+        every_tick: bool,
+        layers: impl FnOnce(NodeId, NodeId) -> Vec<NodeLayer>,
+    ) -> Scene {
+        let red = self.add(Box::new(red));
+        let blue = self.add(Box::new(blue));
         let (node, sender) = CompositorNode::new(
             CanvasDesc {
                 width: W,
@@ -173,7 +220,13 @@ impl Rig {
             layers(red, blue),
         );
         assert_eq!(node.capacity(), capacity);
-        let comp = self.add(Box::new(node));
+        let stats = node.stats();
+        let node: Box<dyn Node<GpuRuntime>> = if every_tick {
+            Box::new(node.every_tick())
+        } else {
+            Box::new(node)
+        };
+        let comp = self.add(node);
         let last = Arc::new(Mutex::new(None));
         let probe = self.add(Box::new(Probe {
             desc: NodeDescriptor::new(
@@ -199,6 +252,7 @@ impl Rig {
             probe,
             sender,
             last,
+            stats,
         }
     }
 
@@ -235,6 +289,24 @@ struct Scene {
     probe: NodeId,
     sender: LayerSender,
     last: Arc<Mutex<Option<VideoFrame>>>,
+    stats: Arc<CompositorStats>,
+}
+
+impl Scene {
+    /// `(timestamp, sequence)` of the canvas the probe saw last.
+    fn key(&self) -> (Timestamp, u64) {
+        let guard = self.last.lock().unwrap();
+        let frame = guard.as_ref().expect("the probe saw a canvas");
+        (frame.timestamp(), frame.sequence())
+    }
+
+    /// Draws and unchanged ticks so far.
+    fn counts(&self) -> (u64, u64) {
+        (
+            self.stats.drawn.load(Ordering::Relaxed),
+            self.stats.unchanged.load(Ordering::Relaxed),
+        )
+    }
 }
 
 const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
@@ -344,4 +416,100 @@ fn a_fade_is_evaluated_at_tick_time() {
     assert_close(rig.pixel(&scene, 8, 16), [0.5, 0.0, 0.0, 0.5], 0.01);
     rig.run(&scene, 4); // 116 ms: done.
     assert_close(rig.pixel(&scene, 8, 16), RED, 0.01);
+}
+
+#[test]
+fn unchanged_inputs_keep_the_canvas_frame() {
+    let Some(mut rig) = Rig::new() else { return };
+    let (scene, _) = rig.still_scene(false, |red, blue| vec![full(red, 0), right_half(blue, 1)]);
+    // The first tick warms the nodes; the second draws.
+    rig.run(&scene, 2);
+    assert_eq!(scene.counts(), (1, 0));
+    let first = scene.key();
+    rig.run(&scene, 5);
+    // No more draws; the canvas frame stays with its timestamp and sequence (R-03).
+    assert_eq!(scene.counts(), (1, 5));
+    assert_eq!(scene.key(), first);
+    assert_close(rig.pixel(&scene, 8, 16), RED, 0.01);
+    assert_close(rig.pixel(&scene, 56, 16), BLUE, 0.01);
+}
+
+#[test]
+fn a_new_picture_draws_again_with_a_new_key() {
+    let Some(mut rig) = Rig::new() else { return };
+    let (scene, repaint) =
+        rig.still_scene(false, |red, blue| vec![full(red, 0), right_half(blue, 1)]);
+    rig.run(&scene, 3);
+    assert_eq!(scene.counts(), (1, 1));
+    let before = scene.key();
+    repaint.store(true, Ordering::Relaxed);
+    rig.run(&scene, 1);
+    assert_eq!(scene.counts(), (2, 1));
+    assert_ne!(scene.key().1, before.1, "a new draw is a new generation");
+    rig.run(&scene, 2);
+    assert_eq!(scene.counts(), (2, 3));
+}
+
+#[test]
+fn a_new_layer_list_draws_again() {
+    let Some(mut rig) = Rig::new() else { return };
+    let (mut scene, _) =
+        rig.still_scene(false, |red, blue| vec![full(red, 0), right_half(blue, 1)]);
+    rig.run(&scene, 3);
+    assert_eq!(scene.counts(), (1, 1));
+    let (red, blue) = (scene.red, scene.blue);
+    assert!(
+        scene
+            .sender
+            .send(vec![full(blue, 1), right_half(red, 0)])
+            .is_none()
+    );
+    rig.run(&scene, 2);
+    assert_eq!(scene.counts(), (2, 2));
+    assert_close(rig.pixel(&scene, 8, 16), BLUE, 0.01);
+    assert_close(rig.pixel(&scene, 56, 16), RED, 0.01);
+}
+
+#[test]
+fn a_fade_draws_every_tick_until_it_has_ended() {
+    let Some(mut rig) = Rig::new() else { return };
+    // Ticks at 60 fps from zero; the fade ends at 100 ms (tick 6).
+    let (scene, _) = rig.still_scene(false, |red, _| {
+        let mut layer = full(red, 0);
+        layer.fade = Some(Fade {
+            from: 0.0,
+            start: Timestamp::ZERO,
+            duration: Duration::from_millis(100),
+            easing: rbs_gpu::node::Easing::Linear,
+        });
+        vec![layer]
+    });
+    // Ticks 0 to 3: the last is at 50 ms, half way.
+    rig.run(&scene, 4);
+    assert_eq!(scene.counts(), (3, 0));
+    assert_close(rig.pixel(&scene, 8, 16), [0.5, 0.0, 0.0, 0.5], 0.01);
+    // Ticks 4 to 6 still move it; tick 6 draws the end value at 100 ms.
+    rig.run(&scene, 3);
+    assert_eq!(scene.counts(), (6, 0));
+    assert_close(rig.pixel(&scene, 8, 16), RED, 0.01);
+    // Tick 7 draws once more (the last draw was at the end), then it stays.
+    rig.run(&scene, 5);
+    assert_eq!(scene.counts(), (7, 4));
+    assert_close(rig.pixel(&scene, 8, 16), RED, 0.01);
+}
+
+#[test]
+fn every_tick_draws_each_tick() {
+    let Some(mut rig) = Rig::new() else { return };
+    let (scene, _) = rig.still_scene(true, |red, blue| vec![full(red, 0), right_half(blue, 1)]);
+    rig.run(&scene, 5);
+    assert_eq!(scene.counts(), (4, 0));
+}
+
+#[test]
+fn a_live_source_draws_each_tick() {
+    let Some(mut rig) = Rig::new() else { return };
+    let scene = rig.scene(4, |red, blue| vec![full(red, 0), right_half(blue, 1)]);
+    rig.run(&scene, 5);
+    assert_eq!(scene.counts(), (4, 0));
 }

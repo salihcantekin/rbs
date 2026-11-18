@@ -21,7 +21,7 @@ use rbs_graph::runtime::{
     Controller, Executor, Node, NodeError, PrepareCtx, ProcessCtx, Tick, channel,
 };
 use rbs_nodes::capture::CaptureNodeStats;
-use rbs_nodes::{CaptureSourceNode, ExportEnd, ExportHold, VideoExportNode};
+use rbs_nodes::{CaptureSourceNode, ExportEnd, ExportHold, StillSourceNode, VideoExportNode};
 
 const W: u32 = 128;
 const H: u32 = 72;
@@ -285,7 +285,10 @@ fn a_window_is_captured_composited_and_exported_as_nv12() {
         assert_eq!(format.pixel_format, PixelFormat::Nv12);
         assert_eq!(format.size, Size::new(W, H));
         assert_eq!(frame.timestamp(), Tick::of(&cadence, i as u64).time);
-        assert_eq!(frame.sequence(), i as u64);
+        // Each draw is a new generation (render on change, R-03).
+        if i > 0 {
+            assert!(frame.sequence() > frames[i - 1].sequence());
+        }
         // A grey sRGB window: limited-range luma near the grey level, neutral chroma.
         let (y, cb, cr) = centre(frame);
         let near = [32u8, 96, 160]
@@ -606,6 +609,12 @@ type Holdable = (
 /// Program: a grey window. Hold scene: an empty compositor (black). Both into one
 /// export that can be held.
 fn held_pipeline() -> Option<Holdable> {
+    held_pipeline_of(false)
+}
+
+/// As [`held_pipeline`]; `still` makes the program a white still, a canvas that render
+/// on change draws once (R-03).
+fn held_pipeline_of(still: bool) -> Option<Holdable> {
     let ctx = gpu()?;
     let (ctl, exec) = channel::<GpuRuntime>(Arc::clone(&ctx), RenderLocal::default());
     let clock = TestClock::new();
@@ -620,10 +629,16 @@ fn held_pipeline() -> Option<Holdable> {
     let request = CaptureRequest::new(TargetId::new("test-window-0"), Arc::new(clock))
         .with_frame_rate(FrameRate::FPS_30)
         .with_pixel_formats(&[PixelFormat::Bgra8]);
-    let capture = rig.add(Box::new(CaptureSourceNode::new(
-        Arc::new(TestCaptureFactory::new()),
-        request,
-    )));
+    let capture = if still {
+        rig.add(Box::new(
+            StillSourceNode::new(4, 4, vec![255; 4 * 4 * 4]).unwrap(),
+        ))
+    } else {
+        rig.add(Box::new(CaptureSourceNode::new(
+            Arc::new(TestCaptureFactory::new()),
+            request,
+        )))
+    };
     let canvas = CanvasDesc {
         width: W,
         height: H,
@@ -721,6 +736,57 @@ fn a_scene_hold_sends_the_scene_with_running_times_across_both_edges() {
     assert_eq!(health.errors, 0, "{health:?}");
     // Back on the run path: nothing left from the hold path.
     assert!(end.requested().is_none());
+}
+
+#[test]
+fn a_hold_over_a_still_program_keeps_times_rising_when_the_program_comes_back() {
+    let Some((mut rig, seen, export, end, switch)) = held_pipeline_of(true) else {
+        return;
+    };
+    for _ in 0..4 {
+        rig.tick();
+    }
+    switch.hold(HoldPicture::Scene);
+    end.wake_at(Timestamp::ZERO);
+    for _ in 0..4 {
+        rig.tick();
+    }
+    switch.release();
+    for _ in 0..6 {
+        rig.tick();
+    }
+    let got = seen_after(&seen);
+    // The program canvas was drawn once, before the hold. Converted again after it,
+    // it takes the tick's time: never a time before the hold's frames (R-03).
+    assert!(got.windows(2).all(|w| w[0].0 < w[1].0), "{got:?}");
+    let dark: Vec<bool> = got.iter().map(|(_, y)| *y <= DARK).collect();
+    let last_dark = dark.iter().rposition(|d| *d).expect("the scene went out");
+    assert!(
+        last_dark + 3 < got.len() && !dark[last_dark + 1..].iter().any(|d| *d),
+        "the program came back: {got:?}"
+    );
+
+    // Ending on repeats of the still: every tick up to the end goes out, then the
+    // export reports the end.
+    let cadence = Cadence::frames(Timestamp::ZERO, FrameRate::FPS_30);
+    let at = cadence.time_of(rig.tick + 2);
+    end.end_at(at);
+    let mut ticks = 0;
+    while !end.ended() {
+        assert!(ticks < 6, "the export never ended");
+        rig.tick();
+        ticks += 1;
+    }
+    let seen = seen_after(&seen);
+    assert!(seen.windows(2).all(|w| w[0].0 < w[1].0), "{seen:?}");
+    assert_eq!(seen.last().map(|s| s.0), Some(at), "{seen:?}");
+    let health = rig.exec.health(export).unwrap();
+    assert_eq!(health.errors, 0, "{health:?}");
+}
+
+/// A copy of what a [`LumaProbe`] saw.
+fn seen_after(seen: &Mutex<Vec<(Timestamp, u8)>>) -> Vec<(Timestamp, u8)> {
+    seen.lock().unwrap().clone()
 }
 
 #[test]

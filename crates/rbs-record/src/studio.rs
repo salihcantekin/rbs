@@ -1578,7 +1578,7 @@ impl Studio {
 
         let (compositor, layers) =
             CompositorNode::new(CanvasDesc { width, height }, MAX_LAYERS as u32, Vec::new());
-        engine.adopt::<GpuRuntime>(RENDER, compositor_id, Box::new(compositor))?;
+        engine.adopt::<GpuRuntime>(RENDER, compositor_id, compositor.into_node())?;
 
         let mut preview = None;
         if let Some(desc) = settings.preview {
@@ -2996,7 +2996,7 @@ impl Studio {
         let (compositor, layers) =
             CompositorNode::new(CanvasDesc { width, height }, MAX_LAYERS as u32, Vec::new());
         self.engine
-            .adopt::<GpuRuntime>(RENDER, bound.node, Box::new(compositor))?;
+            .adopt::<GpuRuntime>(RENDER, bound.node, compositor.into_node())?;
         let node = PreviewNode::new(desc);
         let stats = node.stats();
         let id = add_active(
@@ -5227,7 +5227,7 @@ fn attach_compositor(
         MAX_LAYERS as u32,
         Vec::new(),
     );
-    engine.adopt::<GpuRuntime>(RENDER, bound.node, Box::new(compositor))?;
+    engine.adopt::<GpuRuntime>(RENDER, bound.node, compositor.into_node())?;
     let mut picture = None;
     if let Some(desc) = desc {
         match add_picture(engine, graph, bound.node, desc) {

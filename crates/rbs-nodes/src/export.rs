@@ -72,6 +72,9 @@ pub struct ExportNodeStats {
     /// the export's budget ([`VideoExportNode::give_way_after`], ADR-0086 decision 9).
     /// Each is a gap in the file, never a shifted timestamp.
     pub gave_way: AtomicU64,
+    /// Frames that repeated the picture before them because the canvas did not change
+    /// (render on change, R-03): no conversion and no readback. Included in `frames`.
+    pub repeated: AtomicU64,
 }
 
 /// Ends a video export's input at a master-clock time (ADR-0045); shared between the
@@ -655,6 +658,9 @@ impl VideoExportNode {
     ) -> Result<(), NodeError> {
         let tick = ctx.tick();
         let gpu = ctx.shared();
+        // The download's last frame is the hold's from here on: the program's canvas is
+        // converted again after the hold, never repeated from it.
+        self.last = None;
         let (inputs, outputs, local) = ctx.parts();
         let download = self.download.as_mut().ok_or(NodeError::NotReady)?;
         let mut result = Ok(());
@@ -867,27 +873,47 @@ impl Node<GpuRuntime> for VideoExportNode {
         }
 
         if let Some(canvas) = inputs.video(CANVAS_PIN, 0) {
-            // An ISO track stamps the tick, so it takes the same picture again.
+            let picture = (canvas.timestamp(), canvas.sequence());
+            // A picture this export has not converted yet. One it has (a canvas left
+            // unchanged by render on change, or an ISO track's unchanged source) goes out
+            // again as a repeat entry: stamped with the tick, no conversion, no readback
+            // (R-03, E-02; ADR-0143 R5).
+            let fresh = self.last != Some(picture);
+            // An ISO track stamps the tick, so it takes every tick. A canvas drawn this
+            // tick keeps its own key. Any other frame (a repeat, or an older canvas
+            // converted again after a hold or a lost readback) takes the tick's time and
+            // a new sequence, so stamps never go back.
             let key = if every_tick {
                 (tick.time, tick.index)
+            } else if fresh && picture.0 >= tick.time {
+                picture
             } else {
-                (canvas.timestamp(), canvas.sequence())
+                (tick.time, next_generation())
             };
             let place = match window {
                 Some(w) => w.place(key.0.as_nanos()),
                 None => Place::Kept(self.shift),
             };
-            if self.last != Some(key) && key.0.as_nanos() <= end {
-                self.last = Some(key);
+            if key.0.as_nanos() <= end {
                 if place == Place::Cut {
                     // Inside a pause window: nothing is converted (ADR-0124).
                 } else if give_way {
                     self.stats.gave_way.fetch_add(1, Ordering::Relaxed);
-                } else if download
-                    .submit_at(gpu, &local.pool, canvas, shifted(key.0, place), key.1)
-                    .is_err()
-                {
-                    result = Err(NodeError::Backend("video export conversion failed"));
+                } else if fresh {
+                    match download.submit_at(gpu, &local.pool, canvas, shifted(key.0, place), key.1)
+                    {
+                        // Only a picture on its way to the encoder is repeated later.
+                        Ok(true) => self.last = Some(picture),
+                        // A full ring (counted in `busy`): converted on the next tick.
+                        Ok(false) => {}
+                        Err(_) => {
+                            result = Err(NodeError::Backend("video export conversion failed"));
+                        }
+                    }
+                } else {
+                    // A new frame of the same picture. A full ring drops it (counted in
+                    // `busy`); the picture before it is still the one to repeat.
+                    download.submit_repeat(shifted(key.0, place), key.1);
                 }
             }
         }
@@ -906,6 +932,14 @@ impl Node<GpuRuntime> for VideoExportNode {
             .busy
             .fetch_add(now.busy - self.seen.busy, Ordering::Relaxed);
         self.stats.lost.fetch_add(lost, Ordering::Relaxed);
+        self.stats
+            .repeated
+            .fetch_add(now.repeated - self.seen.repeated, Ordering::Relaxed);
+        if now.no_buffer != self.seen.no_buffer || now.failed != self.seen.failed {
+            // A readback that never reached the encoder: the next tick converts the
+            // canvas again instead of repeating a picture before it.
+            self.last = None;
+        }
         self.seen = now;
         result
     }
