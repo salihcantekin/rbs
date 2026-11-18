@@ -14,6 +14,7 @@
 //! format lives with the user data layer (`rbs-user-data`, ADR-0051). Spec:
 //! `docs/specs/scene-model.md`.
 
+pub mod activity;
 mod arrange;
 mod attributes;
 pub mod binder;
@@ -30,10 +31,11 @@ pub use collection::{
     Removed, SceneCollection, SceneError, SourceCopy, SourceFields, Undo,
 };
 pub use crop::{place_chrome, recrop_keeping, visible_size};
-pub use flatten::{Affine2, FlatLayer};
+pub use flatten::{Affine2, FlatLayer, ScrollKey};
 pub use model::{
     COMPANION_OF_HINT, ChromeFill, CollectionGlide, CollectionTransition, DISPLAY_SOURCE_TYPE,
     DisplayChrome, FadeSettings, GlideEasing, MAX_GLIDE_MS, MAX_SHOW_FOR_MS, STANDBY_HINT,
-    SceneAudio, SceneLevel, SceneTransition, SourceGlide, SourceRegion, StingerSettings,
-    SwipeDirection, SwipeSettings, TransitionKind, show_for_is_valid,
+    SceneAudio, SceneLevel, SceneTransition, Scroll, ScrollDirection, ScrollRepeat, ScrollStart,
+    SourceGlide, SourceRegion, StingerSettings, SwipeDirection, SwipeSettings, TransitionKind,
+    show_for_is_valid,
 };

@@ -107,6 +107,15 @@ fn source() -> SourceInfo {
             crop: [0, 0, 0, 0],
             opacity: 1.0,
             style: style(),
+            scroll: Some(ItemScroll {
+                direction: ScrollDirection::Left,
+                speed: 90.0,
+                gap: 0.0,
+                repeat: ScrollRepeat::Loop,
+                start: ScrollStart::Inside,
+                fade: 0.0,
+                ramp_ms: 300,
+            }),
         }),
         picture_size: Some([1920, 1080]),
         visible: false,
@@ -254,6 +263,41 @@ fn every_request() -> Vec<Request> {
         c(Command::ItemSetStyle(SetItemStyle {
             item: 7,
             style: style(),
+            canvas: OutputCanvas::Main,
+        })),
+        c(Command::ItemSetScroll(SetItemScroll {
+            item: 7,
+            scroll: Some(ItemScroll {
+                direction: ScrollDirection::Up,
+                speed: 120.0,
+                gap: 40.0,
+                repeat: ScrollRepeat::Once,
+                start: ScrollStart::Outside,
+                fade: 16.0,
+                ramp_ms: 0,
+            }),
+            canvas: OutputCanvas::Vertical,
+        })),
+        c(Command::ItemSetScroll(SetItemScroll {
+            item: 7,
+            scroll: None,
+            canvas: OutputCanvas::Main,
+        })),
+        c(Command::ItemScrollPause(ScrollItem {
+            item: 7,
+            canvas: OutputCanvas::Main,
+        })),
+        c(Command::ItemScrollResume(ScrollItem {
+            item: 7,
+            canvas: OutputCanvas::Vertical,
+        })),
+        c(Command::ItemScrollRestart(ScrollItem {
+            item: 7,
+            canvas: OutputCanvas::Main,
+        })),
+        c(Command::ItemScrollSpeed(SetScrollSpeed {
+            item: 7,
+            speed: 240.0,
             canvas: OutputCanvas::Main,
         })),
         c(Command::ItemSetCrop(SetItemCrop {
@@ -1030,6 +1074,7 @@ fn every_result_and_event_type_round_trips() {
     round_trip(&Snapshot {
         seq: seq.clone(),
         data: StreamState::Idle {
+            available: true,
             last: Some(StreamSummary {
                 failure: Some("the server closed the connection".into()),
                 frames: 1800,
@@ -1076,6 +1121,7 @@ fn every_result_and_event_type_round_trips() {
             rms_db: vec![-18.0, -19.25],
         }]),
         EventPayload::StreamState(StreamState::Live {
+            available: true,
             protocol: StreamProtocol::Srt,
             connected: true,
             connects: 1,
@@ -1129,7 +1175,7 @@ fn every_result_and_event_type_round_trips() {
         }),
         EventPayload::StreamCanvasState(CanvasStreamState {
             canvas: OutputCanvas::Vertical,
-            state: StreamState::Idle { last: None },
+            state: StreamState::idle(),
         }),
         EventPayload::CalibrationState(calibration_done()),
         EventPayload::CalibrationState(CalibrationState::Idle),
@@ -1159,6 +1205,10 @@ fn every_result_and_event_type_round_trips() {
             state: SyncMeasureState::Failed {
                 reason: SyncMeasureFailure::TooFewClaps,
             },
+        }),
+        EventPayload::ItemScrollFinished(ScrollFinished {
+            canvas: OutputCanvas::Vertical,
+            items: vec![3, 7],
         }),
         EventPayload::TransitionState(TransitionStateChanged {
             canvas: OutputCanvas::Main,
@@ -1673,6 +1723,7 @@ fn authenticate_debug_hides_the_token() {
 #[test]
 fn stream_state_has_a_stable_wire_form() {
     let live = StreamState::Live {
+        available: true,
         protocol: StreamProtocol::Rtmp,
         connected: false,
         connects: 0,
@@ -1694,6 +1745,7 @@ fn stream_state_has_a_stable_wire_form() {
         serde_json::to_value(&live).unwrap(),
         json!({
             "state": "live",
+            "available": true,
             "protocol": "rtmp",
             "connected": false,
             "connects": 0,
@@ -1710,6 +1762,15 @@ fn stream_state_has_a_stable_wire_form() {
             "hold_fallback_reason": null,
         })
     );
+    // Streaming off (protocol 1.93): `available` false in the idle form; a 1.92
+    // server's idle state, without it, reads as available.
+    assert_eq!(
+        serde_json::to_value(StreamState::idle().with_available(false)).unwrap(),
+        json!({"state": "idle", "last": null, "available": false})
+    );
+    let older: StreamState =
+        serde_json::from_value(json!({"state": "idle", "last": null})).unwrap();
+    assert!(older.available());
     // A 1.63 server's live state, without the hold fields, reads as not held.
     let old: StreamState = serde_json::from_value(json!({
         "state": "live", "protocol": "rtmp", "connected": true, "connects": 1,
@@ -1729,12 +1790,12 @@ fn stream_state_has_a_stable_wire_form() {
     let event = Event {
         object: None,
         seq: 3,
-        payload: EventPayload::StreamState(StreamState::Idle { last: None }),
+        payload: EventPayload::StreamState(StreamState::idle()),
     };
     let v: Value = serde_json::from_str(&JsonCodec.encode_event(&event)).unwrap();
     assert_eq!(
         v["params"],
-        json!({"topic": "stream.state", "seq": 3, "data": {"state": "idle", "last": null}})
+        json!({"topic": "stream.state", "seq": 3, "data": {"state": "idle", "last": null, "available": true}})
     );
     assert_eq!(
         rbs_api::request::method_scope("stream.start"),
@@ -1888,6 +1949,75 @@ fn item_styles_are_a_minor_addition() {
         assert_eq!(parse_color(bad), None, "{bad}");
     }
     assert_eq!(format_color([255, 0, 128, 128]), "#ff008080");
+}
+
+#[test]
+fn scrolls_are_a_minor_addition_with_short_defaults() {
+    let plain: ItemScroll = serde_json::from_value(json!({"speed": 80.0})).unwrap();
+    assert_eq!(
+        plain,
+        ItemScroll {
+            direction: ScrollDirection::Left,
+            speed: 80.0,
+            gap: 0.0,
+            repeat: ScrollRepeat::Loop,
+            start: ScrollStart::Inside,
+            fade: 0.0,
+            ramp_ms: 300,
+        }
+    );
+    assert_eq!(serde_json::to_value(plain).unwrap(), json!({"speed": 80.0}));
+    let all = ItemScroll {
+        direction: ScrollDirection::Down,
+        repeat: ScrollRepeat::Once,
+        start: ScrollStart::Outside,
+        ramp_ms: 0,
+        ..plain
+    };
+    assert_eq!(
+        serde_json::to_value(all).unwrap(),
+        json!({"direction": "down", "speed": 80.0, "repeat": "once",
+               "start": "outside", "ramp_ms": 0})
+    );
+    assert!(serde_json::from_value::<ItemScroll>(json!({})).is_err());
+    assert!(serde_json::from_value::<ItemScroll>(json!({"speed": 1.0, "wrap": true})).is_err());
+    assert!(
+        serde_json::from_value::<ItemScroll>(json!({"speed": 1.0, "direction": "diagonal"}))
+            .is_err()
+    );
+    let layout: ItemLayout = serde_json::from_value(json!({
+        "position": [0.0, 0.0], "size": [640.0, 360.0], "rotation": 0.0,
+        "crop": [0, 0, 0, 0], "opacity": 1.0, "style": {}
+    }))
+    .unwrap();
+    assert_eq!(layout.scroll, None);
+    for method in [
+        "item.scroll_pause",
+        "item.scroll_resume",
+        "item.scroll_restart",
+    ] {
+        let r: Request =
+            serde_json::from_value(json!({"method": method, "params": {"item": 3}})).unwrap();
+        assert_eq!(r.scope(), Some(Scope::Control), "{method}");
+    }
+    let clear: Request = serde_json::from_value(json!({
+        "method": "item.set_scroll", "params": {"item": 3, "scroll": null}
+    }))
+    .unwrap();
+    assert_eq!(
+        clear,
+        Request::Command(Command::ItemSetScroll(SetItemScroll {
+            item: 3,
+            scroll: None,
+            canvas: OutputCanvas::Main
+        }))
+    );
+    assert!(
+        serde_json::from_value::<Request>(json!({
+            "method": "item.scroll_speed", "params": {"item": 3, "speed": 2.0, "ramp": 1}
+        }))
+        .is_err()
+    );
 }
 
 #[test]

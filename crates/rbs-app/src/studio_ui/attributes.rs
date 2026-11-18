@@ -28,6 +28,7 @@ fn section(g: AttributeGroup) -> i32 {
         | AttributeGroup::Crop
         | AttributeGroup::Opacity
         | AttributeGroup::Style
+        | AttributeGroup::Scroll
         | AttributeGroup::VideoFilters => 0,
         AttributeGroup::AudioFilters | AttributeGroup::Sound | AttributeGroup::SyncOffset => 1,
         AttributeGroup::Options

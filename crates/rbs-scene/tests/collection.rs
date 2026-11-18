@@ -6,14 +6,39 @@ use std::collections::BTreeSet;
 
 use rbs_core::media::Size;
 use rbs_core::timing::FrameRate;
-use rbs_graph::node::NodeTypeId;
+use rbs_graph::node::{NodeDescriptor, NodeTypeId};
+use rbs_scene::activity::{ActivityTraits, MAX_LINGER_S, OnReturn, Run, SourceActivity};
+use rbs_scene::binder::NodeTypes;
 use rbs_scene::model::{
     Border, CanvasId, CollectionGlide, Crop, DisplayChrome, FilterId, GlideEasing, ItemContent,
     ItemId, ItemStyle, Layout, MAX_GLIDE_MS, MAX_SHOW_FOR_MS, MAX_SOURCE_VOLUME,
-    MAX_SYNC_OFFSET_MS, MasterAudio, RecordSeparately, SceneId, SceneScope, SettingValue, Settings,
-    Shadow, Shape, SourceAudio, SourceGlide, SourceId, SourceMonitor, SourceRegion,
+    MAX_SYNC_OFFSET_MS, MasterAudio, RecordSeparately, SceneId, SceneScope, Scroll,
+    ScrollDirection, SettingValue, Settings, Shadow, Shape, SourceAudio, SourceGlide, SourceId,
+    SourceMonitor, SourceRegion,
 };
 use rbs_scene::{Affine2, MAX_LAYERS, MAX_NESTING_DEPTH, SceneCollection, SceneError, Undo};
+
+/// Node types that declare only activity (ADR-0152): media and browser run while a
+/// shown scene draws them, as `rbs-sources` declares; every other type while placed.
+struct Activity;
+
+impl NodeTypes for Activity {
+    fn descriptor(&self, _: &NodeTypeId) -> Option<std::sync::Arc<NodeDescriptor>> {
+        None
+    }
+    fn activity(&self, type_id: &NodeTypeId) -> ActivityTraits {
+        match type_id.as_str() {
+            "org.rbs.source.media" | "org.rbs.source.browser" => ActivityTraits::new(
+                &[Run::Placed, Run::Shown, Run::OnAir],
+                &[OnReturn::Resume, OnReturn::Restart],
+                Run::Shown,
+                Some(OnReturn::Restart),
+                false,
+            ),
+            _ => ActivityTraits::PLACED,
+        }
+    }
+}
 
 fn ty(name: &str) -> NodeTypeId {
     NodeTypeId::new(format!("org.rbs.source.{name}"))
@@ -344,6 +369,52 @@ fn invalid_edits_are_refused() {
         ),
         Err(SceneError::StyleOnScene(_))
     ));
+    // ADR-0150 decision 1: scroll is for sources, within its ranges.
+    let ticker = Scroll::new(ScrollDirection::Left, 120.0);
+    assert!(matches!(
+        s.col.add_item(
+            scene,
+            ItemContent::Scene(other),
+            full(1.0, 1.0).with_scroll(Some(ticker)),
+            None
+        ),
+        Err(SceneError::ScrollOnScene(_))
+    ));
+    for bad in [
+        Scroll::new(ScrollDirection::Left, 0.5),
+        Scroll::new(ScrollDirection::Left, 4000.5),
+        Scroll::new(ScrollDirection::Left, f32::NAN),
+        ticker.with_gap(-1.0),
+        ticker.with_gap(16384.5),
+        ticker.with_fade(f32::INFINITY),
+        ticker.with_fade(2049.0),
+        ticker.with_ramp_ms(5001),
+    ] {
+        assert_eq!(
+            s.col
+                .add_item(
+                    scene,
+                    ItemContent::Source(s.cam),
+                    full(1.0, 1.0).with_scroll(Some(bad)),
+                    None
+                )
+                .map(|_| ()),
+            Err(SceneError::InvalidLayout),
+            "{bad:?}"
+        );
+    }
+    // The ends of the ranges are valid (checked without an edit: this test ends with an
+    // unchanged collection).
+    assert!(
+        full(1.0, 1.0)
+            .with_scroll(Some(
+                Scroll::new(ScrollDirection::Down, 4000.0)
+                    .with_gap(16384.0)
+                    .with_fade(2048.0)
+                    .with_ramp_ms(5000),
+            ))
+            .is_valid()
+    );
     for bad in [
         ItemStyle::new(Shape::Rectangle { radius: -1.0 }),
         ItemStyle::new(Shape::Rectangle { radius: f32::NAN }),
@@ -462,15 +533,15 @@ fn temporal_sources_run_only_when_a_shown_scene_draws_them() {
 
     // Hidden media and browser are not running. A hidden camera and a hidden
     // still stay running. Placement alone still counts as wanted.
-    assert!(!s.col.running_sources().contains(&media));
-    assert!(!s.col.running_sources().contains(&browser));
-    assert!(s.col.running_sources().contains(&s.cam));
-    assert!(s.col.running_sources().contains(&logo));
+    assert!(!s.col.running_sources(&Activity).contains(&media));
+    assert!(!s.col.running_sources(&Activity).contains(&browser));
+    assert!(s.col.running_sources(&Activity).contains(&s.cam));
+    assert!(s.col.running_sources(&Activity).contains(&logo));
     assert!(s.col.wanted_sources().contains(&media));
-    assert!(!s.col.warm_sources(s.wide).contains(&media));
-    assert!(!s.col.warm_sources(s.wide).contains(&browser));
-    assert!(s.col.warm_sources(s.wide).contains(&s.cam));
-    assert!(s.col.warm_sources(s.wide).contains(&logo));
+    assert!(!s.col.warm_sources(s.wide, &Activity).contains(&media));
+    assert!(!s.col.warm_sources(s.wide, &Activity).contains(&browser));
+    assert!(s.col.warm_sources(s.wide, &Activity).contains(&s.cam));
+    assert!(s.col.warm_sources(s.wide, &Activity).contains(&logo));
 
     // Opacity 0 with visible true still counts, for both temporal type ids.
     s.col.set_item_visible(hidden_media, true).unwrap();
@@ -481,8 +552,8 @@ fn temporal_sources_run_only_when_a_shown_scene_draws_them() {
     s.col
         .set_item_layout(hidden_page, None, full(1.0, 1.0).with_opacity(0.0))
         .unwrap();
-    assert!(s.col.running_sources().contains(&media));
-    assert!(s.col.running_sources().contains(&browser));
+    assert!(s.col.running_sources(&Activity).contains(&media));
+    assert!(s.col.running_sources(&Activity).contains(&browser));
     assert!(
         !s.col
             .flatten(s.wide, live)
@@ -500,8 +571,8 @@ fn temporal_sources_run_only_when_a_shown_scene_draws_them() {
     s.col
         .add_item(shelf, ItemContent::Source(browser), full(1.0, 1.0), None)
         .unwrap();
-    assert!(!s.col.running_sources().contains(&media));
-    assert!(!s.col.running_sources().contains(&browser));
+    assert!(!s.col.running_sources(&Activity).contains(&media));
+    assert!(!s.col.running_sources(&Activity).contains(&browser));
     assert!(s.col.wanted_sources().contains(&media));
 
     // The preview scene counts. One visible placement on any canvas is enough.
@@ -509,14 +580,14 @@ fn temporal_sources_run_only_when_a_shown_scene_draws_them() {
         .add_item(preview, ItemContent::Source(browser), full(1.0, 1.0), None)
         .unwrap();
     s.col.set_preview(s.wide, Some(preview)).unwrap();
-    assert!(s.col.running_sources().contains(&browser));
-    assert!(!s.col.running_sources().contains(&media));
+    assert!(s.col.running_sources(&Activity).contains(&browser));
+    assert!(!s.col.running_sources(&Activity).contains(&media));
     let (tall_live, _) = s.col.add_scene("Tall live", SceneScope::Shared).unwrap();
     s.col
         .add_item(tall_live, ItemContent::Source(media), full(1.0, 1.0), None)
         .unwrap();
     s.col.set_program(s.tall, Some(tall_live)).unwrap();
-    assert!(s.col.running_sources().contains(&media));
+    assert!(s.col.running_sources(&Activity).contains(&media));
 }
 
 #[test]
@@ -601,12 +672,12 @@ fn timed_show_draws_a_hidden_item_without_writing_visible() {
     assert_eq!(s.col.cued_drawn_sources(&cued), BTreeSet::from([media]));
     assert!(
         s.col
-            .running_sources_cued(&BTreeSet::from([media]))
+            .running_sources_cued(&Activity, &BTreeSet::from([media]))
             .contains(&media)
     );
-    assert!(!s.col.running_sources().contains(&media));
+    assert!(!s.col.running_sources(&Activity).contains(&media));
     // A still stays on the warm rule whether or not a cue names it.
-    assert!(s.col.running_sources().contains(&logo));
+    assert!(s.col.running_sources(&Activity).contains(&logo));
 
     // A cue on a scene that is not the program does not appear on program output.
     let shelf_cue = BTreeSet::from([shelf_item]);
@@ -2135,12 +2206,12 @@ fn a_following_canvas_does_not_keep_its_own_scenes_sources_warm() {
     s.col.set_program(s.wide, Some(shared)).unwrap();
     s.col.set_program(s.tall, Some(own)).unwrap();
     // On its own, the vertical canvas keeps the camera of its own scene warm.
-    assert!(s.col.warm_sources(s.tall).contains(&s.cam));
+    assert!(s.col.warm_sources(s.tall, &Activity).contains(&s.cam));
     // Following, it shows only what the horizontal canvas puts on air.
     s.col
         .set_canvas_follow(s.tall, Some(s.wide), Default::default())
         .unwrap();
-    let warm = s.col.warm_sources(s.tall);
+    let warm = s.col.warm_sources(s.tall, &Activity);
     assert!(!warm.contains(&s.cam), "{warm:?}");
     assert!(warm.contains(&s.screen), "{warm:?}");
 }
@@ -2425,4 +2496,262 @@ fn a_loaded_collection_with_its_stinger_placed_stays_editable() {
     .unwrap();
     assert_eq!(col.placed_stinger(), Some(s.cam));
     col.rename_scene(a, "B").unwrap();
+}
+
+#[test]
+fn a_scroll_scales_with_its_box_and_is_stored_within_its_ranges() {
+    // ADR-0150 decision 2: speed, gap and fade are in layout units.
+    let ticker = Scroll::new(ScrollDirection::Left, 100.0)
+        .with_gap(40.0)
+        .with_fade(20.0);
+    let l = Layout::new([0.0, 980.0], [1920.0, 100.0]).with_scroll(Some(ticker));
+    // A 1920x1080 layout on a 960x540 canvas: half size.
+    let placed = l.placed_in((1920, 1080), (960, 540));
+    let s = placed.scroll.unwrap();
+    assert_eq!((s.speed, s.gap, s.fade), (50.0, 20.0, 10.0));
+    assert_eq!(s.ramp_ms, ticker.ramp_ms);
+    assert_eq!(placed.stored_in((1920, 1080), (960, 540)), l);
+    // Stored from a larger canvas, values are kept within the saved ranges.
+    let fast = Layout::new([0.0, 0.0], [10.0, 10.0]).with_scroll(Some(
+        Scroll::new(ScrollDirection::Up, 4000.0)
+            .with_gap(16384.0)
+            .with_fade(2048.0),
+    ));
+    let stored = fast.stored_in((1920, 1080), (960, 540));
+    let s = stored.scroll.unwrap();
+    assert_eq!((s.speed, s.gap, s.fade), (4000.0, 16384.0, 2048.0));
+    assert!(stored.is_valid());
+    assert_eq!(Layout::new([0.0, 0.0], [1.0, 1.0]).scroll, None);
+}
+
+#[test]
+fn scroll_layers_carry_canvas_pixels_and_one_key_per_run() {
+    // ADR-0150 decisions 2 and 5.
+    use rbs_scene::ScrollKey;
+    let mut s = studio();
+    let ticker = Scroll::new(ScrollDirection::Left, 100.0)
+        .with_gap(40.0)
+        .with_fade(10.0);
+    let bar = Layout::new([0.0, 980.0], [1920.0, 100.0]).with_scroll(Some(ticker));
+    let (a, _) = s.col.add_scene("A", SceneScope::Shared).unwrap();
+    let (b, _) = s.col.add_scene("B", SceneScope::Shared).unwrap();
+    s.col
+        .add_item(a, ItemContent::Source(s.screen), bar, None)
+        .unwrap();
+    // The same source and scroll in another scene, placed elsewhere along the
+    // direction and wider: same cross-axis size, so the same run.
+    s.col
+        .add_item(
+            b,
+            ItemContent::Source(s.screen),
+            Layout::new([100.0, 0.0], [1500.0, 100.0]).with_scroll(Some(ticker)),
+            None,
+        )
+        .unwrap();
+    let la = s.col.flatten(s.wide, a).unwrap();
+    let lb = s.col.flatten(s.wide, b).unwrap();
+    assert_eq!(la[0].scroll, Some(ticker));
+    assert!(la[0].scroll_key.is_some());
+    assert_eq!(la[0].scroll_key, lb[0].scroll_key);
+    let key = la[0].scroll_key.unwrap();
+    assert_eq!(key.canvas, s.wide);
+    assert_eq!(key.source, s.screen);
+
+    // Nested at half size: speed, gap and fade halve, and the cross size changes, so
+    // it is another run.
+    let (outer, _) = s.col.add_scene("Outer", SceneScope::Shared).unwrap();
+    s.col
+        .add_item(
+            outer,
+            ItemContent::Scene(a),
+            Layout::new([0.0, 0.0], [960.0, 540.0]),
+            None,
+        )
+        .unwrap();
+    let nested = s.col.flatten(s.wide, outer).unwrap();
+    let half = nested[0].scroll.unwrap();
+    assert_eq!((half.speed, half.gap, half.fade), (50.0, 20.0, 5.0));
+    assert_ne!(nested[0].scroll_key, Some(key));
+
+    // An item faded to 0 is not drawn, but its run is still listed.
+    let keys = |col: &SceneCollection, scene| {
+        col.scroll_keys_cued(s.wide, scene, &BTreeSet::new())
+            .unwrap()
+    };
+    assert_eq!(keys(&s.col, a), BTreeSet::from([key]));
+    let item = s.col.scene(a).unwrap().items[0].id;
+    s.col
+        .set_item_layout(item, None, bar.with_opacity(0.0))
+        .unwrap();
+    assert!(s.col.flatten(s.wide, a).unwrap().is_empty());
+    assert_eq!(keys(&s.col, a), BTreeSet::from([key]));
+    // A hidden item has no run.
+    s.col.set_item_visible(item, false).unwrap();
+    assert_eq!(keys(&s.col, a), BTreeSet::<ScrollKey>::new());
+    // A layer without scroll has no key.
+    let (plain, _) = s.col.add_scene("Plain", SceneScope::Shared).unwrap();
+    s.col
+        .add_item(plain, ItemContent::Source(s.cam), full(10.0, 10.0), None)
+        .unwrap();
+    let l = s.col.flatten(s.wide, plain).unwrap();
+    assert_eq!((l[0].scroll, l[0].scroll_key), (None, None));
+}
+
+#[test]
+fn a_scene_gets_its_items_back_as_one_undo_step() {
+    let mut s = studio();
+    let (scene, _) = s.col.add_scene("Talk", SceneScope::Shared).unwrap();
+    let (cam, _) = s
+        .col
+        .add_item(scene, ItemContent::Source(s.cam), full(960.0, 540.0), None)
+        .unwrap();
+    let (screen, _) = s
+        .col
+        .add_item(
+            scene,
+            ItemContent::Source(s.screen),
+            full(1920.0, 1080.0),
+            None,
+        )
+        .unwrap();
+    let before = s.col.scene(scene).unwrap().items.clone();
+
+    // Edits as in Preview: the camera moves, the screen goes, a new camera comes.
+    s.col
+        .set_item_layout(cam, Some(s.wide), Layout::new([10.0, 10.0], [400.0, 300.0]))
+        .unwrap();
+    s.col.remove_item(screen).unwrap();
+    s.col
+        .add_item(scene, ItemContent::Source(s.cam), full(100.0, 100.0), None)
+        .unwrap();
+    let edited = s.col.scene(scene).unwrap().items.clone();
+
+    let undo = s.col.set_scene_items(scene, before.clone()).unwrap();
+    assert_eq!(s.col.scene(scene).unwrap().items, before);
+    assert!(
+        s.col.item(screen).is_some(),
+        "the removed item keeps its id"
+    );
+
+    let redo = s.col.undo(undo).unwrap();
+    assert_eq!(s.col.scene(scene).unwrap().items, edited);
+    s.col.undo(redo).unwrap();
+    assert_eq!(s.col.scene(scene).unwrap().items, before);
+}
+
+#[test]
+fn a_scene_never_gets_an_item_id_that_is_unissued_or_used() {
+    let mut s = studio();
+    let (scene, _) = s.col.add_scene("Talk", SceneScope::Shared).unwrap();
+    let (other, _) = s.col.add_scene("Other", SceneScope::Shared).unwrap();
+    let (cam, _) = s
+        .col
+        .add_item(scene, ItemContent::Source(s.cam), full(960.0, 540.0), None)
+        .unwrap();
+    let (elsewhere, _) = s
+        .col
+        .add_item(other, ItemContent::Source(s.cam), full(960.0, 540.0), None)
+        .unwrap();
+    let mut items = s.col.scene(scene).unwrap().items.clone();
+    let before = s.col.clone();
+
+    let mut used = items[0].clone();
+    used.id = elsewhere;
+    items.push(used);
+    assert_eq!(
+        s.col.set_scene_items(scene, items.clone()),
+        Err(SceneError::UndoConflict)
+    );
+    items.pop();
+    let mut twice = items[0].clone();
+    twice.id = cam;
+    items.push(twice);
+    assert_eq!(
+        s.col.set_scene_items(scene, items.clone()),
+        Err(SceneError::UndoConflict)
+    );
+    items.pop();
+    let mut other_content = items.clone();
+    other_content[0].content = ItemContent::Source(s.screen);
+    assert_eq!(
+        s.col.set_scene_items(scene, other_content),
+        Err(SceneError::UndoConflict)
+    );
+    let mut unissued = items[0].clone();
+    unissued.id = ItemId::from_raw(0x0F00_0000);
+    items.push(unissued);
+    assert_eq!(
+        s.col.set_scene_items(scene, items),
+        Err(SceneError::UndoConflict)
+    );
+    assert_eq!(s.col, before, "a refused edit changes nothing");
+}
+
+#[test]
+fn source_activity_is_one_undo_step_and_linger_is_bounded() {
+    let mut col = SceneCollection::new();
+    let (cam, _) = col
+        .add_source(
+            "Camera",
+            NodeTypeId::new("org.rbs.source.camera"),
+            Default::default(),
+        )
+        .unwrap();
+    let policy = SourceActivity::new(Some(Run::Shown), Some(OnReturn::Resume), Some(10));
+    let undo = col.set_source_activity(cam, policy).unwrap();
+    assert_eq!(col.source(cam).unwrap().activity, policy);
+    col.undo(undo).unwrap();
+    assert!(col.source(cam).unwrap().activity.is_default());
+    let too_long = SourceActivity::new(None, None, Some(MAX_LINGER_S + 1));
+    assert_eq!(
+        col.set_source_activity(cam, too_long),
+        Err(SceneError::InvalidActivity)
+    );
+    assert!(col.source(cam).unwrap().activity.is_default());
+}
+
+#[test]
+fn levels_follow_program_preview_and_placement() {
+    let mut col = SceneCollection::new();
+    let canvas = col
+        .add_canvas("Main", Size::new(1920, 1080), FrameRate::FPS_30)
+        .unwrap()
+        .0;
+    let film = |col: &mut SceneCollection, name: &str| {
+        col.add_source(
+            name,
+            NodeTypeId::new("org.rbs.source.media"),
+            Default::default(),
+        )
+        .unwrap()
+        .0
+    };
+    let (a, b, c) = (
+        film(&mut col, "A"),
+        film(&mut col, "B"),
+        film(&mut col, "C"),
+    );
+    let scene_with = |col: &mut SceneCollection, name: &str, src| {
+        let (scene, _) = col.add_scene(name, SceneScope::Shared).unwrap();
+        col.add_item(
+            scene,
+            ItemContent::Source(src),
+            Layout::new([0.0, 0.0], [10.0, 10.0]),
+            None,
+        )
+        .unwrap();
+        scene
+    };
+    let pa = scene_with(&mut col, "Program", a);
+    let pb = scene_with(&mut col, "Preview", b);
+    scene_with(&mut col, "Shelf", c);
+    col.set_program(canvas, Some(pa)).unwrap();
+    col.set_preview(canvas, Some(pb)).unwrap();
+    let levels = col.source_levels(&BTreeSet::new());
+    use rbs_scene::activity::Level;
+    assert_eq!(levels.get(&a), Some(&Level::OnAir));
+    assert_eq!(levels.get(&b), Some(&Level::Shown));
+    assert_eq!(levels.get(&c), Some(&Level::Placed));
+    let running = col.running_sources(&Activity);
+    assert!(running.contains(&a) && running.contains(&b) && !running.contains(&c));
 }

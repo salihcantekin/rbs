@@ -161,7 +161,7 @@ impl TextRenderer for FakeTextRenderer {
         }
         let m = Metrics::of(block, scale);
         let lines = lines(&block.text, &m, wrap);
-        let (_, text_h) = text_size(&lines, &m);
+        let (text_w, text_h) = text_size(&lines, &m);
 
         let mut c = Canvas {
             w: bw,
@@ -231,6 +231,7 @@ impl TextRenderer for FakeTextRenderer {
             .is_some_and(|f| !FAMILIES.contains(&f));
         let mut notes = RenderNotes::default();
         notes.font_missing = font_missing;
+        notes.cut_to_fit = !block.text.is_empty() && (text_w > area_w || text_h > area_h);
         Ok((picture, notes))
     }
 

@@ -70,6 +70,10 @@ pub enum Topic {
     /// A program change's transition started or ended (protocol 1.81, ADR-0128).
     #[serde(rename = "transition.state")]
     TransitionState,
+    /// `item.scroll_finished` (protocol 1.94, ADR-0150): a `Once` scroll ended, per
+    /// canvas.
+    #[serde(rename = "item.scroll_finished")]
+    ItemScrollFinished,
     /// One add-on's status, one key per catalog entry (state, protocol 1.90,
     /// ADR-0145).
     #[serde(rename = "addon.changed")]
@@ -78,7 +82,7 @@ pub enum Topic {
 
 impl Topic {
     /// Every topic.
-    pub const ALL: [Topic; 18] = [
+    pub const ALL: [Topic; 19] = [
         Topic::SourceChanged,
         Topic::RecordState,
         Topic::CanvasChanged,
@@ -97,6 +101,7 @@ impl Topic {
         Topic::AttributesClipboardChanged,
         Topic::TransitionState,
         Topic::AddonChanged,
+        Topic::ItemScrollFinished,
     ];
 
     /// Its name on the wire.
@@ -120,6 +125,7 @@ impl Topic {
             Topic::AttributesClipboardChanged => "source.attributes_clipboard.changed",
             Topic::TransitionState => "transition.state",
             Topic::AddonChanged => "addon.changed",
+            Topic::ItemScrollFinished => "item.scroll_finished",
         }
     }
 
@@ -295,6 +301,9 @@ pub enum EventPayload {
     /// A transition started or ended (protocol 1.81).
     #[serde(rename = "transition.state")]
     TransitionState(crate::types::TransitionStateChanged),
+    /// `item.scroll_finished` (protocol 1.94).
+    #[serde(rename = "item.scroll_finished")]
+    ItemScrollFinished(crate::types::ScrollFinished),
     /// One add-on's status (protocol 1.90).
     #[serde(rename = "addon.changed")]
     AddonChanged(crate::types::AddOnChanged),
@@ -321,6 +330,7 @@ impl EventPayload {
             EventPayload::SyncMeasureChanged(_) => Topic::SyncMeasureChanged,
             EventPayload::AttributesClipboardChanged(_) => Topic::AttributesClipboardChanged,
             EventPayload::TransitionState(_) => Topic::TransitionState,
+            EventPayload::ItemScrollFinished(_) => Topic::ItemScrollFinished,
             EventPayload::AddonChanged(_) => Topic::AddonChanged,
         }
     }

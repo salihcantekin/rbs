@@ -34,6 +34,7 @@ pub const TEXT_KEYS: &[&str] = &[
     keys::ALIGN,
     keys::VALIGN,
     keys::WRAP,
+    keys::SINGLE_LINE,
     keys::OVERFLOW,
     keys::LINE_SPACING,
     keys::LETTER_SPACING,
@@ -120,6 +121,10 @@ pub struct TextSettings {
     pub duration_ms: Option<u64>,
     /// Shown at the end of a countdown or while a recording or stream is stopped.
     pub end_text: Option<String>,
+    /// One line, as wide as the text (ADR-0150 decision 10): line breaks become
+    /// spaces, nothing wraps, and the picture's width follows the text up to the caps
+    /// ([`single_line_block`]); `width` is not used.
+    pub single_line: bool,
 }
 
 impl TextSettings {
@@ -256,6 +261,7 @@ pub fn read_text_lenient(settings: &Settings) -> (TextSettings, Vec<&'static str
                 target: None,
                 duration_ms: None,
                 end_text: None,
+                single_line: false,
             },
             r.adjusted,
         ),
@@ -503,6 +509,7 @@ fn read(r: &mut Reader<'_>) -> Result<TextSettings, SourceError> {
         Some(_) => Some(r.int(keys::DURATION_MS, (0, i64::MAX), 0, "0 or more")? as u64),
     };
     let end_text = r.text(keys::END_TEXT)?;
+    let single_line = r.flag(keys::SINGLE_LINE, false)?;
     block.tabular_figures = kind != TextKind::Text || fields;
     Ok(TextSettings {
         kind,
@@ -514,7 +521,30 @@ fn read(r: &mut Reader<'_>) -> Result<TextSettings, SourceError> {
         target,
         duration_ms,
         end_text,
+        single_line,
     })
+}
+
+/// The block a `single_line` source draws (ADR-0150 decision 10): every line break
+/// (`\r\n`, `\n`, `\r`) is one space, nothing wraps, and the box is as wide as the
+/// text measures (`natural_width`, from [`rbs_text::TextRenderer::measure`] of the
+/// returned block's text without a width), within a side of [`MAX_SIDE`] and the
+/// [`MAX_PIXELS`] area at the block's height. A wider text keeps the widest box and
+/// is cut there (the renderer reports `cut_to_fit`). The height stays as set.
+pub fn single_line_block(mut block: TextBlock) -> TextBlock {
+    block.text = one_line(&block.text);
+    block.wrap = false;
+    block
+}
+
+/// The box width of a `single_line` block whose text measures `natural_width`.
+pub fn single_line_width(natural_width: u32, height: u32) -> u32 {
+    let by_area = (MAX_PIXELS / u64::from(height.max(1))).min(u64::from(MAX_SIDE)) as u32;
+    natural_width.clamp(1, by_area)
+}
+
+fn one_line(text: &str) -> String {
+    text.replace("\r\n", " ").replace(['\n', '\r'], " ")
 }
 
 #[cfg(test)]
@@ -553,6 +583,24 @@ mod tests {
         assert!(t.block.outline.is_none() && t.block.shadow.is_none());
         assert!(t.block.validate().is_ok());
         assert!(t.is_still());
+        assert!(!t.single_line);
+    }
+
+    #[test]
+    fn a_single_line_has_no_breaks_and_its_width_stays_within_the_caps() {
+        let t = validate_text(&boxed(&[(keys::SINGLE_LINE, SettingValue::Bool(true))])).unwrap();
+        assert!(t.single_line);
+        assert!(validate_text(&boxed(&[(keys::SINGLE_LINE, SettingValue::Int(1))])).is_err());
+        let mut b = t.block;
+        b.text = "a\r\nb\nc\rd".into();
+        let b = single_line_block(b);
+        assert_eq!(b.text, "a b c d");
+        assert!(!b.wrap);
+        assert_eq!(single_line_width(900, 100), 900);
+        assert_eq!(single_line_width(0, 100), 1);
+        assert_eq!(single_line_width(9000, 100), MAX_SIDE);
+        // At 4096 high the area cap allows 2048 across.
+        assert_eq!(single_line_width(9000, 4096), 2048);
     }
 
     #[test]

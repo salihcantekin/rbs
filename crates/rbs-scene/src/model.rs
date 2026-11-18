@@ -1,5 +1,6 @@
 //! The value types of a scene collection.
 
+use crate::activity::SourceActivity;
 use std::collections::BTreeMap;
 use std::fmt;
 
@@ -447,6 +448,10 @@ pub struct Source {
     /// left out of the file. The binder does not read it: a set flag adds no node
     /// until an ISO recording starts.
     pub record_separately: RecordSeparately,
+    /// When the source runs and what it does when it returns (ADR-0152). Every key
+    /// absent is the type's default, left out of the file. Not settings: the binder
+    /// does not compare it, so changing it never replaces the source's node.
+    pub activity: SourceActivity,
 }
 
 /// Which of a source's feeds are recorded as their own files (ADR-0086).
@@ -986,6 +991,7 @@ impl Source {
             region: None,
             chrome: None,
             record_separately: RecordSeparately::default(),
+            activity: SourceActivity::default(),
         }
     }
 }
@@ -1298,6 +1304,161 @@ impl ItemStyle {
     }
 }
 
+/// Which way a scrolling picture moves in the item's box (ADR-0150), in the box's own
+/// frame: a rotated box scrolls along its rotated axis.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScrollDirection {
+    /// Right to left, like a news ticker.
+    #[default]
+    Left,
+    /// Left to right.
+    Right,
+    /// Bottom to top, like credits.
+    Up,
+    /// Top to bottom.
+    Down,
+}
+
+/// How often the picture crosses the window (ADR-0150).
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScrollRepeat {
+    /// Copies follow each other forever, `gap` apart.
+    #[default]
+    Loop,
+    /// The picture crosses the window once, then the box stays empty.
+    Once,
+}
+
+/// Where a scroll run starts (ADR-0150).
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScrollStart {
+    /// The picture starts where it is placed without a scroll.
+    #[default]
+    Inside,
+    /// The picture enters from the edge the motion comes from.
+    Outside,
+}
+
+/// Slowest scroll speed, layout units per second (ADR-0150).
+pub const MIN_SCROLL_SPEED: f32 = 1.0;
+/// Fastest scroll speed, layout units per second.
+pub const MAX_SCROLL_SPEED: f32 = 4000.0;
+/// Widest gap between two copies, layout units.
+pub const MAX_SCROLL_GAP: f32 = 16384.0;
+/// Longest edge fade, layout units.
+pub const MAX_SCROLL_FADE: f32 = 2048.0;
+/// Longest ease of a pause, resume or speed change, milliseconds.
+pub const MAX_SCROLL_RAMP_MS: u32 = 5000;
+/// The ease a new scroll gets, milliseconds.
+pub const DEFAULT_SCROLL_RAMP_MS: u32 = 300;
+
+/// A picture that moves through its item's box (ADR-0150). The box is a window onto the
+/// picture and its copies; across the direction the picture fills the box with its
+/// aspect ratio kept. Lengths and speed are in the units of [`Layout::size`] and scale
+/// with the box.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Scroll {
+    /// Which way the picture moves.
+    pub direction: ScrollDirection,
+    /// Layout units per second, `MIN_SCROLL_SPEED..=MAX_SCROLL_SPEED`.
+    pub speed: f32,
+    /// Empty layout units between two copies, `0..=MAX_SCROLL_GAP`.
+    pub gap: f32,
+    /// Forever or once.
+    pub repeat: ScrollRepeat,
+    /// Where the run starts.
+    pub start: ScrollStart,
+    /// Soft edges at both ends of the window, layout units, `0..=MAX_SCROLL_FADE`. The
+    /// compositor clamps it to half the window.
+    pub fade: f32,
+    /// How long a pause, resume or speed change eases (`EaseInOut`), milliseconds,
+    /// `0..=MAX_SCROLL_RAMP_MS`.
+    pub ramp_ms: u32,
+}
+
+impl Scroll {
+    /// A looping scroll in `direction` at `speed`, starting inside, no gap, no fade, the
+    /// default ramp.
+    pub const fn new(direction: ScrollDirection, speed: f32) -> Self {
+        Self {
+            direction,
+            speed,
+            gap: 0.0,
+            repeat: ScrollRepeat::Loop,
+            start: ScrollStart::Inside,
+            fade: 0.0,
+            ramp_ms: DEFAULT_SCROLL_RAMP_MS,
+        }
+    }
+
+    /// The same scroll with `gap`.
+    pub const fn with_gap(mut self, gap: f32) -> Self {
+        self.gap = gap;
+        self
+    }
+
+    /// The same scroll with `repeat`.
+    pub const fn with_repeat(mut self, repeat: ScrollRepeat) -> Self {
+        self.repeat = repeat;
+        self
+    }
+
+    /// The same scroll with `start`.
+    pub const fn with_start(mut self, start: ScrollStart) -> Self {
+        self.start = start;
+        self
+    }
+
+    /// The same scroll with `fade`.
+    pub const fn with_fade(mut self, fade: f32) -> Self {
+        self.fade = fade;
+        self
+    }
+
+    /// The same scroll with `ramp_ms`.
+    pub const fn with_ramp_ms(mut self, ramp_ms: u32) -> Self {
+        self.ramp_ms = ramp_ms;
+        self
+    }
+
+    /// True if every value is within its range (NaN is not).
+    pub fn is_valid(&self) -> bool {
+        (MIN_SCROLL_SPEED..=MAX_SCROLL_SPEED).contains(&self.speed)
+            && (0.0..=MAX_SCROLL_GAP).contains(&self.gap)
+            && (0.0..=MAX_SCROLL_FADE).contains(&self.fade)
+            && self.ramp_ms <= MAX_SCROLL_RAMP_MS
+    }
+
+    /// Speed, gap and fade multiplied by `factor`, as the box is scaled (ADR-0150
+    /// decision 2). A factor of 1, or one that is not finite and positive, leaves the
+    /// scroll unchanged. The result may leave the saved ranges; it is drawn, not stored.
+    pub fn scaled(self, factor: f32) -> Self {
+        if !(factor.is_finite() && factor > 0.0) || factor == 1.0 {
+            return self;
+        }
+        let mut out = self;
+        out.speed *= factor;
+        out.gap *= factor;
+        out.fade *= factor;
+        out
+    }
+
+    /// Speed, gap and fade brought into their saved ranges (NaN becomes the lower end).
+    pub fn clamped(self) -> Self {
+        let fit = |v: f32, lo: f32, hi: f32| if v.is_nan() { lo } else { v.clamp(lo, hi) };
+        let mut out = self;
+        out.speed = fit(self.speed, MIN_SCROLL_SPEED, MAX_SCROLL_SPEED);
+        out.gap = fit(self.gap, 0.0, MAX_SCROLL_GAP);
+        out.fade = fit(self.fade, 0.0, MAX_SCROLL_FADE);
+        out.ramp_ms = self.ramp_ms.min(MAX_SCROLL_RAMP_MS);
+        out
+    }
+}
+
 /// Where an item sits on a canvas: a box at `position` (top-left, canvas pixels) of
 /// `size`, rotated clockwise by `rotation` degrees about its centre.
 #[non_exhaustive]
@@ -1315,6 +1476,8 @@ pub struct Layout {
     pub opacity: f32,
     /// Shape, border and shadow of the picture (ADR-0053). Only for source items.
     pub style: ItemStyle,
+    /// The picture moving through the box (ADR-0150). Only for source items.
+    pub scroll: Option<Scroll>,
 }
 
 impl Layout {
@@ -1327,6 +1490,7 @@ impl Layout {
             crop: Crop::new(0, 0, 0, 0),
             opacity: 1.0,
             style: ItemStyle::new(Shape::Rectangle { radius: 0.0 }),
+            scroll: None,
         }
     }
 
@@ -1373,13 +1537,21 @@ impl Layout {
         self
     }
 
-    /// True if every number is finite, opacity is within 0..=1 and the style is valid.
+    /// The same layout with `scroll`.
+    pub const fn with_scroll(mut self, scroll: Option<Scroll>) -> Self {
+        self.scroll = scroll;
+        self
+    }
+
+    /// True if every number is finite, opacity is within 0..=1 and the style and the
+    /// scroll are valid.
     pub fn is_valid(&self) -> bool {
         self.position.iter().all(|v| v.is_finite())
             && self.size.iter().all(|v| v.is_finite())
             && self.rotation.is_finite()
             && (0.0..=1.0).contains(&self.opacity)
             && self.style.is_valid()
+            && self.scroll.is_none_or(|s| s.is_valid())
     }
 
     /// This box, written in a canvas of `from`, as it is drawn on a canvas of `to`
@@ -1394,6 +1566,7 @@ impl Layout {
         out.position = [self.position[0] * scale + ox, self.position[1] * scale + oy];
         out.size = [self.size[0] * scale, self.size[1] * scale];
         out.style = self.style.scaled(scale);
+        out.scroll = self.scroll.map(|s| s.scaled(scale));
         out
     }
 
@@ -1408,6 +1581,8 @@ impl Layout {
         out.position = [(self.position[0] - ox) * inv, (self.position[1] - oy) * inv];
         out.size = [self.size[0] * inv, self.size[1] * inv];
         out.style = self.style.scaled(inv);
+        // Stored values must stay within the saved ranges.
+        out.scroll = self.scroll.map(|s| s.scaled(inv).clamped());
         out
     }
 }

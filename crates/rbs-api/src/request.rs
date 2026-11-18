@@ -8,7 +8,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::event::Topic;
 use crate::scope::{Scope, ScopeSet};
-use crate::types::ItemStyle;
 use crate::types::{
     CalibrationState, Canvas, CanvasRecordState, CanvasStreamState, CaptureTarget, EstimateAnswer,
     EstimateSummary, FilterTypeList, Library, LoudnessStatus, MonitorDeviceList, MonitorMode,
@@ -18,6 +17,7 @@ use crate::types::{
     VcamStatus,
 };
 use crate::types::{DeviceKey, DeviceSyncEntry};
+use crate::types::{ItemScroll, ItemStyle};
 
 /// Parameters of a method that takes none. Unknown fields are ignored.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1444,6 +1444,47 @@ pub struct SetItemShowFor {
     pub show_for_ms: Option<u32>,
 }
 
+/// `item.set_scroll` (protocol 1.94, ADR-0150 decision 11): sets or clears the saved
+/// scroll of a source item's layout on a canvas. One undo step.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetItemScroll {
+    /// The item's id (`source.list`).
+    pub item: u32,
+    /// The scroll; `null` clears it.
+    pub scroll: Option<ItemScroll>,
+    /// `"main"` (the default) or `"vertical"`, as for the other item edits.
+    #[serde(default, skip_serializing_if = "is_main")]
+    pub canvas: OutputCanvas,
+}
+
+/// `item.scroll_pause`, `item.scroll_resume` and `item.scroll_restart` (protocol 1.94,
+/// ADR-0150 decision 11): live, not saved, not undone. They act on the item's run on
+/// the canvas, so every item sharing that run moves too.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScrollItem {
+    /// The item's id.
+    pub item: u32,
+    /// `"main"` (the default) or `"vertical"`.
+    #[serde(default, skip_serializing_if = "is_main")]
+    pub canvas: OutputCanvas,
+}
+
+/// `item.scroll_speed` (protocol 1.94, ADR-0150 decision 11): live speed of the item's
+/// run until a scroll edit, a restart or the run's end.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetScrollSpeed {
+    /// The item's id.
+    pub item: u32,
+    /// Units per second, 1 to 4000 (0 is refused: pause is the call for it).
+    pub speed: f32,
+    /// `"main"` (the default) or `"vertical"`.
+    #[serde(default, skip_serializing_if = "is_main")]
+    pub canvas: OutputCanvas,
+}
+
 /// `item.show` (ADR-0105). Live session cue. Does not change `visible` and is not
 /// undone. No protocol minor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1924,6 +1965,16 @@ pub enum Command {
     ItemSetShowFor(SetItemShowFor),
     /// `item.show` (ADR-0105). Live, not undoable. No protocol minor.
     ItemShow(ShowItem),
+    /// `item.set_scroll` (protocol 1.94, ADR-0150). Undoable.
+    ItemSetScroll(SetItemScroll),
+    /// `item.scroll_pause` (protocol 1.94). Live.
+    ItemScrollPause(ScrollItem),
+    /// `item.scroll_resume` (protocol 1.94). Live.
+    ItemScrollResume(ScrollItem),
+    /// `item.scroll_restart` (protocol 1.94). Live.
+    ItemScrollRestart(ScrollItem),
+    /// `item.scroll_speed` (protocol 1.94). Live.
+    ItemScrollSpeed(SetScrollSpeed),
     /// `scene.sources` (protocol 1.9): the source items of any scene.
     SceneSources(SceneRef),
     /// `canvas.set_preview` (protocol 1.9).
@@ -2208,6 +2259,11 @@ impl Command {
             Command::ItemSetLocked(_) => "item.set_locked",
             Command::ItemSetShowFor(_) => "item.set_show_for",
             Command::ItemShow(_) => "item.show",
+            Command::ItemSetScroll(_) => "item.set_scroll",
+            Command::ItemScrollPause(_) => "item.scroll_pause",
+            Command::ItemScrollResume(_) => "item.scroll_resume",
+            Command::ItemScrollRestart(_) => "item.scroll_restart",
+            Command::ItemScrollSpeed(_) => "item.scroll_speed",
             Command::EditUndo => "edit.undo",
             Command::EditRedo => "edit.redo",
             Command::OutputProfiles => "output.profiles",
@@ -2536,6 +2592,11 @@ pub const METHODS: &[MethodInfo] = &[
     m("item.set_locked", Some(Scope::Control), Effect::Edit),
     m("item.set_show_for", Some(Scope::Control), Effect::Edit),
     m("item.show", Some(Scope::Control), Effect::Edit),
+    m("item.set_scroll", Some(Scope::Control), Effect::Edit),
+    m("item.scroll_pause", Some(Scope::Control), Effect::Edit),
+    m("item.scroll_resume", Some(Scope::Control), Effect::Edit),
+    m("item.scroll_restart", Some(Scope::Control), Effect::Edit),
+    m("item.scroll_speed", Some(Scope::Control), Effect::Edit),
     m("scene.sources", Some(Scope::Read), Effect::Read),
     m("canvas.set_preview", Some(Scope::Control), Effect::Edit),
     m("canvas.transition", Some(Scope::Control), Effect::Edit),
@@ -2911,6 +2972,16 @@ enum WireRequest {
     ItemSetShowFor(SetItemShowFor),
     #[serde(rename = "item.show")]
     ItemShow(ShowItem),
+    #[serde(rename = "item.set_scroll")]
+    ItemSetScroll(SetItemScroll),
+    #[serde(rename = "item.scroll_pause")]
+    ItemScrollPause(ScrollItem),
+    #[serde(rename = "item.scroll_resume")]
+    ItemScrollResume(ScrollItem),
+    #[serde(rename = "item.scroll_restart")]
+    ItemScrollRestart(ScrollItem),
+    #[serde(rename = "item.scroll_speed")]
+    ItemScrollSpeed(SetScrollSpeed),
     #[serde(rename = "scene.sources")]
     SceneSources(SceneRef),
     #[serde(rename = "canvas.set_preview")]
@@ -3205,6 +3276,11 @@ impl From<WireRequest> for Request {
             WireRequest::ItemSetLocked(p) => Request::Command(C::ItemSetLocked(p)),
             WireRequest::ItemSetShowFor(p) => Request::Command(C::ItemSetShowFor(p)),
             WireRequest::ItemShow(p) => Request::Command(C::ItemShow(p)),
+            WireRequest::ItemSetScroll(p) => Request::Command(C::ItemSetScroll(p)),
+            WireRequest::ItemScrollPause(p) => Request::Command(C::ItemScrollPause(p)),
+            WireRequest::ItemScrollResume(p) => Request::Command(C::ItemScrollResume(p)),
+            WireRequest::ItemScrollRestart(p) => Request::Command(C::ItemScrollRestart(p)),
+            WireRequest::ItemScrollSpeed(p) => Request::Command(C::ItemScrollSpeed(p)),
             WireRequest::EditUndo(_) => Request::Command(C::EditUndo),
             WireRequest::EditRedo(_) => Request::Command(C::EditRedo),
             WireRequest::OutputProfiles(_) => Request::Command(C::OutputProfiles),
@@ -3388,6 +3464,11 @@ impl From<Request> for WireRequest {
                 C::ItemSetLocked(p) => WireRequest::ItemSetLocked(p),
                 C::ItemSetShowFor(p) => WireRequest::ItemSetShowFor(p),
                 C::ItemShow(p) => WireRequest::ItemShow(p),
+                C::ItemSetScroll(p) => WireRequest::ItemSetScroll(p),
+                C::ItemScrollPause(p) => WireRequest::ItemScrollPause(p),
+                C::ItemScrollResume(p) => WireRequest::ItemScrollResume(p),
+                C::ItemScrollRestart(p) => WireRequest::ItemScrollRestart(p),
+                C::ItemScrollSpeed(p) => WireRequest::ItemScrollSpeed(p),
                 C::EditUndo => WireRequest::EditUndo(Empty {}),
                 C::EditRedo => WireRequest::EditRedo(Empty {}),
                 C::OutputProfiles => WireRequest::OutputProfiles(Empty {}),

@@ -26,6 +26,8 @@ use std::fmt;
 use std::sync::Arc;
 
 use rbs_core::lifecycle::Lifecycle;
+
+use crate::activity::{ActivityTraits, Level};
 use rbs_graph::description::{
     GraphDescription, GraphError, Link, NodeId, PartitionId, SchedulePlan,
 };
@@ -33,7 +35,10 @@ use rbs_graph::node::{LinkKind, NodeDescriptor, NodeKind, NodeTypeId};
 
 use crate::collection::{SceneCollection, SceneError};
 use crate::flatten::Affine2;
-use crate::model::{CanvasId, Crop, FilterId, ItemId, ItemStyle, SceneId, Settings, SourceId};
+use crate::flatten::ScrollKey;
+use crate::model::{
+    CanvasId, Crop, FilterId, ItemId, ItemStyle, SceneId, Scroll, Settings, SourceId,
+};
 
 /// Node type id of the canvas compositor.
 pub const COMPOSITOR_TYPE: &str = "org.rbs.compositor";
@@ -68,6 +73,14 @@ pub trait NodeTypes {
     /// No keys unless a type says so.
     fn live_keys(&self, _type_id: &NodeTypeId) -> &'static [&'static str] {
         &[]
+    }
+
+    /// What `type_id` supports for when a source runs and what it does when it
+    /// returns (ADR-0152 decision 5). [`ActivityTraits::PLACED`] unless a type says
+    /// otherwise: Active while placed, linked while warm, as capture and plugins
+    /// are today.
+    fn activity(&self, _type_id: &NodeTypeId) -> ActivityTraits {
+        ActivityTraits::PLACED
     }
 }
 
@@ -223,6 +236,11 @@ pub struct BoundLayer {
     pub style: ItemStyle,
     /// The item's own box size, the units of `style`.
     pub box_size: [f32; 2],
+    /// The scroll in canvas pixels, as in [`FlatLayer::scroll`](crate::FlatLayer::scroll)
+    /// (ADR-0150).
+    pub scroll: Option<Scroll>,
+    /// Its run, as in [`FlatLayer::scroll_key`](crate::FlatLayer::scroll_key).
+    pub scroll_key: Option<ScrollKey>,
 }
 
 /// A bound compositor and what it draws.
@@ -307,6 +325,10 @@ pub enum BindProblem {
     /// its type names no sound node (ADR-0106 decisions 2 and 7): its sound is not
     /// mixed. A camera microphone stays a companion source (ADR-0096).
     AudioOnVideoSource(SourceId),
+    /// The source's saved activity policy uses a value its type does not allow
+    /// (ADR-0152 decision 10): the type's default is in force and the saved value is
+    /// kept. The host shows it as a source warning (`activity_unsupported`).
+    ActivityUnsupported(SourceId),
 }
 
 /// What [`SceneBinder::sync`] produced.
@@ -950,6 +972,16 @@ impl State {
             .map(|(c, h)| (*c, *h))
             .collect();
         self.heal(graph, &mut report)?;
+        // Which sources are Active and which temporal ones are on air (ADR-0152
+        // decisions 1 to 3). Computed first so the preview leaves out a source that
+        // is Standby there (`run: on_air`).
+        let (running, on_air) = activity_states(
+            types,
+            collection,
+            (cued_items, cued_sources),
+            (&hold, &outgoing),
+            &mut report,
+        )?;
         let compositor_desc = types
             .descriptor(&NodeTypeId::new(COMPOSITOR_TYPE))
             .filter(|d| d.kind == NodeKind::Compositor)
@@ -1305,6 +1337,11 @@ impl State {
                 .map_err(BindError::Scene)?;
             let mut layers = Vec::with_capacity(flat.len());
             for layer in flat {
+                // A source that is Standby at the preview's level (`run: on_air`) is
+                // neither drawn nor linked there (ADR-0152 decision 9).
+                if role == Role::Preview && !running.contains(&layer.source) {
+                    continue;
+                }
                 if let Some(bound) = self
                     .sources
                     .get(&layer.source)
@@ -1319,6 +1356,8 @@ impl State {
                         opacity: layer.opacity,
                         style: layer.style,
                         box_size: layer.box_size,
+                        scroll: layer.scroll,
+                        scroll_key: layer.scroll_key,
                     });
                 }
             }
@@ -1333,7 +1372,7 @@ impl State {
             // in neither set unless a timed-show cue draws it (ADR-0105).
             let warm = match role {
                 Role::Program => {
-                    let mut warm = collection.warm_sources(canvas);
+                    let mut warm = collection.warm_sources(canvas, types);
                     warm.extend(
                         collection
                             .visible_sources_cued(canvas, scene, cued_items)
@@ -1346,7 +1385,13 @@ impl State {
                     }
                     warm
                 }
-                Role::Preview | Role::Hold | Role::Incoming => collection
+                Role::Preview => collection
+                    .visible_sources_cued(canvas, scene, cued_items)
+                    .map_err(BindError::Scene)?
+                    .into_iter()
+                    .filter(|id| running.contains(id))
+                    .collect(),
+                Role::Hold | Role::Incoming => collection
                     .visible_sources_cued(canvas, scene, cued_items)
                     .map_err(BindError::Scene)?,
             };
@@ -1523,49 +1568,9 @@ impl State {
             }
         }
 
-        // Wanted states. Capture sources and stills follow `wanted_sources`.
-        // Media and browser sources follow `running_sources` (ADR-0107): Active
-        // only while a shown program or preview scene draws them, or the host's
-        // cue set names them (ADR-0105).
-        let mut running = collection.running_sources_cued(cued_sources);
-        // An outgoing picture keeps playing, on air, until its transition ends.
-        let mut on_air = BTreeSet::new();
-        for o in outgoing.values() {
-            running.extend(o.drawn.iter().copied());
-            running.extend(o.heard.iter().copied());
-            running.extend(o.stinger);
-            on_air.extend(
-                o.drawn
-                    .iter()
-                    .chain(&o.heard)
-                    .chain(&o.stinger)
-                    .copied()
-                    .filter(|id| collection.is_temporal(*id)),
-            );
-        }
-        // A program scene's temporal sources are on air (ADR-0107 decision 6).
-        for canvas in collection.canvases() {
-            if let Some(program) = canvas.program
-                && let Ok(drawn) = collection.visible_sources_cued(canvas.id, program, cued_items)
-            {
-                on_air.extend(drawn.into_iter().filter(|id| collection.is_temporal(*id)));
-            }
-        }
-        // A hold scene's media and browser sources play while it is bound, on air.
-        for (&canvas, h) in &hold {
-            let drawn = collection
-                .visible_sources_cued(canvas, h.scene, cued_items)
-                .map_err(BindError::Scene)?;
-            on_air.extend(
-                drawn
-                    .iter()
-                    .copied()
-                    .filter(|id| collection.is_temporal(*id)),
-            );
-            running.extend(drawn);
-        }
-        // Only an Active source has a membership that matters.
-        on_air.retain(|id| running.contains(id));
+        // Wanted states (ADR-0152): a source is Active when its level reaches its
+        // effective `run`; the outgoing scene, the stinger and a hold scene keep
+        // theirs running whatever their policy.
         report.on_air_sources = on_air;
         for (id, bound) in &self.sources {
             let state = if running.contains(id) {
@@ -1596,6 +1601,64 @@ impl State {
         }
         Ok(report)
     }
+}
+
+/// The sources the binder sets Active and the temporal ones on air (ADR-0152
+/// decisions 1 to 3, ADR-0107 decision 6). Levels come from the collection
+/// (placed, preview, program with cues), raised to On air by a bound hold scene and
+/// a running transition's outgoing `drawn`, `heard` and stinger, which also stay
+/// Active whatever their policy. A cued source (ADR-0105) is at least Shown. A
+/// policy the type does not allow is reported and the type's default used.
+fn activity_states(
+    types: &dyn NodeTypes,
+    collection: &SceneCollection,
+    (cued_items, cued_sources): (&BTreeSet<ItemId>, &BTreeSet<SourceId>),
+    (hold, outgoing): (
+        &BTreeMap<CanvasId, HoldScene>,
+        &BTreeMap<CanvasId, &OutgoingScene>,
+    ),
+    report: &mut BindReport,
+) -> Result<(BTreeSet<SourceId>, BTreeSet<SourceId>), BindError> {
+    let mut levels = collection.source_levels(cued_items);
+    for id in cued_sources {
+        if collection.source(*id).is_some_and(|s| !s.standby()) {
+            let level = levels.entry(*id).or_insert(Level::Shown);
+            *level = (*level).max(Level::Shown);
+        }
+    }
+    let mut forced = BTreeSet::new();
+    for o in outgoing.values() {
+        forced.extend(o.drawn.iter().chain(&o.heard).chain(&o.stinger).copied());
+    }
+    for (&canvas, h) in hold {
+        let drawn = collection
+            .visible_sources_cued(canvas, h.scene, cued_items)
+            .map_err(BindError::Scene)?;
+        forced.extend(drawn);
+    }
+    for id in &forced {
+        levels.insert(*id, Level::OnAir);
+    }
+    let mut running = BTreeSet::new();
+    let mut on_air = BTreeSet::new();
+    for (id, level) in levels {
+        let Some(source) = collection.source(id) else {
+            continue;
+        };
+        let traits = types.activity(&source.type_id);
+        if !source.activity.is_default() && !traits.allows(&source.activity) {
+            report.problems.push(BindProblem::ActivityUnsupported(id));
+        }
+        let policy = traits.effective(Some(&source.activity));
+        if forced.contains(&id) || policy.active_at(level) {
+            running.insert(id);
+            // Only an Active temporal source has a membership that matters.
+            if level == Level::OnAir && policy.is_temporal() {
+                on_air.insert(id);
+            }
+        }
+    }
+    Ok((running, on_air))
 }
 
 /// Links `mix` to the sources in `heard` that have sound (ADR-0039, ADR-0106):

@@ -228,6 +228,20 @@ impl HoldRun {
     pub(super) fn view_mut(&mut self) -> Option<&mut HoldView> {
         self.view.as_mut()
     }
+
+    /// The layers its picture draws.
+    pub(super) fn bound_layers(&self) -> &[BoundLayer] {
+        self.view
+            .as_ref()
+            .map_or(&[], |v| v.bound.layers.as_slice())
+    }
+
+    /// The scroll runs its picture draws (ADR-0150 decision 5).
+    pub(super) fn scroll_keys_into(&self, out: &mut BTreeSet<rbs_scene::ScrollKey>) {
+        if let Some(view) = &self.view {
+            super::scroll::keys_of(&view.bound.layers, out);
+        }
+    }
 }
 
 /// A hold scene's mixer: its strips are the scene's sources at the scene's levels.
@@ -243,7 +257,7 @@ pub(super) struct HoldMix {
 /// A hold scene's compositor and what draws its layers.
 pub(super) struct HoldView {
     pub(super) compositor: NodeId,
-    pub(super) layers: LayerSender,
+    pub(super) layers: CompositorPort,
     pub(super) bound: BoundCompositor,
 }
 
@@ -285,11 +299,11 @@ impl Studio {
             match (run.view.as_mut(), bound, size) {
                 (Some(view), Some(bound), _) => view.bound = bound,
                 (None, Some(bound), Some((width, height))) => {
-                    let (compositor, layers) = CompositorNode::new(
+                    let (compositor, layers) = CompositorPort::of_new(CompositorNode::new(
                         CanvasDesc { width, height },
                         MAX_LAYERS as u32,
                         Vec::new(),
-                    );
+                    ));
                     self.engine
                         .adopt::<GpuRuntime>(RENDER, bound.node, compositor.into_node())?;
                     for chain in self.chains.video.iter().flatten() {

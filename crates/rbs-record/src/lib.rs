@@ -69,4 +69,6 @@ pub use studio::{
     MEASURE_CLAPS, MEASURE_WINDOW, SyncMeasureFailure, SyncMeasureRefused, SyncMeasureResult,
     SyncMeasureSignals, SyncMeasureState, SyncMeasureStatus,
 };
-pub use studio::{STINGER_WAIT, StingerFacts};
+pub use studio::{
+    STINGER_WAIT, ScrollControl, ScrollFinished, ScrollHandover, ScrollRefused, StingerFacts,
+};

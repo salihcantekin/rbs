@@ -1,17 +1,15 @@
 //! Turning a scene into the flat layer list a compositor draws, and finding the
 //! sources a collection needs running.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
+use crate::activity::{Effective, Level, Run};
+use crate::binder::NodeTypes;
 use crate::collection::{SceneCollection, SceneError, allowed_on};
 use crate::model::{
-    CanvasId, Crop, ItemContent, ItemId, ItemStyle, Layout, SceneId, SceneItem, SourceId,
+    CanvasId, Crop, ItemContent, ItemId, ItemStyle, Layout, SceneId, SceneItem, Scroll,
+    ScrollDirection, SourceId,
 };
-
-/// Media file source. Temporal: Active only while a shown scene draws it (ADR-0107).
-const TEMPORAL_MEDIA: &str = "org.rbs.source.media";
-/// Browser source. Temporal, same rule as [`TEMPORAL_MEDIA`] (ADR-0107).
-const TEMPORAL_BROWSER: &str = "org.rbs.source.browser";
 
 /// A 2D affine transform, with the same convention as `rbs-gpu`'s layer transform:
 /// maps `(x, y)` to `(a*x + c*y + tx, b*x + d*y + ty)`; for layers it maps the unit
@@ -109,6 +107,92 @@ pub struct FlatLayer {
     pub style: ItemStyle,
     /// The item's own box size (`|Layout::size|`), the units of `style`.
     pub box_size: [f32; 2],
+    /// The picture moving through the box (ADR-0150), with speed, gap and fade in
+    /// canvas pixels along the direction (scaled as the box is, nested scenes
+    /// included).
+    pub scroll: Option<Scroll>,
+    /// The run this layer's scroll belongs to; set exactly when `scroll` is.
+    pub scroll_key: Option<ScrollKey>,
+}
+
+/// The run a scrolling layer belongs to (ADR-0150 decision 5): canvas, source, the
+/// scaled scroll settings and the box's length across the direction, in canvas pixels.
+/// Every layer with an equal key on a canvas shows the same position. Floats compare
+/// by their bits, with `-0.0` taken as `0.0`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ScrollKey {
+    /// The canvas.
+    pub canvas: CanvasId,
+    /// The source scrolled.
+    pub source: SourceId,
+    /// Direction, repeat and start.
+    kind: [u8; 3],
+    /// Ramp in milliseconds.
+    ramp_ms: u32,
+    /// Speed, gap, fade and the cross-axis length, as bits.
+    bits: [u32; 4],
+}
+
+impl ScrollKey {
+    /// The key of `scroll` (already scaled to canvas pixels) on a box `cross` canvas
+    /// pixels long across the direction.
+    pub fn new(canvas: CanvasId, source: SourceId, scroll: &Scroll, cross: f32) -> Self {
+        let bits = |v: f32| if v == 0.0 { 0 } else { v.to_bits() };
+        Self {
+            canvas,
+            source,
+            kind: [
+                scroll.direction as u8,
+                scroll.repeat as u8,
+                scroll.start as u8,
+            ],
+            ramp_ms: scroll.ramp_ms,
+            bits: [
+                bits(scroll.speed),
+                bits(scroll.gap),
+                bits(scroll.fade),
+                bits(cross),
+            ],
+        }
+    }
+
+    /// The scaled speed, canvas pixels per second.
+    pub fn speed(&self) -> f32 {
+        f32::from_bits(self.bits[0])
+    }
+
+    /// How long a pause, resume or speed change eases.
+    pub fn ramp_ms(&self) -> u32 {
+        self.ramp_ms
+    }
+}
+
+/// `scroll` in canvas pixels for a box drawn by `placed` from a layout of `size`, with
+/// its key; `None` when the box has no length along or across the direction.
+fn placed_scroll(
+    canvas: CanvasId,
+    source: SourceId,
+    scroll: Scroll,
+    placed: &Affine2,
+    size: [f32; 2],
+) -> Option<(Scroll, ScrollKey)> {
+    let x_len = placed.a.hypot(placed.b);
+    let y_len = placed.c.hypot(placed.d);
+    let vertical = matches!(
+        scroll.direction,
+        ScrollDirection::Up | ScrollDirection::Down
+    );
+    let (along, cross, own) = if vertical {
+        (y_len, x_len, size[1].abs())
+    } else {
+        (x_len, y_len, size[0].abs())
+    };
+    let factor = along / own;
+    if !(factor.is_finite() && factor > 0.0 && cross.is_finite() && cross > 0.0) {
+        return None;
+    }
+    let scaled = scroll.scaled(factor);
+    Some((scaled, ScrollKey::new(canvas, source, &scaled, cross)))
 }
 
 impl SceneCollection {
@@ -164,6 +248,7 @@ impl SceneCollection {
             size,
             Affine2::IDENTITY,
             1.0,
+            false,
             cued,
             &mut path,
             &mut out,
@@ -178,12 +263,56 @@ impl SceneCollection {
                 size,
                 Affine2::IDENTITY,
                 1.0,
+                false,
                 cued,
                 &mut path,
                 &mut out,
             );
         }
         Ok(out)
+    }
+
+    /// The scroll runs `scene` draws on `canvas` with `cued` items (ADR-0150 decision
+    /// 5), as [`Self::flatten_cued`] would key them, and also those of items at opacity
+    /// 0, which flattening leaves out: their runs keep going while they are faded out.
+    pub fn scroll_keys_cued(
+        &self,
+        canvas: CanvasId,
+        scene: SceneId,
+        cued: &BTreeSet<ItemId>,
+    ) -> Result<BTreeSet<ScrollKey>, SceneError> {
+        let c = self
+            .canvas(canvas)
+            .ok_or(SceneError::UnknownCanvas(canvas))?;
+        let s = self.scene(scene).ok_or(SceneError::UnknownScene(scene))?;
+        if !allowed_on(s.scope, canvas) {
+            return Err(SceneError::ScopeViolation(scene));
+        }
+        let space = (c.layout_size.width, c.layout_size.height);
+        let current = (c.size.width, c.size.height);
+        let size = (c.size.width as f32, c.size.height as f32);
+        let mut out = Vec::new();
+        let mut path = Vec::new();
+        let cued = (!cued.is_empty()).then_some(cued);
+        for root in [Some(scene), c.globals.filter(|g| *g != scene)]
+            .into_iter()
+            .flatten()
+        {
+            self.flatten_into(
+                canvas,
+                root,
+                space,
+                current,
+                size,
+                Affine2::IDENTITY,
+                1.0,
+                true,
+                cued,
+                &mut path,
+                &mut out,
+            );
+        }
+        Ok(out.into_iter().filter_map(|l| l.scroll_key).collect())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -196,6 +325,7 @@ impl SceneCollection {
         size: (f32, f32),
         outer: Affine2,
         opacity: f32,
+        keep_clear: bool,
         cued: Option<&BTreeSet<ItemId>>,
         path: &mut Vec<ItemId>,
         out: &mut Vec<FlatLayer>,
@@ -207,7 +337,7 @@ impl SceneCollection {
         for item in s.items.iter().filter(|i| item_drawn(i, cued)) {
             let layout = item.layout_on(canvas).placed_in(space, current);
             let alpha = opacity * layout.opacity;
-            if alpha <= 0.0 {
+            if alpha <= 0.0 && !keep_clear {
                 continue;
             }
             let placed = Affine2::of_layout(&layout).then(&outer);
@@ -224,6 +354,9 @@ impl SceneCollection {
                         .and_then(|s| s.region)
                         .map(|region| region.intersect_crop(layout.crop))
                         .unwrap_or(layout.crop);
+                    let scroll = layout
+                        .scroll
+                        .and_then(|sc| placed_scroll(canvas, source, sc, &placed, layout.size));
                     out.push(FlatLayer {
                         source,
                         path: path.clone(),
@@ -232,12 +365,15 @@ impl SceneCollection {
                         opacity: alpha,
                         style: layout.style,
                         box_size: [layout.size[0].abs(), layout.size[1].abs()],
+                        scroll: scroll.map(|(sc, _)| sc),
+                        scroll_key: scroll.map(|(_, k)| k),
                     });
                 }
                 ItemContent::Scene(nested) => {
                     let inner = Affine2::scale(1.0 / size.0, 1.0 / size.1).then(&placed);
                     self.flatten_into(
-                        canvas, nested, space, current, size, inner, alpha, cued, path, out,
+                        canvas, nested, space, current, size, inner, alpha, keep_clear, cued, path,
+                        out,
                     );
                 }
             }
@@ -342,54 +478,88 @@ impl SceneCollection {
         wanted
     }
 
-    /// Sources the binder sets Active (ADR-0107).
-    ///
-    /// Capture sources and stills are [`Self::wanted_sources`]: placed and not
-    /// deactivated, even when hidden or off the shown scene. `org.rbs.source.media`
-    /// and `org.rbs.source.browser` are Active only when some canvas's program scene,
-    /// or its preview scene when that field is set, draws them with `visible` true.
-    /// Opacity does not matter, including 0. A hidden item does not, unless the host
-    /// passes its source in [`Self::running_sources_cued`]. A scene that is
-    /// not program or preview does not. One visible placement across the canvases is
-    /// enough. A follower counts once the host has written the scene it is showing,
-    /// including a followed program, into `program`.
-    pub fn running_sources(&self) -> BTreeSet<SourceId> {
-        self.running_sources_cued(&BTreeSet::new())
-    }
-
-    /// Like [`Self::running_sources`], and temporal sources in `cued` are Active too
-    /// (ADR-0105 decision 7, ADR-0107 decision 4). The host passes source ids of
-    /// items a shown scene is actually drawing for a cue. An empty set adds nothing.
-    /// Capture sources and stills stay on [`Self::wanted_sources`]. A deactivated
-    /// source is not made Active.
-    pub fn running_sources_cued(&self, cued: &BTreeSet<SourceId>) -> BTreeSet<SourceId> {
-        let mut running = BTreeSet::new();
-        for id in self.wanted_sources() {
-            if !self.is_temporal(id) {
-                running.insert(id);
-            }
-        }
+    /// How far each placed, not deactivated source is from the screen (ADR-0152
+    /// decision 1), from the collection alone: [`Level::Placed`] for every item in any
+    /// scene, [`Level::Shown`] when a canvas's preview scene draws it with `visible`
+    /// true (or `cued_items` names the item), [`Level::OnAir`] when a canvas's program
+    /// scene does. Hold scenes and running transitions are the binder's inputs and
+    /// raise these levels there. A source placed nowhere, or deactivated, is absent
+    /// (Unplaced or Off).
+    pub fn source_levels(&self, cued_items: &BTreeSet<ItemId>) -> BTreeMap<SourceId, Level> {
+        let mut levels: BTreeMap<SourceId, Level> = self
+            .wanted_sources()
+            .into_iter()
+            .map(|id| (id, Level::Placed))
+            .collect();
         for canvas in self.canvases() {
-            for scene in [canvas.program, canvas.preview].into_iter().flatten() {
-                let Ok(visible) = self.visible_sources(canvas.id, scene) else {
+            let shown = [
+                (canvas.preview, Level::Shown),
+                (canvas.program, Level::OnAir),
+            ];
+            for (scene, level) in shown {
+                let Some(scene) = scene else {
                     continue;
                 };
-                for id in visible {
-                    if self.is_temporal(id) {
-                        running.insert(id);
-                    }
+                let Ok(drawn) = self.visible_sources_cued(canvas.id, scene, cued_items) else {
+                    continue;
+                };
+                for id in drawn {
+                    let slot = levels.entry(id).or_insert(level);
+                    *slot = (*slot).max(level);
                 }
             }
         }
-        if !cued.is_empty() {
-            for id in cued {
-                if self.is_temporal(*id) && self.source(*id).is_some_and(|source| !source.standby())
-                {
-                    running.insert(*id);
-                }
+        levels
+    }
+
+    /// Sources the binder sets Active, without hold scenes or transitions (ADR-0152,
+    /// ADR-0107): each source whose level ([`Self::source_levels`]) reaches the
+    /// `run` of its effective policy, from `types`. By default, capture sources and
+    /// stills run while placed ([`Self::wanted_sources`]); a type whose default `run`
+    /// is `shown` (media, browser) runs only while some canvas's program scene, or its
+    /// preview scene when that field is set, draws it with `visible` true. Opacity
+    /// does not matter, including 0. A hidden item does not, unless the host passes
+    /// its source in [`Self::running_sources_cued`]. A follower counts once the host
+    /// has written the scene it is showing, including a followed program, into
+    /// `program`.
+    pub fn running_sources(&self, types: &dyn NodeTypes) -> BTreeSet<SourceId> {
+        self.running_sources_cued(types, &BTreeSet::new())
+    }
+
+    /// Like [`Self::running_sources`], and sources in `cued` are at least Shown
+    /// (ADR-0105 decision 7). The host passes source ids of items a shown scene is
+    /// actually drawing for a cue. An empty set adds nothing. A deactivated source
+    /// is not made Active.
+    pub fn running_sources_cued(
+        &self,
+        types: &dyn NodeTypes,
+        cued: &BTreeSet<SourceId>,
+    ) -> BTreeSet<SourceId> {
+        let mut levels = self.source_levels(&BTreeSet::new());
+        for id in cued {
+            if self.source(*id).is_some_and(|source| !source.standby()) {
+                let slot = levels.entry(*id).or_insert(Level::Shown);
+                *slot = (*slot).max(Level::Shown);
             }
         }
-        running
+        levels
+            .into_iter()
+            .filter(|(id, level)| {
+                self.effective_activity(*id, types)
+                    .is_some_and(|p| p.active_at(*level))
+            })
+            .map(|(id, _)| id)
+            .collect()
+    }
+
+    /// The policy in force for `id` (ADR-0152 decision 3), or `None` when no such
+    /// source exists.
+    pub fn effective_activity(&self, id: SourceId, types: &dyn NodeTypes) -> Option<Effective> {
+        self.source(id).map(|source| {
+            types
+                .activity(&source.type_id)
+                .effective(Some(&source.activity))
+        })
     }
 
     /// Source ids that a shown scene draws only because `cued` names the item
@@ -415,23 +585,17 @@ impl SceneCollection {
         out
     }
 
-    /// True for the two temporal type ids (ADR-0107). No other type, including a
-    /// plugin, is temporal.
-    pub(crate) fn is_temporal(&self, id: SourceId) -> bool {
-        self.source(id).is_some_and(|source| {
-            matches!(source.type_id.as_str(), TEMPORAL_MEDIA | TEMPORAL_BROWSER)
-        })
-    }
-
     /// Wanted sources placed on a scene `canvas` may show (including its global scene).
     /// The program compositor keeps these linked so `plan()` does not drop them for
     /// having no sink while they are hidden or off the current scene; layers still come
     /// only from [`Self::flatten`].
     ///
-    /// Temporal sources are omitted. A hidden temporal source is not linked. One a
-    /// shown scene draws is linked from that scene's `visible_sources`, not from here.
-    /// For a canvas that follows another, only scenes the leader can show count.
-    pub fn warm_sources(&self, canvas: CanvasId) -> BTreeSet<SourceId> {
+    /// Only sources whose effective `run` is `placed` and whose type is
+    /// `linked_while_warm` are listed (ADR-0152 decision 4). A temporal source is not
+    /// linked while hidden; one a shown scene draws is linked from that scene's
+    /// `visible_sources`, not from here. For a canvas that follows another, only
+    /// scenes the leader can show count.
+    pub fn warm_sources(&self, canvas: CanvasId, types: &dyn NodeTypes) -> BTreeSet<SourceId> {
         let Some(c) = self.canvas(canvas) else {
             return BTreeSet::new();
         };
@@ -453,7 +617,13 @@ impl SceneCollection {
         }
         self.wanted_sources()
             .into_iter()
-            .filter(|id| !self.is_temporal(*id))
+            .filter(|id| {
+                self.source(*id).is_some_and(|source| {
+                    let traits = types.activity(&source.type_id);
+                    traits.linked_while_warm
+                        && traits.effective(Some(&source.activity)).run == Run::Placed
+                })
+            })
             .filter(|id| {
                 self.placements_of(*id)
                     .iter()

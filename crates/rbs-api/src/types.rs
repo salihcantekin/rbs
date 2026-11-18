@@ -799,6 +799,105 @@ pub struct ItemLayout {
     pub opacity: f32,
     /// Shape, border and shadow (ADR-0053).
     pub style: ItemStyle,
+    /// The picture moving through the box (protocol 1.94, ADR-0150); absent when it
+    /// does not scroll.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scroll: Option<ItemScroll>,
+}
+
+/// Which way a scrolling picture moves in its box (protocol 1.94, ADR-0150), in the
+/// box's own frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ScrollDirection {
+    /// Right to left, like a news ticker.
+    #[default]
+    Left,
+    /// Left to right.
+    Right,
+    /// Bottom to top, like credits.
+    Up,
+    /// Top to bottom.
+    Down,
+}
+
+/// How often a scrolling picture crosses its box (ADR-0150).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ScrollRepeat {
+    /// Copies follow each other forever.
+    #[default]
+    Loop,
+    /// Once, then the box stays empty.
+    Once,
+}
+
+/// Where a scroll run starts (ADR-0150).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ScrollStart {
+    /// Where the picture is placed without a scroll.
+    #[default]
+    Inside,
+    /// Entering from the edge the motion comes from.
+    Outside,
+}
+
+fn default_ramp_ms() -> u32 {
+    300
+}
+
+fn is_default_ramp_ms(v: &u32) -> bool {
+    *v == 300
+}
+
+fn is_zero_f32(v: &f32) -> bool {
+    *v == 0.0
+}
+
+/// A picture moving through its item's box (protocol 1.94, ADR-0150). Lengths and
+/// speed in the item's box units (canvas pixels for an item on the canvas); defaults
+/// are left out.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ItemScroll {
+    /// Which way it moves (`left`).
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub direction: ScrollDirection,
+    /// Units per second, 1 to 4000.
+    pub speed: f32,
+    /// Empty units between two copies, 0 to 16384 (0).
+    #[serde(default, skip_serializing_if = "is_zero_f32")]
+    pub gap: f32,
+    /// `loop` (the default) or `once`.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub repeat: ScrollRepeat,
+    /// `inside` (the default) or `outside`.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub start: ScrollStart,
+    /// Soft edges at both ends of the box, 0 to 2048 (0).
+    #[serde(default, skip_serializing_if = "is_zero_f32")]
+    pub fade: f32,
+    /// How long a pause, resume or speed change eases, 0 to 5000 ms (300).
+    #[serde(
+        default = "default_ramp_ms",
+        skip_serializing_if = "is_default_ramp_ms"
+    )]
+    pub ramp_ms: u32,
+}
+
+fn is_default<T: Default + PartialEq>(v: &T) -> bool {
+    *v == T::default()
+}
+
+/// `item.scroll_finished` (protocol 1.94, ADR-0150 decision 11): a `Once` scroll's
+/// picture has left its box. Published once per run, with every item that used it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScrollFinished {
+    /// The canvas.
+    pub canvas: OutputCanvas,
+    /// The items, in id order.
+    pub items: Vec<u32>,
 }
 
 /// The outline of a picture inside its box (ADR-0053).
@@ -1655,9 +1754,17 @@ pub enum StreamState {
     Idle {
         /// How the last stream of this server run ended, if one ran.
         last: Option<StreamSummary>,
+        /// Streaming is available on the canvas (protocol 1.94, ADR-0148): one of its
+        /// destinations is on. Absent from an older server: read as true.
+        #[serde(default = "crate::types::yes")]
+        available: bool,
     },
     /// A stream runs; it connects, and reconnects, in the background.
     Live {
+        /// Streaming is available on the canvas (protocol 1.94, ADR-0148). A running
+        /// stream goes on when it turns false.
+        #[serde(default = "crate::types::yes")]
+        available: bool,
         /// How it reaches the server.
         protocol: StreamProtocol,
         /// The server takes the stream now.
@@ -1706,6 +1813,38 @@ pub enum StreamState {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         destinations: Vec<LiveDestination>,
     },
+}
+
+impl StreamState {
+    /// An idle stream that never ran, streaming available.
+    pub fn idle() -> Self {
+        StreamState::Idle {
+            last: None,
+            available: true,
+        }
+    }
+
+    /// Whether streaming is available on the canvas (protocol 1.94).
+    pub fn available(&self) -> bool {
+        match self {
+            StreamState::Idle { available, .. } | StreamState::Live { available, .. } => *available,
+        }
+    }
+
+    /// The state with `available` set.
+    pub fn with_available(mut self, on: bool) -> Self {
+        match &mut self {
+            StreamState::Idle { available, .. } | StreamState::Live { available, .. } => {
+                *available = on;
+            }
+        }
+        self
+    }
+}
+
+/// Serde's default for a flag that an older peer leaves out and that means "yes".
+pub(crate) fn yes() -> bool {
+    true
 }
 
 /// One destination of a live stream (protocol 1.77, ADR-0127 decision 16). Never its

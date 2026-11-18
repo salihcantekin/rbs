@@ -45,13 +45,14 @@ use rbs_gpu::share::{MAX_PREVIEW_SURFACES, PreviewDesc, PreviewEndpoint, ring_ne
 use rbs_graph::node::NodeTypeId;
 use rbs_record::{
     AudioSettings, ExtraCanvas, IsoAudioStart, Link, OutputId, OutputSettings, PictureId, Progress,
-    RecordAdapters, RecordError, Studio, StudioSettings, TextDue, TransitionOnce, TransitionPhase,
-    VideoSettings, VirtualCameraSettings,
+    RecordAdapters, RecordError, ScrollControl, ScrollRefused, Studio, StudioSettings, TextDue,
+    TransitionOnce, TransitionPhase, VideoSettings, VirtualCameraSettings,
 };
 use rbs_scene::model::{
     Border, CanvasId, Crop, DisplayChrome, FilterId, ItemContent, ItemId, ItemStyle, Layout,
-    MasterAudio, RecordSeparately, Scene, SceneId, SceneItem, SceneScope, SettingValue, Settings,
-    Shadow, Shape, Source, SourceAudio, SourceId, SourceMonitor, SourceRegion, VideoAs,
+    MAX_SCROLL_SPEED, MIN_SCROLL_SPEED, MasterAudio, RecordSeparately, Scene, SceneId, SceneItem,
+    SceneScope, Scroll, ScrollDirection, ScrollRepeat, ScrollStart, SettingValue, Settings, Shadow,
+    Shape, Source, SourceAudio, SourceId, SourceMonitor, SourceRegion, VideoAs,
 };
 use rbs_scene::{
     AutoLayout, CenterAxis, ChromeFill, FitMode, Removed, SceneError, SceneLevel, Undo,
@@ -1305,8 +1306,9 @@ pub enum Command {
     /// start and after each change.
     SetVerticalStreamProfile(Option<StreamProfile>),
     /// The output profile's stream destinations (ADR-0127 decision 1): the next Go
-    /// live of each canvas sends to every enabled, configured one.
-    SetStreamDestinations(Destinations),
+    /// live of each canvas sends to every enabled, configured one. `true`: the section
+    /// did not load, so streaming counts as available (ADR-0148 decision 1).
+    SetStreamDestinations(Destinations, bool),
     /// Whether Record and Go live also act on the vertical outputs (ADR-0111), as the
     /// output profile saved them. Sent at start and after each change.
     SetVerticalFlags(VerticalFlags),
@@ -2422,7 +2424,7 @@ impl Default for CanvasOutputs {
             destinations_shown: Vec::new(),
             protection_stop: None,
             record_state: api::RecordState::Idle { last: None },
-            stream_state: api::StreamState::Idle { last: None },
+            stream_state: api::StreamState::idle(),
             markers: None,
             hold: HoldPlan::default(),
         }
@@ -3858,6 +3860,9 @@ struct Host {
     vertical_stream_profile: Option<StreamProfile>,
     /// The output profile's stream destinations as the UI sent them (ADR-0127).
     destinations: Destinations,
+    /// The destinations section did not load (ADR-0148 decision 1): streaming counts
+    /// as available on both canvases.
+    destinations_unloaded: bool,
     /// The output profiles and scene collections as the UI listed them last; `None`
     /// until the UI sent them.
     library: Option<(api::Library, api::Library)>,
@@ -4546,6 +4551,7 @@ fn start(
         vertical_profile: None,
         vertical_stream_profile: None,
         destinations: Destinations::default(),
+        destinations_unloaded: false,
         library: None,
         switch_pending: None,
         switch_seq: 0,
@@ -5369,8 +5375,15 @@ impl Host {
                 self.publish(notify);
             }
             Command::SetVerticalProfile(profile) => self.vertical_profile = profile,
-            Command::SetVerticalStreamProfile(profile) => self.vertical_stream_profile = profile,
-            Command::SetStreamDestinations(destinations) => self.destinations = destinations,
+            Command::SetVerticalStreamProfile(profile) => {
+                self.vertical_stream_profile = profile;
+                self.availability_changed();
+            }
+            Command::SetStreamDestinations(destinations, unloaded) => {
+                self.destinations = destinations;
+                self.destinations_unloaded = unloaded;
+                self.availability_changed();
+            }
             Command::SetVerticalFlags(flags) => {
                 if flags != self.vertical_flags {
                     self.vertical_flags = flags;
@@ -5513,6 +5526,7 @@ impl Host {
                 if self.stream_profile.as_ref() != Some(&profile) {
                     self.stream_profile = Some(profile);
                     self.settings_changed();
+                    self.availability_changed();
                 }
             }
             Command::SaveStreamKey(key) => {
@@ -6437,6 +6451,9 @@ impl Host {
     }
 
     fn set_stream_state(&mut self, c: OutputCanvas, state: api::StreamState) {
+        // Every state says whether streaming is available on the canvas (control API
+        // 1.93, ADR-0148 decision 10).
+        let state = state.with_available(self.stream_available(c));
         if state == self.outs[slot(c)].stream_state {
             return;
         }
@@ -6680,6 +6697,8 @@ impl Host {
             self.forget_vertical_outputs();
         }
         let run = self.run_collection();
+        // Tickers go on where they were (ADR-0150 decision 5).
+        settings.scroll_runs = Some(self.studio.scroll_handover());
         // Timers and elapsed times run on across the restart (ADR-0129 decision 11).
         let timers = self.studio.text_timers();
         let old_now = self.clock.now();
@@ -8326,6 +8345,8 @@ impl Host {
         self.set_stream_state(
             c,
             api::StreamState::Live {
+                // `set_stream_state` sets it from the destinations.
+                available: true,
                 protocol,
                 connected: false,
                 connects: 0,
@@ -8443,6 +8464,10 @@ impl Host {
             (None, Some(_)) => self.stream_profile.clone().unwrap_or_default(),
             (None, None) => return Err(no_server()),
         };
+        // Every destination off: refused before any key is read (ADR-0148 decision 10).
+        if only.is_none() && !self.stream_available(c) {
+            return Err(failed(STREAMING_OFF));
+        }
         // The first slot removed: the other destinations go live on the stream's
         // shared settings (ADR-0148 decision 6), or streaming is off.
         if other.is_none() && !crate::stream_destinations::first_exists(&profile) {
@@ -8522,9 +8547,22 @@ impl Host {
         Some(c)
     }
 
+    /// The stream settings or destinations changed: each canvas's stream state says
+    /// again whether streaming is available, and publishes when that changed (control
+    /// API 1.93, ADR-0148 decision 10). A removed vertical canvas publishes nothing.
+    fn availability_changed(&mut self) {
+        for c in self.output_canvases() {
+            let state = self.outs[slot(c)].stream_state.clone();
+            self.set_stream_state(c, state);
+        }
+    }
+
     /// Streaming is available on `c` (ADR-0148 decision 1): one of its existing
-    /// destinations is on.
+    /// destinations is on, or the destinations section did not load.
     fn stream_available(&self, c: OutputCanvas) -> bool {
+        if self.destinations_unloaded {
+            return true;
+        }
         let role = match c {
             OutputCanvas::Main => DestinationCanvas::Main,
             OutputCanvas::Vertical => DestinationCanvas::Vertical,
@@ -9076,6 +9114,8 @@ impl Host {
         self.set_stream_state(
             c,
             api::StreamState::Idle {
+                // `set_stream_state` sets it from the destinations.
+                available: true,
                 last: Some(api::StreamSummary {
                     failure: failure.clone(),
                     frames,
@@ -12309,11 +12349,53 @@ impl Host {
             .set_preview(self.canvas, scene)
             .map_err(|e| Refusal::of(&e))?;
         if !on {
+            // Only once the mode has ended, so a refused leave changes nothing
+            // (ADR-0151 decision 5).
+            self.discard_preview_edits();
             // Leaving studio mode ends a running transition at once (ADR-0128
             // decision 9); the next update binds without it.
             self.studio.end_transitions();
         }
         Ok(true)
+    }
+
+    /// Puts the held program scene back as it is on air before studio mode ends
+    /// (ADR-0151): edits made in Preview since the hold began never reach the program
+    /// without a transition. One undo step, so Undo brings the edits back; nothing
+    /// when nothing is held or nothing was edited.
+    fn discard_preview_edits(&mut self) {
+        let Some(held) = self.held.take() else {
+            return;
+        };
+        if held.from != self.scene {
+            return;
+        }
+        let base = held.scene.id.get();
+        let items: Option<Vec<SceneItem>> = held
+            .scene
+            .items
+            .into_iter()
+            .map(|mut item| {
+                item.id = ItemId::from_raw(item.id.get().checked_sub(base)?);
+                Some(item)
+            })
+            .collect();
+        let Some(items) = items else {
+            return;
+        };
+        let Some(scene) = self.collection.scene(held.from) else {
+            return;
+        };
+        if scene.items == items {
+            return;
+        }
+        let name = scene.name.clone();
+        // A refusal (the copy no longer fits the collection, which the hold already
+        // checks) leaves the scene as it is: the edits stay, as before ADR-0151.
+        if let Ok(undo) = self.collection.set_scene_items(held.from, items) {
+            self.history
+                .record(EditKind::DiscardPreview, &name, 0, vec![undo]);
+        }
     }
 
     /// Makes a scene the preview scene (studio mode only; a live action).
@@ -12832,6 +12914,82 @@ impl Host {
         Ok(true)
     }
 
+    /// Sets or clears an item's saved scroll on `on` (ADR-0150): one undo step. False
+    /// when it was already so.
+    fn set_item_scroll(
+        &mut self,
+        item: ItemId,
+        scroll: Option<Scroll>,
+        gesture: u64,
+        on: OutputCanvas,
+    ) -> Result<bool, String> {
+        let Some((_, found)) = self.collection.item(item) else {
+            return Err("This source is not in the scene any more.".to_owned());
+        };
+        let found = found.clone();
+        let (mut layout, own) = match on {
+            OutputCanvas::Main => (
+                self.shown_layout(&found),
+                found
+                    .overrides
+                    .contains_key(&self.canvas)
+                    .then_some(self.canvas),
+            ),
+            OutputCanvas::Vertical => {
+                let (_, layout, own) = self.crop_target_on(item, on).map_err(|e| e.text())?;
+                (layout, own)
+            }
+        };
+        if layout.scroll == scroll {
+            return Ok(false);
+        }
+        layout.scroll = scroll;
+        let undo = self
+            .save_live_layout(item, own, layout)
+            .map_err(|e| edit_error(&e))?;
+        let name = match found.content {
+            ItemContent::Source(id) => self.name_of(id),
+            _ => String::new(),
+        };
+        self.history
+            .record(EditKind::Scroll, &name, gesture, vec![undo]);
+        Ok(true)
+    }
+
+    /// A live call on an item's scroll run (ADR-0150 decision 11).
+    fn api_scroll_control(
+        &mut self,
+        item: u32,
+        on: OutputCanvas,
+        control: ScrollControl,
+    ) -> Result<Response, ApiError> {
+        let canvas = self.edit_canvas(on).map_err(|e| refused(&e))?;
+        let id = ItemId::from_raw(item);
+        let Some((_, found)) = self.collection.item(id) else {
+            return Err(ApiError::new(
+                ErrorKind::NotFound,
+                format!("no item {item}"),
+            ));
+        };
+        if matches!(found.content, ItemContent::Scene(_)) {
+            return Err(ApiError::new(
+                ErrorKind::InvalidParams,
+                "scroll is for source items, not nested scenes",
+            ));
+        }
+        match self.studio.scroll_control(id, canvas, control) {
+            Ok(_) => Ok(Response::Done(Empty {})),
+            Err(ScrollRefused::NoScroll) => Err(ApiError::new(
+                ErrorKind::InvalidParams,
+                "This source does not scroll on that canvas.",
+            )),
+            Err(_) => Err(ApiError::new(
+                ErrorKind::Conflict,
+                "This source is not on a scene a canvas shows, so its scroll is not running.",
+            )),
+        }
+    }
+
     /// An item placing a source, anywhere in the collection, with its layout on the
     /// studio's canvas and whether that is its own override there.
     fn crop_target(
@@ -13143,6 +13301,7 @@ impl Host {
             Err(e) => notify(Update::Error(e.to_string())),
         }
         self.publish_transitions();
+        self.publish_scroll_finished();
         self.look_at_stinger();
         self.publish(notify);
     }
@@ -13151,6 +13310,26 @@ impl Host {
     /// `transition.state` (ADR-0128 decision 13), one key per canvas. Like every state
     /// topic the slot keeps the latest: a cut's start and end in one update reach a
     /// slow client as `ended` with a `seq` that skipped the start.
+    fn publish_scroll_finished(&mut self) {
+        for e in self.studio.take_scroll_finished() {
+            let canvas = if e.canvas == self.canvas {
+                OutputCanvas::Main
+            } else if self.vertical.map(|v| v.canvas) == Some(e.canvas) {
+                OutputCanvas::Vertical
+            } else {
+                continue;
+            };
+            let finished = api::ScrollFinished {
+                canvas,
+                items: e.items.iter().map(|i| i.get()).collect(),
+            };
+            self.events
+                .changed(canvas_key(Topic::ItemScrollFinished, canvas), || {
+                    EventPayload::ItemScrollFinished(finished)
+                });
+        }
+    }
+
     fn publish_transitions(&mut self) {
         for e in self.studio.take_transition_events() {
             let canvas = if e.canvas == self.canvas {
@@ -13546,6 +13725,9 @@ fn edit_error(e: &SceneError) -> String {
     match e {
         SceneError::StyleOnScene(_) => {
             "Shape and border are for sources, not for scenes placed in a scene.".to_owned()
+        }
+        SceneError::ScrollOnScene(_) => {
+            "Scroll is for sources, not for scenes placed in a scene.".to_owned()
         }
         SceneError::InvalidLayout => {
             "Position and size must be numbers, and the size cannot be 0.".to_owned()
@@ -14749,6 +14931,66 @@ impl ApiTarget<'_> {
                 }
                 Ok(Response::Done(Empty {}))
             }
+            C::ItemSetScroll(p) => {
+                let scroll = match &p.scroll {
+                    Some(s) => Some(
+                        scene_scroll(s)
+                            .map_err(|why| ApiError::new(ErrorKind::InvalidParams, why))?,
+                    ),
+                    None => None,
+                };
+                // The canvas comes first in the error order (protocol 1.44).
+                host.edit_canvas(p.canvas).map_err(|e| refused(&e))?;
+                let item = ItemId::from_raw(p.item);
+                match host.collection.item(item).map(|(_, i)| i.content) {
+                    None => {
+                        return Err(ApiError::new(
+                            ErrorKind::NotFound,
+                            format!("no item {}", p.item),
+                        ));
+                    }
+                    Some(ItemContent::Scene(_)) => {
+                        return Err(ApiError::new(
+                            ErrorKind::InvalidParams,
+                            "scroll is for source items, not nested scenes",
+                        ));
+                    }
+                    Some(_) => {}
+                }
+                if p.canvas == OutputCanvas::Vertical
+                    && host.collection.item(item).map(|(scene, _)| scene) == host.globals()
+                {
+                    return Err(ApiError::new(
+                        ErrorKind::Conflict,
+                        "Global sources are not on the vertical canvas yet.",
+                    ));
+                }
+                if host
+                    .set_item_scroll(item, scroll, 0, p.canvas)
+                    .map_err(failed)?
+                {
+                    host.apply(notify);
+                }
+                Ok(Response::Done(Empty {}))
+            }
+            C::ItemScrollPause(p) => {
+                host.api_scroll_control(p.item, p.canvas, ScrollControl::Pause)
+            }
+            C::ItemScrollResume(p) => {
+                host.api_scroll_control(p.item, p.canvas, ScrollControl::Resume)
+            }
+            C::ItemScrollRestart(p) => {
+                host.api_scroll_control(p.item, p.canvas, ScrollControl::Restart)
+            }
+            C::ItemScrollSpeed(p) => {
+                if !(MIN_SCROLL_SPEED..=MAX_SCROLL_SPEED).contains(&p.speed) {
+                    return Err(ApiError::new(
+                        ErrorKind::InvalidParams,
+                        "speed must be 1 to 4000; pause is item.scroll_pause",
+                    ));
+                }
+                host.api_scroll_control(p.item, p.canvas, ScrollControl::Speed(f64::from(p.speed)))
+            }
             C::EditUndo | C::EditRedo => {
                 let done = host.undo_or_redo(matches!(command, C::EditUndo));
                 host.apply(notify);
@@ -15544,13 +15786,9 @@ impl ApiTarget<'_> {
                 outputs.push(entry(api::OutputOutcome::Running));
                 continue;
             }
-            if kind == api::OutputKind::Stream
-                && c != OutputCanvas::Main
-                && self
-                    .host
-                    .stream_profile_of(c)
-                    .is_none_or(|p| p.server.is_empty())
-            {
+            // `canvas: "all"` starts the canvases where streaming is available
+            // (ADR-0148 decision 10).
+            if kind == api::OutputKind::Stream && !self.host.stream_available(c) {
                 outputs.push(entry(api::OutputOutcome::NotConfigured));
                 continue;
             }
@@ -15584,6 +15822,14 @@ impl ApiTarget<'_> {
                     ..entry(api::OutputOutcome::Refused)
                 }),
             }
+        }
+        // Refused only when no canvas streams or can (ADR-0148 decision 10).
+        if kind == api::OutputKind::Stream
+            && outputs
+                .iter()
+                .all(|o| o.outcome == api::OutputOutcome::NotConfigured)
+        {
+            return Err(failed(STREAMING_OFF));
         }
         if !outputs
             .iter()
@@ -16179,6 +16425,61 @@ fn api_style(s: &ItemStyle) -> api::ItemStyle {
     }
 }
 
+/// The API form of a scroll (ADR-0150).
+fn api_scroll(s: &Scroll) -> api::ItemScroll {
+    api::ItemScroll {
+        direction: match s.direction {
+            ScrollDirection::Right => api::ScrollDirection::Right,
+            ScrollDirection::Up => api::ScrollDirection::Up,
+            ScrollDirection::Down => api::ScrollDirection::Down,
+            _ => api::ScrollDirection::Left,
+        },
+        speed: s.speed,
+        gap: s.gap,
+        repeat: match s.repeat {
+            ScrollRepeat::Once => api::ScrollRepeat::Once,
+            _ => api::ScrollRepeat::Loop,
+        },
+        start: match s.start {
+            ScrollStart::Outside => api::ScrollStart::Outside,
+            _ => api::ScrollStart::Inside,
+        },
+        fade: s.fade,
+        ramp_ms: s.ramp_ms,
+    }
+}
+
+/// The scene's form of an API scroll; the error says what is out of range.
+fn scene_scroll(s: &api::ItemScroll) -> Result<Scroll, String> {
+    let direction = match s.direction {
+        api::ScrollDirection::Left => ScrollDirection::Left,
+        api::ScrollDirection::Right => ScrollDirection::Right,
+        api::ScrollDirection::Up => ScrollDirection::Up,
+        api::ScrollDirection::Down => ScrollDirection::Down,
+    };
+    let scroll = Scroll::new(direction, s.speed)
+        .with_gap(s.gap)
+        .with_repeat(match s.repeat {
+            api::ScrollRepeat::Loop => ScrollRepeat::Loop,
+            api::ScrollRepeat::Once => ScrollRepeat::Once,
+        })
+        .with_start(match s.start {
+            api::ScrollStart::Inside => ScrollStart::Inside,
+            api::ScrollStart::Outside => ScrollStart::Outside,
+        })
+        .with_fade(s.fade)
+        .with_ramp_ms(s.ramp_ms);
+    if scroll.is_valid() {
+        Ok(scroll)
+    } else {
+        Err(SCROLL_ERROR.into())
+    }
+}
+
+/// Why a scroll is refused.
+const SCROLL_ERROR: &str =
+    "Scroll speed must be 1 to 4000, gap 0 to 16384, edge fade 0 to 2048 and ramp 0 to 5000 ms.";
+
 /// The scene's form of an API style; the error says what is wrong.
 fn scene_style(s: &api::ItemStyle) -> Result<ItemStyle, String> {
     let shape = match s.shape {
@@ -16251,6 +16552,7 @@ fn api_source(row: &SourceRow) -> api::SourceInfo {
             crop: [l.crop.left, l.crop.top, l.crop.right, l.crop.bottom],
             opacity: l.opacity,
             style: api_style(&l.style),
+            scroll: l.scroll.map(|s| api_scroll(&s)),
         }),
         picture_size: row.picture.map(|(w, h)| [w, h]),
         visible: row.visible,
