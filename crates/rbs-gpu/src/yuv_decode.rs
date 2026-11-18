@@ -17,7 +17,8 @@
 //! plane ids every frame would create a bind group every frame.
 
 use rbs_core::media::{
-    ColorRange, ColorSpace, MatrixCoefficients, PixelFormat, TextureId, TransferFunction,
+    ColorRange, ColorSpace, FramePayload, MatrixCoefficients, PixelFormat, TextureId,
+    TransferFunction, VideoFormat, VideoFrame,
 };
 
 use crate::context::GpuContext;
@@ -79,33 +80,50 @@ fn target_format(bits: u32) -> wgpu::TextureFormat {
     }
 }
 
-/// Uniform block of the decode shader (`Params` in `yuv_decode.wgsl`).
+/// Uniform block of the decode shader (`Params` in `yuv_decode.wgsl`), and the
+/// compositor's per-layer 4:2:0 record (`YuvGpu` in `composite.wgsl`).
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
-struct Params {
+pub(crate) struct Params {
     rows: [[f32; 4]; 3],
     transfer: [u32; 4],
 }
 
-struct Cached {
-    source: YuvSource,
-    /// Bits of the source format (8 or 10), part of the parameters.
-    bits: u32,
-    color: ColorSpace,
-    buffer: wgpu::Buffer,
+/// A plane pair given as two pool slots, with its bind group on the 4:2:0 layout.
+struct CachedPlanes {
+    luma: TextureId,
+    chroma: TextureId,
     bind_group: wgpu::BindGroup,
     last_used: u64,
 }
 
-/// Decodes 4:2:0 sources of any size. Holds GPU objects only while it exists; the importer
-/// creates one on the first YUV surface (P13).
+/// The parameter uniform of one colour space at one bit depth.
+struct CachedParams {
+    bits: u32,
+    color: ColorSpace,
+    bind_group: wgpu::BindGroup,
+    last_used: u64,
+}
+
+/// Most colour descriptions whose parameter uniforms are cached. Older entries are
+/// replaced.
+const MAX_DECODE_COLORS: usize = 8;
+
+/// Decodes 4:2:0 sources of any size. Holds GPU objects only while it exists; consumers
+/// that need RGB (filters, [`YuvToRgb`]) create one on the first 4:2:0 frame (P13).
+///
+/// The planes are bound with the context's 4:2:0 layout (group 0), the colour parameters
+/// with a uniform cached per colour space (group 1). A 4:2:0 pool slot
+/// ([`YuvSource::Surface`]) brings its own plane bind group, so decoding it creates
+/// nothing per frame, whatever its id.
 pub struct YuvDecoder {
-    layout: wgpu::BindGroupLayout,
+    params_layout: wgpu::BindGroupLayout,
     /// Writes [`DECODED_8BIT_FORMAT`] (NV12 sources).
     pipeline_8bit: wgpu::RenderPipeline,
     /// Writes the canvas format (P010 sources).
     pipeline_canvas: wgpu::RenderPipeline,
-    cache: Vec<Cached>,
+    planes: Vec<CachedPlanes>,
+    colors: Vec<CachedParams>,
     tick: u64,
 }
 
@@ -113,40 +131,18 @@ impl YuvDecoder {
     /// Creates the pipeline. Not a per-frame call.
     pub fn new(ctx: &GpuContext) -> Self {
         let device = ctx.device();
-        let texture = |binding| wgpu::BindGroupLayoutEntry {
-            binding,
-            visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Texture {
-                sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                view_dimension: wgpu::TextureViewDimension::D2,
-                multisampled: false,
-            },
-            count: None,
-        };
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("rbs-gpu yuv decode"),
-            entries: &[
-                texture(0),
-                texture(1),
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
+        let params_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("rbs-gpu yuv decode params"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<Params>() as u64),
                 },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: wgpu::BufferSize::new(
-                            std::mem::size_of::<Params>() as u64
-                        ),
-                    },
-                    count: None,
-                },
-            ],
+                count: None,
+            }],
         });
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("rbs-gpu yuv decode"),
@@ -154,7 +150,7 @@ impl YuvDecoder {
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("rbs-gpu yuv decode"),
-            bind_group_layouts: &[Some(&layout)],
+            bind_group_layouts: &[Some(&ctx.yuv_layout), Some(&params_layout)],
             immediate_size: 0,
         });
         let pipeline = |format| {
@@ -187,8 +183,9 @@ impl YuvDecoder {
         Self {
             pipeline_8bit: pipeline(DECODED_8BIT_FORMAT),
             pipeline_canvas: pipeline(crate::CANVAS_FORMAT),
-            layout,
-            cache: Vec::with_capacity(MAX_DECODE_SOURCES),
+            params_layout,
+            planes: Vec::with_capacity(MAX_DECODE_SOURCES),
+            colors: Vec::with_capacity(MAX_DECODE_COLORS),
             tick: 0,
         }
     }
@@ -223,8 +220,20 @@ impl YuvDecoder {
         }
         let params = params(color, bits)?;
         self.tick += 1;
-        let index = self.cached(ctx, pool, source, (luma, chroma), bits, color, params);
-        let bind_group = &self.cache[index].bind_group;
+        let colour = self.cached_params(ctx, bits, color, params);
+        let pair = match source {
+            YuvSource::Surface(_) => None,
+            YuvSource::Planes { .. } => {
+                Some(self.cached_planes(ctx, pool, source, luma.view(), chroma))
+            }
+        };
+        let planes_group = match pair {
+            Some(i) => &self.planes[i].bind_group,
+            None => luma
+                .yuv_bind_group()
+                .ok_or(GpuError::TargetMismatch(target))?,
+        };
+        let params_group = &self.colors[colour].bind_group;
 
         let mut encoder = ctx
             .device()
@@ -253,60 +262,94 @@ impl YuvDecoder {
             } else {
                 &self.pipeline_canvas
             });
-            pass.set_bind_group(0, bind_group, &[]);
+            pass.set_bind_group(0, planes_group, &[]);
+            pass.set_bind_group(1, params_group, &[]);
             pass.draw(0..3, 0..1);
         }
         Ok(ctx.queue().submit(Some(encoder.finish())))
     }
 
-    /// Drops the cache entries that reference pool slot `id` (as luma, chroma or surface).
-    /// Call when a source's planes are released, so the cached bind group does not keep
-    /// their textures (and any native surface behind them) alive. Not a per-frame call.
+    /// Drops the cached bind group of a plane pair given as two slots, one of which is
+    /// `id`. Call when a source's planes are released, so the bind group does not keep
+    /// their textures alive. Not a per-frame call. 4:2:0 pool slots
+    /// ([`YuvSource::Surface`]) need no call: their bind group lives in the slot.
     pub fn forget(&mut self, id: TextureId) {
-        self.cache.retain(|c| match c.source {
-            YuvSource::Planes { luma, chroma } => luma != id && chroma != id,
-            YuvSource::Surface(s) => s != id,
-        });
+        self.planes.retain(|c| c.luma != id && c.chroma != id);
     }
 
-    /// Sources whose bind groups are cached.
+    /// Plane pairs given as two slots whose bind groups are cached.
     pub fn cached_sources(&self) -> usize {
-        self.cache.len()
+        self.planes.len()
     }
 
-    /// The cache entry for `source`, created or refreshed when needed. Ids carry a
+    /// The cache entry of a two-slot plane pair, created when needed. Ids carry a
     /// generation, so a reused pool slot is a different key.
-    #[allow(clippy::too_many_arguments)]
-    fn cached(
+    fn cached_planes(
         &mut self,
         ctx: &GpuContext,
         pool: &TexturePool,
         source: YuvSource,
-        (luma, chroma): (&crate::pool::PooledTexture, &wgpu::TextureView),
+        luma_view: &wgpu::TextureView,
+        chroma_view: &wgpu::TextureView,
+    ) -> usize {
+        let YuvSource::Planes { luma, chroma } = source else {
+            return 0;
+        };
+        if let Some(i) = self
+            .planes
+            .iter()
+            .position(|c| c.luma == luma && c.chroma == chroma)
+        {
+            self.planes[i].last_used = self.tick;
+            return i;
+        }
+        // First sight: allocates. Entries whose planes left the pool go first.
+        self.planes
+            .retain(|c| pool.get(c.luma).is_some() && pool.get(c.chroma).is_some());
+        let bind_group = ctx.device().create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("rbs-gpu yuv decode planes"),
+            layout: &ctx.yuv_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(luma_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&ctx.linear_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(chroma_view),
+                },
+            ],
+        });
+        let entry = CachedPlanes {
+            luma,
+            chroma,
+            bind_group,
+            last_used: self.tick,
+        };
+        replace_oldest(&mut self.planes, entry, MAX_DECODE_SOURCES, |c| c.last_used)
+    }
+
+    /// The parameter uniform of `color` at `bits`, created when first seen.
+    fn cached_params(
+        &mut self,
+        ctx: &GpuContext,
         bits: u32,
         color: ColorSpace,
         params: Params,
     ) -> usize {
-        if let Some(i) = self.cache.iter().position(|c| c.source == source) {
-            let c = &mut self.cache[i];
-            c.last_used = self.tick;
-            if c.color != color || c.bits != bits {
-                // Rare: the source changed colour description.
-                ctx.queue()
-                    .write_buffer(&c.buffer, 0, bytemuck::bytes_of(&params));
-                c.color = color;
-                c.bits = bits;
-            }
+        if let Some(i) = self
+            .colors
+            .iter()
+            .position(|c| c.bits == bits && c.color == color)
+        {
+            self.colors[i].last_used = self.tick;
             return i;
         }
-        // First sight of this source: allocates (buffer, bind group). Entries whose planes
-        // are gone from the pool are dropped first, so they do not keep textures alive.
-        self.cache.retain(|c| match c.source {
-            YuvSource::Planes { luma, chroma } => {
-                pool.get(luma).is_some() && pool.get(chroma).is_some()
-            }
-            YuvSource::Surface(s) => pool.get(s).is_some(),
-        });
+        // A new colour description: rare, allocates.
         let buffer = ctx.device().create_buffer(&wgpu::BufferDescriptor {
             label: Some("rbs-gpu yuv decode params"),
             size: std::mem::size_of::<Params>() as u64,
@@ -316,48 +359,129 @@ impl YuvDecoder {
         ctx.queue()
             .write_buffer(&buffer, 0, bytemuck::bytes_of(&params));
         let bind_group = ctx.device().create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("rbs-gpu yuv decode"),
-            layout: &self.layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(luma.view()),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(chroma),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&ctx.linear_sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: buffer.as_entire_binding(),
-                },
-            ],
+            label: Some("rbs-gpu yuv decode params"),
+            layout: &self.params_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buffer.as_entire_binding(),
+            }],
         });
-        let entry = Cached {
-            source,
+        let entry = CachedParams {
             bits,
             color,
-            buffer,
             bind_group,
             last_used: self.tick,
         };
-        if self.cache.len() < MAX_DECODE_SOURCES {
-            self.cache.push(entry);
-            self.cache.len() - 1
-        } else {
-            let oldest = self
-                .cache
-                .iter()
-                .enumerate()
-                .min_by_key(|(_, c)| c.last_used)
-                .map_or(0, |(i, _)| i);
-            self.cache[oldest] = entry;
-            oldest
+        replace_oldest(&mut self.colors, entry, MAX_DECODE_COLORS, |c| c.last_used)
+    }
+}
+
+/// Pushes `entry`, or replaces the least recently used one when `cache` holds `max`.
+/// Returns its index.
+fn replace_oldest<T>(cache: &mut Vec<T>, entry: T, max: usize, used: impl Fn(&T) -> u64) -> usize {
+    if cache.len() < max {
+        cache.push(entry);
+        return cache.len() - 1;
+    }
+    let oldest = cache
+        .iter()
+        .enumerate()
+        .min_by_key(|(_, c)| used(c))
+        .map_or(0, |(i, _)| i);
+    cache[oldest] = entry;
+    oldest
+}
+
+/// RGB for consumers that cannot sample 4:2:0 (filters, the separate-file normalisation):
+/// decodes a 4:2:0 texture frame once per picture into a pool texture of
+/// [`decoded_desc`] and keeps that frame until the next picture (perf audit R-11 step
+/// b). Holds nothing until the first 4:2:0 frame (P13).
+#[derive(Default)]
+pub struct YuvToRgb {
+    decoder: Option<YuvDecoder>,
+    /// The last picture decoded: its slot, time and sequence, and the RGB frame.
+    last: Option<((TextureId, rbs_core::time::Timestamp, u64), VideoFrame)>,
+}
+
+impl YuvToRgb {
+    /// Nothing decoded yet.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// True when `frame` is a texture frame of a 4:2:0 slot, which [`Self::rgb`] decodes.
+    pub fn needs_decode(pool: &TexturePool, frame: &VideoFrame) -> bool {
+        let FramePayload::Texture(id) = *frame.payload() else {
+            return false;
+        };
+        pool.get(id).is_some_and(|t| t.is_planar())
+    }
+
+    /// The RGB frame of `frame`'s picture (a 4:2:0 texture frame): decoded on the first
+    /// call for a picture, the kept frame on later calls. The frame has the decode's
+    /// pixel format and [`decoded_color`], the time and sequence of `frame`. Hot path:
+    /// a picture already seen costs a comparison; a new one one decode pass, with no
+    /// allocation in RBS code once the pool holds textures of its size.
+    pub fn rgb(
+        &mut self,
+        ctx: &GpuContext,
+        pool: &mut TexturePool,
+        frame: &VideoFrame,
+    ) -> Result<&VideoFrame, GpuError> {
+        let FramePayload::Texture(id) = *frame.payload() else {
+            return Err(GpuError::Unsupported(
+                "RGB of a frame that is not a texture",
+            ));
+        };
+        let key = (id, frame.timestamp(), frame.sequence());
+        // The kept frame goes unless it is this picture's, so its slot can be reused.
+        if self.last.as_ref().is_some_and(|(k, _)| *k != key) {
+            self.last = None;
         }
+        if self.last.is_none() {
+            self.last = Some((key, self.decode(ctx, pool, id, frame)?));
+        }
+        self.last
+            .as_ref()
+            .map(|(_, rgb)| rgb)
+            .ok_or(GpuError::StaleTexture(id))
+    }
+
+    /// Decodes the 4:2:0 picture of `frame` (slot `id`) into a new RGB frame.
+    fn decode(
+        &mut self,
+        ctx: &GpuContext,
+        pool: &mut TexturePool,
+        id: TextureId,
+        frame: &VideoFrame,
+    ) -> Result<VideoFrame, GpuError> {
+        let format = *frame.format();
+        let (w, h) = (format.size.width, format.size.height);
+        let decoder = self.decoder.get_or_insert_with(|| YuvDecoder::new(ctx));
+        let target = pool.acquire(ctx, &decoded_desc(w, h, format.pixel_format))?;
+        let decoded = decoder
+            .decode(ctx, pool, YuvSource::Surface(id), format.color, target)
+            .and_then(|_| {
+                let rgb = VideoFormat::new(
+                    format.size,
+                    decoded_pixel_format(format.pixel_format),
+                    decoded_color(format.color),
+                );
+                pool.frame(target, rgb, frame.timestamp())
+            });
+        // The kept frame's lease holds the slot; this handle is not needed.
+        let _ = pool.release(target);
+        let mut rgb = decoded?.with_sequence(frame.sequence());
+        if let Some(t) = frame.source_time() {
+            rgb = rgb.with_source_time(t);
+        }
+        Ok(rgb)
+    }
+
+    /// Drops the kept frame (its slot returns to the pool once no reader holds it).
+    /// Not a per-frame call.
+    pub fn release(&mut self) {
+        self.last = None;
     }
 }
 
@@ -413,7 +537,7 @@ fn check_size(width: u32, height: u32) -> Result<(), GpuError> {
 
 /// The shader parameters for `color` at `bits` per sample (8, or 10 in the high bits of a
 /// 16-bit word).
-fn params(color: ColorSpace, bits: u32) -> Result<Params, GpuError> {
+pub(crate) fn params(color: ColorSpace, bits: u32) -> Result<Params, GpuError> {
     let (kr, kb) = match color.matrix {
         MatrixCoefficients::Bt601 => (0.299, 0.114),
         MatrixCoefficients::Bt709 => (0.2126, 0.0722),

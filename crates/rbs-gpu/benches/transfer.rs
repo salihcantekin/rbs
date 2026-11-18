@@ -8,10 +8,16 @@
 //!   `take_ready` (conversion, readback and the CPU copy into a frame buffer).
 //! - `download_1080p/take_copy`: only the render-thread part after the GPU finished
 //!   (`take_ready` with the copy), measured by submitting outside the timed section.
+//! - `two_outputs_1080p/separate` and `two_outputs_1080p/shared`: a recording and a
+//!   stream of one canvas at the same size, each with its own stamps: two downloads with
+//!   readbacks of their own (two conversions, readbacks and CPU copies per picture, as
+//!   before R-01) against two downloads of one `DownloadShare` (one of each). Submit
+//!   both, wait for the GPU, take both.
 //! - `upload_1080p/nv12` and `upload_1080p/bgra`: `SourceUpload::upload` plus a wait for
 //!   the GPU (write, and for NV12 the decode).
 //!
 //! On software adapters (CI) the GPU part is CPU-bound; compare against `main` only.
+//! `RBS_BENCH_POWER=low` prefers the integrated adapter.
 
 use std::time::{Duration, Instant};
 
@@ -20,8 +26,10 @@ use rbs_core::media::{
     Bytes, ColorSpace, PixelFormat, PlaneLayout, Size, SystemFrame, VideoFormat, VideoFrame,
 };
 use rbs_core::time::Timestamp;
+use rbs_gpu::download::DOWNLOAD_BUFFERS;
 use rbs_gpu::{
-    GpuContext, GpuRequest, SourceUpload, TextureDesc, TexturePool, YuvDownload, YuvFormat,
+    DownloadShare, GpuContext, GpuRequest, SourceUpload, TextureDesc, TexturePool, YuvDownload,
+    YuvFormat,
 };
 
 const W: u32 = 1920;
@@ -39,9 +47,14 @@ fn canvas_frame(pool: &TexturePool, id: rbs_gpu::TextureId, i: u64) -> VideoFram
 }
 
 fn bench(c: &mut Criterion) {
+    // `RBS_BENCH_POWER=low` measures on the integrated GPU of a hybrid machine.
+    let power = match std::env::var("RBS_BENCH_POWER").as_deref() {
+        Ok("low") => rbs_gpu::context::PowerPreference::LowPower,
+        _ => rbs_gpu::context::PowerPreference::HighPerformance,
+    };
     let ctx = match GpuContext::new(&GpuRequest {
         allow_software: true,
-        ..GpuRequest::default()
+        power,
     }) {
         Ok(ctx) => ctx,
         Err(e) => {
@@ -86,6 +99,58 @@ fn bench(c: &mut Criterion) {
             total
         });
     });
+    g.finish();
+
+    let shared = |share: &DownloadShare| {
+        YuvDownload::scaled_tone_shared(
+            &ctx,
+            share,
+            YuvFormat::Nv12,
+            W,
+            H,
+            W,
+            H,
+            DOWNLOAD_BUFFERS,
+            ColorSpace::BT709_LIMITED,
+            false,
+        )
+        .expect("shared download")
+    };
+    let share = DownloadShare::new();
+    let pairs = [
+        (
+            "separate",
+            YuvDownload::new(&ctx, YuvFormat::Nv12, W, H).expect("download"),
+            YuvDownload::new(&ctx, YuvFormat::Nv12, W, H).expect("download"),
+        ),
+        ("shared", shared(&share), shared(&share)),
+    ];
+    let mut g = c.benchmark_group("two_outputs_1080p");
+    g.sample_size(20);
+    for (name, mut rec, mut live) in pairs {
+        let copied = ctx.metrics().frames_cpu_copied();
+        let mut pictures = 0u64;
+        g.bench_function(name, |b| {
+            b.iter(|| {
+                i += 1;
+                pictures += 1;
+                let frame = canvas_frame(&pool, canvas, i);
+                rec.submit(&ctx, &pool, &frame).expect("submit");
+                live.submit_at(&ctx, &pool, &frame, Timestamp::from_nanos(i), i + 1)
+                    .expect("submit");
+                ctx.wait_idle().expect("wait");
+                ctx.poll();
+                let a = rec.take_ready(&ctx).expect("take").expect("a frame");
+                let b = live.take_ready(&ctx).expect("take").expect("a frame");
+                (a, b)
+            });
+        });
+        let copies = ctx.metrics().frames_cpu_copied() - copied;
+        eprintln!(
+            "two_outputs_1080p/{name}: {copies} CPU copies for {pictures} pictures ({:.2} per picture)",
+            copies as f64 / pictures.max(1) as f64
+        );
+    }
     g.finish();
 
     let mut g = c.benchmark_group("upload_1080p");

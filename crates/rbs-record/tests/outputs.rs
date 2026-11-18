@@ -111,6 +111,14 @@ fn a_recording_and_a_stream_with_different_settings_run_on_their_own_encoders() 
         r.log.count(0) >= 8 && r.log.count(1) >= 8 && r.stream_log.count(0) >= 8
     });
     assert!(reached, "{:?}", studio.output_progress(live));
+    // One conversion and readback per canvas picture for both (R-01): the export that
+    // runs second in a tick joins the first one's readback.
+    let (pr, pl) = (
+        studio.output_progress(rec).unwrap(),
+        studio.output_progress(live).unwrap(),
+    );
+    assert!(pr.frames_joined + pl.frames_joined >= 4, "{pr:?} {pl:?}");
+    assert_eq!((pr.export_drops, pl.export_drops), (0, 0));
 
     // The recording ends (its own export takes no later canvas, ADR-0045) and
     // stops: its file is complete, the stream goes on.
@@ -621,6 +629,9 @@ fn a_different_output_size_uses_its_own_encoder() {
         r.log.count(0) >= 8 && r.stream_log.count(0) >= 8
     });
     assert!(reached, "{:?}", studio.output_progress(small));
+    // Another size is another conversion: nothing is joined (R-01).
+    assert_eq!(studio.output_progress(rec).unwrap().frames_joined, 0);
+    assert_eq!(studio.output_progress(small).unwrap().frames_joined, 0);
 
     // The canvas-sized output stops. The scaled one keeps delivering.
     let end = clock.now();
