@@ -1,4 +1,4 @@
-// NV12 or P010 planes (Y' and interleaved CbCr) to linear Rgba16Float, for source import.
+// NV12 or P010 planes (Y' and interleaved CbCr) to linear RGB, for consumers that need RGB.
 // Spec: docs/specs/gpu-compositor.md, "YUV source decode".
 
 struct Params {
@@ -9,10 +9,11 @@ struct Params {
     transfer: vec4<u32>,
 };
 
+// The context's 4:2:0 layout, shared with the compositor's YUV pipelines.
 @group(0) @binding(0) var luma: texture_2d<f32>;
-@group(0) @binding(1) var chroma: texture_2d<f32>;
-@group(0) @binding(2) var chroma_sampler: sampler;
-@group(0) @binding(3) var<uniform> params: Params;
+@group(0) @binding(1) var chroma_sampler: sampler;
+@group(0) @binding(2) var chroma: texture_2d<f32>;
+@group(1) @binding(0) var<uniform> params: Params;
 
 @vertex
 fn vs_fullscreen(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {

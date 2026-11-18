@@ -6,6 +6,8 @@
 //! kernel is computed once (allocation on the control thread); looking up weights
 //! interpolates linearly between two of its `PHASES + 1` phases and never allocates.
 
+use std::sync::{Arc, Mutex, PoisonError, Weak};
+
 use rbs_core::timing::SampleRate;
 
 /// Taps per output frame. Even; the window spans `TAPS / 2` input frames either side.
@@ -57,6 +59,29 @@ impl Kernel {
     pub fn cutoff(source: SampleRate, target: SampleRate) -> f64 {
         let ratio = f64::from(target.hz()) / f64::from(source.hz());
         (0.5 * ratio.min(1.0) - TRANSITION / 2.0).max(0.01)
+    }
+
+    /// The kernel for converting `source` to `target`, shared with every other user of
+    /// the same rate pair while one is alive (A-05 of the 2026-11 performance audit:
+    /// one 64 KiB table per pair, not per node, and no rebuild on every prepare).
+    /// Control thread: may build the table and takes a process-wide lock.
+    pub fn shared(source: SampleRate, target: SampleRate) -> Arc<Self> {
+        type Cache = Mutex<Vec<((u32, u32), Weak<Kernel>)>>;
+        static CACHE: Cache = Mutex::new(Vec::new());
+        let key = (source.hz(), target.hz());
+        // A poisoned cache holds only weak pointers; reuse it as it is.
+        let mut cache = CACHE.lock().unwrap_or_else(PoisonError::into_inner);
+        cache.retain(|(_, k)| k.strong_count() > 0);
+        if let Some(kernel) = cache
+            .iter()
+            .find(|(k, _)| *k == key)
+            .and_then(|(_, k)| k.upgrade())
+        {
+            return kernel;
+        }
+        let kernel = Arc::new(Self::new(source, target));
+        cache.push((key, Arc::downgrade(&kernel)));
+        kernel
     }
 
     /// The kernel for converting `source` to `target` (control thread: allocates).
@@ -125,6 +150,19 @@ pub fn apply(weights: &[f32; TAPS], input: &[f32]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nodes_of_the_same_rate_pair_share_one_table() {
+        let a = Kernel::shared(SampleRate::HZ_44100, SampleRate::HZ_48000);
+        let b = Kernel::shared(SampleRate::HZ_44100, SampleRate::HZ_48000);
+        let other = Kernel::shared(SampleRate::HZ_48000, SampleRate::HZ_44100);
+        assert!(Arc::ptr_eq(&a, &b));
+        assert!(!Arc::ptr_eq(&a, &other));
+        assert_eq!(
+            a.table,
+            Kernel::new(SampleRate::HZ_44100, SampleRate::HZ_48000).table
+        );
+    }
 
     /// Resamples a tone of `hz` from `from` to `to` at a fixed ratio and returns the
     /// RMS of the output, away from the edges.

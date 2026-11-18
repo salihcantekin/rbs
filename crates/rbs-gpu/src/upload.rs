@@ -7,41 +7,26 @@
 //! `Queue::write_texture` and returns a `Texture` frame of the same time:
 //!
 //! - `Bgra8` and `Rgba8`: one pool texture per frame, sampled directly by the compositor.
-//! - `Nv12` and `P010`: two plane textures the upload keeps (one pair per size), decoded
-//!   by a [`YuvDecoder`] into a canvas-format pool texture per frame, like imported
-//!   4:2:0 surfaces (rule 6 of "Native import").
+//! - `Nv12` and `P010`: one 4:2:0 pool slot per frame ([`TextureDesc::planar`], a plane
+//!   pair), which the compositor samples as it is, like imported 4:2:0 surfaces (perf
+//!   audit R-11 step b). The frame keeps the source's pixel format and colour.
 //!
 //! Hot path: [`SourceUpload::upload`] allocates nothing in RBS code for a format and size
 //! it has seen (see [`SourceUpload::prepare_for`]); wgpu stages the bytes internally.
-//! The pool textures of a new size, and the decoder on the first 4:2:0 frame, are created
-//! on first use.
+//! The pool textures of a new size are created on first use.
 
 use rbs_core::media::{FramePayload, PixelFormat, SystemFrame, VideoFormat, VideoFrame};
 
 use crate::context::GpuContext;
 use crate::error::GpuError;
 use crate::pool::{TextureDesc, TexturePool};
-use crate::yuv_decode::{
-    YuvDecoder, YuvSource, check_color, decoded_color, decoded_desc, decoded_pixel_format,
-};
+use crate::yuv_decode::check_color;
 use rbs_core::media::TextureId;
-
-/// Plane textures kept for 4:2:0 frames of one size.
-#[derive(Debug, Clone, Copy)]
-struct Planes {
-    luma: TextureId,
-    chroma: TextureId,
-    width: u32,
-    height: u32,
-    format: PixelFormat,
-}
 
 /// Uploads system-memory frames into pool textures. Holds nothing until the first frame
 /// or [`SourceUpload::prepare_for`].
 #[derive(Default)]
 pub struct SourceUpload {
-    planes: Option<Planes>,
-    decoder: Option<YuvDecoder>,
     uploaded: u64,
 }
 
@@ -75,13 +60,17 @@ fn rgb_desc(width: u32, height: u32, format: wgpu::TextureFormat) -> TextureDesc
     desc
 }
 
-fn plane_desc(width: u32, height: u32, format: wgpu::TextureFormat) -> TextureDesc {
-    TextureDesc {
-        width,
-        height,
-        format,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-    }
+/// The 4:2:0 slot description of a `width x height` `pf` (`Nv12` or `P010`) frame:
+/// sampled by the compositor, filled by copies, copyable for diagnostics and tests.
+fn planar_desc(width: u32, height: u32, pf: PixelFormat) -> TextureDesc {
+    let format = if pf == PixelFormat::Nv12 {
+        wgpu::TextureFormat::NV12
+    } else {
+        wgpu::TextureFormat::P010
+    };
+    let mut desc = TextureDesc::planar(width, height, format);
+    desc.usage |= wgpu::TextureUsages::COPY_SRC;
+    desc
 }
 
 /// Writes rows `rows` of `bytes_per_row` from plane `index` of `frame` into `texture`.
@@ -105,6 +94,11 @@ fn write_plane(
         .plane_rows(index, format.size.height)
         .ok_or(GpuError::Unsupported("system frame plane missing"))?;
     let stride = u32::try_from(stride).map_err(|_| GpuError::Unsupported("stride too large"))?;
+    // Plane 1 of a 4:2:0 slot is its CbCr texture.
+    let target = u32::try_from(index)
+        .ok()
+        .and_then(|i| tex.plane_texture(i))
+        .ok_or(GpuError::TargetMismatch(texture))?;
     // `SystemFrame::new` checked that every row fits; trim to what the copy reads.
     let needed = u64::from(stride) * u64::from(rows.saturating_sub(1)) + row;
     let data = usize::try_from(needed)
@@ -113,7 +107,7 @@ fn write_plane(
         .ok_or(GpuError::Unsupported("system frame plane too short"))?;
     ctx.queue().write_texture(
         wgpu::TexelCopyTextureInfo {
-            texture: tex.texture(),
+            texture: target,
             mip_level: 0,
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,
@@ -124,7 +118,7 @@ fn write_plane(
             bytes_per_row: Some(stride),
             rows_per_image: Some(rows),
         },
-        tex.texture().size(),
+        target.size(),
     );
     Ok(())
 }
@@ -140,9 +134,9 @@ impl SourceUpload {
         self.uploaded
     }
 
-    /// Creates what frames of `format` need, so the first [`Self::upload`] does not: the
-    /// plane textures and the decoder for 4:2:0, a ring of three textures on the pool's
-    /// free list for single-plane formats. Not real-time (call from `warm`).
+    /// Creates what frames of `format` need, so the first [`Self::upload`] does not: a
+    /// ring of three textures (4:2:0 plane pairs, or single-plane textures) on the pool's
+    /// free list. Not real-time (call from `warm`).
     pub fn prepare_for(
         &mut self,
         ctx: &GpuContext,
@@ -152,11 +146,7 @@ impl SourceUpload {
         let (w, h) = (format.size.width, format.size.height);
         match format.pixel_format {
             PixelFormat::Nv12 | PixelFormat::P010 => {
-                self.planes_for(ctx, pool, format)?;
-                if self.decoder.is_none() {
-                    self.decoder = Some(YuvDecoder::new(ctx));
-                }
-                ring(ctx, pool, &decoded_desc(w, h, format.pixel_format))
+                ring(ctx, pool, &planar_desc(w, h, format.pixel_format))
             }
             pf => match rgb_format(pf) {
                 Some(f) => ring(ctx, pool, &rgb_desc(w, h, f)),
@@ -186,33 +176,14 @@ impl SourceUpload {
                     10
                 };
                 check_color(format.color, bits)?;
-                let planes = self.planes_for(ctx, pool, &format)?;
-                write_plane(ctx, pool, system, 0, planes.luma)?;
-                write_plane(ctx, pool, system, 1, planes.chroma)?;
-                let decoder = self.decoder.get_or_insert_with(|| YuvDecoder::new(ctx));
-                let target = pool.acquire(ctx, &decoded_desc(w, h, format.pixel_format))?;
-                let decoded = decoder
-                    .decode(
-                        ctx,
-                        pool,
-                        YuvSource::Planes {
-                            luma: planes.luma,
-                            chroma: planes.chroma,
-                        },
-                        format.color,
-                        target,
-                    )
-                    .and_then(|_| {
-                        let rgb = VideoFormat::new(
-                            format.size,
-                            decoded_pixel_format(format.pixel_format),
-                            decoded_color(format.color),
-                        );
-                        pool.frame(target, rgb, frame.timestamp())
-                    });
-                // The frame's lease keeps the slot; the upload keeps nothing.
-                let _ = pool.release(target);
-                decoded?
+                // One 4:2:0 slot per frame from the pool's free list; the frame keeps
+                // the source's format and colour and the compositor samples it as it is.
+                let id = pool.acquire(ctx, &planar_desc(w, h, format.pixel_format))?;
+                let written = write_plane(ctx, pool, system, 0, id)
+                    .and_then(|()| write_plane(ctx, pool, system, 1, id))
+                    .and_then(|()| pool.frame(id, format, frame.timestamp()));
+                let _ = pool.release(id);
+                written?
             }
             pf => {
                 let tex_format =
@@ -232,66 +203,10 @@ impl SourceUpload {
         Ok(out)
     }
 
-    /// Returns the plane textures to the pool and forgets the decoder's bind groups for
-    /// them. Call when the source stops.
+    /// Kept for callers that stop a source: the upload holds no texture between frames
+    /// (each frame's slot is held by the frame alone), so there is nothing to give back.
     pub fn release(&mut self, pool: &mut TexturePool) {
-        if let Some(p) = self.planes.take() {
-            if let Some(decoder) = &mut self.decoder {
-                decoder.forget(p.luma);
-                decoder.forget(p.chroma);
-            }
-            let _ = pool.release(p.luma);
-            let _ = pool.release(p.chroma);
-        }
-    }
-
-    /// The plane pair for `format`, replacing a pair of another size or bit depth.
-    fn planes_for(
-        &mut self,
-        ctx: &GpuContext,
-        pool: &mut TexturePool,
-        format: &VideoFormat,
-    ) -> Result<Planes, GpuError> {
-        let (w, h, pf) = (format.size.width, format.size.height, format.pixel_format);
-        if let Some(p) = self.planes
-            && p.width == w
-            && p.height == h
-            && p.format == pf
-        {
-            return Ok(p);
-        }
-        if w % 2 != 0 || h % 2 != 0 || w == 0 || h == 0 {
-            return Err(GpuError::InvalidSize {
-                width: w,
-                height: h,
-            });
-        }
-        self.release(pool);
-        let (lf, cf) = if pf == PixelFormat::Nv12 {
-            (wgpu::TextureFormat::R8Unorm, wgpu::TextureFormat::Rg8Unorm)
-        } else {
-            (
-                wgpu::TextureFormat::R16Unorm,
-                wgpu::TextureFormat::Rg16Unorm,
-            )
-        };
-        let luma = pool.acquire(ctx, &plane_desc(w, h, lf))?;
-        let chroma = match pool.acquire(ctx, &plane_desc(w / 2, h / 2, cf)) {
-            Ok(id) => id,
-            Err(e) => {
-                let _ = pool.release(luma);
-                return Err(e);
-            }
-        };
-        let p = Planes {
-            luma,
-            chroma,
-            width: w,
-            height: h,
-            format: pf,
-        };
-        self.planes = Some(p);
-        Ok(p)
+        let _ = pool;
     }
 }
 

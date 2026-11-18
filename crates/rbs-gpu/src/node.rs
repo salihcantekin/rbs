@@ -544,6 +544,8 @@ impl<R: ReadySignal, D: Redraw> Node<GpuRuntime> for CompositorNode<R, D> {
                 source_transfer,
                 opaque: spec.opaque,
                 style: spec.style,
+                // A 4:2:0 picture is sampled as it is, with its own colour space (R-11).
+                ycbcr: frame.format().color,
             });
         }
 

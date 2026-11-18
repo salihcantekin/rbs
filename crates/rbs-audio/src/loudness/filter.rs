@@ -81,6 +81,45 @@ impl KState {
     }
 }
 
+/// Filters two channels together and returns the sum of squares of each. The two
+/// recursions are independent, so they overlap in the pipeline (or share one vector
+/// register); each lane does exactly what [`KState::sum_squares`] does, so the results
+/// are bit-exact. `x` and `y` must be the same length. Real-time safe.
+#[inline]
+pub(crate) fn sum_squares_pair(
+    states: &mut [KState],
+    f: &[Biquad; 2],
+    x: &[f32],
+    y: &[f32],
+) -> (f64, f64) {
+    let [p, q] = f;
+    let (Some(a), Some(b)) = (states.first(), states.get(1)) else {
+        return (0.0, 0.0);
+    };
+    // Lane 0 is `x`, lane 1 is `y`.
+    let mut s0 = [a.s[0][0], b.s[0][0]];
+    let mut s1 = [a.s[0][1], b.s[0][1]];
+    let mut t0 = [a.s[1][0], b.s[1][0]];
+    let mut t1 = [a.s[1][1], b.s[1][1]];
+    let mut acc = [0.0f64; 2];
+    for (&u, &w) in x.iter().zip(y) {
+        let v = [f64::from(u), f64::from(w)];
+        for l in 0..2 {
+            let y = p.b0 * v[l] + s0[l];
+            s0[l] = p.b1 * v[l] - p.a1 * y + s1[l];
+            s1[l] = p.b2 * v[l] - p.a2 * y;
+            let z = q.b0 * y + t0[l];
+            t0[l] = q.b1 * y - q.a1 * z + t1[l];
+            t1[l] = q.b2 * y - q.a2 * z;
+            acc[l] += z * z;
+        }
+    }
+    for (l, st) in states.iter_mut().take(2).enumerate() {
+        st.s = [[flush(s0[l]), flush(s1[l])], [flush(t0[l]), flush(t1[l])]];
+    }
+    (acc[0], acc[1])
+}
+
 #[inline]
 fn flush(v: f64) -> f64 {
     if v.abs() < 1e-30 { 0.0 } else { v }
@@ -89,6 +128,21 @@ fn flush(v: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn two_channels_together_match_one_at_a_time() {
+        let f = k_weighting(48_000.0);
+        let x: Vec<f32> = (0..480).map(|i| (i as f32 * 0.05).sin()).collect();
+        let y: Vec<f32> = (0..480).map(|i| 0.3 * (i as f32 * 0.31).cos()).collect();
+        let mut single = [KState::default(); 2];
+        let mut pair = [KState::default(); 2];
+        for _ in 0..3 {
+            let want = (single[0].sum_squares(&f, &x), single[1].sum_squares(&f, &y));
+            assert_eq!(sum_squares_pair(&mut pair, &f, &x, &y), want);
+        }
+        assert_eq!(single[0].s, pair[0].s);
+        assert_eq!(single[1].s, pair[1].s);
+    }
 
     #[test]
     fn the_48_khz_coefficients_match_bs_1770() {

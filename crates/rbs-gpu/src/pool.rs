@@ -50,6 +50,20 @@ impl TextureDesc {
         }
     }
 
+    /// A 4:2:0 picture (`format` `NV12` or `P010`) that is filled by copies and sampled
+    /// by the compositor as it is (perf audit R-11 step b). The pool backs it with a plane
+    /// pair: a Y' texture (`R8Unorm` / `R16Unorm`) and an interleaved CbCr texture
+    /// (`Rg8Unorm` / `Rg16Unorm`) at half the size, in one slot (see [`is_plane_pair`]).
+    /// Width and height must be even.
+    pub fn planar(width: u32, height: u32, format: wgpu::TextureFormat) -> Self {
+        Self {
+            width,
+            height,
+            format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        }
+    }
+
     /// A source texture that is filled by a copy and sampled by the compositor.
     pub fn source(width: u32, height: u32, format: wgpu::TextureFormat) -> Self {
         Self {
@@ -61,8 +75,35 @@ impl TextureDesc {
     }
 }
 
+/// True when the pool backs `desc` with a plane pair instead of one texture: a
+/// multi-planar 4:2:0 format (`NV12`, `P010`) without `RENDER_ATTACHMENT`. Such a slot
+/// needs no multi-planar device feature, only the plane formats'. Multi-planar
+/// descriptions with `RENDER_ATTACHMENT` (encoder surfaces) stay one texture.
+pub fn is_plane_pair(desc: &TextureDesc) -> bool {
+    plane_formats(desc.format).is_some()
+        && !desc.usage.contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
+}
+
+/// The Y' and CbCr plane formats of a 4:2:0 format.
+pub(crate) fn plane_formats(
+    format: wgpu::TextureFormat,
+) -> Option<(wgpu::TextureFormat, wgpu::TextureFormat)> {
+    match format {
+        wgpu::TextureFormat::NV12 => {
+            Some((wgpu::TextureFormat::R8Unorm, wgpu::TextureFormat::Rg8Unorm))
+        }
+        wgpu::TextureFormat::P010 => Some((
+            wgpu::TextureFormat::R16Unorm,
+            wgpu::TextureFormat::Rg16Unorm,
+        )),
+        _ => None,
+    }
+}
+
 /// A texture owned by the pool, with its default view and, when sampleable, a bind group
-/// for the compositor's sampled-texture layout.
+/// for the compositor's sampled-texture layout. A 4:2:0 slot (a multi-planar texture or
+/// a plane pair) has one view per plane and, when sampleable, a bind group for the
+/// compositor's YUV pipelines instead.
 #[derive(Debug)]
 pub struct PooledTexture {
     desc: TextureDesc,
@@ -70,7 +111,11 @@ pub struct PooledTexture {
     view: wgpu::TextureView,
     /// Second plane of a multi-planar texture (NV12 chroma); `view` is then plane 0.
     plane1: Option<wgpu::TextureView>,
+    /// The CbCr texture of a plane pair; `texture` is then the Y' plane.
+    chroma: Option<wgpu::Texture>,
     sampled: Option<wgpu::BindGroup>,
+    /// Y', sampler and CbCr for [`GpuContext`]'s 4:2:0 layout (4:2:0 slots only).
+    yuv: Option<wgpu::BindGroup>,
 }
 
 impl PooledTexture {
@@ -79,9 +124,34 @@ impl PooledTexture {
         &self.desc
     }
 
-    /// The wgpu texture.
+    /// The wgpu texture: the Y' plane of a plane pair.
     pub fn texture(&self) -> &wgpu::Texture {
         &self.texture
+    }
+
+    /// The texture holding `plane`: plane 0 is [`Self::texture`]; plane 1 is the CbCr
+    /// texture of a plane pair, or the same texture for a multi-planar format. `None` for
+    /// other planes and for single-plane formats' plane 1.
+    pub fn plane_texture(&self, plane: u32) -> Option<&wgpu::Texture> {
+        match plane {
+            0 => Some(&self.texture),
+            1 => match &self.chroma {
+                Some(c) => Some(c),
+                None => self.plane1.as_ref().map(|_| &self.texture),
+            },
+            _ => None,
+        }
+    }
+
+    /// True for a 4:2:0 slot: a multi-planar texture or a plane pair.
+    pub fn is_planar(&self) -> bool {
+        self.plane1.is_some()
+    }
+
+    /// The bind group of a sampleable 4:2:0 slot's planes for the compositor's YUV
+    /// pipelines (perf audit R-11 step b); `None` for other textures.
+    pub(crate) fn yuv_bind_group(&self) -> Option<&wgpu::BindGroup> {
+        self.yuv.as_ref()
     }
 
     /// The default view of the whole texture, or of plane 0 for a multi-planar format.
@@ -338,11 +408,20 @@ impl TexturePool {
         }
         // A format behind an optional device feature (NV12, P010, 16-bit normalized) would
         // make wgpu's validation panic in `create_texture`; return an error instead.
-        if !ctx
-            .device()
-            .features()
-            .contains(desc.format.required_features())
-        {
+        let pair = is_plane_pair(desc)
+            .then(|| plane_formats(desc.format))
+            .flatten();
+        let needed = match pair {
+            Some((luma, chroma)) => luma.required_features() | chroma.required_features(),
+            None => desc.format.required_features(),
+        };
+        if pair.is_some() && (!desc.width.is_multiple_of(2) || !desc.height.is_multiple_of(2)) {
+            return Err(GpuError::InvalidSize {
+                width: desc.width,
+                height: desc.height,
+            });
+        }
+        if !ctx.device().features().contains(needed) {
             return Err(GpuError::Unsupported(
                 "texture format needs a device feature this GPU does not have",
             ));
@@ -353,21 +432,32 @@ impl TexturePool {
                 capacity: self.capacity,
             });
         }
-        let texture = ctx.device().create_texture(&wgpu::TextureDescriptor {
-            label: Some("rbs-gpu pooled"),
-            size: wgpu::Extent3d {
-                width: desc.width,
-                height: desc.height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: desc.format,
-            usage: desc.usage,
-            view_formats: &[],
-        });
-        let index = self.place(wrap(ctx, texture, *desc), false);
+        let make = |width, height, format| {
+            ctx.device().create_texture(&wgpu::TextureDescriptor {
+                label: Some("rbs-gpu pooled"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: desc.usage,
+                view_formats: &[],
+            })
+        };
+        let pooled = match pair {
+            Some((luma, chroma)) => wrap_planes(
+                ctx,
+                make(desc.width, desc.height, luma),
+                make(desc.width / 2, desc.height / 2, chroma),
+                *desc,
+            ),
+            None => wrap(ctx, make(desc.width, desc.height, desc.format), *desc),
+        };
+        let index = self.place(pooled, false);
         // Reserve room in the free list now so releasing never grows it on the hot path.
         let list = match self.free.iter_mut().position(|f| f.desc == *desc) {
             Some(i) => &mut self.free[i],
@@ -431,6 +521,33 @@ impl TexturePool {
             });
         }
         let index = self.place(wrap(ctx, texture, desc), true);
+        Ok(TextureId::new(index, self.slots[index as usize].generation))
+    }
+
+    /// Adds a 4:2:0 picture the pool did not create as a plane pair (an imported
+    /// bi-planar surface aliased plane by plane): `desc` is the picture's
+    /// ([`TextureDesc::planar`] usage or more), `luma` its Y' plane and `chroma` its CbCr
+    /// plane at half the size. Like [`Self::insert_external`] otherwise.
+    pub fn insert_external_planes(
+        &mut self,
+        ctx: &GpuContext,
+        luma: wgpu::Texture,
+        chroma: wgpu::Texture,
+        desc: TextureDesc,
+    ) -> Result<TextureId, GpuError> {
+        if plane_formats(desc.format).is_none() {
+            return Err(GpuError::Unsupported(
+                "plane pair of a format that is not 4:2:0",
+            ));
+        }
+        self.collect();
+        if self.empty.is_empty() && self.slots.len() >= self.capacity as usize && !self.evict(&desc)
+        {
+            return Err(GpuError::PoolFull {
+                capacity: self.capacity,
+            });
+        }
+        let index = self.place(wrap_planes(ctx, luma, chroma, desc), true);
         Ok(TextureId::new(index, self.slots[index as usize].generation))
     }
 
@@ -632,12 +749,17 @@ fn wrap(ctx: &GpuContext, texture: wgpu::Texture, desc: TextureDesc) -> PooledTe
                 ..Default::default()
             })
         };
+        let view = plane(wgpu::TextureAspect::Plane0);
+        let plane1 = plane(wgpu::TextureAspect::Plane1);
+        let yuv = yuv_group(ctx, &desc, &view, &plane1);
         return PooledTexture {
             desc,
-            view: plane(wgpu::TextureAspect::Plane0),
-            plane1: Some(plane(wgpu::TextureAspect::Plane1)),
+            view,
+            plane1: Some(plane1),
             texture,
+            chroma: None,
             sampled: None,
+            yuv,
         };
     }
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -665,6 +787,59 @@ fn wrap(ctx: &GpuContext, texture: wgpu::Texture, desc: TextureDesc) -> PooledTe
         texture,
         view,
         plane1: None,
+        chroma: None,
         sampled,
+        yuv: None,
     }
+}
+
+/// Builds the pooled wrapper of a plane pair: `luma` is plane 0, `chroma` plane 1.
+fn wrap_planes(
+    ctx: &GpuContext,
+    luma: wgpu::Texture,
+    chroma: wgpu::Texture,
+    desc: TextureDesc,
+) -> PooledTexture {
+    let view = luma.create_view(&wgpu::TextureViewDescriptor::default());
+    let plane1 = chroma.create_view(&wgpu::TextureViewDescriptor::default());
+    let yuv = yuv_group(ctx, &desc, &view, &plane1);
+    PooledTexture {
+        desc,
+        texture: luma,
+        view,
+        plane1: Some(plane1),
+        chroma: Some(chroma),
+        sampled: None,
+        yuv,
+    }
+}
+
+/// The compositor's bind group for a sampleable 4:2:0 slot's two plane views.
+fn yuv_group(
+    ctx: &GpuContext,
+    desc: &TextureDesc,
+    luma: &wgpu::TextureView,
+    chroma: &wgpu::TextureView,
+) -> Option<wgpu::BindGroup> {
+    if !desc.usage.contains(wgpu::TextureUsages::TEXTURE_BINDING) {
+        return None;
+    }
+    Some(ctx.device().create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("rbs-gpu sampled 4:2:0"),
+        layout: &ctx.yuv_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(luma),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(&ctx.linear_sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::TextureView(chroma),
+            },
+        ],
+    }))
 }
