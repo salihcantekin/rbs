@@ -17,18 +17,43 @@ use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::time::{Duration, Instant};
 
+use rbs_browser_ipc::control::Control;
 use rbs_browser_ipc::{
     Configure, HEARTBEAT_PERIOD, MAX_PAYLOAD, encode_configure, heartbeat_lost, restart_delay,
     startup_lost,
 };
 use rbs_browser_shm::{FrameRing, RingReader, SlotLayout, SoundPacket, SoundRing};
 
+/// The helper's stdin: `configure`, then control messages; dropping it stops the
+/// helper.
+type ControlPipe = std::sync::Arc<std::sync::Mutex<Option<ChildStdin>>>;
+
+fn close_pipe(pipe: &ControlPipe) {
+    if let Ok(mut stdin) = pipe.lock() {
+        stdin.take();
+    }
+}
+
+/// Writes one control message; false when the helper's stdin is closed or the write
+/// failed. Control path only: it can wait while the pipe is full.
+fn send_on(pipe: &ControlPipe, message: &rbs_browser_ipc::control::Control) -> bool {
+    let Ok(mut guard) = pipe.lock() else {
+        return false;
+    };
+    let Some(stdin) = guard.as_mut() else {
+        return false;
+    };
+    let bytes = rbs_browser_ipc::control::encode(message);
+    stdin.write_all(&bytes).is_ok() && stdin.flush().is_ok()
+}
+
 /// A running (or exited) helper as the studio sees it.
 #[derive(Debug)]
 pub struct HelperChild {
     child: Option<Child>,
-    /// Kept open: the helper runs until its stdin closes.
-    stdin: Option<ChildStdin>,
+    /// Kept open: the helper runs until its stdin closes. Shared with the
+    /// supervisor's owner, which sends control messages on it (ADR-0132 decision 8).
+    stdin: ControlPipe,
     ring: FrameRing,
     reader: RingReader,
     /// The page's sound section, when the studio asked for sound.
@@ -136,6 +161,11 @@ impl HelperChild {
         rbs_browser_ipc::exit::cause(self.exit_code, self.has_beaten())
     }
 
+    /// Sends a control message (ADR-0132 decision 8); false when the helper is gone.
+    pub fn send(&self, message: &rbs_browser_ipc::control::Control) -> bool {
+        send_on(&self.stdin, message)
+    }
+
     /// Frames the helper has published so far.
     pub fn frames_written(&self) -> u64 {
         self.ring.frames_written()
@@ -145,7 +175,7 @@ impl HelperChild {
     /// own (an engine removes its temporary profile then); kills it after that. Not
     /// for the render thread: it can wait up to `grace`.
     pub fn close(&mut self, grace: Duration) {
-        self.stdin.take();
+        close_pipe(&self.stdin);
         if let Some(child) = self.child.as_mut() {
             let deadline = Instant::now() + grace;
             while matches!(child.try_wait(), Ok(None)) && Instant::now() < deadline {
@@ -157,7 +187,7 @@ impl HelperChild {
 
     /// Kills and reaps the child on the control path. A dead child holds no slot.
     pub fn stop(&mut self) {
-        self.stdin.take();
+        close_pipe(&self.stdin);
         if let Some(mut child) = self.child.take() {
             let _ = child.kill();
             let _ = child.wait();
@@ -184,7 +214,7 @@ impl HelperChild {
 
 impl Drop for HelperChild {
     fn drop(&mut self) {
-        self.stdin.take();
+        close_pipe(&self.stdin);
         if let Some(mut child) = self.child.take() {
             let _ = child.kill();
             let _ = child.wait();
@@ -263,7 +293,7 @@ pub fn spawn_helper_with_env(
     let reader = ring.reader();
     Ok(HelperChild {
         child: Some(child),
-        stdin: Some(stdin),
+        stdin: std::sync::Arc::new(std::sync::Mutex::new(Some(stdin))),
         ring,
         reader,
         sound,
@@ -305,6 +335,7 @@ pub struct Supervisor {
     /// The cause of the exit, set before `exited` (0 other, 1 missing, 2 mismatch).
     cause: std::sync::Arc<std::sync::atomic::AtomicU8>,
     thread: Option<std::thread::JoinHandle<HelperChild>>,
+    pipe: ControlPipe,
 }
 
 /// Where the supervisor hands page sound (ADR-0109 decision 6). Runs on the supervisor
@@ -357,6 +388,7 @@ impl Supervisor {
         let cause = Arc::new(std::sync::atomic::AtomicU8::new(0));
         let (stop_flag, exited_flag) = (Arc::clone(&stop), Arc::clone(&exited));
         let cause_flag = Arc::clone(&cause);
+        let pipe = Arc::clone(&child.stdin);
         // Poll twice per page frame so a new frame waits at most half a period.
         let mut period = Duration::from_secs(1) / fps.clamp(1, 60) / 2;
         if sound.is_some() && child.has_sound() {
@@ -398,7 +430,14 @@ impl Supervisor {
             exited,
             cause,
             thread: Some(thread),
+            pipe,
         })
+    }
+
+    /// Sends a control message to the running helper (ADR-0132 decision 8); false
+    /// once it stopped. Control path: it can wait while the pipe is full.
+    pub fn send(&self, message: &rbs_browser_ipc::control::Control) -> bool {
+        !self.exited() && send_on(&self.pipe, message)
     }
 
     /// True once the helper exited or lost its heartbeat. Never waits.
@@ -492,10 +531,21 @@ pub fn helper_main_with(mode: HelperMode, tone: bool) -> Result<(), String> {
     let mut writer = ring.writer();
     let width = config.width as usize;
     let mut shift = 0usize;
-    let mut paint = |shift: usize| {
-        ring.publish_with(&mut writer, |rgba| checker(rgba, width, shift));
+    // The count and code of the last control message, shown in the first pixel once
+    // one arrived, so tests can see it.
+    let mut mark = [0u8; 2];
+    let mut paint = |shift: usize, mark: [u8; 2]| {
+        ring.publish_with(&mut writer, |rgba| {
+            checker(rgba, width, shift);
+            if mark[0] == 0 {
+                return;
+            }
+            if let Some(first) = rgba.get_mut(..4) {
+                first.copy_from_slice(&[mark[0], mark[1], 0, 255]);
+            }
+        });
     };
-    paint(shift);
+    paint(shift, mark);
     ring.beat();
     match mode {
         HelperMode::Once => Ok(()),
@@ -505,12 +555,23 @@ pub fn helper_main_with(mode: HelperMode, tone: bool) -> Result<(), String> {
             Ok(())
         }
         HelperMode::Run => {
-            let (closed_tx, closed_rx) = std::sync::mpsc::channel::<()>();
+            // `None` when stdin closed: the stop signal.
+            let (closed_tx, closed_rx) = std::sync::mpsc::channel::<Option<Control>>();
             std::thread::spawn(move || {
-                let mut rest = [0u8; 64];
-                while matches!(stdin.read(&mut rest), Ok(n) if n > 0) {}
-                let _ = closed_tx.send(());
+                loop {
+                    match rbs_browser_ipc::control::read(&mut stdin) {
+                        Ok(Some(message)) => {
+                            if closed_tx.send(Some(message)).is_err() {
+                                return;
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(_) => break,
+                    }
+                }
+                let _ = closed_tx.send(None);
             });
+            let mut count = 0u8;
             let period = Duration::from_secs(1) / config.fps.clamp(1, 60);
             let mut since_beat = Duration::ZERO;
             let mut tone = (tone && !config.sound.is_empty())
@@ -520,13 +581,17 @@ pub fn helper_main_with(mode: HelperMode, tone: bool) -> Result<(), String> {
             loop {
                 match closed_rx.recv_timeout(period) {
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                    Ok(Some(message)) => {
+                        count = count.wrapping_add(1).max(1);
+                        mark = [count, control_mark(&message)];
+                    }
                     _ => return Ok(()),
                 }
                 if let Some(tone) = tone.as_mut() {
                     tone.write(rbs_browser_shm::os_monotonic_nanos());
                 }
                 shift = shift.wrapping_add(4);
-                paint(shift);
+                paint(shift, mark);
                 since_beat += period;
                 if since_beat >= HEARTBEAT_PERIOD / 2 {
                     ring.beat();
@@ -578,6 +643,18 @@ impl Tone {
             .write_planar(self.next_os, self.rate, &[&self.left, &self.left], frames);
         self.frame += frames as u64;
         self.next_os += (frames as u128 * 1_000_000_000 / u128::from(self.rate)) as u64;
+    }
+}
+
+/// The test double's code for a control message in its first pixel's green byte.
+pub fn control_mark(message: &Control) -> u8 {
+    match message {
+        Control::Reload {
+            bypass_cache: false,
+        } => 1,
+        Control::Reload { bypass_cache: true } => 2,
+        Control::RunScript(None) => 3,
+        Control::RunScript(Some(_)) => 4,
     }
 }
 

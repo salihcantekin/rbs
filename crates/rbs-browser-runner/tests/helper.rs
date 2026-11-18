@@ -164,6 +164,43 @@ fn the_supervisor_publishes_frames_and_reports_an_exit() {
 }
 
 #[test]
+fn control_messages_reach_the_running_helper_in_order() {
+    use rbs_browser_ipc::control::Control;
+    use rbs_browser_runner::control_mark;
+    use std::sync::{Arc, Mutex};
+    let first = Arc::new(Mutex::new([0u8; 2]));
+    let seen = Arc::clone(&first);
+    let mut sup = Supervisor::start(spawn(&["--hold"]), 60, move |px, _, _, _| {
+        *seen.lock().unwrap() = [px[0], px[1]];
+    })
+    .unwrap();
+    let wait_for = |want: [u8; 2]| {
+        let start = Instant::now();
+        while *first.lock().unwrap() != want {
+            assert!(start.elapsed() < GUARD, "hang guard");
+            std::thread::yield_now();
+        }
+    };
+    let messages = [
+        Control::Reload { bypass_cache: true },
+        Control::RunScript(Some("document.title = 'x'".into())),
+        Control::RunScript(None),
+    ];
+    for (n, message) in messages.iter().enumerate() {
+        assert!(sup.send(message));
+        wait_for([u8::try_from(n + 1).unwrap(), control_mark(message)]);
+    }
+    let child = sup.stop().unwrap();
+    assert!(child.unavailable);
+    assert!(
+        !sup.send(&Control::Reload {
+            bypass_cache: false
+        }),
+        "a stopped helper takes no message"
+    );
+}
+
+#[test]
 fn page_sound_crosses_the_sound_section_in_order() {
     use std::sync::{Arc, Mutex};
 

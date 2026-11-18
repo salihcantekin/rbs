@@ -9,9 +9,9 @@ use rbs_browser_ipc::Configure;
 use rbs_scene::model::{SettingValue, Settings, SourceId};
 use rbs_sources::types::{self, keys};
 use rbs_sources::{
-    BrowserBudget, BrowserClaim, BrowserScheme, BrowserSession, BrowserStartError, BrowserTree,
-    NOT_PERMITTED, ShowClass, SourceError, SourceInstance, SourceTypes, agent_may_set_browser_url,
-    browser_scheme, browser_url_is_network, file_directory_scope,
+    BrowserBudget, BrowserClaim, BrowserMessage, BrowserScheme, BrowserSession, BrowserStartError,
+    BrowserTree, NOT_PERMITTED, ShowClass, SourceError, SourceInstance, SourceTypes,
+    agent_may_set_browser_url, browser_scheme, browser_url_is_network, file_directory_scope,
 };
 
 struct FakeTree {
@@ -23,10 +23,17 @@ struct FakeTree {
     exit_reason: Option<&'static str>,
 }
 
+/// Control messages the fake pages got, in order.
+static SENT: std::sync::Mutex<Vec<(u32, BrowserMessage)>> = std::sync::Mutex::new(Vec::new());
+/// The kept profile directory each start was given, by source width.
+static PROFILES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
 struct FakeSession {
     alive: bool,
     stopped: Arc<AtomicU32>,
     exit_reason: Option<&'static str>,
+    /// The page's width: tells tests' sessions apart.
+    width: u32,
 }
 
 impl BrowserSession for FakeSession {
@@ -40,21 +47,34 @@ impl BrowserSession for FakeSession {
     fn exit_reason(&self) -> Option<&'static str> {
         self.exit_reason
     }
+    fn send(&mut self, message: &BrowserMessage) -> bool {
+        SENT.lock().unwrap().push((self.width, message.clone()));
+        self.alive
+    }
 }
 
 impl BrowserTree for FakeTree {
     fn start(
         &self,
-        _config: &Configure,
+        config: &Configure,
         _sink: Arc<rbs_sources::BrowserFrameSink>,
         _sound: Option<Arc<rbs_sources::BrowserSound>>,
     ) -> Result<Box<dyn BrowserSession>, String> {
         self.starts.fetch_add(1, Ordering::Relaxed);
+        PROFILES
+            .lock()
+            .unwrap()
+            .push(config.page.profile_dir.clone());
         Ok(Box::new(FakeSession {
             alive: !self.exit_immediately,
             stopped: Arc::new(AtomicU32::new(0)),
             exit_reason: self.exit_reason,
+            width: config.width,
         }))
+    }
+
+    fn profile_dir(&self, profile_id: &str) -> Option<String> {
+        Some(format!("/profiles/{profile_id}"))
     }
 
     fn unavailable(&self) -> Option<&'static str> {
@@ -429,6 +449,55 @@ fn a_runner_exit_maps_to_its_engine_reason() {
         assert_eq!(node.control().engine_reason(), exit);
         assert!(!budget.holds(source));
     }
+}
+
+#[test]
+fn control_messages_reach_only_a_running_page_with_its_profile() {
+    let budget = BrowserBudget::shared();
+    let source = SourceId::from_raw(7);
+    budget.grant(&[BrowserClaim {
+        source,
+        class: ShowClass::Program,
+    }]);
+    let tree = Arc::new(FakeTree {
+        starts: AtomicU32::new(0),
+        exit_immediately: false,
+        missing: AtomicBool::new(false),
+        exit_reason: None,
+    });
+    let profile = "0123456789abcdef0123456789abcdef";
+    let mut node = rbs_sources::BrowserSourceNode::new(
+        rbs_sources::BrowserSettings {
+            width: 1234,
+            height: 1080,
+            profile_id: Some(profile.into()),
+            ..rbs_sources::BrowserSettings::page("https://example.com/")
+        },
+        Arc::clone(&budget),
+        source,
+        Some(tree),
+    );
+    let reload = BrowserMessage::Reload { bypass_cache: true };
+    assert!(!node.control().send(&reload), "no page runs yet");
+    node.activate().unwrap();
+    assert!(
+        PROFILES
+            .lock()
+            .unwrap()
+            .contains(&format!("/profiles/{profile}"))
+    );
+    assert!(node.control().send(&reload));
+    assert!(node.control().send(&BrowserMessage::RunScript(None)));
+    node.standby();
+    assert!(!node.control().send(&reload), "a stopped page takes none");
+    let sent: Vec<BrowserMessage> = SENT
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(width, _)| *width == 1234)
+        .map(|(_, m)| m.clone())
+        .collect();
+    assert_eq!(sent, [reload, BrowserMessage::RunScript(None)]);
 }
 
 #[test]

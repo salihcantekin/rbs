@@ -50,6 +50,8 @@ pub use browser_sound::{
 };
 pub use filters::{filter_settings, filter_values, filter_values_lenient};
 pub use layers::{GLIDE, glide_layers, glide_max_duration, gpu_easing, node_layers, resolve_slide};
+/// A message to a running browser page (`browser.reload`, `browser.run_script`).
+pub use rbs_browser_ipc::control::Control as BrowserMessage;
 pub use registry::{
     AudioSource, InstanceContext, MonitorDevice, NodeTypeTable, PermissionRequest, SourceError,
     SourceInstance, SourceMode, SourcePicker, SourceTarget, SourceTypes, StillSource, TextSource,

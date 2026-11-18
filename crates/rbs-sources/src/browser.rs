@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use rbs_audio_io::edge::EdgeClock;
+use rbs_browser_ipc::control::Control;
 use rbs_browser_ipc::{Configure, PageOptions, restart_delay};
 use rbs_core::media::{
     ColorSpace, PixelFormat, PlaneLayout, Size, SystemFrame, VideoFormat, VideoFrame,
@@ -802,6 +803,15 @@ impl BrowserControlSidecar {
         }
     }
 
+    /// Sends a control message to the running page (`browser.reload`,
+    /// `browser.run_script`); false when no helper runs. Control path.
+    pub fn send(&self, message: &Control) -> bool {
+        let Ok(mut guard) = self.session.lock() else {
+            return false;
+        };
+        guard.as_mut().is_some_and(|session| session.send(message))
+    }
+
     /// True when a helper process is still attached.
     pub fn helper_running(&self) -> bool {
         self.session
@@ -829,6 +839,13 @@ pub trait BrowserTree: Send + Sync {
     fn unavailable(&self) -> Option<&'static str> {
         None
     }
+
+    /// The directory of the kept profile `profile_id` (ADR-0132 decision 10), or
+    /// `None` when this tree keeps no profiles: the page then gets a fresh one.
+    fn profile_dir(&self, profile_id: &str) -> Option<String> {
+        let _ = profile_id;
+        None
+    }
 }
 
 /// One running tree. `poll` and `stop` run on the control thread, never in `process`.
@@ -846,6 +863,12 @@ pub trait BrowserSession: Send {
     /// Copies the latest helper frame into `sink`.
     fn refresh_sink(&mut self, sink: &BrowserFrameSink) {
         let _ = sink;
+    }
+    /// Sends a control message to the running page (ADR-0132 decision 8); false when
+    /// the tree cannot take one. Control path, never `process`.
+    fn send(&mut self, message: &Control) -> bool {
+        let _ = message;
+        false
     }
 }
 
@@ -961,6 +984,9 @@ impl BrowserSourceNode {
             return Err(BrowserStartError::Cap);
         }
         let mut configure = self.settings.configure();
+        if let Some(id) = self.settings.profile_id.as_deref() {
+            configure.page.profile_dir = tree.profile_dir(id).unwrap_or_default();
+        }
         if let Some(sound) = self.sound.as_ref() {
             configure.sample_rate = sound.sample_rate();
         }

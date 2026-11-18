@@ -3,6 +3,7 @@
 //! visible, the Program panel's preview layer, recording and streaming with their
 //! output settings.
 
+use rbs_browser_ipc::control::Control;
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -5237,15 +5238,22 @@ impl StudioUi {
     /// Reload or Reload without cache on the Page tab (ADR-0132 decision 5). Until
     /// the runner takes messages, a reload opens the page again.
     pub fn browser_reload(&mut self, id: i32, bypass_cache: bool) {
-        let _ = bypass_cache;
         if self.browser_rows.contains_key(&id) {
-            self.reload_source(id);
+            self.send(Command::BrowserControl {
+                id: SourceId::from_raw(id as u32),
+                message: Control::Reload { bypass_cache },
+            });
         }
     }
 
-    /// Run now on the Page tab (ADR-0149 decision 3).
+    /// Run now on the Page tab (ADR-0149 decision 3): the saved script, once.
     pub fn browser_run_script(&mut self, id: i32) {
-        let _ = id;
+        if self.browser_rows.contains_key(&id) {
+            self.send(Command::BrowserControl {
+                id: SourceId::from_raw(id as u32),
+                message: Control::RunScript(None),
+            });
+        }
     }
 
     /// Interact… on the Page tab (ADR-0132 decision 6).

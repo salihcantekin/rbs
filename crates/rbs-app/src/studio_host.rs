@@ -1023,6 +1023,15 @@ pub enum Command {
     },
     /// Try a source that is not running again with its stored settings (ADR-0077).
     ReloadSource(SourceId),
+    /// A message to a browser source's running page: reload it, or run a script
+    /// (ADR-0132 decision 5, ADR-0149 decision 3). A reload of a page that does not
+    /// run is [`Command::ReloadSource`].
+    BrowserControl {
+        /// The browser source.
+        id: SourceId,
+        /// What to send.
+        message: rbs_browser_ipc::control::Control,
+    },
     /// Play, pause, seek or restart a media file (ADR-0108 decision 10): a live action,
     /// not an undo step.
     Media {
@@ -4277,6 +4286,12 @@ fn start(
         .map_or((config.size, config.fps), |c| (c.size, c.frame_rate));
     // The runner ships with the app; the engine it loads is an add-on, resolved now
     // only when the collection has a browser source (ADR-0145 decision 6).
+    // Signed-in profiles sit beside the add-ons, in the local data directory.
+    let profiles = config
+        .add_ons
+        .as_ref()
+        .and_then(|setup| setup.root.parent())
+        .map(|data| data.join("browser-profiles"));
     let add_ons = add_ons::AddOnsHost::new(config.add_ons);
     let engine_slot = Arc::new(crate::browser_tree::EngineSlot::default());
     if collection
@@ -4285,12 +4300,16 @@ fn start(
     {
         engine_slot.set(add_ons.browser_engine());
     }
-    let browser = Arc::new(crate::browser_tree::RunnerBrowserTree::new(
+    let mut tree = crate::browser_tree::RunnerBrowserTree::new(
         config
             .browser_runner
             .or_else(crate::browser_tree::resolve_runner),
         Arc::clone(&engine_slot),
-    ));
+    );
+    if let Some(dir) = profiles {
+        tree = tree.with_profiles(dir);
+    }
+    let browser = Arc::new(tree);
     let browser_tree: Option<Arc<dyn BrowserTree>> =
         Some(Arc::clone(&browser) as Arc<dyn BrowserTree>);
     let mut settings = StudioSettings::new(canvas);
@@ -4994,6 +5013,27 @@ impl Host {
                 Ok(Reload::Restarted(done)) => self.answer_live(Ok(done), notify),
                 Err(e) => self.answer_live(Err(e), notify),
             },
+            Command::BrowserControl { id, message } => {
+                let browser = self
+                    .collection
+                    .source(id)
+                    .is_some_and(|s| s.type_id.as_str() == types::BROWSER_SOURCE);
+                if !browser {
+                    let e = Refusal::NotFound(format!("There is no browser source {}.", id.get()));
+                    self.answer_live(Err(e), notify);
+                } else if self.studio.browser_control(id, &message) {
+                    self.answer_live(Ok(true), notify);
+                } else if matches!(message, rbs_browser_ipc::control::Control::Reload { .. }) {
+                    match self.reload_source(id) {
+                        Ok(Reload::Retargeted) => self.answer(Ok(true), notify),
+                        Ok(Reload::Restarted(done)) => self.answer_live(Ok(done), notify),
+                        Err(e) => self.answer_live(Err(e), notify),
+                    }
+                } else {
+                    // No page runs: nothing to run the script in.
+                    self.answer_live(Ok(false), notify);
+                }
+            }
             Command::SetCompanionAudio { source, on } => {
                 let has = self
                     .collection

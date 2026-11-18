@@ -3628,6 +3628,16 @@ impl Studio {
         self.engine.retry(node)
     }
 
+    /// Sends a control message to the running page of browser source `source`
+    /// (`browser.reload`, `browser.run_script`; ADR-0132 decision 8, ADR-0149).
+    /// False when the source has no running page. Control path, never waits on the
+    /// page.
+    pub fn browser_control(&self, source: SourceId, message: &rbs_sources::BrowserMessage) -> bool {
+        self.browser_controls
+            .get(&source)
+            .is_some_and(|control| control.send(message))
+    }
+
     /// The browser engine add-on was installed or removed (ADR-0145 decision 8):
     /// slots are granted again and every browser source that stopped for want of the
     /// engine is prepared again at the next apply, with no restart. Returns how many
