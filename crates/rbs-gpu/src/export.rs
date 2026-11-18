@@ -352,11 +352,16 @@ impl SurfaceExporter {
     /// (ADR-0147 decision 5); the ring never writes that surface while the frame lives.
     /// Not for real-time threads: it waits for the GPU. `GpuError::ExportBusy` when no
     /// surface is free.
-    pub fn black(&mut self, ctx: &GpuContext, timestamp: Timestamp) -> Result<VideoFrame, GpuError> {
+    pub fn black(
+        &mut self,
+        ctx: &GpuContext,
+        timestamp: Timestamp,
+    ) -> Result<VideoFrame, GpuError> {
         let n = self.planes.len();
         let ring = &self.ring.surfaces;
         let planes = &self.planes;
-        let Some(i) = (0..n).find(|&i| !planes[i].pending && ring[i].1.load(Ordering::Acquire) == 0)
+        let Some(i) =
+            (0..n).find(|&i| !planes[i].pending && ring[i].1.load(Ordering::Acquire) == 0)
         else {
             self.stats.busy += 1;
             return Err(GpuError::ExportBusy { surfaces: n as u32 });
@@ -367,7 +372,10 @@ impl SurfaceExporter {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("rbs-gpu export black"),
             });
-        for (view, value) in [(&self.planes[i].luma, luma), (&self.planes[i].chroma, chroma)] {
+        for (view, value) in [
+            (&self.planes[i].luma, luma),
+            (&self.planes[i].chroma, chroma),
+        ] {
             encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("rbs-gpu export black plane"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -488,11 +496,22 @@ fn black_codes(format: rbs_core::media::PixelFormat, range: ColorRange) -> (f64,
     let ten_bit = format == YuvFormat::P010.pixel_format();
     let (max, luma) = if ten_bit {
         // P010 keeps 10-bit codes in the high bits of a 16-bit word.
-        (65535.0, if range == ColorRange::Full { 0.0 } else { f64::from(64u32 << 6) })
+        (
+            65535.0,
+            if range == ColorRange::Full {
+                0.0
+            } else {
+                f64::from(64u32 << 6)
+            },
+        )
     } else {
         (255.0, if range == ColorRange::Full { 0.0 } else { 16.0 })
     };
-    let chroma = if ten_bit { f64::from(512u32 << 6) } else { 128.0 };
+    let chroma = if ten_bit {
+        f64::from(512u32 << 6)
+    } else {
+        128.0
+    };
     (luma / max, chroma / max)
 }
 
