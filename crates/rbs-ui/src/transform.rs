@@ -484,22 +484,38 @@ pub enum MarkKind {
     HandleBorder,
     /// A handle's inside (`surface.raised`).
     HandleFill,
+    /// A side of a placeholder outline (`border.strong`): where a source that draws
+    /// nothing yet sits, such as a web page with no address. Editing pictures only.
+    Placeholder,
 }
 
 /// Most marks one selection draws: four outline sides and two per handle.
 pub const MAX_MARKS: usize = 4 + 2 * Handle::ALL.len();
 
-/// The selection of `selected` as filled rectangles, written into `out` (cleared
-/// first; no allocation once it has [`MAX_MARKS`] capacity). Handles are drawn only
-/// when `handles` (a box too small on screen gets the outline only).
-pub fn marks(view: &Viewport, selected: &SourceBox, handles: bool, out: &mut Vec<Mark>) {
-    out.clear();
-    let r = view.to_view(selected.visual());
+/// Most placeholder outlines drawn with a selection, so every mark fits the 32 a
+/// picture layer takes.
+pub const MAX_PLACEHOLDERS: usize = 3;
+const _: () = assert!(
+    4 * MAX_PLACEHOLDERS + MAX_MARKS <= 32,
+    "fits a picture layer"
+);
+
+/// Adds the outline of `at` as [`MarkKind::Placeholder`] sides to `out` (not cleared).
+pub fn placeholder_marks(view: &Viewport, at: &SourceBox, out: &mut Vec<Mark>) {
+    let r = view.to_view(at.visual());
     if !(r.w.is_finite() && r.h.is_finite() && r.x.is_finite() && r.y.is_finite()) {
         return;
     }
+    out.extend(outline_sides(r).into_iter().map(|rect| Mark {
+        rect,
+        kind: MarkKind::Placeholder,
+    }));
+}
+
+/// The four sides of `r`'s outline, [`OUTLINE_WIDTH`] wide, inside `r`.
+fn outline_sides(r: Rect) -> [Rect; 4] {
     let t = OUTLINE_WIDTH;
-    let outline = [
+    [
         Rect {
             x: r.x,
             y: r.y,
@@ -524,7 +540,20 @@ pub fn marks(view: &Viewport, selected: &SourceBox, handles: bool, out: &mut Vec
             w: t,
             h: r.h,
         },
-    ];
+    ]
+}
+
+/// The selection of `selected` as filled rectangles, written into `out` (cleared
+/// first; no allocation once it has [`MAX_MARKS`] capacity). Handles are drawn only
+/// when `handles` (a box too small on screen gets the outline only).
+pub fn marks(view: &Viewport, selected: &SourceBox, handles: bool, out: &mut Vec<Mark>) {
+    out.clear();
+    let r = view.to_view(selected.visual());
+    if !(r.w.is_finite() && r.h.is_finite() && r.x.is_finite() && r.y.is_finite()) {
+        return;
+    }
+    let t = OUTLINE_WIDTH;
+    let outline = outline_sides(r);
     out.extend(outline.into_iter().map(|rect| Mark {
         rect,
         kind: MarkKind::Outline,
@@ -570,6 +599,18 @@ mod tests {
             area: Rect::sized(1000.0, 1000.0),
             canvas: [1920.0, 1080.0],
         }
+    }
+
+    #[test]
+    fn a_placeholder_is_an_outline_of_its_own_kind() {
+        let mut out = Vec::new();
+        placeholder_marks(
+            &view(),
+            &SourceBox::new([0.0, 0.0], [1920.0, 1080.0]),
+            &mut out,
+        );
+        assert_eq!(out.len(), 4);
+        assert!(out.iter().all(|m| m.kind == MarkKind::Placeholder));
     }
 
     #[test]

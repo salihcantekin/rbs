@@ -595,7 +595,8 @@ impl PreviewLayer {                       // not Send: the UI's main thread
     /// No-op when neither the rectangle nor the superlayer's height or flip changed.
     pub fn set_rect(&mut self, rect: LayerRect);
     pub fn set_hidden(&self, hidden: bool);        // while toolkit content overlaps it
-    /// Filled rectangles over the picture (selection outline and handles, ADR-0048), in
+    /// Filled rectangles over the picture (selection outline and handles, ADR-0048, and
+    /// placeholder outlines of sources that draw nothing yet), in
     /// `set_rect`'s coordinates; replaces the last ones; empty removes them.
     pub fn set_marks(&mut self, marks: &[Mark]);
     pub fn set_retire_after(&mut self, after: Duration);

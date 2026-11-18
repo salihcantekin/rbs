@@ -76,6 +76,19 @@ pub fn css_script(css: &str) -> String {
     )
 }
 
+/// The style sheet the runner adds to a page: with a transparent background, a rule
+/// that clears the page's own background first (a page paints white unless it says
+/// otherwise, so "Transparent background" alone would show nothing), then the
+/// user's `css`, which can override it. Empty when there is nothing to add.
+pub fn page_css(css: &str, transparent: bool) -> String {
+    const CLEAR: &str = "html, body { background-color: rgba(0, 0, 0, 0) !important; }";
+    match (transparent, css.is_empty()) {
+        (false, _) => css.to_owned(),
+        (true, true) => CLEAR.to_owned(),
+        (true, false) => format!("{CLEAR}\n{css}"),
+    }
+}
+
 /// `text` as a JavaScript string literal: nothing in it can end the literal.
 pub fn js_string(text: &str) -> String {
     let mut out = String::with_capacity(text.len() + 2);
@@ -507,6 +520,18 @@ mod tests {
         assert!(s.contains(r#"\"); alert(1); (\""#));
         assert!(s.contains(r"\n\u2028"));
         assert_eq!(js_string("a\\b\u{1}"), r#""a\\b\u0001""#);
+    }
+
+    #[test]
+    fn a_transparent_page_clears_its_own_background_first() {
+        assert_eq!(page_css("", false), "");
+        assert_eq!(page_css("a{}", false), "a{}");
+        assert!(page_css("", true).contains("background-color: rgba(0, 0, 0, 0) !important"));
+        let both = page_css("body{background:red}", true);
+        assert!(
+            both.ends_with("\nbody{background:red}"),
+            "the user's CSS comes last"
+        );
     }
 
     #[test]

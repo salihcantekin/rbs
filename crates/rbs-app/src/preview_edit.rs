@@ -7,7 +7,8 @@
 
 use rbs_ui::layout::Rect;
 use rbs_ui::transform::{
-    self, Drag, DragKeys, Grip, MAX_MARKS, Mark, SNAP_DISTANCE, SourceBox, Viewport,
+    self, Drag, DragKeys, Grip, MAX_MARKS, MAX_PLACEHOLDERS, Mark, SNAP_DISTANCE, SourceBox,
+    Viewport,
 };
 
 /// A source with a picture as the panel sees it.
@@ -284,9 +285,30 @@ impl PreviewEdit {
     /// The selection of `selected` as marks in panel coordinates, written into `out`.
     pub fn marks(&self, canvas: [f32; 2], placed: &[Placed], selected: i32, out: &mut Vec<Mark>) {
         out.clear();
-        out.reserve(MAX_MARKS);
+        out.reserve(MAX_MARKS + 4 * MAX_PLACEHOLDERS);
         if let Some(p) = placed.iter().find(|p| p.id == selected) {
             transform::marks(&self.view(canvas), &self.current(p), true, out);
+        }
+    }
+
+    /// Adds placeholder outlines (added to `out`, not cleared) for the sources in
+    /// `empty` that draw nothing yet: at most [`MAX_PLACEHOLDERS`], topmost first, the
+    /// selection left out because its own outline already shows it.
+    pub fn placeholders(
+        &self,
+        canvas: [f32; 2],
+        placed: &[Placed],
+        empty: impl Fn(i32) -> bool,
+        selected: i32,
+        out: &mut Vec<Mark>,
+    ) {
+        let view = self.view(canvas);
+        for p in placed
+            .iter()
+            .filter(|p| p.id != selected && empty(p.id))
+            .take(MAX_PLACEHOLDERS)
+        {
+            transform::placeholder_marks(&view, &self.current(p), out);
         }
     }
 }
@@ -480,6 +502,26 @@ mod tests {
         assert_eq!(out[0].rect.x, 710.0);
         e.marks(CANVAS, &s, -1, &mut out);
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn an_empty_source_gets_a_placeholder_unless_it_is_selected() {
+        use rbs_ui::transform::MarkKind;
+        let e = edit();
+        let s = scene();
+        let mut out = Vec::new();
+        e.marks(CANVAS, &s, 1, &mut out);
+        e.placeholders(CANVAS, &s, |id| id == 2, 1, &mut out);
+        assert_eq!(out.len(), MAX_MARKS + 4);
+        let sides: Vec<_> = out
+            .iter()
+            .filter(|m| m.kind == MarkKind::Placeholder)
+            .collect();
+        assert_eq!(sides.len(), 4);
+        assert_eq!(sides[0].rect.x, 700.0, "at source 2, in panel coordinates");
+        e.marks(CANVAS, &s, 2, &mut out);
+        e.placeholders(CANVAS, &s, |id| id == 2, 2, &mut out);
+        assert_eq!(out.len(), MAX_MARKS, "the selection's own outline shows it");
     }
 
     #[test]

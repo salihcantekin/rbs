@@ -555,6 +555,8 @@ impl PartialEq for SourceRow {
             && self.fill == other.fill
             && self.filled == other.filled
             && self.text == other.text
+            && self.browser == other.browser
+            && self.browser_reason == other.browser_reason
             && self.cap_has == other.cap_has
             && self.cap_l == other.cap_l
             && self.cap_t == other.cap_t
