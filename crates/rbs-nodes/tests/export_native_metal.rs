@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use rbs_capture::{CaptureRequest, TargetId};
 use rbs_capture_test::TestCaptureFactory;
 use rbs_core::lifecycle::Lifecycle;
-use rbs_core::media::{FramePayload, MemoryKind, NativeSurface, VideoFrame};
+use rbs_core::media::{FramePayload, MemoryKind, NativeSurface, PixelFormat, VideoFrame};
 use rbs_core::time::{TestClock, Timestamp};
 use rbs_core::timing::{Cadence, FrameRate};
 use rbs_gpu::node::{CompositorNode, GpuRuntime, NodeLayer, RenderLocal};
@@ -102,6 +102,22 @@ impl Node<GpuRuntime> for Probe {
     fn release(&mut self, _: &mut PrepareCtx<'_, GpuRuntime>) {
         self.held.clear();
     }
+}
+
+/// Takes the probe's packets, so the chain ends in an output and is scheduled.
+struct Sink(NodeDescriptor);
+
+impl Node<GpuRuntime> for Sink {
+    fn descriptor(&self) -> &NodeDescriptor {
+        &self.0
+    }
+    fn prepare(&mut self, _: &mut PrepareCtx<'_, GpuRuntime>) -> Result<(), NodeError> {
+        Ok(())
+    }
+    fn process(&mut self, _: &mut ProcessCtx<'_, GpuRuntime>) -> Result<(), NodeError> {
+        Ok(())
+    }
+    fn release(&mut self, _: &mut PrepareCtx<'_, GpuRuntime>) {}
 }
 
 fn gpu() -> Option<Arc<GpuContext>> {
@@ -198,8 +214,9 @@ fn pipeline() -> Option<Built> {
         clock: clock.clone(),
         tick: 0,
     };
-    let request = CaptureRequest::new(TargetId::new("window:1"), Arc::new(clock))
-        .with_frame_rate(FrameRate::FPS_30);
+    let request = CaptureRequest::new(TargetId::new("test-window-0"), Arc::new(clock))
+        .with_frame_rate(FrameRate::FPS_30)
+        .with_pixel_formats(&[PixelFormat::Bgra8]);
     let capture = rig.add(Box::new(CaptureSourceNode::new(
         Arc::new(TestCaptureFactory::new()),
         request,
@@ -228,6 +245,15 @@ fn pipeline() -> Option<Built> {
         seen: Arc::clone(&seen),
         last: None,
     }));
+    let sink = rig.add(Box::new(Sink(NodeDescriptor::new(
+        NodeTypeId::new_static("org.rbs.test.sink"),
+        NodeKind::Output,
+        vec![Pin::one("packets", LinkKind::Packets)],
+        vec![],
+    ))));
+    rig.graph
+        .connect(probe, "packets", sink, "packets")
+        .unwrap();
     rig.graph.connect(capture, "video", comp, "layers").unwrap();
     rig.graph.connect(comp, "canvas", export, "canvas").unwrap();
     rig.graph.connect(export, "video", probe, "video").unwrap();
