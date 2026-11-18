@@ -2573,14 +2573,12 @@ impl Studio {
         let plan = self.graph.plan();
         let scheduled: BTreeSet<NodeId> = plan.order.iter().copied().collect();
         // Sources that keep their instance keep their control; the others leave.
-        let instanced: BTreeSet<SourceId> = self
-            .entries
-            .iter()
-            .filter(|e| e.instance.is_some())
-            .map(|e| e.source)
-            .collect();
+        // A control stays while its source is bound, also after its instance failed:
+        // it holds the browser engine reason the source shows and the install looks
+        // for (ADR-0145). A new instance replaces it.
+        let bound: BTreeSet<SourceId> = self.entries.iter().map(|e| e.source).collect();
         self.browser_controls
-            .retain(|source, _| instanced.contains(source));
+            .retain(|source, _| bound.contains(source));
         // One budget and one helper tree from the composition root (ADR-0109).
         // Captures follow the main canvas's size and rate (every canvas runs at it).
         let (width, height) = self.size;
@@ -3160,6 +3158,25 @@ impl Studio {
                     (Some(_), Some(Watch::Video(stats))) => stats.fault().or(state.fault),
                     (Some(_), _) => state.fault,
                 };
+                // A browser source without its engine says so, also after a runner
+                // that could not load it exited (add-ons spec "Browser engine
+                // consumer").
+                if let Some(reason) = self
+                    .browser_controls
+                    .get(&e.source)
+                    .filter(|c| !c.helper_running())
+                    .and_then(|c| {
+                        // The tree's own answer first: a failed node's instance is
+                        // made again without being prepared, so its control is new.
+                        (state.failed.is_some())
+                            .then(|| self.browser_tree.as_ref()?.unavailable())
+                            .flatten()
+                            .or_else(|| c.engine_reason())
+                    })
+                {
+                    state.failed = Some(browser_engine_message(reason).to_owned());
+                    state.fault = None;
+                }
                 // A text source shows its worker's problem (ADR-0129 decision 7).
                 if state.failed.is_none()
                     && let Some(p) = self.text_problem(e.source).filter(|p| p.fault().is_some())
@@ -3600,6 +3617,41 @@ impl Studio {
             return false;
         };
         self.engine.retry(node)
+    }
+
+    /// The browser engine add-on was installed or removed (ADR-0145 decision 8):
+    /// slots are granted again and every browser source that stopped for want of the
+    /// engine is prepared again at the next apply, with no restart. Returns how many
+    /// were. The caller applies.
+    pub fn browser_engine_changed(&mut self) -> usize {
+        self.browser_budget.grant(&browser_claims(&self.collection));
+        // Every browser source that is not running: one that waited for the engine
+        // failed for good, and retrying a node without a failure does nothing.
+        let waiting: Vec<NodeId> = self
+            .entries
+            .iter()
+            .filter(|e| {
+                e.state.failed.is_some()
+                    && self
+                        .browser_controls
+                        .get(&e.source)
+                        .is_some_and(|c| !c.helper_running())
+            })
+            .map(|e| e.state.node)
+            .collect();
+        let mut retried = 0;
+        for node in waiting {
+            if self.engine.retry(node) {
+                retried += 1;
+                // A failed prepare at the next apply sets it again; a start leaves no
+                // event to clear it by.
+                if let Some(e) = self.entries.iter_mut().find(|e| e.state.node == node) {
+                    e.state.failed = None;
+                    e.state.fault = None;
+                }
+            }
+        }
+        retried
     }
 
     /// Sends the collection's values to a running filter again (a cancelled drag).
@@ -5096,6 +5148,15 @@ fn browser_claims(collection: &SceneCollection) -> Vec<BrowserClaim> {
 }
 
 /// Plain text for a source capture or media node failure (not `Debug` dumps).
+/// The words for a browser source's engine reason.
+fn browser_engine_message(reason: &str) -> &'static str {
+    if reason == rbs_sources::BROWSER_RUNTIME_MISMATCH {
+        "The browser engine does not match this version of RBS. Install it again in Settings › Add-ons."
+    } else {
+        "The browser engine is not installed. Download it in Settings › Add-ons."
+    }
+}
+
 fn source_fault_message(cause: &FaultCause) -> String {
     match cause {
         FaultCause::Bypassed(health) => bypassed_source_message(health),

@@ -14,6 +14,8 @@ use crate::ui::{AddOnRowData, Studio};
 
 /// The page's section number in the Settings window.
 pub const SECTION: i32 = 12;
+/// The page's list card, flashed when another place leads here.
+pub const LIST_CARD: &str = "settings.add-ons.list";
 
 /// The Studio callbacks of the page, on one window's global.
 pub fn install(g: &Studio<'_>, ctx: &Ctx) {

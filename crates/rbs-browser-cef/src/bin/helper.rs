@@ -3,18 +3,17 @@
 
 use cef::{args::Args, *};
 
+#[path = "../engine.rs"]
+#[allow(dead_code, reason = "the helper does not read the settings paths")]
+mod engine;
+
 fn main() {
     let args = Args::new();
-    #[cfg(target_os = "macos")]
-    let _loader = {
-        let Ok(exe) = std::env::current_exe() else {
-            std::process::exit(2);
-        };
-        let loader = library_loader::LibraryLoader::new(&exe, true);
-        if !loader.load() {
-            std::process::exit(3);
-        }
-        loader
+    // The helper loads the same downloaded engine the browser process named in
+    // `RBS_CEF_RUNTIME` (inherited), before any CEF call.
+    let engine = match engine::load(true) {
+        Ok(engine) => engine,
+        Err(code) => std::process::exit(code),
     };
     let _ = api_hash(sys::CEF_API_VERSION_LAST, 0);
     let code = execute_process(
@@ -22,5 +21,6 @@ fn main() {
         None::<&mut App>,
         std::ptr::null_mut(),
     );
+    drop(engine);
     std::process::exit(code.max(0));
 }
