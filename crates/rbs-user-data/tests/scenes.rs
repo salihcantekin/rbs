@@ -1063,3 +1063,34 @@ fn a_stinger_round_trips_in_format_21_and_older_formats_refuse_it() {
         );
     }
 }
+
+#[test]
+fn browser_page_settings_are_written_as_format_22() {
+    // ADR-0132 decision 11, ADR-0149 decision 1.
+    use rbs_scene::model::SettingValue;
+    let mut col = show();
+    let mut page = Settings::new();
+    page.insert(
+        "url".into(),
+        SettingValue::Text("https://example.com/".into()),
+    );
+    let (id, _) = col
+        .add_source(
+            "Page",
+            NodeTypeId::new("org.rbs.source.browser"),
+            page.clone(),
+        )
+        .unwrap();
+    let plain = document::render(&col, Some("Show")).unwrap();
+    assert!(!plain.contains("format = 22"), "{plain}");
+    page.insert("zoom_percent".into(), SettingValue::Int(150));
+    page.insert("script".into(), SettingValue::Text("1 + 1".into()));
+    col.set_source_settings(id, page).unwrap();
+    let text = document::render(&col, Some("Show")).unwrap();
+    assert!(text.contains("format = 22"), "{text}");
+    let back = document::parse::<SceneCollection>(&text).unwrap().document;
+    assert_eq!(back, col);
+    // A format 21 file reads as before.
+    let old = plain.replace("format = 15", "format = 21");
+    assert!(document::parse::<SceneCollection>(&old).is_ok());
+}

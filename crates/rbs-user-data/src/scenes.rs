@@ -947,6 +947,31 @@ fn settings_doc(s: &Settings) -> Result<BTreeMap<String, Value>, String> {
         .collect()
 }
 
+/// The browser source type and the setting keys format 22 adds to it. The type and
+/// the keys are `rbs-sources` names, which this crate does not depend on.
+const BROWSER_SOURCE: &str = "org.rbs.source.browser";
+const BROWSER_PAGE_KEYS: [&str; 11] = [
+    "css",
+    "reload_on_file_change",
+    "keep_signed_in",
+    "profile_id",
+    "reload_every_s",
+    "script",
+    "script_on_load",
+    "script_every_s",
+    "zoom_percent",
+    "keep_running",
+    "retry_on_error",
+];
+
+/// True for a browser source that has a format 22 page setting.
+fn browser_page_settings(s: &Source) -> bool {
+    s.type_id.as_str() == BROWSER_SOURCE
+        && BROWSER_PAGE_KEYS
+            .iter()
+            .any(|k| s.settings.contains_key(*k))
+}
+
 fn settings(s: BTreeMap<String, Value>) -> Settings {
     s.into_iter()
         .map(|(k, v)| {
@@ -963,7 +988,7 @@ fn settings(s: BTreeMap<String, Value>) -> Settings {
 
 impl Document for SceneCollection {
     const KIND: &'static str = "scene-collection";
-    const FORMAT: u32 = 21;
+    const FORMAT: u32 = 22;
 
     fn write_format(&self) -> u32 {
         let t = self.transition();
@@ -974,7 +999,9 @@ impl Document for SceneCollection {
                 .any(|s| s.transition_in.and_then(|t| t.kind) == Some(TransitionKind::Stinger));
         // Format 18 and older read a 0 ms glide as Cut, so such a collection is written
         // as 19 to keep its own transition (ADR-0128 decision 3).
-        if stinger {
+        if self.sources().any(browser_page_settings) {
+            22
+        } else if stinger {
             21
         } else if self.scenes().any(|s| s.transition_in.is_some()) {
             20
@@ -1028,8 +1055,18 @@ impl Document for SceneCollection {
     /// without it, and a file is written as 20 only when a scene has it. Format 21 adds
     /// the Stinger kind and the optional `transition.stinger` (ADR-0140); a format 20 or
     /// older body is a format 21 body without them, and a file is written as 21 only
-    /// when it uses them.
+    /// when it uses them. Format 22 adds the browser page settings `css`,
+    /// `reload_on_file_change`, `keep_signed_in`, `profile_id` (ADR-0132) and
+    /// `reload_every_s`, `script`, `script_on_load`, `script_every_s`, `zoom_percent`,
+    /// `keep_running`, `retry_on_error` (ADR-0149) of a browser source; a format 21 body
+    /// is a format 22 body without them, and a file is written as 22 only when a browser
+    /// source has one, so an older build refuses it instead of failing the source.
     fn upgrade(from: u32, body: &mut toml::Table) -> Result<(), String> {
+        // Format 22 adds browser page settings (ADR-0132, ADR-0149) inside the open
+        // `settings` table; a format 21 body is a format 22 body without them.
+        if from == 21 {
+            return Ok(());
+        }
         let stung = body
             .get("transition")
             .and_then(toml::Value::as_table)

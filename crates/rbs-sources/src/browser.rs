@@ -162,6 +162,51 @@ impl BrowserBudget {
     }
 }
 
+/// Largest `css` in bytes (ADR-0132 decision 4).
+pub const MAX_CSS_BYTES: usize = 64 * 1024;
+/// Largest `script` in bytes (ADR-0149 decision 1).
+pub const MAX_SCRIPT_BYTES: usize = 32 * 1024;
+/// Longest reload or script interval, a day in seconds (ADR-0149 decision 1).
+pub const MAX_INTERVAL_S: u32 = 86_400;
+/// Shortest periodic reload in seconds (ADR-0149 decision 1).
+pub const MIN_RELOAD_EVERY_S: u32 = 10;
+/// Page zoom bounds in percent and its default (ADR-0149 decision 1).
+pub const ZOOM_RANGE: std::ops::RangeInclusive<u32> = 25..=500;
+/// Default page zoom in percent.
+pub const DEFAULT_ZOOM: u32 = 100;
+
+/// The settings keys of a browser source, in the order the Page tab shows them.
+pub const BROWSER_KEYS: [&str; 16] = [
+    keys::URL,
+    keys::WIDTH,
+    keys::HEIGHT,
+    keys::FPS,
+    keys::TRANSPARENT,
+    keys::CSS,
+    keys::RELOAD_ON_FILE_CHANGE,
+    keys::KEEP_SIGNED_IN,
+    keys::PROFILE_ID,
+    keys::RELOAD_EVERY_S,
+    keys::SCRIPT,
+    keys::SCRIPT_ON_LOAD,
+    keys::SCRIPT_EVERY_S,
+    keys::ZOOM_PERCENT,
+    keys::KEEP_RUNNING,
+    keys::RETRY_ON_ERROR,
+];
+
+/// Keys whose value can make the page reach the network on its own, so a session
+/// without the network permission may not write them (ADR-0052, ADR-0132 decision 4,
+/// ADR-0149 decisions 3 and 5). `keep_running` counts only when set to true.
+pub const NETWORK_KEYS: [&str; 6] = [
+    keys::URL,
+    keys::CSS,
+    keys::SCRIPT,
+    keys::SCRIPT_ON_LOAD,
+    keys::SCRIPT_EVERY_S,
+    keys::KEEP_RUNNING,
+];
+
 /// Checked browser settings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BrowserSettings {
@@ -175,9 +220,50 @@ pub struct BrowserSettings {
     pub fps: u32,
     /// Default false.
     pub transparent: bool,
+    /// Custom CSS; empty for none.
+    pub css: String,
+    /// Reload a `file` page when its directory changes.
+    pub reload_on_file_change: bool,
+    /// The kept profile, when `keep_signed_in` is on and the server gave one.
+    pub profile_id: Option<String>,
+    /// Seconds between reloads; 0 for none.
+    pub reload_every_s: u32,
+    /// The user's script; empty for none.
+    pub script: String,
+    /// Run the script after each load.
+    pub script_on_load: bool,
+    /// Seconds between script runs; 0 for none.
+    pub script_every_s: u32,
+    /// Page zoom in percent.
+    pub zoom_percent: u32,
+    /// Active while placed anywhere (ADR-0149 decision 5).
+    pub keep_running: bool,
+    /// Keep error pages off air and retry (default true).
+    pub retry_on_error: bool,
 }
 
 impl BrowserSettings {
+    /// A page at `url` with every other setting at its default.
+    pub fn page(url: impl Into<String>) -> Self {
+        Self {
+            url: url.into(),
+            width: DEFAULT_SIZE.0,
+            height: DEFAULT_SIZE.1,
+            fps: DEFAULT_FPS,
+            transparent: false,
+            css: String::new(),
+            reload_on_file_change: false,
+            profile_id: None,
+            reload_every_s: 0,
+            script: String::new(),
+            script_on_load: false,
+            script_every_s: 0,
+            zoom_percent: DEFAULT_ZOOM,
+            keep_running: false,
+            retry_on_error: true,
+        }
+    }
+
     /// The wire configure block. The composition root fills `frames` with the name of
     /// the frame section it allocates before spawning the helper.
     pub fn configure(&self) -> Configure {
@@ -261,15 +347,7 @@ pub struct AgentDenial {
 /// Validates stored settings. Missing size and fps take the defaults at instantiate.
 pub fn validate_browser(settings: &Settings) -> Result<(), (&'static str, &'static str)> {
     for key in settings.keys() {
-        if ![
-            keys::URL,
-            keys::WIDTH,
-            keys::HEIGHT,
-            keys::FPS,
-            keys::TRANSPARENT,
-        ]
-        .contains(&key.as_str())
-        {
+        if !BROWSER_KEYS.contains(&key.as_str()) {
             return Err(("settings", "only keys this source type uses"));
         }
     }
@@ -293,11 +371,84 @@ pub fn validate_browser(settings: &Settings) -> Result<(), (&'static str, &'stat
             return Err((keys::FPS, "from 1 to 60 frames per second"));
         }
     }
-    match settings.get(keys::TRANSPARENT) {
-        None | Some(SettingValue::Bool(_)) => {}
-        Some(_) => return Err((keys::TRANSPARENT, "a bool")),
+    for key in [
+        keys::TRANSPARENT,
+        keys::RELOAD_ON_FILE_CHANGE,
+        keys::KEEP_SIGNED_IN,
+        keys::SCRIPT_ON_LOAD,
+        keys::KEEP_RUNNING,
+        keys::RETRY_ON_ERROR,
+    ] {
+        bool_setting(settings, key)?;
+    }
+    if text_setting(settings, keys::CSS)?.is_some_and(|css| css.len() > MAX_CSS_BYTES) {
+        return Err((keys::CSS, "at most 64 KiB"));
+    }
+    if text_setting(settings, keys::SCRIPT)?.is_some_and(|s| s.len() > MAX_SCRIPT_BYTES) {
+        return Err((keys::SCRIPT, "at most 32 768 bytes"));
+    }
+    if let Some(id) = text_setting(settings, keys::PROFILE_ID)? {
+        if !is_profile_id(id) {
+            return Err((keys::PROFILE_ID, "32 lowercase hex digits"));
+        }
+    }
+    if let Some(s) = count_setting(settings, keys::RELOAD_EVERY_S)? {
+        if s != 0 && !(MIN_RELOAD_EVERY_S..=MAX_INTERVAL_S).contains(&s) {
+            return Err((keys::RELOAD_EVERY_S, "0, or from 10 to 86400 seconds"));
+        }
+    }
+    if let Some(s) = count_setting(settings, keys::SCRIPT_EVERY_S)? {
+        if s > MAX_INTERVAL_S {
+            return Err((keys::SCRIPT_EVERY_S, "from 0 to 86400 seconds"));
+        }
+    }
+    if let Some(z) = count_setting(settings, keys::ZOOM_PERCENT)? {
+        if !ZOOM_RANGE.contains(&z) {
+            return Err((keys::ZOOM_PERCENT, "from 25 to 500 percent"));
+        }
     }
     Ok(())
+}
+
+/// True for a kept-profile id: 32 lowercase hex digits (ADR-0132 decision 10).
+pub fn is_profile_id(id: &str) -> bool {
+    id.len() == 32 && id.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+fn bool_setting(
+    settings: &Settings,
+    key: &'static str,
+) -> Result<Option<bool>, (&'static str, &'static str)> {
+    match settings.get(key) {
+        None => Ok(None),
+        Some(SettingValue::Bool(on)) => Ok(Some(*on)),
+        Some(_) => Err((key, "a bool")),
+    }
+}
+
+fn text_setting<'a>(
+    settings: &'a Settings,
+    key: &'static str,
+) -> Result<Option<&'a str>, (&'static str, &'static str)> {
+    match settings.get(key) {
+        None => Ok(None),
+        Some(SettingValue::Text(text)) => Ok(Some(text.as_str())),
+        Some(_) => Err((key, "text")),
+    }
+}
+
+/// An integer that may be 0.
+fn count_setting(
+    settings: &Settings,
+    key: &'static str,
+) -> Result<Option<u32>, (&'static str, &'static str)> {
+    match settings.get(key) {
+        None => Ok(None),
+        Some(SettingValue::Int(value)) => u32::try_from(*value)
+            .map(Some)
+            .map_err(|_| (key, "a whole number, 0 or more")),
+        Some(_) => Err((key, "an integer")),
+    }
 }
 
 /// Applies defaults. `validate_browser` must have succeeded.
@@ -318,16 +469,28 @@ pub fn browser_settings(
         _ => return Err((keys::WIDTH, "set together with height")),
     };
     let fps = int_setting(settings, keys::FPS)?.unwrap_or(DEFAULT_FPS);
-    let transparent = match settings.get(keys::TRANSPARENT) {
-        Some(SettingValue::Bool(on)) => *on,
-        _ => false,
-    };
+    let flag = |key| bool_setting(settings, key).map(|on| on.unwrap_or(false));
+    let text = |key| text_setting(settings, key).map(|t| t.unwrap_or_default().to_owned());
+    let count = |key| count_setting(settings, key).map(|n| n.unwrap_or(0));
+    let keep_signed_in = flag(keys::KEEP_SIGNED_IN)?;
     Ok(BrowserSettings {
         url,
         width,
         height,
         fps,
-        transparent,
+        transparent: flag(keys::TRANSPARENT)?,
+        css: text(keys::CSS)?,
+        reload_on_file_change: flag(keys::RELOAD_ON_FILE_CHANGE)?,
+        profile_id: text_setting(settings, keys::PROFILE_ID)?
+            .filter(|_| keep_signed_in)
+            .map(str::to_owned),
+        reload_every_s: count(keys::RELOAD_EVERY_S)?,
+        script: text(keys::SCRIPT)?,
+        script_on_load: flag(keys::SCRIPT_ON_LOAD)?,
+        script_every_s: count(keys::SCRIPT_EVERY_S)?,
+        zoom_percent: count_setting(settings, keys::ZOOM_PERCENT)?.unwrap_or(DEFAULT_ZOOM),
+        keep_running: flag(keys::KEEP_RUNNING)?,
+        retry_on_error: bool_setting(settings, keys::RETRY_ON_ERROR)?.unwrap_or(true),
     })
 }
 

@@ -121,9 +121,92 @@ fn even_size_and_8192_cap() {
     let mut fast = settings("https://example.com/");
     fast.insert(keys::FPS.to_owned(), SettingValue::Int(61));
     assert!(rbs_sources::validate_settings(&id, &fast).is_err());
-    let mut css = settings("https://example.com/");
-    css.insert("css".into(), SettingValue::Text("body{}".into()));
-    assert!(rbs_sources::validate_settings(&id, &css).is_err());
+    let mut unknown = settings("https://example.com/");
+    unknown.insert("user_agent".into(), SettingValue::Text("x".into()));
+    assert!(rbs_sources::validate_settings(&id, &unknown).is_err());
+}
+
+fn with(key: &str, value: SettingValue) -> Settings {
+    let mut s = settings("https://example.com/");
+    s.insert(key.to_owned(), value);
+    s
+}
+
+fn valid(key: &str, value: SettingValue) -> bool {
+    let id = rbs_graph::node::NodeTypeId::new(types::BROWSER_SOURCE);
+    rbs_sources::validate_settings(&id, &with(key, value)).is_ok()
+}
+
+#[test]
+fn page_settings_have_their_bounds() {
+    use SettingValue::{Bool, Int, Text};
+    // ADR-0132 decision 4: CSS up to 64 KiB.
+    assert!(valid(keys::CSS, Text("body{}".into())));
+    assert!(valid(keys::CSS, Text("a".repeat(64 * 1024))));
+    assert!(!valid(keys::CSS, Text("a".repeat(64 * 1024 + 1))));
+    // ADR-0149 decision 1.
+    assert!(valid(keys::RELOAD_EVERY_S, Int(0)));
+    assert!(!valid(keys::RELOAD_EVERY_S, Int(9)));
+    assert!(valid(keys::RELOAD_EVERY_S, Int(10)));
+    assert!(valid(keys::RELOAD_EVERY_S, Int(86_400)));
+    assert!(!valid(keys::RELOAD_EVERY_S, Int(86_401)));
+    assert!(valid(keys::SCRIPT, Text("a".repeat(32 * 1024))));
+    assert!(!valid(keys::SCRIPT, Text("a".repeat(32 * 1024 + 1))));
+    assert!(valid(keys::SCRIPT_EVERY_S, Int(0)));
+    assert!(valid(keys::SCRIPT_EVERY_S, Int(1)));
+    assert!(!valid(keys::SCRIPT_EVERY_S, Int(86_401)));
+    assert!(!valid(keys::SCRIPT_EVERY_S, Int(-1)));
+    assert!(!valid(keys::ZOOM_PERCENT, Int(24)));
+    assert!(valid(keys::ZOOM_PERCENT, Int(25)));
+    assert!(valid(keys::ZOOM_PERCENT, Int(500)));
+    assert!(!valid(keys::ZOOM_PERCENT, Int(501)));
+    for flag in [
+        keys::RELOAD_ON_FILE_CHANGE,
+        keys::KEEP_SIGNED_IN,
+        keys::SCRIPT_ON_LOAD,
+        keys::KEEP_RUNNING,
+        keys::RETRY_ON_ERROR,
+    ] {
+        assert!(valid(flag, Bool(true)), "{flag}");
+        assert!(!valid(flag, Int(1)), "{flag}");
+    }
+    assert!(valid(
+        keys::PROFILE_ID,
+        Text("0123456789abcdef0123456789abcdef".into())
+    ));
+    assert!(!valid(
+        keys::PROFILE_ID,
+        Text("0123456789ABCDEF0123456789ABCDEF".into())
+    ));
+    assert!(!valid(keys::PROFILE_ID, Text("short".into())));
+}
+
+#[test]
+fn page_settings_take_their_defaults() {
+    let page = rbs_sources::browser_settings(&settings("https://example.com/")).unwrap();
+    assert_eq!(page.zoom_percent, 100);
+    assert!(page.retry_on_error);
+    assert!(!page.keep_running && !page.script_on_load && !page.reload_on_file_change);
+    assert_eq!((page.reload_every_s, page.script_every_s), (0, 0));
+    assert!(page.css.is_empty() && page.script.is_empty() && page.profile_id.is_none());
+    // A profile id counts only while keep_signed_in is on.
+    let mut kept = with(
+        keys::PROFILE_ID,
+        SettingValue::Text("0123456789abcdef0123456789abcdef".into()),
+    );
+    assert!(
+        rbs_sources::browser_settings(&kept)
+            .unwrap()
+            .profile_id
+            .is_none()
+    );
+    kept.insert(keys::KEEP_SIGNED_IN.to_owned(), SettingValue::Bool(true));
+    assert!(
+        rbs_sources::browser_settings(&kept)
+            .unwrap()
+            .profile_id
+            .is_some()
+    );
 }
 
 #[test]
@@ -369,11 +452,9 @@ fn browser_node(
 ) -> rbs_sources::BrowserSourceNode {
     rbs_sources::BrowserSourceNode::new(
         rbs_sources::BrowserSettings {
-            url: "https://example.com/".into(),
             width: 1920,
             height: 1080,
-            fps: 30,
-            transparent: false,
+            ..rbs_sources::BrowserSettings::page("https://example.com/")
         },
         Arc::clone(budget),
         SourceId::from_raw(id),
