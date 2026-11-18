@@ -115,6 +115,12 @@ pub struct GpuContext {
     /// A 4:2:0 picture's planes for the compositor's YUV pipelines (perf audit R-11 step
     /// b): Y' (binding 0), the linear clamp sampler (1) and CbCr (2).
     pub(crate) yuv_layout: wgpu::BindGroupLayout,
+    /// The compositor's group 0 (layers, styles, 4:2:0 colour records), shared by every
+    /// compositor of this device and by the wrap pipelines (ADR-0150 decision 7).
+    pub(crate) layers_layout: wgpu::BindGroupLayout,
+    /// The scrolling pipelines, built once on the first [`GpuContext::prepare_scrolling`]
+    /// (ADR-0150 decision 7). Empty on a device where nothing ever scrolled (P13).
+    pub(crate) wrap: std::sync::OnceLock<crate::compositor::WrapSet>,
 }
 
 impl GpuContext {
@@ -282,6 +288,8 @@ impl GpuContext {
             ..Default::default()
         });
 
+        let layers_layout = crate::compositor::layers_layout(&device);
+
         let adapter_luid = crate::interop::adapter_luid(&device);
         Ok(Self {
             #[cfg(target_os = "linux")]
@@ -297,6 +305,8 @@ impl GpuContext {
             sampled_layout,
             linear_sampler,
             yuv_layout,
+            layers_layout,
+            wrap: std::sync::OnceLock::new(),
         })
     }
 
@@ -361,6 +371,20 @@ impl GpuContext {
     /// matches. Pipelines that sample pool textures put it in their pipeline layout.
     pub fn sampled_layout(&self) -> &wgpu::BindGroupLayout {
         &self.sampled_layout
+    }
+
+    /// Builds the scrolling pipelines of this device if they do not exist yet (ADR-0150
+    /// decision 7). Compiles shaders: call from the control thread before the first
+    /// layer list with a scrolling layer is sent, never from `Node::process`. Cheap
+    /// after the first call.
+    pub fn prepare_scrolling(&self) {
+        self.wrap
+            .get_or_init(|| crate::compositor::WrapSet::new(self));
+    }
+
+    /// Whether [`GpuContext::prepare_scrolling`] has built the scrolling pipelines.
+    pub fn scrolling_ready(&self) -> bool {
+        self.wrap.get().is_some()
     }
 
     /// Lets the device retire finished work without blocking. Call once per render tick.

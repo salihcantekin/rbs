@@ -52,6 +52,11 @@ const FRAMES: u64 = 200;
 /// Average allocations per frame over `FRAMES` frames after a warm-up.
 /// With `planar`, the layers are a 4:2:0 plane pair drawn by the YUV pipelines (R-11).
 fn allocs_per_frame(layer_count: usize, planar: bool) -> Option<(f64, f64)> {
+    allocs_per_frame_of(layer_count, planar, false)
+}
+
+/// [`allocs_per_frame`]; with `scrolling`, every layer scrolls (ADR-0150).
+fn allocs_per_frame_of(layer_count: usize, planar: bool, scrolling: bool) -> Option<(f64, f64)> {
     let ctx = common::gpu()?;
     let mut pool = TexturePool::new();
     let mut comp = Compositor::new(
@@ -77,12 +82,36 @@ fn allocs_per_frame(layer_count: usize, planar: bool) -> Option<(f64, f64)> {
     } else {
         solid(ctx, &mut pool, 16, 16, [0.2, 0.4, 0.6, 1.0])
     };
-    let layers: Vec<Layer> = (0..layer_count)
+    let mut layers: Vec<Layer> = (0..layer_count)
         .map(|i| Layer::new(src, i as f32, i as f32, 64.0, 36.0))
         .collect();
+    let binding = scrolling.then(|| rbs_gpu::ScrollBinding::new(ctx));
+    if scrolling {
+        let spec = rbs_gpu::LayerScroll {
+            direction: rbs_gpu::ScrollDirection::Left,
+            repeat: rbs_gpu::ScrollRepeat::Loop,
+            start: rbs_gpu::ScrollStart::Inside,
+            gap: 8.0,
+            fade: 4.0,
+            run: rbs_gpu::ScrollRun::start(rbs_core::time::Timestamp::ZERO, 50.0),
+        };
+        for l in &mut layers {
+            let f = spec
+                .frame(
+                    &l.transform,
+                    &rbs_gpu::UvRect::FULL,
+                    16,
+                    16,
+                    rbs_core::time::Timestamp::from_nanos(1_000_000_000),
+                )
+                .unwrap();
+            l.scroll = Some(f.gpu(spec.direction, spec.repeat, spec.fade));
+        }
+    }
 
     let mut frame = || {
-        comp.render(ctx, &pool, &layers, canvas).unwrap();
+        comp.render_scrolled(ctx, &pool, &layers, canvas, binding.as_ref())
+            .unwrap();
         conv.convert(ctx, &pool, canvas, luma, chroma).unwrap();
         ctx.poll();
     };
@@ -150,4 +179,24 @@ fn yuv_layers_allocate_like_rgb_layers() {
     let per_layer = (many - yuv_b) / 24.0;
     eprintln!("extra allocations per 4:2:0 layer: {per_layer:.2}");
     assert!(per_layer <= 4.0, "per-layer allocations {per_layer}");
+}
+
+#[test]
+fn scrolling_layers_allocate_a_bounded_constant_more() {
+    let Some((rgb_a, rgb_b)) = allocs_per_frame_of(8, false, false) else {
+        return;
+    };
+    let Some((scroll_a, scroll_b)) = allocs_per_frame_of(8, false, true) else {
+        return;
+    };
+    eprintln!(
+        "allocations per frame, 8 layers: plain {rgb_a:.1} / {rgb_b:.1}, scrolling {scroll_a:.1} / {scroll_b:.1}"
+    );
+    assert!(
+        scroll_b <= scroll_a * 1.1 + 1.0,
+        "scrolling: {scroll_a} then {scroll_b}"
+    );
+    // One queue write and one bind group set per scrolling layer: a small constant.
+    let per_layer = (scroll_b - rgb_b) / 8.0;
+    assert!(per_layer <= 4.0, "per scrolling layer {per_layer}");
 }

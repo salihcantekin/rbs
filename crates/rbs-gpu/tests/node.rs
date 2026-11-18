@@ -20,7 +20,10 @@ use rbs_gpu::node::{
     CompositorNode, CompositorStats, Fade, GpuRuntime, LayerSender, NodeLayer, PixelCrop,
     RenderLocal,
 };
-use rbs_gpu::{CanvasDesc, GpuContext, GpuError, GpuRequest, TextureDesc, readback};
+use rbs_gpu::{
+    CanvasDesc, GpuContext, GpuError, GpuRequest, LayerScroll, ScrollBinding, ScrollDirection,
+    ScrollRepeat, ScrollRun, ScrollSender, ScrollStart, TextureDesc, readback,
+};
 use rbs_graph::description::{GraphDescription, NodeId};
 use rbs_graph::node::{LinkKind, NodeDescriptor, NodeKind, NodeTypeId, Pin};
 use rbs_graph::runtime::{
@@ -186,7 +189,7 @@ impl Rig {
     ) -> Scene {
         let red = Solid::new([255, 0, 0, 255]);
         let blue = Solid::new([0, 0, 255, 255]);
-        self.scene_of(red, blue, capacity, false, layers)
+        self.scene_of(red, blue, capacity, false, false, layers)
     }
 
     /// [`Self::scene`] with still sources: `repaint` makes red publish once more.
@@ -198,7 +201,17 @@ impl Rig {
         let repaint = Arc::new(AtomicBool::new(false));
         let red = Solid::still([255, 0, 0, 255], Arc::clone(&repaint));
         let blue = Solid::still([0, 0, 255, 255], Arc::new(AtomicBool::new(false)));
-        (self.scene_of(red, blue, 4, every_tick, layers), repaint)
+        (
+            self.scene_of(red, blue, 4, every_tick, false, layers),
+            repaint,
+        )
+    }
+
+    /// [`Self::still_scene`] whose compositor has scroll records (ADR-0150).
+    fn scroll_scene(&mut self, layers: impl FnOnce(NodeId, NodeId) -> Vec<NodeLayer>) -> Scene {
+        let red = Solid::still([255, 0, 0, 255], Arc::new(AtomicBool::new(false)));
+        let blue = Solid::still([0, 0, 255, 255], Arc::new(AtomicBool::new(false)));
+        self.scene_of(red, blue, 4, false, true, layers)
     }
 
     fn scene_of(
@@ -207,6 +220,7 @@ impl Rig {
         blue: Solid,
         capacity: u32,
         every_tick: bool,
+        scroll: bool,
         layers: impl FnOnce(NodeId, NodeId) -> Vec<NodeLayer>,
     ) -> Scene {
         let red = self.add(Box::new(red));
@@ -221,6 +235,13 @@ impl Rig {
         );
         assert_eq!(node.capacity(), capacity);
         let stats = node.stats();
+        let (node, scroll) = if scroll {
+            let (node, mut sender) = node.with_scroll();
+            sender.send(Some(Arc::new(ScrollBinding::new(&self.ctx))));
+            (node, Some(sender))
+        } else {
+            (node, None)
+        };
         let node: Box<dyn Node<GpuRuntime>> = if every_tick {
             Box::new(node.every_tick())
         } else {
@@ -251,6 +272,7 @@ impl Rig {
             comp,
             probe,
             sender,
+            _scroll: scroll,
             last,
             stats,
         }
@@ -288,6 +310,7 @@ struct Scene {
     comp: NodeId,
     probe: NodeId,
     sender: LayerSender,
+    _scroll: Option<ScrollSender>,
     last: Arc<Mutex<Option<VideoFrame>>>,
     stats: Arc<CompositorStats>,
 }
@@ -512,4 +535,84 @@ fn a_live_source_draws_each_tick() {
     let scene = rig.scene(4, |red, blue| vec![full(red, 0), right_half(blue, 1)]);
     rig.run(&scene, 5);
     assert_eq!(scene.counts(), (4, 0));
+}
+
+/// A full-canvas red layer scrolling left as `run` says, `repeat` copies.
+fn scrolling(red: NodeId, repeat: ScrollRepeat, run: ScrollRun) -> NodeLayer {
+    let mut layer = full(red, 0);
+    layer.scroll = Some(LayerScroll {
+        direction: ScrollDirection::Left,
+        repeat,
+        start: ScrollStart::Inside,
+        gap: 32.0,
+        fade: 0.0,
+        run,
+    });
+    layer
+}
+
+#[test]
+fn a_moving_scroll_draws_every_tick() {
+    let Some(mut rig) = Rig::new() else { return };
+    let scene = rig.scroll_scene(|red, _| {
+        vec![scrolling(
+            red,
+            ScrollRepeat::Loop,
+            ScrollRun::start(Timestamp::ZERO, 60.0),
+        )]
+    });
+    rig.run(&scene, 4);
+    assert_eq!(scene.counts(), (3, 0));
+    rig.run(&scene, 5);
+    assert_eq!(scene.counts(), (8, 0));
+}
+
+#[test]
+fn a_scroll_draws_its_picture_and_gap() {
+    let Some(mut rig) = Rig::new() else { return };
+    // The 2 x 2 picture fills the 32 high box: 32 long, then a 32 gap.
+    let scene = rig.scroll_scene(|red, _| {
+        vec![scrolling(
+            red,
+            ScrollRepeat::Loop,
+            ScrollRun::start(Timestamp::ZERO, 0.0),
+        )]
+    });
+    rig.run(&scene, 2);
+    assert_close(rig.pixel(&scene, 8, 16), RED, 0.01);
+    assert_close(rig.pixel(&scene, 48, 16), [0.0; 4], 0.01);
+}
+
+#[test]
+fn a_paused_scroll_lets_render_on_change_skip_again() {
+    let Some(mut rig) = Rig::new() else { return };
+    // Pauses at 50 ms (tick 3) at once: tick 3 is the last that moves.
+    let run = ScrollRun::start(Timestamp::ZERO, 60.0).change_speed(
+        Timestamp::from_nanos(50_000_000),
+        0.0,
+        Duration::ZERO,
+    );
+    let scene = rig.scroll_scene(|red, _| vec![scrolling(red, ScrollRepeat::Loop, run)]);
+    rig.run(&scene, 10);
+    let (drawn, unchanged) = scene.counts();
+    assert!(drawn <= 5, "drew {drawn}");
+    assert!(unchanged >= 4, "skipped {unchanged}");
+}
+
+#[test]
+fn a_finished_once_scroll_draws_nothing_and_stops_drawing() {
+    let Some(mut rig) = Rig::new() else { return };
+    // 32 long at 960 per second: gone at 33.3 ms, between ticks 2 and 3.
+    let scene = rig.scroll_scene(|red, _| {
+        vec![scrolling(
+            red,
+            ScrollRepeat::Once,
+            ScrollRun::start(Timestamp::ZERO, 960.0),
+        )]
+    });
+    rig.run(&scene, 10);
+    let (drawn, unchanged) = scene.counts();
+    assert!(drawn <= 5, "drew {drawn}");
+    assert!(unchanged >= 4, "skipped {unchanged}");
+    assert_close(rig.pixel(&scene, 8, 16), [0.0; 4], 0.01);
 }

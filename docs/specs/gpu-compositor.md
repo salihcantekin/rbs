@@ -126,6 +126,7 @@ pub struct Layer {
     pub opaque: bool,            // ignore source alpha (XRGB layouts with an undefined 4th byte)
     pub style: LayerStyle,       // shape and border (ADR-0053); the default draws the picture as it is
     pub ycbcr: ColorSpace,       // colour space of a 4:2:0 texture (R-11 step b); ignored for RGB; Layer::new: BT709_LIMITED
+    pub scroll: Option<ScrollGpu>, // the box is a window onto a scrolling strip (ADR-0150); Layer::new: None
 }
 
 pub enum LayerShape { Box, Rounded { radius: f32 }, Circle, Ellipse }
@@ -140,8 +141,11 @@ impl Compositor {
     pub fn new(ctx: &GpuContext, canvas: CanvasDesc, max_layers: u32) -> Result<Compositor, GpuError>;
     pub fn reserve_layers(&mut self, ctx: &GpuContext, max_layers: u32) -> Result<(), GpuError>;
     pub fn render(&mut self, ctx: &GpuContext, pool: &TexturePool, layers: &[Layer], target: TextureId)
-        -> Result<RenderStats, GpuError>;
+        -> Result<RenderStats, GpuError>;   // render_scrolled(.., None)
+    pub fn render_scrolled(&mut self, ctx: &GpuContext, pool: &TexturePool, layers: &[Layer],
+        target: TextureId, scroll: Option<&ScrollBinding>) -> Result<RenderStats, GpuError>;
 }
+// RenderStats { drawn_layers, skipped_layers, empty_crop_layers, unscrolled_layers }
 ```
 
 - Layers are drawn in slice order, first is bottom. Blending is premultiplied "source over". The target is cleared to transparent black first.
@@ -153,6 +157,43 @@ impl Compositor {
 - `UvRect` is ordered (`u0 < u1`, `v0 < v1`). A layer whose crop is not (`u1 <= u0` or `v1 <= v0`, or NaN: a crop larger than the picture) is skipped in both loops of `render` and counted in `RenderStats::empty_crop_layers` (ADR-0058); without the skip, both pipelines would draw it mirrored.
 - The target must be an `Rgba16Float` texture of the canvas size with render-attachment usage, else `GpuError::TargetMismatch`.
 - **Styles (ADR-0053).** A layer whose style draws nothing extra (`LayerStyle::is_plain`: a box without a border, a box size with no area, values that are not finite) and a layer whose transform is singular are drawn by the plain pipeline exactly as before: same shader, same 64-byte record. Other layers are drawn by a second pipeline (`vs_styled`, `fs_styled`; same pipeline layout, blend state and target) that reads a 48-byte style record (kind, radius, border width; box size; border colour) from a second storage binding in group 0, indexed by the layer record's `params.w`; the plain shader never reads it. `render` fills both arrays in one loop over the drawn layers (skipped layers leave no record, so instance and style indices stay in step) and switches pipelines only between consecutive layers that differ. Both arrays are sized by `new` and `reserve_layers`. The styled vertex shader grows the quad by one canvas pixel on each side; the fragment shader clamps the texture coordinate to the crop, evaluates the signed distance to the shape on `unit × box_size` (rounded rectangle with the radius clamped to half the shorter side, the largest centred circle, an ellipse by its gradient-normalised implicit function, a triangle with its tip on the top edge, or an arrow pointing right; the last two are polygon distances of 3 and 7 edges, and the loop always runs 7 times), converts it to canvas pixels along the edge normal (`w = length(Jᵀ n)`, `J` from `dpdx`/`dpdy` of the box position taken before any branch, `n` by central differences) and computes `outer = clamp(0.5 - d / w)` and `inner` the same for `d + border_width`. The colour is `(border · t + content · (1 - border.a · t)) · outer · opacity` with `t = (outer - inner) / outer` (0 where `outer` is 0), after the XRGB and sRGB handling of plain layers.
+
+### Scrolling layers (ADR-0150)
+
+A layer with `scroll` shows its box as a window onto a strip of copies of its cropped picture. `rbs_gpu::scroll` holds the arithmetic, the compositor the drawing.
+
+```rust
+pub enum ScrollDirection { Left, Right, Up, Down }   // in the box's own frame
+pub enum ScrollRepeat { Loop, Once }
+pub enum ScrollStart { Inside, Outside }
+pub struct ScrollRun { pub anchor: Timestamp, pub position: f64, pub from: f64, pub to: f64,
+                       pub ramp: Duration, pub fresh: bool }
+impl ScrollRun {
+    pub fn start(now: Timestamp, speed: f64) -> Self;            // fresh, position 0
+    pub fn position_at(&self, now: Timestamp) -> f64;            // closed form, f64
+    pub fn speed_at(&self, now: Timestamp) -> f64;
+    pub fn ramp_end(&self) -> Timestamp;
+    pub fn change_speed(&self, now: Timestamp, speed: f64, ramp: Duration) -> Self;  // pause: speed 0
+    pub fn moved(&self, now_old: Timestamp, now_new: Timestamp) -> Self;              // studio restart
+}
+pub struct LayerScroll { pub direction: ScrollDirection, pub repeat: ScrollRepeat, pub start: ScrollStart,
+                         pub gap: f32, pub fade: f32, pub run: ScrollRun }
+impl LayerScroll {
+    pub fn frame(&self, transform: &Affine2, crop: &UvRect, width: u32, height: u32, now: Timestamp)
+        -> Option<ScrollFrame>;                                  // None: no box or picture length
+    pub fn moving_at(&self, at: Timestamp, ended: bool) -> bool;
+}
+pub struct ScrollFrame { pub start: f64, pub window: f64, pub picture: f64, pub period: f64, pub ended: bool }
+impl ScrollFrame { pub fn gpu(&self, direction, repeat, fade: f32) -> ScrollGpu; }   // 32-byte shader record
+pub const MAX_SCROLL_LAYERS: u32 = 64;
+pub struct ScrollBinding;                                        // ScrollBinding::new(ctx): control thread only
+impl GpuContext { pub fn prepare_scrolling(&self); pub fn scrolling_ready(&self) -> bool; }
+```
+
+- **Phase.** `position_at` is `position + ∫ speed dt` from the anchor in f64 seconds from integer nanoseconds (exact for spans below about 104 days): the speed eases from `from` to `to` over `ramp` by smoothstep (`∫₀ᵘ 3x² − 2x³ = u³ − u⁴/2`), then stays at `to`. Before the anchor a fresh run holds at its start and a continued run extrapolates at `from`, so a re-anchor at the control side's time never jumps. `moved` shifts the anchor by the signed clock difference, saturating at zero.
+- **Window.** Lengths are in the transform's units (canvas pixels). Along the direction the window is the box's length, across it the picture fills the box with its aspect kept, so the picture is `along_texels × cross_box / cross_texels` long and a period is that plus `gap`. Copy `k` covers `[k · period, k · period + picture)` on the strip and the window covers `[start, start + window)`. `start` is the run's distance (forward for Left and Up, backward for Right and Down) from an origin: 0 for `Inside`, `−window` for a forward `Outside`, `picture` for a backward one. `Loop` wraps it with `rem_euclid(period)` in f64; `Once` clamps it to just outside the picture, and `ended` is true once the picture has fully left the window. Only the wrapped `start` reaches the GPU, as f32.
+- **Pipelines.** The four wrap pipelines (`vs_wrap` + `fs_wrap`, `vs_styled` + `fs_wrap_styled`, `vs_wrap` + `fs_yuv_wrap`, `vs_styled` + `fs_yuv_wrap_styled`) are built once per device in a `OnceLock` on `GpuContext` by `prepare_scrolling`, from a module of `composite.wgsl` and `wrap.wgsl`, with a pipeline layout of the device's layers layout (group 0, also used by `Compositor::new`), the sampled or 4:2:0 layout (group 1) and a uniform record at a dynamic offset (group 2). A device where nothing scrolled has none of them; `Compositor::new` is unchanged by them. `ScrollBinding::new` builds them if needed and a 64 × 256-byte uniform buffer with its bind group for one compositor.
+- **Drawing.** `render_scrolled` writes each scrolling layer's record at `slot × 256` (one queue write per scrolling layer) and draws it with the wrap pipeline of its kind at that offset. The fragment stage maps the box position along the direction to the strip, draws transparent in the gap and, for `Once`, outside the single copy, samples at level 0 (no derivatives across the seam) with the texture coordinate kept half a texel inside the crop of the plane sampled (luma and CbCr each with its own size), so the last column of a copy never blends with the first of the next, and multiplies the edge fade (`clamp(min(a, 1 − a) · window / fade)`, the fade clamped to half the window). Styled scrolling layers keep the shape of the window. Without a binding, without the device's wrap pipelines, or past `MAX_SCROLL_LAYERS`, a scrolling layer draws nothing and counts in `unscrolled_layers`: a long picture is never squeezed into the window.
 
 ### Encoder conversion (NV12, P010)
 
@@ -707,11 +748,13 @@ pub struct NodeLayer {
     pub slide: Option<Slide>, // animates the box from another place (ADR-0100)
     pub opaque: bool,         // ignore source alpha (XRGB sources)
     pub style: LayerStyle,    // shape and border (ADR-0053), converted from the scene's ItemStyle by rbs-sources
+    pub scroll: Option<LayerScroll>, // a scroll and its run (ADR-0150), evaluated against tick time
 }
 pub struct Fade { pub from: f32, pub start: Timestamp, pub duration: Duration, pub easing: Easing }
 pub struct Slide { pub from: Affine2, pub start: Timestamp, pub duration: Duration, pub easing: Easing }
 
 pub type LayerSender = ParamSender<Vec<NodeLayer>>;
+pub type ScrollSender = ParamSender<Option<Arc<ScrollBinding>>>;  // CompositorNode::with_scroll
 
 pub trait Redraw { const ON_CHANGE: bool; }  // a type parameter: no flag tested per tick
 pub struct OnChange;   // the default: draw only when something changed (render on change)
@@ -728,12 +771,16 @@ impl CompositorNode {   // CompositorNode<R: ReadySignal = NoReady, D: Redraw = 
     /// from the pool, stores that tick's index (at least 1) with `Release`.
     pub fn with_ready(self, ready: Arc<AtomicU64>) -> CompositorNode<ReadyCounter>;
     pub fn every_tick(self) -> CompositorNode<R, EveryTick>;
+    /// ADR-0150 decision 7: a channel for this node's scroll records; send a ScrollBinding
+    /// before the first list with a scrolling layer.
+    pub fn with_scroll(self) -> (Self, ScrollSender);
     /// Boxed for the graph: `OnChange`, or `EveryTick` when `render_every_tick()`.
     pub fn into_node(self) -> Box<dyn Node<GpuRuntime>>;
     pub fn stats(&self) -> Arc<CompositorStats>;
 }
 ```
 
+- **Scrolling layers (ADR-0150).** For a layer with `scroll`, the node evaluates the box at tick time (slide included), the crop with the texture's size, and `LayerScroll::frame` at tick time; a frame without length or a finished `Once` draws nothing for that layer; otherwise the layer carries the frame's record. The scroll records come from the `ScrollBinding` last received on the `with_scroll` channel (one `Option` test per tick when the node has none); the binding and the list may arrive in either order, and the only effect is that a scrolling layer is blank for that tick. The node keeps no scroll state: every compositor drawing the same run shows the same offset.
 - **Ready counter (ADR-0128).** Only an incoming compositor of a scene transition has one. A tick on which any layer has no frame, a payload that is not a texture, or a texture not in the pool does not store. The control side reads it with `Acquire` and resets it to 0 when it reuses the node. Without `with_ready` the node does one `Option` test per tick and nothing else.
 
 - `GpuRuntime::end_tick` retires imported surfaces with the tick's time (`Importer::retire(ctx, pool, tick.time)`) and polls the device (`GpuContext::poll`). `begin_tick` does nothing.
@@ -744,7 +791,7 @@ impl CompositorNode {   // CompositorNode<R: ReadySignal = NoReady, D: Redraw = 
   2. Builds the layer list in a reserved buffer. Each `NodeLayer` finds its link: the hint is used when `Inputs::source(LAYERS_PIN, link)` is its producer, else `Inputs::find(LAYERS_PIN, producer)` looks it up (a list can meet an older or newer schedule, and link positions shift when a producer leaves the plan). A layer whose producer is not scheduled, whose link has no frame, or whose frame is not a pool texture is skipped; native frames are imported by the source wrapper before they reach a link. Layers past `capacity` are not drawn.
   3. Converts the crop with the texture's size. The source transfer is `Srgb` when the frame's colour space says sRGB and the texture format does not decode it in the sampler. The layer's `ycbcr` is the frame's colour space (used only for a 4:2:0 texture).
   4. Evaluates a fade at the tick's time: before `start` the opacity is `from`, after `start + duration` it is `opacity`; between them the unit time `u` is mapped by the fade's `easing` (`Linear`: `u`, `EaseInOut`: smoothstep `u²(3−2u)`). A slide is evaluated the same way for the box. A program-scene change sets a slide on every source that was already on that canvas and whose box changed (duration and easing from the collection glide, or that source's override when set; ADR-0100), and a fade from 0 on a source that was not (collection **duration**, `Easing::Linear`, so fade-ins keep today's look). A source whose box is unchanged is left alone. The list is sent once; the node evaluates it (ADR-0023, decision 7).
-  5. **Render on change (R-03, ADR-0143 R5; `OnChange` only).** The node keeps the key of its last draw: one entry per listed layer whose link resolves, the layer's `(TextureId, timestamp, sequence)` or none when it had no picture. When the list did not change this tick (`update` returned false), no layer has a fade or slide whose end was at or after the last draw's tick time, and every entry equals the last draw's, the node does not draw: the canvas frame of the last draw stays on "canvas" with its timestamp and sequence, the canvas description is touched in the pool so the ring is not trimmed, and the ready counter is still stored. It counts `unchanged`. The key lives in two buffers reserved in `prepare` (no allocation). A failed draw makes the next tick draw again.
+  5. **Render on change (R-03, ADR-0143 R5; `OnChange` only).** The node keeps the key of its last draw: one entry per listed layer whose link resolves, the layer's `(TextureId, timestamp, sequence)` or none when it had no picture. When the list did not change this tick (`update` returned false), no layer has a fade or slide whose end was at or after the last draw's tick time, no scroll is moving at the last draw's tick time `drawn_at` (`(speed(drawn_at) > 0 && !(once && ended at drawn_at)) || (ramp > 0 && drawn_at <= ramp_end) || (fresh && drawn_at < anchor && to > 0)`, ADR-0150 decision 8, so one draw always follows the end of a ramp or a `Once` exit), and every entry equals the last draw's, the node does not draw: the canvas frame of the last draw stays on "canvas" with its timestamp and sequence, the canvas description is touched in the pool so the ring is not trimmed, and the ready counter is still stored. It counts `unchanged`. The key lives in two buffers reserved in `prepare` (no allocation). A failed draw makes the next tick draw again.
   6. Otherwise acquires a canvas texture, renders, and publishes it on "canvas": `Rgba16Float`, `ColorSpace::LINEAR_BT709`, the tick's time, and a new sequence from `next_generation()` (ADR-0117 decision 4), so a canvas's `(timestamp, sequence)` changes exactly when its picture does, and a node built anew never repeats an earlier key. It counts `drawn`. The pool slot is released at once, so the frame's lease keeps it alive.
   7. RBS code allocates nothing here (hot path). A ring larger than three only grows when consumers hold more frames than that.
 - **Readers of a canvas.** A reader that only shows pictures (preview, a hold scene's export, a queue to another partition) keys on `(timestamp, sequence)` and does nothing for an unchanged canvas. A reader that must put out one frame per tick (the video export, the virtual camera) sends the last picture again with the tick's time without converting it ([io-nodes.md](io-nodes.md)). Every producer of a layer picture must change its key when its pixels change: capture sources take a new timestamp per frame; stills, text, browser pages and filters take a new generation per new picture (ADR-0117 decision 4).
@@ -770,6 +817,7 @@ Device loss is reported by wgpu through the device-lost callback and surfaced as
 - No CPU readback on the default path (P4).
 - Installed but unused: a `GpuContext` is created only when the first canvas becomes Active. A compositor or converter that is not Active is dropped, releasing its GPU objects (P13).
 - Render on change: an unchanged tick of the compositor node costs one compare per layer and no GPU work; a tick with every input new stays within 5 % of `EveryTick` (`cargo bench -p rbs-nodes --bench render_on_change`: a 1080p tick of compositor and export for a static, a half live and a live scene, `every_tick` against `on_change`).
+- Scrolling (ADR-0150): evaluating a scroll is pure f64 arithmetic (`benches/scroll.rs`, `scroll_eval/64`: 64 runs in 3.5 µs on the cloud runner, 2026-11-18). A list without a scrolling layer draws exactly as before (same pipelines, records and writes). `benches/scroll.rs` measures `compositor_new`, prints the one-time build of the wrap pipelines (74 ms on llvmpipe), and a 1080p frame of 8 layers plain, with an unscrolled 1920 × 80 bar, with that bar scrolling, and with all 8 scrolling.
 - Benchmarks: `benches/preview.rs` (macOS) measures the CPU time of `PreviewPublisher::publish` and `tick` and the GPU frame time of the preview pass (1080p canvas to 720p). `benches/compositor.rs` measures 1080p frame time (render, render + NV12, waiting for the GPU) with 1, 8 and 32 layers, plain and with every tile styled (`composite_styled`), and the CPU cost of recording and submitting 32 layers, plain and half styled.
 
 ## Conformance tests
@@ -785,6 +833,7 @@ Run on any adapter, including software adapters in CI (lavapipe on Linux, WARP o
 - NV12 and P010 surfaces (where `gpu.nv12_surface` / `gpu.p010_surface`; required on Linux CI): both planes of `convert_to_surface` equal the two-plane output byte for byte on a two-colour canvas; a texture of another format is rejected.
 - YUV source decode (any adapter): NV12 and P010 (where `gpu.p010`) planes from the encoder conversion of black, white, 18 % grey, red, green and a blue mix decode back to the linear colour within 0.02 (NV12, into `Rgba8UnormSrgb`) or 0.01 (P010, into `Rgba16Float`); BT.601 full-range codes decode to red; a multi-planar NV12 source (where `gpu.nv12_surface`) decodes like planes; a wrong target size, an NV12 source into a canvas-format target, swapped planes and a PQ colour space are rejected; one source caches one bind group. Uploaded NV12 system frames come out as `Nv12` texture frames of a plane pair that `YuvToRgb` decodes to the colour.
 - 4:2:0 layers (any adapter, `tests/yuv_composite.rs`): NV12 and P010 (where `gpu.p010`) plane pairs holding the encoder conversion of the six colours above draw them within 0.02 / 0.01; RGB and 4:2:0 layers mix in one render with opacity; a styled 4:2:0 layer keeps its shape; a PQ colour space skips the layer; plane pairs need even sizes and have no RGB bind group; `YuvToRgb` decodes a picture once and again only for a new time or sequence.
+- Scrolling layers (any adapter, `tests/scroll.rs`, `tests/yuv_composite.rs`, `tests/node.rs`, ADR-0150): a loop repeats the picture with a clean seam (last and first columns unblended); left and right scrolls move the window both ways; a gap is transparent; `Once` with `Outside` enters from the far edge and shows a single copy; the edge fade softens both ends; an up scroll moves along the height; a styled window keeps its shape; without a binding a scrolling layer draws nothing and others draw; plain layers beside scrolling ones draw as before; a 4:2:0 picture wraps with its gap; on the node, a moving scroll draws every tick, a paused one and a finished `Once` let render on change skip again (the finished one draws nothing). Unit tests of `scroll`: 30-day exactness, hold and extrapolation before the anchor, continuity of position and speed at changes (also during a ramp with a tick before the anchor), signed restart, geometry of both axes, `Once` end both ways.
 - 4:2:0 import (macOS CI): `'420v'` and `'x420'` IOSurfaces from `SurfaceExporter` import as `Nv12` and `P010` frames that the compositor draws as the original canvas; the producer's surface is held while the frame lives and handed back once it is dropped; a ring of two surfaces is opened twice, then reused.
 - Allocations per frame do not grow over time and grow by at most a small constant per layer.
 - Readback increments `frames_cpu_copied`.
