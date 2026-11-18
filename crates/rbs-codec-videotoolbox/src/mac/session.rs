@@ -1241,6 +1241,17 @@ impl VideoEncoder for VideoToolboxSession {
         &self.stream
     }
 
+    fn max_frames_held(&self) -> usize {
+        // System frames are copied into the session's own pool in `submit`. IOSurface
+        // frames are held (their lease) until their output callback; without B-frames
+        // the hardware returns them within about two frames, so three cover steady state.
+        // More in flight makes the export busy (a counted drop), never unsafe.
+        match self.memory {
+            MemoryKind::Metal => 3,
+            _ => 0,
+        }
+    }
+
     fn submit(&mut self, frame: &VideoFrame) -> Result<(), EncodeError> {
         self.failure()?;
         if *frame.format() != self.format || frame.memory_kind() != self.memory {
