@@ -2207,6 +2207,11 @@ export global Studio {
     in property <string> st-dest-count;
     // "Go live sends to all 3 at the same time." while more than one is on; else "".
     in property <string> st-dest-together;
+    // How many listed destinations are on, and whether streaming is available on the
+    // picked canvas (ADR-0148 decision 1) or its stream runs: the cards that belong to
+    // a stream show only then.
+    in property <int> st-dest-on-count;
+    in property <bool> st-available: true;
     in property <bool> st-dest-can-add;
     in property <bool> st-dest-editable: true;
     in property <string> st-dest-upload;
