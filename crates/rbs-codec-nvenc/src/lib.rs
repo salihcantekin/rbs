@@ -30,9 +30,13 @@
 //! every keyframe. Extradata is the sequence parameters NVENC reports at creation
 //! (`nvEncGetSequenceParams`): Annex B parameter sets, or the AV1 sequence-header OBU.
 //!
-//! Input is system memory only for now: native D3D11/D3D12/CUDA surfaces wait for the
-//! `rbs-gpu` exporters on Windows and Linux (ADR-0025). The copy is counted in
-//! [`SessionStats::copied`].
+//! Input is system memory, copied into the input buffer and counted in
+//! [`SessionStats::copied`], or on Windows exported D3D12 buffers (`d3d12_buffer`,
+//! ADR-0147): the render device's export node writes them, the session imports each
+//! buffer once as CUDA external memory, registers it with NVENC and waits for the
+//! frame's shared fence on its CUDA input stream, so no byte crosses to the CPU. A
+//! native session opens the CUDA device whose LUID is the configured device and holds
+//! each frame until its picture was read ([`SessionStats::native`]).
 //!
 //! Licence: the driver is NVIDIA's; the generated bindings come from FFmpeg's
 //! `nv-codec-headers` (MIT, a redistribution of the SDK header), the loader is
@@ -66,6 +70,11 @@ mod loader;
     any(target_os = "windows", target_os = "linux"),
     target_pointer_width = "64"
 ))]
+mod native;
+#[cfg(all(
+    any(target_os = "windows", target_os = "linux"),
+    target_pointer_width = "64"
+))]
 mod sys;
 
 #[cfg(all(
@@ -78,7 +87,8 @@ mod platform {
     use rbs_codec::{CreateError, VideoEncoder, VideoEncoderConfig, VideoEncoderFactory};
     use rbs_core::capability::CapabilitySet;
     use rbs_core::media::{
-        BitstreamFormat, Bytes, CodecId, EncodedPacket, StreamDescriptor, StreamParams,
+        BitstreamFormat, Bytes, CodecId, EncodedPacket, GpuDeviceId, MemoryKind, StreamDescriptor,
+        StreamParams,
     };
     use rbs_core::registry::{AdapterFactory, AdapterId, ProbeError};
 
@@ -125,7 +135,21 @@ mod platform {
             let dynamic_bitrate = device
                 .codec(config.codec)
                 .is_some_and(|c| c.dynamic_bitrate);
-            let (engine, extradata) = NvencEngine::open(0, &plan)?;
+            // Native input runs on the CUDA device that is the render device (ADR-0147
+            // decision 1); `plan` checked that the device takes the memory kind.
+            let native = config.memory != MemoryKind::System;
+            let ordinal = if native {
+                let unsupported = |what: &str| CreateError::Unsupported { what: what.into() };
+                let Some(GpuDeviceId::Luid(luid)) = config.device else {
+                    return Err(unsupported("native input needs the render device's LUID"));
+                };
+                let api = crate::loader::api().map_err(unsupported)?;
+                crate::native::ordinal_of(api, luid)
+                    .ok_or_else(|| unsupported("the render device is not a CUDA device"))?
+            } else {
+                0
+            };
+            let (engine, extradata) = NvencEngine::open(ordinal, &plan, native)?;
             let bitstream = if config.codec == CodecId::Av1 {
                 BitstreamFormat::Obu
             } else {
@@ -137,14 +161,17 @@ mod platform {
                 Bytes::from(extradata),
                 StreamParams::video(config.format, config.frame_rate),
             );
-            Ok(NvencSession(Session::new(
-                engine,
-                config.codec,
-                config.format,
-                config.rate_control,
-                dynamic_bitrate,
-                stream,
-            )))
+            Ok(NvencSession(
+                Session::new(
+                    engine,
+                    config.codec,
+                    config.format,
+                    config.rate_control,
+                    dynamic_bitrate,
+                    stream,
+                )
+                .with_memory(config.memory),
+            ))
         }
     }
 
@@ -192,6 +219,10 @@ mod platform {
     impl VideoEncoder for NvencSession {
         fn stream(&self) -> &StreamDescriptor {
             self.0.stream()
+        }
+
+        fn max_frames_held(&self) -> usize {
+            self.0.max_frames_held()
         }
 
         fn submit(

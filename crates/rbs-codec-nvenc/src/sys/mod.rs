@@ -50,6 +50,8 @@ pub(crate) const NV_ENC_PIC_PARAMS_VER: u32 = struct_version(6) | (1 << 31);
 pub(crate) const NV_ENC_LOCK_BITSTREAM_VER: u32 = struct_version(1) | (1 << 31);
 pub(crate) const NV_ENC_LOCK_INPUT_BUFFER_VER: u32 = struct_version(1);
 pub(crate) const NV_ENC_SEQUENCE_PARAM_PAYLOAD_VER: u32 = struct_version(1);
+pub(crate) const NV_ENC_REGISTER_RESOURCE_VER: u32 = struct_version(4);
+pub(crate) const NV_ENC_MAP_INPUT_RESOURCE_VER: u32 = struct_version(4);
 
 const fn guid(d1: u32, d2: u16, d3: u16, d4: [u8; 8]) -> GUID {
     GUID {
@@ -197,4 +199,117 @@ pub(crate) mod cuda {
     pub(crate) type CtxDestroyFn = unsafe extern "system" fn(ctx: CUcontext) -> CUresult;
     pub(crate) type CtxPushCurrentFn = unsafe extern "system" fn(ctx: CUcontext) -> CUresult;
     pub(crate) type CtxPopCurrentFn = unsafe extern "system" fn(ctx: *mut CUcontext) -> CUresult;
+
+    // External memory and semaphores (CUDA 10.0 driver API), for native input (ADR-0147
+    // decision 7). Layouts follow `cuda.h` (and FFmpeg's `dynlink_cuda.h`); the sizes are
+    // checked at compile time below for 64-bit targets.
+
+    pub(crate) type CUdeviceptr = u64;
+    pub(crate) type CUstream = *mut c_void;
+    pub(crate) type CUexternalMemory = *mut c_void;
+    pub(crate) type CUexternalSemaphore = *mut c_void;
+
+    /// `CU_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_RESOURCE`.
+    pub(crate) const CU_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_RESOURCE: c_int = 5;
+    /// `CU_EXTERNAL_SEMAPHORE_HANDLE_TYPE_D3D12_FENCE`.
+    pub(crate) const CU_EXTERNAL_SEMAPHORE_HANDLE_TYPE_D3D12_FENCE: c_int = 4;
+    /// `CUDA_EXTERNAL_MEMORY_DEDICATED`: the handle names a committed (dedicated) resource.
+    pub(crate) const CUDA_EXTERNAL_MEMORY_DEDICATED: c_uint = 0x1;
+    /// `CU_STREAM_NON_BLOCKING`: no implicit synchronisation with the NULL stream.
+    pub(crate) const CU_STREAM_NON_BLOCKING: c_uint = 0x1;
+
+    /// `win32` member of the handle unions.
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub(crate) struct Win32Handle {
+        pub handle: *mut c_void,
+        pub name: *const c_void,
+    }
+
+    /// `CUDA_EXTERNAL_MEMORY_HANDLE_DESC`.
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub(crate) struct ExternalMemoryHandleDesc {
+        pub kind: c_int,
+        pub handle: Win32Handle,
+        pub size: u64,
+        pub flags: c_uint,
+        pub reserved: [c_uint; 16],
+    }
+
+    /// `CUDA_EXTERNAL_MEMORY_BUFFER_DESC`.
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub(crate) struct ExternalMemoryBufferDesc {
+        pub offset: u64,
+        pub size: u64,
+        pub flags: c_uint,
+        pub reserved: [c_uint; 16],
+    }
+
+    /// `CUDA_EXTERNAL_SEMAPHORE_HANDLE_DESC`.
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub(crate) struct ExternalSemaphoreHandleDesc {
+        pub kind: c_int,
+        pub handle: Win32Handle,
+        pub flags: c_uint,
+        pub reserved: [c_uint; 16],
+    }
+
+    /// `CUDA_EXTERNAL_SEMAPHORE_WAIT_PARAMS` (the same layout as the signal parameters):
+    /// a D3D12 fence wait uses `fence_value` only; the rest stays zero.
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub(crate) struct ExternalSemaphoreWaitParams {
+        pub fence_value: u64,
+        pub params_reserved: [c_uint; 16],
+        pub flags: c_uint,
+        pub reserved: [c_uint; 16],
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    const _: () = {
+        assert!(std::mem::size_of::<ExternalMemoryHandleDesc>() == 104);
+        assert!(std::mem::offset_of!(ExternalMemoryHandleDesc, handle) == 8);
+        assert!(std::mem::offset_of!(ExternalMemoryHandleDesc, size) == 24);
+        assert!(std::mem::size_of::<ExternalMemoryBufferDesc>() == 88);
+        assert!(std::mem::size_of::<ExternalSemaphoreHandleDesc>() == 96);
+        assert!(std::mem::offset_of!(ExternalSemaphoreHandleDesc, flags) == 24);
+        assert!(std::mem::size_of::<ExternalSemaphoreWaitParams>() == 144);
+        assert!(std::mem::offset_of!(ExternalSemaphoreWaitParams, flags) == 72);
+    };
+
+    pub(crate) type DeviceGetLuidFn = unsafe extern "system" fn(
+        luid: *mut c_char,
+        node_mask: *mut c_uint,
+        device: CUdevice,
+    ) -> CUresult;
+    pub(crate) type StreamCreateFn =
+        unsafe extern "system" fn(stream: *mut CUstream, flags: c_uint) -> CUresult;
+    pub(crate) type StreamDestroyFn = unsafe extern "system" fn(stream: CUstream) -> CUresult;
+    pub(crate) type MemFreeFn = unsafe extern "system" fn(ptr: CUdeviceptr) -> CUresult;
+    pub(crate) type ImportExternalMemoryFn = unsafe extern "system" fn(
+        out: *mut CUexternalMemory,
+        desc: *const ExternalMemoryHandleDesc,
+    ) -> CUresult;
+    pub(crate) type ExternalMemoryGetMappedBufferFn = unsafe extern "system" fn(
+        ptr: *mut CUdeviceptr,
+        memory: CUexternalMemory,
+        desc: *const ExternalMemoryBufferDesc,
+    ) -> CUresult;
+    pub(crate) type DestroyExternalMemoryFn =
+        unsafe extern "system" fn(memory: CUexternalMemory) -> CUresult;
+    pub(crate) type ImportExternalSemaphoreFn = unsafe extern "system" fn(
+        out: *mut CUexternalSemaphore,
+        desc: *const ExternalSemaphoreHandleDesc,
+    ) -> CUresult;
+    pub(crate) type WaitExternalSemaphoresAsyncFn = unsafe extern "system" fn(
+        semaphores: *const CUexternalSemaphore,
+        params: *const ExternalSemaphoreWaitParams,
+        count: c_uint,
+        stream: CUstream,
+    ) -> CUresult;
+    pub(crate) type DestroyExternalSemaphoreFn =
+        unsafe extern "system" fn(semaphore: CUexternalSemaphore) -> CUresult;
 }

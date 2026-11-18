@@ -453,7 +453,11 @@ pub(crate) fn probe() -> Result<DeviceCaps, String> {
         if !codecs.is_empty() {
             let name = format!("{} ({})", display.vendor(), node.display());
             let _ = NODE.set(node);
-            return Ok(DeviceCaps { name, codecs });
+            return Ok(DeviceCaps {
+                name,
+                codecs,
+                native_memory: Vec::new(),
+            });
         }
     }
     Ok(DeviceCaps::default())

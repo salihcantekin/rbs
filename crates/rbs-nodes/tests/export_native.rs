@@ -1,10 +1,10 @@
-//! Capture source -> compositor -> video export in native mode -> an encoder-kind probe,
-//! on Metal (ADR-0147; spec `io-nodes.md`, "Video export node", native mode). The export
-//! hands out exported IOSurface frames, never system memory, and its ring keeps up while
-//! the consumer holds frames like an encoder does. macOS only; elsewhere native mode has
-//! no exporter.
+//! Capture source -> compositor -> video export in native mode -> an encoder-kind probe
+//! (ADR-0147; spec `io-nodes.md`, "Video export node", native mode). The export hands out
+//! exported native frames, never system memory: IOSurfaces on Metal (macOS), shared D3D12
+//! buffers with a timeline fence on D3D12 (Windows). Its ring keeps up while the consumer
+//! holds frames like an encoder does. Elsewhere native mode has no exporter.
 
-#![cfg(target_vendor = "apple")]
+#![cfg(any(target_vendor = "apple", windows))]
 #![allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
 
 use std::collections::VecDeque;
@@ -31,6 +31,45 @@ const W: u32 = 128;
 const H: u32 = 72;
 /// Frames the probe keeps, like an encoder holding frames after `submit`.
 const HELD: usize = 3;
+
+#[cfg(target_vendor = "apple")]
+const EXPECTED: MemoryKind = MemoryKind::Metal;
+#[cfg(windows)]
+const EXPECTED: MemoryKind = MemoryKind::D3d12Buffer;
+
+/// What is wrong with the frame's surface for this platform's exporter, if anything.
+#[cfg(target_vendor = "apple")]
+fn wrong_surface(frame: &VideoFrame) -> Option<String> {
+    (!matches!(
+        frame.payload(),
+        FramePayload::Native {
+            surface: NativeSurface::IoSurface { .. },
+            ..
+        }
+    ))
+    .then(|| "not an IOSurface".into())
+}
+
+/// What is wrong with the frame's surface for this platform's exporter, if anything:
+/// a shared buffer with the chroma rows right after the luma rows (what NVENC reads)
+/// and a timeline fence.
+#[cfg(windows)]
+fn wrong_surface(frame: &VideoFrame) -> Option<String> {
+    use rbs_core::media::SurfaceSync;
+    let FramePayload::Native {
+        surface: NativeSurface::D3dSharedBuffer { handle, planes, .. },
+        sync,
+        ..
+    } = frame.payload()
+    else {
+        return Some("not a shared D3D12 buffer".into());
+    };
+    let h = frame.format().size.height as usize;
+    if *handle == 0 || planes[0].offset != 0 || planes[1].offset != planes[0].stride * h {
+        return Some(format!("layout {planes:?}"));
+    }
+    (!matches!(sync, SurfaceSync::TimelineFence { .. })).then(|| format!("sync {sync:?}"))
+}
 
 #[derive(Default)]
 struct Seen {
@@ -72,17 +111,11 @@ impl Node<GpuRuntime> for Probe {
             seen.wrong
                 .push(format!("not exported: {:?}", frame.payload()));
         }
-        if frame.memory_kind() != MemoryKind::Metal {
+        if frame.memory_kind() != EXPECTED {
             seen.wrong.push(format!("memory {:?}", frame.memory_kind()));
         }
-        if !matches!(
-            frame.payload(),
-            FramePayload::Native {
-                surface: NativeSurface::IoSurface { .. },
-                ..
-            }
-        ) {
-            seen.wrong.push("not an IOSurface".into());
+        if let Some(what) = wrong_surface(frame) {
+            seen.wrong.push(what);
         }
         let size = frame.format().size;
         if (size.width, size.height) != (W, H) {
@@ -203,7 +236,10 @@ fn pipeline() -> Option<Built> {
         eprintln!("SKIPPED: this device has no native export");
         return None;
     };
-    assert_eq!(kind, MemoryKind::Metal);
+    if kind != EXPECTED {
+        eprintln!("SKIPPED: this device exports {kind}, not {EXPECTED}");
+        return None;
+    }
     let (ctl, exec) = channel::<GpuRuntime>(Arc::clone(&ctx), RenderLocal::default());
     let clock = TestClock::new();
     let mut rig = Rig {
