@@ -130,3 +130,5 @@ Round 2 (same independent AI session, 2026-11-18): changes requested. Round-1 co
 9. A skipped script is invisible. -> `script` status field and exact-origin help (decisions 3, 7).
 
 Round 3 (same independent AI session, 2026-11-18): changes requested, minor (three text edits, then approve without another design round). Round-2 concerns all resolved. (1) Decision 7 said "agents" where decision 3 says any token. -> Fixed. (2) A 100 ms drain needs a ring that holds it, and a backlog must not play. -> Drain at most a quarter of the ring apart, skip to the present on show, both checked (decisions 5, 9). (3) `ran` claimed more than the runner knows. -> Renamed `sent` (decisions 3, 7).
+
+Round 3 confirm (same independent AI session, 2026-11-18): **approve**, no open concerns. Acceptance waits on the owner.
