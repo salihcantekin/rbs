@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use rbs_codec::{
     CreateError, EncodeError, EncoderChange, VideoEncoder, VideoEncoderConfig, VideoEncoderFactory,
 };
-use rbs_core::media::{EncodedPacket, StreamDescriptor, VideoFrame};
+use rbs_core::media::{EncodedPacket, MemoryKind, StreamDescriptor, VideoFrame};
 use rbs_core::time::Timestamp;
 use rbs_graph::node::{LinkKind, NodeDescriptor, NodeKind, NodeTypeId, Pin};
 use rbs_graph::runtime::{Node, NodeError, PrepareCtx, ProcessCtx, Runtime};
@@ -132,6 +132,14 @@ pub struct VideoEncoderNode {
     /// declare `codec.reconfigure: keyframe`, so nothing is read per frame.
     keyframe_at: Option<Arc<KeyframeAt>>,
     stats: Arc<EncoderNodeStats>,
+    /// Frames the probed session said it keeps after `submit` (ADR-0147 decision 4).
+    frames_held: usize,
+    /// The input is a native GPU memory kind (ADR-0147): every failure is permanent,
+    /// so the studio rebuilds the chain with system memory (decision 9).
+    native: bool,
+    /// A native frame was refused: the next tick fails permanently, before it submits
+    /// anything, so the packets of the refusing tick are kept (decision 9).
+    fail_next: bool,
 }
 
 impl VideoEncoderNode {
@@ -142,7 +150,11 @@ impl VideoEncoderNode {
         factory: Arc<dyn VideoEncoderFactory>,
         config: VideoEncoderConfig,
     ) -> Result<Self, CreateError> {
-        let stream = factory.create(&config)?.stream().clone();
+        let probe = factory.create(&config)?;
+        let stream = probe.stream().clone();
+        let frames_held = probe.max_frames_held();
+        drop(probe);
+        let native = !matches!(config.memory, MemoryKind::System | MemoryKind::Gpu);
         Ok(Self {
             descriptor: video_encoder_descriptor(),
             factory,
@@ -156,7 +168,16 @@ impl VideoEncoderNode {
             ended: false,
             keyframe_at: None,
             stats: Arc::default(),
+            frames_held,
+            native,
+            fail_next: false,
         })
+    }
+
+    /// Frames the session keeps after `submit`, as the probe reported
+    /// (`VideoEncoder::max_frames_held`): a native export sizes its ring with it.
+    pub fn frames_held(&self) -> usize {
+        self.frames_held
     }
 
     /// Lets the control thread ask for a keyframe at a time through the returned
@@ -220,8 +241,11 @@ impl VideoEncoderNode {
             // discarded with it and break the stream (spec, invariant 4).
             Err(EncodeError::InvalidInput(_)) => {
                 add(&self.stats.refused, 1);
+                // A native frame refused: permanent from the next tick (ADR-0147).
+                self.fail_next |= self.native;
                 Ok(())
             }
+            Err(_) if self.native => Err(NodeError::Permanent("native encoder input failed")),
             Err(e) => Err(encode_error(e)),
         }
     }
@@ -283,8 +307,9 @@ impl<X: Runtime> Node<X> for VideoEncoderNode {
 
     fn prepare(&mut self, _ctx: &mut PrepareCtx<'_, X>) -> Result<(), NodeError> {
         if self.session.is_none() {
+            let native = self.native;
             let session = self.factory.create(&self.config).map_err(|e| match e {
-                e if e.is_recoverable() => NodeError::Failed(format!("encoder: {e}")),
+                e if e.is_recoverable() && !native => NodeError::Failed(format!("encoder: {e}")),
                 _ => NodeError::Permanent("the encoder cannot be created"),
             })?;
             if *session.stream() != self.stream {
@@ -297,6 +322,7 @@ impl<X: Runtime> Node<X> for VideoEncoderNode {
         self.last = None;
         self.resync = false;
         self.ended = false;
+        self.fail_next = false;
         self.drained = Vec::with_capacity(DRAIN_CAPACITY);
         self.carry = VecDeque::with_capacity(CARRY_PACKETS);
         Ok(())
@@ -316,6 +342,9 @@ impl<X: Runtime> Node<X> for VideoEncoderNode {
             add(&self.stats.packets, 1);
         }
 
+        if self.fail_next {
+            return Err(NodeError::Permanent("encoder refused native input"));
+        }
         let mut result = Ok(());
         if self.ended {
             return result;
