@@ -1,5 +1,5 @@
 //! Live scroll calls in the studio (ADR-0150 decision 11, spec `control-api.md`,
-//! "Protocol 1.93"): pause, resume, speed and restart act on the item's run without an
+//! "Protocol 1.94"): pause, resume, speed and restart act on the item's run without an
 //! edit; an item without a scroll is refused; a `Once` run's end is reported once, by
 //! the control loop's service, on the test clock. Its own test binary, apart from
 //! `scroll.rs`, which checks that the device has seen nothing scroll before it.

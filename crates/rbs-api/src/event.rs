@@ -70,7 +70,7 @@ pub enum Topic {
     /// A program change's transition started or ended (protocol 1.81, ADR-0128).
     #[serde(rename = "transition.state")]
     TransitionState,
-    /// `item.scroll_finished` (protocol 1.93, ADR-0150): a `Once` scroll ended, per
+    /// `item.scroll_finished` (protocol 1.94, ADR-0150): a `Once` scroll ended, per
     /// canvas.
     #[serde(rename = "item.scroll_finished")]
     ItemScrollFinished,
@@ -301,7 +301,7 @@ pub enum EventPayload {
     /// A transition started or ended (protocol 1.81).
     #[serde(rename = "transition.state")]
     TransitionState(crate::types::TransitionStateChanged),
-    /// `item.scroll_finished` (protocol 1.93).
+    /// `item.scroll_finished` (protocol 1.94).
     #[serde(rename = "item.scroll_finished")]
     ItemScrollFinished(crate::types::ScrollFinished),
     /// One add-on's status (protocol 1.90).

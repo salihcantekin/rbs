@@ -307,7 +307,7 @@ fn a_control_api_client_drives_the_studio() {
         d[0]["layout"]["style"]["shape"] == "rectangle"
     });
 
-    // Scrolling (protocol 1.93, ADR-0150): a scroll is set on the item, published in
+    // Scrolling (protocol 1.94, ADR-0150): a scroll is set on the item, published in
     // its layout with the defaults left out, refused out of range, and undone like any
     // edit. The live calls refuse an item without a scroll and a speed out of range.
     let set = c.call(

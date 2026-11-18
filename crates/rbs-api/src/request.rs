@@ -1444,7 +1444,7 @@ pub struct SetItemShowFor {
     pub show_for_ms: Option<u32>,
 }
 
-/// `item.set_scroll` (protocol 1.93, ADR-0150 decision 11): sets or clears the saved
+/// `item.set_scroll` (protocol 1.94, ADR-0150 decision 11): sets or clears the saved
 /// scroll of a source item's layout on a canvas. One undo step.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1458,7 +1458,7 @@ pub struct SetItemScroll {
     pub canvas: OutputCanvas,
 }
 
-/// `item.scroll_pause`, `item.scroll_resume` and `item.scroll_restart` (protocol 1.93,
+/// `item.scroll_pause`, `item.scroll_resume` and `item.scroll_restart` (protocol 1.94,
 /// ADR-0150 decision 11): live, not saved, not undone. They act on the item's run on
 /// the canvas, so every item sharing that run moves too.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1471,7 +1471,7 @@ pub struct ScrollItem {
     pub canvas: OutputCanvas,
 }
 
-/// `item.scroll_speed` (protocol 1.93, ADR-0150 decision 11): live speed of the item's
+/// `item.scroll_speed` (protocol 1.94, ADR-0150 decision 11): live speed of the item's
 /// run until a scroll edit, a restart or the run's end.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1965,15 +1965,15 @@ pub enum Command {
     ItemSetShowFor(SetItemShowFor),
     /// `item.show` (ADR-0105). Live, not undoable. No protocol minor.
     ItemShow(ShowItem),
-    /// `item.set_scroll` (protocol 1.93, ADR-0150). Undoable.
+    /// `item.set_scroll` (protocol 1.94, ADR-0150). Undoable.
     ItemSetScroll(SetItemScroll),
-    /// `item.scroll_pause` (protocol 1.93). Live.
+    /// `item.scroll_pause` (protocol 1.94). Live.
     ItemScrollPause(ScrollItem),
-    /// `item.scroll_resume` (protocol 1.93). Live.
+    /// `item.scroll_resume` (protocol 1.94). Live.
     ItemScrollResume(ScrollItem),
-    /// `item.scroll_restart` (protocol 1.93). Live.
+    /// `item.scroll_restart` (protocol 1.94). Live.
     ItemScrollRestart(ScrollItem),
-    /// `item.scroll_speed` (protocol 1.93). Live.
+    /// `item.scroll_speed` (protocol 1.94). Live.
     ItemScrollSpeed(SetScrollSpeed),
     /// `scene.sources` (protocol 1.9): the source items of any scene.
     SceneSources(SceneRef),

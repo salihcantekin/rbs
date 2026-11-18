@@ -244,6 +244,7 @@ mod tests {
     #[test]
     fn states_are_described_in_one_line() {
         let live = serde_json::to_value(StreamState::Live {
+            available: true,
             protocol: StreamProtocol::Rtmp,
             connected: true,
             connects: 1,
@@ -266,6 +267,7 @@ mod tests {
             "Live over RTMP, connected (connected once, 0 reconnect attempts). Video: VideoToolbox, audio: AudioToolbox AAC."
         );
         let reconnecting = serde_json::to_value(StreamState::Live {
+            available: true,
             protocol: StreamProtocol::Srt,
             connected: false,
             connects: 2,
@@ -287,9 +289,10 @@ mod tests {
             describe(&reconnecting),
             "Live over SRT, reconnecting (connected 2 times, 3 reconnect attempts). Video: NVENC, audio: none."
         );
-        let idle = serde_json::to_value(StreamState::Idle { last: None }).unwrap();
+        let idle = serde_json::to_value(StreamState::idle()).unwrap();
         assert_eq!(describe(&idle), "Not live.");
         let failed = serde_json::to_value(StreamState::Idle {
+            available: true,
             last: Some(StreamSummary {
                 failure: Some("unknown stream key".into()),
                 frames: 10,
@@ -340,6 +343,7 @@ mod tests {
                 )),
                 Command::StreamStart(_) => {
                     self.0 = StreamState::Live {
+                        available: true,
                         protocol: StreamProtocol::Rtmp,
                         connected: false,
                         connects: 0,
@@ -366,6 +370,7 @@ mod tests {
                 }
                 Command::StreamStop(_) => {
                     self.0 = StreamState::Idle {
+                        available: true,
                         last: Some(StreamSummary {
                             failure: None,
                             frames: 60,
@@ -396,7 +401,7 @@ mod tests {
                 }),
             )
             .unwrap();
-            let mut target = Streamer(StreamState::Idle { last: None });
+            let mut target = Streamer(StreamState::idle());
             let control = std::thread::spawn(move || {
                 let mut events = EventPublisher::new();
                 while let Ok(true) = woken.recv() {

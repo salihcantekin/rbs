@@ -4790,7 +4790,10 @@ impl StudioUi {
         {
             self.stream_note = format!("The stream destinations could not be saved: {e}");
         }
-        self.send(Command::SetStreamDestinations(self.destinations.clone()));
+        self.send(Command::SetStreamDestinations(
+            self.destinations.clone(),
+            !self.destinations_note.is_empty(),
+        ));
     }
 
     fn save_stream(&mut self) {
@@ -5953,7 +5956,10 @@ impl StudioUi {
         self.send(Command::SetVerticalStreamProfile(
             self.vertical_stream.clone(),
         ));
-        self.send(Command::SetStreamDestinations(self.destinations.clone()));
+        self.send(Command::SetStreamDestinations(
+            self.destinations.clone(),
+            !self.destinations_note.is_empty(),
+        ));
     }
 
     /// Output profile menu: makes a profile named `name`, with default settings or a
@@ -6732,7 +6738,10 @@ impl StudioUi {
                     self.destinations = d;
                     self.save_destinations();
                 } else {
-                    self.send(Command::SetStreamDestinations(self.destinations.clone()));
+                    self.send(Command::SetStreamDestinations(
+                        self.destinations.clone(),
+                        !self.destinations_note.is_empty(),
+                    ));
                 }
             }
             // `rbs-cli token` over local IPC made or revoked a token; the control

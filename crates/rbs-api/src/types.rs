@@ -799,13 +799,13 @@ pub struct ItemLayout {
     pub opacity: f32,
     /// Shape, border and shadow (ADR-0053).
     pub style: ItemStyle,
-    /// The picture moving through the box (protocol 1.93, ADR-0150); absent when it
+    /// The picture moving through the box (protocol 1.94, ADR-0150); absent when it
     /// does not scroll.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scroll: Option<ItemScroll>,
 }
 
-/// Which way a scrolling picture moves in its box (protocol 1.93, ADR-0150), in the
+/// Which way a scrolling picture moves in its box (protocol 1.94, ADR-0150), in the
 /// box's own frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -855,7 +855,7 @@ fn is_zero_f32(v: &f32) -> bool {
     *v == 0.0
 }
 
-/// A picture moving through its item's box (protocol 1.93, ADR-0150). Lengths and
+/// A picture moving through its item's box (protocol 1.94, ADR-0150). Lengths and
 /// speed in the item's box units (canvas pixels for an item on the canvas); defaults
 /// are left out.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -890,7 +890,7 @@ fn is_default<T: Default + PartialEq>(v: &T) -> bool {
     *v == T::default()
 }
 
-/// `item.scroll_finished` (protocol 1.93, ADR-0150 decision 11): a `Once` scroll's
+/// `item.scroll_finished` (protocol 1.94, ADR-0150 decision 11): a `Once` scroll's
 /// picture has left its box. Published once per run, with every item that used it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScrollFinished {
@@ -1754,9 +1754,17 @@ pub enum StreamState {
     Idle {
         /// How the last stream of this server run ended, if one ran.
         last: Option<StreamSummary>,
+        /// Streaming is available on the canvas (protocol 1.94, ADR-0148): one of its
+        /// destinations is on. Absent from an older server: read as true.
+        #[serde(default = "crate::types::yes")]
+        available: bool,
     },
     /// A stream runs; it connects, and reconnects, in the background.
     Live {
+        /// Streaming is available on the canvas (protocol 1.94, ADR-0148). A running
+        /// stream goes on when it turns false.
+        #[serde(default = "crate::types::yes")]
+        available: bool,
         /// How it reaches the server.
         protocol: StreamProtocol,
         /// The server takes the stream now.
@@ -1805,6 +1813,38 @@ pub enum StreamState {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         destinations: Vec<LiveDestination>,
     },
+}
+
+impl StreamState {
+    /// An idle stream that never ran, streaming available.
+    pub fn idle() -> Self {
+        StreamState::Idle {
+            last: None,
+            available: true,
+        }
+    }
+
+    /// Whether streaming is available on the canvas (protocol 1.94).
+    pub fn available(&self) -> bool {
+        match self {
+            StreamState::Idle { available, .. } | StreamState::Live { available, .. } => *available,
+        }
+    }
+
+    /// The state with `available` set.
+    pub fn with_available(mut self, on: bool) -> Self {
+        match &mut self {
+            StreamState::Idle { available, .. } | StreamState::Live { available, .. } => {
+                *available = on;
+            }
+        }
+        self
+    }
+}
+
+/// Serde's default for a flag that an older peer leaves out and that means "yes".
+pub(crate) fn yes() -> bool {
+    true
 }
 
 /// One destination of a live stream (protocol 1.77, ADR-0127 decision 16). Never its

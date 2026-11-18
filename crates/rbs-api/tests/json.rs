@@ -1074,6 +1074,7 @@ fn every_result_and_event_type_round_trips() {
     round_trip(&Snapshot {
         seq: seq.clone(),
         data: StreamState::Idle {
+            available: true,
             last: Some(StreamSummary {
                 failure: Some("the server closed the connection".into()),
                 frames: 1800,
@@ -1120,6 +1121,7 @@ fn every_result_and_event_type_round_trips() {
             rms_db: vec![-18.0, -19.25],
         }]),
         EventPayload::StreamState(StreamState::Live {
+            available: true,
             protocol: StreamProtocol::Srt,
             connected: true,
             connects: 1,
@@ -1173,7 +1175,7 @@ fn every_result_and_event_type_round_trips() {
         }),
         EventPayload::StreamCanvasState(CanvasStreamState {
             canvas: OutputCanvas::Vertical,
-            state: StreamState::Idle { last: None },
+            state: StreamState::idle(),
         }),
         EventPayload::CalibrationState(calibration_done()),
         EventPayload::CalibrationState(CalibrationState::Idle),
@@ -1721,6 +1723,7 @@ fn authenticate_debug_hides_the_token() {
 #[test]
 fn stream_state_has_a_stable_wire_form() {
     let live = StreamState::Live {
+        available: true,
         protocol: StreamProtocol::Rtmp,
         connected: false,
         connects: 0,
@@ -1742,6 +1745,7 @@ fn stream_state_has_a_stable_wire_form() {
         serde_json::to_value(&live).unwrap(),
         json!({
             "state": "live",
+            "available": true,
             "protocol": "rtmp",
             "connected": false,
             "connects": 0,
@@ -1758,6 +1762,15 @@ fn stream_state_has_a_stable_wire_form() {
             "hold_fallback_reason": null,
         })
     );
+    // Streaming off (protocol 1.93): `available` false in the idle form; a 1.92
+    // server's idle state, without it, reads as available.
+    assert_eq!(
+        serde_json::to_value(StreamState::idle().with_available(false)).unwrap(),
+        json!({"state": "idle", "last": null, "available": false})
+    );
+    let older: StreamState =
+        serde_json::from_value(json!({"state": "idle", "last": null})).unwrap();
+    assert!(older.available());
     // A 1.63 server's live state, without the hold fields, reads as not held.
     let old: StreamState = serde_json::from_value(json!({
         "state": "live", "protocol": "rtmp", "connected": true, "connects": 1,
@@ -1777,12 +1790,12 @@ fn stream_state_has_a_stable_wire_form() {
     let event = Event {
         object: None,
         seq: 3,
-        payload: EventPayload::StreamState(StreamState::Idle { last: None }),
+        payload: EventPayload::StreamState(StreamState::idle()),
     };
     let v: Value = serde_json::from_str(&JsonCodec.encode_event(&event)).unwrap();
     assert_eq!(
         v["params"],
-        json!({"topic": "stream.state", "seq": 3, "data": {"state": "idle", "last": null}})
+        json!({"topic": "stream.state", "seq": 3, "data": {"state": "idle", "last": null, "available": true}})
     );
     assert_eq!(
         rbs_api::request::method_scope("stream.start"),
