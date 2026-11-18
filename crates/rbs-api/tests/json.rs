@@ -755,7 +755,18 @@ fn every_request() -> Vec<Request> {
         c(Command::SettingsClearRecentTargets(TargetsParams {
             kind: SourceKind::Window,
         })),
+        c(Command::AddonList),
+        c(Command::AddonInstall(engine())),
+        c(Command::AddonCancel(engine())),
+        c(Command::AddonClean(engine())),
+        c(Command::AddonRemove(engine())),
     ]
+}
+
+fn engine() -> AddOnRef {
+    AddOnRef {
+        id: "org.rbs.browser-engine".into(),
+    }
 }
 
 #[test]
@@ -3196,4 +3207,63 @@ fn text_timers_decode_as_protocol_1_84() {
         running: true,
         value_ms: 1500,
     });
+}
+
+#[test]
+fn add_on_calls_and_statuses_have_a_stable_wire_form() {
+    // An id only: a path or URL field is unknown (ADR-0145 decision 9).
+    let r: AddOnRef = serde_json::from_value(json!({"id": "org.rbs.browser-engine"})).unwrap();
+    assert_eq!(r.id, "org.rbs.browser-engine");
+    assert!(serde_json::from_value::<AddOnRef>(json!({"id": "x", "url": "https://e"})).is_err());
+    let list = AddOnList {
+        add_ons: vec![AddOnInfo {
+            id: "org.rbs.browser-engine".into(),
+            kind: "runtime".into(),
+            name: "Browser engine".into(),
+            summary: "Lets browser sources show web pages.".into(),
+            version: "156.0.30".into(),
+            size: Some(175_176_258),
+            unpacked_size: Some(444_764_149),
+            available: true,
+            status: AddOnStatus::Downloading {
+                bytes: 10,
+                total: 20,
+            },
+        }],
+    };
+    round_trip(&list);
+    assert_eq!(
+        serde_json::to_value(&list).unwrap()["add_ons"][0]["status"],
+        json!({"state": "downloading", "bytes": 10, "total": 20})
+    );
+    assert_eq!(
+        serde_json::to_value(AddOnStatus::Failed {
+            reason: AddOnFailReason::HashMismatch
+        })
+        .unwrap(),
+        json!({"state": "failed", "reason": "hash_mismatch"})
+    );
+    let later: AddOnStatus = serde_json::from_value(json!({"state": "paused"})).unwrap();
+    assert_eq!(later, AddOnStatus::Other);
+    for status in [
+        AddOnStatus::NotInstalled,
+        AddOnStatus::Verifying,
+        AddOnStatus::Installing,
+        AddOnStatus::Installed {
+            version: "156.0.30".into(),
+        },
+        AddOnStatus::UpdateAvailable {
+            installed: "156.0.29".into(),
+            available: "156.0.30".into(),
+        },
+    ] {
+        round_trip(&Event {
+            object: Some(0),
+            seq: 3,
+            payload: EventPayload::AddonChanged(AddOnChanged {
+                id: "org.rbs.browser-engine".into(),
+                status,
+            }),
+        });
+    }
 }

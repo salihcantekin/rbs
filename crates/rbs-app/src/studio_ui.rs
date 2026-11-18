@@ -5988,6 +5988,8 @@ impl StudioUi {
             // Taken above.
             Update::Monitor(_) | Update::MonitorDevices(_) | Update::Loudness(_) => {}
             Update::TBarReset => self.tbar_resets = self.tbar_resets.wrapping_add(1),
+            // Settings › Add-ons is not built yet (ADR-0145 decision 10).
+            Update::AddOnChanged(_) => {}
             Update::Thumbnail {
                 adapter,
                 target,

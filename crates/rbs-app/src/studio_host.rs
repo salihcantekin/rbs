@@ -65,6 +65,7 @@ use rbs_sources::{SourceError, SourceTarget};
 use rbs_transport::{ReconnectPolicy, Secret, TransportInput};
 use rbs_vcam::{InstallState, VcamStats, VirtualCameraFactory};
 
+mod add_ons;
 mod attributes;
 pub use attributes::{AttributeTargetView, AttributesView};
 mod calibration;
@@ -2753,6 +2754,9 @@ pub struct MarkerNote {
 /// What the studio tells the UI.
 #[derive(Debug, Clone)]
 pub enum Update {
+    /// An add-on's status changed (ADR-0145): an install's progress or end, a clean
+    /// or a removal. Settings › Add-ons asks for the whole list when it opens.
+    AddOnChanged(api::AddOnChanged),
     /// The play state of every media source the studio runs (ADR-0108 decision 10).
     Media(Vec<MediaTick>),
     /// The monitor output (ADR-0097): device, volume, whether it is wanted and plays,
@@ -3144,6 +3148,11 @@ enum Msg {
         key: stinger::LookKey,
         result: Result<rbs_sources::stinger::StingerLook, rbs_sources::stinger::LookError>,
     },
+    /// The install thread of catalog entry `index` reports (ADR-0145).
+    AddOn {
+        index: usize,
+        msg: add_ons::AddOnMsg,
+    },
 }
 
 /// How the studio starts.
@@ -3201,6 +3210,10 @@ pub struct HostConfig {
     /// The calibration run's clock, pacer, file system and wall time (ADR-0087 step
     /// D1); `None`: the real ones. Tests inject a test clock and a fake sink.
     pub calibration_setup: Option<calibration::CalibrationSetup>,
+    /// The add-on catalog, where add-ons are kept and how they are fetched (ADR-0145;
+    /// [`crate::add_ons::AddOnsSetup::system`] in the app). `None`: `addon.list`
+    /// shows the built-in catalog as not installed and installs are refused.
+    pub add_ons: Option<crate::add_ons::AddOnsSetup>,
     /// A step to panic at once (tests only, ADR-0055).
     #[cfg(feature = "fault-injection")]
     #[doc(hidden)]
@@ -3246,6 +3259,7 @@ impl HostConfig {
             calibration: crate::calibration_file::CalibrationFile::default(),
             read_free_space: None,
             calibration_setup: None,
+            add_ons: None,
             #[cfg(feature = "fault-injection")]
             fault: None,
         }
@@ -3715,6 +3729,8 @@ struct Host {
     gpu: Arc<GpuContext>,
     /// The browser helper tree when `rbs-browser-helper` was found (ADR-0109).
     browser_tree: Option<Arc<dyn BrowserTree>>,
+    /// The add-on catalog and running installs (ADR-0145).
+    add_ons: add_ons::AddOnsHost,
     /// The preview's ring size from the canvas rate at the last start, when this
     /// platform publishes a preview. Restarts size the ring again from the canvas
     /// that is about to run.
@@ -3833,7 +3849,8 @@ fn run(
                     | Msg::RegionPreview { .. }
                     | Msg::Calibration { .. }
                     | Msg::PermissionAnswered(_)
-                    | Msg::StingerLook { .. } => {}
+                    | Msg::StingerLook { .. }
+                    | Msg::AddOn { .. } => {}
                 }
                 if let Some(api) = &api {
                     let mut events = EventPublisher::new();
@@ -3982,6 +3999,7 @@ fn round(
             }
         }
         Some(Msg::Calibration { id, msg }) => host.calibration_msg(id, msg),
+        Some(Msg::AddOn { index, msg }) => host.addon_msg(index, msg, notify),
         Some(Msg::StingerLook { key, result }) => {
             if host.stinger_looked(key, result) {
                 host.publish(notify);
@@ -4417,6 +4435,7 @@ fn start(
         switch_seq: 0,
         inbox: Weak::new(),
         stinger: stinger::StingerFile::default(),
+        add_ons: add_ons::AddOnsHost::new(config.add_ons),
         levels,
     };
     // A vertical canvas saved with the collection runs again (ADR-0093 decision 9).
@@ -14953,6 +14972,17 @@ impl ApiTarget<'_> {
             C::ImportObsScan => obs_import_api::scan(),
             C::ImportObsCheck(p) => obs_import_api::check(&p),
             C::ImportObsRun(p) => host.import_obs(&p, notify),
+            C::AddonList => Ok(Response::AddOnList(host.addon_list())),
+            C::AddonInstall(r) => host
+                .addon_install(&r.id, notify)
+                .map(|()| Response::Done(Empty {})),
+            C::AddonCancel(r) => host.addon_cancel(&r.id).map(|()| Response::Done(Empty {})),
+            C::AddonClean(r) => host
+                .addon_clean(&r.id, notify)
+                .map(|()| Response::Done(Empty {})),
+            C::AddonRemove(r) => host
+                .addon_remove(&r.id, notify)
+                .map(|()| Response::Done(Empty {})),
             C::CollectionSetGlide(p) => {
                 let easing = match p.easing {
                     api::GlideEasing::Linear => 0,

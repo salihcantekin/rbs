@@ -4536,6 +4536,8 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "objc2-quartz-core 0.3.2",
  "raw-window-handle",
+ "rbs-add-ons",
+ "rbs-add-ons-sys",
  "rbs-api",
  "rbs-api-ipc",
  "rbs-api-ws",
