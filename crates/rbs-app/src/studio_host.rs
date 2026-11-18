@@ -13482,6 +13482,8 @@ impl ControlTarget for ApiTarget<'_> {
     ) -> Result<Response, ApiError> {
         self.host.check_on_air(caller.irreversible, &command)?;
         self.host.check_network(caller.irreversible, &command)?;
+        self.host
+            .check_local_only(caller.token.is_some(), &command)?;
         self.handle(command, events)
     }
 
