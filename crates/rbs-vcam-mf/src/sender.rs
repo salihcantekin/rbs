@@ -106,6 +106,30 @@ impl<S: RingSource> RingSender<S> {
             w.heartbeat(now_ms);
             self.last_beat_ms = now_ms;
         }
+        self.publish_presence(now_ms);
+    }
+
+    /// Whether an app reads the camera now: the ring is mapped, announces the session's
+    /// size, and its reader heartbeat is fresh. A ring of another size (a format change
+    /// waiting for apps to close the camera) takes no frames either, so it counts as no
+    /// reader.
+    pub fn reader_present(&self, now_ms: u64) -> bool {
+        self.mapped
+            .as_ref()
+            .and_then(|m| header_info(&m.region))
+            .is_some_and(|info| {
+                (info.width, info.height) == (self.layout.width(), self.layout.height())
+                    && info.reader_active(now_ms)
+            })
+    }
+
+    /// Tells the session whether an app reads the camera, so the node skips the
+    /// conversion and readback of frames nobody would see (audit R-02). The reader
+    /// heartbeat's [`STALE_MS`](rbs_vcam_ring::STALE_MS) is the hysteresis: a reader
+    /// counts as gone only after a second without a read.
+    fn publish_presence(&self, now_ms: u64) {
+        self.counters
+            .set_consumer_present(self.reader_present(now_ms));
     }
 
     /// Sends one frame and counts the outcome.
@@ -121,6 +145,7 @@ impl<S: RingSource> RingSender<S> {
             // size, format or memory kind, so this is not counted twice.
             Sent::Refused => {}
         }
+        self.publish_presence(now_ms);
         sent
     }
 
@@ -334,6 +359,58 @@ mod tests {
         reader.heartbeat(20);
         assert_eq!(s.send(&frame(3, W, H), 20), Sent::Absent);
         assert_eq!(s.send(&frame(4, W, H), 30), Sent::Written);
+    }
+
+    #[test]
+    fn presence_follows_the_reader_heartbeat_and_the_announced_size() {
+        use std::sync::atomic::Ordering;
+        let (mut s, region, layout, created, _, counters) = setup();
+        // Before the sender looks, a reader may be there.
+        assert!(counters.consumer_present());
+        // No ring: nobody reads.
+        s.idle(1_000);
+        assert!(!counters.consumer_present());
+
+        // The source creates the ring; the app reads (its heartbeat is fresh).
+        initialize(&region, &layout, 1).unwrap();
+        created.store(true, Ordering::Release);
+        let reader = Reader::new(region.clone(), layout).unwrap();
+        // A ring without a reader heartbeat yet: still nobody.
+        s.idle(1_000 + RETRY_MS);
+        assert!(s.is_mapped());
+        assert!(!counters.consumer_present());
+        reader.heartbeat(1_300);
+        s.idle(1_300);
+        assert!(counters.consumer_present());
+        assert_eq!(s.send(&frame(1, W, H), 1_310), Sent::Written);
+        assert!(counters.consumer_present());
+
+        // The app stops reading: present until its heartbeat is STALE_MS old.
+        s.idle(1_300 + rbs_vcam_ring::STALE_MS);
+        assert!(counters.consumer_present());
+        s.idle(1_300 + rbs_vcam_ring::STALE_MS + 1);
+        assert!(!counters.consumer_present());
+        // It reads again.
+        reader.heartbeat(3_000);
+        s.idle(3_000);
+        assert!(counters.consumer_present());
+
+        // A ring announcing another size takes no frames: nobody reads this format.
+        let other = Layout::nv12(W * 2, H, W * 2).unwrap();
+        let big = Region::owned(other.total_len().max(layout.total_len()));
+        initialize(&big, &other, 1).unwrap();
+        // The app reads that ring (a fresh heartbeat), so only the size keeps it out.
+        Reader::new(big.clone(), other).unwrap().heartbeat(10);
+        assert!(header_info(&big).unwrap().reader_active(10));
+        let fake = Fake {
+            region: big,
+            created: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            maps: Arc::default(),
+        };
+        let pending = Arc::new(VcamCounters::default());
+        let mut p = RingSender::new(fake, layout, Arc::clone(&pending));
+        assert_eq!(p.send(&frame(2, W, H), 10), Sent::FormatPending);
+        assert!(!pending.consumer_present());
     }
 
     #[test]

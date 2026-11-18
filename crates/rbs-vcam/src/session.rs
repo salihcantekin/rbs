@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use rbs_core::capability::CapabilitySet;
 use rbs_core::media::{MemoryKind, PixelFormat, VideoFrame};
@@ -115,6 +115,13 @@ pub trait VirtualCameraSession: Send {
     fn counters(&self) -> Option<VcamCountersReader> {
         None
     }
+    /// Whether an app may be reading the camera now. `false` only when the adapter
+    /// knows no app reads it: the node then skips the camera frame before any GPU work
+    /// (no conversion, no readback, no copy; audit R-02, ADR-0143). One relaxed atomic
+    /// load on the render thread. Default `true` for an adapter that cannot tell.
+    fn consumer_present(&self) -> bool {
+        true
+    }
 }
 
 /// A read-only view of a session's counters ([`VirtualCameraSession::counters`]).
@@ -144,6 +151,9 @@ pub struct VcamCounters {
     pub(crate) format_pending: AtomicU64,
     pub(crate) os_errors: AtomicU64,
     pub(crate) last_os_error: AtomicU32,
+    /// Set by the sender thread when it knows no app reads the camera; `false` (a
+    /// reader may be there) until it looks.
+    pub(crate) no_reader: AtomicBool,
 }
 
 impl VcamCounters {
@@ -165,6 +175,18 @@ impl VcamCounters {
     /// A frame taken while a format change waits for apps to close the camera.
     pub fn count_format_pending(&self) {
         self.format_pending.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// The sender thread's word on whether an app reads the camera now
+    /// ([`VirtualCameraSession::consumer_present`]).
+    pub fn set_consumer_present(&self, present: bool) {
+        self.no_reader.store(!present, Ordering::Relaxed);
+    }
+
+    /// The last word of [`set_consumer_present`](Self::set_consumer_present); `true`
+    /// before the first.
+    pub fn consumer_present(&self) -> bool {
+        !self.no_reader.load(Ordering::Relaxed)
     }
 
     /// An OS call failed with `code` (stored as a non-zero 32-bit code).

@@ -631,8 +631,9 @@ fn camera_line(state: &rbs_record::VirtualCameraState) -> String {
         )
     });
     format!(
-        "{delivered}{} handed over, {} skipped (app behind), {} skipped (readback busy), {} lost, {} refused, {} failed",
+        "{delivered}{} handed over, {} skipped (no app reading), {} skipped (app behind), {} skipped (readback busy), {} lost, {} refused, {} failed",
         n(&s.sent),
+        n(&s.no_reader),
         n(&s.consumer_busy),
         n(&s.busy),
         n(&s.lost),

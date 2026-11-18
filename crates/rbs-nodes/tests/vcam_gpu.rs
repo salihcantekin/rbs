@@ -240,3 +240,32 @@ fn a_frame_the_session_refuses_is_counted_never_an_error() {
     // Refused frames free their slots: no conversion was skipped for want of one.
     assert_eq!(rig.stat(|s| &s.consumer_busy), 0);
 }
+
+#[test]
+fn with_no_app_reading_due_frames_are_skipped_before_conversion_until_one_reads() {
+    let cam = config(CAM_W, CAM_H, FrameRate::FPS_30);
+    let Some(mut rig) = rig(FrameRate::FPS_30, cam, cam, false) else {
+        return;
+    };
+    rig.consumer.set_absent(true);
+    for _ in 0..5 {
+        rig.tick();
+    }
+    // Every due frame is skipped before `reserve`: nothing converted, read back or sent.
+    assert_eq!(rig.stat(|s| &s.no_reader), 5);
+    assert_eq!(rig.stat(|s| &s.sent), 0);
+    assert_eq!(rig.stat(|s| &s.consumer_busy), 0);
+    assert_eq!(rig.stat(|s| &s.busy), 0);
+    assert_eq!(rig.stat(|s| &s.lost), 0);
+    assert!(rig.consumer.delivered().is_empty());
+    assert_eq!(rig.exec.health(rig.camera.unwrap()).unwrap().errors, 0);
+
+    // An app opens the camera: the next due frame is converted and sent.
+    rig.consumer.set_absent(false);
+    rig.tick();
+    rig.tick();
+    assert_eq!(rig.stat(|s| &s.no_reader), 5);
+    assert!(rig.stat(|s| &s.sent) >= 1);
+    let got = wait_delivered(&rig.consumer, 1);
+    assert_eq!(got[0], 5, "{got:?}");
+}
