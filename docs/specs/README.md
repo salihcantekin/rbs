@@ -19,6 +19,7 @@ Specs are the current contracts of RBS. Code must match them; a PR that changes 
 | [media-types.md](media-types.md) | Draft | `rbs-core` (`media`, `timing`) |
 | [scene-model.md](scene-model.md) | Draft | `rbs-scene` (model, edits, undo, flattening, graph binding, validating loader) |
 | [user-data.md](user-data.md) | Draft | `rbs-user-data` (versioned documents, libraries, output profiles, scene collection document; ADR-0051) |
+| [add-ons.md](add-ons.md) | Draft | `rbs-add-ons`, `rbs-add-ons-http`, `rbs-app` (downloaded add-ons, the browser engine first, Settings › Add-ons; ADR-0145) |
 | [gpu-compositor.md](gpu-compositor.md) | Draft | `rbs-gpu` |
 | [video-filters.md](video-filters.md) | Draft | `rbs-filters` (filter type trait, filter node, catalogue, conformance), `rbs-sources`, `rbs-record` (ADR-0062) |
 | [audio-filters.md](audio-filters.md) | Draft | `rbs-audio-filters` (audio filter type trait, DSP, filter node, Gain, Noise gate, conformance), `rbs-params` (ADR-0082) |
