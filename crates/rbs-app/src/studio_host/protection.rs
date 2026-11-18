@@ -30,10 +30,7 @@ const STEP_INTERVAL: Duration = Duration::from_secs(1);
 
 /// A line for the developer log (stderr), as the app's other logs.
 fn log(line: &str) {
-    #[allow(clippy::print_stderr)]
-    {
-        eprintln!("rbs: {line}");
-    }
+    rbs_crash::errln!("rbs: {line}");
 }
 
 /// Makes the probe for a new guard: the OS probe in the app, a fake in tests.

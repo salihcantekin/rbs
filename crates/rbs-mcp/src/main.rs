@@ -50,13 +50,13 @@ fn main() -> ExitCode {
     };
     let mut mcp = Mcp::new(connector, Arc::new(MonotonicClock::new()), namespaces);
     if let Err(why) = mcp.start() {
-        eprintln!("rbs-mcp: {why}");
+        note(format_args!("rbs-mcp: {why}"));
         return ExitCode::FAILURE;
     }
     if let Some(why) = mcp.hint_reason() {
-        eprintln!(
+        note(format_args!(
             "rbs-mcp: not connected to RBS yet ({why}); waiting for Start in Settings, AI tools"
-        );
+        ));
     }
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
@@ -77,7 +77,7 @@ fn main() -> ExitCode {
             }
         }
         if let Some(why) = outcome.exit {
-            eprintln!("rbs-mcp: {why}");
+            note(format_args!("rbs-mcp: {why}"));
             return ExitCode::FAILURE;
         }
     }
@@ -85,6 +85,12 @@ fn main() -> ExitCode {
 }
 
 fn usage() -> ExitCode {
-    eprintln!("{USAGE}");
+    note(format_args!("{USAGE}"));
     ExitCode::from(2)
+}
+
+/// A line to stderr. `eprintln!` would panic when the AI tool closed stderr; the line is
+/// dropped instead (crash-resilience spec, "Standard output and error").
+fn note(line: std::fmt::Arguments<'_>) {
+    let _ = writeln!(std::io::stderr().lock(), "{line}");
 }

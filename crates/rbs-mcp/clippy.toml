@@ -1,0 +1,10 @@
+# Standard output and error (crash-resilience spec, "Standard output and error"): the std
+# macros panic when the pipe behind them closed. stdout is the MCP channel (written with
+# `writeln!`, ending the server on an error); stderr lines go through `note`.
+disallowed-macros = [
+    { path = "std::println", reason = "panics when stdout is closed; write with writeln! and handle the error" },
+    { path = "std::eprintln", reason = "panics when stderr is closed; use note" },
+    { path = "std::print", reason = "panics when stdout is closed; write with writeln! and handle the error" },
+    { path = "std::eprint", reason = "panics when stderr is closed; use note" },
+    { path = "std::dbg", reason = "panics when stderr is closed; use note" },
+]

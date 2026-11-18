@@ -4871,6 +4871,7 @@ dependencies = [
  "rbs-codec-vaapi",
  "rbs-codec-videotoolbox",
  "rbs-core",
+ "rbs-crash",
  "rbs-engine",
  "rbs-filters",
  "rbs-gpu",

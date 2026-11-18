@@ -1,6 +1,9 @@
 //! Embeds the RBS logo as the Windows executable's icon resource (the file icon and the
 //! taskbar icon). Nothing happens on other targets.
 
+// Cargo reads its directives from a build script's standard output.
+#![allow(clippy::disallowed_macros)]
+
 fn main() {
     println!("cargo:rerun-if-changed=assets/brand/rbs.ico");
     println!("cargo:rerun-if-changed=build.rs");

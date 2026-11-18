@@ -20,3 +20,13 @@ disallowed-methods = [
     { path = "slint::ComponentHandle::run", reason = "a nested event loop (ADR-0055); main() runs the one event loop" },
     { path = "std::thread::sleep", reason = "blocks the thread (ADR-0055 decision 6; tests use TestClock, ADR-0032)" },
 ]
+
+# Standard output and error (crash-resilience spec, "Standard output and error"): the std
+# macros panic when the pipe or terminal behind them closed; these drop the line.
+disallowed-macros = [
+    { path = "std::println", reason = "panics when stdout is closed; use rbs_crash::outln!" },
+    { path = "std::eprintln", reason = "panics when stderr is closed; use rbs_crash::errln!" },
+    { path = "std::print", reason = "panics when stdout is closed; use rbs_crash::outln!" },
+    { path = "std::eprint", reason = "panics when stderr is closed; use rbs_crash::errln!" },
+    { path = "std::dbg", reason = "panics when stderr is closed; use rbs_crash::errln!" },
+]

@@ -89,16 +89,16 @@ fn main() -> ExitCode {
         match wait(&rx) {
             Ok(Update::Started { encoders, .. }) => {
                 let names: Vec<_> = encoders.iter().map(|e| e.name.as_str()).collect();
-                println!("studio started; video encoders: {names:?}");
+                rbs_crash::outln!("studio started; video encoders: {names:?}");
                 break;
             }
             Ok(Update::Failed(e)) => {
-                eprintln!("the studio did not start: {e}");
+                rbs_crash::errln!("the studio did not start: {e}");
                 return ExitCode::FAILURE;
             }
             Ok(_) => {}
             Err(_) => {
-                eprintln!("the studio did not answer");
+                rbs_crash::errln!("the studio did not answer");
                 return ExitCode::FAILURE;
             }
         }
@@ -113,7 +113,7 @@ fn main() -> ExitCode {
             Ok(Update::Targets(SourceKind::Screen, _)) => break,
             Ok(_) => {}
             Err(_) => {
-                eprintln!("the studio did not answer");
+                rbs_crash::errln!("the studio did not answer");
                 return ExitCode::FAILURE;
             }
         }
@@ -163,12 +163,12 @@ fn main() -> ExitCode {
         serde_json::json!({"profile": "default"}),
     );
     if run.get("error").is_some() {
-        eprintln!("calibration.run refused: {run}");
+        rbs_crash::errln!("calibration.run refused: {run}");
         return ExitCode::FAILURE;
     }
     loop {
         let Ok(v) = jrx.recv_timeout(LIMIT) else {
-            eprintln!("no calibration.state within {LIMIT:?}");
+            rbs_crash::errln!("no calibration.state within {LIMIT:?}");
             return ExitCode::FAILURE;
         };
         if v["params"]["topic"] != "calibration.state" {
@@ -178,8 +178,8 @@ fn main() -> ExitCode {
         let t = started.elapsed().as_secs_f64();
         match data["state"].as_str() {
             Some("done" | "failed") => {
-                println!("after {t:.1} s:");
-                println!("{}", serde_json::to_string_pretty(data).unwrap_or_default());
+                rbs_crash::outln!("after {t:.1} s:");
+                rbs_crash::outln!("{}", serde_json::to_string_pretty(data).unwrap_or_default());
                 let estimate = call(
                     &handle,
                     &jrx,
@@ -187,7 +187,7 @@ fn main() -> ExitCode {
                     "record.estimate",
                     serde_json::json!({"profile": "default"}),
                 );
-                println!(
+                rbs_crash::outln!(
                     "record.estimate max_tracks: {}",
                     estimate["result"]["max_tracks"]
                 );
@@ -197,7 +197,7 @@ fn main() -> ExitCode {
                     ExitCode::FAILURE
                 };
             }
-            _ => println!("{t:6.1} s  {data}"),
+            _ => rbs_crash::outln!("{t:6.1} s  {data}"),
         }
     }
 }

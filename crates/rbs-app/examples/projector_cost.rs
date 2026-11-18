@@ -86,7 +86,7 @@ fn main() {
     let (mut adapters, notes) = rbs_app::platform::adapters();
     adapters.probe();
     for n in notes {
-        eprintln!("note: {n}");
+        rbs_crash::errln!("note: {n}");
     }
     // `RBS_BENCH_SOFTWARE=1` accepts a CPU adapter, only to check the demo runs on a
     // machine without a GPU; its numbers mean nothing.
@@ -95,7 +95,7 @@ fn main() {
         ..rbs_gpu::GpuRequest::default()
     };
     let gpu = Arc::new(rbs_gpu::GpuContext::new(&request).expect("a GPU"));
-    println!("gpu: {}", gpu.adapter_name());
+    rbs_crash::outln!("gpu: {}", gpu.adapter_name());
     let mut engine = rbs_engine::Engine::new();
     engine.set_thread_policy(Some(Arc::new(rbs_thread_os::OsThreadPolicy::new())));
     let mut settings = StudioSettings::new(main);
@@ -137,9 +137,11 @@ fn main() {
             std::thread::spawn(move || read(endpoint, &stop, &frames))
         })
         .collect();
-    println!(
+    rbs_crash::outln!(
         "canvas {}x{}, pictures {pictures} ({} surfaces each)",
-        main_size.0, main_size.1, desc.surfaces
+        main_size.0,
+        main_size.1,
+        desc.surfaces
     );
 
     let cpu_start = cpu_time();
@@ -147,7 +149,7 @@ fn main() {
     while start.elapsed() < Duration::from_secs(seconds) {
         let serviced = studio.service();
         for (partition, event) in &serviced.events {
-            eprintln!("event on {partition:?}: {event:?}");
+            rbs_crash::errln!("event on {partition:?}: {event:?}");
         }
         std::thread::sleep(
             serviced
@@ -159,7 +161,7 @@ fn main() {
     let wall = start.elapsed();
     let cpu = cpu_time().saturating_sub(cpu_start);
     stop.store(true, Ordering::Relaxed);
-    println!(
+    rbs_crash::outln!(
         "wall {:.1} s, process CPU {:.1} % of one core, peak memory {:.0} MiB, frames received {}",
         wall.as_secs_f64(),
         100.0 * cpu.as_secs_f64() / wall.as_secs_f64(),
@@ -172,7 +174,7 @@ fn main() {
         } else {
             t.sum / u32::try_from(t.ticks).unwrap_or(u32::MAX)
         };
-        println!(
+        rbs_crash::outln!(
             "render ticks {}: mean {:.2} ms, max {:.2} ms, 50 % under {} % and 99 % under {} % of the period, by quarter {:?}",
             t.ticks,
             mean.as_secs_f64() * 1e3,
@@ -190,7 +192,7 @@ fn main() {
     }
     let (_, errors) = studio.shutdown();
     if !errors.is_empty() {
-        eprintln!("shutdown errors: {errors:?}");
+        rbs_crash::errln!("shutdown errors: {errors:?}");
     }
 }
 
@@ -223,7 +225,7 @@ fn read(endpoint: rbs_gpu::share::PreviewEndpoint, stop: &AtomicBool, frames: &A
             }
             Ok(None) => {}
             Err(e) => {
-                eprintln!("picture ended: {e}");
+                rbs_crash::errln!("picture ended: {e}");
                 return;
             }
         }

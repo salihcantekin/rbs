@@ -103,10 +103,10 @@ fn main() {
     let (mut adapters, notes) = rbs_app::platform::adapters();
     adapters.probe();
     for n in notes {
-        eprintln!("note: {n}");
+        rbs_crash::errln!("note: {n}");
     }
     let gpu = Arc::new(rbs_gpu::GpuContext::new(&rbs_gpu::GpuRequest::default()).expect("a GPU"));
-    println!("gpu: {}", gpu.adapter_name());
+    rbs_crash::outln!("gpu: {}", gpu.adapter_name());
     let mut engine = rbs_engine::Engine::new();
     engine.set_thread_policy(Some(Arc::new(rbs_thread_os::OsThreadPolicy::new())));
     let mut settings = StudioSettings::new(main);
@@ -120,7 +120,7 @@ fn main() {
                 height,
                 surfaces: 3,
             });
-            println!("vertical picture: {width}x{height}");
+            rbs_crash::outln!("vertical picture: {width}x{height}");
         }
         settings.extra_canvases = vec![extra];
     }
@@ -146,7 +146,7 @@ fn main() {
     while start.elapsed() < Duration::from_secs(seconds) {
         let serviced = studio.service();
         for (partition, event) in &serviced.events {
-            eprintln!("event on {partition:?}: {event:?}");
+            rbs_crash::errln!("event on {partition:?}: {event:?}");
         }
         std::thread::sleep(
             serviced
@@ -157,7 +157,7 @@ fn main() {
     }
     let wall = start.elapsed();
     let cpu = cpu_time().saturating_sub(cpu_start);
-    println!(
+    rbs_crash::outln!(
         "canvases: {canvases}, wall {:.1} s, process CPU {:.1} % of one core, peak memory {:.0} MiB",
         wall.as_secs_f64(),
         100.0 * cpu.as_secs_f64() / wall.as_secs_f64(),
@@ -165,7 +165,7 @@ fn main() {
     );
     for (name, id) in &outputs {
         let p = studio.output_progress(*id).expect("the output runs");
-        println!(
+        rbs_crash::outln!(
             "{name}: exported {} (drops {}), encoded {} (skipped {}, drops {}), late render ticks {}",
             p.frames_exported,
             p.export_drops,
@@ -178,11 +178,11 @@ fn main() {
     let (reports, errors) = studio.shutdown();
     for (_, r) in reports {
         if let Some(f) = r.failure {
-            eprintln!("failure: {f}");
+            rbs_crash::errln!("failure: {f}");
         }
     }
     if !errors.is_empty() {
-        eprintln!("shutdown errors: {errors:?}");
+        rbs_crash::errln!("shutdown errors: {errors:?}");
     }
 }
 
