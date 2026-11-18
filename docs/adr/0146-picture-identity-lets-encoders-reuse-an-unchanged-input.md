@@ -1,6 +1,6 @@
 # ADR-0146: Picture identity on video frames, so encoders reuse an unchanged input instead of copying it
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-18
 - Deciders: Salih (owner)
 - Builds on: [ADR-0004](0004-single-master-clock.md), [ADR-0025](0025-encoder-surface-export.md), [ADR-0031](0031-adapter-support-crates.md), [ADR-0038](0038-io-graph-nodes.md), [ADR-0093](0093-vertical-second-canvas-from-the-same-sources.md), [ADR-0117](0117-still-sources-as-images.md), [ADR-0143](0143-performance-rules-for-every-change.md) (R5)
@@ -68,4 +68,4 @@ At 1080p NV12 that is 3.1 MB per frame, about 187 MB/s per encoder at 60 fps, on
 
 **Round 2: same independent AI session, 2026-11-18. Verdict: approve.** All 10 fixes were checked against the code. Two minor wording points were applied: when `prepare` runs and what its `Busy` does to the slot id, and a determinism pre-check so the bit-exact hardware test cannot be flaky.
 
-Owner approval: pending.
+Owner approval: Salih, 2026-11-18 ("onaylıyorum" in the project thread).
