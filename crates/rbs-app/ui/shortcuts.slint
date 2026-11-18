@@ -3,7 +3,7 @@
 // windows. Rust (`shortcuts_page`) pushes state into the `Shortcuts` global and
 // handles its callbacks.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, DialogActions, Checkbox, Icon, IconButton, KeyboardShortcutHint, ListRow, Select, TextField, HintText as Hint, ErrorText as Problem } from "components.slint";
+import { Button, DialogActions, Checkbox, Icon, IconButton, KeyboardShortcutHint, ListRow, SegmentedControl, Select, TextField, HintText as Hint, ErrorText as Problem } from "components.slint";
 import { SettingsCard, SettingsCallout, SettingsNotice, RevealOnShow } from "settings.slint";
 import { ShortcutChip, ShortcutRow, Shortcuts, IconName } from "base/types.slint";
 export { ShortcutChip, ShortcutRow, Shortcuts }
@@ -191,6 +191,25 @@ export component ShortcutsSettings inherits VerticalLayout {
             clicked => { Shortcuts.ask-reset-all(); }
         }
     }
+    // The filter row: one category at a time, and only commands with a shortcut.
+    HorizontalLayout {
+        spacing: Tokens.space-3;
+        SegmentedControl {
+            label: @tr("Category");
+            options: Shortcuts.categories;
+            index: Shortcuts.category;
+            selected(i) => { Shortcuts.set-category(i); }
+        }
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 0;
+            Checkbox {
+                text: @tr("With a shortcut");
+                checked: Shortcuts.assigned-only;
+                toggled(on) => { Shortcuts.set-assigned-only(on); }
+            }
+        }
+    }
     if Shortcuts.confirm-reset-all: VerticalLayout {
         RevealOnShow { }
         SettingsCallout {
@@ -219,7 +238,11 @@ export component ShortcutsSettings inherits VerticalLayout {
             accessible-role: list;
             accessible-label: @tr("Commands and their shortcuts");
             for r[i] in Shortcuts.rows: CommandRow { item: r; index: i; }
-            if Shortcuts.rows.length == 0: Hint { text: @tr("No command or shortcut matches the search."); }
+            if Shortcuts.rows.length == 0: Hint {
+                text: Shortcuts.search == "" ? @tr("No command matches the filter.")
+                    : Shortcuts.filtered ? @tr("No command or shortcut matches the search and filter.")
+                    : @tr("No command or shortcut matches the search.");
+            }
         }
     }
 }

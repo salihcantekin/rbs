@@ -25,6 +25,34 @@ pub fn next_generation() -> u64 {
     GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
+/// The identity of a picture's pixels (ADR-0146): two frames with the same picture id
+/// other than [`PictureId::NONE`] have identical pixels and the same [`VideoFormat`].
+/// Lets a consumer that still holds a picture (an encoder's input buffer) use it again
+/// instead of copying it. [`PictureId::NONE`] means unknown and promises nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct PictureId(u64);
+
+impl PictureId {
+    /// Unknown: promises nothing about the pixels.
+    pub const NONE: Self = Self(0);
+
+    /// A picture id no earlier call returned (from [`next_generation`]); never `NONE`.
+    /// The producer attaches it where the pixels are created and never to other pixels.
+    pub fn next() -> Self {
+        Self(next_generation())
+    }
+
+    /// Whether this is [`PictureId::NONE`].
+    pub const fn is_none(self) -> bool {
+        self.0 == 0
+    }
+
+    /// The raw value (diagnostics).
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
 /// Width and height in pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Size {
@@ -792,6 +820,10 @@ pub enum FramePayload {
         surface: NativeSurface,
         /// How to synchronise before reading it.
         sync: SurfaceSync,
+        /// Built by an exporter through [`VideoFrame::exported`]: the frame may be
+        /// shared between holders that never touch its pixels (ADR-0147 decision 2).
+        /// Capture and decoder surfaces are not marked and are imported exactly once.
+        exported: bool,
     },
     /// System memory.
     System(SystemFrame),
@@ -816,12 +848,15 @@ impl FramePayload {
 /// A frame passed to a call (`&VideoFrame`) is lent for that call only. To keep a GPU
 /// or system-memory frame longer (for example in an encoder queue), use
 /// [`VideoFrame::share`]: the copy holds its own [`Lease`] reference. Frames with a
-/// native payload cannot be shared; `rbs-gpu` imports them once and shares the result.
+/// native payload cannot be shared, except those an exporter built with
+/// [`VideoFrame::exported`] (ADR-0147 decision 2); `rbs-gpu` imports the others once
+/// and shares the result.
 #[derive(Debug)]
 pub struct VideoFrame {
     format: VideoFormat,
     timestamp: Timestamp,
     sequence: u64,
+    picture: PictureId,
     source_time: Option<u64>,
     payload: FramePayload,
     lease: Option<Lease>,
@@ -840,6 +875,7 @@ impl VideoFrame {
             format,
             timestamp,
             sequence: 0,
+            picture: PictureId::NONE,
             source_time: None,
             payload: FramePayload::Texture(texture),
             lease,
@@ -853,6 +889,7 @@ impl VideoFrame {
             format: frame.format,
             timestamp,
             sequence: 0,
+            picture: PictureId::NONE,
             source_time: None,
             payload: FramePayload::System(frame),
             lease,
@@ -878,16 +915,66 @@ impl VideoFrame {
             format,
             timestamp,
             sequence: 0,
+            picture: PictureId::NONE,
             source_time: None,
-            payload: FramePayload::Native { surface, sync },
+            payload: FramePayload::Native {
+                surface,
+                sync,
+                exported: false,
+            },
             lease: Some(lease),
         }
+    }
+
+    /// A native frame built by an exporter for a native encoder input (ADR-0147
+    /// decision 2). Unlike [`VideoFrame::native`], the frame can be shared: every
+    /// [`VideoFrame::share`] copy holds its own lease reference.
+    ///
+    /// # Safety
+    ///
+    /// Everything [`VideoFrame::native`] requires, for as long as any shared copy's
+    /// lease lives. In addition, the caller guarantees that exactly one holder reads the
+    /// pixels (the encoder that takes the frame): every other holder (an output slot, a
+    /// queue mailbox, a held picture) only keeps the surface alive.
+    pub unsafe fn exported(
+        format: VideoFormat,
+        timestamp: Timestamp,
+        surface: NativeSurface,
+        sync: SurfaceSync,
+        lease: Lease,
+    ) -> Self {
+        Self {
+            format,
+            timestamp,
+            sequence: 0,
+            picture: PictureId::NONE,
+            source_time: None,
+            payload: FramePayload::Native {
+                surface,
+                sync,
+                exported: true,
+            },
+            lease: Some(lease),
+        }
+    }
+
+    /// Whether this is a native frame built by [`VideoFrame::exported`].
+    pub const fn is_exported(&self) -> bool {
+        matches!(self.payload, FramePayload::Native { exported: true, .. })
     }
 
     /// Sets the sequence number. A producer whose picture changes without a new
     /// timestamp (a still source, a filter re-rendering) passes [`next_generation`].
     pub fn with_sequence(mut self, sequence: u64) -> Self {
         self.sequence = sequence;
+        self
+    }
+
+    /// Sets the picture identity (ADR-0146). Only the producer that created the pixels
+    /// sets it, with [`PictureId::next`]; [`VideoFrame::share`], [`VideoFrame::with_timestamp`]
+    /// and [`VideoFrame::with_sequence`] keep it.
+    pub fn with_picture(mut self, picture: PictureId) -> Self {
+        self.picture = picture;
         self
     }
 
@@ -920,6 +1007,11 @@ impl VideoFrame {
         self.sequence
     }
 
+    /// The picture identity (ADR-0146); [`PictureId::NONE`] unless the producer set it.
+    pub fn picture(&self) -> PictureId {
+        self.picture
+    }
+
     /// The producer's own timestamp in its clock domain, in nanoseconds, for
     /// diagnostics only. Never used for timing.
     pub fn source_time(&self) -> Option<u64> {
@@ -942,17 +1034,28 @@ impl VideoFrame {
     }
 
     /// A second reference to the same pixels, holding its own lease reference.
-    /// `None` for native payloads, which have exactly one consumer (`rbs-gpu`).
+    /// `None` for native payloads that an exporter did not mark (capture and decoder
+    /// surfaces), which have exactly one consumer (`rbs-gpu`).
     pub fn share(&self) -> Option<Self> {
         let payload = match &self.payload {
             FramePayload::Texture(id) => FramePayload::Texture(*id),
             FramePayload::System(frame) => FramePayload::System(frame.clone()),
+            FramePayload::Native {
+                surface,
+                sync,
+                exported: true,
+            } => FramePayload::Native {
+                surface: *surface,
+                sync: *sync,
+                exported: true,
+            },
             FramePayload::Native { .. } => return None,
         };
         Some(Self {
             format: self.format,
             timestamp: self.timestamp,
             sequence: self.sequence,
+            picture: self.picture,
             source_time: self.source_time,
             payload,
             lease: self.lease.clone(),
@@ -964,7 +1067,9 @@ impl VideoFrame {
     /// check [`VideoFrame::payload`] first.
     pub fn into_native(self) -> Option<(NativeSurface, SurfaceSync, Lease)> {
         match (self.payload, self.lease) {
-            (FramePayload::Native { surface, sync }, Some(lease)) => Some((surface, sync, lease)),
+            (FramePayload::Native { surface, sync, .. }, Some(lease)) => {
+                Some((surface, sync, lease))
+            }
             _ => None,
         }
     }
@@ -972,6 +1077,15 @@ impl VideoFrame {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn picture_ids_are_new_and_never_none() {
+        let a = super::PictureId::next();
+        let b = super::PictureId::next();
+        assert!(!a.is_none());
+        assert_ne!(a, b);
+        assert!(super::PictureId::default().is_none());
+    }
 
     #[test]
     fn generations_are_never_zero_and_never_repeat() {
@@ -1109,6 +1223,7 @@ mod tests {
             Some(owner.lease(2)),
         )
         .with_sequence(9)
+        .with_picture(PictureId(5))
         .with_source_time(77);
         assert_eq!(gpu.memory_kind(), MemoryKind::Gpu);
         assert_eq!((gpu.sequence(), gpu.source_time()), (9, Some(77)));
@@ -1117,6 +1232,11 @@ mod tests {
             panic!("texture frames can be shared");
         };
         assert_eq!(queued.payload(), gpu.payload());
+        assert_eq!(queued.picture(), PictureId(5));
+        let restamped = queued
+            .share()
+            .map(|f| f.with_timestamp(Timestamp::from_nanos(2)).with_sequence(10));
+        assert_eq!(restamped.map(|f| f.picture()), Some(PictureId(5)));
         assert_eq!(owner.count(2), 2);
         drop(gpu);
         assert_eq!(owner.count(2), 1);
@@ -1139,6 +1259,7 @@ mod tests {
             )
         };
         assert_eq!(frame.memory_kind(), MemoryKind::D3d12);
+        assert!(!frame.is_exported());
         assert!(frame.share().is_none());
         let Some((s, sync, lease)) = frame.into_native() else {
             panic!("frame is native");
@@ -1152,6 +1273,41 @@ mod tests {
         let texture =
             VideoFrame::texture(nv12_1080p(), Timestamp::ZERO, TextureId::new(0, 0), None);
         assert!(texture.into_native().is_none());
+    }
+
+    #[test]
+    fn exported_frames_share_by_lease() {
+        let owner = Arc::new(CountingOwner::default());
+        let surface = NativeSurface::io_surface(0x1000);
+        // SAFETY: test only; the pointer is never dereferenced.
+        let frame = unsafe {
+            VideoFrame::exported(
+                nv12_1080p(),
+                Timestamp::from_nanos(5),
+                surface,
+                SurfaceSync::Ready,
+                owner.lease(3),
+            )
+        }
+        .with_sequence(9);
+        assert!(frame.is_exported());
+        assert_eq!(frame.memory_kind(), MemoryKind::Metal);
+        let Some(copy) = frame.share() else {
+            panic!("exported frames are shareable");
+        };
+        assert!(copy.is_exported());
+        assert_eq!(copy.payload(), frame.payload());
+        assert_eq!(copy.timestamp(), Timestamp::from_nanos(5));
+        assert_eq!(copy.sequence(), 9);
+        assert_eq!(owner.count(3), 2);
+        drop(frame);
+        assert_eq!(owner.count(3), 1);
+        let Some((s, sync, lease)) = copy.into_native() else {
+            panic!("frame is native");
+        };
+        assert_eq!((s, sync), (surface, SurfaceSync::Ready));
+        drop(lease);
+        assert_eq!(owner.count(3), 0);
     }
 
     #[test]

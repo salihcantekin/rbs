@@ -237,6 +237,18 @@ fn remote_sessions_lose_admin_plugins_and_tokens() {
     assert_eq!(h.one(conn)["result"]["scopes"], json!(["read", "control"]));
     h.call(conn, "settings.get", json!({}));
     assert_eq!(error_kind(&h.one(conn)), "scope_denied");
+    // Add-on management is local only (ADR-0145 decision 9); the list is not.
+    for method in [
+        "addon.install",
+        "addon.cancel",
+        "addon.clean",
+        "addon.remove",
+    ] {
+        h.call(conn, method, json!({"id": "org.rbs.browser-engine"}));
+        assert_eq!(error_kind(&h.one(conn)), "scope_denied", "{method}");
+    }
+    h.call(conn, "addon.list", json!({}));
+    assert_eq!(h.forwarded.len(), 1, "addon.list needs only read");
 
     let mut h = Harness::with_config(|c| c.allow_remote_admin = true);
     let conn = h.connect(PeerInfo::remote_websocket("192.168.1.20"));

@@ -265,6 +265,12 @@ fn deny(from: &str, to: &str) -> Option<String> {
             ],
             "user data sees the scene model, not an adapter or a toolkit",
         ),
+        Class::AddOns => deny_named(
+            to,
+            to_class,
+            &["rbs-core", "serde", "sha2", "toml", "unicode-normalization"],
+            "add-ons hold the rules; HTTP, archives and OS file operations come through rbs-add-ons-sys (ADR-0145)",
+        ),
         Class::Import => deny_named(
             to,
             to_class,
@@ -343,6 +349,7 @@ fn deny_engine(from: &str, to: &str, to_class: Option<Class>) -> Option<String> 
             | Class::Ui
             | Class::Settings
             | Class::UserData
+            | Class::AddOns
             | Class::Import
             | Class::Tool
             | Class::Plugin
@@ -361,6 +368,10 @@ fn deny_engine(from: &str, to: &str, to_class: Option<Class>) -> Option<String> 
 }
 
 fn deny_adapter(from: &str, to: &str, to_class: Option<Class>) -> Option<String> {
+    // The add-ons adapter implements the traits of rbs-add-ons, its port (ADR-0145).
+    if from == "rbs-add-ons-sys" && to == "rbs-add-ons" {
+        return None;
+    }
     match to_class {
         Some(Class::Adapter) => {
             if (from.starts_with("rbs-codec-") && to == "rbs-codec-hw")
@@ -380,6 +391,7 @@ fn deny_adapter(from: &str, to: &str, to_class: Option<Class>) -> Option<String>
             | Class::Ui
             | Class::Settings
             | Class::UserData
+            | Class::AddOns
             | Class::Import
             | Class::Tool
             | Class::Plugin
@@ -461,6 +473,7 @@ enum Class {
     AppUi,
     Settings,
     UserData,
+    AddOns,
     Import,
     App,
     Tool,
@@ -487,6 +500,7 @@ fn class(name: &str) -> Option<Class> {
         | "rbs-app-ui-dialogs" | "rbs-app-ui-probes" | "rbs-app-ui-single" => Class::AppUi,
         "rbs-remote-settings" => Class::Settings,
         "rbs-user-data" => Class::UserData,
+        "rbs-add-ons" => Class::AddOns,
         "rbs-import-obs" => Class::Import,
         "rbs-app" | "rbs-cli" | "rbs-mcp" => Class::App,
         "rbs-plugin-sdk" => Class::PluginSdk,
@@ -529,6 +543,7 @@ fn class(name: &str) -> Option<Class> {
         | "rbs-text-test"
         | "rbs-text-parley"
         | "rbs-browser-runner"
+        | "rbs-add-ons-sys"
         // Outside the workspace (ADR-0132 decision 1), so check-layers never walks
         // it; `the_cef_runner_depends_only_on_its_allow_list` checks its manifest.
         | "rbs-browser-cef" => Class::Adapter,
@@ -567,6 +582,43 @@ mod tests {
         assert!(
             manifest.contains("\"crates/rbs-browser-cef\""),
             "crates/rbs-browser-cef must stay in the workspace exclude list"
+        );
+    }
+
+    /// ADR-0132 decision 2 and ADR-0145 decision 3: the browser engine's pin names
+    /// the CEF version the runner's `cef` crate is built against (the build metadata
+    /// of its version in the runner's own lock file, `156.6.0+156.0.30` -> `156.0.30`).
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn the_cef_pin_matches_the_runner_lock_file() {
+        let dir = workspace_root().join("crates/rbs-browser-cef");
+        let pin: Value = fs::read_to_string(dir.join("cef-pin.toml"))
+            .expect("cef-pin.toml")
+            .parse()
+            .expect("cef-pin.toml is TOML");
+        let pinned = pin.get("version").and_then(Value::as_str).expect("version");
+        let lock: Value = fs::read_to_string(dir.join("Cargo.lock"))
+            .expect("runner Cargo.lock")
+            .parse()
+            .expect("runner Cargo.lock is TOML");
+        let cef = lock
+            .get("package")
+            .and_then(Value::as_array)
+            .and_then(|packages| {
+                packages
+                    .iter()
+                    .find(|p| p.get("name").and_then(Value::as_str) == Some("cef"))
+            })
+            .and_then(|p| p.get("version"))
+            .and_then(Value::as_str)
+            .expect("the cef crate in the runner lock file");
+        let built = cef
+            .split_once('+')
+            .map(|(_, cef)| cef)
+            .expect("cef version has +CEF");
+        assert_eq!(
+            pinned, built,
+            "cef-pin.toml pins CEF {pinned}, the runner's cef crate {cef} is built against {built}"
         );
     }
 

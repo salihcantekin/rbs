@@ -73,6 +73,9 @@ rbs-record = { path = "../rbs-record" }
 rbs-manifest = { path = "../rbs-manifest" }
 rbs-project = { path = "../rbs-project" }
 rbs-browser-runner = { path = "../rbs-browser-runner" }
+# Add-ons (ADR-0145): the rules, and the HTTPS, unpack and file system side.
+rbs-add-ons = { path = "../rbs-add-ons" }
+rbs-add-ons-sys = { path = "../rbs-add-ons-sys" }
 rbs-browser-ipc = { path = "../rbs-browser-ipc" }
 rbs-browser-shm = { path = "../rbs-browser-shm" }
 rbs-thread-os = { path = "../rbs-thread-os" }

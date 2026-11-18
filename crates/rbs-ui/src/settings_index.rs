@@ -113,6 +113,7 @@ const AI_CONNECT: &[Place] = &[at("ai_tools", "settings.ai-tools.connect")];
 const AI_ACTIONS: &[Place] = &[at("ai_tools", "settings.ai-tools.actions")];
 const PERM_DEVICES: &[Place] = &[at("permissions", "settings.permissions.devices")];
 const PERM_HOLDER: &[Place] = &[at("permissions", "settings.permissions.holder")];
+const ADD_ONS: &[Place] = &[at("add_ons", "settings.add-ons.list")];
 /// The Encoding card's rows (`EncoderFields`), shared by Recording and Stream.
 const ENCODING: &[Place] = &[
     at("recording", "settings.recording.encoding"),
@@ -132,19 +133,6 @@ const fn c(
 /// Every entry, in section list order (`SETTINGS_SECTIONS`), each card before its rows.
 pub const SETTINGS: &[Setting] = &[
     // General
-    c(
-        "settings.general.experience",
-        "Experience",
-        "level simple standard pro beginner",
-        GENERAL_EXPERIENCE,
-    ),
-    row(
-        "general.settings-shown",
-        "Settings shown",
-        "experience level simple standard pro beginner advanced expert",
-        GENERAL_EXPERIENCE,
-        Simple,
-    ),
     c(
         "settings.general.closing",
         "Closing the main window",
@@ -216,6 +204,19 @@ pub const SETTINGS: &[Setting] = &[
         "Easing",
         "glide curve animation",
         GENERAL_GLIDE,
+        Simple,
+    ),
+    c(
+        "settings.general.experience",
+        "Experience",
+        "level simple standard pro beginner",
+        GENERAL_EXPERIENCE,
+    ),
+    row(
+        "general.settings-shown",
+        "Settings shown",
+        "experience level simple standard pro beginner advanced expert",
+        GENERAL_EXPERIENCE,
         Simple,
     ),
     c(
@@ -352,6 +353,13 @@ pub const SETTINGS: &[Setting] = &[
         "Who gets these permissions",
         "permission privacy app bundle terminal macos tcc check again",
         PERM_HOLDER,
+    ),
+    // Add-ons (ADR-0145)
+    c(
+        "settings.add-ons.list",
+        "Available add-ons",
+        "add-on addon download install remove update browser engine web page cef chromium",
+        ADD_ONS,
     ),
     // Video
     c(

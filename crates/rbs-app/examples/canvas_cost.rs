@@ -212,12 +212,49 @@ fn peak_rss_mib() -> f64 {
     usage().ru_maxrss as f64 / (1024.0 * 1024.0)
 }
 
-#[cfg(not(target_vendor = "apple"))]
+/// Process CPU time (user + system) so far.
+#[cfg(windows)]
+fn cpu_time() -> Duration {
+    use windows::Win32::Foundation::FILETIME;
+    use windows::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
+    let mut t = [FILETIME::default(); 4];
+    // SAFETY: GetProcessTimes fills the four FILETIMEs it is given for our own process.
+    let ok = unsafe {
+        let [create, exit, kernel, user] = &mut t;
+        GetProcessTimes(GetCurrentProcess(), create, exit, kernel, user).is_ok()
+    };
+    if !ok {
+        return Duration::ZERO;
+    }
+    // 100 ns units.
+    let ft = |f: FILETIME| (u64::from(f.dwHighDateTime) << 32) | u64::from(f.dwLowDateTime);
+    Duration::from_nanos((ft(t[2]) + ft(t[3])) * 100)
+}
+
+/// Peak working set in MiB.
+#[cfg(windows)]
+fn peak_rss_mib() -> f64 {
+    use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+    use windows::Win32::System::Threading::GetCurrentProcess;
+    let mut c = PROCESS_MEMORY_COUNTERS {
+        cb: std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: fills the counters struct of the given size for our own process.
+    let ok = unsafe { GetProcessMemoryInfo(GetCurrentProcess(), &mut c, c.cb).is_ok() };
+    if ok {
+        c.PeakWorkingSetSize as f64 / (1024.0 * 1024.0)
+    } else {
+        0.0
+    }
+}
+
+#[cfg(not(any(windows, target_vendor = "apple")))]
 fn cpu_time() -> Duration {
     Duration::ZERO
 }
 
-#[cfg(not(target_vendor = "apple"))]
+#[cfg(not(any(windows, target_vendor = "apple")))]
 fn peak_rss_mib() -> f64 {
     0.0
 }

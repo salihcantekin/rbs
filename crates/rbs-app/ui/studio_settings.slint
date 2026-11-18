@@ -1245,25 +1245,6 @@ export component GeneralSettings inherits Rectangle {
     form := VerticalLayout {
         spacing: Tokens.space-4;
         alignment: start;
-        // ADR-0113 decision 2: which section levels the app draws.
-        SettingsCard {
-            title: @tr("Experience");
-            id: "settings.general.experience";
-            SettingRow {
-                find: "general.settings-shown";
-                divider: false;
-                label: @tr("Settings shown");
-                summary: @tr("How many options the app shows");
-                hint: @tr("Simple shows the settings most people need. Standard adds advanced ones, Pro shows every setting. A place that leaves options out says so and can show them. Nothing hidden stops applying.");
-                fill: false;
-                SegmentedControl {
-                    label: @tr("Settings shown");
-                    options: [@tr("Simple"), @tr("Standard"), @tr("Pro")];
-                    index: Studio.experience;
-                    selected(i) => { Studio.set-experience(i); }
-                }
-            }
-        }
         SettingsCard {
             title: @tr("Closing the main window");
             id: "settings.general.closing";
@@ -1389,6 +1370,26 @@ export component GeneralSettings inherits Rectangle {
                     index: Studio.glide-easing;
                     enabled: Studio.glide-duration > 0;
                     selected(i) => { Studio.set-glide(Studio.glide-duration, i); }
+                }
+            }
+        }
+        // ADR-0113 decision 2: which section levels the app draws.
+        // Just above "Bring from another app" (owner 2026-11-18).
+        SettingsCard {
+            title: @tr("Experience");
+            id: "settings.general.experience";
+            SettingRow {
+                find: "general.settings-shown";
+                divider: false;
+                label: @tr("Settings shown");
+                summary: @tr("How many options the app shows");
+                hint: @tr("Simple shows the settings most people need. Standard adds advanced ones, Pro shows every setting. A place that leaves options out says so and can show them. Nothing hidden stops applying.");
+                fill: false;
+                SegmentedControl {
+                    label: @tr("Settings shown");
+                    options: [@tr("Simple"), @tr("Standard"), @tr("Pro")];
+                    index: Studio.experience;
+                    selected(i) => { Studio.set-experience(i); }
                 }
             }
         }
@@ -2170,6 +2171,35 @@ export component RemoteControlSettings inherits Rectangle {
     // A token was made: the name field is ready for the next one.
     property <string> made: Studio.rc-new-token;
     changed made => { if made != "" { name.text = ""; } }
+}
+
+// Settings › Add-ons (ADR-0145 decision 9): what RBS can download when it is needed,
+// one command per row. Statuses come from the studio when the page shows and as
+// they change; nothing polls.
+export component AddOnsSettings inherits Rectangle {
+    VerticalLayout {
+        spacing: Tokens.space-4;
+        alignment: start;
+        SettingsCard {
+            id: "settings.add-ons.list";
+            title: @tr("Available add-ons");
+            for r in Studio.add-on-rows: SettingRow {
+                // find: none (a download, not a setting).
+                label: r.label;
+                help: r.help;
+                help-is-problem: r.problem;
+                fill: false;
+                if r.value != "": SettingValue { text: r.value; }
+                if r.action != 0: Button {
+                    text: r.action-text;
+                    lead: r.action == 1 || r.action == 4 || r.action == 5 ? IconName.import : IconName.none;
+                    accessible-name: @tr("{} {}", r.action-text, r.label);
+                    kind: r.action == 1 || r.action == 4 || r.action == 5 ? "primary" : "ghost";
+                    clicked => { Studio.add-on-action(r.id, r.action); }
+                }
+            }
+        }
+    }
 }
 
 // Settings › Permissions (ADR-0141): what the computer lets RBS use, one action per

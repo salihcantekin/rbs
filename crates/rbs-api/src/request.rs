@@ -1754,6 +1754,15 @@ pub struct TokenRef {
     pub name: String,
 }
 
+/// `addon.install`, `addon.cancel`, `addon.clean` and `addon.remove` (protocol 1.90,
+/// ADR-0145): an add-on of the built-in catalog, by id.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AddOnRef {
+    /// The add-on's id, as `addon.list` names it (`org.rbs.browser-engine`).
+    pub id: String,
+}
+
 /// A request the control thread carries out.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
@@ -2071,6 +2080,18 @@ pub enum Command {
     ImportObsRun(ObsImport),
     /// `text.timer` (protocol 1.84): starts, pauses or resets a countdown or stopwatch.
     TextTimer(TextTimer),
+    /// `addon.list` (protocol 1.90, ADR-0145): every add-on of the catalog.
+    AddonList,
+    /// `addon.install` (protocol 1.90): starts a download; progress through
+    /// `addon.changed`.
+    AddonInstall(AddOnRef),
+    /// `addon.cancel` (protocol 1.90): stops a running install.
+    AddonCancel(AddOnRef),
+    /// `addon.clean` (protocol 1.90): removes versions older than the one before the
+    /// catalog's.
+    AddonClean(AddOnRef),
+    /// `addon.remove` (protocol 1.90): removes every version.
+    AddonRemove(AddOnRef),
 }
 
 impl Command {
@@ -2232,6 +2253,11 @@ impl Command {
             Command::ImportObsCheck(_) => "import.obs.check",
             Command::ImportObsRun(_) => "import.obs.run",
             Command::TextTimer(_) => "text.timer",
+            Command::AddonList => "addon.list",
+            Command::AddonInstall(_) => "addon.install",
+            Command::AddonCancel(_) => "addon.cancel",
+            Command::AddonClean(_) => "addon.clean",
+            Command::AddonRemove(_) => "addon.remove",
         }
     }
 }
@@ -2291,6 +2317,8 @@ impl Command {
         use crate::location::is_local_path;
         match self {
             Command::SourceAdd(p) => p.kind == SourceKind::Browser,
+            // Downloads from the catalog's hosts (ADR-0145 decision 9).
+            Command::AddonInstall(_) => true,
             Command::RecordStartToFile(p) => !is_local_path(&p.path),
             Command::SettingsSet(p) => p.profiles.as_ref().is_some_and(|profiles| {
                 profiles
@@ -2601,6 +2629,11 @@ pub const METHODS: &[MethodInfo] = &[
     m("import.obs.check", Some(Scope::Admin), Effect::Read),
     m("import.obs.run", Some(Scope::Admin), Effect::Destructive),
     m("text.timer", Some(Scope::Control), Effect::Edit),
+    m("addon.list", Some(Scope::Read), Effect::Read),
+    m("addon.install", Some(Scope::Plugins), Effect::Edit),
+    m("addon.cancel", Some(Scope::Plugins), Effect::Edit),
+    m("addon.clean", Some(Scope::Plugins), Effect::Destructive),
+    m("addon.remove", Some(Scope::Plugins), Effect::Destructive),
 ];
 
 /// The client-scoped `ui.*` methods (control API spec, "Client-scoped UI commands").
@@ -3022,6 +3055,16 @@ enum WireRequest {
     ImportObsRun(ObsImport),
     #[serde(rename = "text.timer")]
     TextTimer(TextTimer),
+    #[serde(rename = "addon.list")]
+    AddonList(Empty),
+    #[serde(rename = "addon.install")]
+    AddonInstall(AddOnRef),
+    #[serde(rename = "addon.cancel")]
+    AddonCancel(AddOnRef),
+    #[serde(rename = "addon.clean")]
+    AddonClean(AddOnRef),
+    #[serde(rename = "addon.remove")]
+    AddonRemove(AddOnRef),
 }
 
 impl From<WireRequest> for Request {
@@ -3205,6 +3248,11 @@ impl From<WireRequest> for Request {
             WireRequest::ImportObsCheck(p) => Request::Command(C::ImportObsCheck(p)),
             WireRequest::ImportObsRun(p) => Request::Command(C::ImportObsRun(p)),
             WireRequest::TextTimer(p) => Request::Command(C::TextTimer(p)),
+            WireRequest::AddonList(_) => Request::Command(C::AddonList),
+            WireRequest::AddonInstall(p) => Request::Command(C::AddonInstall(p)),
+            WireRequest::AddonCancel(p) => Request::Command(C::AddonCancel(p)),
+            WireRequest::AddonClean(p) => Request::Command(C::AddonClean(p)),
+            WireRequest::AddonRemove(p) => Request::Command(C::AddonRemove(p)),
         }
     }
 }
@@ -3373,6 +3421,11 @@ impl From<Request> for WireRequest {
                 C::ImportObsCheck(p) => WireRequest::ImportObsCheck(p),
                 C::ImportObsRun(p) => WireRequest::ImportObsRun(p),
                 C::TextTimer(p) => WireRequest::TextTimer(p),
+                C::AddonList => WireRequest::AddonList(Empty {}),
+                C::AddonInstall(p) => WireRequest::AddonInstall(p),
+                C::AddonCancel(p) => WireRequest::AddonCancel(p),
+                C::AddonClean(p) => WireRequest::AddonClean(p),
+                C::AddonRemove(p) => WireRequest::AddonRemove(p),
             },
         }
     }
@@ -3650,6 +3703,8 @@ pub enum Response {
     TextFonts(crate::types::TextFonts),
     /// `text.timer` (protocol 1.84).
     TextTimerState(crate::types::TextTimerState),
+    /// `addon.list` (protocol 1.90).
+    AddOnList(crate::types::AddOnList),
     /// `item.set_box` (protocol 1.34).
     BoxPlaced(BoxPlaced),
     /// `canvas.auto_layout` (protocol 1.44).
