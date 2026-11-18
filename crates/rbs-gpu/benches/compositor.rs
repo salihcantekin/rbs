@@ -6,7 +6,8 @@
 //! Each iteration renders one 1080p frame, converts it to NV12 and waits for the GPU,
 //! so the numbers are frame time on the adapter in use. On software adapters (CI)
 //! this is CPU-bound and only useful for relative comparisons against `main`.
-//! Prints a skip message and measures nothing when no adapter exists.
+//! Prints a skip message and measures nothing when no adapter exists. Set
+//! `RBS_BENCH_POWER=low` to prefer the integrated adapter.
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use rbs_gpu::{
@@ -18,8 +19,14 @@ const W: u32 = 1920;
 const H: u32 = 1080;
 
 fn bench(c: &mut Criterion) {
+    // `RBS_BENCH_POWER=low` measures on the integrated GPU of a hybrid machine.
+    let power = match std::env::var("RBS_BENCH_POWER").as_deref() {
+        Ok("low") => rbs_gpu::context::PowerPreference::LowPower,
+        _ => rbs_gpu::context::PowerPreference::HighPerformance,
+    };
     let ctx = match GpuContext::new(&GpuRequest {
         allow_software: true,
+        power,
         ..GpuRequest::default()
     }) {
         Ok(ctx) => ctx,
