@@ -1433,7 +1433,9 @@ export struct LoudnessData {
 // The encoder fields of one output (a recording or a stream): the options offered and
 // the one in use (rbs_app::encoder_form). `rate-kind`: 0 CBR, 1 VBR, 2 constant quality.
 // One destination of the stream in Settings, Stream (ADR-0127 decision 17).
-export struct DestinationRow { id: int, name: string, note: string, on: bool, warn: bool }
+// `removable`: the row has its own Remove (the first destination does not, ADR-0127
+// decision 1).
+export struct DestinationRow { id: int, name: string, note: string, on: bool, warn: bool, removable: bool }
 
 export struct EncoderData {
     codecs: [string], codec: int,
@@ -1480,6 +1482,11 @@ export struct EntryRow { id: string, name: string, current: bool }
 // 1 microphone, 2 screen and windows, 3 system and app sound); `tone` 0 plain, 1 warning,
 // 2 problem; `action` 0 none, 1 Allow, 2 Open system settings, 3 Restart RBS.
 export struct PermissionRowData { kind: int, label: string, status: string, tone: int, value: string, action: int, action-text: string }
+
+// One row of Settings › Add-ons (ADR-0145). `action` 0 none, 1 Download, 2 Cancel,
+// 3 Remove, 4 Update, 5 Retry (`rbs_app::add_on_text::Action`); `value` is shown
+// beside the button when not empty.
+export struct AddOnRowData { id: string, label: string, help: string, problem: bool, value: string, action: int, action-text: string }
 
 export global Studio {
     // 0 starting, 1 running, 2 failed (`failure` says why).
@@ -2177,6 +2184,8 @@ export global Studio {
     // warnings (one per line), "" when none.
     in property <[DestinationRow]> st-dests;
     in property <string> st-dest-count;
+    // "Go live sends to all 3 at the same time." while more than one is on; else "".
+    in property <string> st-dest-together;
     in property <bool> st-dest-can-add;
     in property <bool> st-dest-editable: true;
     in property <string> st-dest-upload;
@@ -2213,6 +2222,7 @@ export global Studio {
     callback dest-save();
     callback dest-cancel();
     callback dest-remove();
+    callback dest-remove-id(int /* id */);
 
     // The canvas (Settings, Video): tiles for the current orientation, the one in
     // use (-1 when the size matches none), the fields, and "W × H" for the status bar.
@@ -2380,6 +2390,11 @@ export global Studio {
     in property <bool> permission-holder-warn;
     callback permission-action(int, int);
     callback permission-check();
+
+    // Settings › Add-ons (ADR-0145): one row per catalog entry, and its command
+    // (`id`, `action` as in `AddOnRowData`).
+    in property <[AddOnRowData]> add-on-rows;
+    callback add-on-action(string, int);
 }
 
 // From vcam.slint.

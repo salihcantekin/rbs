@@ -1,0 +1,69 @@
+# The browser engine add-on: the CEF runtime the `rbs-browser-cef` runner loads
+# (ADR-0132 decision 2, ADR-0145 decision 3, spec docs/specs/add-ons.md).
+#
+# `version` is the CEF version of the `cef` crate in this directory's Cargo.lock
+# (`156.6.0+156.0.30` -> `156.0.30`); `cargo test -p xtask` fails when they differ.
+# A version move changes this file and the crate together and runs a short device
+# check on Windows and macOS.
+#
+# Archives are the upstream "minimal" CEF builds until the RBS mirror exists
+# (ADR-0132 decision 3). Provenance (2026-11-18): each archive was downloaded from
+# the URL below; its SHA-1 matched the upstream build index
+# (https://cef-builds.spotifycdn.com/index.json); `sha256` was computed from that
+# same copy. `unpacked_size` is the sum of the archive's file sizes.
+
+id = "org.rbs.browser-engine"
+kind = "runtime"
+name = "Browser engine"
+summary = "Lets browser sources show web pages."
+version = "156.0.30"
+hosts = ["cef-builds.spotifycdn.com"]
+notices = "https://cef-builds.spotifycdn.com/index.html"
+
+# upstream sha1 0b4c2189e3b93033bbef13add1a86f66849c1e62
+[platform.x86_64-unknown-linux-gnu]
+url = "https://cef-builds.spotifycdn.com/cef_binary_156.0.30%2Bg6028375%2Bchromium-156.0.8078.96_linux64_minimal.tar.bz2"
+size = 333332290
+sha256 = "356db99d653698aa9ba78b22965032b4fa5b23ba079ffdbaa5d28a8530f04011"
+unpacked_size = 1597510500
+format = "tar.bz2"
+strip = 1
+library_dir = "Release"
+resources_dir = "Resources"
+required = ["libcef.so", "icudtl.dat", "v8_context_snapshot.bin"]
+
+# upstream sha1 1fedfc8dd0274caec9183a709ad1ed7856867b91
+[platform.x86_64-pc-windows-msvc]
+url = "https://cef-builds.spotifycdn.com/cef_binary_156.0.30%2Bg6028375%2Bchromium-156.0.8078.96_windows64_minimal.tar.bz2"
+size = 175176258
+sha256 = "74fd321975e99703acd8fc7e3c1b0859292f61b388f4052a0cd7ef1fb3b29f6e"
+unpacked_size = 444764149
+format = "tar.bz2"
+strip = 1
+library_dir = "Release"
+resources_dir = "Resources"
+required = ["libcef.dll", "icudtl.dat", "v8_context_snapshot.bin"]
+
+# upstream sha1 6393d8a838d3b29f6b6939b970b5931dde2082aa
+[platform.aarch64-apple-darwin]
+url = "https://cef-builds.spotifycdn.com/cef_binary_156.0.30%2Bg6028375%2Bchromium-156.0.8078.96_macosarm64_minimal.tar.bz2"
+size = 134874408
+sha256 = "731b599e78c71bf33530d65bfa18963f7d1d59902c1f381f5452188e5116b855"
+unpacked_size = 353003031
+format = "tar.bz2"
+strip = 1
+library_dir = "Release"
+resources_dir = "Release/Chromium Embedded Framework.framework/Resources"
+required = ["Chromium Embedded Framework.framework"]
+
+# upstream sha1 d66ae063959536c86637c63560797713937f5116
+[platform.x86_64-apple-darwin]
+url = "https://cef-builds.spotifycdn.com/cef_binary_156.0.30%2Bg6028375%2Bchromium-156.0.8078.96_macosx64_minimal.tar.bz2"
+size = 141703045
+sha256 = "a9b2fadcd20e1144a6db571e8e457ca616002d858ab3671be295d9b0bcfc8bc8"
+unpacked_size = 364074391
+format = "tar.bz2"
+strip = 1
+library_dir = "Release"
+resources_dir = "Release/Chromium Embedded Framework.framework/Resources"
+required = ["Chromium Embedded Framework.framework"]

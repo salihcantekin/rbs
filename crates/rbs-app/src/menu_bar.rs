@@ -1422,6 +1422,7 @@ pub fn settings_section(name: &str) -> Option<i32> {
         "audio" => 9,
         "ai_tools" => 10,
         "permissions" => 11,
+        "add_ons" => 12,
         _ => return None,
     })
 }
@@ -2256,7 +2257,7 @@ mod tests {
             .map(|s| settings_section(s).expect("known section"))
             .collect();
         seen.sort_unstable();
-        assert_eq!(seen, (0..12).collect::<Vec<_>>());
+        assert_eq!(seen, (0..13).collect::<Vec<_>>());
         assert_eq!(settings_section("mixer"), None);
         let run = |t: &str| open_settings(&CommandId::parse(t).expect("id"));
         assert_eq!(run("ui.settings.open"), Some(Run::OpenSettings(None, None)));

@@ -58,14 +58,27 @@ fn every_method_has_an_effect_and_read_scope_methods_only_read() {
     ] {
         assert_eq!(method_effect(live), Some(Effect::Live), "{live}");
     }
-    for destructive in ["tokens.create", "tokens.revoke", "import.obs.run"] {
+    for destructive in [
+        "tokens.create",
+        "tokens.revoke",
+        "import.obs.run",
+        "addon.clean",
+        "addon.remove",
+    ] {
         assert_eq!(
             method_effect(destructive),
             Some(Effect::Destructive),
             "{destructive}"
         );
     }
-    for edit in ["edit.undo", "edit.redo", "scene.switch", "settings.set"] {
+    for edit in [
+        "edit.undo",
+        "edit.redo",
+        "scene.switch",
+        "settings.set",
+        "addon.install",
+        "addon.cancel",
+    ] {
         assert_eq!(method_effect(edit), Some(Effect::Edit), "{edit}");
     }
     assert_eq!(method_effect("no.such"), None);
@@ -375,6 +388,33 @@ fn tokens_create_never_gives_more_scopes_than_the_caller_holds() {
         conn,
         "tokens.create",
         json!({"name": "viewer", "scopes": ["read"], "irreversible": false}),
+    );
+    assert_eq!(h.forwarded.len(), 1);
+}
+
+#[test]
+fn an_add_on_install_reaches_the_network_and_is_refused_without_the_permission() {
+    let mut h = harness();
+    let mut tokens = TokenStore::new();
+    let mut local = token(AGENT_SEED, "local agent", ScopeSet::ALL).1;
+    local.irreversible = false;
+    tokens.insert(local);
+    h.server.set_tokens(tokens);
+    let conn = h.login(PeerInfo::loopback_websocket(), AGENT_SEED);
+    h.call(
+        conn,
+        "addon.install",
+        json!({"id": "org.rbs.browser-engine"}),
+    );
+    let answer = h.one(conn);
+    assert_eq!(error_kind(&answer), "not_permitted");
+    assert_eq!(answer["error"]["data"]["reason"], "network");
+    assert!(h.forwarded.is_empty());
+    // Cancel downloads nothing and is an edit: it passes.
+    h.call(
+        conn,
+        "addon.cancel",
+        json!({"id": "org.rbs.browser-engine"}),
     );
     assert_eq!(h.forwarded.len(), 1);
 }

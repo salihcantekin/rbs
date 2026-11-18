@@ -1,0 +1,37 @@
+[package]
+name = "rbs-add-ons-sys"
+description = "RBS add-ons adapter: HTTPS downloads, tar.gz and tar.bz2 decoding, and the OS file operations that rbs-add-ons needs (ADR-0145)."
+version.workspace = true
+edition.workspace = true
+# `File::try_lock` (1.89) for the add-on lock.
+rust-version = "1.89"
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Adapter (ADR-0145): implements the Fetch, Unpack and AddOnFs traits of rbs-add-ons.
+# Linked only by the composition roots (rbs-app, later rbs-cli).
+[dependencies]
+rbs-add-ons = { path = "../rbs-add-ons" }
+# HTTP/1.1 client with no TLS provider of its own: TLS is rustls with ring and the
+# OS trust roots through rustls-platform-verifier, like rbs-transport-rtmp.
+ureq = { version = "3.5", default-features = false, features = ["rustls-no-provider", "platform-verifier"] }
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
+# Pure-Rust bzip2 (upstream CEF archives are tar.bz2), gzip and tar.
+bzip2 = "0.6"
+flate2 = "1"
+tar = { version = "0.4", default-features = false }
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", features = ["fs"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+
+[dev-dependencies]
+rbs-core = { path = "../rbs-core" }
+sha2 = "0.10"
+tempfile = "3"
+
+[lints]
+workspace = true
