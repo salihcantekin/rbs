@@ -9851,7 +9851,7 @@ mod tests {
                 ("Set up vertical stream...".to_owned(), true, false),
             ]
         );
-        // "Main + vertical" by default: Record acts on both canvases, and the
+        // "Main + vertical" by default: Record acts on both canvases, and
         // their main-only twins on the main one.
         {
             let s = Shown {
