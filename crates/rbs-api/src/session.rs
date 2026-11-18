@@ -27,6 +27,9 @@ use crate::transport::{
 
 /// The protocol version this server speaks.
 ///
+/// 1.93 adds scrolling (ADR-0150): `item.set_scroll`, the live `item.scroll_pause`,
+/// `item.scroll_resume`, `item.scroll_restart` and `item.scroll_speed`, `scroll` on an
+/// item's layout and the topic `item.scroll_finished`.
 /// 1.92 changes leaving studio mode (ADR-0151): `canvas.set_preview {scene: null}`
 /// while the program is held puts the scene back as it is on air, as one undo step.
 /// 1.90 adds add-ons (ADR-0145): `addon.list`, `addon.install`, `addon.cancel`,
@@ -117,7 +120,7 @@ use crate::transport::{
 /// `record.start`, `tracks` on a running recording and `record_separately` on a source.
 /// 1.45 adds `"wav"` and `"flac"` on a recording profile (the mix with no picture).
 /// 1.44 is the vertical canvas layouts.
-pub const PROTOCOL_VERSION: &str = "1.92";
+pub const PROTOCOL_VERSION: &str = "1.93";
 
 /// Caps and timeouts (ADR-0044 decision 12). The defaults are the version 1 values in
 /// the control API spec.

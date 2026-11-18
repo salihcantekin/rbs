@@ -85,6 +85,8 @@ pub enum EditKind {
     /// Leaving studio mode put the program scene back as it was on air, dropping the
     /// edits made in Preview (ADR-0151; the name is the scene's).
     DiscardPreview,
+    /// A source's scroll was set, changed or cleared (ADR-0150).
+    Scroll,
 }
 
 /// The step the next undo or redo applies: its kind and the name of the source or

@@ -229,6 +229,13 @@ impl HoldRun {
         self.view.as_mut()
     }
 
+    /// The layers its picture draws.
+    pub(super) fn bound_layers(&self) -> &[BoundLayer] {
+        self.view
+            .as_ref()
+            .map_or(&[], |v| v.bound.layers.as_slice())
+    }
+
     /// The scroll runs its picture draws (ADR-0150 decision 5).
     pub(super) fn scroll_keys_into(&self, out: &mut BTreeSet<rbs_scene::ScrollKey>) {
         if let Some(view) = &self.view {

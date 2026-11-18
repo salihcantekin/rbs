@@ -45,13 +45,14 @@ use rbs_gpu::share::{MAX_PREVIEW_SURFACES, PreviewDesc, PreviewEndpoint, ring_ne
 use rbs_graph::node::NodeTypeId;
 use rbs_record::{
     AudioSettings, ExtraCanvas, IsoAudioStart, Link, OutputId, OutputSettings, PictureId, Progress,
-    RecordAdapters, RecordError, Studio, StudioSettings, TextDue, TransitionOnce, TransitionPhase,
-    VideoSettings, VirtualCameraSettings,
+    RecordAdapters, RecordError, ScrollControl, ScrollRefused, Studio, StudioSettings, TextDue,
+    TransitionOnce, TransitionPhase, VideoSettings, VirtualCameraSettings,
 };
 use rbs_scene::model::{
     Border, CanvasId, Crop, DisplayChrome, FilterId, ItemContent, ItemId, ItemStyle, Layout,
-    MasterAudio, RecordSeparately, Scene, SceneId, SceneItem, SceneScope, SettingValue, Settings,
-    Shadow, Shape, Source, SourceAudio, SourceId, SourceMonitor, SourceRegion, VideoAs,
+    MAX_SCROLL_SPEED, MIN_SCROLL_SPEED, MasterAudio, RecordSeparately, Scene, SceneId, SceneItem,
+    SceneScope, Scroll, ScrollDirection, ScrollRepeat, ScrollStart, SettingValue, Settings, Shadow,
+    Shape, Source, SourceAudio, SourceId, SourceMonitor, SourceRegion, VideoAs,
 };
 use rbs_scene::{
     AutoLayout, CenterAxis, ChromeFill, FitMode, Removed, SceneError, SceneLevel, Undo,
@@ -12874,6 +12875,82 @@ impl Host {
         Ok(true)
     }
 
+    /// Sets or clears an item's saved scroll on `on` (ADR-0150): one undo step. False
+    /// when it was already so.
+    fn set_item_scroll(
+        &mut self,
+        item: ItemId,
+        scroll: Option<Scroll>,
+        gesture: u64,
+        on: OutputCanvas,
+    ) -> Result<bool, String> {
+        let Some((_, found)) = self.collection.item(item) else {
+            return Err("This source is not in the scene any more.".to_owned());
+        };
+        let found = found.clone();
+        let (mut layout, own) = match on {
+            OutputCanvas::Main => (
+                self.shown_layout(&found),
+                found
+                    .overrides
+                    .contains_key(&self.canvas)
+                    .then_some(self.canvas),
+            ),
+            OutputCanvas::Vertical => {
+                let (_, layout, own) = self.crop_target_on(item, on).map_err(|e| e.text())?;
+                (layout, own)
+            }
+        };
+        if layout.scroll == scroll {
+            return Ok(false);
+        }
+        layout.scroll = scroll;
+        let undo = self
+            .save_live_layout(item, own, layout)
+            .map_err(|e| edit_error(&e))?;
+        let name = match found.content {
+            ItemContent::Source(id) => self.name_of(id),
+            _ => String::new(),
+        };
+        self.history
+            .record(EditKind::Scroll, &name, gesture, vec![undo]);
+        Ok(true)
+    }
+
+    /// A live call on an item's scroll run (ADR-0150 decision 11).
+    fn api_scroll_control(
+        &mut self,
+        item: u32,
+        on: OutputCanvas,
+        control: ScrollControl,
+    ) -> Result<Response, ApiError> {
+        let canvas = self.edit_canvas(on).map_err(|e| refused(&e))?;
+        let id = ItemId::from_raw(item);
+        let Some((_, found)) = self.collection.item(id) else {
+            return Err(ApiError::new(
+                ErrorKind::NotFound,
+                format!("no item {item}"),
+            ));
+        };
+        if matches!(found.content, ItemContent::Scene(_)) {
+            return Err(ApiError::new(
+                ErrorKind::InvalidParams,
+                "scroll is for source items, not nested scenes",
+            ));
+        }
+        match self.studio.scroll_control(id, canvas, control) {
+            Ok(_) => Ok(Response::Done(Empty {})),
+            Err(ScrollRefused::NoScroll) => Err(ApiError::new(
+                ErrorKind::InvalidParams,
+                "This source does not scroll on that canvas.",
+            )),
+            Err(_) => Err(ApiError::new(
+                ErrorKind::Conflict,
+                "This source is not on a scene a canvas shows, so its scroll is not running.",
+            )),
+        }
+    }
+
     /// An item placing a source, anywhere in the collection, with its layout on the
     /// studio's canvas and whether that is its own override there.
     fn crop_target(
@@ -13185,6 +13262,7 @@ impl Host {
             Err(e) => notify(Update::Error(e.to_string())),
         }
         self.publish_transitions();
+        self.publish_scroll_finished();
         self.look_at_stinger();
         self.publish(notify);
     }
@@ -13193,6 +13271,26 @@ impl Host {
     /// `transition.state` (ADR-0128 decision 13), one key per canvas. Like every state
     /// topic the slot keeps the latest: a cut's start and end in one update reach a
     /// slow client as `ended` with a `seq` that skipped the start.
+    fn publish_scroll_finished(&mut self) {
+        for e in self.studio.take_scroll_finished() {
+            let canvas = if e.canvas == self.canvas {
+                OutputCanvas::Main
+            } else if self.vertical.map(|v| v.canvas) == Some(e.canvas) {
+                OutputCanvas::Vertical
+            } else {
+                continue;
+            };
+            let finished = api::ScrollFinished {
+                canvas,
+                items: e.items.iter().map(|i| i.get()).collect(),
+            };
+            self.events
+                .changed(canvas_key(Topic::ItemScrollFinished, canvas), || {
+                    EventPayload::ItemScrollFinished(finished)
+                });
+        }
+    }
+
     fn publish_transitions(&mut self) {
         for e in self.studio.take_transition_events() {
             let canvas = if e.canvas == self.canvas {
@@ -14794,6 +14892,66 @@ impl ApiTarget<'_> {
                 }
                 Ok(Response::Done(Empty {}))
             }
+            C::ItemSetScroll(p) => {
+                let scroll = match &p.scroll {
+                    Some(s) => Some(
+                        scene_scroll(s)
+                            .map_err(|why| ApiError::new(ErrorKind::InvalidParams, why))?,
+                    ),
+                    None => None,
+                };
+                // The canvas comes first in the error order (protocol 1.44).
+                host.edit_canvas(p.canvas).map_err(|e| refused(&e))?;
+                let item = ItemId::from_raw(p.item);
+                match host.collection.item(item).map(|(_, i)| i.content) {
+                    None => {
+                        return Err(ApiError::new(
+                            ErrorKind::NotFound,
+                            format!("no item {}", p.item),
+                        ));
+                    }
+                    Some(ItemContent::Scene(_)) => {
+                        return Err(ApiError::new(
+                            ErrorKind::InvalidParams,
+                            "scroll is for source items, not nested scenes",
+                        ));
+                    }
+                    Some(_) => {}
+                }
+                if p.canvas == OutputCanvas::Vertical
+                    && host.collection.item(item).map(|(scene, _)| scene) == host.globals()
+                {
+                    return Err(ApiError::new(
+                        ErrorKind::Conflict,
+                        "Global sources are not on the vertical canvas yet.",
+                    ));
+                }
+                if host
+                    .set_item_scroll(item, scroll, 0, p.canvas)
+                    .map_err(failed)?
+                {
+                    host.apply(notify);
+                }
+                Ok(Response::Done(Empty {}))
+            }
+            C::ItemScrollPause(p) => {
+                host.api_scroll_control(p.item, p.canvas, ScrollControl::Pause)
+            }
+            C::ItemScrollResume(p) => {
+                host.api_scroll_control(p.item, p.canvas, ScrollControl::Resume)
+            }
+            C::ItemScrollRestart(p) => {
+                host.api_scroll_control(p.item, p.canvas, ScrollControl::Restart)
+            }
+            C::ItemScrollSpeed(p) => {
+                if !(MIN_SCROLL_SPEED..=MAX_SCROLL_SPEED).contains(&p.speed) {
+                    return Err(ApiError::new(
+                        ErrorKind::InvalidParams,
+                        "speed must be 1 to 4000; pause is item.scroll_pause",
+                    ));
+                }
+                host.api_scroll_control(p.item, p.canvas, ScrollControl::Speed(f64::from(p.speed)))
+            }
             C::EditUndo | C::EditRedo => {
                 let done = host.undo_or_redo(matches!(command, C::EditUndo));
                 host.apply(notify);
@@ -16224,6 +16382,61 @@ fn api_style(s: &ItemStyle) -> api::ItemStyle {
     }
 }
 
+/// The API form of a scroll (ADR-0150).
+fn api_scroll(s: &Scroll) -> api::ItemScroll {
+    api::ItemScroll {
+        direction: match s.direction {
+            ScrollDirection::Right => api::ScrollDirection::Right,
+            ScrollDirection::Up => api::ScrollDirection::Up,
+            ScrollDirection::Down => api::ScrollDirection::Down,
+            _ => api::ScrollDirection::Left,
+        },
+        speed: s.speed,
+        gap: s.gap,
+        repeat: match s.repeat {
+            ScrollRepeat::Once => api::ScrollRepeat::Once,
+            _ => api::ScrollRepeat::Loop,
+        },
+        start: match s.start {
+            ScrollStart::Outside => api::ScrollStart::Outside,
+            _ => api::ScrollStart::Inside,
+        },
+        fade: s.fade,
+        ramp_ms: s.ramp_ms,
+    }
+}
+
+/// The scene's form of an API scroll; the error says what is out of range.
+fn scene_scroll(s: &api::ItemScroll) -> Result<Scroll, String> {
+    let direction = match s.direction {
+        api::ScrollDirection::Left => ScrollDirection::Left,
+        api::ScrollDirection::Right => ScrollDirection::Right,
+        api::ScrollDirection::Up => ScrollDirection::Up,
+        api::ScrollDirection::Down => ScrollDirection::Down,
+    };
+    let scroll = Scroll::new(direction, s.speed)
+        .with_gap(s.gap)
+        .with_repeat(match s.repeat {
+            api::ScrollRepeat::Loop => ScrollRepeat::Loop,
+            api::ScrollRepeat::Once => ScrollRepeat::Once,
+        })
+        .with_start(match s.start {
+            api::ScrollStart::Inside => ScrollStart::Inside,
+            api::ScrollStart::Outside => ScrollStart::Outside,
+        })
+        .with_fade(s.fade)
+        .with_ramp_ms(s.ramp_ms);
+    if scroll.is_valid() {
+        Ok(scroll)
+    } else {
+        Err(SCROLL_ERROR.into())
+    }
+}
+
+/// Why a scroll is refused.
+const SCROLL_ERROR: &str =
+    "Scroll speed must be 1 to 4000, gap 0 to 16384, edge fade 0 to 2048 and ramp 0 to 5000 ms.";
+
 /// The scene's form of an API style; the error says what is wrong.
 fn scene_style(s: &api::ItemStyle) -> Result<ItemStyle, String> {
     let shape = match s.shape {
@@ -16296,6 +16509,7 @@ fn api_source(row: &SourceRow) -> api::SourceInfo {
             crop: [l.crop.left, l.crop.top, l.crop.right, l.crop.bottom],
             opacity: l.opacity,
             style: api_style(&l.style),
+            scroll: l.scroll.map(|s| api_scroll(&s)),
         }),
         picture_size: row.picture.map(|(w, h)| [w, h]),
         visible: row.visible,
