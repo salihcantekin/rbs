@@ -192,11 +192,48 @@ impl SurfaceExporter {
         color: ColorSpace,
         open_shadows: bool,
     ) -> Result<Self, GpuError> {
+        Self::scaled_tone(
+            ctx,
+            format,
+            width,
+            height,
+            width,
+            height,
+            surfaces,
+            color,
+            open_shadows,
+        )
+    }
+
+    /// [`Self::with_tone`] for `src_width x src_height` canvases scaled once to
+    /// `width x height` surfaces ([`YuvConverter::scaled_tone`]), as the readback does for
+    /// an output of another size (ADR-0102).
+    #[allow(clippy::too_many_arguments)]
+    pub fn scaled_tone(
+        ctx: &GpuContext,
+        format: YuvFormat,
+        src_width: u32,
+        src_height: u32,
+        width: u32,
+        height: u32,
+        surfaces: usize,
+        color: ColorSpace,
+        open_shadows: bool,
+    ) -> Result<Self, GpuError> {
         if !(2..=MAX_EXPORT_SURFACES).contains(&surfaces) {
             return Err(GpuError::Unsupported("export ring size outside 2..=32"));
         }
         // Checks the size, the colour, the P010 capability and builds the pipelines.
-        let converter = YuvConverter::with_tone(ctx, format, width, height, color, open_shadows)?;
+        let converter = YuvConverter::scaled_tone(
+            ctx,
+            format,
+            src_width,
+            src_height,
+            width,
+            height,
+            color,
+            open_shadows,
+        )?;
         let layout = Layout::new(ctx, format, width, height, color)?;
         let mut ring = Vec::with_capacity(surfaces);
         let mut planes = Vec::with_capacity(surfaces);
@@ -235,6 +272,13 @@ impl SurfaceExporter {
 
     /// Converted frames not yet handed out by [`Self::take_ready`].
     pub fn pending(&self) -> usize {
+        self.pending.len()
+    }
+
+    /// Conversions in flight: the same as [`Self::pending`], named like the readback's
+    /// counter so the export node drains both the same way at the end of a stream
+    /// (ADR-0147 decision 5, ADR-0045).
+    pub fn in_flight(&self) -> usize {
         self.pending.len()
     }
 
@@ -296,6 +340,87 @@ impl SurfaceExporter {
         Ok(())
     }
 
+    /// [`Self::take_ready`] under the readback's name for the end of a stream: frames come
+    /// out in submission order, one per call, none dropped (ADR-0147 decision 5).
+    pub fn take_oldest(&mut self, ctx: &GpuContext) -> Result<Option<VideoFrame>, GpuError> {
+        self.take_ready(ctx)
+    }
+
+    /// A frame of the black picture in a surface of its own: a free surface is cleared to
+    /// black in the ring's colour and handed out. The caller keeps the frame (and with it
+    /// the surface) for as long as it may send the picture, typically an export hold
+    /// (ADR-0147 decision 5); the ring never writes that surface while the frame lives.
+    /// Not for real-time threads: it waits for the GPU. `GpuError::ExportBusy` when no
+    /// surface is free.
+    pub fn black(&mut self, ctx: &GpuContext, timestamp: Timestamp) -> Result<VideoFrame, GpuError> {
+        let n = self.planes.len();
+        let ring = &self.ring.surfaces;
+        let planes = &self.planes;
+        let Some(i) = (0..n).find(|&i| !planes[i].pending && ring[i].1.load(Ordering::Acquire) == 0)
+        else {
+            self.stats.busy += 1;
+            return Err(GpuError::ExportBusy { surfaces: n as u32 });
+        };
+        let (luma, chroma) = black_codes(self.format.pixel_format, self.format.color.range);
+        let mut encoder = ctx
+            .device()
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("rbs-gpu export black"),
+            });
+        for (view, value) in [(&self.planes[i].luma, luma), (&self.planes[i].chroma, chroma)] {
+            encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("rbs-gpu export black plane"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: value,
+                            g: value,
+                            b: 0.0,
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+        }
+        let submission = ctx.queue().submit(Some(encoder.finish()));
+        ctx.device()
+            .poll(wgpu::PollType::Wait {
+                submission_index: Some(submission),
+                timeout: None,
+            })
+            .map_err(|_| GpuError::Export("black surface did not complete"))?;
+        if ctx.metrics().device_lost() {
+            return Err(GpuError::DeviceLost);
+        }
+        let token = i as u64;
+        self.ring.retain(token);
+        let owner: Arc<dyn LeaseOwner> = self.ring.clone();
+        // SAFETY: one reference to entry `token` was counted just above and is handed over.
+        let lease = unsafe { Lease::adopt(owner, token) };
+        let ptr = std::ptr::from_ref::<IOSurfaceRef>(&self.ring.surfaces[i].0.0) as usize;
+        // SAFETY: as in `take_ready`: a live IOSurfaceRef of `self.format`, retained by the
+        // ring that `lease` keeps alive; its count is now above zero, so the exporter does
+        // not write it while the frame lives; the clear has completed (waited above).
+        let frame = unsafe {
+            VideoFrame::native(
+                self.format,
+                timestamp,
+                NativeSurface::io_surface(ptr),
+                SurfaceSync::Ready,
+                lease,
+            )
+        };
+        Ok(frame)
+    }
+
     /// The oldest converted frame whose GPU work has completed, as a native `IoSurface`
     /// frame (`SurfaceSync::Ready`) holding a lease on the surface; `None` when no frame is
     /// complete yet. Call in a loop until `None`, once per render tick. Does not block.
@@ -354,6 +479,21 @@ impl SurfaceExporter {
         };
         Ok(Some(frame.with_sequence(p.sequence)))
     }
+}
+
+/// Normalised clear values of the black picture for the luma and chroma planes: code 16
+/// (8-bit) or 64 (10-bit, in the high bits of P010) for limited range, 0 for full range,
+/// and the neutral chroma code 128 or 512.
+fn black_codes(format: rbs_core::media::PixelFormat, range: ColorRange) -> (f64, f64) {
+    let ten_bit = format == YuvFormat::P010.pixel_format();
+    let (max, luma) = if ten_bit {
+        // P010 keeps 10-bit codes in the high bits of a 16-bit word.
+        (65535.0, if range == ColorRange::Full { 0.0 } else { f64::from(64u32 << 6) })
+    } else {
+        (255.0, if range == ColorRange::Full { 0.0 } else { 16.0 })
+    };
+    let chroma = if ten_bit { f64::from(512u32 << 6) } else { 128.0 };
+    (luma / max, chroma / max)
 }
 
 /// Byte layout of one surface of the ring, computed once.
