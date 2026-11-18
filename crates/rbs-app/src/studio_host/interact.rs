@@ -178,15 +178,22 @@ impl Host {
             let running = col.as_ref().unwrap_or(&self.collection);
             // A page that cannot run (no engine, no slot, standby) still gets its
             // window: it shows the reason.
-            if let Ok((pid, _)) =
-                self.studio
-                    .add_source_picture(running, &self.adapters.sources, source, desc)
+            match self
+                .studio
+                .add_source_picture(running, &self.adapters.sources, source, desc)
             {
-                self.interacts[at].picture = Some(pid);
-                self.interacts[at].size = size;
-                self.interacts[at].refused = None;
-            } else {
-                self.interacts[at].refused = Some(now);
+                Ok((pid, _)) => {
+                    self.interacts[at].picture = Some(pid);
+                    self.interacts[at].size = size;
+                    self.interacts[at].refused = None;
+                }
+                Err(e) => {
+                    // Said once per state of the source; tried again when it changes.
+                    self.interacts[at].refused = Some(now);
+                    notify(Update::Error(format!(
+                        "The Interact window has no picture of the page: {e}"
+                    )));
+                }
             }
             self.waiting = self.studio.waiting();
         }
