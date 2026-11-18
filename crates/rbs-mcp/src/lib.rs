@@ -226,7 +226,7 @@ impl<C: Connect> Mcp<C> {
     fn tool_list(&self) -> Vec<Value> {
         let mut list = vec![json!({
             "name": "studio_summary",
-            "description": "What the studio is doing: canvas, scenes with their items, sources, profiles and scene collections, recording and stream state, in one JSON value. Call it first.",
+            "description": "What the studio is doing: canvas, scenes with their items, sources, profiles and scene collections, recording and stream state (`stream.available` is false while no stream destination is on, so Go live is off), in one JSON value. Call it first.",
             "inputSchema": { "type": "object", "properties": {} },
             "annotations": { "readOnlyHint": true }
         })];

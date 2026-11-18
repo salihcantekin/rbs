@@ -8459,6 +8459,10 @@ impl Host {
             (None, Some(_)) => self.stream_profile.clone().unwrap_or_default(),
             (None, None) => return Err(no_server()),
         };
+        // Every destination off: refused before any key is read (ADR-0148 decision 10).
+        if only.is_none() && !self.stream_available(c) {
+            return Err(failed(STREAMING_OFF));
+        }
         // The first slot removed: the other destinations go live on the stream's
         // shared settings (ADR-0148 decision 6), or streaming is off.
         if other.is_none() && !crate::stream_destinations::first_exists(&profile) {
@@ -15575,13 +15579,9 @@ impl ApiTarget<'_> {
                 outputs.push(entry(api::OutputOutcome::Running));
                 continue;
             }
-            if kind == api::OutputKind::Stream
-                && c != OutputCanvas::Main
-                && self
-                    .host
-                    .stream_profile_of(c)
-                    .is_none_or(|p| p.server.is_empty())
-            {
+            // `canvas: "all"` starts the canvases where streaming is available
+            // (ADR-0148 decision 10).
+            if kind == api::OutputKind::Stream && !self.host.stream_available(c) {
                 outputs.push(entry(api::OutputOutcome::NotConfigured));
                 continue;
             }
@@ -15615,6 +15615,14 @@ impl ApiTarget<'_> {
                     ..entry(api::OutputOutcome::Refused)
                 }),
             }
+        }
+        // Refused only when no canvas streams or can (ADR-0148 decision 10).
+        if kind == api::OutputKind::Stream
+            && outputs
+                .iter()
+                .all(|o| o.outcome == api::OutputOutcome::NotConfigured)
+        {
+            return Err(failed(STREAMING_OFF));
         }
         if !outputs
             .iter()

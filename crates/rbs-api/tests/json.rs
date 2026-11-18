@@ -1697,6 +1697,7 @@ fn stream_state_has_a_stable_wire_form() {
         serde_json::to_value(&live).unwrap(),
         json!({
             "state": "live",
+            "available": true,
             "protocol": "rtmp",
             "connected": false,
             "connects": 0,
@@ -1713,6 +1714,15 @@ fn stream_state_has_a_stable_wire_form() {
             "hold_fallback_reason": null,
         })
     );
+    // Streaming off (protocol 1.92): `available` false in the idle form; a 1.91
+    // server's idle state, without it, reads as available.
+    assert_eq!(
+        serde_json::to_value(StreamState::idle().with_available(false)).unwrap(),
+        json!({"state": "idle", "last": null, "available": false})
+    );
+    let older: StreamState =
+        serde_json::from_value(json!({"state": "idle", "last": null})).unwrap();
+    assert!(older.available());
     // A 1.63 server's live state, without the hold fields, reads as not held.
     let old: StreamState = serde_json::from_value(json!({
         "state": "live", "protocol": "rtmp", "connected": true, "connects": 1,
@@ -1737,7 +1747,7 @@ fn stream_state_has_a_stable_wire_form() {
     let v: Value = serde_json::from_str(&JsonCodec.encode_event(&event)).unwrap();
     assert_eq!(
         v["params"],
-        json!({"topic": "stream.state", "seq": 3, "data": {"state": "idle", "last": null}})
+        json!({"topic": "stream.state", "seq": 3, "data": {"state": "idle", "last": null, "available": true}})
     );
     assert_eq!(
         rbs_api::request::method_scope("stream.start"),
