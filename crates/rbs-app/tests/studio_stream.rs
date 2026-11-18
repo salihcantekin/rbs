@@ -2194,6 +2194,55 @@ fn destinations(keys: &MemoryKeyStore) -> rbs_app::stream_destinations::Destinat
     d
 }
 
+/// Control API 1.93 (ADR-0148 decision 10): every stream state says whether a
+/// destination is on, a change publishes, and a canvas with none is refused first.
+#[test]
+fn stream_available_follows_the_destinations() {
+    let Some(gpu) = gpu() else { return };
+    let keys = Arc::new(MemoryKeyStore::new());
+    let server = Arc::new(Server::default());
+    let (host, rx) = host(gpu, keys, Arc::clone(&server), &TestClock::new());
+    let (api, mut c) = api_client(&host);
+    c.call(
+        "events.subscribe",
+        serde_json::json!({"topics": ["stream.state"]}),
+    );
+    // A new profile: no destination, so streaming is off.
+    host.send(Command::SetStreamProfile(StreamProfile::new()));
+    add_display(&host, &rx);
+    c.event("stream.state", |d| d["available"] == false);
+    let status = c.call("stream.status", serde_json::json!({}));
+    assert_eq!(status["result"]["data"]["available"], false, "{status}");
+    // A first destination: available, published.
+    let mut profile = StreamProfile::new();
+    profile.server = URL.into();
+    host.send(Command::SetStreamProfile(profile));
+    c.event("stream.state", |d| d["available"] == true);
+    // Turned off in the list: off again, and stream.start is refused before a key is
+    // read.
+    let mut d = rbs_app::stream_destinations::Destinations::default();
+    assert!(d.set_enabled(0, false));
+    host.send(Command::SetStreamDestinations(d.clone(), false));
+    c.event("stream.state", |d| d["available"] == false);
+    let refused = c.call("stream.start", serde_json::json!({}));
+    assert_eq!(refused["error"]["data"]["kind"], "failed", "{refused}");
+    assert!(
+        refused["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Streaming is off"),
+        "{refused}"
+    );
+    let all = c.call("stream.start", serde_json::json!({"canvas": "all"}));
+    assert_eq!(all["error"]["data"]["kind"], "failed", "{all}");
+    // A section that did not load counts as available.
+    host.send(Command::SetStreamDestinations(d, true));
+    c.event("stream.state", |d| d["available"] == true);
+    assert!(server.sessions.lock().unwrap().is_empty());
+    drop(api);
+    drop(host);
+}
+
 #[test]
 fn go_live_sends_to_every_enabled_destination_with_its_own_key() {
     let Some(gpu) = gpu() else { return };
@@ -2203,7 +2252,7 @@ fn go_live_sends_to_every_enabled_destination_with_its_own_key() {
     let server = Arc::new(Server::default());
     let (host, rx) = host(gpu, keys.clone(), Arc::clone(&server), &TestClock::new());
     add_display(&host, &rx);
-    host.send(Command::SetStreamDestinations(destinations(&keys)));
+    host.send(Command::SetStreamDestinations(destinations(&keys), false));
     host.send(Command::StartStream(request()));
     match stream(&rx) {
         StreamUpdate::Started { url, .. } => assert_eq!(url, URL),
@@ -2249,7 +2298,7 @@ fn a_destination_that_drops_ends_alone_and_the_stream_goes_on() {
     let server = Arc::new(Server::default());
     let (host, rx) = host(gpu, keys.clone(), Arc::clone(&server), &TestClock::new());
     add_display(&host, &rx);
-    host.send(Command::SetStreamDestinations(destinations(&keys)));
+    host.send(Command::SetStreamDestinations(destinations(&keys), false));
     host.send(Command::StartStream(request()));
     assert!(matches!(stream(&rx), StreamUpdate::Started { .. }));
     link_where(&rx, |l| l.connected && l.connects == 2);
@@ -2303,7 +2352,7 @@ fn a_control_api_client_lists_starts_and_stops_destinations() {
     let saved = destinations(&keys);
     let [second, off, refused] = [2, 3, 4];
     assert_eq!(saved.get(off).map(|d| d.enabled), Some(false));
-    host.send(Command::SetStreamDestinations(saved));
+    host.send(Command::SetStreamDestinations(saved, false));
     add_display(&host, &rx);
 
     // The list: the first destination, then the others; never a server or a key.
