@@ -2426,3 +2426,93 @@ fn a_loaded_collection_with_its_stinger_placed_stays_editable() {
     assert_eq!(col.placed_stinger(), Some(s.cam));
     col.rename_scene(a, "B").unwrap();
 }
+
+#[test]
+fn a_scene_gets_its_items_back_as_one_undo_step() {
+    let mut s = studio();
+    let (scene, _) = s.col.add_scene("Talk", SceneScope::Shared).unwrap();
+    let (cam, _) = s
+        .col
+        .add_item(scene, ItemContent::Source(s.cam), full(960.0, 540.0), None)
+        .unwrap();
+    let (screen, _) = s
+        .col
+        .add_item(
+            scene,
+            ItemContent::Source(s.screen),
+            full(1920.0, 1080.0),
+            None,
+        )
+        .unwrap();
+    let before = s.col.scene(scene).unwrap().items.clone();
+
+    // Edits as in Preview: the camera moves, the screen goes, a new camera comes.
+    s.col
+        .set_item_layout(cam, Some(s.wide), Layout::new([10.0, 10.0], [400.0, 300.0]))
+        .unwrap();
+    s.col.remove_item(screen).unwrap();
+    s.col
+        .add_item(scene, ItemContent::Source(s.cam), full(100.0, 100.0), None)
+        .unwrap();
+    let edited = s.col.scene(scene).unwrap().items.clone();
+
+    let undo = s.col.set_scene_items(scene, before.clone()).unwrap();
+    assert_eq!(s.col.scene(scene).unwrap().items, before);
+    assert!(
+        s.col.item(screen).is_some(),
+        "the removed item keeps its id"
+    );
+
+    let redo = s.col.undo(undo).unwrap();
+    assert_eq!(s.col.scene(scene).unwrap().items, edited);
+    s.col.undo(redo).unwrap();
+    assert_eq!(s.col.scene(scene).unwrap().items, before);
+}
+
+#[test]
+fn a_scene_never_gets_an_item_id_that_is_unissued_or_used() {
+    let mut s = studio();
+    let (scene, _) = s.col.add_scene("Talk", SceneScope::Shared).unwrap();
+    let (other, _) = s.col.add_scene("Other", SceneScope::Shared).unwrap();
+    let (cam, _) = s
+        .col
+        .add_item(scene, ItemContent::Source(s.cam), full(960.0, 540.0), None)
+        .unwrap();
+    let (elsewhere, _) = s
+        .col
+        .add_item(other, ItemContent::Source(s.cam), full(960.0, 540.0), None)
+        .unwrap();
+    let mut items = s.col.scene(scene).unwrap().items.clone();
+    let before = s.col.clone();
+
+    let mut used = items[0].clone();
+    used.id = elsewhere;
+    items.push(used);
+    assert_eq!(
+        s.col.set_scene_items(scene, items.clone()),
+        Err(SceneError::UndoConflict)
+    );
+    items.pop();
+    let mut twice = items[0].clone();
+    twice.id = cam;
+    items.push(twice);
+    assert_eq!(
+        s.col.set_scene_items(scene, items.clone()),
+        Err(SceneError::UndoConflict)
+    );
+    items.pop();
+    let mut other_content = items.clone();
+    other_content[0].content = ItemContent::Source(s.screen);
+    assert_eq!(
+        s.col.set_scene_items(scene, other_content),
+        Err(SceneError::UndoConflict)
+    );
+    let mut unissued = items[0].clone();
+    unissued.id = ItemId::from_raw(0x0F00_0000);
+    items.push(unissued);
+    assert_eq!(
+        s.col.set_scene_items(scene, items),
+        Err(SceneError::UndoConflict)
+    );
+    assert_eq!(s.col, before, "a refused edit changes nothing");
+}

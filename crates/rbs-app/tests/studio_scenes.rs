@@ -868,6 +868,63 @@ fn with_the_program_scene_in_preview_the_program_is_held_until_the_transition() 
 }
 
 #[test]
+fn leaving_studio_mode_without_a_transition_keeps_the_program_as_it_was() {
+    let Some((host, updates, _api, mut c)) = start() else {
+        return;
+    };
+    let one = scenes(&mut c)["program"].as_u64().unwrap();
+    let screen = add(&mut c, "screen", "Main screen");
+    let row = |rows: &[Value], id: u64| rows.iter().find(|r| r["id"] == id).cloned();
+    let item = row(&sources(&mut c), screen).unwrap()["item"]
+        .as_u64()
+        .unwrap();
+
+    // Edits in Preview while the program is held (ADR-0063).
+    ok(&c.call("canvas.set_preview", json!({"scene": one})));
+    let mic = add(&mut c, "audio_input", "Mic");
+    ok(&c.call("item.set_visible", json!({"item": item, "visible": false})));
+    assert_eq!(sources(&mut c).len(), 2);
+
+    // Leaving without a transition drops them: the program stays as it was on air
+    // (ADR-0151), with the screen's item under its old id.
+    ok(&c.call("canvas.set_preview", json!({"scene": null})));
+    let rows = sources(&mut c);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    let back = row(&rows, screen).unwrap();
+    assert_eq!(back["item"], item);
+    assert_eq!(back.get("visible"), None, "shown again");
+
+    // One undo step brings the edits back.
+    ok(&c.call("edit.undo", json!({})));
+    let rows = sources(&mut c);
+    assert!(row(&rows, mic).is_some());
+    assert_eq!(row(&rows, screen).unwrap()["visible"], false);
+    // The steps made in Preview then undo as before, without a conflict.
+    ok(&c.call("edit.undo", json!({})));
+    assert_eq!(row(&sources(&mut c), screen).unwrap().get("visible"), None);
+    ok(&c.call("edit.undo", json!({})));
+    let rows = sources(&mut c);
+    assert!(row(&rows, mic).is_none());
+    ok(&c.call("edit.redo", json!({})));
+    ok(&c.call("edit.redo", json!({})));
+
+    // After a transition the edits are on air, and leaving keeps them.
+    ok(&c.call("canvas.set_preview", json!({"scene": one})));
+    ok(&c.call("item.set_visible", json!({"item": item, "visible": true})));
+    ok(&c.call("canvas.transition", json!({})));
+    ok(&c.call("canvas.set_preview", json!({"scene": null})));
+    let rows = sources(&mut c);
+    assert_eq!(rows.len(), 2);
+    assert_eq!(row(&rows, screen).unwrap().get("visible"), None);
+    while let Ok(u) = updates.try_recv() {
+        if let Update::Error(e) = u {
+            panic!("{e}");
+        }
+    }
+    drop(host);
+}
+
+#[test]
 fn a_vertical_canvas_is_added_follows_the_main_program_and_is_removed() {
     use rbs_app::studio_host::{Command, VerticalCanvas};
     use rbs_core::media::Size;

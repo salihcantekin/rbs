@@ -49,3 +49,4 @@ Re-check by the same session: nothing blocking remains. Left open: a loaded file
 
 Follow-up, 2026-11-10: ADR-0098 supersedes decision 1 in part: a hold also starts at a transition that keeps the preview scene, and it lasts while its scene is on air, whatever is previewed after; it ends when another scene goes on air or studio mode ends.
 - 2026-11-13: decision 1 (the "rescaled like the scene's" clause) and consequence 3 are superseded by [ADR-0110](0110-canvas-layout-space.md): a held copy keeps its stored boxes and is placed by the layout-space fit.
+- 2026-11-18: [ADR-0151](0151-leaving-studio-mode-keeps-the-program-as-it-was.md) supersedes the sentence of decision 4 on leaving studio mode: leaving while the program is held puts the scene back as it is on air, as one undo step.
