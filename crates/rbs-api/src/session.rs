@@ -27,6 +27,8 @@ use crate::transport::{
 
 /// The protocol version this server speaks.
 ///
+/// 1.90 adds add-ons (ADR-0145): `addon.list`, `addon.install`, `addon.cancel`,
+/// `addon.clean`, `addon.remove` and the topic `addon.changed`.
 /// 1.89 adds the Stinger transition (ADR-0140): the kind `stinger`, `stinger` on
 /// `collection.set_transition` and on the collection's transition, and the
 /// `alpha_unsupported` warning.
@@ -113,7 +115,7 @@ use crate::transport::{
 /// `record.start`, `tracks` on a running recording and `record_separately` on a source.
 /// 1.45 adds `"wav"` and `"flac"` on a recording profile (the mix with no picture).
 /// 1.44 is the vertical canvas layouts.
-pub const PROTOCOL_VERSION: &str = "1.89";
+pub const PROTOCOL_VERSION: &str = "1.90";
 
 /// Caps and timeouts (ADR-0044 decision 12). The defaults are the version 1 values in
 /// the control API spec.

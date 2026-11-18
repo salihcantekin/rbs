@@ -1481,6 +1481,11 @@ export struct EntryRow { id: string, name: string, current: bool }
 // 2 problem; `action` 0 none, 1 Allow, 2 Open system settings, 3 Restart RBS.
 export struct PermissionRowData { kind: int, label: string, status: string, tone: int, value: string, action: int, action-text: string }
 
+// One row of Settings › Add-ons (ADR-0145). `action` 0 none, 1 Download, 2 Cancel,
+// 3 Remove, 4 Update, 5 Retry (`rbs_app::add_on_text::Action`); `value` is shown
+// beside the button when not empty.
+export struct AddOnRowData { id: string, label: string, help: string, problem: bool, value: string, action: int, action-text: string }
+
 export global Studio {
     // 0 starting, 1 running, 2 failed (`failure` says why).
     in property <int> state;
@@ -2380,6 +2385,11 @@ export global Studio {
     in property <bool> permission-holder-warn;
     callback permission-action(int, int);
     callback permission-check();
+
+    // Settings › Add-ons (ADR-0145): one row per catalog entry, and its command
+    // (`id`, `action` as in `AddOnRowData`).
+    in property <[AddOnRowData]> add-on-rows;
+    callback add-on-action(string, int);
 }
 
 // From vcam.slint.

@@ -15,6 +15,7 @@
 //! (development aid, see `look`). `RBS_CONFIG_DIR` overrides the config directory.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod add_ons_page;
 mod app_menu;
 mod appearance;
 mod appearance_page;
@@ -2006,6 +2007,9 @@ impl Ctx {
                 if section == permissions_page::SECTION {
                     permissions_page::opened(app);
                 }
+                if section == add_ons_page::SECTION {
+                    add_ons_page::opened(app);
+                }
                 app.studio.monitor_page_shown(section == SECTION_AUDIO);
                 show_settings_target(&ctx, app, section, target);
                 return;
@@ -2096,6 +2100,9 @@ impl Ctx {
                 if s == permissions_page::SECTION {
                     c.update(permissions_page::opened);
                 }
+                if s == add_ons_page::SECTION {
+                    c.update(add_ons_page::opened);
+                }
                 if s == SECTION_APPEARANCE {
                     let ctx = c.clone();
                     c.update(move |app| appearance_page::opened(&ctx, app));
@@ -2127,6 +2134,9 @@ impl Ctx {
             }
             if section == permissions_page::SECTION {
                 permissions_page::opened(app);
+            }
+            if section == add_ons_page::SECTION {
+                add_ons_page::opened(app);
             }
             app.studio.monitor_page_shown(section == SECTION_AUDIO);
             show_settings_target(&ctx, app, section, target);
@@ -2807,6 +2817,7 @@ impl Ctx {
         vcam_page::push(&app);
         replay_page::push(&app);
         permissions_page::push(&mut app);
+        add_ons_page::push(&app);
 
         // Main window.
         let (stacks, handles, rail) = view::window_view(
@@ -4228,7 +4239,8 @@ pub(crate) const AI_TOOLS_READY: bool = true;
 
 /// Every card of the Settings window that folds (ADR-0078), for "Collapse all". A test
 /// keeps this in step with the ids in `ui/*.slint`.
-const SETTINGS_SECTIONS: [&str; 36] = [
+const SETTINGS_SECTIONS: [&str; 37] = [
+    "settings.add-ons.list",
     "settings.ai-tools.access",
     "settings.ai-tools.actions",
     "settings.ai-tools.connect",
@@ -5618,6 +5630,8 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     });
     // Settings, Permissions (ADR-0141).
     permissions_page::install(g, ctx);
+    // Settings, Add-ons (ADR-0145).
+    add_ons_page::install(g, ctx);
     // Before every redraw of the main window: popups open, move and close with a redraw,
     // and so does a change of the window's scale; the preview layer follows them
     // (ADR-0034 decisions 2 and 4).
@@ -6065,6 +6079,8 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
                     .map_err(|e| e.to_string())
             },
         )));
+        // The built-in add-on catalog (ADR-0145); nothing is read until asked.
+        config.add_ons = rbs_app::add_ons::AddOnsSetup::system();
         config
     };
     match studio_host::StudioHost::spawn(

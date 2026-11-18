@@ -113,6 +113,7 @@ const AI_CONNECT: &[Place] = &[at("ai_tools", "settings.ai-tools.connect")];
 const AI_ACTIONS: &[Place] = &[at("ai_tools", "settings.ai-tools.actions")];
 const PERM_DEVICES: &[Place] = &[at("permissions", "settings.permissions.devices")];
 const PERM_HOLDER: &[Place] = &[at("permissions", "settings.permissions.holder")];
+const ADD_ONS: &[Place] = &[at("add_ons", "settings.add-ons.list")];
 /// The Encoding card's rows (`EncoderFields`), shared by Recording and Stream.
 const ENCODING: &[Place] = &[
     at("recording", "settings.recording.encoding"),
@@ -352,6 +353,13 @@ pub const SETTINGS: &[Setting] = &[
         "Who gets these permissions",
         "permission privacy app bundle terminal macos tcc check again",
         PERM_HOLDER,
+    ),
+    // Add-ons (ADR-0145)
+    c(
+        "settings.add-ons.list",
+        "Available add-ons",
+        "add-on addon download install remove update browser engine web page cef chromium",
+        ADD_ONS,
     ),
     // Video
     c(

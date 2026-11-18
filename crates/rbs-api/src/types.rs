@@ -2927,3 +2927,107 @@ pub struct AttributesClipboardChanged {
     /// What it holds; `null` once cleared (a collection switch).
     pub clipboard: Option<AttributesClipboard>,
 }
+
+/// `addon.list` (protocol 1.90, ADR-0145): every add-on of the built-in catalog, in
+/// catalog order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AddOnList {
+    /// The add-ons.
+    pub add_ons: Vec<AddOnInfo>,
+}
+
+/// One add-on of `addon.list`. Carries no path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AddOnInfo {
+    /// Its id (`org.rbs.browser-engine`).
+    pub id: String,
+    /// What it is: `runtime` (a native library a built-in feature loads).
+    pub kind: String,
+    /// Its name as Settings shows it.
+    pub name: String,
+    /// One sentence on what it adds.
+    pub summary: String,
+    /// The catalog's version.
+    pub version: String,
+    /// The download size in bytes; `null` when there is none for this computer.
+    pub size: Option<u64>,
+    /// The size on disk after install in bytes; `null` when there is none for this
+    /// computer.
+    pub unpacked_size: Option<u64>,
+    /// The catalog has a download for this computer.
+    pub available: bool,
+    /// Where it is.
+    pub status: AddOnStatus,
+}
+
+/// Where an add-on is (`addon.list`, `addon.changed`; add-ons spec, "Status").
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum AddOnStatus {
+    /// Not on disk (a version newer than this build's counts as not installed).
+    NotInstalled,
+    /// Downloading.
+    Downloading {
+        /// Bytes received.
+        bytes: u64,
+        /// Bytes expected.
+        total: u64,
+    },
+    /// Checking the archive's hash.
+    Verifying,
+    /// Unpacking and moving into place.
+    Installing,
+    /// The catalog's version is installed.
+    Installed {
+        /// That version.
+        version: String,
+    },
+    /// Only a lower version is on disk.
+    UpdateAvailable {
+        /// The highest lower version on disk.
+        installed: String,
+        /// The catalog's version.
+        available: String,
+    },
+    /// The last install failed; Retry starts it again.
+    Failed {
+        /// Why.
+        reason: AddOnFailReason,
+    },
+    /// A state this client does not know.
+    #[serde(other)]
+    Other,
+}
+
+/// Why an add-on install failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AddOnFailReason {
+    /// The download failed or stalled.
+    Network,
+    /// A URL or redirect was not `https` or went to a host outside the catalog's list.
+    HostNotAllowed,
+    /// More bytes arrived than the catalog allows.
+    TooLarge,
+    /// The archive's SHA-256 differs from the catalog's.
+    HashMismatch,
+    /// The archive broke a name, link, size or content rule.
+    UnsafeArchive,
+    /// Not enough free space.
+    NoSpace,
+    /// A file system error.
+    Io,
+    /// A reason this client does not know.
+    #[serde(other)]
+    Other,
+}
+
+/// The topic `addon.changed` (protocol 1.90): one add-on's status. The state key's
+/// object is the add-on's place in the catalog.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AddOnChanged {
+    /// The add-on's id.
+    pub id: String,
+    /// Where it is now.
+    pub status: AddOnStatus,
+}
