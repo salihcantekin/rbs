@@ -11,7 +11,7 @@ use rbs_core::timing::FrameRate;
 use rbs_graph::description::{GraphDescription, NodeId, PartitionId};
 use rbs_graph::node::{LinkKind, NodeDescriptor, NodeKind, NodeTypeId, Pin};
 use rbs_scene::SceneCollection;
-use rbs_scene::activity::{ActivityTraits, OnReturn, Run, SourceActivity};
+use rbs_scene::activity::{ActivityTraits, Level, OnReturn, Run, SourceActivity};
 use rbs_scene::binder::{BindError, BindProblem, HoldScene, NodeTypes, Role, SceneBinder, resolve};
 use rbs_scene::model::{
     CanvasId, Crop, DisplayChrome, ItemContent, Layout, SceneId, SceneScope, SettingValue,
@@ -1241,6 +1241,99 @@ fn run_placed_keeps_a_hidden_film_warm_but_unlinked_and_off_air() {
     assert!(!links_into(&s, program).contains(&node));
     assert!(!s.col.warm_sources(s.wide, &Types).contains(&film));
     assert!(!report.on_air_sources.contains(&film));
+}
+
+#[test]
+fn level_changes_list_only_what_changed_since_the_last_sync() {
+    let mut s = setup();
+    s.binder.sync(&s.col, &mut s.graph).unwrap();
+    let (film, next) = film_in_new_scene(&mut s, "Next");
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert_eq!(
+        report.level_changes,
+        vec![(film, Level::Placed, Some(OnReturn::Restart))]
+    );
+    assert_eq!(
+        s.binder.level_of(film),
+        (Level::Placed, Some(OnReturn::Restart))
+    );
+
+    // Nothing changed: nothing listed.
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert!(report.level_changes.is_empty());
+
+    // Preview, then program.
+    s.col.set_preview(s.wide, Some(next)).unwrap();
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert_eq!(
+        report.level_changes,
+        vec![(film, Level::Shown, Some(OnReturn::Restart))]
+    );
+    s.col.set_program(s.wide, Some(next)).unwrap();
+    s.col.set_preview(s.wide, None).unwrap();
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert!(
+        report
+            .level_changes
+            .contains(&(film, Level::OnAir, Some(OnReturn::Restart)))
+    );
+
+    // A new `on_return` alone is a change at the same level.
+    s.col
+        .set_source_activity(
+            film,
+            SourceActivity::new(None, Some(OnReturn::Resume), None),
+        )
+        .unwrap();
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert_eq!(
+        report.level_changes,
+        vec![(film, Level::OnAir, Some(OnReturn::Resume))]
+    );
+
+    // Out of every scene: listed once as Unplaced, then not again.
+    s.col.remove_item(item_of(&s, next, film)).unwrap();
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert!(
+        report
+            .level_changes
+            .contains(&(film, Level::Unplaced, Some(OnReturn::Resume)))
+    );
+    assert_eq!(s.binder.level_of(film), (Level::Unplaced, None));
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert!(report.level_changes.is_empty());
+}
+
+#[test]
+fn a_deleted_source_and_types_without_on_return_report_no_on_return() {
+    let mut s = setup();
+    let first = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert!(
+        first
+            .level_changes
+            .iter()
+            .any(|&(id, level, r)| id == s.cam && level == Level::OnAir && r.is_none())
+    );
+    let (film, _) = film_in_new_scene(&mut s, "Shelf");
+    s.binder.sync(&s.col, &mut s.graph).unwrap();
+    s.col.delete_source(film).unwrap();
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert!(report.level_changes.iter().all(|c| c.0 != film));
+}
+
+#[test]
+fn a_film_that_runs_while_placed_is_on_air_in_its_level() {
+    let mut s = setup();
+    let (film, next) = film_in_new_scene(&mut s, "Next");
+    s.col
+        .set_source_activity(film, SourceActivity::new(Some(Run::Placed), None, None))
+        .unwrap();
+    s.col.set_program(s.wide, Some(next)).unwrap();
+    s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert_eq!(
+        s.binder.level_of(film),
+        (Level::OnAir, Some(OnReturn::Restart))
+    );
 }
 
 #[test]

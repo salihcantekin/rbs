@@ -1223,3 +1223,107 @@ fn browser_page_settings_are_written_as_format_22() {
     let old = plain.replace("format = 15", "format = 21");
     assert!(document::parse::<SceneCollection>(&old).is_ok());
 }
+
+#[test]
+fn a_source_activity_round_trips_in_format_24_and_older_formats_refuse_it() {
+    // ADR-0152 decision 10.
+    use rbs_scene::activity::{OnReturn, Run, SourceActivity};
+    let mut col = show();
+    let plain = document::render(&col, Some("Show")).unwrap();
+    assert!(!plain.contains("format = 24"), "{plain}");
+    assert!(!plain.contains("activity"), "{plain}");
+    let (film, _) = col
+        .add_source("Film", ty("media"), Settings::new())
+        .unwrap();
+    // An `on_return` needs format 25: a format 24 build plays a film by its old key.
+    for (policy, format) in [
+        (SourceActivity::new(Some(Run::OnAir), None, None), 24),
+        (SourceActivity::new(None, Some(OnReturn::Resume), None), 25),
+        (
+            SourceActivity::new(Some(Run::Placed), Some(OnReturn::Restart), Some(600)),
+            25,
+        ),
+    ] {
+        col.set_source_activity(film, policy).unwrap();
+        let text = document::render(&col, Some("Show")).unwrap();
+        assert!(text.contains(&format!("format = {format}")), "{text}");
+        let back = document::parse::<SceneCollection>(&text).unwrap().document;
+        assert_eq!(back, col);
+    }
+
+    let scene_doc = "[[canvases]]\nid = 0\nname = \"C\"\nwidth = 1920\nheight = 1080\nframe_rate = [30, 1]\n\
+                     [[sources]]\nid = 0\nname = \"F\"\ntype = \"org.rbs.source.media\"\n";
+    for (format, extra, ok) in [
+        (23, "activity = { run = \"on_air\" }\n", false),
+        (24, "activity = { run = \"on_air\" }\n", true),
+        (24, "activity = { run = \"always\" }\n", false),
+        (24, "activity = { on_return = \"rewind\" }\n", false),
+        (24, "activity = { linger_s = 601 }\n", false),
+        (24, "activity = { run = \"shown\", colour = 1 }\n", false),
+        // A value a type does not allow still loads (the binder reports it).
+        (
+            24,
+            "activity = { run = \"shown\", on_return = \"continue\" }\n",
+            true,
+        ),
+    ] {
+        let text = format!("kind = \"scene-collection\"\nformat = {format}\n{scene_doc}{extra}");
+        let parsed = document::parse::<SceneCollection>(&text);
+        assert_eq!(parsed.is_ok(), ok, "{format} {extra}: {parsed:?}");
+    }
+}
+
+#[test]
+fn format_24_restart_when_shown_becomes_the_media_on_return() {
+    // ADR-0152 decision 10: true is `restart`, false `resume`, the key is dropped; a
+    // saved `on_return` wins; another type's key of that name is left alone.
+    use rbs_scene::activity::OnReturn;
+    let head = "kind = \"scene-collection\"\nformat = 24\n[[canvases]]\nid = 0\nname = \"C\"\n\
+                width = 1920\nheight = 1080\nframe_rate = [30, 1]\n";
+    let media = |id: u32, extra: &str| {
+        format!(
+            "[[sources]]\nid = {id}\nname = \"F{id}\"\ntype = \"org.rbs.source.media\"\n{extra}"
+        )
+    };
+    let text = format!(
+        "{head}{}{}{}{}",
+        media(
+            0,
+            "settings = { restart_when_shown = false, loop = true }\n"
+        ),
+        media(1, "settings = { restart_when_shown = true }\n"),
+        media(
+            2,
+            "settings = { restart_when_shown = false }\nactivity = { on_return = \"restart\" }\n"
+        ),
+        media(3, ""),
+    );
+    let col = document::parse::<SceneCollection>(&text).unwrap().document;
+    let on_return = |id: u32| {
+        let s = col.sources().find(|s| s.name == format!("F{id}")).unwrap();
+        assert!(!s.settings.contains_key("restart_when_shown"));
+        s.activity.on_return
+    };
+    assert_eq!(on_return(0), Some(OnReturn::Resume));
+    assert_eq!(on_return(1), Some(OnReturn::Restart));
+    assert_eq!(on_return(2), Some(OnReturn::Restart));
+    assert_eq!(on_return(3), None);
+    let f0 = col.sources().find(|s| s.name == "F0").unwrap();
+    assert!(f0.settings.contains_key("loop"));
+    let out = document::render(&col, Some("Show")).unwrap();
+    assert!(out.contains("format = 25"), "{out}");
+    assert!(!out.contains("restart_when_shown"), "{out}");
+    // A non-flag value stays, so the source reports the bad setting.
+    let bad = format!(
+        "{head}{}",
+        media(0, "settings = { restart_when_shown = 1 }\n")
+    );
+    let col = document::parse::<SceneCollection>(&bad).unwrap().document;
+    assert!(
+        col.sources()
+            .next()
+            .unwrap()
+            .settings
+            .contains_key("restart_when_shown")
+    );
+}

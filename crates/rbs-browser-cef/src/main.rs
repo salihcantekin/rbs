@@ -698,7 +698,7 @@ mod mac {
     use cef::application_mac::{CefAppProtocol, CrAppControlProtocol, CrAppProtocol};
     use objc2::runtime::Bool;
     use objc2::{ClassType, DefinedClass, define_class, extern_methods, msg_send, rc::Retained};
-    use objc2_app_kit::{NSApp, NSApplication, NSEvent};
+    use objc2_app_kit::{NSApp, NSApplication, NSApplicationActivationPolicy, NSEvent};
     use objc2_foundation::{MainThreadMarker, NSObjectProtocol};
 
     #[derive(Default)]
@@ -746,11 +746,16 @@ mod mac {
         }
     }
 
-    /// Makes the shared application our subclass. False when that failed.
+    /// Makes the shared application our subclass, with no Dock icon, menu bar or
+    /// activation: the runner draws off screen only. False when that failed.
     pub fn setup() -> bool {
         let _ = RunnerApplication::shared_application();
-        MainThreadMarker::new()
-            .is_some_and(|mtm| NSApp(mtm).isKindOfClass(RunnerApplication::class()))
+        MainThreadMarker::new().is_some_and(|mtm| {
+            let app = NSApp(mtm);
+            // Before the run loop starts, so the Dock never shows the runner.
+            let _ = app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+            app.isKindOfClass(RunnerApplication::class())
+        })
     }
 }
 

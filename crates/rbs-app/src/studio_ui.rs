@@ -46,8 +46,8 @@ use rbs_record::Link;
 use rbs_remote_settings::ai_tools::{self as ai_settings, AiToolsSettings};
 use rbs_remote_settings::{self as remote_profile, Access, RemoteProfile};
 use rbs_scene::model::{
-    Border, ChromeFill, DisplayChrome, ItemId, ItemStyle, Layout, SceneId, Shape, SourceId,
-    SourceRegion, VideoAs,
+    Border, ChromeFill, DisplayChrome, ItemId, ItemStyle, Layout, SceneId, Scroll, ScrollDirection,
+    ScrollRepeat, ScrollStart, Shape, SourceId, SourceRegion, VideoAs,
 };
 use rbs_sources::permissions::PermissionKind;
 use rbs_transport::Secret;
@@ -68,6 +68,10 @@ use crate::ui::{
 /// Meter refresh while the Mixer is visible (U16: 30 Hz).
 pub const METER_PERIOD: Duration = Duration::from_millis(33);
 /// Accessible meter values change at most this often (U16).
+/// The speed a source gets when Scroll is first turned on, in canvas pixels per
+/// second (ADR-0150 decision 12).
+const NEW_SCROLL_SPEED: f32 = 100.0;
+
 const REPORT_EVERY: u32 = 30;
 
 /// Codes of `Studio.rec-state`.
@@ -337,6 +341,9 @@ pub struct StudioUi {
     /// The canvas Properties edits: the vertical one after a source is picked on the
     /// Vertical panel or with its switch (ADR-0093 decision 4).
     props_on: OutputCanvas,
+    /// The last scroll of each source turned off in Properties, so turning Scroll on
+    /// again brings it back (like a text effect kept while off).
+    scroll_kept: std::collections::HashMap<i32, Scroll>,
     /// The vertical picture shows in the main window.
     vertical_shown: bool,
     vmark_buf: Vec<Mark>,
@@ -713,6 +720,7 @@ impl StudioUi {
             marks: Rc::new(VecModel::default()),
             vedit: PreviewEdit::default(),
             props_on: OutputCanvas::Main,
+            scroll_kept: std::collections::HashMap::new(),
             vertical_shown: false,
             vmark_buf: Vec::with_capacity(MAX_MARKS),
             vertical_marks: Rc::new(VecModel::default()),
@@ -3098,6 +3106,88 @@ impl StudioUi {
             style,
             canvas: self.props_target(id),
         });
+    }
+
+    /// The scroll of a video source's picture (Properties, Scroll; ADR-0150 decision
+    /// 12). `direction`: 0 left, 1 right, 2 up, 3 down; `repeat`: 0 loop, 1 once;
+    /// `start`: 0 inside, 1 outside. Off keeps the values for the next on. Out of range
+    /// values are clamped.
+    #[allow(clippy::too_many_arguments)] // One argument per field of the section, and its drag.
+    pub fn set_source_scroll(
+        &mut self,
+        id: i32,
+        on: bool,
+        direction: i32,
+        speed: f32,
+        gap: f32,
+        repeat: i32,
+        start: i32,
+        fade: f32,
+        gesture: i32,
+    ) {
+        let now = self.rows_scroll(id);
+        let scroll = if on {
+            let ramp = now
+                .or_else(|| self.scroll_kept.get(&id).copied())
+                .map_or(rbs_scene::model::DEFAULT_SCROLL_RAMP_MS, |s| s.ramp_ms);
+            let s = Scroll::new(
+                match direction {
+                    1 => ScrollDirection::Right,
+                    2 => ScrollDirection::Up,
+                    3 => ScrollDirection::Down,
+                    _ => ScrollDirection::Left,
+                },
+                speed,
+            )
+            .with_gap(gap)
+            .with_repeat(if repeat == 1 {
+                ScrollRepeat::Once
+            } else {
+                ScrollRepeat::Loop
+            })
+            .with_start(if start == 1 {
+                ScrollStart::Outside
+            } else {
+                ScrollStart::Inside
+            })
+            .with_fade(fade)
+            .with_ramp_ms(ramp);
+            Some(s.clamped())
+        } else {
+            if let Some(s) = now {
+                self.scroll_kept.insert(id, s);
+            }
+            None
+        };
+        self.deleted.clear();
+        self.send(Command::SetSourceScroll {
+            gesture: ui_gesture(gesture),
+            id: SourceId::from_raw(id as u32),
+            scroll,
+            canvas: self.props_target(id),
+        });
+    }
+
+    /// Pause (0), Resume (1) or Restart (2) of a source's scroll on the canvas
+    /// Properties edits: live, not an undo step.
+    pub fn scroll_live(&mut self, id: i32, action: i32) {
+        let control = match action {
+            0 => rbs_record::ScrollControl::Pause,
+            1 => rbs_record::ScrollControl::Resume,
+            _ => rbs_record::ScrollControl::Restart,
+        };
+        self.send(Command::ScrollLive {
+            id: SourceId::from_raw(id as u32),
+            canvas: self.props_target(id),
+            control,
+        });
+    }
+
+    fn rows_scroll(&self, id: i32) -> Option<Scroll> {
+        self.rows
+            .iter()
+            .find(|r| r.id.get() as i32 == id)
+            .and_then(|r| self.props_layout(r).and_then(|l| l.scroll))
     }
 
     /// The canvas Properties edits for row `r`: the vertical one only while it is
@@ -7017,6 +7107,16 @@ impl StudioUi {
                 });
                 let style = shown.map(|l| l.style).unwrap_or_default();
                 let crop = shown.map(|l| l.crop).unwrap_or_default();
+                // Scroll: the layout's, else the one kept while off, else a new one.
+                let scroll_on = shown.is_some_and(|l| l.scroll.is_some());
+                let scroll = shown
+                    .and_then(|l| l.scroll)
+                    .or_else(|| self.scroll_kept.get(&(r.id.get() as i32)).copied())
+                    .unwrap_or(Scroll::new(ScrollDirection::Left, NEW_SCROLL_SPEED));
+                let scroll_paused = match self.props_canvas(r) {
+                    OutputCanvas::Vertical => r.scroll_paused[1],
+                    _ => r.scroll_paused[0],
+                };
                 let (shape, radius) = match style.shape {
                     Shape::Circle => (1, 0.0),
                     Shape::Ellipse => (2, 0.0),
@@ -7080,6 +7180,19 @@ impl StudioUi {
                     can_down: r.layout.is_some() && pictures.last().is_some_and(|l| *l > i),
                     shape,
                     radius,
+                    scroll_on,
+                    scroll_dir: match scroll.direction {
+                        ScrollDirection::Right => 1,
+                        ScrollDirection::Up => 2,
+                        ScrollDirection::Down => 3,
+                        _ => 0,
+                    },
+                    scroll_speed: scroll.speed,
+                    scroll_gap: scroll.gap,
+                    scroll_repeat: i32::from(scroll.repeat == ScrollRepeat::Once),
+                    scroll_start: i32::from(scroll.start == ScrollStart::Outside),
+                    scroll_fade: scroll.fade,
+                    scroll_paused: scroll_on && scroll_paused,
                     border: style.border.is_some(),
                     border_width: border.width,
                     border_color: color_text(border.color).into(),

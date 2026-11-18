@@ -244,6 +244,63 @@ pub struct SetSourceGlide {
     pub glide: Option<crate::types::Glide>,
 }
 
+/// `source.set_activity` (protocol 1.95, ADR-0152): replaces a source's activity
+/// policy. A key left out (or `null`) is the type's default, so `{source}` alone
+/// resets it. One undo step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetSourceActivity {
+    /// The source's id.
+    pub source: u32,
+    /// When it runs; absent is the type's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<crate::types::ActivityRun>,
+    /// What it does when it goes on air again; absent is the type's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_return: Option<crate::types::ActivityReturn>,
+    /// Seconds it stays Active after it stops being needed (`0..=600`); absent is 0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linger_s: Option<u16>,
+}
+
+/// The policy in force for a source (protocol 1.95, ADR-0152).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EffectiveActivity {
+    /// When it runs.
+    pub run: crate::types::ActivityRun,
+    /// What it does when it comes back; absent for types without the choice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_return: Option<crate::types::ActivityReturn>,
+    /// Seconds it lingers.
+    pub linger_s: u16,
+}
+
+/// `source.get_activity`'s answer (protocol 1.95, ADR-0152).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceActivityInfo {
+    /// The source's id.
+    pub source: u32,
+    /// The saved choice; each key absent is the type's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<crate::types::ActivityRun>,
+    /// The saved choice for the return.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_return: Option<crate::types::ActivityReturn>,
+    /// The saved linger.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linger_s: Option<u16>,
+    /// The policy in force: the saved choice merged with the type's defaults, or the
+    /// defaults alone when `supported` is false.
+    pub effective: EffectiveActivity,
+    /// False when the saved choice uses a value the type does not allow (the
+    /// `activity_unsupported` warning).
+    pub supported: bool,
+    /// The `run` values the source's type allows.
+    pub runs: Vec<crate::types::ActivityRun>,
+    /// The `on_return` values the type allows; empty when it has none.
+    pub on_returns: Vec<crate::types::ActivityReturn>,
+}
+
 /// How a display's work area is placed on the canvas (protocol 1.41, ADR-0104).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -1062,7 +1119,7 @@ pub struct BrowserRunScript {
     pub script: Option<String>,
 }
 
-/// `browser.forget_sign_in` (protocol 1.95, ADR-0132 decision 10): deletes the kept
+/// `browser.forget_sign_in` (protocol 1.96, ADR-0132 decision 10): deletes the kept
 /// profile of a browser source that keeps signed in. Cannot be undone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1071,7 +1128,7 @@ pub struct BrowserForgetSignIn {
     pub source: u32,
 }
 
-/// `browser.input` (protocol 1.95, ADR-0132 decisions 6 and 9): pointer, wheel, key
+/// `browser.input` (protocol 1.96, ADR-0132 decisions 6 and 9): pointer, wheel, key
 /// and text events for a browser source's running page, in page pixels.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -2065,9 +2122,9 @@ pub enum Command {
     BrowserReload(BrowserReload),
     /// `browser.run_script` (protocol 1.91, ADR-0149).
     BrowserRunScript(BrowserRunScript),
-    /// `browser.forget_sign_in` (protocol 1.95, ADR-0132).
+    /// `browser.forget_sign_in` (protocol 1.96, ADR-0132).
     BrowserForgetSignIn(BrowserForgetSignIn),
-    /// `browser.input` (protocol 1.95, ADR-0132).
+    /// `browser.input` (protocol 1.96, ADR-0132).
     BrowserInput(BrowserInput),
     /// `source.get_settings` (protocol 1.17).
     SourceGetSettings(GetSourceSettings),
@@ -2245,6 +2302,10 @@ pub enum Command {
     CollectionSetTransition(SetCollectionTransition),
     /// `source.set_glide` (protocol 1.35, ADR-0100).
     SourceSetGlide(SetSourceGlide),
+    /// `source.set_activity` (protocol 1.95, ADR-0152).
+    SourceSetActivity(SetSourceActivity),
+    /// `source.get_activity` (protocol 1.95, ADR-0152).
+    SourceGetActivity(SourceRef),
     /// `source.set_region` (protocol 1.41, ADR-0103).
     SourceSetRegion(SetSourceRegion),
     /// `source.set_record_separately` (protocol 1.46, ADR-0086).
@@ -2454,6 +2515,8 @@ impl Command {
             Command::CollectionSetGlide(_) => "collection.set_glide",
             Command::CollectionSetTransition(_) => "collection.set_transition",
             Command::SourceSetGlide(_) => "source.set_glide",
+            Command::SourceSetActivity(_) => "source.set_activity",
+            Command::SourceGetActivity(_) => "source.get_activity",
             Command::SourceSetRegion(_) => "source.set_region",
             Command::SourceSetRecordSeparately(_) => "source.set_record_separately",
             Command::MarkerAdd(_) => "marker.add",
@@ -2834,6 +2897,8 @@ pub const METHODS: &[MethodInfo] = &[
         Effect::Edit,
     ),
     m("source.set_glide", Some(Scope::Control), Effect::Edit),
+    m("source.set_activity", Some(Scope::Control), Effect::Edit),
+    m("source.get_activity", Some(Scope::Read), Effect::Read),
     m("source.set_region", Some(Scope::Control), Effect::Edit),
     m(
         "source.set_record_separately",
@@ -3262,6 +3327,10 @@ enum WireRequest {
     CollectionSetTransition(SetCollectionTransition),
     #[serde(rename = "source.set_glide")]
     SourceSetGlide(SetSourceGlide),
+    #[serde(rename = "source.set_activity")]
+    SourceSetActivity(SetSourceActivity),
+    #[serde(rename = "source.get_activity")]
+    SourceGetActivity(SourceRef),
     #[serde(rename = "source.set_region")]
     SourceSetRegion(SetSourceRegion),
     #[serde(rename = "source.set_record_separately")]
@@ -3487,6 +3556,8 @@ impl From<WireRequest> for Request {
                 Request::Command(C::CollectionSetTransition(p))
             }
             WireRequest::SourceSetGlide(p) => Request::Command(C::SourceSetGlide(p)),
+            WireRequest::SourceSetActivity(p) => Request::Command(C::SourceSetActivity(p)),
+            WireRequest::SourceGetActivity(p) => Request::Command(C::SourceGetActivity(p)),
             WireRequest::SourceSetRegion(p) => Request::Command(C::SourceSetRegion(p)),
             WireRequest::SourceSetRecordSeparately(p) => {
                 Request::Command(C::SourceSetRecordSeparately(p))
@@ -3671,6 +3742,8 @@ impl From<Request> for WireRequest {
                 C::CollectionSetGlide(p) => WireRequest::CollectionSetGlide(p),
                 C::CollectionSetTransition(p) => WireRequest::CollectionSetTransition(p),
                 C::SourceSetGlide(p) => WireRequest::SourceSetGlide(p),
+                C::SourceSetActivity(p) => WireRequest::SourceSetActivity(p),
+                C::SourceGetActivity(p) => WireRequest::SourceGetActivity(p),
                 C::SourceSetRegion(p) => WireRequest::SourceSetRegion(p),
                 C::SourceSetRecordSeparately(p) => WireRequest::SourceSetRecordSeparately(p),
                 C::MarkerAdd(p) => WireRequest::MarkerAdd(p),
@@ -3961,6 +4034,8 @@ pub enum Response {
     SceneLevelSet(SceneLevelSet),
     /// `source.get_chrome` (protocol 1.41).
     SourceChrome(SourceChromeInfo),
+    /// `source.get_activity` (protocol 1.95, ADR-0152).
+    SourceActivity(SourceActivityInfo),
     /// `look.list` (protocol 1.34).
     Looks(LookList),
     /// `scene.duplicate` (protocol 1.43; `sources` from 1.68).

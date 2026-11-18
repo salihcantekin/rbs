@@ -4296,13 +4296,14 @@ fn close_preview() {
 
 /// Sections that start closed (ADR-0078): the workspace lists them when the user
 /// opens them, under the id with this suffix, so an old file keeps them closed.
-const CLOSED_BY_DEFAULT: [&str; 6] = [
+const CLOSED_BY_DEFAULT: [&str; 7] = [
     "sources.global",
     "mixer.hidden",
     "mixer.loudness",
     "properties.text-outline",
     "properties.text-shadow",
     "properties.text-background",
+    "properties.scroll",
 ];
 const OPENED_SUFFIX: &str = "-open";
 
@@ -5468,6 +5469,25 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
                 .set_source_style(id, shape, radius, border, width, &color, gesture);
         }
     );
+    on!(
+        on_set_source_scroll,
+        |app,
+         id: i32,
+         on: bool,
+         direction: i32,
+         speed: f32,
+         gap: f32,
+         repeat: i32,
+         start: i32,
+         fade: f32,
+         gesture: i32| {
+            app.studio
+                .set_source_scroll(id, on, direction, speed, gap, repeat, start, fade, gesture);
+        }
+    );
+    on!(on_scroll_live, |app, id: i32, action: i32| {
+        app.studio.scroll_live(id, action);
+    });
     on!(on_undo_delete, |app| {
         app.studio.undo_delete();
     });
