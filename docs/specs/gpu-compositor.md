@@ -310,7 +310,7 @@ The textures stay `InUse` from `reserve` to `give_back`, so `trim_idle` cannot d
 `rbs_gpu::download::YuvDownload` is the CPU fallback of the encoder conversion, for encoders that take only system memory (NVENC and AMF on Windows today; ADR-0038). It is used by the video export node ([io-nodes.md](io-nodes.md)).
 
 ```rust
-pub const DOWNLOAD_RING: usize = 4;      // staging buffers in flight
+pub const DOWNLOAD_RING: usize = 4;      // staging buffers in flight; entries per download
 pub const DOWNLOAD_BUFFERS: usize = 6;   // recycled frame buffers
 impl YuvDownload {
     pub fn new(ctx: &GpuContext, format: YuvFormat, width: u32, height: u32) -> Result<YuvDownload, GpuError>;
@@ -332,14 +332,22 @@ impl YuvDownload {
     /// Render on change (R-03): queues the picture of the entry before it again with this
     /// stamp; no GPU work, no copy. `false` (counted `busy`) when every slot is in flight.
     pub fn submit_repeat(&mut self, timestamp: Timestamp, sequence: u64) -> bool;
-    pub fn stats(&self) -> DownloadStats;  // converted, delivered, busy, stale, no_buffer, failed, repeated
+    pub fn stats(&self) -> DownloadStats;  // converted, delivered, busy, stale, no_buffer, failed, repeated, joined
     pub fn in_flight(&self) -> usize;      // readbacks and repeat entries not yet taken
+    /// `scaled_tone` through a share (perf audit R-01): joins the readback of a live download
+    /// of the same shape made with `share`, else makes one that later downloads join.
+    pub fn scaled_tone_shared(ctx: &GpuContext, share: &DownloadShare, format: YuvFormat, src_width: u32,
+        src_height: u32, width: u32, height: u32, buffers: usize, color: ColorSpace,
+        open_shadows: bool) -> Result<YuvDownload, GpuError>;
 }
+#[derive(Default)]
+pub struct DownloadShare;                   // `new()`, `users()`
 ```
 
 - `submit` records the conversion (the `YuvConverter` passes) into two plane textures the download owns, copies both planes into one staging buffer (luma rows, then chroma rows, both with `stride`), submits once and calls `map_async`; the callback only stores an atomic state.
 - `take_ready` walks the ring from the oldest slot while slots are complete, after `GpuContext::poll` (the render runtime polls at the end of each tick). The newest mapped slot is copied (one `memcpy` of the whole buffer) into a frame buffer that no consumer holds (`Bytes::is_unique`, then `try_into_mut`; the buffers are created in the shared representation, so this keeps their allocation), unmapped, and returned as a `System` frame with the canvas frame's timestamp and sequence and plane layouts at offsets `0` and `stride * height`. With every buffer held by consumers the frame is dropped (`no_buffer`). `take_oldest` does the same for the oldest completed slot and leaves newer completed slots for later calls (no `stale` drops), for the end of a stream (ADR-0045); both share one implementation chosen at compile time.
-- **Repeat entries (render on change, R-03; ADR-0143 R5).** `submit_repeat` takes the next ring slot without GPU work and marks it complete at once, so it keeps its place behind readbacks still in flight. A taken repeat is the frame delivered before it again (the download keeps a shared copy of the frame it delivered last; it shares the buffer the consumer holds, so it pins no extra buffer until a newer frame replaces it), stamped with the repeat's timestamp and sequence, counted in `delivered` and `repeated`, and not in `frames_cpu_copied`. A repeat is never merged into another entry: each is one frame of a constant frame rate output. When `take_ready` finds a readback and a repeat behind it complete in the same poll, it returns the readback, and the repeat comes out on the next take (only older readbacks count as `stale`). A failed readback forgets the frame delivered last, so a repeat behind it never shows an older picture: a repeat with no frame before it (the readback before it failed or found no buffer) delivers nothing and counts as `failed`.
+- **Repeat entries (render on change, R-03; ADR-0143 R5).** `submit_repeat` takes the next ring slot without GPU work and marks it complete at once, so it keeps its place behind readbacks still in flight. A taken repeat is the frame delivered before it again (the download keeps a shared copy of the frame it delivered last; it shares the buffer the consumer holds, so it pins no extra buffer until a newer frame replaces it), stamped with the repeat's timestamp and sequence, counted in `delivered` and `repeated`, and not in `frames_cpu_copied`. Every frame read back gets a new `PictureId` where its bytes are made; a repeat and every download that shares the frame keep it, so an encoder can encode a repeat from the input it already holds (ADR-0146). A repeat is never merged into another entry: each is one frame of a constant frame rate output. When `take_ready` finds a readback and a repeat behind it complete in the same poll, it returns the readback, and the repeat comes out on the next take (only older readbacks count as `stale`). A failed readback forgets the frame delivered last, so a repeat behind it never shows an older picture: a repeat with no frame before it (the readback before it failed or found no buffer) delivers nothing and counts as `failed`.
+- **Shared readback (perf audit R-01; ADR-0143 R4).** A download has two parts: its own entries (a ring of `DOWNLOAD_RING` readbacks and repeats in the order queued, with their stamps, the frame delivered last and the counters) and a readback (the converter, the two plane textures, the staging buffers and the frame buffers). Without a share the readback is its own and is used without a lock. Downloads made with one `DownloadShare` and the same shape (format, canvas size, output size, colour, grade) use one readback behind a `Mutex` that only the render thread locks, so it is never contended; a download of another shape makes its own, and the share then lends that one. A joining download adds two staging buffers and `DOWNLOAD_BUFFERS / 2` frame buffers to it (not real-time). `submit_at` of a canvas picture (its timestamp and sequence) that a staging buffer of the readback already holds (in flight or read, not lost) joins that buffer instead of converting again (counted in `joined` and `converted`); any other picture takes a free staging buffer in ring order. The first download that takes a completed buffer copies it into a frame buffer and unmaps it (one `frames_cpu_copied`); later ones share that frame (`Bytes` clone), each stamped with its own timestamp and sequence. A buffer is free again when every download that queued it has taken it, dropped it as stale or been dropped. A copy that finds no free buffer is lost for every download that queued it (each counts `no_buffer`). Bench `two_outputs_1080p` (llvmpipe, 2026-11-18): two downloads of one picture with readbacks of their own 31.4 ms and 2 CPU copies per picture, shared 15.4 ms and 1; one download alone unchanged (15.0 against 15.2 ms on `main`).
 - Every frame copied from a staging buffer increments `GpuMetrics::frames_cpu_copied` (P4).
 - A map failure frees the slot and returns `GpuError::Readback` once.
 
@@ -414,6 +422,21 @@ impl SurfaceExporter {
     pub fn stats(&self) -> ExportStats;     // converted, delivered, busy
     pub fn held(&self) -> usize;            // frames the encoder still holds
     pub fn lease_owner(&self) -> Arc<dyn LeaseOwner>; // kept by the engine until encoder shutdown
+    // ADR-0147:
+    pub fn scaled_tone(ctx, format, src_width, src_height, width, height, surfaces, color, open_shadows)
+        -> Result<SurfaceExporter, GpuError>; // as YuvDownload::scaled_tone (ADR-0102)
+    pub fn kernel(&self) -> ScaleKernel;
+    pub fn in_flight(&self) -> usize;       // conversions not taken yet
+    pub fn take_oldest(&mut self, ctx: &GpuContext) -> Result<Option<VideoFrame>, GpuError>; // ending path
+    pub fn black(&mut self, ctx: &GpuContext, timestamp: Timestamp) -> Result<VideoFrame, GpuError>; // waits; not real time
+}
+
+// rbs_gpu::native_export: the readback's entry rules over an exporter
+impl NativeDownload {
+    pub fn new(exporter: SurfaceExporter, entries: usize) -> Self;
+    pub fn submit_at(..) / submit(..) / submit_repeat(t, seq) -> bool;
+    pub fn take_ready(&mut self, ctx) / take_oldest(&mut self, ctx) -> Result<Option<VideoFrame>, GpuError>;
+    pub fn in_flight(&self) -> usize; pub fn stats(&self) -> DownloadStats; pub fn forget_last(&mut self);
 }
 ```
 
@@ -421,11 +444,13 @@ impl SurfaceExporter {
 - Each plane is aliased as a Metal render target (`R8Unorm`/`RG8Unorm`, or `R16Unorm`/`RG16Unorm`) owned by the exporter; it uses no pool slots. The two-plane conversion renders into them, so there is no copy and no CPU readback.
 - Unified memory only (Apple silicon) for now: whether GPU writes to an IOSurface-backed texture are visible to VideoToolbox on a discrete GPU without a synchronize step is not verified. Intel Macs with a discrete GPU fall back to the CPU path until it is.
 - The lease owner is the ring: it retains every IOSurface and keeps one atomic count per surface. A frame's lease keeps the ring, and so its surface, alive whatever is dropped first (exporter, pool, device). All surfaces are created in `new`; the ring never grows. A surface is written only when it is not pending and its count is zero (`Acquire` load, paired with the `Release` decrement of the encoder's last lease).
-- `take_ready` polls the conversion's submission without waiting (`PollError::Timeout` means not yet). When it has completed and the device is not lost, the frame is `VideoFrame::native(format, t, NativeSurface::io_surface(ptr), SurfaceSync::Ready, lease)` with the exporter's sequence number. Metal reports a failed command buffer as completed. The device-lost check stops delivery after a loss; a non-fatal command buffer error (for example a GPU timeout that does not lose the device) is not detected and can deliver a frame with wrong contents (memory-safe; residual risk until wgpu exposes command buffer status).
+- `take_ready` polls the conversion's submission without waiting (`PollError::Timeout` means not yet). When it has completed and the device is not lost, the frame is `VideoFrame::exported(format, t, NativeSurface::io_surface(ptr), SurfaceSync::Ready, lease)` (marked, so it can be shared; ADR-0147 decision 2) with the exporter's sequence number. Metal reports a failed command buffer as completed. The device-lost check stops delivery after a loss; a non-fatal command buffer error (for example a GPU timeout that does not lose the device) is not detected and can deliver a frame with wrong contents (memory-safe; residual risk until wgpu exposes command buffer status).
 - Frames come out in conversion order. Call `take_ready` until `None` once per render tick; a frame is normally ready on the tick after its conversion. The poll is the same non-blocking `device.poll` the importer's `retire` already runs every tick.
-- Ring size: at least the encoder input queue's capacity plus the frames the encoder API keeps in flight (look-ahead, reordering) plus two. A capability for frames in flight is an open question; until then the encoder adapter documents its figure.
+- Ring size ([ADR-0147](../adr/0147-native-encoder-input.md) decision 4): the export node passes `NATIVE_HOLDERS` (conversions in flight, its output slot, the queue writer's held frame, the mailbox, the reader's output slot) plus the encoder's `VideoEncoder::max_frames_held()`, plus two (pinned picture and black surface) when the export has a hold. Never a constant.
+- `NativeDownload` gives the export node the readback's behaviour over an exporter (`ExportQueue`): repeat entries share the previous exported frame again with a new time and sequence (no conversion), `busy` when the ring is full, conversion order kept behind repeats, and `take_oldest` and `in_flight` for the ending path.
+- `black` clears a free surface to black in the ring's colour (limited or full range codes, NV12 or P010), waits for that GPU work, and hands it out as an exported frame. The export node calls it in `prepare` when it has a hold, and keeps the frame as the hold's black picture.
 - Consumer rules (encoder adapters): wrap the surface with `CVPixelBufferCreateWithIOSurface`, set the colour attachments from the frame's `ColorSpace`, and drop the frame once VideoToolbox has finished with it: after its output callback, including when the frame was dropped (`kVTEncodeInfo_FrameDropped`) or the session was invalidated. A cache of pixel buffers keyed by surface address is allowed only while it also holds the frame's lease or retains the surface; clear it when the encoder stops, so it never keeps a ring alive.
-- The encoder node wrapper keeps `lease_owner()` until the encoder worker has shut down and drops it on a background thread, so the last ring reference, which releases the surfaces, is never dropped on a real-time thread.
+- The export node puts each exporter's `lease_owner()` into the chain's `LeaseOwners`; the composition root keeps it until the chain's export and encoder nodes are released and drops it on the control thread (ADR-0147 decision 8), so the last ring reference, which releases the surfaces, is never dropped on a real-time thread.
 - Installed but unused costs nothing: an exporter exists only while an encoder that takes Metal memory is Active (P13). Dropping it frees its GPU objects; surfaces live on only while frames hold them.
 
 ### Preview export (cross-process)

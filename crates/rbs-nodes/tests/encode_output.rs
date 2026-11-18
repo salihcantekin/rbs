@@ -47,16 +47,33 @@ fn chain_with(
     tx: Arc<TransportState>,
     keyframes: bool,
 ) -> (Chain, Option<Arc<KeyframeAt>>) {
+    chain_config(
+        every,
+        packets_per_frame,
+        backlog,
+        tx,
+        keyframes,
+        encoder_config(),
+    )
+}
+
+/// [`chain_with`] with the encoder opened for `config`.
+fn chain_config(
+    every: u64,
+    packets_per_frame: u64,
+    backlog: usize,
+    tx: Arc<TransportState>,
+    keyframes: bool,
+    config: rbs_codec::VideoEncoderConfig,
+) -> (Chain, Option<Arc<KeyframeAt>>) {
     let mut rig = Rig::new();
     let enc_state = Arc::new(EncoderState::default());
     enc_state
         .packets_per_frame
         .store(packets_per_frame, Ordering::Relaxed);
-    let encoder = VideoEncoderNode::open(
-        Arc::new(FakeEncoderFactory(Arc::clone(&enc_state))),
-        encoder_config(),
-    )
-    .unwrap();
+    let encoder =
+        VideoEncoderNode::open(Arc::new(FakeEncoderFactory(Arc::clone(&enc_state))), config)
+            .unwrap();
     let (encoder, keyframe_at) = if keyframes {
         let (encoder, handle) = encoder.with_keyframe_requests();
         (encoder, Some(handle))
@@ -360,6 +377,30 @@ fn a_refused_frame_loses_no_packet_of_the_same_tick() {
     );
     let health = c.rig.exec.health(c.encoder);
     assert!(health.is_none_or(|h| h.errors == 0), "{health:?}");
+}
+
+#[test]
+fn a_refused_native_frame_keeps_its_tick_and_fails_the_next_for_good() {
+    // ADR-0147 decision 9: in a native memory kind the refused frame is a counted drop
+    // (the packets of that tick still pass), and the next tick fails permanently so the
+    // studio rebuilds the chain with system memory. The fake encoder takes the system
+    // frames of the test source; only the configured kind makes the node native.
+    let mut config = encoder_config();
+    config.memory = rbs_core::media::MemoryKind::Metal;
+    let (mut c, _) = chain_config(2, 40, 4096, TransportState::logging(), false, config);
+    c.rig.ticks(2);
+    c.enc_state.refuse_next.store(true, Ordering::Relaxed);
+    c.rig.ticks(4);
+
+    assert_eq!(c.enc_stats.refused.load(Ordering::Relaxed), 1);
+    let health = c.rig.exec.health(c.encoder).unwrap();
+    assert!(health.permanent, "{health:?}");
+    // Every packet produced before the failure reached the output or was counted.
+    c.rig.drain();
+    let submitted = c.enc_state.submitted.load(Ordering::Relaxed);
+    let times = media_times(&c.tx_state.got());
+    let lost = c.enc_stats.flush_lost.load(Ordering::Relaxed);
+    assert_eq!(times.len() as u64 + lost, 40 * submitted);
 }
 
 #[test]

@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use rbs_core::media::{AudioFormat, CodecId, MemoryKind, VideoFormat};
+use rbs_core::media::{AudioFormat, CodecId, GpuDeviceId, MemoryKind, VideoFormat};
 use rbs_core::timing::FrameRate;
 
 /// How the encoder spends bits.
@@ -111,6 +111,11 @@ pub struct VideoEncoderConfig {
     pub frame_rate: FrameRate,
     /// Where input frames live.
     pub memory: MemoryKind,
+    /// The GPU the input frames live on, required when `memory` is a native kind
+    /// (ADR-0147 decision 1). An adapter that cannot open that device refuses with
+    /// `CreateError::Unsupported`, and the chain uses system memory instead. `None` for
+    /// system memory.
+    pub device: Option<GpuDeviceId>,
     /// Rate control.
     pub rate_control: RateControl,
     /// Keyframe spacing.
@@ -155,6 +160,7 @@ impl VideoEncoderConfig {
             format,
             frame_rate,
             memory,
+            device: None,
             rate_control,
             keyframe_interval: KeyframeInterval::Duration(Duration::from_secs(2)),
             max_b_frames: 0,
@@ -162,6 +168,12 @@ impl VideoEncoderConfig {
             tuning: EncoderTuning::default(),
             adapter_options: Vec::new(),
         }
+    }
+
+    /// Sets the GPU the input frames live on (see [`Self::device`]).
+    pub fn with_device(mut self, device: GpuDeviceId) -> Self {
+        self.device = Some(device);
+        self
     }
 
     /// Sets the keyframe interval.

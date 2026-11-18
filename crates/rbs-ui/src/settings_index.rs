@@ -134,19 +134,6 @@ const fn c(
 pub const SETTINGS: &[Setting] = &[
     // General
     c(
-        "settings.general.experience",
-        "Experience",
-        "level simple standard pro beginner",
-        GENERAL_EXPERIENCE,
-    ),
-    row(
-        "general.settings-shown",
-        "Settings shown",
-        "experience level simple standard pro beginner advanced expert",
-        GENERAL_EXPERIENCE,
-        Simple,
-    ),
-    c(
         "settings.general.closing",
         "Closing the main window",
         "quit exit",
@@ -217,6 +204,19 @@ pub const SETTINGS: &[Setting] = &[
         "Easing",
         "glide curve animation",
         GENERAL_GLIDE,
+        Simple,
+    ),
+    c(
+        "settings.general.experience",
+        "Experience",
+        "level simple standard pro beginner",
+        GENERAL_EXPERIENCE,
+    ),
+    row(
+        "general.settings-shown",
+        "Settings shown",
+        "experience level simple standard pro beginner advanced expert",
+        GENERAL_EXPERIENCE,
         Simple,
     ),
     c(

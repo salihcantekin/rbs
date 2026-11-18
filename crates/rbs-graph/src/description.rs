@@ -154,6 +154,9 @@ pub enum GraphError {
     IdNotRestorable(NodeId),
     /// All `u32` node ids have been issued.
     IdsExhausted,
+    /// The link leaves an exclusive output (ADR-0147 decision 3) that already has a
+    /// link, or ends at a node that is not an encoder.
+    ExclusiveOutput(Link),
 }
 
 impl fmt::Display for GraphError {
@@ -174,6 +177,10 @@ impl fmt::Display for GraphError {
             GraphError::NodeIsActive(id) => write!(f, "{id} is active; move it to standby first"),
             GraphError::IdNotRestorable(id) => write!(f, "{id} cannot be restored"),
             GraphError::IdsExhausted => f.write_str("node ids exhausted"),
+            GraphError::ExclusiveOutput(link) => write!(
+                f,
+                "{link:?} leaves an exclusive output: one link, to an encoder only"
+            ),
         }
     }
 }
@@ -442,6 +449,12 @@ impl GraphDescription {
         }
         if !in_pin.many && self.links.iter().any(|l| l.to == link.to) {
             return Err(GraphError::InputOccupied(link.to));
+        }
+        if out_pin.exclusive
+            && (consumer.kind != NodeKind::Encoder
+                || self.links.iter().any(|l| l.from == link.from))
+        {
+            return Err(GraphError::ExclusiveOutput(link));
         }
         if link.from.node == link.to.node || self.reaches(link.to.node, link.from.node) {
             return Err(GraphError::Cycle(link));
@@ -751,6 +764,53 @@ mod tests {
         assert_eq!(plan.order, [comp, enc, mixer, aenc, out]);
         assert_eq!(plan.skipped, [(timer, SkipReason::NoSink)]);
         Ok(())
+    }
+
+    #[test]
+    fn an_exclusive_output_feeds_one_encoder_only() -> Result<(), GraphError> {
+        let export = d(
+            NodeKind::VideoFilter,
+            vec![Pin::one("in", LinkKind::Video)],
+            vec![Pin::exclusive("out", LinkKind::Video)],
+        );
+        let mut g = GraphDescription::new();
+        let x = g.add_node(export)?;
+        let e1 = g.add_node(encoder())?;
+        let e2 = g.add_node(encoder())?;
+        let f = g.add_node(filter())?;
+        let pv = g.add_node(preview())?;
+        assert!(matches!(
+            g.connect(x, "out", f, "in"),
+            Err(GraphError::ExclusiveOutput(_))
+        ));
+        assert!(matches!(
+            g.connect(x, "out", pv, "video"),
+            Err(GraphError::ExclusiveOutput(_))
+        ));
+        g.connect(x, "out", e1, "in")?;
+        assert!(matches!(
+            g.connect(x, "out", e2, "in"),
+            Err(GraphError::ExclusiveOutput(_))
+        ));
+        // Removing the link frees the output for another encoder.
+        let link = g.links()[0];
+        assert!(g.disconnect(link));
+        g.connect(x, "out", e2, "in")?;
+        Ok(())
+    }
+
+    #[test]
+    fn an_exclusive_input_is_refused() {
+        let bad = NodeDescriptor::new(
+            NodeTypeId::new_static("test.node"),
+            NodeKind::Encoder,
+            vec![Pin::exclusive("in", LinkKind::Video)],
+            vec![Pin::one("out", LinkKind::Packets)],
+        );
+        assert!(matches!(
+            bad.validate(),
+            Err(DescriptorError::ExclusiveInput(_))
+        ));
     }
 
     #[test]

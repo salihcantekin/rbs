@@ -17,12 +17,13 @@ use rbs_audio_filters::{
 };
 use rbs_codec::{EncoderTuning, VideoEncoderConfig};
 use rbs_core::lifecycle::Lifecycle;
-use rbs_core::media::{ContainerId, MemoryKind, PixelFormat, Size, StreamDescriptor};
+use rbs_core::media::{ContainerId, GpuDeviceId, MemoryKind, PixelFormat, Size, StreamDescriptor};
 use rbs_core::pause::{HoldSwitch, PauseWindow};
 use rbs_core::time::Timestamp;
 use rbs_core::timing::{Cadence, FrameRate};
 use rbs_engine::{Applied, DEFAULT_DOORBELL_TIMER, Engine, Pacing, Serviced, WorkerStats};
 use rbs_filters::{FilterNode, FilterStats, FilterType, Values};
+use rbs_gpu::download::DownloadShare;
 use rbs_gpu::node::{CompositorNode, GpuRuntime, LayerSender, RenderLocal};
 use rbs_gpu::share::{PreviewDesc, PreviewEndpoint};
 use rbs_gpu::{CanvasDesc, GpuContext};
@@ -33,7 +34,7 @@ use rbs_graph::runtime::{FaultCause, JoinError, Node, NodeHealth, RuntimeEvent};
 use rbs_nodes::capture::CaptureNodeStats;
 use rbs_nodes::encode::EncoderNodeStats;
 use rbs_nodes::encode::KeyframeAt;
-use rbs_nodes::export::{ExportEnd, ExportHold, ExportNodeStats};
+use rbs_nodes::export::{ExportEnd, ExportHold, ExportNodeStats, LeaseOwners, NativeExport};
 use rbs_nodes::output::OutputNodeStats;
 use rbs_nodes::output_cut::OutputCut;
 use rbs_nodes::{
@@ -579,6 +580,8 @@ impl OutputId {
 
 /// The video half of a prepared output: a new export and encoder, or a running
 /// encoder chain shared with another output.
+// Built once per output start on the control thread, never on a hot path.
+#[allow(clippy::large_enum_variant)]
 enum VideoPlan {
     /// Audio only: no export and no video encoder.
     None,
@@ -598,6 +601,11 @@ enum VideoPlan {
         settings: VideoSettings,
         /// Resolved output size the encoder is opened with.
         size: (u32, u32),
+        /// The readback share its export uses (R-01).
+        share: Arc<DownloadShare>,
+        /// The lease owners of a native export (ADR-0147 decision 8); `None` for the
+        /// readback.
+        owners: Option<Arc<LeaseOwners>>,
     },
     Shared(usize),
 }
@@ -726,6 +734,8 @@ impl Prepared {
     /// encoder in `running` is shared when the output's video settings and resolved
     /// output size equal the ones it was opened with and its adapter is a candidate of
     /// this output's selection (ADR-0047, ADR-0102). `canvas_size` is that output's canvas.
+    // Each argument is distinct; the internal callers pass the studio's state.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn choose(
         adapters: &RecordAdapters,
         out: &OutputSettings,
@@ -734,6 +744,7 @@ impl Prepared {
         fps: FrameRate,
         audio_graph: AudioGraphConfig,
         running: &Chains,
+        native: Option<(MemoryKind, GpuDeviceId)>,
     ) -> Result<Self, RecordError> {
         if out.video.is_none() && out.audio.is_none() {
             return Err(RecordError::EmptyOutput);
@@ -800,8 +811,25 @@ impl Prepared {
                         {
                             return Err(RecordError::NoEncoderSlot);
                         }
-                        let (encoder, chosen) =
-                            select::video_encoder(&adapters.video_encoders, &video_config)?;
+                        // Native input first, when the render device has an exporter and
+                        // an encoder takes its memory on that device (ADR-0147 decision
+                        // 1): chosen by capability, never by vendor. Else the readback.
+                        let native_choice = native.and_then(|(kind, device)| {
+                            let mut config = video_config.clone().with_device(device);
+                            config.memory = kind;
+                            select::video_encoder(&adapters.video_encoders, &config).ok()
+                        });
+                        let (encoder, chosen, owners) = match native_choice {
+                            Some((encoder, chosen)) => {
+                                (encoder, chosen, Some(Arc::new(LeaseOwners::default())))
+                            }
+                            None => {
+                                let (encoder, chosen) =
+                                    select::video_encoder(&adapters.video_encoders, &video_config)?;
+                                (encoder, chosen, None)
+                            }
+                        };
+                        let frames_held = encoder.frames_held();
                         streams.push(encoder.stream().clone());
                         // Every output's encoder takes keyframe requests: a recording
                         // sharing it later resumes at one (ADR-0124 decisions 7 and 8).
@@ -816,6 +844,33 @@ impl Prepared {
                             None => (export, None),
                         };
                         let format = export.frame_format();
+                        // One conversion and readback per output shape (R-01): a
+                        // running chain of the same shape lends its share. Each export
+                        // keeps its own gates, so pausing, holding or ending one never
+                        // touches the other.
+                        let share = running
+                            .video
+                            .iter()
+                            .flatten()
+                            .find(|c| {
+                                c.canvas == canvas
+                                    && c.size == (width, height)
+                                    && c.settings.format == video.format
+                                    && c.settings.color == video.color
+                                    && c.settings.open_shadows == video.open_shadows
+                            })
+                            .map_or_else(
+                                || Arc::new(DownloadShare::new()),
+                                |c| Arc::clone(&c.share),
+                            );
+                        let export = match &owners {
+                            // A native export has its own exporter (ADR-0147 decision 11).
+                            Some(owners) => export.native(NativeExport {
+                                encoder_frames: frames_held,
+                                owners: Arc::clone(owners),
+                            }),
+                            None => export.with_share(Arc::clone(&share)),
+                        };
                         let (export, chain_hold) = if holds {
                             let hold = Arc::new(ExportHold::new(Arc::new(HoldSwitch::default())));
                             (export.with_hold(Arc::clone(&hold)), Some((hold, format)))
@@ -832,6 +887,8 @@ impl Prepared {
                             chosen,
                             settings: video.clone(),
                             size: (width, height),
+                            share,
+                            owners,
                         }
                     }
                 }
@@ -970,6 +1027,13 @@ struct VideoChain {
     /// Its hold and the format its frames are, for a holdable stream's or a pausable
     /// recording's new chain (ADR-0124 decision 13).
     hold: Option<(Arc<ExportHold>, rbs_core::media::VideoFormat)>,
+    /// The readback share of its export: a new chain of the same canvas, output size,
+    /// pixel format, colour and grade uses it too, so the canvas is converted and read
+    /// back once for both (perf audit R-01).
+    share: Arc<DownloadShare>,
+    /// The lease owners of a native export, dropped only after the chain's nodes are
+    /// taken back (ADR-0147 decision 8); `None` for the readback.
+    owners: Option<Arc<LeaseOwners>>,
 }
 
 /// A running audio encoder, used by one or more outputs.
@@ -1002,6 +1066,7 @@ pub(crate) struct Chains {
 #[derive(Debug, Clone, Copy, Default)]
 struct Base {
     frames_exported: u64,
+    frames_joined: u64,
     export_drops: u64,
     frames_encoded: u64,
     encoder_drops: u64,
@@ -1228,6 +1293,16 @@ pub struct Studio {
     /// Retired instances whose take failed (their partition's swap was still in
     /// flight), with the source they belonged to; [`Studio::service`] retries them.
     pending_takes: Vec<(Added, Option<SourceId>)>,
+    /// The native memory kind and device the render device exports to encoders
+    /// (ADR-0147 decision 1); `None` when it has no exporter.
+    native_pref: Option<(MemoryKind, GpuDeviceId)>,
+    /// A native chain failed for good: new chains read back until the studio restarts
+    /// (ADR-0147 decision 9).
+    native_off: bool,
+    /// Lease owners of removed native chains with the nodes they wait for, dropped on
+    /// this (control) thread once those nodes are taken back and the queue endpoints
+    /// had a swap to retire (ADR-0147 decision 8).
+    retiring_owners: Vec<RetiringOwners>,
     /// The mixer's strips last sent.
     strips: Vec<MixStrip>,
     /// Volume and mute per source, from the last [`Studio::update`] or
@@ -1692,6 +1767,9 @@ impl Studio {
             render_worker,
             audio_worker,
             pending_takes: Vec::new(),
+            native_pref: native_encode_of(&gpu),
+            native_off: false,
+            retiring_owners: Vec::new(),
             strips: Vec::new(),
             mix: mix_of(collection, canvas_id),
             master: master_of(collection, canvas_id),
@@ -3725,6 +3803,7 @@ impl Studio {
             let engine = &mut self.engine;
             self.pending_takes.retain(|(a, _)| !take(engine, *a));
         }
+        self.settle_owners();
         for (_, event) in &serviced.events {
             match event {
                 RuntimeEvent::Failed {
@@ -3741,6 +3820,14 @@ impl Studio {
                         // An encoder chain's node fails every output that uses it;
                         // an output node only its own (ADR-0047 decision 7).
                         if retry_at.is_none() {
+                            // A native chain failed for good: later chains read back
+                            // until the studio restarts (ADR-0147 decision 9).
+                            if self.chains.video.iter().flatten().any(|c| {
+                                c.owners.is_some()
+                                    && (c.export.node == *node || c.encoder.node == *node)
+                            }) {
+                                self.native_off = true;
+                            }
                             let users = self.users(*node);
                             for r in self.outputs.iter_mut().filter(|r| users.contains(&r.id)) {
                                 if r.failure.is_none() {
@@ -3879,6 +3966,37 @@ impl Studio {
         self.attach(prepared, &adapters.sources, Strictness::Lenient)
     }
 
+    /// The native memory kind and device for a new chain: none once a native chain
+    /// failed for good (ADR-0147 decision 9).
+    fn native_encode(&self) -> Option<(MemoryKind, GpuDeviceId)> {
+        if self.native_off {
+            None
+        } else {
+            self.native_pref
+        }
+    }
+
+    /// Drops the lease owners of removed native chains whose nodes are taken back,
+    /// one service after that (the retired queue endpoints are gone by then), on this
+    /// control thread (ADR-0147 decision 8).
+    fn settle_owners(&mut self) {
+        if self.retiring_owners.is_empty() {
+            return;
+        }
+        let pending: Vec<NodeId> = self.pending_takes.iter().map(|(a, _)| a.node).collect();
+        self.retiring_owners.retain_mut(|r| {
+            if r.nodes.iter().any(|n| pending.contains(n)) {
+                return true;
+            }
+            r.settled = r.settled.saturating_add(1);
+            if r.settled < 2 {
+                return true;
+            }
+            drop(r.owners.take_all());
+            false
+        });
+    }
+
     /// Checks the limits and chooses `out`'s adapters, sharing running chains.
     fn prepare(
         &self,
@@ -3904,6 +4022,7 @@ impl Studio {
             self.fps,
             self.settings.audio_graph,
             &self.chains,
+            self.native_encode(),
         )
     }
 
@@ -4015,6 +4134,7 @@ impl Studio {
         let mut b = Base::default();
         if let Some(c) = video.and_then(|i| self.chains.video[i].as_ref()) {
             b.frames_exported = c.export_stats.frames.load(Ordering::Relaxed);
+            b.frames_joined = c.export_stats.joined.load(Ordering::Relaxed);
             b.export_drops = sum(&[&c.export_stats.busy, &c.export_stats.lost]);
             let e = &c.encoder_stats;
             b.frames_encoded = e.submitted.load(Ordering::Relaxed);
@@ -4176,6 +4296,8 @@ impl Studio {
                 chosen,
                 settings,
                 size,
+                share,
+                owners,
             },
             Some((e, v)),
         ) = (p.video, new_video)
@@ -4205,6 +4327,8 @@ impl Studio {
                 keyframes,
                 keyframe_capable,
                 hold: chain_hold,
+                share,
+                owners,
             });
         }
         let mut audio_chain = None;
@@ -4448,6 +4572,13 @@ impl Studio {
             {
                 nodes.push(c.export);
                 nodes.push(c.encoder);
+                if let Some(owners) = c.owners {
+                    self.retiring_owners.push(RetiringOwners {
+                        owners,
+                        nodes: [c.export.node, c.encoder.node],
+                        settled: 0,
+                    });
+                }
             }
             if let Some(a) = r.audio
                 && !self.outputs.iter().any(|o| o.audio == Some(a))
@@ -4760,6 +4891,7 @@ impl Studio {
         let since = |now: u64, base: u64| now.saturating_sub(base);
         if let (Some(export), Some(encoder)) = (&r.export, &r.encoder) {
             p.frames_exported = since(export.frames.load(Ordering::Relaxed), b.frames_exported);
+            p.frames_joined = since(export.joined.load(Ordering::Relaxed), b.frames_joined);
             p.export_drops = since(sum(&[&export.busy, &export.lost]), b.export_drops);
             p.frames_encoded = since(encoder.submitted.load(Ordering::Relaxed), b.frames_encoded);
             p.encoder_drops = since(
@@ -5110,6 +5242,21 @@ fn free_chain<T>(
     }
     free.find(|i| !pending(*i))
         .ok_or(RecordError::OutputFinishing)
+}
+
+/// The native memory kind and device `gpu` exports to encoders (ADR-0147).
+pub(crate) fn native_encode_of(gpu: &GpuContext) -> Option<(MemoryKind, GpuDeviceId)> {
+    rbs_nodes::export_preference(gpu)
+}
+
+/// Lease owners of a removed native chain (ADR-0147 decision 8).
+struct RetiringOwners {
+    owners: Arc<LeaseOwners>,
+    /// The chain's export and encoder nodes.
+    nodes: [NodeId; 2],
+    /// Services seen since both nodes were taken back; the owners go after two, when
+    /// the queue endpoints between them have been retired too.
+    settled: u8,
 }
 
 fn take(engine: &mut Engine, a: Added) -> bool {

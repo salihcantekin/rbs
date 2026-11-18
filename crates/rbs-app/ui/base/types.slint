@@ -1259,6 +1259,15 @@ export global Shortcuts {
     in property <string> note;
     in-out property <string> search;
     callback set-search(string);
+    // The category filter: "All" first, then the categories (rbs_ui Category::ALL);
+    // `category` is the chosen index. `assigned-only` shows only commands with a
+    // shortcut. `filtered`: either filter hides rows.
+    in property <[string]> categories: ["All"];
+    in property <int> category;
+    callback set-category(int);
+    in property <bool> assigned-only;
+    callback set-assigned-only(bool);
+    in property <bool> filtered;
     callback remove(int, int);
     callback reset(int);
     in property <bool> confirm-reset-all;

@@ -7,7 +7,7 @@
 //! left out (global scope, a control surface).
 
 use rbs_app::hotkeys::{self, GlobalKeys, Presses, Read};
-use rbs_ui::command::{self, CommandId, CommandState, ENTRIES, Kind, Menu, ParamType};
+use rbs_ui::command::{self, Category, CommandId, CommandState, ENTRIES, Kind, Menu, ParamType};
 use rbs_ui::shortcut::{Check, Chord, Key, Keymap, Mods, Named, Platform, Scope, ShortcutsDoc};
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
@@ -50,8 +50,11 @@ pub struct Keys {
     /// Global chords the OS refused, with why.
     refused: Vec<(String, Chord, String)>,
     presses: Presses,
-    /// The page: search text, the rows shown, the recorder, Reset all asked.
+    /// The page: search text, the category filter (`None` for all), only commands
+    /// with a shortcut, the rows shown, the recorder, Reset all asked.
     search: String,
+    category: Option<Category>,
+    assigned_only: bool,
     rows: Vec<RowSrc>,
     recording: Option<Recording>,
     confirm_reset_all: bool,
@@ -84,6 +87,8 @@ impl Default for Keys {
             refused: Vec::new(),
             presses: Presses::default(),
             search: String::new(),
+            category: None,
+            assigned_only: false,
             rows: Vec::new(),
             recording: None,
             confirm_reset_all: false,
@@ -439,6 +444,17 @@ fn rows(keys: &Keys, state: &dyn CommandState) -> Vec<RowSrc> {
     out
 }
 
+/// The filter row keeps a row: its command is in the chosen category (`None` for
+/// all), and has a shortcut when only those are shown.
+fn filters_keep(
+    category: Option<Category>,
+    assigned_only: bool,
+    command: &str,
+    has_shortcut: bool,
+) -> bool {
+    category.is_none_or(|c| Category::of(command) == c) && (!assigned_only || has_shortcut)
+}
+
 fn title_of(rows: &[RowSrc], command: &str) -> String {
     rows.iter()
         .find(|r| r.command == command)
@@ -470,6 +486,16 @@ pub fn refresh(ctx: &Ctx, app: &App) {
             .recording
             .as_ref()
             .is_some_and(|rec| rec.command == r.command);
+        if !recording_here
+            && !filters_keep(
+                keys.category,
+                keys.assigned_only,
+                &r.command,
+                !chips.is_empty(),
+            )
+        {
+            continue;
+        }
         if !needle.is_empty() && !recording_here {
             let hit = r.title.to_lowercase().contains(&needle)
                 || r.group.to_lowercase().contains(&needle)
@@ -540,6 +566,19 @@ pub fn refresh(ctx: &Ctx, app: &App) {
     let g = w.global::<Shortcuts>();
     g.set_rows(ModelRc::new(VecModel::from(view)));
     g.set_hint(hint(platform).into());
+    g.set_categories(ModelRc::new(VecModel::from(
+        std::iter::once("All")
+            .chain(Category::ALL.iter().map(|c| c.title()))
+            .map(SharedString::from)
+            .collect::<Vec<_>>(),
+    )));
+    g.set_category(
+        keys.category
+            .and_then(|c| Category::ALL.iter().position(|x| *x == c))
+            .map_or(0, |i| i as i32 + 1),
+    );
+    g.set_assigned_only(keys.assigned_only);
+    g.set_filtered(keys.category.is_some() || keys.assigned_only);
     g.set_note(keys.note.clone().into());
     g.set_confirm_reset_all(keys.confirm_reset_all);
     g.set_recording(recording_row.unwrap_or(-1));
@@ -614,6 +653,16 @@ pub fn install(g: &Shortcuts<'_>, ctx: &Ctx) {
     on!(on_set_search, |app, c, text: SharedString| {
         let _ = app;
         c.keys.borrow_mut().search = text.to_string();
+    });
+    on!(on_set_category, |app, c, index: i32| {
+        let _ = app;
+        c.keys.borrow_mut().category = usize::try_from(index - 1)
+            .ok()
+            .and_then(|i| Category::ALL.get(i).copied());
+    });
+    on!(on_set_assigned_only, |app, c, on: bool| {
+        let _ = app;
+        c.keys.borrow_mut().assigned_only = on;
     });
     on!(on_ask_reset_all, |app, c| {
         let _ = app;
@@ -798,7 +847,13 @@ pub fn show_command(ctx: &Ctx, app: &App, id: &str) {
     let Some(entry) = rbs_ui::command::entry(id) else {
         return;
     };
-    ctx.keys.borrow_mut().search = entry.title.to_owned();
+    {
+        let mut keys = ctx.keys.borrow_mut();
+        keys.search = entry.title.to_owned();
+        // The filters must not hide the row asked for.
+        keys.category = None;
+        keys.assigned_only = false;
+    }
     if let Some(w) = &app.settings {
         w.global::<Shortcuts>().set_search(entry.title.into());
     }
@@ -918,6 +973,36 @@ mod tests {
             u.dedup();
             u.len()
         });
+    }
+
+    #[test]
+    fn the_filter_row_keeps_matching_rows() {
+        assert!(filters_keep(None, false, "edit.undo", false));
+        assert!(filters_keep(
+            Some(Category::Scene),
+            false,
+            "scene.next",
+            false
+        ));
+        assert!(!filters_keep(
+            Some(Category::Scene),
+            false,
+            "stream.toggle",
+            true
+        ));
+        assert!(filters_keep(
+            Some(Category::Profiles),
+            false,
+            "profile.select?profile=a",
+            false
+        ));
+        assert!(!filters_keep(None, true, "scene.next", false));
+        assert!(filters_keep(
+            Some(Category::Output),
+            true,
+            "stream.toggle",
+            true
+        ));
     }
 
     #[test]

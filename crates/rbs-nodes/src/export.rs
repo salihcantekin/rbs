@@ -5,12 +5,12 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use rbs_core::media::{
-    ColorRange, ColorSpace, PixelFormat, PlaneLayout, Size, SystemFrame, VideoFormat, VideoFrame,
-    next_generation,
+    ColorRange, ColorSpace, LeaseOwner, PictureId, PixelFormat, PlaneLayout, Size, SystemFrame,
+    VideoFormat, VideoFrame, next_generation,
 };
 use rbs_core::pause::{HoldPicture, HoldSwitch, PauseWindow, Place, Window};
 use rbs_core::time::Timestamp;
-use rbs_gpu::download::{DownloadStats, YuvDownload};
+use rbs_gpu::download::{DownloadShare, DownloadStats, YuvDownload};
 use rbs_gpu::node::GpuRuntime;
 use rbs_gpu::{ScaleKernel, YuvFormat};
 use rbs_graph::node::{LinkKind, NodeDescriptor, NodeKind, NodeTypeId, Pin};
@@ -52,6 +52,146 @@ pub fn video_export_hold_descriptor() -> NodeDescriptor {
     )
 }
 
+/// Lease owners of the native exporters a chain's export node made, one per `prepare`
+/// (restarts included). The composition root keeps this handle and drops the owners on
+/// the control thread only after the chain's export and encoder nodes are released and
+/// collected, so the last reference to an exporter's surfaces never falls on a
+/// real-time thread (ADR-0147 decision 8).
+#[derive(Default)]
+pub struct LeaseOwners {
+    owners: Mutex<Vec<Arc<dyn LeaseOwner>>>,
+}
+
+impl std::fmt::Debug for LeaseOwners {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LeaseOwners")
+            .field("kept", &self.kept())
+            .finish()
+    }
+}
+
+impl LeaseOwners {
+    /// Keeps `owner` until [`Self::take_all`]. Called from `prepare` (may allocate).
+    pub fn keep(&self, owner: Arc<dyn LeaseOwner>) {
+        if let Ok(mut owners) = self.owners.lock() {
+            owners.push(owner);
+        }
+    }
+
+    /// Owners kept now.
+    pub fn kept(&self) -> usize {
+        self.owners.lock().map(|o| o.len()).unwrap_or(0)
+    }
+
+    /// Hands every owner kept so far to the caller, who drops them off the real-time
+    /// threads.
+    pub fn take_all(&self) -> Vec<Arc<dyn LeaseOwner>> {
+        self.owners
+            .lock()
+            .map(|mut o| std::mem::take(&mut *o))
+            .unwrap_or_default()
+    }
+}
+
+/// The native mode of an export (ADR-0147): the encoder reads exported GPU surfaces in
+/// place, with no readback. The composition root chooses it when the encoder lists the
+/// render device's native memory kind and opens that device (decision 1).
+#[derive(Debug, Clone)]
+pub struct NativeExport {
+    /// Frames the encoder keeps after `submit` (`VideoEncoder::max_frames_held`).
+    pub encoder_frames: usize,
+    /// Where each `prepare` leaves its exporter's lease owner (decision 8).
+    pub owners: Arc<LeaseOwners>,
+}
+
+/// Exported surfaces other holders keep at once besides the encoder: conversions in
+/// flight (2), the export's output slot, the queue writer's held frame, the mailbox and
+/// the queue reader's output slot (ADR-0147 decision 4).
+pub const NATIVE_HOLDERS: usize = 6;
+
+/// What turns canvases into encoder input: the readback (system memory, ADR-0038) or,
+/// in native mode, an exporter whose surfaces the encoder reads in place (ADR-0147).
+// One per export, built in `prepare` and never moved on the hot path: the size
+// difference costs nothing, and a box would add an indirection per call.
+#[allow(clippy::large_enum_variant)]
+enum Conversion {
+    Readback(YuvDownload),
+    #[cfg(target_vendor = "apple")]
+    Native(rbs_gpu::native_export::NativeDownload),
+}
+
+macro_rules! each {
+    ($conv:expr, $d:ident => $body:expr) => {
+        match $conv {
+            Conversion::Readback($d) => $body,
+            #[cfg(target_vendor = "apple")]
+            Conversion::Native($d) => $body,
+        }
+    };
+}
+
+impl Conversion {
+    fn kernel(&self) -> ScaleKernel {
+        each!(self, d => d.kernel())
+    }
+    fn stats(&self) -> DownloadStats {
+        each!(self, d => d.stats())
+    }
+    fn in_flight(&self) -> usize {
+        each!(self, d => d.in_flight())
+    }
+    fn submit(
+        &mut self,
+        ctx: &rbs_gpu::GpuContext,
+        pool: &rbs_gpu::TexturePool,
+        canvas: &VideoFrame,
+    ) -> Result<bool, rbs_gpu::GpuError> {
+        each!(self, d => d.submit(ctx, pool, canvas))
+    }
+    fn submit_at(
+        &mut self,
+        ctx: &rbs_gpu::GpuContext,
+        pool: &rbs_gpu::TexturePool,
+        canvas: &VideoFrame,
+        timestamp: Timestamp,
+        sequence: u64,
+    ) -> Result<bool, rbs_gpu::GpuError> {
+        each!(self, d => d.submit_at(ctx, pool, canvas, timestamp, sequence))
+    }
+    fn submit_repeat(&mut self, timestamp: Timestamp, sequence: u64) -> bool {
+        each!(self, d => d.submit_repeat(timestamp, sequence))
+    }
+    fn take_ready(
+        &mut self,
+        ctx: &rbs_gpu::GpuContext,
+    ) -> Result<Option<VideoFrame>, rbs_gpu::GpuError> {
+        each!(self, d => d.take_ready(ctx))
+    }
+    fn take_oldest(
+        &mut self,
+        ctx: &rbs_gpu::GpuContext,
+    ) -> Result<Option<VideoFrame>, rbs_gpu::GpuError> {
+        each!(self, d => d.take_oldest(ctx))
+    }
+}
+
+/// The native memory kind and device this render device can export to encoders, if
+/// any (ADR-0147 decision 1): decided by the device's graphics API, never by vendor.
+/// Metal: IOSurfaces (macOS). Other APIs have no exporter yet (D3D12 and Vulkan follow,
+/// ADR-0147 order of work), so their chains read back.
+pub fn export_preference(
+    ctx: &rbs_gpu::GpuContext,
+) -> Option<(rbs_core::media::MemoryKind, rbs_core::media::GpuDeviceId)> {
+    match ctx.adapter().get_info().backend {
+        #[cfg(target_vendor = "apple")]
+        wgpu::Backend::Metal => Some((
+            rbs_core::media::MemoryKind::Metal,
+            rbs_core::media::GpuDeviceId::MetalRegistryId(0),
+        )),
+        _ => None,
+    }
+}
+
 /// Counters of a video export node, readable from any thread.
 #[derive(Debug, Default)]
 pub struct ExportNodeStats {
@@ -75,6 +215,9 @@ pub struct ExportNodeStats {
     /// Frames that repeated the picture before them because the canvas did not change
     /// (render on change, R-03): no conversion and no readback. Included in `frames`.
     pub repeated: AtomicU64,
+    /// Canvas frames queued without a conversion of their own: another export of the
+    /// same [`DownloadShare`] converted and read that picture back (R-01).
+    pub joined: AtomicU64,
 }
 
 /// Ends a video export's input at a master-clock time (ADR-0045); shared between the
@@ -250,7 +393,9 @@ pub fn black_frame(format: VideoFormat) -> Option<VideoFrame> {
         },
     ];
     let frame = SystemFrame::new(format, data.into(), &planes).ok()?;
-    Some(VideoFrame::system(Timestamp::ZERO, frame, None))
+    // Made once and shared for the whole hold: one picture id, so an encoder copies a
+    // black hold at most once per input buffer (ADR-0146).
+    Some(VideoFrame::system(Timestamp::ZERO, frame, None).with_picture(PictureId::next()))
 }
 
 /// A hold under way, as the export keeps it.
@@ -276,9 +421,16 @@ struct Held {
 
 impl Held {
     /// The picture to send now, shared (no copy).
-    fn picture(&self, hold: Option<&ExportHold>) -> Option<VideoFrame> {
+    fn picture(
+        &self,
+        hold: Option<&ExportHold>,
+        native_black: Option<&VideoFrame>,
+    ) -> Option<VideoFrame> {
         match self.picture {
-            HoldPicture::Black => hold?.black(),
+            HoldPicture::Black => match native_black {
+                Some(black) => black.share(),
+                None => hold?.black(),
+            },
             // Freeze, and Scene: the newest scene frame, or the frozen program frame
             // until the first one is read back.
             _ => self.frozen.as_ref()?.share(),
@@ -306,7 +458,15 @@ pub struct VideoExportNode {
     /// Encoded picture. Equal to the canvas: the 1:1 download. Otherwise one scale.
     width: u32,
     height: u32,
-    download: Option<YuvDownload>,
+    download: Option<Conversion>,
+    /// Native mode (ADR-0147); `None` for the readback.
+    native: Option<NativeExport>,
+    /// The black hold picture in native mode: one exporter surface cleared at `prepare`
+    /// and kept while the export lives; made only for an export with a hold (P13).
+    native_black: Option<VideoFrame>,
+    /// Shares the conversion and readback with the other exports of this share that
+    /// have the same shape (R-01); `None` for an export with a readback of its own.
+    share: Option<Arc<DownloadShare>>,
     last: Option<(Timestamp, u64)>,
     seen: DownloadStats,
     stats: Arc<ExportNodeStats>,
@@ -450,6 +610,9 @@ impl VideoExportNode {
             width,
             height,
             download: None,
+            native: None,
+            native_black: None,
+            share: None,
             last: None,
             seen: DownloadStats::default(),
             stats: Arc::default(),
@@ -464,6 +627,20 @@ impl VideoExportNode {
         }
     }
 
+    /// An export that reads canvases back through `share` (perf audit R-01, ADR-0143
+    /// R4): exports of one share with the same canvas, size, format, colour and grade
+    /// convert and read each canvas picture back once, and each passes it on with its
+    /// own stamps, gates (pause, hold, end) and counters. Exports of one share must run
+    /// in one partition.
+    #[must_use]
+    pub fn with_share(mut self, share: Arc<DownloadShare>) -> Self {
+        // A native export has its own exporter (ADR-0147 decision 11).
+        if self.native.is_none() {
+            self.share = Some(share);
+        }
+        self
+    }
+
     /// An export that a stream's hold can take over (ADR-0124 decision 13). Nothing
     /// on the run path: the export looks at the hold only after
     /// [`ExportEnd::wake_at`].
@@ -475,7 +652,36 @@ impl VideoExportNode {
     pub fn with_hold(mut self, hold: Arc<ExportHold>) -> Self {
         self.descriptor = video_export_hold_descriptor();
         self.hold = Some(hold);
+        self.mark_exclusive();
         self
+    }
+
+    /// An export in native mode (ADR-0147): `prepare` builds an exporter whose surfaces
+    /// the encoder reads in place instead of a readback, and the "video" output becomes
+    /// exclusive (one link, to the encoder only). Not combined with a share: native
+    /// chains each have their own exporter (decision 11). Failures in this mode are
+    /// permanent, so the studio rebuilds the chain with system memory (decision 9).
+    /// Available where the platform has an exporter (macOS); elsewhere `prepare` fails
+    /// permanently.
+    #[must_use]
+    pub fn native(mut self, native: NativeExport) -> Self {
+        self.native = Some(native);
+        self.share = None;
+        self.mark_exclusive();
+        self
+    }
+
+    /// Whether the export is in native mode.
+    pub fn is_native(&self) -> bool {
+        self.native.is_some()
+    }
+
+    fn mark_exclusive(&mut self) {
+        if self.native.is_some()
+            && let Some(pin) = self.descriptor.outputs.get_mut(VIDEO_PIN)
+        {
+            *pin = Pin::exclusive("video", LinkKind::Video);
+        }
     }
 
     /// An export that follows `pause` (ADR-0124 decision 4): it takes no canvas inside
@@ -658,6 +864,7 @@ impl VideoExportNode {
     ) -> Result<(), NodeError> {
         let tick = ctx.tick();
         let gpu = ctx.shared();
+        let native = self.native.is_some();
         // The download's last frame is the hold's from here on: the program's canvas is
         // converted again after the hold, never repeated from it.
         self.last = None;
@@ -671,7 +878,7 @@ impl VideoExportNode {
         let ready = match download.take_ready(gpu) {
             Ok(frame) => frame,
             Err(_) => {
-                result = Err(NodeError::Backend("video export readback failed"));
+                result = Err(failure(native, "video export readback failed"));
                 None
             }
         };
@@ -700,7 +907,7 @@ impl VideoExportNode {
                     // A late program readback, or a scene frame no longer wanted.
                     other => drop(other),
                 }
-                let frame = held.picture(self.hold.as_deref());
+                let frame = held.picture(self.hold.as_deref(), self.native_black.as_ref());
                 let at = held.last_tick;
                 held.last_tick = tick.time;
                 frame.map(|f| f.with_timestamp(at).with_sequence(next_generation()))
@@ -735,7 +942,7 @@ impl VideoExportNode {
             if held.last_scene != Some(key) {
                 held.last_scene = Some(key);
                 if download.submit(gpu, &local.pool, canvas).is_err() {
-                    result = Err(NodeError::Backend("video export conversion failed"));
+                    result = Err(failure(native, "video export conversion failed"));
                 }
             }
         }
@@ -747,6 +954,16 @@ impl VideoExportNode {
             self.end.ended.store(true, Ordering::Release);
         }
         result
+    }
+}
+
+/// The error of a failed conversion or take: permanent in native mode (ADR-0147
+/// decision 9), a backend error the controller restarts otherwise.
+fn failure(native: bool, what: &'static str) -> NodeError {
+    if native {
+        NodeError::Permanent(what)
+    } else {
+        NodeError::Backend(what)
     }
 }
 
@@ -764,6 +981,66 @@ fn send_frame(
     Ok(())
 }
 
+impl VideoExportNode {
+    /// `prepare` in native mode: builds the exporter, sized from its holders (ADR-0147
+    /// decision 4), hands its lease owner to the composition root (decision 8), and
+    /// clears the black hold surface when the export has a hold. Every failure is
+    /// permanent (decision 9).
+    #[cfg(target_vendor = "apple")]
+    fn prepare_native(
+        &mut self,
+        ctx: &mut PrepareCtx<'_, GpuRuntime>,
+        native: &NativeExport,
+    ) -> Result<(), NodeError> {
+        use rbs_gpu::export::{MAX_EXPORT_SURFACES, SurfaceExporter};
+        use rbs_gpu::native_export::NativeDownload;
+        // The hold's pinned picture and its black surface.
+        let hold = if self.hold.is_some() { 2 } else { 0 };
+        let surfaces = NATIVE_HOLDERS + native.encoder_frames + hold;
+        if surfaces > MAX_EXPORT_SURFACES {
+            return Err(NodeError::Permanent("native export ring too large"));
+        }
+        let mut exporter = SurfaceExporter::scaled_tone(
+            ctx.shared,
+            self.format,
+            self.canvas_width,
+            self.canvas_height,
+            self.width,
+            self.height,
+            surfaces,
+            self.color,
+            self.open_shadows,
+        )
+        .map_err(|_| NodeError::Permanent("native export could not be created"))?;
+        native.owners.keep(exporter.lease_owner());
+        if self.hold.is_some() {
+            let black = exporter
+                .black(ctx.shared, Timestamp::ZERO)
+                .map_err(|_| NodeError::Permanent("native export black surface failed"))?;
+            self.native_black = Some(black);
+        }
+        // Repeats take no surface, so the entries may run ahead of the ring a little.
+        let download = NativeDownload::new(exporter, surfaces + 4);
+        self.seen = download.stats();
+        self.download = Some(Conversion::Native(download));
+        self.last = None;
+        self.end.ended.store(false, Ordering::Release);
+        Ok(())
+    }
+
+    /// Native mode has no exporter on this platform yet (ADR-0147 order of work).
+    #[cfg(not(target_vendor = "apple"))]
+    fn prepare_native(
+        &mut self,
+        _ctx: &mut PrepareCtx<'_, GpuRuntime>,
+        _native: &NativeExport,
+    ) -> Result<(), NodeError> {
+        Err(NodeError::Permanent(
+            "native export is not available on this platform",
+        ))
+    }
+}
+
 impl Node<GpuRuntime> for VideoExportNode {
     fn descriptor(&self) -> &NodeDescriptor {
         &self.descriptor
@@ -774,17 +1051,35 @@ impl Node<GpuRuntime> for VideoExportNode {
         // download from this canvas (ADR-0102). The two outputs of one canvas each
         // read that canvas; neither reads the other's planes.
         let same = self.canvas_width == self.width && self.canvas_height == self.height;
-        let download = if same {
-            YuvDownload::with_tone(
+        // A restart: the old download hands its slots back to a shared readback first.
+        self.download = None;
+        self.native_black = None;
+        if let Some(native) = self.native.clone() {
+            return self.prepare_native(ctx, &native);
+        }
+        let download = match self.share.as_deref() {
+            // A shared readback; equal sizes still take the 1:1 path in it.
+            Some(share) => YuvDownload::scaled_tone_shared(
+                ctx.shared,
+                share,
+                self.format,
+                self.canvas_width,
+                self.canvas_height,
+                self.width,
+                self.height,
+                rbs_gpu::download::DOWNLOAD_BUFFERS,
+                self.color,
+                self.open_shadows,
+            ),
+            None if same => YuvDownload::with_tone(
                 ctx.shared,
                 self.format,
                 self.width,
                 self.height,
                 self.color,
                 self.open_shadows,
-            )
-        } else {
-            YuvDownload::scaled_tone(
+            ),
+            None => YuvDownload::scaled_tone(
                 ctx.shared,
                 self.format,
                 self.canvas_width,
@@ -794,11 +1089,11 @@ impl Node<GpuRuntime> for VideoExportNode {
                 rbs_gpu::download::DOWNLOAD_BUFFERS,
                 self.color,
                 self.open_shadows,
-            )
+            ),
         }
         .map_err(|e| NodeError::Failed(format!("video export: {e}")))?;
         self.seen = download.stats();
-        self.download = Some(download);
+        self.download = Some(Conversion::Readback(download));
         self.last = None;
         // A restarted export has nothing in flight; it reports the end again once it
         // has passed on what it takes from now on.
@@ -845,6 +1140,7 @@ impl Node<GpuRuntime> for VideoExportNode {
             }
             (end, self.read_window(ctx_time, next))
         };
+        let native = self.native.is_some();
         let (inputs, outputs, local) = ctx.parts();
         let download = self.download.as_mut().ok_or(NodeError::NotReady)?;
 
@@ -863,13 +1159,13 @@ impl Node<GpuRuntime> for VideoExportNode {
                 // picture goes out once more, with the previous tick's time.
                 if let Some(frame) = released.and_then(|h| {
                     let at = h.last_tick;
-                    h.picture(self.hold.as_deref())
+                    h.picture(self.hold.as_deref(), self.native_black.as_ref())
                         .map(|f| f.with_timestamp(at))
                 }) {
                     send_frame(outputs, frame.with_sequence(next_generation()), &self.stats)?;
                 }
             }
-            Err(_) => result = Err(NodeError::Backend("video export readback failed")),
+            Err(_) => result = Err(failure(native, "video export readback failed")),
         }
 
         if let Some(canvas) = inputs.video(CANVAS_PIN, 0) {
@@ -907,7 +1203,7 @@ impl Node<GpuRuntime> for VideoExportNode {
                         // A full ring (counted in `busy`): converted on the next tick.
                         Ok(false) => {}
                         Err(_) => {
-                            result = Err(NodeError::Backend("video export conversion failed"));
+                            result = Err(failure(native, "video export conversion failed"));
                         }
                     }
                 } else {
@@ -935,6 +1231,11 @@ impl Node<GpuRuntime> for VideoExportNode {
         self.stats
             .repeated
             .fetch_add(now.repeated - self.seen.repeated, Ordering::Relaxed);
+        if now.joined != self.seen.joined {
+            self.stats
+                .joined
+                .fetch_add(now.joined - self.seen.joined, Ordering::Relaxed);
+        }
         if now.no_buffer != self.seen.no_buffer || now.failed != self.seen.failed {
             // A readback that never reached the encoder: the next tick converts the
             // canvas again instead of repeating a picture before it.
@@ -946,6 +1247,9 @@ impl Node<GpuRuntime> for VideoExportNode {
 
     fn release(&mut self, _ctx: &mut PrepareCtx<'_, GpuRuntime>) {
         self.held = None;
+        // Gives the black surface back to the ring; the ring itself lives on in the
+        // owners the composition root keeps (ADR-0147 decision 8).
+        self.native_black = None;
         self.releasing = 0;
         // Readbacks still in flight never reach the encoder (a stop without
         // `ExportEnd`, or past the studio's tail limit): counted, never silent.
@@ -980,6 +1284,8 @@ mod tests {
             let mut format = VideoExportNode::new(yuv, 6, 4, 6, 4).frame_format();
             format.color.range = range;
             let frame = black_frame(format).expect("a black frame");
+            // One picture id for the whole hold (ADR-0146).
+            assert!(!frame.picture().is_none());
             let data = system(&frame);
             let wide = yuv == YuvFormat::P010;
             let at = |i: usize| {
