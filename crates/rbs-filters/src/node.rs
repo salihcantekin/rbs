@@ -10,6 +10,7 @@ use rbs_core::media::{
 };
 use rbs_core::time::Timestamp;
 use rbs_gpu::node::GpuRuntime;
+use rbs_gpu::yuv_decode::YuvToRgb;
 use rbs_gpu::{GpuContext, GpuError, TextureDesc, TexturePool};
 use rbs_graph::node::{LinkKind, NodeDescriptor, NodeKind, Pin};
 use rbs_graph::runtime::param::{self, ParamReceiver, ParamSender};
@@ -91,6 +92,9 @@ pub struct FilterNode {
     /// The output texture published last (still read by the output slot).
     last_output: Option<TextureId>,
     uniforms: [Uniforms; MAX_PASSES],
+    /// Decodes a 4:2:0 input (a camera sampled directly by the compositor, perf audit
+    /// R-11) once per picture; holds nothing until the first such frame.
+    rgb: YuvToRgb,
 }
 
 /// The description of each pass's target for an input of `size`.
@@ -160,6 +164,7 @@ impl FilterNode {
             published: None,
             last_output: None,
             uniforms: [Uniforms::default(); MAX_PASSES],
+            rgb: YuvToRgb::new(),
         };
         (node, sender, stats)
     }
@@ -326,6 +331,7 @@ impl Node<GpuRuntime> for FilterNode {
         }
         self.last_output = None;
         self.published = None;
+        self.rgb.release();
     }
 
     fn process(&mut self, ctx: &mut ProcessCtx<'_, GpuRuntime>) -> Result<(), NodeError> {
@@ -334,8 +340,15 @@ impl Node<GpuRuntime> for FilterNode {
         let prepared = self.gpu.as_ref().ok_or(NodeError::NotReady)?;
         let (inputs, outputs, local) = ctx.parts();
 
-        // What the input offers; nothing usable publishes nothing.
-        let input = inputs.video(IN_PIN, 0).and_then(|frame| {
+        // What the input offers; nothing usable publishes nothing. A 4:2:0 input is
+        // decoded to RGB first, once per picture.
+        let mut frame = inputs.video(IN_PIN, 0);
+        if let Some(f) = frame
+            && YuvToRgb::needs_decode(&local.pool, f)
+        {
+            frame = self.rgb.rgb(gpu, &mut local.pool, f).ok();
+        }
+        let input = frame.and_then(|frame| {
             let FramePayload::Texture(id) = *frame.payload() else {
                 return None;
             };
