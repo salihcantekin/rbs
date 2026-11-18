@@ -157,6 +157,9 @@ impl Host {
             // The adapter and target are a capture device's; a type this build does
             // not know fails closed.
             Command::SourceRetarget(p) => self.source_kind(p.source).is_some_and(|k| k.is_none()),
+            // A click or a key can do anything in a page, a sign-up or a purchase
+            // included (ADR-0132 decision 9).
+            Command::BrowserInput(p) => self.source_kind(p.source).is_some(),
             _ => false,
         };
         if reaches {

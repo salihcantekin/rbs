@@ -25,6 +25,7 @@ use std::time::Duration;
 
 pub mod automation;
 pub mod control;
+pub mod input;
 pub mod page;
 pub mod runtime;
 
@@ -206,7 +207,7 @@ fn take_u8(rest: &mut &[u8]) -> Option<u8> {
 }
 
 impl PageOptions {
-    fn encode(&self, body: &mut Vec<u8>) {
+    pub(crate) fn encode(&self, body: &mut Vec<u8>) {
         put_text(body, &self.css);
         body.extend_from_slice(&u32::from(self.zoom_percent).to_le_bytes());
         put_text(body, &self.script);
@@ -218,7 +219,7 @@ impl PageOptions {
         put_text(body, &self.profile_dir);
     }
 
-    fn decode(mut rest: &[u8]) -> Option<Self> {
+    pub(crate) fn decode(mut rest: &[u8]) -> Option<Self> {
         let rest = &mut rest;
         Some(Self {
             css: take_text(rest)?,

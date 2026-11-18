@@ -480,6 +480,9 @@ impl NodeTypes for NodeTypeTable {
                 keys::START_MS,
                 keys::END_MS,
             ],
+            // CSS, zoom, the script and the timers reach the running page over IPC
+            // (ADR-0132 decision 4, ADR-0149 decision 1).
+            Some(SourceClass::Browser) => &crate::browser::BROWSER_LIVE_KEYS,
             _ => &[],
         }
     }

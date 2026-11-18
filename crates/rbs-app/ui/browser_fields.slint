@@ -63,6 +63,11 @@ export component BrowserFields inherits VerticalLayout {
     // The source name, for accessible names.
     in property <string> name;
     property <BrowserData> b: Studio.browser-props;
+    // Forget sign-in asks first: it cannot be undone (ADR-0132 decision 10). Another
+    // source, or the switch turned off, closes the question.
+    property <bool> confirm-forget;
+    property <int> forget-for: b.id;
+    changed forget-for => { root.confirm-forget = false; }
     // A section's gap between rows, so a tall tab reads top to bottom (owner 2026-11-17).
     spacing: Tokens.size-section-gap;
     // Why the page is not on air, with the action that fixes it (U9).
@@ -267,7 +272,7 @@ export component BrowserFields inherits VerticalLayout {
         }
         Field {
             label: @tr("Script");
-            TextArea {
+            script := TextArea {
                 label: @tr("JavaScript for {}", root.name);
                 text: b.script;
                 lines: 4;
@@ -300,8 +305,9 @@ export component BrowserFields inherits VerticalLayout {
                 text: @tr("Run now");
                 accessible-name: @tr("Run the script of {} now", root.name);
                 dense: true;
-                enabled: b.running && b.script != "";
-                clicked => { Studio.browser-run-script(b.id); }
+                // The text as typed: Run now saves it (no restart, ADR-0149) and runs it.
+                enabled: b.running && script.text != "";
+                clicked => { Studio.browser-run-script(b.id, script.text); }
             }
         }
     }
@@ -348,14 +354,49 @@ export component BrowserFields inherits VerticalLayout {
             checked: b.keep-signed-in;
             toggled(on) => { Studio.set-browser-flag(b.id, "keep_signed_in", on); }
         }
-        if b.keep-signed-in: HorizontalLayout {
+        if b.keep-signed-in && !root.confirm-forget: HorizontalLayout {
             alignment: start;
             Button {
                 lead: IconName.eraser;
                 text: @tr("Forget sign-in");
                 accessible-name: @tr("Forget the sign-in of {}", root.name);
                 dense: true;
-                clicked => { Studio.browser-forget-sign-in(b.id); }
+                clicked => { root.confirm-forget = true; }
+            }
+        }
+        if b.keep-signed-in && root.confirm-forget: HorizontalLayout {
+            spacing: Tokens.space-1;
+            accessible-role: groupbox;
+            accessible-label: @tr("Forget the sign-in of {}?", root.name);
+            Text {
+                horizontal-stretch: 1;
+                text: @tr("Forget the sign-in? The page opens again signed out.");
+                color: Theme.text-primary;
+                font-size: Tokens.type-caption-size;
+                vertical-alignment: center;
+                wrap: word-wrap;
+            }
+            VerticalLayout {
+                alignment: center;
+                Button {
+                    text: @tr("Forget");
+                    accessible-name: @tr("Forget the sign-in of {}", root.name);
+                    kind: "danger";
+                    dense: true;
+                    clicked => {
+                        root.confirm-forget = false;
+                        Studio.browser-forget-sign-in(b.id);
+                    }
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                Button {
+                    text: @tr("Keep");
+                    accessible-name: @tr("Keep the sign-in of {}", root.name);
+                    dense: true;
+                    clicked => { root.confirm-forget = false; }
+                }
             }
         }
     }

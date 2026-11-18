@@ -143,6 +143,16 @@ fn source_fields(type_id: &NodeTypeId) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// `copy` of `source` with a kept profile of its own: a copy never shares the
+/// original's sign-in (ADR-0132 decision 10).
+fn own_profile(copy: SourceCopy, source: &Source) -> Result<SourceCopy, Refusal> {
+    if crate::browser_profiles::id_of(source).is_none() {
+        return Ok(copy);
+    }
+    let id = crate::browser_profiles::new_id().map_err(Refusal::Invalid)?;
+    Ok(copy.with_setting(rbs_sources::types::keys::PROFILE_ID, SettingValue::Text(id)))
+}
+
 /// A free source name from `base`, avoiding `also` (names chosen in the same step).
 fn free_name(host: &Host, base: &str, also: &[String]) -> String {
     let taken =
@@ -279,7 +289,10 @@ impl Host {
         let camera = SourceKind::of(&source.type_id) == Some(SourceKind::Camera);
         let standby = source.standby() || camera;
         let mut names = vec![free_name(self, &source.name, &[])];
-        let mut copies = vec![SourceCopy::new(id, &names[0], standby)];
+        let mut copies = vec![own_profile(
+            SourceCopy::new(id, &names[0], standby),
+            &source,
+        )?];
         if source.companion_of().is_none() {
             let companions: Vec<Source> = self
                 .collection
@@ -357,7 +370,7 @@ impl Host {
                 None => picture_standby(src),
             };
             let name = free_name(self, &src.name, &names);
-            copies.push(SourceCopy::new(s, &name, standby));
+            copies.push(own_profile(SourceCopy::new(s, &name, standby), src)?);
             names.push(name);
         }
         let name = unique_scene_name(&self.collection, &scene.name);

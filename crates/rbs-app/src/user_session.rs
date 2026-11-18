@@ -299,6 +299,18 @@ fn write_jobs(shared: &Shared, data: &UserData, lock: &WriterLock, on_error: &dy
     }
 }
 
+/// Gives every kept browser profile of the saved collection `id` a new id (a copied
+/// or imported collection never shares a sign-in, ADR-0132 decision 10). Writer thread.
+fn own_profiles(data: &UserData, lock: &WriterLock, id: &EntryId) -> Result<(), String> {
+    let lib = data.scene_collections();
+    let mut entry = lib.load(id).map_err(|e| e.to_string())?;
+    let empty = std::collections::BTreeSet::new();
+    if crate::browser_profiles::renew(&mut entry.document, &empty, true)? > 0 {
+        lib.save(lock, id, &entry).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 /// The output profile and scene collection in use.
 pub struct UserSession {
     data: UserData,
@@ -465,12 +477,58 @@ impl UserSession {
     pub fn load_collection(&self, id: &EntryId) -> Result<(String, SceneCollection), String> {
         // A save of it still waiting is written first.
         self.flush();
-        let entry = self
+        let mut entry = self
             .data
             .scene_collections()
             .load(id)
             .map_err(|e| e.to_string())?;
+        self.own_loaded_profiles(id, &mut entry.document);
         Ok((entry.name, entry.document))
+    }
+
+    /// A kept sign-in another collection already holds stays with it; the loaded
+    /// collection `id` starts signed out there (ADR-0132 decision 10), and is saved so.
+    /// Other collections are read only when it keeps a sign-in.
+    fn own_loaded_profiles(&self, id: &EntryId, collection: &mut SceneCollection) {
+        if !crate::browser_profiles::keeps_any(collection) {
+            return;
+        }
+        let taken = self.profile_ids_except(id);
+        if crate::browser_profiles::renew(collection, &taken, false).unwrap_or(0) > 0
+            && let Some(s) = &self.saver
+        {
+            s.shared
+                .push(Job::Collection(id.clone(), collection.clone()));
+        }
+    }
+
+    /// The kept-profile ids of every saved collection but `except`. A collection that
+    /// cannot be read adds none.
+    fn profile_ids_except(&self, except: &EntryId) -> std::collections::BTreeSet<String> {
+        let lib = self.data.scene_collections();
+        self.collections()
+            .into_iter()
+            .filter(|(id, _)| id != except)
+            .filter_map(|(id, _)| lib.load(&id).ok())
+            .flat_map(|e| crate::browser_profiles::ids(&e.document))
+            .collect()
+    }
+
+    /// Every kept-profile id a saved collection names, or `None` when any collection
+    /// cannot be read (the start-up sweep is then skipped, ADR-0132 decision 10).
+    pub fn all_profile_ids(&self) -> Option<std::collections::BTreeSet<String>> {
+        let lib = self.data.scene_collections();
+        let listing = lib.list().ok()?;
+        if !listing.problems.is_empty() {
+            return None;
+        }
+        let mut ids = std::collections::BTreeSet::new();
+        for entry in listing.entries {
+            ids.extend(crate::browser_profiles::ids(
+                &lib.load(&entry.id).ok()?.document,
+            ));
+        }
+        Some(ids)
     }
 
     /// What saves the scene collection `id` (named `name`) after a change, once it
@@ -505,11 +563,16 @@ impl UserSession {
         let starter = starter_collection(canvas);
         self.run(move |data, lock, _| {
             let lib = data.scene_collections();
-            match from {
+            let copied = from.is_some();
+            let id = match from {
                 Some(from) => lib.duplicate(lock, &from, &name),
                 None => lib.create(lock, &name, &starter),
             }
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+            if copied {
+                own_profiles(data, lock, &id)?;
+            }
+            Ok(id)
         })?
     }
 
@@ -536,7 +599,8 @@ impl UserSession {
         self.flush();
         self.data
             .scene_collections()
-            .export(&self.collection_id, to)
+            // A kept sign-in belongs to this computer (ADR-0132 decision 10).
+            .export_with(&self.collection_id, to, crate::browser_profiles::strip)
             .map_err(|e| e.to_string())
     }
 
@@ -557,10 +621,12 @@ impl UserSession {
     pub fn import_collection(&self, from: &Path) -> Result<String, String> {
         let from = from.to_owned();
         self.run(move |data, lock, _| {
-            data.scene_collections()
+            let (id, name) = data
+                .scene_collections()
                 .import(lock, &from)
-                .map(|(_, name)| name)
-                .map_err(|e| e.to_string())
+                .map_err(|e| e.to_string())?;
+            own_profiles(data, lock, &id)?;
+            Ok(name)
         })?
     }
 
@@ -1013,20 +1079,20 @@ pub fn open(config: &Path, on_error: OnError) -> (UserSession, SceneCollection) 
             }
         }
     });
-    (
-        UserSession {
-            data,
-            saver,
-            profile_id,
-            profile_name,
-            profile,
-            collection_id,
-            collection_name,
-            notes,
-            revision: AtomicU64::new(0),
-        },
-        collection,
-    )
+    let session = UserSession {
+        data,
+        saver,
+        profile_id,
+        profile_name,
+        profile,
+        collection_id,
+        collection_name,
+        notes,
+        revision: AtomicU64::new(0),
+    };
+    let mut collection = collection;
+    session.own_loaded_profiles(&session.collection_id, &mut collection);
+    (session, collection)
 }
 
 /// Migration notes are about files the user cannot act on any more; they go nowhere.

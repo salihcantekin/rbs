@@ -1843,7 +1843,7 @@ export global Studio {
     callback set-browser-local(int /* id */, bool /* local file */);
     callback choose-browser-file(int /* id */);
     callback browser-reload(int /* id */, bool /* bypass the cache */);
-    callback browser-run-script(int /* id */);
+    callback browser-run-script(int /* id */, string /* script */);
     callback browser-interact(int /* id */);
     callback browser-forget-sign-in(int /* id */);
     // Settings › Add-ons with the browser engine's row shown (ADR-0145).

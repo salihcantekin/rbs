@@ -1108,6 +1108,64 @@ fn pictures_are_added_and_removed_on_the_main_canvas_while_it_runs() {
 
 #[cfg(any(windows, target_vendor = "apple"))]
 #[test]
+fn a_source_picture_runs_a_source_no_scene_shows_until_it_is_removed() {
+    use rbs_gpu::share::PreviewDesc;
+
+    let Some(gpu) = gpu() else { return };
+    let r = rig();
+    let (mut col, main) = scene();
+    // A camera in no scene: nothing runs it (P13).
+    let (cam, _) = col
+        .add_source(
+            "Loose camera",
+            NodeTypeId::new_static(types::CAMERA_SOURCE),
+            Settings::new(),
+        )
+        .unwrap();
+    let (engine, clock) = engine_at_start();
+    let mut settings = StudioSettings::new(main);
+    settings.audio = false;
+    let mut studio = Studio::start(engine, gpu, &col, &r.adapters.sources, &settings).unwrap();
+    let buffers = r.capture.live_buffers();
+    assert_eq!(studio.picture_size(cam), None);
+    let desc = PreviewDesc {
+        width: 32,
+        height: 18,
+        surfaces: 4,
+    };
+    // Its own picture (an Interact window, ADR-0132 decision 6) holds it at Shown
+    // (ADR-0152 decision 2): it opens and its picture is prepared.
+    let (pid, _) = studio
+        .add_source_picture(&col, &r.adapters.sources, cam, desc)
+        .unwrap();
+    assert_eq!(studio.pictures(), vec![pid]);
+    assert!(r.capture.live_buffers() > buffers, "the camera is open");
+    let reached = run_until(&mut studio, &clock, |s| {
+        s.picture(pid).is_some() && s.picture_size(cam).is_some()
+    });
+    assert!(reached, "the picture is prepared and the camera runs");
+    // Removed: the camera closes again.
+    studio
+        .remove_picture(&col, &r.adapters.sources, pid)
+        .unwrap();
+    assert!(studio.pictures().is_empty());
+    assert_eq!(studio.picture_size(cam), None);
+    assert_eq!(r.capture.live_buffers(), buffers);
+    // A source that is gone cannot get a picture.
+    col.delete_source(cam).unwrap();
+    studio.update(&col, &r.adapters.sources).unwrap();
+    assert!(
+        studio
+            .add_source_picture(&col, &r.adapters.sources, cam, desc)
+            .is_err()
+    );
+    assert!(studio.pictures().is_empty());
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
+#[cfg(any(windows, target_vendor = "apple"))]
+#[test]
 fn pictures_of_a_further_canvas_leave_with_it() {
     use rbs_core::media::video::Size;
     use rbs_core::timing::FrameRate;

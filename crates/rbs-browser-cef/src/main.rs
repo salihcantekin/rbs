@@ -46,6 +46,7 @@ use rbs_browser_shm::{
 };
 
 mod engine;
+mod input;
 
 // Exit codes, numbered in `rbs-browser-ipc`. Any exit is Unavailable to the studio;
 // the runtime ones name why (add-ons spec "Browser engine consumer").
@@ -74,11 +75,14 @@ struct Page {
     stream_channels: AtomicU32,
     /// The saved address: the script runs only on its origin (ADR-0149 decision 3).
     url: String,
-    /// CSS, zoom, script and timers (ADR-0132, ADR-0149).
-    options: PageOptions,
+    /// CSS, zoom, script and timers (ADR-0132, ADR-0149); the studio changes them
+    /// while the page runs (ADR-0149 decision 1).
+    options: Mutex<PageOptions>,
     /// The style sheet added at each commit: the transparent-background rule and
     /// the user's CSS (`page_css`); empty for none.
-    css: String,
+    css: Mutex<String>,
+    /// The page has the engine's input focus (set at the first input event).
+    focused: AtomicBool,
     /// The main frame's load cycle: held frames, reloads, retries, script runs.
     cycle: Mutex<Cycle>,
     /// The runner started the next main-frame navigation itself (a reload or a
@@ -91,6 +95,21 @@ struct Page {
 impl Page {
     fn now(&self) -> Duration {
         self.epoch.elapsed()
+    }
+
+    fn zoom(&self) -> u16 {
+        self.options.lock().map_or(100, |o| o.zoom_percent)
+    }
+
+    fn script(&self) -> String {
+        self.options
+            .lock()
+            .map(|o| o.script.clone())
+            .unwrap_or_default()
+    }
+
+    fn css(&self) -> String {
+        self.css.lock().map(|c| c.clone()).unwrap_or_default()
     }
 
     fn with_cycle<T>(&self, f: impl FnOnce(&mut Cycle) -> T) -> Option<T> {
@@ -388,10 +407,11 @@ wrap_load_handler! {
             // Every commit, so a zoom Chromium kept for the host never shows
             // (ADR-0149 decision 4).
             if let Some(host) = browser.host() {
-                host.set_zoom_level(zoom_level(page.options.zoom_percent));
+                host.set_zoom_level(zoom_level(page.zoom()));
             }
-            if !page.css.is_empty() {
-                let script = css_script(&page.css);
+            let css = page.css();
+            if !css.is_empty() {
+                let script = css_script(&css);
                 frame.execute_java_script(Some(&script.as_str().into()), None, 0);
             }
         }
@@ -411,13 +431,13 @@ wrap_load_handler! {
             // Again at the end of the load: Chromium can put its own zoom back
             // while the document commits.
             if let Some(host) = browser.and_then(|b| b.host()) {
-                let level = zoom_level(page.options.zoom_percent);
+                let level = zoom_level(page.zoom());
                 if (host.zoom_level() - level).abs() > 1e-6 {
                     host.set_zoom_level(level);
                 }
             }
             if page.with_cycle(|c| c.finished(page.now())).unwrap_or(false) {
-                page.run_script(frame, &page.options.script);
+                page.run_script(frame, &page.script());
             }
         }
 
@@ -795,21 +815,10 @@ fn run_browser(args: &args::Args, app: &mut App, engine: &engine::Engine) -> i32
         stream_rate: AtomicU32::new(0),
         stream_channels: AtomicU32::new(0),
         url: config.url.clone(),
-        options: config.page.clone(),
-        css: page_css(&config.page.css, config.transparent),
-        cycle: Mutex::new(Cycle::new(CycleOptions {
-            reload_every_s: config.page.reload_every_s,
-            script_every_s: if config.page.script.is_empty() {
-                0
-            } else {
-                config.page.script_every_s
-            },
-            script_on_load: config.page.script_on_load && !config.page.script.is_empty(),
-            retry_on_error: config.page.retry_on_error,
-            restyles: config.transparent
-                || !config.page.css.is_empty()
-                || config.page.zoom_percent != 100,
-        })),
+        options: Mutex::new(config.page.clone()),
+        css: Mutex::new(page_css(&config.page.css, config.transparent)),
+        focused: AtomicBool::new(false),
+        cycle: Mutex::new(Cycle::new(CycleOptions::of(&config.page, config.transparent))),
         ours: AtomicBool::new(false),
         epoch: Instant::now(),
     });
@@ -1038,7 +1047,7 @@ fn browse(
             Some(Due::Retry) => reload(page, &browser, Start::Retry, false),
             Some(Due::RunScript) => {
                 if let Some(frame) = browser.main_frame() {
-                    page.run_script(&frame, &page.options.script);
+                    page.run_script(&frame, &page.script());
                 }
             }
             None => {}
@@ -1088,9 +1097,49 @@ fn apply_control(page: &Page, browser: &Browser, message: &Control) {
         Control::Reload { bypass_cache } => reload(page, browser, Start::Reload, *bypass_cache),
         Control::RunScript(script) => {
             if let Some(frame) = browser.main_frame() {
-                let text = script.as_deref().unwrap_or(&page.options.script);
-                page.run_script(&frame, text);
+                let text = script.clone().unwrap_or_else(|| page.script());
+                page.run_script(&frame, &text);
             }
         }
+        Control::Page(options) => apply_options(page, browser, options),
+        Control::Input(event) => {
+            if let Some(host) = browser.host() {
+                if !page.focused.swap(true, Ordering::AcqRel) {
+                    host.set_focus(1);
+                }
+                input::send(&host, event);
+            }
+        }
+    }
+}
+
+/// New page options while the page runs (ADR-0149 decision 1): zoom and CSS at once,
+/// timers from now, the script from its next run, `retry_on_error` from the next
+/// load. A watched directory keeps the setting the page started with.
+fn apply_options(page: &Page, browser: &Browser, options: &PageOptions) {
+    let transparent = page.transparent;
+    let css = page_css(&options.css, transparent);
+    let css_changed = page.css.lock().is_ok_and(|mut c| {
+        let changed = *c != css;
+        *c = css.clone();
+        changed
+    });
+    let zoom_changed = page.options.lock().is_ok_and(|mut o| {
+        let changed = o.zoom_percent != options.zoom_percent;
+        let profile_dir = std::mem::take(&mut o.profile_dir);
+        *o = PageOptions {
+            profile_dir,
+            ..options.clone()
+        };
+        changed
+    });
+    let _ = page.with_cycle(|c| c.set_options(page.now(), CycleOptions::of(options, transparent)));
+    if zoom_changed && let Some(host) = browser.host() {
+        host.set_zoom_level(zoom_level(options.zoom_percent));
+    }
+    // The fixed CSS script replaces the sheet it added (an empty one clears it).
+    if css_changed && let Some(frame) = browser.main_frame() {
+        let script = css_script(&css);
+        frame.execute_java_script(Some(&script.as_str().into()), None, 0);
     }
 }

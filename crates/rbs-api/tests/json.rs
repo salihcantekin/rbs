@@ -794,6 +794,46 @@ fn every_request() -> Vec<Request> {
             source: 3,
             script: None,
         })),
+        c(Command::BrowserForgetSignIn(BrowserForgetSignIn {
+            source: 3,
+        })),
+        c(Command::BrowserInput(BrowserInput {
+            source: 3,
+            events: vec![
+                BrowserInputEvent::Move {
+                    x: 1,
+                    y: 2,
+                    modifiers: BrowserModifiers::default(),
+                },
+                BrowserInputEvent::Leave,
+                BrowserInputEvent::Button {
+                    x: 1,
+                    y: 2,
+                    button: BrowserMouseButton::Left,
+                    down: true,
+                    clicks: 2,
+                    modifiers: BrowserModifiers {
+                        shift: true,
+                        ..BrowserModifiers::default()
+                    },
+                },
+                BrowserInputEvent::Wheel {
+                    x: 1,
+                    y: 2,
+                    dx: 0,
+                    dy: -120,
+                    modifiers: BrowserModifiers::default(),
+                },
+                BrowserInputEvent::Key {
+                    key: "Enter".to_owned(),
+                    down: false,
+                    modifiers: BrowserModifiers::default(),
+                },
+                BrowserInputEvent::Text {
+                    text: "hi".to_owned(),
+                },
+            ],
+        })),
         c(Command::SourceGetSettings(GetSourceSettings { source: 3 })),
         c(Command::MediaPlay(MediaSource { source: 3 })),
         c(Command::MediaPause(MediaSource { source: 3 })),

@@ -656,6 +656,9 @@ fn apply_all(ctx: &Ctx, app: &App) {
     crate::projector::each_window(|w| {
         look::apply(&w.global::<Theme>(), &w.global::<Tokens>(), look);
     });
+    crate::interact::each_window(|w| {
+        look::apply(&w.global::<Theme>(), &w.global::<Tokens>(), look);
+    });
 }
 
 /// Runs the "Keep this look?" countdown while it is asked; the timeout is Undo.

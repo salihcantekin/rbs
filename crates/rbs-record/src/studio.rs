@@ -583,7 +583,11 @@ pub struct PictureId(u64);
 /// stopped for good, if it did. Not essential: the studio runs on without it.
 struct AddedPicture {
     id: PictureId,
-    canvas: CanvasId,
+    /// The canvas it shows; `None` for a picture of one source.
+    canvas: Option<CanvasId>,
+    /// The source it shows ([`Studio::add_source_picture`]), linked from the
+    /// source's own node, before its filters.
+    source: Option<SourceId>,
     node: NodeId,
     stats: Arc<PreviewNodeStats>,
     failure: Option<String>,
@@ -1274,6 +1278,10 @@ pub struct Studio {
     /// Empty while no projector is open, so nothing of them exists (P13).
     pictures: Vec<AddedPicture>,
     next_picture: u64,
+    /// Sources an open Interact window holds at Shown (ADR-0132 decision 6, ADR-0152
+    /// decision 2): the binder runs them, and their page takes a preview slot. Empty
+    /// while no Interact window is open.
+    shown_by: BTreeSet<SourceId>,
     /// Boxes on screen before the latest program-scene change, so a source that is in
     /// both scenes moves instead of jumping. Empty once `max_duration` has passed.
     glide: Option<Glide>,
@@ -1787,6 +1795,7 @@ impl Studio {
             extras,
             pictures: Vec::new(),
             next_picture: 0,
+            shown_by: BTreeSet::new(),
             glide: None,
             transitions: BTreeMap::new(),
             transition_done: false,
@@ -1958,10 +1967,10 @@ impl Studio {
         let added: Vec<NodeId> = self
             .pictures
             .iter()
-            .filter(|p| p.canvas == canvas)
+            .filter(|p| p.canvas == Some(canvas))
             .map(|p| p.node)
             .collect();
-        self.pictures.retain(|p| p.canvas != canvas);
+        self.pictures.retain(|p| p.canvas != Some(canvas));
         for node in added {
             if self.graph.node(node).is_some() {
                 let _ = self.graph.set_state(node, Lifecycle::Standby);
@@ -2080,7 +2089,8 @@ impl Studio {
         self.next_picture += 1;
         self.pictures.push(AddedPicture {
             id,
-            canvas,
+            canvas: Some(canvas),
+            source: None,
             node,
             stats,
             failure: None,
@@ -2124,6 +2134,7 @@ impl Studio {
             let _ = self.graph.set_state(picture.node, Lifecycle::Standby);
             let _ = self.graph.remove_node(picture.node);
         }
+        self.release_shown_by(picture.source);
         let updated = self.update_with(collection, sources, None);
         let leaving = Added {
             node: picture.node,
@@ -2134,6 +2145,157 @@ impl Studio {
             self.pending_takes.push((leaving, None));
         }
         updated
+    }
+
+    /// Adds a picture of one source for a UI: the Interact window of a browser page
+    /// (ADR-0132 decision 6). The source is held at Shown while the picture exists
+    /// (ADR-0152 decision 2), so it runs and its page takes a preview slot even when
+    /// no shown scene draws it, and a preview node at `desc`'s size is fed from the
+    /// source's own node (page pixels, before its filters). Nothing is copied to the
+    /// CPU. When it does not start, this fails and nothing is kept; a later fault
+    /// shows in [`Studio::picture_failure`]. `NotBound` when the collection has no
+    /// such source or it does not run (a source in standby).
+    pub fn add_source_picture(
+        &mut self,
+        collection: &SceneCollection,
+        sources: &SourceTypes,
+        source: SourceId,
+        desc: PreviewDesc,
+    ) -> Result<(PictureId, Updated), RecordError> {
+        if collection.source(source).is_none() {
+            return Err(RecordError::NotBound("source"));
+        }
+        let fresh = self.shown_by.insert(source);
+        // Bind the source first: its node is the picture's producer.
+        let bound = self.update_with(collection, sources, None);
+        let node = match bound.map(|_| self.binder.source_node(source)) {
+            Ok(Some(node)) => node,
+            Ok(None) => {
+                self.forget_shown_by(fresh, source, collection, sources);
+                return Err(RecordError::NotBound("source"));
+            }
+            Err(e) => {
+                self.forget_shown_by(fresh, source, collection, sources);
+                return Err(e);
+            }
+        };
+        let picture = PreviewNode::new(desc);
+        let stats = picture.stats();
+        let added = (|| {
+            let pin = iso_video::video_pin(&self.graph, node)?;
+            let id = add_active(
+                &mut self.graph,
+                Node::<GpuRuntime>::descriptor(&picture),
+                RENDER,
+            )?;
+            if let Err(e) = self.graph.connect(node, &pin, id, "canvas") {
+                let _ = self.graph.set_state(id, Lifecycle::Standby);
+                let _ = self.graph.remove_node(id);
+                return Err(RecordError::from(e));
+            }
+            if let Err(e) = self
+                .engine
+                .adopt::<GpuRuntime>(RENDER, id, Box::new(picture))
+            {
+                let _ = self.graph.set_state(id, Lifecycle::Standby);
+                let _ = self.graph.remove_node(id);
+                return Err(RecordError::from(e));
+            }
+            Ok(id)
+        })();
+        let node = match added {
+            Ok(node) => node,
+            Err(e) => {
+                self.forget_shown_by(fresh, source, collection, sources);
+                return Err(e);
+            }
+        };
+        let id = PictureId(self.next_picture);
+        self.next_picture += 1;
+        self.pictures.push(AddedPicture {
+            id,
+            canvas: None,
+            source: Some(source),
+            node,
+            stats,
+            failure: None,
+        });
+        let updated = self.update_with(collection, sources, None);
+        let failure = self
+            .pictures
+            .iter()
+            .find(|p| p.id == id)
+            .and_then(|p| p.failure.clone());
+        match (updated, failure) {
+            (Ok(updated), None) => Ok((id, updated)),
+            (Ok(_), Some(why)) => {
+                self.drop_picture(id);
+                let _ = self.update_with(collection, sources, None);
+                Err(RecordError::Start(vec![StartFailure {
+                    node: "picture".to_owned(),
+                    reason: why,
+                }]))
+            }
+            (Err(e), _) => {
+                self.drop_picture(id);
+                Err(e)
+            }
+        }
+    }
+
+    /// Undoes the hold of a failed [`Studio::add_source_picture`] (`fresh`: it added
+    /// it) and binds again without it.
+    fn forget_shown_by(
+        &mut self,
+        fresh: bool,
+        source: SourceId,
+        collection: &SceneCollection,
+        sources: &SourceTypes,
+    ) {
+        if fresh && !self.pictures.iter().any(|p| p.source == Some(source)) {
+            self.shown_by.remove(&source);
+            let _ = self.update_with(collection, sources, None);
+        }
+    }
+
+    /// A source picture left: its source is no longer held, unless another picture
+    /// still shows it.
+    fn release_shown_by(&mut self, source: Option<SourceId>) {
+        if let Some(source) = source
+            && !self.pictures.iter().any(|p| p.source == Some(source))
+        {
+            self.shown_by.remove(&source);
+        }
+    }
+
+    /// Links each source picture from its source's node again after a sync that
+    /// replaced the node (a changed address, a restart).
+    fn relink_source_pictures(&mut self) {
+        let pairs: Vec<(SourceId, NodeId)> = self
+            .pictures
+            .iter()
+            .filter_map(|p| Some((p.source?, p.node)))
+            .collect();
+        for (source, to) in pairs {
+            let Some(node) = self.binder.source_node(source) else {
+                continue;
+            };
+            let current = self
+                .graph
+                .links()
+                .iter()
+                .find(|l| l.to.node == to && l.to.pin == 0)
+                .copied();
+            if current.is_some_and(|l| l.from.node == node) {
+                continue;
+            }
+            if let Some(link) = current {
+                self.graph.disconnect(link);
+            }
+            if let Ok(pin) = iso_video::video_pin(&self.graph, node) {
+                let _ = self.graph.connect(node, &pin, to, "canvas");
+            }
+        }
     }
 
     /// Takes a picture out of the graph and the engine without an update (it never
@@ -2147,6 +2309,7 @@ impl Studio {
             let _ = self.graph.set_state(picture.node, Lifecycle::Standby);
             let _ = self.graph.remove_node(picture.node);
         }
+        self.release_shown_by(picture.source);
         let leaving = Added {
             node: picture.node,
             partition: RENDER,
@@ -2508,8 +2671,10 @@ impl Studio {
         self.note_scene_change(collection, &effective, old_main, &old_extra, old_layers);
         self.mix = mix_of(collection, self.settings.canvas);
         self.master = master_of(collection, self.settings.canvas);
-        // Separate tracks follow a source whose node the sync replaced.
+        // Separate tracks and source pictures follow a source whose node the sync
+        // replaced.
         self.relink_iso_video();
+        self.relink_source_pictures();
         let (failed, problems) = self.reconcile(sources, Some(report), Strictness::Lenient)?;
         if let Some(e) = attach_error {
             return Err(e);
@@ -2644,6 +2809,14 @@ impl Studio {
                     // The command checked the settings before the document write
                     // (`validate_settings`), so a refusal here changes nothing.
                     let _ = rbs_sources::apply_media_live(control, &s.settings, keys);
+                }
+                // Browser page options reach the running page without a restart
+                // (ADR-0149 decision 1).
+                if let (Some(s), Some(control)) = (
+                    collection.source(*source),
+                    self.browser_controls.get(source),
+                ) {
+                    let _ = rbs_sources::apply_browser_live(control, &s.settings);
                 }
             }
             if let Some(worker) = self.text.as_mut() {
@@ -3055,7 +3228,8 @@ impl Studio {
         }
 
         // Program-shown pages take a helper slot before preview-only ones (ADR-0109).
-        self.browser_budget.grant(&browser_claims(&self.collection));
+        self.browser_budget
+            .grant(&browser_claims(&self.collection, &self.shown_by));
         let applied = self.engine.apply(&self.graph);
         if applied.is_ok()
             && let Some(report) = report.as_mut()
@@ -3762,10 +3936,17 @@ impl Studio {
         self.engine.retry(node)
     }
 
+    /// True while browser source `source` has a running page (a helper process).
+    pub fn browser_running(&self, source: SourceId) -> bool {
+        self.browser_controls
+            .get(&source)
+            .is_some_and(|control| control.helper_running())
+    }
+
     /// Sends a control message to the running page of browser source `source`
-    /// (`browser.reload`, `browser.run_script`; ADR-0132 decision 8, ADR-0149).
-    /// False when the source has no running page. Control path, never waits on the
-    /// page.
+    /// (`browser.reload`, `browser.run_script`, live page options, input; ADR-0132
+    /// decision 8, ADR-0149). False when the source has no running page. Control path,
+    /// never waits on the page.
     pub fn browser_control(&self, source: SourceId, message: &rbs_sources::BrowserMessage) -> bool {
         self.browser_controls
             .get(&source)
@@ -3777,7 +3958,8 @@ impl Studio {
     /// engine is prepared again at the next apply, with no restart. Returns how many
     /// were. The caller applies.
     pub fn browser_engine_changed(&mut self) -> usize {
-        self.browser_budget.grant(&browser_claims(&self.collection));
+        self.browser_budget
+            .grant(&browser_claims(&self.collection, &self.shown_by));
         // Every browser source that is not running: one that waited for the engine
         // failed for good, and retrying a node without a failure does nothing.
         let waiting: Vec<NodeId> = self
@@ -3913,11 +4095,22 @@ impl Studio {
             .retain(|id| collection.item(id).is_some_and(|(_, item)| !item.visible));
         let hold = self.hold_requests();
         let outgoing = self.outgoing_scenes();
-        if self.cues.is_empty() && hold.is_empty() && outgoing.is_empty() {
+        if self.cues.is_empty()
+            && hold.is_empty()
+            && outgoing.is_empty()
+            && self.shown_by.is_empty()
+        {
             return self.binder.sync(collection, &mut self.graph);
         }
         let items = self.cues.items();
-        let sources = collection.cued_drawn_sources(&items);
+        let mut sources = collection.cued_drawn_sources(&items);
+        // An open Interact window raises its page to Shown (ADR-0152 decision 2).
+        sources.extend(
+            self.shown_by
+                .iter()
+                .filter(|id| collection.source(**id).is_some())
+                .copied(),
+        );
         self.binder.sync_transition(
             collection,
             &mut self.graph,
@@ -5269,7 +5462,10 @@ impl Studio {
 
 /// Shown browser sources, program before preview. Hidden pages are omitted, so they
 /// take no helper slot (ADR-0109, ADR-0107).
-fn browser_claims(collection: &SceneCollection) -> Vec<BrowserClaim> {
+fn browser_claims(
+    collection: &SceneCollection,
+    shown_by: &BTreeSet<SourceId>,
+) -> Vec<BrowserClaim> {
     let mut claims = Vec::new();
     for source in collection.sources() {
         if source.type_id.as_str() != rbs_sources::types::BROWSER_SOURCE {
@@ -5299,6 +5495,10 @@ fn browser_claims(collection: &SceneCollection) -> Vec<BrowserClaim> {
                     _ => show,
                 });
             }
+        }
+        // An open Interact window counts as the preview (ADR-0132 decision 6).
+        if class.is_none() && shown_by.contains(&source.id) {
+            class = Some(ShowClass::Preview);
         }
         if let Some(class) = class {
             claims.push(BrowserClaim {
