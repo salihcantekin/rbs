@@ -11287,6 +11287,37 @@ impl Host {
         playing.then_some(MEDIA_TICK)
     }
 
+    /// `browser.reload` and `browser.run_script`: a message to the source's running
+    /// page. No running page is `conflict` with reason `browser_not_running`; an
+    /// agent cannot wake a hidden page (ADR-0132 decision 5, ADR-0149 decision 7).
+    fn browser_message(
+        &mut self,
+        source: u32,
+        message: &rbs_sources::BrowserMessage,
+    ) -> Result<(), ApiError> {
+        let id = SourceId::from_raw(source);
+        let browser = self
+            .collection
+            .source(id)
+            .is_some_and(|s| s.type_id.as_str() == types::BROWSER_SOURCE);
+        if !browser {
+            return Err(ApiError::new(
+                ErrorKind::NotFound,
+                format!("there is no browser source {source}"),
+            ));
+        }
+        if self.studio.browser_control(id, message) {
+            return Ok(());
+        }
+        let mut data = serde_json::Map::new();
+        data.insert("reason".into(), "browser_not_running".into());
+        Err(ApiError::with_data(
+            ErrorKind::Conflict,
+            "the page is not running: it runs while a scene on Program or Preview shows it",
+            data,
+        ))
+    }
+
     fn reload_source(&mut self, id: SourceId) -> Result<Reload, Refusal> {
         if self.collection.source(id).is_none() {
             return Err(Refusal::NotFound(format!(
@@ -14370,6 +14401,17 @@ impl ApiTarget<'_> {
                 .media_command(p.source, MediaOp::State)
                 .map(Response::MediaState)
                 .map_err(|e| refused(&e)),
+            C::BrowserReload(p) => host
+                .browser_message(
+                    p.source,
+                    &rbs_sources::BrowserMessage::Reload {
+                        bypass_cache: p.bypass_cache,
+                    },
+                )
+                .map(|()| Response::Done(Empty {})),
+            C::BrowserRunScript(p) => host
+                .browser_message(p.source, &rbs_sources::BrowserMessage::RunScript(p.script))
+                .map(|()| Response::Done(Empty {})),
             C::SourceReload(p) => {
                 if host
                     .reload_source(SourceId::from_raw(p.source))

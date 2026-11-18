@@ -113,11 +113,28 @@ impl Host {
         if !token {
             return Ok(());
         }
-        if let Command::SourceSetSettings(p) = command
-            && let Some(source) = self.collection.source(SourceId::from_raw(p.source))
-            && SourceKind::of(&source.type_id) == Some(SourceKind::Browser)
-            && script_in_signed_in_account(&source.settings, &p.settings)
-        {
+        let signed_in_browser = |id: u32| {
+            self.collection
+                .source(SourceId::from_raw(id))
+                .filter(|s| SourceKind::of(&s.type_id) == Some(SourceKind::Browser))
+        };
+        let refused = match command {
+            Command::SourceSetSettings(p) => signed_in_browser(p.source)
+                .is_some_and(|s| script_in_signed_in_account(&s.settings, &p.settings)),
+            // A script of its own inside a signed-in page; the saved one was set up
+            // by the local user.
+            Command::BrowserRunScript(p) => {
+                p.script.is_some()
+                    && signed_in_browser(p.source).is_some_and(|s| {
+                        matches!(
+                            s.settings.get(keys::KEEP_SIGNED_IN),
+                            Some(rbs_scene::model::SettingValue::Bool(true))
+                        )
+                    })
+            }
+            _ => false,
+        };
+        if refused {
             return Err(local_only(command.method()));
         }
         Ok(())
