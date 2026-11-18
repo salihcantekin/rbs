@@ -6,6 +6,7 @@
 import { Theme, Tokens } from "tokens.slint";
 import { Button, DialogActions, Select, Toggle, OverlayHost, NumberField, SettingRow } from "components.slint";
 import { SettingsCard } from "settings.slint";
+import { BrowserFields } from "browser_fields.slint";
 import { Studio, SourceSettingsData, IconName } from "base/types.slint";
 
 // One resize/move handle on the capture-region preview (matches preview canvas marks).
@@ -61,6 +62,8 @@ export component SourceSettingsWindow inherits Window {
         chrome-on: false, chrome-t: 0, chrome-r: 0, chrome-b: 0, chrome-l: 0, chrome-fill: 0, has-work-rect: false,
         pic-w: 0, pic-h: 0, has-region-preview: false, region-preview: @image-url("../assets/brand/icon-win-256.png")
     };
+    // A browser source: the window shows its Page fields, which apply at once.
+    property <bool> browser: Studio.browser-props.on && Studio.browser-props.id == d.id;
     // The draft.
     in-out property <int> mode-index: -1;
     in-out property <int> rate-index: -1;
@@ -349,7 +352,10 @@ export component SourceSettingsWindow inherits Window {
                     width: parent.width;
                     spacing: Tokens.size-section-gap;
 
-                SettingsCard {
+                // A browser source (ADR-0109): the Page fields of Properties. Each change
+                // is one undo step and applies at once, so the window only closes.
+                if root.browser: BrowserFields { name: d.name; }
+                if !root.browser: SettingsCard {
                     title: @tr("Video");
                     id: "source-settings.video";
                     description: @tr("Mode, frame rate and cursor for this capture.");
@@ -693,7 +699,7 @@ export component SourceSettingsWindow inherits Window {
                     }
                 }
 
-                Text {
+                if !root.browser: Text {
                     horizontal-stretch: 1;
                     text: @tr("A change opens the source again with the new settings. Its name, layout and filters stay. One Undo step.");
                     color: Theme.text-secondary;
@@ -703,9 +709,10 @@ export component SourceSettingsWindow inherits Window {
                 } // body
             } // Flickable
             actions := DialogActions {
-                confirm-text: @tr("OK");
+                cancel-text: root.browser ? @tr("Close") : @tr("Cancel");
+                confirm-text: root.browser ? "" : @tr("OK");
                 confirm-enabled: d.id >= 0;
-                extra-text: @tr("Apply");
+                extra-text: root.browser ? "" : @tr("Apply");
                 extra-enabled: d.id >= 0;
                 cancelled => { root.dismiss(); }
                 extra-clicked => {

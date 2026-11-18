@@ -19,7 +19,15 @@
 //! The CEF runtime is not shipped with the runner: it is the browser engine add-on,
 //! loaded from the directory the studio names (`engine`, ADR-0145).
 //!
-//! Not yet: the GPU texture path, CSS, reload, input and the sandbox (ADR-0132 steps).
+//! After `configure`, the studio sends control messages on the same pipe
+//! (`rbs_browser_ipc::control`, ADR-0132 decision 8): reload and run the script. The
+//! page settings of ADR-0132 and ADR-0149 (CSS, zoom, the user's script, periodic
+//! reload, retry on load errors, reload when a `file` page's directory changes, a kept
+//! profile) arrive in `configure`; the load cycle that holds frames and times the
+//! reloads, retries and script runs is `rbs_browser_ipc::automation::Cycle`.
+//!
+//! Not yet: the GPU texture path, input, the status channel back to the studio and the
+//! sandbox (ADR-0132 steps).
 
 use std::io::Read;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
@@ -27,8 +35,12 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use cef::*;
+use rbs_browser_ipc::automation::{
+    Cycle, CycleOptions, Due, Start, css_script, file_dir, script_may_run, zoom_level,
+};
+use rbs_browser_ipc::control::Control;
 use rbs_browser_ipc::page::{bgra_premultiplied_to_rgba, file_scope, request_allowed};
-use rbs_browser_ipc::{Configure, HEARTBEAT_PERIOD, MAX_PAYLOAD, decode_configure};
+use rbs_browser_ipc::{Configure, HEARTBEAT_PERIOD, MAX_PAYLOAD, PageOptions, decode_configure};
 use rbs_browser_shm::{
     FrameRing, MAX_SOUND_CHANNELS, RingWriter, SlotLayout, SoundRing, os_monotonic_nanos,
 };
@@ -60,6 +72,41 @@ struct Page {
     /// Rate and channels of the current audio stream (CEF's audio thread).
     stream_rate: AtomicU32,
     stream_channels: AtomicU32,
+    /// The saved address: the script runs only on its origin (ADR-0149 decision 3).
+    url: String,
+    /// CSS, zoom, script and timers (ADR-0132, ADR-0149).
+    options: PageOptions,
+    /// The main frame's load cycle: held frames, reloads, retries, script runs.
+    cycle: Mutex<Cycle>,
+    /// The runner started the next main-frame navigation itself (a reload or a
+    /// retry) and already told `cycle`.
+    ours: AtomicBool,
+    /// The runner's clock for `cycle`.
+    epoch: Instant,
+}
+
+impl Page {
+    fn now(&self) -> Duration {
+        self.epoch.elapsed()
+    }
+
+    fn with_cycle<T>(&self, f: impl FnOnce(&mut Cycle) -> T) -> Option<T> {
+        self.cycle.lock().ok().map(|mut cycle| f(&mut cycle))
+    }
+
+    /// Runs `script` in `frame` when the frame is on the saved origin. Returns
+    /// whether it was sent (ADR-0149 decision 3: no result, no error report).
+    fn run_script(&self, frame: &Frame, script: &str) -> bool {
+        if script.is_empty() {
+            return false;
+        }
+        let current = CefString::from(&frame.url()).to_string();
+        if !script_may_run(&self.url, &current) {
+            return false;
+        }
+        frame.execute_java_script(Some(&script.into()), None, 0);
+        true
+    }
 }
 
 static PAGE: OnceLock<Page> = OnceLock::new();
@@ -135,6 +182,11 @@ wrap_render_handler! {
             if u32::try_from(width).ok() != Some(page.ring.width())
                 || u32::try_from(height).ok() != Some(page.ring.height())
             {
+                return;
+            }
+            // A document still held (no status, style or zoom yet, or a failed
+            // load) is not sent; the studio keeps the last good picture.
+            if !page.with_cycle(|c| c.painted(page.now())).unwrap_or(true) {
                 return;
             }
             let len = page.ring.width() as usize * page.ring.height() as usize * 4;
@@ -267,7 +319,7 @@ wrap_life_span_handler! {
 }
 
 wrap_resource_request_handler! {
-    struct Resources;
+    struct MainResponses;
     impl ResourceRequestHandler {
         fn on_before_resource_load(
             &self,
@@ -285,6 +337,95 @@ wrap_resource_request_handler! {
             } else {
                 ReturnValue::CANCEL
             }
+        }
+
+        fn on_resource_response(
+            &self,
+            _browser: Option<&mut Browser>,
+            _frame: Option<&mut Frame>,
+            request: Option<&mut Request>,
+            response: Option<&mut Response>,
+        ) -> ::std::os::raw::c_int {
+            // The main frame's status, before its document commits (ADR-0149
+            // decision 6). A failed one stays held; the cycle retries it.
+            let (Some(page), Some(request), Some(response)) = (page(), request, response) else {
+                return 0;
+            };
+            if request.resource_type() != ResourceType::MAIN_FRAME {
+                return 0;
+            }
+            let status = u16::try_from(response.status()).unwrap_or(0);
+            let retry_after = CefString::from(&response.header_by_name(Some(&"Retry-After".into())))
+                .to_string()
+                .trim()
+                .parse::<u32>()
+                .ok();
+            let _ = page.with_cycle(|c| c.response(page.now(), status, retry_after));
+            0
+        }
+    }
+}
+
+wrap_load_handler! {
+    struct Loads;
+    impl LoadHandler {
+        fn on_load_start(
+            &self,
+            browser: Option<&mut Browser>,
+            frame: Option<&mut Frame>,
+            _transition_type: TransitionType,
+        ) {
+            let (Some(page), Some(browser), Some(frame)) = (page(), browser, frame) else {
+                return;
+            };
+            if frame.is_main() == 0 {
+                return;
+            }
+            let _ = page.with_cycle(|c| c.committed(page.now()));
+            // Every commit, so a zoom Chromium kept for the host never shows
+            // (ADR-0149 decision 4).
+            if let Some(host) = browser.host() {
+                host.set_zoom_level(zoom_level(page.options.zoom_percent));
+            }
+            if !page.options.css.is_empty() {
+                let script = css_script(&page.options.css);
+                frame.execute_java_script(Some(&script.as_str().into()), None, 0);
+            }
+        }
+
+        fn on_load_end(
+            &self,
+            _browser: Option<&mut Browser>,
+            frame: Option<&mut Frame>,
+            _http_status_code: ::std::os::raw::c_int,
+        ) {
+            let (Some(page), Some(frame)) = (page(), frame) else {
+                return;
+            };
+            if frame.is_main() == 0 {
+                return;
+            }
+            if page.with_cycle(|c| c.finished(page.now())).unwrap_or(false) {
+                page.run_script(frame, &page.options.script);
+            }
+        }
+
+        fn on_load_error(
+            &self,
+            _browser: Option<&mut Browser>,
+            frame: Option<&mut Frame>,
+            error_code: Errorcode,
+            _error_text: Option<&CefString>,
+            _failed_url: Option<&CefString>,
+        ) {
+            let (Some(page), Some(frame)) = (page(), frame) else {
+                return;
+            };
+            // A stopped or replaced navigation is not a failure of the page.
+            if frame.is_main() == 0 || error_code == Errorcode::ABORTED {
+                return;
+            }
+            let _ = page.with_cycle(|c| c.failed(page.now(), None));
         }
     }
 }
@@ -305,6 +446,26 @@ wrap_request_handler! {
             _disable_default_handling: Option<&mut ::std::os::raw::c_int>,
         ) -> Option<ResourceRequestHandler> {
             Some(self.resources.clone())
+        }
+
+        fn on_before_browse(
+            &self,
+            _browser: Option<&mut Browser>,
+            frame: Option<&mut Frame>,
+            _request: Option<&mut Request>,
+            _user_gesture: ::std::os::raw::c_int,
+            is_redirect: ::std::os::raw::c_int,
+        ) -> ::std::os::raw::c_int {
+            // A main-frame navigation the page started itself: hold its document
+            // like a first load. The runner's own reloads told the cycle already.
+            if let (Some(page), Some(frame)) = (page(), frame)
+                && frame.is_main() != 0
+                && is_redirect == 0
+                && !page.ours.swap(false, Ordering::AcqRel)
+            {
+                let _ = page.with_cycle(|c| c.navigate(page.now(), Start::Load));
+            }
+            0
         }
 
         fn on_render_process_unresponsive(
@@ -450,6 +611,7 @@ wrap_client! {
         sound: AudioHandler,
         life: LifeSpanHandler,
         requests: RequestHandler,
+        loads: LoadHandler,
     }
     impl Client {
         fn render_handler(&self) -> Option<RenderHandler> {
@@ -463,6 +625,9 @@ wrap_client! {
         }
         fn request_handler(&self) -> Option<RequestHandler> {
             Some(self.requests.clone())
+        }
+        fn load_handler(&self) -> Option<LoadHandler> {
+            Some(self.loads.clone())
         }
         fn permission_handler(&self) -> Option<PermissionHandler> {
             Some(Permissions::new())
@@ -613,29 +778,63 @@ fn run_browser(args: &args::Args, app: &mut App, engine: &engine::Engine) -> i32
         sample_rate: config.sample_rate,
         stream_rate: AtomicU32::new(0),
         stream_channels: AtomicU32::new(0),
+        url: config.url.clone(),
+        options: config.page.clone(),
+        cycle: Mutex::new(Cycle::new(CycleOptions {
+            reload_every_s: config.page.reload_every_s,
+            script_every_s: if config.page.script.is_empty() {
+                0
+            } else {
+                config.page.script_every_s
+            },
+            script_on_load: config.page.script_on_load && !config.page.script.is_empty(),
+            retry_on_error: config.page.retry_on_error,
+            restyles: !config.page.css.is_empty() || config.page.zoom_percent != 100,
+        })),
+        ours: AtomicBool::new(false),
+        epoch: Instant::now(),
     });
 
-    // Stdin closing is the studio's stop (ADR-0109 decision 8).
+    // Control messages, then stdin closing: the studio's stop (ADR-0109 decision 8,
+    // ADR-0132 decision 8). The loop takes them on CEF's UI thread.
     let stop = std::sync::Arc::new(AtomicBool::new(false));
     let stop_flag = std::sync::Arc::clone(&stop);
+    let (control_tx, control_rx) = std::sync::mpsc::channel::<Control>();
     let _ = std::thread::Builder::new()
         .name("rbs-browser-stdin".into())
         .spawn(move || {
-            let mut rest = [0u8; 64];
-            while matches!(stdin.read(&mut rest), Ok(n) if n > 0) {}
+            // An unknown kind is skipped; a closed pipe or a bad length stops.
+            while let Ok(message) = rbs_browser_ipc::control::read(&mut stdin) {
+                if let Some(message) = message
+                    && control_tx.send(message).is_err()
+                {
+                    break;
+                }
+            }
             stop_flag.store(true, Ordering::Release);
         });
 
-    // One temporary profile per tree, removed on exit (ADR-0109 decision 10).
-    let Some(profile) = new_profile_dir() else {
-        return exit::INIT_FAILED;
+    // A signed-in source keeps its profile (ADR-0132 decision 10); every other tree
+    // gets a temporary one, removed on exit (ADR-0109 decision 10).
+    let kept = !config.page.profile_dir.is_empty();
+    let profile = if kept {
+        let dir = std::path::PathBuf::from(&config.page.profile_dir);
+        if create_private_dir_all(&dir).is_err() {
+            return exit::INIT_FAILED;
+        }
+        dir
+    } else {
+        let Some(dir) = new_profile_dir() else {
+            return exit::INIT_FAILED;
+        };
+        dir
     };
     let settings = Settings {
         windowless_rendering_enabled: 1,
         // The sandbox is a later step (ADR-0132); until then this runner is opt-in.
         no_sandbox: 1,
         root_cache_path: profile.to_string_lossy().as_ref().into(),
-        persist_session_cookies: 0,
+        persist_session_cookies: i32::from(kept),
         log_severity: LogSeverity::ERROR,
         log_file: profile.join("cef.log").to_string_lossy().as_ref().into(),
         resources_dir_path: engine
@@ -660,15 +859,54 @@ fn run_browser(args: &args::Args, app: &mut App, engine: &engine::Engine) -> i32
         std::ptr::null_mut(),
     ) != 1
     {
-        remove_profile(&profile);
+        if !kept {
+            remove_profile(&profile);
+        }
         return exit::INIT_FAILED;
     }
 
-    let code = browse(page, &config, &stop);
+    let code = browse(page, &config, &stop, &control_rx);
     shutdown();
-    remove_profile(&profile);
+    if !kept {
+        remove_profile(&profile);
+    }
     code
 }
+
+/// Creates `dir` and its parents; on Unix the new directories are private to the user.
+fn create_private_dir_all(dir: &std::path::Path) -> std::io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(dir)
+}
+
+/// A cheap stamp of a directory's entries (names, sizes, modification times), not
+/// recursive; it changes when any file in it changes (ADR-0132 decision 5).
+fn dir_stamp(dir: &std::path::Path) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        let mut seen: Vec<(std::ffi::OsString, u64, Option<std::time::SystemTime>)> = entries
+            .flatten()
+            .map(|entry| {
+                let meta = entry.metadata().ok();
+                (
+                    entry.file_name(),
+                    meta.as_ref().map_or(0, std::fs::Metadata::len),
+                    meta.and_then(|m| m.modified().ok()),
+                )
+            })
+            .collect();
+        seen.sort();
+        seen.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+/// How often a `file` page's directory is checked for `reload_on_file_change`.
+const FILE_CHECK: Duration = Duration::from_millis(500);
 
 /// How long [`remove_profile`] keeps trying. Below the studio's stop grace together
 /// with a normal close, so the studio does not kill the tree in the middle of it.
@@ -718,7 +956,14 @@ fn new_profile_dir() -> Option<std::path::PathBuf> {
     None
 }
 
-fn browse(page: &Page, config: &Configure, stop: &AtomicBool) -> i32 {
+fn browse(
+    page: &Page,
+    config: &Configure,
+    stop: &AtomicBool,
+    control: &std::sync::mpsc::Receiver<Control>,
+) -> i32 {
+    // The first navigation: the cycle starts in it already.
+    page.ours.store(true, Ordering::Release);
     let window = WindowInfo::default().set_as_windowless(Default::default());
     let browser_settings = BrowserSettings {
         windowless_frame_rate: i32::try_from(config.fps.clamp(1, 60)).unwrap_or(30),
@@ -732,7 +977,8 @@ fn browse(page: &Page, config: &Configure, stop: &AtomicBool) -> i32 {
         Paint::new(),
         Sound::new(),
         Life::new(),
-        Requests::new(Resources::new()),
+        Requests::new(MainResponses::new()),
+        Loads::new(),
     );
     let Some(browser) = browser_host_create_browser_sync(
         Some(&window),
@@ -744,6 +990,14 @@ fn browse(page: &Page, config: &Configure, stop: &AtomicBool) -> i32 {
     ) else {
         return exit::NO_BROWSER;
     };
+    // Only a `file` page with the switch on watches its directory; no timer otherwise.
+    let watched = config
+        .page
+        .reload_on_file_change
+        .then(|| file_dir(&config.url))
+        .flatten();
+    let mut stamp = watched.as_deref().map(dir_stamp);
+    let mut last_check = Instant::now();
 
     // Pump CEF at least twice per page frame, and often enough for the heartbeat.
     let period = Duration::from_secs(1) / config.fps.clamp(1, 60);
@@ -756,6 +1010,28 @@ fn browse(page: &Page, config: &Configure, stop: &AtomicBool) -> i32 {
         {
             page.ring.beat();
             last_beat = Instant::now();
+        }
+        while let Ok(message) = control.try_recv() {
+            apply_control(page, &browser, &message);
+        }
+        match page.with_cycle(|c| c.tick(page.now())).flatten() {
+            Some(Due::Reload) => reload(page, &browser, Start::Reload, false),
+            Some(Due::Retry) => reload(page, &browser, Start::Retry, false),
+            Some(Due::RunScript) => {
+                if let Some(frame) = browser.main_frame() {
+                    page.run_script(&frame, &page.options.script);
+                }
+            }
+            None => {}
+        }
+        if let Some(dir) = watched.as_deref()
+            && last_check.elapsed() >= FILE_CHECK
+        {
+            last_check = Instant::now();
+            let now = dir_stamp(dir);
+            if stamp.replace(now) != Some(now) {
+                reload(page, &browser, Start::Reload, true);
+            }
         }
         std::thread::sleep(pump);
     }
@@ -773,4 +1049,29 @@ fn browse(page: &Page, config: &Configure, stop: &AtomicBool) -> i32 {
     }
     drop(browser);
     page.code.load(Ordering::Acquire)
+}
+
+/// Reloads the main frame as `start`, telling the cycle first so the old picture stays
+/// until the new document may be sent.
+fn reload(page: &Page, browser: &Browser, start: Start, bypass_cache: bool) {
+    let _ = page.with_cycle(|c| c.navigate(page.now(), start));
+    page.ours.store(true, Ordering::Release);
+    if bypass_cache {
+        browser.reload_ignore_cache();
+    } else {
+        browser.reload();
+    }
+}
+
+/// A control message from the studio, on CEF's UI thread.
+fn apply_control(page: &Page, browser: &Browser, message: &Control) {
+    match message {
+        Control::Reload { bypass_cache } => reload(page, browser, Start::Reload, *bypass_cache),
+        Control::RunScript(script) => {
+            if let Some(frame) = browser.main_frame() {
+                let text = script.as_deref().unwrap_or(&page.options.script);
+                page.run_script(&frame, text);
+            }
+        }
+    }
 }

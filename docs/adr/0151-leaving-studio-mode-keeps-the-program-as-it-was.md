@@ -23,14 +23,14 @@ Only the held case is affected. When the preview scene is another scene than the
 5. **Order.** The host ends studio mode first (`set_preview(None)`) and puts the scene back only when that succeeded, so a refused leave changes nothing.
 6. **Zero cost.** Nothing runs outside the moment studio mode ends with a hold (P13). No new thread, timer or per-frame work.
 
-7. **Protocol 1.91, a stated exception.** The control API spec counts a change of meaning as major. Like ADR-0098 (1.31), this ADR asks the owner to accept a minor version: the method, its parameters and its answer are unchanged, a client sees the result in `scene.changed` and `source.changed` as for any edit, and a major version would cost every client a migration for one outcome of one live action. The exception is listed in the spec's versioning paragraph. `canvas.set_preview` stays `live`: what is on air does not change when the mode ends; the put-back only makes the scene match it.
+7. **Protocol 1.92, a stated exception.** The control API spec counts a change of meaning as major. Like ADR-0098 (1.31), this ADR asks the owner to accept a minor version: the method, its parameters and its answer are unchanged, a client sees the result in `scene.changed` and `source.changed` as for any edit, and a major version would cost every client a migration for one outcome of one live action. The exception is listed in the spec's versioning paragraph. `canvas.set_preview` stays `live`: what is on air does not change when the mode ends; the put-back only makes the scene match it.
 
 ## Consequences
 
 - Studio mode never changes the program without a transition, also when it ends.
 - Out of scope: the preview scene's edits are saved with the document while a hold runs (the hold lives only in the run, ADR-0063 decision 2). A scene collection switch or quitting the app while held saves the edited scene, and reopening the collection shows the edits on air. Putting the scene back on those paths too is a possible follow-up.
 - A user who meant to keep the edits and forgot the transition gets them back with one Undo; the control API documents this.
-- Control API: protocol 1.91 (decision 7). Specs: control API (versioning exception, method table, Studio mode section, undo section, the 1.91 section), scene model (`set_scene_items`).
+- Control API: protocol 1.92 (decision 7). Specs: control API (versioning exception, method table, Studio mode section, undo section, the 1.92 section), scene model (`set_scene_items`).
 - Tests: rbs-scene contract tests for `set_scene_items` (round trip through undo and redo, refused ids and content); an rbs-app API test that leaving without a transition keeps the program, that one `edit.undo` brings the edits back and the steps made in Preview then undo without a conflict, and that leaving after a transition keeps the edits.
 
 ## Alternatives considered
