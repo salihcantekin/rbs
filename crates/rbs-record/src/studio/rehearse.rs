@@ -68,7 +68,10 @@ impl Studio {
             return Err(e.into());
         }
         relink(&mut self.graph, incoming, id, picture);
-        if let Err(e) = self.engine.adopt::<GpuRuntime>(RENDER, id, Box::new(node)) {
+        if let Err(e) = self
+            .engine
+            .adopt::<GpuRuntime>(RENDER, id, node.into_node())
+        {
             relink(&mut self.graph, id, incoming, picture);
             let _ = self.graph.remove_node(id);
             return Err(e.into());

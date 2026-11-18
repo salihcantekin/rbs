@@ -42,6 +42,8 @@ const IDLE: u8 = 0;
 const MAPPING: u8 = 1;
 const MAPPED: u8 = 2;
 const FAILED: u8 = 3;
+/// A repeat entry (render on change, R-03): no GPU work; done as soon as it is queued.
+const REPEAT: u8 = 4;
 
 /// Counters of one download.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -58,8 +60,11 @@ pub struct DownloadStats {
     /// Read-back frames dropped because consumers held every frame buffer.
     pub no_buffer: u64,
     /// Readbacks that failed: the device could not map them, or the frame could not be
-    /// built.
+    /// built. A repeat with no picture before it counts here too.
     pub failed: u64,
+    /// Frames delivered by a repeat entry: the picture before it again, with a new
+    /// timestamp, without GPU work or a copy (included in `delivered`).
+    pub repeated: u64,
 }
 
 struct Slot {
@@ -89,6 +94,10 @@ pub struct YuvDownload {
     /// Oldest slot that may be in flight.
     tail: usize,
     buffers: Vec<Bytes>,
+    /// The frame delivered last, which a repeat entry delivers again. It shares the
+    /// buffer the consumer already holds, so it pins no extra buffer until a newer
+    /// frame replaces it.
+    last: Option<VideoFrame>,
     stats: DownloadStats,
 }
 
@@ -279,6 +288,7 @@ impl YuvDownload {
             head: 0,
             tail: 0,
             buffers,
+            last: None,
             stats: DownloadStats::default(),
         })
     }
@@ -304,7 +314,7 @@ impl YuvDownload {
         self.stats
     }
 
-    /// Readbacks in flight.
+    /// Readbacks and repeat entries in flight (not taken yet).
     pub fn in_flight(&self) -> usize {
         self.slots
             .iter()
@@ -383,6 +393,25 @@ impl YuvDownload {
         Ok(true)
     }
 
+    /// Queues the picture of the entry before this one again, stamped `timestamp` and
+    /// `sequence`, for a canvas that did not change (render on change, R-03; ADR-0143
+    /// R5). No GPU work, no copy: once taken it is the previous frame's buffer again.
+    /// Its place in the ring keeps the output in order behind readbacks in flight.
+    /// Returns `false` when every slot is in flight (counted in `busy`).
+    /// Hot path; never waits.
+    pub fn submit_repeat(&mut self, timestamp: Timestamp, sequence: u64) -> bool {
+        let slot = &mut self.slots[self.head];
+        if slot.state.load(Ordering::Acquire) != IDLE {
+            self.stats.busy += 1;
+            return false;
+        }
+        slot.timestamp = timestamp;
+        slot.sequence = sequence;
+        slot.state.store(REPEAT, Ordering::Release);
+        self.head = (self.head + 1) % self.slots.len();
+        true
+    }
+
     /// The newest frame whose readback has completed, if any. Older completed frames are
     /// dropped (`stale`). Call after `GpuContext::poll` (the render runtime polls at the
     /// end of each tick). Hot path; never waits.
@@ -402,41 +431,85 @@ impl YuvDownload {
         &mut self,
         ctx: &GpuContext,
     ) -> Result<Option<VideoFrame>, GpuError> {
-        let mut newest = None;
+        // The newest completed entry's stamp, and the newest readback at or before it,
+        // whose picture that entry shows (a repeat shows the picture before it). A repeat
+        // is never merged into another entry: each is one frame of a constant frame rate
+        // output, so a take returns at most one repeat, and a repeat behind a readback
+        // waits for the next take.
+        let mut stamp = None;
+        let mut picture = None;
         let mut failed = false;
         // Slots complete in submission order; walk from the oldest while they are done.
         while self.tail != self.head || self.state(self.tail) != IDLE {
-            match self.state(self.tail) {
+            let index = self.tail;
+            match self.state(index) {
                 MAPPED => {
-                    if let Some(older) = newest.replace(self.tail) {
-                        self.recycle(older);
+                    let slot = &self.slots[index];
+                    if stamp.replace((slot.timestamp, slot.sequence)).is_some() {
                         self.stats.stale += 1;
+                    }
+                    if let Some(older) = picture.replace(index) {
+                        self.recycle(older);
                     }
                     if !NEWEST {
                         self.tail = (self.tail + 1) % self.slots.len();
                         break;
                     }
                 }
+                REPEAT => {
+                    if stamp.is_some() {
+                        // Left for the next take.
+                        break;
+                    }
+                    let slot = &self.slots[index];
+                    stamp = Some((slot.timestamp, slot.sequence));
+                    // Nothing to unmap: the slot is free at once.
+                    self.recycle(index);
+                    self.tail = (self.tail + 1) % self.slots.len();
+                    break;
+                }
                 FAILED => {
-                    self.recycle(self.tail);
+                    self.recycle(index);
                     self.stats.failed += 1;
                     failed = true;
+                    // A repeat behind it must not show the picture before the lost one.
+                    self.last = None;
                 }
                 _ => break,
             }
             self.tail = (self.tail + 1) % self.slots.len();
         }
-        let Some(index) = newest else {
+        let Some((timestamp, sequence)) = stamp else {
             return if failed {
                 Err(GpuError::Readback("staging buffer map failed".into()))
             } else {
                 Ok(None)
             };
         };
-        let frame = self.read(index);
-        self.recycle(index);
+        let frame = match picture {
+            Some(index) => {
+                let frame = self.read(index);
+                self.recycle(index);
+                if frame.is_some() {
+                    ctx.metrics().count_cpu_copy();
+                }
+                // The frame to repeat, sharing the consumer's buffer.
+                self.last = frame.as_ref().and_then(VideoFrame::share);
+                frame
+            }
+            None => {
+                let again = self.last.as_ref().and_then(VideoFrame::share);
+                if again.is_some() {
+                    self.stats.repeated += 1;
+                } else {
+                    // No picture before this repeat (the readback before it failed).
+                    self.stats.failed += 1;
+                }
+                again
+            }
+        };
+        let frame = frame.map(|f| f.with_timestamp(timestamp).with_sequence(sequence));
         if frame.is_some() {
-            ctx.metrics().count_cpu_copy();
             self.stats.delivered += 1;
         }
         Ok(frame)
