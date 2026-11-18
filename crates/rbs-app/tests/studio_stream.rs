@@ -2194,7 +2194,7 @@ fn destinations(keys: &MemoryKeyStore) -> rbs_app::stream_destinations::Destinat
     d
 }
 
-/// Control API 1.92 (ADR-0148 decision 10): every stream state says whether a
+/// Control API 1.93 (ADR-0148 decision 10): every stream state says whether a
 /// destination is on, a change publishes, and a canvas with none is refused first.
 #[test]
 fn stream_available_follows_the_destinations() {

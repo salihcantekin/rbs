@@ -1655,14 +1655,14 @@ pub enum StreamState {
     Idle {
         /// How the last stream of this server run ended, if one ran.
         last: Option<StreamSummary>,
-        /// Streaming is available on the canvas (protocol 1.92, ADR-0148): one of its
+        /// Streaming is available on the canvas (protocol 1.93, ADR-0148): one of its
         /// destinations is on. Absent from an older server: read as true.
         #[serde(default = "crate::types::yes")]
         available: bool,
     },
     /// A stream runs; it connects, and reconnects, in the background.
     Live {
-        /// Streaming is available on the canvas (protocol 1.92, ADR-0148). A running
+        /// Streaming is available on the canvas (protocol 1.93, ADR-0148). A running
         /// stream goes on when it turns false.
         #[serde(default = "crate::types::yes")]
         available: bool,
@@ -1725,7 +1725,7 @@ impl StreamState {
         }
     }
 
-    /// Whether streaming is available on the canvas (protocol 1.92).
+    /// Whether streaming is available on the canvas (protocol 1.93).
     pub fn available(&self) -> bool {
         match self {
             StreamState::Idle { available, .. } | StreamState::Live { available, .. } => *available,

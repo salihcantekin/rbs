@@ -1714,7 +1714,7 @@ fn stream_state_has_a_stable_wire_form() {
             "hold_fallback_reason": null,
         })
     );
-    // Streaming off (protocol 1.92): `available` false in the idle form; a 1.91
+    // Streaming off (protocol 1.93): `available` false in the idle form; a 1.92
     // server's idle state, without it, reads as available.
     assert_eq!(
         serde_json::to_value(StreamState::idle().with_available(false)).unwrap(),

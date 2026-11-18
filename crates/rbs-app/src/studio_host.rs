@@ -6449,7 +6449,7 @@ impl Host {
 
     fn set_stream_state(&mut self, c: OutputCanvas, state: api::StreamState) {
         // Every state says whether streaming is available on the canvas (control API
-        // 1.92, ADR-0148 decision 10).
+        // 1.93, ADR-0148 decision 10).
         let state = state.with_available(self.stream_available(c));
         if state == self.outs[slot(c)].stream_state {
             return;
@@ -8544,7 +8544,7 @@ impl Host {
 
     /// The stream settings or destinations changed: each canvas's stream state says
     /// again whether streaming is available, and publishes when that changed (control
-    /// API 1.92, ADR-0148 decision 10). A removed vertical canvas publishes nothing.
+    /// API 1.93, ADR-0148 decision 10). A removed vertical canvas publishes nothing.
     fn availability_changed(&mut self) {
         for c in self.output_canvases() {
             let state = self.outs[slot(c)].stream_state.clone();
@@ -12344,11 +12344,53 @@ impl Host {
             .set_preview(self.canvas, scene)
             .map_err(|e| Refusal::of(&e))?;
         if !on {
+            // Only once the mode has ended, so a refused leave changes nothing
+            // (ADR-0151 decision 5).
+            self.discard_preview_edits();
             // Leaving studio mode ends a running transition at once (ADR-0128
             // decision 9); the next update binds without it.
             self.studio.end_transitions();
         }
         Ok(true)
+    }
+
+    /// Puts the held program scene back as it is on air before studio mode ends
+    /// (ADR-0151): edits made in Preview since the hold began never reach the program
+    /// without a transition. One undo step, so Undo brings the edits back; nothing
+    /// when nothing is held or nothing was edited.
+    fn discard_preview_edits(&mut self) {
+        let Some(held) = self.held.take() else {
+            return;
+        };
+        if held.from != self.scene {
+            return;
+        }
+        let base = held.scene.id.get();
+        let items: Option<Vec<SceneItem>> = held
+            .scene
+            .items
+            .into_iter()
+            .map(|mut item| {
+                item.id = ItemId::from_raw(item.id.get().checked_sub(base)?);
+                Some(item)
+            })
+            .collect();
+        let Some(items) = items else {
+            return;
+        };
+        let Some(scene) = self.collection.scene(held.from) else {
+            return;
+        };
+        if scene.items == items {
+            return;
+        }
+        let name = scene.name.clone();
+        // A refusal (the copy no longer fits the collection, which the hold already
+        // checks) leaves the scene as it is: the edits stay, as before ADR-0151.
+        if let Ok(undo) = self.collection.set_scene_items(held.from, items) {
+            self.history
+                .record(EditKind::DiscardPreview, &name, 0, vec![undo]);
+        }
     }
 
     /// Makes a scene the preview scene (studio mode only; a live action).

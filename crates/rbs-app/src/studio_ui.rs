@@ -3127,7 +3127,31 @@ impl StudioUi {
         if on != self.props_on {
             self.props_on = on;
             self.refresh_rows();
+            // The selection's marks follow to the picture now edited.
+            self.refresh_marks();
         }
+    }
+
+    /// The selection as a press on picture `on` sees it: none when the other picture
+    /// shows its marks, so a handle never answers where it is not drawn.
+    fn marked_selection(&self, on: OutputCanvas) -> i32 {
+        if self.marks_on() == on {
+            self.selected
+        } else {
+            -1
+        }
+    }
+
+    /// The one picture that shows the selection's marks: the one whose canvas
+    /// Properties edits for the selected source, so a press on one picture never marks
+    /// the other. The main one in studio mode (the vertical picture is not edited
+    /// there) and while the vertical picture does not show.
+    fn marks_on(&self) -> OutputCanvas {
+        marks_picture(
+            self.studio_mode,
+            self.vertical_shown,
+            self.props_target(self.selected),
+        )
     }
 
     /// Properties' Horizontal / Vertical switch (ADR-0093 decision 4).
@@ -3197,6 +3221,7 @@ impl StudioUi {
         let placed = self.placed_where(|_| true);
         let hit = self.edit.source_at(at, self.canvas_px(), &placed);
         self.selected = hit.unwrap_or(-1);
+        self.pick_props(OutputCanvas::Main);
         self.refresh_marks();
         hit
     }
@@ -3327,7 +3352,8 @@ impl StudioUi {
             crop,
         };
         let placed = self.placed_vertical(false);
-        let e = self.vedit.press(at, canvas, &placed, self.selected, keys);
+        let selected = self.marked_selection(OutputCanvas::Vertical);
+        let e = self.vedit.press(at, canvas, &placed, selected, keys);
         self.pick_props(OutputCanvas::Vertical);
         self.run_vertical(e);
     }
@@ -3408,9 +3434,11 @@ impl StudioUi {
             crop,
         };
         let placed = self.placed();
+        // The selection's handles answer only on the picture that shows them.
+        let selected = self.marked_selection(OutputCanvas::Main);
         let e = self
             .edit
-            .press(at, self.canvas_px(), &placed, self.selected, keys);
+            .press(at, self.canvas_px(), &placed, selected, keys);
         self.pick_props(OutputCanvas::Main);
         self.run(e);
     }
@@ -3451,15 +3479,23 @@ impl StudioUi {
 
     /// Works out the selection's marks again (selection, rows, drag or panel changed).
     pub fn refresh_marks(&mut self) {
-        let placed = self.placed();
+        let on = self.marks_on();
         let mut buf = std::mem::take(&mut self.mark_buf);
-        self.edit
-            .marks(self.canvas_px(), &placed, self.selected, &mut buf);
+        if on == OutputCanvas::Main {
+            let placed = self.placed();
+            self.edit
+                .marks(self.canvas_px(), &placed, self.selected, &mut buf);
+        } else {
+            buf.clear();
+        }
         set_rows(&self.marks, mark_data(&buf));
         self.mark_buf = buf;
-        // The vertical picture shows the same selection.
+        // The vertical picture marks the selection only when it is the one edited.
         let mut buf = std::mem::take(&mut self.vmark_buf);
-        match self.vertical_px().filter(|_| self.vertical_shown) {
+        match self
+            .vertical_px()
+            .filter(|_| self.vertical_shown && on == OutputCanvas::Vertical)
+        {
             Some(canvas) => {
                 let placed = self.placed_vertical(false);
                 self.vedit.marks(canvas, &placed, self.selected, &mut buf);
@@ -8147,6 +8183,17 @@ fn source_icon(kind: Option<SourceKind>) -> &'static str {
     }
 }
 
+/// The picture that shows the selection's marks: `edited`, the canvas Properties edits
+/// for the selected source, unless studio mode is on (only the main canvas is edited
+/// there) or the vertical picture does not show.
+fn marks_picture(studio_mode: bool, vertical_shown: bool, edited: OutputCanvas) -> OutputCanvas {
+    if studio_mode || !vertical_shown {
+        OutputCanvas::Main
+    } else {
+        edited
+    }
+}
+
 /// The Studio global's `undo-kind` / `redo-kind` code and the source's name for a
 /// step: 0 nothing, 1 add, 2 delete, 3 layer order, 4 move or resize, 5 shape or
 /// border, 6 crop, 7 shown or hidden, 8 lock, 9 source rename, 10 scene added, 11
@@ -8157,7 +8204,9 @@ fn source_icon(kind: Option<SourceKind>) -> &'static str {
 /// 21 how long Show draws a hidden item (the cue itself is not an undo step),
 /// 22 the source's capture region, 23 the source's Record separately mark, 24 a
 /// scene's levels (ADR-0091; the name is the scene's), 25 a source duplicated, 26 a
-/// source reset, 27 attributes pasted (ADR-0133; the copied source's name).
+/// source reset, 27 attributes pasted (ADR-0133; the copied source's name), 28 the
+/// collection's transition, 29 Preview edits dropped when studio mode ended (ADR-0151;
+/// the scene's name).
 fn step_view(step: Option<&StepInfo>) -> (i32, &str) {
     match step {
         None => (0, ""),
@@ -8191,6 +8240,7 @@ fn step_view(step: Option<&StepInfo>) -> (i32, &str) {
                 EditKind::Reset => 26,
                 EditKind::PasteAttributes => 27,
                 EditKind::Transition => 28,
+                EditKind::DiscardPreview => 29,
             },
             s.name.as_str(),
         ),
@@ -8586,6 +8636,16 @@ fn media_tick_fields(ticks: &[rbs_app::studio_host::MediaTick], id: i32) -> (i32
 #[allow(clippy::unwrap_used)] // Tests fail by panicking.
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_edited_picture_marks_the_selection() {
+        use OutputCanvas::{Main, Vertical};
+        assert_eq!(marks_picture(false, true, Vertical), Vertical);
+        assert_eq!(marks_picture(false, true, Main), Main);
+        // The vertical picture is not edited in studio mode, nor while it is hidden.
+        assert_eq!(marks_picture(true, true, Vertical), Main);
+        assert_eq!(marks_picture(false, false, Vertical), Main);
+    }
 
     #[test]
     fn a_meter_row_is_written_only_when_it_changes() {
