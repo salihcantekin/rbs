@@ -1,6 +1,6 @@
 # ADR-0151: Leaving studio mode keeps the program as it was on air
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-18
 - Deciders: Salih (owner)
 - Supersedes in part: ADR-0063 decision 4 (its sentence on leaving studio mode), ADR-0098 decision 2 (a hold that ends because studio mode ends)
@@ -53,4 +53,4 @@ Independent review per ADR-0014, 2026-11-18, independent AI session given the AD
 7. Decision 3 was untested: the app test now undoes the Preview steps after the put-back.
 8. Wording on whole-list expectation: decision 4.
 
-Owner acceptance: pending.
+Owner acceptance, 2026-11-18: Salih approved the merge of PR #556 ("merge et"), which accepts this ADR, including the minor-version exception of decision 7.
