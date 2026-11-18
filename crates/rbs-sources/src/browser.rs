@@ -6,7 +6,7 @@
 //! composition root spawns the executable from `rbs-browser-runner` (or the CEF tree
 //! root) by path. `rbs-sources` does not spawn processes.
 
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -33,6 +33,16 @@ pub const BROWSER_NODE_TYPE: &str = "org.rbs.browser";
 pub const MAX_HELPERS: usize = 2;
 /// Control-API reason when a source does not get a slot.
 pub const BROWSER_CAP: &str = "browser_cap";
+/// Reason when the browser engine add-on is not installed, or the runner could not
+/// load it (ADR-0145, add-ons spec "Browser engine consumer"). No slot, no back-off.
+pub const BROWSER_RUNTIME_MISSING: &str = "browser_runtime_missing";
+/// Reason when the installed browser engine is another version than the runner's.
+pub const BROWSER_RUNTIME_MISMATCH: &str = "browser_runtime_mismatch";
+/// Reason when the composition root set no runner, or found none.
+pub const HELPER_MISSING: &str = "helper_missing";
+/// Reason after any other runner exit (counts toward back-off).
+pub const HELPER_EXIT: &str = "helper_exit";
+
 /// Wire kind an agent sees without the network permission (code -32011 when the
 /// control API grows that kind).
 pub const NOT_PERMITTED: &str = "not_permitted";
@@ -521,6 +531,18 @@ pub struct BrowserControlSidecar {
     budget: Arc<BrowserBudget>,
     source: SourceId,
     exited: AtomicBool,
+    /// The engine reason of the last exit or refused start (0 none, 1 missing, 2
+    /// mismatch), read by the studio to word the source and to start it again after
+    /// an install.
+    engine: AtomicU8,
+}
+
+fn encode_engine(reason: Option<&'static str>) -> u8 {
+    match reason {
+        Some(BROWSER_RUNTIME_MISSING) => 1,
+        Some(BROWSER_RUNTIME_MISMATCH) => 2,
+        _ => 0,
+    }
 }
 
 impl BrowserControlSidecar {
@@ -532,6 +554,7 @@ impl BrowserControlSidecar {
             budget,
             source,
             exited: AtomicBool::new(false),
+            engine: AtomicU8::new(0),
         }
     }
 
@@ -553,6 +576,8 @@ impl BrowserControlSidecar {
             return;
         };
         if session.poll().is_some() {
+            self.engine
+                .store(encode_engine(session.exit_reason()), Ordering::Release);
             session.stop();
             *guard = None;
             self.budget.release(self.source);
@@ -560,6 +585,21 @@ impl BrowserControlSidecar {
             return;
         }
         session.refresh_sink(&self.sink);
+    }
+
+    /// The engine reason of the last exit or refused start
+    /// ([`BROWSER_RUNTIME_MISSING`] or [`BROWSER_RUNTIME_MISMATCH`]); `None` once a
+    /// helper runs. Never waits.
+    pub fn engine_reason(&self) -> Option<&'static str> {
+        match self.engine.load(Ordering::Acquire) {
+            1 => Some(BROWSER_RUNTIME_MISSING),
+            2 => Some(BROWSER_RUNTIME_MISMATCH),
+            _ => None,
+        }
+    }
+
+    fn set_engine_reason(&self, reason: Option<&'static str>) {
+        self.engine.store(encode_engine(reason), Ordering::Release);
     }
 
     /// True once when the helper exited between ticks.
@@ -603,6 +643,13 @@ pub trait BrowserTree: Send + Sync {
         sink: Arc<BrowserFrameSink>,
         sound: Option<Arc<crate::BrowserSound>>,
     ) -> Result<Box<dyn BrowserSession>, String>;
+
+    /// Why no tree can start now ([`BROWSER_RUNTIME_MISSING`], [`HELPER_MISSING`]),
+    /// checked at each start before a slot is used. `None`: [`BrowserTree::start`]
+    /// may run. Never waits on the network; may read the disk.
+    fn unavailable(&self) -> Option<&'static str> {
+        None
+    }
 }
 
 /// One running tree. `poll` and `stop` run on the control thread, never in `process`.
@@ -611,6 +658,12 @@ pub trait BrowserSession: Send {
     fn poll(&mut self) -> Option<i32>;
     /// Kills the tree. Standby.
     fn stop(&mut self);
+    /// After [`BrowserSession::poll`] saw an exit: the source reason it maps to
+    /// ([`BROWSER_RUNTIME_MISSING`], [`BROWSER_RUNTIME_MISMATCH`]); `None` for any
+    /// other exit ([`HELPER_EXIT`]).
+    fn exit_reason(&self) -> Option<&'static str> {
+        None
+    }
     /// Copies the latest helper frame into `sink`.
     fn refresh_sink(&mut self, sink: &BrowserFrameSink) {
         let _ = sink;
@@ -683,7 +736,8 @@ impl BrowserSourceNode {
         self.starts
     }
 
-    /// `browser_cap` or `helper_exit` when the source is Unavailable.
+    /// `browser_cap`, `helper_exit`, `helper_missing`, `browser_runtime_missing` or
+    /// `browser_runtime_mismatch` when the source is Unavailable.
     pub fn reason(&self) -> Option<&'static str> {
         self.reason
     }
@@ -704,16 +758,24 @@ impl BrowserSourceNode {
         if self.control.helper_running() {
             return Ok(());
         }
-        if !self.budget.holds(self.source) {
-            self.reason = Some(BROWSER_CAP);
-            return Err(BrowserStartError::Cap);
-        }
         let Some(tree) = self.tree.clone() else {
-            self.reason = Some("helper_missing");
+            self.reason = Some(HELPER_MISSING);
             return Err(BrowserStartError::Failed(
                 "the composition root has not set a browser helper".into(),
             ));
         };
+        // Before the slot: a source that cannot start holds none and does not back
+        // off (add-ons spec "Browser engine consumer").
+        if let Some(reason) = tree.unavailable() {
+            self.budget.release(self.source);
+            self.reason = Some(reason);
+            self.control.set_engine_reason(Some(reason));
+            return Err(BrowserStartError::Unavailable(reason));
+        }
+        if !self.budget.holds(self.source) {
+            self.reason = Some(BROWSER_CAP);
+            return Err(BrowserStartError::Cap);
+        }
         let mut configure = self.settings.configure();
         if let Some(sound) = self.sound.as_ref() {
             configure.sample_rate = sound.sample_rate();
@@ -723,10 +785,14 @@ impl BrowserSourceNode {
                 self.starts = self.starts.saturating_add(1);
                 session.refresh_sink(self.control.sink().as_ref());
                 if session.poll().is_some() {
+                    let engine = session.exit_reason();
                     self.note_exit();
+                    self.control.set_engine_reason(engine);
+                    self.reason = Some(engine.unwrap_or(HELPER_EXIT));
                     return Err(BrowserStartError::Exited);
                 }
                 self.control.set_session(session);
+                self.control.set_engine_reason(None);
                 self.reason = None;
                 Ok(())
             }
@@ -763,7 +829,7 @@ impl BrowserSourceNode {
     fn mark_unavailable_after_exit(&mut self) {
         self.attempts = self.attempts.saturating_add(1);
         self.retry_after = Some(restart_delay(self.attempts));
-        self.reason = Some("helper_exit");
+        self.reason = Some(self.control.engine_reason().unwrap_or(HELPER_EXIT));
     }
 }
 
@@ -782,6 +848,9 @@ pub enum BrowserStartError {
     Exited,
     /// The tree could not be started.
     Failed(String),
+    /// No tree can start now (the browser engine is missing); no slot is held and
+    /// the node is not restarted until the studio asks.
+    Unavailable(&'static str),
 }
 
 impl std::fmt::Display for BrowserStartError {
@@ -790,6 +859,7 @@ impl std::fmt::Display for BrowserStartError {
             BrowserStartError::Cap => f.write_str(BROWSER_CAP),
             BrowserStartError::Exited => f.write_str("browser helper exited"),
             BrowserStartError::Failed(text) => f.write_str(text),
+            BrowserStartError::Unavailable(reason) => f.write_str(reason),
         }
     }
 }
@@ -803,8 +873,12 @@ impl Node<GpuRuntime> for BrowserSourceNode {
         if self.control.take_exited() {
             self.mark_unavailable_after_exit();
         }
-        self.activate()
-            .map_err(|error| NodeError::Failed(error.to_string()))
+        self.activate().map_err(|error| match error {
+            // Retrying will not help until the engine is installed; the studio starts
+            // the node again then (ADR-0024 Permanent).
+            BrowserStartError::Unavailable(reason) => NodeError::Permanent(reason),
+            other => NodeError::Failed(other.to_string()),
+        })
     }
 
     fn warm(&mut self, ctx: &mut WarmCtx<'_, GpuRuntime>) -> Result<(), NodeError> {

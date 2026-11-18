@@ -24,6 +24,58 @@
 use std::time::Duration;
 
 pub mod page;
+pub mod runtime;
+
+/// Exit codes of the CEF runner (`rbs-browser-cef`). Any exit makes the source
+/// Unavailable; these two name why (add-ons spec "Browser engine consumer").
+pub mod exit {
+    /// The `configure` message did not decode.
+    pub const BAD_CONFIGURE: i32 = 2;
+    /// The studio's frame section did not open.
+    pub const NO_SECTION: i32 = 3;
+    /// The engine did not initialise.
+    pub const INIT_FAILED: i32 = 4;
+    /// The engine made no browser.
+    pub const NO_BROWSER: i32 = 5;
+    /// The page's renderer process went away.
+    pub const RENDERER_GONE: i32 = 6;
+    /// The downloaded engine is missing or did not load: `browser_runtime_missing`.
+    pub const RUNTIME_MISSING: i32 = 7;
+    /// The downloaded engine is another CEF version than the runner was built
+    /// for: `browser_runtime_mismatch`.
+    pub const RUNTIME_MISMATCH: i32 = 8;
+    /// What the OS loader returns when a load-time library is missing (Linux
+    /// `libcef.so`): the process ends before `main`.
+    pub const LOADER_MISSING: i32 = 127;
+
+    /// Why a runner exited, as far as the engine is concerned.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Cause {
+        /// The engine is not there or did not load.
+        RuntimeMissing,
+        /// The engine is another version.
+        RuntimeMismatch,
+        /// Anything else: a page, a crash, a bad section.
+        Other,
+    }
+
+    /// Maps an exit to its cause. `code` is the exit status (`None`: ended by a
+    /// signal or killed by the studio); `beaten` is true once the runner beat its
+    /// heartbeat, its first hello. An exit before that hello with a code the runner
+    /// does not use itself (a loader failure, a crash while loading the engine)
+    /// is a missing runtime.
+    pub fn cause(code: Option<i32>, beaten: bool) -> Cause {
+        match code {
+            Some(RUNTIME_MISSING | LOADER_MISSING) => Cause::RuntimeMissing,
+            Some(RUNTIME_MISMATCH) => Cause::RuntimeMismatch,
+            Some(BAD_CONFIGURE | NO_SECTION | INIT_FAILED | NO_BROWSER | RENDERER_GONE) => {
+                Cause::Other
+            }
+            Some(_) if !beaten => Cause::RuntimeMissing,
+            _ => Cause::Other,
+        }
+    }
+}
 
 /// Configure kind.
 pub const KIND_CONFIGURE: u8 = 1;
@@ -236,6 +288,26 @@ mod tests {
             assert!(!PageBoundary::DENIED.js_bindings);
             assert!(!PageBoundary::DENIED.device_prompts);
         }
+    }
+
+    #[test]
+    fn runner_exits_map_to_engine_causes() {
+        use exit::{Cause, cause};
+        assert_eq!(
+            cause(Some(exit::RUNTIME_MISSING), true),
+            Cause::RuntimeMissing
+        );
+        assert_eq!(cause(Some(127), false), Cause::RuntimeMissing);
+        assert_eq!(
+            cause(Some(exit::RUNTIME_MISMATCH), false),
+            Cause::RuntimeMismatch
+        );
+        // Windows: a crash while loading (0xC0000135, DLL not found) before the hello.
+        assert_eq!(cause(Some(-1_073_741_515), false), Cause::RuntimeMissing);
+        assert_eq!(cause(Some(-1_073_741_515), true), Cause::Other);
+        assert_eq!(cause(Some(exit::NO_SECTION), false), Cause::Other);
+        assert_eq!(cause(Some(0), true), Cause::Other);
+        assert_eq!(cause(None, false), Cause::Other, "killed by the studio");
     }
 
     #[test]

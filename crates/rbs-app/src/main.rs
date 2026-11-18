@@ -1332,7 +1332,8 @@ impl App {
                     return;
                 }
                 Some(SourceKind::Browser) => {
-                    // Synthetic helper ignores the page; any URL starts a test pattern.
+                    // Without the browser engine the studio opens Settings › Add-ons
+                    // instead and adds nothing (ADR-0145 decision 8).
                     self.studio.add_browser_page("https://example.com/");
                     return;
                 }
@@ -2785,6 +2786,17 @@ impl Ctx {
         if let Some(ask) = app.ask_name.take() {
             self.show_all(&mut app);
             app.open_name_prompt(ask);
+        }
+        if app.studio.open_add_on.take().is_some() {
+            // Add Source › Browser without its engine (ADR-0145 decision 8): the
+            // Add-ons section, its list card flashed.
+            self.show_all(&mut app);
+            app.open_settings = Some((
+                Some(add_ons_page::SECTION),
+                Some(menu_bar::SettingsTarget::Setting(
+                    add_ons_page::LIST_CARD.to_owned(),
+                )),
+            ));
         }
         if let Some((section, target)) = app.open_settings.take() {
             // Without a section: where the open window is, else General (listed first).

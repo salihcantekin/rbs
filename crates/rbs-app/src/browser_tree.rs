@@ -1,73 +1,180 @@
-//! Wires the test-double browser helper executable into the studio (ADR-0109).
+//! Wires the browser runner into the studio (ADR-0109, ADR-0145 decisions 7 and 8).
 //!
-//! The desktop app does not link CEF. It starts `rbs-browser-helper` next to the main
-//! executable, or from `RBS_BROWSER_HELPER` / `CARGO_BIN_EXE_rbs-browser-helper`.
+//! The desktop app does not link CEF. It starts the runner `rbs-browser-cef`, which
+//! ships next to the app and loads the browser engine add-on from the directory the
+//! studio names in its environment (add-ons spec "Browser engine consumer"). Tests and
+//! developers point `RBS_BROWSER_HELPER` at another runner; the test double
+//! `rbs-browser-helper` is found through `CARGO_BIN_EXE_rbs-browser-helper` only.
 
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use rbs_browser_ipc::Configure;
-use rbs_browser_runner::{PageSound, Supervisor, spawn_helper};
+use rbs_browser_ipc::exit::Cause;
+use rbs_browser_runner::{PageSound, Supervisor, runtime_env, spawn_helper_with_env};
 use rbs_browser_shm::SlotLayout;
 use rbs_browser_shm::SoundPacket;
 use rbs_sources::{
-    BrowserFrameSink, BrowserPictureEdge, BrowserSession, BrowserSound, BrowserSoundFeed,
-    BrowserTree,
+    BROWSER_RUNTIME_MISMATCH, BROWSER_RUNTIME_MISSING, BrowserFrameSink, BrowserPictureEdge,
+    BrowserSession, BrowserSound, BrowserSoundFeed, BrowserTree, HELPER_MISSING,
 };
 
-/// Locates `rbs-browser-helper` for this process.
-pub fn resolve_browser_helper() -> Option<PathBuf> {
-    if let Ok(path) = std::env::var("RBS_BROWSER_HELPER") {
-        let path = PathBuf::from(path);
-        if path.is_file() {
-            return Some(path);
-        }
-    }
-    if let Ok(path) = std::env::var("CARGO_BIN_EXE_rbs-browser-helper") {
-        let path = PathBuf::from(path);
-        if path.is_file() {
-            return Some(path);
-        }
-    }
-    let mut exe = std::env::current_exe().ok()?;
-    exe.pop();
-    if exe.file_name().is_some_and(|name| name == "deps") {
-        exe.pop();
-    }
-    let name = if cfg!(windows) {
-        "rbs-browser-helper.exe"
-    } else {
-        "rbs-browser-helper"
+/// The runner that ships next to the app.
+const RUNNER: &str = "rbs-browser-cef";
+
+/// Which runner this process starts, and whether it needs the engine add-on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Runner {
+    /// The executable.
+    pub program: PathBuf,
+    /// Its arguments (the test double's `--hold`).
+    pub args: Vec<String>,
+    /// True for the shipped runner: it does not start without an installed engine.
+    /// An override or the test double may carry its own engine.
+    pub needs_engine: bool,
+}
+
+/// Locates the runner for this process: `RBS_BROWSER_HELPER` overrides, then the
+/// test double `CARGO_BIN_EXE_rbs-browser-helper` (tests), otherwise `rbs-browser-cef`
+/// next to the app (inside the bundle on macOS). `rbs-browser-helper` next to the app
+/// is not picked up.
+pub fn resolve_runner() -> Option<Runner> {
+    let from_env = |key: &str| {
+        std::env::var_os(key)
+            .map(PathBuf::from)
+            .filter(|path| path.is_file())
     };
-    exe.push(name);
-    exe.is_file().then_some(exe)
+    if let Some(program) = from_env("RBS_BROWSER_HELPER") {
+        return Some(Runner {
+            program,
+            args: vec!["--hold".into()],
+            needs_engine: false,
+        });
+    }
+    if let Some(program) = from_env("CARGO_BIN_EXE_rbs-browser-helper") {
+        return Some(Runner {
+            program,
+            args: vec!["--hold".into()],
+            needs_engine: false,
+        });
+    }
+    let mut dir = std::env::current_exe().ok()?;
+    dir.pop();
+    shipped_runner(&dir).map(|program| Runner {
+        program,
+        args: Vec::new(),
+        needs_engine: true,
+    })
 }
 
-/// Starts the synthetic helper shipped with `rbs-browser-runner`.
-#[derive(Debug)]
-pub struct HelperBrowserTree {
-    program: PathBuf,
+/// `rbs-browser-cef` in `dir` (the app's directory), or inside its bundle on macOS.
+fn shipped_runner(dir: &Path) -> Option<PathBuf> {
+    let name = format!("{RUNNER}{}", std::env::consts::EXE_SUFFIX);
+    let flat = dir.join(&name);
+    if flat.is_file() {
+        return Some(flat);
+    }
+    // macOS: the runner is an app bundle with its helpers (ADR-0132 decision 1).
+    let bundled = dir
+        .join(format!("{RUNNER}.app"))
+        .join("Contents")
+        .join("MacOS")
+        .join(&name);
+    (cfg!(target_os = "macos") && bundled.is_file()).then_some(bundled)
 }
 
-impl HelperBrowserTree {
-    /// Fails when [`resolve_browser_helper`] finds no executable.
-    pub fn new() -> Result<Self, String> {
-        let program = resolve_browser_helper()
-            .ok_or_else(|| "rbs-browser-helper was not found next to the app".to_owned())?;
-        Ok(Self { program })
+/// The installed browser engine as the runner needs it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EngineRuntime {
+    /// The installed version's directory (it holds the marker).
+    pub root: PathBuf,
+    /// The directory that holds the library.
+    pub library_dir: PathBuf,
+}
+
+/// The engine slot the host sets after resolving the add-on, and the tree reads at
+/// each start. Shared by one host and its tree.
+#[derive(Debug, Default)]
+pub struct EngineSlot {
+    runtime: Mutex<Option<EngineRuntime>>,
+}
+
+impl EngineSlot {
+    /// Sets or clears the installed engine.
+    pub fn set(&self, runtime: Option<EngineRuntime>) {
+        if let Ok(mut slot) = self.runtime.lock() {
+            *slot = runtime;
+        }
+    }
+
+    /// The installed engine, if any.
+    pub fn get(&self) -> Option<EngineRuntime> {
+        self.runtime.lock().ok().and_then(|slot| slot.clone())
     }
 }
 
-impl BrowserTree for HelperBrowserTree {
+/// Starts the runner for each browser source.
+#[derive(Debug)]
+pub struct RunnerBrowserTree {
+    runner: Option<Runner>,
+    engine: Arc<EngineSlot>,
+    /// Sessions alive now; the add-on is in use while it is above 0.
+    live: Arc<AtomicUsize>,
+}
+
+impl RunnerBrowserTree {
+    /// A tree with `runner` (none: every start is `helper_missing`) that reads the
+    /// engine from `engine`.
+    pub fn new(runner: Option<Runner>, engine: Arc<EngineSlot>) -> Self {
+        Self {
+            runner,
+            engine,
+            live: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    /// True while a runner this tree started is alive (or still stopping).
+    pub fn in_use(&self) -> bool {
+        self.live.load(Ordering::Acquire) > 0
+    }
+
+    /// True when a start would be refused only for want of the engine add-on.
+    pub fn needs_engine(&self) -> bool {
+        self.runner.as_ref().is_some_and(|r| r.needs_engine) && self.engine.get().is_none()
+    }
+
+    fn env(&self) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+        self.engine
+            .get()
+            .map(|rt| runtime_env(&rt.root, &rt.library_dir))
+            .unwrap_or_default()
+    }
+}
+
+impl BrowserTree for RunnerBrowserTree {
+    fn unavailable(&self) -> Option<&'static str> {
+        if self.runner.is_none() {
+            return Some(HELPER_MISSING);
+        }
+        self.needs_engine().then_some(BROWSER_RUNTIME_MISSING)
+    }
+
     fn start(
         &self,
         config: &Configure,
         sink: Arc<BrowserFrameSink>,
         sound: Option<Arc<BrowserSound>>,
     ) -> Result<Box<dyn BrowserSession>, String> {
-        let child = spawn_helper(
-            self.program.as_path(),
-            &["--hold"],
+        let runner = self
+            .runner
+            .as_ref()
+            .ok_or_else(|| "no browser runner was found next to the app".to_owned())?;
+        let args: Vec<&str> = runner.args.iter().map(String::as_str).collect();
+        let child = spawn_helper_with_env(
+            &runner.program,
+            &args,
+            &self.env(),
             config,
             SlotLayout::Rgba8Straight,
         )?;
@@ -95,7 +202,27 @@ impl BrowserTree for HelperBrowserTree {
             )?,
             None => Supervisor::start(child, config.fps, publish)?,
         };
-        Ok(Box::new(HelperSession { supervisor }))
+        Ok(Box::new(RunnerSession {
+            supervisor,
+            _live: Live::new(&self.live),
+        }))
+    }
+}
+
+/// Counts one live session; the count drops when the session does.
+#[derive(Debug)]
+struct Live(Arc<AtomicUsize>);
+
+impl Live {
+    fn new(count: &Arc<AtomicUsize>) -> Self {
+        count.fetch_add(1, Ordering::AcqRel);
+        Self(Arc::clone(count))
+    }
+}
+
+impl Drop for Live {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
@@ -121,11 +248,12 @@ impl PageSound for FeedSound {
     }
 }
 
-struct HelperSession {
+struct RunnerSession {
     supervisor: Supervisor,
+    _live: Live,
 }
 
-impl BrowserSession for HelperSession {
+impl BrowserSession for RunnerSession {
     fn poll(&mut self) -> Option<i32> {
         // An exit or a lost heartbeat (ADR-0109 decision 8), seen by the supervisor.
         self.supervisor.exited().then_some(1)
@@ -134,5 +262,78 @@ impl BrowserSession for HelperSession {
     fn stop(&mut self) {
         // Never waits: the supervisor thread closes the helper (ADR-0109 decision 8).
         self.supervisor.stop_detached();
+    }
+
+    fn exit_reason(&self) -> Option<&'static str> {
+        match self.supervisor.exit_cause() {
+            Cause::RuntimeMissing => Some(BROWSER_RUNTIME_MISSING),
+            Cause::RuntimeMismatch => Some(BROWSER_RUNTIME_MISMATCH),
+            Cause::Other => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
+    use super::*;
+
+    fn tree(needs_engine: bool) -> RunnerBrowserTree {
+        RunnerBrowserTree::new(
+            Some(Runner {
+                program: PathBuf::from("runner"),
+                args: Vec::new(),
+                needs_engine,
+            }),
+            Arc::new(EngineSlot::default()),
+        )
+    }
+
+    #[test]
+    fn the_shipped_runner_needs_the_engine_and_an_override_does_not() {
+        let shipped = tree(true);
+        assert_eq!(shipped.unavailable(), Some(BROWSER_RUNTIME_MISSING));
+        assert!(shipped.env().is_empty());
+        shipped.engine.set(Some(EngineRuntime {
+            root: PathBuf::from("/rt"),
+            library_dir: PathBuf::from("/rt/Release"),
+        }));
+        assert_eq!(shipped.unavailable(), None);
+        let env = shipped.env();
+        assert_eq!(env[0].0, rbs_browser_ipc::runtime::RUNTIME_ENV);
+        assert_eq!(env[0].1, "/rt");
+        if cfg!(target_os = "linux") {
+            assert_eq!(env[1], ("LD_LIBRARY_PATH".into(), "/rt/Release".into()));
+        }
+        assert_eq!(tree(false).unavailable(), None);
+        let none = RunnerBrowserTree::new(None, Arc::new(EngineSlot::default()));
+        assert_eq!(none.unavailable(), Some(HELPER_MISSING));
+    }
+
+    #[test]
+    fn the_test_double_next_to_the_app_is_not_the_runner() {
+        let dir = std::env::temp_dir().join(format!("rbs-runner-pick-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = std::env::consts::EXE_SUFFIX;
+        std::fs::write(dir.join(format!("rbs-browser-helper{exe}")), b"").unwrap();
+        assert_eq!(shipped_runner(&dir), None);
+        std::fs::write(dir.join(format!("rbs-browser-cef{exe}")), b"").unwrap();
+        assert_eq!(
+            shipped_runner(&dir),
+            Some(dir.join(format!("rbs-browser-cef{exe}")))
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_live_count_follows_the_sessions() {
+        let count = Arc::new(AtomicUsize::new(0));
+        let a = Live::new(&count);
+        let b = Live::new(&count);
+        assert_eq!(count.load(Ordering::Acquire), 2);
+        drop(a);
+        drop(b);
+        assert_eq!(count.load(Ordering::Acquire), 0);
     }
 }

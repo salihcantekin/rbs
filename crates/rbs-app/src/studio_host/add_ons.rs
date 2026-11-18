@@ -14,6 +14,7 @@ use rbs_api::{ApiError, ErrorKind};
 
 use super::{AddOnAction, Host, Msg, Update};
 use crate::add_ons::{AddOnsSetup, BROWSER_ENGINE};
+use crate::browser_tree::EngineRuntime;
 
 /// What an install thread reports.
 #[derive(Debug)]
@@ -67,10 +68,17 @@ impl AddOnsHost {
 
     /// The catalog's version of the add-on `id` when it is installed with its marker
     /// (reads the disk; add-ons spec "Resolving").
-    #[allow(dead_code, reason = "the browser runner reads it once it is wired")]
     pub(super) fn installed(&self, id: &str) -> Option<Installed> {
         let entry = self.catalog.iter().find(|e| e.id.as_str() == id)?;
         self.store()?.installed(entry)
+    }
+
+    /// The installed browser engine as the runner needs it (reads the disk).
+    pub(super) fn browser_engine(&self) -> Option<EngineRuntime> {
+        self.installed(BROWSER_ENGINE).map(|i| EngineRuntime {
+            root: i.path,
+            library_dir: i.library_dir,
+        })
     }
 
     fn status(&self, index: usize) -> Status {
@@ -365,13 +373,25 @@ impl Host {
 }
 
 impl Host {
-    /// True while a browser tree runs in this process.
+    /// True while a browser runner started by this process is alive.
     fn browser_engine_in_use(&self) -> bool {
-        false
+        self.browser.in_use()
     }
 
-    /// The browser engine was installed or removed.
+    /// Reads the engine again (Add Source › Browser, ADR-0145 decision 6) and says
+    /// whether a browser source could not start for want of it.
+    pub(super) fn browser_needs_engine(&mut self) -> bool {
+        self.engine_slot.set(self.add_ons.browser_engine());
+        self.browser.needs_engine()
+    }
+
+    /// The browser engine was installed or removed: the runner's slot follows, and
+    /// every browser source waiting for the engine starts again with no restart
+    /// (add-ons spec "Browser engine consumer").
     fn browser_engine_changed(&mut self, notify: &dyn Fn(Update)) {
-        let _ = notify;
+        self.engine_slot.set(self.add_ons.browser_engine());
+        if self.studio.browser_engine_changed() > 0 {
+            self.apply(notify);
+        }
     }
 }

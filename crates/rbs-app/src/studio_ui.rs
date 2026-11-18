@@ -265,6 +265,9 @@ pub struct StudioUi {
     /// Every add-on as the host last reported it (ADR-0145); Settings › Add-ons reads
     /// it. Empty until the page was first shown.
     pub add_ons: Vec<rbs_api::types::AddOnInfo>,
+    /// Set when the host asks to show an add-on in Settings › Add-ons (Add Source ›
+    /// Browser without its engine, ADR-0145 decision 8); the shell takes it.
+    pub open_add_on: Option<String>,
     /// 0 starting, 1 running, 2 failed.
     pub state: i32,
     pub failure: String,
@@ -678,6 +681,7 @@ impl StudioUi {
             permissions: (Vec::new(), None),
             permissions_serial: 0,
             add_ons: Vec::new(),
+            open_add_on: None,
             inspected: Cell::new(-1),
             adding: false,
             reveal_shape: false,
@@ -5993,6 +5997,7 @@ impl StudioUi {
             Update::Monitor(_) | Update::MonitorDevices(_) | Update::Loudness(_) => {}
             Update::TBarReset => self.tbar_resets = self.tbar_resets.wrapping_add(1),
             Update::AddOns(list) => self.add_ons = list.add_ons,
+            Update::OpenAddOn(id) => self.open_add_on = Some(id),
             Update::AddOnChanged(changed) => {
                 if let Some(row) = self.add_ons.iter_mut().find(|a| a.id == changed.id) {
                     row.status = changed.status;
