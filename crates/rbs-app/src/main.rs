@@ -4892,9 +4892,11 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
         app.studio
             .set_media_setting(id, "loop", serde_json::Value::Bool(on));
     });
-    on!(on_set_media_restart_when_shown, |app, id: i32, on: bool| {
-        app.studio
-            .set_media_setting(id, "restart_when_shown", serde_json::Value::Bool(on));
+    on!(on_set_source_run, |app, id: i32, index: i32| {
+        app.studio.set_source_run(id, index);
+    });
+    on!(on_set_source_on_return, |app, id: i32, index: i32| {
+        app.studio.set_source_on_return(id, index);
     });
     on!(
         on_set_media_range_mark,

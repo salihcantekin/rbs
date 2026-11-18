@@ -549,6 +549,32 @@ pub struct SourceRow {
     /// The stored playback settings of a media file (ADR-0108); `None` for every other
     /// kind. The play state and cursor travel in [`Update::Media`].
     pub media: Option<MediaSettings>,
+    /// The policy in force for a source whose type offers a choice of `run`
+    /// (ADR-0152); `None` for every other type, where Properties shows nothing.
+    pub activity: Option<ActivityChoice>,
+}
+
+/// A source's activity policy in force, as Properties shows it (ADR-0152).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ActivityChoice {
+    /// The lowest level at which it runs.
+    pub run: rbs_scene::activity::Run,
+    /// What it does when it comes back; `None` for a type without one.
+    pub on_return: Option<rbs_scene::activity::OnReturn>,
+}
+
+impl ActivityChoice {
+    fn of(source: &Source) -> Option<Self> {
+        let traits = rbs_sources::activity_traits(&source.type_id);
+        if traits.runs.len() < 2 {
+            return None;
+        }
+        let effective = traits.effective(Some(&source.activity));
+        Some(Self {
+            run: effective.run,
+            on_return: effective.on_return,
+        })
+    }
 }
 
 /// A media file's stored settings, as Properties shows them (ADR-0108).
@@ -558,8 +584,6 @@ pub struct MediaSettings {
     pub path: String,
     /// Play again at the end (default on).
     pub looped: bool,
-    /// Start from the beginning when shown again (default on).
-    pub restart_when_shown: bool,
     /// Where the play range starts, in milliseconds of media time (default 0).
     pub start_ms: i64,
     /// Where the play range ends; `None` for the end of the file.
@@ -578,7 +602,6 @@ impl MediaSettings {
                 _ => String::new(),
             },
             looped: flag(keys::LOOP),
-            restart_when_shown: restarts_when_shown(source),
             start_ms: match source.settings.get(keys::START_MS) {
                 Some(SettingValue::Int(ms)) => (*ms).max(0),
                 _ => 0,
@@ -622,6 +645,7 @@ impl PartialEq for SourceRow {
             && self.device_peers == other.device_peers
             && self.latency == other.latency
             && self.media == other.media
+            && self.activity == other.activity
             && self.picture == other.picture
             && self.visible == other.visible
             && self.active == other.active
@@ -1157,6 +1181,17 @@ pub enum Command {
     /// The collection's transition (ADR-0128): kind and each kind's settings. One undo
     /// step.
     SetTransition(rbs_scene::CollectionTransition),
+    /// Properties' "Runs" and "When it comes back" (ADR-0152): the source's `run`
+    /// and `on_return`, its linger kept. A value equal to the type's default is
+    /// stored as absent. One undo step; a value the type does not allow is refused.
+    SetSourceActivity {
+        /// The source.
+        id: SourceId,
+        /// The lowest level at which it runs.
+        run: rbs_scene::activity::Run,
+        /// What it does when it comes back; `None` for a type without one.
+        on_return: Option<rbs_scene::activity::OnReturn>,
+    },
     /// Per-source slide override (ADR-0100). `custom` false clears it. One undo step.
     SetSourceGlide {
         /// The source.
@@ -5242,6 +5277,10 @@ impl Host {
             }
             Command::SetTransition(t) => {
                 let done = self.put_transition(t);
+                self.answer(done, notify);
+            }
+            Command::SetSourceActivity { id, run, on_return } => {
+                let done = self.set_source_choice(id, run, on_return);
                 self.answer(done, notify);
             }
             Command::SetSourceGlide {
@@ -12038,6 +12077,28 @@ impl Host {
         Ok(true)
     }
 
+    /// Properties' choice of `run` and `on_return` for a source (ADR-0152): the
+    /// type's default is stored as absent, so a document stays at the oldest format
+    /// that holds it, and the source's linger is kept.
+    fn set_source_choice(
+        &mut self,
+        id: SourceId,
+        run: rbs_scene::activity::Run,
+        on_return: Option<rbs_scene::activity::OnReturn>,
+    ) -> Result<bool, Refusal> {
+        let source = self
+            .collection
+            .source(id)
+            .ok_or_else(|| Refusal::NotFound(format!("There is no source {}.", id.get())))?;
+        let traits = rbs_sources::activity_traits(&source.type_id);
+        let activity = rbs_scene::activity::SourceActivity::new(
+            (run != traits.default_run).then_some(run),
+            on_return.filter(|r| Some(*r) != traits.default_on_return),
+            source.activity.linger_s,
+        );
+        self.set_source_activity(id, activity)
+    }
+
     /// Replaces a source's activity policy (ADR-0152). One undo step (recorded as a
     /// settings change). A value the source's type does not allow is refused as
     /// invalid; the same policy again changes nothing.
@@ -14000,6 +14061,7 @@ impl Host {
                 ) = self.source_row_extra(s, item.id);
                 SourceRow {
                     media: MediaSettings::of(s),
+                    activity: ActivityChoice::of(s),
                     latency: self.studio.audio_latency(s.id),
                     device_peers: self
                         .device_peers(s.id)

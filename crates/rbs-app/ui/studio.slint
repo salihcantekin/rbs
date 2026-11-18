@@ -6,7 +6,7 @@ import { Theme, Tokens } from "tokens.slint";
 import { DialogActions, HScrollArea, ListBox, ScrollArea, Button, Checkbox, ColorPicker, FocusRing, RingFocus, SectionHeader, Tabs, Icon, IconButton, MenuItem, MenuSurface, EmptyState, NumberField, Select, SegmentedControl, SizeNest, Slider, VSlider, LevelText, ValueReadout, TextField, TextArea, Toggle, InfoHint, FeatureSection, SettingRow, ListRow, StatusLine, HintText as Hint, CaptionField as Field, MenuArea, SurfaceCard } from "components.slint";
 import { SettingsCard, SettingBlock, SettingsStatus, SettingsNotice, SettingsCallout, RevealOnShow, Shown } from "settings.slint";
 import { CommandMenu } from "context_menu.slint";
-import { Section, BrowserFields } from "browser_fields.slint";
+import { Section, BrowserFields, ActivityFields } from "browser_fields.slint";
 import { ReplayControls, ReplaySettings } from "replay.slint";
 import { FilterFieldData, FilterLevels, FilterData, SourceData, SceneData, LookData, SampleData, KindData, MarkData, ModeData, SyncMeasureData, AttributeGroupRow, AttributeTargetRow, AttributesData, TextData, BrowserData, SourceSettingsData, SourceTargetData, MeterRow, ScaleMark, LoudnessData, DestinationRow, EncoderData, TokenRow, AiActionRow, StatRow, EntryRow, PermissionRowData, Studio, Sections, Experience, IconName, Icons, SizeBand, Overlays } from "base/types.slint";
 export { FilterFieldData, FilterLevels, FilterData, SourceData, SceneData, LookData, SampleData, KindData, MarkData, ModeData, SyncMeasureData, AttributeGroupRow, AttributeTargetRow, AttributesData, TextData, BrowserData, SourceSettingsData, SourceTargetData, MeterRow, ScaleMark, LoudnessData, DestinationRow, EncoderData, TokenRow, AiActionRow, StatRow, EntryRow, PermissionRowData, Studio }
@@ -3522,7 +3522,8 @@ component SourceFields inherits VerticalLayout {
             clicked => { Studio.list-source-targets(data.id); }
         }
     }
-    // A media file: the file, Loop and Restart when shown (ADR-0108), each one undo step.
+    // A media file: the file, Loop (ADR-0108), Runs and When it comes back (ADR-0152),
+    // each one undo step.
     if data.media: Field {
         label: @tr("File");
         HorizontalLayout {
@@ -3544,34 +3545,22 @@ component SourceFields inherits VerticalLayout {
             }
         }
     }
-    // Loop and Restart when shown side by side (owner 2026-11-17); the second goes
-    // under the first when the panel is too narrow for both.
-    if data.media: Rectangle {
-        property <length> gap: Tokens.space-4;
-        property <bool> one-line: self.width >= loop.preferred-width + self.gap + restart.preferred-width;
-        min-height: self.one-line ? max(loop.preferred-height, restart.preferred-height)
-            : loop.preferred-height + Tokens.size-field-gap + restart.preferred-height;
-        max-height: self.min-height;
-        loop := Toggle {
-            x: 0px;
-            y: 0px;
-            width: self.preferred-width;
-            height: self.preferred-height;
-            text: @tr("Loop");
-            label: @tr("Loop {}", data.name);
-            checked: data.media-loop;
-            toggled(on) => { Studio.set-media-loop(data.id, on); }
-        }
-        restart := Toggle {
-            x: parent.one-line ? loop.preferred-width + parent.gap : 0px;
-            y: parent.one-line ? 0px : loop.preferred-height + Tokens.size-field-gap;
-            width: min(self.preferred-width, parent.width - self.x);
-            height: self.preferred-height;
-            text: @tr("Restart when shown");
-            label: @tr("Restart {} when shown", data.name);
-            checked: data.media-restart;
-            toggled(on) => { Studio.set-media-restart-when-shown(data.id, on); }
-        }
+    if data.media: Toggle {
+        text: @tr("Loop");
+        label: @tr("Loop {}", data.name);
+        checked: data.media-loop;
+        toggled(on) => { Studio.set-media-loop(data.id, on); }
+    }
+    // Runs and When it comes back (ADR-0152) replace Restart when shown.
+    if data.media && data.act-on: ActivityFields {
+        name: data.name;
+        id: data.id;
+        run: data.act-run;
+        on-return: data.act-return;
+        run-options: [@tr("While shown"), @tr("Only on air")];
+        return-options: [@tr("Start over"), @tr("Resume where it stopped")];
+        run-hint: @tr("While shown: the file plays when a scene on Program or Preview shows it, and sleeps otherwise. Only on air: it plays only on Program; Preview does not show it.");
+        return-hint: @tr("Start over plays from the start of the play range each time it goes on air; Resume plays on from where it left the air.");
     }
     // The play range (ADR-0108 decision 11): set from the playback position, as an
     // editor's in and out points (I and O on the position slider do the same). Each
@@ -4250,7 +4239,7 @@ component SourceProperties inherits VerticalLayout {
     // 0 Transform, 1 Filters, 2 Audio, 3 Source, 4 Text, 5 Page (a browser source). The Source tab is the last one shown;
     // the first tab opens, except while the source is not running, when the Source tab
     // opens by itself (ADR-0077).
-    // A media file has a Source tab too: its file, Loop, Restart when shown and play
+    // A media file has a Source tab too: its file, Loop, Runs, When it comes back and play
     // range (ADR-0108), though it is no capture kind.
     property <bool> has-source: data.kind-code >= 0 || data.media;
     // The tabs before Source: Transform, Filters and Audio for a source with a picture

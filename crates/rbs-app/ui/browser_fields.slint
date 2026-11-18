@@ -2,7 +2,7 @@
 // Properties panel's Page tab and the Source settings window, and the collapsible
 // Section both use.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, IconButton, InfoHint, NumberField, SectionHeader, SegmentedControl, TextArea, TextField, Toggle, CaptionField as Field } from "components.slint";
+import { Button, IconButton, InfoHint, NumberField, SectionHeader, SegmentedControl, Select, TextArea, TextField, Toggle, CaptionField as Field } from "components.slint";
 import { SettingsCallout } from "settings.slint";
 import { BrowserData, Studio, Sections, IconName } from "base/types.slint";
 
@@ -56,9 +56,70 @@ export component Section inherits VerticalLayout {
     }
 }
 
+// "Runs" and "When it comes back" of a media file or a web page (ADR-0152, owner
+// approval 2026-11-18): the source's activity policy, each a list with an info hint.
+// "Runs" shows -1 (no choice) for a saved value the kind's list leaves out.
+// The lists' order is `studio_ui::activity_choice`'s. Each pick is one undo step.
+export component ActivityFields inherits VerticalLayout {
+    // The source, for accessible names.
+    in property <string> name;
+    in property <int> id;
+    // Positions in the lists; -1 shows none.
+    in property <int> run;
+    in property <int> on-return;
+    // The "Runs" and "When it comes back" words of this kind (the order of
+    // `studio_ui::activity_choice`), and what they do.
+    in property <[string]> run-options;
+    in property <[string]> return-options;
+    in property <string> return-hint;
+    // What "While in a scene" costs for this kind.
+    in property <string> run-hint;
+    spacing: Tokens.size-section-gap;
+    Field {
+        label: @tr("Runs");
+        HorizontalLayout {
+            spacing: Tokens.space-1;
+            Select {
+                horizontal-stretch: 1;
+                label: @tr("When {} runs", root.name);
+                options: root.run-options;
+                index: root.run;
+                selected(i) => { if i != root.run { Studio.set-source-run(root.id, i); } }
+            }
+            VerticalLayout {
+                alignment: center;
+                InfoHint {
+                    label: @tr("Runs");
+                    text: root.run-hint;
+                }
+            }
+        }
+    }
+    Field {
+        label: @tr("When it comes back");
+        HorizontalLayout {
+            spacing: Tokens.space-1;
+            Select {
+                horizontal-stretch: 1;
+                label: @tr("What {} does when it comes back", root.name);
+                options: root.return-options;
+                index: root.on-return;
+                selected(i) => { if i != root.on-return { Studio.set-source-on-return(root.id, i); } }
+            }
+            VerticalLayout {
+                alignment: center;
+                InfoHint {
+                    label: @tr("When it comes back");
+                    text: root.return-hint;
+                }
+            }
+        }
+    }
+}
+
 // The Page tab of a browser source (ADR-0109, ADR-0132, ADR-0149): the page, its size
 // and rate, then Custom CSS, Automation and Behaviour. Every change is one undo step and
-// reaches a running page without a restart, except Keep running when hidden.
+// reaches a running page without a restart.
 export component BrowserFields inherits VerticalLayout {
     // The source name, for accessible names.
     in property <string> name;
@@ -314,22 +375,15 @@ export component BrowserFields inherits VerticalLayout {
     Section {
         title: @tr("Behaviour");
         id: "properties.browser-behaviour";
-        HorizontalLayout {
-            spacing: Tokens.space-1;
-            Toggle {
-                horizontal-stretch: 1;
-                text: @tr("Keep running when hidden");
-                label: @tr("Keep {} running when hidden", root.name);
-                checked: b.keep-running;
-                toggled(on) => { Studio.set-browser-flag(b.id, "keep_running", on); }
-            }
-            VerticalLayout {
-                alignment: center;
-                InfoHint {
-                    label: @tr("Keep running when hidden");
-                    text: @tr("Chat and timers keep their state across scene changes. Costs one browser process and one of the two page slots while the source is in any scene; a shown page takes that slot first.");
-                }
-            }
+        ActivityFields {
+            name: root.name;
+            id: b.id;
+            run: b.run;
+            on-return: b.on-return;
+            run-options: [@tr("While in a scene"), @tr("While shown"), @tr("Only on air")];
+            return-options: [@tr("Continue"), @tr("Reload")];
+            run-hint: @tr("While shown: the page sleeps when no scene on Program or Preview shows it. While in a scene: chat and timers keep their state across scene changes; this costs one browser process and one of the two page slots while the source is in any scene, and a shown page takes that slot first. Only on air: the page starts when it goes on air.");
+            return-hint: @tr("Reload loads the page again when it goes on air; the last picture stays until the new one is drawn. A page that slept always loads fresh.");
         }
         HorizontalLayout {
             spacing: Tokens.space-1;
