@@ -395,7 +395,7 @@ wrap_load_handler! {
 
         fn on_load_end(
             &self,
-            _browser: Option<&mut Browser>,
+            browser: Option<&mut Browser>,
             frame: Option<&mut Frame>,
             _http_status_code: ::std::os::raw::c_int,
         ) {
@@ -404,6 +404,12 @@ wrap_load_handler! {
             };
             if frame.is_main() == 0 {
                 return;
+            }
+            // Chromium may apply the zoom it keeps per host after the commit, so the
+            // zoom set in `on_load_start` can be lost; set it again (ADR-0149
+            // decision 4: per-host zoom is ignored).
+            if let Some(host) = browser.and_then(|b| b.host()) {
+                host.set_zoom_level(zoom_level(page.options.zoom_percent));
             }
             if page.with_cycle(|c| c.finished(page.now())).unwrap_or(false) {
                 page.run_script(frame, &page.options.script);

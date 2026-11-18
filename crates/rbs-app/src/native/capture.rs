@@ -74,7 +74,9 @@ pub fn forget_saved_frame(ns_view: NonNull<c_void>) {
     unsafe {
         let empty: *mut AnyObject = msg_send![class!(NSString), stringWithUTF8String: c"".as_ptr()];
         if !empty.is_null() {
-            let _: () = msg_send![window, setFrameAutosaveName: empty];
+            // `setFrameAutosaveName:` returns BOOL; debug builds of objc2 check the
+            // declared return type and panic on `()`.
+            let _: bool = msg_send![window, setFrameAutosaveName: empty];
         }
     }
 }
