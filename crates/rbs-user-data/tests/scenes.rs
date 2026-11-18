@@ -1223,3 +1223,48 @@ fn browser_page_settings_are_written_as_format_22() {
     let old = plain.replace("format = 15", "format = 21");
     assert!(document::parse::<SceneCollection>(&old).is_ok());
 }
+
+#[test]
+fn a_source_activity_round_trips_in_format_24_and_older_formats_refuse_it() {
+    // ADR-0152 decision 10.
+    use rbs_scene::activity::{OnReturn, Run, SourceActivity};
+    let mut col = show();
+    let plain = document::render(&col, Some("Show")).unwrap();
+    assert!(!plain.contains("format = 24"), "{plain}");
+    assert!(!plain.contains("activity"), "{plain}");
+    let (film, _) = col
+        .add_source("Film", ty("media"), Settings::new())
+        .unwrap();
+    for policy in [
+        SourceActivity::new(Some(Run::OnAir), None, None),
+        SourceActivity::new(None, Some(OnReturn::Resume), None),
+        SourceActivity::new(Some(Run::Placed), Some(OnReturn::Restart), Some(600)),
+    ] {
+        col.set_source_activity(film, policy).unwrap();
+        let text = document::render(&col, Some("Show")).unwrap();
+        assert!(text.contains("format = 24"), "{text}");
+        let back = document::parse::<SceneCollection>(&text).unwrap().document;
+        assert_eq!(back, col);
+    }
+
+    let scene_doc = "[[canvases]]\nid = 0\nname = \"C\"\nwidth = 1920\nheight = 1080\nframe_rate = [30, 1]\n\
+                     [[sources]]\nid = 0\nname = \"F\"\ntype = \"org.rbs.source.media\"\n";
+    for (format, extra, ok) in [
+        (23, "activity = { run = \"on_air\" }\n", false),
+        (24, "activity = { run = \"on_air\" }\n", true),
+        (24, "activity = { run = \"always\" }\n", false),
+        (24, "activity = { on_return = \"rewind\" }\n", false),
+        (24, "activity = { linger_s = 601 }\n", false),
+        (24, "activity = { run = \"shown\", colour = 1 }\n", false),
+        // A value a type does not allow still loads (the binder reports it).
+        (
+            24,
+            "activity = { run = \"shown\", on_return = \"continue\" }\n",
+            true,
+        ),
+    ] {
+        let text = format!("kind = \"scene-collection\"\nformat = {format}\n{scene_doc}{extra}");
+        let parsed = document::parse::<SceneCollection>(&text);
+        assert_eq!(parsed.is_ok(), ok, "{format} {extra}: {parsed:?}");
+    }
+}

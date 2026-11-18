@@ -2696,6 +2696,7 @@ impl Refusal {
             | SceneError::InvalidVolume
             | SceneError::InvalidSyncOffset
             | SceneError::InvalidShowFor
+            | SceneError::InvalidActivity
             | SceneError::InvalidTransition
             | SceneError::ChromeNotDisplay
             | SceneError::IndexOutOfRange(_) => Self::Invalid(edit_error(e)),
@@ -11728,6 +11729,38 @@ impl Host {
         Ok(true)
     }
 
+    /// Replaces a source's activity policy (ADR-0152). One undo step (recorded as a
+    /// settings change). A value the source's type does not allow is refused as
+    /// invalid; the same policy again changes nothing.
+    fn set_source_activity(
+        &mut self,
+        id: SourceId,
+        activity: rbs_scene::activity::SourceActivity,
+    ) -> Result<bool, Refusal> {
+        let source = self
+            .collection
+            .source(id)
+            .ok_or_else(|| Refusal::NotFound(format!("There is no source {}.", id.get())))?;
+        let traits = rbs_sources::activity_traits(&source.type_id);
+        if !traits.allows(&activity) {
+            return Err(Refusal::Invalid(format!(
+                "Source {} does not allow that activity.",
+                id.get()
+            )));
+        }
+        if source.activity == activity {
+            return Ok(false);
+        }
+        let name = source.name.clone();
+        let undo = self
+            .collection
+            .set_source_activity(id, activity)
+            .map_err(|e| Refusal::of(&e))?;
+        self.history
+            .record(EditKind::SourceSettings, &name, 0, vec![undo]);
+        Ok(true)
+    }
+
     /// Sets or clears a source region (ADR-0103). One undo step, not an item crop.
     /// A sound-only source is refused. When the picture size is known, a region
     /// that leaves no pixel is refused. Setting a region also places the item box
@@ -15667,6 +15700,50 @@ impl ApiTarget<'_> {
                 }
                 Ok(Response::Done(Empty {}))
             }
+            C::SourceSetActivity(p) => {
+                let activity = rbs_scene::activity::SourceActivity::new(
+                    p.run.map(activity_run),
+                    p.on_return.map(activity_return),
+                    p.linger_s,
+                );
+                if host
+                    .set_source_activity(SourceId::from_raw(p.source), activity)
+                    .map_err(|e| refused(&e))?
+                {
+                    host.apply(notify);
+                }
+                Ok(Response::Done(Empty {}))
+            }
+            C::SourceGetActivity(p) => {
+                let source = host
+                    .collection
+                    .source(SourceId::from_raw(p.source))
+                    .ok_or_else(|| {
+                        ApiError::new(
+                            ErrorKind::NotFound,
+                            format!("There is no source {}.", p.source),
+                        )
+                    })?;
+                let traits = rbs_sources::activity_traits(&source.type_id);
+                let saved = source.activity;
+                let effective = traits.effective(Some(&saved));
+                Ok(Response::SourceActivity(
+                    rbs_api::request::SourceActivityInfo {
+                        source: p.source,
+                        run: saved.run.map(api_run),
+                        on_return: saved.on_return.map(api_return),
+                        linger_s: saved.linger_s,
+                        effective: rbs_api::request::EffectiveActivity {
+                            run: api_run(effective.run),
+                            on_return: effective.on_return.map(api_return),
+                            linger_s: effective.linger_s,
+                        },
+                        supported: saved.is_default() || traits.allows(&saved),
+                        runs: traits.runs.iter().copied().map(api_run).collect(),
+                        on_returns: traits.on_returns.iter().copied().map(api_return).collect(),
+                    },
+                ))
+            }
             C::SourceGetChrome(p) => {
                 let source = host
                     .collection
@@ -17317,6 +17394,46 @@ fn in_scene(id: SourceId) -> rbs_api::request::SourceInScene {
         source: id.get(),
         scene: None,
         canvas: OutputCanvas::default(),
+    }
+}
+
+/// The control API's spelling of a `run` value (ADR-0152).
+fn api_run(r: rbs_scene::activity::Run) -> api::ActivityRun {
+    use rbs_scene::activity::Run;
+    match r {
+        Run::Placed => api::ActivityRun::Placed,
+        Run::Shown => api::ActivityRun::Shown,
+        _ => api::ActivityRun::OnAir,
+    }
+}
+
+/// The scene model's `run` value for the control API's spelling (ADR-0152).
+fn activity_run(r: api::ActivityRun) -> rbs_scene::activity::Run {
+    use rbs_scene::activity::Run;
+    match r {
+        api::ActivityRun::Placed => Run::Placed,
+        api::ActivityRun::Shown => Run::Shown,
+        api::ActivityRun::OnAir => Run::OnAir,
+    }
+}
+
+/// The control API's spelling of an `on_return` value (ADR-0152).
+fn api_return(o: rbs_scene::activity::OnReturn) -> api::ActivityReturn {
+    use rbs_scene::activity::OnReturn;
+    match o {
+        OnReturn::Continue => api::ActivityReturn::Continue,
+        OnReturn::Resume => api::ActivityReturn::Resume,
+        _ => api::ActivityReturn::Restart,
+    }
+}
+
+/// The scene model's `on_return` value for the control API's spelling (ADR-0152).
+fn activity_return(o: api::ActivityReturn) -> rbs_scene::activity::OnReturn {
+    use rbs_scene::activity::OnReturn;
+    match o {
+        api::ActivityReturn::Continue => OnReturn::Continue,
+        api::ActivityReturn::Resume => OnReturn::Resume,
+        api::ActivityReturn::Restart => OnReturn::Restart,
     }
 }
 

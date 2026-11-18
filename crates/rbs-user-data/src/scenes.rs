@@ -47,6 +47,7 @@
 //! # chrome = { top = 40, bottom = 80, fill = "cover" }  # display only (format 14, ADR-0104)
 //! # record_separately = { video = true, audio = true }  # format 16, ADR-0086; absent: neither
 //! # record_separately = { video = true, video_as = "image" }  # "image" or "video" (format 18, ADR-0117); absent: automatic
+//! # activity = { run = "on_air", on_return = "resume", linger_s = 10 }  # each key optional; absent: the type's default (format 24, ADR-0152)
 //!
 //! [[scenes]]
 //! id = 0
@@ -73,6 +74,7 @@
 //! strings. Loading validates the whole collection
 //! ([`SceneCollection::from_parts`]).
 
+use rbs_scene::activity::{MAX_LINGER_S, OnReturn, Run, SourceActivity};
 use std::collections::BTreeMap;
 
 use rbs_core::media::Size;
@@ -450,6 +452,55 @@ struct SourceDoc {
     /// Separate files for this source (format 16, ADR-0086). Absent: neither feed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     record_separately: Option<RecordSeparatelyDoc>,
+    /// When the source runs and what it does when it returns (format 24, ADR-0152).
+    /// Absent: the type's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    activity: Option<ActivityDoc>,
+}
+
+/// A source's activity policy (ADR-0152): every key optional, absent is the type's
+/// default. Values the type does not allow load and are reported by the binder.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ActivityDoc {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    run: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    on_return: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    linger_s: Option<u16>,
+}
+
+impl ActivityDoc {
+    fn from(a: SourceActivity) -> Option<Self> {
+        (!a.is_default()).then(|| Self {
+            run: a.run.map(|r| r.as_str().to_owned()),
+            on_return: a.on_return.map(|o| o.as_str().to_owned()),
+            linger_s: a.linger_s,
+        })
+    }
+
+    fn activity(&self, source: &str) -> Result<SourceActivity, String> {
+        let run = self
+            .run
+            .as_deref()
+            .map(|r| Run::parse(r).ok_or_else(|| format!("{source}: unknown `activity.run` {r:?}")))
+            .transpose()?;
+        let on_return = self
+            .on_return
+            .as_deref()
+            .map(|o| {
+                OnReturn::parse(o)
+                    .ok_or_else(|| format!("{source}: unknown `activity.on_return` {o:?}"))
+            })
+            .transpose()?;
+        if self.linger_s.is_some_and(|l| l > MAX_LINGER_S) {
+            return Err(format!(
+                "{source}: `activity.linger_s` is over {MAX_LINGER_S}"
+            ));
+        }
+        Ok(SourceActivity::new(run, on_return, self.linger_s))
+    }
 }
 
 /// Which feeds of a source are recorded as their own files (ADR-0086).
@@ -1124,9 +1175,12 @@ fn any_layout_scrolls(body: &toml::Table) -> bool {
 
 impl Document for SceneCollection {
     const KIND: &'static str = "scene-collection";
-    const FORMAT: u32 = 23;
+    const FORMAT: u32 = 24;
 
     fn write_format(&self) -> u32 {
+        if self.sources().any(|s| !s.activity.is_default()) {
+            return 24;
+        }
         let scrolls = self.scenes().any(|s| {
             s.items.iter().any(|i| {
                 i.layout.scroll.is_some() || i.overrides.values().any(|l| l.scroll.is_some())
@@ -1207,7 +1261,25 @@ impl Document for SceneCollection {
     /// source has one, so an older build refuses it instead of failing the source. Format
     /// 23 adds the optional layout `scroll` (ADR-0150); a format 22 or older body is a
     /// format 23 body without it, and a file is written as 23 only when a layout scrolls.
+    /// Format 24 adds the optional source `activity` (ADR-0152); a format 23 or older
+    /// body is a format 24 body without it, and a file is written as 24 only when a
+    /// source has one.
     fn upgrade(from: u32, body: &mut toml::Table) -> Result<(), String> {
+        let has_activity = body
+            .get("sources")
+            .and_then(toml::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(toml::Value::as_table)
+            .any(|s| s.contains_key("activity"));
+        if (1..=23).contains(&from) && has_activity {
+            return Err(format!(
+                "format {from} has no source `activity` (format 24)"
+            ));
+        }
+        if from == 23 {
+            return Ok(());
+        }
         if (1..=22).contains(&from) && any_layout_scrolls(body) {
             return Err(format!("format {from} has no layout `scroll` (format 23)"));
         }
@@ -1456,6 +1528,7 @@ impl Document for SceneCollection {
                     chrome: s.chrome.map(ChromeDoc::from),
                     record_separately: (!s.record_separately.is_none())
                         .then(|| RecordSeparatelyDoc::from(s.record_separately)),
+                    activity: ActivityDoc::from(s.activity),
                 })
             })
             .collect::<Result<_, String>>()?;
@@ -1601,6 +1674,12 @@ impl Document for SceneCollection {
                     .record_separately
                     .as_ref()
                     .map_or(Ok(RecordSeparately::default()), RecordSeparatelyDoc::flag)?;
+                source.activity = s
+                    .activity
+                    .as_ref()
+                    .map(|a| a.activity(&s.name))
+                    .transpose()?
+                    .unwrap_or_default();
                 Ok(source)
             })
             .collect::<Result<Vec<_>, String>>()?;
