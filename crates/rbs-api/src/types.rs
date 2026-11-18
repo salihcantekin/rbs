@@ -505,6 +505,31 @@ pub struct SceneTransition {
     pub duration_ms: Option<u32>,
 }
 
+/// When a source runs (protocol 1.95, ADR-0152): the lowest level at which it is
+/// Active.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActivityRun {
+    /// While it is in any scene, hidden or off air.
+    Placed,
+    /// While a shown scene (program or studio-mode preview) draws it.
+    Shown,
+    /// Only while on air.
+    OnAir,
+}
+
+/// What a source does when it goes on air again (protocol 1.95, ADR-0152).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActivityReturn {
+    /// As if it had kept running while away.
+    Continue,
+    /// Where it stopped.
+    Resume,
+    /// From the beginning.
+    Restart,
+}
+
 /// How a slide maps unit time (protocol 1.35, ADR-0100). Fade-ins stay linear.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum GlideEasing {

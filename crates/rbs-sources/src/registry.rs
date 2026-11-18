@@ -487,11 +487,18 @@ impl NodeTypes for NodeTypeTable {
     /// built-in type, and any type this table does not know, runs while placed
     /// (ADR-0152 decisions 4 and 5).
     fn activity(&self, type_id: &NodeTypeId) -> ActivityTraits {
-        match class_of(type_id) {
-            Some(SourceClass::Media) => MEDIA_ACTIVITY,
-            Some(SourceClass::Browser) => BROWSER_ACTIVITY,
-            _ => ActivityTraits::PLACED,
-        }
+        activity_traits(type_id)
+    }
+}
+
+/// What a built-in source type supports for its activity policy (ADR-0152); any
+/// other type, plugins included, is [`ActivityTraits::PLACED`]. The same answer as
+/// [`NodeTypeTable`]'s `NodeTypes::activity`, for the host's checks.
+pub fn activity_traits(type_id: &NodeTypeId) -> ActivityTraits {
+    match class_of(type_id) {
+        Some(SourceClass::Media) => MEDIA_ACTIVITY,
+        Some(SourceClass::Browser) => BROWSER_ACTIVITY,
+        _ => ActivityTraits::PLACED,
     }
 }
 
