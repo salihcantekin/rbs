@@ -157,3 +157,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0147](0147-native-encoder-input.md) | Native encoder input chosen by capability: exporters per graphics API, native frames cross only to an encoder, readback stays the fallback (exits ADR-0038 decision 3 per encoder) | Accepted |
 | [0148](0148-streaming-follows-its-destinations.md) | Streaming follows its destinations: every destination can be removed, Go live shows only while one is on, End stream never hidden while live | Accepted |
 | [0150](0150-scrolling-layers-in-the-compositor.md) | Scrolling is a layer motion evaluated by the compositor node, for every source (ticker, crawl, credits; answers ADR-0129 decision 9) | Accepted |
+| [0151](0151-leaving-studio-mode-keeps-the-program-as-it-was.md) | Leaving studio mode keeps the program as it was on air: held edits are put back as one undo step (supersedes part of ADR-0063 decision 4 and ADR-0098 decision 2) | Proposed |
