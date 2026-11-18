@@ -1731,6 +1731,9 @@ export component MixerPanel inherits Rectangle {
     changed wide => { Studio.meters-relayout(); }
     changed scene-closed => { Studio.meters-relayout(); }
     changed global-closed => { Studio.meters-relayout(); }
+    // A source added or removed makes or drops a bar too.
+    property <int> meter-count: Studio.meters.length + Studio.master-meter.length;
+    changed meter-count => { Studio.meters-relayout(); }
     if !root.any: EmptyState {
         width: parent.width;
         height: parent.height;
