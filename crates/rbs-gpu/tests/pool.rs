@@ -86,6 +86,27 @@ fn invalid_sizes_are_rejected() {
 }
 
 #[test]
+fn acquire_of_a_format_the_device_lacks_is_an_error() {
+    let Some(ctx) = common::gpu() else { return };
+    let mut pool = TexturePool::new();
+    let desc = rbs_gpu::yuv::surface_desc(rbs_gpu::yuv::YuvFormat::Nv12, 64, 64);
+    let result = pool.acquire(ctx, &desc);
+    if ctx
+        .device()
+        .features()
+        .contains(wgpu::Features::TEXTURE_FORMAT_NV12)
+    {
+        assert!(result.is_ok(), "device has NV12: {result:?}");
+    } else {
+        assert!(
+            matches!(result, Err(GpuError::Unsupported(_))),
+            "no NV12 feature: an error, not a wgpu panic: {result:?}"
+        );
+        assert_eq!(pool.descriptions(), 0, "nothing was created");
+    }
+}
+
+#[test]
 fn lease_keeps_released_slot_alive_until_dropped() {
     let Some(ctx) = common::gpu() else { return };
     let mut pool = TexturePool::new();

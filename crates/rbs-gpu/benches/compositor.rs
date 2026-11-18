@@ -246,7 +246,14 @@ fn bench(c: &mut Criterion) {
             ctx.wait_idle().expect("wait");
         });
     });
-    if let Ok(surface) = pool.acquire(&ctx, &yuv::surface_desc(YuvFormat::Nv12, W, H)) {
+    let has = |key: &rbs_core::capability::CapabilityKey| {
+        ctx.capabilities().get(key) == Some(&rbs_core::capability::CapabilityValue::Flag(true))
+    };
+    // The one-texture NV12 surface, where the device has it (Metal does not).
+    if has(&rbs_gpu::context::CAP_NV12_SURFACE) {
+        let surface = pool
+            .acquire(&ctx, &yuv::surface_desc(YuvFormat::Nv12, W, H))
+            .expect("nv12 surface");
         group.bench_function("nv12_surface", |b| {
             b.iter(|| {
                 conv.convert_to_surface(&ctx, &pool, canvas, surface)
@@ -256,9 +263,6 @@ fn bench(c: &mut Criterion) {
         });
     }
     // P010 conversion alone, where the device has 16-bit normalized targets.
-    let has = |key: &rbs_core::capability::CapabilityKey| {
-        ctx.capabilities().get(key) == Some(&rbs_core::capability::CapabilityValue::Flag(true))
-    };
     if has(&rbs_gpu::context::CAP_P010) {
         let mut p010 = YuvConverter::new(&ctx, YuvFormat::P010, W, H).expect("p010");
         let luma = pool
