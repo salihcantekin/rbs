@@ -1,6 +1,6 @@
 # ADR-0150: Scrolling is a layer motion evaluated by the compositor node, for every source
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-18
 - Deciders: Salih (owner)
 - Answers: [ADR-0129](0129-text-source.md) decision 9 (scrolling decided separately); clarifies [ADR-0117](0117-still-sources-as-images.md) decision 2's "ticker" (decision 9 below)
@@ -165,3 +165,5 @@ Concerns and resolutions:
 4. Live speed range. -> Decision 11.
 5. Stale resolutions in earlier rounds. -> Note: where rounds disagree, the latest round and the decision text win (round 1 #3 and #8, round 2 #2 and #13 are replaced by later rounds).
 6. Channel order. -> Decision 7: one blank tick, stated and tested.
+
+Owner decision: Salih, 2026-11-18. Accepted after the round-6 review. He also accepted that preview and program share one run, so a live pause or speed change on an item seen in the studio-mode preview also moves the program's copy (decision 11), in exchange for a Take that never makes a ticker jump.

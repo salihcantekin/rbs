@@ -156,4 +156,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0146](0146-picture-identity-lets-encoders-reuse-an-unchanged-input.md) | Picture identity on video frames, so encoders reuse an unchanged input instead of copying it | Accepted |
 | [0147](0147-native-encoder-input.md) | Native encoder input chosen by capability: exporters per graphics API, native frames cross only to an encoder, readback stays the fallback (exits ADR-0038 decision 3 per encoder) | Accepted |
 | [0148](0148-streaming-follows-its-destinations.md) | Streaming follows its destinations: every destination can be removed, Go live shows only while one is on, End stream never hidden while live | Accepted |
-| [0150](0150-scrolling-layers-in-the-compositor.md) | Scrolling is a layer motion evaluated by the compositor node, for every source (ticker, crawl, credits; answers ADR-0129 decision 9) | Proposed |
+| [0150](0150-scrolling-layers-in-the-compositor.md) | Scrolling is a layer motion evaluated by the compositor node, for every source (ticker, crawl, credits; answers ADR-0129 decision 9) | Accepted |
