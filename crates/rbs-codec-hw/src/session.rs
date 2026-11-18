@@ -10,8 +10,8 @@
 
 use rbs_codec::{EncodeError, EncoderChange, RateControl, VideoEncoder};
 use rbs_core::media::{
-    Bytes, CodecId, EncodedPacket, FramePayload, StreamDescriptor, SystemFrame, VideoFormat,
-    VideoFrame,
+    Bytes, CodecId, EncodedPacket, FramePayload, PictureId, StreamDescriptor, SystemFrame,
+    VideoFormat, VideoFrame,
 };
 use rbs_core::time::Timestamp;
 
@@ -81,6 +81,22 @@ pub trait Engine: Send {
     /// the queue depth the driver accepted).
     fn slots(&self) -> usize;
 
+    /// Whether a slot's input buffer still holds the uploaded pixels after its picture
+    /// was encoded and read, so the session may encode the same picture from it again
+    /// without `upload` (ADR-0146). Read once when the session is created. `true` only
+    /// after the bit-exact hardware test of ADR-0146 decision 4 passed for the engine.
+    fn keeps_input(&self) -> bool {
+        false
+    }
+
+    /// Checks that `slot`'s input buffer may be written or encoded now. Called first
+    /// for every frame: before `upload` when the frame is copied, before `encode` when
+    /// the slot already holds its picture. `Busy` leaves the frame unconsumed and
+    /// the slot unchanged. Not called for a slot that is in flight.
+    fn prepare(&mut self, _slot: usize) -> Result<(), EngineError> {
+        Ok(())
+    }
+
     /// Copies `frame` into the input buffer of `slot`. Not called for a slot that is
     /// in flight.
     fn upload(&mut self, slot: usize, frame: &SystemFrame) -> Result<(), EngineError>;
@@ -108,6 +124,17 @@ pub trait Engine: Send {
 struct Slot {
     pts: Timestamp,
     token: u64,
+    /// The picture the slot's input buffer holds (ADR-0146): `NONE` before an upload
+    /// starts, the frame's id once it returned `Ok`, whatever `encode` does next.
+    picture: PictureId,
+}
+
+/// Set to a non-empty value other than `0`, every frame is copied even where the
+/// engine could reuse its input (ADR-0146 A/B measurements). Read once per session.
+pub const ENCODER_COPY_ALWAYS_ENV: &str = "RBS_ENCODER_COPY_ALWAYS";
+
+fn copy_always() -> bool {
+    std::env::var_os(ENCODER_COPY_ALWAYS_ENV).is_some_and(|v| !v.is_empty() && v != "0")
 }
 
 /// A session over an engine. Implements the encoder port.
@@ -119,6 +146,8 @@ pub struct Session<E: Engine> {
     rate_control: RateControl,
     dynamic_bitrate: bool,
     slots: Box<[Slot]>,
+    /// The engine keeps its input and copies are not forced (ADR-0146).
+    reuse: bool,
     /// Oldest slot in flight.
     head: usize,
     /// Slots in flight (submitted, not yet drained).
@@ -142,6 +171,7 @@ impl<E: Engine> Session<E> {
         stream: StreamDescriptor,
     ) -> Self {
         let slots = vec![Slot::default(); engine.slots().max(1)].into_boxed_slice();
+        let reuse = engine.keeps_input() && !copy_always();
         Self {
             engine,
             stream,
@@ -150,6 +180,7 @@ impl<E: Engine> Session<E> {
             rate_control,
             dynamic_bitrate,
             slots,
+            reuse,
             head: 0,
             in_flight: 0,
             next_token: 0,
@@ -191,8 +222,16 @@ impl<E: Engine> Session<E> {
         let e = e.into_encode();
         if !e.is_recoverable() {
             self.broken = Some(e.clone());
+            self.forget_pictures();
         }
         e
+    }
+
+    /// No slot is trusted to hold a picture any more (ADR-0146).
+    fn forget_pictures(&mut self) {
+        for slot in &mut self.slots {
+            slot.picture = PictureId::NONE;
+        }
     }
 
     /// Takes the oldest slot's output. `Ok(false)` when it is not ready.
@@ -262,15 +301,27 @@ impl<E: Engine> VideoEncoder for Session<E> {
             return Err(EncodeError::Busy);
         }
         let slot = self.wrap(self.head + self.in_flight);
-        if let Err(e) = self.engine.upload(slot, system) {
+        if let Err(e) = self.engine.prepare(slot) {
             return Err(self.fail(e));
         }
-        self.stats.copied += 1;
+        // ADR-0146: a slot that holds this frame's picture is encoded again as it is.
+        let picture = frame.picture();
+        if self.reuse && !picture.is_none() && self.slots[slot].picture == picture {
+            self.stats.reused += 1;
+        } else {
+            self.slots[slot].picture = PictureId::NONE;
+            if let Err(e) = self.engine.upload(slot, system) {
+                return Err(self.fail(e));
+            }
+            self.slots[slot].picture = picture;
+            self.stats.copied += 1;
+        }
         let token = self.next_token;
         if let Err(e) = self.engine.encode(slot, token, self.keyframe_pending) {
             return Err(self.fail(e));
         }
-        self.slots[slot] = Slot { pts, token };
+        self.slots[slot].pts = pts;
+        self.slots[slot].token = token;
         self.next_token += 1;
         self.in_flight += 1;
         self.last_pts = Some(pts);
@@ -329,6 +380,7 @@ impl<E: Engine> VideoEncoder for Session<E> {
         // The stream may go on after a flush; start it again with an IDR so it is
         // decodable from there.
         self.keyframe_pending = true;
+        self.forget_pictures();
         if self.in_flight == 0 {
             return Ok(());
         }
@@ -363,6 +415,11 @@ mod fake {
         pub reorder: bool,
         /// `set_rate_control` fails with this error.
         pub rate_error: Option<EngineError>,
+        /// The engine keeps its input after encoding (ADR-0146). Without it, an
+        /// encode from a slot with no fresh upload panics.
+        pub keeps_input: bool,
+        /// `prepare` calls (counted from 0) that return `Busy`.
+        pub prepare_busy: Vec<u64>,
     }
 
     #[derive(Debug, Clone, Copy, Default)]
@@ -371,7 +428,8 @@ mod fake {
         keyframe: bool,
         polls: u32,
         busy: bool,
-        uploaded: bool,
+        /// First luma byte of the picture in the input buffer, if it holds one.
+        held: Option<u8>,
     }
 
     /// The fake engine.
@@ -385,6 +443,8 @@ mod fake {
         pub eos: u32,
         /// Last rate control applied.
         pub rc: Option<Rc>,
+        /// Calls of `prepare`.
+        pub prepares: u64,
     }
 
     impl FakeEngine {
@@ -396,6 +456,7 @@ mod fake {
                 slots: [Pending::default(); FAKE_SLOTS],
                 eos: 0,
                 rc: None,
+                prepares: 0,
             }
         }
     }
@@ -408,10 +469,24 @@ mod fake {
             FAKE_SLOTS
         }
 
+        fn keeps_input(&self) -> bool {
+            self.script.keeps_input
+        }
+
+        fn prepare(&mut self, slot: usize) -> Result<(), EngineError> {
+            assert!(!self.slots[slot].busy, "prepare of a slot in flight");
+            let call = self.prepares;
+            self.prepares += 1;
+            if self.script.prepare_busy.contains(&call) {
+                return Err(EngineError::Busy);
+            }
+            Ok(())
+        }
+
         fn upload(&mut self, slot: usize, frame: &SystemFrame) -> Result<(), EngineError> {
             assert!(!self.slots[slot].busy, "upload into a slot in flight");
-            assert!(frame.plane(0).is_some());
-            self.slots[slot].uploaded = true;
+            let (luma, _) = frame.plane(0).ok_or(EngineError::Broken("no luma"))?;
+            self.slots[slot].held = luma.first().copied();
             Ok(())
         }
 
@@ -425,7 +500,7 @@ mod fake {
                 return Err(self.script.encode_errors.remove(i).1);
             }
             let s = &mut self.slots[slot];
-            assert!(s.uploaded && !s.busy);
+            assert!(s.held.is_some() && !s.busy, "encode without a picture");
             let keyframe = idr || self.since_idr + 1 >= self.gop;
             self.since_idr = if keyframe { 0 } else { self.since_idr + 1 };
             *s = Pending {
@@ -433,7 +508,7 @@ mod fake {
                 keyframe,
                 polls: 0,
                 busy: true,
-                uploaded: false,
+                held: s.held,
             };
             Ok(())
         }
@@ -450,13 +525,18 @@ mod fake {
                 return Ok(None);
             }
             s.busy = false;
+            let picture = s.held.unwrap_or_default();
+            if !self.script.keeps_input {
+                // An engine that does not keep its input: the next encode needs an upload.
+                s.held = None;
+            }
             let token = if self.script.reorder {
                 s.token + 1
             } else {
                 s.token
             };
             Ok(Some(Output {
-                data: vec![0, 0, 0, 1, if s.keyframe { 0x65 } else { 0x41 }, 0x88],
+                data: vec![0, 0, 0, 1, if s.keyframe { 0x65 } else { 0x41 }, picture],
                 keyframe: s.keyframe,
                 token,
             }))
@@ -804,5 +884,185 @@ mod tests {
             })),
             Err(EncodeError::Unsupported)
         );
+    }
+
+    // ADR-0146: picture identity lets a slot that holds a picture encode it again.
+
+    impl Run {
+        /// Frame `content` (its picture varies with it) with picture id `picture`, at
+        /// the next tick.
+        fn picture(&mut self, content: u64, picture: PictureId) -> VideoFrame {
+            let ts = self.cadence.time_of(self.index);
+            self.index += 1;
+            self.frames
+                .frame(&config().format, content, ts)
+                .unwrap()
+                .with_picture(picture)
+        }
+
+        fn send(&mut self, content: u64, picture: PictureId) -> Result<(), EncodeError> {
+            let f = self.picture(content, picture);
+            self.session.submit(&f)
+        }
+
+        /// Last byte of each packet: the first luma byte of the picture encoded.
+        fn pictures(&self) -> Vec<u8> {
+            self.packets
+                .iter()
+                .map(|p| *p.data().last().unwrap())
+                .collect()
+        }
+    }
+
+    fn keeping() -> Script {
+        Script {
+            keeps_input: true,
+            ..Script::default()
+        }
+    }
+
+    #[test]
+    fn a_static_picture_is_copied_once_per_slot_then_reused() {
+        let mut run = Run::new(keeping());
+        let id = PictureId::next();
+        let total = 3 * FRAMES_IN_FLIGHT;
+        for _ in 0..total {
+            run.send(5, id).unwrap();
+            run.session.drain(&mut run.packets).unwrap();
+        }
+        run.session.flush(&mut run.packets).unwrap();
+        let stats = run.session.stats();
+        assert_eq!(stats.copied, FRAMES_IN_FLIGHT as u64);
+        assert_eq!(stats.reused, (total - FRAMES_IN_FLIGHT) as u64);
+        assert_eq!(stats.submitted, total as u64);
+        assert_eq!(run.pictures(), vec![20; total]);
+    }
+
+    #[test]
+    fn reuse_encodes_exactly_what_copying_encodes() {
+        // Static, a change, static again, a new picture with the old content, and
+        // frames without an id: the bitstream must not depend on reuse.
+        let (a, b, c) = (PictureId::next(), PictureId::next(), PictureId::next());
+        let mut plan = Vec::new();
+        plan.extend(std::iter::repeat_n((1, a), 20));
+        plan.extend(std::iter::repeat_n((2, b), 3));
+        plan.extend(std::iter::repeat_n((1, a), 11));
+        plan.extend(std::iter::repeat_n((1, c), 9));
+        plan.extend((0..5).map(|i| (10 + i, PictureId::NONE)));
+        plan.extend(std::iter::repeat_n((2, b), 17));
+        let encode = |script: Script| {
+            let mut run = Run::new(script);
+            for &(content, id) in &plan {
+                run.send(content, id).unwrap();
+                run.session.drain(&mut run.packets).unwrap();
+            }
+            run.session.flush(&mut run.packets).unwrap();
+            let data: Vec<Bytes> = run.packets.iter().map(|p| p.data().clone()).collect();
+            (data, run.session.stats())
+        };
+        let (copied, copy_stats) = encode(Script::default());
+        let (reused, reuse_stats) = encode(keeping());
+        assert_eq!(copied, reused);
+        assert_eq!(copy_stats.reused, 0);
+        assert_eq!(copy_stats.copied, plan.len() as u64);
+        assert!(reuse_stats.reused > 0);
+        assert_eq!(reuse_stats.copied + reuse_stats.reused, plan.len() as u64);
+    }
+
+    #[test]
+    fn a_frame_refused_after_its_upload_leaves_its_own_picture_in_the_slot() {
+        // Every slot holds X; then Y is uploaded into slot 0 but its encode is refused
+        // and Y is dropped. X must be copied into slot 0 again, not encoded from Y.
+        let mut run = Run::new(Script {
+            encode_errors: vec![(FRAMES_IN_FLIGHT as u64, EngineError::Busy)],
+            ..keeping()
+        });
+        let (x, y) = (PictureId::next(), PictureId::next());
+        for _ in 0..FRAMES_IN_FLIGHT {
+            run.send(1, x).unwrap();
+        }
+        // Drained, not flushed: a flush would forget every picture.
+        run.session.drain(&mut run.packets).unwrap();
+        assert_eq!(run.session.stats().packets, FRAMES_IN_FLIGHT as u64);
+        assert_eq!(run.send(2, y), Err(EncodeError::Busy));
+        run.send(1, x).unwrap();
+        run.session.flush(&mut run.packets).unwrap();
+        assert_eq!(*run.pictures().last().unwrap(), 4);
+        assert_eq!(run.session.stats().copied, FRAMES_IN_FLIGHT as u64 + 2);
+    }
+
+    #[test]
+    fn a_frame_refused_after_its_upload_is_not_copied_again() {
+        let mut run = Run::new(Script {
+            encode_errors: vec![(0, EngineError::Busy)],
+            ..keeping()
+        });
+        let x = run.picture(1, PictureId::next());
+        assert_eq!(run.session.submit(&x), Err(EncodeError::Busy));
+        run.session.submit(&x).unwrap();
+        let stats = run.session.stats();
+        assert_eq!((stats.copied, stats.reused, stats.submitted), (1, 1, 1));
+    }
+
+    #[test]
+    fn a_busy_prepare_consumes_nothing() {
+        let mut run = Run::new(Script {
+            prepare_busy: vec![1],
+            ..keeping()
+        });
+        let id = PictureId::next();
+        run.send(1, id).unwrap();
+        assert_eq!(run.send(1, id), Err(EncodeError::Busy));
+        run.send(1, id).unwrap();
+        run.session.flush(&mut run.packets).unwrap();
+        let stats = run.session.stats();
+        assert_eq!((stats.copied, stats.submitted), (2, 2));
+        assert_eq!(run.session.engine().prepares, 3);
+    }
+
+    #[test]
+    fn prepare_runs_for_reused_frames_too() {
+        let mut run = Run::new(keeping());
+        let id = PictureId::next();
+        for _ in 0..2 * FRAMES_IN_FLIGHT {
+            run.send(1, id).unwrap();
+            run.session.drain(&mut run.packets).unwrap();
+        }
+        assert_eq!(run.session.engine().prepares, 2 * FRAMES_IN_FLIGHT as u64);
+    }
+
+    #[test]
+    fn flush_forgets_the_pictures() {
+        let mut run = Run::new(keeping());
+        let id = PictureId::next();
+        for _ in 0..FRAMES_IN_FLIGHT {
+            run.send(1, id).unwrap();
+        }
+        run.session.flush(&mut run.packets).unwrap();
+        run.send(1, id).unwrap();
+        assert_eq!(run.session.stats().copied, FRAMES_IN_FLIGHT as u64 + 1);
+        assert_eq!(run.session.stats().reused, 0);
+    }
+
+    #[test]
+    fn frames_without_a_picture_id_are_always_copied() {
+        let mut run = Run::new(keeping());
+        for _ in 0..2 * FRAMES_IN_FLIGHT {
+            run.send(1, PictureId::NONE).unwrap();
+            run.session.drain(&mut run.packets).unwrap();
+        }
+        assert_eq!(run.session.stats().reused, 0);
+        assert_eq!(run.session.stats().copied, 2 * FRAMES_IN_FLIGHT as u64);
+    }
+
+    #[test]
+    fn an_engine_that_does_not_keep_its_input_is_always_copied() {
+        let mut run = Run::new(Script::default());
+        let id = PictureId::next();
+        for _ in 0..2 * FRAMES_IN_FLIGHT {
+            run.send(1, id).unwrap();
+            run.session.drain(&mut run.packets).unwrap();
+        }
+        assert_eq!(run.session.stats().reused, 0);
     }
 }

@@ -5,8 +5,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use rbs_core::media::{
-    ColorRange, ColorSpace, PixelFormat, PlaneLayout, Size, SystemFrame, VideoFormat, VideoFrame,
-    next_generation,
+    ColorRange, ColorSpace, PictureId, PixelFormat, PlaneLayout, Size, SystemFrame, VideoFormat,
+    VideoFrame, next_generation,
 };
 use rbs_core::pause::{HoldPicture, HoldSwitch, PauseWindow, Place, Window};
 use rbs_core::time::Timestamp;
@@ -253,7 +253,9 @@ pub fn black_frame(format: VideoFormat) -> Option<VideoFrame> {
         },
     ];
     let frame = SystemFrame::new(format, data.into(), &planes).ok()?;
-    Some(VideoFrame::system(Timestamp::ZERO, frame, None))
+    // Made once and shared for the whole hold: one picture id, so an encoder copies a
+    // black hold at most once per input buffer (ADR-0146).
+    Some(VideoFrame::system(Timestamp::ZERO, frame, None).with_picture(PictureId::next()))
 }
 
 /// A hold under way, as the export keeps it.
@@ -1017,6 +1019,8 @@ mod tests {
             let mut format = VideoExportNode::new(yuv, 6, 4, 6, 4).frame_format();
             format.color.range = range;
             let frame = black_frame(format).expect("a black frame");
+            // One picture id for the whole hold (ADR-0146).
+            assert!(!frame.picture().is_none());
             let data = system(&frame);
             let wide = yuv == YuvFormat::P010;
             let at = |i: usize| {

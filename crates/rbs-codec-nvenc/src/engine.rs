@@ -735,6 +735,13 @@ impl Engine for NvencEngine {
         FRAMES_IN_FLIGHT
     }
 
+    /// Each slot owns its input buffer, written only by `upload` while unlocked and
+    /// only read by the encoder (ADR-0146). Confirmed by the bit-exact hardware test
+    /// `slow_reused_input_encodes_bit_exact` (tests/hardware.rs).
+    fn keeps_input(&self) -> bool {
+        true
+    }
+
     fn upload(&mut self, slot: usize, frame: &SystemFrame) -> Result<(), EngineError> {
         let funcs = &self.device.api.nvenc.0;
         let lock = f(funcs.nvEncLockInputBuffer, "nvEncLockInputBuffer")?;

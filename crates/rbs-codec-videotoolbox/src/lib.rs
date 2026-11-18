@@ -76,6 +76,9 @@ pub struct SessionStats {
     pub copied: u64,
     /// IOSurfaces wrapped in a new `CVPixelBuffer` (cache misses).
     pub wrapped: u64,
+    /// System-memory frames encoded from the buffer their picture was already copied
+    /// into (ADR-0146), without a copy.
+    pub reused: u64,
 }
 
 #[cfg(target_os = "macos")]

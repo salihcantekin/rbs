@@ -21,7 +21,8 @@ use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
 use bytes::BytesMut;
 use rbs_core::media::{
-    Bytes, ColorSpace, FramePayload, PlaneLayout, Size, SystemFrame, VideoFormat, VideoFrame,
+    Bytes, ColorSpace, FramePayload, PictureId, PlaneLayout, Size, SystemFrame, VideoFormat,
+    VideoFrame,
 };
 use rbs_core::time::Timestamp;
 
@@ -486,7 +487,12 @@ impl Readback {
         ];
         // Cannot fail for the layout `new` computed; counted, never silent.
         let system = SystemFrame::new(self.format, bytes, &planes).map_err(|_| Lost::Failed)?;
-        Ok(VideoFrame::system(slot.picture.0, system, None).with_sequence(slot.picture.1))
+        // A new picture id where the bytes are made (ADR-0146 decision 2): every export
+        // that joins this readback shares these bytes and so this id, and a repeat
+        // delivers the same frame again, so encoders can reuse their input.
+        Ok(VideoFrame::system(slot.picture.0, system, None)
+            .with_sequence(slot.picture.1)
+            .with_picture(PictureId::next()))
     }
 }
 
