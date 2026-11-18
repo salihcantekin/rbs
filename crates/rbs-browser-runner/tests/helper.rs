@@ -35,6 +35,7 @@ fn config() -> Configure {
         frames: String::new(),
         sound: String::new(),
         sample_rate: 0,
+        page: rbs_browser_ipc::PageOptions::default(),
     }
 }
 

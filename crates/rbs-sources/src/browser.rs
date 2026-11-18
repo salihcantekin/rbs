@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use rbs_audio_io::edge::EdgeClock;
-use rbs_browser_ipc::{Configure, restart_delay};
+use rbs_browser_ipc::{Configure, PageOptions, restart_delay};
 use rbs_core::media::{
     ColorSpace, PixelFormat, PlaneLayout, Size, SystemFrame, VideoFormat, VideoFrame,
     next_generation,
@@ -279,6 +279,17 @@ impl BrowserSettings {
             frames: String::new(),
             sound: String::new(),
             sample_rate: 0,
+            page: PageOptions {
+                css: self.css.clone(),
+                zoom_percent: u16::try_from(self.zoom_percent).unwrap_or(u16::MAX),
+                script: self.script.clone(),
+                script_on_load: self.script_on_load,
+                script_every_s: self.script_every_s,
+                reload_every_s: self.reload_every_s,
+                retry_on_error: self.retry_on_error,
+                reload_on_file_change: self.reload_on_file_change,
+                profile_dir: String::new(),
+            },
         }
     }
 }
