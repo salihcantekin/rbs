@@ -14,6 +14,7 @@ source "Alerts" org.rbs.source.browser
   transparent = true
   url = "https://widgets.example.com/alerts?token=SECRET-TOKEN-123"
   width = 400
+  activity on_return restart
 source "Badge colour" org.rbs.source.color
   color = "#ff0000"
   height = 100

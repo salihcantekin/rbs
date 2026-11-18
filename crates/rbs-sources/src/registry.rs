@@ -518,11 +518,11 @@ pub const MEDIA_ACTIVITY: ActivityTraits = ActivityTraits::new(
 
 /// A browser page (ADR-0152 decision 4, ADR-0109): Active while a shown scene draws
 /// it; `run: placed` is ADR-0149's background page (process running, picture node
-/// unscheduled, one picture per second, sound dropped). `on_return: restart` comes
-/// with its delivery to the runner.
+/// unscheduled, one picture per second, sound dropped). `on_return: restart`
+/// reloads a running page when it goes on air (decision 6).
 pub const BROWSER_ACTIVITY: ActivityTraits = ActivityTraits::new(
     &[Run::Placed, Run::Shown, Run::OnAir],
-    &[OnReturn::Continue],
+    &[OnReturn::Continue, OnReturn::Restart],
     Run::Shown,
     Some(OnReturn::Continue),
     false,
