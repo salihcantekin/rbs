@@ -326,6 +326,15 @@ pub(crate) fn count(all: &Destinations, canvas: Canvas) -> String {
     format!("{n} of {MAX_DESTINATIONS_PER_CANVAS}")
 }
 
+/// The line over the list while more than one destination is on: they all stream at
+/// once, in the list's order. Empty otherwise.
+pub(crate) fn together(rows: &[Row]) -> String {
+    match rows.iter().filter(|r| r.on).count() {
+        0 | 1 => String::new(),
+        n => format!("Go live sends to all {n} at the same time."),
+    }
+}
+
 /// `Studio` model rows of the card.
 pub(crate) fn row_model(rows: &[Row]) -> slint::ModelRc<crate::ui::DestinationRow> {
     std::rc::Rc::new(slint::VecModel::from(
@@ -580,7 +589,9 @@ impl super::StudioUi {
     pub(crate) fn push_destinations(&self, g: &crate::ui::Studio<'_>) {
         let canvas = role(self.settings_canvas);
         let stream = self.stream_form();
-        g.set_st_dests(row_model(&rows(&self.destinations, canvas, stream)));
+        let list = rows(&self.destinations, canvas, stream);
+        g.set_st_dest_together(together(&list).into());
+        g.set_st_dests(row_model(&list));
         g.set_st_dest_count(count(&self.destinations, canvas).into());
         g.set_st_dest_can_add(self.destinations_editable() && can_add(&self.destinations, canvas));
         g.set_st_dest_editable(self.destinations_editable());
@@ -874,6 +885,8 @@ mod tests {
         );
         assert_eq!(rows[1].id, id);
         assert!(rows[1].removable);
+        assert_eq!(together(&rows), "Go live sends to all 2 at the same time.");
+        assert_eq!(together(&rows[..1]), "");
         assert_eq!(rows[1].name, "Kick");
         assert_eq!(rows[1].note, "Kick · No server yet · Same as the stream");
         assert!(rows[1].warn);

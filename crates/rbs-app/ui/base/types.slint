@@ -2170,6 +2170,8 @@ export global Studio {
     // warnings (one per line), "" when none.
     in property <[DestinationRow]> st-dests;
     in property <string> st-dest-count;
+    // "Go live sends to all 3 at the same time." while more than one is on; else "".
+    in property <string> st-dest-together;
     in property <bool> st-dest-can-add;
     in property <bool> st-dest-editable: true;
     in property <string> st-dest-upload;

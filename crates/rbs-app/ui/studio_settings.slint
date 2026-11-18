@@ -643,11 +643,14 @@ export component RecordingSettings inherits Rectangle {
     changed folder-serial => { folder.text = Studio.out-folder; }
 }
 
-// One destination in the Destinations card: Use on Go live, its name and what it is
-// (service, protocol, key, encoding), its edit button and, for every destination but
-// the first, its remove button (ADR-0127 decisions 1 and 17).
+// One destination in the Destinations card: its place in the list, its name and what
+// it is (service, protocol, key, encoding), its edit button, for every destination but
+// the first its remove button, and at the end Use on Go live (ADR-0127 decisions 1
+// and 17). Every destination that is on streams at once; the number is the list's
+// order.
 component DestinationItem inherits Rectangle {
     in property <DestinationRow> dest;
+    in property <int> number;
     in property <bool> divider: true;
     in property <bool> editable: true;
     callback remove-asked();
@@ -655,16 +658,14 @@ component DestinationItem inherits Rectangle {
     if root.divider: Rectangle { y: 0; height: Tokens.size-border; background: Theme.border-subtle; }
     HorizontalLayout {
         spacing: Tokens.space-3;
-        VerticalLayout {
-            alignment: center;
+        Text {
+            text: root.number;
+            color: root.dest.on ? Theme.text-secondary : Theme.text-disabled;
+            font-size: Tokens.type-caption-size;
+            font-weight: Tokens.type-label-weight;
+            vertical-alignment: center;
             horizontal-stretch: 0;
-            Toggle {
-                label: @tr("Use {} on Go live", root.dest.name);
-                checked: root.dest.on;
-                enabled: root.editable;
-                horizontal-stretch: 0;
-                toggled(on) => { Studio.dest-set-enabled(root.dest.id, on); }
-            }
+            accessible-role: none;
         }
         VerticalLayout {
             alignment: center;
@@ -678,8 +679,8 @@ component DestinationItem inherits Rectangle {
                 accessible-role: none;
             }
             Text {
-                text: root.dest.note;
-                color: root.dest.warn ? Theme.state-warning : Theme.text-secondary;
+                text: root.dest.on ? root.dest.note : @tr("Skipped on Go live · {}", root.dest.note);
+                color: root.dest.warn && root.dest.on ? Theme.state-warning : Theme.text-secondary;
                 font-size: Tokens.type-caption-size;
                 overflow: elide;
                 accessible-role: none;
@@ -694,13 +695,26 @@ component DestinationItem inherits Rectangle {
                 clicked => { Studio.dest-edit(root.dest.id); }
             }
         }
-        if root.dest.removable: VerticalLayout {
+        // The first destination has no Remove; its place stays so the buttons line up.
+        VerticalLayout {
             alignment: center;
             IconButton {
+                visible: root.dest.removable;
                 icon: IconName.trash;
                 name: @tr("Remove {}", root.dest.name);
-                enabled: root.editable;
+                enabled: root.editable && root.dest.removable;
                 clicked => { root.remove-asked(); }
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 0;
+            Toggle {
+                label: @tr("Use {} on Go live", root.dest.name);
+                checked: root.dest.on;
+                enabled: root.editable;
+                horizontal-stretch: 0;
+                toggled(on) => { Studio.dest-set-enabled(root.dest.id, on); }
             }
         }
     }
@@ -853,9 +867,16 @@ component DestinationsCard inherits SettingsCard {
     property <bool> noted: Studio.st-dest-upload != "" || Studio.st-dest-warnings != "";
     title: @tr("Destinations");
     id: "settings.stream.destinations";
+    if Studio.st-dest-together != "": Text {
+        text: Studio.st-dest-together;
+        color: Theme.text-secondary;
+        font-size: Tokens.type-caption-size;
+        wrap: word-wrap;
+    }
     for row[i] in Studio.st-dests: VerticalLayout {
         DestinationItem {
             dest: row;
+            number: i + 1;
             divider: i > 0;
             editable: Studio.st-dest-editable && !Studio.st-ed-open && root.confirm-id == -1;
             remove-asked => { root.confirm-id = row.id; }
