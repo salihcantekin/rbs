@@ -15,7 +15,7 @@
 id = "org.rbs.browser-engine"
 kind = "runtime"
 name = "Browser engine"
-summary = "Lets browser sources show web pages (Chromium Embedded Framework)."
+summary = "Lets browser sources show web pages."
 version = "156.0.30"
 hosts = ["cef-builds.spotifycdn.com"]
 notices = "https://cef-builds.spotifycdn.com/index.html"

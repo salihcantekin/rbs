@@ -2115,6 +2115,35 @@ export component RemoteControlSettings inherits Rectangle {
     changed made => { if made != "" { name.text = ""; } }
 }
 
+// Settings › Add-ons (ADR-0145 decision 9): what RBS can download when it is needed,
+// one command per row. Statuses come from the studio when the page shows and as
+// they change; nothing polls.
+export component AddOnsSettings inherits Rectangle {
+    VerticalLayout {
+        spacing: Tokens.space-4;
+        alignment: start;
+        SettingsCard {
+            id: "settings.add-ons.list";
+            title: @tr("Available add-ons");
+            for r in Studio.add-on-rows: SettingRow {
+                // find: none (a download, not a setting).
+                label: r.label;
+                help: r.help;
+                help-is-problem: r.problem;
+                fill: false;
+                if r.value != "": SettingValue { text: r.value; }
+                if r.action != 0: Button {
+                    text: r.action-text;
+                    lead: r.action == 1 || r.action == 4 || r.action == 5 ? IconName.import : IconName.none;
+                    accessible-name: @tr("{} {}", r.action-text, r.label);
+                    kind: r.action == 1 || r.action == 4 || r.action == 5 ? "primary" : "ghost";
+                    clicked => { Studio.add-on-action(r.id, r.action); }
+                }
+            }
+        }
+    }
+}
+
 // Settings › Permissions (ADR-0141): what the computer lets RBS use, one action per
 // row, and which app the system gives the permissions to. Statuses are read when the
 // page shows, when its window becomes active again and on Check again; nothing polls.

@@ -12,7 +12,7 @@ use rbs_api::event::{EventPayload, StateKey, Topic};
 use rbs_api::types as api;
 use rbs_api::{ApiError, ErrorKind};
 
-use super::{Host, Msg, Update};
+use super::{AddOnAction, Host, Msg, Update};
 use crate::add_ons::{AddOnsSetup, BROWSER_ENGINE};
 
 /// What an install thread reports.
@@ -28,6 +28,9 @@ pub(super) enum AddOnMsg {
 struct Run {
     cancel: Arc<AtomicBool>,
     shown: Status,
+    /// Update: clean older versions once the install succeeded (add-ons spec,
+    /// "Clean").
+    clean_after: bool,
 }
 
 /// The add-ons the studio knows and what runs.
@@ -232,6 +235,7 @@ impl Host {
         self.add_ons.runs[index] = Some(Run {
             cancel,
             shown: Status::Downloading { bytes: 0, total },
+            clean_after: false,
         });
         self.publish_addon(index, notify);
         Ok(())
@@ -301,10 +305,20 @@ impl Host {
         match msg {
             AddOnMsg::Progress(status) => run.shown = status,
             AddOnMsg::Done(result) => {
+                let clean_after = run.clean_after;
                 self.add_ons.runs[index] = None;
                 match result {
                     Ok(_) => {
                         self.add_ons.failed[index] = None;
+                        if clean_after
+                            && let Some(store) = self.add_ons.store()
+                            && let Err(e) = store.clean(&self.add_ons.catalog[index])
+                        {
+                            rbs_crash::errln!(
+                                "rbs: cleaning old versions of {} failed: {e}",
+                                self.add_ons.catalog[index].id
+                            );
+                        }
                         self.add_on_changed(index, notify);
                     }
                     Err(e) => {
@@ -320,6 +334,25 @@ impl Host {
             }
         }
         self.publish_addon(index, notify);
+    }
+
+    /// A row command of Settings › Add-ons. A refusal is shown as an error notice.
+    pub(super) fn addon_command(&mut self, id: &str, action: AddOnAction, notify: &dyn Fn(Update)) {
+        let result = match action {
+            AddOnAction::Install => self.addon_install(id, notify),
+            AddOnAction::Update => self.addon_install(id, notify).map(|()| {
+                if let Ok(index) = self.add_ons.index(id)
+                    && let Some(run) = self.add_ons.runs[index].as_mut()
+                {
+                    run.clean_after = true;
+                }
+            }),
+            AddOnAction::Cancel => self.addon_cancel(id),
+            AddOnAction::Remove => self.addon_remove(id, notify),
+        };
+        if let Err(e) = result {
+            notify(Update::Error(e.message));
+        }
     }
 
     /// An add-on was installed or removed: its consumers look again (add-ons spec,

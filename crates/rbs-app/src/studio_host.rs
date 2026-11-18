@@ -1428,6 +1428,31 @@ pub enum Command {
     /// 4); [`Update::Permissions`] follows when it is answered. Ignored while a prompt
     /// for the kind is showing.
     RequestPermission(PermissionKind),
+    /// Read every add-on's status for Settings › Add-ons ([`Update::AddOns`],
+    /// ADR-0145). Reads each add-on's folder; starts nothing.
+    ListAddOns,
+    /// Download, cancel, update or remove an add-on of the catalog (ADR-0145 decision
+    /// 9); progress and the end arrive as [`Update::AddOnChanged`], a refusal as
+    /// [`Update::Error`].
+    AddOn {
+        /// The add-on's id.
+        id: String,
+        /// What to do.
+        action: AddOnAction,
+    },
+}
+
+/// What [`Command::AddOn`] does: the commands of an add-on's row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddOnAction {
+    /// Download (also Retry): `addon.install`.
+    Install,
+    /// Update: install the catalog's version, then clean older ones.
+    Update,
+    /// Cancel a running install.
+    Cancel,
+    /// Remove every version.
+    Remove,
 }
 
 /// A video encoder the user can pick.
@@ -2757,6 +2782,8 @@ pub enum Update {
     /// An add-on's status changed (ADR-0145): an install's progress or end, a clean
     /// or a removal. Settings › Add-ons asks for the whole list when it opens.
     AddOnChanged(api::AddOnChanged),
+    /// Every add-on, answering [`Command::ListAddOns`].
+    AddOns(api::AddOnList),
     /// The play state of every media source the studio runs (ADR-0108 decision 10).
     Media(Vec<MediaTick>),
     /// The monitor output (ADR-0097): device, volume, whether it is wanted and plays,
@@ -4510,6 +4537,8 @@ impl Host {
                 }
             }
             Command::ReadPermissions => self.send_permissions(notify),
+            Command::ListAddOns => notify(Update::AddOns(self.addon_list())),
+            Command::AddOn { id, action } => self.addon_command(&id, action, notify),
             Command::RequestPermission(kind) => self.ask_permission(kind, None, notify),
             Command::AddSourceWithAudio { kind, target } => {
                 let done = self

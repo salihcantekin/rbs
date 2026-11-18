@@ -262,6 +262,9 @@ pub struct StudioUi {
     /// Counts the statuses the host sent, so the first-run page knows an answer is
     /// newer than its request.
     pub permissions_serial: u64,
+    /// Every add-on as the host last reported it (ADR-0145); Settings › Add-ons reads
+    /// it. Empty until the page was first shown.
+    pub add_ons: Vec<rbs_api::types::AddOnInfo>,
     /// 0 starting, 1 running, 2 failed.
     pub state: i32,
     pub failure: String,
@@ -674,6 +677,7 @@ impl StudioUi {
             attributes_clipboard: None,
             permissions: (Vec::new(), None),
             permissions_serial: 0,
+            add_ons: Vec::new(),
             inspected: Cell::new(-1),
             adding: false,
             reveal_shape: false,
@@ -5988,8 +5992,12 @@ impl StudioUi {
             // Taken above.
             Update::Monitor(_) | Update::MonitorDevices(_) | Update::Loudness(_) => {}
             Update::TBarReset => self.tbar_resets = self.tbar_resets.wrapping_add(1),
-            // Settings › Add-ons is not built yet (ADR-0145 decision 10).
-            Update::AddOnChanged(_) => {}
+            Update::AddOns(list) => self.add_ons = list.add_ons,
+            Update::AddOnChanged(changed) => {
+                if let Some(row) = self.add_ons.iter_mut().find(|a| a.id == changed.id) {
+                    row.status = changed.status;
+                }
+            }
             Update::Thumbnail {
                 adapter,
                 target,
