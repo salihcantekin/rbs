@@ -1,6 +1,6 @@
 # ADR-0147: Native encoder input chosen by capability (exit the ADR-0038 readback per encoder)
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-18
 - Deciders: Salih (owner)
 
@@ -93,4 +93,4 @@ Round 2: same reviewer, 2026-11-18. Verdict: changes requested. Findings 1-4, 6-
 
 Round 3: same reviewer, 2026-11-18. Verdict: approve. Round-2 findings 1-4 confirmed resolved against the code. Two minor findings, addressed: the refused-frame rule of ADR-0038 decision 4 is kept (decision 9: the refused frame is a counted drop, the permanent failure comes on the next tick), and stopping recordings on a native failure is stated in Consequences for the owner to accept.
 
-Owner approval: pending.
+Owner approval: Salih, 2026-11-18 (decision in the project thread), including the behaviour change that a native failure stops a recording.
