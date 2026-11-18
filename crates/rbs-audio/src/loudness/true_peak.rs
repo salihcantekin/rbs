@@ -158,15 +158,13 @@ fn interpolate<const P: usize>(
             let Ok(win) = <&[f32; TAPS]>::try_from(&buf[i + 1..i + 1 + TAPS]) else {
                 break;
             };
-            let mut acc = [0.0f32; P];
-            for (k, tap) in coeffs.iter().enumerate() {
-                let s = win[TAPS - 1 - k];
-                for l in 0..P {
-                    acc[l] += tap[l] * s;
-                }
-            }
-            for a in acc {
-                let a = a.abs();
+            for l in 0..P {
+                let y: f32 = coeffs
+                    .iter()
+                    .zip(win.iter().rev())
+                    .map(|(tap, &s)| tap[l] * s)
+                    .sum();
+                let a = y.abs();
                 peak = if a > peak { a } else { peak };
             }
         }
