@@ -118,6 +118,16 @@ impl Studio {
         out
     }
 
+    /// Whether a live pause holds the run of `item` on `canvas` (Properties shows
+    /// Resume then). False when it has no run.
+    pub fn scroll_paused(&self, item: ItemId, canvas: CanvasId) -> bool {
+        self.all_layers()
+            .into_iter()
+            .filter(|l| l.path.last() == Some(&item))
+            .filter_map(|l| l.scroll_key)
+            .any(|k| k.canvas == canvas && self.scroll_runs.is_paused(&k))
+    }
+
     /// A live call on the run of `item` on `canvas` (ADR-0150 decision 11); every list
     /// is sent again. `Ok` with the number of runs it acted on (an item placed twice in
     /// one picture may have two).

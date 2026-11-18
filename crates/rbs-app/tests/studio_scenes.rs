@@ -1240,6 +1240,71 @@ fn style_crop_and_transform_on_the_vertical_canvas_leave_the_main_layout() {
     drop(host);
 }
 
+/// Properties' Scroll (ADR-0150 decision 12): the switch sets the scroll as one undo
+/// step, Pause holds the run (the row says so) and Resume lets it go, live; an out of
+/// range scroll and a live call without a scroll are refused in words.
+#[test]
+fn properties_scroll_sets_the_layout_and_pauses_the_run() {
+    use rbs_app::studio_host::{Command, OutputCanvas};
+    use rbs_record::ScrollControl;
+    use rbs_scene::model::{Scroll, ScrollDirection, SourceId};
+    let Some((host, updates, _api, mut c)) = start() else {
+        return;
+    };
+    let id = SourceId::from_raw(add(&mut c, "screen", "Screen") as u32);
+    let live = |control| Command::ScrollLive {
+        id,
+        canvas: OutputCanvas::Main,
+        control,
+    };
+    host.send(live(ScrollControl::Pause));
+    next(&updates, |u| match u {
+        Update::Error(e) if e.contains("does not scroll") => Some(()),
+        _ => None,
+    });
+    let ticker = Scroll::new(ScrollDirection::Left, 120.0);
+    host.send(Command::SetSourceScroll {
+        gesture: 0,
+        id,
+        scroll: Some(ticker),
+        canvas: OutputCanvas::Main,
+    });
+    next(&updates, |u| match u {
+        Update::Sources(r) if r[0].layout.is_some_and(|l| l.scroll == Some(ticker)) => Some(()),
+        Update::Error(e) => panic!("{e}"),
+        _ => None,
+    });
+    host.send(live(ScrollControl::Pause));
+    next(&updates, |u| match u {
+        Update::Sources(r) if r[0].scroll_paused == [true, false] => Some(()),
+        Update::Error(e) => panic!("{e}"),
+        _ => None,
+    });
+    host.send(live(ScrollControl::Resume));
+    next(&updates, |u| match u {
+        Update::Sources(r) if r[0].scroll_paused == [false, false] => Some(()),
+        Update::Error(e) => panic!("{e}"),
+        _ => None,
+    });
+    host.send(Command::SetSourceScroll {
+        gesture: 0,
+        id,
+        scroll: Some(Scroll::new(ScrollDirection::Left, 0.0)),
+        canvas: OutputCanvas::Main,
+    });
+    next(&updates, |u| match u {
+        Update::Error(e) if e.contains("speed") => Some(()),
+        _ => None,
+    });
+    ok(&c.call("edit.undo", json!({})));
+    next(&updates, |u| match u {
+        Update::Sources(r) if r[0].layout.is_some_and(|l| l.scroll.is_none()) => Some(()),
+        Update::Error(e) => panic!("{e}"),
+        _ => None,
+    });
+    drop(host);
+}
+
 /// Protocol 1.44: the vertical canvas's layouts and size through the control API.
 #[test]
 fn the_control_api_arranges_and_resizes_the_vertical_canvas() {
