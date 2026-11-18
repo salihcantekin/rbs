@@ -44,7 +44,7 @@ impl TextBlock {
 
 pub struct TextPicture { /* width, height, straight-alpha sRGB Rgba8 */ }
 #[non_exhaustive] pub enum TextError { InvalidSetting { key: &'static str }, Render(String) }
-#[non_exhaustive] pub struct RenderNotes { pub font_missing: bool }
+#[non_exhaustive] pub struct RenderNotes { pub font_missing: bool, pub cut_to_fit: bool }
 
 pub trait TextRenderer: Send + Sync {
     fn id(&self) -> &str;
@@ -67,11 +67,12 @@ Invariants:
 3. Draw order: background over the whole box, the shadow (the blurred silhouette of fill and outline, moved by the offset), the outline, the fill (colour or gradient across the box, 0 degrees top to bottom as the colour source), colour glyphs.
 4. `wrap` breaks lines at the area width. With `wrap` off each `\n` starts a line and the block of lines is placed in the area by `align`; with `wrap` on each line is aligned within the area width. `valign` places the block of lines in the area height.
 5. `Fit` shrinks the font (and letter spacing) by a binary search of at most `FIT_MAX_STEPS` layouts down to `FIT_MIN_SCALE`, then clips. `Clip` cuts at the box edges. `Ellipsis` behaves as `Clip` in the first adapter step; the "…" ending is a follow-up.
-6. A family that is not installed is drawn in the default family with `RenderNotes::font_missing`; it is never an error. `font: None` is the system UI font (`rbs-text-parley` with system fonts) or the first font a renderer was given.
-7. `measure` returns the natural size of the text at full size, padding, outline and shadow included, wrapped at `max_width` (the text area's width) when given. It ignores `box_size` and `overflow`.
-8. `families` is sorted case-insensitively without duplicates.
-9. `trim` drops font caches and contexts; the next call builds them again and draws the same pictures.
-10. Renderers are called off the render thread only (the text worker). They may block and allocate. Error messages never contain a path or the text.
+6. `cut_to_fit` is set when the text, at the scale it was drawn, is larger than the layout area, so part of it is cut at the box: `Clip` or `Ellipsis` with too much text, or `Fit` at `FIT_MIN_SCALE`. An empty text is never cut. It is a note, never an error (ADR-0150 decision 10).
+7. A family that is not installed is drawn in the default family with `RenderNotes::font_missing`; it is never an error. `font: None` is the system UI font (`rbs-text-parley` with system fonts) or the first font a renderer was given.
+8. `measure` returns the natural size of the text at full size, padding, outline and shadow included, wrapped at `max_width` (the text area's width) when given. It ignores `box_size` and `overflow`.
+9. `families` is sorted case-insensitively without duplicates.
+10. `trim` drops font caches and contexts; the next call builds them again and draws the same pictures.
+11. Renderers are called off the render thread only (the text worker). They may block and allocate. Error messages never contain a path or the text.
 
 ## Errors and failure behaviour
 
@@ -83,4 +84,4 @@ Not real time. `rbs-text-parley` builds its font collection lazily on the first 
 
 ## Conformance tests
 
-`rbs_text::conformance::run(&dyn TextRenderer)`: the picture is the box for several sizes; an empty text is transparent; a text draws ink; the background reaches every corner; left, centre and right move the ink in that order; `Fit` shrinks a line that is too long; an outline adds pixels; size 0 and a zero-width box are refused; `measure` is repeatable, wraps when narrower and adds the padding exactly; the same block draws the same picture twice. `rbs-text-test` and `rbs-text-parley` run it; the parley tests load the bundled font `crates/rbs-text-parley/tests/fonts/inter-subset.otf` (a subset of Inter, SIL OFL 1.1, licence beside it) with no system fonts, so they give the same result on every machine.
+`rbs_text::conformance::run(&dyn TextRenderer)`: the picture is the box for several sizes; an empty text is transparent; a text draws ink; the background reaches every corner; left, centre and right move the ink in that order; `Fit` shrinks a line that is too long; a clipped line reports `cut_to_fit` and the same line in a box of its measured size, or an empty text, does not; an outline adds pixels; size 0 and a zero-width box are refused; `measure` is repeatable, wraps when narrower and adds the padding exactly; the same block draws the same picture twice. `rbs-text-test` and `rbs-text-parley` run it; the parley tests load the bundled font `crates/rbs-text-parley/tests/fonts/inter-subset.otf` (a subset of Inter, SIL OFL 1.1, licence beside it) with no system fonts, so they give the same result on every machine.

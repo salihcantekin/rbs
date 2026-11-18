@@ -298,6 +298,7 @@ Settings (keys in `types::keys`; ranges are the `rbs_text` constants):
 | `size` | Float | 72 | 1 to 1024 px |
 | `weight` | Int | 400 | 100 to 900 |
 | `italic`, `wrap` | Bool | false, true | |
+| `single_line` | Bool | false | one line as wide as the text ("One line" below); `wrap` and `width` are not used while it is on |
 | `color`, `color2`, `angle` | Text, Text, Int | `#ffffff`, none, 0 | `#rrggbb[aa]`; `color2` makes a gradient; -360 to 360 degrees |
 | `width`, `height` | Int | 640 x 160 (documents only) | 1 to 4096 each, at most 8 388 608 pixels; required for an edit |
 | `align`, `valign`, `overflow` | Text | `center`, `middle`, `fit` | `left`/`center`/`right`, `top`/`middle`/`bottom`, `fit`/`clip`/`ellipsis` |
@@ -364,6 +365,21 @@ impl Studio {
 The host (`rbs-app`) calls `set_text_outputs` before each service: the program scene's name (the scene a held switch is going to), and how long the main canvas's main recording (not while ending; paused time left out) and stream have run, on the studio's master clock. A studio restart hands the timers and elapsed times to the new studio with the running part folded in, so they run on; a collection switch saves the old collection's timers and restores the new one's. Timers are saved in `text-timers.toml` (user-data spec, "Text timers") on every `text.timer` and at exit.
 
 Tests: `text_live::tests` (UTC dates and weekdays, every pattern token and quoted text, timer units, targets, a clock, both countdowns, stopwatch and elapsed times, fields), `tests/text_worker.rs` (a clock on air is drawn each second and not off air; a stopwatch follows its run state and draws only on a change, once at attach; fields show the scene and the recording time), `rbs-record` `tests/text_source.rs` `timers_start_pause_reset_and_carry_across_a_restart`, `rbs-app` `text_timers::tests`, `studio_host::text_live::tests`, `text_clock::tests` and `tests/studio_api.rs` `a_control_api_client_adds_and_edits_a_text_source` (`text.timer`).
+
+### One line (ADR-0150 decision 10)
+
+```rust
+// rbs_sources::text
+pub fn single_line_block(block: TextBlock) -> TextBlock;   // breaks to spaces, wrap off
+pub fn single_line_width(natural_width: u32, height: u32) -> u32;
+// rbs_sources::text_worker
+pub enum TextProblem { ..., CutToFit }                       // a note
+```
+
+- **Rule.** With `single_line` on, the worker turns every line break (`\r\n`, `\n`, `\r`) into one space, turns wrapping off, measures the text without a width (`TextRenderer::measure`) and draws it into a box that wide and `height` high. The width is at least 1 and at most 4096 and `MAX_PIXELS / height`, so `reserve` and the box-sized textures of ADR-0129 decision 5 are unchanged; a new width is the existing one-allocation-per-size-change path. `overflow`, `align` and `valign` apply inside that box as usual (a taller text with `fit` shrinks).
+- **Cut.** A text wider than the widest box keeps that box and is cut there; the renderer reports `RenderNotes::cut_to_fit` and the worker posts the note `TextProblem::CutToFit` ("The line is too long and its end is cut") in the drawing slot, after `FontMissing`. A cut that `overflow` asked for on a text without `single_line` is not a note.
+- **The item.** The picture is as wide as the text, not as the item's box. A scrolling item (`Layout::scroll`, "Scrolling layers") moves it through the box at the box's height, which is what `single_line` is for; an item without a scroll stretches it into the box. Crisp resizing does not apply to a `single_line` text (`text_resize::resized` returns `None`, so it stretches), and Fit box to text still sets `width` and `height`, of which only `height` is used.
+- **Tests.** `rbs-sources` `text::tests::a_single_line_has_no_breaks_and_its_width_stays_within_the_caps`, `text_resize::tests::a_single_line_stretches`, `tests/text_worker.rs` (`a_single_line_is_as_wide_as_its_text_and_a_too_long_one_is_cut`), and the port conformance suite (`cut_to_fit`).
 
 ### Crisp resizing (ADR-0129 decision 12)
 

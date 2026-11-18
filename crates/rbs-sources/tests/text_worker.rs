@@ -554,12 +554,66 @@ fn problems_name_no_path() {
         TextProblem::FileNotAnswering,
         TextProblem::CouldNotDraw,
         TextProblem::FontMissing,
+        TextProblem::CutToFit,
     ] {
         assert!(!p.message().contains('/'));
     }
     assert!(TextProblem::FontMissing.fault().is_none());
+    assert!(TextProblem::CutToFit.fault().is_none());
     let _ = Timestamp::ZERO;
     let _ = AtomicBool::new(false);
+}
+
+// ---- One line (ADR-0150 decision 10) ---------------------------------------------------
+
+fn one_line(text: &str) -> TextSettings {
+    let mut s = Settings::new();
+    s.insert(keys::WIDTH.into(), SettingValue::Int(120));
+    s.insert(keys::HEIGHT.into(), SettingValue::Int(40));
+    s.insert(keys::SIZE.into(), SettingValue::Float(20.0));
+    s.insert(keys::TEXT.into(), SettingValue::Text(text.into()));
+    s.insert(keys::SINGLE_LINE.into(), SettingValue::Bool(true));
+    validate_text(&s).unwrap()
+}
+
+#[test]
+fn a_single_line_is_as_wide_as_its_text_and_a_too_long_one_is_cut() {
+    let mut r = rig();
+    let (tx, mut rx) = channel(None);
+    // Line breaks are spaces; the picture is the measured width, not `width`, at the
+    // set height, and it is the picture of the same line drawn in a box that size.
+    let request = r.worker.attach(src(1), tx, one_line("Breaking\nnews"));
+    let frame = next_frame(&mut rx, request - 1);
+    let mut block = one_line("Breaking news").block;
+    block.wrap = false;
+    let [w, _] = FakeTextRenderer::new().measure(&block, None).unwrap();
+    assert!(w > 120, "wider than the box setting: {w}");
+    assert_eq!((frame.picture.width(), frame.picture.height()), (w, 40));
+    block.box_size = [w, 40];
+    let want = FakeTextRenderer::new().render(&block).unwrap().0;
+    assert_eq!(frame.picture.rgba(), want.rgba());
+    assert!(
+        problems(&mut r)
+            .iter()
+            .all(|p| p.0 != src(1) || p.2.is_none()),
+        "a line that fits is not a problem"
+    );
+
+    // A line wider than 4096 pixels keeps the widest picture and is cut, with a note.
+    let long = "word ".repeat(2000);
+    let request = r.worker.set_settings(src(1), one_line(&long)).unwrap();
+    let frame = next_frame(&mut rx, request - 1);
+    assert_eq!((frame.picture.width(), frame.picture.height()), (4096, 40));
+    let mut seen = Vec::new();
+    wait_for("the cut note", || {
+        seen.extend(problems(&mut r));
+        seen.iter()
+            .any(|p| p.0 == src(1) && p.2 == Some(TextProblem::CutToFit))
+    });
+    assert!(
+        TextProblem::CutToFit.fault().is_none(),
+        "a note, not a fault"
+    );
 }
 
 // ---- Live kinds (ADR-0129 decision 11) ------------------------------------------------

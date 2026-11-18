@@ -145,6 +145,9 @@ pub mod keys {
     pub const VALIGN: &str = "valign";
     /// Bool, text: break lines at the box width. Default true.
     pub const WRAP: &str = "wrap";
+    /// Bool, text: one line whose picture is as wide as the text (ADR-0150 decision
+    /// 10). Default false.
+    pub const SINGLE_LINE: &str = "single_line";
     /// Text, text: `fit`, `clip` or `ellipsis`. Default `fit`.
     pub const OVERFLOW: &str = "overflow";
     /// Float, text: line height multiple, 0.5 to 3. Default 1.
