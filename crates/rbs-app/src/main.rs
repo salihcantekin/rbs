@@ -2983,6 +2983,7 @@ impl Ctx {
             studio_ui::destinations::chip_rows(&app.studio.live_destination_rows()),
         );
         let dests = ModelRc::from(app.live_dests_model.clone());
+        let streaming = app.studio.streaming_shows();
         let push = |g: Shell<'_>| {
             g.set_live_state(view::live_code(live));
             g.set_live_duration(live.duration_text().into());
@@ -2993,6 +2994,7 @@ impl Ctx {
             g.set_live_outputs(live.outputs_text().into());
             g.set_audio_only(app.studio.record_button_audio());
             g.set_live_camera(live.camera);
+            g.set_streaming(streaming);
             g.set_panels(panels.clone());
             g.set_workspaces(workspaces.clone());
             g.set_workspace_name(ws.name.as_str().into());
@@ -5510,6 +5512,11 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
         app.studio.set_output_same(out, on);
     });
     on!(on_go_live, |app| {
+        // Only the vertical canvas streams: Go live is its own (ADR-0148 decision 8).
+        if app.studio.go_live_is_vertical() {
+            app.start_output(SilentStart::GoLiveVertical, true);
+            return;
+        }
         let all = app.studio.with_vertical(OutputKind::Stream);
         app.start_output(SilentStart::GoLive(all), true);
     });

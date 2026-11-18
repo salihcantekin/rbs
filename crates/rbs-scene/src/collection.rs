@@ -44,7 +44,8 @@ pub enum SceneError {
     BadTypeId(NodeTypeId),
     /// A canvas must be at least 1x1.
     EmptyCanvas,
-    /// A layout has a non-finite number or an opacity outside 0..=1.
+    /// A layout has a non-finite number, an opacity outside 0..=1, or an invalid style
+    /// or scroll.
     InvalidLayout,
     /// A float setting is not finite.
     InvalidSetting(String),
@@ -53,6 +54,8 @@ pub enum SceneError {
     /// Shape and border apply to source items only (ADR-0053): a nested scene is not
     /// drawn as one picture.
     StyleOnScene(ItemId),
+    /// Scroll applies to source items only (ADR-0150).
+    ScrollOnScene(ItemId),
     /// The scene would contain itself, directly or through other scenes.
     NestingCycle(SceneId),
     /// The scene's scope does not allow it here: a canvas scene shown on another
@@ -134,13 +137,16 @@ impl fmt::Display for SceneError {
             SceneError::EmptyName => f.write_str("name is empty"),
             SceneError::BadTypeId(t) => write!(f, "type id {t:?} is not reverse-DNS"),
             SceneError::EmptyCanvas => f.write_str("canvas size must be at least 1x1"),
-            SceneError::InvalidLayout => {
-                f.write_str("layout is not finite, opacity is out of range or the style is invalid")
-            }
+            SceneError::InvalidLayout => f.write_str(
+                "layout is not finite, opacity is out of range, or the style or scroll is invalid",
+            ),
             SceneError::InvalidSetting(k) => write!(f, "setting {k:?} is not finite"),
             SceneError::CropOnScene(id) => write!(f, "{id} places a scene; crop is for sources"),
             SceneError::StyleOnScene(id) => {
                 write!(f, "{id} places a scene; shape and border are for sources")
+            }
+            SceneError::ScrollOnScene(id) => {
+                write!(f, "{id} places a scene; scroll is for sources")
             }
             SceneError::NestingCycle(id) => write!(f, "{id} would contain itself"),
             SceneError::ScopeViolation(id) => write!(f, "{id} is not allowed here by its scope"),
@@ -330,6 +336,13 @@ enum Op {
     },
     /// Several `ReplaceItem`s as one step (auto layout, ADR-0093).
     ReplaceItems(Vec<(SceneItem, SceneItem)>),
+    /// Replaces every item of a scene at once, in order (ADR-0151): the program's
+    /// items put back when studio mode ends.
+    SetSceneItems {
+        scene: SceneId,
+        expected: Vec<SceneItem>,
+        new: Vec<SceneItem>,
+    },
     MoveItem {
         item: ItemId,
         from: usize,
@@ -1783,6 +1796,23 @@ impl SceneCollection {
         self.apply(Op::ReplaceItems(pairs))
     }
 
+    /// Replaces every item of `scene`, in order (bottom first), as one undo step
+    /// (ADR-0151). Items keep their ids: one not in the scene now must have been
+    /// issued by this collection and be free (an item removed earlier). The
+    /// collection's invariants hold as for any edit.
+    pub fn set_scene_items(
+        &mut self,
+        scene: SceneId,
+        items: Vec<SceneItem>,
+    ) -> Result<Undo, SceneError> {
+        let expected = self.get_scene(scene)?.items.clone();
+        self.apply(Op::SetSceneItems {
+            scene,
+            expected,
+            new: items,
+        })
+    }
+
     /// Drops an item's layout for `canvas`, so it uses the default layout there.
     pub fn clear_item_layout(&mut self, id: ItemId, canvas: CanvasId) -> Result<Undo, SceneError> {
         let mut item = self.get_item(id)?.clone();
@@ -2400,6 +2430,40 @@ impl SceneCollection {
                 inverse.reverse();
                 Ok(Op::ReplaceItems(inverse))
             }
+            Op::SetSceneItems {
+                scene,
+                expected,
+                new,
+            } => {
+                if self.get_scene(scene)?.items != expected {
+                    return Err(SceneError::UndoConflict);
+                }
+                // An item that comes back keeps its id: one that was issued, is not
+                // used elsewhere and is not given twice.
+                let mut ids = BTreeSet::new();
+                for item in &new {
+                    let was = expected.iter().find(|e| e.id == item.id);
+                    let kept = was.is_some();
+                    let elsewhere = !kept && self.item(item.id).is_some();
+                    // A kept item keeps what it places, as `ReplaceItem` requires.
+                    if !ids.insert(item.id) || was.is_some_and(|e| e.content != item.content) {
+                        return Err(SceneError::UndoConflict);
+                    }
+                    if !kept {
+                        Self::restorable(self.next.item, item.id.0, elsewhere)?;
+                    }
+                }
+                let s = self
+                    .scenes
+                    .get_mut(&scene)
+                    .ok_or(SceneError::UnknownScene(scene))?;
+                s.items = new.clone();
+                Ok(Op::SetSceneItems {
+                    scene,
+                    expected: new,
+                    new: expected,
+                })
+            }
             Op::MoveItem { item, from, to } => {
                 let index = to;
                 let (scene, at, value) = self.take_item(item)?;
@@ -2579,6 +2643,9 @@ impl SceneCollection {
                     }
                     if matches!(item.content, ItemContent::Scene(_)) && !layout.style.is_plain() {
                         return Err(SceneError::StyleOnScene(item.id));
+                    }
+                    if matches!(item.content, ItemContent::Scene(_)) && layout.scroll.is_some() {
+                        return Err(SceneError::ScrollOnScene(item.id));
                     }
                 }
                 match item.content {

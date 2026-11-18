@@ -161,7 +161,7 @@ enum Phase {
 /// The incoming compositor of one canvas, once adopted.
 pub(super) struct IncomingView {
     compositor: NodeId,
-    layers: LayerSender,
+    layers: CompositorPort,
     bound: BoundCompositor,
     ready: Arc<AtomicU64>,
 }
@@ -999,11 +999,11 @@ impl Studio {
                         });
                     }
                     let ready = Arc::new(AtomicU64::new(0));
-                    let (compositor, layers) = CompositorNode::new(
+                    let (compositor, layers) = CompositorPort::of_new(CompositorNode::new(
                         CanvasDesc { width, height },
                         MAX_LAYERS as u32,
                         Vec::new(),
-                    );
+                    ));
                     let compositor = compositor.with_ready(Arc::clone(&ready));
                     self.engine
                         .adopt::<GpuRuntime>(RENDER, bound.node, compositor.into_node())?;
@@ -1035,6 +1035,17 @@ impl Studio {
         self.transitions
             .retain(|_, t| !(t.phase == Phase::Done && t.incoming.is_none()));
         Ok(())
+    }
+
+    /// The scroll runs the transitions draw: the outgoing pictures and the incoming
+    /// compositors (ADR-0150 decision 5).
+    pub(super) fn transition_scroll_keys(&self, out: &mut BTreeSet<rbs_scene::ScrollKey>) {
+        for t in self.transitions.values() {
+            super::scroll::keys_of(&t.from, out);
+            if let Some(view) = &t.incoming {
+                super::scroll::keys_of(&view.bound.layers, out);
+            }
+        }
     }
 
     /// The program layers of `canvas` while its transition runs, or `None` to paint
@@ -1074,7 +1085,14 @@ impl Studio {
             let mut current = program.clone();
             current.layers.retain(|l| !is_global(l));
             let drawn: BTreeSet<SourceId> = current.layers.iter().map(|l| l.source).collect();
-            let mut layers = paint_layers(&current, plan, self.glide.as_ref(), now, canvas);
+            let mut layers = paint_layers(
+                &current,
+                plan,
+                self.glide.as_ref(),
+                now,
+                canvas,
+                &self.scroll_runs,
+            );
             let mut leaving = program.clone();
             leaving.layers = t
                 .from
@@ -1082,7 +1100,7 @@ impl Studio {
                 .filter(|l| !is_global(l) && !drawn.contains(&l.source))
                 .cloned()
                 .collect();
-            for mut l in node_layers(&leaving, plan) {
+            for mut l in node_layers(&leaving, plan, &self.scroll_runs) {
                 l.fade = Some(Fade {
                     from: l.opacity,
                     start,
@@ -1095,7 +1113,7 @@ impl Studio {
             }
             let mut above = program.clone();
             above.layers.retain(|l| is_global(l));
-            layers.extend(node_layers(&above, plan));
+            layers.extend(node_layers(&above, plan, &self.scroll_runs));
             return Some(layers);
         }
         let running = matches!(t.phase, Phase::Running(_));
@@ -1104,7 +1122,8 @@ impl Studio {
             if running {
                 incoming.layers.retain(|l| !is_global(l));
             }
-            let _ = view.layers.send(node_layers(&incoming, plan));
+            view.layers
+                .send(node_layers(&incoming, plan, &self.scroll_runs), &self.gpu);
         }
         let mut outgoing = program.clone();
         // A manual transition keeps the program as it is, edits included.
@@ -1113,21 +1132,21 @@ impl Studio {
         }
         if let (Some(m), Phase::Running(_)) = (&t.manual, t.phase) {
             outgoing.layers.retain(|l| !is_global(l));
-            let mut layers = node_layers(&outgoing, plan);
+            let mut layers = node_layers(&outgoing, plan, &self.scroll_runs);
             if let Some(view) = &t.incoming {
                 let top = frozen_blend(view.compositor, size, t.blend, t.easing, m.t, &mut layers);
                 layers.extend(top);
             }
             let mut above = program.clone();
             above.layers.retain(|l| is_global(l));
-            layers.extend(node_layers(&above, plan));
+            layers.extend(node_layers(&above, plan, &self.scroll_runs));
             return Some(layers);
         }
         match t.phase {
-            Phase::Waiting(_) => Some(node_layers(&outgoing, plan)),
+            Phase::Waiting(_) => Some(node_layers(&outgoing, plan, &self.scroll_runs)),
             Phase::Running(start) => {
                 outgoing.layers.retain(|l| !is_global(l));
-                let mut layers = node_layers(&outgoing, plan);
+                let mut layers = node_layers(&outgoing, plan, &self.scroll_runs);
                 if let Some(view) = &t.incoming {
                     let (w, h) = size;
                     let full = || {
@@ -1224,7 +1243,7 @@ impl Studio {
                 // The globals as they are now, above everything.
                 let mut above = program.clone();
                 above.layers.retain(|l| is_global(l));
-                layers.extend(node_layers(&above, plan));
+                layers.extend(node_layers(&above, plan, &self.scroll_runs));
                 Some(layers)
             }
             Phase::Ending(_) | Phase::Done => None,

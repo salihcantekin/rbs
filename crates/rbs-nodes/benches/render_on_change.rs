@@ -8,6 +8,10 @@
 //! - `live`: a 60 fps capture on a 60 fps canvas, a new picture every tick (the cost
 //!   of the check itself; `on_change` must stay within noise of `every_tick`).
 //!
+//! `on_change_scroll_channel` is `on_change` with the compositor's scroll channel and
+//! no binding, as every studio compositor has it (ADR-0150 decision 7): the per-tick
+//! cost a canvas pays while nothing scrolls.
+//!
 //! Runs on any adapter, software included; the numbers are the whole tick, so they
 //! compare variants on one machine, not machines.
 //!
@@ -63,6 +67,8 @@ struct Rig {
     ctx: Arc<GpuContext>,
     clock: TestClock,
     tick: u64,
+    /// Kept so the scroll channel stays open.
+    _scroll: Option<rbs_gpu::ScrollSender>,
 }
 
 impl Rig {
@@ -90,7 +96,12 @@ impl Rig {
 }
 
 /// The pipeline: three stills, plus a capture at `capture` fps when given.
-fn rig(ctx: &Arc<GpuContext>, capture: Option<FrameRate>, every_tick: bool) -> Rig {
+fn rig(
+    ctx: &Arc<GpuContext>,
+    capture: Option<FrameRate>,
+    every_tick: bool,
+    scroll_channel: bool,
+) -> Rig {
     let (ctl, exec) = channel::<GpuRuntime>(Arc::clone(ctx), RenderLocal::default());
     let clock = TestClock::new();
     let mut rig = Rig {
@@ -100,6 +111,7 @@ fn rig(ctx: &Arc<GpuContext>, capture: Option<FrameRate>, every_tick: bool) -> R
         ctx: Arc::clone(ctx),
         clock: clock.clone(),
         tick: 0,
+        _scroll: None,
     };
     let mut producers = Vec::new();
     for grey in [40u8, 120, 200] {
@@ -135,6 +147,10 @@ fn rig(ctx: &Arc<GpuContext>, capture: Option<FrameRate>, every_tick: bool) -> R
     );
     let comp: Box<dyn Node<GpuRuntime>> = if every_tick {
         Box::new(comp.every_tick())
+    } else if scroll_channel {
+        let (comp, sender) = comp.with_scroll();
+        rig._scroll = Some(sender);
+        Box::new(comp)
     } else {
         Box::new(comp)
     };
@@ -179,8 +195,12 @@ fn ticks(c: &mut Criterion) {
         ("live", Some(FrameRate::FPS_60)),
     ];
     for &(scene, capture) in scenes {
-        for (mode, every_tick) in [("every_tick", true), ("on_change", false)] {
-            let mut r = rig(&ctx, capture, every_tick);
+        for (mode, every_tick, scroll_channel) in [
+            ("every_tick", true, false),
+            ("on_change", false, false),
+            ("on_change_scroll_channel", false, true),
+        ] {
+            let mut r = rig(&ctx, capture, every_tick, scroll_channel);
             group.bench_function(format!("{scene}/{mode}"), |b| b.iter(|| r.tick()));
         }
     }

@@ -1045,6 +1045,8 @@ impl StudioUi {
         g.set_rec_marker_lead(p.markers.lead_ms as f32 / 1000.0);
         g.set_rec_marker_scenes(p.markers.scene_changes);
         g.set_rec_marker_stream(p.markers.stream_events);
+        g.set_st_streaming(self.streaming_shows());
+        g.set_st_main_shows(self.stream_shows(OutputCanvas::Main));
         g.set_rec_marker_pauses(p.markers.pause_markers);
         let canvas = self.settings_canvas_size();
         let rec_size = self.recording_output_size();
@@ -3125,7 +3127,31 @@ impl StudioUi {
         if on != self.props_on {
             self.props_on = on;
             self.refresh_rows();
+            // The selection's marks follow to the picture now edited.
+            self.refresh_marks();
         }
+    }
+
+    /// The selection as a press on picture `on` sees it: none when the other picture
+    /// shows its marks, so a handle never answers where it is not drawn.
+    fn marked_selection(&self, on: OutputCanvas) -> i32 {
+        if self.marks_on() == on {
+            self.selected
+        } else {
+            -1
+        }
+    }
+
+    /// The one picture that shows the selection's marks: the one whose canvas
+    /// Properties edits for the selected source, so a press on one picture never marks
+    /// the other. The main one in studio mode (the vertical picture is not edited
+    /// there) and while the vertical picture does not show.
+    fn marks_on(&self) -> OutputCanvas {
+        marks_picture(
+            self.studio_mode,
+            self.vertical_shown,
+            self.props_target(self.selected),
+        )
     }
 
     /// Properties' Horizontal / Vertical switch (ADR-0093 decision 4).
@@ -3195,6 +3221,7 @@ impl StudioUi {
         let placed = self.placed_where(|_| true);
         let hit = self.edit.source_at(at, self.canvas_px(), &placed);
         self.selected = hit.unwrap_or(-1);
+        self.pick_props(OutputCanvas::Main);
         self.refresh_marks();
         hit
     }
@@ -3325,7 +3352,8 @@ impl StudioUi {
             crop,
         };
         let placed = self.placed_vertical(false);
-        let e = self.vedit.press(at, canvas, &placed, self.selected, keys);
+        let selected = self.marked_selection(OutputCanvas::Vertical);
+        let e = self.vedit.press(at, canvas, &placed, selected, keys);
         self.pick_props(OutputCanvas::Vertical);
         self.run_vertical(e);
     }
@@ -3406,9 +3434,11 @@ impl StudioUi {
             crop,
         };
         let placed = self.placed();
+        // The selection's handles answer only on the picture that shows them.
+        let selected = self.marked_selection(OutputCanvas::Main);
         let e = self
             .edit
-            .press(at, self.canvas_px(), &placed, self.selected, keys);
+            .press(at, self.canvas_px(), &placed, selected, keys);
         self.pick_props(OutputCanvas::Main);
         self.run(e);
     }
@@ -3449,15 +3479,23 @@ impl StudioUi {
 
     /// Works out the selection's marks again (selection, rows, drag or panel changed).
     pub fn refresh_marks(&mut self) {
-        let placed = self.placed();
+        let on = self.marks_on();
         let mut buf = std::mem::take(&mut self.mark_buf);
-        self.edit
-            .marks(self.canvas_px(), &placed, self.selected, &mut buf);
+        if on == OutputCanvas::Main {
+            let placed = self.placed();
+            self.edit
+                .marks(self.canvas_px(), &placed, self.selected, &mut buf);
+        } else {
+            buf.clear();
+        }
         set_rows(&self.marks, mark_data(&buf));
         self.mark_buf = buf;
-        // The vertical picture shows the same selection.
+        // The vertical picture marks the selection only when it is the one edited.
         let mut buf = std::mem::take(&mut self.vmark_buf);
-        match self.vertical_px().filter(|_| self.vertical_shown) {
+        match self
+            .vertical_px()
+            .filter(|_| self.vertical_shown && on == OutputCanvas::Vertical)
+        {
             Some(canvas) => {
                 let placed = self.placed_vertical(false);
                 self.vedit.marks(canvas, &placed, self.selected, &mut buf);
@@ -4328,7 +4366,14 @@ impl StudioUi {
     /// Whether Record or Go live also acts on the vertical canvas now: its flag is on
     /// and a vertical canvas exists (ADR-0111 decisions 2 and 5).
     pub fn with_vertical(&self, kind: OutputKind) -> bool {
-        vertical_outputs::resolve_toggle(kind, self.vertical_flags, self.vertical.is_some())
+        let both = match kind {
+            OutputKind::Record => true,
+            // The with-main choice of streams needs both canvases (ADR-0148 decision 8).
+            OutputKind::Stream => {
+                self.stream_shows(OutputCanvas::Main) && self.stream_shows(OutputCanvas::Vertical)
+            }
+        };
+        both && vertical_outputs::resolve_toggle(kind, self.vertical_flags, self.vertical.is_some())
             == OutputTarget::All
     }
 
@@ -4411,6 +4456,47 @@ impl StudioUi {
                     .destinations
                     .available(rbs_app::stream_destinations::Canvas::Vertical, p)
         })
+    }
+
+    /// Streaming is available on `c` (ADR-0148 decision 1): one of its existing
+    /// destinations is on. A destinations section that did not load counts as
+    /// available, so a load error never reads as "streaming is off".
+    pub fn stream_available(&self, c: OutputCanvas) -> bool {
+        use rbs_app::stream_destinations::Canvas;
+        if !self.destinations_note.is_empty() {
+            return true;
+        }
+        match c {
+            OutputCanvas::Main => self.destinations.available(Canvas::Main, &self.stream),
+            OutputCanvas::Vertical => {
+                self.vertical.is_some()
+                    && self
+                        .vertical_stream
+                        .as_ref()
+                        .is_some_and(|p| self.destinations.available(Canvas::Vertical, p))
+            }
+        }
+    }
+
+    /// `c` shows its stream items (ADR-0148 decision 8): streaming is available on it,
+    /// or its stream is not off (End stream and Hold never leave a running stream).
+    pub fn stream_shows(&self, c: OutputCanvas) -> bool {
+        self.stream_available(c)
+            || match c {
+                OutputCanvas::Main => self.st_state != st_state::OFF,
+                OutputCanvas::Vertical => self.vertical_st.busy(),
+            }
+    }
+
+    /// Either canvas shows its stream items: the frame's Go live shows.
+    pub fn streaming_shows(&self) -> bool {
+        self.stream_shows(OutputCanvas::Main) || self.stream_shows(OutputCanvas::Vertical)
+    }
+
+    /// The frame's Go live acts on the vertical canvas alone: only it shows stream
+    /// items (ADR-0148 decision 8, "vertical only").
+    pub fn go_live_is_vertical(&self) -> bool {
+        !self.stream_shows(OutputCanvas::Main) && self.stream_shows(OutputCanvas::Vertical)
     }
 
     /// The request Go live of `c` sends (ADR-0148 decision 6): from the stream
@@ -4704,7 +4790,10 @@ impl StudioUi {
         {
             self.stream_note = format!("The stream destinations could not be saved: {e}");
         }
-        self.send(Command::SetStreamDestinations(self.destinations.clone()));
+        self.send(Command::SetStreamDestinations(
+            self.destinations.clone(),
+            !self.destinations_note.is_empty(),
+        ));
     }
 
     fn save_stream(&mut self) {
@@ -4767,7 +4856,15 @@ impl StudioUi {
                 && self.st_bad
                 && !self.setup_note_stale(),
         );
-        g.set_st_needs_setup(self.stream.missing().is_some());
+        // Only while the main canvas streams and Go live would ask for a server or a
+        // key (ADR-0148: an empty first slot beside other destinations needs none).
+        g.set_st_needs_setup(
+            self.st_state == st_state::OFF
+                && self.stream_shows(OutputCanvas::Main)
+                && self
+                    .stream_request(OutputCanvas::Main)
+                    .is_err_and(|(_, setup)| setup),
+        );
         // End stream also ends the vertical stream: the question names both (ADR-0111).
         g.set_st_end_both(self.with_vertical(OutputKind::Stream) && self.vertical_st.on());
         if g.get_st_server_serial() != self.server_serial as i32 {
@@ -5859,7 +5956,10 @@ impl StudioUi {
         self.send(Command::SetVerticalStreamProfile(
             self.vertical_stream.clone(),
         ));
-        self.send(Command::SetStreamDestinations(self.destinations.clone()));
+        self.send(Command::SetStreamDestinations(
+            self.destinations.clone(),
+            !self.destinations_note.is_empty(),
+        ));
     }
 
     /// Output profile menu: makes a profile named `name`, with default settings or a
@@ -6638,7 +6738,10 @@ impl StudioUi {
                     self.destinations = d;
                     self.save_destinations();
                 } else {
-                    self.send(Command::SetStreamDestinations(self.destinations.clone()));
+                    self.send(Command::SetStreamDestinations(
+                        self.destinations.clone(),
+                        !self.destinations_note.is_empty(),
+                    ));
                 }
             }
             // `rbs-cli token` over local IPC made or revoked a token; the control
@@ -8080,6 +8183,17 @@ fn source_icon(kind: Option<SourceKind>) -> &'static str {
     }
 }
 
+/// The picture that shows the selection's marks: `edited`, the canvas Properties edits
+/// for the selected source, unless studio mode is on (only the main canvas is edited
+/// there) or the vertical picture does not show.
+fn marks_picture(studio_mode: bool, vertical_shown: bool, edited: OutputCanvas) -> OutputCanvas {
+    if studio_mode || !vertical_shown {
+        OutputCanvas::Main
+    } else {
+        edited
+    }
+}
+
 /// The Studio global's `undo-kind` / `redo-kind` code and the source's name for a
 /// step: 0 nothing, 1 add, 2 delete, 3 layer order, 4 move or resize, 5 shape or
 /// border, 6 crop, 7 shown or hidden, 8 lock, 9 source rename, 10 scene added, 11
@@ -8090,7 +8204,9 @@ fn source_icon(kind: Option<SourceKind>) -> &'static str {
 /// 21 how long Show draws a hidden item (the cue itself is not an undo step),
 /// 22 the source's capture region, 23 the source's Record separately mark, 24 a
 /// scene's levels (ADR-0091; the name is the scene's), 25 a source duplicated, 26 a
-/// source reset, 27 attributes pasted (ADR-0133; the copied source's name).
+/// source reset, 27 attributes pasted (ADR-0133; the copied source's name), 28 the
+/// collection's transition, 29 Preview edits dropped when studio mode ended (ADR-0151;
+/// the scene's name).
 fn step_view(step: Option<&StepInfo>) -> (i32, &str) {
     match step {
         None => (0, ""),
@@ -8124,6 +8240,7 @@ fn step_view(step: Option<&StepInfo>) -> (i32, &str) {
                 EditKind::Reset => 26,
                 EditKind::PasteAttributes => 27,
                 EditKind::Transition => 28,
+                EditKind::DiscardPreview => 29,
             },
             s.name.as_str(),
         ),
@@ -8519,6 +8636,16 @@ fn media_tick_fields(ticks: &[rbs_app::studio_host::MediaTick], id: i32) -> (i32
 #[allow(clippy::unwrap_used)] // Tests fail by panicking.
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_edited_picture_marks_the_selection() {
+        use OutputCanvas::{Main, Vertical};
+        assert_eq!(marks_picture(false, true, Vertical), Vertical);
+        assert_eq!(marks_picture(false, true, Main), Main);
+        // The vertical picture is not edited in studio mode, nor while it is hidden.
+        assert_eq!(marks_picture(true, true, Vertical), Main);
+        assert_eq!(marks_picture(false, false, Vertical), Main);
+    }
 
     #[test]
     fn a_meter_row_is_written_only_when_it_changes() {
@@ -8927,6 +9054,61 @@ mod tests {
             .add(rbs_app::stream_destinations::Canvas::Main, "", "custom")
             .unwrap();
         assert!(next > id);
+    }
+
+    /// ADR-0148 decision 8: the stream items show while a destination is on or the
+    /// stream runs; only Go live is refused, never End stream.
+    #[test]
+    fn stream_items_follow_streaming_availability() {
+        use crate::menu_bar::{Shown, toolbar};
+        use rbs_app::stream_destinations::Canvas;
+        use rbs_ui::command::{CommandId, CommandState};
+        let (mut ui, d) = ui("stream-items");
+        let ws = rbs_ui::builtin::edit();
+        let fixed = |ui: &StudioUi| -> (Vec<String>, bool, Result<(), String>) {
+            let shown = Shown {
+                workspace: &ws,
+                workspaces: &[],
+                studio: ui,
+                panels: Vec::new(),
+                themes: Vec::new(),
+                experience: crate::background::Experience::Pro,
+                density: Default::default(),
+                maximized: None,
+                camera: Default::default(),
+                replay: Default::default(),
+                can_undo: true,
+                can_redo: false,
+                projectors: Vec::new(),
+                displays: Vec::new(),
+            };
+            let go_live = CommandId::parse("stream.toggle").unwrap();
+            let ids = toolbar(&shown).0.fixed.into_iter().map(|t| t.id).collect();
+            (ids, shown.applies(&go_live), shown.enabled(&go_live))
+        };
+        // A new profile has no destination: Record only, and Go live says why.
+        assert!(!ui.streaming_shows());
+        let (ids, applies, enabled) = fixed(&ui);
+        assert_eq!(ids, ["record.toggle"]);
+        assert!(!applies);
+        assert_eq!(enabled, Err(rbs_app::studio_host::STREAMING_OFF.to_owned()));
+        // A first destination: Go live is back.
+        ui.stream.server = "rtmp://live.example.com/app".into();
+        assert!(ui.stream_available(OutputCanvas::Main));
+        let (ids, applies, _) = fixed(&ui);
+        assert_eq!(ids, ["stream.toggle", "record.toggle"]);
+        assert!(applies);
+        // Turned off: hidden again.
+        assert!(ui.destinations.set_enabled(Canvas::Main.first(), false));
+        assert!(!ui.streaming_shows());
+        assert_eq!(fixed(&ui).0, ["record.toggle"]);
+        // A running stream keeps End stream however the list changed.
+        ui.st_state = st_state::LIVE;
+        let (ids, applies, enabled) = fixed(&ui);
+        assert_eq!(ids, ["stream.toggle", "record.toggle"]);
+        assert!(applies);
+        assert_eq!(enabled, Ok(()));
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
@@ -9375,7 +9557,9 @@ mod tests {
         };
         use slint::ComponentHandle;
 
-        let (ui, d) = ui("frame-fits");
+        let (mut ui, d) = ui("frame-fits");
+        // A destination, so the fixed group has Go live too (ADR-0148).
+        ui.stream.server = "rtmp://live.example.com/app".into();
         let ws = rbs_ui::builtin::edit();
         let shown = Shown {
             workspace: &ws,
@@ -9878,21 +10062,22 @@ mod tests {
             follow: true,
         });
         // The with-main choice comes first (ADR-0111 decision 6), then each output.
+        // Only the main canvas has a destination: no vertical stream items and no
+        // with-main choice for streams (ADR-0148 decision 8).
+        ui.stream.server = "rtmp://live.example.com/app".into();
         assert_eq!(
             titles(&ui),
             [
                 ("When recording".to_owned(), true, false),
-                ("When going live".to_owned(), true, false),
                 (String::new(), true, false),
                 ("Record main only".to_owned(), true, false),
                 ("Record vertical".to_owned(), true, false),
                 ("Go live main only".to_owned(), true, false),
-                ("Go live vertical".to_owned(), true, false),
                 (String::new(), true, false),
                 ("Set up vertical stream...".to_owned(), true, false),
             ]
         );
-        // "Main + vertical" by default: Record and Go live act on both canvases, and
+        // "Main + vertical" by default: Record acts on both canvases, and
         // their main-only twins on the main one.
         {
             let s = Shown {
@@ -9912,7 +10097,8 @@ mod tests {
                 displays: Vec::new(),
             };
             assert_eq!(run("record.toggle", &s), Some(Run::Record(true)));
-            assert_eq!(run("stream.toggle", &s), Some(Run::GoLive(true)));
+            // Go live acts on the main canvas alone: the vertical one has no destination.
+            assert_eq!(run("stream.toggle", &s), Some(Run::GoLive(false)));
             assert_eq!(run("record.main.toggle", &s), Some(Run::Record(false)));
             assert_eq!(run("stream.main.toggle", &s), Some(Run::GoLive(false)));
             assert_eq!(
@@ -9940,7 +10126,8 @@ mod tests {
         }
         ui.vertical_flags = ui.vertical_flags.set(OutputKind::Record, false);
         assert!(!ui.with_vertical(OutputKind::Record));
-        assert!(ui.with_vertical(OutputKind::Stream));
+        // Streams need a destination on both canvases for "Main + vertical".
+        assert!(!ui.with_vertical(OutputKind::Stream));
         // Go live with "Main + vertical" and no vertical server: the vertical stream is
         // skipped without an error (ADR-0111 decision 2).
         assert!(!ui.vertical_stream_set_up());

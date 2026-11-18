@@ -52,3 +52,5 @@ Independent review per ADR-0014, 2026-11-10, independent AI session (given the A
 Round 2, 2026-11-10, same reviewer on the revision and the implementation: approve with changes, 3 findings, resolved here: (1) a minor version for a change of meaning goes against the control API spec's rule: stated as an exception in decision 5, open for the owner's acceptance; (2) a held copy taken again after it stopped fitting needed preview == program, so the hold could end while another scene was previewed: `copy_of` takes the same scene again, with a unit test; (3) ADR-0063 decision 4's gap now lasts longer: Consequences and the control API spec.
 
 Owner acceptance, 2026-11-10: Salih tested the change on Windows and approved the merge, including the minor-version exception in decision 5.
+
+Follow-up, 2026-11-18: [ADR-0151](0151-leaving-studio-mode-keeps-the-program-as-it-was.md) changes what happens when studio mode ends while a hold runs (decision 2): the scene is put back as it is on air, as one undo step.

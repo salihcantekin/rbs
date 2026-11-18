@@ -354,9 +354,13 @@ impl Studio {
         for e in &mut self.entries {
             e.scheduled = super::in_plan(&self.binder, e, &scheduled);
         }
-        let _ = self.layers.send(node_layers(&self.bound, &plan));
+        self.layers.send(
+            node_layers(&self.bound, &plan, &self.scroll_runs),
+            &self.gpu,
+        );
         if let Some(sp) = &mut self.scene_preview {
-            let _ = sp.layers.send(node_layers(&sp.bound, &plan));
+            sp.layers
+                .send(node_layers(&sp.bound, &plan, &self.scroll_runs), &self.gpu);
         }
         errors
     }
