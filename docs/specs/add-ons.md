@@ -229,4 +229,4 @@ All in `rbs-add-ons` with the in-memory `Fetch` and `Unpack`, no network or CEF:
 
 ## Open questions
 
-- Whether the runner ships with the app (this spec) or is downloaded with the runtime: owner to confirm (ADR-0145 decision 8).
+None. The runner ships with the app (owner, 2026-11-18).
