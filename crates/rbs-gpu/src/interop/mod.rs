@@ -11,17 +11,13 @@
 
 use std::time::Duration;
 
-use rbs_core::media::{
-    FramePayload, Lease, NativeSurface, PixelFormat, TextureId, VideoFormat, VideoFrame,
-};
+use rbs_core::media::{FramePayload, Lease, NativeSurface, PixelFormat, TextureId, VideoFrame};
 use rbs_core::time::Timestamp;
 
 use crate::context::GpuContext;
 use crate::error::GpuError;
 use crate::pool::{TextureDesc, TexturePool};
-use crate::yuv_decode::{
-    YuvDecoder, YuvSource, check_color, decoded_color, decoded_desc, decoded_pixel_format,
-};
+use crate::yuv_decode::check_color;
 
 #[cfg(windows)]
 mod d3d12;
@@ -61,19 +57,17 @@ struct Opened {
     /// The surface, or its luma plane for 4:2:0 surfaces.
     texture: wgpu::Texture,
     desc: TextureDesc,
-    /// The interleaved CbCr plane of a 4:2:0 surface (NV12, P010), decoded to RGB on import.
+    /// The interleaved CbCr plane of a 4:2:0 surface (NV12, P010). The two planes share
+    /// one pool slot (a plane pair) that the compositor samples as it is.
     chroma: Option<(wgpu::Texture, TextureDesc)>,
 }
 
 struct Entry {
     /// Producer identity of the surface (handle value or object pointer).
     key: u64,
-    /// The surface's pool slot (its luma plane for 4:2:0 surfaces).
+    /// The surface's pool slot (a plane pair for 4:2:0 surfaces). Frames reference it,
+    /// so the native lease goes back once no frame does and the GPU is done with it.
     id: TextureId,
-    /// The chroma plane's pool slot of a 4:2:0 surface. Such surfaces are decoded into a
-    /// fresh canvas-format slot on every import, so no frame references `id` or `chroma`;
-    /// the native lease goes back once the decode (and the hand-back) completed.
-    chroma: Option<TextureId>,
     /// Frame size the surface was first delivered with. A frame of another size on the same
     /// key means the producer's handle value now names another object.
     frame_size: (u32, u32),
@@ -98,8 +92,6 @@ pub struct Importer {
     fences: d3d12::Fences,
     #[cfg(target_os = "linux")]
     sync_files: vulkan::SyncFiles,
-    /// Created on the first 4:2:0 surface (P13).
-    decoder: Option<YuvDecoder>,
 }
 
 impl Importer {
@@ -156,47 +148,21 @@ impl Importer {
         // A producer resends a surface only after its lease was released, so this is
         // normally `None`; replacing drops a stale lease.
         entry.native = Some(lease);
-        let (id, chroma) = (entry.id, entry.chroma);
-        let mut out = match chroma {
-            None => pool.frame(id, format, timestamp)?,
-            Some(chroma) => {
-                // 4:2:0: decode into a fresh slot that the returned frame alone holds. The
-                // decode's submission reads the planes, so `retire` hands the lease back
-                // only after it.
-                // The surface's bit depth must match the frame's pixel format.
-                let expected = match pool.get(id).map(|t| t.desc().format) {
-                    Some(wgpu::TextureFormat::R16Unorm) => PixelFormat::P010,
-                    _ => PixelFormat::Nv12,
-                };
-                if format.pixel_format != expected {
-                    return Err(GpuError::Unsupported(
-                        "4:2:0 surface whose bit depth differs from the frame's pixel format",
-                    ));
-                }
-                let decoder = self.decoder.get_or_insert_with(|| YuvDecoder::new(ctx));
-                let (w, h) = (format.size.width, format.size.height);
-                let target = pool.acquire(ctx, &decoded_desc(w, h, expected))?;
-                let decoded = decoder
-                    .decode(
-                        ctx,
-                        pool,
-                        YuvSource::Planes { luma: id, chroma },
-                        format.color,
-                        target,
-                    )
-                    .and_then(|_| {
-                        let rgb = VideoFormat::new(
-                            format.size,
-                            decoded_pixel_format(expected),
-                            decoded_color(format.color),
-                        );
-                        pool.frame(target, rgb, timestamp)
-                    });
-                // The frame's lease (if any) keeps the slot; the importer keeps nothing.
-                let _ = pool.release(target);
-                decoded?
-            }
+        let id = entry.id;
+        // 4:2:0 (perf audit R-11 step b): the frame is the plane pair itself, in the
+        // source's own format and colour; the compositor samples it with no decoded copy.
+        // The surface's bit depth must match the frame's pixel format.
+        let planar = match pool.get(id).map(|t| t.desc().format) {
+            Some(wgpu::TextureFormat::NV12) => Some(PixelFormat::Nv12),
+            Some(wgpu::TextureFormat::P010) => Some(PixelFormat::P010),
+            _ => None,
         };
+        if planar.is_some_and(|expected| format.pixel_format != expected) {
+            return Err(GpuError::Unsupported(
+                "4:2:0 surface whose bit depth differs from the frame's pixel format",
+            ));
+        }
+        let mut out = pool.frame(id, format, timestamp)?;
         out = out.with_sequence(sequence);
         if let Some(t) = source_time {
             out = out.with_source_time(t);
@@ -259,22 +225,24 @@ impl Importer {
             self.evict_one(pool)?;
         }
         let opened = open_backend(ctx, surface, frame_size)?;
-        let id = pool.insert_external(ctx, opened.texture, opened.desc)?;
-        let chroma = match opened.chroma {
-            None => None,
-            Some((texture, desc)) => match pool.insert_external(ctx, texture, desc) {
-                Ok(c) => Some(c),
-                Err(e) => {
-                    let _ = pool.release(id);
-                    return Err(e);
-                }
-            },
+        let id = match opened.chroma {
+            None => pool.insert_external(ctx, opened.texture, opened.desc)?,
+            Some((chroma, _)) => {
+                let format = match opened.desc.format {
+                    wgpu::TextureFormat::R16Unorm => wgpu::TextureFormat::P010,
+                    _ => wgpu::TextureFormat::NV12,
+                };
+                let desc = TextureDesc {
+                    format,
+                    ..opened.desc
+                };
+                pool.insert_external_planes(ctx, opened.texture, chroma, desc)?
+            }
         };
         ctx.metrics().count_surface_opened();
         self.entries.push(Entry {
             key,
             id,
-            chroma,
             frame_size,
             last_seen: self.tick,
             // Set by the next `retire`, which sees `last_seen == tick`.
@@ -305,14 +273,6 @@ impl Importer {
     fn close(&mut self, i: usize, pool: &mut TexturePool) {
         let e = self.entries.swap_remove(i);
         let _ = pool.release(e.id);
-        if let Some(c) = e.chroma {
-            let _ = pool.release(c);
-            // The decoder's bind group would otherwise keep the planes (and the producer's
-            // surface) alive.
-            if let Some(decoder) = &mut self.decoder {
-                decoder.forget(e.id);
-            }
-        }
     }
 
     /// Closes every cached surface that is not in use (no producer lease, no frame).
@@ -382,12 +342,14 @@ impl Importer {
                         label: Some("rbs-gpu import hand-back"),
                     })
             });
-            let chroma = e.chroma.and_then(|c| pool.get(c));
+            // A plane pair's CbCr texture is a second wgpu texture; a single-plane
+            // surface has none.
+            let chroma = texture.plane_texture(1).filter(|c| *c != texture.texture());
             let transitions =
-                std::iter::once(texture)
+                std::iter::once(texture.texture())
                     .chain(chroma)
                     .map(|t| wgpu::TextureTransition {
-                        texture: t.texture(),
+                        texture: t,
                         selector: None,
                         state: wgpu::TextureUses::PRESENT,
                     });

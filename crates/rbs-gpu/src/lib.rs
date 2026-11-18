@@ -47,7 +47,7 @@ pub use compositor::{
     CanvasDesc, Compositor, Layer, LayerShape, LayerStyle, RenderStats, Transfer,
 };
 pub use context::{GpuContext, GpuMetrics, GpuRequest, PowerPreference};
-pub use download::{DownloadStats, YuvDownload};
+pub use download::{DownloadShare, DownloadStats, YuvDownload};
 pub use error::GpuError;
 pub use interop::Importer;
 pub use math::{Affine2, UvRect};

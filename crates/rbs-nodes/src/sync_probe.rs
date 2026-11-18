@@ -16,6 +16,7 @@ use std::time::Duration;
 use rbs_core::time::Timestamp;
 use rbs_gpu::MotionProbe;
 use rbs_gpu::node::GpuRuntime;
+use rbs_gpu::yuv_decode::YuvToRgb;
 use rbs_graph::node::{LinkKind, NodeDescriptor, NodeKind, NodeTypeId, Pin};
 use rbs_graph::runtime::{Node, NodeError, PrepareCtx, ProcessCtx};
 
@@ -125,6 +126,9 @@ pub struct SyncPictureProbeNode {
     probe: Option<MotionProbe>,
     last: Option<(Timestamp, u64)>,
     log: Arc<SyncPictureLog>,
+    /// Decodes a 4:2:0 camera picture for the probe (perf audit R-11); holds nothing
+    /// until the first such frame.
+    rgb: YuvToRgb,
 }
 
 impl SyncPictureProbeNode {
@@ -144,6 +148,7 @@ impl SyncPictureProbeNode {
             probe: None,
             last: None,
             log: Arc::clone(&log),
+            rgb: YuvToRgb::new(),
         };
         (node, log)
     }
@@ -179,6 +184,18 @@ impl Node<GpuRuntime> for SyncPictureProbeNode {
             return Ok(());
         }
         self.last = Some(key);
+        // The probe samples RGB: a 4:2:0 picture is decoded once.
+        let picture = if YuvToRgb::needs_decode(&local.pool, picture) {
+            match self.rgb.rgb(gpu, &mut local.pool, picture) {
+                Ok(rgb) => rgb,
+                Err(_) => {
+                    self.log.failed.fetch_add(1, Ordering::Relaxed);
+                    return Err(NodeError::Backend("sync picture decode failed"));
+                }
+            }
+        } else {
+            picture
+        };
         match probe.submit(gpu, &local.pool, picture, tick.time.as_nanos()) {
             Ok(true) => Ok(()),
             Ok(false) => {
@@ -195,6 +212,7 @@ impl Node<GpuRuntime> for SyncPictureProbeNode {
     fn release(&mut self, _ctx: &mut PrepareCtx<'_, GpuRuntime>) {
         self.probe = None;
         self.last = None;
+        self.rgb.release();
     }
 }
 

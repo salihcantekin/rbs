@@ -50,7 +50,8 @@ const H: u32 = 180;
 const FRAMES: u64 = 200;
 
 /// Average allocations per frame over `FRAMES` frames after a warm-up.
-fn allocs_per_frame(layer_count: usize) -> Option<(f64, f64)> {
+/// With `planar`, the layers are a 4:2:0 plane pair drawn by the YUV pipelines (R-11).
+fn allocs_per_frame(layer_count: usize, planar: bool) -> Option<(f64, f64)> {
     let ctx = common::gpu()?;
     let mut pool = TexturePool::new();
     let mut comp = Compositor::new(
@@ -70,7 +71,12 @@ fn allocs_per_frame(layer_count: usize) -> Option<(f64, f64)> {
     let chroma = pool
         .acquire(ctx, &yuv::chroma_desc(YuvFormat::Nv12, W, H))
         .unwrap();
-    let src = solid(ctx, &mut pool, 16, 16, [0.2, 0.4, 0.6, 1.0]);
+    let src = if planar {
+        pool.acquire(ctx, &TextureDesc::planar(16, 16, wgpu::TextureFormat::NV12))
+            .unwrap()
+    } else {
+        solid(ctx, &mut pool, 16, 16, [0.2, 0.4, 0.6, 1.0])
+    };
     let layers: Vec<Layer> = (0..layer_count)
         .map(|i| Layer::new(src, i as f32, i as f32, 64.0, 36.0))
         .collect();
@@ -100,10 +106,10 @@ fn allocs_per_frame(layer_count: usize) -> Option<(f64, f64)> {
 
 #[test]
 fn allocations_per_frame_are_bounded() {
-    let Some((one_a, one_b)) = allocs_per_frame(1) else {
+    let Some((one_a, one_b)) = allocs_per_frame(1, false) else {
         return;
     };
-    let Some((many_a, many_b)) = allocs_per_frame(32) else {
+    let Some((many_a, many_b)) = allocs_per_frame(32, false) else {
         return;
     };
     eprintln!(
@@ -119,5 +125,29 @@ fn allocations_per_frame_are_bounded() {
     // (b) Per-layer cost is a small constant (wgpu command recording), not unbounded.
     let per_layer = (many_b - one_b) / 31.0;
     eprintln!("extra allocations per layer: {per_layer:.2}");
+    assert!(per_layer <= 4.0, "per-layer allocations {per_layer}");
+}
+
+#[test]
+fn yuv_layers_allocate_like_rgb_layers() {
+    let Some((rgb_a, rgb_b)) = allocs_per_frame(8, false) else {
+        return;
+    };
+    let Some((yuv_a, yuv_b)) = allocs_per_frame(8, true) else {
+        return;
+    };
+    eprintln!(
+        "allocations per frame, 8 layers: RGB {rgb_a:.1} / {rgb_b:.1}, 4:2:0 {yuv_a:.1} / {yuv_b:.1}"
+    );
+    assert!(yuv_b <= yuv_a * 1.1 + 1.0, "4:2:0: {yuv_a} then {yuv_b}");
+    // The colour records cost one more buffer write per frame (wgpu stages it: 8
+    // allocations on lavapipe), far below the decode pass and submit per camera picture
+    // they replace (about 56). Nothing per layer in RBS code.
+    assert!(yuv_b <= rgb_b + 12.0, "4:2:0 {yuv_b} against RGB {rgb_b}");
+    let Some((_, many)) = allocs_per_frame(32, true) else {
+        return;
+    };
+    let per_layer = (many - yuv_b) / 24.0;
+    eprintln!("extra allocations per 4:2:0 layer: {per_layer:.2}");
     assert!(per_layer <= 4.0, "per-layer allocations {per_layer}");
 }

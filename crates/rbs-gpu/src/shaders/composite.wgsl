@@ -70,6 +70,55 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     return layer_colour(l, in.uv) * l.params.x;
 }
 
+// 4:2:0 layers (perf audit R-11 step b): Y' and CbCr are sampled where the layer is drawn,
+// with no decoded copy. Drawn by their own pipelines, whose group 1 holds the Y' plane
+// (`source`), the sampler and the CbCr plane; RGB layers never pay for this.
+
+struct YuvGpu {
+    // R', G', B' = dot(row, vec4(luma, cb, cr, 1)) on the stored normalized values: code
+    // scale, range and matrix folded together (the decode's parameters).
+    rows: array<vec4<f32>, 3>,
+    // x: 0 = linear, 1 = BT.709 inverse OETF, 2 = sRGB EOTF.
+    transfer: vec4<u32>,
+};
+
+@group(0) @binding(2) var<storage, read> yuvs: array<YuvGpu>;
+@group(1) @binding(2) var chroma: texture_2d<f32>;
+
+fn inverse_oetf_709(v: vec3<f32>) -> vec3<f32> {
+    let lo = v / 4.5;
+    let hi = pow((v + vec3<f32>(0.099)) / 1.099, vec3<f32>(1.0 / 0.45));
+    return select(hi, lo, v < vec3<f32>(0.081));
+}
+
+// The colour of 4:2:0 layer `ii` at `uv`: linear, opaque. Y' and CbCr are filtered
+// bilinearly at the same point (centre siting, as the encoder writes it), then
+// converted: the matrix is affine, so this equals filtering R'G'B'.
+fn yuv_colour(ii: u32, uv: vec2<f32>) -> vec4<f32> {
+    let y = textureSample(source, source_sampler, uv).r;
+    let c = textureSample(chroma, source_sampler, uv).rg;
+    let p = yuvs[ii];
+    let v = vec4<f32>(y, c, 1.0);
+    let prime = clamp(
+        vec3<f32>(dot(p.rows[0], v), dot(p.rows[1], v), dot(p.rows[2], v)),
+        vec3<f32>(0.0),
+        vec3<f32>(1.0),
+    );
+    var lin = prime;
+    if (p.transfer.x == 1u) {
+        lin = inverse_oetf_709(prime);
+    } else if (p.transfer.x == 2u) {
+        lin = srgb_to_linear(prime);
+    }
+    return vec4<f32>(lin, 1.0);
+}
+
+@fragment
+fn fs_yuv(in: VsOut) -> @location(0) vec4<f32> {
+    let l = layers[in.layer];
+    return yuv_colour(in.layer, in.uv) * l.params.x;
+}
+
 // Styled layers (ADR-0053): shape, border, antialiased edge. Drawn by their own
 // pipeline, so unstyled layers above never pay for any of this.
 
@@ -185,8 +234,27 @@ fn shape_distance(kind: f32, radius: f32, p: vec2<f32>, half: vec2<f32>) -> f32 
     return polygon_distance(p, v, n);
 }
 
+// The grown quad samples past the crop; clamp to it.
+fn styled_uv(l: LayerGpu, uv: vec2<f32>) -> vec2<f32> {
+    let lo = min(l.crop.xy, l.crop.zw);
+    let hi = max(l.crop.xy, l.crop.zw);
+    return clamp(uv, lo, hi);
+}
+
 @fragment
 fn fs_styled(in: StyledOut) -> @location(0) vec4<f32> {
+    let l = layers[in.layer];
+    return styled(in, layer_colour(l, styled_uv(l, in.uv)));
+}
+
+@fragment
+fn fs_yuv_styled(in: StyledOut) -> @location(0) vec4<f32> {
+    let l = layers[in.layer];
+    return styled(in, yuv_colour(in.layer, styled_uv(l, in.uv)));
+}
+
+// Shape, border and coverage of a styled layer over its picture colour `c`.
+fn styled(in: StyledOut, c: vec4<f32>) -> vec4<f32> {
     let l = layers[in.layer];
     let st = styles[u32(l.params.w)];
     // Screen-space derivatives of the box position, taken before any branch (WGSL
@@ -194,10 +262,6 @@ fn fs_styled(in: StyledOut) -> @location(0) vec4<f32> {
     let local = in.unit * st.size.xy;
     let dx = dpdx(local);
     let dy = dpdy(local);
-    // The grown quad samples past the crop; clamp to it.
-    let lo = min(l.crop.xy, l.crop.zw);
-    let hi = max(l.crop.xy, l.crop.zw);
-    let c = layer_colour(l, clamp(in.uv, lo, hi));
     let half = st.size.xy * 0.5;
     let p = local - half;
     let kind = st.shape.x;

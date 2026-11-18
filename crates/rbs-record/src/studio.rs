@@ -23,6 +23,7 @@ use rbs_core::time::Timestamp;
 use rbs_core::timing::{Cadence, FrameRate};
 use rbs_engine::{Applied, DEFAULT_DOORBELL_TIMER, Engine, Pacing, Serviced, WorkerStats};
 use rbs_filters::{FilterNode, FilterStats, FilterType, Values};
+use rbs_gpu::download::DownloadShare;
 use rbs_gpu::node::{CompositorNode, GpuRuntime, LayerSender, RenderLocal};
 use rbs_gpu::share::{PreviewDesc, PreviewEndpoint};
 use rbs_gpu::{CanvasDesc, GpuContext};
@@ -598,6 +599,8 @@ enum VideoPlan {
         settings: VideoSettings,
         /// Resolved output size the encoder is opened with.
         size: (u32, u32),
+        /// The readback share its export uses (R-01).
+        share: Arc<DownloadShare>,
     },
     Shared(usize),
 }
@@ -816,6 +819,26 @@ impl Prepared {
                             None => (export, None),
                         };
                         let format = export.frame_format();
+                        // One conversion and readback per output shape (R-01): a
+                        // running chain of the same shape lends its share. Each export
+                        // keeps its own gates, so pausing, holding or ending one never
+                        // touches the other.
+                        let share = running
+                            .video
+                            .iter()
+                            .flatten()
+                            .find(|c| {
+                                c.canvas == canvas
+                                    && c.size == (width, height)
+                                    && c.settings.format == video.format
+                                    && c.settings.color == video.color
+                                    && c.settings.open_shadows == video.open_shadows
+                            })
+                            .map_or_else(
+                                || Arc::new(DownloadShare::new()),
+                                |c| Arc::clone(&c.share),
+                            );
+                        let export = export.with_share(Arc::clone(&share));
                         let (export, chain_hold) = if holds {
                             let hold = Arc::new(ExportHold::new(Arc::new(HoldSwitch::default())));
                             (export.with_hold(Arc::clone(&hold)), Some((hold, format)))
@@ -832,6 +855,7 @@ impl Prepared {
                             chosen,
                             settings: video.clone(),
                             size: (width, height),
+                            share,
                         }
                     }
                 }
@@ -970,6 +994,10 @@ struct VideoChain {
     /// Its hold and the format its frames are, for a holdable stream's or a pausable
     /// recording's new chain (ADR-0124 decision 13).
     hold: Option<(Arc<ExportHold>, rbs_core::media::VideoFormat)>,
+    /// The readback share of its export: a new chain of the same canvas, output size,
+    /// pixel format, colour and grade uses it too, so the canvas is converted and read
+    /// back once for both (perf audit R-01).
+    share: Arc<DownloadShare>,
 }
 
 /// A running audio encoder, used by one or more outputs.
@@ -1002,6 +1030,7 @@ pub(crate) struct Chains {
 #[derive(Debug, Clone, Copy, Default)]
 struct Base {
     frames_exported: u64,
+    frames_joined: u64,
     export_drops: u64,
     frames_encoded: u64,
     encoder_drops: u64,
@@ -4015,6 +4044,7 @@ impl Studio {
         let mut b = Base::default();
         if let Some(c) = video.and_then(|i| self.chains.video[i].as_ref()) {
             b.frames_exported = c.export_stats.frames.load(Ordering::Relaxed);
+            b.frames_joined = c.export_stats.joined.load(Ordering::Relaxed);
             b.export_drops = sum(&[&c.export_stats.busy, &c.export_stats.lost]);
             let e = &c.encoder_stats;
             b.frames_encoded = e.submitted.load(Ordering::Relaxed);
@@ -4176,6 +4206,7 @@ impl Studio {
                 chosen,
                 settings,
                 size,
+                share,
             },
             Some((e, v)),
         ) = (p.video, new_video)
@@ -4205,6 +4236,7 @@ impl Studio {
                 keyframes,
                 keyframe_capable,
                 hold: chain_hold,
+                share,
             });
         }
         let mut audio_chain = None;
@@ -4760,6 +4792,7 @@ impl Studio {
         let since = |now: u64, base: u64| now.saturating_sub(base);
         if let (Some(export), Some(encoder)) = (&r.export, &r.encoder) {
             p.frames_exported = since(export.frames.load(Ordering::Relaxed), b.frames_exported);
+            p.frames_joined = since(export.joined.load(Ordering::Relaxed), b.frames_joined);
             p.export_drops = since(sum(&[&export.busy, &export.lost]), b.export_drops);
             p.frames_encoded = since(encoder.submitted.load(Ordering::Relaxed), b.frames_encoded);
             p.encoder_drops = since(

@@ -389,8 +389,8 @@ pub enum SourceInstance {
     /// Adopt into the render partition; hand `frames` to the text worker. Boxed: it
     /// carries its settings.
     Text(Box<TextSource>),
-    /// Adopt into the audio partition.
-    Audio(AudioSource),
+    /// Adopt into the audio partition. Boxed: larger than the picture variants.
+    Audio(Box<AudioSource>),
 }
 
 impl fmt::Debug for SourceInstance {
@@ -1307,13 +1307,13 @@ impl SourceTypes {
                     .with_exclude_own_process(exclude);
                 let stream = backend.open_input(&request).map_err(SourceError::Audio)?;
                 let (node, offset, stats) = InputNode::new(stream, ctx.audio, ctx.max_audio_offset);
-                Ok(SourceInstance::Audio(AudioSource {
+                Ok(SourceInstance::Audio(Box::new(AudioSource {
                     node,
                     offset,
                     stats,
                     adapter: backend.id(),
                     endpoint,
-                }))
+                })))
             }
         }
     }

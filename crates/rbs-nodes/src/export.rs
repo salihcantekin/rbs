@@ -10,7 +10,7 @@ use rbs_core::media::{
 };
 use rbs_core::pause::{HoldPicture, HoldSwitch, PauseWindow, Place, Window};
 use rbs_core::time::Timestamp;
-use rbs_gpu::download::{DownloadStats, YuvDownload};
+use rbs_gpu::download::{DownloadShare, DownloadStats, YuvDownload};
 use rbs_gpu::node::GpuRuntime;
 use rbs_gpu::{ScaleKernel, YuvFormat};
 use rbs_graph::node::{LinkKind, NodeDescriptor, NodeKind, NodeTypeId, Pin};
@@ -75,6 +75,9 @@ pub struct ExportNodeStats {
     /// Frames that repeated the picture before them because the canvas did not change
     /// (render on change, R-03): no conversion and no readback. Included in `frames`.
     pub repeated: AtomicU64,
+    /// Canvas frames queued without a conversion of their own: another export of the
+    /// same [`DownloadShare`] converted and read that picture back (R-01).
+    pub joined: AtomicU64,
 }
 
 /// Ends a video export's input at a master-clock time (ADR-0045); shared between the
@@ -307,6 +310,9 @@ pub struct VideoExportNode {
     width: u32,
     height: u32,
     download: Option<YuvDownload>,
+    /// Shares the conversion and readback with the other exports of this share that
+    /// have the same shape (R-01); `None` for an export with a readback of its own.
+    share: Option<Arc<DownloadShare>>,
     last: Option<(Timestamp, u64)>,
     seen: DownloadStats,
     stats: Arc<ExportNodeStats>,
@@ -450,6 +456,7 @@ impl VideoExportNode {
             width,
             height,
             download: None,
+            share: None,
             last: None,
             seen: DownloadStats::default(),
             stats: Arc::default(),
@@ -462,6 +469,17 @@ impl VideoExportNode {
             held: None,
             releasing: 0,
         }
+    }
+
+    /// An export that reads canvases back through `share` (perf audit R-01, ADR-0143
+    /// R4): exports of one share with the same canvas, size, format, colour and grade
+    /// convert and read each canvas picture back once, and each passes it on with its
+    /// own stamps, gates (pause, hold, end) and counters. Exports of one share must run
+    /// in one partition.
+    #[must_use]
+    pub fn with_share(mut self, share: Arc<DownloadShare>) -> Self {
+        self.share = Some(share);
+        self
     }
 
     /// An export that a stream's hold can take over (ADR-0124 decision 13). Nothing
@@ -774,17 +792,31 @@ impl Node<GpuRuntime> for VideoExportNode {
         // download from this canvas (ADR-0102). The two outputs of one canvas each
         // read that canvas; neither reads the other's planes.
         let same = self.canvas_width == self.width && self.canvas_height == self.height;
-        let download = if same {
-            YuvDownload::with_tone(
+        // A restart: the old download hands its slots back to a shared readback first.
+        self.download = None;
+        let download = match self.share.as_deref() {
+            // A shared readback; equal sizes still take the 1:1 path in it.
+            Some(share) => YuvDownload::scaled_tone_shared(
+                ctx.shared,
+                share,
+                self.format,
+                self.canvas_width,
+                self.canvas_height,
+                self.width,
+                self.height,
+                rbs_gpu::download::DOWNLOAD_BUFFERS,
+                self.color,
+                self.open_shadows,
+            ),
+            None if same => YuvDownload::with_tone(
                 ctx.shared,
                 self.format,
                 self.width,
                 self.height,
                 self.color,
                 self.open_shadows,
-            )
-        } else {
-            YuvDownload::scaled_tone(
+            ),
+            None => YuvDownload::scaled_tone(
                 ctx.shared,
                 self.format,
                 self.canvas_width,
@@ -794,7 +826,7 @@ impl Node<GpuRuntime> for VideoExportNode {
                 rbs_gpu::download::DOWNLOAD_BUFFERS,
                 self.color,
                 self.open_shadows,
-            )
+            ),
         }
         .map_err(|e| NodeError::Failed(format!("video export: {e}")))?;
         self.seen = download.stats();
@@ -935,6 +967,11 @@ impl Node<GpuRuntime> for VideoExportNode {
         self.stats
             .repeated
             .fetch_add(now.repeated - self.seen.repeated, Ordering::Relaxed);
+        if now.joined != self.seen.joined {
+            self.stats
+                .joined
+                .fetch_add(now.joined - self.seen.joined, Ordering::Relaxed);
+        }
         if now.no_buffer != self.seen.no_buffer || now.failed != self.seen.failed {
             // A readback that never reached the encoder: the next tick converts the
             // canvas again instead of repeating a picture before it.
