@@ -588,6 +588,13 @@ pub enum TransitionKind {
     Stinger,
 }
 
+impl TransitionKind {
+    /// True for Move, the default (a field that holds it is not written).
+    pub fn is_move(&self) -> bool {
+        *self == Self::Move
+    }
+}
+
 /// Which way a Swipe or Slide moves (protocol 1.81, ADR-0128).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -677,8 +684,12 @@ impl StingerTransition {
 /// settings. Move's settings are the collection `glide`.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Transition {
-    /// The kind a program change uses.
+    /// The kind a program change uses in studio mode.
     pub kind: TransitionKind,
+    /// The kind a program change uses outside studio mode (protocol 1.97, ADR-0153);
+    /// absent while Move.
+    #[serde(default, skip_serializing_if = "TransitionKind::is_move")]
+    pub direct_kind: TransitionKind,
     /// Fade settings.
     pub fade: FadeTransition,
     /// Swipe settings.

@@ -125,3 +125,5 @@ Independent review per ADR-0014.
   5. Followers: resolved, each runs its own transition from the leader's start (decision 11).
 
 Owner acceptance, 2026-11-16: Salih approved the ADR after both review rounds.
+
+Superseded in part by [ADR-0153](0153-a-transition-of-its-own-outside-studio-mode.md) decision 1, 2026-11-18: decision 14 (one kind for every program change) no longer holds; outside studio mode a program change uses a kind of its own, Move by default.

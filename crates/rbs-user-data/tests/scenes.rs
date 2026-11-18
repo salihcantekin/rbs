@@ -936,6 +936,47 @@ fn format_18_loads_as_move_or_cut_and_format_19_round_trips() {
 }
 
 #[test]
+fn the_kind_outside_studio_mode_round_trips_in_format_27_and_older_formats_refuse_it() {
+    use rbs_scene::{CollectionTransition, TransitionKind};
+    // Absent: Move, and the file keeps its lower format (ADR-0153).
+    let plain = document::render(&show(), Some("Show")).unwrap();
+    assert!(!plain.contains("direct"), "{plain}");
+    assert!(!plain.contains("format = 27"), "{plain}");
+    let older = format!(
+        "format = 26\nkind = \"scene-collection\"\n[transition]\nkind = \"slide\"\n{CANVAS}{SOURCE}"
+    );
+    let col = document::parse::<SceneCollection>(&older).unwrap().document;
+    assert_eq!(col.transition().kind, TransitionKind::Slide);
+    assert_eq!(col.transition().direct, TransitionKind::Move);
+
+    let mut col = show();
+    col.set_transition(CollectionTransition {
+        kind: TransitionKind::Slide,
+        direct: TransitionKind::Fade,
+        ..Default::default()
+    })
+    .unwrap();
+    let text = document::render(&col, Some("Show")).unwrap();
+    assert!(text.contains("format = 27"), "{text}");
+    assert!(text.contains("direct = \"fade\""), "{text}");
+    let back = document::parse::<SceneCollection>(&text).unwrap().document;
+    assert_eq!(back, col);
+
+    // A format 26 file cannot carry it.
+    let hand = text.replace("format = 27", "format = 26");
+    match document::parse::<SceneCollection>(&hand) {
+        Err(DataError::Invalid(why)) => assert!(why.contains("transition.direct"), "{why}"),
+        other => panic!("expected Invalid, got {other:?}"),
+    }
+    // An unknown kind is refused.
+    let odd = text.replace("direct = \"fade\"", "direct = \"spin\"");
+    assert!(matches!(
+        document::parse::<SceneCollection>(&odd),
+        Err(DataError::Invalid(_))
+    ));
+}
+
+#[test]
 fn a_transition_in_an_older_format_or_out_of_range_is_refused() {
     let why = invalid("transition = { kind = \"fade\" }\n");
     assert!(why.contains("transition"), "{why}");

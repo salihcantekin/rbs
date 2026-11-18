@@ -2165,6 +2165,30 @@ fn studio_mode_is_a_minor_addition() {
     }))
     .unwrap();
     assert_eq!(set.scope(), Some(Scope::Control));
+    // The kind outside studio mode (protocol 1.97, ADR-0153).
+    let direct: Request = serde_json::from_value(json!({
+        "method": "collection.set_transition",
+        "params": {"direct_kind": "cut"}
+    }))
+    .unwrap();
+    assert_eq!(
+        direct,
+        Request::Command(Command::CollectionSetTransition(SetCollectionTransition {
+            direct_kind: Some(TransitionKind::Cut),
+            ..Default::default()
+        }))
+    );
+    let mut cut = scenes();
+    cut.transition.direct_kind = TransitionKind::Cut;
+    let wire = serde_json::to_value(&cut).unwrap();
+    assert_eq!(wire["transition"]["direct_kind"], "cut");
+    round_trip(&cut);
+    // Move, the default, is left out.
+    assert!(
+        serde_json::to_value(scenes()).unwrap()["transition"]
+            .get("direct_kind")
+            .is_none()
+    );
     assert!(
         serde_json::from_value::<Request>(json!({
             "method": "canvas.transition",

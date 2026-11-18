@@ -160,3 +160,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0150](0150-scrolling-layers-in-the-compositor.md) | Scrolling is a layer motion evaluated by the compositor node, for every source (ticker, crawl, credits; answers ADR-0129 decision 9) | Accepted |
 | [0151](0151-leaving-studio-mode-keeps-the-program-as-it-was.md) | Leaving studio mode keeps the program as it was on air: held edits are put back as one undo step (supersedes part of ADR-0063 decision 4 and ADR-0098 decision 2) | Accepted |
 | [0152](0152-source-activity-when-a-source-runs-and-what-it-does-on-return.md) | Source activity: one policy for every source (run while placed, shown or on air; continue, resume or restart on return; linger), defaults declared by the type | Accepted |
+| [0153](0153-a-transition-of-its-own-outside-studio-mode.md) | A transition kind of its own outside studio mode (Move by default); the rail's kind is for studio mode | Accepted |

@@ -11944,6 +11944,9 @@ impl Host {
         if let Some(kind) = p.kind {
             t.kind = scene_transition_kind(kind);
         }
+        if let Some(kind) = p.direct_kind {
+            t.direct = scene_transition_kind(kind);
+        }
         if let Some(f) = &p.fade {
             t.fade = rbs_scene::FadeSettings {
                 duration_ms: f.duration_ms,
@@ -17261,6 +17264,7 @@ fn api_transition(
 ) -> api::Transition {
     api::Transition {
         kind: api_transition_kind(t.kind),
+        direct_kind: api_transition_kind(t.direct),
         fade: api::FadeTransition {
             duration_ms: t.fade.duration_ms,
             easing: api_easing(t.fade.easing),

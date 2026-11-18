@@ -419,7 +419,7 @@ pub(super) fn rehearsal_plan(
     collection: &SceneCollection,
     preview: SceneId,
 ) -> Option<(Duration, GlideEasing, TransitionKind)> {
-    let e = Studio::transition_into(collection, Some(preview), TransitionOnce::default());
+    let e = Studio::transition_into(collection, Some(preview), TransitionOnce::default(), true);
     let kind = e.kind();
     if kind == TransitionKind::Move {
         return (e.glide.duration_ms > 0).then(|| {
@@ -443,7 +443,7 @@ pub(super) fn rehearsal_layers(
     size: (u32, u32),
     start: Timestamp,
 ) -> Vec<rbs_gpu::node::NodeLayer> {
-    let e = Studio::transition_into(collection, Some(preview), TransitionOnce::default());
+    let e = Studio::transition_into(collection, Some(preview), TransitionOnce::default(), true);
     let plan = blend_of(e.transition).or_else(|| {
         (e.kind() == TransitionKind::Move && e.glide.duration_ms > 0).then(|| {
             (
@@ -685,7 +685,11 @@ impl Studio {
                 .find_map(|x| changed(x.canvas, program_scene(&self.collection, x.canvas)))
         });
         let once = self.transition_once.take().unwrap_or_default();
-        let mut e = Self::transition_into(collection, incoming, once);
+        // Studio mode is the main canvas's; further canvases follow it (ADR-0153).
+        let studio_mode = collection
+            .canvas(self.settings.canvas)
+            .is_some_and(|c| c.preview.is_some());
+        let mut e = Self::transition_into(collection, incoming, once, studio_mode);
         // A manual transition's end starts no timed one (ADR-0135 decision 5).
         if self.manual_take {
             e.transition.kind = TransitionKind::Cut;
@@ -694,17 +698,20 @@ impl Studio {
     }
 
     /// The transition a change into `incoming` uses: `once`, then the scene's
-    /// override, then the collection (ADR-0135 decision 8).
+    /// override, then the collection's kind for the mode: the rail's in studio mode,
+    /// its own outside it (ADR-0135 decision 8, ADR-0153).
     fn transition_into(
         collection: &SceneCollection,
         incoming: Option<SceneId>,
         once: TransitionOnce,
+        studio_mode: bool,
     ) -> Effective {
         let mut e = Effective {
             transition: collection.transition(),
             glide: collection.glide(),
             source_glides: true,
         };
+        e.transition.kind = e.transition.kind_for(studio_mode);
         let scene_override = incoming
             .and_then(|id| collection.scene(id))
             .and_then(|s| s.transition_in)
@@ -1549,7 +1556,7 @@ impl Studio {
         let Some(preview) = collection.canvas(canvas).and_then(|c| c.preview) else {
             return Ok(ManualStep::Idle);
         };
-        let e = Self::transition_into(&collection, Some(preview), TransitionOnce::default());
+        let e = Self::transition_into(&collection, Some(preview), TransitionOnce::default(), true);
         let kind = e.kind();
         // Move is drawn as a crossfade with its easing (decision 3).
         let blend = blend_of(e.transition).or_else(|| {

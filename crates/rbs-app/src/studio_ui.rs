@@ -2576,6 +2576,15 @@ impl StudioUi {
         }
     }
 
+    /// The kind a scene switch uses outside studio mode (Scene menu, ADR-0153).
+    pub fn set_direct_transition(&mut self, kind: rbs_scene::TransitionKind) {
+        let mut t = self.transition;
+        t.direct = kind;
+        if t != self.transition {
+            self.send(Command::SetTransition(t));
+        }
+    }
+
     /// The duration of the rail's kind: Fade's, Swipe's and Slide's own, Move's is
     /// the collection glide. Cut has none.
     pub fn set_transition_duration(&mut self, duration_ms: i32) {
@@ -5823,6 +5832,11 @@ impl StudioUi {
             .set_vec(rows(profiles, &self.user.profile_id));
         self.collection_rows
             .set_vec(rows(collections, &self.user.collection_id));
+    }
+
+    /// The kind a scene switch uses outside studio mode (ADR-0153), for the Scene menu.
+    pub fn direct_transition(&self) -> rbs_scene::TransitionKind {
+        self.transition.direct
     }
 
     /// The output profiles (`collection` false) or scene collections as last read,

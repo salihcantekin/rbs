@@ -19,6 +19,7 @@
 //!
 //! # [transition]               # format 19, ADR-0128; absent: Move (format 18 and older: Cut when the glide is 0 ms)
 //! # kind = "fade"              # "cut", "fade", "move", "swipe", "slide" or "stinger" (format 21)
+//! # direct = "cut"             # the kind outside studio mode, same values (format 27, ADR-0153)
 //! # fade = { duration_ms = 300, easing = "linear", via = "#000000" }   # via: fade through a colour
 //! # swipe = { duration_ms = 500, easing = "ease-in-out", direction = "left" }  # "left", "right", "up", "down"
 //! # slide = { duration_ms = 500, easing = "ease-in-out", direction = "left" }
@@ -210,6 +211,9 @@ impl From<GlideDoc> for SourceGlide {
 struct TransitionDoc {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     kind: Option<String>,
+    /// The kind outside studio mode (format 27, ADR-0153); absent: Move.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    direct: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     fade: Option<FadeDoc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -276,6 +280,7 @@ impl From<CollectionTransition> for TransitionDoc {
         };
         Self {
             kind: (t.kind != d.kind).then(|| t.kind.as_str().to_owned()),
+            direct: (t.direct != d.direct).then(|| t.direct.as_str().to_owned()),
             fade: (t.fade != d.fade).then(|| FadeDoc {
                 duration_ms: t.fade.duration_ms,
                 easing: t.fade.easing.into(),
@@ -298,6 +303,10 @@ impl TryFrom<TransitionDoc> for CollectionTransition {
         let mut t = CollectionTransition::default();
         if let Some(kind) = doc.kind {
             t.kind = TransitionKind::parse(&kind)
+                .ok_or_else(|| format!("unknown transition kind `{kind}`"))?;
+        }
+        if let Some(kind) = doc.direct {
+            t.direct = TransitionKind::parse(&kind)
                 .ok_or_else(|| format!("unknown transition kind `{kind}`"))?;
         }
         if let Some(f) = doc.fade {
@@ -1260,9 +1269,13 @@ fn any_layout_scrolls(body: &toml::Table) -> bool {
 
 impl Document for SceneCollection {
     const KIND: &'static str = "scene-collection";
-    const FORMAT: u32 = 26;
+    const FORMAT: u32 = 27;
 
     fn write_format(&self) -> u32 {
+        // An older build would run every change with the rail's kind (ADR-0153).
+        if self.transition().direct != CollectionTransition::default().direct {
+            return 27;
+        }
         // A format 25 build does not run a page while it is hidden and has no
         // `keep_running` key to read, so a background page is written as 26.
         if self.sources().any(|s| {
@@ -1367,8 +1380,23 @@ impl Document for SceneCollection {
     /// 25 only when a source has an `on_return`. Format 26 moves a browser source's
     /// `keep_running` setting into its `activity.run` (true `placed`, false the type's
     /// default) and drops the key; a format 25 or older body is upgraded that way, and
-    /// a file is written as 26 only when a browser source has `run = "placed"`.
+    /// a file is written as 26 only when a browser source has `run = "placed"`. Format
+    /// 27 adds the optional `transition.direct` (ADR-0153); a format 26 or older body is
+    /// a format 27 body without it (Move outside studio mode), and a file is written as
+    /// 27 only when it is not Move.
     fn upgrade(from: u32, body: &mut toml::Table) -> Result<(), String> {
+        let direct = body
+            .get("transition")
+            .and_then(toml::Value::as_table)
+            .is_some_and(|t| t.contains_key("direct"));
+        if (1..=26).contains(&from) && direct {
+            return Err(format!(
+                "format {from} has no `transition.direct` (format 27)"
+            ));
+        }
+        if from == 26 {
+            return Ok(());
+        }
         let has_activity = body
             .get("sources")
             .and_then(toml::Value::as_array)
