@@ -226,7 +226,8 @@ struct State {
     relock: bool,
     /// Source frames per graph frame, nominal.
     nominal: f64,
-    kernel: Kernel,
+    /// Shared with every node of the same rate pair (read-only).
+    kernel: std::sync::Arc<Kernel>,
     matrix: [[f32; MAX_CHANNELS]; MAX_CHANNELS],
 }
 
@@ -252,7 +253,7 @@ impl State {
             ahead: false,
             relock: false,
             nominal: rate / f64::from(config.format.sample_rate.hz()),
-            kernel: Kernel::new(src.sample_rate, config.format.sample_rate),
+            kernel: Kernel::shared(src.sample_rate, config.format.sample_rate),
             matrix: matrix(src.channels, config.format.channels),
         }
     }

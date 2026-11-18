@@ -172,15 +172,15 @@ impl AudioDsp for DuckerDsp {
         let frames = frames.min(self.gains.len());
         let s = self.s;
         let mut peak = 0.0f32;
+        // The linked key level of every frame (into `gains`); none without a key.
+        // Frames past the shortest key channel read as silence, as before.
+        let key_channels = key
+            .into_iter()
+            .flatten()
+            .map(|c| &c[..key_len.min(c.len())]);
+        crate::linked_levels(&mut self.gains[..frames], key_channels);
         for f in 0..frames {
-            let mut level = 0.0f32;
-            if let Some(k) = key
-                && f < key_len
-            {
-                for ch in k {
-                    level = level.max(ch[f].abs());
-                }
-            }
+            let level = self.gains[f];
             // NaN or infinity must not poison the envelope.
             let level = if level.is_finite() { level } else { 0.0 };
             peak = peak.max(level);

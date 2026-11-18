@@ -113,9 +113,16 @@ impl Ring {
         self.head = 0;
         self.len = silence.min(self.buf.len());
     }
+    /// `head + n` wrapped into the buffer, for `n <= capacity` (a compare instead of
+    /// a division per sample, A-06 of the 2026-11 performance audit).
+    #[inline]
+    fn wrap(&self, i: usize) -> usize {
+        let cap = self.buf.len();
+        if i >= cap { i - cap } else { i }
+    }
     fn push(&mut self, x: f32) {
         if self.len < self.buf.len() {
-            let at = (self.head + self.len) % self.buf.len();
+            let at = self.wrap(self.head + self.len);
             self.buf[at] = x;
             self.len += 1;
         }
@@ -126,7 +133,7 @@ impl Ring {
             return 0.0;
         }
         let x = self.buf[self.head];
-        self.head = (self.head + 1) % self.buf.len();
+        self.head = self.wrap(self.head + 1);
         self.len -= 1;
         x
     }
@@ -272,11 +279,13 @@ impl NoiseDsp {
             for ring in &mut self.out {
                 let cap = ring.buf.len();
                 let first = (ring.head + ring.len + cap - FRAME_SIZE) % cap;
+                // The frame is at most two runs: up to the end, then from the start.
+                let (tail, head) = ring.buf.split_at_mut(first);
+                let run = head.len().min(FRAME_SIZE);
                 let mut g = start_gain;
-                for i in 0..FRAME_SIZE {
+                for x in head[..run].iter_mut().chain(&mut tail[..FRAME_SIZE - run]) {
                     g += step;
-                    let at = (first + i) % cap;
-                    ring.buf[at] = clean(ring.buf[at] * g);
+                    *x = clean(*x * g);
                 }
             }
         }

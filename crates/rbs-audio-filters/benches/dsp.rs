@@ -213,6 +213,24 @@ fn equaliser_benches(c: &mut Criterion) {
         "equaliser_all",
         &mut [ty.make(setup(), &all).expect("valid")],
     );
+    // A tone, then 0.6 s of digital silence: the section states decay towards
+    // denormals (A-04 of the 2026-11 performance audit). One iteration is 61 blocks.
+    let mut decaying = ty.make(setup(), &all).expect("valid");
+    let (tone, _) = signal();
+    c.bench_function("equaliser_tone_then_silence_61_blocks", |b| {
+        let (mut l, mut r) = (tone.clone(), tone.clone());
+        b.iter(|| {
+            l.copy_from_slice(&tone);
+            r.copy_from_slice(&tone);
+            decaying.process(&mut [&mut l[..], &mut r[..]], FRAMES);
+            for _ in 0..60 {
+                l.fill(0.0);
+                r.fill(0.0);
+                decaying.process(&mut [&mut l[..], &mut r[..]], FRAMES);
+            }
+            black_box((&l, &r));
+        });
+    });
     let other = all
         .with(ty, [("band1_freq", Value::Number(2000.0))])
         .expect("valid");

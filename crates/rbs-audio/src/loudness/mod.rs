@@ -305,13 +305,30 @@ impl LoudnessMeter {
         let mut done = 0;
         while done < frames {
             let n = (self.step_frames - self.step_pos).min(frames - done);
-            for c in 0..self.channels {
-                let x = channels
+            let slice = |c: usize| {
+                channels
                     .get(c)
                     .and_then(|ch| ch.get(done..(done + n).min(ch.len())))
-                    .unwrap_or(&[]);
-                self.step_sum[c] += self.state[c].sum_squares(&self.filter, x);
-                let p = self.true_peak.peak(c, x);
+                    .unwrap_or(&[])
+            };
+            // Channels go through the K-weighting in pairs (A-17 of the 2026-11
+            // performance audit); the results are the same as one at a time.
+            let mut c = 0;
+            while c < self.channels {
+                let x = slice(c);
+                let y = slice(c + 1);
+                if c + 1 < self.channels && x.len() == y.len() {
+                    let (a, b) = filter::sum_squares_pair(&mut self.state[c..], &self.filter, x, y);
+                    self.step_sum[c] += a;
+                    self.step_sum[c + 1] += b;
+                    c += 2;
+                } else {
+                    self.step_sum[c] += self.state[c].sum_squares(&self.filter, x);
+                    c += 1;
+                }
+            }
+            for c in 0..self.channels {
+                let p = self.true_peak.peak_above(c, slice(c), self.peak);
                 if p > self.peak {
                     self.peak = p;
                 }
