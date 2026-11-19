@@ -98,6 +98,8 @@ pub trait ControlTarget {
 #[derive(Debug)]
 pub(crate) struct EventShared {
     mask: AtomicU32,
+    /// Sampled topics (`audio.levels`). Separate from `mask`, which the publisher uses.
+    sampled: AtomicU32,
     slots: Mutex<HashMap<StateKey, Event>>,
     pending: AtomicBool,
     wake: Arc<Wake>,
@@ -107,6 +109,7 @@ impl EventShared {
     pub(crate) fn new(wake: Arc<Wake>) -> Self {
         Self {
             mask: AtomicU32::new(0),
+            sampled: AtomicU32::new(0),
             slots: Mutex::new(HashMap::new()),
             pending: AtomicBool::new(false),
             wake,
@@ -117,6 +120,16 @@ impl EventShared {
     /// needs it is forwarded, so the `seq` read for its answer comes after.
     pub(crate) fn set_mask(&self, topics: TopicSet) {
         self.mask.store(topics.bits(), Ordering::Release);
+    }
+
+    pub(crate) fn set_sampled(&self, topics: TopicSet) {
+        self.sampled.store(topics.bits(), Ordering::Release);
+    }
+
+    /// True when a client subscribes to `topic`, including a sampled topic.
+    pub(crate) fn subscribed(&self, topic: Topic) -> bool {
+        let bits = self.mask.load(Ordering::Acquire) | self.sampled.load(Ordering::Acquire);
+        TopicSet::from_bits(bits).contains(topic)
     }
 
     /// The events written since the last call. Clears the pending flag before it reads
@@ -140,6 +153,13 @@ impl EventShared {
 /// The publisher's link to a running API server.
 #[derive(Debug, Clone)]
 pub struct EventLink(pub(crate) Arc<EventShared>);
+
+impl EventLink {
+    /// True when a connected client subscribes to `topic`, including `audio.levels`.
+    pub fn subscribed(&self, topic: Topic) -> bool {
+        self.0.subscribed(topic)
+    }
+}
 
 type LocalSink = Box<dyn FnMut(&Event) + Send>;
 
@@ -167,6 +187,11 @@ impl EventPublisher {
     /// Stops publishing to the API server.
     pub fn detach(&mut self) {
         self.link = None;
+    }
+
+    /// True when a connected client subscribes to `topic`.
+    pub fn subscribed(&self, topic: Topic) -> bool {
+        self.link.as_ref().is_some_and(|link| link.subscribed(topic))
     }
 
     /// Registers the in-process UI as a permanent subscriber to `topics`; `sink` runs on

@@ -309,8 +309,11 @@ pub enum Action {
     /// Send this command to the control thread (and wake it).
     Forward(Forwarded),
     /// Store this subscriber mask where the control thread reads it. Comes before the
-    /// `Forward` of the subscribe that needs it.
+    /// `Forward` of the subscribe that needs it. Sampled topics are not in this mask.
     SetMask(TopicSet),
+    /// Sampled topics clients subscribe to (`audio.levels`). The control thread reads
+    /// this to keep meters attached; it does not publish those topics itself.
+    SetSampled(TopicSet),
     /// Log this.
     Audit(AuditEvent),
 }
@@ -473,6 +476,8 @@ pub struct Server {
     budget: Arc<ConnectionBudget>,
     backoff: HashMap<String, Backoff>,
     mask: TopicSet,
+    /// Sampled topics (`audio.levels`) the ready sessions subscribe to.
+    sampled: TopicSet,
     sample_seq: u64,
     sampler: Option<Box<dyn Sampler>>,
     actions: VecDeque<Action>,
@@ -500,6 +505,7 @@ impl Server {
             budget,
             backoff: HashMap::new(),
             mask: TopicSet::EMPTY,
+            sampled: TopicSet::EMPTY,
             sample_seq: 0,
             sampler: None,
             actions: VecDeque::new(),
@@ -1389,10 +1395,15 @@ impl Server {
             .values()
             .filter(|s| matches!(s.phase, Phase::Ready { .. }))
             .fold(TopicSet::EMPTY, |m, s| m.union(s.topics));
-        let mask = TopicSet::of(mask.iter().filter(|t| !t.is_sampled()));
-        if mask != self.mask {
-            self.mask = mask;
-            self.actions.push_back(Action::SetMask(mask));
+        let state = TopicSet::of(mask.iter().filter(|t| !t.is_sampled()));
+        let sampled = TopicSet::of(mask.iter().filter(|t| t.is_sampled()));
+        if state != self.mask {
+            self.mask = state;
+            self.actions.push_back(Action::SetMask(state));
+        }
+        if sampled != self.sampled {
+            self.sampled = sampled;
+            self.actions.push_back(Action::SetSampled(sampled));
         }
     }
 

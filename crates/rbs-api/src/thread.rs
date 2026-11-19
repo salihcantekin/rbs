@@ -169,6 +169,10 @@ impl ApiServer {
                                     }
                                 }
                                 Action::SetMask(mask) => events.set_mask(mask),
+                                Action::SetSampled(mask) => {
+                                    events.set_sampled(mask);
+                                    control_waker();
+                                }
                                 Action::Audit(a) => audit(a),
                             }
                         }

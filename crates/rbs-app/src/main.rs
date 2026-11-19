@@ -251,6 +251,8 @@ struct App {
     exiting: bool,
     /// Every window is hidden by Close with Keep RBS running (ADR-0056).
     hidden: bool,
+    /// The last Mixer-shown flag sent to the control thread.
+    meters_ui: bool,
     /// What closing the main window does (`app.toml`, ADR-0056).
     bg: background::AppSettings,
     /// The capture-exclusion last applied, and how many windows existed then.
@@ -2427,6 +2429,10 @@ impl Ctx {
             }
         } else {
             self.meter_timer.stop();
+        }
+        if mixer_shown != app.meters_ui {
+            s.send(studio_host::Command::SetMetersUi(mixer_shown));
+            app.meters_ui = mixer_shown;
         }
 
         #[cfg(any(target_os = "macos", windows))]
@@ -6146,6 +6152,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             sections_windows: 0,
             exiting: false,
             hidden: false,
+            meters_ui: true,
             bg,
             capture_applied: (false, usize::MAX),
             capture_retry: None,

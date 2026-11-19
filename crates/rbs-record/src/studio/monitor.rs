@@ -175,6 +175,7 @@ impl Studio {
             &mixer.master,
             self.master,
             &self.solo,
+            self.meters_on,
         ));
         true
     }

@@ -1368,6 +1368,9 @@ pub struct Studio {
     retiring_owners: Vec<RetiringOwners>,
     /// The mixer's strips last sent.
     strips: Vec<MixStrip>,
+    /// Meters are in the mixer's parameters. Off while the Mixer is hidden and no
+    /// control client samples `audio.levels` (ADR-0143 R2).
+    meters_on: bool,
     /// Volume and mute per source, from the last [`Studio::update`] or
     /// [`Studio::set_mix`].
     mix: BTreeMap<SourceId, SourceAudio>,
@@ -1855,6 +1858,7 @@ impl Studio {
             native_off: false,
             retiring_owners: Vec::new(),
             strips: Vec::new(),
+            meters_on: true,
             mix: mix_of(collection, canvas_id),
             master: master_of(collection, canvas_id),
             filters: Vec::new(),
@@ -3316,13 +3320,20 @@ impl Studio {
             );
             let _ = mixer
                 .params
-                .send(mixer_params(&union, &mixer.master, self.master, &self.solo));
+                .send(mixer_params(
+                    &union,
+                    &mixer.master,
+                    self.master,
+                    &self.solo,
+                    self.meters_on,
+                ));
             if union.len() != staged.len() {
                 trimmed = Some(mixer_params(
                     &staged,
                     &mixer.master,
                     self.master,
                     &self.solo,
+                    self.meters_on,
                 ));
             }
             self.strips = staged;
@@ -3364,7 +3375,13 @@ impl Studio {
                         left.producer == right.producer && left.source == right.source
                     });
                 if !same {
-                    trimmed = Some(mixer_params(&new, &mixer.master, self.master, &self.solo));
+                    trimmed = Some(mixer_params(
+                        &new,
+                        &mixer.master,
+                        self.master,
+                        &self.solo,
+                        self.meters_on,
+                    ));
                     self.strips = new;
                 }
             }
@@ -3561,8 +3578,19 @@ impl Studio {
             &mixer.master,
             self.master,
             &self.solo,
+            self.meters_on,
         ));
         true
+    }
+
+    /// Puts meters on the mixer, or takes them off. A repeat of the current state
+    /// sends nothing. Control thread only.
+    pub fn set_meters_on(&mut self, on: bool) {
+        if self.meters_on == on {
+            return;
+        }
+        self.meters_on = on;
+        self.send_mix();
     }
 
     /// The bound sources the running plan schedules, in binder order, each with its
@@ -6064,6 +6092,7 @@ fn mixer_params(
     meter: &Arc<LevelMeter>,
     master: MasterAudio,
     solo: &BTreeSet<SourceId>,
+    meters_on: bool,
 ) -> MixerParams {
     let strips = strips
         .iter()
@@ -6074,14 +6103,17 @@ fn mixer_params(
                 .with_solo(solo.contains(&s.source))
                 .with_ramp_override(s.ramp);
             match &s.meter {
-                Some(m) => strip.with_meter(Arc::clone(m)),
-                None => strip,
+                Some(m) if meters_on => strip.with_meter(Arc::clone(m)),
+                _ => strip,
             }
         })
         .collect();
-    MixerParams::new(strips)
-        .with_master(master.gain())
-        .with_master_meter(Arc::clone(meter))
+    let params = MixerParams::new(strips).with_master(master.gain());
+    if meters_on {
+        params.with_master_meter(Arc::clone(meter))
+    } else {
+        params
+    }
 }
 
 /// The adjustments of every text source's stored settings (ADR-0129): what

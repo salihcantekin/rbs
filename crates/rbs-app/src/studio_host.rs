@@ -885,6 +885,9 @@ pub enum Command {
         /// Muted.
         muted: bool,
     },
+    /// The Mixer panel is shown (`true`) or hidden. Meters stay on while a control
+    /// client subscribes to `audio.levels` (ADR-0143 R2).
+    SetMetersUi(bool),
     /// Turns a scene's Own levels on (`own` true, copying what is heard) or puts it
     /// back in Shared levels (ADR-0091, `scene.audio.own` / `scene.audio.shared`). One
     /// undo step; a refusal comes back as [`Update::Error`].
@@ -4020,6 +4023,10 @@ struct Host {
     fault: Option<Fault>,
     /// Counts `seq` per state key and publishes events to control API clients.
     events: EventPublisher,
+    /// The Mixer panel is shown. Combined with an `audio.levels` subscription.
+    meters_ui: bool,
+    /// What the mixer was last told.
+    meters_applied: bool,
     /// The control API, while remote control is on.
     api: Option<Api>,
     /// The recording settings as the UI saved them.
@@ -4290,6 +4297,9 @@ fn round(
             .as_ref()
             .is_some_and(|api| api.serve_one(&mut Refuse(why.clone()), &mut host.events, notify)),
     };
+    if failed.is_none() {
+        host.sync_meters();
+    }
     if failed.is_none()
         && let Some(why) = host.dead.take()
     {
@@ -4723,6 +4733,8 @@ fn start(
         // A collection that had to be completed is saved at the first publish.
         saved: loaded,
         events: EventPublisher::new(),
+        meters_ui: true,
+        meters_applied: true,
         api: None,
         profile: RecordProfile::new(),
         kinds,
@@ -4953,6 +4965,10 @@ impl Host {
                     })
                 };
                 self.run_ui_api(call, notify);
+            }
+            Command::SetMetersUi(on) => {
+                self.meters_ui = on;
+                self.sync_meters();
             }
             Command::SetSceneOwnLevels { scene, own } => {
                 let scene = rbs_api::request::SceneRef { scene: scene.get() };
@@ -6713,6 +6729,16 @@ impl Host {
                     EventPayload::StreamCanvasState(api::CanvasStreamState { canvas: c, state })
                 }),
         };
+    }
+
+    /// Puts meters on the mixer while the Mixer is shown or a client samples levels.
+    fn sync_meters(&mut self) {
+        let on = self.meters_ui || self.events.subscribed(rbs_api::Topic::AudioLevels);
+        if on == self.meters_applied {
+            return;
+        }
+        self.studio.set_meters_on(on);
+        self.meters_applied = on;
     }
 
     /// Serves one waiting control API request; true when one was served.

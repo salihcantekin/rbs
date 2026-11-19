@@ -209,6 +209,7 @@ impl Harness {
                 Action::Forward(f) => self.forwarded.push(f),
                 Action::Audit(e) => self.audit.push(e),
                 Action::SetMask(m) => self.masks.push(m),
+                Action::SetSampled(_) => {}
             }
         }
     }
