@@ -6,9 +6,10 @@
 //! the others; any other value is refused at open.
 //!
 //! One packet is 10 ms (`sample rate / 100` frames, at least one). `submit` copies
-//! into a buffer reserved at creation. The packet payload is the one allocation per
-//! packet. NaN becomes silence. A full-scale sample is the largest finite integer
-//! of that width, so `1.0` does not overflow.
+//! into a buffer reserved at creation. A read index consumes each packet in place,
+//! so that buffer is not reallocated per packet. The packet payload is the one
+//! allocation per packet. NaN becomes silence. A full-scale sample is the largest
+//! finite integer of that width, so `1.0` does not overflow.
 
 use rbs_codec::{
     AudioEncoder, AudioEncoderConfig, AudioEncoderFactory, CreateError, EncodeError, EncoderChange,
@@ -73,7 +74,11 @@ struct PcmSession {
     frame_size: usize,
     channels: usize,
     bits: u16,
+    /// Interleaved samples not yet emitted. `read` is the first of them.
+    /// Consumed samples stay put until `reclaim`, so a packet does not allocate
+    /// a new tail the way `Vec::split_off` did.
     pending: Vec<f32>,
+    read: usize,
     origin: Option<Timestamp>,
     emitted: u64,
     ready: Vec<EncodedPacket>,
@@ -113,6 +118,7 @@ impl PcmSession {
             channels,
             bits,
             pending: Vec::with_capacity(frame_size * channels * 2),
+            read: 0,
             origin: None,
             emitted: 0,
             ready: Vec::with_capacity(4),
@@ -120,13 +126,35 @@ impl PcmSession {
         })
     }
 
+    fn unread(&self) -> usize {
+        debug_assert!(self.read <= self.pending.len());
+        self.pending.len() - self.read
+    }
+
+    /// Drops samples already copied into packets. An empty buffer keeps its
+    /// capacity. A tail slides to the front in place, with no allocation.
+    fn reclaim(&mut self) {
+        if self.read == 0 {
+            return;
+        }
+        let unread = self.unread();
+        if unread == 0 {
+            self.pending.clear();
+        } else {
+            self.pending.copy_within(self.read.., 0);
+            self.pending.truncate(unread);
+        }
+        self.read = 0;
+    }
+
     fn take_packet(&mut self) -> Result<(), EncodeError> {
         let frames = self.frame_size;
         let channels = self.channels;
+        let start = self.read;
         self.packet.clear();
         for frame in 0..frames {
             for channel in 0..channels {
-                let sample = self.pending[frame * channels + channel];
+                let sample = self.pending[start + frame * channels + channel];
                 match self.bits {
                     16 => self.packet.extend_from_slice(&to_i16(sample).to_le_bytes()),
                     24 => {
@@ -137,12 +165,24 @@ impl PcmSession {
                 }
             }
         }
-        let rest = self.pending.split_off(frames * channels);
-        self.pending = rest;
-        let origin = self.origin.ok_or(EncodeError::Failed {
-            reason: "pcm packet without a start time".into(),
-            recoverable: false,
-        })?;
+        self.read = start + frames * channels;
+        let drained = self.read == self.pending.len();
+        if drained {
+            self.pending.clear();
+            self.read = 0;
+        }
+        let origin = match self.origin {
+            Some(origin) => origin,
+            None => {
+                if !drained {
+                    self.reclaim();
+                }
+                return Err(EncodeError::Failed {
+                    reason: "pcm packet without a start time".into(),
+                    recoverable: false,
+                });
+            }
+        };
         let pts = origin
             + self
                 .format
@@ -158,7 +198,7 @@ impl PcmSession {
             .with_duration(self.format.sample_rate.duration_of(frames as u64));
         self.ready.push(packet);
         self.emitted += 1;
-        if self.pending.is_empty() {
+        if drained {
             self.origin = None;
             self.emitted = 0;
         }
@@ -179,6 +219,8 @@ impl AudioEncoder for PcmSession {
         if block.format() != self.format {
             return Err(EncodeError::InvalidInput("format".into()));
         }
+        // `reclaim` ran at the end of the previous call, so `pending` holds only
+        // samples that still belong to the open packet.
         if self.pending.is_empty() {
             self.origin = Some(block.timestamp());
         }
@@ -196,9 +238,14 @@ impl AudioEncoder for PcmSession {
             AudioSamples::Interleaved(samples) => self.pending.extend_from_slice(samples),
             _ => return Err(EncodeError::InvalidInput("sample layout".into())),
         }
-        while self.pending.len() >= self.frame_size * self.channels {
-            self.take_packet()?;
+        let need = self.frame_size * self.channels;
+        while self.unread() >= need {
+            if let Err(error) = self.take_packet() {
+                self.reclaim();
+                return Err(error);
+            }
         }
+        self.reclaim();
         Ok(())
     }
 
@@ -216,7 +263,8 @@ impl AudioEncoder for PcmSession {
     }
 
     fn flush(&mut self, out: &mut Vec<EncodedPacket>) -> Result<(), EncodeError> {
-        if !self.pending.is_empty() {
+        if self.unread() > 0 {
+            self.reclaim();
             let need = self.frame_size * self.channels;
             self.pending.resize(need, 0.0);
             self.take_packet()?;
@@ -303,5 +351,170 @@ mod tests {
             PcmSession::new(&config),
             Err(CreateError::Unsupported { .. })
         ));
+    }
+
+    fn session() -> PcmSession {
+        PcmSession::new(&AudioEncoderConfig::new(
+            CodecId::Pcm,
+            AudioFormat::STEREO_48K,
+            0,
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_tail_stays_in_the_pending_buffer_and_the_next_packet_bytes_match() {
+        let mut session = session();
+        let reserved = session.pending.capacity();
+        let frames = 490;
+        let mut left = vec![0.0; frames];
+        let mut right = vec![0.0; frames];
+        for i in 0..frames {
+            left[i] = (i as f32 * 0.001) - 0.2;
+            right[i] = 0.25 - (i as f32 * 0.0005);
+        }
+        let origin = Timestamp::from_nanos(1_000);
+        let first = AudioBlock::planar(AudioFormat::STEREO_48K, origin, &[&left, &right]).unwrap();
+        session.submit(&first).unwrap();
+        assert_eq!(session.read, 0);
+        assert_eq!(session.pending.len(), 20);
+        assert!(session.pending.capacity() >= reserved);
+        let cap = session.pending.capacity();
+
+        let mut packets = Vec::new();
+        session.drain(&mut packets).unwrap();
+        assert_eq!(packets.len(), 1);
+        assert_eq!(packets[0].pts(), origin);
+        assert_eq!(packets[0].data().len(), 480 * 2 * 2);
+        for i in 0..480 {
+            let data = packets[0].data();
+            let l = i16::from_le_bytes([data[i * 4], data[i * 4 + 1]]);
+            let r = i16::from_le_bytes([data[i * 4 + 2], data[i * 4 + 3]]);
+            assert_eq!(l, to_i16(left[i]));
+            assert_eq!(r, to_i16(right[i]));
+        }
+
+        let rest = 470;
+        let mut interleaved = Vec::with_capacity(rest * 2);
+        for _ in 0..rest {
+            interleaved.push(0.1);
+            interleaved.push(-0.1);
+        }
+        let second = AudioBlock::interleaved(
+            AudioFormat::STEREO_48K,
+            Timestamp::from_nanos(9_000_000_000),
+            &interleaved,
+        )
+        .unwrap();
+        session.submit(&second).unwrap();
+        assert_eq!(session.pending.capacity(), cap);
+        assert_eq!(session.read, 0);
+        assert!(session.pending.is_empty());
+        packets.clear();
+        session.drain(&mut packets).unwrap();
+        assert_eq!(packets.len(), 1);
+        let rate = AudioFormat::STEREO_48K.sample_rate;
+        assert_eq!(packets[0].pts(), origin + rate.duration_of(480));
+        let data = packets[0].data();
+        for i in 0..10 {
+            let l = i16::from_le_bytes([data[i * 4], data[i * 4 + 1]]);
+            let r = i16::from_le_bytes([data[i * 4 + 2], data[i * 4 + 3]]);
+            assert_eq!(l, to_i16(left[480 + i]));
+            assert_eq!(r, to_i16(right[480 + i]));
+        }
+        for i in 10..480 {
+            let l = i16::from_le_bytes([data[i * 4], data[i * 4 + 1]]);
+            let r = i16::from_le_bytes([data[i * 4 + 2], data[i * 4 + 3]]);
+            assert_eq!(l, to_i16(0.1));
+            assert_eq!(r, to_i16(-0.1));
+        }
+    }
+
+    #[test]
+    fn repeated_packets_keep_the_pending_capacity() {
+        let mut session = session();
+        let packets_per_block = 3;
+        let frames = 480 * packets_per_block;
+        let mut left = vec![0.0; frames];
+        let mut right = vec![0.0; frames];
+        for i in 0..frames {
+            left[i] = ((i % 17) as f32) * 0.01 - 0.08;
+            right[i] = 0.05 - ((i % 13) as f32) * 0.01;
+        }
+        let origin = Timestamp::from_nanos(5_000);
+        let block = AudioBlock::planar(AudioFormat::STEREO_48K, origin, &[&left, &right]).unwrap();
+        session.submit(&block).unwrap();
+        let cap = session.pending.capacity();
+        assert!(cap >= frames * 2);
+        assert_eq!(session.read, 0);
+        assert!(session.pending.is_empty());
+        for n in 1..4 {
+            let block = AudioBlock::planar(
+                AudioFormat::STEREO_48K,
+                Timestamp::from_nanos(5_000 + n * 30_000_000),
+                &[&left, &right],
+            )
+            .unwrap();
+            session.submit(&block).unwrap();
+            assert_eq!(session.pending.capacity(), cap);
+            assert_eq!(session.read, 0);
+        }
+        let mut packets = Vec::new();
+        session.drain(&mut packets).unwrap();
+        assert_eq!(packets.len(), packets_per_block * 4);
+        let rate = AudioFormat::STEREO_48K.sample_rate;
+        for (n, packet) in packets.iter().enumerate() {
+            let block = n / packets_per_block;
+            let index = n % packets_per_block;
+            let block_origin = if block == 0 {
+                origin
+            } else {
+                Timestamp::from_nanos(5_000 + block as u64 * 30_000_000)
+            };
+            assert_eq!(
+                packet.pts(),
+                block_origin + rate.duration_of(index as u64 * 480)
+            );
+            let data = packet.data();
+            for frame in 0..480 {
+                let sample = index * 480 + frame;
+                let l = i16::from_le_bytes([data[frame * 4], data[frame * 4 + 1]]);
+                let r = i16::from_le_bytes([data[frame * 4 + 2], data[frame * 4 + 3]]);
+                assert_eq!(l, to_i16(left[sample]));
+                assert_eq!(r, to_i16(right[sample]));
+            }
+        }
+    }
+
+    #[test]
+    fn flush_pads_the_unread_tail_with_silence() {
+        let mut session = session();
+        let reserved = session.pending.capacity();
+        let frames = 5;
+        let left = vec![0.5; frames];
+        let right = vec![-0.25; frames];
+        let origin = Timestamp::from_nanos(42_000);
+        let block = AudioBlock::planar(AudioFormat::STEREO_48K, origin, &[&left, &right]).unwrap();
+        session.submit(&block).unwrap();
+        assert_eq!(session.pending.len(), frames * 2);
+        let mut packets = Vec::new();
+        session.flush(&mut packets).unwrap();
+        assert_eq!(packets.len(), 1);
+        assert_eq!(packets[0].pts(), origin);
+        assert_eq!(packets[0].data().len(), 480 * 4);
+        let data = packets[0].data();
+        for i in 0..frames {
+            let l = i16::from_le_bytes([data[i * 4], data[i * 4 + 1]]);
+            let r = i16::from_le_bytes([data[i * 4 + 2], data[i * 4 + 3]]);
+            assert_eq!(l, to_i16(0.5));
+            assert_eq!(r, to_i16(-0.25));
+        }
+        assert!(data[frames * 4..].iter().all(|byte| *byte == 0));
+        assert!(session.pending.is_empty());
+        assert_eq!(session.read, 0);
+        assert!(session.pending.capacity() >= reserved);
+        packets.clear();
+        session.flush(&mut packets).unwrap();
+        assert!(packets.is_empty());
     }
 }
