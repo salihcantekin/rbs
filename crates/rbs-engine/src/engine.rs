@@ -735,6 +735,8 @@ impl Engine {
             if let Some(d) = part.next_due() {
                 min(d);
             }
+            // ADR-0027 decision 6: a running worker is polled so a bypass is seen within
+            // one interval. Nothing else signals that counter.
             if part.has_worker() || part.in_flight() || part.has_faults() {
                 min(self.config.control_interval);
             }

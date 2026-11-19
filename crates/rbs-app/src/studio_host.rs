@@ -109,9 +109,9 @@ use crate::vertical_outputs::VerticalFlags;
 /// loop (the studio asks for at most about 100 ms).
 const MAX_WAIT: Duration = Duration::from_millis(50);
 /// The longest the control thread sleeps while no output runs, ends or waits (perf
-/// audit G-05): nothing is polled then, and every timed driver (media, transitions,
-/// cues, rehearsal, replay, monitor, calibration) still asks for its own deadline. Four
-/// rounds a second instead of twenty; the engine asks for the same while a worker runs.
+/// audit G-05). Idle with no deadline blocks on the next message instead (F-08).
+/// This cap remains for a round that still has to look, and the unit test of
+/// [`round_cap`].
 const IDLE_WAIT: Duration = Duration::from_millis(250);
 /// How often the Stats panel gets new counters while an output runs (its redraw rate,
 /// design system: `rbs.stats` 1 Hz).
@@ -4150,13 +4150,19 @@ fn run(
     };
     host.publish(notify);
     let mut failed: Option<String> = None;
-    let mut wait = MAX_WAIT;
+    let mut wait = Some(MAX_WAIT);
     let mut caught_in_row = 0;
     loop {
-        let msg = match rx.recv_timeout(wait) {
-            Ok(m) => Some(m),
-            Err(RecvTimeoutError::Timeout) => None,
-            Err(RecvTimeoutError::Disconnected) => break,
+        let msg = match wait {
+            Some(wait) => match rx.recv_timeout(wait) {
+                Ok(m) => Some(m),
+                Err(RecvTimeoutError::Timeout) => None,
+                Err(RecvTimeoutError::Disconnected) => break,
+            },
+            None => match rx.recv() {
+                Ok(m) => Some(m),
+                Err(_) => break,
+            },
         };
         // Each round is a panic boundary (ADR-0055 decision 3): a bug in one command or
         // one round fails that round, and the studio and its outputs keep running.
@@ -4171,7 +4177,7 @@ fn run(
             }
             Err(_) => {
                 caught_in_row += 1;
-                wait = MAX_WAIT;
+                wait = Some(MAX_WAIT);
                 notify(Update::Error(rbs_crash::CAUGHT_TEXT.into()));
                 let _ = rbs_crash::contain(|| host.recover(&mut failed, caught_in_row, notify));
             }
@@ -4238,7 +4244,7 @@ fn round(
     failed: &mut Option<String>,
     msg: Option<Msg>,
     notify: &dyn Fn(Update),
-) -> Duration {
+) -> Option<Duration> {
     match msg {
         Some(Msg::Ui(c)) => {
             if failed.is_none() {
@@ -4319,18 +4325,32 @@ fn round(
         // A run still meets its deadline while the studio is failed.
         let calibration = host.drive_calibration();
         return if served_api {
-            Duration::ZERO
+            Some(Duration::ZERO)
         } else {
-            calibration.unwrap_or(Duration::from_secs(3600))
+            Some(calibration.unwrap_or(Duration::from_secs(3600)))
         };
     }
     host.feed_text_live();
     let serviced = host.studio.service();
-    let cap = round_cap(&host.outs, host.waiting || host.held_switch.is_some());
-    let mut wait = serviced.wait.unwrap_or(cap).min(cap);
+    let busy = host.waiting || host.held_switch.is_some();
+    let cap = round_cap(&host.outs, busy);
+    // An output or a switch is checked every round and has no deadline of its own.
+    // Idle, with no engine deadline, blocks on the next message instead of the 250 ms poll.
+    let poll = busy
+        || host
+            .outs
+            .iter()
+            .any(|o| o.recording.is_some() || o.streaming.is_some() || o.ending);
+    let mut armed = serviced.wait.is_some() || poll;
+    let mut wait = if poll {
+        serviced.wait.unwrap_or(cap).min(cap)
+    } else {
+        serviced.wait.unwrap_or(Duration::MAX)
+    };
     if served_api {
         // More may wait; look again right after any UI command.
         wait = Duration::ZERO;
+        armed = true;
     }
     if let Some(why) = host.studio.failure() {
         // Clients see the recording end with the failure instead of a stale state.
@@ -4338,7 +4358,7 @@ fn round(
         *failed = Some(why.clone());
         host.end_outputs(&why, notify);
         notify(Update::Failed(why));
-        return wait;
+        return finish_wait(wait, armed);
     }
     // A replacement that waited for its predecessor opens now.
     let waiting = host.studio.waiting();
@@ -4347,19 +4367,19 @@ fn round(
     }
     host.waiting = waiting;
     if let Some(left) = host.drive_crisp(notify) {
-        wait = wait.min(left);
+        arm(&mut wait, &mut armed, left);
     }
     if host.fonts_wanted {
         host.list_text_fonts(notify);
         if host.fonts_wanted {
-            wait = wait.min(text_resize::FONTS_POLL);
+            arm(&mut wait, &mut armed, text_resize::FONTS_POLL);
         }
     }
     if host.held_switch.is_some() {
         host.drive_held_switch(notify);
         if host.held_switch.is_some() {
             // Look again within a render tick.
-            wait = wait.min(HELD_SWITCH_POLL);
+            arm(&mut wait, &mut armed, HELD_SWITCH_POLL);
         }
     }
     // The latest T-bar value (ADR-0135 decision 1), once per round.
@@ -4412,7 +4432,7 @@ fn round(
                 host.stop_recording(c, None, notify);
             } else {
                 // The tail takes a few frames; look again soon.
-                wait = wait.min(ENDING_WAIT);
+                arm(&mut wait, &mut armed, ENDING_WAIT);
             }
         }
         if host.outs[slot(c)].streaming.is_some() {
@@ -4421,39 +4441,39 @@ fn round(
             } else {
                 host.report_link(c, notify);
                 if let Some(left) = host.drive_hold(c) {
-                    wait = wait.min(left);
+                    arm(&mut wait, &mut armed, left);
                 }
             }
         }
     }
     let now = host.clock.now();
     if let Some(left) = host.report_stats(now, notify) {
-        wait = wait.min(left);
+        arm(&mut wait, &mut armed, left);
     }
     if let Some(left) = host.drive_protection(now, notify) {
-        wait = wait.min(left);
+        arm(&mut wait, &mut armed, left);
     }
     if let Some(left) = host.report_camera(now, notify) {
-        wait = wait.min(left);
+        arm(&mut wait, &mut armed, left);
     }
     if let Some(left) = host.drive_monitor(now) {
-        wait = wait.min(left);
+        arm(&mut wait, &mut armed, left);
     }
     if let Some(left) = host.drive_calibration() {
-        wait = wait.min(left);
+        arm(&mut wait, &mut armed, left);
     }
     if let Some(left) = host.drive_sync_measure(notify) {
-        wait = wait.min(left);
+        arm(&mut wait, &mut armed, left);
     }
     if let Some(left) = host.drive_marker_flush(now, notify) {
-        wait = wait.min(left);
+        arm(&mut wait, &mut armed, left);
     }
     if let Some(left) = host.report_media(notify) {
-        wait = wait.min(left);
+        arm(&mut wait, &mut armed, left);
     }
     host.report_monitor(notify);
     if let Some(left) = host.report_replay(now, notify) {
-        wait = wait.min(left);
+        arm(&mut wait, &mut armed, left);
     }
     // One wake for the soonest timed-show deadline. An empty cue map adds nothing
     // (ADR-0105, P13).
@@ -4461,18 +4481,29 @@ fn round(
         host.apply(notify);
     }
     if let Some(left) = host.studio.cue_wait(now) {
-        wait = wait.min(left);
+        arm(&mut wait, &mut armed, left);
     }
     // A running transition steps on the master clock; none arms nothing (P13).
     if let Some(left) = host.studio.transition_wait(now) {
-        wait = wait.min(left);
+        arm(&mut wait, &mut armed, left);
     }
     // A rehearsal ends on the master clock; none arms nothing (P13).
     if let Some(left) = host.studio.rehearsal_wait(now) {
-        wait = wait.min(left);
+        arm(&mut wait, &mut armed, left);
     }
     host.publish(notify);
-    wait
+    finish_wait(wait, armed)
+}
+
+/// Keeps `left` as the soonest deadline. `armed` stays false only while no driver and
+/// no engine asked for a wake, so the control thread can block on the next message.
+fn arm(wait: &mut Duration, armed: &mut bool, left: Duration) {
+    *wait = (*wait).min(left);
+    *armed = true;
+}
+
+fn finish_wait(wait: Duration, armed: bool) -> Option<Duration> {
+    armed.then_some(wait)
 }
 
 /// The longest sleep after a round: [`MAX_WAIT`] while an output runs or ends on any
@@ -18075,8 +18106,9 @@ mod tests {
         assert!(browser_input_event(&text("x".repeat(257))).is_err());
     }
 
-    /// At idle the control thread sleeps up to a quarter second; anything that is
-    /// checked each round keeps the short sleep (perf audit G-05).
+    /// While an output runs or a switch waits, the round keeps the short sleep. Idle
+    /// does not use that cap: with no deadline the control thread blocks on the next
+    /// message (F-08).
     #[test]
     fn the_control_thread_sleeps_longer_while_nothing_runs() {
         let mut outs = [CanvasOutputs::default(), CanvasOutputs::default()];
