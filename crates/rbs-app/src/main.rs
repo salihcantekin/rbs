@@ -6088,10 +6088,16 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
     );
     let mut user_notes = user.notes.clone();
     // Kept browser sign-ins no saved collection names any more (ADR-0132 decision 10).
+    // The session stays on this thread: it owns the writer. The sweep thread reads a
+    // clone of the data path, the same way as `all_profile_ids`, and does not take
+    // the writer lock.
     if let Some(dir) = rbs_app::add_ons::default_root()
         .and_then(|root| rbs_app::browser_profiles::dir_beside(&root))
     {
-        rbs_app::browser_profiles::sweep_at_start(dir, || user.all_profile_ids());
+        let data = user.data().clone();
+        rbs_app::browser_profiles::sweep_at_start(dir, move || {
+            rbs_app::user_session::saved_profile_ids(&data)
+        });
     }
     // What closing the main window does (ADR-0056); a bad file means the default.
     let (mut bg, bg_note) = background::load(&config);

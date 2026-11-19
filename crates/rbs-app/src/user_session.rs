@@ -311,6 +311,25 @@ fn own_profiles(data: &UserData, lock: &WriterLock, id: &EntryId) -> Result<(), 
     Ok(())
 }
 
+/// Every kept-profile id a saved collection names, or `None` when any collection
+/// cannot be read (the start-up sweep is then skipped, ADR-0132 decision 10).
+/// Reads the collection files the same way [`UserSession::all_profile_ids`] does,
+/// and does not take the writer lock.
+pub fn saved_profile_ids(data: &UserData) -> Option<std::collections::BTreeSet<String>> {
+    let lib = data.scene_collections();
+    let listing = lib.list().ok()?;
+    if !listing.problems.is_empty() {
+        return None;
+    }
+    let mut ids = std::collections::BTreeSet::new();
+    for entry in listing.entries {
+        ids.extend(crate::browser_profiles::ids(
+            &lib.load(&entry.id).ok()?.document,
+        ));
+    }
+    Some(ids)
+}
+
 /// The output profile and scene collection in use.
 pub struct UserSession {
     data: UserData,
@@ -517,18 +536,7 @@ impl UserSession {
     /// Every kept-profile id a saved collection names, or `None` when any collection
     /// cannot be read (the start-up sweep is then skipped, ADR-0132 decision 10).
     pub fn all_profile_ids(&self) -> Option<std::collections::BTreeSet<String>> {
-        let lib = self.data.scene_collections();
-        let listing = lib.list().ok()?;
-        if !listing.problems.is_empty() {
-            return None;
-        }
-        let mut ids = std::collections::BTreeSet::new();
-        for entry in listing.entries {
-            ids.extend(crate::browser_profiles::ids(
-                &lib.load(&entry.id).ok()?.document,
-            ));
-        }
-        Some(ids)
+        saved_profile_ids(&self.data)
     }
 
     /// What saves the scene collection `id` (named `name`) after a change, once it

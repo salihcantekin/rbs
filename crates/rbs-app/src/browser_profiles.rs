@@ -29,22 +29,37 @@ pub fn dir_beside(add_ons_root: &Path) -> Option<PathBuf> {
 /// The name of the profiles directory in the local data directory.
 pub const DIR_NAME: &str = "browser-profiles";
 
-/// The start-up sweep on a thread of its own, when `dir` holds anything: `referenced`
-/// is asked only then (it reads every saved collection) and `None` skips the sweep.
-pub fn sweep_at_start(dir: PathBuf, referenced: impl FnOnce() -> Option<BTreeSet<String>>) {
+/// The start-up sweep on a thread of its own, when `dir` holds anything.
+/// `referenced` runs on that thread (it reads every saved collection) and is not
+/// called before the thread is spawned. `None` skips the sweep. An empty `dir`
+/// does not spawn and does not call `referenced`.
+pub fn sweep_at_start(
+    dir: PathBuf,
+    referenced: impl FnOnce() -> Option<BTreeSet<String>> + Send + 'static,
+) {
+    drop(spawn_sweep(dir, referenced));
+}
+
+/// Spawns the start-up sweep. `None` when `dir` is empty or the thread could not
+/// be started: nothing is deleted, and `referenced` is not called. The returned
+/// handle is joined by tests; [`sweep_at_start`] detaches it.
+fn spawn_sweep(
+    dir: PathBuf,
+    referenced: impl FnOnce() -> Option<BTreeSet<String>> + Send + 'static,
+) -> Option<std::thread::JoinHandle<()>> {
     let has_any = std::fs::read_dir(&dir).is_ok_and(|mut e| e.next().is_some());
     if !has_any {
-        return;
+        return None;
     }
-    let Some(referenced) = referenced() else {
-        return;
-    };
-    let spawned = std::thread::Builder::new()
+    std::thread::Builder::new()
         .name("rbs-profile-sweep".into())
         .spawn(move || {
+            let Some(referenced) = referenced() else {
+                return;
+            };
             sweep(&dir, &referenced);
-        });
-    drop(spawned);
+        })
+        .ok()
 }
 
 /// A new random profile id: 32 lowercase hex digits (128 bits).
@@ -273,6 +288,79 @@ mod tests {
             remove_with_retries(&dir.join(A), 1, Duration::ZERO),
             "gone counts"
         );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn profiles_dir(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("rbs-profiles-{label}-{}", new_id().unwrap()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn the_start_sweep_reads_on_its_thread_and_removes_only_unreferenced_profiles() {
+        let dir = profiles_dir("start");
+        for name in [A, B, "not-a-profile"] {
+            std::fs::create_dir_all(dir.join(name)).unwrap();
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let thread = spawn_sweep(dir.clone(), move || {
+            tx.send(std::thread::current().name().map(str::to_owned))
+                .unwrap();
+            Some(BTreeSet::from([A.to_owned()]))
+        })
+        .unwrap();
+        thread.join().unwrap();
+        assert_eq!(
+            rx.recv().unwrap().as_deref(),
+            Some("rbs-profile-sweep"),
+            "collections are read on the sweep thread"
+        );
+        assert!(dir.join(A).exists() && dir.join("not-a-profile").exists());
+        assert!(!dir.join(B).exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_start_sweep_skips_when_a_collection_cannot_be_read() {
+        let dir = profiles_dir("skip");
+        std::fs::create_dir_all(dir.join(A)).unwrap();
+        let thread = spawn_sweep(dir.clone(), || None).unwrap();
+        thread.join().unwrap();
+        assert!(
+            dir.join(A).exists(),
+            "an unreadable collection skips the sweep"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn sweep_at_start_asks_on_the_sweep_thread() {
+        let dir = profiles_dir("public");
+        std::fs::create_dir_all(dir.join(A)).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        sweep_at_start(dir.clone(), move || {
+            let _ = tx.send(std::thread::current().name().map(str::to_owned));
+            None
+        });
+        // Hang guard. A passing run returns as soon as the sweep thread reads.
+        let name = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(name.as_deref(), Some("rbs-profile-sweep"));
+        assert!(dir.join(A).exists(), "None skips the sweep");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_empty_profiles_directory_does_not_read_collections() {
+        let dir = profiles_dir("empty");
+        let asked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = std::sync::Arc::clone(&asked);
+        let started = spawn_sweep(dir.clone(), move || {
+            flag.store(true, std::sync::atomic::Ordering::Relaxed);
+            Some(BTreeSet::new())
+        });
+        assert!(started.is_none());
+        assert!(!asked.load(std::sync::atomic::Ordering::Relaxed));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
