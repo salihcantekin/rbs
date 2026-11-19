@@ -10,8 +10,8 @@
 //! UI command waiting, and state changes are published as events with a `seq` per
 //! state key. With no API attached this costs a counter increment per change.
 
-use std::collections::{BTreeMap, HashMap};
 use std::collections::hash_map::DefaultHasher;
+use std::collections::{BTreeMap, HashMap};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Weak;
@@ -13955,57 +13955,57 @@ impl Host {
         let stamp = self.compute_list_stamp();
         if self.list_stamp != Some(stamp) {
             self.list_stamp = Some(stamp);
-        let scenes = self.scene_list();
-        if self.scenes_shown.as_ref() != Some(&scenes) {
-            self.scenes_shown = Some(scenes.clone());
-            let listed = api_scenes(&scenes);
-            self.events
-                .changed(StateKey::topic(Topic::SceneChanged), || {
-                    EventPayload::SceneChanged(listed)
-                });
-            notify(Update::Scenes(scenes));
-        }
-        // `source.changed` and the Mixer: the program scene (ADR-0061 decision 8).
-        let heard = self.rows_of(self.scene);
-        let globals = self.global_rows();
-        if heard != self.heard || globals != self.globals_shown {
-            if heard != self.heard {
-                let listed: Vec<api::SourceInfo> = heard.iter().map(api_source).collect();
+            let scenes = self.scene_list();
+            if self.scenes_shown.as_ref() != Some(&scenes) {
+                self.scenes_shown = Some(scenes.clone());
+                let listed = api_scenes(&scenes);
                 self.events
-                    .changed(StateKey::topic(Topic::SourceChanged), || {
-                        EventPayload::SourceChanged(listed)
+                    .changed(StateKey::topic(Topic::SceneChanged), || {
+                        EventPayload::SceneChanged(listed)
                     });
+                notify(Update::Scenes(scenes));
             }
-            self.heard = heard.clone();
-            self.globals_shown = globals.clone();
-            // The Mixer hears the global sources with the program (ADR-0065).
-            let mut mixed = globals;
-            mixed.extend(heard);
-            notify(Update::Heard(mixed));
-        }
-        let rows = self.rows();
-        if rows != self.rows {
-            let mut refused: Vec<PermissionKind> = rows
-                .iter()
-                .filter_map(|r| match r.status {
-                    SourceStatus::Unavailable {
-                        fault: SourceFault::PermissionDenied,
-                        ..
-                    } => PermissionKind::of_type(&r.kind?.type_id()),
-                    _ => None,
-                })
-                .collect();
-            refused.sort_by_key(|k| PermissionKind::ALL.iter().position(|a| a == k));
-            refused.dedup();
-            if refused != self.permission_refused {
-                if refused.iter().any(|k| !self.permission_refused.contains(k)) {
-                    self.send_permissions(notify);
+            // `source.changed` and the Mixer: the program scene (ADR-0061 decision 8).
+            let heard = self.rows_of(self.scene);
+            let globals = self.global_rows();
+            if heard != self.heard || globals != self.globals_shown {
+                if heard != self.heard {
+                    let listed: Vec<api::SourceInfo> = heard.iter().map(api_source).collect();
+                    self.events
+                        .changed(StateKey::topic(Topic::SourceChanged), || {
+                            EventPayload::SourceChanged(listed)
+                        });
                 }
-                self.permission_refused = refused;
+                self.heard = heard.clone();
+                self.globals_shown = globals.clone();
+                // The Mixer hears the global sources with the program (ADR-0065).
+                let mut mixed = globals;
+                mixed.extend(heard);
+                notify(Update::Heard(mixed));
             }
-            self.rows = rows.clone();
-            notify(Update::Sources(rows));
-        }
+            let rows = self.rows();
+            if rows != self.rows {
+                let mut refused: Vec<PermissionKind> = rows
+                    .iter()
+                    .filter_map(|r| match r.status {
+                        SourceStatus::Unavailable {
+                            fault: SourceFault::PermissionDenied,
+                            ..
+                        } => PermissionKind::of_type(&r.kind?.type_id()),
+                        _ => None,
+                    })
+                    .collect();
+                refused.sort_by_key(|k| PermissionKind::ALL.iter().position(|a| a == k));
+                refused.dedup();
+                if refused != self.permission_refused {
+                    if refused.iter().any(|k| !self.permission_refused.contains(k)) {
+                        self.send_permissions(notify);
+                    }
+                    self.permission_refused = refused;
+                }
+                self.rows = rows.clone();
+                notify(Update::Sources(rows));
+            }
         }
         let picture = self.studio.scene_preview();
         if picture != self.scene_preview_sent {
@@ -14060,9 +14060,7 @@ impl Host {
         for source in self.collection.sources() {
             source.id.hash(&mut hasher);
             let state = states.iter().find(|st| st.source == source.id);
-            state
-                .and_then(|st| st.failed.as_deref())
-                .hash(&mut hasher);
+            state.and_then(|st| st.failed.as_deref()).hash(&mut hasher);
             state
                 .and_then(|st| st.fault)
                 .map(|f| f as u8)
@@ -14105,9 +14103,7 @@ impl Host {
                 item.visible.hash(&mut hasher);
                 item.locked.hash(&mut hasher);
                 item.show_for_ms.hash(&mut hasher);
-                self.studio
-                    .cue_remaining_ms(item.id, now)
-                    .hash(&mut hasher);
+                self.studio.cue_remaining_ms(item.id, now).hash(&mut hasher);
                 self.scroll_paused_of(item).hash(&mut hasher);
             }
         }

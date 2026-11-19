@@ -7446,8 +7446,9 @@ impl StudioUi {
                 // What is heard: the program scene's own level over the source's
                 // (ADR-0091 decision 3); the fader edits that.
                 let heard = r.heard.unwrap_or(r.audio);
-                MeterRow {
-                    id: r.id.get() as i32,
+                let id = r.id.get() as i32;
+                let mut row = MeterRow {
+                    id,
                     muted: heard.muted,
                     volume: fader::position_of(heard.volume),
                     volume_text: if live {
@@ -7464,7 +7465,21 @@ impl StudioUi {
                     live,
                     scene_level: own,
                     ..MeterRow::default()
+                };
+                // A fader or name change must not clear the bar the meter tick paints.
+                if live && let Some(old) = self.meter_row(id) {
+                    row.lo_from = old.lo_from;
+                    row.lo_to = old.lo_to;
+                    row.mi_from = old.mi_from;
+                    row.mi_to = old.mi_to;
+                    row.hi_from = old.hi_from;
+                    row.hi_to = old.hi_to;
+                    row.peak = old.peak;
+                    row.peak_zone = old.peak_zone;
+                    row.clipped = old.clipped;
+                    row.value = old.value;
                 }
+                row
             })
             .collect();
         set_rows(&self.meters, meters);
@@ -7482,6 +7497,12 @@ impl StudioUi {
             })
             .collect();
         set_rows(&self.hidden_meters, hidden);
+    }
+
+    /// The Mixer row already showing `id`, so a later `Heard` can keep its bar.
+    fn meter_row(&self, id: i32) -> Option<MeterRow> {
+        (0..self.meters.row_count())
+            .find_map(|i| self.meters.row_data(i).filter(|row| row.id == id))
     }
 
     /// Why a recording or stream started now would carry no voice; `None` while a
