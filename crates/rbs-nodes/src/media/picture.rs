@@ -547,6 +547,11 @@ impl MediaPictureNode {
         progress
             .queued_bytes
             .fetch_sub(item.bytes as u64, Ordering::Relaxed);
+        if self.shared.picture_waiting.load(Ordering::Acquire) {
+            if let Some(worker) = self.shared.worker_thread.get() {
+                worker.unpark();
+            }
+        }
         Some(item)
     }
 

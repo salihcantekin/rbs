@@ -11,8 +11,9 @@
 //! source that is heard but not seen still plays.
 //!
 //! The worker stamps every picture and every sound block with master time (ADR-0106
-//! decision 4). It paces each stream by master time, never waits on a ring, drops and
-//! counts what does not fit, resamples and remaps sound to the audio graph's format and
+//! decision 4). It paces each stream by master time. A picture waits for a free ring
+//! slot instead of being decoded and dropped; a sound block that does not fit is
+//! dropped and counted. It resamples and remaps sound to the audio graph's format and
 //! cuts it on the audio block grid (ADR-0106 decision 3). Both `process` methods only
 //! dequeue, copy, and hand buffers back on return rings: they do not allocate, free,
 //! block, resample, or read the file.
@@ -38,7 +39,7 @@ mod sound;
 mod worker;
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
 
 use rbs_core::time::Timestamp;
@@ -166,6 +167,11 @@ pub(crate) struct Shared {
     /// The picture node is prepared: the worker queues pictures. Without it, pictures
     /// are decoded for the pass timing only, not copied or queued.
     pub(crate) picture_attached: AtomicBool,
+    /// The worker thread, set when it starts. The picture node uses it to wake a
+    /// worker that is waiting for a free picture slot. Lock-free after it is set.
+    pub(crate) worker_thread: OnceLock<std::thread::Thread>,
+    /// The worker is parked until a picture slot is free or the next sound block is due.
+    pub(crate) picture_waiting: AtomicBool,
     /// A block time the sound node has seen, in nanoseconds plus one; 0 before its
     /// first block. Every block time is on the same grid.
     pub(crate) grid: AtomicU64,
@@ -229,6 +235,8 @@ impl Shared {
             inlet: Mutex::new(None),
             sound_attached: AtomicBool::new(false),
             picture_attached: AtomicBool::new(false),
+            worker_thread: OnceLock::new(),
+            picture_waiting: AtomicBool::new(false),
             grid: AtomicU64::new(0),
             epoch: AtomicU32::new(0),
             sound_from: AtomicU64::new(0),

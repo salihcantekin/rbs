@@ -341,6 +341,8 @@ impl GifFrames {
         );
         self.dispose = Some((frame.dispose, rect, saved));
         let delay = delay_rule(Duration::from_millis(u64::from(frame.delay) * 10));
+        // The next frame's disposal starts from this canvas, so the published picture
+        // is a snapshot. The worker takes that buffer without copying it again.
         Ok(Some(Composed {
             rgba: self.canvas.clone(),
             delay,
@@ -445,8 +447,9 @@ impl PngFrames {
                 height: out.height,
             };
             put_rect(&mut self.canvas, self.width, self.height, rect, &self.rgba);
+            // One picture: nothing composites on top of this canvas.
             return Ok(Some(Composed {
-                rgba: self.canvas.clone(),
+                rgba: std::mem::take(&mut self.canvas),
                 delay: Duration::ZERO,
             }));
         }
@@ -491,6 +494,8 @@ impl PngFrames {
             }
         }
         self.dispose = Some((fc.dispose_op, rect, saved));
+        // The next frame's disposal starts from this canvas, so the published picture
+        // is a snapshot. The worker takes that buffer without copying it again.
         Ok(Some(Composed {
             rgba: self.canvas.clone(),
             delay: delay_rule(apng_delay(&fc)),

@@ -206,11 +206,15 @@ impl BrowserTree for RunnerBrowserTree {
         let mut edge = sound
             .as_ref()
             .map(|sound| BrowserPictureEdge::new(sound.clock()));
-        let publish = move |rgba: &[u8], width, height, painted| {
+        let publish = move |rgba: &mut Vec<u8>, width, height, painted, fresh| {
             let stamp = edge
                 .as_mut()
                 .map(|edge| edge.stamp(painted, rbs_browser_shm::os_monotonic_nanos()));
-            sink.publish_at(rgba, width, height, stamp);
+            if fresh {
+                sink.publish_frame(rgba, width, height, stamp);
+            } else {
+                sink.republish();
+            }
         };
         let supervisor = match sound {
             // The page's sound reaches the sound node through the feed, on the

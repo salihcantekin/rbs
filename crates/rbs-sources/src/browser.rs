@@ -598,6 +598,8 @@ struct Kept {
     /// Bytes the render thread still held when a newer picture came; dropped here once
     /// it lets go, so the last reference never goes on the render thread.
     retired: Option<Bytes>,
+    /// Master time of `last`, so a page shown again republishes it without the pixels.
+    stamp: Option<Timestamp>,
 }
 
 impl BrowserFrameSink {
@@ -648,6 +650,100 @@ impl BrowserFrameSink {
             }
             _ => Bytes::copy_from_slice(rgba),
         };
+        self.store_picture(kept, bytes, width, height, stamp);
+    }
+
+    /// Publishes a buffer the supervisor owns. When the previous picture is still
+    /// held, the buffer becomes the frame's bytes and `rgba` is left at the same
+    /// length for the next section copy, which overwrites it. When the render thread
+    /// has let the previous bytes go, those bytes are reused and `rgba` is unchanged.
+    pub fn publish_frame(
+        &self,
+        rgba: &mut Vec<u8>,
+        width: u32,
+        height: u32,
+        stamp: Option<Timestamp>,
+    ) {
+        let expected = (width as usize)
+            .saturating_mul(height as usize)
+            .saturating_mul(4);
+        if width == 0 || height == 0 || rgba.len() != expected {
+            return;
+        }
+        let replaced = self.pending.lock().ok().and_then(|mut slot| slot.take());
+        drop(replaced);
+        let Ok(mut kept) = self.kept.lock() else {
+            return;
+        };
+        if kept.retired.as_ref().is_some_and(Bytes::is_unique) {
+            kept.retired = None;
+        }
+        let bytes = match kept.last.take().map(Bytes::try_into_mut) {
+            Some(Ok(mut reuse)) if reuse.len() == rgba.len() => {
+                reuse.copy_from_slice(rgba);
+                reuse.freeze()
+            }
+            held => {
+                if let Some(Err(held)) = held {
+                    kept.retired = Some(held);
+                }
+                let painted = std::mem::take(rgba);
+                // The next section copy overwrites every byte before anything reads it.
+                // A page shown again republishes `kept.last` and does not read `rgba`.
+                rgba.reserve(expected);
+                // SAFETY: `expected` equals `painted.len()`, which was one full frame.
+                // `take_latest` writes that many bytes over this buffer before a read.
+                unsafe { rgba.set_len(expected) };
+                Bytes::from(painted)
+            }
+        };
+        self.store_picture(kept, bytes, width, height, stamp);
+    }
+
+    /// Puts the last picture back for a page that was shown again and has not painted.
+    /// Clones the bytes (a reference count). No pixel copy.
+    pub fn republish(&self) {
+        let Ok(kept) = self.kept.lock() else {
+            return;
+        };
+        let Some(bytes) = kept.last.clone() else {
+            return;
+        };
+        let stamp = kept.stamp;
+        let width = self.width.load(Ordering::Acquire);
+        let height = self.height.load(Ordering::Acquire);
+        drop(kept);
+        if width == 0 || height == 0 {
+            return;
+        }
+        let format = VideoFormat::new(
+            Size::new(width, height),
+            PixelFormat::Rgba8,
+            ColorSpace::SRGB,
+        );
+        let planes = [PlaneLayout {
+            offset: 0,
+            stride: width as usize * 4,
+        }];
+        let Ok(system) = SystemFrame::new(format, bytes, &planes) else {
+            return;
+        };
+        let frame = VideoFrame::system(stamp.unwrap_or(Timestamp::ZERO), system, None)
+            .with_sequence(next_generation());
+        if let Ok(mut slot) = self.pending.lock() {
+            *slot = Some(PendingPicture { frame, stamp });
+        }
+        self.generation.fetch_add(1, Ordering::Release);
+    }
+
+    fn store_picture(
+        &self,
+        mut kept: std::sync::MutexGuard<'_, Kept>,
+        bytes: Bytes,
+        width: u32,
+        height: u32,
+        stamp: Option<Timestamp>,
+    ) {
         let format = VideoFormat::new(
             Size::new(width, height),
             PixelFormat::Rgba8,
@@ -661,8 +757,8 @@ impl BrowserFrameSink {
             return;
         };
         kept.last = Some(bytes);
+        kept.stamp = stamp;
         drop(kept);
-        // A new key per picture, also when it has no stamp (ADR-0117 decision 4).
         let frame = VideoFrame::system(stamp.unwrap_or(Timestamp::ZERO), system, None)
             .with_sequence(next_generation());
         if let Ok(mut slot) = self.pending.lock() {
@@ -1402,6 +1498,42 @@ mod tests {
         // The frame's own bookkeeping may allocate; the pixels are not copied anew.
         let fresh = allocation_counter::measure(|| sink.publish(&[2; 16], 2, 2));
         assert!(info.bytes_total <= fresh.bytes_total, "{info:?} {fresh:?}");
+    }
+
+    #[test]
+    fn a_held_picture_keeps_the_supervisors_buffer() {
+        let sink = BrowserFrameSink::new();
+        let mut buf = vec![1u8; 16];
+        let ptr = buf.as_ptr();
+        sink.publish_frame(&mut buf, 2, 2, None);
+        let held = sink.take_due(Timestamp::ZERO).unwrap();
+        match held.payload() {
+            rbs_core::media::FramePayload::System(system) => {
+                assert_eq!(system.data().as_ptr(), ptr);
+            }
+            _ => panic!("system frame"),
+        }
+        assert_eq!(buf.len(), 16);
+        let ptr2 = buf.as_ptr();
+        buf.fill(2);
+        sink.publish_frame(&mut buf, 2, 2, None);
+        let next = sink.take_due(Timestamp::ZERO).unwrap();
+        match next.payload() {
+            rbs_core::media::FramePayload::System(system) => {
+                assert_eq!(system.data().as_ptr(), ptr2);
+                assert_eq!(system.data()[0], 2);
+            }
+            _ => panic!("system frame"),
+        }
+        sink.republish();
+        let again = sink.take_due(Timestamp::ZERO).unwrap();
+        match again.payload() {
+            rbs_core::media::FramePayload::System(system) => {
+                assert_eq!(system.data().as_ptr(), ptr2);
+            }
+            _ => panic!("system frame"),
+        }
+        drop(held);
     }
 
     #[test]

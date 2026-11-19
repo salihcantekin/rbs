@@ -2,8 +2,10 @@
 //!
 //! It owns the decoder. It paces each stream by master time: it decodes a stream only
 //! while that stream's next stamp is at most [`LEAD`] ahead of now, and parks
-//! otherwise. It never waits on a ring: a picture or block that does not fit is dropped
-//! and counted. It stamps pictures and sound with master time from one anchor, set once
+//! otherwise. When the picture ring cannot take another picture of the size already
+//! queued, it does not decode the next one; it waits until the picture node takes a
+//! picture or until the next sound block is due. A sound block that does not fit is
+//! dropped and counted. It stamps pictures and sound with master time from one anchor, set once
 //! it holds the first picture (and the first sound chunk while the sound node is
 //! prepared), at now plus the lead, and keeps mapping forward across a
 //! loop boundary so a loop leaves no timestamp gap.
@@ -127,6 +129,7 @@ impl Drop for Released<'_> {
 
 /// Runs one worker until the end of the file (without `loop`), a fault, or shutdown.
 pub(crate) fn run(job: Job) {
+    let _ = job.shared.worker_thread.set(thread::current());
     let target = job.shared.decode_target();
     let mut opened = job.factory.open_for(&job.path, &target);
     // An adapter that cannot keep alpha passes the file to the next one that can
@@ -224,6 +227,7 @@ pub(crate) fn run(job: Job) {
         sound: SoundStream::new(&job.config, cursor),
         primed_sound,
         unseen: std::collections::VecDeque::new(),
+        last_picture_bytes: None,
         job: &job,
         decoder: &mut *decoder,
     };
@@ -283,6 +287,9 @@ struct Run<'a> {
     /// start and master time: the latest one due and those after it (at most
     /// [`PICTURE_SLOTS`]). Decoded samples, not copies.
     unseen: std::collections::VecDeque<Unseen>,
+    /// Bytes of the last picture, so a full ring is seen before the next decode.
+    /// `None` until the first picture.
+    last_picture_bytes: Option<usize>,
     /// The first sound chunk, decoded before the anchor was set.
     primed_sound: Option<rbs_media_decode::SoundSample>,
 }
@@ -471,7 +478,13 @@ impl Run<'_> {
                     }
                 }
             }
-            if !self.pictures.done && self.master(self.pictures.next) <= horizon {
+            let picture_due = !self.pictures.done && self.master(self.pictures.next) <= horizon;
+            // A full ring would decode this picture and then drop it. Wait instead.
+            // Sound still runs up to its next block, below.
+            let waiting_for_room = picture_due
+                && job.shared.picture_attached.load(Ordering::Acquire)
+                && self.picture_ring_full();
+            if picture_due && !waiting_for_room {
                 busy = true;
                 match self.next_picture() {
                     Ok(()) => {}
@@ -540,6 +553,10 @@ impl Run<'_> {
                 self.primed_sound = None;
                 continue;
             }
+            if waiting_for_room {
+                self.wait_for_picture_room(now);
+                continue;
+            }
             if !busy {
                 job.progress
                     .settled_at
@@ -568,6 +585,58 @@ impl Run<'_> {
             due = Some(due.map_or(s, |d: i128| d.min(s)));
         }
         due
+    }
+
+    /// True when another picture of the last size would be dropped. The first picture
+    /// has no size yet, so it is decoded.
+    fn picture_ring_full(&self) -> bool {
+        let Some(bytes) = self.last_picture_bytes else {
+            return false;
+        };
+        let fill = fill_count(bytes);
+        let queued = self.job.progress.queued_frames.load(Ordering::Relaxed) as usize;
+        let queued_bytes = self.job.progress.queued_bytes.load(Ordering::Relaxed) as usize;
+        queued >= fill || queued_bytes.saturating_add(bytes) > MAX_FRAME_BYTES
+    }
+
+    /// Parks until the picture node takes a picture, or until the next sound block is
+    /// due. A slot that frees after the flag is set wakes this thread.
+    fn wait_for_picture_room(&self, now: Timestamp) {
+        self.job
+            .shared
+            .picture_waiting
+            .store(true, Ordering::Release);
+        if self.picture_ring_full() {
+            match self.sound_park_wait(now) {
+                Some(wait) if !wait.is_zero() => thread::park_timeout(wait),
+                Some(_) => {}
+                None => thread::park(),
+            }
+        }
+        self.job
+            .shared
+            .picture_waiting
+            .store(false, Ordering::Release);
+    }
+
+    /// How long until the next sound block is inside the lead. `None` when sound is
+    /// not running. `Some(0)` when a block is already due.
+    fn sound_park_wait(&self, now: Timestamp) -> Option<Duration> {
+        let playing = self.job.shared.sound_attached.load(Ordering::Acquire)
+            && self.job.shared.has_audio.load(Ordering::Acquire)
+            && !self.sound.done
+            && self.sound.inlet.is_some();
+        if !playing {
+            return None;
+        }
+        let horizon = now.as_nanos() as i128 + LEAD.as_nanos() as i128;
+        let wait = self.sound_next_master() - horizon;
+        if wait <= 0 {
+            return Some(Duration::ZERO);
+        }
+        Some(Duration::from_nanos(
+            u64::try_from(wait).unwrap_or(u64::MAX),
+        ))
     }
 
     /// The worker decodes sound now.
@@ -669,7 +738,8 @@ impl Run<'_> {
     }
 
     /// Copies one picture into a frame and queues it, or drops and counts it when the
-    /// ring, the byte cap, or the surface budget is full. A native picture moves on
+    /// ring, the byte cap, or the surface budget is full. An `Rgba8` picture's buffer
+    /// becomes the frame's `Bytes` (no second copy). A native picture moves on
     /// uncopied; `slot` is its claim when it was kept in `unseen`.
     fn queue_picture(
         &mut self,
@@ -687,6 +757,7 @@ impl Run<'_> {
         let index = self.index;
         self.index = self.index.wrapping_add(1);
         let (frame, native, mark, bytes, fill) = if picture.is_native() {
+            self.last_picture_bytes = Some(0);
             let Some(slot) = slot.or_else(|| NativeSlot::claim(&job.shared.stats)) else {
                 job.shared
                     .stats
@@ -705,25 +776,41 @@ impl Run<'_> {
                 PICTURE_SLOTS,
             )
         } else {
-            let Some(parts) = picture_parts(&picture) else {
+            let width = picture.width;
+            let height = picture.height;
+            let PictureData::System {
+                layout,
+                color,
+                bytes,
+            } = picture.into_data()
+            else {
                 return Err(());
             };
-            let bytes = parts.bytes.len();
-            let fill = fill_count(bytes);
+            let len = bytes.len();
+            self.last_picture_bytes = Some(len);
+            let fill = fill_count(len);
             let queued = job.progress.queued_frames.load(Ordering::Relaxed) as usize;
             let queued_bytes = job.progress.queued_bytes.load(Ordering::Relaxed) as usize;
-            if queued >= fill || queued_bytes.saturating_add(bytes) > MAX_FRAME_BYTES {
+            if queued >= fill || queued_bytes.saturating_add(len) > MAX_FRAME_BYTES {
                 job.shared
                     .stats
                     .worker_dropped_pictures
                     .fetch_add(1, Ordering::Relaxed);
                 return Ok(());
             }
-            let mark = parts.bytes.first().copied().unwrap_or(0);
-            let Ok(frame) = system_frame(&parts, start_master) else {
-                return Err(());
+            let mark = bytes.first().copied().unwrap_or(0);
+            let frame = if layout == PictureLayout::Rgba8 {
+                let Ok(frame) = rgba_owned(width, height, bytes, start_master) else {
+                    return Err(());
+                };
+                frame
+            } else {
+                let Ok(frame) = system_frame(layout, color, start_master) else {
+                    return Err(());
+                };
+                frame
             };
-            (frame, None, mark, bytes, fill)
+            (frame, None, mark, len, fill)
         };
         if job.progress.queued_frames.load(Ordering::Relaxed) as usize >= fill {
             job.shared
@@ -1324,39 +1411,14 @@ fn to_timestamp(nanos: i128) -> Timestamp {
     Timestamp::from_nanos(u64::try_from(nanos.max(0)).unwrap_or(u64::MAX))
 }
 
-struct PictureBits<'a> {
-    width: u32,
-    height: u32,
+fn system_frame(
     layout: PictureLayout,
     color: SampleColor,
-    bytes: &'a [u8],
-}
-
-fn picture_parts(picture: &rbs_media_decode::Picture) -> Option<PictureBits<'_>> {
-    match picture.data() {
-        rbs_media_decode::PictureData::System {
-            layout,
-            color,
-            bytes,
-        } => Some(PictureBits {
-            width: picture.width,
-            height: picture.height,
-            layout: *layout,
-            color: *color,
-            bytes,
-        }),
-        _ => None,
-    }
-}
-
-fn system_frame(
-    picture: &PictureBits<'_>,
-    timestamp: Timestamp,
+    _timestamp: Timestamp,
 ) -> Result<VideoFrame, DecodeError> {
-    match picture.layout {
-        PictureLayout::Rgba8 => rgba_frame(picture, timestamp),
+    match layout {
         PictureLayout::Nv12 => {
-            check_color(map_color(picture.color), 8).map_err(|error| {
+            check_color(map_color(color), 8).map_err(|error| {
                 DecodeError::Failed(format!("colour is not decodable: {error}"))
             })?;
             Err(DecodeError::Unsupported(
@@ -1365,7 +1427,7 @@ fn system_frame(
             ))
         }
         PictureLayout::P010 => {
-            check_color(map_color(picture.color), 10).map_err(|error| {
+            check_color(map_color(color), 10).map_err(|error| {
                 DecodeError::Failed(format!("colour is not decodable: {error}"))
             })?;
             Err(DecodeError::Unsupported(
@@ -1387,20 +1449,26 @@ fn map_color(color: SampleColor) -> ColorSpace {
     }
 }
 
-fn rgba_frame(picture: &PictureBits<'_>, timestamp: Timestamp) -> Result<VideoFrame, DecodeError> {
+fn rgba_owned(
+    width: u32,
+    height: u32,
+    bytes: Vec<u8>,
+    timestamp: Timestamp,
+) -> Result<VideoFrame, DecodeError> {
     let format = VideoFormat::new(
-        Size::new(picture.width, picture.height),
+        Size::new(width, height),
         PixelFormat::Rgba8,
         ColorSpace::SRGB,
     );
-    let stride = (picture.width as usize).saturating_mul(4);
-    let bytes = bytes::Bytes::copy_from_slice(picture.bytes);
+    let stride = (width as usize).saturating_mul(4);
+    // The picture owns this buffer. `Bytes::from` keeps it; it does not copy the pixels.
+    let bytes = bytes::Bytes::from(bytes);
     let planes = [PlaneLayout { offset: 0, stride }];
     let system = SystemFrame::new(format, bytes, &planes)
         .map_err(|error| DecodeError::Failed(format!("picture layout: {error}")))?;
     let frame = VideoFrame::system(timestamp, system, None);
-    // The first clone of a `Bytes` made from a copy allocates its shared header. Do
-    // that here, on the worker, so the picture node's `share` only counts a reference.
+    // A `Bytes` built from a `Vec` gains its shared header on the first clone. Do that
+    // here, on the worker, so the picture node's `share` only counts a reference.
     drop(frame.share());
     Ok(frame)
 }

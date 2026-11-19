@@ -308,8 +308,10 @@ fn encode_cause(cause: rbs_browser_ipc::exit::Cause) -> u8 {
 
 /// Studio-side supervisor thread for one running helper (ADR-0109 decision 8). It
 /// exists only while the source is Active (P13). At the page's frame rate it copies the
-/// newest frame out of the section and hands it to `publish` with its paint time (OS
-/// monotonic nanoseconds, 0 = unknown), and it checks the
+/// newest frame out of the section and hands that buffer to `publish` with its paint
+/// time (OS monotonic nanoseconds, 0 = unknown) and whether the frame is new. A page
+/// shown again calls `publish` with `fresh` false; the buffer may then be a spare the
+/// next copy will overwrite, so the closure republishes the picture it stored. It checks the
 /// process and the heartbeat. It never runs on the render thread.
 #[derive(Debug)]
 pub struct Supervisor {
@@ -362,7 +364,7 @@ impl Supervisor {
     pub fn start(
         child: HelperChild,
         fps: u32,
-        publish: impl FnMut(&[u8], u32, u32, u64) + Send + 'static,
+        publish: impl FnMut(&mut Vec<u8>, u32, u32, u64, bool) + Send + 'static,
     ) -> Result<Self, String> {
         Self::start_inner(child, fps, publish, None)
     }
@@ -372,7 +374,7 @@ impl Supervisor {
     pub fn start_with_sound(
         child: HelperChild,
         fps: u32,
-        publish: impl FnMut(&[u8], u32, u32, u64) + Send + 'static,
+        publish: impl FnMut(&mut Vec<u8>, u32, u32, u64, bool) + Send + 'static,
         sound: Box<dyn PageSound>,
     ) -> Result<Self, String> {
         Self::start_inner(child, fps, publish, Some(sound))
@@ -381,7 +383,7 @@ impl Supervisor {
     fn start_inner(
         mut child: HelperChild,
         fps: u32,
-        mut publish: impl FnMut(&[u8], u32, u32, u64) + Send + 'static,
+        mut publish: impl FnMut(&mut Vec<u8>, u32, u32, u64, bool) + Send + 'static,
         mut sound: Option<Box<dyn PageSound>>,
     ) -> Result<Self, String> {
         use std::sync::Arc;
@@ -435,9 +437,21 @@ impl Supervisor {
                     // Shown again: the last picture once more, so a page that
                     // paints nothing new still shows (its paint time stays, so it
                     // is due at once).
+                    let fresh = child.refresh();
+                    // Shown again: the last picture once more, so a page that
+                    // paints nothing new still shows (its paint time stays, so it
+                    // is due at once). `fresh` is false then: the closure republishes
+                    // the sink's bytes and does not read `frame`, which may be the
+                    // spare buffer waiting for the next section copy.
                     let again = republish_flag.swap(false, Ordering::AcqRel);
-                    if child.refresh() || (again && child.width > 0 && child.height > 0) {
-                        publish(&child.frame, child.width, child.height, child.painted);
+                    if fresh || (again && child.width > 0 && child.height > 0) {
+                        publish(
+                            &mut child.frame,
+                            child.width,
+                            child.height,
+                            child.painted,
+                            fresh,
+                        );
                     }
                     if !child.process_alive() || !child.check_heartbeat(Instant::now()) {
                         cause_flag.store(encode_cause(child.exit_cause()), Ordering::Release);

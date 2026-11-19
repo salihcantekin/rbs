@@ -140,7 +140,7 @@ fn the_supervisor_publishes_frames_and_reports_an_exit() {
     use std::sync::atomic::{AtomicU32, Ordering};
     let published = Arc::new(AtomicU32::new(0));
     let seen = Arc::clone(&published);
-    let mut sup = Supervisor::start(spawn(&["--hold"]), 60, move |px, w, h, painted| {
+    let mut sup = Supervisor::start(spawn(&["--hold"]), 60, move |px, w, h, painted, _| {
         assert!(painted > 0, "the helper stamps its frames");
         assert_eq!(px.len(), (w * h * 4) as usize);
         seen.fetch_add(1, Ordering::Relaxed);
@@ -155,7 +155,7 @@ fn the_supervisor_publishes_frames_and_reports_an_exit() {
     let child = sup.stop().unwrap();
     assert!(child.unavailable);
 
-    let sup = Supervisor::start(spawn(&["--exit-immediately"]), 60, |_, _, _, _| {}).unwrap();
+    let sup = Supervisor::start(spawn(&["--exit-immediately"]), 60, |_, _, _, _, _| {}).unwrap();
     let start = Instant::now();
     while !sup.exited() {
         assert!(start.elapsed() < GUARD, "hang guard");
@@ -172,7 +172,7 @@ fn a_still_page_shown_again_publishes_its_last_picture_once_more() {
     use std::sync::atomic::{AtomicU32, Ordering};
     let published = Arc::new(AtomicU32::new(0));
     let seen = Arc::clone(&published);
-    let mut sup = Supervisor::start(spawn(&["--still"]), 60, move |px, w, h, _| {
+    let mut sup = Supervisor::start(spawn(&["--still"]), 60, move |px, w, h, _, _| {
         assert_eq!(px.len(), (w * h * 4) as usize);
         seen.fetch_add(1, Ordering::Relaxed);
     })
@@ -203,7 +203,7 @@ fn control_messages_reach_the_running_helper_in_order() {
     use std::sync::{Arc, Mutex};
     let first = Arc::new(Mutex::new([0u8; 2]));
     let seen = Arc::clone(&first);
-    let mut sup = Supervisor::start(spawn(&["--hold"]), 60, move |px, _, _, _| {
+    let mut sup = Supervisor::start(spawn(&["--hold"]), 60, move |px, _, _, _, _| {
         *seen.lock().unwrap() = [px[0], px[1]];
     })
     .unwrap();
@@ -292,7 +292,7 @@ fn page_sound_crosses_the_sound_section_in_order() {
     let mut sup = Supervisor::start_with_sound(
         child,
         60,
-        |_, _, _, _| {},
+        |_, _, _, _, _| {},
         Box::new(Sink(Arc::clone(&heard))),
     )
     .unwrap();
@@ -386,7 +386,7 @@ fn a_runner_without_its_engine_exits_as_runtime_missing() {
 fn a_runner_with_another_engine_version_exits_as_a_mismatch() {
     use rbs_browser_ipc::exit::Cause;
     let rt = fake_runtime("old", "155.0.1");
-    let sup = Supervisor::start(spawn_with_runtime(Some(&rt)), 60, |_, _, _, _| {}).unwrap();
+    let sup = Supervisor::start(spawn_with_runtime(Some(&rt)), 60, |_, _, _, _, _| {}).unwrap();
     let start = Instant::now();
     while !sup.exited() {
         assert!(start.elapsed() < GUARD, "hang guard");
