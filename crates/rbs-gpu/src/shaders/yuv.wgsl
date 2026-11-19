@@ -192,6 +192,96 @@ fn catmull_linear(p: vec2<f32>) -> vec3<f32> {
     }
     return acc;
 }
+
+// The four luma centres of one chroma texel. Their 4×4 Catmull-Rom neighbourhoods
+// overlap (about 25 canvas texels, not 64), so each of those texels is loaded once
+// and the four kernels then run in the same order as `catmull_linear`. A centre
+// outside the fitted picture is black. Luma still calls `catmull_linear` itself.
+fn catmull_quad(c: vec2<f32>) -> array<vec3<f32>, 4> {
+    var out: array<vec3<f32>, 4>;
+    var valid: array<bool, 4>;
+    var base: array<vec2<i32>, 4>;
+    var frac: array<vec2<f32>, 4>;
+    var centre: array<vec2<f32>, 4>;
+    centre[0] = c + vec2<f32>(0.5, 0.5);
+    centre[1] = c + vec2<f32>(1.5, 0.5);
+    centre[2] = c + vec2<f32>(0.5, 1.5);
+    centre[3] = c + vec2<f32>(1.5, 1.5);
+
+    var min_base = vec2<i32>(0);
+    var max_base = vec2<i32>(0);
+    var any_valid = false;
+    let dims = vec2<i32>(textureDimensions(canvas));
+    let fit_origin = vec2<f32>(fit_x, fit_y);
+    let fit_size = vec2<f32>(fit_w, fit_h);
+
+    for (var i = 0; i < 4; i++) {
+        let uv = (centre[i] - fit_origin) / fit_size;
+        if (any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0))) {
+            valid[i] = false;
+        } else {
+            let coord = uv * vec2<f32>(dims) - vec2<f32>(0.5);
+            let b = floor(coord);
+            valid[i] = true;
+            base[i] = vec2<i32>(b);
+            frac[i] = coord - b;
+            if (!any_valid) {
+                min_base = vec2<i32>(b);
+                max_base = vec2<i32>(b);
+                any_valid = true;
+            } else {
+                min_base = min(min_base, vec2<i32>(b));
+                max_base = max(max_base, vec2<i32>(b));
+            }
+        }
+    }
+    if (!any_valid) {
+        return out;
+    }
+
+    // Upscale centres sit less than one canvas texel apart, so the union of the
+    // four clamped 4×4 windows is a rectangle of at most 5×5. A wider window
+    // (not an upscale) loads each tap on its own.
+    let min_s = clamp(min_base - vec2<i32>(1), vec2<i32>(0), dims - vec2<i32>(1));
+    let max_s = clamp(max_base + vec2<i32>(2), vec2<i32>(0), dims - vec2<i32>(1));
+    let span = max_s - min_s;
+    let cached = span.x < 5 && span.y < 5;
+    var taps: array<vec3<f32>, 25>;
+    if (cached) {
+        for (var j = 0; j <= span.y; j++) {
+            for (var i = 0; i <= span.x; i++) {
+                taps[j * 5 + i] = textureLoad(canvas, min_s + vec2<i32>(i, j), 0).rgb;
+            }
+        }
+    }
+
+    for (var i = 0; i < 4; i++) {
+        if (!valid[i]) {
+            continue;
+        }
+        let f = frac[i];
+        let b = base[i];
+        var acc = vec3<f32>(0.0);
+        for (var y = -1; y <= 2; y++) {
+            let wy = keys(f.y - f32(y));
+            for (var x = -1; x <= 2; x++) {
+                let wx = keys(f.x - f32(x));
+                let s = clamp(b + vec2<i32>(x, y), vec2<i32>(0), dims - vec2<i32>(1));
+                var texel: vec3<f32>;
+                if (cached) {
+                    let ix = s.x - min_s.x;
+                    let iy = s.y - min_s.y;
+                    texel = taps[iy * 5 + ix];
+                } else {
+                    texel = textureLoad(canvas, s, 0).rgb;
+                }
+                acc += texel * (wx * wy);
+            }
+        }
+        out[i] = acc;
+    }
+    return out;
+}
 // END catmull_fn
 
 // BEGIN catmull_fs
@@ -203,11 +293,8 @@ fn fs_luma_catmull(@builtin(position) pos: vec4<f32>) -> @location(0) f32 {
 
 @fragment
 fn fs_chroma_catmull(@builtin(position) pos: vec4<f32>) -> @location(0) vec2<f32> {
-    let c = floor(pos.xy) * 2.0;
-    let p = (oetf_709(catmull_linear(c + vec2<f32>(0.5, 0.5)))
-        + oetf_709(catmull_linear(c + vec2<f32>(1.5, 0.5)))
-        + oetf_709(catmull_linear(c + vec2<f32>(0.5, 1.5)))
-        + oetf_709(catmull_linear(c + vec2<f32>(1.5, 1.5)))) * 0.25;
+    let q = catmull_quad(floor(pos.xy) * 2.0);
+    let p = (oetf_709(q[0]) + oetf_709(q[1]) + oetf_709(q[2]) + oetf_709(q[3])) * 0.25;
     let yp = luma(p);
     let cb = (p.b - yp) / 1.8556;
     let cr = (p.r - yp) / 1.5748;
@@ -315,11 +402,9 @@ fn fs_luma_open_catmull(@builtin(position) pos: vec4<f32>) -> @location(0) f32 {
 
 @fragment
 fn fs_chroma_open_catmull(@builtin(position) pos: vec4<f32>) -> @location(0) vec2<f32> {
-    let c = floor(pos.xy) * 2.0;
-    let p = (oetf_709(open_shadows(catmull_linear(c + vec2<f32>(0.5, 0.5))))
-        + oetf_709(open_shadows(catmull_linear(c + vec2<f32>(1.5, 0.5))))
-        + oetf_709(open_shadows(catmull_linear(c + vec2<f32>(0.5, 1.5))))
-        + oetf_709(open_shadows(catmull_linear(c + vec2<f32>(1.5, 1.5))))) * 0.25;
+    let q = catmull_quad(floor(pos.xy) * 2.0);
+    let p = (oetf_709(open_shadows(q[0])) + oetf_709(open_shadows(q[1]))
+        + oetf_709(open_shadows(q[2])) + oetf_709(open_shadows(q[3]))) * 0.25;
     let yp = luma(p);
     let cb = (p.b - yp) / 1.8556;
     let cr = (p.r - yp) / 1.5748;
@@ -425,11 +510,8 @@ fn fs_luma_srgb_catmull(@builtin(position) pos: vec4<f32>) -> @location(0) f32 {
 
 @fragment
 fn fs_chroma_srgb_catmull(@builtin(position) pos: vec4<f32>) -> @location(0) vec2<f32> {
-    let c = floor(pos.xy) * 2.0;
-    let p = (oetf_srgb(catmull_linear(c + vec2<f32>(0.5, 0.5)))
-        + oetf_srgb(catmull_linear(c + vec2<f32>(1.5, 0.5)))
-        + oetf_srgb(catmull_linear(c + vec2<f32>(0.5, 1.5)))
-        + oetf_srgb(catmull_linear(c + vec2<f32>(1.5, 1.5)))) * 0.25;
+    let q = catmull_quad(floor(pos.xy) * 2.0);
+    let p = (oetf_srgb(q[0]) + oetf_srgb(q[1]) + oetf_srgb(q[2]) + oetf_srgb(q[3])) * 0.25;
     return store_c(p);
 }
 // END srgb_catmull
