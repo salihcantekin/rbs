@@ -7,7 +7,9 @@
 //! starved and dead-end nodes are never in a plan, so hot loops need no "is it
 //! enabled" checks (ADR-0013).
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::cell::RefCell;
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
 
@@ -497,56 +499,81 @@ impl GraphDescription {
     /// input of a muxer); handling that is part of its normal `process`, not a feature
     /// check.
     pub fn plan(&self) -> SchedulePlan {
-        let kinds: HashMap<NodeId, &NodeEntry> = self
-            .nodes
-            .iter()
-            .filter(|n| n.state.is_scheduled())
-            .map(|n| (n.id, n))
-            .collect();
-        let mut alive: BTreeSet<NodeId> = kinds.keys().copied().collect();
-        let mut skipped = Vec::new();
+        // `plan` is shared, so the scratch cannot sit on the description. One buffer
+        // per thread is enough: apply runs on the control thread. A nested call takes
+        // the buffer out and puts it back, so the outer call still returns its own.
+        PLAN_SCRATCH.with(|slot| {
+            let mut scratch = slot.borrow_mut().take().unwrap_or_default();
+            let planned = self.plan_with(&mut scratch);
+            *slot.borrow_mut() = Some(scratch);
+            planned
+        })
+    }
 
+    fn plan_with(&self, scratch: &mut PlanScratch) -> SchedulePlan {
+        let n = self.nodes.len();
+        scratch.load(&self.nodes, &self.links);
+        fill_flags(&mut scratch.alive, n);
+        for (index, node) in self.nodes.iter().enumerate() {
+            scratch.alive[index] = node.state.is_scheduled();
+        }
+
+        let mut skipped = Vec::new();
         loop {
-            let links: Vec<&Link> = self
-                .links
-                .iter()
-                .filter(|l| alive.contains(&l.from.node) && alive.contains(&l.to.node))
-                .collect();
-            let mut fed: HashSet<NodeId> = HashSet::new();
-            let mut prev: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
-            for l in links.iter().filter(|l| l.kind.is_media()) {
-                fed.insert(l.to.node);
-                prev.entry(l.to.node).or_default().push(l.from.node);
+            scratch.active.clear();
+            scratch.stack.clear();
+            scratch.starved.clear();
+            fill_flags(&mut scratch.fed, n);
+            fill_flags(&mut scratch.reaches, n);
+            clear_rows(&mut scratch.prev, n);
+
+            let link_count = scratch.ends.len();
+            for index in 0..link_count {
+                let end = scratch.ends[index];
+                if !end_live(&scratch.alive, end) {
+                    continue;
+                }
+                scratch.active.push(index);
+                if self.links[index].kind.is_media() {
+                    scratch.fed[end.to] = true;
+                    scratch.prev[end.to].push(end.from);
+                }
             }
-            let starved: Vec<NodeId> = alive
-                .iter()
-                .copied()
-                .filter(|id| needs_input(kinds[id].descriptor.kind) && !fed.contains(id))
-                .collect();
+
+            for (index, node) in self.nodes.iter().enumerate() {
+                if scratch.alive[index] && needs_input(node.descriptor.kind) && !scratch.fed[index]
+                {
+                    scratch.starved.push(index);
+                }
+            }
 
             // Reverse reachability from sinks (Output nodes) along media links.
-            let mut reaches_sink: HashSet<NodeId> = HashSet::new();
-            let mut stack: Vec<NodeId> = alive
-                .iter()
-                .copied()
-                .filter(|id| kinds[id].descriptor.kind == NodeKind::Output)
-                .collect();
-            while let Some(id) = stack.pop() {
-                if reaches_sink.insert(id) {
-                    stack.extend(prev.get(&id).into_iter().flatten().copied());
+            for (index, node) in self.nodes.iter().enumerate() {
+                if scratch.alive[index] && node.descriptor.kind == NodeKind::Output {
+                    scratch.stack.push(index);
+                }
+            }
+            while let Some(index) = scratch.stack.pop() {
+                if scratch.reaches[index] {
+                    continue;
+                }
+                scratch.reaches[index] = true;
+                let incoming = scratch.prev[index].len();
+                for cursor in 0..incoming {
+                    scratch.stack.push(scratch.prev[index][cursor]);
                 }
             }
 
             let mut changed = false;
-            for id in starved {
-                alive.remove(&id);
-                skipped.push((id, SkipReason::Starved));
+            for index in scratch.starved.drain(..) {
+                scratch.alive[index] = false;
+                skipped.push((self.nodes[index].id, SkipReason::Starved));
                 changed = true;
             }
-            for id in alive.clone() {
-                if !reaches_sink.contains(&id) {
-                    alive.remove(&id);
-                    skipped.push((id, SkipReason::NoSink));
+            for index in 0..n {
+                if scratch.alive[index] && !scratch.reaches[index] {
+                    scratch.alive[index] = false;
+                    skipped.push((self.nodes[index].id, SkipReason::NoSink));
                     changed = true;
                 }
             }
@@ -555,34 +582,43 @@ impl GraphDescription {
             }
         }
 
-        let links: Vec<Link> = self
-            .links
-            .iter()
-            .copied()
-            .filter(|l| alive.contains(&l.from.node) && alive.contains(&l.to.node))
-            .collect();
-        let mut indegree: HashMap<NodeId, usize> = alive.iter().map(|&id| (id, 0)).collect();
-        let mut next: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
-        for l in &links {
-            *indegree.entry(l.to.node).or_default() += 1;
-            next.entry(l.from.node).or_default().push(l.to.node);
+        fill_zero(&mut scratch.indegree, n);
+        clear_rows(&mut scratch.next, n);
+        let active = scratch.active.len();
+        for cursor in 0..active {
+            let end = scratch.ends[scratch.active[cursor]];
+            scratch.indegree[end.to] += 1;
+            scratch.next[end.from].push(end.to);
         }
-        let mut ready: BTreeSet<NodeId> = alive
-            .iter()
-            .copied()
-            .filter(|id| indegree.get(id) == Some(&0))
-            .collect();
-        let mut order = Vec::with_capacity(alive.len());
-        while let Some(id) = ready.pop_first() {
-            order.push(id);
-            for to in next.get(&id).into_iter().flatten() {
-                if let Some(d) = indegree.get_mut(to) {
-                    *d -= 1;
-                    if *d == 0 {
-                        ready.insert(*to);
-                    }
+
+        scratch.ready.clear();
+        let mut scheduled = 0;
+        for index in 0..n {
+            if !scratch.alive[index] {
+                continue;
+            }
+            scheduled += 1;
+            if scratch.indegree[index] == 0 {
+                scratch.ready.push(Reverse((self.nodes[index].id, index)));
+            }
+        }
+
+        let mut order = Vec::with_capacity(scheduled);
+        while let Some(Reverse((_, index))) = scratch.ready.pop() {
+            order.push(self.nodes[index].id);
+            let outgoing = scratch.next[index].len();
+            for cursor in 0..outgoing {
+                let to = scratch.next[index][cursor];
+                scratch.indegree[to] -= 1;
+                if scratch.indegree[to] == 0 {
+                    scratch.ready.push(Reverse((self.nodes[to].id, to)));
                 }
             }
+        }
+
+        let mut links = Vec::with_capacity(active);
+        for cursor in 0..active {
+            links.push(self.links[scratch.active[cursor]]);
         }
         skipped.sort_by_key(|(id, _)| *id);
         SchedulePlan {
@@ -590,6 +626,102 @@ impl GraphDescription {
             links,
             skipped,
         }
+    }
+}
+
+/// Absent endpoint. A real node index is always smaller.
+const MISSING: usize = usize::MAX;
+
+/// One link's endpoints as indices into [`GraphDescription`]'s node list.
+#[derive(Clone, Copy)]
+struct PlanEnd {
+    from: usize,
+    to: usize,
+}
+
+/// Scratch for [`GraphDescription::plan`]. Kept on the calling thread and grown only
+/// when a later description is larger than the retained capacity.
+#[derive(Default)]
+struct PlanScratch {
+    /// `(id, node index)` sorted by id, so a link can be resolved without a map.
+    by_id: Vec<(NodeId, usize)>,
+    /// Endpoint indices parallel to the description's links.
+    ends: Vec<PlanEnd>,
+    /// Indices into `ends` / the link list for links whose ends are still alive.
+    active: Vec<usize>,
+    alive: Vec<bool>,
+    fed: Vec<bool>,
+    reaches: Vec<bool>,
+    /// Media producers of each node, by node index.
+    prev: Vec<Vec<usize>>,
+    /// Consumers of each node, every link kind, by node index.
+    next: Vec<Vec<usize>>,
+    indegree: Vec<usize>,
+    stack: Vec<usize>,
+    starved: Vec<usize>,
+    /// Ready nodes as `(id, index)`. The lowest id is scheduled next.
+    ready: BinaryHeap<Reverse<(NodeId, usize)>>,
+}
+
+thread_local! {
+    static PLAN_SCRATCH: RefCell<Option<PlanScratch>> = const { RefCell::new(None) };
+}
+
+impl PlanScratch {
+    fn load(&mut self, nodes: &[NodeEntry], links: &[Link]) {
+        self.by_id.clear();
+        if self.by_id.capacity() < nodes.len() {
+            self.by_id.reserve(nodes.len() - self.by_id.capacity());
+        }
+        for (index, node) in nodes.iter().enumerate() {
+            self.by_id.push((node.id, index));
+        }
+        self.by_id.sort_unstable_by_key(|(id, _)| *id);
+
+        self.ends.clear();
+        if self.ends.capacity() < links.len() {
+            self.ends.reserve(links.len() - self.ends.capacity());
+        }
+        for link in links {
+            let from = self.lookup(link.from.node);
+            let to = self.lookup(link.to.node);
+            self.ends.push(PlanEnd { from, to });
+        }
+    }
+
+    fn lookup(&self, id: NodeId) -> usize {
+        match self.by_id.binary_search_by_key(&id, |(id, _)| *id) {
+            Ok(pos) => self.by_id[pos].1,
+            Err(_) => MISSING,
+        }
+    }
+}
+
+fn end_live(alive: &[bool], end: PlanEnd) -> bool {
+    alive.get(end.from).copied().unwrap_or(false) && alive.get(end.to).copied().unwrap_or(false)
+}
+
+/// Sets the first `len` flags to false, allocating only when `len` exceeds capacity.
+fn fill_flags(flags: &mut Vec<bool>, len: usize) {
+    if flags.len() < len {
+        flags.resize(len, false);
+    }
+    flags[..len].fill(false);
+}
+
+fn fill_zero(values: &mut Vec<usize>, len: usize) {
+    if values.len() < len {
+        values.resize(len, 0);
+    }
+    values[..len].fill(0);
+}
+
+fn clear_rows(rows: &mut Vec<Vec<usize>>, len: usize) {
+    if rows.len() < len {
+        rows.resize_with(len, Vec::new);
+    }
+    for row in &mut rows[..len] {
+        row.clear();
     }
 }
 
