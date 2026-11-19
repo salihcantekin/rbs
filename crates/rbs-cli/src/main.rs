@@ -33,6 +33,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use rbs_codec::VideoEncoderFactory;
 use rbs_core::capability::Requirement;
 use rbs_core::registry::{AdapterFactory, AdapterId, Registry};
 use rbs_engine::Engine;
@@ -167,12 +168,13 @@ fn main() -> ExitCode {
 }
 
 fn probed() -> RecordAdapters {
-    let (mut adapters, errors) = platform::adapters();
-    for e in errors {
+    let mut registered = platform::adapters();
+    for e in registered.errors {
         rbs_crash::errln!("warning: {e}");
     }
-    adapters.probe();
-    adapters
+    // Listing devices probes every adapter, including every video encoder.
+    registered.adapters.probe();
+    registered.adapters
 }
 
 fn list_registry<F: ?Sized + AdapterFactory>(title: &str, registry: &Registry<F>) {
@@ -215,6 +217,52 @@ fn devices() -> ExitCode {
     list_registry("muxers", &adapters.muxers);
     list_registry("transports", &adapters.transports);
     ExitCode::SUCCESS
+}
+
+/// Probes the adapters a recording uses, once each.
+///
+/// Sources, muxers and transports (`probe_io`) and audio encoders are always probed.
+/// With no `encoder`, every video encoder is probed once. With `encoder`, the id is
+/// resolved from the registered ids (that does not probe), only that factory is
+/// installed, and that registry is probed once. The other video encoders are not
+/// probed. A named encoder that is not usable fails rather than falling back.
+fn probe_for_record(
+    adapters: &mut RecordAdapters,
+    video_factories: &[Arc<dyn VideoEncoderFactory>],
+    encoder: Option<&str>,
+) -> Result<(), String> {
+    let named = match encoder {
+        Some(name) => {
+            let id = resolve(&adapters.video_encoders, name)?;
+            let factory = video_factories
+                .iter()
+                .find(|factory| factory.id() == id)
+                .cloned()
+                .ok_or_else(|| format!("encoder {id} is not available on this system"))?;
+            let mut only = Registry::new();
+            only.register(factory).map_err(|e| e.to_string())?;
+            adapters.video_encoders = only;
+            Some(id)
+        }
+        None => None,
+    };
+    adapters.probe_io();
+    adapters.audio_encoders.probe_all();
+    adapters.video_encoders.probe_all();
+    if let Some(id) = named {
+        // Only the named encoder: if it cannot open, the recording fails rather than
+        // quietly using another one.
+        let available = adapters
+            .video_encoders
+            .select(&Requirement::new())
+            .candidates
+            .iter()
+            .any(|factory| factory.id() == id);
+        if !available {
+            return Err(format!("encoder {id} is not available on this system"));
+        }
+    }
+    Ok(())
 }
 
 /// The registered id `wanted` names: the id itself or its last dotted part.
@@ -264,31 +312,16 @@ fn line(elapsed: Duration, p: &Progress) -> String {
 }
 
 fn record(a: &RecordArgs) -> Result<(), String> {
-    let (mut adapters, errors) = platform::adapters();
-    for e in errors {
+    let mut registered = platform::adapters();
+    for e in registered.errors {
         rbs_crash::errln!("warning: {e}");
     }
-    let wanted = match &a.encoder {
-        Some(name) => Some(resolve(&adapters.video_encoders, name)?),
-        None => None,
-    };
-    adapters.probe();
-    if let Some(id) = wanted {
-        // Only the named encoder: if it cannot open, the recording fails rather than
-        // quietly using another one.
-        let candidates = adapters
-            .video_encoders
-            .select(&Requirement::new())
-            .candidates;
-        let factory = candidates
-            .into_iter()
-            .find(|f| f.id() == id)
-            .ok_or_else(|| format!("encoder {id} is not available on this system"))?;
-        let mut only = Registry::new();
-        only.register(factory).map_err(|e| e.to_string())?;
-        only.probe_all();
-        adapters.video_encoders = only;
-    }
+    probe_for_record(
+        &mut registered.adapters,
+        &registered.video_encoders,
+        a.encoder.as_deref(),
+    )?;
+    let mut adapters = registered.adapters;
     if adapters.video_encoders.ids().next().is_none() {
         return Err(format!(
             "recording is not available on {} yet (no video encoder adapters are wired)",
@@ -790,6 +823,8 @@ impl Link {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)] // Tests fail by panicking.
 mod tests {
+    use std::sync::atomic::AtomicUsize;
+
     use super::*;
 
     fn node_id() -> NodeId {
@@ -862,5 +897,159 @@ mod tests {
             LinkChange::Reconnecting(3).describe("x"),
             "not connected, trying again (attempt 3)"
         );
+    }
+
+    /// Counts `probe` calls. Creating the factory does not probe, and `create` is never
+    /// called: the test does not open a device.
+    struct CountingEncoder {
+        id: &'static str,
+        probes: Arc<AtomicUsize>,
+        fail: bool,
+    }
+
+    impl AdapterFactory for CountingEncoder {
+        fn id(&self) -> AdapterId {
+            AdapterId::new(self.id)
+        }
+
+        fn display_name(&self) -> &str {
+            self.id
+        }
+
+        fn probe(
+            &self,
+        ) -> Result<rbs_core::capability::CapabilitySet, rbs_core::registry::ProbeError> {
+            self.probes.fetch_add(1, Ordering::SeqCst);
+            if self.fail {
+                Err(rbs_core::registry::ProbeError::new("missing"))
+            } else {
+                Ok(rbs_core::capability::CapabilitySet::new())
+            }
+        }
+    }
+
+    impl VideoEncoderFactory for CountingEncoder {
+        fn create(
+            &self,
+            _: &rbs_codec::VideoEncoderConfig,
+        ) -> Result<Box<dyn rbs_codec::VideoEncoder>, rbs_codec::CreateError> {
+            Err(rbs_codec::CreateError::Unsupported {
+                what: "test".into(),
+            })
+        }
+    }
+
+    impl rbs_codec::AudioEncoderFactory for CountingEncoder {
+        fn create(
+            &self,
+            _: &rbs_codec::AudioEncoderConfig,
+        ) -> Result<Box<dyn rbs_codec::AudioEncoder>, rbs_codec::CreateError> {
+            Err(rbs_codec::CreateError::Unsupported {
+                what: "test".into(),
+            })
+        }
+    }
+
+    fn counting(id: &'static str, fail: bool) -> (Arc<CountingEncoder>, Arc<AtomicUsize>) {
+        let probes = Arc::new(AtomicUsize::new(0));
+        let factory = Arc::new(CountingEncoder {
+            id,
+            probes: Arc::clone(&probes),
+            fail,
+        });
+        (factory, probes)
+    }
+
+    fn register_video(
+        adapters: &mut RecordAdapters,
+        factory: Arc<CountingEncoder>,
+    ) -> Arc<dyn VideoEncoderFactory> {
+        let factory: Arc<dyn VideoEncoderFactory> = factory;
+        adapters
+            .video_encoders
+            .register(Arc::clone(&factory))
+            .unwrap();
+        factory
+    }
+
+    #[test]
+    fn named_encoder_is_probed_once_and_the_others_are_not() {
+        let (alpha, alpha_probes) = counting("org.rbs.test.alpha", false);
+        let (beta, beta_probes) = counting("org.rbs.test.beta", false);
+        let (audio, audio_probes) = counting("org.rbs.test.audio", false);
+        let mut adapters = RecordAdapters::new();
+        let factories = vec![
+            register_video(&mut adapters, alpha),
+            register_video(&mut adapters, beta),
+        ];
+        adapters
+            .audio_encoders
+            .register(audio as Arc<dyn rbs_codec::AudioEncoderFactory>)
+            .unwrap();
+
+        probe_for_record(&mut adapters, &factories, Some("beta")).unwrap();
+
+        assert_eq!(alpha_probes.load(Ordering::SeqCst), 0);
+        assert_eq!(beta_probes.load(Ordering::SeqCst), 1);
+        assert_eq!(audio_probes.load(Ordering::SeqCst), 1);
+        let ids: Vec<_> = adapters
+            .video_encoders
+            .ids()
+            .map(|id| id.as_str().to_owned())
+            .collect();
+        assert_eq!(ids, ["org.rbs.test.beta"]);
+    }
+
+    #[test]
+    fn every_video_encoder_is_probed_once_when_none_is_named() {
+        let (alpha, alpha_probes) = counting("org.rbs.test.alpha", false);
+        let (beta, beta_probes) = counting("org.rbs.test.beta", false);
+        let mut adapters = RecordAdapters::new();
+        let factories = vec![
+            register_video(&mut adapters, alpha),
+            register_video(&mut adapters, beta),
+        ];
+
+        probe_for_record(&mut adapters, &factories, None).unwrap();
+
+        assert_eq!(alpha_probes.load(Ordering::SeqCst), 1);
+        assert_eq!(beta_probes.load(Ordering::SeqCst), 1);
+        assert_eq!(adapters.video_encoders.ids().count(), 2);
+    }
+
+    #[test]
+    fn an_unknown_encoder_fails_before_any_probe() {
+        let (alpha, alpha_probes) = counting("org.rbs.test.alpha", false);
+        let mut adapters = RecordAdapters::new();
+        let factories = vec![register_video(&mut adapters, alpha)];
+
+        let err = probe_for_record(&mut adapters, &factories, Some("missing")).unwrap_err();
+
+        assert!(err.contains("no encoder"), "{err}");
+        assert_eq!(alpha_probes.load(Ordering::SeqCst), 0);
+        assert_eq!(adapters.video_encoders.ids().count(), 1);
+    }
+
+    #[test]
+    fn a_named_encoder_that_cannot_probe_does_not_fall_back() {
+        let (alpha, alpha_probes) = counting("org.rbs.test.alpha", false);
+        let (beta, beta_probes) = counting("org.rbs.test.beta", true);
+        let mut adapters = RecordAdapters::new();
+        let factories = vec![
+            register_video(&mut adapters, alpha),
+            register_video(&mut adapters, beta),
+        ];
+
+        let err = probe_for_record(&mut adapters, &factories, Some("beta")).unwrap_err();
+
+        assert!(err.contains("not available on this system"), "{err}");
+        assert_eq!(alpha_probes.load(Ordering::SeqCst), 0);
+        assert_eq!(beta_probes.load(Ordering::SeqCst), 1);
+        let ids: Vec<_> = adapters
+            .video_encoders
+            .ids()
+            .map(|id| id.as_str().to_owned())
+            .collect();
+        assert_eq!(ids, ["org.rbs.test.beta"]);
     }
 }

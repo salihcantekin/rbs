@@ -4,11 +4,23 @@
 
 use std::sync::Arc;
 
+use rbs_codec::VideoEncoderFactory;
 use rbs_record::RecordAdapters;
+
+/// Adapters this build registers, not probed yet.
+pub struct PlatformAdapters {
+    /// Every port. Video encoders are the full list, in registration order.
+    pub adapters: RecordAdapters,
+    /// The same video-encoder `Arc`s `adapters` holds, in registration order.
+    /// Installing one of them does not probe it.
+    pub video_encoders: Vec<Arc<dyn VideoEncoderFactory>>,
+    /// Duplicate-id registration bugs in this list.
+    pub errors: Vec<String>,
+}
 
 /// Every adapter this build has for the platform, not probed yet. Registration errors
 /// (a duplicate id) are returned as messages; they mean a bug in this list.
-pub fn adapters() -> (RecordAdapters, Vec<String>) {
+pub fn adapters() -> PlatformAdapters {
     let mut a = RecordAdapters::new();
     let mut errors = Vec::new();
     let mut note = |r: Result<(), rbs_core::registry::DuplicateAdapter>| {
@@ -62,14 +74,6 @@ pub fn adapters() -> (RecordAdapters, Vec<String>) {
                 .register_audio(Arc::new(rbs_audio_io_wasapi::WasapiAudioBackend::new())),
         );
         note(
-            a.video_encoders
-                .register(Arc::new(rbs_codec_nvenc::NvencFactory::new())),
-        );
-        note(
-            a.video_encoders
-                .register(Arc::new(rbs_codec_amf::AmfFactory::new())),
-        );
-        note(
             a.audio_encoders
                 .register(Arc::new(rbs_codec_mf::MfAacFactory::new())),
         );
@@ -86,23 +90,6 @@ pub fn adapters() -> (RecordAdapters, Vec<String>) {
         note(
             a.sources
                 .register_audio(Arc::new(rbs_audio_io_pipewire::PipeWireAudioBackend::new())),
-        );
-        // Hardware encoders; the first that probes and opens wins.
-        note(
-            a.video_encoders
-                .register(Arc::new(rbs_codec_nvenc::NvencFactory::new())),
-        );
-        note(
-            a.video_encoders
-                .register(Arc::new(rbs_codec_amf::AmfFactory::new())),
-        );
-        note(
-            a.video_encoders
-                .register(Arc::new(rbs_codec_qsv::QsvFactory::new())),
-        );
-        note(
-            a.video_encoders
-                .register(Arc::new(rbs_codec_vaapi::VaapiFactory::new())),
         );
         // The system's FFmpeg (libavcodec), loaded at run time (ADR-0007).
         note(
@@ -125,19 +112,47 @@ pub fn adapters() -> (RecordAdapters, Vec<String>) {
                 .register_audio(Arc::new(rbs_audio_io_coreaudio::CoreAudioBackend::new())),
         );
         note(
-            a.video_encoders
-                .register(Arc::new(rbs_codec_videotoolbox::VideoToolboxFactory::new())),
-        );
-        // Apple's software encoders: a last resort after the hardware adapter.
-        note(a.video_encoders.register(Arc::new(
-            rbs_codec_videotoolbox::VideoToolboxFactory::with_software(),
-        )));
-        note(
             a.audio_encoders
                 .register(Arc::new(rbs_codec_audiotoolbox::AacFactory::new())),
         );
     }
-    (a, errors)
+    let video_encoders = video_encoder_factories();
+    for factory in &video_encoders {
+        note(a.video_encoders.register(Arc::clone(factory)));
+    }
+    PlatformAdapters {
+        adapters: a,
+        video_encoders,
+        errors,
+    }
+}
+
+/// Video encoders in preference order. Building one does not probe.
+/// Hardware adapters come first; a software adapter is the last resort.
+fn video_encoder_factories() -> Vec<Arc<dyn VideoEncoderFactory>> {
+    let mut factories: Vec<Arc<dyn VideoEncoderFactory>> = Vec::new();
+    #[cfg(windows)]
+    {
+        factories.push(Arc::new(rbs_codec_nvenc::NvencFactory::new()));
+        factories.push(Arc::new(rbs_codec_amf::AmfFactory::new()));
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // The first that probes and opens wins.
+        factories.push(Arc::new(rbs_codec_nvenc::NvencFactory::new()));
+        factories.push(Arc::new(rbs_codec_amf::AmfFactory::new()));
+        factories.push(Arc::new(rbs_codec_qsv::QsvFactory::new()));
+        factories.push(Arc::new(rbs_codec_vaapi::VaapiFactory::new()));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        factories.push(Arc::new(rbs_codec_videotoolbox::VideoToolboxFactory::new()));
+        // Apple's software encoders: a last resort after the hardware adapter.
+        factories.push(Arc::new(
+            rbs_codec_videotoolbox::VideoToolboxFactory::with_software(),
+        ));
+    }
+    factories
 }
 
 /// The virtual camera adapter of this platform, if it has one (ADR-0066: Windows only).
