@@ -134,13 +134,31 @@ impl TruePeak {
             hist[pos + TAPS] = v;
             let window = &hist[pos..pos + TAPS];
             for phase in self.coeffs.chunks_exact(TAPS) {
-                let y: f32 = phase.iter().zip(window).map(|(c, s)| c * s).sum();
+                let y = dot12(phase, window);
                 peak = peak.max(y.abs());
             }
         }
         self.pos[channel] = pos;
         peak
     }
+}
+
+/// Product sum of one 12-tap phase with the sample window, in f32. Both slices are
+/// `TAPS` long (`chunks_exact` and the mirrored history). A short slice adds nothing.
+#[inline]
+fn dot12(weights: &[f32], input: &[f32]) -> f32 {
+    if weights.len() < TAPS || input.len() < TAPS {
+        return 0.0;
+    }
+    let mut acc = [0.0f32; 4];
+    for k in 0..3 {
+        let i = k * 4;
+        acc[0] += weights[i] * input[i];
+        acc[1] += weights[i + 1] * input[i + 1];
+        acc[2] += weights[i + 2] * input[i + 2];
+        acc[3] += weights[i + 3] * input[i + 3];
+    }
+    (acc[0] + acc[1]) + (acc[2] + acc[3])
 }
 
 /// The largest absolute value of `x` (NaN ignored), in 8 lanes so it vectorises.
