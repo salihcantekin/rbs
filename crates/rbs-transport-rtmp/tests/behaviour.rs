@@ -139,7 +139,7 @@ fn str_arg(values: &[Decoded], i: usize) -> Option<&str> {
 fn expected_body(tracks: &FlvTracks, index: usize, packet: &EncodedPacket, cts: i64) -> Vec<u8> {
     let plan = tracks.plan(index, packet).unwrap();
     let mut out = Vec::new();
-    tracks.write_body(plan, packet, cts, &mut out);
+    tracks.write_body(&plan, packet, cts, &mut out);
     out
 }
 

@@ -169,6 +169,97 @@ pub fn annexb_to_length_prefixed(data: &[u8], out: &mut Vec<u8>) -> Result<(), F
     Ok(())
 }
 
+/// Appends the Annex B units `keep` accepts to `out` as 4-byte length prefixes.
+/// One walk. On error `out` is left as it was. Callers that want the same filtered
+/// sample for several outputs run this once and share the buffer (ADR-0143 R3).
+pub fn annexb_to_length_prefixed_if(
+    data: &[u8],
+    out: &mut Vec<u8>,
+    keep: impl Fn(&[u8]) -> bool,
+) -> Result<(), FormatError> {
+    let start = out.len();
+    for unit in annexb_units(data) {
+        if !keep(unit) {
+            continue;
+        }
+        let Ok(len) = u32::try_from(unit.len()) else {
+            out.truncate(start);
+            return Err(FormatError::Invalid("NAL size"));
+        };
+        out.extend_from_slice(&len.to_be_bytes());
+        out.extend_from_slice(unit);
+    }
+    Ok(())
+}
+
+/// Appends the Annex B units `each` keeps, in one walk, as 4-byte lengths.
+/// `each` is told how many bytes this call has already appended. `Ok(false)` skips
+/// the unit. `Err` restores `out` to its length on entry and returns that error.
+/// The length prefix is `unit.len() as u32`, the same width the muxers write.
+pub fn annexb_to_length_prefixed_while<E>(
+    data: &[u8],
+    out: &mut Vec<u8>,
+    mut each: impl FnMut(&[u8], usize) -> Result<bool, E>,
+) -> Result<usize, E> {
+    let start = out.len();
+    for unit in annexb_units(data) {
+        let added = out.len() - start;
+        match each(unit, added) {
+            Ok(false) => {}
+            Ok(true) => {
+                out.extend_from_slice(&(unit.len() as u32).to_be_bytes());
+                out.extend_from_slice(unit);
+            }
+            Err(e) => {
+                out.truncate(start);
+                return Err(e);
+            }
+        }
+    }
+    Ok(out.len() - start)
+}
+
+/// A parameter set carried in the container's codec private data, not in the sample.
+pub fn parameter_set(codec: rbs_core::media::CodecId, unit: &[u8]) -> bool {
+    use rbs_core::media::CodecId;
+    match codec {
+        CodecId::Hevc => {
+            matches!(hevc_type(unit), Some(hevc::VPS | hevc::SPS | hevc::PPS))
+        }
+        _ => matches!(h264_type(unit), Some(h264::SPS | h264::PPS)),
+    }
+}
+
+/// An access unit delimiter. Length-prefixed samples omit it.
+pub fn access_unit_delimiter(codec: rbs_core::media::CodecId, unit: &[u8]) -> bool {
+    use rbs_core::media::CodecId;
+    match codec {
+        CodecId::Hevc => hevc_type(unit) == Some(hevc::AUD),
+        _ => h264_type(unit) == Some(h264::AUD),
+    }
+}
+
+/// Whether an Annex B unit belongs in a length-prefixed sample: not empty, not a
+/// parameter set, not an access unit delimiter.
+pub fn in_length_prefixed_sample(codec: rbs_core::media::CodecId, unit: &[u8]) -> bool {
+    !unit.is_empty() && !parameter_set(codec, unit) && !access_unit_delimiter(codec, unit)
+}
+
+/// The bytes [`rbs_core::media::PacketShare`] compares. Each set is its length as a
+/// big-endian `u32` followed by the set, so two lists of the same sets match and a
+/// concatenation of different cuts does not.
+pub fn parameter_set_key(sets: &[Vec<u8>]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for set in sets {
+        let Ok(len) = u32::try_from(set.len()) else {
+            continue;
+        };
+        out.extend_from_slice(&len.to_be_bytes());
+        out.extend_from_slice(set);
+    }
+    out
+}
+
 /// Appends length-prefixed `data` to `out` as Annex B with 4-byte start codes. When
 /// `prefix_units` is given (typically SPS and PPS before an IDR for MPEG-TS), those
 /// units are written first. Zero-length units are skipped. On error `out` is left as
@@ -401,5 +492,32 @@ mod tests {
         let ptr = out.as_ptr();
         annexb_to_length_prefixed(ANNEXB, &mut out).unwrap();
         assert_eq!(out.as_ptr(), ptr);
+    }
+
+    #[test]
+    fn filtered_conversion_drops_what_the_caller_rejects() {
+        let mut out = Vec::new();
+        annexb_to_length_prefixed_if(ANNEXB, &mut out, |unit| h264_type(unit) != Some(h264::SPS))
+            .unwrap();
+        let units: Vec<&[u8]> = length_prefixed_units(&out, 4).map(Result::unwrap).collect();
+        assert!(units.iter().all(|unit| h264_type(unit) != Some(h264::SPS)));
+        assert!(units.iter().any(|unit| h264_type(unit) == Some(h264::PPS)));
+    }
+
+    #[test]
+    fn a_rejected_unit_leaves_the_buffer_as_it_was() {
+        let mut out = vec![9];
+        let err = annexb_to_length_prefixed_while(ANNEXB, &mut out, |unit, _| {
+            if h264_type(unit) == Some(h264::IDR) {
+                Err("idr")
+            } else {
+                Ok(in_length_prefixed_sample(
+                    rbs_core::media::CodecId::H264,
+                    unit,
+                ))
+            }
+        });
+        assert_eq!(err, Err("idr"));
+        assert_eq!(out, vec![9]);
     }
 }

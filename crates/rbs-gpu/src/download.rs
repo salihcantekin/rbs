@@ -861,6 +861,27 @@ impl YuvDownload {
             // Nothing in flight: no lock taken.
             return Ok(None);
         }
+        // A repeat only restamps the picture already taken. It does not touch the
+        // readback, so the shared mutex stays out of the steady repeat path (F-11).
+        if self.entries[self.tail].kind == Kind::Repeat {
+            let entry = self.entries[self.tail];
+            self.entries[self.tail] = FREE;
+            self.tail = (self.tail + 1) % DOWNLOAD_RING;
+            let again = self.last.as_ref().and_then(VideoFrame::share);
+            if again.is_some() {
+                self.stats.repeated += 1;
+            } else {
+                self.stats.failed += 1;
+            }
+            let frame = again.map(|f| {
+                f.with_timestamp(entry.timestamp)
+                    .with_sequence(entry.sequence)
+            });
+            if frame.is_some() {
+                self.stats.delivered += 1;
+            }
+            return Ok(frame);
+        }
         let mut r = self.store.lock()?;
         // The newest completed entry's stamp, and the newest readback at or before it,
         // whose picture that entry shows (a repeat shows the picture before it). A repeat

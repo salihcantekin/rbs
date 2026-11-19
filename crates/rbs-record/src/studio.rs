@@ -2,6 +2,7 @@
 //! preview and metered, with recordings started and stopped while it runs (spec
 //! `docs/specs/recording.md`, "Studio", ADR-0041).
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
@@ -753,6 +754,9 @@ pub(crate) struct Prepared {
     cut: Option<Arc<OutputCut>>,
     /// A stream that can be held (ADR-0124 decision 12).
     holdable: bool,
+    /// This output's container wants the filtered length-prefixed sample (fMP4, MOV,
+    /// Matroska). A second such output of one encoder turns packet sharing on.
+    filtered_share: bool,
 }
 
 impl Prepared {
@@ -1018,6 +1022,10 @@ impl Prepared {
             pause,
             cut,
             holdable: out.holdable,
+            filtered_share: matches!(
+                out.container(),
+                Some(ContainerId::Mp4Fragmented | ContainerId::Mov | ContainerId::Matroska)
+            ),
         })
     }
 }
@@ -1058,6 +1066,10 @@ struct VideoChain {
     /// pixel format, colour and grade uses it too, so the canvas is converted and read
     /// back once for both (perf audit R-01).
     share: Arc<DownloadShare>,
+    /// Set while two or more fMP4, MOV or Matroska outputs take this encoder's packets.
+    share_packets: Arc<AtomicBool>,
+    /// How many of those outputs are attached. The flag follows `>= 2`.
+    filtered_users: u8,
     /// The lease owners of a native export, dropped only after the chain's nodes are
     /// taken back (ADR-0147 decision 8); `None` for the readback.
     owners: Option<Arc<LeaseOwners>>,
@@ -1166,6 +1178,8 @@ struct Attached {
     paused_at: pause::Targets,
     /// Its holds (ADR-0124 decision 13).
     hold: hold::Holds,
+    /// Counted in its video chain's filtered-sample users.
+    filtered_share: bool,
 }
 
 /// The cross-partition queues feeding an output's encoders.
@@ -1790,7 +1804,7 @@ impl Studio {
             fps,
             binder,
             graph,
-            collection: collection.clone(),
+            collection: Cow::clone(collection).into_owned(),
             cues: ShowCues::new(),
             compositor: compositor_id,
             layers,
@@ -2734,7 +2748,7 @@ impl Studio {
                 Err(e) => attach_error = Some(e),
             }
         }
-        self.collection = collection.clone();
+        self.collection = Cow::clone(collection).into_owned();
         self.note_scene_change(collection, &effective, old_main, &old_extra, old_layers);
         self.mix = mix_of(collection, self.settings.canvas);
         self.master = master_of(collection, self.settings.canvas);
@@ -4851,6 +4865,7 @@ impl Studio {
             let export_stats = export.stats();
             let end = export.end();
             let encoder_stats = encoder.stats();
+            let share_packets = encoder.share_packets();
             let stream = encoder.stream().clone();
             let r = self.engine.adopt::<GpuRuntime>(RENDER, e.node, export);
             adopt(&mut self.engine, e, r)?;
@@ -4873,6 +4888,8 @@ impl Studio {
                 keyframe_capable,
                 hold: chain_hold,
                 share,
+                share_packets,
+                filtered_users: 0,
                 owners,
             });
         }
@@ -4957,6 +4974,16 @@ impl Studio {
                     .and_then(|h| h.held())
             });
         let now = self.engine.clock().now();
+        let filtered_share = p.filtered_share && video_slot.is_some();
+        if filtered_share
+            && let Some(i) = video_slot
+            && let Some(c) = self.chains.video[i].as_mut()
+        {
+            c.filtered_users = c.filtered_users.saturating_add(1);
+            if c.filtered_users >= 2 {
+                c.share_packets.store(true, Ordering::Release);
+            }
+        }
         self.outputs.push(Attached {
             id,
             canvas,
@@ -4993,6 +5020,7 @@ impl Studio {
             cut: p.cut,
             paused_at: pause::Targets::default(),
             hold: hold::Holds::joined(p.holdable, held, now),
+            filtered_share,
         });
         Ok((id, nodes))
     }
@@ -5108,6 +5136,16 @@ impl Studio {
         let mut nodes: Vec<Added> = gone.iter().map(|r| r.output).collect();
         let mut removed = Vec::new();
         for r in gone {
+            if r.filtered_share
+                && let Some(v) = r.video
+                && self.outputs.iter().any(|o| o.video == Some(v))
+                && let Some(c) = self.chains.video[v].as_mut()
+            {
+                c.filtered_users = c.filtered_users.saturating_sub(1);
+                if c.filtered_users < 2 {
+                    c.share_packets.store(false, Ordering::Release);
+                }
+            }
             let video_alone = r
                 .video
                 .is_some_and(|v| !self.outputs.iter().any(|o| o.video == Some(v)));
@@ -5889,13 +5927,13 @@ struct ScenePreview {
 /// `collection` with every following canvas's program scene set to what it shows now
 /// (ADR-0093 decision 3); `last` remembers it for the `KeepLast` fallback. The binder
 /// sees only program scenes, so it needs to know nothing of following.
-fn with_followers(
-    collection: &SceneCollection,
+fn with_followers<'a>(
+    collection: &'a SceneCollection,
     last: &mut BTreeMap<CanvasId, SceneId>,
-) -> SceneCollection {
+) -> Cow<'a, SceneCollection> {
     let shown = collection.followed_programs(last);
     if shown.is_empty() {
-        return collection.clone();
+        return Cow::Borrowed(collection);
     }
     let mut resolved = collection.clone();
     for (canvas, scene) in shown {
@@ -5904,7 +5942,7 @@ fn with_followers(
             last.insert(canvas, scene);
         }
     }
-    resolved
+    Cow::Owned(resolved)
 }
 
 /// A further canvas that runs (ADR-0093).

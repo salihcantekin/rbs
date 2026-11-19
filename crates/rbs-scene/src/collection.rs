@@ -1903,6 +1903,17 @@ impl SceneCollection {
             .ok_or(SceneError::UnknownFilter(id))
     }
 
+    /// A live level edit whose new value is already in range. It cannot break names,
+    /// nesting or cycles, so the full document walk adds nothing.
+    fn field_edit(op: &Op) -> bool {
+        match op {
+            Op::SetSourceAudio { new, .. } => new.is_valid(),
+            Op::SetCanvasMaster { new, .. } => new.is_valid(),
+            Op::Batch(ops) => !ops.is_empty() && ops.iter().all(Self::field_edit),
+            _ => false,
+        }
+    }
+
     fn apply(&mut self, op: Op) -> Result<Undo, SceneError> {
         let next = self.next.clone();
         self.apply_with(op, next)
@@ -1914,8 +1925,14 @@ impl SceneCollection {
     fn apply_with(&mut self, op: Op, next: NextIds) -> Result<Undo, SceneError> {
         let mut draft = self.clone();
         draft.next = next;
+        let field = Self::field_edit(&op);
         let inverse = draft.perform(op)?;
-        draft.validate()?;
+        // A volume, mute or master change cannot break the document shape. The value
+        // was already checked, so the full walk would only re-read every other object.
+        // The clone stays: a refused edit must not change `self`.
+        if !field {
+            draft.validate()?;
+        }
         // A document loaded with its stinger placed stays editable (ADR-0140 decision
         // 1); an edit may not make it so.
         if let Some(id) = draft.placed_stinger()

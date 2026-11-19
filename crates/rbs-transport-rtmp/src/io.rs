@@ -936,27 +936,27 @@ impl Io {
         if !*headers_sent {
             *headers_sent = true;
             self.headers(conn.stream_id, item.ms);
+            conn.write_all(&self.out, shared)?;
+            self.out.clear();
         }
         self.body.clear();
         self.config
             .tracks
-            .write_body(item.plan, &item.packet, item.cts, &mut self.body);
+            .write_body(&item.plan, &item.packet, item.cts, &mut self.body);
         let (csid, type_id) = match item.plan.kind {
             TrackKind::Video => (chunk::CSID_VIDEO, chunk::MSG_VIDEO),
             TrackKind::Audio => (chunk::CSID_AUDIO, chunk::MSG_AUDIO),
         };
-        self.out
-            .reserve(chunk::message_size(self.body.len(), CHUNK_SIZE, item.ms));
-        chunk::write_message(
-            &mut self.out,
+        let stream_id = conn.stream_id;
+        chunk::write_message_with(
+            |part| conn.write_all(part, shared),
             csid,
             item.ms,
             type_id,
-            conn.stream_id,
+            stream_id,
             &self.body,
             CHUNK_SIZE,
-        );
-        conn.write_all(&self.out, shared)
+        )
     }
 
     /// Appends `@setDataFrame onMetaData` and the sequence headers, stamped with the

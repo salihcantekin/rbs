@@ -136,13 +136,25 @@ pub enum TrackKind {
 }
 
 /// A packet checked by [`FlvTracks::plan`].
+///
+/// Video plans remember where each kept NAL unit sits in the packet, so
+/// [`FlvTracks::write_body`] copies those bytes and does not scan the packet again.
+/// At most [`MAX_NAL_UNITS`] units are kept; the list is inline, so `plan` does not
+/// allocate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BodyPlan {
     /// The stream's kind.
     pub kind: TrackKind,
     /// Exact body size: prefix and payload.
     pub data_size: usize,
+    /// `(start, len)` of each kept video NAL unit inside the packet.
+    units: [(u32, u32); MAX_NAL_UNITS],
+    /// How many of `units` are set. Zero for audio.
+    n_units: u8,
 }
+
+/// Kept NAL units one video body can name. More than this is [`PacketError::TooLarge`].
+const MAX_NAL_UNITS: usize = 32;
 
 impl BodyPlan {
     /// The tag type for this body.
@@ -348,8 +360,8 @@ impl FlvTracks {
         true
     }
 
-    /// Hot path. Checks a packet for stream `index` and gives its exact body size. Reads
-    /// the NAL unit lengths of H.264 packets; never allocates.
+    /// Hot path. Checks a packet for stream `index` and gives its exact body size.
+    /// A video plan records each kept NAL unit's range in the packet. No allocation.
     pub fn plan(&self, index: usize, packet: &EncodedPacket) -> Result<BodyPlan, PacketError> {
         let kind = self.kind(index).ok_or(PacketError::UnknownStream)?;
         let expected = match kind {
@@ -363,24 +375,39 @@ impl FlvTracks {
         if data.is_empty() {
             return Err(PacketError::Empty);
         }
+        let mut units = [(0u32, 0u32); MAX_NAL_UNITS];
+        let mut n_units = 0u8;
         let payload = match (kind, &self.video) {
             (TrackKind::Video, Some(video)) => {
                 let out_size = video.out_length_size();
                 let mut total = 0;
+                let mut push = |unit: &[u8]| -> Result<(), PacketError> {
+                    if !keep_unit(unit) {
+                        return Ok(());
+                    }
+                    let n = n_units as usize;
+                    if n == MAX_NAL_UNITS {
+                        return Err(PacketError::TooLarge);
+                    }
+                    total += out_size + unit.len();
+                    // `unit` is a subslice of `data` from the NAL iterators.
+                    let start = unit.as_ptr() as usize - data.as_ptr() as usize;
+                    units[n] = (start as u32, unit.len() as u32);
+                    n_units += 1;
+                    Ok(())
+                };
                 match (video.length_size, packet.bitstream()) {
                     (Some(size), BitstreamFormat::LengthPrefixed { length_size })
                         if size == length_size =>
                     {
                         for unit in nal::length_prefixed_units(data, size) {
                             let unit = unit.map_err(|_| PacketError::Truncated)?;
-                            if keep_unit(unit) {
-                                total += out_size + unit.len();
-                            }
+                            push(unit)?;
                         }
                     }
                     (None, BitstreamFormat::AnnexB) => {
-                        for unit in nal::annexb_units(data).filter(|u| keep_unit(u)) {
-                            total += out_size + unit.len();
+                        for unit in nal::annexb_units(data) {
+                            push(unit)?;
                         }
                     }
                     _ => return Err(PacketError::WrongFraming),
@@ -403,6 +430,8 @@ impl FlvTracks {
         Ok(BodyPlan {
             kind,
             data_size: payload,
+            units,
+            n_units,
         })
     }
 
@@ -413,7 +442,7 @@ impl FlvTracks {
     /// packet gives a body whose size differs from `plan.data_size`.
     pub fn write_body(
         &self,
-        plan: BodyPlan,
+        plan: &BodyPlan,
         packet: &EncodedPacket,
         cts_ms: i64,
         out: &mut Vec<u8>,
@@ -436,14 +465,14 @@ impl FlvTracks {
                     out.extend_from_slice(&len[4 - out_size..]);
                     out.extend_from_slice(unit);
                 };
-                match video.length_size {
-                    Some(size) => nal::length_prefixed_units(data, size)
-                        .filter_map(Result::ok)
-                        .filter(|u| keep_unit(u))
-                        .for_each(&mut put),
-                    None => nal::annexb_units(data)
-                        .filter(|u| keep_unit(u))
-                        .for_each(&mut put),
+                for (start, len) in plan.units.iter().take(plan.n_units as usize) {
+                    let start = *start as usize;
+                    let len = *len as usize;
+                    let Some(unit) = data.get(start..start + len) else {
+                        debug_assert!(false, "plan from another packet");
+                        break;
+                    };
+                    put(unit);
                 }
             }
             _ => {
@@ -525,7 +554,7 @@ mod tests {
         let p = packet(BitstreamFormat::AnnexB, true, data);
         let plan = tracks.plan(0, &p).unwrap();
         let mut body = Vec::new();
-        tracks.write_body(plan, &p, -1, &mut body);
+        tracks.write_body(&plan, &p, -1, &mut body);
         assert_eq!(body.len(), plan.data_size);
         assert_eq!(
             body,

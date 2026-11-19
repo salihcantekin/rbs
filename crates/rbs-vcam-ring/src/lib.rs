@@ -471,14 +471,14 @@ impl Writer {
             || self.region.u32_at(OFF_GENERATION).load(Ordering::Acquire) != self.generation
     }
 
-    fn take_slot(&self, now_ms: u64, seq_new: u64) -> Option<usize> {
+    fn take_slot(&self, now_ms: u64, seq_new: u64) -> Option<(usize, u64)> {
         let writing = word(seq_new, TAG_WRITING);
         let words: [u64; SLOTS] =
             std::array::from_fn(|s| state(&self.region, &self.layout, s).load(Ordering::Acquire));
         // 1. A free slot.
         for (s, &w) in words.iter().enumerate() {
             if tag(w) == TAG_FREE && self.cas(s, w, writing) {
-                return Some(s);
+                return Some((s, w));
             }
         }
         // 2. A slot held by a reader that stopped.
@@ -486,7 +486,7 @@ impl Writer {
         if now_ms.saturating_sub(reader_hb) > STALE_MS {
             for (s, &w) in words.iter().enumerate() {
                 if tag(w) == TAG_READING && self.cas(s, w, writing) {
-                    return Some(s);
+                    return Some((s, w));
                 }
             }
         }
@@ -502,7 +502,10 @@ impl Writer {
             .iter()
             .filter(|(_, s)| *s != usize::MAX)
             .map(|&(_, s)| s)
-            .find(|&s| self.cas(s, words[s], writing))
+            .find_map(|s| {
+                let prev = words[s];
+                self.cas(s, prev, writing).then_some((s, prev))
+            })
     }
 
     fn cas(&self, slot: usize, current: u64, new: u64) -> bool {
@@ -527,7 +530,7 @@ impl Writer {
         }
         self.heartbeat(now_ms);
         let seq_new = self.next_seq;
-        let Some(slot) = self.take_slot(now_ms, seq_new) else {
+        let Some((slot, _)) = self.take_slot(now_ms, seq_new) else {
             return Ok(WriteOutcome::Busy);
         };
         let dst = self.region.pixels_ptr(&self.layout, slot);
@@ -535,6 +538,42 @@ impl Writer {
         // `pixels` has exactly `frame_len` bytes in our own memory, so the ranges do not
         // overlap. The slot is ours (state `Writing`), so no honest reader copies it now.
         unsafe { std::ptr::copy_nonoverlapping(pixels.as_ptr(), dst, pixels.len()) };
+        timestamp(&self.region, &self.layout, slot).store(timestamp_ns as u64, Ordering::Relaxed);
+        state(&self.region, &self.layout, slot).store(word(seq_new, TAG_READY), Ordering::Release);
+        self.next_seq += 1;
+        Ok(WriteOutcome::Written { seq: seq_new })
+    }
+
+    /// Writes one frame straight into the slot. `fill` returns false when the frame
+    /// does not belong in this ring. The previous slot state is restored then, so a
+    /// ready frame that was borrowed for the attempt stays readable.
+    pub fn fill(
+        &mut self,
+        now_ms: u64,
+        timestamp_ns: i64,
+        fill: impl FnOnce(&mut [u8]) -> bool,
+    ) -> Result<WriteOutcome, RingError> {
+        if self.reset_seen() {
+            return Ok(WriteOutcome::Reset);
+        }
+        self.heartbeat(now_ms);
+        let seq_new = self.next_seq;
+        let Some((slot, prev)) = self.take_slot(now_ms, seq_new) else {
+            return Ok(WriteOutcome::Busy);
+        };
+        let dst = self.region.pixels_ptr(&self.layout, slot);
+        let len = self.layout.frame_len();
+        // SAFETY: the slot is `Writing`, so this writer owns `frame_len` bytes at `dst`.
+        // `fill` only touches that slice. A false return puts `prev` back before any
+        // reader can observe the slot as ready.
+        let wrote = unsafe {
+            let buf = std::slice::from_raw_parts_mut(dst, len);
+            fill(buf)
+        };
+        if !wrote {
+            state(&self.region, &self.layout, slot).store(prev, Ordering::Release);
+            return Err(RingError::InvalidFrame);
+        }
         timestamp(&self.region, &self.layout, slot).store(timestamp_ns as u64, Ordering::Relaxed);
         state(&self.region, &self.layout, slot).store(word(seq_new, TAG_READY), Ordering::Release);
         self.next_seq += 1;

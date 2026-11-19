@@ -17,7 +17,9 @@
 //!   encoder's delay (libavcodec's `initial_padding`, one frame) is not signalled, as
 //!   the spec's open question on encoder delay describes.
 //! - Bitrates: any rate from [`MIN_BITRATE`] to [`MAX_BITRATE_PER_CHANNEL`] per
-//!   channel; fixed while running.
+//!   channel; fixed while running. Adapter option `aac_coder` selects libavcodec's
+//!   coder when it is set. When it is absent the library default stays (twoloop).
+//!   Changing that default needs a quality and encode-time measurement (ADR-0143 R10).
 //! - A block whose timestamp is a codec frame or more away from the running sample
 //!   timeline is a discontinuity: the partial frame is padded with silence, the encoder
 //!   is drained, and the timeline restarts at the block (on a new encoder context,

@@ -11,7 +11,9 @@ Policy: principle P15, `docs/adr/0014-review-policy.md`. Paths: `docs/architectu
 2. **Measure** with the `measure-performance` skill. Put the before/after table in the PR. No numbers, no merge.
 3. **Checklist** (answer each OK / Issue / N/A with one line):
    - No heap allocation per call (including hidden ones: `format!`, `to_string`, `Vec` growth, `Box`, `Arc::new`, closures that capture by value into boxes).
-   - No locks that can be contended, no blocking calls, no I/O, no logging per call (use counters).
+   - No locks that can be contended, no blocking calls, no I/O, no logging per call (use counters). `Mutex::lock` and `RwLock::read`/`write` fail this item even when the lock is not contended today. The only lock on a hot path is a `try_lock` that never waits, and only where an ADR already allows it (F-11, P6).
+   - An unchanged picture does not replace its output slot or retain a new lease. `submit_repeat` is only for a consumer that needs a new timestamp (ADR-0143 R5, F-17).
+   - One hop moves a picture across the CPU at most once. A second full-frame copy of the same picture in that hop fails this item (ADR-0143 R9).
    - No new branches that test whether an inactive feature is enabled (P13).
    - Work per call is bounded; no loops over unbounded collections.
    - Data layout: no extra indirection or copies of frame or audio data; GPU frames stay on the GPU (P4).

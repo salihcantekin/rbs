@@ -150,19 +150,8 @@ impl MediaSoundNode {
                     break;
                 };
                 if due && !stale {
-                    let width = channels.len().max(1);
-                    // Blocks are exactly `width * frames` long (the worker cuts them
-                    // for this config); a short one leaves the rest silent.
-                    let whole = (block.samples.len() / width).min(frames);
-                    for (c, dest) in channels.iter_mut().enumerate() {
-                        let (head, tail) = dest[..frames].split_at_mut(whole);
-                        for (sample, frame) in
-                            head.iter_mut().zip(block.samples.chunks_exact(width))
-                        {
-                            *sample = frame[c];
-                        }
-                        tail.fill(0.0);
-                    }
+                    // Blocks are cut for this channel count. A short one leaves silence.
+                    rbs_audio::deinterleave(&block.samples, channels, frames);
                     written = true;
                 } else if late && !stale {
                     stats.late_blocks.fetch_add(1, Ordering::Relaxed);

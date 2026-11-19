@@ -54,8 +54,6 @@ pub struct RingSender<S> {
     mapped: Option<Mapped>,
     last_look_ms: Option<u64>,
     last_beat_ms: u64,
-    /// One frame, packed to the ring's stride: allocated once here.
-    scratch: Vec<u8>,
 }
 
 impl<S: RingSource> RingSender<S> {
@@ -63,7 +61,6 @@ impl<S: RingSource> RingSender<S> {
     pub fn new(source: S, layout: Layout, counters: Arc<VcamCounters>) -> Self {
         Self {
             source,
-            scratch: vec![0; layout.frame_len()],
             layout,
             counters,
             mapped: None,
@@ -150,9 +147,6 @@ impl<S: RingSource> RingSender<S> {
     }
 
     fn write(&mut self, frame: &VideoFrame, now_ms: u64) -> Sent {
-        if !pack(frame, &self.layout, &mut self.scratch) {
-            return Sent::Refused;
-        }
         self.look(now_ms);
         let Some(m) = self.mapped.as_mut() else {
             return Sent::Absent;
@@ -172,7 +166,7 @@ impl<S: RingSource> RingSender<S> {
             return Sent::Absent;
         };
         let ts = i64::try_from(frame.timestamp().as_nanos()).unwrap_or(i64::MAX);
-        let outcome = w.write(now_ms, ts, &self.scratch);
+        let outcome = w.fill(now_ms, ts, |dst| pack(frame, &self.layout, dst));
         self.last_beat_ms = now_ms;
         let absent = !info.reader_active(now_ms);
         match outcome {

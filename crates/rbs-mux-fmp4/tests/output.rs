@@ -560,6 +560,65 @@ fn annexb_input_is_converted_and_parameter_sets_dropped() {
 }
 
 #[test]
+fn a_second_muxer_copies_the_shared_sample() {
+    let mut stream = h264_stream();
+    stream.bitstream = BitstreamFormat::AnnexB;
+    let config = MuxerConfig::new(MP4, vec![stream]);
+    let sets = rbs_media_format::avc::AvcConfig::parse(SYNTHETIC_AVCC).unwrap();
+    let key = rbs_media_format::nal::parameter_set_key(
+        &sets
+            .sps
+            .iter()
+            .chain(&sets.pps)
+            .map(|s| s.to_vec())
+            .collect::<Vec<_>>(),
+    );
+    let au = vec![
+        0, 0, 1, 0x09, 0xf0, 0, 0, 0, 1, 0x67, 0x64, 0x00, 0x1f, 0xac, 0xd9, 0x40, 0x50, 0x05, 0,
+        0, 1, 0x68, 0xeb, 0xe3, 0xcb, 0, 0, 0, 1, 0x06, 5, 0, 0, 1, 0x65, 1, 2,
+    ];
+    let mut shared_packet = video(0, 0, true, au.clone(), BitstreamFormat::AnnexB);
+    shared_packet.attach_packet_share();
+
+    let mut alone = Fmp4MuxerFactory.create(&config).unwrap();
+    let mut alone_chunks = Vec::new();
+    alone.begin(&mut alone_chunks).unwrap();
+    alone
+        .write(
+            StreamIndex(0),
+            &video(0, 0, true, au, BitstreamFormat::AnnexB),
+            &mut alone_chunks,
+        )
+        .unwrap();
+    alone.finish(&mut alone_chunks).unwrap();
+
+    let mut first = Fmp4MuxerFactory.create(&config).unwrap();
+    let mut second = Fmp4MuxerFactory.create(&config).unwrap();
+    let mut a = Vec::new();
+    let mut b = Vec::new();
+    first.begin(&mut a).unwrap();
+    second.begin(&mut b).unwrap();
+    first.write(StreamIndex(0), &shared_packet, &mut a).unwrap();
+    let stored = shared_packet
+        .packet_share()
+        .unwrap()
+        .get(&key)
+        .expect("the first muxer stores the filtered sample");
+    second
+        .write(StreamIndex(0), &shared_packet, &mut b)
+        .unwrap();
+    let again = shared_packet.packet_share().unwrap().get(&key).unwrap();
+    assert_eq!(again.as_ptr(), stored.as_ptr());
+    first.finish(&mut a).unwrap();
+    second.finish(&mut b).unwrap();
+    let (_, _, mdat_alone) = fragment(&alone_chunks[1].data);
+    let (_, _, mdat_a) = fragment(&a[1].data);
+    let (_, _, mdat_b) = fragment(&b[1].data);
+    assert_eq!(mdat_a, mdat_alone);
+    assert_eq!(mdat_b, mdat_a);
+}
+
+#[test]
 fn audio_only_output_has_keyframe_fragments() {
     let config = MuxerConfig::new(MP4, vec![aac_stream()]);
     let mut muxer = Fmp4MuxerFactory.create(&config).unwrap();

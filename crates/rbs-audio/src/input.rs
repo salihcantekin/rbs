@@ -202,9 +202,13 @@ struct State {
     src_channels: usize,
     /// Frames per channel the FIFO holds.
     cap: usize,
-    /// Planar FIFO: channel `c` is `fifo[c * cap..(c + 1) * cap]`; frames `0..len` are
-    /// valid, frame 0 the oldest.
+    /// Planar FIFO: channel `c` is `fifo[c * cap..(c + 1) * cap]`. The live frames
+    /// are `origin..origin + len`, frame 0 the oldest. `origin` advances instead of
+    /// sliding the tail every block, and the live span is copied back to 0 only when
+    /// the next write would pass `cap`.
     fifo: Box<[f32]>,
+    /// First live frame in each channel.
+    origin: usize,
     len: usize,
     /// Time map: master ns of the anchor, and the time of FIFO frame 0 relative to it.
     base: u64,
@@ -241,6 +245,7 @@ impl State {
             src_channels,
             cap,
             fifo: vec![0.0; cap * src_channels].into_boxed_slice(),
+            origin: 0,
             len: 0,
             base: 0,
             head: 0.0,
@@ -258,16 +263,32 @@ impl State {
         }
     }
 
-    /// Moves FIFO frames `from..from + n` to `to` in every channel.
+    /// Moves FIFO frames `from..from + n` to `to` in every channel. Indexes are
+    /// logical (frame 0 is the oldest).
     fn shift(&mut self, from: usize, n: usize, to: usize) {
         if n == 0 || from == to {
             return;
         }
+        let from = self.origin + from;
+        let to = self.origin + to;
         for c in 0..self.src_channels {
             let base = c * self.cap;
             self.fifo
                 .copy_within(base + from..base + from + n, base + to);
         }
+    }
+
+    /// Copies the live frames back to the start of each channel.
+    fn compact(&mut self) {
+        if self.origin == 0 {
+            return;
+        }
+        for c in 0..self.src_channels {
+            let base = c * self.cap;
+            self.fifo
+                .copy_within(base + self.origin..base + self.origin + self.len, base);
+        }
+        self.origin = 0;
     }
 
     /// Drops the oldest `n` frames (`n <= len`), keeping the map and position.
@@ -276,7 +297,7 @@ impl State {
         if n == 0 {
             return;
         }
-        self.shift(n, self.len - n, 0);
+        self.origin += n;
         self.len -= n;
         self.head += n as f64 * self.dt;
         self.p -= n as f64;
@@ -319,9 +340,12 @@ impl State {
         if diff > 0.0 {
             let gap = (diff / self.dt).round() as usize;
             if self.len + gap + n <= self.cap {
+                if self.origin + self.len + gap + n > self.cap {
+                    self.compact();
+                }
                 self.shift(self.len, n, self.len + gap);
                 for c in 0..self.src_channels {
-                    let at = c * self.cap + self.len;
+                    let at = c * self.cap + self.origin + self.len;
                     self.fifo[at..at + gap].fill(0.0);
                 }
                 self.len += gap + n;
@@ -454,10 +478,14 @@ impl InputAligner {
                 InputStats::add(&stats.discarded_frames, n as u64);
                 st.drop_front(n);
             }
-            let (len, cap, n_ch) = (st.len, st.cap, st.src_channels);
+            let (cap, n_ch) = (st.cap, st.src_channels);
+            if st.origin + st.len + MIN_ROOM > st.cap {
+                st.compact();
+            }
+            let physical = st.origin + st.len;
             let mut views: [&mut [f32]; MAX_CHANNELS] = Default::default();
             for (view, chunk) in views.iter_mut().zip(st.fifo.chunks_exact_mut(cap)) {
-                *view = &mut chunk[len..];
+                *view = &mut chunk[physical..];
             }
             let read = match self.stream.read(&mut views[..n_ch]) {
                 Ok(r) => r,
@@ -550,7 +578,7 @@ impl InputAligner {
                 st.kernel.coefficients(st.p - i as f64, &mut weights);
                 let mut v = [0.0f32; MAX_CHANNELS];
                 for (c, v) in v.iter_mut().enumerate().take(st.src_channels) {
-                    let at = c * st.cap + i - BEFORE;
+                    let at = c * st.cap + st.origin + i - BEFORE;
                     *v = apply(&weights, &st.fifo[at..at + TAPS]);
                 }
                 for (o, ch) in chans.iter_mut().enumerate().take(n_out) {

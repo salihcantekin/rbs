@@ -4,13 +4,15 @@
 //! adapter's OS render callback owns the [`OutputConsumer`] and pulls from it. The two
 //! halves are a lock-free single-producer single-consumer ring, so neither side
 //! allocates, locks or waits (principle P6). An empty ring plays silence and is
-//! counted; a full ring drops the newest audio and is counted. Samples are stored as
-//! `f32` bits in atomics, so the ring needs no `unsafe`.
+//! counted; a full ring drops the newest audio and is counted. Samples are plain
+//! `f32` slots with the same exclusive-range rule as the capture ring.
 //!
 //! Contract: "Audio output" in `docs/specs/audio-io-port.md`.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use crate::ring::PlainSamples;
 
 use rbs_core::media::AudioFormat;
 
@@ -106,8 +108,8 @@ pub trait AudioOutput: Send {
 }
 
 struct Shared {
-    /// Samples, `capacity * channels` of them, as `f32` bits.
-    samples: Box<[AtomicU32]>,
+    /// Samples, `capacity * channels` of them.
+    samples: PlainSamples,
     capacity: usize,
     channels: usize,
     /// Frames ever pushed into the ring (producer-owned, read by the consumer).
@@ -134,10 +136,7 @@ pub struct OutputConsumer {
 pub fn channel(channels: usize, frames: usize) -> (OutputProducer, OutputConsumer) {
     let channels = channels.max(1);
     let capacity = frames.clamp(MIN_RING_FRAMES, MAX_RING_FRAMES);
-    let samples = (0..capacity * channels)
-        .map(|_| AtomicU32::new(0))
-        .collect::<Vec<_>>()
-        .into_boxed_slice();
+    let samples = PlainSamples::new(capacity * channels);
     let shared = Arc::new(Shared {
         samples,
         capacity,
@@ -191,10 +190,13 @@ impl OutputProducer {
         for f in 0..take {
             let slot = ((head as usize + f) % shared.capacity) * shared.channels;
             for c in 0..shared.channels {
-                shared.samples[slot + c].store(
-                    interleaved[f * shared.channels + c].to_bits(),
-                    Ordering::Relaxed,
-                );
+                // SAFETY: `head` is published only after this loop, and `space` kept
+                // these slots out of the consumer's range.
+                unsafe {
+                    shared
+                        .samples
+                        .store(slot + c, interleaved[f * shared.channels + c]);
+                }
             }
         }
         shared.head.store(head + take as u64, Ordering::Release);
@@ -250,8 +252,9 @@ impl OutputConsumer {
         for f in 0..take {
             let slot = ((tail as usize + f) % shared.capacity) * shared.channels;
             for c in 0..shared.channels {
-                out[f * shared.channels + c] =
-                    f32::from_bits(shared.samples[slot + c].load(Ordering::Relaxed));
+                // SAFETY: `head` was acquired above, and `tail` is published only after
+                // this loop.
+                out[f * shared.channels + c] = unsafe { shared.samples.load(slot + c) };
             }
         }
         for v in &mut out[take * shared.channels..] {

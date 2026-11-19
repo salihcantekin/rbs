@@ -291,9 +291,34 @@ impl FfmpegAacFactory {
     ) -> Result<FfmpegAacSession, CreateError> {
         let checked = session::check(config)?;
         let api = api().map_err(|e| CreateError::Unsupported { what: e })?;
-        let engine = AvEngine::new(api, &checked)?;
+        let engine = AvEngine::new(api, &checked, aac_coder(config)?)?;
         Ok(FfmpegAacSession(Session::new(engine, &checked)))
     }
+}
+
+/// `aac_coder` from the adapter options. Absent leaves libavcodec's default
+/// (twoloop). A different default needs an R10 measurement before it is set here.
+fn aac_coder(config: &AudioEncoderConfig) -> Result<Option<std::ffi::CString>, CreateError> {
+    let Some((_, value)) = config
+        .adapter_options
+        .iter()
+        .find(|(key, _)| key == "aac_coder")
+    else {
+        return Ok(None);
+    };
+    let token = value.len() <= 32
+        && !value.is_empty()
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_');
+    if !token {
+        return Err(CreateError::InvalidConfig(
+            "aac_coder must be a short ASCII token".into(),
+        ));
+    }
+    std::ffi::CString::new(value.as_str())
+        .map(Some)
+        .map_err(|_| CreateError::InvalidConfig("aac_coder must be a short ASCII token".into()))
 }
 
 impl AdapterFactory for FfmpegAacFactory {
@@ -351,7 +376,11 @@ impl Drop for Context {
 
 impl Context {
     /// Allocates, configures and opens the `aac` encoder, then checks the layout.
-    fn open(api: &'static Api, checked: &Checked) -> Result<Self, CreateError> {
+    fn open(
+        api: &'static Api,
+        checked: &Checked,
+        coder: Option<&std::ffi::CStr>,
+    ) -> Result<Self, CreateError> {
         let codec = api.aac();
         if codec.is_null() {
             return Err(CreateError::Unsupported {
@@ -404,6 +433,12 @@ impl Context {
                     return Err(device(&format!("option {name:?}"), r));
                 }
             }
+            if let Some(coder) = coder {
+                let r = (api.opt_set)(ptr, c"aac_coder".as_ptr(), coder.as_ptr(), 0);
+                if r < 0 {
+                    return Err(device("option aac_coder", r));
+                }
+            }
             write(ptr, layout.ctx_sample_fmt, AV_SAMPLE_FMT_FLTP);
             let r = (api.open)(ptr, codec, ptr::null_mut());
             if r < 0 {
@@ -437,6 +472,8 @@ impl Context {
 pub struct AvEngine {
     api: &'static Api,
     checked: Checked,
+    /// `aac_coder` when the config set it. Absent keeps libavcodec's default.
+    coder: Option<std::ffi::CString>,
     ctx: Option<Context>,
     frame: *mut c_void,
     packet: *mut c_void,
@@ -463,13 +500,18 @@ impl Drop for AvEngine {
 }
 
 impl AvEngine {
-    fn new(api: &'static Api, checked: &Checked) -> Result<Self, CreateError> {
-        let ctx = Context::open(api, checked)?;
+    fn new(
+        api: &'static Api,
+        checked: &Checked,
+        coder: Option<std::ffi::CString>,
+    ) -> Result<Self, CreateError> {
+        let ctx = Context::open(api, checked, coder.as_deref())?;
         // SAFETY: plain allocations; null is checked below and accepted by Drop.
         let (frame, packet) = unsafe { ((api.frame_alloc)(), (api.packet_alloc)()) };
         let engine = Self {
             api,
             checked: *checked,
+            coder,
             ctx: Some(ctx),
             frame,
             packet,
@@ -572,9 +614,11 @@ impl Engine for AvEngine {
         if self.ctx.is_none() {
             // The first frame of a timeline after `finish`: a fresh context (a
             // control-rate event, after discontinuities and flushes only).
-            let ctx = Context::open(api, &self.checked).map_err(|e| EncodeError::Failed {
-                reason: e.to_string(),
-                recoverable: false,
+            let ctx = Context::open(api, &self.checked, self.coder.as_deref()).map_err(|e| {
+                EncodeError::Failed {
+                    reason: e.to_string(),
+                    recoverable: false,
+                }
             })?;
             self.ctx = Some(ctx);
             self.contexts += 1;

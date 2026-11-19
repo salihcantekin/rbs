@@ -30,8 +30,6 @@ use super::pcm::Converter;
 use super::picture::MediaNodeError;
 use super::{LEAD, MediaStats, NATIVE_WAITING, PICTURE_SLOTS, Shared, SoundBlock, SoundInlet};
 
-/// Longest a worker parks before it looks at the clock again.
-const PARK: Duration = Duration::from_millis(2);
 /// A sound timestamp further than this from where the stream already is starts it
 /// again at the stated time (a gap is filled with silence, an overlap is cut).
 const SOUND_RESYNC: Duration = Duration::from_millis(50);
@@ -442,7 +440,9 @@ impl Run<'_> {
                     .settled_at
                     .store(now.as_nanos().saturating_add(1), Ordering::Release);
                 if !busy {
-                    thread::park_timeout(PARK);
+                    // A command or shutdown unparks. The clock does not, so a
+                    // paused worker sleeps until one of those, not on a 2 ms poll.
+                    thread::park();
                 }
                 continue;
             }
@@ -451,7 +451,9 @@ impl Run<'_> {
                     .settled_at
                     .store(now.as_nanos().saturating_add(1), Ordering::Release);
                 if !busy {
-                    thread::park_timeout(PARK);
+                    // A command or shutdown unparks. The clock does not, so a
+                    // paused worker sleeps until one of those, not on a 2 ms poll.
+                    thread::park();
                 }
                 continue;
             }
@@ -542,12 +544,15 @@ impl Run<'_> {
                 job.progress
                     .settled_at
                     .store(now.as_nanos().saturating_add(1), Ordering::Release);
-                let next = self.next_due().map_or(PARK, |due| {
+                let next = self.next_due().map(|due| {
                     let wait = due - horizon;
                     Duration::from_nanos(u64::try_from(wait.max(0)).unwrap_or(u64::MAX))
                 });
-                if !next.is_zero() {
-                    thread::park_timeout(next.min(PARK));
+                match next {
+                    Some(wait) if !wait.is_zero() => thread::park_timeout(wait),
+                    Some(_) => {}
+                    // Nothing is due until a command. Shutdown and control unpark.
+                    None => thread::park(),
                 }
             }
         }

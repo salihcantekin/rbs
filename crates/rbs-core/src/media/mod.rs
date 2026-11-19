@@ -24,7 +24,7 @@ pub use container::{ChunkKind, ContainerId, MuxChunk, StreamIndex};
 pub use device::GpuDeviceId;
 pub use lease::{Lease, LeaseOwner};
 pub use packet::{
-    BitstreamFormat, CodecId, EncodedPacket, MediaKind, StreamDescriptor, StreamParams,
+    BitstreamFormat, CodecId, EncodedPacket, MediaKind, PacketShare, StreamDescriptor, StreamParams,
 };
 pub use video::{
     ColorPrimaries, ColorRange, ColorSpace, D3dApi, DmaBufPlane, DmaBufSurface, FramePayload,

@@ -7,9 +7,9 @@
 //! One producer (the OS callback or the adapter's thread) pushes packets of
 //! interleaved or planar device samples, each with the master time of its first
 //! frame. One consumer (the stream's `read` on the audio thread) moves them out as
-//! planar `f32`. Samples are stored as `f32` bits in atomics, so the ring needs no
-//! `unsafe`; on every supported CPU a relaxed atomic load or store of 32 bits is a
-//! plain load or store.
+//! planar `f32`. Samples are plain `f32` slots. The producer writes a slot only
+//! before it publishes the write index, and the consumer reads it only after that
+//! publish and before it publishes the read index. The indexes stay atomic.
 //!
 //! Each packet leaves a *mark* (frame position, timestamp, whether it starts a new
 //! run) in a second fixed ring. A read extrapolates the timestamp of its first frame
@@ -24,8 +24,9 @@
 //!
 //! Every method except [`channel`] is lock-free and allocation-free.
 
+use std::cell::UnsafeCell;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use rbs_core::media::AudioFormat;
@@ -118,12 +119,50 @@ struct Mark {
     discontinuity: AtomicBool,
 }
 
+/// Interleaved `f32` slots shared by one producer and one consumer.
+///
+/// `Sync` because a slot is written only in the range the producer has not published,
+/// and read only in the range the consumer has acquired and not yet released.
+pub(crate) struct PlainSamples(Box<[UnsafeCell<f32>]>);
+
+// SAFETY: the SPSC indexes are the publication. A slot's `f32` is not accessed by
+// both sides at once when callers obey `store` and `load`.
+unsafe impl Sync for PlainSamples {}
+
+impl PlainSamples {
+    pub(crate) fn new(n: usize) -> Self {
+        Self((0..n).map(|_| UnsafeCell::new(0.0)).collect())
+    }
+
+    /// Writes `value` at `index`.
+    ///
+    /// # Safety
+    ///
+    /// The caller is the producer and `index` is inside the range it is about to
+    /// publish with its write index. The consumer does not read it yet.
+    pub(crate) unsafe fn store(&self, index: usize, value: f32) {
+        // SAFETY: the caller holds the exclusive unpublished range.
+        unsafe { *self.0[index].get() = value };
+    }
+
+    /// Reads the slot at `index`.
+    ///
+    /// # Safety
+    ///
+    /// The caller is the consumer and has acquired the write index that published
+    /// `index`, and has not yet published a read index past it.
+    pub(crate) unsafe fn load(&self, index: usize) -> f32 {
+        // SAFETY: the caller holds the exclusive published-but-not-consumed range.
+        unsafe { *self.0[index].get() }
+    }
+}
+
 struct Shared {
     channels: usize,
     /// Capacity in sample frames.
     capacity: u64,
-    /// `capacity * channels` interleaved `f32` bits.
-    samples: Box<[AtomicU32]>,
+    /// `capacity * channels` interleaved `f32` slots.
+    samples: PlainSamples,
     /// Frames written in total; only the producer stores it.
     write: AtomicU64,
     /// Frames read in total; only the consumer stores it.
@@ -150,9 +189,7 @@ pub fn channel(
     let shared = Arc::new(Shared {
         channels,
         capacity: capacity as u64,
-        samples: (0..capacity * channels)
-            .map(|_| AtomicU32::new(0))
-            .collect(),
+        samples: PlainSamples::new(capacity * channels),
         write: AtomicU64::new(0),
         read: AtomicU64::new(0),
         marks: (0..marks.max(1))
@@ -296,8 +333,12 @@ impl RingProducer {
         for frame in 0..frames {
             let base = slot * channels;
             for channel in 0..channels {
-                s.samples[base + channel]
-                    .store(sample(frame, channel).to_bits(), Ordering::Relaxed);
+                // SAFETY: `write` is published only after this loop, and the free-space
+                // check above kept these slots out of the consumer's range.
+                unsafe {
+                    s.samples
+                        .store(base + channel, sample(frame, channel).to_f32())
+                };
             }
             slot += 1;
             if slot == capacity {
@@ -413,7 +454,9 @@ impl RingConsumer {
         for frame in 0..frames as usize {
             let base = slot * channels;
             for (channel, out) in out.iter_mut().enumerate() {
-                out[frame] = f32::from_bits(s.samples[base + channel].load(Ordering::Relaxed));
+                // SAFETY: `write` was acquired above, and `read` is published only after
+                // this loop, so these slots are still the consumer's.
+                out[frame] = unsafe { s.samples.load(base + channel) };
             }
             slot += 1;
             if slot == capacity {

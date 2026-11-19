@@ -3,7 +3,7 @@
 
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use rbs_codec::{
     CreateError, EncodeError, EncoderChange, VideoEncoder, VideoEncoderConfig, VideoEncoderFactory,
@@ -140,6 +140,9 @@ pub struct VideoEncoderNode {
     /// A native frame was refused: the next tick fails permanently, before it submits
     /// anything, so the packets of the refusing tick are kept (decision 9).
     fail_next: bool,
+    /// Set by the studio when a second output needs the same filtered length-prefixed
+    /// form. While it is set, each Annex B packet carries a [`rbs_core::media::PacketShare`].
+    share_packets: Arc<AtomicBool>,
 }
 
 impl VideoEncoderNode {
@@ -171,6 +174,7 @@ impl VideoEncoderNode {
             frames_held,
             native,
             fail_next: false,
+            share_packets: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -204,6 +208,12 @@ impl VideoEncoderNode {
     /// The node's counters.
     pub fn stats(&self) -> Arc<EncoderNodeStats> {
         Arc::clone(&self.stats)
+    }
+
+    /// The switch the studio sets when a second fMP4, MOV or Matroska output shares
+    /// this encoder. Annex B packets then carry one filtered-sample slot.
+    pub fn share_packets(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.share_packets)
     }
 
     /// Submits `frame`, draining once and retrying when the session is busy.
@@ -254,7 +264,7 @@ impl VideoEncoderNode {
     fn pass(
         &mut self,
         outputs: &mut rbs_graph::runtime::Outputs<'_>,
-        packet: EncodedPacket,
+        mut packet: EncodedPacket,
     ) -> Result<(), NodeError> {
         if self.resync {
             if !packet.keyframe() {
@@ -266,6 +276,7 @@ impl VideoEncoderNode {
         if !self.carry.is_empty() {
             return self.keep(packet);
         }
+        self.attach_share(&mut packet);
         match outputs.push_packet(PACKETS_PIN, packet) {
             Ok(()) => {
                 add(&self.stats.packets, 1);
@@ -289,6 +300,14 @@ impl VideoEncoderNode {
             let _ = session.reconfigure(&EncoderChange::RequestKeyframe);
         }
         Ok(())
+    }
+
+    /// Gives an Annex B packet its shared slot once the studio has a second consumer
+    /// of the filtered form. One output leaves the packet as the encoder wrote it.
+    fn attach_share(&self, packet: &mut EncodedPacket) {
+        if self.share_packets.load(Ordering::Acquire) {
+            packet.attach_packet_share();
+        }
     }
 }
 
@@ -334,7 +353,8 @@ impl<X: Runtime> Node<X> for VideoEncoderNode {
         let outputs = ctx.outputs();
 
         // Packets left over from earlier ticks go first, in order.
-        while let Some(packet) = self.carry.pop_front() {
+        while let Some(mut packet) = self.carry.pop_front() {
+            self.attach_share(&mut packet);
             if let Err(rejected) = outputs.push_packet(PACKETS_PIN, packet) {
                 self.carry.push_front(rejected.value);
                 break;

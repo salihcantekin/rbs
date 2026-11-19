@@ -47,6 +47,7 @@ pub(crate) const MAX_BODY: usize = 0x00ff_ffff;
 const EXTENDED: u32 = 0x00ff_ffff;
 
 /// Bytes [`write_message`] appends for a body of `len` bytes.
+#[allow(dead_code)] // The chunk tests check this size formula.
 pub(crate) fn message_size(len: usize, chunk_size: usize, timestamp: u32) -> usize {
     let ext = if timestamp >= EXTENDED { 4 } else { 0 };
     let chunks = len.div_ceil(chunk_size).max(1);
@@ -66,27 +67,68 @@ pub(crate) fn write_message(
     body: &[u8],
     chunk_size: usize,
 ) {
+    let _ = write_message_with(
+        |bytes| {
+            out.extend_from_slice(bytes);
+            Ok::<(), ()>(())
+        },
+        csid,
+        timestamp,
+        type_id,
+        stream_id,
+        body,
+        chunk_size,
+    );
+}
+
+/// Writes one message as chunks without copying `body` into another buffer.
+/// `emit` receives each header and each body slice in order.
+pub(crate) fn write_message_with<E>(
+    mut emit: impl FnMut(&[u8]) -> Result<(), E>,
+    csid: u8,
+    timestamp: u32,
+    type_id: u8,
+    stream_id: u32,
+    body: &[u8],
+    chunk_size: usize,
+) -> Result<(), E> {
     debug_assert!((2..64).contains(&csid) && body.len() <= MAX_BODY);
     let extended = timestamp >= EXTENDED;
     let [_, t2, t1, t0] = timestamp.min(EXTENDED).to_be_bytes();
     let [_, l2, l1, l0] = (body.len() as u32).to_be_bytes();
-    out.push(csid);
-    out.extend_from_slice(&[t2, t1, t0, l2, l1, l0, type_id]);
-    out.extend_from_slice(&stream_id.to_le_bytes());
+    let mut hdr = [0u8; 16];
+    hdr[0] = csid;
+    hdr[1] = t2;
+    hdr[2] = t1;
+    hdr[3] = t0;
+    hdr[4] = l2;
+    hdr[5] = l1;
+    hdr[6] = l0;
+    hdr[7] = type_id;
+    hdr[8..12].copy_from_slice(&stream_id.to_le_bytes());
+    let mut n = 12;
     if extended {
-        out.extend_from_slice(&timestamp.to_be_bytes());
+        hdr[12..16].copy_from_slice(&timestamp.to_be_bytes());
+        n = 16;
     }
+    emit(&hdr[..n])?;
     let mut pieces = body.chunks(chunk_size);
     if let Some(first) = pieces.next() {
-        out.extend_from_slice(first);
+        emit(first)?;
     }
     for piece in pieces {
-        out.push(0xc0 | csid);
-        if extended {
-            out.extend_from_slice(&timestamp.to_be_bytes());
-        }
-        out.extend_from_slice(piece);
+        let mut cont = [0u8; 5];
+        cont[0] = 0xc0 | csid;
+        let cn = if extended {
+            cont[1..5].copy_from_slice(&timestamp.to_be_bytes());
+            5
+        } else {
+            1
+        };
+        emit(&cont[..cn])?;
+        emit(piece)?;
     }
+    Ok(())
 }
 
 /// Appends a protocol control message with a 4-byte value (Set Chunk Size,

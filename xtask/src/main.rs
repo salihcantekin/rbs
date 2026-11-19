@@ -1,6 +1,8 @@
 //! Layer check for principle P1 (`docs/architecture/overview.md`, Layers).
 //!
 //! `cargo xtask check-layers` fails when a crate depends on a layer it may not see.
+//! Dev-dependencies are checked for adapters and vendor SDKs. An engine crate may
+//! name those in a dev-dependency for an example harness. A normal dependency may not.
 //! The allowlists are the current tree. A new crate, or a new dependency that crosses
 //! a layer, is classified here in the same change as the overview table.
 //!
@@ -128,9 +130,9 @@ fn check_workspace() -> Result<(), Vec<String>> {
     edges.extend(read_edges(&own)?);
     let mut errors = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
-    for (from, to) in &edges {
+    for (from, to, dev) in &edges {
         seen.insert(from.clone());
-        if let Some(error) = deny(from, to) {
+        if let Some(error) = denied(from, to, *dev) {
             errors.push(format!("{from} must not depend on {to} ({error})"));
         }
     }
@@ -160,7 +162,7 @@ fn workspace_root() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..")
 }
 
-fn read_edges(manifest: &Path) -> Result<Vec<(String, String)>, Vec<String>> {
+fn read_edges(manifest: &Path) -> Result<Vec<(String, String, bool)>, Vec<String>> {
     let text = fs::read_to_string(manifest)
         .map_err(|e| vec![format!("read {}: {e}", manifest.display())])?;
     let value: Value = text
@@ -173,21 +175,57 @@ fn read_edges(manifest: &Path) -> Result<Vec<(String, String)>, Vec<String>> {
         .ok_or_else(|| vec![format!("{} has no package name", manifest.display())])?
         .to_owned();
     let mut edges = Vec::new();
-    if let Some(deps) = value.get("dependencies").and_then(Value::as_table) {
-        for dep in deps.keys() {
-            edges.push((name.clone(), dep.clone()));
-        }
-    }
+    push_dep_table(&mut edges, &name, value.get("dependencies"), false);
+    push_dep_table(&mut edges, &name, value.get("dev-dependencies"), true);
     if let Some(targets) = value.get("target").and_then(Value::as_table) {
         for target in targets.values() {
-            if let Some(deps) = target.get("dependencies").and_then(Value::as_table) {
-                for dep in deps.keys() {
-                    edges.push((name.clone(), dep.clone()));
-                }
-            }
+            push_dep_table(&mut edges, &name, target.get("dependencies"), false);
+            push_dep_table(&mut edges, &name, target.get("dev-dependencies"), true);
         }
     }
     Ok(edges)
+}
+
+fn push_dep_table(
+    edges: &mut Vec<(String, String, bool)>,
+    name: &str,
+    table: Option<&Value>,
+    dev: bool,
+) {
+    let Some(deps) = table.and_then(Value::as_table) else {
+        return;
+    };
+    for dep in deps.keys() {
+        edges.push((name.to_owned(), dep.clone(), dev));
+    }
+}
+
+/// `dev` marks a dev-dependency. Tests and benches may name criterion. What a
+/// dev-dependency must not hide is an adapter or a vendor SDK behind a core,
+/// helper, support or engine crate. An engine crate may name those for an
+/// example (`rbs-nodes` `examples/record.rs` and `native_encode.rs`).
+fn denied(from: &str, to: &str, dev: bool) -> Option<String> {
+    if !dev {
+        return deny(from, to);
+    }
+    let from_class = class(from);
+    let watched = matches!(
+        from_class,
+        Some(Class::Core | Class::Helper | Class::Support | Class::Engine)
+    );
+    if !watched {
+        return None;
+    }
+    let adapterish = matches!(class(to), Some(Class::Adapter)) || is_ffmpeg(to) || is_os_media(to);
+    if !adapterish {
+        return None;
+    }
+    if from_class == Some(Class::Engine)
+        && (matches!(class(to), Some(Class::Adapter)) || matches!(to, "windows" | "libc"))
+    {
+        return None;
+    }
+    deny(from, to)
 }
 
 /// Why `from` may not depend on `to`, or `None` when the edge is allowed.
@@ -639,6 +677,16 @@ mod tests {
     }
 
     #[test]
+    fn an_engine_example_may_name_an_adapter() {
+        assert!(denied("rbs-nodes", "rbs-codec-nvenc", true).is_none());
+        assert!(denied("rbs-nodes", "windows", true).is_none());
+        assert!(denied("rbs-nodes", "rbs-codec-nvenc", false).is_some());
+        assert!(denied("rbs-core", "rbs-codec-nvenc", true).is_some());
+        assert!(denied("rbs-graph", "criterion", true).is_none());
+        assert!(denied("rbs-transport-srt", "rbs-mux-mpegts", true).is_none());
+    }
+
+    #[test]
     fn adapters_do_not_depend_on_each_other() {
         assert!(deny("rbs-codec-nvenc", "rbs-codec-amf").is_some());
         assert!(deny("rbs-codec-nvenc", "rbs-codec-hw").is_none());
@@ -662,7 +710,7 @@ mod tests {
         let manifest = workspace_root().join("crates/rbs-browser-cef/Cargo.toml");
         let edges = read_edges(&manifest).unwrap_or_default();
         assert!(!edges.is_empty(), "rbs-browser-cef has dependencies");
-        for (_, to) in edges {
+        for (_, to, _) in edges {
             // `windows-sys` loads the downloaded engine on Windows (add-ons spec,
             // "Browser engine consumer").
             let allowed = matches!(

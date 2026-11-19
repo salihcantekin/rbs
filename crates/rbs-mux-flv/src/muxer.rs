@@ -111,7 +111,7 @@ impl Muxer for FlvMuxer {
         // only, and the chunk is the only allocation for this packet.
         let mut tag = Vec::with_capacity(TAG_HEADER_LEN + plan.data_size + 4);
         tag.extend_from_slice(&flv::tag_header(plan.tag_type(), plan.data_size, ms));
-        self.tracks.write_body(plan, packet, cts, &mut tag);
+        self.tracks.write_body(&plan, packet, cts, &mut tag);
         flv::previous_tag_size(&mut tag, plan.data_size);
         debug_assert_eq!(tag.len(), tag.capacity());
 

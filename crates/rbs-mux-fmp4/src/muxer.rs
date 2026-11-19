@@ -11,7 +11,7 @@ use rbs_media_format::aac::AudioSpecificConfig;
 use rbs_media_format::av1::Av1Config;
 use rbs_media_format::avc::AvcConfig;
 use rbs_media_format::hvcc::Hvcc;
-use rbs_media_format::nal::{self, h264, hevc};
+use rbs_media_format::nal::{self};
 use rbs_mux::{CreateError, MuxError, Muxer, MuxerConfig};
 
 use crate::boxes;
@@ -114,6 +114,8 @@ struct Track {
     /// SPS and PPS of the sample entry. In-band parameter sets must be one of these:
     /// a changed set would make the rest of the file undecodable.
     parameter_sets: Vec<Vec<u8>>,
+    /// [`nal::parameter_set_key`] of `parameter_sets`, built once.
+    set_key: Bytes,
     last_dts: Option<Timestamp>,
     /// File offset of this track's 4-byte `tkhd` duration, patched at `finish`.
     duration_at: usize,
@@ -162,34 +164,9 @@ fn nanos(t: Timestamp) -> i128 {
     i128::from(t.as_nanos())
 }
 
-/// Whether an Annex B unit goes into an `avc1` sample: parameter sets live in the
-/// sample entry and access unit delimiters are not needed.
-fn keep_unit(codec: CodecId, unit: &[u8]) -> bool {
-    !unit.is_empty() && !is_parameter_set(codec, unit) && !is_aud(codec, unit)
-}
-
-fn is_aud(codec: CodecId, unit: &[u8]) -> bool {
-    match codec {
-        CodecId::Hevc => nal::hevc_type(unit) == Some(hevc::AUD),
-        _ => nal::h264_type(unit) == Some(h264::AUD),
-    }
-}
-
-fn is_parameter_set(codec: CodecId, unit: &[u8]) -> bool {
-    match codec {
-        CodecId::Hevc => {
-            matches!(
-                nal::hevc_type(unit),
-                Some(hevc::VPS | hevc::SPS | hevc::PPS)
-            )
-        }
-        _ => matches!(nal::h264_type(unit), Some(h264::SPS | h264::PPS)),
-    }
-}
-
 /// Refuses an in-band parameter set that differs from the sample entry's.
 fn check_parameter_set(track: &Track, unit: &[u8]) -> Result<(), MuxError> {
-    if is_parameter_set(track.codec, unit) && !track.parameter_sets.iter().any(|p| p == unit) {
+    if nal::parameter_set(track.codec, unit) && !track.parameter_sets.iter().any(|p| p == unit) {
         return Err(MuxError::InvalidPacket(
             "parameter sets changed; a fragmented file needs a new output".into(),
         ));
@@ -531,7 +508,12 @@ impl Fmp4Muxer {
                     let (config, length_size, parameter_sets, hevc) = if codec == CodecId::Hevc {
                         let (hvcc, length_size) = hvcc_for(stream)?;
                         let parameter_sets = Hvcc::parse(&hvcc)
-                            .map(|c| c.parameter_sets.iter().map(|p| p.to_vec()).collect())
+                            .map(|c| {
+                                c.parameter_sets
+                                    .iter()
+                                    .map(|p| p.to_vec())
+                                    .collect::<Vec<Vec<u8>>>()
+                            })
                             .map_err(|e| {
                                 CreateError::InvalidConfig(format!("HEVC extradata: {e}"))
                             })?;
@@ -539,7 +521,13 @@ impl Fmp4Muxer {
                     } else {
                         let (avcc, length_size) = avcc_for(stream)?;
                         let parameter_sets = AvcConfig::parse(&avcc)
-                            .map(|c| c.sps.iter().chain(&c.pps).map(|p| p.to_vec()).collect())
+                            .map(|c| {
+                                c.sps
+                                    .iter()
+                                    .chain(&c.pps)
+                                    .map(|p| p.to_vec())
+                                    .collect::<Vec<Vec<u8>>>()
+                            })
                             .map_err(|e| {
                                 CreateError::InvalidConfig(format!("H.264 extradata: {e}"))
                             })?;
@@ -551,6 +539,7 @@ impl Fmp4Muxer {
                     ) else {
                         return Err(CreateError::InvalidConfig("picture size".into()));
                     };
+                    let set_key = Bytes::from(nal::parameter_set_key(&parameter_sets));
                     let mut track = Track {
                         id,
                         codec,
@@ -562,6 +551,7 @@ impl Fmp4Muxer {
                         staging: Vec::new(),
                         committed: 0,
                         parameter_sets,
+                        set_key,
                         last_dts: None,
                         duration_at: 0,
                         present_end: None,
@@ -627,6 +617,7 @@ impl Fmp4Muxer {
                         staging: Vec::new(),
                         committed: 0,
                         parameter_sets: Vec::new(),
+                        set_key: Bytes::new(),
                         last_dts: None,
                         duration_at: 0,
                         present_end: None,
@@ -673,6 +664,7 @@ impl Fmp4Muxer {
                         staging: Vec::new(),
                         committed: 0,
                         parameter_sets: Vec::new(),
+                        set_key: Bytes::new(),
                         last_dts: None,
                         duration_at: 0,
                         present_end: None,
@@ -719,6 +711,7 @@ impl Fmp4Muxer {
                         staging: Vec::new(),
                         committed: 0,
                         parameter_sets: Vec::new(),
+                        set_key: Bytes::new(),
                         last_dts: None,
                         duration_at: 0,
                         present_end: None,
@@ -1049,33 +1042,48 @@ impl Muxer for Fmp4Muxer {
                 data.len()
             }
             Kind::Video { length_size: None } => {
-                // Converted after the committed samples; a flush below keeps it.
-                let staged = track.staging.len();
-                let mut result = Ok(());
-                for unit in nal::annexb_units(data) {
-                    if let Err(e) = check_parameter_set(track, unit) {
-                        result = Err(e);
-                        break;
+                if let Some(sample) = packet
+                    .packet_share()
+                    .and_then(|share| share.get(&track.set_key))
+                {
+                    track.staging.extend_from_slice(&sample);
+                    stored = Bytes::new();
+                    sample.len()
+                } else {
+                    // One walk: check, drop parameter sets and delimiters, length-prefix.
+                    // A failure restores the staging buffer.
+                    let staged = track.staging.len();
+                    let codec = track.codec;
+                    let converted = {
+                        let sets = &track.parameter_sets;
+                        let staging = &mut track.staging;
+                        nal::annexb_to_length_prefixed_while(data, staging, |unit, added| {
+                            if nal::parameter_set(codec, unit) && !sets.iter().any(|p| p == unit) {
+                                return Err(MuxError::InvalidPacket(
+                                    "parameter sets changed; a fragmented file needs a new output"
+                                        .into(),
+                                ));
+                            }
+                            if !nal::in_length_prefixed_sample(codec, unit) {
+                                return Ok(false);
+                            }
+                            if added + 4 + unit.len() > MAX_SAMPLE_BYTES {
+                                return Err(MuxError::Overflow("sample size"));
+                            }
+                            Ok(true)
+                        })?
+                    };
+                    if converted == 0 {
+                        return Err(MuxError::InvalidPacket("packet without media".into()));
                     }
-                    if keep_unit(track.codec, unit) {
-                        boxes::u32(&mut track.staging, unit.len() as u32);
-                        track.staging.extend_from_slice(unit);
+                    if let Some(share) = packet.packet_share() {
+                        let sample =
+                            Bytes::copy_from_slice(&track.staging[staged..staged + converted]);
+                        share.store(&track.set_key, sample);
                     }
-                    if track.staging.len() - staged > MAX_SAMPLE_BYTES {
-                        result = Err(MuxError::Overflow("sample size"));
-                        break;
-                    }
+                    stored = Bytes::new();
+                    converted
                 }
-                let converted = track.staging.len() - staged;
-                if result.is_ok() && converted == 0 {
-                    result = Err(MuxError::InvalidPacket("packet without media".into()));
-                }
-                if let Err(e) = result {
-                    track.staging.truncate(staged);
-                    return Err(e);
-                }
-                stored = Bytes::new();
-                converted
             }
             Kind::Obu => data.len(),
             Kind::Audio => data.len(),

@@ -5,6 +5,7 @@
 //! "packets fan out without copying payloads"). See `docs/specs/media-types.md#packets`.
 
 use std::fmt;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -177,7 +178,45 @@ pub struct EncodedPacket {
     duration: Option<Duration>,
     keyframe: bool,
     data: Bytes,
+    /// Set by [`Self::attach_packet_share`] before the packet is cloned to several
+    /// outputs. The first filtered conversion stores its bytes here; the next output
+    /// clones them. Absent until attached, so creating and cloning a packet allocates
+    /// nothing for it.
+    share: Option<Arc<PacketShare>>,
 }
+
+/// One filtered conversion of a packet, shared by every clone.
+///
+/// The key is the parameter-set bytes the conversion was checked against. A caller
+/// whose key differs does not see the sample.
+#[derive(Debug)]
+pub struct PacketShare {
+    slot: OnceLock<(Bytes, Bytes)>,
+}
+
+impl PacketShare {
+    /// The stored sample when `key` is the one it was stored under.
+    pub fn get(&self, key: &[u8]) -> Option<Bytes> {
+        let (stored, sample) = self.slot.get()?;
+        (stored.as_ref() == key).then(|| sample.clone())
+    }
+
+    /// Keeps `sample` for `key` when the slot is empty. A slot already filled for
+    /// another key is left as it is.
+    pub fn store(&self, key: &[u8], sample: Bytes) {
+        let _ = self
+            .slot
+            .get_or_init(|| (Bytes::copy_from_slice(key), sample));
+    }
+}
+
+impl PartialEq for PacketShare {
+    fn eq(&self, other: &Self) -> bool {
+        self.slot.get() == other.slot.get()
+    }
+}
+
+impl Eq for PacketShare {}
 
 impl EncodedPacket {
     /// Creates a packet with no duration. Fails with [`MediaError::DtsAfterPts`] if
@@ -201,7 +240,26 @@ impl EncodedPacket {
             duration: None,
             keyframe,
             data,
+            share: None,
         })
+    }
+
+    /// Allocates the shared slot for an Annex B H.264 or HEVC packet, once.
+    /// Other packets are unchanged. Clones made after this call share the slot.
+    pub fn attach_packet_share(&mut self) {
+        if self.share.is_none()
+            && self.bitstream == BitstreamFormat::AnnexB
+            && matches!(self.codec, CodecId::H264 | CodecId::Hevc)
+        {
+            self.share = Some(Arc::new(PacketShare {
+                slot: OnceLock::new(),
+            }));
+        }
+    }
+
+    /// The shared conversion slot, after [`Self::attach_packet_share`].
+    pub fn packet_share(&self) -> Option<&Arc<PacketShare>> {
+        self.share.as_ref()
     }
 
     /// Sets the duration.
@@ -306,5 +364,43 @@ mod tests {
             ),
         );
         assert_eq!(descriptor.codec.media_kind(), MediaKind::Video);
+    }
+
+    #[test]
+    fn a_shared_filter_is_one_sample_for_every_clone() {
+        let mut packet = EncodedPacket::new(
+            CodecId::H264,
+            BitstreamFormat::AnnexB,
+            Timestamp::ZERO,
+            Timestamp::ZERO,
+            true,
+            Bytes::from_static(&[0, 0, 0, 1, 0x65]),
+        )
+        .unwrap();
+        assert!(packet.packet_share().is_none());
+        packet.attach_packet_share();
+        let share = std::sync::Arc::clone(packet.packet_share().unwrap());
+        let clone = packet.clone();
+        assert!(std::sync::Arc::ptr_eq(
+            &share,
+            clone.packet_share().unwrap()
+        ));
+        let sample = Bytes::from_static(&[0, 0, 0, 1, 0x65]);
+        share.store(b"sets", sample.clone());
+        let got = clone.packet_share().unwrap().get(b"sets").unwrap();
+        assert_eq!(got.as_ptr(), sample.as_ptr());
+        assert!(clone.packet_share().unwrap().get(b"other").is_none());
+        let raw = EncodedPacket::new(
+            CodecId::Aac,
+            BitstreamFormat::Raw,
+            Timestamp::ZERO,
+            Timestamp::ZERO,
+            true,
+            Bytes::new(),
+        )
+        .unwrap();
+        let mut raw = raw;
+        raw.attach_packet_share();
+        assert!(raw.packet_share().is_none());
     }
 }

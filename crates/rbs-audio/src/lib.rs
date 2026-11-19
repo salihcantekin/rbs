@@ -64,3 +64,19 @@ pub use sync_probe::{
     SYNC_PROBE_NODE_TYPE, SYNC_PROBE_STEP, SubBlockEnergy, SyncProbeLog, SyncProbeNode,
     sync_probe_descriptor,
 };
+
+/// Copies interleaved `samples` into the first `frames` of each channel.
+/// A short block fills the rest of that span with silence. No allocation.
+pub fn deinterleave(samples: &[f32], channels: &mut [&mut [f32]], frames: usize) {
+    let width = channels.len().max(1);
+    let whole = (samples.len() / width).min(frames);
+    for (c, dest) in channels.iter_mut().enumerate() {
+        let span = frames.min(dest.len());
+        let whole = whole.min(span);
+        let (head, tail) = dest[..span].split_at_mut(whole);
+        for (sample, frame) in head.iter_mut().zip(samples.chunks_exact(width)) {
+            *sample = frame[c];
+        }
+        tail.fill(0.0);
+    }
+}

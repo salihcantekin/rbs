@@ -483,7 +483,9 @@ impl MediaPictureNode {
     ) -> Result<Option<VideoFrame>, NodeError> {
         let chosen = self.dequeue(now);
         if !self.changed && self.shown_texture.is_some() {
-            return Ok(self.shown_texture.as_ref().and_then(VideoFrame::share));
+            // The slot already shows this picture. Publishing again retains a lease
+            // on every tick (ADR-0143 R5).
+            return Ok(None);
         }
         let source = match chosen {
             Some(frame) => frame,

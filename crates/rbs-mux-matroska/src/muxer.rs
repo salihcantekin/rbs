@@ -11,7 +11,7 @@ use rbs_media_format::aac::AudioSpecificConfig;
 use rbs_media_format::av1::Av1Config;
 use rbs_media_format::avc::AvcConfig;
 use rbs_media_format::hvcc::Hvcc;
-use rbs_media_format::nal::{self, h264, hevc};
+use rbs_media_format::nal::{self};
 use rbs_mux::{CreateError, MuxError, Muxer, MuxerConfig};
 
 use crate::ebml;
@@ -124,6 +124,8 @@ struct Track {
     /// SPS and PPS of the codec private data. In-band parameter sets must be one of
     /// these: a changed set would make the rest of the file undecodable.
     parameter_sets: Vec<Vec<u8>>,
+    /// [`nal::parameter_set_key`] of `parameter_sets`, built once.
+    set_key: Bytes,
     last_dts: Option<Timestamp>,
     /// Whether this track has a block in the cluster being collected.
     in_cluster: bool,
@@ -171,34 +173,9 @@ fn nanos(t: Timestamp) -> i128 {
     i128::from(t.as_nanos())
 }
 
-/// Whether an Annex B unit goes into a block: parameter sets live in the codec
-/// private data and access unit delimiters are not needed.
-fn keep_unit(codec: CodecId, unit: &[u8]) -> bool {
-    !unit.is_empty() && !is_parameter_set(codec, unit) && !is_aud(codec, unit)
-}
-
-fn is_aud(codec: CodecId, unit: &[u8]) -> bool {
-    match codec {
-        CodecId::Hevc => nal::hevc_type(unit) == Some(hevc::AUD),
-        _ => nal::h264_type(unit) == Some(h264::AUD),
-    }
-}
-
-fn is_parameter_set(codec: CodecId, unit: &[u8]) -> bool {
-    match codec {
-        CodecId::Hevc => {
-            matches!(
-                nal::hevc_type(unit),
-                Some(hevc::VPS | hevc::SPS | hevc::PPS)
-            )
-        }
-        _ => matches!(nal::h264_type(unit), Some(h264::SPS | h264::PPS)),
-    }
-}
-
 /// Refuses an in-band parameter set that differs from the codec private data's.
 fn check_parameter_set(track: &Track, unit: &[u8]) -> Result<(), MuxError> {
-    if is_parameter_set(track.codec, unit) && !track.parameter_sets.iter().any(|p| p == unit) {
+    if nal::parameter_set(track.codec, unit) && !track.parameter_sets.iter().any(|p| p == unit) {
         return Err(MuxError::InvalidPacket(
             "parameter sets changed; Matroska needs a new output".into(),
         ));
@@ -336,7 +313,12 @@ impl MatroskaMuxer {
                     {
                         let (hvcc, length_size) = hvcc_for(stream)?;
                         let parameter_sets = Hvcc::parse(&hvcc)
-                            .map(|c| c.parameter_sets.iter().map(|p| p.to_vec()).collect())
+                            .map(|c| {
+                                c.parameter_sets
+                                    .iter()
+                                    .map(|p| p.to_vec())
+                                    .collect::<Vec<Vec<u8>>>()
+                            })
                             .map_err(|e| {
                                 CreateError::InvalidConfig(format!("HEVC extradata: {e}"))
                             })?;
@@ -344,7 +326,13 @@ impl MatroskaMuxer {
                     } else {
                         let (avcc, length_size) = avcc_for(stream)?;
                         let parameter_sets = AvcConfig::parse(&avcc)
-                            .map(|c| c.sps.iter().chain(&c.pps).map(|p| p.to_vec()).collect())
+                            .map(|c| {
+                                c.sps
+                                    .iter()
+                                    .chain(&c.pps)
+                                    .map(|p| p.to_vec())
+                                    .collect::<Vec<Vec<u8>>>()
+                            })
                             .map_err(|e| {
                                 CreateError::InvalidConfig(format!("H.264 extradata: {e}"))
                             })?;
@@ -363,11 +351,13 @@ impl MatroskaMuxer {
                     ebml::uint(&mut header, PIXEL_WIDTH, u64::from(format.size.width));
                     ebml::uint(&mut header, PIXEL_HEIGHT, u64::from(format.size.height));
                     ebml::close(&mut header, video);
+                    let set_key = Bytes::from(nal::parameter_set_key(&parameter_sets));
                     tracks.push(Track {
                         codec,
                         bitstream: stream.bitstream,
                         kind: Kind::Video { length_size },
                         parameter_sets,
+                        set_key,
                         last_dts: None,
                         in_cluster: false,
                         default_duration: frame_rate.frame_duration(),
@@ -411,6 +401,7 @@ impl MatroskaMuxer {
                         bitstream: BitstreamFormat::Obu,
                         kind: Kind::Obu,
                         parameter_sets: Vec::new(),
+                        set_key: Bytes::new(),
                         last_dts: None,
                         in_cluster: false,
                         default_duration: frame_rate.frame_duration(),
@@ -446,6 +437,7 @@ impl MatroskaMuxer {
                         bitstream: BitstreamFormat::Raw,
                         kind: Kind::Audio,
                         parameter_sets: Vec::new(),
+                        set_key: Bytes::new(),
                         last_dts: None,
                         in_cluster: false,
                         default_duration: Duration::from_nanos(
@@ -669,7 +661,6 @@ impl Muxer for MatroskaMuxer {
 
         // Validate and size the packet before anything changes or is emitted, so an
         // error leaves no output and no state behind.
-        let staged = self.staging.len();
         let (payload, len) = match track.kind {
             Kind::Video {
                 length_size: Some(length_size),
@@ -680,7 +671,7 @@ impl Muxer for MatroskaMuxer {
                         MuxError::InvalidPacket("truncated length-prefixed NAL unit".into())
                     })?;
                     check_parameter_set(track, unit)?;
-                    media |= keep_unit(track.codec, unit);
+                    media |= nal::in_length_prefixed_sample(track.codec, unit);
                 }
                 if !media {
                     return Err(MuxError::InvalidPacket("packet without media".into()));
@@ -688,31 +679,44 @@ impl Muxer for MatroskaMuxer {
                 (Payload::Shared(packet.data().clone()), data.len())
             }
             Kind::Video { length_size: None } => {
-                let mut result = Ok(());
-                for unit in nal::annexb_units(data) {
-                    if let Err(e) = check_parameter_set(track, unit) {
-                        result = Err(e);
-                        break;
+                if let Some(sample) = packet
+                    .packet_share()
+                    .and_then(|share| share.get(&track.set_key))
+                {
+                    self.staging.extend_from_slice(&sample);
+                    (Payload::Staged { start: 0 }, sample.len())
+                } else {
+                    let staged = self.staging.len();
+                    let codec = track.codec;
+                    let sets = &track.parameter_sets;
+                    let converted = nal::annexb_to_length_prefixed_while(
+                        data,
+                        &mut self.staging,
+                        |unit, added| {
+                            if nal::parameter_set(codec, unit) && !sets.iter().any(|p| p == unit) {
+                                return Err(MuxError::InvalidPacket(
+                                    "parameter sets changed; Matroska needs a new output".into(),
+                                ));
+                            }
+                            if !nal::in_length_prefixed_sample(codec, unit) {
+                                return Ok(false);
+                            }
+                            if added + 4 + unit.len() > MAX_SAMPLE_BYTES {
+                                return Err(MuxError::Overflow("sample size"));
+                            }
+                            Ok(true)
+                        },
+                    )?;
+                    if converted == 0 {
+                        return Err(MuxError::InvalidPacket("packet without media".into()));
                     }
-                    if keep_unit(track.codec, unit) {
-                        self.staging
-                            .extend_from_slice(&(unit.len() as u32).to_be_bytes());
-                        self.staging.extend_from_slice(unit);
+                    if let Some(share) = packet.packet_share() {
+                        let sample =
+                            Bytes::copy_from_slice(&self.staging[staged..staged + converted]);
+                        share.store(&track.set_key, sample);
                     }
-                    if self.staging.len() - staged > MAX_SAMPLE_BYTES {
-                        result = Err(MuxError::Overflow("sample size"));
-                        break;
-                    }
+                    (Payload::Staged { start: 0 }, converted)
                 }
-                let converted = self.staging.len() - staged;
-                if result.is_ok() && converted == 0 {
-                    result = Err(MuxError::InvalidPacket("packet without media".into()));
-                }
-                if let Err(e) = result {
-                    self.staging.truncate(staged);
-                    return Err(e);
-                }
-                (Payload::Staged { start: 0 }, converted)
             }
             Kind::Obu => (Payload::Shared(packet.data().clone()), data.len()),
             Kind::Audio => (Payload::Shared(packet.data().clone()), data.len()),
