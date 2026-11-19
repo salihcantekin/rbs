@@ -15,7 +15,9 @@
 //!   the render thread never frees them and importers never see a reused handle value.
 //! - On each `FrameArrived` callback (an OS thread) the adapter copies the new frame into
 //!   a free ring texture, signals the shared fence and publishes the slot through the
-//!   lock-free [`Ring`].
+//!   lock-free [`Ring`]. When `SetMinUpdateInterval` fails, a frame younger than the
+//!   requested interval since the last published frame is not published. The operating
+//!   system has already copied that frame into the capture pool.
 //! - `latest_frame` on the render thread takes the newest slot and returns a
 //!   `D3dSharedHandle` frame with a `TimelineFence` sync. It does not allocate, lock or
 //!   call into the OS.
@@ -26,6 +28,7 @@
 //! register it unconditionally.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use rbs_core::media::{
     D3dApi, Lease, LeaseOwner, NativeSurface, Size, SurfaceSync, VideoFormat, VideoFrame,
@@ -64,6 +67,26 @@ pub const FRAMES_IN_FLIGHT: usize = RING_SLOTS - 2;
 /// little-endian integer. Equal to `(HighPart as u32 as u64) << 32 | LowPart as u64`.
 pub const fn luid_to_u64(luid: [u8; 8]) -> u64 {
     u64::from_le_bytes(luid)
+}
+
+/// Whether to publish a frame after `SetMinUpdateInterval` failed.
+///
+/// `last_published` is the timestamp of the last frame that was published. The first
+/// frame (`None`) is published. A later frame is not published when `timestamp` is
+/// younger than `interval` after that frame. A frame exactly one interval later is
+/// published. The caller measures every decision from the last published timestamp,
+/// including after a frame was dropped. This does not stop the operating system from
+/// copying the frame into the capture pool.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn publish_when_interval_failed(
+    timestamp: Timestamp,
+    last_published: Option<Timestamp>,
+    interval: Duration,
+) -> bool {
+    match last_published {
+        Some(last) => timestamp.saturating_since(last) >= interval,
+        None => true,
+    }
 }
 
 pub use platform::WgcCaptureFactory;
@@ -443,5 +466,42 @@ mod tests {
             assert_eq!(info.count_total, 0, "frame {seq} allocated");
         }
         assert!(ring.is_idle());
+    }
+
+    #[test]
+    fn failed_interval_drops_a_too_young_frame_and_keeps_one_old_enough() {
+        use rbs_core::timing::FrameRate;
+        use std::time::Duration;
+
+        let interval = FrameRate::FPS_30.frame_duration();
+        let first = Timestamp::from_nanos(10_000_000_000);
+        assert!(publish_when_interval_failed(first, None, interval));
+
+        let last = Some(first);
+        // One refresh of a 144 Hz display, against a 30 fps interval.
+        let refresh = Duration::from_nanos(1_000_000_000 / 144);
+        assert!(refresh < interval);
+        assert!(!publish_when_interval_failed(
+            first + refresh,
+            last,
+            interval
+        ));
+        // The dropped frame does not move the window: the next one is still
+        // measured from the last published timestamp.
+        assert!(!publish_when_interval_failed(
+            first + refresh + refresh,
+            last,
+            interval
+        ));
+        assert!(!publish_when_interval_failed(
+            first + interval - Duration::from_nanos(1),
+            last,
+            interval
+        ));
+        assert!(publish_when_interval_failed(
+            first + interval,
+            last,
+            interval
+        ));
     }
 }

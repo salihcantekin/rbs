@@ -839,6 +839,11 @@ struct Producer {
     clock: Arc<dyn Clock>,
     drift: DriftEstimator,
     last_timestamp: Option<Timestamp>,
+    /// Set when `SetMinUpdateInterval` failed. A frame younger than this since
+    /// `last_timestamp` is not published. `None` when the call succeeded or no
+    /// rate was requested, and the handler then publishes as before. The operating
+    /// system still copies every frame into the capture pool either way.
+    publish_interval: Option<Duration>,
     qpc_frequency: u64,
     failed: Arc<AtomicI64>,
     stopped: bool,
@@ -900,13 +905,33 @@ impl Producer {
             self.sequence += 1;
             return Ok(());
         }
+        // Only after `SetMinUpdateInterval` failed. A successful call leaves
+        // `publish_interval` empty, so this branch is skipped and the rest of the
+        // handler is unchanged. The operating system has already copied the frame
+        // into the pool; a too-young one is not published, so it is not imported.
+        let prepared = if let Some(interval) = self.publish_interval {
+            let source = frame_time(&frame);
+            let timestamp = self.timestamp_of(arrived, qpc, source);
+            if !crate::publish_when_interval_failed(timestamp, self.last_timestamp, interval) {
+                let _ = frame.Close();
+                ring.count_drop();
+                self.sequence += 1;
+                return Ok(());
+            }
+            Some((source, timestamp))
+        } else {
+            None
+        };
         let Some(slot) = ring.claim() else {
             // The consumer holds every texture: drop rather than wait (invariant 9).
             ring.count_drop();
             self.sequence += 1;
             return Ok(());
         };
-        let source = frame_time(&frame);
+        let source = match prepared {
+            Some((source, _)) => source,
+            None => frame_time(&frame),
+        };
         let result = self.write_slot(slot, &frame, (width, height));
         // Return the OS buffer to the pool now rather than when the handler returns.
         let _ = frame.Close();
@@ -926,19 +951,12 @@ impl Producer {
 
         // Clock edge (ADR-0004): pair QPC with the master clock now, then convert the
         // frame's QPC-based capture time. Without one, the arrival time is used.
-        let mapped = match source {
-            Some(source) => {
-                let _ = self.drift.observe(qpc, arrived);
-                self.drift
-                    .mapping()
-                    .map_or(arrived, |m| m.to_master(source))
-            }
-            None => arrived,
+        // When the software interval already stamped this frame, reuse that stamp so
+        // the drift estimator is not updated twice.
+        let timestamp = match prepared {
+            Some((_, timestamp)) => timestamp,
+            None => self.timestamp_of(arrived, qpc, source),
         };
-        let floor = self
-            .last_timestamp
-            .map_or(Timestamp::ZERO, |t| t + Duration::from_nanos(1));
-        let timestamp = mapped.min(arrived).max(floor);
         self.last_timestamp = Some(timestamp);
 
         ring.publish(
@@ -954,6 +972,23 @@ impl Producer {
         );
         self.sequence += 1;
         Ok(())
+    }
+
+    /// The timestamp this frame would be published with.
+    fn timestamp_of(&mut self, arrived: Timestamp, qpc: u64, source: Option<u64>) -> Timestamp {
+        let mapped = match source {
+            Some(source) => {
+                let _ = self.drift.observe(qpc, arrived);
+                self.drift
+                    .mapping()
+                    .map_or(arrived, |m| m.to_master(source))
+            }
+            None => arrived,
+        };
+        let floor = self
+            .last_timestamp
+            .map_or(Timestamp::ZERO, |t| t + Duration::from_nanos(1));
+        mapped.min(arrived).max(floor)
     }
 
     /// Copies the frame into the slot's texture (replacing it first if the size
@@ -1076,6 +1111,18 @@ fn min_interval(rate: FrameRate) -> TimeSpan {
     }
 }
 
+/// `None` when `SetMinUpdateInterval` succeeded: the OS paces delivery and the
+/// handler publishes every frame it copies. `Some` when the call failed: the
+/// handler then drops publishes younger than the returned interval. The OS still
+/// copies each refresh into the capture pool.
+fn software_interval(session: &GraphicsCaptureSession, rate: FrameRate) -> Option<Duration> {
+    if session.SetMinUpdateInterval(min_interval(rate)).is_ok() {
+        None
+    } else {
+        Some(rate.frame_duration())
+    }
+}
+
 pub(crate) fn create_item(resolved: Resolved) -> windows::core::Result<GraphicsCaptureItem> {
     let interop = windows::core::factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()?;
     // SAFETY: the handles were checked by `resolve` just before; WGC validates them too.
@@ -1189,6 +1236,7 @@ impl WgcSession {
             clock: Arc::clone(&self.clock),
             drift: DriftEstimator::new(Duration::from_millis(100)),
             last_timestamp: self.last_timestamp,
+            publish_interval: None,
             qpc_frequency: frequency.unsigned_abs(),
             failed: Arc::clone(&failed),
             stopped: false,
@@ -1215,7 +1263,7 @@ impl WgcSession {
             // Not available on every Windows version; the border is cosmetic.
             let _ = session.SetIsBorderRequired(false);
             if let Some(rate) = self.accepted.frame_rate {
-                let _ = session.SetMinUpdateInterval(min_interval(rate));
+                lock(&producer).publish_interval = software_interval(&session, rate);
             }
             session.StartCapture()?;
             Ok((arrived_token, closed_token))
@@ -1357,9 +1405,8 @@ impl CaptureSession for WgcSession {
             CaptureChange::FrameRate(rate) => {
                 self.accepted.frame_rate = Some(rate);
                 if let Some(active) = self.active.as_ref() {
-                    // Not available on every Windows version: WGC then delivers at the
-                    // display rate, which the "upper bound" rule allows.
-                    let _ = active.session.SetMinUpdateInterval(min_interval(rate));
+                    let interval = software_interval(&active.session, rate);
+                    lock(&active.producer).publish_interval = interval;
                 }
                 Ok(())
             }
