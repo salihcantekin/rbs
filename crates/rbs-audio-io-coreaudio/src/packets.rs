@@ -31,7 +31,7 @@ use rbs_core::timing::SampleRate;
 pub(crate) const MAX_STEP: Duration = Duration::from_millis(1);
 
 /// Frames converted per step when the input is not one interleaved buffer with
-/// exactly the delivered channels.
+/// exactly the delivered channels, and not one buffer per channel.
 const SCRATCH_FRAMES: usize = 1_024;
 
 /// One input buffer of a cycle: interleaved `f32` with `channels` channels.
@@ -59,7 +59,8 @@ pub(crate) struct Packets {
     producer: RingProducer,
     edge: EdgeClock,
     rate: SampleRate,
-    /// Planar scratch for input that is not one matching interleaved buffer.
+    /// Planar scratch for input that is not one matching interleaved buffer and not
+    /// one channel per buffer.
     scratch: Box<[f32]>,
     /// Where the last stored audio ended (or, before any, the floor of a restarted
     /// stream).
@@ -153,6 +154,18 @@ impl Packets {
             self.producer.lost(frames as u64);
             return false;
         }
+        // Each buffer is already one channel and there is one per delivered channel, so
+        // the HAL slices are the planes. A shorter slice, a buffer that holds more than
+        // one channel, or a channel count that does not match still uses the scratch
+        // below (missing samples and channels stay silent).
+        if channels > 0
+            && buffers.len() == channels
+            && buffers
+                .iter()
+                .all(|buffer| buffer.channels == 1 && buffer.samples.len() >= frames)
+        {
+            return self.push_one_channel(buffers, frames, start);
+        }
         let mut done = 0;
         while done < frames {
             let n = (frames - done).min(SCRATCH_FRAMES);
@@ -181,6 +194,31 @@ impl Packets {
                 .zip(self.scratch.chunks_exact(SCRATCH_FRAMES))
             {
                 *slice = &plane[..n];
+            }
+            let at = start + self.rate.duration_of(done as u64);
+            if self.producer.push_planar(at, &slices[..channels]) == Push::Dropped {
+                return false;
+            }
+            done += n;
+        }
+        true
+    }
+
+    /// Pushes `buffers` straight through, one channel per slice, in the same chunks and
+    /// with the same timestamps as the scratch path. Each slice is at least `frames` long.
+    fn push_one_channel(
+        &mut self,
+        buffers: &[Buffer<'_>],
+        frames: usize,
+        start: Timestamp,
+    ) -> bool {
+        let channels = buffers.len();
+        let mut done = 0;
+        while done < frames {
+            let n = (frames - done).min(SCRATCH_FRAMES);
+            let mut slices: [&[f32]; MAX_CHANNELS] = [&[]; MAX_CHANNELS];
+            for (slice, buffer) in slices.iter_mut().zip(buffers) {
+                *slice = &buffer.samples[done..done + n];
             }
             let at = start + self.rate.duration_of(done as u64);
             if self.producer.push_planar(at, &slices[..channels]) == Push::Dropped {
@@ -430,5 +468,122 @@ mod tests {
         packets.push(cycle(&buffers, 0, 0.0), Timestamp::from_nanos(10 * PERIOD));
         let second = drain(&mut consumer);
         assert!(second[0].timestamp >= first[0].timestamp + Duration::from_millis(10));
+    }
+
+    #[test]
+    fn one_channel_buffers_skip_scratch_and_wide_buffers_keep_interleave() {
+        let frames = SCRATCH_FRAMES + 4;
+        let (mut packets, mut consumer, _) = path(AudioFormat::STEREO_48K);
+        let left: Vec<f32> = (0..frames).map(|i| i as f32 * 0.001).collect();
+        let right: Vec<f32> = (0..frames).map(|i| 1.0 + i as f32 * 0.001).collect();
+        let buffers = [
+            Buffer {
+                samples: &left,
+                channels: 1,
+            },
+            Buffer {
+                samples: &right,
+                channels: 1,
+            },
+        ];
+        packets.scratch.fill(7.0);
+        let now = Timestamp::from_nanos(2_000_000_000);
+        let allocations = allocation_counter::measure(|| {
+            packets.push(
+                Cycle {
+                    buffers: &buffers,
+                    frames,
+                    host_nanos: None,
+                    sample_time: None,
+                },
+                now,
+            );
+        });
+        assert_eq!(allocations.count_total, 0, "push allocated");
+        assert!(
+            packets.scratch.iter().all(|sample| *sample == 7.0),
+            "one-channel buffers were copied into scratch"
+        );
+        let mut got_left = vec![0.0; frames];
+        let mut got_right = vec![0.0; frames];
+        let read = consumer.read(&mut [&mut got_left, &mut got_right]).unwrap();
+        assert_eq!(read.frames, frames);
+        assert_eq!(got_left, left);
+        assert_eq!(got_right, right);
+        let duration = SampleRate::HZ_48000.duration_of(frames as u64);
+        assert_eq!(read.timestamp, now - duration);
+
+        // Too big for the ring: dropped whole, and still not copied into scratch.
+        let (producer, consumer) = ring::channel(AudioFormat::STEREO_48K, 32, 8);
+        let mut packets = Packets::new(producer, SampleRate::HZ_48000, Arc::new(AtomicU64::new(0)));
+        packets.scratch.fill(7.0);
+        let dropped_frames = 64;
+        let plane = vec![0.25_f32; dropped_frames];
+        let dropped = [
+            Buffer {
+                samples: &plane,
+                channels: 1,
+            },
+            Buffer {
+                samples: &plane,
+                channels: 1,
+            },
+        ];
+        packets.push(
+            Cycle {
+                buffers: &dropped,
+                frames: dropped_frames,
+                host_nanos: None,
+                sample_time: None,
+            },
+            now,
+        );
+        assert_eq!(consumer.stats().dropped, dropped_frames as u64);
+        assert_eq!(consumer.available(), 0);
+        assert!(packets.scratch.iter().all(|sample| *sample == 7.0));
+
+        // Two interleaved pairs into four channels still take the scratch path.
+        let format = AudioFormat::new(SampleRate::HZ_48000, ChannelLayout::Discrete(4)).unwrap();
+        let (mut packets, mut consumer, _) = path(format);
+        let wide = SCRATCH_FRAMES + 2;
+        let first: Vec<f32> = (0..wide * 2).map(|i| i as f32).collect();
+        let second: Vec<f32> = (0..wide * 2).map(|i| 10_000.0 + i as f32).collect();
+        let buffers = [
+            Buffer {
+                samples: &first,
+                channels: 2,
+            },
+            Buffer {
+                samples: &second,
+                channels: 2,
+            },
+        ];
+        packets.scratch.fill(7.0);
+        packets.push(
+            Cycle {
+                buffers: &buffers,
+                frames: wide,
+                host_nanos: None,
+                sample_time: None,
+            },
+            now,
+        );
+        assert!(
+            packets.scratch.iter().any(|sample| *sample != 7.0),
+            "a multi-channel buffer skipped the scratch fill"
+        );
+        let mut planes = vec![vec![0.0_f32; wide]; 4];
+        let mut out: Vec<&mut [f32]> = planes
+            .iter_mut()
+            .map(|plane| plane.as_mut_slice())
+            .collect();
+        let read = consumer.read(&mut out).unwrap();
+        assert_eq!(read.frames, wide);
+        for frame in [0, SCRATCH_FRAMES] {
+            assert_eq!(planes[0][frame], first[frame * 2]);
+            assert_eq!(planes[1][frame], first[frame * 2 + 1]);
+            assert_eq!(planes[2][frame], second[frame * 2]);
+            assert_eq!(planes[3][frame], second[frame * 2 + 1]);
+        }
     }
 }
