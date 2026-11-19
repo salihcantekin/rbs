@@ -412,6 +412,8 @@ pub struct SceneCollection {
     canvases: BTreeMap<CanvasId, Canvas>,
     sources: BTreeMap<SourceId, Source>,
     scenes: BTreeMap<SceneId, Scene>,
+    /// Which scene holds each item. Rebuilt with the scenes; not stored in the file.
+    item_scene: BTreeMap<ItemId, SceneId>,
     /// Morph on a program-scene change (ADR-0100).
     glide: CollectionGlide,
     /// The transition a program change uses (ADR-0128).
@@ -427,6 +429,7 @@ impl PartialEq for SceneCollection {
         self.canvases == other.canvases
             && self.sources == other.sources
             && self.scenes == other.scenes
+            && self.item_scene == other.item_scene
             && self.glide == other.glide
             && self.transition == other.transition
     }
@@ -576,6 +579,9 @@ impl SceneCollection {
                 }
             }
             let id = s.id;
+            for item in &s.items {
+                col.item_scene.insert(item.id, id);
+            }
             if col.scenes.insert(id, s).is_some() {
                 return Err(SceneError::DuplicateId(id.to_string()));
             }
@@ -642,9 +648,13 @@ impl SceneCollection {
 
     /// An item and the scene that holds it.
     pub fn item(&self, id: ItemId) -> Option<(SceneId, &SceneItem)> {
-        self.scenes
-            .values()
-            .find_map(|s| s.items.iter().find(|i| i.id == id).map(|i| (s.id, i)))
+        let scene_id = *self.item_scene.get(&id)?;
+        let scene = self.scenes.get(&scene_id)?;
+        scene
+            .items
+            .iter()
+            .find(|item| item.id == id)
+            .map(|item| (scene_id, item))
     }
 
     /// Scenes canvas `canvas` may show: its own and shared ones (U15: the scene list
@@ -900,13 +910,13 @@ impl SceneCollection {
             .unwrap_or(&[]);
         if !order.is_empty() {
             // Unknown ids (a scene added after the order was saved) stay at the end,
-            // in id order. `sort_by_key` is stable.
-            list.sort_by_key(|s| {
-                order
-                    .iter()
-                    .position(|id| *id == s.id)
-                    .unwrap_or(usize::MAX)
-            });
+            // in id order. `sort_by_key` is stable. The first place of a repeated id
+            // wins, as a scan from the front would.
+            let mut rank = BTreeMap::new();
+            for (index, id) in order.iter().enumerate() {
+                rank.entry(*id).or_insert(index);
+            }
+            list.sort_by_key(|s| rank.get(&s.id).copied().unwrap_or(usize::MAX));
         }
         list
     }
@@ -1963,12 +1973,33 @@ impl SceneCollection {
     }
 
     fn take_item(&mut self, id: ItemId) -> Result<(SceneId, usize, SceneItem), SceneError> {
-        for scene in self.scenes.values_mut() {
-            if let Some(index) = scene.items.iter().position(|i| i.id == id) {
-                return Ok((scene.id, index, scene.items.remove(index)));
-            }
+        let scene_id = self
+            .item_scene
+            .get(&id)
+            .copied()
+            .ok_or(SceneError::UnknownItem(id))?;
+        let scene = self
+            .scenes
+            .get_mut(&scene_id)
+            .ok_or(SceneError::UnknownItem(id))?;
+        let Some(index) = scene.items.iter().position(|item| item.id == id) else {
+            return Err(SceneError::UnknownItem(id));
+        };
+        let item = scene.items.remove(index);
+        self.item_scene.remove(&id);
+        Ok((scene_id, index, item))
+    }
+
+    fn index_scene(&mut self, scene: &Scene) {
+        for item in &scene.items {
+            self.item_scene.insert(item.id, scene.id);
         }
-        Err(SceneError::UnknownItem(id))
+    }
+
+    fn unindex_scene(&mut self, scene: &Scene) {
+        for item in &scene.items {
+            self.item_scene.remove(&item.id);
+        }
     }
 
     fn insert_item(
@@ -1985,7 +2016,9 @@ impl SceneCollection {
         if index > s.items.len() {
             return Err(SceneError::IndexOutOfRange(index));
         }
+        let id = item.id;
         s.items.insert(index, item);
+        self.item_scene.insert(id, scene);
         Ok(())
     }
 
@@ -2000,7 +2033,9 @@ impl SceneCollection {
                 if scene.items[index].content == content {
                     // Record the original position; restoring in ascending order then
                     // puts every item back exactly where it was.
-                    removed.push((scene.id, index + taken, scene.items.remove(index)));
+                    let item = scene.items.remove(index);
+                    self.item_scene.remove(&item.id);
+                    removed.push((scene.id, index + taken, item));
                     taken += 1;
                 } else {
                     index += 1;
@@ -2033,6 +2068,7 @@ impl SceneCollection {
                     for item in &scene.items {
                         Self::restorable(self.next.item, item.id.0, self.item(item.id).is_some())?;
                     }
+                    self.index_scene(&scene);
                     self.scenes.insert(sid, scene);
                 }
                 for (item, layout) in overrides {
@@ -2049,6 +2085,9 @@ impl SceneCollection {
                 // Its global scene goes with it (ADR-0065): the user never sees it as
                 // a scene of its own. Validation keeps it nested nowhere.
                 let globals = canvas.globals.and_then(|g| self.scenes.remove(&g));
+                if let Some(scene) = &globals {
+                    self.unindex_scene(scene);
+                }
                 if self
                     .scenes
                     .values()
@@ -2355,6 +2394,7 @@ impl SceneCollection {
             } => {
                 let id = scene.id;
                 Self::restorable(self.next.scene, id.0, self.scenes.contains_key(&id))?;
+                self.index_scene(&scene);
                 self.scenes.insert(id, scene);
                 self.restore_items(placements)?;
                 for (canvas, program, preview) in shown {
@@ -2387,6 +2427,7 @@ impl SceneCollection {
                     .scenes
                     .remove(&id)
                     .ok_or(SceneError::UnknownScene(id))?;
+                self.unindex_scene(&scene);
                 let placements = self.remove_items(ItemContent::Scene(id));
                 let mut shown = Vec::new();
                 let mut globals = Vec::new();
@@ -2532,11 +2573,24 @@ impl SceneCollection {
                         Self::restorable(self.next.item, item.id.0, elsewhere)?;
                     }
                 }
+                let old: Vec<ItemId> = self
+                    .get_scene(scene)?
+                    .items
+                    .iter()
+                    .map(|item| item.id)
+                    .collect();
+                let kept: Vec<ItemId> = new.iter().map(|item| item.id).collect();
                 let s = self
                     .scenes
                     .get_mut(&scene)
                     .ok_or(SceneError::UnknownScene(scene))?;
                 s.items = new.clone();
+                for id in old {
+                    self.item_scene.remove(&id);
+                }
+                for id in kept {
+                    self.item_scene.insert(id, scene);
+                }
                 Ok(Op::SetSceneItems {
                     scene,
                     expected: new,
@@ -2557,6 +2611,7 @@ impl SceneCollection {
                     return Err(SceneError::IndexOutOfRange(index));
                 }
                 s.items.insert(index, value);
+                self.item_scene.insert(item, scene);
                 Ok(Op::MoveItem {
                     item,
                     from: to,
@@ -2567,10 +2622,17 @@ impl SceneCollection {
     }
 
     fn item_mut(&mut self, id: ItemId) -> Result<&mut SceneItem, SceneError> {
+        let scene_id = self
+            .item_scene
+            .get(&id)
+            .copied()
+            .ok_or(SceneError::UnknownItem(id))?;
         self.scenes
-            .values_mut()
-            .flat_map(|s| s.items.iter_mut())
-            .find(|i| i.id == id)
+            .get_mut(&scene_id)
+            .ok_or(SceneError::UnknownItem(id))?
+            .items
+            .iter_mut()
+            .find(|item| item.id == id)
             .ok_or(SceneError::UnknownItem(id))
     }
 
@@ -2585,8 +2647,26 @@ impl SceneCollection {
             .then_some(id)
     }
 
+    /// The index names the scene that actually holds each item, and nothing else.
+    fn item_index_matches(&self) -> bool {
+        let mut seen = 0usize;
+        for scene in self.scenes.values() {
+            for item in &scene.items {
+                if self.item_scene.get(&item.id) != Some(&scene.id) {
+                    return false;
+                }
+                seen += 1;
+            }
+        }
+        seen == self.item_scene.len()
+    }
+
     /// Checks every invariant of the scene model spec.
     fn validate(&self) -> Result<(), SceneError> {
+        debug_assert!(
+            self.item_index_matches(),
+            "the item index does not match the scenes"
+        );
         if !self.glide.is_valid() {
             return Err(SceneError::InvalidGlide);
         }
