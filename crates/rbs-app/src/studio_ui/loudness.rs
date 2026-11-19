@@ -2,7 +2,8 @@
 //! its number, the true-peak dot and the details, and Settings › Audio › Loudness.
 //! Both read one [`LoudnessUi`], filled from the host's [`Update::Loudness`]; the
 //! values come from the running meter's lock-free readout at the Mixer's refresh rate,
-//! and only while Show loudness is on (P13).
+//! and only while Show loudness is on (P13). A string is formatted again only when the
+//! tenth it shows changes, so a steady tenth is not rebuilt on that tick.
 
 use std::rc::Rc;
 
@@ -25,6 +26,115 @@ pub struct LoudnessUi {
     /// Custom was picked in Settings while the target is a preset's value: the
     /// Custom target row stays shown until another preset is picked.
     custom: bool,
+    /// The strings last formatted, and the tenths they show.
+    paint: LoudnessPaint,
+}
+
+/// One string kept until the tenth it shows changes.
+#[derive(Default)]
+struct Held<K: Default> {
+    key: K,
+    ready: bool,
+    text: slint::SharedString,
+}
+
+impl<K: Copy + PartialEq + Default> Held<K> {
+    /// Formats only when `key` is not the one already shown. The new string replaces
+    /// the old one; a repeat keeps the same allocation.
+    fn update(&mut self, key: K, format_text: impl FnOnce() -> String) -> bool {
+        if self.ready && self.key == key {
+            return false;
+        }
+        self.text = format_text().into();
+        self.key = key;
+        self.ready = true;
+        true
+    }
+}
+
+/// The tenths the Mixer's loudness strings were formatted from, plus the bar and the
+/// true-peak dot, which follow the raw reading and are not tenths.
+#[derive(Default)]
+struct LoudnessPaint {
+    short_text: Held<Option<i32>>,
+    momentary: Held<Option<i32>>,
+    integrated: Held<Option<i32>>,
+    range: Held<Option<i32>>,
+    true_peak: Held<Option<i32>>,
+    /// The target's tenth and, when it is a preset, that preset's index. The name is
+    /// part of the string.
+    target_text: Held<(Option<i32>, Option<usize>)>,
+    limit_text: Held<Option<i32>>,
+    at: f32,
+    target_at: f32,
+    over: bool,
+}
+
+impl LoudnessPaint {
+    /// The row for this reading, or `None` when every shown tenth, the bar, the target
+    /// mark and the true-peak dot are unchanged. A steady tenth keeps its string.
+    fn refresh(&mut self, l: &Loudness, target: f32, limit: f32) -> Option<LoudnessData> {
+        let has = l.short_term.is_finite();
+        let at = if has {
+            meter::position(l.short_term)
+        } else {
+            0.0
+        };
+        let target_at = meter::position(target);
+        let over = l.true_peak.is_finite() && l.true_peak > limit;
+        let preset = loudness_settings::preset_of(target);
+
+        let mut formatted = false;
+        formatted |= self.short_text.update(shown_tenth(l.short_term), || {
+            if has {
+                number(l.short_term)
+            } else {
+                String::new()
+            }
+        });
+        formatted |= self
+            .momentary
+            .update(shown_tenth(l.momentary), || with_unit(l.momentary, "LUFS"));
+        formatted |= self.integrated.update(shown_tenth(l.integrated), || {
+            with_unit(l.integrated, "LUFS")
+        });
+        formatted |= self
+            .range
+            .update(shown_tenth(l.range), || with_unit(l.range, "LU"));
+        formatted |= self
+            .true_peak
+            .update(shown_tenth(l.true_peak), || with_unit(l.true_peak, "dBTP"));
+        formatted |= self.target_text.update((shown_tenth(target), preset), || {
+            target_line(target, preset)
+        });
+        formatted |= self
+            .limit_text
+            .update(shown_tenth(limit), || with_unit(limit, "dBTP"));
+
+        let same_place = self.at.to_bits() == at.to_bits()
+            && self.target_at.to_bits() == target_at.to_bits()
+            && self.over == over;
+        if !formatted && same_place {
+            return None;
+        }
+        self.at = at;
+        self.target_at = target_at;
+        self.over = over;
+        Some(LoudnessData {
+            on: true,
+            has,
+            short_text: self.short_text.text.clone(),
+            at,
+            target_at,
+            target_text: self.target_text.text.clone(),
+            over,
+            momentary: self.momentary.text.clone(),
+            integrated: self.integrated.text.clone(),
+            range: self.range.text.clone(),
+            true_peak: self.true_peak.text.clone(),
+            limit_text: self.limit_text.text.clone(),
+        })
+    }
 }
 
 /// `v` with one decimal and a real minus sign ("−14.2").
@@ -37,6 +147,35 @@ fn number(v: f32) -> String {
     }
 }
 
+/// The tenth [`number`] shows, or `None` when `v` has no number.
+///
+/// The product is in `f64` so an `f32` multiply does not invent a halfway, and a real
+/// halfway rounds to the even tenth, which is what `{v:.1}` does. The meter tick
+/// remembers this and formats again only when it changes.
+fn shown_tenth(v: f32) -> Option<i32> {
+    if !v.is_finite() {
+        return None;
+    }
+    let scaled = f64::from(v) * 10.0;
+    let floor = scaled.floor();
+    if !(floor >= f64::from(i32::MIN) && floor <= f64::from(i32::MAX)) {
+        return Some(if scaled.is_sign_negative() {
+            i32::MIN
+        } else {
+            i32::MAX
+        });
+    }
+    // `floor` is inside `i32`, so the cast keeps it.
+    let base = floor as i32;
+    let frac = scaled - floor;
+    let tenth = if frac > 0.5 || (frac == 0.5 && base.rem_euclid(2) != 0) {
+        base.saturating_add(1)
+    } else {
+        base
+    };
+    Some(tenth)
+}
+
 /// A value with its unit, or empty while it has none.
 fn with_unit(v: f32, unit: &str) -> String {
     if v.is_finite() {
@@ -46,43 +185,15 @@ fn with_unit(v: f32, unit: &str) -> String {
     }
 }
 
-/// The Mixer's row for these values.
-pub fn row(l: &Loudness, target: f32, limit: f32) -> LoudnessData {
-    let has = l.short_term.is_finite();
-    let preset = loudness_settings::preset_of(target).map(|i| {
-        PRESETS[i]
-            .label
-            .split(" (")
-            .next()
-            .unwrap_or_default()
-            .to_owned()
-    });
-    LoudnessData {
-        on: true,
-        has,
-        short_text: if has {
-            number(l.short_term)
-        } else {
-            String::new()
+/// The target as shown: "−14.0 LUFS", or "−14.0 LUFS (Streaming)" for a preset.
+fn target_line(target: f32, preset: Option<usize>) -> String {
+    let value = with_unit(target, "LUFS");
+    match preset.and_then(|i| PRESETS.get(i)) {
+        Some(p) => {
+            let name = p.label.split(" (").next().unwrap_or_default();
+            format!("{value} ({name})")
         }
-        .into(),
-        at: if has {
-            meter::position(l.short_term)
-        } else {
-            0.0
-        },
-        target_at: meter::position(target),
-        target_text: match preset {
-            Some(name) => format!("{} ({name})", with_unit(target, "LUFS")),
-            None => with_unit(target, "LUFS"),
-        }
-        .into(),
-        over: l.true_peak.is_finite() && l.true_peak > limit,
-        momentary: with_unit(l.momentary, "LUFS").into(),
-        integrated: with_unit(l.integrated, "LUFS").into(),
-        range: with_unit(l.range, "LU").into(),
-        true_peak: with_unit(l.true_peak, "dBTP").into(),
-        limit_text: with_unit(limit, "dBTP").into(),
+        None => value,
     }
 }
 
@@ -95,6 +206,7 @@ impl StudioUi {
         self.loudness.view = Some(v.clone());
         if !v.shown {
             self.loudness.rows.set_vec(Vec::new());
+            self.loudness.paint = LoudnessPaint::default();
         } else {
             self.tick_loudness();
         }
@@ -102,18 +214,27 @@ impl StudioUi {
     }
 
     /// One refresh of the Mixer's loudness row (with the meters, while the Mixer
-    /// shows): reads the meter's values; the row changes only when what it shows does.
+    /// shows). Strings are formatted only when the tenth they show changes; the bar,
+    /// the target mark and the true-peak dot still follow the raw reading. The row is
+    /// replaced only when what it shows changes.
     pub(super) fn tick_loudness(&mut self) {
-        let Some(v) = &self.loudness.view else {
+        let (values, target, limit) = {
+            let Some(v) = &self.loudness.view else {
+                return;
+            };
+            if !v.shown {
+                return;
+            }
+            (
+                v.readout.as_ref().map_or(Loudness::NONE, |r| r.get()),
+                v.target,
+                v.true_peak_limit,
+            )
+        };
+        let Some(row) = self.loudness.paint.refresh(&values, target, limit) else {
             return;
         };
-        if !v.shown {
-            return;
-        }
-        let values = v.readout.as_ref().map_or(Loudness::NONE, |r| r.get());
-        let row = row(&values, v.target, v.true_peak_limit);
         match self.loudness.rows.row_data(0) {
-            Some(old) if old == row => {}
             Some(_) => self.loudness.rows.set_row_data(0, row),
             None => self.loudness.rows.set_vec(vec![row]),
         }
@@ -204,8 +325,16 @@ impl StudioUi {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)] // Tests fail by panicking.
 mod tests {
     use super::*;
+
+    /// A freshly formatted row, the same strings the meter shows on a first reading.
+    fn row(l: &Loudness, target: f32, limit: f32) -> LoudnessData {
+        LoudnessPaint::default()
+            .refresh(l, target, limit)
+            .expect("a fresh reading builds a row")
+    }
 
     #[test]
     fn numbers_use_a_real_minus_and_no_value_stays_empty() {
@@ -232,5 +361,78 @@ mod tests {
         assert_eq!(r.true_peak, "\u{2212}0.6 dBTP");
         assert!(!row(&l, -14.0, 0.0).over);
         assert_eq!(row(&l, -18.0, -1.0).target_text, "\u{2212}18.0 LUFS");
+    }
+
+    /// The integer `shown_tenth` is the tenth of the string `number` builds.
+    fn tenth_in(text: &str) -> i32 {
+        let neg = text.starts_with('\u{2212}');
+        let text = text.trim_start_matches('\u{2212}');
+        let (whole, frac) = text.split_once('.').expect("one decimal");
+        let whole: i32 = whole.parse().expect("whole");
+        let frac: i32 = frac.parse().expect("tenth");
+        let n = whole * 10 + frac;
+        if neg { -n } else { n }
+    }
+
+    #[test]
+    fn the_remembered_tenth_is_the_one_the_string_shows() {
+        for v in [
+            -14.25f32, -14.24, -14.26, -0.05, -0.04, -0.01, 0.0, -0.0, 1.25, 2.0, -1.25,
+            -30.849998, -70.0, 30.0,
+        ] {
+            assert_eq!(shown_tenth(v), Some(tenth_in(&number(v))), "{v}");
+        }
+        assert_eq!(shown_tenth(f32::NEG_INFINITY), None);
+    }
+
+    #[test]
+    fn a_steady_tenth_keeps_the_string_and_a_new_tenth_rebuilds_it() {
+        let mut paint = LoudnessPaint::default();
+        let mut l = Loudness::NONE;
+        l.short_term = -15.24;
+        l.momentary = -16.21;
+        l.integrated = -14.04;
+        l.range = 8.01;
+        l.true_peak = -1.04;
+        let a = paint
+            .refresh(&l, -14.0, -1.0)
+            .expect("the first reading builds a row");
+        assert_eq!(a, row(&l, -14.0, -1.0));
+        let short = a.short_text.as_str().as_ptr();
+        let peak = a.true_peak.as_str().as_ptr();
+        let target = a.target_text.as_str().as_ptr();
+
+        // Still −15.2. The bar moves; the strings stay the same allocation.
+        l.short_term = -15.21;
+        l.momentary = -16.24;
+        let b = paint.refresh(&l, -14.0, -1.0).expect("the bar still moves");
+        assert_eq!(b, row(&l, -14.0, -1.0));
+        assert_eq!(b.short_text.as_str().as_ptr(), short);
+        assert_eq!(b.true_peak.as_str().as_ptr(), peak);
+        assert_eq!(b.target_text.as_str().as_ptr(), target);
+        assert_ne!(b.at.to_bits(), a.at.to_bits());
+
+        // Nothing shown changed: no new row, so nothing is formatted.
+        assert!(paint.refresh(&l, -14.0, -1.0).is_none());
+
+        // −15.3. Short-term is rebuilt. A true peak still on −1.0 is not.
+        l.short_term = -15.26;
+        let c = paint
+            .refresh(&l, -14.0, -1.0)
+            .expect("a new tenth rebuilds");
+        assert_eq!(c.short_text.as_str(), "\u{2212}15.3");
+        assert_eq!(c, row(&l, -14.0, -1.0));
+        assert_ne!(c.short_text.as_str().as_ptr(), short);
+        assert_eq!(c.true_peak.as_str().as_ptr(), peak);
+
+        // The dot lights inside the same true-peak tenth (−1.0), without a new string.
+        l.true_peak = -0.96;
+        let d = paint
+            .refresh(&l, -14.0, -1.0)
+            .expect("the dot still lights");
+        assert!(d.over);
+        assert_eq!(d.true_peak.as_str(), "\u{2212}1.0 dBTP");
+        assert_eq!(d.true_peak.as_str().as_ptr(), peak);
+        assert_eq!(d, row(&l, -14.0, -1.0));
     }
 }
