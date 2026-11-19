@@ -1043,7 +1043,10 @@ impl CommandState for Shown<'_> {
             }
             "profile.select" => self.studio.library_choices(false),
             "collection.select" => self.studio.library_choices(true),
-            "collection.direct_transition" => direct_choices(self.studio.direct_transition()),
+            "collection.direct_transition" => {
+                let (t, glide_ms) = self.studio.direct_transition();
+                direct_choices(t, glide_ms)
+            }
             "ui.theme.select" => self.themes.clone(),
             "ui.experience.select" => {
                 use crate::background::Experience;
@@ -1940,11 +1943,35 @@ const DIRECT_KINDS: [(rbs_scene::TransitionKind, &str); 6] = [
     (rbs_scene::TransitionKind::Stinger, "Stinger"),
 ];
 
-/// Scene › Transition outside studio mode: `(title, kind, current)`.
-fn direct_choices(now: rbs_scene::TransitionKind) -> Vec<(String, String, bool)> {
+/// Scene › Transition outside studio mode: `(title, kind, current)`. Each title
+/// names the kind's duration, which both modes share (Move's is the glide), and says
+/// when the kind cuts (0 ms, or a Stinger with no file), so a choice that looks like a
+/// Cut is never a surprise (owner, 2026-11-19).
+fn direct_choices(
+    t: rbs_scene::CollectionTransition,
+    glide_ms: u32,
+) -> Vec<(String, String, bool)> {
+    use rbs_scene::TransitionKind as K;
     DIRECT_KINDS
         .into_iter()
-        .map(|(k, title)| (title.to_owned(), k.as_str().to_owned(), k == now))
+        .map(|(k, name)| {
+            let ms = match k {
+                K::Fade => Some(t.fade.duration_ms),
+                K::Move => Some(glide_ms),
+                K::Swipe => Some(t.swipe.duration_ms),
+                K::Slide => Some(t.slide.duration_ms),
+                _ => None,
+            };
+            let title = match ms {
+                Some(0) => format!("{name} (0 ms: a cut)"),
+                Some(ms) => format!("{name} ({ms} ms)"),
+                None if k == K::Stinger && t.stinger.source.is_none() => {
+                    format!("{name} (no file: a cut)")
+                }
+                None => name.to_owned(),
+            };
+            (title, k.as_str().to_owned(), k == t.direct)
+        })
         .collect()
 }
 
@@ -2330,10 +2357,21 @@ mod tests {
 
     #[test]
     fn the_transition_outside_studio_mode_checks_the_current_kind() {
-        use rbs_scene::TransitionKind as K;
-        let choices = direct_choices(K::Move);
+        use rbs_scene::{CollectionTransition, TransitionKind as K};
+        let t = CollectionTransition::default();
+        let choices = direct_choices(t, 400);
         let titles: Vec<_> = choices.iter().map(|(t, _, _)| t.as_str()).collect();
-        assert_eq!(titles, ["Cut", "Fade", "Move", "Swipe", "Slide", "Stinger"]);
+        assert_eq!(
+            titles,
+            [
+                "Cut",
+                "Fade (300 ms)",
+                "Move (400 ms)",
+                "Swipe (500 ms)",
+                "Slide (500 ms)",
+                "Stinger (no file: a cut)"
+            ]
+        );
         let checked: Vec<_> = choices.iter().filter(|c| c.2).collect();
         assert_eq!(checked.len(), 1);
         assert_eq!(checked[0].1, "move");
@@ -2341,7 +2379,14 @@ mod tests {
         for (_, value, _) in &choices {
             assert!(K::parse(value).is_some(), "{value}");
         }
-        assert!(direct_choices(K::Fade)[1].2);
+        // A 0 ms glide makes Move a cut, and the title says so.
+        let fade = CollectionTransition {
+            direct: K::Fade,
+            ..t
+        };
+        let still = direct_choices(fade, 0);
+        assert_eq!(still[2].0, "Move (0 ms: a cut)");
+        assert!(still[1].2);
     }
 
     #[test]
