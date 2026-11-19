@@ -1,7 +1,12 @@
 // Canvas (linear Rgba16Float, premultiplied, composited over black) to NV12 or P010 planes.
 // BT.709 OETF and matrix, limited range, chroma averaged over each 2x2 block.
 // Spec: docs/specs/gpu-compositor.md, "Encoder conversion (NV12, P010)".
+//
+// `yuv.rs` compiles one pair of fragment entry points (plus `vs_fullscreen`) and
+// shares that module. The markers name those parts. They are comments; the math
+// is unchanged.
 
+// BEGIN header
 // Code levels of the output format, set per pipeline (defaults: 8-bit NV12).
 // Limited-range luma is `y_black + y_range * Y'`, chroma `c_mid + c_range * C`.
 override y_black: f32 = 16.0;
@@ -22,18 +27,24 @@ fn vs_fullscreen(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32>
     let y = f32(vi & 2u);
     return vec4<f32>(x * 2.0 - 1.0, 1.0 - y * 2.0, 0.0, 1.0);
 }
+// END header
 
+// BEGIN oetf
 fn oetf_709(l: vec3<f32>) -> vec3<f32> {
     let c = clamp(l, vec3<f32>(0.0), vec3<f32>(1.0));
     let lo = 4.5 * c;
     let hi = 1.099 * pow(c, vec3<f32>(0.45)) - vec3<f32>(0.099);
     return select(hi, lo, c < vec3<f32>(0.018));
 }
+// END oetf
 
+// BEGIN luma
 fn luma(p: vec3<f32>) -> f32 {
     return dot(p, vec3<f32>(0.2126, 0.7152, 0.0722));
 }
+// END luma
 
+// BEGIN prime
 fn load_prime(x: i32, y: i32) -> vec3<f32> {
     return oetf_709(textureLoad(canvas, vec2<i32>(x, y), 0).rgb);
 }
@@ -55,7 +66,9 @@ fn fs_chroma(@builtin(position) pos: vec4<f32>) -> @location(0) vec2<f32> {
     let cr = (p.r - yp) / 1.5748;
     return round(vec2<f32>(c_mid) + c_range * vec2<f32>(cb, cr)) * code_scale;
 }
+// END prime
 
+// BEGIN fit
 // Scaled conversion (ADR-0066 decision 4, kernels in ADR-0102). The canvas is fitted
 // into the output with its aspect ratio kept; the rest of the output is black. The
 // one-to-one entries above are unchanged and do not sample. This bilinear pair is the
@@ -66,9 +79,13 @@ override fit_x: f32 = 0.0;
 override fit_y: f32 = 0.0;
 override fit_w: f32 = 1.0;
 override fit_h: f32 = 1.0;
+// END fit
 // Integer downscale ratio N (>= 2). Set only on the box pipelines.
+// BEGIN box_n
 override box_n: i32 = 2;
+// END box_n
 
+// BEGIN sample
 fn sample_prime(p: vec2<f32>) -> vec3<f32> {
     let uv = (p - vec2<f32>(fit_x, fit_y)) / vec2<f32>(fit_w, fit_h);
     if (any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0))) {
@@ -94,7 +111,9 @@ fn fs_chroma_scaled(@builtin(position) pos: vec4<f32>) -> @location(0) vec2<f32>
     let cr = (p.r - yp) / 1.5748;
     return round(vec2<f32>(c_mid) + c_range * vec2<f32>(cb, cr)) * code_scale;
 }
+// END sample
 
+// BEGIN box_fn
 // Integer downscale (ADR-0102): each output pixel is the equal-weight mean of its
 // N×N canvas texels in linear light. N and the fit rectangle are pipeline constants.
 // Outside the fitted picture the result is black, as on the bilinear path.
@@ -119,7 +138,9 @@ fn box_linear(ix: i32, iy: i32) -> vec3<f32> {
     }
     return sum / (f32(box_n) * f32(box_n));
 }
+// END box_fn
 
+// BEGIN box_fs
 @fragment
 fn fs_luma_box(@builtin(position) pos: vec4<f32>) -> @location(0) f32 {
     let p = oetf_709(box_linear(i32(pos.x), i32(pos.y)));
@@ -138,7 +159,9 @@ fn fs_chroma_box(@builtin(position) pos: vec4<f32>) -> @location(0) vec2<f32> {
     let cr = (p.r - yp) / 1.5748;
     return round(vec2<f32>(c_mid) + c_range * vec2<f32>(cb, cr)) * code_scale;
 }
+// END box_fs
 
+// BEGIN catmull_fn
 // Upscale (ADR-0102): Keys Catmull-Rom, a = -0.5, in linear light. Samples outside
 // the canvas clamp to the edge texel. Outside the fitted picture the result is black.
 fn keys(d: f32) -> f32 {
@@ -169,7 +192,9 @@ fn catmull_linear(p: vec2<f32>) -> vec3<f32> {
     }
     return acc;
 }
+// END catmull_fn
 
+// BEGIN catmull_fs
 @fragment
 fn fs_luma_catmull(@builtin(position) pos: vec4<f32>) -> @location(0) f32 {
     let p = oetf_709(catmull_linear(pos.xy));
@@ -188,7 +213,9 @@ fn fs_chroma_catmull(@builtin(position) pos: vec4<f32>) -> @location(0) vec2<f32
     let cr = (p.r - yp) / 1.5748;
     return round(vec2<f32>(c_mid) + c_range * vec2<f32>(cb, cr)) * code_scale;
 }
+// END catmull_fs
 
+// BEGIN open_fn
 // Open shadows, a grade on the Video path only. Linear light below middle grey
 // (0.18) is raised by a power of 0.7 about that knee; black, middle grey and
 // everything above are unchanged. The BT.709 OETF and limited-range codes then
@@ -203,7 +230,9 @@ fn open_shadows(l: vec3<f32>) -> vec3<f32> {
     // `select` evaluates both sides. Zero stays zero without a negative power.
     return select(c, lifted, (c > vec3<f32>(0.0)) & (c < vec3<f32>(SHADOW_KNEE)));
 }
+// END open_fn
 
+// BEGIN open_prime
 fn load_open(x: i32, y: i32) -> vec3<f32> {
     return oetf_709(open_shadows(textureLoad(canvas, vec2<i32>(x, y), 0).rgb));
 }
@@ -225,7 +254,9 @@ fn fs_chroma_open(@builtin(position) pos: vec4<f32>) -> @location(0) vec2<f32> {
     let cr = (p.r - yp) / 1.5748;
     return round(vec2<f32>(c_mid) + c_range * vec2<f32>(cb, cr)) * code_scale;
 }
+// END open_prime
 
+// BEGIN open_sample
 fn sample_open(p: vec2<f32>) -> vec3<f32> {
     let uv = (p - vec2<f32>(fit_x, fit_y)) / vec2<f32>(fit_w, fit_h);
     if (any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0))) {
@@ -251,7 +282,9 @@ fn fs_chroma_open_scaled(@builtin(position) pos: vec4<f32>) -> @location(0) vec2
     let cr = (p.r - yp) / 1.5748;
     return round(vec2<f32>(c_mid) + c_range * vec2<f32>(cb, cr)) * code_scale;
 }
+// END open_sample
 
+// BEGIN open_box
 @fragment
 fn fs_luma_open_box(@builtin(position) pos: vec4<f32>) -> @location(0) f32 {
     let p = oetf_709(open_shadows(box_linear(i32(pos.x), i32(pos.y))));
@@ -271,7 +304,9 @@ fn fs_chroma_open_box(@builtin(position) pos: vec4<f32>) -> @location(0) vec2<f3
     let cr = (p.r - yp) / 1.5748;
     return round(vec2<f32>(c_mid) + c_range * vec2<f32>(cb, cr)) * code_scale;
 }
+// END open_box
 
+// BEGIN open_catmull
 @fragment
 fn fs_luma_open_catmull(@builtin(position) pos: vec4<f32>) -> @location(0) f32 {
     let p = oetf_709(open_shadows(catmull_linear(pos.xy)));
@@ -290,7 +325,9 @@ fn fs_chroma_open_catmull(@builtin(position) pos: vec4<f32>) -> @location(0) vec
     let cr = (p.r - yp) / 1.5748;
     return round(vec2<f32>(c_mid) + c_range * vec2<f32>(cb, cr)) * code_scale;
 }
+// END open_catmull
 
+// BEGIN srgb
 // Screen delivery (ColorSpace::SRGB_VIDEO): sRGB OETF, full range. A separate entry point
 // from the BT.709 limited path above, so that path does not branch on this mode.
 // `code_max` is the largest legal code (255 or 1023). Full-range chroma can round one
@@ -302,10 +339,6 @@ fn oetf_srgb(l: vec3<f32>) -> vec3<f32> {
     let lo = 12.92 * c;
     let hi = 1.055 * pow(c, vec3<f32>(1.0 / 2.4)) - vec3<f32>(0.055);
     return select(hi, lo, c <= vec3<f32>(0.0031308));
-}
-
-fn load_srgb(x: i32, y: i32) -> vec3<f32> {
-    return oetf_srgb(textureLoad(canvas, vec2<i32>(x, y), 0).rgb);
 }
 
 fn store_y(p: vec3<f32>) -> f32 {
@@ -322,6 +355,12 @@ fn store_c(p: vec3<f32>) -> vec2<f32> {
         vec2<f32>(code_max),
     ) * code_scale;
 }
+// END srgb
+
+// BEGIN srgb_prime
+fn load_srgb(x: i32, y: i32) -> vec3<f32> {
+    return oetf_srgb(textureLoad(canvas, vec2<i32>(x, y), 0).rgb);
+}
 
 @fragment
 fn fs_luma_srgb(@builtin(position) pos: vec4<f32>) -> @location(0) f32 {
@@ -336,7 +375,9 @@ fn fs_chroma_srgb(@builtin(position) pos: vec4<f32>) -> @location(0) vec2<f32> {
         * 0.25;
     return store_c(p);
 }
+// END srgb_prime
 
+// BEGIN srgb_sample
 fn sample_srgb(p: vec2<f32>) -> vec3<f32> {
     let uv = (p - vec2<f32>(fit_x, fit_y)) / vec2<f32>(fit_w, fit_h);
     if (any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0))) {
@@ -358,7 +399,9 @@ fn fs_chroma_srgb_scaled(@builtin(position) pos: vec4<f32>) -> @location(0) vec2
         * 0.25;
     return store_c(p);
 }
+// END srgb_sample
 
+// BEGIN srgb_box
 @fragment
 fn fs_luma_srgb_box(@builtin(position) pos: vec4<f32>) -> @location(0) f32 {
     return store_y(oetf_srgb(box_linear(i32(pos.x), i32(pos.y))));
@@ -372,7 +415,9 @@ fn fs_chroma_srgb_box(@builtin(position) pos: vec4<f32>) -> @location(0) vec2<f3
         + oetf_srgb(box_linear(x, y + 1)) + oetf_srgb(box_linear(x + 1, y + 1))) * 0.25;
     return store_c(p);
 }
+// END srgb_box
 
+// BEGIN srgb_catmull
 @fragment
 fn fs_luma_srgb_catmull(@builtin(position) pos: vec4<f32>) -> @location(0) f32 {
     return store_y(oetf_srgb(catmull_linear(pos.xy)));
@@ -387,3 +432,4 @@ fn fs_chroma_srgb_catmull(@builtin(position) pos: vec4<f32>) -> @location(0) vec
         + oetf_srgb(catmull_linear(c + vec2<f32>(1.5, 1.5)))) * 0.25;
     return store_c(p);
 }
+// END srgb_catmull

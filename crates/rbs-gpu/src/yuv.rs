@@ -9,9 +9,13 @@
 //! Hot path: both conversions record two render passes (luma at full size,
 //! chroma at half size) and submit them. It does not allocate in RBS code. Render
 //! passes are used instead of a compute pass because the plane formats are render targets,
-//! while storage writes to them need optional features. NV12 and P010 share one shader;
-//! the code levels are pipeline-overridable constants. The scale kernel is chosen when
+//! while storage writes to them need optional features. NV12 and P010 share one shader
+//! module per colour mode and scale kernel. Prepare compiles `vs_fullscreen` and that
+//! pair, and another converter of the same pair on the same device reuses the module.
+//! The code levels are pipeline-overridable constants. The scale kernel is chosen when
 //! the converter is created ([`scale_kernel`]); a frame does not branch on another kernel.
+
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use crate::context::{CAP_NV12_SURFACE, CAP_P010, CAP_P010_SURFACE, CAP_SOFTWARE, GpuContext};
 use crate::error::GpuError;
@@ -152,6 +156,10 @@ pub struct YuvConverter {
     src_height: u32,
     /// Chosen at creation. `convert` does not read it.
     kernel: ScaleKernel,
+    /// Keeps the shared module alive so another converter of this pair can reuse it.
+    /// The pipelines already reference the wgpu module; this handle is the share.
+    #[allow(dead_code)]
+    shader: Arc<SharedShader>,
     luma: wgpu::RenderPipeline,
     chroma: wgpu::RenderPipeline,
     /// Software adapters only: planes and a buffer for the staged surface path.
@@ -396,10 +404,7 @@ impl YuvConverter {
         }
         let kernel = scale_kernel(src_width, src_height, width, height);
         let device = ctx.device();
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("rbs-gpu yuv"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/yuv.wgsl").into()),
-        });
+        let shader = shared_shader(device, kernel, screen, open_shadows);
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("rbs-gpu yuv"),
             bind_group_layouts: &[Some(&ctx.sampled_layout)],
@@ -436,7 +441,7 @@ impl YuvConverter {
                 label: Some("rbs-gpu yuv"),
                 layout: Some(&layout),
                 vertex: wgpu::VertexState {
-                    module: &module,
+                    module: &shader.module,
                     entry_point: Some("vs_fullscreen"),
                     compilation_options: Default::default(),
                     buffers: &[],
@@ -445,7 +450,7 @@ impl YuvConverter {
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState::default(),
                 fragment: Some(wgpu::FragmentState {
-                    module: &module,
+                    module: &shader.module,
                     entry_point: Some(entry),
                     compilation_options: wgpu::PipelineCompilationOptions {
                         constants: &constants,
@@ -465,11 +470,12 @@ impl YuvConverter {
             YuvFormat::Nv12 => &CAP_NV12_SURFACE,
             YuvFormat::P010 => &CAP_P010_SURFACE,
         };
-        // Chosen once, at creation. One luma pipeline and one chroma pipeline: the
-        // other kernels' entry points stay in the module and are not built. Open
-        // shadows and sRGB are their own entry points, so the default path does not
-        // test them.
+        // Chosen once, at creation. One luma pipeline and one chroma pipeline.
+        // The module has `vs_fullscreen` and that pair only. Open shadows and sRGB
+        // are their own entry points, so the default path does not test them.
         let (luma_entry, chroma_entry) = entry_points(kernel, screen, open_shadows);
+        let luma = pipeline(luma_entry, format.luma_format());
+        let chroma = pipeline(chroma_entry, format.chroma_format());
         Ok(Self {
             format,
             width,
@@ -477,8 +483,9 @@ impl YuvConverter {
             src_width,
             src_height,
             kernel,
-            luma: pipeline(luma_entry, format.luma_format()),
-            chroma: pipeline(chroma_entry, format.chroma_format()),
+            shader,
+            luma,
+            chroma,
             staged: (ctx.has(surface_cap) && ctx.has(&CAP_SOFTWARE))
                 .then(|| Staged::new(ctx, format, width, height)),
         })
@@ -625,7 +632,7 @@ impl YuvConverter {
 }
 
 /// Scale kernel a converter builds (ADR-0102). One converter holds that kernel's two
-/// pipelines only; the shader module may contain every entry point.
+/// pipelines only. Its shader module has `vs_fullscreen` and that pair.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScaleKernel {
     /// Source size equals output size. `textureLoad`, no scaler.
@@ -701,6 +708,160 @@ fn box_fit(src_width: u32, src_height: u32, width: u32, height: u32, n: u32) -> 
         fw,
         fh,
     ]
+}
+
+/// One compiled `yuv.wgsl` pair. Held by every live converter that uses it, so a
+/// second converter does not compile that pair again. The cache keeps only a weak
+/// handle: after the last converter of the pair drops, the module drops with it and
+/// does not keep the device.
+struct SharedShader {
+    device: wgpu::Device,
+    module: wgpu::ShaderModule,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct ShaderKey {
+    screen: bool,
+    open_shadows: bool,
+    kind: ShaderKind,
+}
+
+/// The scale family. `Box(2)` and `Box(3)` are one family: `box_n` is a pipeline constant.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ShaderKind {
+    OneToOne,
+    Box,
+    Catmull,
+    Bilinear,
+}
+
+fn shader_kind(kernel: ScaleKernel) -> ShaderKind {
+    match kernel {
+        ScaleKernel::OneToOne => ShaderKind::OneToOne,
+        ScaleKernel::Box(_) => ShaderKind::Box,
+        ScaleKernel::CatmullRom => ShaderKind::Catmull,
+        ScaleKernel::Bilinear => ShaderKind::Bilinear,
+    }
+}
+
+fn shader_key(kernel: ScaleKernel, screen: bool, open_shadows: bool) -> ShaderKey {
+    ShaderKey {
+        screen,
+        // sRGB entry points ignore the open-shadows flag, matching [`entry_points`].
+        open_shadows: open_shadows && !screen,
+        kind: shader_kind(kernel),
+    }
+}
+
+const YUV_WGSL: &str = include_str!("shaders/yuv.wgsl");
+
+/// The WGSL between `// BEGIN {name}` and `// END {name}`.
+fn wgsl_part(name: &str) -> &'static str {
+    let begin = format!("// BEGIN {name}\n");
+    let Some(start) = YUV_WGSL.find(&begin) else {
+        debug_assert!(false, "yuv.wgsl has no part {name}");
+        return "";
+    };
+    let rest = &YUV_WGSL[start + begin.len()..];
+    let end = format!("// END {name}\n");
+    match rest.find(&end) {
+        Some(at) => &rest[..at],
+        None => {
+            debug_assert!(false, "yuv.wgsl part {name} has no end");
+            ""
+        }
+    }
+}
+
+/// `vs_fullscreen` plus the two fragment entry points for this colour mode and kernel,
+/// and the helpers those entry points call. Nothing else from `yuv.wgsl`.
+fn shader_source(kernel: ScaleKernel, screen: bool, open_shadows: bool) -> String {
+    let key = shader_key(kernel, screen, open_shadows);
+    let parts: &[&str] = match (key.screen, key.open_shadows, key.kind) {
+        (false, false, ShaderKind::OneToOne) => &["header", "luma", "oetf", "prime"],
+        (false, false, ShaderKind::Bilinear) => &["header", "luma", "oetf", "fit", "sample"],
+        (false, false, ShaderKind::Box) => {
+            &["header", "luma", "oetf", "fit", "box_n", "box_fn", "box_fs"]
+        }
+        (false, false, ShaderKind::Catmull) => {
+            &["header", "luma", "oetf", "fit", "catmull_fn", "catmull_fs"]
+        }
+        (false, true, ShaderKind::OneToOne) => &["header", "luma", "oetf", "open_fn", "open_prime"],
+        (false, true, ShaderKind::Bilinear) => {
+            &["header", "luma", "oetf", "fit", "open_fn", "open_sample"]
+        }
+        (false, true, ShaderKind::Box) => &[
+            "header", "luma", "oetf", "fit", "box_n", "box_fn", "open_fn", "open_box",
+        ],
+        (false, true, ShaderKind::Catmull) => &[
+            "header",
+            "luma",
+            "oetf",
+            "fit",
+            "catmull_fn",
+            "open_fn",
+            "open_catmull",
+        ],
+        (true, _, ShaderKind::OneToOne) => &["header", "luma", "srgb", "srgb_prime"],
+        (true, _, ShaderKind::Bilinear) => &["header", "luma", "fit", "srgb", "srgb_sample"],
+        (true, _, ShaderKind::Box) => &[
+            "header", "luma", "fit", "box_n", "box_fn", "srgb", "srgb_box",
+        ],
+        (true, _, ShaderKind::Catmull) => &[
+            "header",
+            "luma",
+            "fit",
+            "catmull_fn",
+            "srgb",
+            "srgb_catmull",
+        ],
+    };
+    let mut src = String::new();
+    for name in parts {
+        src.push_str(wgsl_part(name));
+    }
+    src
+}
+
+type ShaderCache = Mutex<Vec<(ShaderKey, Weak<SharedShader>)>>;
+
+fn shader_cache() -> &'static ShaderCache {
+    static CACHE: OnceLock<ShaderCache> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// The module for this pair on `device`. The first converter compiles it; a later
+/// converter of the same pair on that device takes the same module.
+fn shared_shader(
+    device: &wgpu::Device,
+    kernel: ScaleKernel,
+    screen: bool,
+    open_shadows: bool,
+) -> Arc<SharedShader> {
+    let key = shader_key(kernel, screen, open_shadows);
+    let mut cache = shader_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    cache.retain(|(_, weak)| weak.strong_count() > 0);
+    if let Some(found) = cache.iter().find_map(|(cached, weak)| {
+        if *cached != key {
+            return None;
+        }
+        let shared = weak.upgrade()?;
+        (shared.device == *device).then_some(shared)
+    }) {
+        return found;
+    }
+    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("rbs-gpu yuv"),
+        source: wgpu::ShaderSource::Wgsl(shader_source(kernel, screen, open_shadows).into()),
+    });
+    let shared = Arc::new(SharedShader {
+        device: device.clone(),
+        module,
+    });
+    cache.push((key, Arc::downgrade(&shared)));
+    shared
 }
 
 /// Entry points for one colour mode and one kernel. The open-shadows and sRGB names
@@ -878,6 +1039,65 @@ mod tests {
         assert_eq!(
             entry_points(ScaleKernel::OneToOne, true, false).0,
             "fs_luma_srgb"
+        );
+    }
+
+    #[test]
+    fn each_pair_shader_source_contains_only_that_pair() {
+        let kernels = [
+            ScaleKernel::OneToOne,
+            ScaleKernel::Box(2),
+            ScaleKernel::Box(4),
+            ScaleKernel::CatmullRom,
+            ScaleKernel::Bilinear,
+        ];
+        let modes = [(false, false), (false, true), (true, false), (true, true)];
+        let mut all_entries = Vec::new();
+        for kernel in kernels {
+            for (screen, open) in modes {
+                let pair = entry_points(kernel, screen, open);
+                all_entries.push(pair.0);
+                all_entries.push(pair.1);
+            }
+        }
+        all_entries.sort_unstable();
+        all_entries.dedup();
+        for kernel in kernels {
+            for (screen, open) in modes {
+                let (luma, chroma) = entry_points(kernel, screen, open);
+                let src = shader_source(kernel, screen, open);
+                assert!(
+                    src.len() < YUV_WGSL.len(),
+                    "{luma}/{chroma} compiled the whole of yuv.wgsl"
+                );
+                assert_eq!(src.matches("@vertex").count(), 1, "{luma}/{chroma}");
+                assert!(src.contains("fn vs_fullscreen("), "{luma}/{chroma}");
+                assert_eq!(src.matches("@fragment").count(), 2, "{luma}/{chroma}");
+                assert!(
+                    src.contains(&format!("fn {luma}(")),
+                    "{luma} missing from its module"
+                );
+                assert!(
+                    src.contains(&format!("fn {chroma}(")),
+                    "{chroma} missing from its module"
+                );
+                for other in &all_entries {
+                    if *other != luma && *other != chroma {
+                        assert!(
+                            !src.contains(&format!("fn {other}(")),
+                            "{other} leaked into {luma}/{chroma}"
+                        );
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            shader_source(ScaleKernel::Box(2), false, false),
+            shader_source(ScaleKernel::Box(4), false, false)
+        );
+        assert_eq!(
+            shader_source(ScaleKernel::OneToOne, true, false),
+            shader_source(ScaleKernel::OneToOne, true, true)
         );
     }
 }
