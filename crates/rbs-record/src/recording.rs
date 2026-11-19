@@ -169,13 +169,24 @@ impl RecordAdapters {
         }
     }
 
-    /// Probes every registry.
+    /// Probes every registry. The desktop studio probes encoders later
+    /// ([`RecordAdapters::probe_encoders`]).
     pub fn probe(&mut self) {
+        self.probe_io();
+        self.probe_encoders();
+    }
+
+    /// Probes sources, muxers and transports. Video and audio encoders stay unprobed.
+    pub fn probe_io(&mut self) {
         self.sources.probe();
-        self.video_encoders.probe_all();
-        self.audio_encoders.probe_all();
         self.muxers.probe_all();
         self.transports.probe_all();
+    }
+
+    /// Probes video and audio encoders and caches the result. A second call probes again.
+    pub fn probe_encoders(&mut self) {
+        self.video_encoders.probe_all();
+        self.audio_encoders.probe_all();
     }
 }
 

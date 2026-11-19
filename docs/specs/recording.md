@@ -32,14 +32,18 @@ pub const OUTPUT_2: PartitionId;        // 7
 
 #[non_exhaustive] pub enum Port { VideoEncoder, AudioEncoder, Muxer, Transport } // Display
 
-pub struct RecordAdapters {            // registries filled and probed by the composition root
+pub struct RecordAdapters {            // registries filled by the composition root; `probe` probes all,
+                                           // `probe_io` leaves video and audio encoders for later
     pub sources: SourceTypes,
     pub video_encoders: Registry<dyn VideoEncoderFactory>,
     pub audio_encoders: Registry<dyn AudioEncoderFactory>,
     pub muxers: Registry<dyn MuxerFactory>,
     pub transports: Registry<dyn TransportFactory>,
 }
-impl RecordAdapters { pub fn new() -> Self; pub fn probe(&mut self); }
+impl RecordAdapters { pub fn new() -> Self; pub fn probe(&mut self); pub fn probe_io(&mut self); pub fn probe_encoders(&mut self); }
+// The desktop studio calls `probe_io` at start. It calls `probe_encoders` once, when output
+// settings are about to be shown or a recording or stream is about to start, and keeps the
+// result. Until that call it does not report that the computer has no video encoder.
 
 #[non_exhaustive] pub struct Partitions { // the non-render partition ids; defaults are the constants above
     pub audio: PartitionId, pub video_encoder: PartitionId,

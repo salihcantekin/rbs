@@ -462,6 +462,9 @@ pub struct StudioUi {
     /// Why this system cannot record (`None`: it can).
     pub cannot_record: Option<String>,
     encoders: Vec<EncoderInfo>,
+    /// Video encoders have been probed. Until then the list is empty and recording
+    /// is not reported as unavailable.
+    pub encoders_ready: bool,
     /// The output settings and where they are saved.
     pub profile: RecordProfile,
     config: PathBuf,
@@ -799,6 +802,7 @@ impl StudioUi {
             rec_note_bad: false,
             cannot_record: Some("The studio is starting.".into()),
             encoders: Vec::new(),
+            encoders_ready: false,
             profile,
             config: config.to_owned(),
             user,
@@ -6511,6 +6515,14 @@ impl StudioUi {
                 let next = self.edit.answered(seq, ok);
                 self.run(next);
             }
+            Update::Encoders {
+                encoders,
+                cannot_record,
+            } => {
+                self.encoders = encoders;
+                self.cannot_record = cannot_record;
+                self.encoders_ready = true;
+            }
             Update::Started {
                 preview,
                 kinds,
@@ -6523,6 +6535,7 @@ impl StudioUi {
                 self.display = display;
                 self.encoders = encoders;
                 self.cannot_record = cannot_record;
+                self.encoders_ready = false;
                 for n in notes {
                     log(&n);
                 }

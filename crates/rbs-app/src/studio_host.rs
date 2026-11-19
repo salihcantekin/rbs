@@ -891,6 +891,9 @@ pub enum Command {
     /// The Mixer panel is shown (`true`) or hidden. Meters stay on while a control
     /// client subscribes to `audio.levels` (ADR-0143 R2).
     SetMetersUi(bool),
+    /// Probe video and audio encoders once and publish the list. Sent before output
+    /// settings are shown.
+    EnsureEncoders,
     /// Turns a scene's Own levels on (`own` true, copying what is heard) or puts it
     /// back in Shared levels (ADR-0091, `scene.audio.own` / `scene.audio.shared`). One
     /// undo step; a refusal comes back as [`Update::Error`].
@@ -3069,6 +3072,13 @@ pub enum Update {
         /// is not multiplied by the scale.
         display: Option<MainDisplay>,
     },
+    /// Video encoders after the one probe, and why recording is unavailable.
+    Encoders {
+        /// Best first. Empty when none probed successfully.
+        encoders: Vec<EncoderInfo>,
+        /// `None` when this computer can record video.
+        cannot_record: Option<String>,
+    },
     /// The canvas the studio runs now, after [`Command::SetCanvas`]: changed, or
     /// unchanged when the change was refused (an [`Update::Error`] says why). Connect
     /// to `preview` again.
@@ -4062,8 +4072,10 @@ struct Host {
     profile: RecordProfile,
     /// Kinds the adapters can add.
     kinds: Vec<SourceKind>,
-    /// Video encoders, best first.
+    /// Video encoders, best first. Empty until [`Host::ensure_encoders`].
     encoders: Vec<EncoderInfo>,
+    /// Video and audio encoders have been probed once.
+    encoders_probed: bool,
     /// Why this system cannot record.
     cannot_record: Option<String>,
     /// The stream settings as the UI uses them; `None` until the UI sent them.
@@ -4572,7 +4584,7 @@ fn start(
     #[cfg(feature = "fault-injection")]
     let config_fault = config.fault;
     let (mut adapters, mut notes) = adapters();
-    adapters.probe();
+    adapters.probe_io();
     let can_monitor = adapters.sources.can_monitor();
     let gpu = gpu()?;
     notes.push(format!("gpu: {}", gpu.adapter_name()));
@@ -4664,34 +4676,10 @@ fn start(
             .filter(|k| installed.contains(&k.type_id())),
         )
         .collect();
-    let encoders: Vec<EncoderInfo> = adapters
-        .video_encoders
-        .select(&Requirement::new())
-        .candidates
-        .iter()
-        // An adapter that probes to nothing (no driver or device here) cannot encode.
-        .filter(|f| {
-            adapters
-                .video_encoders
-                .capabilities(&f.id())
-                .is_some_and(|c| !c.is_empty())
-        })
-        .map(|f| EncoderInfo {
-            id: f.id().as_str().to_owned(),
-            name: f.display_name().to_owned(),
-            options: adapters
-                .video_encoders
-                .capabilities(&f.id())
-                .map(EncoderOptions::from_caps)
-                .unwrap_or_default(),
-        })
-        .collect();
-    let cannot_record = encoders.is_empty().then(|| {
-        format!(
-            "Recording is not available on {} yet: this system has no video encoder RBS can use.",
-            os_name()
-        )
-    });
+    // Video and audio encoders are probed on first use (ADR-0154's neighbour, F-08):
+    // output settings about to open, or a recording or stream about to start.
+    let encoders = Vec::new();
+    let cannot_record = None;
     let update = Update::Started {
         preview: studio.preview(),
         kinds: Vec::clone(&kinds),
@@ -4823,6 +4811,7 @@ fn start(
         profile: RecordProfile::new(),
         kinds,
         encoders,
+        encoders_probed: false,
         cannot_record,
         stream_profile: None,
         vertical_profile: None,
@@ -5053,6 +5042,10 @@ impl Host {
             Command::SetMetersUi(on) => {
                 self.meters_ui = on;
                 self.sync_meters();
+            }
+            Command::EnsureEncoders => {
+                self.ensure_encoders();
+                self.publish_encoders(notify);
             }
             Command::SetSceneOwnLevels { scene, own } => {
                 let scene = rbs_api::request::SceneRef { scene: scene.get() };
@@ -8327,6 +8320,16 @@ impl Host {
 
     /// The UI's Record for `c`: starts the recording and says how it went.
     fn record_asked(&mut self, c: OutputCanvas, r: &RecordRequest, notify: &dyn Fn(Update)) {
+        self.note_encoders(notify);
+        if !self.record_profile(c).format.is_audio_only()
+            && let Some(why) = &self.cannot_record
+        {
+            notify(recording_update(
+                c,
+                RecordingUpdate::NotStarted(why.clone()),
+            ));
+            return;
+        }
         let update = match self.start_recording(c, r, Some(API_PROFILE_ID.into()), StartGate::Older)
         {
             Ok(update) => update,
@@ -8339,6 +8342,11 @@ impl Host {
     /// The UI's Go live for `c`: starts the stream, says how it went, and records
     /// with it when that is on.
     fn stream_asked(&mut self, c: OutputCanvas, r: &StreamRequest, notify: &dyn Fn(Update)) {
+        self.note_encoders(notify);
+        if let Some(why) = &self.cannot_record {
+            notify(stream_update(c, StreamUpdate::NotStarted(why.clone())));
+            return;
+        }
         let update = match self.start_stream(c, r) {
             Ok(update) => update,
             Err(why) => StreamUpdate::NotStarted(why),
@@ -9041,11 +9049,40 @@ impl Host {
     /// Attaches `out` to the studio with the picked encoder only, or the best one (a
     /// running one when the settings match, ADR-0047); returns the output and the
     /// encoders' names.
+    /// Probes video and audio encoders once. Returns whether this call did the probe.
+    fn ensure_encoders(&mut self) -> bool {
+        if self.encoders_probed {
+            return false;
+        }
+        self.adapters.probe_encoders();
+        let (encoders, cannot_record) = encoder_catalog(&self.adapters);
+        self.encoders = encoders;
+        self.cannot_record = cannot_record;
+        self.encoders_probed = true;
+        true
+    }
+
+    fn publish_encoders(&self, notify: &dyn Fn(Update)) {
+        notify(Update::Encoders {
+            encoders: self.encoders.clone(),
+            cannot_record: self.cannot_record.clone(),
+        });
+    }
+
+    /// Probes when needed and tells the UI. A later call publishes nothing.
+    fn note_encoders(&mut self, notify: &dyn Fn(Update)) {
+        if self.ensure_encoders() {
+            self.publish_encoders(notify);
+        }
+    }
+
     fn start_output(
         &mut self,
         out: &OutputSettings,
         encoder: Option<&str>,
     ) -> Result<(OutputId, String, Option<String>), String> {
+        // A path that did not publish still probes before an encoder is chosen.
+        self.ensure_encoders();
         // A picked encoder is the only one tried: if it cannot open, the output fails
         // rather than quietly using another one.
         let all = match encoder {
@@ -14629,25 +14666,28 @@ impl ApiTarget<'_> {
             return Err(ApiError::new(ErrorKind::Conflict, why));
         }
         match command {
-            C::StudioGet => Ok(Response::Studio(api::Snapshot {
-                seq: host.events.seq_map([Topic::CanvasChanged]),
-                data: api::StudioInfo {
-                    canvas: host.api_canvas(),
-                    kinds: host.kinds.iter().filter_map(|k| api_kind(*k)).collect(),
-                    encoders: host
-                        .encoders
-                        .iter()
-                        .map(|e| api::EncoderInfo {
-                            id: e.id.clone(),
-                            name: e.name.clone(),
-                            rate_controls: e.options.rate_controls.clone(),
-                            h264_profiles: e.options.h264_profiles.clone(),
-                            b_frames_max: e.options.b_frames_max,
-                        })
-                        .collect(),
-                    cannot_record: host.cannot_record.clone(),
-                },
-            })),
+            C::StudioGet => {
+                host.note_encoders(notify);
+                Ok(Response::Studio(api::Snapshot {
+                    seq: host.events.seq_map([Topic::CanvasChanged]),
+                    data: api::StudioInfo {
+                        canvas: host.api_canvas(),
+                        kinds: host.kinds.iter().filter_map(|k| api_kind(*k)).collect(),
+                        encoders: host
+                            .encoders
+                            .iter()
+                            .map(|e| api::EncoderInfo {
+                                id: e.id.clone(),
+                                name: e.name.clone(),
+                                rate_controls: e.options.rate_controls.clone(),
+                                h264_profiles: e.options.h264_profiles.clone(),
+                                b_frames_max: e.options.b_frames_max,
+                            })
+                            .collect(),
+                        cannot_record: host.cannot_record.clone(),
+                    },
+                }))
+            }
             C::SourceList => Ok(Response::Sources(api::Snapshot {
                 seq: host.events.seq_map([Topic::SourceChanged]),
                 data: host
@@ -16418,6 +16458,7 @@ impl ApiTarget<'_> {
                 format!("{} already exists", path.display()),
             ));
         }
+        host.note_encoders(notify);
         if !host.record_profile(c).format.is_audio_only()
             && let Some(why) = &host.cannot_record
         {
@@ -16992,6 +17033,10 @@ impl ApiTarget<'_> {
     fn stream_to(&mut self, c: OutputCanvas, only: Option<u32>) -> Result<Response, ApiError> {
         let notify = self.notify;
         let host = &mut *self.host;
+        host.note_encoders(notify);
+        if let Some(why) = &host.cannot_record {
+            return Err(failed(why.clone()));
+        }
         if host.outs[slot(c)].streaming.is_some() {
             return Err(ApiError::new(
                 ErrorKind::Conflict,
@@ -17630,6 +17675,37 @@ fn refused(e: &Refusal) -> ApiError {
 }
 
 /// A registry with only the encoder `id` of `all`, probed.
+fn encoder_catalog(adapters: &RecordAdapters) -> (Vec<EncoderInfo>, Option<String>) {
+    let encoders: Vec<EncoderInfo> = adapters
+        .video_encoders
+        .select(&Requirement::new())
+        .candidates
+        .iter()
+        .filter(|f| {
+            adapters
+                .video_encoders
+                .capabilities(&f.id())
+                .is_some_and(|c| !c.is_empty())
+        })
+        .map(|f| EncoderInfo {
+            id: f.id().as_str().to_owned(),
+            name: f.display_name().to_owned(),
+            options: adapters
+                .video_encoders
+                .capabilities(&f.id())
+                .map(EncoderOptions::from_caps)
+                .unwrap_or_default(),
+        })
+        .collect();
+    let cannot_record = encoders.is_empty().then(|| {
+        format!(
+            "Recording is not available on {} yet: this system has no video encoder RBS can use.",
+            os_name()
+        )
+    });
+    (encoders, cannot_record)
+}
+
 fn only_encoder<F: ?Sized + AdapterFactory>(
     all: &Registry<F>,
     id: &str,

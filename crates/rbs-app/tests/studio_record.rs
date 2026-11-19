@@ -403,16 +403,31 @@ fn recordings_start_with_the_picked_encoder_and_stop_into_a_closed_file() {
     let _ = std::fs::remove_dir_all(&dir);
     let clock = TestClock::new();
     let (host, rx) = host(gpu, &clock);
-    let (encoders, cannot) = next(&rx, |u| match u {
+    let cannot = next(&rx, |u| match u {
         Update::Started {
             encoders,
             cannot_record,
             ..
-        } => Some((encoders, cannot_record)),
+        } => {
+            assert!(encoders.is_empty(), "{encoders:?}");
+            Some(cannot_record)
+        }
         Update::Failed(e) => panic!("{e}"),
         _ => None,
     });
     assert_eq!(cannot, None);
+    host.send(Command::EnsureEncoders);
+    let encoders = next(&rx, |u| match u {
+        Update::Encoders {
+            encoders,
+            cannot_record,
+        } => {
+            assert_eq!(cannot_record, None);
+            Some(encoders)
+        }
+        Update::Failed(e) => panic!("{e}"),
+        _ => None,
+    });
     let ids: Vec<&str> = encoders.iter().map(|e| e.id.as_str()).collect();
     assert!(ids.contains(&BROKEN) && ids.contains(&WORKING), "{ids:?}");
 

@@ -212,6 +212,11 @@ struct App {
     /// `ui.settings.open` ran; the next sync shows Settings, at this section when
     /// given, and at the setting or command it names (spec `settings-search.md`).
     open_settings: Option<(Option<i32>, Option<menu_bar::SettingsTarget>)>,
+    /// Output settings asked for encoders and the probe has not answered yet.
+    encoders_asked: bool,
+    /// The settings section last shown with its data ready. A switch to recording
+    /// or streaming waits here until the encoder probe answers.
+    settings_section: i32,
     /// The Settings window's search results, in the order shown (settings search
     /// step 3); `SettingsWindow.hit-chosen` indexes them.
     settings_found: Vec<rbs_ui::settings_index::Found>,
@@ -1644,6 +1649,10 @@ fn exclude_window_from_capture(window: &slint::Window, exclude: bool) -> bool {
 
 /// Sections of the Settings window (`SettingsWindow.section`).
 const SECTION_RECORDING: i32 = 1;
+
+fn output_settings_section(section: i32) -> bool {
+    section == SECTION_RECORDING || section == SECTION_STREAM
+}
 const SECTION_STREAM: i32 = 2;
 const SECTION_GENERAL: i32 = 4;
 const SECTION_APPEARANCE: i32 = 5;
@@ -2029,6 +2038,15 @@ impl Ctx {
     fn open_settings(&self, section: i32, target: Option<menu_bar::SettingsTarget>) {
         let ctx = self.clone();
         self.update(move |app| {
+            if output_settings_section(section) && !app.studio.encoders_ready {
+                // Probe before the section is drawn. The next sync opens it.
+                app.open_settings = Some((Some(section), target));
+                if !app.encoders_asked {
+                    app.studio.send(studio_host::Command::EnsureEncoders);
+                    app.encoders_asked = true;
+                }
+                return;
+            }
             app.studio.settings_opened();
             if let Some(w) = &app.settings {
                 w.set_section(section);
@@ -2131,7 +2149,21 @@ impl Ctx {
             });
             let c = ctx.clone();
             w.on_section_shown(move |s| {
-                c.update(move |app| app.studio.monitor_page_shown(s == SECTION_AUDIO));
+                c.update(move |app| {
+                    if output_settings_section(s) && !app.studio.encoders_ready {
+                        app.open_settings = Some((Some(s), None));
+                        if !app.encoders_asked {
+                            app.studio.send(studio_host::Command::EnsureEncoders);
+                            app.encoders_asked = true;
+                        }
+                        if let Some(w) = &app.settings {
+                            w.set_section(app.settings_section);
+                        }
+                        return;
+                    }
+                    app.settings_section = s;
+                    app.studio.monitor_page_shown(s == SECTION_AUDIO);
+                });
                 if s == SECTION_VIRTUAL_CAMERA {
                     c.update(vcam_page::opened);
                 }
@@ -6134,6 +6166,8 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             select_density: None,
             density: user.data().appearance().0.density,
             open_settings: None,
+            encoders_asked: false,
+            settings_section: SECTION_GENERAL,
             settings_found: Vec::new(),
             first_run_access: None,
             open_source_settings: None,
