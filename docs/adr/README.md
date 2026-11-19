@@ -137,7 +137,7 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0127](0127-multistreaming-to-several-destinations.md) | Multistreaming: one stream to several destinations, one shared encoder, each destination isolated; RTMPS; service presets | Accepted |
 | [0128](0128-scene-transitions.md) | Scene transitions: Cut, Fade, Move, Swipe, Slide (Stinger later); the incoming scene drawn by its own compositor only while a transition runs | Accepted |
 | [0129](0129-text-source.md) | A text source: a fixed box drawn on the CPU once per change through a text rendering port, updated in place; live kinds (clock, countdown, stopwatch, elapsed time) and crisp resizing | Accepted |
-| [0130](0130-voice-filters-noise-suppression-compressor-limiter-eq.md) | Voice filters: noise suppression, compressor, limiter and equaliser, with filter latency | Accepted |
+| [0130](0130-voice-filters-noise-suppression-compressor-limiter-eq.md) | Voice filters: noise suppression, compressor, limiter and equaliser, with filter latency | Accepted (decision 5 superseded in part by ADR-0155) |
 | [0131](0131-import-obs-scene-collections-and-profiles.md) | Import OBS scene collections, profiles and hotkeys as a new collection and output profile, through a mapper registry, with a report of what did not come across | Accepted |
 | [0132](0132-browser-engine-css-interaction.md) | The browser source runs CEF fetched on first use, with custom CSS, reload, interaction and an opt-in sign-in | Accepted |
 | [0133](0133-duplicate-reset-and-paste-source-attributes.md) | Duplicate a source (and a scene with new sources), reset a source, and paste chosen attribute groups onto other sources in one undo step; sound stays live | Accepted |
@@ -162,3 +162,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0152](0152-source-activity-when-a-source-runs-and-what-it-does-on-return.md) | Source activity: one policy for every source (run while placed, shown or on air; continue, resume or restart on return; linger), defaults declared by the type | Accepted |
 | [0153](0153-a-transition-of-its-own-outside-studio-mode.md) | A transition kind of its own outside studio mode (Move by default); the rail's kind is for studio mode | Accepted |
 | [0154](0154-wake-the-control-thread-on-bypass.md) | Wake the control thread when a node is bypassed, and stop capping the control wait merely because a worker runs (supersedes part of ADR-0027 decision 6) | Accepted |
+| [0155](0155-one-noise-state-until-each-channel-is-selected.md) | One noise-suppression state until each channel is selected (supersedes part of ADR-0130 decision 5) | Accepted |

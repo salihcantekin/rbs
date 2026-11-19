@@ -164,31 +164,73 @@ fn other_rates_are_refused_and_have_no_latency() {
 }
 
 #[test]
-fn processing_set_and_a_mode_switch_do_not_allocate() {
+fn processing_and_a_value_edit_do_not_allocate() {
     let mut dsp = NoiseSuppression
         .make(setup(256), &values(&[]))
         .expect("48 kHz");
-    let separate = values(&[
-        ("mode", Value::Choice(1)),
+    let quieter = values(&[
+        ("max_reduction", Value::Number(12.0)),
         ("voice_gate", Value::Toggle(true)),
     ]);
-    let mono = values(&[]);
     let input = fan(256);
     let mut l = input.clone();
-    let mut r = input.clone();
+    let mut r = input;
     let info = allocation_counter::measure(|| {
-        for i in 0..40 {
-            if i == 10 {
-                dsp.set(&separate);
-            }
-            if i == 30 {
-                dsp.set(&mono);
-            }
+        dsp.set(&quieter);
+        for _ in 0..40 {
             dsp.process(&mut [&mut l[..], &mut r[..]], 256);
         }
         dsp.reset();
     });
     assert_eq!(info.count_total, 0);
+}
+
+#[test]
+fn switching_to_separate_builds_the_second_denoiser_in_set() {
+    let mut dsp = NoiseSuppression
+        .make(setup(480), &values(&[]))
+        .expect("48 kHz");
+    let separate = values(&[("mode", Value::Choice(1))]);
+    let built = allocation_counter::measure(|| dsp.set(&separate));
+    assert!(
+        built.count_total > 0,
+        "set builds the second denoiser, count {}",
+        built.count_total
+    );
+
+    let tone: Vec<f32> = (0..30 * FRAME_SIZE)
+        .map(|i| 0.3 * (i as f32 * 300.0 * std::f32::consts::TAU / 48_000.0).sin())
+        .collect();
+    let mut l = vec![0.0f32; 480];
+    let mut r = vec![0.0f32; 480];
+    let mut energy_l = 0.0f32;
+    let mut energy_r = 0.0f32;
+    let processed = allocation_counter::measure(|| {
+        for chunk in tone.chunks_exact(480) {
+            l.fill(0.0);
+            r.copy_from_slice(chunk);
+            dsp.process(&mut [&mut l[..], &mut r[..]], 480);
+            energy_l += l.iter().map(|y| y * y).sum::<f32>();
+            energy_r += r.iter().map(|y| y * y).sum::<f32>();
+        }
+    });
+    assert_eq!(
+        processed.count_total, 0,
+        "process does not build a denoiser"
+    );
+    assert!(
+        energy_r > 1.0,
+        "the right channel is denoised, energy {energy_r}"
+    );
+    assert_eq!(energy_l, 0.0, "a silent left channel stays silent");
+
+    let back = allocation_counter::measure(|| dsp.set(&values(&[])));
+    assert_eq!(
+        back.count_total, 0,
+        "returning to mono keeps the built state"
+    );
+    let again = allocation_counter::measure(|| dsp.set(&separate));
+    assert_eq!(again.count_total, 0, "the second denoiser is already built");
 }
 
 #[test]

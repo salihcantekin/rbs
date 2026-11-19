@@ -1,6 +1,6 @@
 # ADR-0130: Voice filters: noise suppression, compressor, limiter and equaliser, with filter latency
 
-- Status: Accepted
+- Status: Accepted (decision 5 superseded in part by ADR-0155: `mono` builds one RNNoise state; the first switch to `separate` may allocate that state's plan)
 - Date: 2026-11-16
 - Deciders: Salih (owner)
 - Amends: ADR-0126 (decisions 4 and 5; ADR-0126 itself is not edited beyond an appended `## Review` note pointing here, CLAUDE.md rule 9)

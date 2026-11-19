@@ -5,8 +5,12 @@
 //! denoises every full frame and plays the result from an output queue that starts with
 //! `480 - gcd(B, 480)` frames of silence for a block size `B`, so it never runs dry. With
 //! RNNoise's own one-frame delay the latency is `960 - gcd(B, 480)` frames: 480 when `B`
-//! is a multiple of 480. All buffers and the RNNoise states (one per channel of the graph
-//! format) are made in `make`; `process`, `set` and `reset` allocate nothing.
+//! is a multiple of 480. The rings and the per-channel input frames are made in `make`.
+//! `make` builds one RNNoise state in `mono` (the default) and one per channel in
+//! `separate`, so the default mode does not plan an unused channel's FFT. Switching to
+//! `separate` builds the missing states in `set`, before that call returns; `process`
+//! and `reset` allocate nothing. A later switch back to `mono` keeps the states it
+//! already built, so it does not free them on the parameter path.
 
 use std::sync::Arc;
 
@@ -190,12 +194,12 @@ impl NoiseDsp {
         }
         let channels = setup.format.channels.channels().clamp(1, MAX_CHANNELS);
         let s = Settings::of(values);
-        let mut states = Vec::with_capacity(channels);
-        for _ in 0..channels {
-            let mut d = Denoiser::new()
-                .map_err(|_| ParamError::Unsupported("the noise model is unavailable"))?;
-            d.set_max_reduction_db(s.max_reduction_db);
-            states.push(d);
+        // One state for the default pass. `separate` needs one per channel; those are
+        // built here when the filter starts in that mode, or in `set` when it switches.
+        let built = if s.separate { channels } else { 1 };
+        let mut states = Vec::with_capacity(built);
+        for _ in 0..built {
+            states.push(Self::denoiser(s.max_reduction_db)?);
         }
         let latency = latency_for(setup.block_frames);
         let prefill = latency as usize - FRAME_SIZE;
@@ -217,6 +221,31 @@ impl NoiseDsp {
         };
         dsp.reset();
         Ok(dsp)
+    }
+
+    /// One RNNoise state at `max_reduction_db`. Allocates (the model tables and the FFT
+    /// plans); callers are `new` and `set`, never `process`.
+    fn denoiser(max_reduction_db: f32) -> Result<Denoiser, ParamError> {
+        let mut denoiser = Denoiser::new()
+            .map_err(|_| ParamError::Unsupported("the noise model is unavailable"))?;
+        denoiser.set_max_reduction_db(max_reduction_db);
+        Ok(denoiser)
+    }
+
+    /// Builds any RNNoise state `separate` needs that is not already built.
+    /// Returns false when a state could not be made; the caller then stays in `mono`.
+    fn build_missing_denoisers(&mut self, max_reduction_db: f32) -> bool {
+        if self.states.len() >= self.channels {
+            return true;
+        }
+        self.states.reserve(self.channels - self.states.len());
+        while self.states.len() < self.channels {
+            match Self::denoiser(max_reduction_db) {
+                Ok(denoiser) => self.states.push(denoiser),
+                Err(_) => return false,
+            }
+        }
+        true
     }
 
     /// Denoises the collected frame of every pass and queues the result.
@@ -309,7 +338,12 @@ impl NoiseDsp {
 
 impl AudioDsp for NoiseDsp {
     fn set(&mut self, values: &Values) {
-        let new = Settings::of(values);
+        let mut new = Settings::of(values);
+        // Build before the mode is stored, so the next `process` already has a state
+        // per channel. This is the parameter path: `process` never constructs one.
+        if new.separate && !self.build_missing_denoisers(new.max_reduction_db) {
+            new.separate = false;
+        }
         let mode_changed = new.separate != self.s.separate;
         if new.max_reduction_db != self.s.max_reduction_db {
             for d in &mut self.states {
@@ -318,8 +352,8 @@ impl AudioDsp for NoiseDsp {
         }
         self.s = new;
         if mode_changed {
-            // The second state was not fed in mono mode: start every state clean
-            // (about 10 ms of silence while they converge; ADR-0130 decision 5).
+            // States that were idle in the other mode start clean (about 10 ms of
+            // silence while they converge; ADR-0130 decision 5).
             self.reset();
         }
     }
@@ -390,5 +424,75 @@ impl AudioDsp for NoiseDsp {
 
     fn latency_frames(&self) -> u32 {
         self.latency
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used)]
+
+    use super::*;
+    use rbs_core::media::{AudioFormat, ChannelLayout};
+    use rbs_core::timing::SampleRate;
+    use rbs_params::Value;
+
+    fn stereo() -> DspSetup {
+        DspSetup::new(AudioFormat::STEREO_48K, 480)
+    }
+
+    fn mode(separate: bool) -> Values {
+        Values::from_pairs(
+            &NoiseSuppression as &dyn AudioFilterType,
+            [("mode", Value::Choice(u8::from(separate)))],
+        )
+        .expect("mode")
+    }
+
+    #[test]
+    fn the_default_mode_builds_one_denoiser() {
+        let dsp = NoiseDsp::new(stereo(), &mode(false)).expect("48 kHz");
+        assert_eq!(dsp.channels, 2);
+        assert_eq!(dsp.states.len(), 1);
+    }
+
+    #[test]
+    fn separate_from_the_start_builds_one_denoiser_per_channel() {
+        let dsp = NoiseDsp::new(stereo(), &mode(true)).expect("48 kHz");
+        assert_eq!(dsp.states.len(), 2);
+    }
+
+    #[test]
+    fn set_builds_the_missing_denoiser_before_process_can_run() {
+        let mut dsp = NoiseDsp::new(stereo(), &mode(false)).expect("48 kHz");
+        dsp.set(&mode(true));
+        assert!(dsp.s.separate);
+        assert_eq!(dsp.states.len(), 2);
+        let mut l = [0.0f32; 480];
+        let mut r = [0.0f32; 480];
+        dsp.process(&mut [&mut l[..], &mut r[..]], 480);
+        assert_eq!(dsp.states.len(), 2);
+        dsp.set(&mode(false));
+        assert!(!dsp.s.separate);
+        assert_eq!(dsp.states.len(), 2, "built states stay");
+        dsp.set(&mode(true));
+        assert_eq!(dsp.states.len(), 2);
+    }
+
+    #[test]
+    fn a_mono_graph_never_builds_a_second_denoiser() {
+        let format = AudioFormat::new(SampleRate::HZ_48000, ChannelLayout::Mono).expect("format");
+        let mut dsp = NoiseDsp::new(DspSetup::new(format, 480), &mode(false)).expect("48 kHz");
+        assert_eq!(dsp.states.len(), 1);
+        dsp.set(&mode(true));
+        assert_eq!(dsp.states.len(), 1);
+    }
+
+    #[test]
+    fn process_in_the_default_mode_does_not_build_a_denoiser() {
+        let mut dsp = NoiseDsp::new(stereo(), &mode(false)).expect("48 kHz");
+        let mut l = vec![0.1f32; 256];
+        let mut r = vec![0.1f32; 256];
+        dsp.process(&mut [&mut l[..], &mut r[..]], 256);
+        assert_eq!(dsp.states.len(), 1);
     }
 }
