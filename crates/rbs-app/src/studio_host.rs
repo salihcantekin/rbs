@@ -11,6 +11,8 @@
 //! state key. With no API attached this costs a counter increment per change.
 
 use std::collections::{BTreeMap, HashMap};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Weak;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
@@ -3895,6 +3897,11 @@ struct Host {
     studio: Studio,
     adapters: RecordAdapters,
     collection: SceneCollection,
+    /// Bumped when the whole collection value is replaced. Together with
+    /// [`SceneCollection::generation`] it says whether source rows must be rebuilt.
+    collection_epoch: u64,
+    /// The last [`Self::list_stamp`]. `None` until the first publish.
+    list_stamp: Option<u64>,
     canvas: CanvasId,
     /// The canvas's program scene: the one the Sources panel and the source commands
     /// edit (kept in step by [`Host::keep_program`]).
@@ -4624,6 +4631,8 @@ fn start(
         studio,
         adapters,
         collection,
+        collection_epoch: 0,
+        list_stamp: None,
         canvas,
         scene,
         rows: Vec::new(),
@@ -6269,6 +6278,7 @@ impl Host {
         // Whatever the old collection's last change was, it is saved before this one.
         self.publish_save();
         self.save_text_timers();
+        self.note_collection();
         let old = (
             std::mem::replace(&mut self.collection, next),
             std::mem::replace(&mut self.canvas, canvas),
@@ -6292,6 +6302,7 @@ impl Host {
                 Ok(())
             }
             Err(why) => {
+                self.note_collection();
                 (self.collection, self.canvas, self.scene) = old;
                 self.held = old_held;
                 if let Err(again) = self.restart() {
@@ -6821,6 +6832,7 @@ impl Host {
                 Ok(())
             }
             Err(why) => {
+                self.note_collection();
                 self.collection = before;
                 self.restarting = true;
                 let again = self.restart();
@@ -10939,6 +10951,7 @@ impl Host {
                 )
                 .map_err(|e| Refusal::of(&e))?;
         }
+        self.note_collection();
         let before = std::mem::replace(&mut self.collection, draft);
         let run = self.run_collection();
         let running = run.as_ref().unwrap_or(&self.collection);
@@ -10958,6 +10971,7 @@ impl Host {
                 Ok(true)
             }
             Err(e) => {
+                self.note_collection();
                 self.collection = before;
                 Err(Refusal::Failed(format!(
                     "The vertical canvas did not start: {e}"
@@ -11211,6 +11225,7 @@ impl Host {
                 let _ = draft.set_scene_scope(id, SceneScope::Canvas(self.canvas));
             }
         }
+        self.note_collection();
         self.collection = draft;
         self.vertical = None;
         // Steps that wrote vertical layouts would name a canvas that is gone (scene
@@ -13284,6 +13299,7 @@ impl Host {
                 ),
                 e => Refusal::Failed(e.to_string()),
             })?;
+        self.note_collection();
         let before = std::mem::replace(&mut self.collection, draft);
         let started = {
             let extra = self.vertical_extra(v.canvas);
@@ -13300,6 +13316,7 @@ impl Host {
             }
             Err(e) => {
                 // The canvas runs again at the size it had.
+                self.note_collection();
                 self.collection = before;
                 let extra = self.vertical_extra(v.canvas);
                 let run = self.run_collection();
@@ -13935,6 +13952,9 @@ impl Host {
             self.loudness_sent = Some(loudness.clone());
             notify(Update::Loudness(loudness));
         }
+        let stamp = self.compute_list_stamp();
+        if self.list_stamp != Some(stamp) {
+            self.list_stamp = Some(stamp);
         let scenes = self.scene_list();
         if self.scenes_shown.as_ref() != Some(&scenes) {
             self.scenes_shown = Some(scenes.clone());
@@ -13986,6 +14006,7 @@ impl Host {
             self.rows = rows.clone();
             notify(Update::Sources(rows));
         }
+        }
         let picture = self.studio.scene_preview();
         if picture != self.scene_preview_sent {
             self.scene_preview_sent = picture.clone();
@@ -14011,6 +14032,86 @@ impl Host {
             });
         }
         self.publish_levels();
+    }
+
+    fn note_collection(&mut self) {
+        self.collection_epoch = self.collection_epoch.wrapping_add(1);
+    }
+
+    /// Whether the scene list and the source rows still match what was published.
+    /// Cue time is included, so a running Show cue still rebuilds. Document edits
+    /// bump [`SceneCollection::generation`]; replacing the collection bumps the epoch.
+    fn compute_list_stamp(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        self.collection_epoch.hash(&mut hasher);
+        self.collection.generation().hash(&mut hasher);
+        self.scene.hash(&mut hasher);
+        self.preview().hash(&mut hasher);
+        self.edited().hash(&mut hasher);
+        self.vertical.map(|v| v.canvas).hash(&mut hasher);
+        self.stinger.cut_found_ms().hash(&mut hasher);
+        self.stinger.looking().hash(&mut hasher);
+        self.stinger.alpha_unsupported().hash(&mut hasher);
+        self.stinger_length()
+            .map(|l| l.as_millis() as u64)
+            .hash(&mut hasher);
+        let now = self.clock.now();
+        let states = self.studio.sources();
+        for source in self.collection.sources() {
+            source.id.hash(&mut hasher);
+            let state = states.iter().find(|st| st.source == source.id);
+            state
+                .and_then(|st| st.failed.as_deref())
+                .hash(&mut hasher);
+            state
+                .and_then(|st| st.fault)
+                .map(|f| f as u8)
+                .hash(&mut hasher);
+            state.and_then(|st| st.reason).hash(&mut hasher);
+            let latency = self.studio.audio_latency(source.id);
+            latency.map(|l| l.filter_latency_ns).hash(&mut hasher);
+            latency.map(|l| l.heard_offset_ns).hash(&mut hasher);
+            latency.map(|l| l.uncompensated_ns).hash(&mut hasher);
+            self.studio
+                .meter(source.id)
+                .map(Arc::as_ptr)
+                .map(|p| p as usize)
+                .hash(&mut hasher);
+            self.sizes.get(&source.id).hash(&mut hasher);
+            for filter in &source.filters {
+                filter.id.hash(&mut hasher);
+                self.studio
+                    .audio_filter_latency_ns(filter.id)
+                    .hash(&mut hasher);
+                self.studio
+                    .audio_filter_meter(filter.id)
+                    .map(Arc::as_ptr)
+                    .map(|p| p as usize)
+                    .hash(&mut hasher);
+            }
+            for (_, name) in self.device_peers(source.id) {
+                name.hash(&mut hasher);
+            }
+        }
+        for scene_id in [Some(self.scene), self.preview(), Some(self.edited())]
+            .into_iter()
+            .flatten()
+        {
+            let Some(scene) = self.collection.scene(scene_id) else {
+                continue;
+            };
+            for item in &scene.items {
+                item.id.hash(&mut hasher);
+                item.visible.hash(&mut hasher);
+                item.locked.hash(&mut hasher);
+                item.show_for_ms.hash(&mut hasher);
+                self.studio
+                    .cue_remaining_ms(item.id, now)
+                    .hash(&mut hasher);
+                self.scroll_paused_of(item).hash(&mut hasher);
+            }
+        }
+        hasher.finish()
     }
 
     /// The running audio sources' meters, for `audio.levels`. A source that is both

@@ -417,6 +417,9 @@ pub struct SceneCollection {
     /// The transition a program change uses (ADR-0128).
     transition: CollectionTransition,
     next: NextIds,
+    /// Bumped on every committed edit. Not saved. Compared by the control thread so
+    /// an unchanged collection does not rebuild source rows.
+    generation: u64,
 }
 
 impl PartialEq for SceneCollection {
@@ -1854,6 +1857,11 @@ impl SceneCollection {
         self.replace_item(item)
     }
 
+    /// Edits committed since this collection was created. Not part of the file.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
     /// Applies an undo (or redo) record and returns the record that reverses it.
     pub fn undo(&mut self, undo: Undo) -> Result<Undo, SceneError> {
         self.apply(undo.0)
@@ -1941,6 +1949,7 @@ impl SceneCollection {
             return Err(SceneError::StingerPlaced(id));
         }
         *self = draft;
+        self.generation = self.generation.wrapping_add(1);
         Ok(Undo(inverse))
     }
 
