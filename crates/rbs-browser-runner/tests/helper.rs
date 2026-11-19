@@ -164,6 +164,39 @@ fn the_supervisor_publishes_frames_and_reports_an_exit() {
 }
 
 #[test]
+fn a_still_page_shown_again_publishes_its_last_picture_once_more() {
+    // ADR-0149 decision 5: a background page that paints nothing new while hidden
+    // must still show when it is shown again; the studio's picture node took its
+    // last picture before it left the schedule.
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    let published = Arc::new(AtomicU32::new(0));
+    let seen = Arc::clone(&published);
+    let mut sup = Supervisor::start(spawn(&["--still"]), 60, move |px, w, h, _| {
+        assert_eq!(px.len(), (w * h * 4) as usize);
+        seen.fetch_add(1, Ordering::Relaxed);
+    })
+    .unwrap();
+    let until = |n: u32| {
+        let start = Instant::now();
+        while published.load(Ordering::Relaxed) < n {
+            assert!(start.elapsed() < GUARD, "hang guard");
+            std::thread::yield_now();
+        }
+    };
+    until(1);
+    // Hidden: nothing new. Shown again: the last picture once more.
+    assert!(sup.set_shown(false));
+    assert!(sup.set_shown(true));
+    until(2);
+    // Showing a shown page again publishes nothing.
+    assert!(sup.set_shown(true));
+    assert!(!sup.exited());
+    let _ = sup.stop();
+    assert_eq!(published.load(Ordering::Relaxed), 2);
+}
+
+#[test]
 fn control_messages_reach_the_running_helper_in_order() {
     use rbs_browser_ipc::control::Control;
     use rbs_browser_runner::control_mark;
