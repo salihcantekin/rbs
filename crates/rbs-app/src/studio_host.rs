@@ -4590,6 +4590,39 @@ fn round_cap(outs: &[CanvasOutputs], busy: bool) -> Duration {
     if running || busy { MAX_WAIT } else { IDLE_WAIT }
 }
 
+/// The main display for the Video settings row at startup (ADR-0102 decision 8).
+///
+/// On macOS this is the Core Graphics framebuffer and point width. It does not
+/// list screen targets. Other systems keep the default screen target's pixel
+/// size and scale.
+fn startup_main_display(sources: &rbs_sources::SourceTypes) -> Option<MainDisplay> {
+    #[cfg(target_os = "macos")]
+    {
+        // Listing screens would open ScreenCaptureKit shareable content.
+        let _ = sources;
+        return rbs_capture_sck::main_display().map(|(width, height, scale)| MainDisplay {
+            size: (width, height),
+            scale,
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let screens = sources
+            .targets(&SourceKind::Screen.type_id())
+            .unwrap_or_default();
+        screens
+            .iter()
+            .find(|t| t.is_default)
+            .or_else(|| screens.first())
+            .and_then(|t| {
+                t.size.map(|size| MainDisplay {
+                    size,
+                    scale: t.scale,
+                })
+            })
+    }
+}
+
 fn start(
     config: HostConfig,
     adapters: impl FnOnce() -> (RecordAdapters, Vec<String>),
@@ -4663,20 +4696,7 @@ fn start(
         browser_tree.clone(),
     )
     .map_err(|e| e.to_string())?;
-    let screens = adapters
-        .sources
-        .targets(&SourceKind::Screen.type_id())
-        .unwrap_or_default();
-    let display = screens
-        .iter()
-        .find(|t| t.is_default)
-        .or_else(|| screens.first())
-        .and_then(|t| {
-            t.size.map(|size| MainDisplay {
-                size,
-                scale: t.scale,
-            })
-        });
+    let display = startup_main_display(&adapters.sources);
     let installed = adapters.sources.installed();
     let kinds: Vec<SourceKind> = SourceKind::ALL
         .into_iter()

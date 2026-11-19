@@ -21,8 +21,8 @@ use objc2_core_foundation::{
     CFArray, CFDictionary, CFRetained, CFString, CFType, CGPoint, CGRect, CGSize,
 };
 use objc2_core_graphics::{
-    CGBitmapContextCreate, CGColorSpace, CGContext, CGDisplayCopyDisplayMode, CGDisplayMode,
-    CGEvent, CGImageAlphaInfo, CGInterpolationQuality, CGMainDisplayID,
+    CGBitmapContextCreate, CGColorSpace, CGContext, CGDisplayBounds, CGDisplayCopyDisplayMode,
+    CGDisplayMode, CGEvent, CGImageAlphaInfo, CGInterpolationQuality, CGMainDisplayID,
     CGPreflightScreenCaptureAccess, CGRectMakeWithDictionaryRepresentation,
     CGRequestScreenCaptureAccess, CGWindowListCopyWindowInfo, CGWindowListOption,
     kCGColorSpaceSRGB, kCGWindowAlpha, kCGWindowBounds, kCGWindowLayer,
@@ -214,6 +214,44 @@ fn display_pixel_size(display: u32) -> (u32, u32) {
     let w = CGDisplayMode::pixel_width(mode.as_deref());
     let h = CGDisplayMode::pixel_height(mode.as_deref());
     (clamp_u32(w), clamp_u32(h))
+}
+
+/// The main display's framebuffer in physical pixels, and the point-width scale
+/// for the Video settings label (ADR-0102 decision 8).
+///
+/// Core Graphics only: `CGMainDisplayID`, `CGDisplayCopyDisplayMode` (the same
+/// pixel size display enumeration reads) and the point width from
+/// `CGDisplayBounds`. Does not open ScreenCaptureKit shareable content.
+///
+/// `None` when the pixel size is 0, which covers a missing mode and a pixel
+/// side of 0. The scale is `None` when the point width is missing or 0. The
+/// pixel size is not multiplied by the scale.
+pub fn main_display() -> Option<(u32, u32, Option<DisplayScale>)> {
+    let id = CGMainDisplayID();
+    let (width, height) = display_pixel_size(id);
+    let points = point_width(CGDisplayBounds(id).size.width);
+    main_display_reading((width > 0 && height > 0).then_some((width, height)), points)
+}
+
+/// Pixel size plus the scale label. `None` when the pixel size is missing or a
+/// side of it is 0. The scale is `None` when the point width is missing or 0.
+fn main_display_reading(
+    pixels: Option<(u32, u32)>,
+    points: Option<u32>,
+) -> Option<(u32, u32, Option<DisplayScale>)> {
+    let (width, height) = pixels.filter(|(width, height)| *width > 0 && *height > 0)?;
+    let scale = points.and_then(|points| DisplayScale::from_pixels_per_point(width, points));
+    Some((width, height, scale))
+}
+
+/// Point width from [`CGDisplayBounds`], as the integer [`display_scale_ratio`]
+/// divides by. `None` when the width is not a positive finite value.
+fn point_width(width: f64) -> Option<u32> {
+    if !width.is_finite() || width <= 0.0 || width > f64::from(u32::MAX) {
+        return None;
+    }
+    let points = width.round() as u32;
+    (points > 0).then_some(points)
 }
 
 fn clamp_u32(value: usize) -> u32 {
@@ -1705,6 +1743,37 @@ mod thumbnail_tests {
             grab.rgba().chunks_exact(4).any(|p| p[..3] != [0, 0, 0]),
             "all black"
         );
+    }
+}
+
+#[cfg(test)]
+mod main_display_tests {
+    #![allow(clippy::expect_used)]
+
+    use super::main_display_reading;
+
+    #[test]
+    fn scale_ratio_is_pixel_width_over_point_width() {
+        let (width, height, scale) =
+            main_display_reading(Some((3024, 1964)), Some(1512)).expect("pixel size");
+        assert_eq!((width, height), (3024, 1964));
+        assert_eq!(scale.expect("scale").percent(), 200);
+
+        let full = main_display_reading(Some((1920, 1080)), Some(1920)).expect("pixel size");
+        assert_eq!(full.0, 1920);
+        assert_eq!(full.1, 1080);
+        assert_eq!(full.2.expect("scale").percent(), 100);
+
+        // A missing mode, or a pixel side of 0, has no reading.
+        assert!(main_display_reading(None, Some(1512)).is_none());
+        assert!(main_display_reading(Some((0, 1080)), Some(1920)).is_none());
+        assert!(main_display_reading(Some((1920, 0)), Some(1920)).is_none());
+        // A point width of 0 keeps the framebuffer and drops the scale.
+        let missing_points = main_display_reading(Some((1920, 1080)), None).expect("pixel size");
+        assert_eq!((missing_points.0, missing_points.1), (1920, 1080));
+        assert!(missing_points.2.is_none());
+        let zero_points = main_display_reading(Some((1920, 1080)), Some(0)).expect("pixel size");
+        assert!(zero_points.2.is_none());
     }
 }
 

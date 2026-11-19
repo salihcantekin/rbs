@@ -69,6 +69,8 @@ pub struct WorkRect { pub x: u32, pub y: u32, pub width: u32, pub height: u32 }
 /// They must not multiply `size` by the scale. `choose_framebuffer` picks the size:
 /// the pixel mode (`EnumDisplaySettings` / `CGDisplayMode`) when it was read,
 /// otherwise the monitor rectangle, and never a size scaled by the percent.
+/// On macOS the startup reading of the main display's framebuffer and point width
+/// uses Core Graphics and does not open shareable content.
 #[derive(Copy, Eq)] pub struct DisplayScale; // from_dpi / from_pixels_per_point / percent
 pub struct DisplayReading { pub monitor: Option<(u32, u32)>, pub mode: Option<(u32, u32)>, pub scale: Option<DisplayScale> }
 pub struct FramebufferChoice { pub width, pub height, pub percent: Option<u32> } // label()

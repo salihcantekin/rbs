@@ -68,6 +68,11 @@ pub const QUEUE_DEPTH: usize = RING_SLOTS + 2;
 
 pub use platform::SckCaptureFactory;
 
+/// The main display's framebuffer and Video-settings scale, from Core Graphics.
+/// Does not open shareable content. macOS only.
+#[cfg(target_os = "macos")]
+pub use mac::main_display;
+
 #[cfg(target_os = "macos")]
 mod platform {
     pub use crate::mac::SckCaptureFactory;
