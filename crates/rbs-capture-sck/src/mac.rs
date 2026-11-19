@@ -43,6 +43,7 @@ use objc2_screen_capture_kit::{
     SCStreamOutput, SCStreamOutputType, SCWindow,
 };
 
+use rbs_capture::edge::EdgeClock;
 use rbs_capture::handoff::{FrameMeta, Grave, Graveyard, Ring};
 use rbs_capture::{
     CaptureChange, CaptureError, CaptureFactory, CaptureRequest, CaptureSession, CaptureStats,
@@ -55,7 +56,7 @@ use rbs_core::media::{ColorSpace, LeaseOwner, MemoryKind, PixelFormat, Size, Vid
 
 use rbs_core::registry::{AdapterFactory, AdapterId, HARDWARE, ProbeError};
 use rbs_core::time::{Clock, Timestamp};
-use rbs_core::timing::{DriftEstimator, FrameRate};
+use rbs_core::timing::FrameRate;
 
 use crate::cursor::{self, Above};
 use crate::{ADAPTER_ID, Consumer, FRAMES_IN_FLIGHT, QUEUE_DEPTH, RING_SLOTS};
@@ -901,8 +902,9 @@ struct Producer {
     seen: Seen,
     sequence: u64,
     clock: Arc<dyn Clock>,
-    drift: DriftEstimator,
-    last_timestamp: Option<Timestamp>,
+    /// 100 ms buckets. A new producer starts a fresh estimate; `resume` restores
+    /// only the monotonic floor from the session's last delivered stamp.
+    edge: EdgeClock,
     stopped: bool,
 }
 
@@ -1062,23 +1064,18 @@ impl Producer {
         }
 
         // Clock edge (ADR-0004): pair the host clock with the master clock now, then
-        // convert the sample's host-clock presentation time.
+        // convert the sample's host-clock presentation time. A sample with no
+        // presentation time is stamped as arrival. The estimate and the delivered
+        // stamp move only on this publish path.
         // SAFETY: reading the timing of a valid sample buffer.
         let source = cm_time_nanos(unsafe { sample.presentation_time_stamp() });
-        let mapped = match source {
+        let timestamp = match source {
             Some(source) => {
-                let _ = self.drift.observe(host, arrived);
-                self.drift
-                    .mapping()
-                    .map_or(arrived, |m| m.to_master(source))
+                self.edge.observe(host, arrived);
+                self.edge.to_master(source, arrived)
             }
-            None => arrived,
+            None => self.edge.deliver_arrival(arrived),
         };
-        let floor = self
-            .last_timestamp
-            .map_or(Timestamp::ZERO, |t| t + Duration::from_nanos(1));
-        let timestamp = mapped.min(arrived).max(floor);
-        self.last_timestamp = Some(timestamp);
 
         ring.publish(
             slot,
@@ -1278,8 +1275,13 @@ impl SckSession {
             seen: Seen::with_capacity(),
             sequence: self.next_sequence,
             clock: Arc::clone(&self.clock),
-            drift: DriftEstimator::new(Duration::from_millis(100)),
-            last_timestamp: self.last_timestamp,
+            edge: {
+                let mut edge = EdgeClock::new(Duration::from_millis(100));
+                if let Some(last) = self.last_timestamp {
+                    edge.resume(last);
+                }
+                edge
+            },
             stopped: false,
         }));
         let output = Output::new(OutputIvars {
@@ -1396,7 +1398,7 @@ impl CaptureSession for SckSession {
             producer.stopped = true;
             producer.stream = None;
             self.next_sequence = producer.sequence;
-            self.last_timestamp = producer.last_timestamp;
+            self.last_timestamp = producer.edge.last();
             std::mem::replace(
                 &mut producer.seen,
                 Seen {

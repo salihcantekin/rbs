@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use rbs_capture::edge::EdgeClock;
 use rbs_capture::{
     CaptureChange, CaptureError, CaptureFactory, CaptureRequest, CaptureSession, CaptureStats,
     CaptureTarget, DisplayReading, DisplayScale, ErrorDomain, GpuDeviceId, SyncKind, TargetId,
@@ -18,7 +19,7 @@ use rbs_core::capability::{CapabilitySet, CapabilityValue};
 use rbs_core::media::{ColorSpace, LeaseOwner, MemoryKind, PixelFormat, Size, VideoFormat};
 use rbs_core::registry::{AdapterFactory, AdapterId, HARDWARE, ProbeError};
 use rbs_core::time::{Clock, Timestamp};
-use rbs_core::timing::{DriftEstimator, FrameRate};
+use rbs_core::timing::FrameRate;
 
 use windows::Foundation::{TimeSpan, TypedEventHandler};
 use windows::Graphics::Capture::{
@@ -837,12 +838,14 @@ struct Producer {
     fence_value: u64,
     sequence: u64,
     clock: Arc<dyn Clock>,
-    drift: DriftEstimator,
-    last_timestamp: Option<Timestamp>,
+    /// 100 ms buckets. A new producer starts a fresh estimate; `resume` restores
+    /// only the monotonic floor from the session's last delivered stamp.
+    edge: EdgeClock,
     /// Set when `SetMinUpdateInterval` failed. A frame younger than this since
-    /// `last_timestamp` is not published. `None` when the call succeeded or no
-    /// rate was requested, and the handler then publishes as before. The operating
-    /// system still copies every frame into the capture pool either way.
+    /// the last published stamp (`edge.last`) is not published. `None` when the
+    /// call succeeded or no rate was requested, and the handler then publishes as
+    /// before. The operating system still copies every frame into the capture pool
+    /// either way.
     publish_interval: Option<Duration>,
     qpc_frequency: u64,
     failed: Arc<AtomicI64>,
@@ -912,7 +915,7 @@ impl Producer {
         let prepared = if let Some(interval) = self.publish_interval {
             let source = frame_time(&frame);
             let timestamp = self.timestamp_of(arrived, qpc, source);
-            if !crate::publish_when_interval_failed(timestamp, self.last_timestamp, interval) {
+            if !crate::publish_when_interval_failed(timestamp, self.edge.last(), interval) {
                 let _ = frame.Close();
                 ring.count_drop();
                 self.sequence += 1;
@@ -952,12 +955,13 @@ impl Producer {
         // Clock edge (ADR-0004): pair QPC with the master clock now, then convert the
         // frame's QPC-based capture time. Without one, the arrival time is used.
         // When the software interval already stamped this frame, reuse that stamp so
-        // the drift estimator is not updated twice.
+        // the drift estimator is not updated twice. The floor advances only here, on
+        // the frame that is published.
         let timestamp = match prepared {
             Some((_, timestamp)) => timestamp,
             None => self.timestamp_of(arrived, qpc, source),
         };
-        self.last_timestamp = Some(timestamp);
+        self.edge.deliver(timestamp);
 
         ring.publish(
             slot,
@@ -975,20 +979,18 @@ impl Producer {
     }
 
     /// The timestamp this frame would be published with.
+    ///
+    /// Observes the drift estimator when the frame has a capture time. Does not
+    /// advance the monotonic floor; a software-interval drop returns before
+    /// `EdgeClock::deliver`.
     fn timestamp_of(&mut self, arrived: Timestamp, qpc: u64, source: Option<u64>) -> Timestamp {
-        let mapped = match source {
+        match source {
             Some(source) => {
-                let _ = self.drift.observe(qpc, arrived);
-                self.drift
-                    .mapping()
-                    .map_or(arrived, |m| m.to_master(source))
+                self.edge.observe(qpc, arrived);
+                self.edge.map(source, arrived)
             }
-            None => arrived,
-        };
-        let floor = self
-            .last_timestamp
-            .map_or(Timestamp::ZERO, |t| t + Duration::from_nanos(1));
-        mapped.min(arrived).max(floor)
+            None => self.edge.map_arrival(arrived),
+        }
     }
 
     /// Copies the frame into the slot's texture (replacing it first if the size
@@ -1234,8 +1236,13 @@ impl WgcSession {
             pool_size: size,
             sequence: self.next_sequence,
             clock: Arc::clone(&self.clock),
-            drift: DriftEstimator::new(Duration::from_millis(100)),
-            last_timestamp: self.last_timestamp,
+            edge: {
+                let mut edge = EdgeClock::new(Duration::from_millis(100));
+                if let Some(last) = self.last_timestamp {
+                    edge.resume(last);
+                }
+                edge
+            },
             publish_interval: None,
             qpc_frequency: frequency.unsigned_abs(),
             failed: Arc::clone(&failed),
@@ -1330,7 +1337,7 @@ impl CaptureSession for WgcSession {
             let mut producer = lock(&active.producer);
             producer.stopped = true;
             self.next_sequence = producer.sequence;
-            self.last_timestamp = producer.last_timestamp;
+            self.last_timestamp = producer.edge.last();
         }
         let ring = &active.shared.ring;
         let waiting = ring.clear();
