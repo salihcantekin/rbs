@@ -245,20 +245,20 @@ impl ReplayRingNode {
         }
     }
 
-    fn serve_request(&mut self) {
+    fn serve_request(&mut self) -> bool {
         let h = &self.handle;
         if h.state.load(Ordering::Acquire) != REQUESTED {
-            return;
+            return false;
         }
         let value = h.request.load(Ordering::Acquire);
         if value == 0 {
-            return; // already served, waiting to be taken
+            return false; // already served, waiting to be taken
         }
         let buf = match self.cut_buf.take() {
             Some(b) => b,
             None => match self.spare.try_recv() {
                 Ok(b) => b,
-                Err(_) => return, // control has not supplied storage yet; next tick
+                Err(_) => return false, // control has not supplied storage yet; next tick
             },
         };
         let mut buf = buf;
@@ -268,6 +268,7 @@ impl ReplayRingNode {
         h.clips_cut.fetch_add(1, Ordering::Relaxed);
         // One request at a time, so the single result slot is free.
         let _ = self.results.try_send((result, buf));
+        true
     }
 }
 
@@ -290,15 +291,21 @@ impl<X: Runtime> Node<X> for ReplayRingNode {
 
     fn process(&mut self, ctx: &mut ProcessCtx<'_, X>) -> Result<(), NodeError> {
         let inputs = ctx.inputs();
+        let mut stored = false;
         for stream in 0..self.streams {
             for packet in inputs.packets(stream) {
                 let index = StreamIndex(stream as u16);
                 self.ring.push(index, packet.clone(), &mut self.evicted);
+                stored = true;
             }
         }
-        self.serve_request();
+        let cut = self.serve_request();
         self.hand_off();
-        self.publish_status();
+        // Held time comes from packet timestamps, not the clock, so an empty tick
+        // cannot change the published status.
+        if stored || cut {
+            self.publish_status();
+        }
         Ok(())
     }
 
