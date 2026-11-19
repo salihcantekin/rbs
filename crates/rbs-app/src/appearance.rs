@@ -48,20 +48,41 @@ pub fn forget_themes(
     (next != *choice).then_some(next)
 }
 
+/// `appearance.toml` as read at start, plus a replacement when a slot names a theme
+/// file that is gone. One read; the caller passes `choice` (or the saved
+/// replacement) on instead of reading the file again.
+pub struct StartAppearance {
+    /// The file, or the defaults when it cannot be read.
+    pub choice: Appearance,
+    /// Why the file cannot be read. No slot is replaced in that case.
+    pub error: Option<rbs_user_data::DataError>,
+    /// `choice` with each missing theme file replaced by a built-in theme.
+    pub replaced: Option<Appearance>,
+}
+
 /// At start: slots that name a user theme whose file is gone (deleted, or removed by
 /// hand) take the built-in Dark (dark and the one theme) or Light theme, so a
 /// deleted theme is never reported as unreadable (themes spec, "Deleting").
-pub fn forget_missing(data: &UserData) -> Option<Appearance> {
-    let (choice, err) = data.appearance();
-    if err.is_some() {
-        return None;
+pub fn forget_missing(data: &UserData) -> StartAppearance {
+    let (choice, error) = data.appearance();
+    if error.is_some() {
+        return StartAppearance {
+            choice,
+            error,
+            replaced: None,
+        };
     }
     let themes = data.themes();
-    forget_themes(
+    let replaced = forget_themes(
         &choice,
         |id| !themes.path(id).exists(),
         |slot| if slot == 1 { Base::Light } else { Base::Dark },
-    )
+    );
+    StartAppearance {
+        choice,
+        error: None,
+        replaced,
+    }
 }
 
 /// A theme in the list: a built-in one or a user theme.
@@ -1065,7 +1086,7 @@ mod tests {
         choice.light = ThemeId::User(EntryId::parse("gone").unwrap());
         choice.dark = ThemeId::User(id);
         data.set_appearance(&lock, &choice).unwrap();
-        let healed = forget_missing(&data).unwrap();
+        let healed = forget_missing(&data).replaced.unwrap();
         assert_eq!(healed.light, ThemeId::BuiltIn(Base::Light));
         assert_eq!(healed.dark, choice.dark);
     }

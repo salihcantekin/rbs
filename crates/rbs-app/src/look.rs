@@ -151,7 +151,28 @@ pub struct Look {
 /// Reads the look: the token file, the appearance choice and the themes it names.
 /// `None` keeps the values compiled into `tokens.slint` (only if the built-in file
 /// stopped parsing after the build). The `String` says what could not be used.
+/// Reads `appearance.toml`. Start passes the value [`load_with_appearance`] already
+/// holds, so the file is not read twice.
 pub fn load(data: &UserData, fonts: &mut dyn FontCatalog) -> (Option<Look>, Option<String>) {
+    resolve_look(data, fonts, None)
+}
+
+/// [`load`] using an appearance that was already read. `appearance.toml` is not
+/// read again. `error` is the reason that read failed.
+pub fn load_with_appearance(
+    data: &UserData,
+    fonts: &mut dyn FontCatalog,
+    appearance: Appearance,
+    error: Option<rbs_user_data::DataError>,
+) -> (Option<Look>, Option<String>) {
+    resolve_look(data, fonts, Some((appearance, error)))
+}
+
+fn resolve_look(
+    data: &UserData,
+    fonts: &mut dyn FontCatalog,
+    read: Option<(Appearance, Option<rbs_user_data::DataError>)>,
+) -> (Option<Look>, Option<String>) {
     let mut notes = Vec::new();
     let Some(file) = token_file(&mut notes) else {
         return (None, join(notes));
@@ -164,7 +185,7 @@ pub fn load(data: &UserData, fonts: &mut dyn FontCatalog) -> (Option<Look>, Opti
             ThemeId::BuiltIn(base),
         ),
         None => {
-            let (a, err) = data.appearance();
+            let (a, err) = read.unwrap_or_else(|| data.appearance());
             if let Some(e) = err {
                 notes.push(format!("The appearance settings cannot be read: {e}"));
             }
@@ -855,5 +876,51 @@ mod tests {
         super::apply(&theme, &tokens, Some(&look));
         assert_eq!(tokens.get_space_4(), 8.0);
         assert_eq!(tokens.get_radius_md(), 6.0);
+    }
+
+    /// The appearance passed in is the one resolved. A later change to the file is
+    /// not read.
+    #[test]
+    fn a_passed_appearance_is_used_without_reading_the_file_again() {
+        let d = TempDir::new("passed");
+        let data = UserData::new(&d.0);
+        let lock = data.try_lock().unwrap().unwrap();
+        let mut warm = ThemeBody::new(Base::Light);
+        warm.length.insert("radius.md".into(), 9.0);
+        let id = data.themes().create(&lock, "Warm", &warm).unwrap();
+        let fixed = Appearance::new(
+            AppearanceMode::Fixed,
+            ThemeId::BuiltIn(Base::Dark),
+            ThemeId::BuiltIn(Base::Light),
+            ThemeId::User(id),
+        );
+        data.set_appearance(&lock, &fixed).unwrap();
+        let mut fonts = Fake(&[]);
+
+        let (from_file, file_note) = super::load(&data, &mut fonts);
+        let (from_value, value_note) =
+            super::load_with_appearance(&data, &mut fonts, fixed.clone(), None);
+        assert_eq!(file_note, value_note);
+        assert_eq!(from_file.unwrap().themes, from_value.unwrap().themes);
+
+        // The file now says something else. The value already read still resolves.
+        data.set_appearance(&lock, &Appearance::default()).unwrap();
+        let (kept, kept_note) = super::load_with_appearance(&data, &mut fonts, fixed, None);
+        assert!(kept_note.is_none(), "{kept_note:?}");
+        assert_eq!(kept.unwrap().themes[0].length["radius.md"], 9.0);
+        let reread = super::load(&data, &mut fonts).0.unwrap();
+        assert_ne!(reread.themes[0].length.get("radius.md").copied(), Some(9.0));
+
+        std::fs::write(d.0.join("appearance.toml"), "this is not toml\n").unwrap();
+        let (broken, err) = data.appearance();
+        let from_read = super::load(&data, &mut fonts).1;
+        let from_passed = super::load_with_appearance(&data, &mut fonts, broken, err).1;
+        assert_eq!(from_read, from_passed);
+        assert!(
+            from_passed
+                .as_deref()
+                .is_some_and(|n| n.contains("cannot be read")),
+            "{from_passed:?}"
+        );
     }
 }

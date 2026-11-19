@@ -6029,15 +6029,26 @@ fn reset_appearance(config: &Path) -> Option<String> {
 /// Slots of `appearance.toml` that name a deleted theme take a built-in theme
 /// (themes spec, "Deleting"), so a deleted theme is not reported at every start.
 /// Read-only when another RBS holds the user data.
-fn forget_deleted_themes(config: &Path) {
+///
+/// Returns the appearance just read: the saved replacement when a missing theme
+/// was forgotten and the write succeeded, otherwise the file as read (defaults,
+/// with the reason, when it cannot be read). The caller passes this to the look
+/// so `appearance.toml` is not read again.
+fn forget_deleted_themes(
+    config: &Path,
+) -> (rbs_user_data::Appearance, Option<rbs_user_data::DataError>) {
     let data = rbs_user_data::UserData::new(config);
-    let Some(next) = appearance::forget_missing(&data) else {
-        return;
-    };
-    if let Ok(Some(lock)) = data.try_lock() {
+    let read = appearance::forget_missing(&data);
+    if let Some(next) = read.replaced {
+        if let Ok(Some(lock)) = data.try_lock()
+            && data.set_appearance(&lock, &next).is_ok()
+        {
+            return (next, None);
+        }
         // On failure the start note says why the theme is not used, as before.
-        let _ = data.set_appearance(&lock, &next);
+        return (read.choice, None);
     }
+    (read.choice, read.error)
 }
 
 fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
@@ -6050,8 +6061,10 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
         .any(|a| a == "--reset-appearance")
         .then(|| reset_appearance(&config))
         .flatten();
-    // Before the user session takes the writer lock.
-    forget_deleted_themes(&config);
+    // Before the user session takes the writer lock. The look and the density use
+    // this value, so `appearance.toml` is not read again at start.
+    let (appearance, appearance_error) = forget_deleted_themes(&config);
+    let density = appearance.density;
     let selector = slint::BackendSelector::new()
         .backend_name("winit".into())
         .renderer_name("skia".into())
@@ -6116,9 +6129,11 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
         });
     }
 
-    let (look, look_error) = look::load(
+    let (look, look_error) = look::load_with_appearance(
         &rbs_user_data::UserData::new(&config),
         &mut look::SystemFonts::default(),
+        appearance,
+        appearance_error,
     );
     if let Some(why) = look_error.or(reset_note) {
         error = error.or(Some(UiError::Other(why)));
@@ -6164,7 +6179,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             reload_themes: false,
             select_theme: None,
             select_density: None,
-            density: user.data().appearance().0.density,
+            density,
             open_settings: None,
             encoders_asked: false,
             settings_section: SECTION_GENERAL,
