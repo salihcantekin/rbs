@@ -79,12 +79,9 @@ impl AudioDsp for GainDsp {
 
     fn process(&mut self, channels: &mut [&mut [f32]], frames: usize) {
         if self.left == 0 && self.current == 1.0 {
-            // Unity: nothing to do except the sanitising.
-            for ch in channels.iter_mut() {
-                for x in ch[..frames].iter_mut() {
-                    *x = clean(*x);
-                }
-            }
+            // Steady unity. A normal or an already flushed sample is left in place.
+            // NaN, infinity, a denormal and -0 still become 0, as `clean` wrote.
+            flush_non_normals(channels, frames);
             return;
         }
         let (start, left, step, target) = (self.current, self.left, self.step, self.target);
@@ -109,5 +106,124 @@ impl AudioDsp for GainDsp {
         } else {
             start + step * ramp as f32
         };
+    }
+}
+
+/// A sample `clean` replaces with silence: NaN, infinity, a denormal, or -0.
+/// Positive zero and every finite normal number are already that result.
+#[inline]
+fn needs_flush(x: f32) -> bool {
+    let bits = x.to_bits();
+    let exponent = bits & 0x7f80_0000;
+    bits != 0 && (exponent == 0 || exponent == 0x7f80_0000)
+}
+
+/// One pass over a unity block. Clean samples are not written.
+fn flush_non_normals(channels: &mut [&mut [f32]], frames: usize) {
+    for ch in channels.iter_mut() {
+        for x in ch[..frames].iter_mut() {
+            if needs_flush(*x) {
+                *x = 0.0;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unity() -> GainDsp {
+        let values = Values::defaults(&Gain as &dyn crate::AudioFilterType);
+        GainDsp::new(AudioFormat::STEREO_48K, &values)
+    }
+
+    /// The per-sample walk unity gain used to run.
+    fn old_walk(samples: &mut [f32]) {
+        for x in samples.iter_mut() {
+            *x = clean(*x);
+        }
+    }
+
+    #[test]
+    fn unity_gain_of_a_clean_block_matches_the_flush_walk() {
+        let mut dsp = unity();
+        let clean_l = [
+            0.0f32,
+            0.25,
+            -0.5,
+            1.0,
+            -1.0,
+            f32::MIN_POSITIVE,
+            -f32::MIN_POSITIVE,
+        ];
+        let clean_r = [0.1f32, -0.2, 0.0, 0.5, -0.75, 0.125, -0.0625];
+        let mut l = clean_l;
+        let mut r = clean_r;
+        let mut expect_l = clean_l;
+        let mut expect_r = clean_r;
+        old_walk(&mut expect_l);
+        old_walk(&mut expect_r);
+        let frames = l.len();
+        dsp.process(&mut [&mut l[..], &mut r[..]], frames);
+        assert_eq!(l.map(f32::to_bits), expect_l.map(f32::to_bits));
+        assert_eq!(r.map(f32::to_bits), expect_r.map(f32::to_bits));
+        assert_eq!(l.map(f32::to_bits), clean_l.map(f32::to_bits));
+
+        let dirty = [
+            0.5f32,
+            f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            1.0e-40,
+            -1.0e-40,
+            -0.0,
+            0.0,
+        ];
+        let mut l = dirty;
+        let mut r = dirty;
+        let mut expect_l = dirty;
+        let mut expect_r = dirty;
+        old_walk(&mut expect_l);
+        old_walk(&mut expect_r);
+        let frames = l.len();
+        dsp.process(&mut [&mut l[..], &mut r[..]], frames);
+        assert_eq!(l.map(f32::to_bits), expect_l.map(f32::to_bits));
+        assert_eq!(r.map(f32::to_bits), expect_r.map(f32::to_bits));
+        assert_eq!(l[1].to_bits(), 0);
+        assert_eq!(l[2].to_bits(), 0);
+        assert_eq!(l[4].to_bits(), 0);
+        assert_eq!(l[6].to_bits(), 0);
+
+        // Any other steady gain, including silence, still multiplies and flushes.
+        let mut dsp = unity();
+        dsp.current = 2.0;
+        dsp.target = 2.0;
+        let scaled = [0.25f32, f32::NAN, 1.0e-40, -0.0];
+        let mut l = scaled;
+        let mut r = scaled;
+        let mut expect_l = scaled;
+        let mut expect_r = scaled;
+        for x in expect_l.iter_mut().chain(expect_r.iter_mut()) {
+            *x = clean(*x * 2.0);
+        }
+        let frames = l.len();
+        dsp.process(&mut [&mut l[..], &mut r[..]], frames);
+        assert_eq!(l.map(f32::to_bits), expect_l.map(f32::to_bits));
+        assert_eq!(r.map(f32::to_bits), expect_r.map(f32::to_bits));
+
+        dsp.current = 0.0;
+        dsp.target = 0.0;
+        let mut l = scaled;
+        let mut r = scaled;
+        let mut expect_l = scaled;
+        let mut expect_r = scaled;
+        for x in expect_l.iter_mut().chain(expect_r.iter_mut()) {
+            *x = clean(*x * 0.0);
+        }
+        let frames = l.len();
+        dsp.process(&mut [&mut l[..], &mut r[..]], frames);
+        assert_eq!(l.map(f32::to_bits), expect_l.map(f32::to_bits));
+        assert_eq!(r.map(f32::to_bits), expect_r.map(f32::to_bits));
     }
 }
