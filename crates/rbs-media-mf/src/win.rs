@@ -35,7 +35,7 @@ use rbs_media_decode::{
 
 use crate::edits::{SoundEdit, Trimmed};
 use crate::gpu::Gpu;
-use crate::{Crop, bgrx_to_rgba, f32_samples, hns, missing_codec, nominal_duration, to_hns};
+use crate::{Crop, f32_samples, hns, missing_codec, nominal_duration, to_hns};
 
 const VIDEO: u32 = MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32;
 const AUDIO: u32 = MF_SOURCE_READER_FIRST_AUDIO_STREAM.0 as u32;
@@ -277,6 +277,9 @@ pub(crate) struct MfDecoder {
     cursor: Duration,
     /// The previous picture's duration, to continue an unstated one.
     last_duration: Option<Duration>,
+    /// Swizzle buffer for a picture copied in memory. Empty while every picture is
+    /// handed out from the GPU.
+    rgba: crate::SwizzleSpare,
     /// The decode device and the shared textures of native pictures; `None` copies.
     /// Dropped after the readers that use its device manager.
     gpu: Option<Gpu>,
@@ -368,6 +371,7 @@ impl MfDecoder {
             sound_edit,
             cursor: Duration::ZERO,
             last_duration: None,
+            rgba: crate::SwizzleSpare::new(),
             gpu,
             _runtime: runtime,
         })
@@ -463,11 +467,14 @@ fn read(
     }
 }
 
-/// Copies the picture of `sample` as `Rgba8`.
-fn picture_bytes(sample: &IMFSample, shape: &VideoShape) -> Result<Vec<u8>, DecodeError> {
-    let mut out = Vec::new();
+/// Copies the picture of `sample` as `Rgba8` into `spare`'s buffer.
+fn picture_bytes(
+    sample: &IMFSample,
+    shape: &VideoShape,
+    spare: &mut crate::SwizzleSpare,
+) -> Result<Vec<u8>, DecodeError> {
     // SAFETY: the sample is live; each buffer is locked and unlocked in this block and
-    // the pointer is only read inside the lock.
+    // the pointer is only read inside the lock. The returned `Vec` does not borrow it.
     unsafe {
         let buffer = sample
             .ConvertToContiguousBuffer()
@@ -492,7 +499,7 @@ fn picture_bytes(sample: &IMFSample, shape: &VideoShape) -> Result<Vec<u8>, Deco
             let len = before_last + shape.frame_w as usize * 4;
             let first = if pitch < 0 { before_last } else { 0 };
             let src = std::slice::from_raw_parts(low, len);
-            let done = bgrx_to_rgba(src, first, pitch, shape.crop, &mut out);
+            let done = spare.swizzle(src, first, pitch, shape.crop);
             let _ = two_d.Unlock2D();
             done
         } else {
@@ -508,13 +515,12 @@ fn picture_bytes(sample: &IMFSample, shape: &VideoShape) -> Result<Vec<u8>, Deco
             } else {
                 0
             };
-            let done = bgrx_to_rgba(src, first, stride, shape.crop, &mut out);
+            let done = spare.swizzle(src, first, stride, shape.crop);
             let _ = buffer.Unlock();
             done
         };
-        copied.ok_or_else(|| DecodeError::Failed("the picture buffer is too small".into()))?;
+        copied.ok_or_else(|| DecodeError::Failed("the picture buffer is too small".into()))
     }
-    Ok(out)
 }
 
 impl MediaDecoder for MfDecoder {
@@ -554,11 +560,14 @@ impl MediaDecoder for MfDecoder {
                 picture,
             }));
         }
-        let mut bytes = picture_bytes(&sample, &self.shape)?;
+        let mut bytes = picture_bytes(&sample, &self.shape, &mut self.rgba)?;
         let (mut width, mut height) = (self.shape.crop.width, self.shape.crop.height);
         if self.rotation != Rotation::None {
             let mut turned = Vec::new();
-            (width, height) = rotate_rgba(&bytes, width, height, self.rotation, &mut turned)
+            let turned_size = rotate_rgba(&bytes, width, height, self.rotation, &mut turned);
+            // The returned picture is `turned`. The swizzle buffer is not that picture.
+            self.rgba.recycle(bytes);
+            (width, height) = turned_size
                 .ok_or_else(|| DecodeError::Failed("a picture of the wrong size".into()))?;
             bytes = turned;
         }

@@ -20,8 +20,10 @@
 //!   into a shared NT-handle texture (`gpu.rs`). Without a LUID, when that device
 //!   cannot be made or cannot decode the file, or for a picture that is not on the GPU,
 //!   pictures are copied as below (spec invariant 11).
-//! - Otherwise each picture is copied once from the decoder's buffer into a new `Rgba8`
-//!   buffer (`B, G, R, X` to `R, G, B, 255`, cropped to the display aperture).
+//! - Otherwise each picture is copied once from the decoder's buffer into a reused
+//!   `Rgba8` buffer (`B, G, R, X` to `R, G, B, 255`, cropped to the display aperture).
+//!   That buffer is returned for the worker to take with `Bytes::from`. A spare stays
+//!   here so the next frame does not write a picture the caller still holds.
 //!
 //! The capability is `zero-copy` for `new` and `cpu-upload` for `cpu_upload` (the
 //! measured fallback of ADR-0108 decision 4).
@@ -230,6 +232,63 @@ fn bgrx_to_rgba(
     Some(())
 }
 
+/// The CPU fallback's swizzle buffer and the spare that replaces it.
+///
+/// One picture is swizzled into a buffer this value owns, and that buffer is returned.
+/// The media worker takes the `Vec` with `Bytes::from` and does not copy the pixels.
+/// `Bytes::from` may take the allocation only once a spare of the same size is already
+/// held here, or the spare was large enough to swap in: the returned buffer is not the
+/// one the next frame writes. The first frame may allocate. A larger frame may grow
+/// the spare. A picture the caller still holds is never that spare.
+struct SwizzleSpare {
+    spare: Vec<u8>,
+}
+
+impl SwizzleSpare {
+    fn new() -> Self {
+        Self { spare: Vec::new() }
+    }
+
+    /// A buffer with room for `len` bytes. After this returns, `spare` is a different
+    /// allocation (already large enough when this one had to grow), so the caller can
+    /// keep the result across the next frame.
+    fn take(&mut self, len: usize) -> Vec<u8> {
+        if self.spare.capacity() < len {
+            self.spare.reserve(len);
+            let out = std::mem::take(&mut self.spare);
+            self.spare.reserve(len);
+            return out;
+        }
+        std::mem::take(&mut self.spare)
+    }
+
+    /// Puts `buf` back when the caller wrote the picture it returns somewhere else
+    /// (a turn). Not for a buffer the caller still holds.
+    fn recycle(&mut self, buf: Vec<u8>) {
+        if buf.capacity() > self.spare.capacity() {
+            self.spare = buf;
+        }
+    }
+
+    /// Swizzles the crop of `src` into a buffer the next call will not write.
+    /// `None` when a row lies outside `src`.
+    fn swizzle(
+        &mut self,
+        src: &[u8],
+        first_row: usize,
+        pitch: isize,
+        crop: Crop,
+    ) -> Option<Vec<u8>> {
+        let len = crop.width as usize * crop.height as usize * 4;
+        let mut out = self.take(len);
+        if bgrx_to_rgba(src, first_row, pitch, crop, &mut out).is_none() {
+            self.recycle(out);
+            return None;
+        }
+        Some(out)
+    }
+}
+
 /// Interleaved little-endian `f32` bytes as samples.
 fn f32_samples(bytes: &[u8]) -> Vec<f32> {
     bytes
@@ -266,7 +325,57 @@ fn missing_codec(fourcc: u32) -> String {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::cell::Cell;
+
     use super::*;
+
+    struct AllocCount;
+
+    thread_local! {
+        static ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
+        static IN_ALLOC: Cell<bool> = const { Cell::new(false) };
+    }
+
+    fn count_allocation() {
+        // `try_with` fails while this thread's local is still being created, so the
+        // counter cannot re-enter itself. Other threads keep their own counts.
+        let _ = IN_ALLOC.try_with(|flag| {
+            if flag.replace(true) {
+                return;
+            }
+            let _ = ALLOCATIONS.try_with(|n| n.set(n.get().saturating_add(1)));
+            flag.set(false);
+        });
+    }
+
+    fn allocations() -> usize {
+        ALLOCATIONS.with(|n| n.get())
+    }
+
+    // SAFETY: forwards to the system allocator and only counts calls on this thread.
+    unsafe impl GlobalAlloc for AllocCount {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            count_allocation();
+            // SAFETY: `layout` is the size and alignment asked for by the caller.
+            unsafe { System.alloc(layout) }
+        }
+
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            // SAFETY: `ptr` was returned by `alloc` or `realloc` for this `layout`.
+            unsafe { System.dealloc(ptr, layout) }
+        }
+
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+            count_allocation();
+            // SAFETY: `ptr` was allocated with `layout`, and `new_size` is the new size
+            // in bytes.
+            unsafe { System.realloc(ptr, layout, new_size) }
+        }
+    }
+
+    #[global_allocator]
+    static ALLOCATOR: AllocCount = AllocCount;
 
     #[test]
     fn media_foundation_time_is_in_hundreds_of_nanoseconds() {
@@ -292,6 +401,26 @@ mod tests {
         assert_eq!(Crop::of(8, 8, Some((0, 0, 0, 0))).width, 8);
         assert_eq!(Crop::of(8, 8, Some((-1, 0, 4, 4))).width, 8);
         assert_eq!(Crop::of(8, 8, Some((6, 6, 4, 4))).width, 2);
+    }
+
+    #[test]
+    fn a_second_frame_reuses_the_swizzle_spare() {
+        // 1x2, top-down. Two frames, same size, different pixels.
+        let first_src = [1, 2, 3, 0, 10, 20, 30, 0];
+        let second_src = [4, 5, 6, 0, 40, 50, 60, 0];
+        let crop = Crop::of(1, 2, None);
+        let mut spare = SwizzleSpare::new();
+        let _ = allocations();
+        let first = spare.swizzle(&first_src, 0, 4, crop).unwrap();
+        let kept = first.clone();
+        let before = allocations();
+        let second = spare.swizzle(&second_src, 0, 4, crop).unwrap();
+        let after = allocations();
+        assert_eq!(after, before, "the second frame allocated");
+        assert_eq!(first, kept);
+        assert_eq!(first, vec![3, 2, 1, 255, 30, 20, 10, 255]);
+        assert_eq!(second, vec![6, 5, 4, 255, 60, 50, 40, 255]);
+        assert_ne!(first.as_ptr(), second.as_ptr());
     }
 
     #[test]
