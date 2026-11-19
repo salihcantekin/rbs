@@ -2,7 +2,9 @@
 //!
 //! Every OS capture API is an adapter implementing [`CaptureFactory`] and
 //! [`CaptureSession`]. Adapters declare what they can do with the keys in [`caps`] and
-//! prove it with the suite in [`conformance`]. Contract: `docs/specs/capture-port.md`.
+//! prove it with the suite in [`conformance`]. [`edge`] converts an OS capture time to
+//! master time; adapters call it instead of pasting the conversion. Contract:
+//! `docs/specs/capture-port.md`.
 //!
 //! This crate is a port: it depends only on `rbs-core` and never on an OS API, GPU
 //! library or adapter (principle P1).
@@ -10,6 +12,7 @@
 pub mod camera;
 pub mod caps;
 pub mod conformance;
+pub mod edge;
 mod error;
 mod framebuffer;
 pub mod handoff;
