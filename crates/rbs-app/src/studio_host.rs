@@ -88,6 +88,7 @@ mod scene_cache;
 mod stinger;
 pub mod sync_measure;
 mod text_live;
+mod text_measure;
 mod text_resize;
 
 use crate::canvas_profile::CanvasProfile;
@@ -3420,6 +3421,12 @@ enum Msg {
         key: stinger::LookKey,
         result: Result<rbs_sources::stinger::StingerLook, rbs_sources::stinger::LookError>,
     },
+    /// A text source's box was measured off the control thread.
+    TextMeasured {
+        id: SourceId,
+        text: String,
+        size: [u32; 2],
+    },
     /// The install thread of catalog entry `index` reports (ADR-0145).
     AddOn {
         index: usize,
@@ -4180,6 +4187,7 @@ fn run(
                     | Msg::Calibration { .. }
                     | Msg::PermissionAnswered(_)
                     | Msg::StingerLook { .. }
+                    | Msg::TextMeasured { .. }
                     | Msg::AddOn { .. } => {}
                 }
                 if let Some(api) = &api {
@@ -4352,6 +4360,11 @@ fn round(
         Some(Msg::AddOn { index, msg }) => host.addon_msg(index, msg, notify),
         Some(Msg::StingerLook { key, result }) => {
             if host.stinger_looked(key, result) {
+                host.publish(notify);
+            }
+        }
+        Some(Msg::TextMeasured { id, text, size }) => {
+            if text_measure::apply(host, id, &text, size) {
                 host.publish(notify);
             }
         }
@@ -10351,33 +10364,20 @@ impl Host {
         }
     }
 
-    /// Settings and layout of a new text source showing `text` (ADR-0129 decision 4):
-    /// the box fits the text with its padding, measured by the registered renderer, or
-    /// is 640 x 160 when there is none, it fails or takes longer than
-    /// [`TEXT_MEASURE_WAIT`]; the item is the same size, centred, so it draws 1:1.
+    /// Settings and layout of a new text source showing `text` (ADR-0129 decision 4).
+    /// The box is the default 640 x 160, centred, so the add does not wait on the
+    /// renderer. [`text_measure::begin`] patches the size when the measure arrives
+    /// and the text and the box are still this default.
     fn new_text(&self, text: &str) -> Result<(Settings, Layout), Refusal> {
         let canvas = self
             .collection
             .canvas(self.canvas)
             .ok_or_else(|| Refusal::NotFound("The canvas is gone.".into()))?;
         let (cw, ch) = (canvas.size.width, canvas.size.height);
+        let [dw, dh] = rbs_sources::text::DEFAULT_BOX;
+        let [w, h] = [dw.clamp(1, cw.max(1)), dh.clamp(1, ch.max(1))];
         let mut settings = Settings::new();
         settings.insert(keys::TEXT.into(), SettingValue::Text(text.to_owned()));
-        let [dw, dh] = rbs_sources::text::DEFAULT_BOX;
-        settings.insert(keys::WIDTH.into(), SettingValue::Int(i64::from(dw)));
-        settings.insert(keys::HEIGHT.into(), SettingValue::Int(i64::from(dh)));
-        let parsed = rbs_sources::text::validate_text(&settings)
-            .map_err(|e| Refusal::Invalid(e.to_string()))?;
-        let renderer = rbs_sources::text::pick_renderer(
-            &self.adapters.sources.text_renderers(),
-            &parsed.block,
-        );
-        let [w, h] = renderer
-            .and_then(|r| measure_text(r, parsed.block, TEXT_MEASURE_WAIT))
-            .map_or([dw, dh], |[w, h]| {
-                // At least one pixel, and within the canvas.
-                [w.clamp(1, cw.max(1)), h.clamp(1, ch.max(1))]
-            });
         settings.insert(keys::WIDTH.into(), SettingValue::Int(i64::from(w)));
         settings.insert(keys::HEIGHT.into(), SettingValue::Int(i64::from(h)));
         rbs_sources::validate_settings(&SourceKind::Text.type_id(), &settings)
@@ -10399,11 +10399,13 @@ impl Host {
     ) -> Result<SourceId, Refusal> {
         let (settings, layout) = self.new_text(text)?;
         let base = name.filter(|n| !n.trim().is_empty()).unwrap_or("Text");
-        if global {
+        let id = if global {
             self.add_global_with(base, SourceKind::Text, settings, layout)
         } else {
             self.add_still(base, SourceKind::Text, settings, layout, None)
-        }
+        }?;
+        text_measure::begin(self, id);
+        Ok(id)
     }
 
     /// Replaces a text source's `text` only (`source.set_text`); one undo step.
@@ -17600,23 +17602,11 @@ fn api_scenes(list: &SceneList) -> api::SceneList {
     }
 }
 
-/// A control API error for a refused edit.
-/// How long adding a text source waits for its text to be measured (ADR-0129
-/// decision 4) before it takes the default box.
+/// How long Fit box to text waits for the renderer. Adding a text source does not
+/// wait: it uses the default box and [`text_measure`] patches the size later.
 const TEXT_MEASURE_WAIT: Duration = Duration::from_millis(200);
 
-/// Measures `block` with `renderer` on a thread of its own, waiting at most `wait`:
-/// the first font load can be slow, and the control thread must not wait longer. A
-/// late answer is dropped with its thread; a failure or a panic is `None`.
-fn measure_text(
-    renderer: Arc<dyn rbs_text::TextRenderer>,
-    block: rbs_text::TextBlock,
-    wait: Duration,
-) -> Option<[u32; 2]> {
-    measure_text_wrapped(renderer, block, None, wait)
-}
-
-/// [`measure_text`] wrapped at `max_width` (Fit box to text), with the same wait.
+/// [`measure_text_wrapped`] at `max_width` (Fit box to text).
 fn measure_text_at(
     renderer: Arc<dyn rbs_text::TextRenderer>,
     block: rbs_text::TextBlock,
@@ -17625,6 +17615,8 @@ fn measure_text_at(
     measure_text_wrapped(renderer, block, max_width, TEXT_MEASURE_WAIT)
 }
 
+/// Measures `block` with `renderer` on a thread of its own, waiting at most `wait`.
+/// A late answer is dropped with its thread; a failure or a panic is `None`.
 fn measure_text_wrapped(
     renderer: Arc<dyn rbs_text::TextRenderer>,
     block: rbs_text::TextBlock,
