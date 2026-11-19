@@ -9,8 +9,8 @@
 //! - Input: `f32` blocks of any length, planar or interleaved, mono or stereo at
 //!   44.1 or 48 kHz. Samples go into a pre-allocated planar 1024-frame staging area
 //!   (the encoder's own sample format, `AV_SAMPLE_FMT_FLTP`, so nothing is converted);
-//!   each full frame is copied into the session's one `AVFrame` and encoded
-//!   synchronously on the calling thread (`threads = 1`: no threads, no callbacks).
+//!   each full frame points the session's one `AVFrame` at that staging buffer and is
+//!   encoded synchronously on the calling thread (`threads = 1`: no threads, no callbacks).
 //! - Output: raw AAC-LC access units (`BitstreamFormat::Raw`) with a two-byte
 //!   `AudioSpecificConfig` as extradata. Each packet is 1024 samples; its timestamp is
 //!   the first block's timestamp plus 1024 samples per packet (invariant 8). The

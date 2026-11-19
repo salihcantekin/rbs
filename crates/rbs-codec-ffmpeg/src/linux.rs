@@ -12,12 +12,14 @@
 //! libavutil major each libavcodec major ships with. It sets every encoder parameter it
 //! can through `AVOptions` (by name, layout-free) and touches struct fields only where
 //! no option exists: the context's `sample_fmt`, `frame_size` and `initial_padding`, and
-//! the frame's `data`, `nb_samples`, `format`, `pts` and `ch_layout`, and the packet's
-//! `data`, `size`. Before a session is used, the layout is checked against the library
-//! itself: a fresh context's `sample_fmt` reads `AV_SAMPLE_FMT_NONE`, and after opening,
-//! `frame_size` read through the layout equals the `frame_size` option and 1024, and
-//! `initial_padding` is 1024. A mismatch refuses the session (`CreateError::Device`)
-//! instead of writing through a wrong offset.
+//! the frame's `data`, `linesize`, `nb_samples`, `format`, `pts` and `ch_layout`, and the
+//! packet's `data`, `size`. Before a session is used, the layout is checked against the
+//! library itself: a fresh context's `sample_fmt` reads `AV_SAMPLE_FMT_NONE`, and after
+//! opening, `frame_size` read through the layout equals the `frame_size` option and 1024,
+//! and `initial_padding` is 1024. After `av_frame_get_buffer`, each plane's `linesize` is
+//! exactly 1024 `f32`s (alignment 0 adds no padding when the sample count is a multiple
+//! of 32). A mismatch refuses the session (`CreateError::Device`) instead of writing
+//! through a wrong offset.
 
 use std::ffi::{CStr, c_char, c_int, c_uint, c_void};
 use std::ptr;
@@ -56,6 +58,8 @@ pub(crate) struct Layout {
 
 /// `AVFrame` fields at the same offset in every supported major.
 const FRAME_DATA: usize = 0;
+/// `AVFrame.linesize`, immediately after `data[8]` on every supported major.
+const FRAME_LINESIZE: usize = 64;
 const FRAME_NB_SAMPLES: usize = 112;
 const FRAME_FORMAT: usize = 116;
 const FRAME_PTS: usize = 136;
@@ -541,18 +545,29 @@ impl AvEngine {
             return Err(CreateError::Device(api.error("av_frame_get_buffer", r)));
         }
         // Frame layout check before any sample is written: libavutil points
-        // `extended_data` at `data` and fills one plane per channel.
-        // SAFETY: `frame` is live; both reads are pointer fields of the loaded major.
-        let laid_out = unsafe {
+        // `extended_data` at `data` and fills one plane per channel. `linesize` is the
+        // plane size in bytes; 1024 is a multiple of 32, so alignment 0 leaves it equal
+        // to the staging plane (no padding to copy into).
+        // SAFETY: `frame` is live; the reads are fields of the loaded major.
+        let (planes_ok, linesize) = unsafe {
             let extended: *const c_void = read(frame, FRAME_EXTENDED_DATA);
-            extended == frame.cast_const()
+            let linesize: c_int = read(frame, FRAME_LINESIZE);
+            let planes_ok = extended == frame.cast_const()
                 && (0..checked.channels).all(|c| {
                     !read::<*const c_void>(frame, FRAME_DATA + c * size_of::<*mut u8>()).is_null()
-                })
+                });
+            (planes_ok, linesize)
         };
-        if !laid_out {
+        if !planes_ok {
             return Err(CreateError::Device(format!(
                 "libavutil {} layout check failed: the frame's planes are not where expected",
+                layout.avutil
+            )));
+        }
+        let plane_bytes = (FRAME * size_of::<f32>()) as c_int;
+        if linesize != plane_bytes {
+            return Err(CreateError::Device(format!(
+                "libavutil {} plane is {linesize} bytes, not {plane_bytes}: a padded frame would require a copy",
                 layout.avutil
             )));
         }
@@ -624,18 +639,26 @@ impl Engine for AvEngine {
             self.contexts += 1;
             self.pts = 0;
         }
-        // SAFETY: `frame` holds buffers for `FRAME` samples on each channel (set up in
-        // `new`); make_writable gives it back its own buffers if the encoder still
-        // referenced them (libavcodec's AAC encoder copies its input, so normally it
-        // does nothing). `data[c]` are `FRAME` floats each; `pts` is an int64_t.
+        // SAFETY: `frame` owns one buffer per channel from `av_frame_get_buffer`, and
+        // `linesize` equals one staging plane (`new` refused a padded plane).
+        // `av_frame_make_writable` returns without copying while this engine is the only
+        // owner. libavcodec's AAC encoder then copies `nb_samples` floats from
+        // `extended_data` inside `avcodec_send_frame` and unrefs its frame before that
+        // call returns, so these buffers are writable again and staging is not read
+        // afterwards. `extended_data` points at `data`. Each `plane` is `FRAME`
+        // contiguous `f32`s, stable until `encode` returns, and the encoder only reads
+        // it (the stored `*mut` is not written). `pts` is an `int64_t`.
         unsafe {
             let r = (api.frame_make_writable)(self.frame);
             if r < 0 {
                 return Err(self.failed("av_frame_make_writable", r));
             }
             for (c, plane) in planar.chunks_exact(FRAME).enumerate() {
-                let dst: *mut f32 = read(self.frame, FRAME_DATA + c * size_of::<*mut u8>());
-                ptr::copy_nonoverlapping(plane.as_ptr(), dst, FRAME);
+                write(
+                    self.frame,
+                    FRAME_DATA + c * size_of::<*mut u8>(),
+                    plane.as_ptr().cast_mut(),
+                );
             }
             write(self.frame, FRAME_PTS, self.pts);
         }
