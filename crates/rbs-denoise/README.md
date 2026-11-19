@@ -15,6 +15,7 @@ Keep this list complete, so an upstream fix can be ported by diffing.
 5. **Gain floor.** `Denoiser::set_max_reduction_db` limits the band gains that are applied (not the ones the network remembers) to a floor; with no floor the output is upstream's.
 6. **Reset.** `Denoiser::reset` (and `reset` on the features, pitch finder and RNN state) returns to a silent history without allocating.
 7. **Removed.** The C API, the `dasp` signal adapter, the training code, `shift_input`, `Biquad::filter_in_place` and custom-model loading.
+8. **History slide.** `DenoiseFeatures::shift_and_filter_input` moves the kept tail of `input_mem` with `copy_within` (one `memmove` of the overlapping range) instead of assigning each sample. The values are the same bits.
 
 ## Contract
 

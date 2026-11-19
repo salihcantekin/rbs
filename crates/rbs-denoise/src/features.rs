@@ -17,8 +17,9 @@
 
 // Vendored from nnnoiseless 0.5.2 (BSD-3-Clause, see LICENSE-RNNOISE). Patched: the
 // spectra are plain `[Complex; FREQ_SIZE]` arrays transformed by the denoiser's own
-// realfft plans (no easyfft thread-local planner), the tables come from `Tables`, and
-// the training-only API is removed. See README.md.
+// realfft plans (no easyfft thread-local planner), the tables come from `Tables`, the
+// input history is shifted with `copy_within`, and the training-only API is removed.
+// See README.md.
 
 use crate::{
     CEPS_MEM, Complex, FRAME_SIZE, FREQ_SIZE, Fft, NB_BANDS, NB_DELTA_CEPS, NB_FEATURES,
@@ -108,9 +109,10 @@ impl DenoiseFeatures {
     /// high-pass filter.
     pub(crate) fn shift_and_filter_input(&mut self, input: &[f32; FRAME_SIZE]) {
         let new_idx = self.input_mem.len() - FRAME_SIZE;
-        for i in 0..new_idx {
-            self.input_mem[i] = self.input_mem[i + FRAME_SIZE];
-        }
+        // The kept tail (`FRAME_SIZE..`) overlaps the destination (`0..new_idx`).
+        // `copy_within` is `ptr::copy` (`memmove`), which moves an overlapping range
+        // in the safe direction. Same bits as assigning each element.
+        self.input_mem.copy_within(FRAME_SIZE.., 0);
         crate::util::BIQUAD_HP.filter(&mut self.input_mem[new_idx..], &mut self.mem_hp_x, input);
     }
 
