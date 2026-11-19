@@ -264,13 +264,14 @@ fn page_sound_crosses_the_sound_section_in_order() {
     }
     struct Sink(Arc<Mutex<Heard>>);
     impl rbs_browser_runner::PageSound for Sink {
-        fn packet(&mut self, packet: rbs_browser_shm::SoundPacket<'_>) {
+        fn packet(&mut self, packet: rbs_browser_shm::OwnedSoundPacket) -> Vec<f32> {
             let mut heard = self.0.lock().unwrap();
             let frames = packet.samples.len() / usize::from(packet.channels);
             heard.frames += frames;
             heard.packets.push((packet.os_nanos, frames));
             heard.loud |= packet.samples.iter().any(|s| s.abs() > 0.1);
             heard.format = Some((packet.rate, packet.channels));
+            packet.samples
         }
         fn observe(&mut self, _os_now: u64) {}
         fn pump(&mut self) {

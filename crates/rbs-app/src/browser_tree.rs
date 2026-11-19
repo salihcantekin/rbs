@@ -14,8 +14,8 @@ use rbs_browser_ipc::Configure;
 use rbs_browser_ipc::control::Control;
 use rbs_browser_ipc::exit::Cause;
 use rbs_browser_runner::{PageSound, Supervisor, runtime_env, spawn_helper_with_env};
+use rbs_browser_shm::OwnedSoundPacket;
 use rbs_browser_shm::SlotLayout;
-use rbs_browser_shm::SoundPacket;
 use rbs_sources::{
     BROWSER_RUNTIME_MISMATCH, BROWSER_RUNTIME_MISSING, BrowserFrameSink, BrowserPictureEdge,
     BrowserSession, BrowserSound, BrowserSoundFeed, BrowserTree, HELPER_MISSING,
@@ -259,13 +259,13 @@ impl PageSound for FeedSound {
         self.0.observe(os_now);
     }
 
-    fn packet(&mut self, packet: SoundPacket<'_>) {
-        self.0.packet(
+    fn packet(&mut self, packet: OwnedSoundPacket) -> Vec<f32> {
+        self.0.take_packet(
             packet.os_nanos,
             packet.rate,
             packet.channels,
             packet.samples,
-        );
+        )
     }
 
     fn pump(&mut self) {

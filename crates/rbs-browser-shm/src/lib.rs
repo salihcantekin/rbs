@@ -36,7 +36,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 pub mod sound;
 
-pub use sound::{MAX_SOUND_CHANNELS, SoundPacket, SoundRing};
+pub use sound::{MAX_SOUND_CHANNELS, OwnedSoundPacket, SoundPacket, SoundRing};
 
 /// The OS monotonic clock in nanoseconds (`CLOCK_MONOTONIC` on Unix,
 /// `QueryPerformanceCounter` on Windows). Every process on the machine reads the same

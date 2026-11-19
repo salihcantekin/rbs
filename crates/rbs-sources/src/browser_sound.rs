@@ -323,6 +323,40 @@ struct Pending {
     offset: usize,
     discontinuity: bool,
     delivered: u64,
+    /// Buffers whose packets were fully read. The feed takes one back as its spare.
+    freed: Vec<Vec<f32>>,
+}
+
+impl Pending {
+    /// Room for a few packets so a second packet does not grow the queue.
+    fn with_room() -> Self {
+        Self {
+            packets: VecDeque::with_capacity(8),
+            freed: Vec::with_capacity(2),
+            ..Self::default()
+        }
+    }
+
+    /// Keeps `buf` until the feed takes a spare back. At most two, the larger ones.
+    fn recycle(&mut self, mut buf: Vec<f32>) {
+        buf.clear();
+        if self.freed.len() < 2 {
+            self.freed.push(buf);
+            return;
+        }
+        let Some(index) = self
+            .freed
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, old)| old.capacity())
+            .map(|(index, _)| index)
+        else {
+            return;
+        };
+        if buf.capacity() > self.freed[index].capacity() {
+            self.freed[index] = buf;
+        }
+    }
 }
 
 /// The page's packets as an [`AudioInputStream`] of one fixed format.
@@ -345,7 +379,9 @@ impl AudioInputStream for PageStream {
 
     fn stop(&mut self) {
         if let Ok(mut pending) = self.pending.lock() {
-            pending.packets.clear();
+            while let Some((_, buf)) = pending.packets.pop_front() {
+                pending.recycle(buf);
+            }
             pending.offset = 0;
         }
     }
@@ -373,7 +409,9 @@ impl AudioInputStream for PageStream {
             }
         }
         if offset + frames >= total {
-            pending.packets.pop_front();
+            if let Some((_, buf)) = pending.packets.pop_front() {
+                pending.recycle(buf);
+            }
             pending.offset = 0;
         } else {
             pending.offset = offset + frames;
@@ -437,6 +475,10 @@ pub struct BrowserSoundFeed {
     /// Buffers made so far (at most the ring's return capacity).
     buffers: usize,
     planar: Vec<Vec<f32>>,
+    /// Packet buffer that is not queued. The supervisor swaps it for the next
+    /// copy, so a queued packet keeps the buffer the caller still holds.
+    /// Supervisor thread only: never the audio thread.
+    spare: Vec<f32>,
 }
 
 impl BrowserSoundFeed {
@@ -451,6 +493,7 @@ impl BrowserSoundFeed {
             expected_os: None,
             buffers: 0,
             planar: Vec::new(),
+            spare: Vec::new(),
         }
     }
 
@@ -461,39 +504,139 @@ impl BrowserSoundFeed {
     }
 
     /// One packet of interleaved `samples` (`channels` wide, at `rate`) whose first
-    /// frame was made at OS time `os_nanos`.
+    /// frame was made at OS time `os_nanos`. Copies into the spare. After that spare
+    /// exists, a later packet of the same size does not allocate.
     pub fn packet(&mut self, os_nanos: u64, rate: u32, channels: u16, samples: &[f32]) {
+        let Some((stamp, n)) = self.ready(os_nanos, rate, channels, samples.len()) else {
+            return;
+        };
+        let copied = &samples[..n];
+        let _ = self.with_pending(rate, channels, |feed, pending| {
+            feed.reclaim(pending);
+            feed.evict(pending, stamp);
+            let mut dest = feed.take_spare(n);
+            dest[..n].copy_from_slice(copied);
+            Self::push(pending, stamp, dest);
+        });
+    }
+
+    /// Queues `samples`, already the one copy out of shared memory, and returns a
+    /// spare for the next copy. The spare is not `samples`. The first packet may
+    /// allocate it; a later packet of the same size does not. A larger packet may
+    /// grow it. Supervisor thread only.
+    pub fn take_packet(
+        &mut self,
+        os_nanos: u64,
+        rate: u32,
+        channels: u16,
+        mut samples: Vec<f32>,
+    ) -> Vec<f32> {
+        let Some((stamp, n)) = self.ready(os_nanos, rate, channels, samples.len()) else {
+            return samples;
+        };
+        samples.truncate(n);
+        let Some(slot) = self.pending_slot(rate, channels) else {
+            return samples;
+        };
+        let Ok(mut pending) = slot.lock() else {
+            return samples;
+        };
+        self.reclaim(&mut pending);
+        self.evict(&mut pending, stamp);
+        let spare = self.take_spare(n);
+        Self::push(&mut pending, stamp, samples);
+        spare
+    }
+
+    /// Stamp for one packet of `len` interleaved samples, or none when it is dropped.
+    fn ready(
+        &mut self,
+        os_nanos: u64,
+        rate: u32,
+        channels: u16,
+        len: usize,
+    ) -> Option<(Timestamp, usize)> {
         if !self.connect() || channels == 0 || rate == 0 {
-            return;
+            return None;
         }
-        let frames = samples.len() / usize::from(channels);
+        let frames = len / usize::from(channels);
         if frames == 0 {
-            return;
+            return None;
         }
+        let n = frames * usize::from(channels);
         let duration = Duration::from_nanos(frames as u64 * 1_000_000_000 / u64::from(rate));
         let os_nanos = self.smooth(os_nanos, duration);
         let stamp = self
             .edge
             .to_master(os_nanos, duration, self.shared.clock.now());
-        let Some(aligned) = self.aligned_for(rate, channels) else {
-            return;
-        };
-        if let Ok(mut pending) = aligned.pending.lock() {
-            // Until the node's first block names the grid nothing is rendered: keep
-            // at most `PENDING_LIMIT` of sound.
-            while pending
-                .packets
-                .front()
-                .is_some_and(|(first, _)| stamp.saturating_since(*first) > PENDING_LIMIT)
-            {
-                pending.packets.pop_front();
-                pending.offset = 0;
-                pending.discontinuity = true;
-            }
-            pending
-                .packets
-                .push_back((stamp, samples[..frames * usize::from(channels)].to_vec()));
+        Some((stamp, n))
+    }
+
+    fn pending_slot(&mut self, rate: u32, channels: u16) -> Option<Arc<Mutex<Pending>>> {
+        self.aligned_for(rate, channels)
+            .map(|aligned| Arc::clone(&aligned.pending))
+    }
+
+    fn with_pending<T>(
+        &mut self,
+        rate: u32,
+        channels: u16,
+        body: impl FnOnce(&mut Self, &mut Pending) -> T,
+    ) -> Option<T> {
+        let slot = self.pending_slot(rate, channels)?;
+        let mut pending = slot.lock().ok()?;
+        Some(body(self, &mut pending))
+    }
+
+    fn reclaim(&mut self, pending: &mut Pending) {
+        while let Some(buf) = pending.freed.pop() {
+            self.stash_spare(buf);
         }
+    }
+
+    /// Drops sound older than [`PENDING_LIMIT`] and keeps its buffers.
+    fn evict(&mut self, pending: &mut Pending, stamp: Timestamp) {
+        while pending
+            .packets
+            .front()
+            .is_some_and(|(first, _)| stamp.saturating_since(*first) > PENDING_LIMIT)
+        {
+            if let Some((_, buf)) = pending.packets.pop_front() {
+                self.stash_spare(buf);
+            }
+            pending.offset = 0;
+            pending.discontinuity = true;
+        }
+    }
+
+    fn stash_spare(&mut self, buf: Vec<f32>) {
+        if buf.capacity() > self.spare.capacity() {
+            self.spare = buf;
+        }
+    }
+
+    /// A buffer of length `n` that is not the one a queued packet holds.
+    ///
+    /// The first time, or when `n` does not fit, this allocates the buffer it
+    /// returns and leaves another of the same size in `spare`, so the next
+    /// packet of this size can take that one without allocating.
+    fn take_spare(&mut self, n: usize) -> Vec<f32> {
+        if self.spare.capacity() < n {
+            self.spare.resize(n, 0.0);
+            let out = std::mem::take(&mut self.spare);
+            self.spare.resize(n, 0.0);
+            return out;
+        }
+        let mut out = std::mem::take(&mut self.spare);
+        if out.len() < n {
+            out.resize(n, 0.0);
+        }
+        out.truncate(n);
+        out
+    }
+
+    fn push(pending: &mut Pending, stamp: Timestamp, samples: Vec<f32>) {
+        pending.packets.push_back((stamp, samples));
     }
 
     /// The OS time of a packet stamped `os_nanos`: continuous with the last packet,
@@ -663,7 +806,7 @@ impl BrowserSoundFeed {
             }
             let sample_rate = SampleRate::new(rate)?;
             let format = AudioFormat::new(sample_rate, layout_of(channels)).ok()?;
-            let pending = Arc::new(Mutex::new(Pending::default()));
+            let pending = Arc::new(Mutex::new(Pending::with_room()));
             let stream = PageStream {
                 format,
                 pending: Arc::clone(&pending),
@@ -878,6 +1021,51 @@ mod tests {
             }
         });
         assert_eq!(info.count_total, 0, "{info:?}");
+    }
+
+    #[test]
+    fn a_later_packet_reuses_the_spare() {
+        let mut rig = Rig::new(48_000, 2);
+        rig.clock.advance(Duration::from_millis(100));
+        let now = OS + rig.clock.now().as_nanos();
+        rig.feed.observe(now);
+        let small = vec![0.25f32; 960];
+        rig.feed.packet(now, 48_000, 2, &small);
+        let second = allocation_counter::measure(|| {
+            rig.feed.packet(now + 10_000_000, 48_000, 2, &small);
+        });
+        assert_eq!(second.count_total, 0, "{second:?}");
+        {
+            let pending = rig.feed.aligned.as_ref().unwrap().pending.lock().unwrap();
+            assert_eq!(pending.packets.len(), 2);
+            assert!(pending.packets[0].1.iter().all(|sample| *sample == 0.25));
+            assert!(pending.packets[1].1.iter().all(|sample| *sample == 0.25));
+            assert_ne!(pending.packets[0].1.as_ptr(), pending.packets[1].1.as_ptr());
+        }
+        let big = vec![0.5f32; 1920];
+        let grew = allocation_counter::measure(|| {
+            rig.feed.packet(now + 20_000_000, 48_000, 2, &big);
+        });
+        assert!(grew.count_total > 0, "{grew:?}");
+        let again = allocation_counter::measure(|| {
+            rig.feed.packet(now + 40_000_000, 48_000, 2, &big);
+        });
+        assert_eq!(again.count_total, 0, "{again:?}");
+        let pending = rig.feed.aligned.as_ref().unwrap().pending.lock().unwrap();
+        assert!(pending.packets[0].1.iter().all(|sample| *sample == 0.25));
+        assert!(pending.packets[2].1.iter().all(|sample| *sample == 0.5));
+        drop(pending);
+
+        // The supervisor path moves the section copy in. The queued buffer is that
+        // one; the spare returned for the next copy is a different allocation.
+        let owned = vec![0.75f32; 960];
+        let owned_ptr = owned.as_ptr();
+        let spare = rig.feed.take_packet(now + 50_000_000, 48_000, 2, owned);
+        assert_ne!(spare.as_ptr(), owned_ptr);
+        let pending = rig.feed.aligned.as_ref().unwrap().pending.lock().unwrap();
+        let queued = &pending.packets.back().unwrap().1;
+        assert_eq!(queued.as_ptr(), owned_ptr);
+        assert!(queued.iter().all(|sample| *sample == 0.75));
     }
 
     #[test]

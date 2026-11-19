@@ -22,7 +22,7 @@ use rbs_browser_ipc::{
     Configure, HEARTBEAT_PERIOD, MAX_PAYLOAD, encode_configure, heartbeat_lost, restart_delay,
     startup_lost,
 };
-use rbs_browser_shm::{FrameRing, RingReader, SlotLayout, SoundPacket, SoundRing};
+use rbs_browser_shm::{FrameRing, OwnedSoundPacket, RingReader, SlotLayout, SoundRing};
 
 /// A running (or exited) helper as the studio sees it.
 #[derive(Debug)]
@@ -85,10 +85,11 @@ impl HelperChild {
     }
 
     /// Calls `each` for every sound packet the helper wrote since the last call, in
-    /// order. Control thread only; never waits.
-    pub fn read_sound(&mut self, each: impl FnMut(SoundPacket<'_>)) {
+    /// order. `each` returns a spare buffer for the next copy, not the packet it
+    /// still holds. Control thread only; never waits.
+    pub fn read_sound(&mut self, each: impl FnMut(OwnedSoundPacket) -> Vec<f32>) {
         if let Some(sound) = self.sound.as_ref() {
-            sound.read(&mut self.sound_scratch, each);
+            sound.read_spare(&mut self.sound_scratch, each);
         }
     }
 
@@ -340,8 +341,9 @@ pub trait PageSound: Send + 'static {
     /// First in each poll: the OS monotonic time just read
     /// ([`rbs_browser_shm::os_monotonic_nanos`]), for the edge mapping.
     fn observe(&mut self, os_now: u64);
-    /// One packet the helper wrote, in order.
-    fn packet(&mut self, packet: SoundPacket<'_>);
+    /// One packet the helper wrote, in order. Returns a spare buffer for the next
+    /// copy. That spare is not the packet's own samples.
+    fn packet(&mut self, packet: OwnedSoundPacket) -> Vec<f32>;
     /// Last in each poll, after its packets.
     fn pump(&mut self);
 }
@@ -430,7 +432,7 @@ impl Supervisor {
                             // Hidden, or shown again just now: drop what the ring
                             // holds, so a shown page plays from the present with no
                             // backlog (ADR-0149 decision 5).
-                            child.read_sound(|_| {});
+                            child.read_sound(|packet| packet.samples);
                         }
                     }
                     was_shown = shown;

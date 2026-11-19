@@ -54,7 +54,7 @@ const fn section_len() -> usize {
     SOUND_HEADER + PACKETS * ENTRY + SAMPLES * 4
 }
 
-/// One packet as the studio reads it.
+/// One packet as the studio reads it, borrowing the scratch passed to [`SoundRing::read`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SoundPacket<'a> {
     /// OS monotonic time of the first frame ([`crate::os_monotonic_nanos`]).
@@ -65,6 +65,22 @@ pub struct SoundPacket<'a> {
     pub channels: u16,
     /// Interleaved samples, a whole number of frames.
     pub samples: &'a [f32],
+}
+
+/// One packet copied once out of the section ([`SoundRing::read_spare`]).
+///
+/// `samples` is that copy. The caller returns a different buffer for the next
+/// packet, so this one stays intact while it is still held.
+#[derive(Debug, PartialEq)]
+pub struct OwnedSoundPacket {
+    /// OS monotonic time of the first frame ([`crate::os_monotonic_nanos`]).
+    pub os_nanos: u64,
+    /// Frames per second.
+    pub rate: u32,
+    /// Channels, interleaved in `samples`.
+    pub channels: u16,
+    /// Interleaved samples, a whole number of frames.
+    pub samples: Vec<f32>,
 }
 
 /// One mapped sound section. The studio [`SoundRing::create`]s it; the helper
@@ -176,8 +192,54 @@ impl SoundRing {
     /// Studio side: calls `each` for every packet written since the last call, in
     /// order, with its samples copied into `scratch`. A malformed packet (the helper
     /// is untrusted) ends the read and skips everything written so far. Never waits;
-    /// allocates only to grow `scratch`.
+    /// allocates only to grow `scratch`. [`Self::read_spare`] moves that buffer to
+    /// the caller instead of borrowing `scratch`.
     pub fn read(&self, scratch: &mut Vec<f32>, mut each: impl FnMut(SoundPacket<'_>)) {
+        self.for_each_new(
+            |os_nanos, rate, channels, count, dest| {
+                each(SoundPacket {
+                    os_nanos,
+                    rate,
+                    channels,
+                    samples: &dest[..count],
+                });
+            },
+            scratch,
+        );
+    }
+
+    /// As [`read`](Self::read), but each packet is copied once into `slot` and then
+    /// moved to `each`. `each` returns the spare for the next copy: a buffer of this
+    /// packet's length once one exists, and not a buffer it still holds. Allocates
+    /// only to grow `slot`. A larger packet may grow it.
+    pub fn read_spare(
+        &self,
+        slot: &mut Vec<f32>,
+        mut each: impl FnMut(OwnedSoundPacket) -> Vec<f32>,
+    ) {
+        self.for_each_new(
+            |os_nanos, rate, channels, count, dest| {
+                let mut filled = std::mem::take(dest);
+                filled.truncate(count);
+                *dest = each(OwnedSoundPacket {
+                    os_nanos,
+                    rate,
+                    channels,
+                    samples: filled,
+                });
+            },
+            slot,
+        );
+    }
+
+    /// Walks new packets. `on_packet` sees the samples in `dest` (the first `count`
+    /// elements) and may replace `dest` with the spare for the next packet. A
+    /// malformed packet ends the walk and skips to the helper's present.
+    fn for_each_new(
+        &self,
+        mut on_packet: impl FnMut(u64, u32, u16, usize, &mut Vec<f32>),
+        dest: &mut Vec<f32>,
+    ) {
         let packets = self.dword(32).load(Ordering::Acquire);
         let written = self.dword(16).load(Ordering::Acquire);
         let mut packets_read = self.dword(40).load(Ordering::Relaxed);
@@ -205,33 +267,36 @@ impl SoundRing {
                 self.skip(written, packets);
                 return;
             }
-            if scratch.len() < count {
-                scratch.resize(count, 0.0);
-            }
-            let start = (read % SAMPLES as u64) as usize;
-            let head = count.min(SAMPLES - start);
-            let base = self.samples_ptr();
-            // SAFETY: both ranges are inside the sample area (`start < SAMPLES`,
-            // `head <= SAMPLES - start`, `count - head <= SAMPLES`), and `scratch`
-            // holds at least `count` samples and is ours. The helper wrote these
-            // samples before it published `written` (release, read with acquire)
-            // and does not write them again until `read` passes them. A raw copy
-            // never forms a reference to memory the helper may write.
-            unsafe {
-                std::ptr::copy_nonoverlapping(base.add(start), scratch.as_mut_ptr(), head);
-                std::ptr::copy_nonoverlapping(base, scratch.as_mut_ptr().add(head), count - head);
-            }
+            self.copy_samples(read, count, dest);
+            // `read_spare` takes `dest` and puts the spare back. A short spare
+            // grows on the next copy; nothing reads it before that.
+            on_packet(os_nanos, rate, channels as u16, count, dest);
             read += count as u64;
             packets_read += 1;
-            each(SoundPacket {
-                os_nanos,
-                rate,
-                channels: channels as u16,
-                samples: &scratch[..count],
-            });
         }
         self.dword(24).store(read, Ordering::Release);
         self.dword(40).store(packets_read, Ordering::Release);
+    }
+
+    /// Copies `count` interleaved samples starting at sample cursor `read` into `dest`.
+    /// Grows `dest` when it is shorter than `count`.
+    fn copy_samples(&self, read: u64, count: usize, dest: &mut Vec<f32>) {
+        if dest.len() < count {
+            dest.resize(count, 0.0);
+        }
+        let start = (read % SAMPLES as u64) as usize;
+        let head = count.min(SAMPLES - start);
+        let base = self.samples_ptr();
+        // SAFETY: both ranges are inside the sample area (`start < SAMPLES`,
+        // `head <= SAMPLES - start`, `count - head <= SAMPLES`), and `dest`
+        // holds at least `count` samples and is ours. The helper wrote these
+        // samples before it published `written` (release, read with acquire)
+        // and does not write them again until `read` passes them. A raw copy
+        // never forms a reference to memory the helper may write.
+        unsafe {
+            std::ptr::copy_nonoverlapping(base.add(start), dest.as_mut_ptr(), head);
+            std::ptr::copy_nonoverlapping(base, dest.as_mut_ptr().add(head), count - head);
+        }
     }
 
     fn skip(&self, written: u64, packets: u64) {
@@ -360,5 +425,44 @@ mod tests {
         assert!(!studio.write_planar(1, 48_000, &planes, 4));
         assert!(!studio.write_planar(1, 48_000, &[&plane[..2]], 4));
         assert_eq!(studio.dropped(), 2);
+    }
+
+    #[test]
+    fn the_spare_returned_for_one_packet_holds_the_next() {
+        let studio = SoundRing::create().unwrap();
+        let helper = SoundRing::open(studio.name()).unwrap();
+        let (l, r) = ([1.0, 2.0], [-1.0, -2.0]);
+        assert!(helper.write_planar(100, 48_000, &[&l, &r], 2));
+        assert!(helper.write_planar(200, 48_000, &[&l[..1]], 1));
+        let mut slot = Vec::new();
+        let mut first: Option<(usize, Vec<f32>)> = None;
+        let mut spare_ptr = std::ptr::null();
+        let mut second_ptr = std::ptr::null();
+        let mut second_samples = Vec::new();
+        let mut n = 0u32;
+        studio.read_spare(&mut slot, |packet| {
+            n += 1;
+            if n == 1 {
+                let len = packet.samples.len();
+                let ptr = packet.samples.as_ptr() as usize;
+                first = Some((ptr, packet.samples));
+                let spare = vec![0.0; len];
+                spare_ptr = spare.as_ptr();
+                spare
+            } else {
+                second_ptr = packet.samples.as_ptr();
+                assert_eq!(packet.os_nanos, 200);
+                assert_eq!(packet.rate, 48_000);
+                assert_eq!(packet.channels, 1);
+                second_samples = packet.samples.clone();
+                packet.samples
+            }
+        });
+        let (first_ptr, first_samples) = first.unwrap();
+        assert_eq!(first_samples, vec![1.0, -1.0, 2.0, -2.0]);
+        assert_eq!(second_samples, vec![1.0]);
+        assert_eq!(second_ptr, spare_ptr);
+        assert_ne!(first_ptr, second_ptr as usize);
+        assert_eq!(n, 2);
     }
 }
