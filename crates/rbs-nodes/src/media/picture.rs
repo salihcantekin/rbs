@@ -336,6 +336,10 @@ impl MediaPictureNode {
         {
             last = Some(item);
         }
+        // The picture already in the slot stays there. A different one is published once.
+        let same = last.as_ref().is_some_and(|item| {
+            self.shown && self.published == Some(item.index) && self.shown_texture.is_some()
+        });
         if let Some(current) = last {
             self.held_mark = current.mark;
             self.shared.set_cursor(current.media);
@@ -345,7 +349,7 @@ impl MediaPictureNode {
                 _ => self.shown_texture.as_ref().and_then(VideoFrame::share),
             };
         }
-        self.shown = false;
+        self.shown = same;
         self.rings = None;
         self.phase = player.phase;
     }
@@ -389,6 +393,10 @@ impl MediaPictureNode {
     /// Chooses the picture for master time `now`: the latest one whose stamp is due,
     /// or the first one before its time (the cued picture is on air at once; motion
     /// starts one lead later). Does not allocate, free, block, or read the file.
+    ///
+    /// When this picture is already showing, returns `None` and does not share it.
+    /// The slot keeps that frame, with its timestamp and sequence. A first picture
+    /// and a picture that replaced it are shared.
     pub fn dequeue(&mut self, now: Timestamp) -> Option<VideoFrame> {
         self.changed = false;
         // A run the control path started (a restart from the end hold) is taken first.
@@ -398,6 +406,13 @@ impl MediaPictureNode {
                 .stats
                 .repeated_video
                 .fetch_add(1, Ordering::Relaxed);
+            // `shown` stays set while the held picture is the one already in the slot.
+            self.changed = !self.shown;
+            if self.changed {
+                self.shown = true;
+            } else if self.shown_texture.is_some() {
+                return None;
+            }
             return self.held.as_ref().and_then(VideoFrame::share);
         }
         if self.phase != MediaPhase::Playing {
@@ -454,6 +469,10 @@ impl MediaPictureNode {
         }
         let Some(current) = self.current.as_ref() else {
             // A new run after the end hold shows the held picture until its first.
+            // The slot already has it when a texture is showing.
+            if self.shown && self.shown_texture.is_some() {
+                return None;
+            }
             return self.held.as_ref().and_then(VideoFrame::share);
         };
         self.changed = !self.shown;
@@ -462,6 +481,9 @@ impl MediaPictureNode {
                 .stats
                 .repeated_video
                 .fetch_add(1, Ordering::Relaxed);
+            if self.shown_texture.is_some() {
+                return None;
+            }
         } else {
             self.shown = true;
             self.published = Some(current.index);
@@ -483,8 +505,8 @@ impl MediaPictureNode {
     ) -> Result<Option<VideoFrame>, NodeError> {
         let chosen = self.dequeue(now);
         if !self.changed && self.shown_texture.is_some() {
-            // The slot already shows this picture. Publishing again retains a lease
-            // on every tick (ADR-0143 R5).
+            // The slot already shows this picture. `dequeue` did not share it.
+            // Publishing again would retain a lease on every tick (ADR-0143 R5).
             return Ok(None);
         }
         let source = match chosen {
@@ -657,4 +679,140 @@ impl Node<GpuRuntime> for MediaPictureNode {
 /// True for a native surface the importer still has to take.
 fn is_native(frame: &VideoFrame) -> bool {
     matches!(frame.payload(), FramePayload::Native { .. })
+}
+
+#[cfg(test)]
+mod share_tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicI64, Ordering};
+    use std::time::Duration;
+
+    use rbs_audio::AudioGraphConfig;
+    use rbs_core::media::lease::{Lease, LeaseOwner};
+    use rbs_core::media::{ColorSpace, PixelFormat, Size, TextureId, VideoFormat, VideoFrame};
+    use rbs_core::time::{TestClock, Timestamp};
+    use rbs_media_decode_test::{ScriptClip, ScriptFactory};
+
+    use super::super::worker::Pending;
+    use super::MediaPhase;
+    use crate::media_pair;
+
+    /// Counts lease retains. Test slots own no memory.
+    struct Counter(AtomicI64);
+
+    // SAFETY: `retain` and `release` keep the counter exact, and the slot owns no memory.
+    unsafe impl LeaseOwner for Counter {
+        fn retain(&self, _token: u64) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+
+        fn release(&self, _token: u64) {
+            self.0.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+
+    impl Counter {
+        fn lease(self: &Arc<Self>) -> Lease {
+            self.retain(0);
+            // SAFETY: the reference counted just above is handed to the lease.
+            unsafe { Lease::adopt(Arc::clone(self) as Arc<dyn LeaseOwner>, 0) }
+        }
+
+        fn count(&self) -> i64 {
+            self.0.load(Ordering::Relaxed)
+        }
+    }
+
+    fn pending(frame: VideoFrame) -> Pending {
+        Pending {
+            frame: Some(frame),
+            native: None,
+            generation: 0,
+            start: Timestamp::ZERO,
+            media: Duration::ZERO,
+            index: 7,
+            mark: 1,
+            bytes: 0,
+        }
+    }
+
+    #[test]
+    fn an_unchanged_picture_is_not_shared_again() {
+        let owner = Arc::new(Counter(AtomicI64::new(0)));
+        let stamp = Timestamp::from_nanos(1_500_000);
+        let sequence = 42;
+        let format = VideoFormat::new(Size::new(2, 2), PixelFormat::Rgba8, ColorSpace::SRGB);
+        let frame = VideoFrame::texture(format, stamp, TextureId::new(1, 1), Some(owner.lease()))
+            .with_sequence(sequence);
+        let clock = Arc::new(TestClock::new());
+        let mut pair = media_pair(
+            Arc::new(ScriptFactory::new(ScriptClip::silent_frames())),
+            std::path::PathBuf::from("clip.mp4"),
+            true,
+            true,
+            clock,
+            AudioGraphConfig::default(),
+        );
+        let picture = &mut pair.picture;
+        let Some(showing) = frame.share() else {
+            panic!("a texture shares");
+        };
+        let Some(held) = frame.share() else {
+            panic!("a texture shares");
+        };
+        drop(frame);
+        // The slot and the current picture each hold one lease.
+        picture.shown_texture = Some(showing);
+        picture.current = Some(pending(held));
+        picture.shown = true;
+        picture.published = Some(7);
+        picture.phase = MediaPhase::Playing;
+        let leases = owner.count();
+        assert!(picture.dequeue(Timestamp::from_nanos(16_000_000)).is_none());
+        assert_eq!(owner.count(), leases, "an unchanged picture was shared");
+        let stored = picture
+            .current
+            .as_ref()
+            .and_then(|item| item.frame.as_ref());
+        let Some(stored) = stored else {
+            panic!("the slot picture was dropped");
+        };
+        assert_eq!(stored.timestamp(), stamp);
+        assert_eq!(stored.sequence(), sequence);
+        assert!(picture.shown_texture.is_some());
+
+        // A picture that has not been published yet is shared, once.
+        picture.shown = false;
+        let Some(published) = picture.dequeue(stamp) else {
+            panic!("a new picture is published");
+        };
+        assert_eq!(owner.count(), leases + 1);
+        assert_eq!(published.timestamp(), stamp);
+        assert_eq!(published.sequence(), sequence);
+        drop(published);
+        assert_eq!(owner.count(), leases);
+        assert!(picture.dequeue(Timestamp::from_nanos(32_000_000)).is_none());
+        assert_eq!(owner.count(), leases);
+
+        // The end hold of that same picture does not share it again.
+        picture.phase = MediaPhase::Hold;
+        picture.shown = true;
+        let Some(kept) = picture
+            .current
+            .as_ref()
+            .and_then(|item| item.frame.as_ref())
+            .and_then(VideoFrame::share)
+        else {
+            panic!("the held picture shares");
+        };
+        picture.held = Some(kept);
+        let leases = owner.count();
+        assert!(picture.dequeue(Timestamp::from_nanos(48_000_000)).is_none());
+        assert_eq!(owner.count(), leases, "a held picture was shared");
+        let Some(held) = picture.held.as_ref() else {
+            panic!("the held picture was dropped");
+        };
+        assert_eq!(held.timestamp(), stamp);
+        assert_eq!(held.sequence(), sequence);
+    }
 }
