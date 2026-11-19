@@ -50,6 +50,24 @@ fn fill(w: u32, h: u32, mut pixel: impl FnMut(u32, u32) -> [u8; 4]) -> Vec<u8> {
     out
 }
 
+/// One row of `pixel`, repeated `h` times. The bytes match [`fill`] with a constant pixel.
+fn solid(w: u32, h: u32, pixel: [u8; 4]) -> Vec<u8> {
+    let width = w as usize;
+    let height = h as usize;
+    if width == 0 || height == 0 {
+        return Vec::new();
+    }
+    let mut row = Vec::with_capacity(width * 4);
+    for _ in 0..width {
+        row.extend_from_slice(&pixel);
+    }
+    let mut out = Vec::with_capacity(row.len() * height);
+    for _ in 0..height {
+        out.extend_from_slice(&row);
+    }
+    out
+}
+
 /// A position along a gradient line through the picture at `angle` degrees (0 = top to
 /// bottom, 90 = left to right), 0.0 at the start and 1.0 at the end.
 fn gradient_t(x: u32, y: u32, w: u32, h: u32, angle: f32) -> f32 {
@@ -73,7 +91,7 @@ pub fn color_picture(
     angle: f32,
 ) -> Vec<u8> {
     match second {
-        None => fill(w, h, |_, _| first),
+        None => solid(w, h, first),
         Some(second) => fill(w, h, |x, y| {
             lerp(first, second, gradient_t(x, y, w, h, angle))
         }),
@@ -104,15 +122,22 @@ fn decode_limited(path: &Path, max_bytes: u64) -> Result<Picture, String> {
     }
     let mut buffer = vec![0u8; size];
     let frame = reader.next_frame(&mut buffer).map_err(|e| e.to_string())?;
-    let data = &buffer[..frame.buffer_size()];
+    let used = frame.buffer_size();
     let rgba = match frame.color_type {
-        png::ColorType::Rgba => data.to_vec(),
-        png::ColorType::Rgb => data
+        // The decoder already wrote RGBA into `buffer`. Keep that allocation.
+        png::ColorType::Rgba => {
+            buffer.truncate(used);
+            buffer
+        }
+        png::ColorType::Rgb => buffer[..used]
             .chunks_exact(3)
             .flat_map(|p| [p[0], p[1], p[2], 255])
             .collect(),
-        png::ColorType::Grayscale => data.iter().flat_map(|&g| [g, g, g, 255]).collect(),
-        png::ColorType::GrayscaleAlpha => data
+        png::ColorType::Grayscale => buffer[..used]
+            .iter()
+            .flat_map(|&g| [g, g, g, 255])
+            .collect(),
+        png::ColorType::GrayscaleAlpha => buffer[..used]
             .chunks_exact(2)
             .flat_map(|p| [p[0], p[0], p[0], p[1]])
             .collect(),
