@@ -341,7 +341,8 @@ pub struct CompositorNode<R: ReadySignal = NoReady, D: Redraw = OnChange> {
     /// The key of the last draw, one entry per listed layer; room for `capacity` entries
     /// reserved in `prepare` ([`OnChange`] only).
     drawn_key: Vec<LayerKey>,
-    /// This tick's key, built beside `scratch`; swapped with `drawn_key` after a draw.
+    /// This tick's key, compared before the draw list is built; swapped with
+    /// `drawn_key` after a draw.
     key: Vec<LayerKey>,
     /// `drawn_key` describes the frame on "canvas" (false until the first draw and after
     /// a failed one).
@@ -518,14 +519,67 @@ impl<R: ReadySignal, D: Redraw> Node<GpuRuntime> for CompositorNode<R, D> {
             }
             None => None,
         };
-        self.scratch.clear();
-        if D::ON_CHANGE {
-            self.key.clear();
-        }
-        // A fade or slide that had not ended at the last draw: this tick moves it.
-        let mut moving = false;
         // A linked layer without a picture this tick (ADR-0128 decision 7).
         let mut missing = false;
+        if D::ON_CHANGE {
+            self.key.clear();
+            // A fade, slide or scroll that had not ended at the last draw still moves.
+            let mut moving = false;
+            for spec in self.layers.get().iter().take(self.capacity as usize) {
+                let Some(link) = link_of(&inputs, spec) else {
+                    continue;
+                };
+                let picture = inputs.video(LAYERS_PIN, link).and_then(|frame| {
+                    let FramePayload::Texture(id) = *frame.payload() else {
+                        return None;
+                    };
+                    let tex = local.pool.get(id)?;
+                    Some((frame, id, tex.desc()))
+                });
+                // Room for `capacity` entries was reserved in `prepare`: no allocation.
+                self.key
+                    .push(picture.map(|(f, id, _)| (id, f.timestamp(), f.sequence())));
+                let ends = |start: Timestamp, length: Duration| start + length;
+                moving |= spec
+                    .fade
+                    .is_some_and(|f| self.drawn_at <= ends(f.start, f.duration))
+                    || spec
+                        .slide
+                        .is_some_and(|m| self.drawn_at <= ends(m.start, m.duration));
+                let Some((_, _, d)) = picture else {
+                    missing = R::TRACKS;
+                    continue;
+                };
+                // Scroll motion uses the same box as the draw (tick time), so a slide
+                // that changes the window still forces a draw.
+                if let Some(sc) = &spec.scroll {
+                    let transform = match &spec.slide {
+                        Some(slide) => slide.at(spec.transform, tick.time),
+                        None => spec.transform,
+                    };
+                    let crop = uv(spec.crop, d.width, d.height);
+                    let ended = sc
+                        .frame(&transform, &crop, d.width, d.height, self.drawn_at)
+                        .is_some_and(|f| f.ended);
+                    moving |= sc.moving_at(self.drawn_at, ended);
+                }
+            }
+            // Render on change (R-03): compare the key before building the draw list.
+            // Nothing new to draw, so the canvas frame of the last draw stays on
+            // "canvas" with its timestamp and sequence, and every reader that keys on
+            // them skips its work too. The canvas description is touched so its ring
+            // is not trimmed while unchanged.
+            if self.drawn_valid && !listed && !moving && self.key == self.drawn_key {
+                local.pool.touch(&desc);
+                self.stats.unchanged.fetch_add(1, Ordering::Relaxed);
+                if R::TRACKS && !missing {
+                    self.ready.mark(tick.index);
+                }
+                return Ok(());
+            }
+        }
+
+        self.scratch.clear();
         for spec in self.layers.get().iter().take(self.capacity as usize) {
             let Some(link) = link_of(&inputs, spec) else {
                 continue;
@@ -537,18 +591,6 @@ impl<R: ReadySignal, D: Redraw> Node<GpuRuntime> for CompositorNode<R, D> {
                 let tex = local.pool.get(id)?;
                 Some((frame, id, tex.desc()))
             });
-            if D::ON_CHANGE {
-                // Room for `capacity` entries was reserved in `prepare`: no allocation.
-                self.key
-                    .push(picture.map(|(f, id, _)| (id, f.timestamp(), f.sequence())));
-                let ends = |start: Timestamp, length: Duration| start + length;
-                moving |= spec
-                    .fade
-                    .is_some_and(|f| self.drawn_at <= ends(f.start, f.duration))
-                    || spec
-                        .slide
-                        .is_some_and(|m| self.drawn_at <= ends(m.start, m.duration));
-            }
             let Some((frame, id, d)) = picture else {
                 missing = R::TRACKS;
                 continue;
@@ -561,12 +603,6 @@ impl<R: ReadySignal, D: Redraw> Node<GpuRuntime> for CompositorNode<R, D> {
             let scroll = match &spec.scroll {
                 None => None,
                 Some(sc) => {
-                    if D::ON_CHANGE {
-                        let ended = sc
-                            .frame(&transform, &crop, d.width, d.height, self.drawn_at)
-                            .is_some_and(|f| f.ended);
-                        moving |= sc.moving_at(self.drawn_at, ended);
-                    }
                     // No length, or a Once picture that has left: nothing to draw.
                     match sc.frame(&transform, &crop, d.width, d.height, tick.time) {
                         Some(f) if !f.ended => Some(f.gpu(sc.direction, sc.repeat, sc.fade)),
@@ -599,18 +635,6 @@ impl<R: ReadySignal, D: Redraw> Node<GpuRuntime> for CompositorNode<R, D> {
             });
         }
 
-        // Render on change (R-03): nothing new to draw, so the canvas frame of the last
-        // draw stays on "canvas" with its timestamp and sequence, and every reader that
-        // keys on them skips its work too. The canvas description is touched so its
-        // ring is not trimmed while unchanged.
-        if D::ON_CHANGE && self.drawn_valid && !listed && !moving && self.key == self.drawn_key {
-            local.pool.touch(&desc);
-            self.stats.unchanged.fetch_add(1, Ordering::Relaxed);
-            if R::TRACKS && !missing {
-                self.ready.mark(tick.index);
-            }
-            return Ok(());
-        }
         // A failed draw below leaves the key invalid, so the next tick draws again.
         self.drawn_valid = false;
 
