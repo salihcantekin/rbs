@@ -1231,13 +1231,17 @@ impl Node<GpuRuntime> for VideoExportNode {
         let lost = (now.stale - self.seen.stale)
             + (now.no_buffer - self.seen.no_buffer)
             + (now.failed - self.seen.failed);
-        self.stats
-            .busy
-            .fetch_add(now.busy - self.seen.busy, Ordering::Relaxed);
-        self.stats.lost.fetch_add(lost, Ordering::Relaxed);
-        self.stats
-            .repeated
-            .fetch_add(now.repeated - self.seen.repeated, Ordering::Relaxed);
+        let busy = now.busy - self.seen.busy;
+        if busy != 0 {
+            self.stats.busy.fetch_add(busy, Ordering::Relaxed);
+        }
+        if lost != 0 {
+            self.stats.lost.fetch_add(lost, Ordering::Relaxed);
+        }
+        let repeated = now.repeated - self.seen.repeated;
+        if repeated != 0 {
+            self.stats.repeated.fetch_add(repeated, Ordering::Relaxed);
+        }
         if now.joined != self.seen.joined {
             self.stats
                 .joined
