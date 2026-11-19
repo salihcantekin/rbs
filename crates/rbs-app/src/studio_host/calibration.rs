@@ -10,9 +10,9 @@
 //! while any output runs.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::Arc;
 use std::time::Duration;
 
 use rbs_api::event::{EventPayload, StateKey, Topic};
