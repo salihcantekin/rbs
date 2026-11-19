@@ -281,6 +281,8 @@ pub struct MixerNode {
     capacity: usize,
     /// One per honoured strip, parallel to the first `capacity` of `params.strips`.
     strips: Vec<StripState>,
+    /// Producer to strip index, sorted by producer. Filled in `apply_params`.
+    by_producer: Vec<(NodeId, usize)>,
     scratch: Vec<StripState>,
     master: Ramp,
     /// The parameters have not been applied yet.
@@ -323,6 +325,7 @@ impl MixerNode {
                 params: rx,
                 capacity: strips,
                 strips: Vec::with_capacity(strips),
+                by_producer: Vec::with_capacity(strips),
                 scratch: Vec::with_capacity(strips),
                 master: Ramp::steady(1.0),
                 fresh: true,
@@ -337,7 +340,8 @@ impl MixerNode {
     }
 
     /// Takes new parameters (or a change of whether the monitor is read) into the
-    /// ramp state, without allocating (both vectors hold `capacity`).
+    /// ramp state, without allocating (the strip vectors and the producer table
+    /// hold `capacity`).
     fn apply_params(&mut self, t: Timestamp) {
         let p = self.params.get();
         let ramp = p.ramp;
@@ -396,6 +400,12 @@ impl MixerNode {
             self.scratch.push(state);
         }
         std::mem::swap(&mut self.strips, &mut self.scratch);
+        self.by_producer.clear();
+        for (index, strip) in self.strips.iter().enumerate() {
+            self.by_producer.push((strip.producer, index));
+        }
+        self.by_producer
+            .sort_unstable_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
         let master = sanitize(p.master);
         self.master = if self.fresh {
             Ramp::steady(master)
@@ -403,6 +413,17 @@ impl MixerNode {
             self.master.towards(master, t, ramp)
         };
         self.fresh = false;
+    }
+
+    /// The strip for `producer`, from the table `apply_params` sorted.
+    fn strip_mut(&mut self, producer: NodeId) -> Option<&mut StripState> {
+        let at = self.by_producer.partition_point(|entry| entry.0 < producer);
+        let index = self
+            .by_producer
+            .get(at)
+            .filter(|entry| entry.0 == producer)
+            .map(|entry| entry.1)?;
+        self.strips.get_mut(index)
     }
 }
 
@@ -459,7 +480,7 @@ impl<X: Runtime> Node<X> for MixerNode {
             let Some(producer) = inputs.source(0, link) else {
                 continue;
             };
-            let Some(strip) = self.strips.iter_mut().find(|s| s.producer == producer) else {
+            let Some(strip) = self.strip_mut(producer) else {
                 self.stats.unknown_inputs.fetch_add(1, Ordering::Relaxed);
                 continue;
             };
@@ -493,11 +514,12 @@ impl<X: Runtime> Node<X> for MixerNode {
             // The common case (every send at 1, nothing to the monitor) is the plain
             // sum; anything else takes the general loop.
             let plain = s0 == 1.0 && s1 == 1.0 && m0 == 0.0 && m1 == 0.0;
+            let meter_index = strip.index;
             let meter = self
                 .params
                 .get()
                 .strips
-                .get(strip.index)
+                .get(meter_index)
                 .and_then(|s| s.meter.as_deref());
             let dg = (g1 - g0) * inv;
             let (ds, dm) = ((s1 - s0) * inv, (m1 - m0) * inv);
