@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use rbs_core::media::{
     ColorSpace, FramePayload, PixelFormat, Size, TextureId, TransferFunction, VideoFormat,
-    next_generation,
+    VideoFrame, next_generation,
 };
 use rbs_core::time::Timestamp;
 use rbs_gpu::node::GpuRuntime;
@@ -16,6 +16,7 @@ use rbs_graph::node::{LinkKind, NodeDescriptor, NodeKind, Pin};
 use rbs_graph::runtime::param::{self, ParamReceiver, ParamSender};
 use rbs_graph::runtime::{Node, NodeError, PrepareCtx, ProcessCtx, WarmCtx};
 
+use crate::catalogue::{COLOR_CORRECTION, colour_correction_is_identity};
 use crate::types::{FilterType, MAX_PASSES, PassSource, UNIFORM_VECS, Uniforms, Values};
 
 /// Index of the "in" pin.
@@ -92,6 +93,8 @@ pub struct FilterNode {
     /// The output texture published last (still read by the output slot).
     last_output: Option<TextureId>,
     uniforms: [Uniforms; MAX_PASSES],
+    /// Colour correction only: an identity grade publishes the input instead of drawing.
+    identity_skip: bool,
     /// Decodes a 4:2:0 input (a camera sampled directly by the compositor, perf audit
     /// R-11) once per picture; holds nothing until the first such frame.
     rgb: YuvToRgb,
@@ -153,6 +156,7 @@ impl FilterNode {
         if let Some(s) = size.filter(|s| s[0] > 0 && s[1] > 0) {
             stats.size.store(pack(s), Ordering::Release);
         }
+        let identity_skip = ty.type_id().as_str() == COLOR_CORRECTION;
         let node = Self {
             descriptor: descriptor(ty.as_ref()),
             ty,
@@ -164,6 +168,7 @@ impl FilterNode {
             published: None,
             last_output: None,
             uniforms: [Uniforms::default(); MAX_PASSES],
+            identity_skip,
             rgb: YuvToRgb::new(),
         };
         (node, sender, stats)
@@ -342,11 +347,13 @@ impl Node<GpuRuntime> for FilterNode {
 
         // What the input offers; nothing usable publishes nothing. A 4:2:0 input is
         // decoded to RGB first, once per picture.
+        let mut decoded = false;
         let mut frame = inputs.video(IN_PIN, 0);
         if let Some(f) = frame
             && YuvToRgb::needs_decode(&local.pool, f)
         {
             frame = self.rgb.rgb(gpu, &mut local.pool, f).ok();
+            decoded = frame.is_some();
         }
         let input = frame.and_then(|frame| {
             let FramePayload::Texture(id) = *frame.payload() else {
@@ -357,9 +364,20 @@ impl Node<GpuRuntime> for FilterNode {
             let d = tex.desc();
             let decode =
                 frame.format().color.transfer == TransferFunction::Srgb && !d.format.is_srgb();
-            Some((id, [d.width, d.height], decode, frame.timestamp()))
+            let format = frame.format();
+            // Publishing this frame leaves the pixels and the tags the pass would claim.
+            let linear_canvas = d.format == wgpu::TextureFormat::Rgba16Float
+                && format.pixel_format == PixelFormat::Rgba16Float
+                && format.color == ColorSpace::LINEAR_BT709;
+            Some((
+                id,
+                [d.width, d.height],
+                decode,
+                frame.timestamp(),
+                linear_canvas,
+            ))
         });
-        let Some((input_id, size, decode, time)) = input else {
+        let Some((input_id, size, decode, time, linear_canvas)) = input else {
             self.published = None;
             drop(outputs.set_video(OUT_PIN, None)?);
             return Ok(());
@@ -407,11 +425,39 @@ impl Node<GpuRuntime> for FilterNode {
                     0.0,
                     if first && decode { 1.0 } else { 0.0 },
                 ];
-                gpu.queue().write_buffer(
-                    &prepared.buffers[i],
-                    0,
-                    bytemuck::bytes_of(&self.uniforms[i]),
-                );
+            }
+            // Identity colour correction on linear canvas pixels is a no-op, including
+            // the sRGB round trip. Publish the input and skip the draw. Any other grade,
+            // or an sRGB-encoded input, still runs the pass below.
+            if self.identity_skip
+                && linear_canvas
+                && !decode
+                && colour_correction_is_identity(&self.uniforms[0])
+            {
+                let shared = if decoded {
+                    inputs.video(IN_PIN, 0).and_then(|src| {
+                        self.rgb
+                            .rgb(gpu, &mut local.pool, src)
+                            .ok()
+                            .and_then(VideoFrame::share)
+                    })
+                } else {
+                    inputs.video(IN_PIN, 0).and_then(VideoFrame::share)
+                };
+                if let Some(frame) = shared {
+                    self.written = Some(state);
+                    self.stats.frames.fetch_add(1, Ordering::Relaxed);
+                    self.published = Some((input_id, time));
+                    for desc in targets_of(passes, size).iter().flatten() {
+                        local.pool.touch(desc);
+                    }
+                    drop(outputs.set_video(OUT_PIN, Some(frame.with_sequence(next_generation())))?);
+                    return Ok(());
+                }
+            }
+            for (i, buffer) in prepared.buffers.iter().enumerate().take(count) {
+                gpu.queue()
+                    .write_buffer(buffer, 0, bytemuck::bytes_of(&self.uniforms[i]));
             }
             self.written = Some(state);
         }

@@ -2,7 +2,7 @@
 
 use rbs_graph::node::NodeTypeId;
 
-use crate::types::{Field, FilterType, Pass, PassSource, Scale, Uniforms, Values};
+use crate::types::{Field, FilterType, Pass, PassSource, Scale, UNIFORM_VECS, Uniforms, Values};
 
 /// Type id of colour correction.
 pub const COLOR_CORRECTION: &str = "org.rbs.filter.color-correction";
@@ -79,6 +79,18 @@ impl FilterType for ColorCorrection {
         ];
         u.0[1] = [hue.cos(), hue.sin(), 0.0, 0.0];
     }
+}
+
+/// The colour-correction grade is a no-op: brightness 0, contrast 0, saturation 1,
+/// gamma 1, hue 0. `u[0]` is brightness, contrast, saturation and `1 / gamma`; `u[1]`
+/// is `cos(hue)`, `sin(hue)`. Slots `u[2]`..`u[14]` stay zero. The node owns `u[15]`
+/// (texel size and the sRGB decode flag), which this does not read.
+pub(crate) fn colour_correction_is_identity(u: &Uniforms) -> bool {
+    u.0[0] == [0.0, 0.0, 1.0, 1.0]
+        && u.0[1] == [1.0, 0.0, 0.0, 0.0]
+        && u.0[2..UNIFORM_VECS - 1]
+            .iter()
+            .all(|row| *row == [0.0, 0.0, 0.0, 0.0])
 }
 
 /// Chroma key: makes a colour (green by default) transparent.
@@ -241,6 +253,37 @@ mod tests {
             let sum: f32 = w[0] + 2.0 * w[1..=n].iter().sum::<f32>();
             assert!((sum - 1.0).abs() < 1e-5, "{sigma}: {sum}");
             assert!(n <= MAX_BLUR_TAPS);
+        }
+    }
+
+    #[test]
+    fn colour_correction_defaults_are_the_identity_grade() {
+        use crate::types::Value;
+
+        let ty: &dyn FilterType = &ColorCorrection;
+        let defaults = Values::defaults(ty);
+        let mut out = [Uniforms::default()];
+        ty.uniforms(&defaults, [16, 8], &mut out);
+        assert!(colour_correction_is_identity(&out[0]));
+        // The node's decode flag and texel size are not part of the grade.
+        out[0].0[UNIFORM_VECS - 1] = [1.0 / 16.0, 1.0 / 8.0, 0.0, 1.0];
+        assert!(colour_correction_is_identity(&out[0]));
+        let patches = [
+            ("brightness", 0.1),
+            ("contrast", 0.1),
+            ("saturation", 1.1),
+            ("gamma", 1.1),
+            ("hue", 10.0),
+        ];
+        for (key, number) in patches {
+            let Ok(values) = defaults.with(ty, [(key, Value::Number(number))]) else {
+                panic!("in-range {key}");
+            };
+            ty.uniforms(&values, [16, 8], &mut out);
+            assert!(
+                !colour_correction_is_identity(&out[0]),
+                "{key} still looked like the identity"
+            );
         }
     }
 

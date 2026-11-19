@@ -273,10 +273,15 @@ impl Node<GpuRuntime> for Feed {
                     wgpu::TextureFormat::Rgba16Float
                 }
             };
-            let desc = TextureDesc::source(p.width, p.height, texel(p.srgb8));
+            let mut desc = TextureDesc::source(p.width, p.height, texel(p.srgb8));
+            // Colour correction at the identity grade publishes this texture. The golden
+            // reads it back, which needs COPY_SRC; sampling only needs TEXTURE_BINDING.
+            desc.usage |= wgpu::TextureUsages::COPY_SRC;
             if let Some((old, w, h, srgb8, _)) = self.current.take() {
                 let _ = local.pool.release(old);
-                if TextureDesc::source(w, h, texel(srgb8)) != desc {
+                let mut old_desc = TextureDesc::source(w, h, texel(srgb8));
+                old_desc.usage |= wgpu::TextureUsages::COPY_SRC;
+                if old_desc != desc {
                     // As a capture source does when its size changes: the old frame
                     // is dropped once nobody reads it.
                     local.pool.forget_texture(old);
