@@ -642,6 +642,13 @@ impl Compositor {
         let mut any_yuv = false;
         let mut scrolled = 0u32;
         for (index, layer) in layers.iter().enumerate() {
+            // A fully transparent layer blends to nothing. Skip it before sampling
+            // (docs/specs/gpu-compositor.md). A later frame with opacity above 0 draws
+            // the same texture; the source stays scheduled.
+            if layer.opacity <= 0.0 {
+                stats.skipped_layers += 1;
+                continue;
+            }
             let Some((_, colour)) = sampled(pool, layer) else {
                 stats.skipped_layers += 1;
                 continue;

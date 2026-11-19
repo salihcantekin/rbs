@@ -193,6 +193,23 @@ fn rotated_layer_covers_rotated_area() {
 }
 
 #[test]
+fn a_fully_transparent_layer_is_not_sampled() {
+    let Some((ctx, mut pool, mut comp, target)) = setup() else {
+        return;
+    };
+    let red = solid(ctx, &mut pool, 2, 2, [1.0, 0.0, 0.0, 1.0]);
+    let green = solid(ctx, &mut pool, 2, 2, [0.0, 1.0, 0.0, 1.0]);
+    let mut cover = Layer::new(green, 0.0, 0.0, 64.0, 64.0);
+    cover.opacity = 0.0;
+    let layers = [Layer::new(red, 0.0, 0.0, 64.0, 64.0), cover];
+    let stats = comp.render(ctx, &pool, &layers, target).unwrap();
+    assert_eq!(stats.drawn_layers, 1);
+    assert_eq!(stats.skipped_layers, 1);
+    let px = readback::read_rgba16f(ctx, &pool, target).unwrap();
+    assert_close(at(&px, W, 32, 32), [1.0, 0.0, 0.0, 1.0], TOL);
+}
+
+#[test]
 fn stale_layer_is_skipped_and_counted() {
     let Some((ctx, mut pool, mut comp, target)) = setup() else {
         return;
