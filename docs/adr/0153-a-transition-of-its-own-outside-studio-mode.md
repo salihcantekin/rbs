@@ -51,3 +51,5 @@ Independent review per ADR-0014, 2026-11-18, a fresh AI session given the ADR, t
 8. The ADR-0128 note is worded as a Review record.
 
 Owner acceptance, 2026-11-18: Salih chose the design (decision card, "separate setting, default Move"), said "başla" to the proposal, and approved merges and visual changes of the running work in advance the same evening, which accepts this ADR, including the minor-version exception of decision 5.
+
+Follow-up, 2026-11-19 (owner report after testing): with the glide at 0 ms, Move outside studio mode looked like a Cut and nothing said why. The owner chose (decision card) to keep the durations shared (decision 2) and show them: each choice of the Scene menu picker names its duration, and says when it cuts (0 ms, or a Stinger with no file). No contract change.

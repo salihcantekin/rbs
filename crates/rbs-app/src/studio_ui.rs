@@ -5834,9 +5834,10 @@ impl StudioUi {
             .set_vec(rows(collections, &self.user.collection_id));
     }
 
-    /// The kind a scene switch uses outside studio mode (ADR-0153), for the Scene menu.
-    pub fn direct_transition(&self) -> rbs_scene::TransitionKind {
-        self.transition.direct
+    /// The collection's transition and the glide's duration in ms (Move's), for the
+    /// Scene menu's choice outside studio mode (ADR-0153).
+    pub fn direct_transition(&self) -> (rbs_scene::CollectionTransition, u32) {
+        (self.transition, self.glide.duration_ms)
     }
 
     /// The output profiles (`collection` false) or scene collections as last read,
