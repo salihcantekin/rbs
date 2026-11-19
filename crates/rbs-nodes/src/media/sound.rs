@@ -150,8 +150,8 @@ impl MediaSoundNode {
                     break;
                 };
                 if due && !stale {
-                    // Blocks are cut for this channel count. A short one leaves silence.
-                    rbs_audio::deinterleave(&block.samples, channels, frames);
+                    // Blocks are cut for this channel count. A short plane leaves silence.
+                    copy_planes(&block.samples, block.channels, channels, frames);
                     written = true;
                 } else if late && !stale {
                     stats.late_blocks.fetch_add(1, Ordering::Relaxed);
@@ -187,6 +187,25 @@ impl MediaSoundNode {
             }
         }
         written
+    }
+}
+
+/// Copies each plane of `samples` (`stored` channels, channel-major) into `channels`.
+/// One `copy_from_slice` per channel. A short plane leaves the rest of that span
+/// silent. No allocation.
+fn copy_planes(samples: &[f32], stored: usize, channels: &mut [&mut [f32]], frames: usize) {
+    let plane = samples.len().checked_div(stored).unwrap_or(0);
+    let count = stored.min(channels.len());
+    for (c, dest) in channels.iter_mut().enumerate().take(count) {
+        let span = frames.min(dest.len());
+        let start = c.saturating_mul(plane);
+        let available = plane.min(span).min(samples.len().saturating_sub(start));
+        dest[..available].copy_from_slice(&samples[start..start + available]);
+        dest[available..span].fill(0.0);
+    }
+    for dest in channels.iter_mut().skip(count) {
+        let span = frames.min(dest.len());
+        dest[..span].fill(0.0);
     }
 }
 

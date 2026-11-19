@@ -1007,6 +1007,7 @@ impl Run<'_> {
                 epoch: job.epoch,
                 generation: self.generation,
                 samples: buffer,
+                channels: self.sound.channels,
             };
             let Some(inlet) = self.sound.inlet.as_mut() else {
                 stats.worker_dropped_blocks.fetch_add(1, Ordering::Relaxed);
@@ -1186,8 +1187,8 @@ struct SoundStream {
     channels: usize,
     block_frames: usize,
     converter: Option<Converter>,
-    /// Interleaved frames from `head`.
-    fifo: Vec<f32>,
+    /// Graph-rate frames from `head`, one plane per channel (channel-major).
+    fifo: Vec<Vec<f32>>,
     head: i64,
     /// Media time of the next source chunk when it states none.
     next_media: Duration,
@@ -1207,12 +1208,13 @@ struct SoundStream {
 impl SoundStream {
     fn new(config: &AudioGraphConfig, cursor: Duration) -> Self {
         let rate = config.format.sample_rate.hz();
+        let channels = config.format.channels.channels().max(1);
         let mut stream = Self {
             rate,
-            channels: config.format.channels.channels().max(1),
+            channels,
             block_frames: config.block_frames as usize,
             converter: None,
-            fifo: Vec::new(),
+            fifo: vec![Vec::new(); channels],
             head: 0,
             next_media: cursor,
             block: None,
@@ -1232,7 +1234,7 @@ impl SoundStream {
     /// inlet and the spare buffers kept.
     fn reset(&mut self, config: &AudioGraphConfig, position: Duration) {
         self.converter = None;
-        self.fifo.clear();
+        self.clear_frames();
         self.head = self.frame_of(position, i128::from(config.format.sample_rate.hz()));
         self.next_media = position;
         self.block = None;
@@ -1286,18 +1288,45 @@ impl SoundStream {
     }
 
     fn end_frame(&self) -> i64 {
-        self.head + (self.fifo.len() / self.channels) as i64
+        self.head + self.buffered_frames() as i64
+    }
+
+    /// Full frames buffered: the shortest plane. A partial trailing frame sits on the
+    /// earlier channels only, the same as a leftover in an interleaved buffer.
+    fn buffered_frames(&self) -> usize {
+        self.fifo.iter().map(Vec::len).min().unwrap_or(0)
+    }
+
+    fn clear_frames(&mut self) {
+        for plane in &mut self.fifo {
+            plane.clear();
+        }
+    }
+
+    /// Appends `frames` of silence to every plane.
+    fn push_silence(&mut self, frames: usize) {
+        if frames == 0 {
+            return;
+        }
+        for plane in &mut self.fifo {
+            plane.resize(plane.len().saturating_add(frames), 0.0);
+        }
     }
 
     fn drop_before(&mut self, frame: i64) {
-        let n = (frame - self.head).clamp(0, (self.fifo.len() / self.channels) as i64);
-        self.fifo.drain(..n as usize * self.channels);
+        let buffered = self.buffered_frames() as i64;
+        let n = frame.saturating_sub(self.head).clamp(0, buffered);
+        let drop = usize::try_from(n).unwrap_or(0);
+        for plane in &mut self.fifo {
+            let n = drop.min(plane.len());
+            plane.drain(..n);
+        }
         self.head += n;
     }
 
     fn skip_to(&mut self, frame: i64) {
         if frame > self.end_frame() {
-            self.fifo.clear();
+            self.clear_frames();
             self.head = frame;
             self.converter = None;
             self.resync = true;
@@ -1332,10 +1361,8 @@ impl SoundStream {
             self.scratch = out;
             let end = self.end_frame();
             if stated > end {
-                self.fifo.extend(std::iter::repeat_n(
-                    0.0,
-                    (stated - end) as usize * self.channels,
-                ));
+                let frames = usize::try_from(stated.saturating_sub(end)).unwrap_or(usize::MAX);
+                self.push_silence(frames);
             }
             self.skip = u64::try_from(self.end_frame() - stated).unwrap_or(0);
             self.converter = Some(Converter::new(pcm.sample_rate, rate, channels));
@@ -1351,12 +1378,36 @@ impl SoundStream {
     }
 
     /// Appends converted frames, minus any still to skip.
+    ///
+    /// `out` is interleaved. Each channel is appended to its own plane, including a
+    /// trailing partial frame on the earlier channels.
     fn extend(&mut self, out: &[f32]) {
-        let frames = (out.len() / self.channels) as u64;
+        let channels = self.channels;
+        if channels == 0 {
+            return;
+        }
+        let frames = (out.len() / channels) as u64;
         let skip = self.skip.min(frames);
         self.skip -= skip;
-        self.fifo
-            .extend_from_slice(&out[skip as usize * self.channels..]);
+        let start = usize::try_from(skip)
+            .unwrap_or(usize::MAX)
+            .saturating_mul(channels);
+        if start >= out.len() {
+            return;
+        }
+        let rest = &out[start..];
+        let full = rest.len() / channels;
+        for (c, plane) in self.fifo.iter_mut().enumerate().take(channels) {
+            plane.reserve(full);
+            for frame in 0..full {
+                plane.push(rest[frame * channels + c]);
+            }
+        }
+        for (c, sample) in rest[full * channels..].iter().enumerate() {
+            if let Some(plane) = self.fifo.get_mut(c) {
+                plane.push(*sample);
+            }
+        }
     }
 
     /// Flushes the converter and pads or cuts to `end`.
@@ -1371,13 +1422,13 @@ impl SoundStream {
         self.converter = None;
         let have = self.end_frame();
         if have < end {
-            self.fifo.extend(std::iter::repeat_n(
-                0.0,
-                (end - have) as usize * self.channels,
-            ));
+            let frames = usize::try_from(end.saturating_sub(have)).unwrap_or(usize::MAX);
+            self.push_silence(frames);
         } else if have > end {
-            let keep = (end - self.head).max(0) as usize * self.channels;
-            self.fifo.truncate(keep);
+            let keep = usize::try_from(end.saturating_sub(self.head).max(0)).unwrap_or(usize::MAX);
+            for plane in &mut self.fifo {
+                plane.truncate(keep);
+            }
         }
         self.done = true;
     }
@@ -1403,23 +1454,25 @@ impl SoundStream {
         Some((stamp, first))
     }
 
+    /// Writes one block as channel-major planes of `frames` samples.
+    ///
+    /// Each plane is one `copy_from_slice` of the frames this stream has. A block that
+    /// starts before `head`, or runs past the buffered frames, fills that part with
+    /// silence. The buffer is not shared with the stream.
     fn copy_block(&self, first: i64, frames: i64, buffer: &mut [f32]) {
-        for f in 0..frames {
-            let at = first + f - self.head;
-            for c in 0..self.channels {
-                let v = if at >= 0 {
-                    self.fifo
-                        .get(at as usize * self.channels + c)
-                        .copied()
-                        .unwrap_or(0.0)
-                } else {
-                    0.0
-                };
-                if let Some(slot) = buffer.get_mut(f as usize * self.channels + c) {
-                    *slot = v;
-                }
+        let frames = usize::try_from(frames.max(0)).unwrap_or(0);
+        let at = first.saturating_sub(self.head);
+        for c in 0..self.channels {
+            let start = c.saturating_mul(frames);
+            if start >= buffer.len() {
+                break;
             }
+            let end = start.saturating_add(frames).min(buffer.len());
+            let src = self.fifo.get(c).map(Vec::as_slice).unwrap_or(&[]);
+            write_plane(&mut buffer[start..end], src, at);
         }
+        let covered = self.channels.saturating_mul(frames).min(buffer.len());
+        buffer[covered..].fill(0.0);
     }
 
     fn consume_block(&mut self, first: i64, frames: i64) {
@@ -1427,6 +1480,39 @@ impl SoundStream {
         if let Some(j) = self.block.as_mut() {
             *j += 1;
         }
+    }
+}
+
+/// Writes one channel plane. `at` is the index in `src` of `dest[0]` (negative when
+/// the block starts before the buffered frames). The overlap is one `copy_from_slice`;
+/// the rest of `dest` is silence.
+fn write_plane(dest: &mut [f32], src: &[f32], at: i64) {
+    let Ok(dest_len) = i64::try_from(dest.len()) else {
+        dest.fill(0.0);
+        return;
+    };
+    let src_len = i64::try_from(src.len()).unwrap_or(i64::MAX);
+    let from = if at < 0 {
+        at.saturating_neg().min(dest_len)
+    } else {
+        0
+    };
+    let to = src_len.saturating_sub(at).clamp(from, dest_len);
+    let from_u = usize::try_from(from).unwrap_or(0);
+    let to_u = usize::try_from(to).unwrap_or(dest.len()).min(dest.len());
+    if from_u > 0 {
+        dest[..from_u].fill(0.0);
+    }
+    if to_u < dest.len() {
+        dest[to_u..].fill(0.0);
+    }
+    let src_at = usize::try_from(at.saturating_add(from)).unwrap_or(0);
+    let n = to_u
+        .saturating_sub(from_u)
+        .min(src.len().saturating_sub(src_at))
+        .min(dest.len().saturating_sub(from_u));
+    if n > 0 {
+        dest[from_u..from_u + n].copy_from_slice(&src[src_at..src_at + n]);
     }
 }
 
@@ -1536,11 +1622,43 @@ fn rgba_owned(
 
 #[cfg(test)]
 mod tests {
-    use super::clock_tracks_wall;
+    use std::time::Duration;
+
+    use rbs_audio::AudioGraphConfig;
+
+    use super::{SoundStream, clock_tracks_wall};
 
     #[test]
     fn a_wall_clock_moves_and_a_test_clock_does_not() {
         assert!(clock_tracks_wall(&rbs_core::time::MonotonicClock::new()));
         assert!(!clock_tracks_wall(&rbs_core::time::TestClock::new()));
+    }
+
+    #[test]
+    fn copy_block_writes_channel_major_planes() {
+        let config = AudioGraphConfig::default();
+        let mut stream = SoundStream::new(&config, Duration::ZERO);
+        stream.extend(&[1.0, -1.0, 2.0, -2.0, 3.0, -3.0, 4.0, -4.0]);
+
+        let mut buffer = vec![7.0; 8];
+        stream.copy_block(0, 4, &mut buffer);
+        assert_eq!(buffer[..4], [1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(buffer[4..], [-1.0, -2.0, -3.0, -4.0]);
+
+        buffer.fill(7.0);
+        stream.copy_block(-2, 4, &mut buffer);
+        assert_eq!(buffer[..4], [0.0, 0.0, 1.0, 2.0]);
+        assert_eq!(buffer[4..], [0.0, 0.0, -1.0, -2.0]);
+
+        buffer = vec![7.0; 12];
+        stream.copy_block(0, 6, &mut buffer);
+        assert_eq!(buffer[..6], [1.0, 2.0, 3.0, 4.0, 0.0, 0.0]);
+        assert_eq!(buffer[6..], [-1.0, -2.0, -3.0, -4.0, 0.0, 0.0]);
+
+        stream.drop_before(1);
+        buffer = vec![7.0; 6];
+        stream.copy_block(stream.head, 3, &mut buffer);
+        assert_eq!(buffer[..3], [2.0, 3.0, 4.0]);
+        assert_eq!(buffer[3..], [-2.0, -3.0, -4.0]);
     }
 }

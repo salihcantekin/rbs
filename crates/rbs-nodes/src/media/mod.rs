@@ -141,13 +141,18 @@ pub struct MediaStats {
     pub import_failures: AtomicU64,
 }
 
-/// One block of sound, interleaved at the graph's format, stamped at the master time
-/// of its first frame on the block grid.
+/// One block of sound at the graph's format, stamped at the master time of its first
+/// frame on the block grid.
+///
+/// `samples` is channel-major: `channels` planes of equal length.
+/// The worker writes each plane with one copy, and the sound node copies each plane
+/// into the graph block.
 pub(crate) struct SoundBlock {
     pub(crate) stamp: Timestamp,
     pub(crate) epoch: u32,
     pub(crate) generation: u32,
     pub(crate) samples: Box<[f32]>,
+    pub(crate) channels: usize,
 }
 
 /// The worker's end of the sound node's rings.
