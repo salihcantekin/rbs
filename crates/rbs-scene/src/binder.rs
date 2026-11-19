@@ -542,6 +542,17 @@ impl BoundSource {
             .and_then(|f| self.filters.get(f))
             .unwrap_or(&self.source)
     }
+
+    /// The node a compositor links. Video filters stay off while nothing draws the
+    /// source above opacity 0, so the link is the source itself and a later fade
+    /// still has a picture. An audio chain has no video output and always uses the tail.
+    fn producer(&self, drawn: bool) -> &BoundNode {
+        if self.source.pins.output.is_some() && !drawn {
+            &self.source
+        } else {
+            self.tail()
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1319,6 +1330,24 @@ impl State {
                 report.retired_compositors.push(b.node.node);
             }
         }
+        // Sources a shown scene draws above opacity 0. Flatten already omits the rest.
+        // Outgoing and stinger sources keep their filters for the transition.
+        let mut drawn_sources = BTreeSet::new();
+        for (&(canvas, role), &scene) in &needed {
+            let flat = collection
+                .flatten_cued(canvas, scene, cued_items)
+                .map_err(BindError::Scene)?;
+            for layer in flat {
+                if role == Role::Preview && !running.contains(&layer.source) {
+                    continue;
+                }
+                drawn_sources.insert(layer.source);
+            }
+        }
+        for o in outgoing.values() {
+            drawn_sources.extend(o.drawn.iter().copied());
+            drawn_sources.extend(o.stinger);
+        }
         // An incoming compositor exists before the program compositor of its canvas
         // is linked, so the program compositor can draw it as a layer.
         let mut fresh: BTreeSet<(CanvasId, Role)> = BTreeSet::new();
@@ -1375,7 +1404,7 @@ impl State {
                     .filter(|b| b.source.pins.output.is_some())
                 {
                     layers.push(BoundLayer {
-                        producer: bound.tail().node,
+                        producer: bound.producer(true).node,
                         source: layer.source,
                         path: layer.path,
                         transform: layer.transform,
@@ -1429,7 +1458,7 @@ impl State {
                     .get(&source)
                     .filter(|b| b.source.pins.output.is_some())
                 {
-                    let tail = bound.tail();
+                    let tail = bound.producer(drawn_sources.contains(&source));
                     if !producers.iter().any(|p| p.node == tail.node) {
                         producers.push(tail.clone());
                     }
@@ -1611,8 +1640,11 @@ impl State {
             if let Some(s) = &bound.sound {
                 set_state(graph, s.node, state)?;
             }
+            // Video filters run only while a shown layer draws the source. An audio
+            // chain follows the source: it is the heard path (scene model spec).
+            let filters_on = bound.source.pins.output.is_none() || drawn_sources.contains(id);
             for (f, b) in &bound.filters {
-                let s = if bound.chain.contains(f) {
+                let s = if bound.chain.contains(f) && filters_on {
                     state
                 } else {
                     Lifecycle::Standby

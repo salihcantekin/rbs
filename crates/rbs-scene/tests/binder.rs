@@ -512,6 +512,38 @@ fn a_source_faded_to_zero_stays_linked_and_scheduled() {
 }
 
 #[test]
+fn a_fully_transparent_source_stays_scheduled_without_its_video_filters() {
+    let mut s = setup();
+    let (lut, _) = s
+        .col
+        .add_filter(s.cam, ty("org.rbs.filter.lut"), Settings::new())
+        .unwrap();
+    let item = s.col.scene(s.live).unwrap().items[1].id;
+    s.col
+        .set_item_layout(item, None, full().with_opacity(0.0))
+        .unwrap();
+    s.binder.sync(&s.col, &mut s.graph).unwrap();
+    let cam = s.binder.source_node(s.cam).unwrap();
+    let filter = s.binder.filter_node(s.cam, lut).unwrap();
+    let comp = s.binder.compositor(s.wide, Role::Program).unwrap();
+    attach_output(&mut s.graph, comp);
+    assert_eq!(state(&s, cam), Lifecycle::Active);
+    assert_eq!(state(&s, filter), Lifecycle::Standby);
+    assert!(s.graph.plan().order.contains(&cam));
+    assert!(!s.graph.plan().order.contains(&filter));
+    assert!(links_into(&s, comp).contains(&cam));
+    assert!(!links_into(&s, comp).contains(&filter));
+
+    s.col.set_item_layout(item, None, full()).unwrap();
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert_eq!(state(&s, filter), Lifecycle::Active);
+    assert_eq!(
+        report.compositors[&(s.wide, Role::Program)].layers[1].producer,
+        filter
+    );
+}
+
+#[test]
 fn nodes_removed_by_someone_else_are_bound_again() {
     let mut s = setup();
     let (lut, _) = s
@@ -1424,6 +1456,22 @@ fn audio_filters_chain_in_the_sources_partition_and_the_mixer_hears_the_tail() {
     assert_eq!(links_into(&s, n2), [n1]);
     let mixer = s.binder.mixer(s.wide).unwrap();
     assert_eq!(links_into(&s, mixer), [n2], "the mixer hears the tail only");
+    let item = s
+        .col
+        .scene(s.live)
+        .unwrap()
+        .items
+        .iter()
+        .find(|i| matches!(i.content, ItemContent::Source(id) if id == mic))
+        .unwrap()
+        .id;
+    s.col
+        .set_item_layout(item, None, full().with_opacity(0.0))
+        .unwrap();
+    s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert_eq!(state(&s, n1), Lifecycle::Active);
+    assert_eq!(state(&s, n2), Lifecycle::Active);
+    assert_eq!(links_into(&s, mixer), [n2]);
     let bound = &report.mixers[&s.wide];
     assert_eq!(bound.inputs.len(), 1);
     assert_eq!(bound.inputs[0].producer, n2);
@@ -1953,17 +2001,33 @@ fn direct_globals(s: &Setup, canvas: rbs_scene::model::CanvasId) -> Vec<SourceId
         .unwrap_or_default()
 }
 
+fn drawn_sources(s: &Setup) -> std::collections::BTreeSet<SourceId> {
+    let mut out = std::collections::BTreeSet::new();
+    for canvas in s.col.canvases() {
+        for scene in [canvas.program, canvas.preview].into_iter().flatten() {
+            if let Ok(layers) = s.col.flatten(canvas.id, scene) {
+                out.extend(layers.into_iter().map(|l| l.source));
+            }
+        }
+    }
+    out
+}
+
 /// Checks the graph against the collection without using the binder's own report for
 /// the expectations.
 fn check_consistent(s: &Setup, report: &rbs_scene::binder::BindReport, seed: u64, step: usize) {
     let wanted = s.col.running_sources(&Types);
     let mut accounted = std::collections::BTreeSet::new();
+    let drawn = drawn_sources(s);
     let tail_of = |src: SourceId| -> Option<NodeId> {
         if !has_video(s, src) {
             return None;
         }
         let source = s.col.source(src)?;
         let node = s.binder.source_node(src)?;
+        if !drawn.contains(&src) {
+            return Some(node);
+        }
         Some(
             source
                 .filters
@@ -2030,8 +2094,11 @@ fn check_consistent(s: &Setup, report: &rbs_scene::binder::BindReport, seed: u64
         for f in &src.filters {
             if let Some(fnode) = s.binder.filter_node(src.id, f.id) {
                 accounted.insert(fnode);
-                let fs = if f.enabled {
-                    expect
+                let fs = if f.enabled
+                    && expect == Lifecycle::Active
+                    && (!has_video(s, src.id) || drawn.contains(&src.id))
+                {
+                    Lifecycle::Active
                 } else {
                     Lifecycle::Standby
                 };
