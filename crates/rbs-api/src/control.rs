@@ -191,7 +191,9 @@ impl EventPublisher {
 
     /// True when a connected client subscribes to `topic`.
     pub fn subscribed(&self, topic: Topic) -> bool {
-        self.link.as_ref().is_some_and(|link| link.subscribed(topic))
+        self.link
+            .as_ref()
+            .is_some_and(|link| link.subscribed(topic))
     }
 
     /// Registers the in-process UI as a permanent subscriber to `topics`; `sink` runs on
