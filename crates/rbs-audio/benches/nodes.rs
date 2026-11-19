@@ -2,6 +2,8 @@
 //!
 //! - `input`: one input node on the reference adapter, 48 kHz mono and 44.1 kHz stereo
 //!   sources into the 48 kHz stereo graph (read, steer, resample, map channels).
+//! - `input_split`: the 48 kHz to 48 kHz sinc (`coefficients` + `apply`) and the
+//!   mono-to-stereo channel-matrix dot, each over one 480-frame block.
 //! - `mixer`: a mixer of 16 stereo inputs with a meter on every strip and the output,
 //!   without and with the monitor output read (4 strips monitored).
 //! - `output`: one output node from the 48 kHz stereo graph to a 48 kHz and a 44.1 kHz
@@ -356,5 +358,86 @@ fn output(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, input, mixer, output);
+/// The resampler and the channel-matrix dot of one 480-frame block, measured apart
+/// from the input node's ring read and FIFO.
+///
+/// The sinc bench is the pair of calls in `InputAligner::render` for one mono
+/// channel at a 1:1 rate: [`Kernel::coefficients`](rbs_audio::resample::Kernel::coefficients)
+/// on the shared 48 kHz to 48 kHz kernel, then [`apply`](rbs_audio::resample::apply).
+/// The matrix bench cannot call `input::matrix` (`pub(crate)`); it repeats that
+/// function's mono-to-stereo weights and the dot loop in `render`.
+fn input_split(c: &mut Criterion) {
+    use rbs_audio::resample::{AFTER, BEFORE, Kernel, TAPS, apply};
+    use rbs_core::media::MAX_CHANNELS;
+    use rbs_core::timing::SampleRate;
+
+    let frames = AudioGraphConfig::default().block_frames as usize;
+    assert_eq!(frames, 480, "the published input block is 480 frames");
+
+    let mut group = c.benchmark_group("audio_input_split");
+
+    let kernel = Kernel::shared(SampleRate::HZ_48000, SampleRate::HZ_48000);
+    let input_len = BEFORE + frames + AFTER;
+    let input: Vec<f32> = (0..input_len)
+        .map(|i| (i as f32 * 0.05).sin() * 0.3)
+        .collect();
+    let mut sinc_out = vec![0.0f32; frames];
+    group.bench_function("sinc_48k_to_48k_mono", |bench| {
+        bench.iter(|| {
+            let mut weights = [0.0f32; TAPS];
+            // The step is 1.0 (equal rates, no steering). One barrier per block keeps
+            // the phase lookup in the frame loop; the outputs are black-boxed below.
+            let step = std::hint::black_box(1.0f64);
+            let mut p = BEFORE as f64;
+            for frame in 0..frames {
+                let i = p.floor();
+                let at = i as usize - BEFORE;
+                kernel.coefficients(p - i, &mut weights);
+                sinc_out[frame] = apply(&weights, &input[at..at + TAPS]);
+                p += step;
+            }
+            std::hint::black_box(sinc_out.as_slice());
+        });
+    });
+
+    // Same weights as `matrix(ChannelLayout::Mono, ChannelLayout::Stereo)`.
+    let mut matrix = [[0.0f32; MAX_CHANNELS]; MAX_CHANNELS];
+    matrix[0][0] = 1.0;
+    matrix[1][0] = 1.0;
+    let src_channels = 1usize;
+    let n_out = 2usize;
+    let source: Vec<f32> = (0..frames).map(|i| (i as f32 * 0.05).sin() * 0.3).collect();
+    let mut left = vec![0.0f32; frames];
+    let mut right = vec![0.0f32; frames];
+    group.bench_function("matrix_mono_to_stereo", |bench| {
+        bench.iter(|| {
+            let src_channels = std::hint::black_box(src_channels);
+            let n_out = std::hint::black_box(n_out);
+            let matrix = std::hint::black_box(&matrix);
+            {
+                let mut chans: [&mut [f32]; 2] = [&mut left, &mut right];
+                for frame in 0..frames {
+                    let mut v = [0.0f32; MAX_CHANNELS];
+                    for slot in v.iter_mut().take(src_channels) {
+                        *slot = source[frame];
+                    }
+                    for (o, ch) in chans.iter_mut().enumerate().take(n_out) {
+                        let row = &matrix[o];
+                        let mut acc = 0.0f32;
+                        for c in 0..src_channels {
+                            acc += row[c] * v[c];
+                        }
+                        ch[frame] = acc;
+                    }
+                }
+            }
+            std::hint::black_box(left.as_slice());
+            std::hint::black_box(right.as_slice());
+        });
+    });
+
+    group.finish();
+}
+
+criterion_group!(benches, input, mixer, output, input_split);
 criterion_main!(benches);
