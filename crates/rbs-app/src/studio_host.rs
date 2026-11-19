@@ -84,6 +84,7 @@ mod obs_import_api;
 mod on_air;
 pub mod protection;
 pub mod replay;
+mod scene_cache;
 mod stinger;
 pub mod sync_measure;
 mod text_live;
@@ -3966,6 +3967,9 @@ struct Host {
     interacts: Vec<interact::InteractRun>,
     /// The scene list as last sent.
     scenes_shown: Option<SceneList>,
+    /// `scene.list` for the snapshot last published or last polled. See
+    /// [`scene_cache`].
+    scene_answer: scene_cache::SceneAnswerCache,
     /// The second canvas that runs, and what was last sent about it (ADR-0093).
     vertical: Option<VerticalState>,
     /// The saved vertical canvas could not start again; told once at the next publish.
@@ -4711,6 +4715,7 @@ fn start(
         projectors: Vec::new(),
         interacts: Vec::new(),
         scenes_shown: None,
+        scene_answer: scene_cache::SceneAnswerCache::default(),
         vertical: None,
         vertical_restore_error: None,
         vertical_flags: VerticalFlags::default(),
@@ -14071,8 +14076,10 @@ impl Host {
             if self.scenes_shown.as_ref() != Some(&scenes) {
                 self.scenes_shown = Some(scenes.clone());
                 let listed = api_scenes(&scenes);
+                self.scene_answer
+                    .store(scene_cache::SceneAnswerKey::of(self), listed.clone());
                 self.events
-                    .changed(StateKey::topic(Topic::SceneChanged), || {
+                    .changed(StateKey::topic(Topic::SceneChanged), move || {
                         EventPayload::SceneChanged(listed)
                     });
                 notify(Update::Scenes(scenes));
@@ -14824,7 +14831,7 @@ impl ApiTarget<'_> {
             }
             C::SceneList => Ok(Response::Scenes(api::Snapshot {
                 seq: host.events.seq_map([Topic::SceneChanged]),
-                data: api_scenes(&host.scene_list()),
+                data: scene_cache::answer(host),
             })),
             C::SceneAdd(p) => {
                 let name = p.name.as_deref();

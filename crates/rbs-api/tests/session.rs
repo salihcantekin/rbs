@@ -12,7 +12,7 @@ use rbs_api::event::{EventPayload, Topic, TopicSet};
 use rbs_api::session::{AuditEvent, Input};
 use rbs_api::token::{Token, TokenStore};
 use rbs_api::transport::{CloseReason, PeerInfo};
-use rbs_api::types::RecordState;
+use rbs_api::types::{RecordState, SourceLevels};
 use rbs_api::{Command, ScopeSet};
 use serde_json::json;
 use support::*;
@@ -622,17 +622,23 @@ fn the_publisher_counts_seq_and_builds_payloads_only_for_subscribers() {
 
 #[test]
 fn sampled_topics_follow_the_client_rate_capped() {
-    struct Levels;
+    struct Levels(u32);
     impl rbs_api::Sampler for Levels {
         fn sample(&mut self, _topic: Topic) -> Option<EventPayload> {
-            Some(EventPayload::AudioLevels(vec![]))
+            self.0 += 1;
+            let db = -(self.0 as f32);
+            Some(EventPayload::AudioLevels(vec![SourceLevels {
+                source: 1,
+                peak_db: vec![db],
+                rms_db: vec![db],
+            }]))
         }
     }
     let mut h = Harness::new();
     let config = h.server.config().clone();
     let mut tokens = TokenStore::new();
     tokens.insert(token(PANEL_TOKEN_SEED, "Stream Deck", ScopeSet::PANEL).1);
-    h.server = rbs_api::Server::new(config, tokens).with_sampler(Box::new(Levels));
+    h.server = rbs_api::Server::new(config, tokens).with_sampler(Box::new(Levels(0)));
     h.inbox = rbs_api::TransportInbox::new(
         std::sync::Arc::new(rbs_api::wake::Wake::new()),
         h.server.budget(),
@@ -664,6 +670,72 @@ fn sampled_topics_follow_the_client_rate_capped() {
         json!({"topics": ["record.state"], "rates": {"record.state": 5}}),
     );
     assert_eq!(error_kind(&h.one(conn)), "invalid_params");
+}
+
+#[test]
+fn identical_audio_levels_are_not_encoded_again() {
+    let peak = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0f32.to_bits()));
+    struct Levels(std::sync::Arc<std::sync::atomic::AtomicU32>);
+    impl rbs_api::Sampler for Levels {
+        fn sample(&mut self, topic: Topic) -> Option<EventPayload> {
+            if topic != Topic::AudioLevels {
+                return None;
+            }
+            let db = f32::from_bits(self.0.load(std::sync::atomic::Ordering::Relaxed));
+            Some(EventPayload::AudioLevels(vec![SourceLevels {
+                source: 3,
+                peak_db: vec![db],
+                rms_db: vec![db],
+            }]))
+        }
+    }
+    let mut h = Harness::new();
+    let config = h.server.config().clone();
+    let mut tokens = TokenStore::new();
+    tokens.insert(token(PANEL_TOKEN_SEED, "Stream Deck", ScopeSet::PANEL).1);
+    h.server = rbs_api::Server::new(config, tokens).with_sampler(Box::new(Levels(peak.clone())));
+    h.inbox = rbs_api::TransportInbox::new(
+        std::sync::Arc::new(rbs_api::wake::Wake::new()),
+        h.server.budget(),
+        8,
+        4096,
+    );
+    let conn = h.login(PeerInfo::loopback_websocket(), PANEL_TOKEN_SEED);
+    h.call(
+        conn,
+        "events.subscribe",
+        json!({"topics": ["audio.levels"], "rates": {"audio.levels": 30}}),
+    );
+    let mut target = FakeTarget::default();
+    h.serve(&mut target);
+    h.take(conn);
+    let interval = Duration::from_secs(1) / 30;
+
+    h.advance(interval);
+    let first = level_events(h.take(conn));
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0]["data"][0]["peak_db"], json!([0.0]));
+
+    h.advance(interval);
+    assert!(level_events(h.take(conn)).is_empty());
+
+    peak.store((-6.0f32).to_bits(), std::sync::atomic::Ordering::Relaxed);
+    h.advance(interval);
+    let changed = level_events(h.take(conn));
+    assert_eq!(changed.len(), 1);
+    assert_eq!(changed[0]["data"][0]["peak_db"], json!([-6.0]));
+    assert_eq!(changed[0]["data"][0]["rms_db"], json!([-6.0]));
+
+    h.advance(interval);
+    assert!(level_events(h.take(conn)).is_empty());
+}
+
+fn level_events(messages: Vec<serde_json::Value>) -> Vec<serde_json::Value> {
+    messages
+        .into_iter()
+        .filter(|m| m["method"] == "event" && m["params"]["topic"] == "audio.levels")
+        .map(|m| m["params"].clone())
+        .collect()
 }
 
 #[test]

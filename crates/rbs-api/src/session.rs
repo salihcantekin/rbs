@@ -24,6 +24,7 @@ use crate::transport::{
     CloseReason, ConnectionBudget, ConnectionId, ConnectionSender, MessageLimit, PeerInfo,
     SendError, TransportEvent,
 };
+use crate::types::SourceLevels;
 
 /// The protocol version this server speaks.
 ///
@@ -479,6 +480,12 @@ pub struct Server {
     /// Sampled topics (`audio.levels`) the ready sessions subscribe to.
     sampled: TopicSet,
     sample_seq: u64,
+    /// `audio.levels` rows last encoded, and the connections that were sent them.
+    /// A later sample is not encoded when the rows match and every connection due
+    /// now was in that send. A connection that has not been sent them still gets
+    /// this sample. `None` after a sample with no rows, so the next rows are sent
+    /// even when the numbers repeat.
+    levels_sent: Option<(Vec<SourceLevels>, Vec<ConnectionId>)>,
     sampler: Option<Box<dyn Sampler>>,
     actions: VecDeque<Action>,
 }
@@ -507,6 +514,7 @@ impl Server {
             mask: TopicSet::EMPTY,
             sampled: TopicSet::EMPTY,
             sample_seq: 0,
+            levels_sent: None,
             sampler: None,
             actions: VecDeque::new(),
         }
@@ -1373,8 +1381,24 @@ impl Server {
                 }
             }
             let Some(payload) = sampler.sample(topic) else {
+                if topic == Topic::AudioLevels {
+                    self.levels_sent = None;
+                }
                 continue;
             };
+            if topic == Topic::AudioLevels {
+                if let EventPayload::AudioLevels(rows) = &payload
+                    && self.levels_sent.as_ref().is_some_and(|(sent, got)| {
+                        sent == rows && due.iter().all(|id| got.contains(id))
+                    })
+                {
+                    continue;
+                }
+                self.levels_sent = match &payload {
+                    EventPayload::AudioLevels(rows) => Some((rows.clone(), due.clone())),
+                    _ => None,
+                };
+            }
             self.sample_seq += 1;
             let event = Event {
                 object: None,
