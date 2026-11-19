@@ -110,6 +110,34 @@ fn an_animated_webp_decodes_composes_and_seeks() {
     check_animation("anim.webp");
 }
 
+fn a_published_frame_is_unchanged_by_the_next_one(name: &str) {
+    let mut dec = AnimDecoder::open(&fixture(name)).expect("open");
+    let first = dec.next_picture().expect("first").expect("a frame");
+    let PictureData::System { bytes, .. } = first.picture.data() else {
+        panic!("a system picture");
+    };
+    let kept = bytes.clone();
+    let second = dec.next_picture().expect("second").expect("a frame");
+    let PictureData::System { bytes, .. } = first.picture.data() else {
+        panic!("a system picture");
+    };
+    assert_eq!(
+        bytes, &kept,
+        "{name}: the next frame rewrote the published one"
+    );
+    let PictureData::System { bytes: next, .. } = second.picture.data() else {
+        panic!("a system picture");
+    };
+    assert_ne!(next, &kept, "{name}");
+}
+
+#[test]
+fn a_published_gif_apng_or_webp_frame_is_not_the_next_frame_canvas() {
+    a_published_frame_is_unchanged_by_the_next_one("anim.gif");
+    a_published_frame_is_unchanged_by_the_next_one("anim.png");
+    a_published_frame_is_unchanged_by_the_next_one("anim.webp");
+}
+
 #[test]
 fn a_still_png_is_one_frame_without_duration() {
     let mut dec = AnimDecoder::open(&fixture("still.png")).expect("open");

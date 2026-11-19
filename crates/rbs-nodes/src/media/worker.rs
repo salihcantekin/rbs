@@ -1,20 +1,22 @@
 //! The decode worker of one media source (ADR-0108 decision 5).
 //!
 //! It owns the decoder. It paces each stream by master time: it decodes a stream only
-//! while that stream's next stamp is at most [`LEAD`] ahead of now, and parks
-//! otherwise. When the picture ring cannot take another picture of the size already
-//! queued, it does not decode the next one; it waits until the picture node takes a
-//! picture or until the next sound block is due. A sound block that does not fit is
-//! dropped and counted. It stamps pictures and sound with master time from one anchor, set once
-//! it holds the first picture (and the first sound chunk while the sound node is
-//! prepared), at now plus the lead, and keeps mapping forward across a
-//! loop boundary so a loop leaves no timestamp gap.
+//! while that stream's next stamp is at most [`LEAD`] ahead of now, and parks until
+//! that stamp (a command unparks it). A paused or held file parks until the next
+//! command or the pause release, which unparks on the control path. When the picture
+//! ring cannot take another picture of the size already queued, it does not decode
+//! the next one; it waits until the picture node takes a picture or until the next
+//! sound block is due. A sound block that does not fit is dropped and counted. It
+//! stamps pictures and sound with master time from one anchor, set once it holds the
+//! first picture (and the first sound chunk while the sound node is prepared), at now
+//! plus the lead, and keeps mapping forward across a loop boundary so a loop leaves
+//! no timestamp gap.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rbs_audio::AudioGraphConfig;
 use rbs_core::media::{
@@ -153,6 +155,9 @@ pub(crate) fn run(job: Job) {
     };
     job.progress.decoder_held.store(true, Ordering::Release);
     let _released = Released(&job.progress.decoder_held);
+    // While `wake` is still blocked on `ready`. A test clock does not move here;
+    // a wall clock does. The loop uses this so a test never sleeps out a frame delay.
+    let wall_clock = clock_tracks_wall(job.clock.as_ref());
     // The cursor inside the play range, and a range start past the end of the file
     // clamped to its last picture (ADR-0108 decision 11).
     let cursor = clamp_into(job.shared.in_range(job.cursor), decoder.duration());
@@ -228,6 +233,7 @@ pub(crate) fn run(job: Job) {
         primed_sound,
         unseen: std::collections::VecDeque::new(),
         last_picture_bytes: None,
+        wall_clock,
         job: &job,
         decoder: &mut *decoder,
     };
@@ -290,6 +296,9 @@ struct Run<'a> {
     /// Bytes of the last picture, so a full ring is seen before the next decode.
     /// `None` until the first picture.
     last_picture_bytes: Option<usize>,
+    /// The injected clock moves with wall time. A `TestClock` does not, so a wait
+    /// on it returns when the test steps the clock instead of sleeping.
+    wall_clock: bool,
     /// The first sound chunk, decoded before the anchor was set.
     primed_sound: Option<rbs_media_decode::SoundSample>,
 }
@@ -447,9 +456,10 @@ impl Run<'_> {
                     .settled_at
                     .store(now.as_nanos().saturating_add(1), Ordering::Release);
                 if !busy {
-                    // A command or shutdown unparks. The clock does not, so a
-                    // paused worker sleeps until one of those, not on a 2 ms poll.
-                    thread::park();
+                    // A command, shutdown, or the pause release (it joins this
+                    // thread) unparks. Nothing else does, so a paused file waits
+                    // for one of those.
+                    self.wait_idle();
                 }
                 continue;
             }
@@ -458,9 +468,7 @@ impl Run<'_> {
                     .settled_at
                     .store(now.as_nanos().saturating_add(1), Ordering::Release);
                 if !busy {
-                    // A command or shutdown unparks. The clock does not, so a
-                    // paused worker sleeps until one of those, not on a 2 ms poll.
-                    thread::park();
+                    self.wait_idle();
                 }
                 continue;
             }
@@ -566,12 +574,47 @@ impl Run<'_> {
                     Duration::from_nanos(u64::try_from(wait.max(0)).unwrap_or(u64::MAX))
                 });
                 match next {
-                    Some(wait) if !wait.is_zero() => thread::park_timeout(wait),
+                    Some(wait) if !wait.is_zero() => self.wait_for(wait),
                     Some(_) => {}
                     // Nothing is due until a command. Shutdown and control unpark.
-                    None => thread::park(),
+                    None => self.wait_idle(),
                 }
             }
+        }
+    }
+
+    /// Parks until a command, shutdown, or the pause release unparks this thread.
+    /// A test clock returns once it changes, so the loop can record `settled_at`
+    /// for the wait the tests already poll. It does not sleep.
+    fn wait_idle(&self) {
+        if self.wall_clock {
+            thread::park();
+            return;
+        }
+        self.wait_for_clock_change();
+    }
+
+    /// Parks for `wait` of a wall clock: the real time until the next stamp, with
+    /// no shorter cap. A command unparks early. A test clock returns when it
+    /// changes instead of sleeping for `wait`.
+    fn wait_for(&self, wait: Duration) {
+        if wait.is_zero() {
+            return;
+        }
+        if self.wall_clock {
+            thread::park_timeout(wait);
+            return;
+        }
+        self.wait_for_clock_change();
+    }
+
+    /// One turn of a test-clock wait. `park_timeout(0)` collects a command unpark.
+    /// A yield lets the test thread step the clock. The caller loops.
+    fn wait_for_clock_change(&self) {
+        let start = self.job.clock.now();
+        thread::park_timeout(Duration::ZERO);
+        if self.job.clock.now() == start {
+            thread::yield_now();
         }
     }
 
@@ -608,9 +651,9 @@ impl Run<'_> {
             .store(true, Ordering::Release);
         if self.picture_ring_full() {
             match self.sound_park_wait(now) {
-                Some(wait) if !wait.is_zero() => thread::park_timeout(wait),
+                Some(wait) if !wait.is_zero() => self.wait_for(wait),
                 Some(_) => {}
-                None => thread::park(),
+                None => self.wait_idle(),
             }
         }
         self.job
@@ -1411,6 +1454,24 @@ fn to_timestamp(nanos: i128) -> Timestamp {
     Timestamp::from_nanos(u64::try_from(nanos.max(0)).unwrap_or(u64::MAX))
 }
 
+/// How long a one-time probe watches the clock. A wall clock moves in this
+/// window; a `TestClock` does not, because the caller is blocked until the
+/// worker reports ready. This is not the per-frame wait.
+const CLOCK_PROBE: Duration = Duration::from_millis(1);
+
+/// True when `clock` advances with wall time.
+fn clock_tracks_wall(clock: &dyn Clock) -> bool {
+    let start = clock.now();
+    let wall = Instant::now();
+    while wall.elapsed() < CLOCK_PROBE {
+        if clock.now() > start {
+            return true;
+        }
+        std::hint::spin_loop();
+    }
+    clock.now() > start
+}
+
 fn system_frame(
     layout: PictureLayout,
     color: SampleColor,
@@ -1471,4 +1532,15 @@ fn rgba_owned(
     // here, on the worker, so the picture node's `share` only counts a reference.
     drop(frame.share());
     Ok(frame)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::clock_tracks_wall;
+
+    #[test]
+    fn a_wall_clock_moves_and_a_test_clock_does_not() {
+        assert!(clock_tracks_wall(&rbs_core::time::MonotonicClock::new()));
+        assert!(!clock_tracks_wall(&rbs_core::time::TestClock::new()));
+    }
 }

@@ -273,6 +273,8 @@ struct GifFrames {
     width: u32,
     height: u32,
     canvas: Vec<u8>,
+    /// Receives the next snapshot, then becomes the canvas after the swap.
+    spare: Vec<u8>,
     /// What the previous frame asks to be done before the next one is drawn.
     dispose: Option<(gif::DisposalMethod, Rect, Option<Vec<u8>>)>,
 }
@@ -301,6 +303,7 @@ impl GifFrames {
             width,
             height,
             canvas: vec![0; rgba_len(width, height)],
+            spare: Vec::new(),
             dispose: None,
         })
     }
@@ -341,10 +344,10 @@ impl GifFrames {
         );
         self.dispose = Some((frame.dispose, rect, saved));
         let delay = delay_rule(Duration::from_millis(u64::from(frame.delay) * 10));
-        // The next frame's disposal starts from this canvas, so the published picture
-        // is a snapshot. The worker takes that buffer without copying it again.
+        // Disposal of this frame runs on `canvas` when the next one is drawn, so the
+        // caller gets a separate buffer. The worker takes it without copying again.
         Ok(Some(Composed {
-            rgba: self.canvas.clone(),
+            rgba: snapshot(&mut self.canvas, &mut self.spare),
             delay,
         }))
     }
@@ -371,6 +374,8 @@ struct PngFrames {
     width: u32,
     height: u32,
     canvas: Vec<u8>,
+    /// Receives the next snapshot, then becomes the canvas after the swap.
+    spare: Vec<u8>,
     /// The decoded sub-frame, in the output colour type.
     buffer: Vec<u8>,
     /// The sub-frame converted to `Rgba8`.
@@ -404,6 +409,7 @@ impl PngFrames {
             width,
             height,
             canvas: vec![0; rgba_len(width, height)],
+            spare: Vec::new(),
             buffer: vec![0; size],
             rgba: Vec::new(),
             animated,
@@ -494,10 +500,10 @@ impl PngFrames {
             }
         }
         self.dispose = Some((fc.dispose_op, rect, saved));
-        // The next frame's disposal starts from this canvas, so the published picture
-        // is a snapshot. The worker takes that buffer without copying it again.
+        // Disposal of this frame runs on `canvas` when the next one is drawn, so the
+        // caller gets a separate buffer. The worker takes it without copying again.
         Ok(Some(Composed {
-            rgba: self.canvas.clone(),
+            rgba: snapshot(&mut self.canvas, &mut self.spare),
             delay: delay_rule(apng_delay(&fc)),
         }))
     }
@@ -537,7 +543,10 @@ fn png_duration(path: &Path) -> Result<Option<Duration>, DecodeError> {
 
 struct WebpFrames {
     decoder: image_webp::WebPDecoder<BufReader<File>>,
+    /// What `read_frame` fills. The decoder keeps its own canvas and copies into this.
     buffer: Vec<u8>,
+    /// Swapped in so the next read has a buffer after this one is published.
+    spare: Vec<u8>,
     done: bool,
 }
 
@@ -556,6 +565,7 @@ impl WebpFrames {
         Ok(Self {
             decoder,
             buffer: vec![0; size],
+            spare: Vec::new(),
             done: false,
         })
     }
@@ -578,15 +588,32 @@ impl WebpFrames {
             self.done = true;
             Duration::ZERO
         };
-        let mut rgba = Vec::with_capacity(rgba_len(width, height));
-        if self.decoder.has_alpha() {
-            rgba.extend_from_slice(&self.buffer);
-        } else {
+        let rgba = self.publish_frame(width, height);
+        Ok(Some(Composed { rgba, delay }))
+    }
+
+    /// The frame `read_frame` just wrote, as straight-alpha `Rgba8`.
+    ///
+    /// An alpha frame is that buffer itself: the decoder's canvas stays inside the
+    /// decoder, so publishing this buffer does not share it with the next frame.
+    /// A frame without alpha is expanded from RGB. The buffer stays for that expansion
+    /// and for the next read.
+    fn publish_frame(&mut self, width: u32, height: u32) -> Vec<u8> {
+        if !self.decoder.has_alpha() {
+            let mut rgba = Vec::with_capacity(rgba_len(width, height));
             for px in self.buffer.chunks_exact(3) {
                 rgba.extend_from_slice(&[px[0], px[1], px[2], 255]);
             }
+            return rgba;
         }
-        Ok(Some(Composed { rgba, delay }))
+        if self.done {
+            return std::mem::take(&mut self.buffer);
+        }
+        if self.spare.len() != self.buffer.len() {
+            self.spare.resize(self.buffer.len(), 0);
+        }
+        std::mem::swap(&mut self.buffer, &mut self.spare);
+        std::mem::take(&mut self.spare)
     }
 }
 
@@ -622,6 +649,20 @@ fn webp_duration(path: &Path) -> Result<Option<Duration>, DecodeError> {
 }
 
 // ---- Canvas helpers ----
+
+/// Publishes a snapshot of `canvas` and leaves the same pixels in `canvas`.
+///
+/// The next frame's disposal writes `canvas`. The returned buffer is the previous
+/// canvas allocation; `spare` (a copy) becomes the canvas. The caller and the next
+/// frame do not share one buffer.
+fn snapshot(canvas: &mut Vec<u8>, spare: &mut Vec<u8>) -> Vec<u8> {
+    if spare.len() != canvas.len() {
+        spare.resize(canvas.len(), 0);
+    }
+    spare.copy_from_slice(canvas);
+    std::mem::swap(canvas, spare);
+    std::mem::take(spare)
+}
 
 /// Converts 8-bit PNG output of `color` to `Rgba8`.
 fn to_rgba(color: png::ColorType, src: &[u8], out: &mut Vec<u8>) -> Result<(), DecodeError> {
@@ -794,5 +835,20 @@ mod tests {
         assert_eq!(canvas[3], 255);
         assert!(canvas[0] > 120 && canvas[0] < 135, "{canvas:?}");
         assert!(canvas[2] > 120 && canvas[2] < 135, "{canvas:?}");
+    }
+
+    #[test]
+    fn a_snapshot_keeps_the_canvas_and_does_not_share_it() {
+        let mut canvas = vec![1, 2, 3, 4];
+        let mut spare = Vec::new();
+        let published = snapshot(&mut canvas, &mut spare);
+        assert_eq!(published, [1, 2, 3, 4]);
+        assert_eq!(canvas, [1, 2, 3, 4]);
+        canvas[0] = 9;
+        assert_eq!(published[0], 1);
+        let again = snapshot(&mut canvas, &mut spare);
+        assert_eq!(again[0], 9);
+        assert_eq!(published[0], 1);
+        assert_eq!(canvas[0], 9);
     }
 }
