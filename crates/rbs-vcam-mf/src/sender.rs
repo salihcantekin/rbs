@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use rbs_core::media::{FramePayload, VideoFrame};
+use rbs_core::media::{FramePayload, PixelFormat, VideoFrame};
 use rbs_vcam::VcamCounters;
 use rbs_vcam_ring::{Layout, Region, WriteOutcome, Writer, header_info};
 
@@ -147,6 +147,14 @@ impl<S: RingSource> RingSender<S> {
     }
 
     fn write(&mut self, frame: &VideoFrame, now_ms: u64) -> Sent {
+        let layout = self.layout;
+        // Borrowed from `frame`, not from `self`, so the slot fill below can run.
+        let direct = contiguous_nv12(frame, &layout);
+        // A frame that cannot be copied is refused before the ring is looked up, so a
+        // missing camera is not counted for it.
+        if self.mapped.is_none() && direct.is_none() && !rows_fit(frame, &layout) {
+            return Sent::Refused;
+        }
         self.look(now_ms);
         let Some(m) = self.mapped.as_mut() else {
             return Sent::Absent;
@@ -166,7 +174,16 @@ impl<S: RingSource> RingSender<S> {
             return Sent::Absent;
         };
         let ts = i64::try_from(frame.timestamp().as_nanos()).unwrap_or(i64::MAX);
-        let outcome = w.fill(now_ms, ts, |dst| pack(frame, &self.layout, dst));
+        let outcome = w.fill(now_ms, ts, |dst| {
+            if let Some(src) = direct
+                && src.len() == dst.len()
+            {
+                // The frame buffer and the slot are different allocations.
+                dst.copy_from_slice(src);
+                return true;
+            }
+            pack(frame, &layout, dst)
+        });
         self.last_beat_ms = now_ms;
         let absent = !info.reader_active(now_ms);
         match outcome {
@@ -183,19 +200,53 @@ impl<S: RingSource> RingSender<S> {
     }
 }
 
-/// Packs a system-memory NV12 `frame` of `layout`'s size into `out` at the layout's
-/// stride. `false` for anything else.
-pub fn pack(frame: &VideoFrame, layout: &Layout, out: &mut [u8]) -> bool {
+/// NV12 bytes that already are the ring image: the two planes sit one after the other
+/// and both strides equal the ring's. `None` when the frame has to be packed (a wider
+/// stride, a gap between the planes, another size, or not system-memory NV12).
+fn contiguous_nv12<'a>(frame: &'a VideoFrame, layout: &Layout) -> Option<&'a [u8]> {
+    let FramePayload::System(sys) = frame.payload() else {
+        return None;
+    };
+    let format = frame.format();
+    if format.pixel_format != PixelFormat::Nv12
+        || format.size.width != layout.width()
+        || format.size.height != layout.height()
+    {
+        return None;
+    }
+    let stride = layout.stride() as usize;
+    let height = layout.height() as usize;
+    let planes = sys.planes();
+    let (y, uv) = (planes.first()?, planes.get(1)?);
+    if planes.len() != 2 || y.stride != stride || uv.stride != stride {
+        return None;
+    }
+    let y_bytes = stride.checked_mul(height)?;
+    if uv.offset != y.offset.checked_add(y_bytes)? {
+        return None;
+    }
+    let end = y.offset.checked_add(layout.frame_len())?;
+    sys.data().get(y.offset..end)
+}
+
+/// Whether `pack` would accept `frame` into a slot of `layout`. No pixels are copied.
+fn rows_fit(frame: &VideoFrame, layout: &Layout) -> bool {
+    for_each_row(frame, layout, |_, _| true)
+}
+
+/// Calls `copy` with each packed row. `false` when `frame` is not system memory of
+/// `layout`'s size, or a row does not fit in its plane.
+fn for_each_row(
+    frame: &VideoFrame,
+    layout: &Layout,
+    mut copy: impl FnMut(usize, &[u8]) -> bool,
+) -> bool {
     let FramePayload::System(sys) = frame.payload() else {
         return false;
     };
     let size = frame.format().size;
-    let (w, h, stride) = (
-        layout.width() as usize,
-        layout.height() as usize,
-        layout.stride() as usize,
-    );
-    if (size.width as usize, size.height as usize) != (w, h) || out.len() != layout.frame_len() {
+    let (w, h) = (layout.width() as usize, layout.height() as usize);
+    if (size.width as usize, size.height as usize) != (w, h) {
         return false;
     }
     let (Some((y, ys)), Some((uv, uvs))) = (sys.plane(0), sys.plane(1)) else {
@@ -205,15 +256,32 @@ pub fn pack(frame: &VideoFrame, layout: &Layout, out: &mut [u8]) -> bool {
         .map(|r| (y, ys, r))
         .chain((0..h / 2).map(|r| (uv, uvs, r)));
     for (i, (plane, plane_stride, r)) in rows.enumerate() {
-        let (Some(src), Some(dst)) = (
-            plane.get(r * plane_stride..r * plane_stride + w),
-            out.get_mut(i * stride..i * stride + w),
-        ) else {
+        let Some(src) = plane.get(r * plane_stride..r * plane_stride + w) else {
+            return false;
+        };
+        if !copy(i, src) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Packs a system-memory NV12 `frame` of `layout`'s size into `out` at the layout's
+/// stride, one row of pixels at a time. The stride's tail in `out` is left as it was.
+/// `false` for anything else.
+pub fn pack(frame: &VideoFrame, layout: &Layout, out: &mut [u8]) -> bool {
+    if out.len() != layout.frame_len() {
+        return false;
+    }
+    let stride = layout.stride() as usize;
+    let width = layout.width() as usize;
+    for_each_row(frame, layout, |i, src| {
+        let Some(dst) = out.get_mut(i * stride..i * stride + width) else {
             return false;
         };
         dst.copy_from_slice(src);
-    }
-    true
+        true
+    })
 }
 
 #[cfg(test)]
@@ -432,5 +500,103 @@ mod tests {
         s.idle(4 * RETRY_MS);
         // The writer's heartbeat is fresh: the reader sees no "writer gone".
         assert!(reader.status(4 * RETRY_MS + 500).is_ok());
+    }
+
+    /// NV12 in one buffer. `gap` bytes sit between the planes. Row bytes past `w` are `pad`.
+    fn image(seq: u64, w: u32, h: u32, stride: usize, gap: usize, pad: u8) -> VideoFrame {
+        let y_rows = h as usize;
+        let uv_rows = h as usize / 2;
+        let y_bytes = stride * y_rows;
+        let mut data = vec![0u8; y_bytes + gap + stride * uv_rows];
+        if gap > 0 {
+            data[y_bytes..y_bytes + gap].fill(0xFF);
+        }
+        let paint = |data: &mut [u8], base: usize, row: usize| {
+            let mark = (seq as u8).wrapping_mul(17).wrapping_add(row as u8);
+            for c in 0..w as usize {
+                data[base + c] = mark.wrapping_add(c as u8);
+            }
+            for c in w as usize..stride {
+                data[base + c] = pad;
+            }
+        };
+        for r in 0..y_rows {
+            paint(&mut data, r * stride, r);
+        }
+        for r in 0..uv_rows {
+            paint(&mut data, y_bytes + gap + r * stride, y_rows + r);
+        }
+        let format = VideoFormat::new(
+            Size {
+                width: w,
+                height: h,
+            },
+            PixelFormat::Nv12,
+            ColorSpace::BT709_LIMITED,
+        );
+        let planes = [
+            PlaneLayout { offset: 0, stride },
+            PlaneLayout {
+                offset: y_bytes + gap,
+                stride,
+            },
+        ];
+        let f = SystemFrame::new(format, Bytes::from(data), &planes).unwrap();
+        VideoFrame::system(Timestamp::from_nanos(seq), f, None).with_sequence(seq)
+    }
+
+    /// Sends `frame` once the ring exists and returns the bytes the reader copied.
+    fn deliver(layout: Layout, frame: &VideoFrame) -> Vec<u8> {
+        use std::sync::atomic::AtomicBool;
+        let region = Region::owned(layout.total_len());
+        initialize(&region, &layout, 1).unwrap();
+        let fake = Fake {
+            region: region.clone(),
+            created: Arc::new(AtomicBool::new(true)),
+            maps: Arc::default(),
+        };
+        let mut sender = RingSender::new(fake, layout, Arc::new(VcamCounters::default()));
+        let mut reader = Reader::new(region, layout).unwrap();
+        reader.heartbeat(1_000);
+        assert_eq!(sender.send(frame, 1_000), Sent::Written);
+        let mut out = vec![0u8; layout.frame_len()];
+        let info = reader.read_newest(1_010, &mut out).unwrap().unwrap();
+        assert_eq!(
+            info.timestamp_ns,
+            i64::try_from(frame.timestamp().as_nanos()).unwrap()
+        );
+        out
+    }
+
+    #[test]
+    fn contiguous_frame_is_written_once_and_a_padded_frame_still_packs() {
+        // The ring stride is wider than the width, so a straight write keeps the row
+        // tail and pack leaves that tail untouched (the slot starts at zero).
+        let wide = Layout::nv12(W, H, W + 4).unwrap();
+        let straight = image(7, W, H, (W + 4) as usize, 0, 0xA5);
+        let image_bytes = super::contiguous_nv12(&straight, &wide).unwrap().to_vec();
+        assert_eq!(image_bytes.len(), wide.frame_len());
+        assert!(image_bytes.contains(&0xA5));
+        let mut packed_tail = vec![0u8; wide.frame_len()];
+        assert!(pack(&straight, &wide, &mut packed_tail));
+        assert_ne!(packed_tail, image_bytes);
+        let once = deliver(wide, &straight);
+        assert_eq!(once, image_bytes);
+
+        // A wider plane, and a gap between planes, still take the row pack.
+        let tight = Layout::nv12(W, H, W).unwrap();
+        let padded = image(4, W, H, (W + 8) as usize, 0, 0xA5);
+        assert!(super::contiguous_nv12(&padded, &tight).is_none());
+        let mut packed = vec![0u8; tight.frame_len()];
+        assert!(pack(&padded, &tight, &mut packed));
+        assert!(packed.iter().all(|&b| b != 0xA5));
+        assert_eq!(deliver(tight, &padded), packed);
+
+        let gapped = image(5, W, H, W as usize, 8, 0x5A);
+        assert!(super::contiguous_nv12(&gapped, &tight).is_none());
+        let mut packed_gap = vec![0u8; tight.frame_len()];
+        assert!(pack(&gapped, &tight, &mut packed_gap));
+        assert!(!packed_gap.contains(&0xFF));
+        assert_eq!(deliver(tight, &gapped), packed_gap);
     }
 }
