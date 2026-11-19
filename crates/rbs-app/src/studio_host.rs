@@ -14,9 +14,10 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, HashMap};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::sync::Weak;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{self, Receiver, SendError, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -3597,9 +3598,26 @@ fn preview_desc(size: Size, fps: FrameRate) -> PreviewDesc {
     }
 }
 
+/// The control thread's command channel. Sending also unparks that thread once it
+/// has bound itself (ADR-0154). A bare channel send does not wake a `park`.
+pub(crate) struct ControlOut {
+    tx: Sender<Msg>,
+    wake: OnceLock<Arc<rbs_graph::runtime::ControlWake>>,
+}
+
+impl ControlOut {
+    fn send(&self, msg: Msg) -> Result<(), SendError<Msg>> {
+        let sent = self.tx.send(msg);
+        if let Some(wake) = self.wake.get() {
+            wake.unpark();
+        }
+        sent
+    }
+}
+
 /// The running control thread. Dropping it stops the studio and joins the thread.
 pub struct StudioHost {
-    tx: Option<Arc<Sender<Msg>>>,
+    tx: Option<Arc<ControlOut>>,
     thread: Option<JoinHandle<()>>,
     /// Meters the control API samples for `audio.levels`.
     levels: Arc<crate::levels::LevelFeed>,
@@ -3618,7 +3636,10 @@ impl StudioHost {
         notify: impl Fn(Update) + Send + 'static,
     ) -> std::io::Result<Self> {
         let (tx, rx) = mpsc::channel();
-        let tx = Arc::new(tx);
+        let tx = Arc::new(ControlOut {
+            tx,
+            wake: OnceLock::new(),
+        });
         let levels = crate::levels::LevelFeed::new();
         let thread = std::thread::Builder::new()
             .name("rbs-studio".into())
@@ -3670,7 +3691,8 @@ impl StudioHost {
     /// It holds no strong reference to the channel, so dropping the host still closes
     /// it and ends the control thread while an `ApiServer` keeps the waker.
     pub fn api_waker(&self) -> impl Fn() + Send + Sync + 'static {
-        let tx: Weak<Sender<Msg>> = self.tx.as_ref().map(Arc::downgrade).unwrap_or_default();
+        let tx: std::sync::Weak<ControlOut> =
+            self.tx.as_ref().map(Arc::downgrade).unwrap_or_default();
         move || {
             if let Some(tx) = tx.upgrade() {
                 let _ = tx.send(Msg::ApiWake);
@@ -3851,7 +3873,7 @@ fn kind_noun(kind: SourceKind) -> &'static str {
 struct Host {
     /// This thread's own queue, for results from picker threads. Weak, so dropping
     /// the [`StudioHost`] still ends the thread.
-    inbox: Weak<Sender<Msg>>,
+    inbox: std::sync::Weak<ControlOut>,
     /// The stinger's file look (ADR-0140 decision 3).
     stinger: stinger::StingerFile,
     /// Saves the collection after a change ([`HostConfig::autosave`]).
@@ -4097,7 +4119,7 @@ struct Host {
 /// What the control thread is handed besides the studio configuration.
 struct ControlIo {
     rx: Receiver<Msg>,
-    inbox: Weak<Sender<Msg>>,
+    inbox: std::sync::Weak<ControlOut>,
     levels: Arc<crate::levels::LevelFeed>,
 }
 
@@ -4118,6 +4140,10 @@ fn run(
         Ok((mut host, update)) => {
             notify(update);
             host.inbox = inbox;
+            host.studio.bind_control_thread();
+            if let Some(out) = host.inbox.upgrade() {
+                let _ = out.wake.set(host.studio.control_wake());
+            }
             host
         }
         Err(e) => {
@@ -4150,20 +4176,34 @@ fn run(
     };
     host.publish(notify);
     let mut failed: Option<String> = None;
-    let mut wait = Some(MAX_WAIT);
+    // The first round runs before any park, so a bypass during start is collected.
+    let mut wait = Some(Duration::ZERO);
     let mut caught_in_row = 0;
     loop {
-        let msg = match wait {
-            Some(wait) => match rx.recv_timeout(wait) {
-                Ok(m) => Some(m),
-                Err(RecvTimeoutError::Timeout) => None,
-                Err(RecvTimeoutError::Disconnected) => break,
-            },
-            None => match rx.recv() {
-                Ok(m) => Some(m),
-                Err(_) => break,
-            },
+        let msg = match rx.try_recv() {
+            Ok(m) => Some(m),
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => break,
         };
+        if msg.is_none() {
+            match wait {
+                Some(d) if d.is_zero() => {}
+                due => {
+                    if host.studio.bypass_pending() {
+                        wait = Some(Duration::ZERO);
+                        continue;
+                    }
+                    // The load above is the last read before this park. Nothing in
+                    // between may park, or it would consume the bypass token.
+                    match due {
+                        Some(d) => std::thread::park_timeout(d),
+                        None => std::thread::park(),
+                    }
+                    wait = Some(Duration::ZERO);
+                    continue;
+                }
+            }
+        }
         // Each round is a panic boundary (ADR-0055 decision 3): a bug in one command or
         // one round fails that round, and the studio and its outputs keep running.
         match rbs_crash::contain(|| round(&mut host, &mut failed, msg, notify)) {
@@ -4331,22 +4371,21 @@ fn round(
         };
     }
     host.feed_text_live();
-    let serviced = host.studio.service();
+    host.studio.service();
     let busy = host.waiting || host.held_switch.is_some();
     let cap = round_cap(&host.outs, busy);
     // An output or a switch is checked every round and has no deadline of its own.
-    // Idle, with no engine deadline, blocks on the next message instead of the 250 ms poll.
+    // The engine's wait is taken again after the last settle, not from this service.
     let poll = busy
         || host
             .outs
             .iter()
             .any(|o| o.recording.is_some() || o.streaming.is_some() || o.ending);
-    let mut armed = serviced.wait.is_some() || poll;
-    let mut wait = if poll {
-        serviced.wait.unwrap_or(cap).min(cap)
-    } else {
-        serviced.wait.unwrap_or(Duration::MAX)
-    };
+    let mut armed = poll;
+    let mut wait = if poll { cap } else { Duration::MAX };
+    if let Some(left) = host.studio.control_extra() {
+        arm(&mut wait, &mut armed, left);
+    }
     if served_api {
         // More may wait; look again right after any UI command.
         wait = Duration::ZERO;
@@ -4489,6 +4528,11 @@ fn round(
     }
     // A rehearsal ends on the master clock; none arms nothing (P13).
     if let Some(left) = host.studio.rehearsal_wait(now) {
+        arm(&mut wait, &mut armed, left);
+    }
+    // After every settle in this round, including one that timed out and left a swap
+    // in flight. A bypass during that settle is in this wait, not in the earlier one.
+    if let Some(left) = host.studio.collect_engine() {
         arm(&mut wait, &mut armed, left);
     }
     host.publish(notify);

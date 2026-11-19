@@ -2,7 +2,9 @@
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering, fence};
+
+use super::wake::ControlWake;
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError};
 
 use crate::description::NodeId;
@@ -58,6 +60,8 @@ pub struct Executor<X: Runtime> {
     failure_limit: u32,
     /// Bumped on every bypass; read by the controller (ADR-0024).
     bypasses: Arc<AtomicU64>,
+    /// The control thread to unpark when this counter moves (ADR-0154).
+    control: Arc<ControlWake>,
 }
 
 impl<X: Runtime> Executor<X> {
@@ -77,7 +81,14 @@ impl<X: Runtime> Executor<X> {
             pending: None,
             failure_limit: DEFAULT_FAILURE_LIMIT,
             bypasses,
+            control: ControlWake::new(),
         }
+    }
+
+    /// Shares the engine's control-thread cell. Called before a worker runs this
+    /// executor, including an executor created after the thread has already bound.
+    pub fn set_control_wake(&mut self, wake: Arc<ControlWake>) {
+        self.control = wake;
     }
 
     /// Sets how many failed ticks in a row bypass a node (at least 1).
@@ -217,7 +228,10 @@ impl<X: Runtime> Executor<X> {
                         || health.consecutive_errors >= self.failure_limit
                     {
                         health.bypassed = true;
+                        // Failure edge only (ADR-0154). A healthy tick does not reach this.
                         self.bypasses.fetch_add(1, Ordering::Relaxed);
+                        fence(Ordering::SeqCst);
+                        self.control.unpark();
                     }
                     // Partial events from a failed tick are not passed on.
                     for slot in rest[..entry.outputs.len()].iter_mut() {
@@ -296,6 +310,8 @@ impl<X: Runtime> Executor<X> {
                 entry.health.warm_failed = true;
                 entry.health.bypassed = true;
                 self.bypasses.fetch_add(1, Ordering::Relaxed);
+                fence(Ordering::SeqCst);
+                self.control.unpark();
                 // Return what a partial warm-up took; `warmed` stays false, so the node
                 // is not cooled a second time when it leaves.
                 let _ = catch_unwind(AssertUnwindSafe(|| node.cool(&mut ctx)));

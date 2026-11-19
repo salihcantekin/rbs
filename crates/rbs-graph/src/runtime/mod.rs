@@ -20,6 +20,7 @@ mod controller;
 mod executor;
 mod restart;
 mod schedule;
+mod wake;
 
 pub mod param;
 pub mod queue;
@@ -38,6 +39,7 @@ pub use restart::{FaultCause, FaultStatus, RestartPolicy, RuntimeEvent};
 pub use schedule::{
     AudioOut, Inputs, MAX_BLOCK_FRAMES, OutputError, Outputs, PER_TICK_EVENTS, Rejected,
 };
+pub use wake::ControlWake;
 
 use crate::description::NodeId;
 use crate::node::NodeDescriptor;

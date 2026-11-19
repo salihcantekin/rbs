@@ -39,7 +39,7 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0024](0024-node-restart-with-back-off.md) | Restart failed nodes with back-off, contained to the failed node | Accepted |
 | [0025](0025-encoder-surface-export.md) | Hand encoders exported GPU surfaces as native frames | Accepted |
 | [0026](0026-partitions-and-queues.md) | Partitions joined by queue endpoint nodes | Accepted |
-| [0027](0027-engine-loop.md) | Engine loop: a worker thread per partition in a headless rbs-engine crate | Accepted |
+| [0027](0027-engine-loop.md) | Engine loop: a worker thread per partition in a headless rbs-engine crate | Accepted (decision 6 superseded in part by ADR-0154) |
 | [0028](0028-cross-process-preview-surfaces.md) | Share preview surfaces with the UI process as native handles | Accepted |
 | [0029](0029-final-ticks-on-drain.md) | Final ticks on drain | Accepted |
 | [0030](0030-worker-thread-setup.md) | Worker thread setup: a thread policy port and a runtime attach hook | Accepted |
@@ -161,3 +161,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0151](0151-leaving-studio-mode-keeps-the-program-as-it-was.md) | Leaving studio mode keeps the program as it was on air: held edits are put back as one undo step (supersedes part of ADR-0063 decision 4 and ADR-0098 decision 2) | Accepted |
 | [0152](0152-source-activity-when-a-source-runs-and-what-it-does-on-return.md) | Source activity: one policy for every source (run while placed, shown or on air; continue, resume or restart on return; linger), defaults declared by the type | Accepted |
 | [0153](0153-a-transition-of-its-own-outside-studio-mode.md) | A transition kind of its own outside studio mode (Move by default); the rail's kind is for studio mode | Accepted |
+| [0154](0154-wake-the-control-thread-on-bypass.md) | Wake the control thread when a node is bypassed, and stop capping the control wait merely because a worker runs (supersedes part of ADR-0027 decision 6) | Accepted |

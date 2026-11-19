@@ -512,10 +512,8 @@ fn a_bypassed_node_restarts_through_the_control_loop() {
         assert!(eventually(LIMIT, || stats.ticks() > t));
         let serviced = engine.service();
         assert!(serviced.errors.is_empty(), "{:?}", serviced.errors);
-        assert!(
-            serviced.wait.is_some(),
-            "a worker runs, so the loop keeps looking"
-        );
+        // A healthy worker does not keep the loop awake (ADR-0154). A due restart still
+        // returns a wait, which is what the steps below observe through the events.
         events.extend(serviced.events.into_iter().map(|(_, e)| e));
     };
     // Eight failed ticks bypass the node; the control loop sees it and takes it out.
@@ -544,6 +542,71 @@ fn a_bypassed_node_restarts_through_the_control_loop() {
     let seen = sink_probe.seen.load(Ordering::Relaxed);
     step(&mut engine, &mut events);
     assert!(sink_probe.seen.load(Ordering::Relaxed) > seen, "runs again");
+}
+
+/// A real clock, so the worker reaches its failure limit without the test advancing
+/// time. The park is the wait; `LIMIT` is only the hang guard (ADR-0032, ADR-0154).
+fn engine_with_a_failing_sink() -> Engine {
+    let mut engine = Engine::new();
+    engine.bind_control_thread();
+    engine
+        .add_partition::<()>(RENDER, Arc::new(()), (), cadence())
+        .unwrap();
+    let mut graph = GraphDescription::new();
+    let source = TestNode::new(Role::Source, "source");
+    let sink = TestNode::new(Role::VideoSink, "sink").failing(1);
+    let s = add(&mut graph, &source, RENDER);
+    let k = add(&mut graph, &sink, RENDER);
+    graph.connect(s, "out", k, "in").unwrap();
+    engine.adopt::<()>(RENDER, s, Box::new(source)).unwrap();
+    engine.adopt::<()>(RENDER, k, Box::new(sink)).unwrap();
+    engine.apply(&graph).unwrap();
+    engine
+}
+
+#[test]
+fn a_bypass_wakes_the_bound_control_thread() {
+    let mut engine = engine_with_a_failing_sink();
+    let started = std::time::Instant::now();
+    std::thread::park_timeout(LIMIT);
+    assert!(
+        engine.bypass_pending(),
+        "a bypass must stay visible when nobody polls service()"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "the control thread was not unparked; elapsed {:?}",
+        started.elapsed()
+    );
+    let serviced = engine.service();
+    assert!(
+        serviced
+            .events
+            .iter()
+            .any(|(_, e)| matches!(e, RuntimeEvent::Failed { .. })),
+        "{:?}",
+        serviced.events
+    );
+}
+
+#[test]
+fn a_bypass_during_a_channel_wait_stays_visible() {
+    let engine = engine_with_a_failing_sink();
+    let started = std::time::Instant::now();
+    while !engine.bypass_pending() && started.elapsed() < LIMIT {
+        // A channel wait parks on the same token and can swallow the unpark.
+        let (_tx, rx) = mpsc::channel::<()>();
+        let _ = rx.recv_timeout(Duration::from_millis(20));
+    }
+    assert!(
+        engine.bypass_pending(),
+        "the counter must still say a bypass happened"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "elapsed {:?}",
+        started.elapsed()
+    );
 }
 
 #[test]

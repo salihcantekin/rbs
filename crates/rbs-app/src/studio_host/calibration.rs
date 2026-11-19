@@ -12,7 +12,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 use std::time::Duration;
 
 use rbs_api::event::{EventPayload, StateKey, Topic};
@@ -363,11 +363,11 @@ struct WorkerInput {
     stop: Arc<AtomicBool>,
     start: Timestamp,
     free_space: Option<u64>,
-    inbox: Weak<Sender<Msg>>,
+    inbox: std::sync::Weak<crate::studio_host::ControlOut>,
     live: Arc<GpuContext>,
 }
 
-fn send(inbox: &Weak<Sender<Msg>>, id: u64, msg: WorkerMsg) {
+fn send(inbox: &std::sync::Weak<crate::studio_host::ControlOut>, id: u64, msg: WorkerMsg) {
     if let Some(tx) = inbox.upgrade() {
         let _ = tx.send(Msg::Calibration { id, msg });
     }

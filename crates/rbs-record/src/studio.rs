@@ -31,7 +31,7 @@ use rbs_gpu::{CanvasDesc, GpuContext};
 use rbs_graph::description::{GraphDescription, NodeId, PartitionId};
 use rbs_graph::runtime::param::ParamSender;
 use rbs_graph::runtime::queue::QueueStats;
-use rbs_graph::runtime::{FaultCause, JoinError, Node, NodeHealth, RuntimeEvent};
+use rbs_graph::runtime::{ControlWake, FaultCause, JoinError, Node, NodeHealth, RuntimeEvent};
 use rbs_nodes::capture::CaptureNodeStats;
 use rbs_nodes::encode::EncoderNodeStats;
 use rbs_nodes::encode::KeyframeAt;
@@ -1290,6 +1290,9 @@ pub struct Studio {
     hold_scenes: BTreeMap<CanvasId, hold::HoldRun>,
     /// A hold scene fell back in [`Studio::service`] since the host last asked.
     hold_fell_back: bool,
+    /// Text and scroll deadlines from the last [`Studio::service`], without the
+    /// engine's own wait. The host arms these, then collects the engine again.
+    control_extra: Option<Duration>,
     /// The further canvases that run (ADR-0093), in `settings.extra_canvases` order.
     extras: Vec<ExtraRun>,
     /// Pictures added while the studio runs (ADR-0125), in the order they were added.
@@ -1823,6 +1826,7 @@ impl Studio {
             rehearsal: None,
             hold_scenes: BTreeMap::new(),
             hold_fell_back: false,
+            control_extra: None,
             extras,
             pictures: Vec::new(),
             next_picture: 0,
@@ -3318,15 +3322,13 @@ impl Studio {
                     .filter(|old| !staged.iter().any(|n| n.producer == old.producer))
                     .cloned(),
             );
-            let _ = mixer
-                .params
-                .send(mixer_params(
-                    &union,
-                    &mixer.master,
-                    self.master,
-                    &self.solo,
-                    self.meters_on,
-                ));
+            let _ = mixer.params.send(mixer_params(
+                &union,
+                &mixer.master,
+                self.master,
+                &self.solo,
+                self.meters_on,
+            ));
             if union.len() != staged.len() {
                 trimmed = Some(mixer_params(
                     &staged,
@@ -4356,16 +4358,20 @@ impl Studio {
         }
         self.service_text();
         let mut serviced = self.engine.service();
+        let mut extra: Option<Duration> = None;
         // A live text on air wakes the control loop on its whole second.
         if let Some(due) = self.text.as_ref().and_then(TextWorker::next_due) {
+            extra = Some(due);
             serviced.wait = Some(serviced.wait.map_or(due, |w| w.min(due)));
         }
         // A `Once` scroll wakes it when its picture leaves (ADR-0150 decision 11).
         if !self.scroll_runs.is_empty()
             && let Some(due) = self.service_scroll()
         {
+            extra = Some(extra.map_or(due, |e| e.min(due)));
             serviced.wait = Some(serviced.wait.map_or(due, |w| w.min(due)));
         }
+        self.control_extra = extra;
         if self.step_transitions() {
             self.transition_done = true;
         }
@@ -4387,7 +4393,41 @@ impl Studio {
             self.pending_takes.retain(|(a, _)| !take(engine, *a));
         }
         self.settle_owners();
-        for (_, event) in &serviced.events {
+        self.note_runtime_events(&serviced.events);
+        serviced
+    }
+
+    /// Text and scroll deadlines from the last [`Studio::service`].
+    pub fn control_extra(&self) -> Option<Duration> {
+        self.control_extra
+    }
+
+    /// Binds the calling thread as the one a bypass unparks (ADR-0154).
+    pub fn bind_control_thread(&self) {
+        self.engine.bind_control_thread();
+    }
+
+    /// The cell command senders unpark.
+    pub fn control_wake(&self) -> Arc<ControlWake> {
+        self.engine.control_wake()
+    }
+
+    /// A bypass landed since the last engine collect. Do not park.
+    pub fn bypass_pending(&self) -> bool {
+        self.engine.bypass_pending()
+    }
+
+    /// Collects the engine after the host's last settle in this round. Notes runtime
+    /// events that arrived since [`Studio::service`]. The returned wait is the engine's
+    /// alone; text and scroll stay in [`Studio::control_extra`].
+    pub fn collect_engine(&mut self) -> Option<Duration> {
+        let serviced = self.engine.service();
+        self.note_runtime_events(&serviced.events);
+        serviced.wait
+    }
+
+    fn note_runtime_events(&mut self, events: &[(PartitionId, RuntimeEvent)]) {
+        for (_, event) in events {
             match event {
                 RuntimeEvent::Failed {
                     node,
@@ -4453,7 +4493,6 @@ impl Studio {
                 _ => {}
             }
         }
-        serviced
     }
 
     /// Why the studio cannot go on: its compositor, mixer, preview or sink failed for good.

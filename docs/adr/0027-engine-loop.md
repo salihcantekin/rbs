@@ -1,6 +1,6 @@
 # ADR-0027: Engine loop: a worker thread per partition in a headless rbs-engine crate
 
-- Status: Accepted
+- Status: Accepted (decision 6 superseded in part by ADR-0154: a running worker no longer caps the control wait; a bypass unparks the control thread)
 - Date: 2026-11-03
 - Deciders: Salih (owner)
 - Amends: [ADR-0026](0026-partitions-and-queues.md) Decision 9 and [ADR-0024](0024-node-restart-with-back-off.md) Consequences, which place the engine loop in `rbs-app`; it lives in `rbs-engine` instead.

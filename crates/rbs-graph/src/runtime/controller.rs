@@ -326,9 +326,9 @@ impl<X: Runtime> Controller<X> {
     /// `collect`, a scheduled node failed and must be taken out, a waiting node's
     /// back-off is over, or a restarted node is due to be forgiven.
     ///
-    /// The engine's control loop, on its timer: `collect` (an `apply` is refused while
-    /// a schedule is in flight), then if this is true, `apply` the current
-    /// description; sleep for at most [`Controller::next_due`].
+    /// The engine's control loop: `collect` (an `apply` is refused while a schedule is
+    /// in flight), then if this is true, `apply` the current description; sleep for
+    /// [`Controller::next_due`]. A bypass unparks that sleep (ADR-0154).
     pub fn restart_due(&self) -> bool {
         if self.bypasses.load(Ordering::Relaxed) != self.bypasses_seen {
             return true;
@@ -339,6 +339,11 @@ impl<X: Runtime> Controller<X> {
             // Held without an instance: due once its gate opens.
             None => matches!(self.faults.gate(id, now), Gate::Open),
         }) || self.faults.next_deadline().is_some_and(|at| at <= now)
+    }
+
+    /// The bypass counter, for the load immediately before the control thread parks.
+    pub fn bypass_count(&self) -> u64 {
+        self.bypasses.load(Ordering::Relaxed)
     }
 
     /// How long until [`Controller::restart_due`] may turn true without a new bypass:

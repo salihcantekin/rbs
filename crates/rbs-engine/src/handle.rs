@@ -3,13 +3,13 @@
 
 use std::fmt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::sync::{Mutex, PoisonError};
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
 use rbs_graph::description::{GraphDescription, PartitionId};
-use rbs_graph::runtime::RuntimeEvent;
+use rbs_graph::runtime::{ControlWake, RuntimeEvent};
 
 use crate::engine::{Applied, Engine, EngineError, Shutdown};
 
@@ -31,7 +31,7 @@ pub enum EngineEvent {
 
 /// The callback that receives [`EngineEvent`]s, on the control thread. A UI forwards
 /// them to its event loop (for example with `slint::invoke_from_event_loop`); it must
-/// not block.
+/// not block or park: it shares this thread's park token (ADR-0154).
 pub type EventSink = Box<dyn FnMut(EngineEvent) + Send>;
 
 type Job = Box<dyn FnOnce(&mut Engine) + Send>;
@@ -56,11 +56,12 @@ enum State {
 /// Owns an [`Engine`] on a control thread of its own. Every call returns at once: it
 /// only queues a command. The thread starts with the first command, so an engine that
 /// is never used costs no thread. Once started it stays until shutdown; while nothing
-/// runs it blocks on its command channel (no timer, no CPU), an accepted cost of one
-/// parked thread. The [`EventSink`] must not panic: a panic there ends the control
-/// thread, and later calls return [`EngineError::ShutDown`].
+/// runs it parks until a command or a bypass (no timer, no CPU), an accepted cost of
+/// one parked thread. The [`EventSink`] must not panic or park: a panic there ends the
+/// control thread, and later calls return [`EngineError::ShutDown`].
 pub struct EngineHandle {
     state: Mutex<State>,
+    wake: Arc<ControlWake>,
 }
 
 impl fmt::Debug for EngineHandle {
@@ -79,8 +80,10 @@ impl fmt::Debug for EngineHandle {
 impl EngineHandle {
     /// Wraps `engine`; `events` receives everything the control thread reports.
     pub fn new(engine: Engine, events: EventSink) -> Self {
+        let wake = engine.control_wake();
         Self {
             state: Mutex::new(State::Idle(Box::new(engine), events)),
+            wake,
         }
     }
 
@@ -143,6 +146,10 @@ impl EngineHandle {
             // Later calls fail at once instead of queueing behind the shutdown.
             *commands = None;
         }
+        drop(state);
+        if sent.is_ok() {
+            self.wake.unpark();
+        }
         sent
     }
 }
@@ -159,23 +166,39 @@ impl Drop for EngineHandle {
             if let Some(commands) = commands {
                 let _ = commands.send(Command::Shutdown);
             }
+            self.wake.unpark();
             let _ = thread.join();
         }
     }
 }
 
 fn control_loop(mut engine: Engine, mut sink: EventSink, commands: Receiver<Command>) {
-    let mut wait: Option<Duration> = None;
+    engine.bind_control_thread();
+    // Service before the first park, so a bypass during startup is not slept through.
+    let mut wait: Option<Duration> = Some(Duration::ZERO);
     loop {
-        let command = match wait {
-            Some(d) => match commands.recv_timeout(d) {
-                Ok(c) => Some(c),
-                Err(RecvTimeoutError::Timeout) => None,
-                Err(RecvTimeoutError::Disconnected) => Some(Command::Shutdown),
-            },
-            // Nothing runs and nothing is due: sleep until the next command.
-            None => Some(commands.recv().unwrap_or(Command::Shutdown)),
+        let command = match commands.try_recv() {
+            Ok(c) => Some(c),
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => Some(Command::Shutdown),
         };
+        if command.is_none() {
+            match wait {
+                Some(d) if d.is_zero() => {}
+                due => {
+                    if engine.bypass_pending() {
+                        wait = Some(Duration::ZERO);
+                        continue;
+                    }
+                    match due {
+                        Some(d) => std::thread::park_timeout(d),
+                        None => std::thread::park(),
+                    }
+                    wait = Some(Duration::ZERO);
+                    continue;
+                }
+            }
+        }
         match command {
             Some(Command::Apply(logical)) => match engine.apply(&logical) {
                 Ok(applied) => sink(EngineEvent::Applied(applied)),

@@ -5,6 +5,8 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
+use rbs_graph::runtime::ControlWake;
+
 use rbs_core::thread::ThreadPolicy;
 use rbs_core::time::{Clock, MonotonicClock};
 use rbs_graph::description::{GraphDescription, Link, NodeId, PartitionId};
@@ -25,8 +27,9 @@ pub struct EngineConfig {
     /// reports [`EngineError::SwapTimeout`] and moves on (the swap is collected later
     /// by [`Engine::service`]).
     pub swap_timeout: Duration,
-    /// The longest sleep of the control loop while a worker runs: bypasses are only
-    /// seen when the loop looks (ADR-0024, Decision 9).
+    /// The longest sleep while a swap is in flight, a part is dirty, a move is waiting
+    /// or a retired endpoint remains. A running worker does not use it: a bypass
+    /// unparks the control thread (ADR-0154).
     pub control_interval: Duration,
 }
 
@@ -216,6 +219,11 @@ pub struct Engine {
     /// in [`Engine::service`] (a swap still in flight).
     draining: BTreeSet<PartitionId>,
     shut_down: bool,
+    /// Unparked when an executor bypasses a node (ADR-0154).
+    wake: Arc<ControlWake>,
+    /// The bypass total [`Engine::service`] last observed. The control thread loads
+    /// the counters again immediately before it parks.
+    observed_bypasses: u64,
 }
 
 impl fmt::Debug for Engine {
@@ -257,7 +265,31 @@ impl Engine {
             thread_policy: None,
             draining: BTreeSet::new(),
             shut_down: false,
+            wake: ControlWake::new(),
+            observed_bypasses: 0,
         }
+    }
+
+    /// The sleeper binds this thread before it samples a wait or parks (ADR-0154).
+    pub fn bind_control_thread(&self) {
+        self.wake.bind();
+    }
+
+    /// Shared with the threads that enqueue control commands, so they can unpark.
+    pub fn control_wake(&self) -> Arc<ControlWake> {
+        Arc::clone(&self.wake)
+    }
+
+    /// True when a bypass landed after the last [`Engine::service`]. The loop must
+    /// service again instead of parking.
+    pub fn bypass_pending(&self) -> bool {
+        self.bypass_stamp() != self.observed_bypasses
+    }
+
+    fn bypass_stamp(&self) -> u64 {
+        self.parts
+            .values()
+            .fold(0, |total, part| total.wrapping_add(part.bypass_count()))
     }
 
     /// The engine's clock.
@@ -289,8 +321,15 @@ impl Engine {
             Pacing::Doorbell { .. } => Some(self.lowering.doorbell(id)),
             Pacing::Cadence { .. } => None,
         };
-        let mut part =
-            Partition::<X>::new(id, shared, local, pacing, Arc::clone(&self.clock), bell);
+        let mut part = Partition::<X>::new(
+            id,
+            shared,
+            local,
+            pacing,
+            Arc::clone(&self.clock),
+            bell,
+            Arc::clone(&self.wake),
+        );
         part.set_thread_policy(self.thread_policy.clone());
         self.parts.insert(id, Box::new(part));
         Ok(())
@@ -735,15 +774,17 @@ impl Engine {
             if let Some(d) = part.next_due() {
                 min(d);
             }
-            // ADR-0027 decision 6: a running worker is polled so a bypass is seen within
-            // one interval. Nothing else signals that counter.
-            if part.has_worker() || part.in_flight() || part.has_faults() {
+            // A running worker does not wake this thread. A bypass unparks it
+            // (ADR-0154). A restart's time is `next_due`. An in-flight swap is not
+            // signalled yet, so it still uses the interval.
+            if part.in_flight() {
                 min(self.config.control_interval);
             }
         }
         if !self.retiring.is_empty() || !self.dirty.is_empty() || !self.moves.is_empty() {
             min(self.config.control_interval);
         }
+        self.observed_bypasses = self.bypass_stamp();
         out.wait = wait;
         out
     }

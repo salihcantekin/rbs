@@ -38,7 +38,6 @@ pub(crate) trait Part: Send {
     fn collect(&mut self) -> Result<Option<Collected>, SettleError>;
     fn restart_due(&self) -> bool;
     fn next_due(&self) -> Option<Duration>;
-    fn has_faults(&self) -> bool;
     fn retry(&mut self, id: NodeId) -> bool;
     fn fault(&self, id: NodeId) -> Option<FaultStatus>;
     fn set_restart_policy(&mut self, policy: RestartPolicy);
@@ -50,6 +49,8 @@ pub(crate) trait Part: Send {
     /// type differs.
     fn adopt_any(&mut self, id: NodeId, node: AnyNode) -> Result<(), AdoptAnyError>;
     fn has_worker(&self) -> bool;
+    /// The executor's bypass counter.
+    fn bypass_count(&self) -> u64;
     /// True if the controller has an instance of `id`, idle or scheduled.
     fn holds(&self, id: NodeId) -> bool;
     fn wake(&self);
@@ -111,8 +112,10 @@ impl<X: Runtime> Partition<X> {
         pacing: Pacing,
         clock: Arc<dyn Clock>,
         bell: Option<Arc<Doorbell>>,
+        wake: Arc<rbs_graph::runtime::ControlWake>,
     ) -> Self {
-        let (mut controller, executor) = channel::<X>(shared, local);
+        let (mut controller, mut executor) = channel::<X>(shared, local);
+        executor.set_control_wake(Arc::clone(&wake));
         controller.set_clock(Arc::clone(&clock));
         Self {
             id,
@@ -241,10 +244,6 @@ impl<X: Runtime> Part for Partition<X> {
         self.controller.next_due()
     }
 
-    fn has_faults(&self) -> bool {
-        !self.controller.faulted().is_empty()
-    }
-
     fn retry(&mut self, id: NodeId) -> bool {
         self.controller.retry(id)
     }
@@ -290,6 +289,10 @@ impl<X: Runtime> Part for Partition<X> {
 
     fn has_worker(&self) -> bool {
         self.worker.is_some()
+    }
+
+    fn bypass_count(&self) -> u64 {
+        self.controller.bypass_count()
     }
 
     fn holds(&self, id: NodeId) -> bool {
