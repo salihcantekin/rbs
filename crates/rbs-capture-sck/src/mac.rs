@@ -1572,18 +1572,19 @@ impl CursorWatch {
             .spawn(move || {
                 let stream = stream;
                 let mut last_point = None;
-                let mut still_polls = 0u32;
-                // Ends when `stop` drops the sender (or sends).
+                let mut last_query = None;
+                // Ends when `stop` drops the sender (or sends). The thread keeps
+                // waking: only the window-server query is skipped.
                 while let Err(mpsc::RecvTimeoutError::Timeout) = stopped.recv_timeout(cursor::POLL)
                 {
+                    let now = Instant::now();
                     let point = pointer();
                     let moved = point != last_point;
                     last_point = point;
-                    if !cursor::should_query(moved, still_polls) {
-                        still_polls += 1;
+                    if !cursor::should_query(moved, last_query, now) {
                         continue;
                     }
-                    still_polls = 0;
+                    last_query = Some(now);
                     let covered = covered_at(window, point);
                     let mut config = lock(&config);
                     if config.cursor && config.cursor_covered != covered {

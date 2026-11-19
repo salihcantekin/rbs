@@ -4,23 +4,25 @@
 //! ScreenCaptureKit draws the cursor into a window capture whenever the pointer is
 //! inside the window's frame, even when another window covers that spot, so the
 //! picture shows a second cursor over content the user cannot see. While a window
-//! capture with the cursor is Active, a watcher thread of the session polls the
-//! pointer and the windows stacked above the captured one, and turns the stream's
-//! cursor off while one of them is under the pointer.
+//! capture with the cursor is Active, a watcher thread of the session reads the
+//! pointer on every poll. It asks the window server for the windows stacked above
+//! the captured one when the pointer moved or the last query is old, and skips
+//! that query while the pointer is still and the last query is young. It turns
+//! the stream's cursor off while one of those windows is under the pointer.
 //!
 //! The decision is platform independent so it is tested everywhere.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// How often the watcher looks at the pointer. A covered cursor shows for at most
 /// about this long plus ScreenCaptureKit's reconfiguration time.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) const POLL: Duration = Duration::from_millis(50);
 
-/// Polls in a row that may skip the window list while the pointer stands still. A
-/// window raised over a still pointer (Cmd-Tab) is noticed within this many polls.
+/// A window-list query younger than this is reused while the pointer stands still.
+/// A window raised over a still pointer (Cmd-Tab) is noticed within this time.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub(crate) const STILL_POLLS: u32 = 6;
+pub(crate) const STILL_QUERY: Duration = Duration::from_millis(300);
 
 /// Window level of the Dock (`kCGDockWindowLevel`). Only windows below it count as
 /// covering: app windows, floating panels and modal panels. System windows from the
@@ -68,11 +70,14 @@ pub(crate) fn covered(x: f64, y: f64, above: impl IntoIterator<Item = Above>) ->
         .any(|w| w.alpha > 0.0 && w.layer < DOCK_LAYER && w.bounds.contains(x, y))
 }
 
-/// When the watcher reads the window list: whenever the pointer moved, and at least
-/// every [`STILL_POLLS`] polls while it stands still.
+/// When the watcher reads the window list.
+///
+/// `last_query` is when the window server was last asked; `None` means it has not
+/// been asked yet. A still pointer skips a query younger than [`STILL_QUERY`]. A
+/// move, a missing query, or a query at least that old reads the list again.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub(crate) fn should_query(moved: bool, still_polls: u32) -> bool {
-    moved || still_polls >= STILL_POLLS
+pub(crate) fn should_query(moved: bool, last_query: Option<Instant>, now: Instant) -> bool {
+    moved || last_query.is_none_or(|last| now.saturating_duration_since(last) >= STILL_QUERY)
 }
 
 #[cfg(test)]
@@ -161,10 +166,36 @@ mod tests {
     }
 
     #[test]
-    fn still_pointer_queries_periodically() {
-        assert!(should_query(true, 0));
-        assert!(!should_query(false, 0));
-        assert!(!should_query(false, STILL_POLLS - 1));
-        assert!(should_query(false, STILL_POLLS));
+    fn window_query_skipped_while_still_and_young() {
+        let queried = Instant::now();
+        assert!(!should_query(false, Some(queried), queried));
+        assert!(!should_query(
+            false,
+            Some(queried),
+            queried + (STILL_QUERY - Duration::from_nanos(1))
+        ));
+    }
+
+    #[test]
+    fn window_query_runs_when_the_pointer_moves() {
+        let queried = Instant::now();
+        assert!(should_query(true, Some(queried), queried));
+        assert!(should_query(
+            true,
+            Some(queried),
+            queried + Duration::from_millis(1)
+        ));
+    }
+
+    #[test]
+    fn window_query_runs_when_the_last_query_is_old() {
+        let queried = Instant::now();
+        assert!(should_query(false, None, queried));
+        assert!(should_query(false, Some(queried), queried + STILL_QUERY));
+        assert!(should_query(
+            false,
+            Some(queried),
+            queried + STILL_QUERY + POLL
+        ));
     }
 }
