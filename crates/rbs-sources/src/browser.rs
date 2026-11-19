@@ -585,6 +585,9 @@ struct PendingPicture {
 /// frees or waits here.
 pub struct BrowserFrameSink {
     pending: Mutex<Option<PendingPicture>>,
+    /// Set when `pending` holds a picture and cleared when that picture is taken.
+    /// The render thread's idle path is one atomic load (the video queue's mailbox).
+    fresh: AtomicBool,
     /// Supervisor only: the last picture's bytes, reused when the render thread let go.
     kept: Mutex<Kept>,
     width: AtomicU32,
@@ -607,6 +610,7 @@ impl BrowserFrameSink {
     pub fn new() -> Self {
         Self {
             pending: Mutex::new(None),
+            fresh: AtomicBool::new(false),
             kept: Mutex::new(Kept::default()),
             width: AtomicU32::new(0),
             height: AtomicU32::new(0),
@@ -630,7 +634,7 @@ impl BrowserFrameSink {
             return;
         }
         // The replaced picture is freed here, on this thread.
-        let replaced = self.pending.lock().ok().and_then(|mut slot| slot.take());
+        let replaced = self.take_pending();
         drop(replaced);
         let Ok(mut kept) = self.kept.lock() else {
             return;
@@ -670,7 +674,7 @@ impl BrowserFrameSink {
         if width == 0 || height == 0 || rgba.len() != expected {
             return;
         }
-        let replaced = self.pending.lock().ok().and_then(|mut slot| slot.take());
+        let replaced = self.take_pending();
         drop(replaced);
         let Ok(mut kept) = self.kept.lock() else {
             return;
@@ -732,6 +736,7 @@ impl BrowserFrameSink {
             .with_sequence(next_generation());
         if let Ok(mut slot) = self.pending.lock() {
             *slot = Some(PendingPicture { frame, stamp });
+            self.fresh.store(true, Ordering::Release);
         }
         self.generation.fetch_add(1, Ordering::Release);
     }
@@ -763,16 +768,24 @@ impl BrowserFrameSink {
             .with_sequence(next_generation());
         if let Ok(mut slot) = self.pending.lock() {
             *slot = Some(PendingPicture { frame, stamp });
+            self.fresh.store(true, Ordering::Release);
         }
         self.width.store(width, Ordering::Release);
         self.height.store(height, Ordering::Release);
         self.generation.fetch_add(1, Ordering::Release);
     }
 
+    /// Drops a picture still waiting, and clears the idle flag with it.
+    fn take_pending(&self) -> Option<PendingPicture> {
+        self.pending.lock().ok().and_then(|mut slot| {
+            self.fresh.store(false, Ordering::Release);
+            slot.take()
+        })
+    }
+
     /// Forgets a picture the render thread has not taken (the helper stopped).
     pub(crate) fn clear(&self) {
-        let stale = self.pending.lock().ok().and_then(|mut slot| slot.take());
-        drop(stale);
+        let _stale = self.take_pending();
     }
 
     /// Pictures published so far.
@@ -782,12 +795,17 @@ impl BrowserFrameSink {
 
     /// Render thread: the newest picture whose stamp is at or before `now`, once.
     /// `None` when there is none, it is not due yet, or the supervisor holds the
-    /// slot this instant (taken on a later tick). Never waits, never allocates.
+    /// slot this instant (taken on a later tick). Nothing published since the last
+    /// take is one atomic load and does not lock. Never waits, never allocates.
     pub fn take_due(&self, now: Timestamp) -> Option<VideoFrame> {
+        if !self.fresh.load(Ordering::Acquire) {
+            return None;
+        }
         let mut slot = self.pending.try_lock().ok()?;
         if slot.as_ref()?.stamp.is_some_and(|stamp| stamp > now) {
             return None;
         }
+        self.fresh.store(false, Ordering::Release);
         slot.take().map(|pending| pending.frame)
     }
 }
