@@ -18,6 +18,7 @@ use rbs_engine::{Engine, EngineError, Serviced};
 use rbs_gpu::{GpuContext, YuvFormat};
 use rbs_graph::description::{GraphDescription, GraphError, NodeId, PartitionId};
 use rbs_graph::node::NodeDescriptor;
+use rbs_graph::runtime::RuntimeEvent;
 use rbs_mux::MuxerFactory;
 use rbs_scene::SceneCollection;
 use rbs_scene::binder::{BindError, BindProblem};
@@ -1076,14 +1077,12 @@ impl Recording {
     /// source that fails is marked in [`StartReport::sources`] until it runs again; an
     /// essential node that fails for good, or an output failure, ends the recording
     /// ([`Recording::failure`]). Call it again after `wait` (at most about 100 ms).
+    ///
+    /// Source failures come from this call's events, matched by [`SourceState::node`].
+    /// `Failed` sets that source's `failed`; `Restarted` or `Recovered` clears it.
     pub fn service(&mut self) -> Serviced {
         let serviced = self.studio.service();
-        let now = self.studio.sources();
-        for s in &mut self.started.sources {
-            if let Some(n) = now.iter().find(|n| n.node == s.node) {
-                s.failed.clone_from(&n.failed);
-            }
-        }
+        note_source_failures(&mut self.started.sources, &serviced.events);
         serviced
     }
 
@@ -1138,5 +1137,173 @@ impl Recording {
         report.shutdown_errors.extend(errors);
         report.failure = report.failure.or(studio_failure);
         report
+    }
+}
+
+/// Marks the take's sources from engine events, by node id (recording spec, running).
+///
+/// A source node that fails is recorded on that source only. A node that restarts or
+/// recovers is healthy again. Events for any other node leave the take as it is.
+fn note_source_failures(sources: &mut [SourceState], events: &[(PartitionId, RuntimeEvent)]) {
+    for (_, event) in events {
+        match event {
+            RuntimeEvent::Failed { node, cause, .. } => {
+                for source in sources.iter_mut().filter(|s| s.node == *node) {
+                    source.failed = Some(crate::studio::source_fault_message(cause));
+                }
+            }
+            RuntimeEvent::Restarted { node, .. } | RuntimeEvent::Recovered { node } => {
+                for source in sources.iter_mut().filter(|s| s.node == *node) {
+                    source.failed = None;
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use rbs_core::registry::AdapterId;
+    use rbs_core::time::Timestamp;
+    use rbs_graph::description::GraphDescription;
+    use rbs_graph::node::{LinkKind, NodeDescriptor, NodeKind, NodeTypeId, Pin};
+    use rbs_graph::runtime::{FaultCause, JoinError, NodeError, NodeHealth, RuntimeEvent};
+    use rbs_scene::model::SourceId;
+
+    use super::{PartitionId, SourceState, note_source_failures};
+
+    fn node_ids() -> (
+        rbs_graph::description::NodeId,
+        rbs_graph::description::NodeId,
+        rbs_graph::description::NodeId,
+    ) {
+        let mut graph = GraphDescription::new();
+        let desc = Arc::new(NodeDescriptor::new(
+            NodeTypeId::new_static("org.rbs.test.source"),
+            NodeKind::Source,
+            Vec::new(),
+            vec![Pin::one("out", LinkKind::Video)],
+        ));
+        let mut next = || match graph.add_node(Arc::clone(&desc)) {
+            Ok(id) => id,
+            Err(e) => panic!("test graph: {e}"),
+        };
+        (next(), next(), next())
+    }
+
+    fn source(node: rbs_graph::description::NodeId, name: &str) -> SourceState {
+        SourceState {
+            source: SourceId::from_raw(1),
+            node,
+            name: name.to_owned(),
+            adapter: AdapterId::new("org.rbs.test"),
+            target: "desk".to_owned(),
+            failed: None,
+            fault: None,
+            reason: None,
+        }
+    }
+
+    fn failed(node: rbs_graph::description::NodeId, cause: FaultCause) -> RuntimeEvent {
+        RuntimeEvent::Failed {
+            node,
+            attempt: 1,
+            cause,
+            retry_at: Some(Timestamp::from_nanos(1)),
+        }
+    }
+
+    #[test]
+    fn source_failures_follow_events_for_that_node() {
+        let (camera, display, other) = node_ids();
+        let mut sources = vec![source(camera, "Camera"), source(display, "Display")];
+
+        note_source_failures(
+            &mut sources,
+            &[(
+                PartitionId::RENDER,
+                failed(camera, FaultCause::Bypassed(NodeHealth::default())),
+            )],
+        );
+        assert_eq!(sources[0].failed.as_deref(), Some("Stopped. Press Reload."));
+        assert_eq!(sources[0].name, "Camera");
+        assert_eq!(sources[1].failed, None);
+        assert_eq!(sources[1].name, "Display");
+
+        note_source_failures(
+            &mut sources,
+            &[(
+                PartitionId::RENDER,
+                failed(
+                    other,
+                    FaultCause::Join(JoinError::Prepare(NodeError::NotReady)),
+                ),
+            )],
+        );
+        assert_eq!(sources[0].failed.as_deref(), Some("Stopped. Press Reload."));
+        assert_eq!(sources[1].failed, None);
+
+        note_source_failures(
+            &mut sources,
+            &[
+                (
+                    PartitionId::RENDER,
+                    failed(
+                        display,
+                        FaultCause::Join(JoinError::Prepare(NodeError::Permanent(
+                            "permission denied",
+                        ))),
+                    ),
+                ),
+                (
+                    PartitionId::RENDER,
+                    RuntimeEvent::Restarted {
+                        node: camera,
+                        attempt: 1,
+                    },
+                ),
+            ],
+        );
+        assert_eq!(sources[0].failed, None);
+        assert_eq!(sources[0].name, "Camera");
+        assert_eq!(
+            sources[1].failed.as_deref(),
+            Some("Could not start: permanent failure: permission denied")
+        );
+        assert_eq!(sources[1].name, "Display");
+        assert_eq!(sources[1].target, "desk");
+
+        note_source_failures(
+            &mut sources,
+            &[(
+                PartitionId::RENDER,
+                RuntimeEvent::Recovered { node: display },
+            )],
+        );
+        assert_eq!(sources[0].failed, None);
+        assert_eq!(sources[1].failed, None);
+
+        note_source_failures(
+            &mut sources,
+            &[(
+                PartitionId::RENDER,
+                failed(
+                    camera,
+                    FaultCause::Join(JoinError::BackingOff {
+                        retry_at: Some(Timestamp::from_nanos(1)),
+                    }),
+                ),
+            )],
+        );
+        assert_eq!(sources[0].failed.as_deref(), Some("Waiting to restart…"));
+        note_source_failures(
+            &mut sources,
+            &[(PartitionId::RENDER, RuntimeEvent::Cleared { node: camera })],
+        );
+        assert_eq!(sources[0].failed.as_deref(), Some("Waiting to restart…"));
+        assert_eq!(sources[1].failed, None);
     }
 }

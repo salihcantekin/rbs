@@ -5790,7 +5790,7 @@ fn browser_engine_message(reason: &str) -> &'static str {
     }
 }
 
-fn source_fault_message(cause: &FaultCause) -> String {
+pub(crate) fn source_fault_message(cause: &FaultCause) -> String {
     match cause {
         FaultCause::Bypassed(health) => bypassed_source_message(health),
         FaultCause::Join(JoinError::Prepare(e)) => format!("Could not start: {e}"),
