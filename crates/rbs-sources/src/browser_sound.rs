@@ -72,11 +72,49 @@ pub struct BrowserSoundStats {
     pub format_changes: AtomicU64,
 }
 
-/// One block of sound, interleaved at the graph's format, stamped at the master time
+/// One block of sound, planar at the graph's format, stamped at the master time
 /// of its first frame on the block grid.
+///
+/// `samples` is channel-major: `channels` planes of equal length. The node copies
+/// each plane once into the graph block.
 struct SoundBlock {
     stamp: Timestamp,
     samples: Box<[f32]>,
+    channels: usize,
+}
+
+/// Copies each plane of `samples` (`stored` channels, channel-major) into `channels`.
+/// One `copy_from_slice` per channel. A short plane leaves the rest of that span
+/// silent. No allocation.
+fn copy_planar(samples: &[f32], stored: usize, channels: &mut [&mut [f32]], frames: usize) {
+    let plane = samples.len().checked_div(stored).unwrap_or(0);
+    let count = stored.min(channels.len());
+    for (c, dest) in channels.iter_mut().enumerate().take(count) {
+        let span = frames.min(dest.len());
+        let start = c.saturating_mul(plane);
+        let available = plane.min(span).min(samples.len().saturating_sub(start));
+        dest[..available].copy_from_slice(&samples[start..start + available]);
+        dest[available..span].fill(0.0);
+    }
+    for dest in channels.iter_mut().skip(count) {
+        let span = frames.min(dest.len());
+        dest[..span].fill(0.0);
+    }
+}
+
+/// Writes `planes` into `samples` as channel-major planes of `frames` samples.
+/// One `copy_from_slice` per channel. No allocation.
+fn store_planar(samples: &mut [f32], planes: &[Vec<f32>], frames: usize) {
+    for (c, src) in planes.iter().enumerate() {
+        let start = c.saturating_mul(frames).min(samples.len());
+        let end = start.saturating_add(frames).min(samples.len());
+        let plane = &mut samples[start..end];
+        let n = plane.len().min(src.len());
+        plane[..n].copy_from_slice(&src[..n]);
+        plane[n..].fill(0.0);
+    }
+    let covered = planes.len().saturating_mul(frames).min(samples.len());
+    samples[covered..].fill(0.0);
 }
 
 /// The feed's end of the sound node's rings.
@@ -247,8 +285,8 @@ impl BrowserSoundNode {
                     break;
                 };
                 if due {
-                    // Blocks are cut for this channel count. A short one leaves silence.
-                    rbs_audio::deinterleave(&block.samples, channels, frames);
+                    // Planar planes, one copy each. A short plane leaves silence.
+                    copy_planar(&block.samples, block.channels, channels, frames);
                     written = true;
                 } else {
                     self.shared
@@ -735,11 +773,18 @@ impl BrowserSoundFeed {
         let Some(inlet) = self.inlet.as_mut() else {
             return;
         };
+        let need = n_out.saturating_mul(block_frames);
         let samples = match inlet.returns.pop() {
-            Ok(buffer) => Some(buffer),
+            Ok(buffer) if buffer.len() == need => Some(buffer),
+            Ok(buffer) => {
+                // A returned buffer of another size cannot hold these planes.
+                // Supervisor thread: the first block of a size may allocate.
+                drop(buffer);
+                Some(vec![0.0; need].into_boxed_slice())
+            }
             Err(_) if self.buffers < inlet.returns.buffer().capacity() => {
                 self.buffers += 1;
-                Some(vec![0.0; n_out * block_frames].into_boxed_slice())
+                Some(vec![0.0; need].into_boxed_slice())
             }
             Err(_) => None,
         };
@@ -747,12 +792,13 @@ impl BrowserSoundFeed {
             stats.dropped_blocks.fetch_add(1, Ordering::Relaxed);
             return;
         };
-        for (f, frame) in samples.chunks_exact_mut(n_out).enumerate() {
-            for (c, sample) in frame.iter_mut().enumerate() {
-                *sample = self.planar[c][f];
-            }
-        }
-        match inlet.blocks.push(SoundBlock { stamp, samples }) {
+        let planes = self.planar.get(..n_out).unwrap_or(self.planar.as_slice());
+        store_planar(&mut samples, planes, block_frames);
+        match inlet.blocks.push(SoundBlock {
+            stamp,
+            samples,
+            channels: n_out,
+        }) {
             Ok(()) => {
                 stats.pushed_blocks.fetch_add(1, Ordering::Relaxed);
             }
