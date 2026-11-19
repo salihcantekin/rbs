@@ -30,6 +30,8 @@ fn main() {
         HelperMode::Run
     } else if std::env::args().any(|arg| arg == "--hang") {
         HelperMode::Hang
+    } else if std::env::args().any(|arg| arg == "--still") {
+        HelperMode::Still
     } else {
         HelperMode::Once
     };

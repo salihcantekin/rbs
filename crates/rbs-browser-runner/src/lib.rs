@@ -323,6 +323,10 @@ pub struct Supervisor {
     outbox: std::sync::mpsc::SyncSender<Control>,
     /// False while the page is a hidden background page (ADR-0149 decision 5).
     shown: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Set when a hidden page is shown again: the supervisor publishes its last
+    /// picture once more, since a still page paints nothing new and the studio's
+    /// picture node took the old one before it left the schedule.
+    republish: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Control messages that may wait for the supervisor thread.
@@ -390,6 +394,8 @@ impl Supervisor {
         let (outbox, inbox) = std::sync::mpsc::sync_channel::<Control>(OUTBOX);
         let shown = Arc::new(AtomicBool::new(true));
         let shown_flag = Arc::clone(&shown);
+        let republish = Arc::new(AtomicBool::new(false));
+        let republish_flag = Arc::clone(&republish);
         // Poll twice per page frame so a new frame waits at most half a period.
         let mut period = Duration::from_secs(1) / fps.clamp(1, 60) / 2;
         if sound.is_some() && child.has_sound() {
@@ -426,7 +432,11 @@ impl Supervisor {
                         }
                     }
                     was_shown = shown;
-                    if child.refresh() {
+                    // Shown again: the last picture once more, so a page that
+                    // paints nothing new still shows (its paint time stays, so it
+                    // is due at once).
+                    let again = republish_flag.swap(false, Ordering::AcqRel);
+                    if child.refresh() || (again && child.width > 0 && child.height > 0) {
                         publish(&child.frame, child.width, child.height, child.painted);
                     }
                     if !child.process_alive() || !child.check_heartbeat(Instant::now()) {
@@ -451,6 +461,7 @@ impl Supervisor {
             thread: Some(thread),
             outbox,
             shown,
+            republish,
         })
     }
 
@@ -463,6 +474,13 @@ impl Supervisor {
         use std::sync::atomic::Ordering;
         if self.shown.swap(shown, Ordering::AcqRel) == shown {
             return true;
+        }
+        if shown {
+            self.republish.store(true, Ordering::Release);
+            // Not after a hidden poll's 500 ms wait.
+            if let Some(thread) = self.thread.as_ref() {
+                thread.thread().unpark();
+            }
         }
         self.send(&Control::Shown(shown))
     }
@@ -557,6 +575,9 @@ pub enum HelperMode {
     Run,
     /// Paint one frame, then stay alive without beating (a hung page).
     Hang,
+    /// Paint one frame, then beat until stdin closes without painting again (a still
+    /// page, which a browser engine does not paint again).
+    Still,
 }
 
 /// The test-double helper process: a moving bright checker, so a missing CEF page
@@ -598,6 +619,20 @@ pub fn helper_main_with(mode: HelperMode, tone: bool) -> Result<(), String> {
         HelperMode::Hang => {
             let mut rest = [0u8; 1];
             let _ = stdin.read(&mut rest);
+            Ok(())
+        }
+        HelperMode::Still => {
+            // Beats while stdin is open; never paints again.
+            let (closed_tx, closed_rx) = std::sync::mpsc::channel::<()>();
+            std::thread::spawn(move || {
+                while rbs_browser_ipc::control::read(&mut stdin).is_ok() {}
+                let _ = closed_tx.send(());
+            });
+            while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) =
+                closed_rx.recv_timeout(HEARTBEAT_PERIOD / 2)
+            {
+                ring.beat();
+            }
             Ok(())
         }
         HelperMode::Run => {
