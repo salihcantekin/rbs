@@ -134,7 +134,7 @@ pub fn save(config: &Path, settings: &VcamSettings) -> std::io::Result<()> {
 /// Where the camera's symbolic link is kept: the file `rbs-cli vcam` uses too, so a
 /// camera either of them added is the same camera for both.
 pub fn link_file(config: &Path) -> PathBuf {
-    config.join("vcam-link.txt")
+    rbs_platform::vcam_link_file(config)
 }
 
 /// Work on the camera that runs off the UI thread (it may wait for a prompt).

@@ -13,8 +13,8 @@ publish.workspace = true
 name = "rbs-cli"
 path = "src/main.rs"
 
-# Application layer: the composition root. It may depend on everything and is the only
-# place (with rbs-app) that names adapters (P1).
+# Application layer: the composition root. It may depend on everything; its built-in
+# adapters come from rbs-platform (ADR-0160, P1).
 [dependencies]
 rbs-core = { path = "../rbs-core" }
 rbs-engine = { path = "../rbs-engine" }
@@ -26,21 +26,14 @@ rbs-sources = { path = "../rbs-sources" }
 rbs-capture = { path = "../rbs-capture" }
 rbs-audio-io = { path = "../rbs-audio-io" }
 rbs-record = { path = "../rbs-record" }
+# The built-in adapters, the same list the app registers (ADR-0160).
+rbs-platform = { path = "../rbs-platform" }
 rbs-vcam = { path = "../rbs-vcam" }
 rbs-codec = { path = "../rbs-codec" }
 rbs-thread-os = { path = "../rbs-thread-os" }
-rbs-mux-matroska = { path = "../rbs-mux-matroska" }
-rbs-mux-fmp4 = { path = "../rbs-mux-fmp4" }
-rbs-mux-wav = { path = "../rbs-mux-wav" }
-rbs-mux-flac = { path = "../rbs-mux-flac" }
-rbs-codec-pcm = { path = "../rbs-codec-pcm" }
-rbs-codec-flac = { path = "../rbs-codec-flac" }
 rbs-transport-file = { path = "../rbs-transport-file" }
-# `stream`: RTMP (packets), and SRT carrying MPEG-TS.
+# `stream`: the stream's URL, secret and reconnect policy.
 rbs-transport = { path = "../rbs-transport" }
-rbs-transport-rtmp = { path = "../rbs-transport-rtmp" }
-rbs-transport-srt = { path = "../rbs-transport-srt" }
-rbs-mux-mpegts = { path = "../rbs-mux-mpegts" }
 # `token`: the remote control settings file, shared with rbs-app.
 rbs-remote-settings = { path = "../rbs-remote-settings" }
 # `token` changes go to a running RBS over local IPC (`tokens.*` requests).
@@ -69,32 +62,9 @@ windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_System_Console",
 ] }
-rbs-vcam-mf = { path = "../rbs-vcam-mf" }
-rbs-capture-wgc = { path = "../rbs-capture-wgc" }
-rbs-capture-mf = { path = "../rbs-capture-mf" }
-rbs-audio-io-wasapi = { path = "../rbs-audio-io-wasapi" }
-rbs-codec-nvenc = { path = "../rbs-codec-nvenc" }
-rbs-codec-amf = { path = "../rbs-codec-amf" }
-rbs-codec-mf = { path = "../rbs-codec-mf" }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.180"
-
-[target.'cfg(target_os = "linux")'.dependencies]
-rbs-capture-pipewire = { path = "../rbs-capture-pipewire" }
-rbs-audio-io-pipewire = { path = "../rbs-audio-io-pipewire" }
-rbs-codec-nvenc = { path = "../rbs-codec-nvenc" }
-rbs-codec-amf = { path = "../rbs-codec-amf" }
-rbs-codec-qsv = { path = "../rbs-codec-qsv" }
-rbs-codec-vaapi = { path = "../rbs-codec-vaapi" }
-rbs-codec-ffmpeg = { path = "../rbs-codec-ffmpeg" }
-
-[target.'cfg(target_os = "macos")'.dependencies]
-rbs-capture-sck = { path = "../rbs-capture-sck" }
-rbs-capture-avf = { path = "../rbs-capture-avf" }
-rbs-audio-io-coreaudio = { path = "../rbs-audio-io-coreaudio" }
-rbs-codec-videotoolbox = { path = "../rbs-codec-videotoolbox" }
-rbs-codec-audiotoolbox = { path = "../rbs-codec-audiotoolbox" }
 
 [dev-dependencies]
 rbs-vcam-test = { path = "../rbs-vcam-test" }

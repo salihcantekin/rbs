@@ -953,9 +953,43 @@ pub fn draw(
     }
 }
 
+/// The effect check that failed ([`checked`]); its text is the reason shown.
+#[derive(Clone, Debug, PartialEq)]
+pub enum EffectCheckError {
+    /// A derived colour is too close to the live colour.
+    LooksLive {
+        /// The part, as a phrase ("the glow").
+        what: String,
+        /// Its CIEDE2000 difference from the live colour.
+        difference: f64,
+    },
+    /// The focus ring beside an effect falls under 3:1 contrast.
+    FocusContrast {
+        /// The contrast ratio it has.
+        ratio: f64,
+    },
+}
+
+impl std::fmt::Display for EffectCheckError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EffectCheckError::LooksLive { what, difference } => write!(
+                f,
+                "{what} looks like the live colour (difference {difference:.1}, needs {MIN_DELTA_E_FROM_LIVE})"
+            ),
+            EffectCheckError::FocusContrast { ratio } => write!(
+                f,
+                "the focus ring beside an effect has contrast {ratio:.2}, needs 3"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for EffectCheckError {}
+
 /// What `values` draw, as [`draw`], after the effect checks that turn a setting off
-/// (ADR-0120 decision 9, ADR-0122 decision 6): `Err` holds the failed check in words. The
-/// face pairs never fail here: their searches scale the shading down instead.
+/// (ADR-0120 decision 9, ADR-0122 decision 6): `Err` holds the failed check. The face
+/// pairs never fail here: their searches scale the shading down instead.
 pub fn checked(
     values: &EffectValues,
     colors: &BTreeMap<String, Color>,
@@ -963,7 +997,7 @@ pub fn checked(
     label_line: f32,
     dark: bool,
     live: Color,
-) -> Result<EffectDraw, String> {
+) -> Result<EffectDraw, EffectCheckError> {
     let d = draw(values, colors, length, label_line, dark);
     if !d.on {
         return Ok(d);
@@ -1010,9 +1044,10 @@ pub fn checked(
     for (what, c) in derived {
         let diff = delta_e_2000(c, live);
         if diff < MIN_DELTA_E_FROM_LIVE {
-            return Err(format!(
-                "{what} looks like the live colour (difference {diff:.1}, needs {MIN_DELTA_E_FROM_LIVE})"
-            ));
+            return Err(EffectCheckError::LooksLive {
+                what,
+                difference: diff,
+            });
         }
     }
     // The clamp: a neighbour's strongest shadow at the outer edge of the extent, blended
@@ -1035,16 +1070,14 @@ pub fn checked(
         for g in grounds {
             let ratio = focus.contrast(g);
             if ratio < 3.0 {
-                return Err(format!(
-                    "the focus ring beside an effect has contrast {ratio:.2}, needs 3"
-                ));
+                return Err(EffectCheckError::FocusContrast { ratio });
             }
         }
     }
     Ok(d)
 }
 
-/// The failed check of [`checked`] in words, or `None` when `values` may be drawn.
+/// The failed check of [`checked`], or `None` when `values` may be drawn.
 pub fn check(
     values: &EffectValues,
     colors: &BTreeMap<String, Color>,
@@ -1052,7 +1085,7 @@ pub fn check(
     label_line: f32,
     dark: bool,
     live: Color,
-) -> Option<String> {
+) -> Option<EffectCheckError> {
     checked(values, colors, length, label_line, dark, live).err()
 }
 
@@ -1555,16 +1588,20 @@ mod tests {
         // An accent like the live colour: the halo and the rim would spread "live red".
         let mut red = theme.colors.clone();
         red.insert("color.accent".into(), colour("#c62a30"));
-        assert!(check(Effects::Glow, &red).unwrap().contains("the glow"));
+        let why = check(Effects::Glow, &red).unwrap();
+        assert!(
+            matches!(&why, EffectCheckError::LooksLive { what, .. } if what == "the glow"),
+            "{why}"
+        );
         // A destructive colour like it: the danger rim.
         let mut danger = theme.colors.clone();
         danger.insert("color.action.destructive".into(), colour("#c62a30"));
-        let why = check(Effects::Glow, &danger).unwrap();
+        let why = check(Effects::Glow, &danger).unwrap().to_string();
         assert!(why.contains("the rim of a danger button"), "{why}");
         // A fill whose gloss or key edge lands on it.
         let mut fill = theme.colors.clone();
         fill.insert("color.button.fill".into(), colour("#a80010"));
-        let why = check(Effects::Glass, &fill).unwrap();
+        let why = check(Effects::Glass, &fill).unwrap().to_string();
         assert!(why.contains("color.button.fill"), "{why}");
         assert!(check(Effects::Tactile, &fill).is_some());
     }

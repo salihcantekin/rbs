@@ -776,7 +776,7 @@ impl App {
         if let Ok(cid) = rbs_ui::command::CommandId::parse(id)
             && let Err(reason) = shown.enabled(&cid)
         {
-            self.show_error(UiError::Other(reason));
+            self.show_error(UiError::Other(reason.into_string()));
             return;
         }
         let Some(run) = menu_bar::run(id, &shown) else {
@@ -6289,7 +6289,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
         config.autosave = autosave;
         config.key_account = key_account;
         config.virtual_camera = ctx.app.borrow().vcam.factory();
-        config.system_probe = Some(studio_host::protection::SystemProbeFactory::os());
+        rbs_app::platform::host_seams(&mut config);
         config.config_dir = Some(ctx.app.borrow().config.clone());
         config.swap_after_transition = ctx.app.borrow().bg.swap_after_transition;
         config.media_pause_release = ctx.app.borrow().bg.pause_release();
@@ -6321,7 +6321,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             },
         )));
         // The built-in add-on catalog (ADR-0145); nothing is read until asked.
-        config.add_ons = rbs_app::add_ons::AddOnsSetup::system();
+        config.add_ons = rbs_app::add_ons::system_setup();
         config
     };
     match studio_host::StudioHost::spawn(

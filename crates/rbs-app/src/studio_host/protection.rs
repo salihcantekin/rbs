@@ -20,7 +20,7 @@ use rbs_core::time::Timestamp;
 use rbs_record::OutputId;
 use rbs_record::protection::{
     AlertKind, Guard, GuardStatus, Level, OutputSample, ProbeOutcome, ProbeStep, ProbeWorker,
-    Probed, ProtectionSettings, Sample, SystemProbe, VolumeKey, VolumeSpace,
+    Probed, ProtectionSettings, Sample, SystemProbe, VolumeKey,
 };
 
 use super::{Host, OutputCanvas, Update, slot};
@@ -37,40 +37,11 @@ impl SystemProbeFactory {
     pub fn new(make: impl Fn() -> Box<dyn SystemProbe> + Send + Sync + 'static) -> Self {
         Self(Arc::new(make))
     }
-
-    /// The operating system's probe (`rbs-system-probe`).
-    pub fn os() -> Self {
-        Self::new(|| Box::new(OsProbe))
-    }
 }
 
 impl fmt::Debug for SystemProbeFactory {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("SystemProbeFactory")
-    }
-}
-
-/// `rbs-system-probe` behind the port (ADR-0090 decision 11).
-struct OsProbe;
-
-impl SystemProbe for OsProbe {
-    fn volume_space(&mut self, folder: &Path) -> Probed<VolumeSpace> {
-        match rbs_system_probe::volume_space(folder) {
-            Ok(s) => Probed::Value(VolumeSpace {
-                volume: VolumeKey(s.volume),
-                free_bytes: s.free_bytes,
-            }),
-            Err(rbs_system_probe::ProbeError::Unsupported) => Probed::Unsupported,
-            Err(rbs_system_probe::ProbeError::Failed(_)) => Probed::Unknown,
-        }
-    }
-
-    fn available_memory(&mut self) -> Probed<u64> {
-        match rbs_system_probe::available_memory() {
-            Ok(b) => Probed::Value(b),
-            Err(rbs_system_probe::ProbeError::Unsupported) => Probed::Unsupported,
-            Err(rbs_system_probe::ProbeError::Failed(_)) => Probed::Unknown,
-        }
     }
 }
 

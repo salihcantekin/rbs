@@ -294,7 +294,7 @@ struct RawToolbar {
 }
 
 impl TryFrom<RawToolbar> for Toolbar {
-    type Error = String;
+    type Error = String; // Text: serde's `try_from` hook makes it its message at once.
 
     fn try_from(r: RawToolbar) -> Result<Self, String> {
         if r.items.len() > MAX_TOOLBAR_ITEMS {
@@ -648,7 +648,7 @@ struct RawWindow {
 }
 
 impl TryFrom<RawWindow> for Window {
-    type Error = String;
+    type Error = String; // Text: serde's `try_from` hook makes it its message at once.
 
     fn try_from(r: RawWindow) -> Result<Self, String> {
         let has_areas =

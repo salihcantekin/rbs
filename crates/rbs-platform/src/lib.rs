@@ -1,33 +1,80 @@
-//! The platform's adapters: the only place in the headless path that names them (P1).
+//! The one list of RBS's built-in adapters per platform (ADR-0160). The composition
+//! roots `rbs-app` and `rbs-cli` call it; no other crate may (P1, `check-layers`).
+//!
 //! Order is preference: a registry tries hardware adapters first, then registration
-//! order, unless the user picked one (`--encoder`).
+//! order. Building the list constructs factories only: nothing is probed, loaded or
+//! opened until a registry probes or a source asks (P13).
 
 use std::sync::Arc;
 
 use rbs_codec::VideoEncoderFactory;
+use rbs_core::registry::DuplicateAdapter;
+use rbs_media_decode::MediaDecoderFactory;
 use rbs_record::RecordAdapters;
+
+mod text_clock;
+mod vcam;
+
+pub use text_clock::LocalTextClock;
+pub use vcam::{VcamUnavailable, VirtualCamera, vcam_link_file, virtual_camera};
+
+/// What a root asks for beyond the shared list.
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
+pub struct Options {
+    /// Registers the deterministic reference adapters (synthetic displays, cameras and
+    /// audio). Only with the crate's feature `demo-sources`; without it this field is
+    /// ignored.
+    pub demo_sources: bool,
+}
+
+impl Options {
+    /// The default options with `demo_sources` set.
+    pub fn with_demo_sources(mut self, on: bool) -> Self {
+        self.demo_sources = on;
+        self
+    }
+}
 
 /// Adapters this build registers, not probed yet.
 pub struct PlatformAdapters {
-    /// Every port. Video encoders are the full list, in registration order.
+    /// Every port.
     pub adapters: RecordAdapters,
     /// The same video-encoder `Arc`s `adapters` holds, in registration order.
-    /// Installing one of them does not probe it.
+    /// Installing one of them alone (`rbs-cli --encoder`) does not probe it.
     pub video_encoders: Vec<Arc<dyn VideoEncoderFactory>>,
-    /// Duplicate-id registration bugs in this list.
+    /// Duplicate-id registrations: a bug in this list.
     pub errors: Vec<String>,
 }
 
-/// Every adapter this build has for the platform, not probed yet. Registration errors
-/// (a duplicate id) are returned as messages; they mean a bug in this list.
-pub fn adapters() -> PlatformAdapters {
+/// Every adapter this build has for the platform, not probed yet.
+pub fn adapters(options: &Options) -> PlatformAdapters {
     let mut a = RecordAdapters::new();
     let mut errors = Vec::new();
-    let mut note = |r: Result<(), rbs_core::registry::DuplicateAdapter>| {
+    let mut note = |r: Result<(), DuplicateAdapter>| {
         if let Err(e) = r {
             errors.push(e.to_string());
         }
     };
+    register_common(&mut a, &mut note);
+    register_platform_io(&mut a, &mut note);
+    let video_encoders = video_encoder_factories();
+    for factory in &video_encoders {
+        note(a.video_encoders.register(Arc::clone(factory)));
+    }
+    register_demo(&mut a, &mut note, options);
+    for factory in media_factories() {
+        note(a.sources.register_media(factory));
+    }
+    PlatformAdapters {
+        adapters: a,
+        video_encoders,
+        errors,
+    }
+}
+
+/// Muxers, audio encoders, transports and text on every platform (pure Rust).
+fn register_common(a: &mut RecordAdapters, note: &mut impl FnMut(Result<(), DuplicateAdapter>)) {
     note(
         a.muxers
             .register(Arc::new(rbs_mux_matroska::MatroskaMuxerFactory)),
@@ -44,12 +91,13 @@ pub fn adapters() -> PlatformAdapters {
             .register(Arc::new(rbs_codec_flac::FlacEncoderFactory)),
     );
     note(
-        a.muxers
-            .register(Arc::new(rbs_mux_mpegts::MpegTsMuxerFactory)),
-    );
-    note(
         a.transports
             .register(Arc::new(rbs_transport_file::FileTransportFactory)),
+    );
+    // Go live: RTMP takes packets; SRT takes MPEG-TS (pure Rust, every platform).
+    note(
+        a.muxers
+            .register(Arc::new(rbs_mux_mpegts::MpegTsMuxerFactory)),
     );
     note(
         a.transports
@@ -59,6 +107,17 @@ pub fn adapters() -> PlatformAdapters {
         a.transports
             .register(Arc::new(rbs_transport_srt::SrtTransportFactory)),
     );
+    // Text sources (ADR-0129): parley on the system's fonts, loaded on first use.
+    a.sources
+        .register_text(Arc::new(rbs_text_parley::ParleyRenderer::system()));
+    a.sources.set_text_clock(Arc::new(LocalTextClock));
+}
+
+/// Capture, audio input and output, and the platform's audio encoder.
+fn register_platform_io(
+    a: &mut RecordAdapters,
+    note: &mut impl FnMut(Result<(), DuplicateAdapter>),
+) {
     #[cfg(windows)]
     {
         note(
@@ -116,19 +175,11 @@ pub fn adapters() -> PlatformAdapters {
                 .register(Arc::new(rbs_codec_audiotoolbox::AacFactory::new())),
         );
     }
-    let video_encoders = video_encoder_factories();
-    for factory in &video_encoders {
-        note(a.video_encoders.register(Arc::clone(factory)));
-    }
-    PlatformAdapters {
-        adapters: a,
-        video_encoders,
-        errors,
-    }
+    let _ = (a, note);
 }
 
-/// Video encoders in preference order. Building one does not probe.
-/// Hardware adapters come first; a software adapter is the last resort.
+/// Video encoders in preference order. Hardware adapters come first; a software
+/// adapter is the last resort. The first that probes and opens wins.
 fn video_encoder_factories() -> Vec<Arc<dyn VideoEncoderFactory>> {
     let mut factories: Vec<Arc<dyn VideoEncoderFactory>> = Vec::new();
     #[cfg(windows)]
@@ -138,7 +189,6 @@ fn video_encoder_factories() -> Vec<Arc<dyn VideoEncoderFactory>> {
     }
     #[cfg(target_os = "linux")]
     {
-        // The first that probes and opens wins.
         factories.push(Arc::new(rbs_codec_nvenc::NvencFactory::new()));
         factories.push(Arc::new(rbs_codec_amf::AmfFactory::new()));
         factories.push(Arc::new(rbs_codec_qsv::QsvFactory::new()));
@@ -155,19 +205,45 @@ fn video_encoder_factories() -> Vec<Arc<dyn VideoEncoderFactory>> {
     factories
 }
 
-/// The virtual camera adapter of this platform, if it has one (ADR-0066: Windows only).
-/// The camera's symbolic link is kept in `vcam-link.txt` in the RBS settings folder.
-pub fn virtual_camera() -> Option<Box<dyn rbs_vcam::VirtualCameraFactory>> {
-    #[cfg(windows)]
-    {
-        let dir = rbs_remote_settings::config_dir();
-        // A missing folder only means the link is not kept; `status` then says not added.
-        let _ = std::fs::create_dir_all(&dir);
-        let links = rbs_vcam_mf::FileLinkStore::new(dir.join("vcam-link.txt"));
-        Some(Box::new(rbs_vcam_mf::MfVcamFactory::new(Box::new(links))))
+/// The reference capture and audio adapters, when asked for and built in.
+fn register_demo(
+    a: &mut RecordAdapters,
+    note: &mut impl FnMut(Result<(), DuplicateAdapter>),
+    options: &Options,
+) {
+    #[cfg(feature = "demo-sources")]
+    if options.demo_sources {
+        note(
+            a.sources
+                .register_capture(Arc::new(rbs_capture_test::TestCaptureFactory::new())),
+        );
+        note(
+            a.sources
+                .register_audio(Arc::new(rbs_audio_io_test::TestAudioBackend::new())),
+        );
     }
-    #[cfg(not(windows))]
-    {
-        None
-    }
+    let _ = (a, note, options);
 }
+
+/// Media decoders in registration order (ADR-0108).
+fn media_factories() -> Vec<Arc<dyn MediaDecoderFactory>> {
+    // Animated and still images (GIF, APNG, WebP) in pure Rust. First, so it opens the
+    // files it recognizes; it refuses the rest.
+    let mut factories: Vec<Arc<dyn MediaDecoderFactory>> =
+        vec![Arc::new(rbs_media_anim::AnimFactory::new())];
+    // Video files through the platform, after the image decoder so an animated image
+    // keeps its pure-Rust path.
+    #[cfg(windows)]
+    factories.push(Arc::new(rbs_media_mf::MfMediaFactory::new()));
+    #[cfg(target_os = "macos")]
+    factories.push(Arc::new(rbs_media_avf::AvfMediaFactory::new()));
+    // Bright demo pattern for every other file until FFmpeg is linked. The file path is
+    // ignored.
+    factories.push(Arc::new(rbs_media_decode_test::ScriptFactory::new(
+        rbs_media_decode_test::ScriptClip::demo_pattern(),
+    )));
+    factories
+}
+
+#[cfg(test)]
+mod tests;

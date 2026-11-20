@@ -13,7 +13,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::command::{CommandId, ENTRIES};
+use crate::command::{CommandId, CommandIdError, ENTRIES};
 
 /// Longest chord text in bytes.
 pub const MAX_CHORD_LEN: usize = 64;
@@ -341,6 +341,29 @@ impl fmt::Display for ChordError {
 }
 
 impl std::error::Error for ChordError {}
+
+/// Why a shortcuts document is not used ([`ShortcutsDoc::validate`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ShortcutsDocError {
+    /// More bindings and removals than [`MAX_ENTRIES`].
+    TooManyEntries,
+    /// An entry names a command id that does not parse.
+    Command(CommandIdError),
+    /// An entry's keys are not a chord.
+    Chord(ChordError),
+}
+
+impl fmt::Display for ShortcutsDocError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ShortcutsDocError::TooManyEntries => write!(f, "more than {MAX_ENTRIES} entries"),
+            ShortcutsDocError::Command(e) => e.fmt(f),
+            ShortcutsDocError::Chord(e) => e.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for ShortcutsDocError {}
 
 /// A key with modifiers. Its text (`Display`) is canonical: `Ctrl`, `Alt`, `Shift`,
 /// `Meta` in that order, then the key.
@@ -701,9 +724,9 @@ fn canonical_id(text: &str) -> String {
 impl ShortcutsDoc {
     /// Checks what a file may hold: limits, command ids and chords. Called when the
     /// document is read; a file that fails is not used (spec).
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), ShortcutsDocError> {
         if self.bindings.len() + self.removed.len() > MAX_ENTRIES {
-            return Err(format!("more than {MAX_ENTRIES} entries"));
+            return Err(ShortcutsDocError::TooManyEntries);
         }
         for (command, keys) in self
             .bindings
@@ -711,8 +734,8 @@ impl ShortcutsDoc {
             .map(|b| (&b.command, &b.keys))
             .chain(self.removed.iter().map(|r| (&r.command, &r.keys)))
         {
-            CommandId::parse(command).map_err(|e| e.to_string())?;
-            Chord::parse(keys).map_err(|e| e.to_string())?;
+            CommandId::parse(command).map_err(ShortcutsDocError::Command)?;
+            Chord::parse(keys).map_err(ShortcutsDocError::Chord)?;
         }
         Ok(())
     }
@@ -1405,12 +1428,14 @@ mod tests {
             toml::from_str("[[binding]]\ncommand = \"a.b\"\nkeys = \"F5\"\n").unwrap();
         assert_eq!(app.bindings[0].scope, Scope::App);
         assert!(toml::from_str::<ShortcutsDoc>("extra = 1\n").is_err());
-        assert!(
-            doc(&[("a.b", "Ctrl+Shift+1", Scope::App)], &[])
-                .validate()
-                .is_err()
-        );
-        assert!(doc(&[("Bad", "F5", Scope::App)], &[]).validate().is_err());
+        assert!(matches!(
+            doc(&[("a.b", "Ctrl+Shift+1", Scope::App)], &[]).validate(),
+            Err(ShortcutsDocError::Chord(_))
+        ));
+        assert!(matches!(
+            doc(&[("Bad", "F5", Scope::App)], &[]).validate(),
+            Err(ShortcutsDocError::Command(_))
+        ));
     }
 
     /// Resolving any document never puts one chord in force twice and never panics

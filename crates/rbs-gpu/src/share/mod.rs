@@ -47,7 +47,7 @@ use std::time::Duration;
 #[cfg(all(any(windows, target_os = "macos"), feature = "preview-layer"))]
 pub use geometry::{MAX_MARKS, Mark};
 #[cfg(all(target_os = "macos", feature = "preview-layer"))]
-pub use layer::{DEFAULT_RETIRE_AFTER, LayerRect, PreviewLayer};
+pub use layer::{LayerRect, PreviewLayer};
 #[cfg(target_vendor = "apple")]
 pub use publisher::PreviewPublisher;
 #[cfg(all(any(windows, target_os = "macos"), feature = "preview-layer"))]
@@ -57,7 +57,7 @@ pub use subscriber::{
     PREVIEW_TEXTURE_FORMAT, PREVIEW_TEXTURE_USAGE, PreviewFrame, PreviewSubscriber,
 };
 #[cfg(all(windows, feature = "preview-layer"))]
-pub use win::{DEFAULT_RETIRE_POLL, LayerRect, PreviewLayer, Solid, SolidGroup, SolidLayer};
+pub use win::{LayerRect, PreviewLayer, Solid, SolidGroup, SolidLayer};
 #[cfg(windows)]
 pub use win::{
     PREVIEW_TEXTURE_FORMAT, PREVIEW_TEXTURE_USAGE, PreviewFrame, PreviewPublisher,
@@ -66,6 +66,17 @@ pub use win::{
 
 /// Most surfaces one publisher shares.
 pub const MAX_PREVIEW_SURFACES: usize = 8;
+
+/// Default time a replaced surface stays with the UI on macOS: two refresh periods at
+/// 60 Hz (`PreviewLayer::set_retire_after`). Defined without the `preview-layer`
+/// feature, because the studio host sizes its surface ring with it (ADR-0159).
+pub const DEFAULT_RETIRE_AFTER: Duration = Duration::from_millis(34);
+
+/// How often the UI checks a replaced frame's buffer on Windows while one waits: the
+/// desktop compositor gives a buffer back at its next composition after the replacing
+/// present, within one refresh period. Defined without the `preview-layer` feature for
+/// the studio host (ADR-0159).
+pub const DEFAULT_RETIRE_POLL: Duration = Duration::from_millis(4);
 
 /// `kCVPixelFormatType_32RGBA` ('RGBA').
 #[cfg(target_vendor = "apple")]

@@ -521,39 +521,30 @@ impl<X: Runtime> Node<X> for MixerNode {
                 .strips
                 .get(meter_index)
                 .and_then(|s| s.meter.as_deref());
-            let dg = (g1 - g0) * inv;
-            let (ds, dm) = ((s1 - s0) * inv, (m1 - m0) * inv);
+            let gains = StripGains {
+                g0,
+                dg: (g1 - g0) * inv,
+                s0,
+                ds: (s1 - s0) * inv,
+                m0,
+                dm: (m1 - m0) * inv,
+                plain,
+                silent: plain && g0 == 0.0 && g1 == 0.0,
+                steady: g0 == g1,
+                off_monitor: m0 == 0.0 && m1 == 0.0,
+            };
             for (c, ch) in chans.iter_mut().enumerate().take(n) {
                 let Some(src) = block.channel(c) else {
                     continue;
                 };
                 let out = &mut ch[..frames];
-                let (peak, sum_sq) = if plain && g0 == 0.0 && g1 == 0.0 {
-                    // Muted and settled: adds nothing, and its meter reads silence.
-                    (0.0, 0.0)
-                } else if plain && g0 == g1 {
-                    mix_lanes(out, src, |_| g0, |_| 1.0)
-                } else if plain {
-                    mix_lanes(out, src, |w| g0 + dg * w, |_| 1.0)
-                } else if m0 == 0.0 && m1 == 0.0 {
-                    // Off the monitor, with a send that is not 1 (`Only` ramping).
-                    mix_lanes(out, src, |w| g0 + dg * w, |w| s0 + ds * w)
-                } else {
-                    let mon = &mut self.monitor_mix[c * frames..(c + 1) * frames];
-                    let mut peak = 0.0f32;
-                    let mut sum_sq = 0.0f32;
-                    for (f, ((o, mo), &x)) in out.iter_mut().zip(mon).zip(src).enumerate() {
-                        let w = (f + 1) as f32;
-                        let y = x * (g0 + dg * w);
-                        peak = peak.max(y.abs());
-                        sum_sq += y * y;
-                        *o += y * (s0 + ds * w);
-                        *mo += y * (m0 + dm * w);
-                    }
-                    (peak, sum_sq)
-                };
+                // The `Option` is the only test: with no meter the add-only loops run
+                // and nothing is recorded (F-15a).
                 if let Some(m) = meter {
+                    let (peak, sum_sq) = gains.mix::<true>(out, src, &mut self.monitor_mix, c);
                     m.record_block(c, peak, sum_sq, frames as u32);
+                } else {
+                    gains.mix::<false>(out, src, &mut self.monitor_mix, c);
                 }
             }
         }
@@ -565,9 +556,11 @@ impl<X: Runtime> Node<X> for MixerNode {
         let dm = (m1 - m0) * inv;
         let meter = self.params.get().master_meter.as_deref();
         for (c, ch) in chans.iter_mut().enumerate().take(n) {
-            let (peak, sum_sq) = scale_lanes(&mut ch[..frames], |w| m0 + dm * w);
             if let Some(m) = meter {
+                let (peak, sum_sq) = scale_lanes::<true>(&mut ch[..frames], |w| m0 + dm * w);
                 m.record_block(c, peak, sum_sq, frames as u32);
+            } else {
+                scale_lanes::<false>(&mut ch[..frames], |w| m0 + dm * w);
             }
         }
         out.commit(format, t0, frames)?;
@@ -587,12 +580,84 @@ impl<X: Runtime> Node<X> for MixerNode {
 /// sums, so the reductions vectorise (A-01 of the 2026-11 performance audit).
 const LANES: usize = 8;
 
+/// One strip's gains over a block: start values and steps per frame of the fader
+/// ramp (`g`), the send to the main output (`s`) and the monitor send (`m`).
+struct StripGains {
+    g0: f32,
+    dg: f32,
+    s0: f32,
+    ds: f32,
+    m0: f32,
+    dm: f32,
+    /// Every send at 1 and nothing to the monitor.
+    plain: bool,
+    /// `plain`, and the fader is at 0 for the whole block.
+    silent: bool,
+    /// The fader does not move in this block.
+    steady: bool,
+    /// Nothing goes to the monitor in this block.
+    off_monitor: bool,
+}
+
+impl StripGains {
+    /// Adds one channel `src` of the strip to `out` (and to channel `c` of `monitor`
+    /// when it is on the monitor) and returns the post-fader peak and sum of squares.
+    /// Without `METER` the sums are not kept and `(0.0, 0.0)` comes back; the samples
+    /// written are the same either way.
+    #[inline(always)]
+    fn mix<const METER: bool>(
+        &self,
+        out: &mut [f32],
+        src: &[f32],
+        monitor: &mut [f32],
+        c: usize,
+    ) -> (f32, f32) {
+        let Self {
+            g0,
+            dg,
+            s0,
+            ds,
+            m0,
+            dm,
+            ..
+        } = *self;
+        if self.silent {
+            // Muted and settled: adds nothing, and its meter reads silence.
+            (0.0, 0.0)
+        } else if self.plain && self.steady {
+            mix_lanes::<METER>(out, src, |_| g0, |_| 1.0)
+        } else if self.plain {
+            mix_lanes::<METER>(out, src, |w| g0 + dg * w, |_| 1.0)
+        } else if self.off_monitor {
+            // Off the monitor, with a send that is not 1 (`Only` ramping).
+            mix_lanes::<METER>(out, src, |w| g0 + dg * w, |w| s0 + ds * w)
+        } else {
+            let frames = out.len();
+            let mon = &mut monitor[c * frames..(c + 1) * frames];
+            let mut peak = 0.0f32;
+            let mut sum_sq = 0.0f32;
+            for (f, ((o, mo), &x)) in out.iter_mut().zip(mon).zip(src).enumerate() {
+                let w = (f + 1) as f32;
+                let y = x * (g0 + dg * w);
+                if METER {
+                    peak = peak.max(y.abs());
+                    sum_sq += y * y;
+                }
+                *o += y * (s0 + ds * w);
+                *mo += y * (m0 + dm * w);
+            }
+            (peak, sum_sq)
+        }
+    }
+}
+
 /// Adds `src * gain(w) * send(w)` to `out` and returns the peak and the sum of
 /// squares of `src * gain(w)`, where `w` is the frame number plus one as `f32` (the
 /// ramp position at the frame's end). The samples written are exactly those of a
-/// plain per-frame loop; only the meter sums add up in another order.
+/// plain per-frame loop; only the meter sums add up in another order. Without
+/// `METER` it only adds (the sums are compiled out) and returns `(0.0, 0.0)`.
 #[inline(always)]
-fn mix_lanes(
+fn mix_lanes<const METER: bool>(
     out: &mut [f32],
     src: &[f32],
     gain: impl Fn(f32) -> f32,
@@ -608,9 +673,11 @@ fn mix_lanes(
             // Frame numbers stay far below 2^24, so this is exact.
             let w = base + (l + 1) as f32;
             let y = x[l] * gain(w);
-            let a = y.abs();
-            peak[l] = if a > peak[l] { a } else { peak[l] };
-            sum[l] += y * y;
+            if METER {
+                let a = y.abs();
+                peak[l] = if a > peak[l] { a } else { peak[l] };
+                sum[l] += y * y;
+            }
             o[l] += y * send(w);
         }
         base += LANES as f32;
@@ -624,17 +691,19 @@ fn mix_lanes(
     {
         base += 1.0;
         let y = x * gain(base);
-        p = p.max(y.abs());
-        q += y * y;
+        if METER {
+            p = p.max(y.abs());
+            q += y * y;
+        }
         *o += y * send(base);
     }
     (fold_peak(peak, p), fold_sum(sum, q))
 }
 
 /// Scales `out` by `gain(w)` in place (as [`mix_lanes`]) and returns the peak and the
-/// sum of squares of the result.
+/// sum of squares of the result (`(0.0, 0.0)` without `METER`).
 #[inline(always)]
-fn scale_lanes(out: &mut [f32], gain: impl Fn(f32) -> f32) -> (f32, f32) {
+fn scale_lanes<const METER: bool>(out: &mut [f32], gain: impl Fn(f32) -> f32) -> (f32, f32) {
     let mut peak = [0.0f32; LANES];
     let mut sum = [0.0f32; LANES];
     let mut chunks = out.chunks_exact_mut(LANES);
@@ -643,9 +712,11 @@ fn scale_lanes(out: &mut [f32], gain: impl Fn(f32) -> f32) -> (f32, f32) {
         for l in 0..LANES {
             let y = o[l] * gain(base + (l + 1) as f32);
             o[l] = y;
-            let a = y.abs();
-            peak[l] = if a > peak[l] { a } else { peak[l] };
-            sum[l] += y * y;
+            if METER {
+                let a = y.abs();
+                peak[l] = if a > peak[l] { a } else { peak[l] };
+                sum[l] += y * y;
+            }
         }
         base += LANES as f32;
     }
@@ -654,8 +725,10 @@ fn scale_lanes(out: &mut [f32], gain: impl Fn(f32) -> f32) -> (f32, f32) {
     for o in chunks.into_remainder() {
         base += 1.0;
         *o *= gain(base);
-        p = p.max(o.abs());
-        q += *o * *o;
+        if METER {
+            p = p.max(o.abs());
+            q += *o * *o;
+        }
     }
     (fold_peak(peak, p), fold_sum(sum, q))
 }
@@ -698,7 +771,7 @@ mod tests {
             let mut want = start.clone();
             let (wp, ws) = mix_plain(&mut want, &src, g0, dg, s0, ds);
             let mut got = start.clone();
-            let (gp, gs) = mix_lanes(&mut got, &src, |w| g0 + dg * w, |w| s0 + ds * w);
+            let (gp, gs) = mix_lanes::<true>(&mut got, &src, |w| g0 + dg * w, |w| s0 + ds * w);
             assert_eq!(got, want, "{frames} frames");
             assert_eq!(gp, wp, "{frames} frames");
             assert!(
@@ -715,13 +788,125 @@ mod tests {
                 wsum += *y * *y;
             }
             let mut got = src.clone();
-            let (gp, gs) = scale_lanes(&mut got, |w| g0 + dg * w);
+            let (gp, gs) = scale_lanes::<true>(&mut got, |w| g0 + dg * w);
             assert_eq!(got, want, "{frames} frames");
             assert_eq!(gp, wpeak);
             assert!(
                 (gs - wsum).abs() <= wsum * 1e-5,
                 "{frames} frames: {gs} vs {wsum}"
             );
+        }
+    }
+
+    /// The lane loop as it was before the add-only variant (F-15a), to check that
+    /// the metered loop still gives bit-identical meter sums.
+    fn mix_lanes_before(
+        out: &mut [f32],
+        src: &[f32],
+        gain: impl Fn(f32) -> f32,
+        send: impl Fn(f32) -> f32,
+    ) -> (f32, f32) {
+        let mut peak = [0.0f32; LANES];
+        let mut sum = [0.0f32; LANES];
+        let mut out_chunks = out.chunks_exact_mut(LANES);
+        let mut src_chunks = src.chunks_exact(LANES);
+        let mut base = 0.0f32;
+        for (o, x) in (&mut out_chunks).zip(&mut src_chunks) {
+            for l in 0..LANES {
+                let w = base + (l + 1) as f32;
+                let y = x[l] * gain(w);
+                let a = y.abs();
+                peak[l] = if a > peak[l] { a } else { peak[l] };
+                sum[l] += y * y;
+                o[l] += y * send(w);
+            }
+            base += LANES as f32;
+        }
+        let mut p = 0.0f32;
+        let mut q = 0.0f32;
+        for (o, &x) in out_chunks
+            .into_remainder()
+            .iter_mut()
+            .zip(src_chunks.remainder())
+        {
+            base += 1.0;
+            let y = x * gain(base);
+            p = p.max(y.abs());
+            q += y * y;
+            *o += y * send(base);
+        }
+        (fold_peak(peak, p), fold_sum(sum, q))
+    }
+
+    /// Gains for each branch of [`StripGains::mix`]: silent, steady, fader ramp, send
+    /// ramp, and on the monitor.
+    fn every_branch() -> [StripGains; 5] {
+        let g = |g0: f32, g1: f32, s0: f32, s1: f32, m0: f32, m1: f32| {
+            let plain = s0 == 1.0 && s1 == 1.0 && m0 == 0.0 && m1 == 0.0;
+            StripGains {
+                g0,
+                dg: (g1 - g0) / 480.0,
+                s0,
+                ds: (s1 - s0) / 480.0,
+                m0,
+                dm: (m1 - m0) / 480.0,
+                plain,
+                silent: plain && g0 == 0.0 && g1 == 0.0,
+                steady: g0 == g1,
+                off_monitor: m0 == 0.0 && m1 == 0.0,
+            }
+        };
+        [
+            g(0.0, 0.0, 1.0, 1.0, 0.0, 0.0),
+            g(0.7, 0.7, 1.0, 1.0, 0.0, 0.0),
+            g(0.2, 0.9, 1.0, 1.0, 0.0, 0.0),
+            g(0.5, 0.5, 1.0, 0.0, 0.0, 0.0),
+            g(0.3, 0.6, 1.0, 0.0, 0.0, 1.0),
+        ]
+    }
+
+    #[test]
+    fn without_a_meter_the_mix_writes_the_same_samples_and_with_one_the_same_sums() {
+        for frames in [0, 1, 7, 8, 9, 480, 483] {
+            let src: Vec<f32> = (0..frames)
+                .map(|i| ((i * 37 % 101) as f32 - 50.0) / 50.0)
+                .collect();
+            let start: Vec<f32> = (0..frames).map(|i| (i % 5) as f32 * 0.1).collect();
+            for (k, gains) in every_branch().iter().enumerate() {
+                let mut mon_on = vec![0.25f32; frames * 2];
+                let mut mon_off = mon_on.clone();
+                let mut on = start.clone();
+                let mut off = start.clone();
+                let sums = gains.mix::<true>(&mut on, &src, &mut mon_on, 1);
+                assert_eq!(
+                    gains.mix::<false>(&mut off, &src, &mut mon_off, 1),
+                    (0.0, 0.0)
+                );
+                assert_eq!(on, off, "branch {k}, {frames} frames");
+                assert_eq!(mon_on, mon_off, "branch {k}, {frames} frames");
+                if k == 1 || k == 2 || k == 3 {
+                    let StripGains { g0, dg, s0, ds, .. } = *gains;
+                    let mut before = start.clone();
+                    let want = if k == 1 {
+                        mix_lanes_before(&mut before, &src, |_| g0, |_| 1.0)
+                    } else if k == 2 {
+                        mix_lanes_before(&mut before, &src, |w| g0 + dg * w, |_| 1.0)
+                    } else {
+                        mix_lanes_before(&mut before, &src, |w| g0 + dg * w, |w| s0 + ds * w)
+                    };
+                    assert_eq!(on, before, "branch {k}, {frames} frames");
+                    assert_eq!(sums.0.to_bits(), want.0.to_bits(), "branch {k}");
+                    assert_eq!(sums.1.to_bits(), want.1.to_bits(), "branch {k}");
+                }
+            }
+            let mut on = src.clone();
+            let mut off = src.clone();
+            let _ = scale_lanes::<true>(&mut on, |w| 0.5 + 0.001 * w);
+            assert_eq!(
+                scale_lanes::<false>(&mut off, |w| 0.5 + 0.001 * w),
+                (0.0, 0.0)
+            );
+            assert_eq!(on, off, "{frames} frames");
         }
     }
 

@@ -12,7 +12,8 @@ use std::time::Duration;
 
 use rbs_app::edit_history::{EditKind, StepInfo};
 use rbs_app::studio_host::{
-    Command, Fault, HostConfig, SourceKind, SourceRow, SourceStatus, StudioHost, Target, Update,
+    Command, Fault, HostConfig, MainDisplayProbe, SourceKind, SourceRow, SourceStatus, StudioHost,
+    Target, Update, display_from_default_screen,
 };
 use rbs_audio_io_test::TestAudioBackend;
 use rbs_capture_test::TestCaptureFactory;
@@ -938,4 +939,26 @@ fn a_browser_page_keeps_its_page_settings_through_the_host() {
     assert_eq!(s.get(keys::TRANSPARENT), Some(&SettingValue::Bool(true)));
     assert_eq!(s.get(keys::ZOOM_PERCENT), Some(&SettingValue::Int(150)));
     stop(host, &rx);
+}
+
+/// The main display comes from the root's probe; without one it is unknown, so a root
+/// that passes none never lists screens by accident (ADR-0159 decision 4).
+#[test]
+fn the_main_display_comes_from_the_roots_probe() {
+    let Some(gpu) = gpu() else {
+        return;
+    };
+    let from_screen: MainDisplayProbe = display_from_default_screen;
+    for (probe, known) in [(None, false), (Some(from_screen), true)] {
+        let mut config = HostConfig::desktop();
+        config.preview = None;
+        config.main_display = probe;
+        let (host, rx) = host_with(Arc::clone(&gpu), config);
+        let display = next(&rx, |u| match u {
+            Update::Started { display, .. } => Some(display),
+            _ => None,
+        });
+        assert_eq!(display.is_some(), known, "probe given: {known}");
+        drop(host);
+    }
 }

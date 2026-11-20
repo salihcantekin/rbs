@@ -274,7 +274,7 @@ impl RawNode {
 }
 
 impl TryFrom<RawNode> for Node {
-    type Error = String;
+    type Error = String; // Text: serde's `try_from` hook makes it its message at once.
 
     fn try_from(r: RawNode) -> Result<Self, String> {
         if r.pictures.is_some() {

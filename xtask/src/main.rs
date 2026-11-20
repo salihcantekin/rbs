@@ -253,6 +253,11 @@ fn push_dep_table(
 /// helper, support or engine crate. An engine crate may name those for an
 /// example (`rbs-nodes` `examples/record.rs` and `native_encode.rs`).
 fn denied(from: &str, to: &str, dev: bool) -> Option<String> {
+    // Before the dev-edge shortcut: no crate may reach every adapter through a
+    // dev-dependency on the platform list either (ADR-0160 decision 5).
+    if let Some(why) = deny_platform_user(from, to) {
+        return Some(why);
+    }
     if !dev {
         return deny(from, to);
     }
@@ -298,6 +303,9 @@ fn deny(from: &str, to: &str) -> Option<String> {
     // (ADR-0158 decision 4).
     if to == "rbs-log" && !(class(from) == Some(Class::App) || from == "rbs-browser-runner") {
         return Some("only composition roots and the browser helpers use rbs-log".to_owned());
+    }
+    if let Some(why) = deny_platform_user(from, to) {
+        return Some(why);
     }
     let from_class = class(from)?;
     let to_class = class(to);
@@ -412,7 +420,42 @@ fn deny(from: &str, to: &str) -> Option<String> {
             &["rbs-plugin-sdk"],
             "the plugin host reads manifests and does not load libraries or see the engine",
         ),
+        Class::Platform => deny_platform(to, to_class),
         Class::App | Class::Tool => None,
+    }
+}
+
+/// Only the composition roots that register built-in adapters use the platform list
+/// (ADR-0160 decision 5); `rbs-mcp` uses no adapter (ADR-0052 decision 2).
+fn deny_platform_user(from: &str, to: &str) -> Option<String> {
+    if to == "rbs-platform" && !matches!(from, "rbs-app" | "rbs-cli") {
+        Some("only rbs-app and rbs-cli use the platform adapter list (ADR-0160)".to_owned())
+    } else {
+        None
+    }
+}
+
+/// The platform adapter list (ADR-0160 decision 5): ports, helpers, support crates
+/// without OS bindings, engine crates, adapters other than the two that stay in
+/// rbs-app, and chrono for the text clock.
+fn deny_platform(to: &str, to_class: Option<Class>) -> Option<String> {
+    let allowed = match to_class {
+        Some(Class::Core | Class::Helper | Class::Engine) => true,
+        Some(Class::Support) => !matches!(
+            to,
+            "rbs-browser-shm" | "rbs-vcam-mf-source" | "rbs-system-probe"
+        ),
+        Some(Class::Adapter) => !matches!(to, "rbs-add-ons-sys" | "rbs-browser-runner"),
+        Some(_) => false,
+        None => to == "chrono",
+    };
+    if allowed {
+        None
+    } else {
+        Some(
+            "the platform list sees ports, engine crates and adapters only; OS bindings come through an adapter"
+                .to_owned(),
+        )
     }
 }
 
@@ -476,7 +519,8 @@ fn deny_engine(from: &str, to: &str, to_class: Option<Class>) -> Option<String> 
             | Class::Plugin
             | Class::PluginSdk
             | Class::Diagnostics
-            | Class::EditorProject,
+            | Class::EditorProject
+            | Class::Platform,
         ) => Some("the engine never depends on an adapter, the control API or the UI".to_owned()),
         // Support crates that carry OS bindings stay with their adapters.
         Some(Class::Support)
@@ -533,7 +577,8 @@ fn deny_adapter(from: &str, to: &str, to_class: Option<Class>) -> Option<String>
             | Class::PluginSdk
             | Class::Denoise
             | Class::RecordingModel
-            | Class::EditorProject,
+            | Class::EditorProject
+            | Class::Platform,
         ) => Some("an adapter sees its port, foundation and its support crate".to_owned()),
         // Diagnostics: only rbs-browser-runner gets here (the rbs-log rule in `deny`).
         Some(Class::Core | Class::Helper | Class::Support | Class::Diagnostics) => None,
@@ -626,6 +671,8 @@ enum Class {
     Diagnostics,
     /// `rbs-project`: editor projects, used only by composition roots (ADR-0089).
     EditorProject,
+    /// `rbs-platform`: the built-in adapter list of rbs-app and rbs-cli (ADR-0160).
+    Platform,
 }
 
 /// `None` for a crate from outside the workspace. A workspace crate that is missing
@@ -653,6 +700,7 @@ fn class(name: &str) -> Option<Class> {
         "rbs-add-ons" => Class::AddOns,
         "rbs-import-obs" => Class::Import,
         "rbs-app" | "rbs-cli" | "rbs-mcp" => Class::App,
+        "rbs-platform" => Class::Platform,
         "rbs-plugin-sdk" => Class::PluginSdk,
         "rbs-plugin-host" => Class::Plugin,
         "xtask" => Class::Tool,
@@ -838,6 +886,31 @@ mod tests {
         assert!(deny("rbs-cli", "rbs-project").is_none());
         assert!(deny("rbs-audio-filters", "rbs-denoise").is_none());
         assert!(deny("rbs-denoise", "rbs-core").is_some());
+    }
+
+    #[test]
+    fn only_the_adapter_roots_use_the_platform_list() {
+        assert!(deny("rbs-app", "rbs-platform").is_none());
+        assert!(deny("rbs-cli", "rbs-platform").is_none());
+        assert!(deny("rbs-mcp", "rbs-platform").is_some());
+        assert!(deny("rbs-record", "rbs-platform").is_some());
+        assert!(denied("rbs-mcp", "rbs-platform", true).is_some());
+        assert!(denied("rbs-record", "rbs-platform", true).is_some());
+        assert!(denied("rbs-app", "rbs-platform", true).is_none());
+    }
+
+    #[test]
+    fn the_platform_list_sees_adapters_but_no_os_bindings() {
+        assert!(deny("rbs-platform", "rbs-codec-nvenc").is_none());
+        assert!(deny("rbs-platform", "rbs-core").is_none());
+        assert!(deny("rbs-platform", "rbs-record").is_none());
+        assert!(deny("rbs-platform", "chrono").is_none());
+        assert!(deny("rbs-platform", "rbs-api").is_some());
+        assert!(deny("rbs-platform", "rbs-log").is_some());
+        assert!(deny("rbs-platform", "rbs-system-probe").is_some());
+        assert!(deny("rbs-platform", "rbs-add-ons-sys").is_some());
+        assert!(deny("rbs-platform", "slint").is_some());
+        assert!(deny("rbs-platform", "windows").is_some());
     }
 
     /// The CEF runner is outside the workspace, so check its manifest here.

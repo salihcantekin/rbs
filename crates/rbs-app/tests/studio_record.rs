@@ -12,11 +12,10 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use rbs_api::request::ClientInfo;
 use rbs_api::session::ServerConfig;
 use rbs_api::thread::ApiOptions;
 use rbs_api::transport::{CloseReason, ConnectionHandle, ConnectionSender, PeerInfo, SendError};
-use rbs_api::{ApiServer, TokenStore};
+use rbs_api::{ApiServer, TokenStore, request::ClientInfo};
 use rbs_app::edit_history::EditKind;
 use rbs_app::studio_host::protection::SystemProbeFactory;
 use rbs_app::studio_host::{
@@ -271,6 +270,7 @@ fn spawn_host_hw(
     let (tx, rx) = mpsc::channel();
     let clock = clock.clone();
     config.preview = None;
+    config.chapters = matroska.then(|| Arc::new(rbs_app::chapters::MatroskaChapters) as _);
     let host = StudioHost::spawn(
         config,
         move || {

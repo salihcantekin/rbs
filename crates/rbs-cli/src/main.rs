@@ -22,7 +22,6 @@ mod diag_log;
 mod interrupt;
 mod obs_import;
 mod permissions;
-mod platform;
 mod remote;
 mod scene;
 mod token;
@@ -122,7 +121,7 @@ fn main() -> ExitCode {
             }
         }
         Ok(Command::Vcam(c)) => {
-            let factory = platform::virtual_camera();
+            let factory = virtual_camera();
             match vcam::run(factory.as_deref(), c, &mut std::io::stdout()) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => {
@@ -177,7 +176,7 @@ fn main() -> ExitCode {
 }
 
 fn probed() -> RecordAdapters {
-    let mut registered = platform::adapters();
+    let mut registered = rbs_platform::adapters(&rbs_platform::Options::default());
     for e in registered.errors {
         rbs_crash::errln!("warning: {e}");
     }
@@ -349,7 +348,7 @@ impl From<&str> for RecordCommandError {
 }
 
 fn record(a: &RecordArgs) -> Result<(), RecordCommandError> {
-    let mut registered = platform::adapters();
+    let mut registered = rbs_platform::adapters(&rbs_platform::Options::default());
     for e in registered.errors {
         rbs_crash::errln!("warning: {e}");
     }
@@ -670,12 +669,20 @@ fn record(a: &RecordArgs) -> Result<(), RecordCommandError> {
 
 /// Sets the camera's format and starts sending the program to it (`--vcam`). Returns
 /// the factory, which must outlive the camera's session.
+/// The platform's virtual camera adapter, if it has one (ADR-0066: Windows only). Its
+/// symbolic link is kept in the RBS settings folder, in the file the app uses too.
+fn virtual_camera() -> Option<Arc<dyn rbs_vcam::VirtualCameraFactory>> {
+    rbs_platform::virtual_camera(&rbs_remote_settings::config_dir())
+        .ok()
+        .map(|camera| camera.factory)
+}
+
 fn start_camera(
     recording: &mut Recording,
     f: args::VcamFormat,
-) -> Result<Box<dyn rbs_vcam::VirtualCameraFactory>, String> {
-    let factory = platform::virtual_camera()
-        .ok_or("--vcam: the virtual camera is not available on this platform")?;
+) -> Result<Arc<dyn rbs_vcam::VirtualCameraFactory>, String> {
+    let factory =
+        virtual_camera().ok_or("--vcam: the virtual camera is not available on this platform")?;
     let format = vcam::camera_format(f)?;
     if !factory
         .set_format(&format)

@@ -5,6 +5,7 @@
 //! render thread.
 
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Instant;
 
 use rbs_browser_shm::FrameRing;
 use rbs_core::media::{
@@ -13,6 +14,8 @@ use rbs_core::media::{
 };
 use rbs_core::time::Timestamp;
 use rbs_gpu::browser_pages::PageTextures;
+
+use crate::page_grave::Grave;
 
 /// Textures plus the lease counts in the frame section.
 pub struct PageSlots {
@@ -92,23 +95,23 @@ unsafe impl LeaseOwner for PageSlots {
     }
 }
 
-fn grave() -> &'static Mutex<Vec<Arc<PageSlots>>> {
-    static GRAVE: OnceLock<Mutex<Vec<Arc<PageSlots>>>> = OnceLock::new();
-    GRAVE.get_or_init(|| Mutex::new(Vec::new()))
+fn grave() -> &'static Mutex<Grave<PageSlots>> {
+    static GRAVE: OnceLock<Mutex<Grave<PageSlots>>> = OnceLock::new();
+    GRAVE.get_or_init(|| Mutex::new(Grave::default()))
 }
 
-/// Drops pages whose frames are gone. Control thread.
+/// Drops pages no frame has referenced for [`crate::page_grave::HANDLE_HOLD`], so no
+/// importer can still match their handle values (ADR-0157 decision 13). Control thread.
 pub fn sweep() {
-    let Ok(mut grave) = grave().lock() else {
-        return;
-    };
-    grave.retain(|slots| Arc::strong_count(slots) > 1);
+    if let Ok(mut grave) = grave().lock() {
+        grave.sweep(Instant::now());
+    }
 }
 
-/// Keeps `slots` until every frame has released it, then [`sweep`] drops it here.
+/// Keeps `slots` until every frame has released it and the handle hold has passed;
+/// [`sweep`] drops it then, here and not on the render thread.
 pub fn bury(slots: Arc<PageSlots>) {
     if let Ok(mut grave) = grave().lock() {
-        grave.push(slots);
-        grave.retain(|slots| Arc::strong_count(slots) > 1);
+        grave.bury(slots, Instant::now());
     }
 }

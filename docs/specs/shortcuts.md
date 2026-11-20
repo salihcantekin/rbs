@@ -117,7 +117,7 @@ command = "edit.redo"
 keys = "Ctrl+Y"
 ```
 
-- At most 64 KiB and 512 `binding` plus `removed` entries; unknown keys are errors (ADR-0051). `keys` must parse and `command` must have the command id grammar. A file that breaks any of these fails as a whole (it is a hand edit; the user fixes it or resets).
+- At most 64 KiB and 512 `binding` plus `removed` entries; unknown keys are errors (ADR-0051). `keys` must parse and `command` must have the command id grammar. A file that breaks any of these fails as a whole (it is a hand edit; the user fixes it or resets). `ShortcutsDoc::validate() -> Result<(), ShortcutsDocError>` (`TooManyEntries`, `Command(CommandIdError)`, `Chord(ChordError)`); `rbs-user-data` reports its text.
 - A missing file is the defaults. A file that cannot be read gives the defaults and a note; RBS does not write the file until the user changes a shortcut; that first write moves the unreadable file aside (the user-data "unreadable" path, ADR-0051) and writes a new one, so a hand edit is never silently lost.
 - `UserData::shortcuts() -> (ShortcutsDoc, Option<DataError>)`, `UserData::set_shortcuts(&WriterLock, &ShortcutsDoc)`.
 - Editing operations on `ShortcutsDoc` keep it minimal: adding a binding equal to a removed default deletes the `removed` entry instead; removing a user binding deletes it; removing a default adds a `removed` entry; Reset of one command deletes its `binding` and `removed` entries; Reset all empties both lists.
