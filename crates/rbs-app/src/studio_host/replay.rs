@@ -120,6 +120,8 @@ impl Host {
         if let Some(why) = self.calibration_blocks() {
             return Err(format!("{why}."));
         }
+        // The buffer encodes, so it needs the encoder probe a start would do.
+        self.note_encoders(notify);
         let settings = self.replay_settings()?;
         self.studio
             .arm_replay(&self.adapters, &settings)

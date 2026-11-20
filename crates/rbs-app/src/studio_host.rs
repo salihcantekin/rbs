@@ -7692,6 +7692,7 @@ impl Host {
         all: bool,
         iso: Option<bool>,
     ) -> Result<api::EstimateAnswer, String> {
+        self.ensure_encoders();
         let canvases: Vec<OutputCanvas> = if all { self.output_canvases() } else { vec![c] };
         let mut settings = Vec::new();
         let mut encoders = Vec::new();
@@ -15808,7 +15809,6 @@ impl ApiTarget<'_> {
             }
             C::RecordEstimate(p) => {
                 check_profile(&p.profile)?;
-                host.note_encoders(notify);
                 let target = p.canvas.unwrap_or_default();
                 let (c, all) = match target.single() {
                     Some(one) => (host.api_canvas_of(Some(one))?, false),

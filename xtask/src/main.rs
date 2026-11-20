@@ -830,10 +830,11 @@ mod tests {
         assert!(!edges.is_empty(), "rbs-browser-cef has dependencies");
         for (_, to, _) in edges {
             // `windows-sys` loads the downloaded engine on Windows (add-ons spec,
-            // "Browser engine consumer").
+            // "Browser engine consumer"); `windows` copies the page into the studio's
+            // shared textures with Direct3D 11 (ADR-0109 decision 8).
             let allowed = matches!(
                 to.as_str(),
-                "cef" | "rbs-browser-ipc" | "rbs-browser-shm" | "windows-sys"
+                "cef" | "rbs-browser-ipc" | "rbs-browser-shm" | "windows-sys" | "windows"
             ) || to.starts_with("objc2");
             assert!(allowed, "rbs-browser-cef must not depend on {to}");
         }

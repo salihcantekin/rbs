@@ -1520,8 +1520,8 @@ fn media_and_browser_sources_are_adopted_on_the_render_partition() {
     );
     assert!(browser.failed.is_none(), "{browser:?}");
     assert_eq!(studio.picture_size(page), Some((64, 36)));
-    // On air: the program scene draws it, so it plays (ADR-0107 decision 6).
     let control = studio.media_control(clip).expect("media handle").clone();
+    control.play().unwrap(); // A new file waits for Play; on air it then plays.
     assert_eq!(control.state(), rbs_nodes::MediaPlayState::Playing);
     // Studio mode with the clip only in the preview scene: not on air, so it does
     // not play. Headless, nothing draws the preview, so the cued source sleeps.
