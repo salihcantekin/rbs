@@ -19,7 +19,12 @@ rbs-system-probe = { path = "../rbs-system-probe" }
 # Microsoft's official bindings (MIT OR Apache-2.0), same version as rbs-capture-wgc.
 windows = { version = "0.62", features = [
     "Win32_Foundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
     "Win32_Media_MediaFoundation",
+    "Win32_Security",
     "Win32_System_Com",
     "Win32_System_Performance",
 ] }

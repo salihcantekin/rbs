@@ -43,7 +43,7 @@ use rbs_capture::camera::{self, NativeMode};
 use rbs_capture::handoff::{FrameMeta, Grave, Graveyard};
 use rbs_capture::{
     CaptureChange, CaptureError, CaptureFactory, CaptureRequest, CaptureSession, CaptureStats,
-    CaptureTarget, ErrorDomain, Permission, TargetId, TargetKind, caps,
+    CaptureTarget, ErrorDomain, GpuDeviceId, Permission, SyncKind, TargetId, TargetKind, caps,
 };
 use rbs_core::capability::{CapabilitySet, CapabilityValue};
 use rbs_core::media::{ColorSpace, MemoryKind, PixelFormat, Size, VideoFormat};
@@ -399,7 +399,10 @@ impl AdapterFactory for MfCaptureFactory {
             .with(caps::TARGET_ENUMERATE, set(&["camera"]))
             .with(caps::TARGET_PICKER, set(&[]))
             .with(caps::PIXEL_FORMATS, set(&formats))
-            .with(caps::MEMORY, set(&[MemoryKind::System.as_str()]))
+            .with(
+                caps::MEMORY,
+                set(&[MemoryKind::D3d11.as_str(), MemoryKind::System.as_str()]),
+            )
             .with(caps::CURSOR, CapabilityValue::Flag(false))
             .with(caps::FRAME_RATE_MAX, CapabilityValue::Int(MAX_RATE))
             .with(
@@ -472,11 +475,10 @@ impl CaptureFactory for MfCaptureFactory {
             .ok_or(CaptureError::TargetNotFound)?
             .to_owned();
         // Refuse what cannot be delivered before asking the OS.
-        if !request.memory.contains(&MemoryKind::System)
-            || !request
-                .pixel_formats
-                .iter()
-                .any(|pf| PIXEL_FORMATS.contains(pf))
+        if !request
+            .pixel_formats
+            .iter()
+            .any(|pf| PIXEL_FORMATS.contains(pf))
         {
             return Err(CaptureError::FormatUnsupported);
         }
@@ -498,6 +500,17 @@ impl CaptureFactory for MfCaptureFactory {
             .and_then(Option::as_ref)
             .ok_or(CaptureError::FormatUnsupported)?;
         let format = VideoFormat::new(choice.size, choice.pixel_format, info.color);
+        let gpu = request.memory.contains(&MemoryKind::D3d11)
+            && request
+                .gpu
+                .as_ref()
+                .is_some_and(|g| g.sync.contains(&SyncKind::TimelineFence));
+        if !request.memory.contains(&MemoryKind::System)
+            && !(gpu && choice.pixel_format == PixelFormat::Nv12)
+        {
+            return Err(CaptureError::FormatUnsupported);
+        }
+        let luid = gpu.then(|| luid_of(request)).flatten();
         Ok(Box::new(MfSession {
             link,
             chosen: Chosen {
@@ -506,11 +519,20 @@ impl CaptureFactory for MfCaptureFactory {
             },
             clock: Arc::clone(&request.clock),
             format,
+            luid,
+            system_ok: request.memory.contains(&MemoryKind::System),
             active: None,
             next_sequence: 0,
             last_timestamp: None,
             base: CaptureStats::default(),
         }))
+    }
+}
+
+fn luid_of(request: &CaptureRequest) -> Option<u64> {
+    match request.gpu.as_ref()?.device {
+        GpuDeviceId::Luid(bytes) => Some(u64::from_le_bytes(bytes)),
+        _ => None,
     }
 }
 
@@ -574,6 +596,29 @@ impl Producer {
     fn drop_frame(&mut self) {
         self.shared.ring.count_drop();
         self.sequence += 1;
+    }
+
+    /// Uploads a packed NV12 picture into the slot's shared texture while the sample
+    /// is still locked. `None` keeps the system-memory copy.
+    fn try_nv12(&self, slot: usize, bytes: &[u8], layout: SourceLayout) -> Option<()> {
+        if self.pixel_format != PixelFormat::Nv12 || layout.pitch <= 0 {
+            return None;
+        }
+        let pitch = u32::try_from(layout.pitch).ok()?;
+        let height = self.size.height;
+        let rows = height as usize + (height / 2) as usize;
+        let need = layout
+            .scan0
+            .checked_add(usize::try_from(pitch).ok()?.checked_mul(rows)?)?;
+        if bytes.len() < need {
+            return None;
+        }
+        // SAFETY: `bytes` covers the luma rows and the chroma rows at `pitch`, and the
+        // caller holds the slot. `upload_nv12` copies before it returns.
+        unsafe {
+            self.shared
+                .upload_nv12(slot, bytes.as_ptr().add(layout.scan0), pitch, height)
+        }
     }
 
     fn on_sample(&mut self, sample: &IMFSample) {
@@ -672,6 +717,9 @@ impl Producer {
                     scan0: scan0 as usize - start as usize,
                     pitch: pitch as isize,
                 };
+                if self.try_nv12(slot, bytes, layout).is_some() {
+                    return Some(());
+                }
                 // SAFETY: the caller holds the claim.
                 unsafe {
                     fill_slot(
@@ -706,6 +754,10 @@ impl Producer {
             } else {
                 0
             };
+            let layout = SourceLayout { scan0, pitch };
+            if self.try_nv12(slot, bytes, layout).is_some() {
+                return Some(());
+            }
             // SAFETY: the caller holds the claim.
             unsafe {
                 fill_slot(
@@ -714,7 +766,7 @@ impl Producer {
                     self.pixel_format,
                     self.size,
                     bytes,
-                    SourceLayout { scan0, pitch },
+                    layout,
                 )
             }
         })();
@@ -770,6 +822,42 @@ impl IMFSourceReaderCallback_Impl for ReaderCallback_Impl {
         _timestamp: i64,
         sample: Ref<IMFSample>,
     ) -> windows::core::Result<()> {
+        // A panic here would abort: Media Foundation calls this (ADR-0055).
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.read_sample(status, flags, sample)
+        }));
+        match outcome {
+            Ok(result) => result,
+            Err(_) => {
+                lock(&self.producer).lost.store(true, Ordering::Release);
+                Ok(())
+            }
+        }
+    }
+
+    fn OnFlush(&self, _stream: u32) -> windows::core::Result<()> {
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            *lock(&self.flushed.done) = true;
+            self.flushed.wake.notify_all();
+        }));
+        if outcome.is_err() {
+            lock(&self.producer).lost.store(true, Ordering::Release);
+        }
+        Ok(())
+    }
+
+    fn OnEvent(&self, _stream: u32, _event: Ref<IMFMediaEvent>) -> windows::core::Result<()> {
+        Ok(())
+    }
+}
+
+impl ReaderCallback_Impl {
+    fn read_sample(
+        &self,
+        status: HRESULT,
+        flags: u32,
+        sample: Ref<IMFSample>,
+    ) -> windows::core::Result<()> {
         // Held until the next sample is requested, so `stop` can wait for it.
         let _running = Running::enter(&self.flushed);
         let reader = {
@@ -808,16 +896,6 @@ impl IMFSourceReaderCallback_Impl for ReaderCallback_Impl {
         }
         Ok(())
     }
-
-    fn OnFlush(&self, _stream: u32) -> windows::core::Result<()> {
-        *lock(&self.flushed.done) = true;
-        self.flushed.wake.notify_all();
-        Ok(())
-    }
-
-    fn OnEvent(&self, _stream: u32, _event: Ref<IMFMediaEvent>) -> windows::core::Result<()> {
-        Ok(())
-    }
 }
 
 /// A stopped ring, kept until no frame refers to it so the last lease never frees its
@@ -853,6 +931,10 @@ struct MfSession {
     chosen: Chosen,
     clock: Arc<dyn Clock>,
     format: VideoFormat,
+    /// Render adapter for an NV12 shared texture, when the request asked for one.
+    luid: Option<u64>,
+    /// System memory is an accepted fallback when the texture cannot be created.
+    system_ok: bool,
     active: Option<Active>,
     next_sequence: u64,
     last_timestamp: Option<Timestamp>,
@@ -885,7 +967,15 @@ impl MfSession {
         }
         .map_err(|e| backend(&e))?;
 
-        let shared = Arc::new(Shared::new());
+        let shared = match (self.format.pixel_format, self.luid) {
+            (PixelFormat::Nv12, Some(luid)) => match Shared::with_nv12(luid, self.format.size) {
+                Some(shared) => shared,
+                None if self.system_ok => Shared::new(),
+                None => return Err(CaptureError::FormatUnsupported),
+            },
+            _ => Shared::new(),
+        };
+        let shared = Arc::new(shared);
         let lost = Arc::new(AtomicBool::new(false));
         let copied = Arc::new(AtomicU64::new(0));
         let (first_tx, first_rx) = mpsc::sync_channel(1);
