@@ -227,10 +227,10 @@ fn register_demo(
 
 /// Media decoders in registration order (ADR-0108).
 fn media_factories() -> Vec<Arc<dyn MediaDecoderFactory>> {
-    let mut factories: Vec<Arc<dyn MediaDecoderFactory>> = Vec::new();
     // Animated and still images (GIF, APNG, WebP) in pure Rust. First, so it opens the
     // files it recognizes; it refuses the rest.
-    factories.push(Arc::new(rbs_media_anim::AnimFactory::new()));
+    let mut factories: Vec<Arc<dyn MediaDecoderFactory>> =
+        vec![Arc::new(rbs_media_anim::AnimFactory::new())];
     // Video files through the platform, after the image decoder so an animated image
     // keeps its pure-Rust path.
     #[cfg(windows)]
