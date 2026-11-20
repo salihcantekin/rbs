@@ -12,12 +12,24 @@
 #![allow(clippy::disallowed_methods)] // The one place that may call them.
 
 use std::future::Future;
+use std::panic::Location;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
 /// Runs `f`; a panic is shown in the error bar (rate-limited) and `fallback` is returned.
+#[track_caller]
 pub fn guard_or<R>(fallback: impl FnOnce() -> R, f: impl FnOnce() -> R) -> R {
+    guard_at(Location::caller(), fallback, f)
+}
+
+/// [`guard_or`] for an entry installed at `at`.
+fn guard_at<R>(
+    at: &'static Location<'static>,
+    fallback: impl FnOnce() -> R,
+    f: impl FnOnce() -> R,
+) -> R {
+    let _entry = rbs_app::ui_thread::enter(at);
     match rbs_crash::contain(f) {
         Ok(r) => r,
         Err(_) => {
@@ -28,28 +40,40 @@ pub fn guard_or<R>(fallback: impl FnOnce() -> R, f: impl FnOnce() -> R) -> R {
 }
 
 /// Runs `f`; a panic is shown in the error bar (rate-limited).
+#[track_caller]
 pub fn guard(f: impl FnOnce()) {
-    guard_or(|| (), f);
+    guard_at(Location::caller(), || (), f);
+}
+
+/// [`guard`] for an entry installed at `at`.
+fn guard_from(at: &'static Location<'static>, f: impl FnOnce()) {
+    guard_at(at, || (), f);
 }
 
 /// `slint::Timer::single_shot` with the body guarded.
+#[track_caller]
 pub fn single_shot(after: Duration, f: impl FnOnce() + 'static) {
-    slint::Timer::single_shot(after, move || guard(f));
+    let at = Location::caller();
+    slint::Timer::single_shot(after, move || guard_from(at, f));
 }
 
 /// `slint::Timer::start` with the body guarded.
+#[track_caller]
 pub fn start(
     timer: &slint::Timer,
     mode: slint::TimerMode,
     interval: Duration,
     mut f: impl FnMut() + 'static,
 ) {
-    timer.start(mode, interval, move || guard(&mut f));
+    let at = Location::caller();
+    timer.start(mode, interval, move || guard_from(at, &mut f));
 }
 
 /// `slint::invoke_from_event_loop` with the body guarded. Callable from any thread.
+#[track_caller]
 pub fn invoke(f: impl FnOnce() + Send + 'static) -> Result<(), slint::EventLoopError> {
-    slint::invoke_from_event_loop(move || guard(f))
+    let at = Location::caller();
+    slint::invoke_from_event_loop(move || guard_from(at, f))
 }
 
 /// Ends the UI event loop. Slint posts the quit as an event that the loop takes on a
@@ -61,52 +85,64 @@ pub fn quit_loop() {
 
 /// `slint::spawn_local` with every poll of the task guarded: a panic ends the task.
 #[allow(dead_code)] // Used on macOS and Windows (the file dialogs) only.
+#[track_caller]
 pub fn spawn_local(
     task: impl Future<Output = ()> + 'static,
 ) -> Result<slint::JoinHandle<()>, slint::EventLoopError> {
-    slint::spawn_local(Guarded(Some(Box::pin(task))))
+    slint::spawn_local(Guarded(Some(Box::pin(task)), Location::caller()))
 }
 
 /// `Window::on_close_requested` with the handler guarded; a panic keeps the window.
+#[track_caller]
 pub fn on_close_requested(
     window: &slint::Window,
     mut f: impl FnMut() -> slint::CloseRequestResponse + 'static,
 ) {
+    let at = Location::caller();
     window.on_close_requested(move || {
-        guard_or(|| slint::CloseRequestResponse::KeepWindowShown, &mut f)
+        guard_at(at, || slint::CloseRequestResponse::KeepWindowShown, &mut f)
     });
 }
 
 /// `Window::set_rendering_notifier` with the notifier guarded.
 #[allow(dead_code)] // Used on macOS and Windows only (the preview layer).
+#[track_caller]
 pub fn set_rendering_notifier(
     window: &slint::Window,
     mut f: impl FnMut(slint::RenderingState, &slint::GraphicsAPI<'_>) + 'static,
 ) -> Result<(), slint::SetRenderingNotifierError> {
-    window.set_rendering_notifier(move |state, api| guard(|| f(state, api)))
+    let at = Location::caller();
+    window.set_rendering_notifier(move |state, api| guard_from(at, || f(state, api)))
 }
 
 /// A task whose polls, and whose drop, run under the panic boundary. After a panic the
-/// task is dropped inside the boundary too, so nothing of it unwinds into Slint.
-struct Guarded(Option<Pin<Box<dyn Future<Output = ()>>>>);
+/// task is dropped inside the boundary too, so nothing of it unwinds into Slint. The
+/// place is where the task was spawned (the stall watch's entry).
+struct Guarded(
+    Option<Pin<Box<dyn Future<Output = ()>>>>,
+    &'static Location<'static>,
+);
 
 impl Future for Guarded {
     type Output = ();
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        let at = self.1;
         let Some(task) = self.0.as_mut() else {
             return Poll::Ready(());
         };
+        let entry = rbs_app::ui_thread::enter(at);
         let polled = rbs_crash::contain(|| task.as_mut().poll(cx));
+        drop(entry);
         match polled {
             Ok(Poll::Pending) => Poll::Pending,
             Ok(Poll::Ready(())) => {
-                drop_guarded(self.0.take());
+                drop_guarded(self.0.take(), at);
                 Poll::Ready(())
             }
             Err(_) => {
                 crate::show_caught();
-                drop_guarded(self.0.take());
+                drop_guarded(self.0.take(), at);
                 Poll::Ready(())
             }
         }
@@ -115,12 +151,12 @@ impl Future for Guarded {
 
 impl Drop for Guarded {
     fn drop(&mut self) {
-        drop_guarded(self.0.take());
+        drop_guarded(self.0.take(), self.1);
     }
 }
 
-fn drop_guarded(task: Option<Pin<Box<dyn Future<Output = ()>>>>) {
+fn drop_guarded(task: Option<Pin<Box<dyn Future<Output = ()>>>>, at: &'static Location<'static>) {
     if let Some(task) = task {
-        guard(move || drop(task));
+        guard_from(at, move || drop(task));
     }
 }

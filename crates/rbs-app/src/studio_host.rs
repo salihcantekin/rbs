@@ -3712,8 +3712,8 @@ impl StudioHost {
 
 impl Drop for StudioHost {
     fn drop(&mut self) {
-        // An idle control thread is parked with no timeout and does not see the
-        // disconnect until it is unparked; the join below would wait forever.
+        crate::ui_thread::assert_off_ui("stopping the studio host"); // Joins (ADR-0156).
+        // A parked idle control thread misses the disconnect until unparked: wake it first.
         let wake = self.tx.as_ref().and_then(|out| out.wake.get().cloned());
         self.tx = None;
         if let Some(wake) = wake {

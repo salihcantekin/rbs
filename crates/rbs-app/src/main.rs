@@ -1712,9 +1712,9 @@ fn show_caught() {
 }
 
 impl Ctx {
-    /// Change the state, then update the views once on the next event loop turn.
-    /// Views are never updated from inside a callback, so creating or hiding
-    /// windows cannot re-enter borrowed state.
+    /// Change the state; the views update once on the next event loop turn, never inside a
+    /// callback, so creating or hiding windows cannot re-enter borrowed state.
+    #[track_caller] // The stall watch's place is the caller: the `on!` site.
     fn update(&self, f: impl FnOnce(&mut App) + 'static) {
         // While quitting, changes are dropped (ADR-0156 decision 3).
         if quitting() {
@@ -6489,7 +6489,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
     if let Some(seconds) = measure_ui::requested() {
         measure_ui::install(&main, seconds);
     }
-    slint::run_event_loop_until_quit()?;
+    rbs_app::ui_thread::run_loop(slint::run_event_loop_until_quit)?;
     ctx.after_loop(&main);
     CTX.with(|c| c.borrow_mut().take());
     Ok(())

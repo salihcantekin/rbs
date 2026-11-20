@@ -220,6 +220,8 @@ impl Saver {
 
 impl Drop for Saver {
     fn drop(&mut self) {
+        // Joins the writer: the shutdown thread drops the saver (ADR-0156).
+        crate::ui_thread::assert_off_ui("stopping the user data writer");
         if let Ok(mut q) = self.shared.queue.lock() {
             q.stop = true;
             self.shared.changed.notify_all();

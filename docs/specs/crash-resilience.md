@@ -10,7 +10,7 @@ How the desktop app keeps running when its own code panics, how it records what 
 
 ## Scope
 
-In scope: panic boundaries on the UI thread and the studio's control thread, crash reports, unclean-exit detection, the ban on nested event loops and blocking on the UI thread.
+In scope: panic boundaries on the UI thread and the studio's control thread, crash reports, unclean-exit detection, the ban on nested event loops and blocking on the UI thread, and the UI thread's stall watch.
 
 Out of scope (ADR-0055 follow-up work): the studio in its own process, heartbeats, native crash dumps, GPU device loss, isolated adapters and plugins.
 
@@ -131,6 +131,37 @@ macro_rules! errln { ... }
 ### Nested event loops and blocking (`rbs-app/clippy.toml`)
 
 `disallowed-methods` in the app crate bans: the Slint functions wrapped by `entry.rs` (allowed inside it only); `rfd::FileDialog::{pick_file, pick_files, pick_folder, pick_folders, save_file}` and `rfd::MessageDialog::show`; `slint::run_event_loop`; `slint::ComponentHandle::run` (allowed once, in `main`); `std::thread::sleep` (allowed at the studio thread's shutdown, with a comment). Examples that are measurement tools allow them at file level. UI code uses `rfd::AsyncFileDialog` (or `AsyncMessageDialog`) under `entry::spawn_local`.
+
+### UI thread waits and stalls (`rbs-app` `src/ui_thread.rs`)
+
+The waiting rule and the thread map are in [threads.md](../architecture/threads.md). At run time:
+
+```rust
+/// Marks the calling thread as the UI thread and starts the stall watch (once).
+pub fn loop_started();
+/// Takes the mark away: the event loop has ended.
+pub fn loop_ended();
+/// Runs the event loop `run` between the two.
+pub fn run_loop<R>(run: impl FnOnce() -> R) -> R;
+/// Whether the calling thread is the UI thread while its event loop runs.
+pub fn on_ui_thread() -> bool;
+/// `debug_assert!(!on_ui_thread())`, at the top of a helper that waits on another thread.
+pub fn assert_off_ui(what: &str);
+/// Stamps one UI entry; the entry ends when the value drops.
+pub fn enter(at: &'static Location<'static>) -> Entry;
+pub const STALL: Duration; // 100 ms
+pub const HANG: Duration;  // 1 s
+```
+
+- `main` runs `slint::run_event_loop_until_quit` through `run_loop(f)`, which calls `loop_started` before it and `loop_ended` after it returns, before `Ctx::after_loop`.
+- `assert_off_ui` is called by `StudioHost::drop`, `Saver::drop` and the calibration lanes' `open`, `round` and `close`. It does nothing in release builds and on other threads.
+- Every wrapper in `entry.rs` (and so `Ctx::update`) calls `enter` with the place the entry was installed (`#[track_caller]`; for `Ctx::update`, the `on!` site). Only the outermost entry on the UI thread stamps; nested ones and other threads only count depth.
+- An entry that returns after `STALL` or more logs, on the UI thread, `rbs: ui: the UI thread was busy <ms> ms in the entry installed at <file:line:col>`.
+- The thread `rbs-ui-watch` logs `rbs: ui: the UI thread is not answering: busy <ms> ms so far in the entry installed at <place>` when one entry has run `HANG`, then at 2, 4, 8 ... times `HANG` while it still runs. The place is `an unknown entry` when the UI thread could not take the place's lock (it only tries it). It parks with no timeout while no entry runs; the first entry after that unparks it.
+- Not covered: time Slint spends outside our entry points (its own layout and rendering, OS calls in its event dispatch).
+- Cost: per outermost entry two clock reads, two atomic stores, one atomic swap and one uncontended `try_lock`, measured at 284 ns per entry in an unoptimised test build (Linux cloud container, 1,000,000 entries); nothing per nested entry. One parked thread; while the UI works, the watch wakes at most about once per `HANG`. Lines go to standard error until the diagnostics log (quality plan WP-21) exists.
+
+Tests (`ui_thread::tests`): the watch's decisions with a fed clock (idle parks, a short entry is never reported, a hang is reported at 1 s, 2 s, 4 s, a new entry starts over), the stall line with its place, the debug check fails on a marked thread and not after `loop_ended`, nested entries stamp once.
 
 ### Build
 

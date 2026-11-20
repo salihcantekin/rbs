@@ -18,6 +18,8 @@
 //! - [`encoder_form`]: the encoder settings' choices, from the encoders' capabilities.
 //! - [`hotkeys`]: key presses as shortcut chords, and global shortcuts (ADR-0060).
 //! - [`remote_control`]: the control API server while remote control is on.
+//! - [`ui_thread`]: the UI thread's mark, the debug check for waits, and the stall
+//!   watch (docs/architecture/threads.md).
 //! - [`user_session`]: the output profile and scene collection in use, and their one
 //!   writer thread (ADR-0051).
 //! - [`recent_targets`]: the last targets picked per source type (`recent-targets.toml`, ADR-0077).
@@ -66,6 +68,7 @@ pub mod text_clock;
 pub mod text_timers;
 pub mod theme_hints;
 pub mod thumbnail;
+pub mod ui_thread;
 pub mod user_session;
 pub mod vcam_settings;
 pub mod vertical_outputs;

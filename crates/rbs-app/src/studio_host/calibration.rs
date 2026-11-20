@@ -294,6 +294,7 @@ impl Lanes for ThreadLanes {
         config: &VideoEncoderConfig,
         ring: &Arc<[SystemFrame]>,
     ) -> Result<Result<(), CreateError>, LanesFailure> {
+        crate::ui_thread::assert_off_ui("a calibration lane");
         let l = self.lanes.get_mut(lane).ok_or(LanesFailure)?;
         l.tx.send(LaneReq::Open(
             Arc::clone(factory),
@@ -317,6 +318,7 @@ impl Lanes for ThreadLanes {
         request: RoundRequest,
         out: &mut Vec<SessionReport>,
     ) -> Result<(), LanesFailure> {
+        crate::ui_thread::assert_off_ui("a calibration lane");
         for l in &mut self.lanes {
             let buf = std::mem::take(&mut l.buf);
             l.tx.send(LaneReq::Round(request, buf))
@@ -337,6 +339,7 @@ impl Lanes for ThreadLanes {
     }
 
     fn close(&mut self) -> Result<Vec<Result<bool, EncodeError>>, LanesFailure> {
+        crate::ui_thread::assert_off_ui("a calibration lane");
         let mut out = Vec::new();
         for l in &mut self.lanes {
             l.tx.send(LaneReq::Close).map_err(|_| LanesFailure)?;

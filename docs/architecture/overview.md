@@ -59,6 +59,8 @@ Arrows only point down or sideways into ports. Adapters never depend on each oth
 
 ## Threads
 
+The classes below are the design; [threads.md](threads.md) lists every thread the code starts today, what each may wait on, and the UI thread's waiting rule.
+
 | Thread | Work | Priority |
 | --- | --- | --- |
 | Audio | Device callbacks, mixing, audio filters; lock-free queues, no allocation | Real-time (MMCSS, `THREAD_TIME_CONSTRAINT_POLICY`, rtkit) |
