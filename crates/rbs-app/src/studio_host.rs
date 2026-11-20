@@ -3504,7 +3504,7 @@ pub struct HostConfig {
     /// D1); `None`: the real ones. Tests inject a test clock and a fake sink.
     pub calibration_setup: Option<calibration::CalibrationSetup>,
     /// The add-on catalog, where add-ons are kept and how they are fetched (ADR-0145;
-    /// [`crate::add_ons::AddOnsSetup::system`] in the app). `None`: `addon.list`
+    /// [`crate::add_ons::system_setup`] in the app). `None`: `addon.list`
     /// shows the built-in catalog as not installed and installs are refused.
     pub add_ons: Option<crate::add_ons::AddOnsSetup>,
     /// The browser runner (tests); `None`: [`crate::browser_tree::resolve_runner`].

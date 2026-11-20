@@ -6321,7 +6321,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             },
         )));
         // The built-in add-on catalog (ADR-0145); nothing is read until asked.
-        config.add_ons = rbs_app::add_ons::AddOnsSetup::system();
+        config.add_ons = rbs_app::add_ons::system_setup();
         config
     };
     match studio_host::StudioHost::spawn(

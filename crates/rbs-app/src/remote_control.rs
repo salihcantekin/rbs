@@ -258,11 +258,7 @@ impl RemoteServer {
     /// The store it sets is the union of both settings files, with `flags` as they are
     /// then, so a token change never stops AI tools.
     pub fn api_tokens(&self, config: PathBuf, flags: Arc<SlotFlags>) -> ApiTokens {
-        ApiTokens {
-            config,
-            handle: self.api.token_handle(),
-            flags,
-        }
+        ApiTokens::new(config, self.api.token_handle(), flags)
     }
 
     /// The local IPC endpoint it serves, if it does.
@@ -337,6 +333,15 @@ impl SlotFlags {
 }
 
 impl ApiTokens {
+    /// The `tokens.*` answers for the settings in `config` and the server's `handle`.
+    pub fn new(config: PathBuf, handle: TokenHandle, flags: Arc<SlotFlags>) -> Self {
+        Self {
+            config,
+            handle,
+            flags,
+        }
+    }
+
     /// Answers `command` if it is a `tokens.*` command, `None` otherwise. A change is
     /// saved and the server takes the new tokens (under the settings lock) before this
     /// returns, so a new token works, or a revoked token's apps are disconnected,
