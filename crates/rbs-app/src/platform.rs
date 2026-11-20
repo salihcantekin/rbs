@@ -19,7 +19,8 @@ pub fn adapters() -> (RecordAdapters, Vec<String>) {
 /// Fills the studio host's adapter seams (ADR-0159 decision 4): what the host would
 /// otherwise name an adapter or an OS binding for.
 pub fn host_seams(config: &mut crate::studio_host::HostConfig) {
-    config.system_probe = Some(crate::studio_host::protection::SystemProbeFactory::os());
+    config.system_probe = Some(crate::system_probe::factory());
+    config.os_version = crate::system_probe::os_version();
     config.chapters = Some(std::sync::Arc::new(crate::chapters::MatroskaChapters));
 }
 

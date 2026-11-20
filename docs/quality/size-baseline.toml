@@ -10,7 +10,7 @@
 "crates/rbs-app/src/main.rs" = 6755
 "crates/rbs-app/src/menu_bar.rs" = 2518
 "crates/rbs-app/src/record_profile.rs" = 2081
-"crates/rbs-app/src/studio_host.rs" = 18510
+"crates/rbs-app/src/studio_host.rs" = 18508
 "crates/rbs-app/src/studio_ui.rs" = 11008
 "crates/rbs-app/tests/studio_record.rs" = 3156
 "crates/rbs-app/tests/studio_scenes.rs" = 2288

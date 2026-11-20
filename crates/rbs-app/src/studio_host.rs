@@ -3493,6 +3493,8 @@ pub struct HostConfig {
     /// Writes markers into a finished Matroska master as chapters (ADR-0159 decision 4);
     /// `None`: the markers stay in the manifest only.
     pub chapters: Option<Arc<dyn ChapterWriter>>,
+    /// The OS name and version in the calibration key; always pass it (ADR-0159).
+    pub os_version: Option<String>,
     /// The calibration run's clock, pacer, file system and wall time (ADR-0087 step
     /// D1); `None`: the real ones. Tests inject a test clock and a fake sink.
     pub calibration_setup: Option<calibration::CalibrationSetup>,
@@ -3537,6 +3539,7 @@ impl HostConfig {
             calibration: crate::calibration_file::CalibrationFile::default(),
             read_free_space: None,
             chapters: None,
+            os_version: None,
             calibration_setup: None,
             add_ons: None,
             browser_runner: None,
@@ -3872,8 +3875,8 @@ struct Host {
     /// This thread's own queue, for results from picker threads. Weak, so dropping
     /// the [`StudioHost`] still ends the thread.
     inbox: std::sync::Weak<ControlOut>,
-    /// The root's chapter writer ([`HostConfig::chapters`]).
-    chapters: Option<Arc<dyn ChapterWriter>>,
+    /// What the root passed instead of adapters (ADR-0159 decision 4).
+    seams: seams::HostSeams,
     /// The stinger's file look (ADR-0140 decision 3).
     stinger: stinger::StingerFile,
     /// Saves the collection after a change ([`HostConfig::autosave`]).
@@ -4835,7 +4838,7 @@ fn start(
         switch_pending: None,
         switch_seq: 0,
         inbox: Weak::new(),
-        chapters: config.chapters,
+        seams: seams::HostSeams::new(config.chapters, config.os_version),
         stinger: stinger::StingerFile::default(),
         add_ons,
         levels,
@@ -7865,8 +7868,7 @@ impl Host {
                 scene,
             )
             .map(|mut m| {
-                m.chapters =
-                    (self.chapters.clone()).filter(|_| r.container == ContainerId::Matroska);
+                m.chapters = self.seams.chapters_for(r.container);
                 m
             });
             // Tracked together with the master, after the last panic point of the
@@ -8316,13 +8318,9 @@ impl Host {
                 .map(|id| (id.as_str().to_owned(), None))
                 .collect(),
             rbs_version: env!("CARGO_PKG_VERSION").to_owned(),
-            // The GPU, its driver and the OS: export measurements hold only on the
-            // same (step D2). `uname` is a quick local call.
-            gpu: Some(format!(
-                "{}|{}",
-                self.gpu.adapter_key(),
-                rbs_system_probe::os_version().unwrap_or_default()
-            )),
+            // The GPU, its driver and the OS (read once by the root): export
+            // measurements hold only on the same (step D2).
+            gpu: Some(self.seams.computer_key(&self.gpu.adapter_key())),
         }
     }
 

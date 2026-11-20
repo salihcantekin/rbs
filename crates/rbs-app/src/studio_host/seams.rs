@@ -3,6 +3,9 @@
 
 use std::fmt::Debug;
 use std::fs::File;
+use std::sync::Arc;
+
+use rbs_core::media::ContainerId;
 
 /// One marker as a chapter of a finished file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,5 +41,34 @@ pub struct FreeSpaceReader(pub rbs_record::estimate::ReadFreeSpace);
 impl Debug for FreeSpaceReader {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("FreeSpaceReader")
+    }
+}
+
+/// The host's copy of the seams in its [`super::HostConfig`].
+pub(super) struct HostSeams {
+    /// [`super::HostConfig::chapters`].
+    pub chapters: Option<Arc<dyn ChapterWriter>>,
+    /// [`super::HostConfig::os_version`], empty when unknown.
+    pub os_version: String,
+}
+
+impl HostSeams {
+    pub(super) fn new(chapters: Option<Arc<dyn ChapterWriter>>, os: Option<String>) -> Self {
+        Self {
+            chapters,
+            os_version: os.unwrap_or_default(),
+        }
+    }
+
+    /// The chapter writer for a master in `container`: only Matroska takes chapters.
+    pub(super) fn chapters_for(&self, container: ContainerId) -> Option<Arc<dyn ChapterWriter>> {
+        self.chapters
+            .clone()
+            .filter(|_| container == ContainerId::Matroska)
+    }
+
+    /// The calibration key's computer part: the GPU adapter's key and the OS version.
+    pub(super) fn computer_key(&self, adapter: &str) -> String {
+        format!("{adapter}|{}", self.os_version)
     }
 }
