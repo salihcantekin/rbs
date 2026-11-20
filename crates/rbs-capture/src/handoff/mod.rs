@@ -6,6 +6,8 @@
 
 mod graveyard;
 mod ring;
+mod surface;
 
 pub use graveyard::{Grave, Graveyard};
 pub use ring::{FrameMeta, Ring};
+pub use surface::SurfaceConsumer;
