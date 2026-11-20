@@ -24,7 +24,8 @@ fn measure(f: &mut dyn FnMut()) -> u64 {
 /// would read as a leak after `stop`.
 fn one_hardware_test_at_a_time() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    LOCK.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Environment variable that makes this binary play the fixture tone.
@@ -110,6 +111,48 @@ mod hardware {
     use rbs_core::capability::CapabilitySet;
     use rbs_core::registry::{AdapterFactory, AdapterId, ProbeError};
     use rbs_core::time::MonotonicClock;
+    use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
+    use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
+    use windows::core::PCWSTR;
+
+    /// Auto-reset event the fixture signals when it starts and after each buffer.
+    /// The waits below use it instead of a sleep; the deadline stays the hang guard.
+    struct Pulse {
+        event: HANDLE,
+        name: Vec<u16>,
+    }
+
+    impl Pulse {
+        fn new() -> Self {
+            let text = format!("Local\\rbs-wasapi-fixture-{}", std::process::id());
+            let mut name: Vec<u16> = text.encode_utf16().collect();
+            name.push(0);
+            // SAFETY: unnamed security, auto-reset, initially quiet. `name` is nul-terminated
+            // and outlives the call.
+            let event = unsafe { CreateEventW(None, false, false, PCWSTR(name.as_ptr())) }
+                .unwrap_or_else(|e| panic!("fixture event: {e}"));
+            Self { event, name }
+        }
+
+        fn name(&self) -> String {
+            String::from_utf16_lossy(&self.name[..self.name.len().saturating_sub(1)])
+        }
+
+        /// `true` when the fixture signalled before `deadline`.
+        fn wait(&self, deadline: Instant) -> bool {
+            let left = deadline.saturating_duration_since(Instant::now());
+            let ms = u32::try_from(left.as_millis()).unwrap_or(u32::MAX);
+            // SAFETY: `event` is a live handle this value owns.
+            (unsafe { WaitForSingleObject(self.event, ms) }) == WAIT_OBJECT_0
+        }
+    }
+
+    impl Drop for Pulse {
+        fn drop(&mut self) {
+            // SAFETY: the handle was created here and has not been closed.
+            let _ = unsafe { CloseHandle(self.event) };
+        }
+    }
 
     /// The fixture child playing a tone; killed by `remove`.
     struct Hooks {
@@ -186,18 +229,19 @@ mod hardware {
         }
     }
 
-    fn start_fixture() -> Child {
+    fn start_fixture(pulse: &Pulse) -> Child {
         let exe = std::env::current_exe().unwrap_or_default();
         let child = Command::new(exe)
             .args(["fixture_process", "--exact", "--ignored", "--nocapture"])
             .env(super::FIXTURE, "1")
+            .env("RBS_FIXTURE_EVENT", pulse.name())
             .spawn();
         assert!(child.is_ok(), "cannot start the fixture: {child:?}");
         child.unwrap_or_else(|_| unreachable!())
     }
 
     /// Waits (hang guard 5 s) until the fixture's audio session is listed.
-    fn fixture_endpoint(backend: &WasapiAudioBackend, pid: u32) -> EndpointId {
+    fn fixture_endpoint(backend: &WasapiAudioBackend, pid: u32, pulse: &Pulse) -> EndpointId {
         let id = EndpointId::new(format!("app:{pid}"));
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline {
@@ -207,16 +251,19 @@ mod hardware {
             if listed {
                 return id;
             }
-            std::thread::sleep(Duration::from_millis(20));
+            if !pulse.wait(deadline) {
+                break;
+            }
         }
         panic!("the fixture's audio session never appeared");
     }
 
     pub(super) fn run() {
         let backend = WasapiAudioBackend::new();
-        let child = start_fixture();
-        let app = fixture_endpoint(&backend, child.id());
-        delivers_the_tone(&backend, &app);
+        let pulse = Pulse::new();
+        let child = start_fixture(&pulse);
+        let app = fixture_endpoint(&backend, child.id(), &pulse);
+        delivers_the_tone(&backend, &app, &pulse);
         let hooks = Hooks {
             child: Mutex::new(Some(child)),
             id: app.clone(),
@@ -266,7 +313,11 @@ mod hardware {
 
     /// The tail of half a second of audio from `endpoint` (hang guard 3 s): its rms and
     /// its frequency from zero crossings.
-    fn listen(backend: &WasapiAudioBackend, endpoint: &EndpointId) -> (f32, f32, f32) {
+    fn listen(
+        backend: &WasapiAudioBackend,
+        endpoint: &EndpointId,
+        pulse: &Pulse,
+    ) -> (f32, f32, f32) {
         let clock = Arc::new(MonotonicClock::new());
         let stream = backend.open_input(&InputRequest::new(endpoint.clone(), clock));
         let Ok(mut stream) = stream else {
@@ -279,7 +330,7 @@ mod hardware {
         let mut collected: Vec<f32> = Vec::new();
         let deadline = Instant::now() + Duration::from_secs(3);
         while collected.len() < rate / 2 && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(10));
+            let _ = pulse.wait(deadline);
             let mut out: Vec<&mut [f32]> = planes.iter_mut().map(|p| p.as_mut_slice()).collect();
             if let Ok(read) = stream.read(&mut out) {
                 collected.extend_from_slice(&planes[0][..read.frames]);
@@ -301,8 +352,8 @@ mod hardware {
     /// Process loopback delivers what the fixture plays: a 440 Hz tone. Skipped when
     /// the default output's own mix is silent while the fixture plays, as with Remote
     /// Desktop's "Remote Audio" device: then no loopback can hear anything.
-    fn delivers_the_tone(backend: &WasapiAudioBackend, app: &EndpointId) {
-        let (rms, frequency, seconds) = listen(backend, app);
+    fn delivers_the_tone(backend: &WasapiAudioBackend, app: &EndpointId, pulse: &Pulse) {
+        let (rms, frequency, seconds) = listen(backend, app, pulse);
         eprintln!("fixture capture: rms {rms:.4}, {frequency:.0} Hz over {seconds:.2} s");
         if rms <= 0.01 {
             let output = backend
@@ -310,7 +361,7 @@ mod hardware {
                 .ok()
                 .and_then(|e| e.into_iter().find(|e| e.is_default));
             if let Some(output) = output {
-                let (output_rms, _, _) = listen(backend, &output.id);
+                let (output_rms, _, _) = listen(backend, &output.id, pulse);
                 if output_rms == 0.0 {
                     eprintln!(
                         "skip tone check: the default output {} is silent while the fixture \
@@ -331,13 +382,18 @@ mod hardware {
 mod fixture {
     use std::time::{Duration, Instant};
 
+    use windows::Win32::Foundation::{HANDLE, WAIT_OBJECT_0};
     use windows::Win32::Media::Audio::{
-        AUDCLNT_SHAREMODE_SHARED, IAudioClient, IAudioRenderClient, IMMDeviceEnumerator,
-        MMDeviceEnumerator, eConsole, eRender,
+        AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK, IAudioClient,
+        IAudioRenderClient, IMMDeviceEnumerator, MMDeviceEnumerator, eConsole, eRender,
     };
     use windows::Win32::System::Com::{
         CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoTaskMemFree,
     };
+    use windows::Win32::System::Threading::{
+        CreateEventW, EVENT_MODIFY_STATE, OpenEventW, SetEvent, WaitForSingleObject,
+    };
+    use windows::core::PCWSTR;
 
     /// Longest the fixture plays if nobody kills it (a hang guard).
     const LIFETIME: Duration = Duration::from_secs(60);
@@ -366,10 +422,25 @@ mod fixture {
             let channels = usize::from(format.nChannels);
             let rate = format.nSamplesPerSec as f32;
             let ok = client
-                .Initialize(AUDCLNT_SHAREMODE_SHARED, 0, 1_000_000, 0, mix, None)
+                .Initialize(
+                    AUDCLNT_SHAREMODE_SHARED,
+                    AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+                    1_000_000,
+                    0,
+                    mix,
+                    None,
+                )
                 .is_ok();
             CoTaskMemFree(Some(mix as _));
             if !ok {
+                return;
+            }
+            let signal = open_pulse();
+            let buffer_event = CreateEventW(None, false, false, PCWSTR::null()).ok();
+            let Some(buffer_event) = buffer_event else {
+                return;
+            };
+            if client.SetEventHandle(buffer_event).is_err() {
                 return;
             }
             let Ok(render) = client.GetService::<IAudioRenderClient>() else {
@@ -378,11 +449,19 @@ mod fixture {
             let Ok(size) = client.GetBufferSize() else {
                 return;
             };
-            let _ = client.Start();
+            if client.Start().is_err() {
+                return;
+            }
+            if let Some(signal) = signal {
+                let _ = SetEvent(signal);
+            }
             let mut phase = 0.0_f32;
             let step = 440.0 * std::f32::consts::TAU / rate;
             let end = Instant::now() + LIFETIME;
             while Instant::now() < end {
+                if WaitForSingleObject(buffer_event, 1_000) != WAIT_OBJECT_0 {
+                    continue;
+                }
                 let padding = client.GetCurrentPadding().unwrap_or(size);
                 let free = size.saturating_sub(padding);
                 if free > 0
@@ -398,9 +477,19 @@ mod fixture {
                     }
                     let _ = render.ReleaseBuffer(free, 0);
                 }
-                std::thread::sleep(Duration::from_millis(10));
+                if let Some(signal) = signal {
+                    let _ = SetEvent(signal);
+                }
             }
         }
+    }
+
+    fn open_pulse() -> Option<HANDLE> {
+        let name = std::env::var("RBS_FIXTURE_EVENT").ok()?;
+        let mut wide: Vec<u16> = name.encode_utf16().collect();
+        wide.push(0);
+        // SAFETY: `wide` is nul-terminated. The parent created the event.
+        unsafe { OpenEventW(EVENT_MODIFY_STATE, false, PCWSTR(wide.as_ptr())) }.ok()
     }
 }
 
@@ -484,6 +573,8 @@ mod hardware_output {
                 start.elapsed() < GUARD,
                 "the device did not pull {frames} frames"
             );
+            // The render callback must not signal this wait (P6). The device pulls
+            // every few milliseconds; this is only the hang guard's poll.
             std::thread::sleep(Duration::from_millis(5));
         }
     }
