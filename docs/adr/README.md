@@ -163,3 +163,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0153](0153-a-transition-of-its-own-outside-studio-mode.md) | A transition kind of its own outside studio mode (Move by default); the rail's kind is for studio mode | Accepted |
 | [0154](0154-wake-the-control-thread-on-bypass.md) | Wake the control thread when a node is bypassed, and stop capping the control wait merely because a worker runs (supersedes part of ADR-0027 decision 6) | Accepted |
 | [0155](0155-one-noise-state-until-each-channel-is-selected.md) | One noise-suppression state until each channel is selected (supersedes part of ADR-0130 decision 5) | Accepted |
+| [0157](0157-browser-gpu-pages-sync-on-a-shared-fence.md) | Browser pages on the GPU sync on a shared fence; the helper never waits on the CPU (supersedes the Windows sync and ring-size clauses of ADR-0109 decision 8 and ADR-0132 decision 8) | Proposed |
