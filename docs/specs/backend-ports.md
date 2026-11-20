@@ -78,7 +78,7 @@ The current Rust types live in `rbs_core::capability` and are the source of trut
 
 ## Registry and selection
 
-1. Adapters are registered at start-up: built-in adapters by the composition root (`rbs-app`, `rbs-cli`), plugin adapters by the plugin host.
+1. Adapters are registered at start-up: built-in adapters by the composition root (`rbs-app`, `rbs-cli`) from the one list in `rbs-platform` (`rbs_platform::adapters`, ADR-0160), plugin adapters by the plugin host. Building that list constructs factories only; a factory's constructor must not probe, load a library or open a device.
 2. The registry probes each adapter once (and again on device change events) and caches the result.
 3. `Registry::select(port, requirement)` returns candidates that satisfy the requirement, ordered by:
    1. the user's explicit choice, if any;

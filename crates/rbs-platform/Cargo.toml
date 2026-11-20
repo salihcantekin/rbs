@@ -1,0 +1,75 @@
+[package]
+name = "rbs-platform"
+description = "The one list of RBS's built-in adapters per platform, shared by the composition roots rbs-app and rbs-cli (ADR-0160)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+# `Options::demo_sources` registers the deterministic reference adapters (synthetic
+# displays, cameras and audio). Off in builds that ship; rbs-app's feature of the same
+# name forwards here.
+demo-sources = ["dep:rbs-capture-test", "dep:rbs-audio-io-test"]
+
+# Layer class Platform (xtask check-layers, ADR-0160 decision 5): ports, helpers,
+# support crates without OS bindings, engine crates, adapters and chrono only. Only
+# rbs-app and rbs-cli may depend on this crate.
+[dependencies]
+rbs-core = { path = "../rbs-core" }
+rbs-record = { path = "../rbs-record" }
+rbs-sources = { path = "../rbs-sources" }
+rbs-codec = { path = "../rbs-codec" }
+rbs-vcam = { path = "../rbs-vcam" }
+rbs-media-decode = { path = "../rbs-media-decode" }
+rbs-mux-matroska = { path = "../rbs-mux-matroska" }
+rbs-mux-fmp4 = { path = "../rbs-mux-fmp4" }
+rbs-mux-wav = { path = "../rbs-mux-wav" }
+rbs-mux-flac = { path = "../rbs-mux-flac" }
+rbs-mux-mpegts = { path = "../rbs-mux-mpegts" }
+rbs-codec-pcm = { path = "../rbs-codec-pcm" }
+rbs-codec-flac = { path = "../rbs-codec-flac" }
+rbs-transport-file = { path = "../rbs-transport-file" }
+rbs-transport-rtmp = { path = "../rbs-transport-rtmp" }
+rbs-transport-srt = { path = "../rbs-transport-srt" }
+rbs-text-parley = { path = "../rbs-text-parley" }
+rbs-media-anim = { path = "../rbs-media-anim" }
+# Stand-in media decoder until an FFmpeg adapter ships (ADR-0108 / ADR-0007; quality
+# audit QS-09 replaces it).
+rbs-media-decode-test = { path = "../rbs-media-decode-test" }
+rbs-capture-test = { path = "../rbs-capture-test", optional = true }
+rbs-audio-io-test = { path = "../rbs-audio-io-test", optional = true }
+# The local wall clock of live text sources (src/text_clock.rs, ADR-0129 decision 11).
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+[target.'cfg(windows)'.dependencies]
+rbs-capture-wgc = { path = "../rbs-capture-wgc" }
+rbs-capture-mf = { path = "../rbs-capture-mf" }
+rbs-media-mf = { path = "../rbs-media-mf" }
+rbs-audio-io-wasapi = { path = "../rbs-audio-io-wasapi" }
+rbs-codec-nvenc = { path = "../rbs-codec-nvenc" }
+rbs-codec-amf = { path = "../rbs-codec-amf" }
+rbs-codec-mf = { path = "../rbs-codec-mf" }
+rbs-vcam-mf = { path = "../rbs-vcam-mf" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rbs-capture-pipewire = { path = "../rbs-capture-pipewire" }
+rbs-audio-io-pipewire = { path = "../rbs-audio-io-pipewire" }
+rbs-codec-nvenc = { path = "../rbs-codec-nvenc" }
+rbs-codec-amf = { path = "../rbs-codec-amf" }
+rbs-codec-qsv = { path = "../rbs-codec-qsv" }
+rbs-codec-vaapi = { path = "../rbs-codec-vaapi" }
+rbs-codec-ffmpeg = { path = "../rbs-codec-ffmpeg" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+rbs-capture-sck = { path = "../rbs-capture-sck" }
+rbs-capture-avf = { path = "../rbs-capture-avf" }
+rbs-media-avf = { path = "../rbs-media-avf" }
+rbs-audio-io-coreaudio = { path = "../rbs-audio-io-coreaudio" }
+rbs-codec-videotoolbox = { path = "../rbs-codec-videotoolbox" }
+rbs-codec-audiotoolbox = { path = "../rbs-codec-audiotoolbox" }
+
+[lints]
+workspace = true
