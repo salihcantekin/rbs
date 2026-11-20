@@ -293,7 +293,7 @@ The port follows semver like the plugin SDK (ADR-0003).
 
 ## Hand-off helpers
 
-`rbs_capture::handoff` holds two platform-independent building blocks that hardware adapters share, so the rules above are implemented and tested once:
+`rbs_capture::handoff` holds the platform-independent building blocks that hardware adapters share, so the rules above are implemented and tested once:
 
 `rbs_capture::handoff` is an adapter-support module: it is versioned with the port crate but outside the port contract above, and may change in a minor version (third-party adapters that use it pin `rbs-capture` to a minor version). Its structs are still `#[non_exhaustive]` with constructors. Users outside the capture adapters: the native-picture slots of the media-decode adapters `rbs-media-avf` and `rbs-media-mf` (`Ring` with `claim` and `Lease::adopt`, and `Graveyard`; media-decode-port.md, Adapters).
 
@@ -331,9 +331,18 @@ impl Graveyard {
     pub fn grace(&self) -> Duration;
     pub fn bytes(&self) -> u64;  pub fn len(&self) -> usize;  pub fn is_empty(&self) -> bool;
 }
+
+pub struct SurfaceConsumer<O>; // O: AsRef<Ring> + LeaseOwner
+impl<O> SurfaceConsumer<O> {
+    pub unsafe fn new(shared: Arc<O>, format: VideoFormat) -> Self;
+    pub fn format(&self) -> VideoFormat;
+    pub fn delivered(&self) -> u64;
+    pub fn next(&mut self) -> Option<VideoFrame>; // newest slot, Ready IOSurface, no alloc
+}
 ```
 
 - `Ring` only counts; it owns no surfaces and does not implement `LeaseOwner`. The adapter wraps it with the surfaces it names and makes the `LeaseOwner` promises there. Every method except `new` is lock-free and allocation-free.
+- `SurfaceConsumer` is the render-thread half of an IOSurface hand-off (ScreenCaptureKit and AVFoundation). `next` takes the newest slot and returns a `Ready` `IoSurface` frame of the published size, keeping the pixel format and colour it was opened with. It does not allocate, lock, or touch the surface. The adapter retains the surface for the lease.
 - Calling protocol, which an adapter's `LeaseOwner` relies on: `set_handle`, `publish` and `abandon` only on a slot returned by `claim` and not yet published or abandoned; `release` exactly once per reference from `take` or `retain`. Breaking it is not undefined behaviour in `Ring` but voids the adapter's promises. An unmatched `release` is refused (the count never goes below zero), never panics, and is counted in `misuses`, which tests check is 0.
 - `Graveyard` keeps a grave while it is referenced and for `grace` after it became idle, then drops it on its janitor thread, which exists only while the graveyard holds something (P13). `is_idle` is sampled once per period, so the grace starts at the first idle sample; it must stay true once true. `bytes` is read once at `bury`. A panic in a grave ends the janitor without losing the byte count, and the next `bury` starts a new one. Adapters bury stopped surface sets and replaced surfaces in it, which implements the native surface rules and keeps frees off the render thread.
 - Benchmark: `cargo bench -p rbs-capture --bench handoff`. Release build, cloud container, 2026-11-02: about 29 ns per publish, take and release; about 8 ns for a take with no new frame (unchanged from the WGC-local ring it replaced: 29 ns and 8 ns).

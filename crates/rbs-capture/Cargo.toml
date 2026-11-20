@@ -12,6 +12,7 @@ publish.workspace = true
 rbs-core = { path = "../rbs-core" }
 
 [dev-dependencies]
+allocation-counter = "0.8"
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 
 [[bench]]
