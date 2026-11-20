@@ -162,6 +162,9 @@ pub struct YuvConverter {
     shader: Arc<SharedShader>,
     luma: wgpu::RenderPipeline,
     chroma: wgpu::RenderPipeline,
+    /// Equal-size NV12: one compute dispatch into a packed buffer. `None` for P010
+    /// and for every scaled kernel.
+    packed: Option<Packed>,
     /// Software adapters only: planes and a buffer for the staged surface path.
     staged: Option<Staged>,
 }
@@ -260,6 +263,101 @@ impl Staged {
                 },
                 size,
             );
+        }
+    }
+}
+
+/// Equal-size NV12 written by one compute dispatch. The buffer is cleared and filled
+/// for each frame, then copied into the download's staging buffer.
+struct Packed {
+    pipeline: wgpu::ComputePipeline,
+    buffer: wgpu::Buffer,
+    bind: wgpu::BindGroup,
+    len: u64,
+    groups_x: u32,
+    groups_y: u32,
+}
+
+impl Packed {
+    fn new(
+        ctx: &GpuContext,
+        module: &wgpu::ShaderModule,
+        constants: &[(&str, f64)],
+        width: u32,
+        height: u32,
+        screen: bool,
+        open_shadows: bool,
+    ) -> Self {
+        let stride =
+            width.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let len = u64::from(stride) * u64::from(height + height / 2);
+        let buffer = ctx.device().create_buffer(&wgpu::BufferDescriptor {
+            label: Some("rbs-gpu yuv packed"),
+            size: len,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC
+                | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let layout = ctx
+            .device()
+            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("rbs-gpu yuv packed"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            });
+        let bind = ctx.device().create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("rbs-gpu yuv packed"),
+            layout: &layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buffer.as_entire_binding(),
+            }],
+        });
+        let pipeline_layout =
+            ctx.device()
+                .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("rbs-gpu yuv packed"),
+                    bind_group_layouts: &[Some(ctx.sampled_layout()), Some(&layout)],
+                    immediate_size: 0,
+                });
+        let entry = if screen {
+            "cs_nv12_srgb"
+        } else if open_shadows {
+            "cs_nv12_open"
+        } else {
+            "cs_nv12"
+        };
+        let mut constants = constants.to_vec();
+        constants.push(("out_stride", f64::from(stride)));
+        let pipeline = ctx
+            .device()
+            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("rbs-gpu yuv packed"),
+                layout: Some(&pipeline_layout),
+                module,
+                entry_point: Some(entry),
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    constants: &constants,
+                    ..Default::default()
+                },
+                cache: None,
+            });
+        Self {
+            pipeline,
+            buffer,
+            bind,
+            len,
+            groups_x: (width / 2).div_ceil(8),
+            groups_y: (height / 2).div_ceil(8),
         }
     }
 }
@@ -476,6 +574,17 @@ impl YuvConverter {
         let (luma_entry, chroma_entry) = entry_points(kernel, screen, open_shadows);
         let luma = pipeline(luma_entry, format.luma_format());
         let chroma = pipeline(chroma_entry, format.chroma_format());
+        let packed = (format == YuvFormat::Nv12 && kernel == ScaleKernel::OneToOne).then(|| {
+            Packed::new(
+                ctx,
+                &shader.module,
+                &constants,
+                width,
+                height,
+                screen,
+                open_shadows,
+            )
+        });
         Ok(Self {
             format,
             width,
@@ -486,6 +595,7 @@ impl YuvConverter {
             shader,
             luma,
             chroma,
+            packed,
             staged: (ctx.has(surface_cap) && ctx.has(&CAP_SOFTWARE))
                 .then(|| Staged::new(ctx, format, width, height)),
         })
@@ -628,6 +738,38 @@ impl YuvConverter {
             pass.draw(0..3, 0..1);
         }
         encoder
+    }
+
+    /// Equal-size NV12: one compute dispatch into `dst`, which must be at least the
+    /// packed length. `None` when this converter still uses the two render passes.
+    pub(crate) fn record_packed(
+        &self,
+        ctx: &GpuContext,
+        source: &wgpu::BindGroup,
+        dst: &wgpu::Buffer,
+    ) -> Option<wgpu::CommandEncoder> {
+        let packed = self.packed.as_ref()?;
+        if dst.size() < packed.len {
+            return None;
+        }
+        let mut encoder = ctx
+            .device()
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("rbs-gpu yuv"),
+            });
+        encoder.clear_buffer(&packed.buffer, 0, None);
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("rbs-gpu yuv"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&packed.pipeline);
+            pass.set_bind_group(0, source, &[]);
+            pass.set_bind_group(1, &packed.bind, &[]);
+            pass.dispatch_workgroups(packed.groups_x, packed.groups_y, 1);
+        }
+        encoder.copy_buffer_to_buffer(&packed.buffer, 0, dst, 0, packed.len);
+        Some(encoder)
     }
 }
 
@@ -778,7 +920,9 @@ fn wgsl_part(name: &str) -> &'static str {
 fn shader_source(kernel: ScaleKernel, screen: bool, open_shadows: bool) -> String {
     let key = shader_key(kernel, screen, open_shadows);
     let parts: &[&str] = match (key.screen, key.open_shadows, key.kind) {
-        (false, false, ShaderKind::OneToOne) => &["header", "luma", "oetf", "prime"],
+        (false, false, ShaderKind::OneToOne) => {
+            &["header", "luma", "oetf", "prime", "cs_store", "cs_nv12"]
+        }
         (false, false, ShaderKind::Bilinear) => &["header", "luma", "oetf", "fit", "sample"],
         (false, false, ShaderKind::Box) => {
             &["header", "luma", "oetf", "fit", "box_n", "box_fn", "box_fs"]
@@ -786,7 +930,15 @@ fn shader_source(kernel: ScaleKernel, screen: bool, open_shadows: bool) -> Strin
         (false, false, ShaderKind::Catmull) => {
             &["header", "luma", "oetf", "fit", "catmull_fn", "catmull_fs"]
         }
-        (false, true, ShaderKind::OneToOne) => &["header", "luma", "oetf", "open_fn", "open_prime"],
+        (false, true, ShaderKind::OneToOne) => &[
+            "header",
+            "luma",
+            "oetf",
+            "open_fn",
+            "open_prime",
+            "cs_store",
+            "cs_nv12_open",
+        ],
         (false, true, ShaderKind::Bilinear) => {
             &["header", "luma", "oetf", "fit", "open_fn", "open_sample"]
         }
@@ -802,7 +954,14 @@ fn shader_source(kernel: ScaleKernel, screen: bool, open_shadows: bool) -> Strin
             "open_fn",
             "open_catmull",
         ],
-        (true, _, ShaderKind::OneToOne) => &["header", "luma", "srgb", "srgb_prime"],
+        (true, _, ShaderKind::OneToOne) => &[
+            "header",
+            "luma",
+            "srgb",
+            "srgb_prime",
+            "cs_store",
+            "cs_nv12_srgb",
+        ],
         (true, _, ShaderKind::Bilinear) => &["header", "luma", "fit", "srgb", "srgb_sample"],
         (true, _, ShaderKind::Box) => &[
             "header", "luma", "fit", "box_n", "box_fn", "srgb", "srgb_box",
