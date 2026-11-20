@@ -591,6 +591,8 @@ impl Host {
                 "an output runs; stop it before testing this computer",
             ));
         }
+        // The test encodes as a start would, so it needs the encoder list too.
+        self.ensure_encoders();
         let path = self.recording_file(c);
         let r = self
             .profile_request(c, path.clone())

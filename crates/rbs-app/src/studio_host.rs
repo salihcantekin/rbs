@@ -3712,9 +3712,8 @@ impl StudioHost {
 
 impl Drop for StudioHost {
     fn drop(&mut self) {
-        // An idle control thread is parked with no timeout. Dropping the sender
-        // disconnects it, but a parked thread does not notice until it is unparked,
-        // and the UI thread would wait on the join forever.
+        // An idle control thread is parked with no timeout and does not see the
+        // disconnect until it is unparked; the join below would wait forever.
         let wake = self.tx.as_ref().and_then(|out| out.wake.get().cloned());
         self.tx = None;
         if let Some(wake) = wake {
@@ -15809,6 +15808,7 @@ impl ApiTarget<'_> {
             }
             C::RecordEstimate(p) => {
                 check_profile(&p.profile)?;
+                host.note_encoders(notify);
                 let target = p.canvas.unwrap_or_default();
                 let (c, all) = match target.single() {
                     Some(one) => (host.api_canvas_of(Some(one))?, false),
