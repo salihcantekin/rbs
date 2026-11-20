@@ -1,6 +1,6 @@
 # ADR-0160: One platform adapter list in `rbs-platform`, shared by the composition roots
 
-- Status: Proposed
+- Status: Accepted (three independent review rounds and the owner's approval 2026-11-20, see Review)
 - Date: 2026-11-20
 - Deciders: salihcantekin
 
@@ -97,3 +97,7 @@ Independent review per ADR-0014.
   2. The Adapter allow-list admitted `rbs-add-ons-sys` and `rbs-browser-runner`. Resolved: both denied in `deny_platform`.
   3. Name the `class()` row and the `deny` arm. Resolved: stated in decision 5.
   4. Typo in decision 7. Resolved.
+
+### Owner approval
+
+- salihcantekin approved the ADR as revised after round 3, 2026-11-20 (project thread, "Onaylıyorum").
