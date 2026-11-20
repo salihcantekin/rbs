@@ -15,6 +15,7 @@ pub mod config;
 pub mod conformance;
 pub mod error;
 pub mod transport;
+mod url;
 
 pub use config::{QueueLimits, ReconnectPolicy, Secret, TransportConfig, TransportInput};
 pub use error::{CreateError, TransportError};
@@ -22,3 +23,4 @@ pub use transport::{
     DropReason, SendOutcome, Transport, TransportEvent, TransportFactory, TransportItem,
     TransportStats,
 };
+pub use url::file_url;

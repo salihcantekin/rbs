@@ -424,7 +424,7 @@ Capability keys: `transport.schemes` (Set: `rtmp`, `rtmps`, `srt`, `file`, ...),
 
 ### File transport (`rbs-transport-file`)
 
-- URLs (RFC 8089): `file:///absolute/path` and `file://localhost/absolute/path`; on Windows also `file:///C:/path`, `file://C:\path` and `file://host/share/path` (a UNC path). Percent-escapes are decoded. Relative paths, malformed escapes and (outside Windows) remote hosts are `CreateError::InvalidConfig`. Adapter options are refused (there are none); a secret and a reconnect policy are ignored.
+- URLs (RFC 8089): `file:///absolute/path` and `file://localhost/absolute/path`; on Windows also `file:///C:/path`, `file://C:\path` and `file://host/share/path` (a UNC path). Percent-escapes are decoded. Relative paths, malformed escapes and (outside Windows) remote hosts are `CreateError::InvalidConfig`. The URL of a path is built with `rbs_transport::file_url` (in the port, std only, so the studio host builds output URLs without naming this adapter, ADR-0159); `rbs_transport_file::file_url` re-exports it. Adapter options are refused (there are none); a secret and a reconnect policy are ignored.
 - An existing file is truncated when the session starts. (A "never overwrite" option is a candidate for a later change.)
 - `Patch` chunks are applied by seeking back; a patch that reaches past the bytes written so far, or any patch on a target that cannot seek (a pipe or device), fails the recording with `TransportError::Io`. Only regular files are synced to disk at `finish`.
 - The duration limit counts from the last chunk written (or the first queued, before any write) to the chunk being sent, one chunk interval stricter than counting from the oldest queued chunk.
