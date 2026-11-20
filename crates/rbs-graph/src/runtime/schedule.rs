@@ -523,6 +523,17 @@ impl AudioOut<'_> {
             .take(channels.min(MAX_CHANNELS))
     }
 
+    /// Exchanges the slot's sample buffer with `samples` when they are the same length.
+    /// The audio queue uses this so a consumer reads the queued block itself. `false`
+    /// when the lengths differ; nothing moves.
+    pub(crate) fn swap_samples(&mut self, samples: &mut Box<[f32]>) -> bool {
+        if samples.len() != self.slot.samples.len() {
+            return false;
+        }
+        std::mem::swap(&mut self.slot.samples, samples);
+        true
+    }
+
     /// Publishes the first `frames` frames of each of `format`'s channels as this tick's
     /// block at `timestamp`. `frames == 0` publishes nothing.
     pub fn commit(
