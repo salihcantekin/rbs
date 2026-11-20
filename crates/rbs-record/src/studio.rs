@@ -5853,12 +5853,17 @@ fn browser_background(collection: &SceneCollection, binder: &SceneBinder) -> BTr
 }
 
 /// Plain text for a source capture or media node failure (not `Debug` dumps).
-/// The words for a browser source's engine reason.
+/// The words for a browser source's engine or runner reason.
 fn browser_engine_message(reason: &str) -> &'static str {
-    if reason == rbs_sources::BROWSER_RUNTIME_MISMATCH {
-        "The browser engine does not match this version of RBS. Install it again in Settings › Add-ons."
-    } else {
-        "The browser engine is not installed. Download it in Settings › Add-ons."
+    match reason {
+        rbs_sources::BROWSER_RUNTIME_MISMATCH => {
+            "The browser engine does not match this version of RBS. Install it again in Settings › Add-ons."
+        }
+        rbs_sources::BROWSER_RUNTIME_MISSING => {
+            "The browser engine is not installed. Download it in Settings › Add-ons."
+        }
+        rbs_sources::HELPER_MISSING => "The browser runner was not found next to the app.",
+        _ => "The browser page stopped. Press Reload to try again.",
     }
 }
 
@@ -6349,5 +6354,19 @@ mod tests {
             (64, 36),
             &cam
         ));
+    }
+
+    #[test]
+    fn a_missing_runner_is_not_called_a_missing_engine() {
+        assert!(
+            browser_engine_message(rbs_sources::BROWSER_RUNTIME_MISSING).contains("not installed")
+        );
+        assert!(
+            browser_engine_message(rbs_sources::HELPER_MISSING).contains("runner was not found")
+        );
+        assert!(
+            browser_engine_message(rbs_sources::BROWSER_RUNTIME_MISMATCH)
+                .contains("does not match")
+        );
     }
 }

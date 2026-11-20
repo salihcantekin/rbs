@@ -128,7 +128,8 @@ mod windows {
         SEM_FAILCRITICALERRORS, SEM_NOOPENFILEERRORBOX, SetErrorMode,
     };
     use windows_sys::Win32::System::LibraryLoader::{
-        AddDllDirectory, LOAD_LIBRARY_SEARCH_DEFAULT_DIRS, LoadLibraryExW, SetDefaultDllDirectories,
+        AddDllDirectory, LOAD_LIBRARY_SEARCH_DEFAULT_DIRS, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR,
+        LoadLibraryExW, SetDefaultDllDirectories,
     };
 
     use super::{Runtime, exit};
@@ -154,15 +155,14 @@ mod windows {
         };
         let dir_w = wide(&dir);
         let dll_w = wide(&dir.join("libcef.dll"));
+        // `DLL_LOAD_DIR` searches the folder that holds `libcef.dll` for its
+        // siblings (`chrome_elf.dll` and the rest). `DEFAULT_DIRS` alone does not.
+        let flags = LOAD_LIBRARY_SEARCH_DEFAULT_DIRS | LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR;
         // SAFETY: both buffers are NUL-terminated UTF-16 and outlive the calls.
+        // The directory cookie stays for the process; nothing removes it.
         let loaded = unsafe {
             !AddDllDirectory(dir_w.as_ptr()).is_null()
-                && !LoadLibraryExW(
-                    dll_w.as_ptr(),
-                    std::ptr::null_mut(),
-                    LOAD_LIBRARY_SEARCH_DEFAULT_DIRS,
-                )
-                .is_null()
+                && !LoadLibraryExW(dll_w.as_ptr(), std::ptr::null_mut(), flags).is_null()
         };
         if loaded {
             Ok(())
