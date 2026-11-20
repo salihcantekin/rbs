@@ -68,6 +68,68 @@ fn fs_chroma(@builtin(position) pos: vec4<f32>) -> @location(0) vec2<f32> {
 }
 // END prime
 
+// BEGIN cs_store
+// Equal-size NV12, one dispatch (audit F-12). Each invocation loads its 2×2 canvas
+// texels once and writes four luma codes and one chroma pair into the packed image.
+// Scaled kernels stay on the render passes above.
+override out_stride: u32 = 256u;
+
+@group(1) @binding(0) var<storage, read_write> packed: array<atomic<u32>>;
+
+fn put_byte(offset: u32, code: u32) {
+    let word = offset >> 2u;
+    let shift = (offset & 3u) * 8u;
+    atomicOr(&packed[word], (code & 0xffu) << shift);
+}
+
+fn code_y(p: vec3<f32>) -> u32 {
+    return u32(round(y_black + y_range * luma(p)));
+}
+
+fn code_c(p: vec3<f32>) -> vec2<u32> {
+    let yp = luma(p);
+    let cb = (p.b - yp) / 1.8556;
+    let cr = (p.r - yp) / 1.5748;
+    let c = round(vec2<f32>(c_mid) + c_range * vec2<f32>(cb, cr));
+    return vec2<u32>(u32(c.x), u32(c.y));
+}
+
+fn write_block(x: i32, y: i32, p00: vec3<f32>, p10: vec3<f32>, p01: vec3<f32>, p11: vec3<f32>) {
+    let stride = out_stride;
+    let row = u32(y) * stride;
+    put_byte(row + u32(x), code_y(p00));
+    put_byte(row + u32(x + 1), code_y(p10));
+    let row1 = u32(y + 1) * stride;
+    put_byte(row1 + u32(x), code_y(p01));
+    put_byte(row1 + u32(x + 1), code_y(p11));
+    let avg = (p00 + p10 + p01 + p11) * 0.25;
+    let c = code_c(avg);
+    let chroma = stride * u32(textureDimensions(canvas).y) + (u32(y) / 2u) * stride + u32(x);
+    put_byte(chroma, c.x);
+    put_byte(chroma + 1u, c.y);
+}
+// END cs_store
+
+// BEGIN cs_nv12
+@compute @workgroup_size(8, 8)
+fn cs_nv12(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let x = i32(gid.x) * 2;
+    let y = i32(gid.y) * 2;
+    let dims = vec2<i32>(textureDimensions(canvas));
+    if (x + 1 >= dims.x || y + 1 >= dims.y) {
+        return;
+    }
+    write_block(
+        x,
+        y,
+        load_prime(x, y),
+        load_prime(x + 1, y),
+        load_prime(x, y + 1),
+        load_prime(x + 1, y + 1),
+    );
+}
+// END cs_nv12
+
 // BEGIN fit
 // Scaled conversion (ADR-0066 decision 4, kernels in ADR-0102). The canvas is fitted
 // into the output with its aspect ratio kept; the rest of the output is black. The
@@ -343,6 +405,26 @@ fn fs_chroma_open(@builtin(position) pos: vec4<f32>) -> @location(0) vec2<f32> {
 }
 // END open_prime
 
+// BEGIN cs_nv12_open
+@compute @workgroup_size(8, 8)
+fn cs_nv12_open(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let x = i32(gid.x) * 2;
+    let y = i32(gid.y) * 2;
+    let dims = vec2<i32>(textureDimensions(canvas));
+    if (x + 1 >= dims.x || y + 1 >= dims.y) {
+        return;
+    }
+    write_block(
+        x,
+        y,
+        load_open(x, y),
+        load_open(x + 1, y),
+        load_open(x, y + 1),
+        load_open(x + 1, y + 1),
+    );
+}
+// END cs_nv12_open
+
 // BEGIN open_sample
 fn sample_open(p: vec2<f32>) -> vec3<f32> {
     let uv = (p - vec2<f32>(fit_x, fit_y)) / vec2<f32>(fit_w, fit_h);
@@ -461,6 +543,47 @@ fn fs_chroma_srgb(@builtin(position) pos: vec4<f32>) -> @location(0) vec2<f32> {
     return store_c(p);
 }
 // END srgb_prime
+
+// BEGIN cs_nv12_srgb
+fn code_y_full(p: vec3<f32>) -> u32 {
+    return u32(clamp(round(y_black + y_range * luma(p)), 0.0, code_max));
+}
+
+fn code_c_full(p: vec3<f32>) -> vec2<u32> {
+    let yp = luma(p);
+    let cb = (p.b - yp) / 1.8556;
+    let cr = (p.r - yp) / 1.5748;
+    let c = clamp(
+        round(vec2<f32>(c_mid) + c_range * vec2<f32>(cb, cr)),
+        vec2<f32>(0.0),
+        vec2<f32>(code_max),
+    );
+    return vec2<u32>(u32(c.x), u32(c.y));
+}
+
+@compute @workgroup_size(8, 8)
+fn cs_nv12_srgb(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let x = i32(gid.x) * 2;
+    let y = i32(gid.y) * 2;
+    let dims = vec2<i32>(textureDimensions(canvas));
+    if (x + 1 >= dims.x || y + 1 >= dims.y) {
+        return;
+    }
+    let p00 = load_srgb(x, y);
+    let p10 = load_srgb(x + 1, y);
+    let p01 = load_srgb(x, y + 1);
+    let p11 = load_srgb(x + 1, y + 1);
+    let stride = out_stride;
+    put_byte(u32(y) * stride + u32(x), code_y_full(p00));
+    put_byte(u32(y) * stride + u32(x + 1), code_y_full(p10));
+    put_byte(u32(y + 1) * stride + u32(x), code_y_full(p01));
+    put_byte(u32(y + 1) * stride + u32(x + 1), code_y_full(p11));
+    let c = code_c_full((p00 + p10 + p01 + p11) * 0.25);
+    let chroma = stride * u32(dims.y) + (u32(y) / 2u) * stride + u32(x);
+    put_byte(chroma, c.x);
+    put_byte(chroma + 1u, c.y);
+}
+// END cs_nv12_srgb
 
 // BEGIN srgb_sample
 fn sample_srgb(p: vec2<f32>) -> vec3<f32> {

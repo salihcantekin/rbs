@@ -358,29 +358,36 @@ impl Readback {
             return Ok(None);
         };
         let source = self.converter.source(pool, id)?;
-        let mut encoder = self.converter.record(ctx, source, &self.luma, &self.chroma);
         let slot = &self.slots[index];
-        let copy = |encoder: &mut wgpu::CommandEncoder, tex: &wgpu::Texture, offset: u64| {
-            encoder.copy_texture_to_buffer(
-                wgpu::TexelCopyTextureInfo {
-                    texture: tex,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                wgpu::TexelCopyBufferInfo {
-                    buffer: &slot.staging,
-                    layout: wgpu::TexelCopyBufferLayout {
-                        offset,
-                        bytes_per_row: Some(self.stride),
-                        rows_per_image: Some(tex.height()),
+        let encoder = if let Some(encoder) =
+            self.converter.record_packed(ctx, source, &slot.staging)
+        {
+            encoder
+        } else {
+            let mut encoder = self.converter.record(ctx, source, &self.luma, &self.chroma);
+            let copy = |encoder: &mut wgpu::CommandEncoder, tex: &wgpu::Texture, offset: u64| {
+                encoder.copy_texture_to_buffer(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: tex,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
                     },
-                },
-                tex.size(),
-            );
+                    wgpu::TexelCopyBufferInfo {
+                        buffer: &slot.staging,
+                        layout: wgpu::TexelCopyBufferLayout {
+                            offset,
+                            bytes_per_row: Some(self.stride),
+                            rows_per_image: Some(tex.height()),
+                        },
+                    },
+                    tex.size(),
+                );
+            };
+            copy(&mut encoder, &self.luma_tex, 0);
+            copy(&mut encoder, &self.chroma_tex, self.chroma_offset);
+            encoder
         };
-        copy(&mut encoder, &self.luma_tex, 0);
-        copy(&mut encoder, &self.chroma_tex, self.chroma_offset);
         ctx.queue().submit(Some(encoder.finish()));
 
         let slot = &mut self.slots[index];
