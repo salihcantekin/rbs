@@ -2590,7 +2590,7 @@ impl Ctx {
     fn request(&self, request: Request) -> slint::CloseRequestResponse {
         let Ok(mut app) = self.app.try_borrow_mut() else {
             // Borrowed by a callback in progress: quit as before ADR-0056.
-            let _ = slint::quit_event_loop();
+            entry::quit_loop();
             return slint::CloseRequestResponse::HideWindow;
         };
         let live = app.studio.st_state != studio_ui::st_state::OFF;
@@ -2622,7 +2622,7 @@ impl Ctx {
                 }
                 let _ = app.main.hide();
                 drop(app);
-                let _ = slint::quit_event_loop();
+                entry::quit_loop();
                 slint::CloseRequestResponse::HideWindow
             }
         }
@@ -6472,7 +6472,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
                     let _ = app.main.hide();
                 }
             });
-            let _ = slint::quit_event_loop();
+            entry::quit_loop();
         });
     }
 

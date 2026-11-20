@@ -52,6 +52,17 @@ pub fn invoke(f: impl FnOnce() + Send + 'static) -> Result<(), slint::EventLoopE
     slint::invoke_from_event_loop(move || guard(f))
 }
 
+/// Ends the UI event loop. Posted from another thread: a quit sent from inside the
+/// Windows close message runs at once and is then dropped, so the window hides and
+/// the process stays, with no tray icon to bring it back.
+pub fn quit_loop() {
+    let _ = std::thread::Builder::new()
+        .name("rbs-quit".into())
+        .spawn(|| {
+            let _ = slint::quit_event_loop();
+        });
+}
+
 /// `slint::spawn_local` with every poll of the task guarded: a panic ends the task.
 #[allow(dead_code)] // Used on macOS and Windows (the file dialogs) only.
 pub fn spawn_local(
