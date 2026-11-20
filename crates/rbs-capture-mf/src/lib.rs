@@ -13,8 +13,8 @@
 //!   Foundation calls the reader callback on its work queue threads.
 //! - The callback copies each sample's picture into the buffer of a free slot of the
 //!   lock-free [`Ring`] (one copy, counted in `cpu_copied`) and publishes the slot.
-//!   USB cameras deliver into system memory, so this copy replaces the upload Media
-//!   Foundation's own Direct3D path would do; nothing is read back from a GPU.
+//!   USB cameras deliver into system memory. This copy is not the GPU upload: the
+//!   capture node still uploads the system frame. Nothing is read back from a GPU.
 //! - `latest_frame` on the render thread takes the newest slot and returns a system
 //!   frame sharing the slot's buffer. It does not allocate, lock or call into the OS.
 //!
