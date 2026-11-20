@@ -839,8 +839,7 @@ fn edge_at(
     pw: &ProjectorWindow,
 ) -> Option<winit::window::ResizeDirection> {
     use winit::window::ResizeDirection as D;
-    let edge = f64::from(pw.global::<Tokens>().get_size_projector_resize_edge())
-        * w.scale_factor();
+    let edge = f64::from(pw.global::<Tokens>().get_size_projector_resize_edge()) * w.scale_factor();
     let size = w.inner_size();
     let (x, y) = at;
     let left = x < edge;
