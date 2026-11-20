@@ -681,8 +681,8 @@ fn start_camera(
     recording: &mut Recording,
     f: args::VcamFormat,
 ) -> Result<Arc<dyn rbs_vcam::VirtualCameraFactory>, String> {
-    let factory = virtual_camera()
-        .ok_or("--vcam: the virtual camera is not available on this platform")?;
+    let factory =
+        virtual_camera().ok_or("--vcam: the virtual camera is not available on this platform")?;
     let format = vcam::camera_format(f)?;
     if !factory
         .set_format(&format)

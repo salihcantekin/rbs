@@ -16,7 +16,7 @@ mod text_clock;
 mod vcam;
 
 pub use text_clock::LocalTextClock;
-pub use vcam::{vcam_link_file, virtual_camera, VcamUnavailable, VirtualCamera};
+pub use vcam::{VcamUnavailable, VirtualCamera, vcam_link_file, virtual_camera};
 
 /// What a root asks for beyond the shared list.
 #[derive(Debug, Clone, Default)]
