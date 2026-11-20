@@ -14,7 +14,6 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, HashMap};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 use std::sync::Weak;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
@@ -3639,10 +3638,7 @@ impl StudioHost {
         notify: impl Fn(Update) + Send + 'static,
     ) -> std::io::Result<Self> {
         let (tx, rx) = mpsc::channel();
-        let tx = Arc::new(ControlOut {
-            tx,
-            wake: OnceLock::new(),
-        });
+        let tx = ControlOut::new(tx);
         let levels = crate::levels::LevelFeed::new();
         let thread = std::thread::Builder::new()
             .name("rbs-studio".into())
@@ -3713,12 +3709,9 @@ impl StudioHost {
 impl Drop for StudioHost {
     fn drop(&mut self) {
         crate::ui_thread::assert_off_ui("stopping the studio host"); // Joins (ADR-0156).
-        // A parked idle control thread misses the disconnect until unparked: wake it first.
-        let wake = self.tx.as_ref().and_then(|out| out.wake.get().cloned());
+        // The last `ControlOut` disconnects and unparks the parked control thread, here
+        // or on a worker that still holds it.
         self.tx = None;
-        if let Some(wake) = wake {
-            wake.unpark();
-        }
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
@@ -4155,7 +4148,7 @@ fn run(
             host.inbox = inbox;
             host.studio.bind_control_thread();
             if let Some(out) = host.inbox.upgrade() {
-                let _ = out.wake.set(host.studio.control_wake());
+                out.bind(host.studio.control_wake());
             }
             host
         }
