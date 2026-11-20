@@ -52,6 +52,8 @@ pub mod monitor_settings;
 pub mod native;
 pub mod network_access;
 pub mod obs_import;
+#[cfg_attr(not(windows), allow(dead_code))] // Used by the Windows GPU page path.
+mod page_grave;
 pub mod permission_text;
 pub mod platform;
 pub mod popups;
