@@ -73,6 +73,19 @@ fn on_the_platform_thread(test: fn()) {
 /// resolved faces keep on every pair for exactly this (ADR-0122 decision 4).
 const ROUNDING: f64 = rbs_ui::tokens::FACE_MARGIN;
 
+/// How far one channel of a ring pixel may land from `color.border.focus` and still be
+/// the ring. Metal's blending of a Glass face rounds one edge pixel of the Dark ring
+/// to `[109, 167, 255]` instead of `[110, 168, 255]` (MacBook Pro M4 Pro, 2026-11-20,
+/// `cargo xtask device-check`); anything that covers the ring changes it by far more.
+const RING_CHANNEL_SLACK: u8 = 1;
+
+/// Whether `px` is the ring colour `ring`, within [`RING_CHANNEL_SLACK`] per channel.
+fn is_ring(px: [u8; 4], ring: [u8; 4]) -> bool {
+    px.iter()
+        .zip(ring)
+        .all(|(a, b)| a.abs_diff(b) <= RING_CHANNEL_SLACK)
+}
+
 /// A control of the probe: how it takes the focus, and whether its ring sits outside
 /// its shape (a SplitButton part).
 struct Control {
@@ -530,7 +543,7 @@ impl Ring {
         let covered = self
             .pixels
             .iter()
-            .filter(|i| lively.px[moved(**i)] != ring)
+            .filter(|i| !is_ring(lively.px[moved(**i)], ring))
             .count();
         assert_eq!(
             covered,
