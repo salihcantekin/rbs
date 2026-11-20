@@ -289,27 +289,6 @@ pub fn request_attention() {
     let _: isize = unsafe { msg_send![app, requestUserAttention: INFORMATIONAL_REQUEST as usize] };
 }
 
-#[cfg(test)]
-mod tests {
-    use objc2::sel;
-
-    use super::*;
-
-    #[test]
-    fn should_reopen_returns_when_show_panics() {
-        assert!(SHOW.set(|| panic!("show")).is_ok());
-        set_hidden(true);
-        let answer = should_reopen(
-            std::ptr::null_mut(),
-            sel!(applicationShouldHandleReopen:hasVisibleWindows:),
-            std::ptr::null_mut(),
-            Bool::NO,
-        );
-        assert_eq!(answer, Bool::NO);
-        set_hidden(false);
-    }
-}
-
 /// Tells macOS that a user-initiated task runs until the process ends, so App Nap does
 /// not throttle the hidden app's shutdown (ADR-0156 decision 3). The activity is never
 /// ended: the process ends with it. Main thread only.
@@ -335,5 +314,26 @@ pub fn begin_quit_activity() {
         if !token.is_null() {
             let _: *mut AnyObject = msg_send![token, retain];
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use objc2::sel;
+
+    use super::*;
+
+    #[test]
+    fn should_reopen_returns_when_show_panics() {
+        assert!(SHOW.set(|| panic!("show")).is_ok());
+        set_hidden(true);
+        let answer = should_reopen(
+            std::ptr::null_mut(),
+            sel!(applicationShouldHandleReopen:hasVisibleWindows:),
+            std::ptr::null_mut(),
+            Bool::NO,
+        );
+        assert_eq!(answer, Bool::NO);
+        set_hidden(false);
     }
 }
