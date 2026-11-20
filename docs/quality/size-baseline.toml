@@ -10,12 +10,12 @@
 "crates/rbs-app/src/main.rs" = 6797
 "crates/rbs-app/src/menu_bar.rs" = 2527
 "crates/rbs-app/src/record_profile.rs" = 2081
-"crates/rbs-app/src/studio_host.rs" = 18537
+"crates/rbs-app/src/studio_host.rs" = 18525
 "crates/rbs-app/src/studio_ui.rs" = 11008
 "crates/rbs-app/tests/studio_record.rs" = 3159
 "crates/rbs-app/tests/studio_scenes.rs" = 2288
 "crates/rbs-app/tests/studio_stream.rs" = 2464
-"crates/rbs-record/src/studio.rs" = 6227
+"crates/rbs-record/src/studio.rs" = 6096
 "crates/rbs-record/tests/studio.rs" = 3328
 "crates/rbs-scene/src/collection.rs" = 3004
 "crates/rbs-scene/tests/binder.rs" = 2882
@@ -33,7 +33,7 @@
 "crates/rbs-app/examples/transition_cost.rs::main" = 203
 "crates/rbs-app/src/appearance_page.rs::install" = 228
 "crates/rbs-app/src/main.rs::install_studio" = 1050
-"crates/rbs-app/src/main.rs::run" = 484
+"crates/rbs-app/src/main.rs::run" = 483
 "crates/rbs-app/src/main.rs::sync" = 327
 "crates/rbs-app/src/main.rs::sync_studio" = 210
 "crates/rbs-app/src/menu_bar.rs::enabled" = 514
@@ -70,7 +70,7 @@
 "crates/rbs-project/src/xmeml.rs::write" = 231
 "crates/rbs-record/src/estimate.rs::rows_of" = 281
 "crates/rbs-record/src/studio.rs::add_output" = 312
-"crates/rbs-record/src/studio.rs::choose" = 261
+"crates/rbs-record/src/studio.rs::choose" = 254
 "crates/rbs-record/src/studio.rs::reconcile" = 682
 "crates/rbs-record/src/studio.rs::start_with" = 323
 "crates/rbs-record/src/studio/iso_video.rs::start_iso_video" = 292
