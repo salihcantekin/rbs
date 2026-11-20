@@ -82,7 +82,7 @@ impl PageTextures {
             .map_err(|_| GpuError::Unsupported("D3D11 multithread"))?;
         // SAFETY: plain call on a live device.
         unsafe {
-            multithread.SetMultithreadProtected(true);
+            let _ = multithread.SetMultithreadProtected(true);
         }
         let device5: ID3D11Device5 = device
             .cast()

@@ -73,7 +73,7 @@ impl Copier {
         let multithread: ID3D11Multithread = device.cast().ok()?;
         // SAFETY: plain call on a live device.
         unsafe {
-            multithread.SetMultithreadProtected(true);
+            let _ = multithread.SetMultithreadProtected(true);
         }
         let device1: ID3D11Device1 = device.cast().ok()?;
         let device5: ID3D11Device5 = device.cast().ok()?;
