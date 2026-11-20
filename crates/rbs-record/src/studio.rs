@@ -18,7 +18,9 @@ use rbs_audio_filters::{
 };
 use rbs_codec::{EncoderTuning, VideoEncoderConfig};
 use rbs_core::lifecycle::Lifecycle;
-use rbs_core::media::{ContainerId, GpuDeviceId, MemoryKind, PixelFormat, Size, StreamDescriptor};
+use rbs_core::media::{
+    ColorSpace, ContainerId, GpuDeviceId, MemoryKind, PixelFormat, Size, StreamDescriptor,
+};
 use rbs_core::pause::{HoldSwitch, PauseWindow};
 use rbs_core::time::Timestamp;
 use rbs_core::timing::{Cadence, FrameRate};
@@ -27,7 +29,7 @@ use rbs_filters::{FilterNode, FilterStats, FilterType, Normalise, Values};
 use rbs_gpu::download::DownloadShare;
 use rbs_gpu::node::{CompositorNode, GpuRuntime, RenderLocal};
 use rbs_gpu::share::{PreviewDesc, PreviewEndpoint};
-use rbs_gpu::{CanvasDesc, GpuContext};
+use rbs_gpu::{CanvasDesc, GpuContext, YuvFormat};
 use rbs_graph::description::{GraphDescription, NodeId, PartitionId};
 use rbs_graph::runtime::param::ParamSender;
 use rbs_graph::runtime::queue::QueueStats;
@@ -569,6 +571,18 @@ struct CameraRun {
     stats: Arc<VirtualCameraNodeStats>,
     session: Option<rbs_vcam::VcamCountersReader>,
     failure: Option<String>,
+    /// The readback it shares with an encode of the same shape (audit F-04).
+    download: CameraDownload,
+}
+
+/// The virtual camera's readback share: NV12, Rec. 709 limited, closed shadows, one
+/// canvas and one output size. An encode of that shape uses the same share, and the
+/// camera uses an encode's when one is already running. Either side may stop first.
+pub(crate) struct CameraDownload {
+    canvas: CanvasId,
+    canvas_size: (u32, u32),
+    output: (u32, u32),
+    share: Arc<DownloadShare>,
 }
 
 /// One of a studio's running outputs, from [`Studio::start_output`].
@@ -759,6 +773,53 @@ pub(crate) struct Prepared {
     filtered_share: bool,
 }
 
+/// Whether `video` at `output` on `canvas` is the virtual camera's readback shape.
+fn camera_readback_shape(
+    video: &VideoSettings,
+    canvas: CanvasId,
+    canvas_size: (u32, u32),
+    output: (u32, u32),
+    cam: &CameraDownload,
+) -> bool {
+    video.format == YuvFormat::Nv12
+        && video.color == ColorSpace::BT709_LIMITED
+        && !video.open_shadows
+        && cam.canvas == canvas
+        && cam.canvas_size == canvas_size
+        && cam.output == output
+}
+
+/// The readback share for a new system-memory export: the camera's when the shape
+/// matches, else a running readback chain of that shape, else a new one. Native
+/// chains are not sources; they do not read back.
+fn download_share(
+    running: &Chains,
+    camera: Option<&CameraDownload>,
+    canvas: CanvasId,
+    canvas_size: (u32, u32),
+    output: (u32, u32),
+    video: &VideoSettings,
+) -> Arc<DownloadShare> {
+    if let Some(cam) = camera
+        && camera_readback_shape(video, canvas, canvas_size, output, cam)
+    {
+        return Arc::clone(&cam.share);
+    }
+    running
+        .video
+        .iter()
+        .flatten()
+        .find(|c| {
+            c.owners.is_none()
+                && c.canvas == canvas
+                && c.size == output
+                && c.settings.format == video.format
+                && c.settings.color == video.color
+                && c.settings.open_shadows == video.open_shadows
+        })
+        .map_or_else(|| Arc::new(DownloadShare::new()), |c| Arc::clone(&c.share))
+}
+
 impl Prepared {
     /// Chooses every adapter of an output of a canvas at `fps`; opens only the encoder
     /// sessions it does not share (their stream descriptors make the output). A running
@@ -776,6 +837,7 @@ impl Prepared {
         audio_graph: AudioGraphConfig,
         running: &Chains,
         native: Option<(MemoryKind, GpuDeviceId)>,
+        camera: Option<&CameraDownload>,
     ) -> Result<Self, RecordError> {
         if out.video.is_none() && out.audio.is_none() {
             return Err(RecordError::EmptyOutput);
@@ -875,25 +937,17 @@ impl Prepared {
                             None => (export, None),
                         };
                         let format = export.frame_format();
-                        // One conversion and readback per output shape (R-01): a
-                        // running chain of the same shape lends its share. Each export
-                        // keeps its own gates, so pausing, holding or ending one never
-                        // touches the other.
-                        let share = running
-                            .video
-                            .iter()
-                            .flatten()
-                            .find(|c| {
-                                c.canvas == canvas
-                                    && c.size == (width, height)
-                                    && c.settings.format == video.format
-                                    && c.settings.color == video.color
-                                    && c.settings.open_shadows == video.open_shadows
-                            })
-                            .map_or_else(
-                                || Arc::new(DownloadShare::new()),
-                                |c| Arc::clone(&c.share),
-                            );
+                        // One conversion and readback per output shape (R-01): the
+                        // camera's share when it sends this shape, else a running
+                        // chain of the same shape. Each export keeps its own gates.
+                        let share = download_share(
+                            running,
+                            camera,
+                            canvas,
+                            canvas_size,
+                            (width, height),
+                            video,
+                        );
                         let export = match &owners {
                             // A native export has its own exporter (ADR-0147 decision 11).
                             Some(owners) => export.native(NativeExport {
@@ -4649,6 +4703,7 @@ impl Studio {
             self.settings.audio_graph,
             &self.chains,
             self.native_encode(),
+            self.camera.as_ref().map(|c| &c.download),
         )
     }
 
@@ -5611,7 +5666,18 @@ impl Studio {
         let session = factory.open(&config)?;
         let counters = session.counters();
         let (width, height) = self.size;
-        let node = VirtualCameraNode::new(session, config, width, height);
+        let canvas = self.settings.canvas;
+        let video = VideoSettings::default();
+        let share = download_share(
+            &self.chains,
+            None,
+            canvas,
+            (width, height),
+            (settings.width, settings.height),
+            &video,
+        );
+        let node =
+            VirtualCameraNode::new(session, config, width, height).with_share(Arc::clone(&share));
         let stats = node.stats();
         let engine_error = |e: String| VcamError::Os {
             code: 0,
@@ -5645,6 +5711,12 @@ impl Studio {
             stats,
             session: counters,
             failure: None,
+            download: CameraDownload {
+                canvas,
+                canvas_size: (width, height),
+                output: (settings.width, settings.height),
+                share,
+            },
         });
         Ok(())
     }
@@ -6223,5 +6295,59 @@ mod tests {
                 "{width}x{height}"
             );
         }
+    }
+
+    #[test]
+    fn the_camera_joins_only_an_nv12_limited_download_of_its_size() {
+        let mut col = SceneCollection::new();
+        let (canvas, _) = col
+            .add_canvas("Main", Size::new(64, 36), FrameRate::FPS_30)
+            .unwrap();
+        let cam = CameraDownload {
+            canvas,
+            canvas_size: (64, 36),
+            output: (64, 36),
+            share: Arc::new(DownloadShare::new()),
+        };
+        let video = VideoSettings::default();
+        assert!(camera_readback_shape(
+            &video,
+            canvas,
+            (64, 36),
+            (64, 36),
+            &cam
+        ));
+        let mut shadows = video.clone();
+        shadows.open_shadows = true;
+        assert!(!camera_readback_shape(
+            &shadows,
+            canvas,
+            (64, 36),
+            (64, 36),
+            &cam
+        ));
+        let mut ten_bit = video.clone();
+        ten_bit.format = YuvFormat::P010;
+        assert!(!camera_readback_shape(
+            &ten_bit,
+            canvas,
+            (64, 36),
+            (64, 36),
+            &cam
+        ));
+        assert!(!camera_readback_shape(
+            &video,
+            canvas,
+            (64, 36),
+            (32, 18),
+            &cam
+        ));
+        assert!(!camera_readback_shape(
+            &video,
+            canvas,
+            (32, 18),
+            (64, 36),
+            &cam
+        ));
     }
 }

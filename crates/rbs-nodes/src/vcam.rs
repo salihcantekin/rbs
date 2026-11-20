@@ -6,11 +6,11 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use rbs_core::media::{PixelFormat, next_generation};
+use rbs_core::media::{ColorSpace, PixelFormat, next_generation};
 use rbs_core::time::Timestamp;
 use rbs_core::timing::{Cadence, FrameRate};
 use rbs_gpu::YuvFormat;
-use rbs_gpu::download::{DownloadStats, YuvDownload};
+use rbs_gpu::download::{DownloadShare, DownloadStats, YuvDownload};
 use rbs_gpu::node::GpuRuntime;
 use rbs_graph::node::{LinkKind, NodeDescriptor, NodeKind, NodeTypeId, Pin};
 use rbs_graph::runtime::{Node, NodeError, PrepareCtx, ProcessCtx};
@@ -78,6 +78,8 @@ pub struct VirtualCameraNode {
     canvas_width: u32,
     canvas_height: u32,
     download: Option<YuvDownload>,
+    /// A live encode of this canvas, size and grade, when one exists (audit F-04).
+    share: Option<Arc<DownloadShare>>,
     /// Reserved slots of the readbacks in flight, oldest first (at most
     /// [`SESSION_SLOTS`]; allocated once in `new`).
     tokens: VecDeque<SlotToken>,
@@ -108,6 +110,7 @@ impl VirtualCameraNode {
             canvas_width,
             canvas_height,
             download: None,
+            share: None,
             tokens: VecDeque::with_capacity(SESSION_SLOTS),
             cadence: None,
             next: 0,
@@ -125,6 +128,15 @@ impl VirtualCameraNode {
     /// The session's counters (`replaced`, `consumer_absent`, OS errors, ...).
     pub fn session_stats(&self) -> rbs_vcam::VcamStats {
         self.session.stats()
+    }
+
+    /// Reads canvases back through `share` (audit F-04). A download of the same
+    /// canvas, camera size, NV12, Rec. 709 limited and closed shadows converts once;
+    /// this node still stamps and sends on its own. The share may outlive either side.
+    #[must_use]
+    pub fn with_share(mut self, share: Arc<DownloadShare>) -> Self {
+        self.share = Some(share);
+        self
     }
 }
 
@@ -154,15 +166,29 @@ impl Node<GpuRuntime> for VirtualCameraNode {
             ));
         }
         let f = &self.config.format;
-        let download = YuvDownload::scaled(
-            ctx.shared,
-            YuvFormat::Nv12,
-            self.canvas_width,
-            self.canvas_height,
-            f.width,
-            f.height,
-            CAMERA_BUFFERS,
-        )
+        let download = match self.share.as_deref() {
+            Some(share) => YuvDownload::scaled_tone_shared(
+                ctx.shared,
+                share,
+                YuvFormat::Nv12,
+                self.canvas_width,
+                self.canvas_height,
+                f.width,
+                f.height,
+                CAMERA_BUFFERS,
+                ColorSpace::BT709_LIMITED,
+                false,
+            ),
+            None => YuvDownload::scaled(
+                ctx.shared,
+                YuvFormat::Nv12,
+                self.canvas_width,
+                self.canvas_height,
+                f.width,
+                f.height,
+                CAMERA_BUFFERS,
+            ),
+        }
         .map_err(|e| NodeError::Failed(format!("virtual camera: {e}")))?;
         self.seen = download.stats();
         self.download = Some(download);

@@ -316,3 +316,76 @@ fn with_no_app_reading_due_frames_are_skipped_before_conversion_until_one_reads(
     let got = wait_delivered(&rig.consumer, 1);
     assert!(!got.is_empty(), "{got:?}");
 }
+
+#[test]
+fn two_cameras_of_one_share_use_one_readback() {
+    let ctx = gpu();
+    let Some(ctx) = ctx else { return };
+    let share = Arc::new(rbs_gpu::download::DownloadShare::new());
+    let factory = TestVcamFactory::new();
+    factory.install().unwrap();
+    let node = config(W, H, FrameRate::FPS_30);
+    let first = VirtualCameraNode::new(factory.open(&node).unwrap(), node, W, H)
+        .with_share(Arc::clone(&share));
+    let second = VirtualCameraNode::new(factory.open(&node).unwrap(), node, W, H)
+        .with_share(Arc::clone(&share));
+    let (mut ctl, mut exec) = channel::<GpuRuntime>(Arc::clone(&ctx), RenderLocal::default());
+    let mut graph = GraphDescription::new();
+    let capture = {
+        let id = graph
+            .add_node(Arc::new(
+                CaptureSourceNode::new(
+                    Arc::new(TestCaptureFactory::new()),
+                    CaptureRequest::new(TargetId::new("test-window-0"), Arc::new(TestClock::new()))
+                        .with_frame_rate(FrameRate::FPS_30),
+                )
+                .descriptor()
+                .clone(),
+            ))
+            .unwrap();
+        graph.set_state(id, Lifecycle::Standby).unwrap();
+        graph.set_state(id, Lifecycle::Active).unwrap();
+        ctl.adopt(
+            id,
+            Box::new(CaptureSourceNode::new(
+                Arc::new(TestCaptureFactory::new()),
+                CaptureRequest::new(TargetId::new("test-window-0"), Arc::new(TestClock::new()))
+                    .with_frame_rate(FrameRate::FPS_30),
+            )),
+        )
+        .unwrap();
+        id
+    };
+    let (comp, _layers) = CompositorNode::new(
+        CanvasDesc {
+            width: W,
+            height: H,
+        },
+        4,
+        vec![NodeLayer::new(capture, 0, 0.0, 0.0, W as f32, H as f32)],
+    );
+    let comp_id = graph.add_node(Arc::new(comp.descriptor().clone())).unwrap();
+    graph.set_state(comp_id, Lifecycle::Standby).unwrap();
+    graph.set_state(comp_id, Lifecycle::Active).unwrap();
+    ctl.adopt(comp_id, Box::new(comp)).unwrap();
+    for camera in [first, second] {
+        let id = graph
+            .add_node(Arc::new(camera.descriptor().clone()))
+            .unwrap();
+        graph.set_state(id, Lifecycle::Standby).unwrap();
+        graph.set_state(id, Lifecycle::Active).unwrap();
+        ctl.adopt(id, Box::new(camera)).unwrap();
+        graph.connect(comp_id, "canvas", id, "canvas").unwrap();
+    }
+    graph.connect(capture, "video", comp_id, "layers").unwrap();
+    let report = ctl.apply(&graph).unwrap();
+    assert!(report.failed.is_empty(), "{report:?}");
+    exec.swap_pending();
+    let _ = ctl.collect();
+    let clock = TestClock::new();
+    let cadence = Cadence::frames(Timestamp::ZERO, FrameRate::FPS_30);
+    let tick = Tick::of(&cadence, 0);
+    clock.set(tick.time);
+    exec.run_tick(tick);
+    assert_eq!(share.users(), 2);
+}
