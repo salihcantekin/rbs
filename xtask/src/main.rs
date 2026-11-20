@@ -15,12 +15,16 @@
 //!
 //! `cargo xtask check-size` keeps long files and functions from growing (`check_size`).
 //!
+//! `cargo xtask device-check <scenario>` runs the checks only a real machine can run
+//! and summarises their logs (`device_check`).
+//!
 //! `cargo xtask verify` runs all of the above that a push needs, in one command
 //! (`verify`, owner decision D3 of 2026-11-20).
 
 mod affected;
 mod check_size;
 mod check_ui;
+mod device_check;
 mod ui_dev;
 mod ui_split;
 mod verify;
@@ -120,6 +124,16 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Some("device-check") => {
+            let rest: Vec<String> = args.collect();
+            match device_check::run(&workspace_root(), &rest) {
+                Ok(code) => code,
+                Err(error) => {
+                    eprintln!("device-check: {error}");
+                    ExitCode::from(2)
+                }
+            }
+        }
         Some("ui-dev") => {
             let rest: Vec<String> = args.collect();
             match ui_dev::run(&workspace_root(), &rest) {
@@ -132,8 +146,9 @@ fn main() -> ExitCode {
         }
         _ => {
             eprintln!(
-                "usage: cargo xtask check-layers\n{}\n{}\n{}\n{}\n{}",
+                "usage: cargo xtask check-layers\n{}\n{}\n{}\n{}\n{}\n{}",
                 verify::USAGE,
+                device_check::USAGE,
                 check_ui::USAGE,
                 check_size::USAGE,
                 affected::USAGE,

@@ -60,6 +60,7 @@ cargo xtask affected test         # before a push: changed crates and their depe
 cargo xtask affected clippy
 cargo xtask ui-dev                # UI work: run the app; saving a .slint file reloads it (no Rust build)
 cargo xtask check-size            # long files and functions may not grow (docs/quality/size-baseline.toml)
+cargo xtask device-check <lint|adapters|hardware|app|all>  # on a Mac or Windows machine: OS-only lint, tests, a 1-minute app run
 ```
 
 `cargo xtask verify` runs fmt, `check-layers`, `check-ui` and `check-size`, then `affected clippy` and `affected test`, and prints one result line. Run it before every push and paste that line in the commit or PR; GitHub CI stays manual (owner decision D3, 2026-11-20). `cargo xtask verify --quick` runs only the first four, for the merger's check of a merge result. Like `check-ui`'s files, `docs/quality/size-baseline.toml` and `size-exceptions.toml` are never edited by hand: `check-size --lower` after a split, and `check-size --except` only after the owner's written approval.

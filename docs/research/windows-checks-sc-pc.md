@@ -6,6 +6,8 @@ Stay logged in at the console, or in a Remote Desktop session that stays connect
 
 Do not change encoder `keeps_input`, the Media Foundation camera upload, or the AMF 1 ms sleep from these results. Those waits need a separate bit-exact or driver-wait check. A green run here only says the current path still works.
 
+`cargo xtask device-check adapters` and `cargo xtask device-check hardware` run the lists below in one command each and write a summary (testing strategy, "Device checks").
+
 ## Build on this machine
 
 ```text

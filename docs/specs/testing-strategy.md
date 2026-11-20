@@ -58,6 +58,22 @@ When the selection holds `rbs-app`, `test` builds the whole workspace and runs o
 
 Before a push, `cargo xtask verify` is mandatory (owner decision D3, 2026-11-20): it runs `cargo fmt --all -- --check`, `check-layers`, `check-ui` and `check-size` (the quick part, `--quick` alone), then `cargo xtask affected clippy` and `cargo xtask affected test`, and ends with one result line. The affected part is skipped when a quick check fails. The whole workspace runs once after a batch of merges, not before each one.
 
+### Device checks
+
+Some code builds or runs only on one OS: the `#[cfg(windows)]` and `#[cfg(target_os = "macos")]` parts of `rbs-app`, the adapter crates of each platform, and the hardware suites. A cloud container lints and tests the Linux side only. `cargo xtask device-check <scenario>` runs the rest on a real machine in one command and summarises it (stability plan Faz 4.6):
+
+| Scenario | What it runs |
+| --- | --- |
+| `lint` | `cargo clippy --workspace --all-targets -- -D warnings` on this OS |
+| `adapters` | `cargo test` of this OS's adapter crates (Windows: WGC, Media Foundation, NVENC, AMF, QSV, WASAPI, the virtual camera; macOS: ScreenCaptureKit, AVFoundation, Core Audio, VideoToolbox, AudioToolbox; Linux: PipeWire, VAAPI); hardware tests skip themselves |
+| `hardware` | the hardware conformance suites with their `RBS_CAPTURE_HW`, `RBS_AUDIO_HW` and `RBS_REQUIRE_*` variables set ([Windows checks on SC-PC](../research/windows-checks-sc-pc.md)); needs a logged-in desktop, a camera and audio endpoints |
+| `app` | builds `rbs` (dev profile, `--release` for the release profile) and runs it in the UI measure mode (`RBS_MEASURE_UI`, ADR-0120 decision 13) for about `--seconds` (default 60), which ends with a normal quit |
+| `all` | `lint`, `adapters`, then `app` |
+
+Each step's output is shown and written to `<target>/device-check/<scenario>-<unix seconds>/<step>.log`. `summary.txt` beside them lists what to read first (lint locations, failed tests, measure lines, panics, error lines, new crash reports) and ends with one result line, also printed, such as `device-check app on Mac: passed: build ok (41 s), app ok (58 s, quit 120 ms, 0 panics, 2 error lines, dev build)`. The app step fails on a panic, a new file in the configuration's `crash-reports`, an exit with an error, or a run with no measure report. `quit` is the time from the last measure line to the process's exit (WP-C's quit budget). A run still alive 60 s after its planned end is stopped and reported as hung. `--fresh-config` runs with `RBS_CONFIG_DIR` in the output folder (the first-run page); without it the app uses the machine's own configuration and scenes.
+
+Keep device runs short: one scenario at a time, one thread per machine, and the app run at a minute or two.
+
 ### UI live preview
 
 A UI edit does not need a Rust build. `cargo xtask ui-dev` builds and runs `rbs` with the `ui-live-preview` feature (`rbs-app`, forwarding `rbs-app-ui`'s `live-preview`) and `SLINT_LIVE_PREVIEW=1`, in `target/live-preview` (under `CARGO_TARGET_DIR` when it is set) so that switching between it and a normal build never rebuilds either. The facade `rbs-app-ui` then re-exports `rbs-app-ui-single`, which compiles every window from `ui/roots/single.slint` as small wrappers, and the split crates skip their code generation (ADR-0138 decision 5; Slint's live-preview wrappers cannot import a Slint library). The app interprets `crates/rbs-app/ui` at run time. Saving a `.slint` file reloads the open windows and keeps the state the Rust side set. An editor that saves by writing a new file and renaming it over the old one may not trigger a reload; saving in place does. Arguments after `ui-dev` go to `cargo run` (`cargo xtask ui-dev --features demo-sources`).
