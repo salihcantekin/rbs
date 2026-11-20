@@ -8,7 +8,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rbs_audio::{AudioGraphConfig, MixerNode, MixerParams, MonitorMode, Strip};
+use rbs_audio::{AudioGraphConfig, LevelMeter, MixerNode, MixerParams, MonitorMode, Strip};
 use rbs_core::lifecycle::Lifecycle;
 use rbs_core::media::AudioFormat;
 use rbs_core::time::Timestamp;
@@ -396,4 +396,51 @@ fn solo_changes_ramp_on_the_monitor_and_only_strips_stay_off_the_mix() {
         .map(|w| (w[1] - w[0]).abs())
         .fold(0.0, f32::max);
     assert!(worst <= 0.2 / 960.0 + 1e-6, "{worst}");
+}
+
+#[test]
+fn meters_do_not_change_what_the_mixer_writes() {
+    use MonitorMode::*;
+    // Every loop of the mix: fade-in, steady, `Only` ramping off the mix, `Also` on
+    // the monitor, a muted strip, and the master; once with meters, once without.
+    let run = |meters: bool| {
+        let mut r = Rig::new(&[0.1, 0.2, 0.4, 0.3], |s| {
+            let p = MixerParams::new(
+                s.iter()
+                    .zip([Off, Only, Also, Off])
+                    .enumerate()
+                    .map(|(k, (&id, mode))| {
+                        let strip = Strip::new(id, 0.5).with_monitor(mode).with_muted(k == 3);
+                        if meters {
+                            strip.with_meter(Arc::new(LevelMeter::new(2)))
+                        } else {
+                            strip
+                        }
+                    })
+                    .collect(),
+            )
+            .with_master(1.5)
+            .with_ramp(Duration::from_millis(20));
+            if meters {
+                p.with_master_meter(Arc::new(LevelMeter::new(2)))
+            } else {
+                p
+            }
+        });
+        r.run(3);
+        r.link_monitor(true);
+        r.run(4);
+        let main: Vec<u32> = r.main_since(0).iter().map(|x| x.to_bits()).collect();
+        let mon: Vec<Option<Vec<u32>>> = r
+            .mon
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|b| b.as_ref().map(|b| b.iter().map(|x| x.to_bits()).collect()))
+            .collect();
+        (main, mon)
+    };
+    let (with, without) = (run(true), run(false));
+    assert!(!with.0.is_empty() && with.1.iter().any(Option::is_some));
+    assert_eq!(with, without);
 }

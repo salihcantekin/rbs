@@ -18,8 +18,9 @@
 //!   the spec's open question on encoder delay describes.
 //! - Bitrates: any rate from [`MIN_BITRATE`] to [`MAX_BITRATE_PER_CHANNEL`] per
 //!   channel; fixed while running. Adapter option `aac_coder` selects libavcodec's
-//!   coder when it is set. When it is absent the library default stays (twoloop).
-//!   Changing that default needs a quality and encode-time measurement (ADR-0143 R10).
+//!   coder when it is set (`twoloop` or `fast`; `anmr` is experimental and refused).
+//!   When it is absent the library default stays (twoloop). The measurements for a
+//!   different default are in the output ports spec (F-06); the owner picks it.
 //! - A block whose timestamp is a codec frame or more away from the running sample
 //!   timeline is a discontinuity: the partial frame is padded with silence, the encoder
 //!   is drained, and the timeline restarts at the block (on a new encoder context,

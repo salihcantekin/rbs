@@ -5,7 +5,8 @@
 //! - `input_split`: the 48 kHz to 48 kHz sinc (`coefficients` + `apply`) and the
 //!   mono-to-stereo channel-matrix dot, each over one 480-frame block.
 //! - `mixer`: a mixer of 16 stereo inputs with a meter on every strip and the output,
-//!   without and with the monitor output read (4 strips monitored).
+//!   without and with the monitor output read (4 strips monitored); and 1, 4 and 16
+//!   stereo inputs with meters attached and with none attached (F-15a).
 //! - `output`: one output node from the 48 kHz stereo graph to a 48 kHz and a 44.1 kHz
 //!   stereo device (FIFO, steer, resample, map channels, volume, ring push); the
 //!   bench pulls the ring like a device, outside the node.
@@ -199,19 +200,26 @@ fn input(c: &mut Criterion) {
 }
 
 fn mixer(c: &mut Criterion) {
-    // `monitored` strips on the monitor (`Also`), its output read when non-zero;
-    // the last `muted` strips muted.
-    for (label, monitored, muted) in [
-        ("16_stereo_inputs_with_meters", 0, 0),
-        ("16_stereo_inputs_with_meters_4_monitored", 4, 0),
-        ("16_stereo_inputs_with_meters_8_muted", 0, 8),
+    // `inputs` stereo strips; `monitored` of them on the monitor (`Also`), its output
+    // read when non-zero; the last `muted` strips muted; a meter on every strip and
+    // the output when `meters`.
+    for (label, inputs, monitored, muted, meters) in [
+        ("16_stereo_inputs_with_meters", 16, 0, 0, true),
+        ("16_stereo_inputs_with_meters_4_monitored", 16, 4, 0, true),
+        ("16_stereo_inputs_with_meters_8_muted", 16, 0, 8, true),
+        ("16_stereo_inputs_no_meters", 16, 0, 0, false),
+        ("16_stereo_inputs_no_meters_4_monitored", 16, 4, 0, false),
+        ("4_stereo_inputs_with_meters", 4, 0, 0, true),
+        ("4_stereo_inputs_no_meters", 4, 0, 0, false),
+        ("1_stereo_input_with_meters", 1, 0, 0, true),
+        ("1_stereo_input_no_meters", 1, 0, 0, false),
     ] {
         let config = AudioGraphConfig::default();
         let (mut ctl, mut exec) = channel::<()>(Arc::new(()), ());
         let mut g = GraphDescription::new();
         let mut strips = Vec::new();
         let mut ids = Vec::new();
-        for k in 0..16 {
+        for k in 0..inputs {
             let tone: Vec<f32> = (0..480)
                 .map(|f| ((f + k) as f32 * 0.01).sin() * 0.3)
                 .collect();
@@ -231,15 +239,22 @@ fn mixer(c: &mut Criterion) {
             } else {
                 MonitorMode::Off
             };
-            strips.push(
-                Strip::new(id, 0.7)
-                    .with_meter(Arc::new(LevelMeter::new(2)))
-                    .with_monitor(mode)
-                    .with_muted(k >= 16 - muted),
-            );
+            let strip = Strip::new(id, 0.7)
+                .with_monitor(mode)
+                .with_muted(k >= inputs - muted);
+            strips.push(if meters {
+                strip.with_meter(Arc::new(LevelMeter::new(2)))
+            } else {
+                strip
+            });
             ids.push(id);
         }
-        let params = MixerParams::new(strips).with_master_meter(Arc::new(LevelMeter::new(2)));
+        let params = MixerParams::new(strips);
+        let params = if meters {
+            params.with_master_meter(Arc::new(LevelMeter::new(2)))
+        } else {
+            params
+        };
         let (mixer, _, _) = MixerNode::new(config, 16, params);
         let m = active(&mut g, Node::<()>::descriptor(&mixer));
         let s = sink();

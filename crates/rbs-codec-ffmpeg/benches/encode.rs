@@ -1,6 +1,8 @@
 //! Micro-benchmark of the AAC encode path (measure-performance skill, ADR-0009):
 //! `submit` plus `drain` of one 10 ms stereo 48 kHz block, which encodes a packet
-//! every 2.13 blocks. `fake` measures the session alone (staging, timeline) on every platform; `ffmpeg` adds libavcodec's encoder on Linux.
+//! every 2.13 blocks. `fake` measures the session alone (staging, timeline) on every
+//! platform; `ffmpeg` adds libavcodec's encoder on Linux with its default coder
+//! (twoloop), and `ffmpeg_<coder>` with each `aac_coder` option this FFmpeg opens.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)] // Benchmarks fail by panicking.
 
@@ -38,10 +40,25 @@ fn main() {
         use rbs_core::registry::AdapterFactory;
         let factory = rbs_codec_ffmpeg::FfmpegAacFactory::new();
         if factory.probe().unwrap().is_empty() {
-            eprintln!("no FFmpeg AAC encoder here: mf bench skipped");
+            eprintln!("no FFmpeg AAC encoder here: ffmpeg bench skipped");
         } else {
-            let mut mf = factory.create_session(&config).unwrap();
-            bench(&mut c, "submit_drain/ffmpeg_aac_stereo_48k_10ms", &mut mf);
+            let mut ffmpeg = factory.create_session(&config).unwrap();
+            bench(
+                &mut c,
+                "submit_drain/ffmpeg_aac_stereo_48k_10ms",
+                &mut ffmpeg,
+            );
+            for coder in ["twoloop", "fast", "anmr"] {
+                let config = config.clone().with_adapter_option("aac_coder", coder);
+                match factory.create_session(&config) {
+                    Ok(mut s) => bench(
+                        &mut c,
+                        &format!("submit_drain/ffmpeg_{coder}_stereo_48k_10ms"),
+                        &mut s,
+                    ),
+                    Err(e) => eprintln!("aac_coder {coder} does not open: {e}"),
+                }
+            }
         }
     }
     c.final_summary();

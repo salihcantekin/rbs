@@ -10,14 +10,14 @@
 "crates/rbs-app/src/main.rs" = 6755
 "crates/rbs-app/src/menu_bar.rs" = 2527
 "crates/rbs-app/src/record_profile.rs" = 2081
-"crates/rbs-app/src/studio_host.rs" = 18516
+"crates/rbs-app/src/studio_host.rs" = 18512
 "crates/rbs-app/src/studio_ui.rs" = 11008
 "crates/rbs-app/tests/studio_record.rs" = 3156
 "crates/rbs-app/tests/studio_scenes.rs" = 2288
 "crates/rbs-app/tests/studio_stream.rs" = 2464
 "crates/rbs-record/src/studio.rs" = 6096
 "crates/rbs-record/tests/studio.rs" = 3328
-"crates/rbs-scene/src/collection.rs" = 3004
+"crates/rbs-scene/src/collection.rs" = 2992
 "crates/rbs-scene/tests/binder.rs" = 2882
 "crates/rbs-scene/tests/collection.rs" = 2759
 "crates/rbs-ui/src/command.rs" = 4407

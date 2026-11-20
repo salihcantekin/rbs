@@ -12,5 +12,12 @@ publish.workspace = true
 rbs-core = { path = "../rbs-core" }
 rbs-graph = { path = "../rbs-graph" }
 
+[dev-dependencies]
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "edit"
+harness = false
+
 [lints]
 workspace = true
