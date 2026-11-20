@@ -31,7 +31,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos,
     WINDOWPOS, WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE, WM_GETMINMAXINFO, WM_MOUSEMOVE, WM_NCCALCSIZE,
     WM_NCDESTROY, WM_NCHITTEST, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP,
-    WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_SIZE, WM_SYSCOMMAND, WM_WINDOWPOSCHANGING,
+    WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_SETTINGCHANGE, WM_SIZE, WM_SYSCOMMAND,
+    WM_WINDOWPOSCHANGING,
 };
 
 use crate::caption::{
@@ -462,6 +463,12 @@ fn handle(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
             // SAFETY: only reads the live window's state.
             let zoomed = unsafe { IsZoomed(hwnd) } != 0;
             notify(Event::Maximized(zoomed));
+            pass()
+        }
+        // App theme and high contrast. The callback queues the UI update; this
+        // procedure does not rebuild the theme itself.
+        WM_SETTINGCHANGE if super::theme_setting(wparam, lparam) => {
+            super::notify_os_scheme();
             pass()
         }
         WM_NCDESTROY => {

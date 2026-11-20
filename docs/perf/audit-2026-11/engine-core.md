@@ -27,7 +27,7 @@ Note: no `tokio`, `rayon`, `tracing` or `log` crate is used anywhere; all thread
 | `rbs-replay-clip` | crates/rbs-app/src/studio_host/replay.rs:311 | transient, per saved clip | one-shot | yes |
 | `rbs-preview-connect` / `rbs-preview` | crates/rbs-app/src/preview.rs:83, :142 | while a preview panel is shown | per frame + 250 ms recv timeout | yes (one `invoke` closure alloc per frame) |
 | `rbs-projector-connect` / `rbs-projector` | crates/rbs-app/src/projector.rs:884, :937 | per open projector (macOS/Windows) | per frame + 250 ms | yes |
-| `rbs-os-scheme` | crates/rbs-app/src/win/mod.rs:118 | Windows, always (one) | blocks on registry notify | yes |
+| app theme | crates/rbs-app/src/win/caption.rs | Windows, on the UI thread | `WM_SETTINGCHANGE` (`ImmersiveColorSet`, high contrast) | no extra thread |
 | `rbs-vcam-setup` | crates/rbs-app/src/vcam_page.rs:321 | transient | one-shot | yes |
 | reveal helper | crates/rbs-app/src/reveal.rs:20 | transient | one-shot | yes |
 | `rbs-text-render` / `rbs-text-probe` | crates/rbs-sources/src/text_worker.rs:350, :372 | while text sources exist; stop 30 s after last use (`IDLE_STOP_AFTER`) | on request; on-air file polling every 500 ms (`POLL_INTERVAL`) | yes; file poll could be a watcher |
@@ -43,7 +43,7 @@ Note: no `tokio`, `rayon`, `tracing` or `log` crate is used anywhere; all thread
 | `rbs-vcam-mf` factory | crates/rbs-vcam-mf/src/win/factory.rs:306 | Windows vcam | | yes |
 | `rbs-control` | crates/rbs-engine/src/handle.rs:119 | only via `EngineHandle`, which no crate outside rbs-engine uses | - | not used by the app |
 
-Idle summary: about 2-3 permanent threads (UI, `rbs-studio`, `rbs-user-data`, + `rbs-os-scheme` on Windows) plus `rbs-render` only when a preview is shown. The one P13 outlier at idle is the control thread's fixed 20 Hz wake (G-05).
+Idle summary: about 2-3 permanent threads (UI, `rbs-studio`, `rbs-user-data`) plus `rbs-render` only when a preview is shown. The Windows app theme arrives as `WM_SETTINGCHANGE` on the UI thread. The one P13 outlier at idle is the control thread's fixed 20 Hz wake (G-05).
 
 ## Findings (ordered by benefit / effort)
 
