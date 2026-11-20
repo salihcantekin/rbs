@@ -213,9 +213,24 @@ Native input memory (`metal`, `d3d11`, `d3d12`, `vulkan`, `dmabuf`): the encoder
 - Encoder delay: one frame (`initial_padding` 1024), not signalled (open question below): a drained timeline has one packet more than its input frames (48 for 1 s at 48 kHz).
 - Discontinuities and `flush` follow the AudioToolbox rules; draining sends end of stream (a null frame) and reads every packet. The AAC encoder cannot continue after end of stream, so the first frame of the next timeline opens a new context (a control-rate cost after discontinuities and flushes only; a flush before drop opens none); a context that fails to open then is an unrecoverable `Failed`. Any failed libavcodec call while encoding is an unrecoverable `Failed`.
 - Tests: the fake engine of the `testing` feature runs the port suite and behaviour tests everywhere; the real encoder's tests (port suite, behaviour, one allocation per packet, and `slow_a_tone_decodes_back_to_the_same_tone`, ignored by default, which decodes a 440 Hz tone back with the `ffmpeg` tool at the input level and frequency) skip without FFmpeg unless `RBS_REQUIRE_FFMPEG_AAC=1`.
-- Measured (cloud container, Xeon 2.1 GHz, FFmpeg 6.1.1, 2026-11-04): all tests pass with `RBS_REQUIRE_FFMPEG_AAC=1`; `submit` + `drain` of a 10 ms stereo 48 kHz block 645 us with libavcodec's default `twoloop` coder (6.4 % of one core; session alone 1.0 us; `cargo bench -p rbs-codec-ffmpeg --bench encode`). This is several times the OS encoders' cost; the `fast` coder is about twice as fast (not offered yet).
+- Measured (cloud container, Xeon 2.1 GHz, FFmpeg 6.1.1, 2026-11-04): all tests pass with `RBS_REQUIRE_FFMPEG_AAC=1`; `submit` + `drain` of a 10 ms stereo 48 kHz block 645 us with libavcodec's default `twoloop` coder (6.4 % of one core; session alone 1.0 us; `cargo bench -p rbs-codec-ffmpeg --bench encode`). This is several times the OS encoders' cost.
+- Coder (`aac_coder` adapter option, F-06 of the [resource audit](../research/resource-and-structure-audit-2026-11.md)): absent selects `fast` (owner, 2026-11-20, from the measurements below), not libavcodec's own default `twoloop`; `twoloop` is accepted; `anmr` is refused (`CreateError::Device`, FFmpeg marks it experimental and the adapter does not lower `strict`), as is any unknown name. The option is a private option of the `aac` encoder, so it is set with `AV_OPT_SEARCH_CHILDREN` (without that flag libavcodec answers "Option not found"). Each accepted coder passes the same open check (`frame_size` 1024, `initial_padding` 1024), so packet count, timestamps and durations are those of the default (`every_aac_coder_keeps_frame_size_and_delay`). After the switch to `fast`, the bench's default line reads 71 us (was 543 us with `twoloop`).
+- Coder measurements (cloud container, Xeon 2.3 GHz, 4 vCPU, FFmpeg 6.1.1, libavcodec 60, 2026-11-20). Speed, `cargo bench -p rbs-codec-ffmpeg --bench encode` (one 10 ms stereo 48 kHz sine block, 128 kbit/s): default 543 us, `twoloop` 519 us, `fast` 71 us, session alone 0.84 us. On the synthetic signals below the encoder's CPU time per 10 ms block (`ffmpeg -benchmark`, one thread) is 228-310 us for `twoloop` and 94-101 us for `fast`: `fast` costs a third to a seventh of `twoloop`, depending on the signal. Quality, `python3 -I crates/rbs-codec-ffmpeg/tools/coder_quality.py` (10 s speech-like and music-like stereo signals, encoded, decoded with the `ffmpeg` tool, priming removed; SNR and segmental SNR in dB, higher is better; log-spectral distance 50 Hz-16 kHz in dB, lower is better; bytes for 10 s, the target is 160000 at 128 kbit/s and 200000 at 160 kbit/s):
+
+  | Signal | kbit/s | Coder | SNR | Seg. SNR | LSD | Bytes |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | speech | 128 | twoloop | 9.07 | 8.03 | 3.42 | 161932 |
+  | speech | 128 | fast | 8.87 | 7.82 | 3.74 | 138930 |
+  | speech | 160 | twoloop | 9.92 | 8.82 | 3.10 | 184590 |
+  | speech | 160 | fast | 10.98 | 9.35 | 2.80 | 175459 |
+  | music | 128 | twoloop | 26.80 | 30.18 | 1.90 | 178161 |
+  | music | 128 | fast | 25.63 | 29.97 | 1.72 | 165773 |
+  | music | 160 | twoloop | 29.96 | 32.19 | 1.32 | 218355 |
+  | music | 160 | fast | 28.91 | 31.22 | 1.21 | 206040 |
+
+  The speech signal's SNR is low for both coders because its noise parts are coded as noise (perceptual noise substitution), which SNR counts as error. By these objective measures the two coders are within about 1 dB of each other in both directions; `fast` also stays further below the target bitrate (up to 13 %). No perceptual measure (PEAQ, ViSQOL) was available. The owner chose `fast` as the default on 2026-11-20.
 - On other targets the factory probes to an empty set and refuses sessions.
-- Not yet: FFmpeg 5.1 (its frames still carry the old channel fields), a quality/speed setting (`aac_coder`), HE-AAC, more channels.
+- Not yet: FFmpeg 5.1 (its frames still carry the old channel fields), a user setting for the coder (today only the adapter option), HE-AAC, more channels.
 
 ### Hardware encoder sessions (`rbs-codec-hw`)
 

@@ -73,6 +73,8 @@ mod attributes;
 pub use attributes::{AttributeTargetView, AttributesView};
 mod calibration;
 mod device_sync;
+mod failures;
+use failures::{answer_on_panic, refused};
 pub mod filters;
 mod interact;
 pub use interact::{InteractState, MAX_INTERACT};
@@ -4153,6 +4155,10 @@ fn run(
             host
         }
         Err(e) => {
+            rbs_core::error!(
+                rbs_core::log::Area::Studio,
+                "the studio could not start: {e}"
+            );
             notify(Update::Failed(e.clone()));
             // Keep answering until the UI goes away, so it never waits on a dead thread;
             // control API requests get the reason.
@@ -4213,7 +4219,12 @@ fn run(
         }
         // Each round is a panic boundary (ADR-0055 decision 3): a bug in one command or
         // one round fails that round, and the studio and its outputs keep running.
-        match rbs_crash::contain(|| round(&mut host, &mut failed, msg, notify)) {
+        let kind = failures::Kind::of(msg.as_ref());
+        let logged = |u: Update| {
+            failures::log_update(kind, &u);
+            notify(u);
+        };
+        match rbs_crash::contain(|| round(&mut host, &mut failed, msg, &logged)) {
             Ok(next) => {
                 caught_in_row = 0;
                 wait = next;
@@ -4224,6 +4235,7 @@ fn run(
             }
             Err(_) => {
                 caught_in_row += 1;
+                rbs_core::error!(rbs_core::log::Area::Studio, "a studio round panicked");
                 wait = Some(MAX_WAIT);
                 notify(Update::Error(rbs_crash::CAUGHT_TEXT.into()));
                 let _ = rbs_crash::contain(|| host.recover(&mut failed, caught_in_row, notify));
@@ -4267,22 +4279,6 @@ const HELD_SWITCH_POLL: Duration = Duration::from_millis(4);
 /// Caught panics in a row after which the studio counts as failed: its recording and
 /// stream end cleanly instead of running on with a host that keeps panicking.
 const CAUGHT_LIMIT: u32 = 3;
-
-/// What the UI waits for after `c`, if `c` panics before answering.
-fn answer_on_panic(c: &Command) -> Option<Update> {
-    let why = || rbs_crash::CAUGHT_TEXT.to_owned();
-    match c {
-        Command::StartRecording(_) => Some(Update::Recording(RecordingUpdate::NotStarted(why()))),
-        Command::StartStream(_) => Some(Update::Stream(StreamUpdate::NotStarted(why()))),
-        Command::StartVerticalRecording(_) => Some(Update::VerticalRecording(
-            RecordingUpdate::NotStarted(why()),
-        )),
-        Command::StartVerticalStream(_) => {
-            Some(Update::VerticalStream(StreamUpdate::NotStarted(why())))
-        }
-        _ => None,
-    }
-}
 
 /// One round of the control loop: the message that woke it (`None`: the wait ended),
 /// one API request, then the studio's service. Returns how long to wait for the next.
@@ -7108,6 +7104,7 @@ impl Host {
         self.rearm_replay(&|_| {});
         // The loudness meter measures again, from scratch, in the new studio.
         self.restore_loudness();
+        rbs_core::info!(rbs_core::log::Area::Studio, "the studio restarted");
         Ok(())
     }
 
@@ -12790,6 +12787,7 @@ impl Host {
             .set_program(self.canvas, Some(id))
             .map_err(|e| Refusal::of(&e))?;
         self.scene = id;
+        rbs_core::info!(rbs_core::log::Area::Studio, "scene {} on air", id.get());
         Ok(true)
     }
 
@@ -13099,6 +13097,11 @@ impl Host {
             .set_program(self.canvas, Some(preview))
             .map_err(|e| Refusal::of(&e))?;
         self.scene = preview;
+        rbs_core::info!(
+            rbs_core::log::Area::Studio,
+            "transition to scene {}",
+            preview.get()
+        );
         if self.swap_after_transition {
             let _ = self.collection.set_preview(self.canvas, Some(program));
         }
@@ -14534,12 +14537,17 @@ impl ControlTarget for ApiTarget<'_> {
         std::mem::swap(&mut self.host.events, events);
         // A panic fails this request only (ADR-0055 decision 3); the control loop
         // reconciles the host after the round.
+        let method = command.method();
         let result = rbs_crash::contain(|| self.run(command));
         std::mem::swap(&mut self.host.events, events);
-        result.unwrap_or_else(|_| {
+        let result = result.unwrap_or_else(|_| {
             self.host.caught = true;
             Err(ApiError::new(ErrorKind::Internal, rbs_crash::CAUGHT_TEXT))
-        })
+        });
+        if let Err(e) = &result {
+            failures::log_api_refusal(method, e);
+        }
+        result
     }
 }
 
@@ -17661,18 +17669,6 @@ fn item_removed(removed: &Removed) -> ItemRemoved {
         removed_items: removed.removed_items.iter().map(|i| i.get()).collect(),
         deleted_sources: removed.deleted_sources.iter().map(|s| s.get()).collect(),
     }
-}
-
-fn refused(e: &Refusal) -> ApiError {
-    ApiError::new(
-        match e {
-            Refusal::NotFound(_) => ErrorKind::NotFound,
-            Refusal::Invalid(_) => ErrorKind::InvalidParams,
-            Refusal::Conflict(_) => ErrorKind::Conflict,
-            Refusal::Failed(_) => ErrorKind::Failed,
-        },
-        e.text(),
-    )
 }
 
 /// A registry with only the encoder `id` of `all`, probed.

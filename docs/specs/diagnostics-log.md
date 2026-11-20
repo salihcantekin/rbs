@@ -176,6 +176,7 @@ No log macro in code listed in [hot-paths.md](../architecture/hot-paths.md). `ca
 - `rbs-app`: the log starts first in `main` (`diag_log`), Normal levels, `Lib` at Warn, `RBS_LOG`; lines echo to standard error at a terminal or with `RBS_LOG`; every former `errln!` and `studio_ui::log` line and the UI stall watch log through the macros (2026-11-20).
 - `rbs-cli`: `start_stderr` before the arguments are parsed (`diag_log`); Warn for every area and `Lib`, then `RBS_LOG`, then `--log-level <levels>` (same grammar, anywhere on the line); its answers to its user stay `outln!`/`errln!` (2026-11-20).
 - Settings › Advanced: built as above, with `rbs_log::write_zip` (2026-11-20).
+- Studio host (`studio_host/failures.rs`, `studio_host.rs`): start failure, a stopped studio, a caught panic and the recovery after it (Error and Info), refused window commands by kind and refused control API requests by method and error kind (Warn), scene on air, transition and studio restart (Info), each window command by kind (Trace); the kind is read from the command's `Debug` text up to its first bracket, so no payload is formatted (2026-11-20).
 - Not yet: `rbs-browser-runner` (after stability WP-A), the recent lines in crash reports, new per-area lines, the summary timer.
 
 ## Open questions

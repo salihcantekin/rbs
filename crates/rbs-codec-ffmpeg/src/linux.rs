@@ -42,6 +42,9 @@ const AVERROR_EAGAIN: c_int = -11;
 const AVERROR_EOF: c_int = -0x2046_4F45;
 /// The encoder's `initial_padding` (its delay) and `frame_size`.
 const AAC_DELAY: c_int = 1024;
+/// `AV_OPT_SEARCH_CHILDREN`: also search the context's children, where an encoder's
+/// private options (such as the AAC encoder's `aac_coder`) live in `priv_data`.
+const AV_OPT_SEARCH_CHILDREN: c_int = 1;
 
 /// Byte offsets of the fields the adapter reads or writes, for one pair of majors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -300,15 +303,19 @@ impl FfmpegAacFactory {
     }
 }
 
-/// `aac_coder` from the adapter options. Absent leaves libavcodec's default
-/// (twoloop). A different default needs an R10 measurement before it is set here.
-fn aac_coder(config: &AudioEncoderConfig) -> Result<Option<std::ffi::CString>, CreateError> {
+/// The coder when the adapter options set none: `fast` (owner, 2026-11-20). It costs a
+/// third to a seventh of libavcodec's own default, `twoloop`, at about the same
+/// objective quality (R10 measurement in the output ports spec, F-06).
+const DEFAULT_CODER: &std::ffi::CStr = c"fast";
+
+/// `aac_coder` from the adapter options, or [`DEFAULT_CODER`].
+fn aac_coder(config: &AudioEncoderConfig) -> Result<std::ffi::CString, CreateError> {
     let Some((_, value)) = config
         .adapter_options
         .iter()
         .find(|(key, _)| key == "aac_coder")
     else {
-        return Ok(None);
+        return Ok(DEFAULT_CODER.to_owned());
     };
     let token = value.len() <= 32
         && !value.is_empty()
@@ -321,7 +328,6 @@ fn aac_coder(config: &AudioEncoderConfig) -> Result<Option<std::ffi::CString>, C
         ));
     }
     std::ffi::CString::new(value.as_str())
-        .map(Some)
         .map_err(|_| CreateError::InvalidConfig("aac_coder must be a short ASCII token".into()))
 }
 
@@ -383,7 +389,7 @@ impl Context {
     fn open(
         api: &'static Api,
         checked: &Checked,
-        coder: Option<&std::ffi::CStr>,
+        coder: &std::ffi::CStr,
     ) -> Result<Self, CreateError> {
         let codec = api.aac();
         if codec.is_null() {
@@ -437,11 +443,16 @@ impl Context {
                     return Err(device(&format!("option {name:?}"), r));
                 }
             }
-            if let Some(coder) = coder {
-                let r = (api.opt_set)(ptr, c"aac_coder".as_ptr(), coder.as_ptr(), 0);
-                if r < 0 {
-                    return Err(device("option aac_coder", r));
-                }
+            // A private option of the aac encoder: without the children flag
+            // libavcodec answers "Option not found".
+            let r = (api.opt_set)(
+                ptr,
+                c"aac_coder".as_ptr(),
+                coder.as_ptr(),
+                AV_OPT_SEARCH_CHILDREN,
+            );
+            if r < 0 {
+                return Err(device("option aac_coder", r));
             }
             write(ptr, layout.ctx_sample_fmt, AV_SAMPLE_FMT_FLTP);
             let r = (api.open)(ptr, codec, ptr::null_mut());
@@ -476,8 +487,8 @@ impl Context {
 pub struct AvEngine {
     api: &'static Api,
     checked: Checked,
-    /// `aac_coder` when the config set it. Absent keeps libavcodec's default.
-    coder: Option<std::ffi::CString>,
+    /// The `aac_coder` every context of this session opens with.
+    coder: std::ffi::CString,
     ctx: Option<Context>,
     frame: *mut c_void,
     packet: *mut c_void,
@@ -507,9 +518,9 @@ impl AvEngine {
     fn new(
         api: &'static Api,
         checked: &Checked,
-        coder: Option<std::ffi::CString>,
+        coder: std::ffi::CString,
     ) -> Result<Self, CreateError> {
-        let ctx = Context::open(api, checked, coder.as_deref())?;
+        let ctx = Context::open(api, checked, &coder)?;
         // SAFETY: plain allocations; null is checked below and accepted by Drop.
         let (frame, packet) = unsafe { ((api.frame_alloc)(), (api.packet_alloc)()) };
         let engine = Self {
@@ -629,7 +640,7 @@ impl Engine for AvEngine {
         if self.ctx.is_none() {
             // The first frame of a timeline after `finish`: a fresh context (a
             // control-rate event, after discontinuities and flushes only).
-            let ctx = Context::open(api, &self.checked, self.coder.as_deref()).map_err(|e| {
+            let ctx = Context::open(api, &self.checked, &self.coder).map_err(|e| {
                 EncodeError::Failed {
                     reason: e.to_string(),
                     recoverable: false,
