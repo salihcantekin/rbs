@@ -10,13 +10,13 @@ use windows::Win32::Graphics::Direct3D12::{
     D3D12_RESOURCE_DIMENSION_TEXTURE2D, ID3D12Fence, ID3D12Resource,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
-    DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM_SRGB,
-    DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, DXGI_FORMAT_R10G10B10A2_UNORM,
-    DXGI_FORMAT_R16G16B16A16_FLOAT,
+    DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM_SRGB, DXGI_FORMAT_NV12,
+    DXGI_FORMAT_P010, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
+    DXGI_FORMAT_R10G10B10A2_UNORM, DXGI_FORMAT_R16G16B16A16_FLOAT,
 };
 
 use super::{Opened, USAGE};
-use crate::context::GpuContext;
+use crate::context::{CAP_P010, GpuContext};
 use crate::error::GpuError;
 use crate::pool::TextureDesc;
 
@@ -108,6 +108,9 @@ pub(crate) fn open_with_usage(
     {
         return Err(GpuError::Unsupported("surface is not a single 2D texture"));
     }
+    if matches!(desc.Format, DXGI_FORMAT_NV12 | DXGI_FORMAT_P010) {
+        return open_planar(ctx, resource, desc, usage);
+    }
     let format = map_format(desc.Format)?;
     let width = u32::try_from(desc.Width).map_err(|_| GpuError::InvalidSize {
         width: u32::MAX,
@@ -158,6 +161,94 @@ pub(crate) fn open_with_usage(
             format,
             usage,
         },
+    })
+}
+
+fn open_planar(
+    ctx: &GpuContext,
+    resource: ID3D12Resource,
+    desc: windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_DESC,
+    usage: wgpu::TextureUsages,
+) -> Result<Opened, GpuError> {
+    let ten_bit = desc.Format == DXGI_FORMAT_P010;
+    if ten_bit && !ctx.has(&CAP_P010) {
+        return Err(GpuError::Unsupported("P010 surface without gpu.p010"));
+    }
+    let width = u32::try_from(desc.Width).map_err(|_| GpuError::InvalidSize {
+        width: u32::MAX,
+        height: desc.Height,
+    })?;
+    if !width.is_multiple_of(2) || !desc.Height.is_multiple_of(2) || desc.Height == 0 {
+        return Err(GpuError::InvalidSize {
+            width,
+            height: desc.Height,
+        });
+    }
+    let (luma_format, chroma_format) = if ten_bit {
+        (wgpu::TextureFormat::R16Unorm, wgpu::TextureFormat::Rg16Unorm)
+    } else {
+        (wgpu::TextureFormat::R8Unorm, wgpu::TextureFormat::Rg8Unorm)
+    };
+    let luma_size = wgpu::Extent3d {
+        width,
+        height: desc.Height,
+        depth_or_array_layers: 1,
+    };
+    let chroma_size = wgpu::Extent3d {
+        width: width / 2,
+        height: desc.Height / 2,
+        depth_or_array_layers: 1,
+    };
+    // Two wrappers of one NV12 or P010 resource, one plane each. The state tracker
+    // treats them as separate textures; both are only sampled, never written.
+    let wrap = |plane: u32, format, size| {
+        // SAFETY: `resource` was opened on this device. Cloning adds a COM reference
+        // the wrapper keeps. The format is the single-plane view of that DXGI plane.
+        let hal = unsafe {
+            wgpu::hal::dx12::Device::texture_from_raw(
+                resource.clone(),
+                format,
+                wgpu::TextureDimension::D2,
+                size,
+                1,
+                1,
+            )
+            .with_plane_slice(plane)
+        };
+        // SAFETY: the wrapper matches this device. A shared resource starts in COMMON
+        // (wgpu `PRESENT`). The plane slice is pinned by `with_plane_slice`.
+        unsafe {
+            ctx.device().create_texture_from_hal::<Dx12>(
+                hal,
+                &wgpu::TextureDescriptor {
+                    label: Some("rbs-gpu imported plane"),
+                    size,
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format,
+                    usage,
+                    view_formats: &[],
+                },
+                wgpu::TextureUses::PRESENT,
+            )
+        }
+    };
+    let luma = wrap(0, luma_format, luma_size);
+    let chroma = wrap(1, chroma_format, chroma_size);
+    let plane = |format, width, height| TextureDesc {
+        width,
+        height,
+        format,
+        usage,
+    };
+    Ok(Opened {
+        texture: luma,
+        chroma: Some((
+            chroma,
+            plane(chroma_format, chroma_size.width, chroma_size.height),
+        )),
+        desc: plane(luma_format, width, desc.Height),
     })
 }
 
