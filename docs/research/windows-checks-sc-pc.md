@@ -4,7 +4,7 @@ Run these on the Windows desktop (SC-PC) from a checkout of `main` after `git pu
 
 Stay logged in at the console, or in a Remote Desktop session that stays connected. Disconnecting the session locks the desktop. Windows Graphics Capture, the camera, and the GPU encoders then fail or change behaviour. While the capture test runs, keep something moving on a display (a playing video). WGC does not deliver frames of a still screen.
 
-Do not change encoder `keeps_input`, the Media Foundation camera upload, or the AMF 1 ms sleep from these results. Those waits need a separate bit-exact or driver-wait check. A green run here only says the current path still works.
+Do not turn encoder `keeps_input` on, and do not remove the Media Foundation camera upload, from these results. AMF waits in `QueryOutput` (`QueryTimeout`); a component that refuses that property still polls every 1 ms. A green run only says the current path still works.
 
 `cargo xtask device-check adapters` and `cargo xtask device-check hardware` run the lists below in one command each and write a summary (testing strategy, "Device checks").
 

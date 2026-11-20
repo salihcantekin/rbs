@@ -195,6 +195,8 @@ pub(crate) const H264_HEADER_SPACING: Name = w!("HeaderInsertionSpacing");
 pub(crate) const H264_INSERT_SPS: Name = w!("InsertSPS");
 pub(crate) const H264_INSERT_PPS: Name = w!("InsertPPS");
 pub(crate) const H264_FULL_RANGE: Name = w!("FullRangeColor");
+/// Milliseconds `QueryOutput` may block. Zero returns at once.
+pub(crate) const H264_QUERY_TIMEOUT: Name = w!("QueryTimeout");
 
 // HEVC-only names.
 pub(crate) const HEVC_GOP_SIZE: Name = w!("HevcGOPSize");
@@ -202,6 +204,8 @@ pub(crate) const HEVC_GOPS_PER_IDR: Name = w!("HevcGOPSPerIDR");
 pub(crate) const HEVC_HEADER_MODE: Name = w!("HevcHeaderInsertionMode");
 pub(crate) const HEVC_INSERT_HEADER: Name = w!("HevcInsertHeader");
 pub(crate) const HEVC_NOMINAL_RANGE: Name = w!("HevcNominalRange");
+/// Milliseconds `QueryOutput` may block. Zero returns at once.
+pub(crate) const HEVC_QUERY_TIMEOUT: Name = w!("HevcQueryTimeout");
 
 /// The adapter's own property on input surfaces, carried to the output data: the
 /// session's token of the frame.
