@@ -29,7 +29,9 @@ use windows::Win32::Graphics::Direct3D11::{
     D3D11CreateDevice, ID3D11Device, ID3D11Device5, ID3D11DeviceContext, ID3D11DeviceContext4,
     ID3D11Fence, ID3D11Texture2D,
 };
-use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
+use windows::Win32::Graphics::Dxgi::Common::{
+    DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_NV12, DXGI_SAMPLE_DESC,
+};
 use windows::Win32::Graphics::Dxgi::{
     CreateDXGIFactory1, DXGI_SHARED_RESOURCE_READ, DXGI_SHARED_RESOURCE_WRITE, IDXGIAdapter,
     IDXGIFactory4, IDXGIResource1,
@@ -327,4 +329,144 @@ fn wrong_adapter_and_keyed_mutex_are_rejected() {
         Err(rbs_gpu::GpuError::Unsupported(_))
     ));
     assert_eq!(owner.held(), 0);
+}
+
+/// An NT shared NV12 texture is a plane pair the compositor samples. Devices that
+/// cannot create a shared NV12 texture skip; `RBS_REQUIRE_D3D12` does not require it.
+#[test]
+fn nv12_shared_texture_is_a_plane_pair() {
+    let Some(ctx) = common::gpu() else { return };
+    let Some(luid) = d3d12_luid(ctx) else { return };
+    let Some(made) = nv12_texture(luid) else {
+        eprintln!("SKIPPED: this device will not create a shared NV12 texture");
+        return;
+    };
+    let owner = Arc::new(Producer::default());
+    let mut pool = TexturePool::new();
+    let mut importer = Importer::new();
+    made.signal(1);
+    let format = VideoFormat::new(
+        Size::new(W, H),
+        PixelFormat::Nv12,
+        ColorSpace::BT709_LIMITED,
+    );
+    // SAFETY: the handles are a live shared NV12 texture and fence on `luid`. The
+    // test does not write the texture again while the lease is held.
+    let frame = unsafe {
+        VideoFrame::native(
+            format,
+            Timestamp::ZERO,
+            NativeSurface::d3d_shared_handle(made.texture_handle.0 as u64, true, D3dApi::D3d11, luid),
+            SurfaceSync::timeline_fence(made.fence_handle.0 as u64, 1),
+            owner.lease(),
+        )
+    };
+    let imported = importer.import(ctx, &mut pool, frame).unwrap();
+    assert_eq!(imported.format().pixel_format, PixelFormat::Nv12);
+    let rbs_core::media::FramePayload::Texture(id) = *imported.payload() else {
+        panic!("import must return a texture frame");
+    };
+    assert_eq!(pool.get(id).unwrap().desc().format, wgpu::TextureFormat::NV12);
+    let mut comp = Compositor::new(ctx, CanvasDesc { width: W, height: H }, 1).unwrap();
+    let canvas = pool.acquire(ctx, &TextureDesc::canvas(W, H)).unwrap();
+    let mut layer = Layer::new(id, 0.0, 0.0, W as f32, H as f32);
+    layer.ycbcr = ColorSpace::BT709_LIMITED;
+    comp.render(ctx, &pool, &[layer], canvas).unwrap();
+    let px = readback::read_rgba16f(ctx, &pool, canvas).unwrap();
+    // Limited black: Y 16, neutral chroma. Both samples, not one lucky texel.
+    assert_close(at(&px, W, 1, 1), [0.0, 0.0, 0.0, 1.0], 0.02);
+    assert_close(at(&px, W, 4, 4), [0.0, 0.0, 0.0, 1.0], 0.02);
+}
+
+fn nv12_texture(luid: u64) -> Option<D3d11> {
+    use windows::Win32::Graphics::Direct3D11::D3D11_BIND_SHADER_RESOURCE;
+    unsafe {
+        let factory: IDXGIFactory4 = CreateDXGIFactory1().ok()?;
+        let adapter: IDXGIAdapter = factory
+            .EnumAdapterByLuid(LUID {
+                LowPart: luid as u32,
+                HighPart: (luid >> 32) as i32,
+            })
+            .ok()?;
+        let mut device = None;
+        let mut context = None;
+        D3D11CreateDevice(
+            &adapter,
+            D3D_DRIVER_TYPE_UNKNOWN,
+            HMODULE::default(),
+            D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+            Some(&[D3D_FEATURE_LEVEL_11_0]),
+            D3D11_SDK_VERSION,
+            Some(&mut device),
+            None,
+            Some(&mut context),
+        )
+        .ok()?;
+        let device = device?;
+        let context = context?;
+        let desc = D3D11_TEXTURE2D_DESC {
+            Width: W,
+            Height: H,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: DXGI_FORMAT_NV12,
+            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            Usage: D3D11_USAGE_DEFAULT,
+            BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
+            CPUAccessFlags: 0,
+            MiscFlags: (D3D11_RESOURCE_MISC_SHARED_NTHANDLE.0 | D3D11_RESOURCE_MISC_SHARED.0) as u32,
+        };
+        let mut texture = None;
+        device.CreateTexture2D(&desc, None, Some(&mut texture)).ok()?;
+        let texture = texture?;
+        // One packed NV12 image: Y rows, then UV rows, at the driver's alignment.
+        // A tight pitch, and a second UpdateSubresource for plane 1, left chroma at 0
+        // (limited black then came back green, about 0.15).
+        const PITCH: usize = 256;
+        let rows_y = H as usize;
+        let rows_uv = (H / 2) as usize;
+        let mut data = vec![0u8; PITCH * (rows_y + rows_uv)];
+        for row in 0..rows_y {
+            data[row * PITCH..][..W as usize].fill(16);
+        }
+        for row in 0..rows_uv {
+            data[(rows_y + row) * PITCH..][..W as usize].fill(128);
+        }
+        context.UpdateSubresource(
+            &texture,
+            0,
+            None,
+            data.as_ptr().cast(),
+            PITCH as u32,
+            (PITCH * rows_y) as u32,
+        );
+        context.Flush();
+        let texture_handle = texture
+            .cast::<IDXGIResource1>()
+            .ok()?
+            .CreateSharedHandle(
+                None,
+                DXGI_SHARED_RESOURCE_READ.0 | DXGI_SHARED_RESOURCE_WRITE.0,
+                PCWSTR::null(),
+            )
+            .ok()?;
+        let mut fence: Option<ID3D11Fence> = None;
+        device
+            .cast::<ID3D11Device5>()
+            .ok()?
+            .CreateFence(0, D3D11_FENCE_FLAG_SHARED, &mut fence)
+            .ok()?;
+        let fence = fence?;
+        let fence_handle = fence
+            .CreateSharedHandle(None, GENERIC_ALL.0, PCWSTR::null())
+            .ok()?;
+        Some(D3d11 {
+            _device: device,
+            context,
+            _texture: texture,
+            fence,
+            texture_handle,
+            fence_handle,
+        })
+    }
 }
