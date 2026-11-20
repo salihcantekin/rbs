@@ -360,7 +360,7 @@ impl Host {
         let container = self.profile.format.container();
         let writer = ClipWriter::new(
             &self.adapters,
-            &rbs_transport_file::file_url(&path),
+            &rbs_transport::file_url(&path),
             container,
         )
         .map_err(|e| e.to_string())?;

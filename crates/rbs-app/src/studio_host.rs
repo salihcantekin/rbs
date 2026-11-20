@@ -7340,7 +7340,7 @@ impl Host {
             .format("%Y-%m-%dT%H:%M:%S%.3fZ")
             .to_string();
         let mut start = IsoAudioStart::new(
-            rbs_transport_file::file_url(&folder),
+            rbs_transport::file_url(&folder),
             ContainerId::Wav,
             master_name.clone(),
             t0_utc.clone(),
@@ -7504,7 +7504,7 @@ impl Host {
             return Ok(());
         };
         let mut start = rbs_record::IsoVideoStart::new(
-            rbs_transport_file::file_url(&files.folder),
+            rbs_transport::file_url(&files.folder),
             r.container,
             video,
         );
@@ -7647,7 +7647,7 @@ impl Host {
         r: &RecordRequest,
         path: &Path,
     ) -> OutputSettings {
-        let mut out = OutputSettings::new(rbs_transport_file::file_url(path), r.container);
+        let mut out = OutputSettings::new(rbs_transport::file_url(path), r.container);
         out.canvas = canvas;
         out.video = r.video.clone();
         out.audio = self.adapters.audio_encoders.ids().next().map(|_| {
