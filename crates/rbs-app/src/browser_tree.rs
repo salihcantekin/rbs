@@ -13,7 +13,9 @@ use std::sync::{Arc, Mutex};
 use rbs_browser_ipc::Configure;
 use rbs_browser_ipc::control::Control;
 use rbs_browser_ipc::exit::Cause;
-use rbs_browser_runner::{PageSound, Supervisor, runtime_env, spawn_helper_with_env};
+use rbs_browser_runner::{
+    PagePicture, PageSound, Supervisor, runtime_env, spawn_helper_prepared,
+};
 use rbs_browser_shm::OwnedSoundPacket;
 use rbs_browser_shm::SlotLayout;
 use rbs_sources::{
@@ -125,6 +127,8 @@ pub struct RunnerBrowserTree {
     /// `browser-profiles/` in the local data directory (ADR-0132 decision 10);
     /// `None`: every page gets a fresh profile.
     profiles: Option<PathBuf>,
+    /// Render adapter. `None`: every page stays on the shared-memory path.
+    adapter: Option<u64>,
 }
 
 impl RunnerBrowserTree {
@@ -136,6 +140,7 @@ impl RunnerBrowserTree {
             engine,
             live: Arc::new(AtomicUsize::new(0)),
             profiles: None,
+            adapter: None,
         }
     }
 
@@ -143,6 +148,12 @@ impl RunnerBrowserTree {
     /// directory).
     pub fn with_profiles(mut self, dir: PathBuf) -> Self {
         self.profiles = Some(dir);
+        self
+    }
+
+    /// Pages on this adapter copy into studio textures (ADR-0109 decision 8).
+    pub fn with_adapter(mut self, luid: u64) -> Self {
+        self.adapter = Some(luid);
         self
     }
 
@@ -192,13 +203,51 @@ impl BrowserTree for RunnerBrowserTree {
             .as_ref()
             .ok_or_else(|| "no browser runner was found next to the app".to_owned())?;
         let args: Vec<&str> = runner.args.iter().map(String::as_str).collect();
-        let child = spawn_helper_with_env(
+        #[cfg(windows)]
+        let textures = self.adapter.and_then(|luid| {
+            crate::browser_gpu::sweep();
+            rbs_gpu::browser_pages::PageTextures::create(luid, config.width, config.height).ok()
+        });
+        let child = spawn_helper_prepared(
             &runner.program,
             &args,
             &self.env(),
             config,
             SlotLayout::Rgba8Straight,
+            |pid| {
+                #[cfg(windows)]
+                {
+                    return textures.as_ref().and_then(|textures| {
+                        let (handles, fence) = textures.duplicate_to(pid)?;
+                        let (vendor, device) = textures.vendor_device();
+                        Some(rbs_browser_ipc::GpuShare {
+                            adapter_luid: textures.luid(),
+                            vendor,
+                            device,
+                            fence,
+                            textures: handles,
+                        })
+                    });
+                }
+                #[cfg(not(windows))]
+                {
+                    let _ = pid;
+                    None
+                }
+            },
         )?;
+        #[cfg(windows)]
+        let slots = textures.and_then(|textures| {
+            crate::browser_gpu::PageSlots::open(
+                child.frame_name(),
+                config.width,
+                config.height,
+                textures,
+            )
+            .ok()
+        });
+        #[cfg(not(windows))]
+        let slots = None::<()>;
         // The supervisor thread exists only while the source is Active (P13). It
         // stamps each picture on the master clock at the edge, by the rule the page's
         // sound follows, so the render thread shows it with that sound (ADR-0109
@@ -206,14 +255,29 @@ impl BrowserTree for RunnerBrowserTree {
         let mut edge = sound
             .as_ref()
             .map(|sound| BrowserPictureEdge::new(sound.clock()));
-        let publish = move |rgba: &mut Vec<u8>, width, height, painted, fresh| {
+        #[cfg_attr(not(windows), allow(unused_variables))]
+        let kept = slots.clone();
+        #[cfg(not(windows))]
+        let _keep_type = slots;
+        let publish = move |rgba: &mut Vec<u8>, width, height, painted, picture: PagePicture| {
             let stamp = edge
                 .as_mut()
                 .map(|edge| edge.stamp(painted, rbs_browser_shm::os_monotonic_nanos()));
-            if fresh {
-                sink.publish_frame(rgba, width, height, stamp);
-            } else {
-                sink.republish();
+            match picture {
+                PagePicture::Bytes { fresh: true } => {
+                    sink.publish_frame(rgba, width, height, stamp);
+                }
+                PagePicture::Bytes { fresh: false } => sink.republish(),
+                PagePicture::Texture { slot, .. } => {
+                    #[cfg(windows)]
+                    if let Some(slots) = &kept {
+                        sink.publish_native(slots.picture(slot, stamp), stamp);
+                    }
+                    #[cfg(not(windows))]
+                    {
+                        let _ = (slot, stamp);
+                    }
+                }
             }
         };
         let supervisor = match sound {
@@ -230,6 +294,8 @@ impl BrowserTree for RunnerBrowserTree {
         Ok(Box::new(RunnerSession {
             supervisor,
             _live: Live::new(&self.live),
+            #[cfg(windows)]
+            slots,
         }))
     }
 }
@@ -276,6 +342,8 @@ impl PageSound for FeedSound {
 struct RunnerSession {
     supervisor: Supervisor,
     _live: Live,
+    #[cfg(windows)]
+    slots: Option<std::sync::Arc<crate::browser_gpu::PageSlots>>,
 }
 
 impl BrowserSession for RunnerSession {
@@ -287,6 +355,10 @@ impl BrowserSession for RunnerSession {
     fn stop(&mut self) {
         // Never waits: the supervisor thread closes the helper (ADR-0109 decision 8).
         self.supervisor.stop_detached();
+        #[cfg(windows)]
+        if let Some(slots) = self.slots.take() {
+            crate::browser_gpu::bury(slots);
+        }
     }
 
     fn send(&mut self, message: &Control) -> bool {

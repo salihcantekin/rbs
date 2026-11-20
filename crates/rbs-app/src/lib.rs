@@ -31,6 +31,8 @@ pub mod add_ons;
 pub mod ai_tools;
 pub mod background;
 pub mod browser_profiles;
+#[cfg(windows)]
+mod browser_gpu;
 pub mod browser_tree;
 pub mod calibration_file;
 pub mod canvas_profile;

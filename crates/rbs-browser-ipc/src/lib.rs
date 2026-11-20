@@ -137,6 +137,8 @@ pub struct Configure {
     pub sample_rate: u32,
     /// CSS, zoom, the user's script, timers and retry (ADR-0132, ADR-0149).
     pub page: PageOptions,
+    /// Shared textures, when this tree paints on the GPU. `None`: shared memory.
+    pub gpu: Option<GpuShare>,
 }
 
 /// What the runner does to the page besides showing it (ADR-0132 decisions 4, 5 and 10,
@@ -162,6 +164,23 @@ pub struct PageOptions {
     pub reload_on_file_change: bool,
     /// The kept profile's directory; empty for a fresh temporary profile.
     pub profile_dir: String,
+}
+
+/// Studio-owned shared textures the helper copies into (ADR-0109 decision 8,
+/// ADR-0132 decision 8). Handle values are valid in the helper process. Absent on
+/// the shared-memory path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GpuShare {
+    /// Render adapter the textures were created on.
+    pub adapter_luid: u64,
+    /// DXGI vendor id, so the helper's GPU process uses that adapter.
+    pub vendor: u32,
+    /// DXGI device id.
+    pub device: u32,
+    /// Shared fence handle in the helper process.
+    pub fence: u64,
+    /// Three texture handles in the helper process, in slot order.
+    pub textures: [u64; 3],
 }
 
 impl Default for PageOptions {
@@ -219,8 +238,45 @@ impl PageOptions {
         put_text(body, &self.profile_dir);
     }
 
-    pub(crate) fn decode(mut rest: &[u8]) -> Option<Self> {
-        let rest = &mut rest;
+    fn encode_gpu(body: &mut Vec<u8>, gpu: &GpuShare) {
+        body.extend_from_slice(b"RBSg");
+        body.extend_from_slice(&gpu.adapter_luid.to_le_bytes());
+        body.extend_from_slice(&gpu.vendor.to_le_bytes());
+        body.extend_from_slice(&gpu.device.to_le_bytes());
+        body.extend_from_slice(&gpu.fence.to_le_bytes());
+        for handle in gpu.textures {
+            body.extend_from_slice(&handle.to_le_bytes());
+        }
+    }
+
+    fn decode_gpu(rest: &[u8]) -> Option<Option<GpuShare>> {
+        if rest.is_empty() || !rest.starts_with(b"RBSg") {
+            return Some(None);
+        }
+        if rest.len() < 4 + 8 + 4 + 4 + 8 + 24 {
+            return None;
+        }
+        let mut tail = &rest[4..];
+        let take = |tail: &mut &[u8]| -> Option<u64> {
+            let v = u64::from_le_bytes(tail.get(..8)?.try_into().ok()?);
+            *tail = tail.get(8..)?;
+            Some(v)
+        };
+        let adapter_luid = take(&mut tail)?;
+        let vendor = take_u32(&mut tail)?;
+        let device = take_u32(&mut tail)?;
+        let fence = take(&mut tail)?;
+        let textures = [take(&mut tail)?, take(&mut tail)?, take(&mut tail)?];
+        Some(Some(GpuShare {
+            adapter_luid,
+            vendor,
+            device,
+            fence,
+            textures,
+        }))
+    }
+
+    pub(crate) fn decode(rest: &mut &[u8]) -> Option<Self> {
         Some(Self {
             css: take_text(rest)?,
             zoom_percent: u16::try_from(take_u32(rest)?).ok()?,
@@ -262,6 +318,9 @@ pub fn encode_configure(config: &Configure) -> Vec<u8> {
     body.extend_from_slice(sound);
     body.extend_from_slice(&config.sample_rate.to_le_bytes());
     config.page.encode(&mut body);
+    if let Some(gpu) = &config.gpu {
+        PageOptions::encode_gpu(&mut body, gpu);
+    }
     prefix(body)
 }
 
@@ -295,12 +354,13 @@ pub fn decode_configure(bytes: &[u8]) -> Option<Configure> {
     let rate = tail.get(2 + sound_len..2 + sound_len + 4)?;
     let sample_rate = u32::from_le_bytes(rate.try_into().ok()?);
     // An older studio sends no page block: a plain page.
-    let rest = tail.get(2 + sound_len + 4..)?;
+    let mut rest = tail.get(2 + sound_len + 4..)?;
     let page = if rest.is_empty() {
         PageOptions::default()
     } else {
-        PageOptions::decode(rest)?
+        PageOptions::decode(&mut rest)?
     };
+    let gpu = PageOptions::decode_gpu(rest)?;
     Some(Configure {
         url,
         width,
@@ -311,6 +371,7 @@ pub fn decode_configure(bytes: &[u8]) -> Option<Configure> {
         sound,
         sample_rate,
         page,
+        gpu,
     })
 }
 
@@ -378,6 +439,7 @@ mod tests {
             sound: "/rbsb.1.1".into(),
             sample_rate: 48_000,
             page: PageOptions::default(),
+            gpu: None,
         };
         let encoded = encode_configure(&config);
         assert_eq!(decode_configure(&encoded), Some(config.clone()));
@@ -397,7 +459,18 @@ mod tests {
             ..config
         };
         let encoded = encode_configure(&page);
-        assert_eq!(decode_configure(&encoded), Some(page));
+        assert_eq!(decode_configure(&encoded), Some(page.clone()));
+        let gpu = Configure {
+            gpu: Some(GpuShare {
+                adapter_luid: 7,
+                vendor: 0x10DE,
+                device: 0x2484,
+                fence: 11,
+                textures: [1, 2, 3],
+            }),
+            ..page
+        };
+        assert_eq!(decode_configure(&encode_configure(&gpu)), Some(gpu));
     }
 
     #[test]

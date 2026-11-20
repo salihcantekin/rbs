@@ -23,7 +23,11 @@
 //! 48      24    paint time of slots 0, 1 and 2: OS monotonic nanoseconds
 //!               ([`os_monotonic_nanos`]) the helper took when it started to fill the
 //!               slot; 0 = unknown (ADR-0109 decision 8)
-//! 72      56    reserved (0)
+//! 72      24    GPU fence value of slots 0, 1 and 2 (0 until a GPU publish)
+//! 96      12    GPU lease count of slots 0, 1 and 2
+//! 108     4     slot of the latest GPU publish
+//! 112     8     GPU publish sequence (0 until the first)
+//! 120     8     reserved (0)
 //! 128     ...   three slots of width * height * 4 bytes, sRGB
 //! ```
 //!
@@ -57,6 +61,14 @@ pub const VERSION: u32 = 1;
 const DIRTY: u32 = 0b100;
 /// Header offset of slot 0's paint time; slots 1 and 2 follow.
 const PAINTED: usize = 48;
+/// Fence value of GPU slot 0; slots 1 and 2 follow.
+const GPU_FENCE: usize = 72;
+/// Lease count of GPU slot 0; slots 1 and 2 follow.
+const GPU_LEASE: usize = 96;
+/// Slot index of the latest GPU publish.
+const GPU_SLOT: usize = 108;
+/// How many GPU pictures the helper has published.
+const GPU_SEQ: usize = 112;
 const INDEX: u32 = 0b011;
 
 /// Pixel layout of the slots.
@@ -271,6 +283,59 @@ impl FrameRing {
             );
         }
         true
+    }
+
+    /// Helper side: a slot whose lease is zero, or `None` when every slot is still
+    /// on the studio's GPU. Never waits.
+    pub fn claim_gpu(&self) -> Option<u32> {
+        (0..SLOTS).find(|&slot| self.lease(slot) == 0)
+    }
+
+    /// How many studio frames still read this GPU slot.
+    pub fn lease(&self, slot: u32) -> u32 {
+        let slot = slot.min(SLOTS - 1) as usize;
+        self.word(GPU_LEASE + 4 * slot).load(Ordering::Acquire)
+    }
+
+    /// One more reader of a GPU slot. The lease that owns the frame calls this
+    /// before it is adopted.
+    pub fn lease_add(&self, slot: u32) {
+        let slot = slot.min(SLOTS - 1) as usize;
+        self.word(GPU_LEASE + 4 * slot).fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// One fewer reader. The slot may be written again at zero.
+    pub fn lease_sub(&self, slot: u32) {
+        let slot = slot.min(SLOTS - 1) as usize;
+        self.word(GPU_LEASE + 4 * slot).fetch_sub(1, Ordering::AcqRel);
+    }
+
+    /// Helper side: the GPU copy into `slot` has finished at `fence`. The pixel
+    /// slots are not written. Never waits.
+    pub fn publish_gpu(&self, slot: u32, fence: u64) {
+        let slot = slot.min(SLOTS - 1);
+        let index = slot as usize;
+        self.dword(PAINTED + 8 * index)
+            .store(os_monotonic_nanos(), Ordering::Relaxed);
+        self.dword(GPU_FENCE + 8 * index).store(fence, Ordering::Relaxed);
+        self.word(GPU_SLOT).store(slot, Ordering::Relaxed);
+        self.dword(GPU_SEQ).fetch_add(1, Ordering::Release);
+        self.dword(32).fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Studio side: the GPU picture published since `seen`, and the sequence to
+    /// pass next time. `None` when nothing new arrived. Does not copy pixels and
+    /// does not take the lease: the caller adds it when it builds the frame.
+    pub fn take_gpu(&self, seen: &mut u64) -> Option<(u32, u64, u64)> {
+        let seq = self.dword(GPU_SEQ).load(Ordering::Acquire);
+        if seq == *seen {
+            return None;
+        }
+        let slot = self.word(GPU_SLOT).load(Ordering::Relaxed).min(SLOTS - 1);
+        let fence = self.dword(GPU_FENCE + 8 * slot as usize).load(Ordering::Relaxed);
+        let painted = self.dword(PAINTED + 8 * slot as usize).load(Ordering::Relaxed);
+        *seen = seq;
+        Some((slot, fence, painted))
     }
 
     /// Studio side: the paint time (OS monotonic nanoseconds) of the frame the last
@@ -661,6 +726,23 @@ mod tests {
         assert!(FrameRing::open("/rbsb.missing.0", 2, 2).is_err());
         let helper = FrameRing::open(studio.name(), 4, 2).unwrap();
         assert_eq!(helper.layout(), SlotLayout::Bgra8Premultiplied);
+    }
+
+    #[test]
+    fn a_gpu_publish_names_the_slot_and_does_not_copy_pixels() {
+        let studio = FrameRing::create(2, 2, SlotLayout::Rgba8Straight).unwrap();
+        let mut seen = 0;
+        assert!(studio.take_gpu(&mut seen).is_none());
+        assert_eq!(studio.claim_gpu(), Some(0));
+        studio.lease_add(0);
+        assert!(studio.claim_gpu().is_some());
+        assert_ne!(studio.claim_gpu(), Some(0));
+        studio.publish_gpu(1, 9);
+        let (slot, fence, _) = studio.take_gpu(&mut seen).unwrap();
+        assert_eq!((slot, fence), (1, 9));
+        assert!(studio.take_gpu(&mut seen).is_none());
+        studio.lease_sub(0);
+        assert_eq!(studio.claim_gpu(), Some(0));
     }
 
     #[test]

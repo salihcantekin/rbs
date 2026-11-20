@@ -4679,6 +4679,9 @@ fn start(
     if let Some(dir) = profiles.clone() {
         tree = tree.with_profiles(dir);
     }
+    // The Windows GPU page path (`with_adapter`) stays off until its sync is fixed:
+    // the helper waited on the CPU inside CEF's paint callback and froze Interact.
+    // Pages use the shared-memory path meanwhile (stability plan WP-A).
     let browser = Arc::new(tree);
     let browser_tree: Option<Arc<dyn BrowserTree>> =
         Some(Arc::clone(&browser) as Arc<dyn BrowserTree>);

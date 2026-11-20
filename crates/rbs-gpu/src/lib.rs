@@ -23,6 +23,8 @@
 //! (cross-process preview) and `exit` (Linux: waits for submitted work before the
 //! process exits), all marked low-level modules (P11).
 
+#[cfg(windows)]
+pub mod browser_pages;
 pub mod budget;
 pub mod compositor;
 pub mod context;

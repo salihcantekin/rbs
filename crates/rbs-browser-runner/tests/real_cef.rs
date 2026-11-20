@@ -42,6 +42,7 @@ fn spawn(runner: &Path, runtime: &Path) -> HelperChild {
         sound: String::new(),
         sample_rate: 0,
         page: rbs_browser_ipc::PageOptions::default(),
+        gpu: None,
     };
     spawn_helper_with_env(
         runner,

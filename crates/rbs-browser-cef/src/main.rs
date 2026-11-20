@@ -136,6 +136,15 @@ impl Page {
 
 static PAGE: OnceLock<Page> = OnceLock::new();
 
+/// Non-zero while this tree copies CEF's texture into the studio's (Windows).
+#[cfg(windows)]
+static GPU_VENDOR: AtomicU32 = AtomicU32::new(0);
+#[cfg(windows)]
+static COPIER: OnceLock<gpu::Copier> = OnceLock::new();
+
+#[cfg(windows)]
+mod gpu;
+
 fn page() -> Option<&'static Page> {
     PAGE.get()
 }
@@ -155,9 +164,23 @@ wrap_app! {
                 Some(&"autoplay-policy".into()),
                 Some(&"no-user-gesture-required".into()),
             );
-            // Software paint into the shared section. The GPU path is a later step.
-            line.append_switch(Some(&"disable-gpu".into()));
-            line.append_switch(Some(&"disable-gpu-compositing".into()));
+            // Software paint, unless this tree was given studio textures (ADR-0109
+            // decision 8). A child process sees the switch the browser process added.
+            #[cfg(windows)]
+            let shared = GPU_VENDOR.load(Ordering::Relaxed) != 0
+                || line.has_switch(Some(&"rbs-shared-textures".into())) != 0;
+            #[cfg(not(windows))]
+            let shared = false;
+            if shared {
+                // Marks the child processes. Naming a GPU vendor here left the page black.
+                #[cfg(windows)]
+                if GPU_VENDOR.load(Ordering::Relaxed) != 0 {
+                    line.append_switch(Some(&"rbs-shared-textures".into()));
+                }
+            } else {
+                line.append_switch(Some(&"disable-gpu".into()));
+                line.append_switch(Some(&"disable-gpu-compositing".into()));
+            }
             line.append_switch(Some(&"deny-permission-prompts".into()));
             // The helper never shows a window, so it needs no X11 or Wayland
             // display on Linux.
@@ -188,6 +211,31 @@ wrap_render_handler! {
             rect.y = 0;
             rect.width = i32::try_from(page.ring.width()).unwrap_or(i32::MAX);
             rect.height = i32::try_from(page.ring.height()).unwrap_or(i32::MAX);
+        }
+
+        fn screen_info(
+            &self,
+            _browser: Option<&mut Browser>,
+            screen_info: Option<&mut ScreenInfo>,
+        ) -> ::std::os::raw::c_int {
+            // Scale 1 keeps the painted bitmap the same size as the studio texture.
+            // A monitor scale paints a larger texture; copying that into the smaller
+            // slot does nothing and the page stays black.
+            let (Some(info), Some(page)) = (screen_info, page()) else {
+                return 0;
+            };
+            let width = i32::try_from(page.ring.width()).unwrap_or(0);
+            let height = i32::try_from(page.ring.height()).unwrap_or(0);
+            info.device_scale_factor = 1.0;
+            info.depth = 24;
+            info.depth_per_component = 8;
+            info.is_monochrome = 0;
+            info.rect.x = 0;
+            info.rect.y = 0;
+            info.rect.width = width;
+            info.rect.height = height;
+            info.available_rect = info.rect.clone();
+            1
         }
 
         fn on_paint(
@@ -228,6 +276,28 @@ wrap_render_handler! {
                 // adds no per-frame pass. The GPU path replaces this.
                 SlotLayout::Rgba8Straight => bgra_premultiplied_to_rgba(pixels, slot, transparent),
             });
+        }
+
+        #[cfg(windows)]
+        fn on_accelerated_paint(
+            &self,
+            _browser: Option<&mut Browser>,
+            type_: PaintElementType,
+            _dirty_rects: Option<&[Rect]>,
+            info: Option<&AcceleratedPaintInfo>,
+        ) {
+            if type_ != PaintElementType::VIEW {
+                return;
+            }
+            let (Some(info), Some(page), Some(copier)) = (info, page(), COPIER.get()) else {
+                return;
+            };
+            // CEF's handle is valid for this callback. A panic here would abort the
+            // helper (ADR-0055); the copy returns without a picture instead.
+            let handle = info.shared_texture_handle as *mut std::ffi::c_void;
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                copier.copy(handle, &page.ring);
+            }));
         }
     }
 }
@@ -827,6 +897,16 @@ fn run_browser(args: &args::Args, app: &mut App, engine: &engine::Engine) -> i32
         fps: i32::try_from(config.fps.clamp(1, 60)).unwrap_or(30),
     });
 
+    #[cfg(windows)]
+    if let Some(share) = config.gpu {
+        if let Some(copier) = gpu::Copier::open(&share) {
+            // Non-zero selects the shared-texture command line. A vendor id of 0
+            // would leave the software switches on.
+            GPU_VENDOR.store(share.vendor.max(1), Ordering::Relaxed);
+            let _ = COPIER.set(copier);
+        }
+    }
+
     // Control messages, then stdin closing: the studio's stop (ADR-0109 decision 8,
     // ADR-0132 decision 8). The loop takes them on CEF's UI thread.
     let stop = std::sync::Arc::new(AtomicBool::new(false));
@@ -996,7 +1076,11 @@ fn browse(
 ) -> i32 {
     // The first navigation: the cycle starts in it already.
     page.ours.store(true, Ordering::Release);
-    let window = WindowInfo::default().set_as_windowless(Default::default());
+    let mut window = WindowInfo::default().set_as_windowless(Default::default());
+    #[cfg(windows)]
+    if COPIER.get().is_some() {
+        window.shared_texture_enabled = 1;
+    }
     let browser_settings = BrowserSettings {
         windowless_frame_rate: page.fps,
         // 0 is fully transparent; otherwise an opaque black page background.
