@@ -27,6 +27,7 @@ mod scene;
 mod token;
 mod vcam;
 
+use std::fmt;
 use std::io::{BufRead, IsTerminal};
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -40,7 +41,7 @@ use rbs_engine::Engine;
 use rbs_gpu::{GpuContext, GpuRequest};
 use rbs_graph::description::NodeId;
 use rbs_graph::runtime::{FaultCause, RuntimeEvent};
-use rbs_record::{AudioSettings, Progress, RecordAdapters, RecordSettings, Recording};
+use rbs_record::{AudioSettings, Progress, RecordAdapters, RecordError, RecordSettings, Recording};
 use rbs_transport::{ReconnectPolicy, Secret, TransportInput};
 
 use crate::args::{Command, RecordArgs, StreamTarget};
@@ -311,7 +312,35 @@ fn line(elapsed: Duration, p: &Progress) -> String {
     s
 }
 
-fn record(a: &RecordArgs) -> Result<(), String> {
+/// A `record` or `stream` failure. A studio start keeps [`RecordError`] until it is
+/// printed; every other failure is already a sentence.
+enum RecordCommandError {
+    Record(RecordError),
+    Other(String),
+}
+
+impl fmt::Display for RecordCommandError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Record(error) => write!(f, "{error}"),
+            Self::Other(message) => f.write_str(message),
+        }
+    }
+}
+
+impl From<String> for RecordCommandError {
+    fn from(message: String) -> Self {
+        Self::Other(message)
+    }
+}
+
+impl From<&str> for RecordCommandError {
+    fn from(message: &str) -> Self {
+        Self::Other(message.to_owned())
+    }
+}
+
+fn record(a: &RecordArgs) -> Result<(), RecordCommandError> {
     let mut registered = platform::adapters();
     for e in registered.errors {
         rbs_crash::errln!("warning: {e}");
@@ -326,13 +355,15 @@ fn record(a: &RecordArgs) -> Result<(), String> {
         return Err(format!(
             "recording is not available on {} yet (no video encoder adapters are wired)",
             std::env::consts::OS
-        ));
+        )
+        .into());
     }
     if !a.no_audio && adapters.audio_encoders.ids().next().is_none() {
         return Err(format!(
             "no audio encoder is wired on {} yet; pass --no-audio to record the picture only",
             std::env::consts::OS
-        ));
+        )
+        .into());
     }
 
     // The stream key is checked before any device or permission prompt is touched.
@@ -354,10 +385,9 @@ fn record(a: &RecordArgs) -> Result<(), String> {
             let out =
                 std::path::absolute(&a.out).map_err(|e| format!("{}: {e}", a.out.display()))?;
             if out.exists() && !a.overwrite {
-                return Err(format!(
-                    "{} exists; pass --overwrite to replace it",
-                    out.display()
-                ));
+                return Err(
+                    format!("{} exists; pass --overwrite to replace it", out.display()).into(),
+                );
             }
             RecordSettings::new(
                 built.canvas,
@@ -419,7 +449,7 @@ fn record(a: &RecordArgs) -> Result<(), String> {
             if let Some(out) = file.as_ref().filter(|f| !existed && f.exists()) {
                 let _ = std::fs::remove_file(out);
             }
-            return Err(e.to_string());
+            return Err(RecordCommandError::Record(e));
         }
     };
     let started = recording.started().clone();
@@ -614,14 +644,17 @@ fn record(a: &RecordArgs) -> Result<(), String> {
     match failure {
         // The stream failed before it ever reached the server.
         Some(why) if a.stream.is_some() && p.connects == 0 => {
-            Err(format!("never connected to {url}: {why}"))
+            Err(format!("never connected to {url}: {why}").into())
         }
-        Some(why) => Err(why),
-        None if a.stream.is_some() && p.connects == 0 => Err(format!("never connected to {url}")),
+        Some(why) => Err(why.into()),
+        None if a.stream.is_some() && p.connects == 0 => {
+            Err(format!("never connected to {url}").into())
+        }
         None if p.packets_muxed() == 0 => Err(format!(
             "no packet reached the {}",
             if a.stream.is_some() { "stream" } else { "file" }
-        )),
+        )
+        .into()),
         None if !report.shutdown_errors.is_empty() => Err("the engine did not stop cleanly".into()),
         None => Ok(()),
     }
@@ -875,6 +908,17 @@ mod tests {
             )
         );
         assert_eq!(describe_event(&RuntimeEvent::Cleared { node }, &[]), None);
+    }
+
+    #[test]
+    fn a_busy_canvas_stays_a_record_error_until_it_is_printed() {
+        let id = rbs_scene::model::CanvasId::from_raw(7);
+        let error = RecordCommandError::Record(RecordError::CanvasBusy(id));
+        assert!(matches!(
+            error,
+            RecordCommandError::Record(RecordError::CanvasBusy(got)) if got == id
+        ));
+        assert_eq!(error.to_string(), RecordError::CanvasBusy(id).to_string());
     }
 
     #[test]
