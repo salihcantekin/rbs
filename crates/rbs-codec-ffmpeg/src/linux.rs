@@ -42,6 +42,9 @@ const AVERROR_EAGAIN: c_int = -11;
 const AVERROR_EOF: c_int = -0x2046_4F45;
 /// The encoder's `initial_padding` (its delay) and `frame_size`.
 const AAC_DELAY: c_int = 1024;
+/// `AV_OPT_SEARCH_CHILDREN`: also search the context's children, where an encoder's
+/// private options (such as the AAC encoder's `aac_coder`) live in `priv_data`.
+const AV_OPT_SEARCH_CHILDREN: c_int = 1;
 
 /// Byte offsets of the fields the adapter reads or writes, for one pair of majors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -301,7 +304,7 @@ impl FfmpegAacFactory {
 }
 
 /// `aac_coder` from the adapter options. Absent leaves libavcodec's default
-/// (twoloop). A different default needs an R10 measurement before it is set here.
+/// (twoloop). The R10 measurement is in the output ports spec; the owner picks the default.
 fn aac_coder(config: &AudioEncoderConfig) -> Result<Option<std::ffi::CString>, CreateError> {
     let Some((_, value)) = config
         .adapter_options
@@ -438,7 +441,14 @@ impl Context {
                 }
             }
             if let Some(coder) = coder {
-                let r = (api.opt_set)(ptr, c"aac_coder".as_ptr(), coder.as_ptr(), 0);
+                // A private option of the aac encoder: without the children flag
+                // libavcodec answers "Option not found".
+                let r = (api.opt_set)(
+                    ptr,
+                    c"aac_coder".as_ptr(),
+                    coder.as_ptr(),
+                    AV_OPT_SEARCH_CHILDREN,
+                );
                 if r < 0 {
                     return Err(device("option aac_coder", r));
                 }
