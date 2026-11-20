@@ -4834,6 +4834,7 @@ version = "0.0.1"
 dependencies = [
  "allocation-counter",
  "bytes",
+ "criterion 0.8.2",
  "rbs-capture",
  "rbs-core",
  "rbs-system-probe",

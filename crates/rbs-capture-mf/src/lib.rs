@@ -42,6 +42,38 @@ const MAX_PLANES: usize = 3;
 
 #[cfg(windows)]
 mod gpu_nv12;
+
+/// The camera callback's NV12 copy into a shared texture, for the `gpu_nv12`
+/// benchmark only (hot-path measurement, `measure-performance` skill).
+#[cfg(windows)]
+#[doc(hidden)]
+pub mod bench {
+    use rbs_core::media::Size;
+
+    /// A shared NV12 texture ring on the first adapter.
+    pub struct Nv12Ring(crate::gpu_nv12::GpuRing);
+
+    impl Nv12Ring {
+        /// `None` when the first adapter cannot share NV12 textures.
+        pub fn open(width: u32, height: u32, slots: usize) -> Option<Self> {
+            let luid = crate::gpu_nv12::first_adapter_luid()?;
+            crate::gpu_nv12::GpuRing::open(luid, Size::new(width, height), slots).map(Self)
+        }
+
+        /// What the callback does with one locked picture: copy, signal, flush.
+        /// `picture` holds `height` luma rows and `height / 2` chroma rows of `pitch`
+        /// bytes. `false` when the copy failed.
+        pub fn write(&self, slot: usize, picture: &[u8], pitch: u32, height: u32) -> bool {
+            let rows = height as usize + height as usize / 2;
+            if picture.len() < pitch as usize * rows {
+                return false;
+            }
+            self.0
+                .write(slot, picture.as_ptr(), pitch, height)
+                .is_some()
+        }
+    }
+}
 #[cfg(windows)]
 mod win;
 

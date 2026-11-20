@@ -172,6 +172,17 @@ impl Drop for GpuRing {
     }
 }
 
+/// LUID of the first DXGI adapter (tests and the benchmark).
+pub(crate) fn first_adapter_luid() -> Option<u64> {
+    // SAFETY: the factory is local and released at the end of this call.
+    unsafe {
+        let factory: IDXGIFactory4 = CreateDXGIFactory1().ok()?;
+        let adapter: IDXGIAdapter = factory.EnumAdapters(0).ok()?;
+        let desc = adapter.GetDesc().ok()?;
+        Some((desc.AdapterLuid.LowPart as u64) | ((desc.AdapterLuid.HighPart as u64) << 32))
+    }
+}
+
 fn close_nt(value: u64) {
     if value != 0 {
         // SAFETY: `value` is an NT handle this ring created and has not closed.
@@ -361,12 +372,6 @@ mod tests {
     }
 
     fn default_luid() -> Option<u64> {
-        // SAFETY: the factory is local and released at the end of this call.
-        unsafe {
-            let factory: IDXGIFactory4 = CreateDXGIFactory1().ok()?;
-            let adapter: IDXGIAdapter = factory.EnumAdapters(0).ok()?;
-            let desc = adapter.GetDesc().ok()?;
-            Some((desc.AdapterLuid.LowPart as u64) | ((desc.AdapterLuid.HighPart as u64) << 32))
-        }
+        first_adapter_luid()
     }
 }
