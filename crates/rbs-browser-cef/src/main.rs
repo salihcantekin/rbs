@@ -193,18 +193,21 @@ wrap_app! {
             #[cfg(not(windows))]
             let shared = false;
             if shared {
-                // Marks the child processes, and pins CEF's GPU process to the
-                // studio's adapter (ADR-0157 decision 8). Vendor switches left the page
-                // black. Chromium reads the value as decimal `<high>,<low>` (ui/gl/gl_display.cc);
-                // anything else makes the GPU process fail at EGL start.
+                // Marks the child processes. The GPU process is not pinned to an
+                // adapter by default: with `--use-adapter-luid` (and earlier with vendor
+                // switches) CEF 156 started but never painted on SC-PC. Another adapter
+                // shows as a failed open of CEF's texture instead (ADR-0157 decision 8).
+                // `RBS_BROWSER_ADAPTER_SWITCH` adds the switch for device checks only.
                 #[cfg(windows)]
                 if luid != 0 {
                     line.append_switch(Some(&"rbs-shared-textures".into()));
-                    let value = adapter_luid_switch(luid);
-                    line.append_switch_with_value(
-                        Some(&"use-adapter-luid".into()),
-                        Some(&value.as_str().into()),
-                    );
+                    if std::env::var_os("RBS_BROWSER_ADAPTER_SWITCH").is_some() {
+                        let value = adapter_luid_switch(luid);
+                        line.append_switch_with_value(
+                            Some(&"use-adapter-luid".into()),
+                            Some(&value.as_str().into()),
+                        );
+                    }
                 }
             } else {
                 line.append_switch(Some(&"disable-gpu".into()));
