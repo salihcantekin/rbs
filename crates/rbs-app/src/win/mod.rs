@@ -123,10 +123,19 @@ pub fn watch_os_scheme(on_change: impl Fn() + Send + 'static) {
 }
 
 static SCHEME: std::sync::Mutex<Option<Box<dyn Fn() + Send>>> = std::sync::Mutex::new(None);
+/// The slot last given to the callback. Applying it asks Windows to refresh menus,
+/// and that sends `WM_SETTINGCHANGE` again for the same slot. Handling that repeat
+/// never returns to the close button.
+static SCHEME_SLOT: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
 
-/// Runs the theme callback registered by [`watch_os_scheme`]. The window procedure
-/// calls this on the UI thread; the callback itself queues the UI update.
+/// Runs the theme callback registered by [`watch_os_scheme`] when the slot changed.
+/// The window procedure calls this on the UI thread; the callback queues the UI update.
 pub(crate) fn notify_os_scheme() {
+    use std::sync::atomic::Ordering;
+    let slot = os_scheme_slot();
+    if SCHEME_SLOT.swap(slot, Ordering::Relaxed) == slot {
+        return;
+    }
     let guard = SCHEME
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
