@@ -78,7 +78,34 @@ enum Job {
     Run(Task),
 }
 
+/// What a job writes, for a wait on one entry only ([`Saver::flush_entry`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Key {
+    Collection(EntryId),
+    Profile(EntryId),
+    Current,
+    /// A task may touch anything.
+    Run,
+}
+
+impl Key {
+    /// Whether a wait for `entry` must wait for this job: a save of that entry, or a
+    /// task.
+    fn touches(&self, entry: &Key) -> bool {
+        self == entry || *self == Key::Run
+    }
+}
+
 impl Job {
+    fn key(&self) -> Key {
+        match self {
+            Job::Collection(id, _) => Key::Collection(id.clone()),
+            Job::Profile(id, _) => Key::Profile(id.clone()),
+            Job::Current(_) => Key::Current,
+            Job::Run(_) => Key::Run,
+        }
+    }
+
     /// A newer job of the same entry replaces one still waiting at the end of the queue.
     fn replaces(&self, older: &Job) -> bool {
         match (self, older) {
@@ -101,7 +128,8 @@ pub const COLLECTION_MAX_DELAY: Duration = Duration::from_secs(5);
 #[derive(Default)]
 struct Queue {
     jobs: VecDeque<Job>,
-    busy: bool,
+    /// The job the writer applies now.
+    busy: Option<Key>,
     stop: bool,
     /// [`Saver::flush`] waits: a held collection save is written at once.
     hurry: bool,
@@ -209,7 +237,31 @@ impl Saver {
             q.hurry = true;
             self.shared.changed.notify_all();
         }
-        while !q.jobs.is_empty() || q.busy {
+        while !q.jobs.is_empty() || q.busy.is_some() {
+            q = match self.shared.changed.wait(q) {
+                Ok(q) => q,
+                Err(_) => return,
+            };
+        }
+    }
+
+    /// Waits until every save of `entry` asked for so far, and every task, is written;
+    /// returns at once when none is queued or being written, so loading another entry
+    /// does not wait for the disk (docs/architecture/threads.md). A held save of it is
+    /// written at once.
+    fn flush_entry(&self, entry: &Key) {
+        let Ok(mut q) = self.shared.queue.lock() else {
+            return;
+        };
+        let waits = |q: &Queue| {
+            q.jobs.iter().any(|j| j.key().touches(entry))
+                || q.busy.as_ref().is_some_and(|b| b.touches(entry))
+        };
+        if q.jobs.iter().any(|j| j.key().touches(entry)) {
+            q.hurry = true;
+            self.shared.changed.notify_all();
+        }
+        while waits(&q) {
             q = match self.shared.changed.wait(q) {
                 Ok(q) => q,
                 Err(_) => return,
@@ -252,7 +304,7 @@ fn write_jobs(shared: &Shared, data: &UserData, lock: &WriterLock, on_error: &dy
                         q.due = None;
                         q.since = None;
                     }
-                    q.busy = true;
+                    q.busy = Some(job.key());
                     break job;
                 }
                 q.hurry = false;
@@ -295,7 +347,7 @@ fn write_jobs(shared: &Shared, data: &UserData, lock: &WriterLock, on_error: &dy
             on_error(why);
         }
         if let Ok(mut q) = shared.queue.lock() {
-            q.busy = false;
+            q.busy = None;
             shared.changed.notify_all();
         }
     }
@@ -402,6 +454,13 @@ impl UserSession {
         }
     }
 
+    /// Waits until every save of `entry` and every task is written ([`Saver::flush_entry`]).
+    fn flush_entry(&self, entry: &Key) {
+        if let Some(s) = &self.saver {
+            s.flush_entry(entry);
+        }
+    }
+
     /// Hands the writer over for the shutdown thread (ADR-0156 decision 5): the caller
     /// flushes and drops it there, which joins the writer thread and releases the
     /// writer lock. From now on this session saves nothing, as a read-only one.
@@ -449,8 +508,9 @@ impl UserSession {
     /// Uses the output profile `id` from now on (its sections replace
     /// [`UserSession::profile`]) and saves the choice.
     pub fn switch_profile(&mut self, id: &EntryId) -> Result<(), String> {
-        // A save of the profile in use still waiting is written first.
-        self.flush();
+        // A save of that profile still waiting is written first; saves of others do not
+        // hold the switch.
+        self.flush_entry(&Key::Profile(id.clone()));
         let entry = self.data.profiles().load(id).map_err(|e| e.to_string())?;
         if let Some(s) = &self.saver {
             Names::set(&s.shared.names.profiles, id, &entry.name);
@@ -503,8 +563,9 @@ impl UserSession {
 
     /// Loads the scene collection `id`, to run it.
     pub fn load_collection(&self, id: &EntryId) -> Result<(String, SceneCollection), String> {
-        // A save of it still waiting is written first.
-        self.flush();
+        // A save of it still waiting is written first; saves of others do not hold the
+        // switch.
+        self.flush_entry(&Key::Collection(id.clone()));
         let mut entry = self
             .data
             .scene_collections()
@@ -521,6 +582,8 @@ impl UserSession {
         if !crate::browser_profiles::keeps_any(collection) {
             return;
         }
+        // Reads every other collection: their saves still waiting are written first.
+        self.flush();
         let taken = self.profile_ids_except(id);
         if crate::browser_profiles::renew(collection, &taken, false).unwrap_or(0) > 0
             && let Some(s) = &self.saver
@@ -1338,6 +1401,44 @@ mod tests {
         let seen = seen.lock().unwrap();
         assert_eq!(seen.len(), 1, "{seen:?}");
         assert!(seen[0].contains("does not exist"), "{seen:?}");
+    }
+
+    /// A wait for one entry passes a held save of another one, and writes its own.
+    #[test]
+    fn a_flush_of_one_entry_skips_saves_of_others() {
+        let d = Dir::new("entry");
+        let data = UserData::new(&d.0);
+        let lock = data.try_lock().unwrap().unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&seen);
+        let on_error: OnError = Arc::new(move |why| sink.lock().unwrap().push(why));
+        let saver = Saver::start_with(data, lock, on_error, Duration::from_secs(3600)).unwrap();
+        let held = EntryId::parse("held").unwrap();
+        let other = EntryId::parse("other").unwrap();
+        Names::set(&saver.shared.names.collections, &held, "Held");
+        saver
+            .shared
+            .push(Job::Collection(held.clone(), SceneCollection::new()));
+        // Nothing of `other` waits: returns with the held save still queued.
+        saver.flush_entry(&Key::Collection(other));
+        assert_eq!(saver.shared.queue.lock().unwrap().jobs.len(), 1);
+        assert!(seen.lock().unwrap().is_empty());
+        // A wait for the held entry writes it at once (it was never created, so the
+        // write reports that).
+        saver.flush_entry(&Key::Collection(held));
+        assert!(saver.shared.queue.lock().unwrap().jobs.is_empty());
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1, "{seen:?}");
+        assert!(seen[0].contains("does not exist"), "{seen:?}");
+    }
+
+    #[test]
+    fn a_task_is_waited_for_by_any_entry() {
+        let k = Key::Collection(EntryId::parse("a").unwrap());
+        assert!(Key::Run.touches(&k));
+        assert!(k.touches(&k));
+        assert!(!Key::Current.touches(&k));
+        assert!(!Key::Profile(EntryId::parse("a").unwrap()).touches(&k));
     }
 
     #[test]

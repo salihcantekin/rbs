@@ -345,7 +345,7 @@ fn long_tasks(long: &[(Duration, &'static Location<'static>)]) -> String {
             None => places.push((at, 1, took, took)),
         }
     }
-    places.sort_by(|a, b| b.2.cmp(&a.2));
+    places.sort_by_key(|p| std::cmp::Reverse(p.2));
     let top: Vec<String> = places
         .iter()
         .take(3)
