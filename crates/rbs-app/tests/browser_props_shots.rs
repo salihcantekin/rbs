@@ -129,6 +129,9 @@ fn page_tab_screenshots() {
     for (base, b) in [(Base::Dark, "dark"), (Base::Light, "light")] {
         shot(&file, base, &format!("page-{b}"), page(0), &dir);
         shot(&file, base, &format!("page-error-{b}"), page(3), &dir);
+        let mut fell_back = page(5);
+        fell_back.running = true;
+        shot(&file, base, &format!("page-gpu-fallback-{b}"), fell_back, &dir);
         let mut local = page(1);
         local.file = true;
         local.url = "file:///Users/me/overlays/scoreboard.html".into();

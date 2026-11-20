@@ -14159,7 +14159,7 @@ impl Host {
                 .and_then(|st| st.fault)
                 .map(|f| f as u8)
                 .hash(&mut hasher);
-            state.and_then(|st| st.reason).hash(&mut hasher);
+            crate::browser_tree::page_reason(&self.studio, source.id, state).hash(&mut hasher);
             let latency = self.studio.audio_latency(source.id);
             latency.map(|l| l.filter_latency_ns).hash(&mut hasher);
             latency.map(|l| l.heard_offset_ns).hash(&mut hasher);
@@ -14354,7 +14354,7 @@ impl Host {
                     text: (SourceKind::of(&s.type_id) == Some(SourceKind::Text))
                         .then(|| s.settings.clone()),
                     browser: (kind == Some(SourceKind::Browser)).then(|| browser_page_settings(s)),
-                    browser_reason: state.and_then(|st| st.reason),
+                    browser_reason: crate::browser_tree::page_reason(&self.studio, s.id, state),
                     cap_has,
                     cap_l,
                     cap_t,

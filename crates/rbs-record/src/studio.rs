@@ -73,6 +73,7 @@ use crate::recording::{
 };
 use crate::select::{self, Chosen};
 
+mod browser_page;
 mod estimate_plan;
 mod vcam;
 pub use estimate_plan::{PlannedOutput, StartPlanRequest};
@@ -4054,13 +4055,6 @@ impl Studio {
                 control.stop_background(false);
             }
         }
-    }
-
-    /// True while browser source `source` has a running page (a helper process).
-    pub fn browser_running(&self, source: SourceId) -> bool {
-        self.browser_controls
-            .get(&source)
-            .is_some_and(|control| control.helper_running())
     }
 
     /// Sends a control message to the running page of browser source `source`

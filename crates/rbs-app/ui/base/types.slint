@@ -1389,7 +1389,8 @@ export struct TextData { on: bool, id: int, kind: int, text: string, file: strin
 // A browser source's Page tab (ADR-0109, ADR-0132, ADR-0149). `file` is true for a local
 // file (`url` is then its `file:` address and `file-name` its name). `state`: 0 the page
 // runs or will run when shown, 1 the browser engine is not installed, 2 both page slots
-// are taken, 3 the page failed to load (`status` says why), 4 hidden and not running.
+// are taken, 3 the page failed to load (`status` says why), 4 hidden and not running,
+// 5 the page runs drawn without the graphics card (ADR-0157 decision 9).
 export struct BrowserData { on: bool, id: int, file: bool, url: string, file-name: string, width: int, height: int, canvas-w: int, canvas-h: int, fps: int, zoom: int, transparent: bool, css: string, reload-on-file-change: bool, keep-signed-in: bool, reload-every: int, script: string, script-on-load: bool, script-every: int, run: int, on-return: int, retry-on-error: bool, running: bool, state: int, status: string }
 
 export struct SourceSettingsData { id: int, name: string, kind-code: int, modes: [ModeData], mode-labels: [string], mode-index: int, rates: [string], rate-index: int, has-cursor: bool, cursor: bool, cap-has: bool, cap-l: int, cap-t: int, cap-r: int, cap-b: int, chrome-on: bool, chrome-t: int, chrome-r: int, chrome-b: int, chrome-l: int, chrome-fill: int, has-work-rect: bool, pic-w: int, pic-h: int, has-region-preview: bool, region-preview: image }

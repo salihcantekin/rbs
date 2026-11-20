@@ -15,7 +15,7 @@
 "crates/rbs-app/tests/studio_record.rs" = 3156
 "crates/rbs-app/tests/studio_scenes.rs" = 2288
 "crates/rbs-app/tests/studio_stream.rs" = 2464
-"crates/rbs-record/src/studio.rs" = 6096
+"crates/rbs-record/src/studio.rs" = 6090
 "crates/rbs-record/tests/studio.rs" = 3328
 "crates/rbs-scene/src/collection.rs" = 2992
 "crates/rbs-scene/tests/binder.rs" = 2882
