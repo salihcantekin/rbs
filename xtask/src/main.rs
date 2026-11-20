@@ -22,6 +22,7 @@
 //! (`verify`, owner decision D3 of 2026-11-20).
 
 mod affected;
+mod check_logs;
 mod check_size;
 mod check_ui;
 mod device_check;
@@ -197,6 +198,7 @@ fn check_workspace() -> Result<(), Vec<String>> {
             ));
         }
     }
+    errors.extend(check_logs::run(&root));
     if errors.is_empty() {
         Ok(())
     } else {
@@ -292,11 +294,22 @@ fn deny(from: &str, to: &str) -> Option<String> {
                 .to_owned(),
         );
     }
+    // The log file writer serves composition roots and the browser helpers only
+    // (ADR-0158 decision 4).
+    if to == "rbs-log" && !(class(from) == Some(Class::App) || from == "rbs-browser-runner") {
+        return Some("only composition roots and the browser helpers use rbs-log".to_owned());
+    }
     let from_class = class(from)?;
     let to_class = class(to);
     match from_class {
         Class::Core => deny_core(to, to_class),
         Class::Helper => deny_helper(from, to, to_class),
+        Class::Diagnostics => deny_named(
+            to,
+            to_class,
+            &["rbs-core", "rbs-crash", "log"],
+            "rbs-log depends on rbs-core, rbs-crash and log only (ADR-0158)",
+        ),
         Class::Support => deny_support(from, to, to_class),
         Class::Engine => deny_engine(from, to, to_class),
         Class::Adapter => deny_adapter(from, to, to_class),
@@ -462,6 +475,7 @@ fn deny_engine(from: &str, to: &str, to_class: Option<Class>) -> Option<String> 
             | Class::Tool
             | Class::Plugin
             | Class::PluginSdk
+            | Class::Diagnostics
             | Class::EditorProject,
         ) => Some("the engine never depends on an adapter, the control API or the UI".to_owned()),
         // Support crates that carry OS bindings stay with their adapters.
@@ -521,7 +535,8 @@ fn deny_adapter(from: &str, to: &str, to_class: Option<Class>) -> Option<String>
             | Class::RecordingModel
             | Class::EditorProject,
         ) => Some("an adapter sees its port, foundation and its support crate".to_owned()),
-        Some(Class::Core | Class::Helper | Class::Support) => None,
+        // Diagnostics: only rbs-browser-runner gets here (the rbs-log rule in `deny`).
+        Some(Class::Core | Class::Helper | Class::Support | Class::Diagnostics) => None,
         None if is_ui_toolkit(to) => Some("an adapter does not use a UI toolkit".to_owned()),
         None => None,
     }
@@ -607,6 +622,8 @@ enum Class {
     Denoise,
     /// `rbs-manifest`: the recording model (ADR-0089).
     RecordingModel,
+    /// `rbs-log`: the diagnostics log file (ADR-0158).
+    Diagnostics,
     /// `rbs-project`: editor projects, used only by composition roots (ADR-0089).
     EditorProject,
 }
@@ -625,6 +642,7 @@ fn class(name: &str) -> Option<Class> {
         }
         "rbs-gpu" | "rbs-audio" | "rbs-audio-filters" | "rbs-engine" | "rbs-nodes"
         | "rbs-sources" | "rbs-record" | "rbs-filters" => Class::Engine,
+        "rbs-log" => Class::Diagnostics,
         "rbs-api" => Class::Control,
         "rbs-api-ws" | "rbs-api-ipc" => Class::Transport,
         "rbs-ui" => Class::Ui,

@@ -4578,6 +4578,7 @@ dependencies = [
  "rbs-gpu",
  "rbs-graph",
  "rbs-import-obs",
+ "rbs-log",
  "rbs-manifest",
  "rbs-mcp",
  "rbs-media-anim",
@@ -5185,6 +5186,15 @@ dependencies = [
  "rbs-scene",
  "rbs-ui",
  "serde_json",
+]
+
+[[package]]
+name = "rbs-log"
+version = "0.0.1"
+dependencies = [
+ "log",
+ "rbs-core",
+ "rbs-crash",
 ]
 
 [[package]]

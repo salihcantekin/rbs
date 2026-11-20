@@ -1,0 +1,21 @@
+[package]
+name = "rbs-log"
+description = "The RBS diagnostics log file: a sink for rbs_core::log that writes a rotating, redacted file off the calling thread (ADR-0158)."
+version.workspace = true
+edition.workspace = true
+# `File::try_lock` (1.89). Used only by composition roots and helper executables.
+rust-version = "1.89"
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Layer class Diagnostics (xtask check-layers): rbs-core, rbs-crash and log only.
+[dependencies]
+rbs-core = { path = "../rbs-core" }
+rbs-crash = { path = "../rbs-crash" }
+# Libraries in the build (wgpu, winit, rustls) report through `log`; the bridge
+# forwards those records into Area::Lib. No default features.
+log = { version = "0.4", default-features = false, features = ["std"] }
+
+[lints]
+workspace = true

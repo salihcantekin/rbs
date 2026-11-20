@@ -6,6 +6,7 @@
 //! - [`capability`]: the capability and requirement model used to pick backends (ADR-0003).
 //! - [`fault`]: the typed cause of a source failure (ADR-0077).
 //! - [`pause`]: pause windows of a recording (ADR-0124).
+//! - [`log`]: the diagnostics log facade and its macros (ADR-0158).
 //! - [`lifecycle`]: Installed / Standby / Active states (ADR-0013).
 //! - [`registry`]: adapter factories and runtime selection by capability.
 //! - [`thread`]: the thread policy port, scheduling classes for worker threads (ADR-0030).
@@ -20,6 +21,7 @@ pub mod capability;
 pub mod conformance;
 pub mod fault;
 pub mod lifecycle;
+pub mod log;
 pub mod media;
 pub mod pause;
 pub mod registry;

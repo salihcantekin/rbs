@@ -21,7 +21,9 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub mod log_redact;
 pub mod out;
+pub use log_redact::{LogRedactor, redact_for_log};
 
 /// The error bar's text for a caught panic.
 pub const CAUGHT_TEXT: &str = "Something went wrong in RBS. The recording and the stream keep running; a report was saved in the crash-reports folder of the settings folder.";
@@ -61,7 +63,8 @@ pub fn report_panics_on_this_thread() {
 
 /// Text that must never appear in a report, such as a stream key or a stream URL
 /// in use: the hook replaces it with `<redacted>`. Kept for the life of the process
-/// (at most [`MAX_SECRETS`], the oldest dropped first).
+/// (at most [`MAX_SECRETS`], the least recently added dropped first). Register a
+/// secret before any line that holds it is logged.
 pub fn add_secret(secret: &str) {
     if secret.len() < 4 {
         return; // Too short to redact without hiding ordinary text.
@@ -69,19 +72,36 @@ pub fn add_secret(secret: &str) {
     let mut secrets = SECRETS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if secrets.iter().any(|s| s == secret) {
+    if push_secret(&mut secrets, secret, MAX_SECRETS) {
         return;
     }
-    if secrets.len() == MAX_SECRETS {
-        secrets.remove(0);
-    }
-    secrets.push(secret.to_owned());
+    SECRETS_CHANGED.fetch_add(1, Ordering::Release);
 }
 
-/// Secrets [`add_secret`] keeps at most.
-pub const MAX_SECRETS: usize = 16;
+/// Adds `secret` to `list`, most recently added last: one already listed moves to the
+/// end (true: the list's contents did not change), so a secret still in use is not the
+/// first to go at `cap`.
+fn push_secret(list: &mut Vec<String>, secret: &str, cap: usize) -> bool {
+    if let Some(i) = list.iter().position(|s| s == secret) {
+        let s = list.remove(i);
+        list.push(s);
+        return true;
+    }
+    if list.len() >= cap {
+        list.remove(0);
+    }
+    list.push(secret.to_owned());
+    false
+}
 
-static SECRETS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+/// Counts changes to the secrets list, so a log writer can copy it only when it changed.
+pub(crate) static SECRETS_CHANGED: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Secrets [`add_secret`] keeps at most.
+pub const MAX_SECRETS: usize = 64;
+
+pub(crate) static SECRETS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
 fn payload_text(payload: &(dyn std::any::Any + Send)) -> String {
     if let Some(s) = payload.downcast_ref::<&str>() {
@@ -543,13 +563,14 @@ fn stale_marker(path: &Path) -> Option<Stale> {
 }
 
 /// The user's home directory, from the environment.
-fn home_dir() -> Option<String> {
+pub fn home_dir() -> Option<String> {
     let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
     std::env::var(var).ok().filter(|h| h.len() > 1)
 }
 
 /// URL schemes whose rest may hold a stream key or a passphrase.
-const SECRET_SCHEMES: [&str; 5] = ["rtmp://", "rtmps://", "srt://", "rist://", "whip://"];
+pub(crate) const SECRET_SCHEMES: [&str; 5] =
+    ["rtmp://", "rtmps://", "srt://", "rist://", "whip://"];
 
 /// `text` with the home directory shown as `~` and everything after a stream URL's
 /// scheme (host, path, key, query) replaced, so a report holds no stream key and no
@@ -576,7 +597,7 @@ pub fn redact(text: &str, home: Option<&str>) -> String {
 /// `text` with `home` shown as `~` where it is a whole path: followed by a separator,
 /// the end, or a character that cannot be part of a file name in a report (quote,
 /// space, colon). On Windows paths are matched ignoring ASCII case.
-fn replace_home(text: &str, home: &str, ignore_case: bool) -> String {
+pub(crate) fn replace_home(text: &str, home: &str, ignore_case: bool) -> String {
     let home = home.trim_end_matches(['/', '\\']);
     if home.is_empty() {
         return text.to_owned();
@@ -624,7 +645,7 @@ fn redact_secrets(text: &str) -> String {
 }
 
 /// Case-insensitive `find` of a `needle` (ASCII case only).
-fn lower_find(hay: &str, needle: &str) -> Option<usize> {
+pub(crate) fn lower_find(hay: &str, needle: &str) -> Option<usize> {
     hay.as_bytes()
         .windows(needle.len())
         .position(|w| w.eq_ignore_ascii_case(needle.as_bytes()))
@@ -683,6 +704,16 @@ mod tests {
             location: "src/main.rs:1:2",
             backtrace: "0: frame",
         }
+    }
+
+    #[test]
+    fn a_secret_added_again_is_kept_longest() {
+        let mut list = Vec::new();
+        assert!(!push_secret(&mut list, "a", 2));
+        assert!(!push_secret(&mut list, "b", 2));
+        assert!(push_secret(&mut list, "a", 2));
+        assert!(!push_secret(&mut list, "c", 2));
+        assert_eq!(list, ["a", "c"]);
     }
 
     #[test]
