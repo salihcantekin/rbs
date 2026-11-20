@@ -2240,6 +2240,135 @@ export component AddOnsSettings inherits Rectangle {
     }
 }
 
+// Settings › Advanced (ADR-0158 decision 8, spec diagnostics-log.md): how much the
+// diagnostics log holds, and the logs a bug report needs. A level applies at once.
+export component AdvancedSettings inherits Rectangle {
+    form := VerticalLayout {
+        spacing: Tokens.space-4;
+        alignment: start;
+        log-card := SettingsCard {
+            title: @tr("Logging");
+            id: "settings.advanced.logging";
+            more-hidden: !Experience.expert;
+            SettingRow {
+                find: "advanced.log-detail";
+                divider: false;
+                label: @tr("Log detail");
+                summary: @tr("How much the log file holds");
+                hint: @tr("Normal is right for everyday use. Detailed and Everything help find a bug: switch one on, do what went wrong again, then save the logs below.");
+                help: Studio.log-env != "" ? @tr("The RBS_LOG environment variable sets the levels now ({}), so this setting waits.", Studio.log-env) : "";
+                help-is-warning: Studio.log-env != "";
+                enabled: Studio.log-env == "";
+                fill: false;
+                changed: Studio.log-env == "" && Studio.log-detail != 2;
+                default-text: @tr("Normal");
+                reset => { Studio.set-log-detail(2); }
+                SegmentedControl {
+                    label: @tr("Log detail");
+                    options: [@tr("Errors only"), @tr("Warnings"), @tr("Normal"), @tr("Detailed"), @tr("Everything")];
+                    index: Studio.log-detail;
+                    enabled: Studio.log-env == "";
+                    selected(i) => { Studio.set-log-detail(i); }
+                }
+            }
+            SettingRow {
+                find: "advanced.log-reset";
+                label: @tr("Back to Normal at next start");
+                summary: @tr("A detailed log lasts one run");
+                hint: @tr("A detailed log grows fast. With this on, RBS goes back to Normal, for every area, when it starts again.");
+                enabled: Studio.log-env == "";
+                Toggle {
+                    label: @tr("Back to Normal at next start");
+                    checked: Studio.log-back-to-normal;
+                    enabled: Studio.log-env == "";
+                    toggled(on) => { Studio.set-log-back-to-normal(on); }
+                }
+            }
+            if Studio.log-env == "" && Studio.log-detailed: SettingsNotice {
+                text: Studio.log-back-to-normal
+                    ? @tr("A detailed level is on until RBS starts again. Do what went wrong again now, then save the logs.")
+                    : @tr("A detailed level is on and stays on. The log file grows fast; set Normal when you are done.");
+            }
+            if Experience.expert || log-card.show-all: SettingRow {
+                find: "advanced.log-areas";
+                label: @tr("Detail per area");
+                summary: @tr("Overrides Log detail for one part of RBS");
+                hint: @tr("Each area can log more or less than Log detail says. Libraries are the parts RBS is built from; they stay at Warnings unless you raise them here.");
+                enabled: Studio.log-env == "";
+                fill: false;
+                Button {
+                    text: @tr("Reset all");
+                    accessible-name: @tr("Reset every area to Log detail");
+                    enabled: Studio.log-env == "" && Studio.log-areas-changed;
+                    clicked => { Studio.reset-log-areas(); }
+                }
+            }
+            if Experience.expert || log-card.show-all: VerticalLayout {
+                for r in Studio.log-areas: SettingRow {
+                    // find: none (one row per area; the row above is found).
+                    label: r.label;
+                    enabled: Studio.log-env == "";
+                    changed: Studio.log-env == "" && r.level >= 0;
+                    default-text: @tr("Same as Log detail");
+                    reset => { Studio.set-log-area(r.name, -1); }
+                    Select {
+                        label: r.label;
+                        options: [@tr("Same as Log detail"), @tr("Errors only"), @tr("Warnings"), @tr("Normal"), @tr("Detailed"), @tr("Everything")];
+                        index: r.level + 1;
+                        enabled: Studio.log-env == "";
+                        selected(i) => { Studio.set-log-area(r.name, i - 1); }
+                    }
+                }
+            }
+        }
+        SettingsCard {
+            title: @tr("Bug report");
+            id: "settings.advanced.report";
+            SettingRow {
+                find: "advanced.save-logs";
+                divider: false;
+                label: @tr("Save logs");
+                summary: @tr("One zip to attach to a bug report");
+                hint: @tr("The last three runs, crash reports, and a summary of this computer and of the app settings. Stream keys, passwords and your home folder are left out. Look the files over before you send them.");
+                fill: false;
+                Button {
+                    text: @tr("Save logs…");
+                    kind: "primary";
+                    enabled: Studio.can-save-logs;
+                    clicked => { Studio.save-logs(); }
+                }
+            }
+            SettingRow {
+                find: "advanced.logs-folder";
+                label: @tr("Logs folder");
+                summary: @tr("Where RBS writes its log files");
+                fill: false;
+                Button {
+                    text: @tr("Open the logs folder");
+                    enabled: Studio.can-save-logs;
+                    clicked => { Studio.open-logs-folder(); }
+                }
+            }
+            SettingRow {
+                find: "advanced.report-problem";
+                label: @tr("Report a problem");
+                summary: @tr("A new issue on GitHub, with the version filled in");
+                hint: @tr("Opens a new issue on the RBS GitHub page with the RBS version and system filled in. Attach the saved zip there.");
+                fill: false;
+                Button {
+                    text: @tr("Report on GitHub…");
+                    clicked => { Studio.report-problem(); }
+                }
+            }
+            if Studio.log-save-status != "": SettingsStatus {
+                text: Studio.log-save-status;
+                tone: Studio.log-save-tone;
+            }
+        }
+    }
+    height: form.preferred-height;
+}
+
 // Settings › Permissions (ADR-0141): what the computer lets RBS use, one action per
 // row, and which app the system gives the permissions to. Statuses are read when the
 // page shows, when its window becomes active again and on Check again; nothing polls.

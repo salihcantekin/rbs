@@ -10,6 +10,7 @@
 //! Diagnostics).
 
 mod bridge;
+mod export;
 mod files;
 mod filters;
 mod time;
@@ -24,6 +25,7 @@ use std::time::{Duration, Instant, SystemTime};
 use rbs_core::log::{Record, Sink};
 
 pub use bridge::bridge_log_crate;
+pub use export::{Bundle, CRASH_REPORTS, write_zip};
 pub use files::Limits;
 pub use filters::{ParseError, apply_level, parse_filters, set_filter};
 
@@ -258,6 +260,11 @@ impl Logger {
     pub fn path(&self) -> Option<&Path> {
         self.path.as_deref()
     }
+}
+
+/// `20261120T152735Z`: a UTC time as log file names write it, for other file names.
+pub fn stamp(t: SystemTime) -> String {
+    time::compact(t)
 }
 
 /// The logs folder of this system: `RBS_LOG_DIR` when set, else macOS

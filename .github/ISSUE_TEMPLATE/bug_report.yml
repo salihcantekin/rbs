@@ -1,0 +1,38 @@
+name: Bug report
+description: Something in RBS does not work as it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. In RBS, Settings › Advanced › Save logs makes a zip with the logs of the last runs; attach it below. Look the files over first: stream keys, passwords and your home folder are left out, but other text you typed may be in them.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Add a camera source
+        2. Start recording
+        3. ...
+  - type: input
+    id: version
+    attributes:
+      label: RBS version
+      description: Filled in when you open this from Settings › Advanced.
+  - type: input
+    id: os
+    attributes:
+      label: System
+      description: Filled in when you open this from Settings › Advanced (for example macos+aarch64).
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Drag the zip from Save logs here. Set Log detail to Detailed, do what went wrong again, then save the logs.

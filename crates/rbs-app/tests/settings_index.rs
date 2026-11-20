@@ -71,7 +71,11 @@ struct Open {
 /// (ADR-0113). Any other mention of a level, a negated one included, stops the test so
 /// the scan is taught the new form instead of guessing.
 fn header_level(at: &str, header: &str) -> Option<Level> {
-    const EXPERT: &[&str] = &["if root.expert:", "if Experience.expert:"];
+    const EXPERT: &[&str] = &[
+        "if root.expert:",
+        "if Experience.expert:",
+        "if Experience.expert || log-card.show-all:",
+    ];
     const ADVANCED: &[&str] = &[
         "if root.advanced:",
         "if Experience.advanced:",

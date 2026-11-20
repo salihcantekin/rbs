@@ -16,6 +16,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod add_ons_page;
+mod advanced_page;
 mod app_menu;
 mod appearance;
 mod appearance_page;
@@ -1696,8 +1697,7 @@ fn show_caught() {
         return;
     }
     SHOWN.with(|s| s.set(Some(now)));
-    // Not through `Ctx::update` or the guarded helpers: a panic while showing it must
-    // not report itself again.
+    // Not through `Ctx::update` or the guarded helpers: a panic here must not report again.
     #[allow(clippy::disallowed_methods)]
     let _ = slint::invoke_from_event_loop(|| {
         let _ = rbs_crash::contain(|| {
@@ -2271,8 +2271,7 @@ impl Ctx {
                 app.session.set_live(live);
             }
         }
-        // One tick a second while live or recording (either canvas), none otherwise
-        // (ADR-0013).
+        // One tick a second while live or recording (either canvas), else none (ADR-0013).
         if app.session.live().is_active()
             || app.studio.vertical_rec.busy()
             || app.studio.vertical_st.busy()
@@ -2796,6 +2795,7 @@ impl Ctx {
         if let Some(w) = &app.settings {
             push(w.global::<Studio>());
         }
+        advanced_page::push(app);
     }
 
     fn sync(&self) {
@@ -4353,8 +4353,10 @@ pub(crate) const AI_TOOLS_READY: bool = true;
 
 /// Every card of the Settings window that folds (ADR-0078), for "Collapse all". A test
 /// keeps this in step with the ids in `ui/*.slint`.
-const SETTINGS_SECTIONS: [&str; 37] = [
+const SETTINGS_SECTIONS: [&str; 39] = [
     "settings.add-ons.list",
+    "settings.advanced.logging",
+    "settings.advanced.report",
     "settings.ai-tools.access",
     "settings.ai-tools.actions",
     "settings.ai-tools.connect",
@@ -4395,8 +4397,7 @@ const SETTINGS_SECTIONS: [&str; 37] = [
 
 /// Connects one window's `Sections` global to the workspace's closed sections.
 fn install_sections(g: &Sections<'_>, ctx: &Ctx) {
-    // Pure: Slint asks again when `rev` changes. While the app is busy (never at
-    // render time) the section shows open.
+    // Pure: Slint asks again when `rev` changes; while the app is busy the section is open.
     let c = ctx.clone();
     g.on_closed(move |id, _rev| {
         let (key, listed_is_closed) = section_key(id.as_str());
@@ -5818,10 +5819,10 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_ai_show_config, |app| {
         app.studio.ai_show_config();
     });
-    // Settings, Permissions (ADR-0141).
+    // Settings pages: Permissions (ADR-0141), Add-ons (ADR-0145), Advanced (ADR-0158).
     permissions_page::install(g, ctx);
-    // Settings, Add-ons (ADR-0145).
     add_ons_page::install(g, ctx);
+    advanced_page::install(g, ctx);
     // Before every redraw of the main window: popups open, move and close with a redraw,
     // and so does a change of the window's scale; the preview layer follows them
     // (ADR-0034 decisions 2 and 4).
@@ -5887,8 +5888,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     rbs_app::native::set_app_name(c"RBS");
     let _log = rbs_app::diag_log::start();
     let config = config::config_dir();
-    // A second launch while RBS keeps running brings that RBS forward and ends here
-    // (ADR-0056 decision 6).
+    // A second launch while RBS keeps running brings it forward and ends (ADR-0056 d. 6).
     #[cfg(windows)]
     if background::load(&config).0.on_close == OnClose::KeepRunning
         && rbs_app::win::signal_running()
@@ -6056,8 +6056,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
     // The stream key's store: read only when a stream starts (src/stream_key.rs).
     let keys = rbs_app::stream_key::system();
     let studio_config = config.clone();
-    // The output profile and scene collection in use (ADR-0051); failed saves are
-    // reported like other studio errors.
+    // The output profile and collection in use (ADR-0051); failed saves show as studio errors.
     let (user, collection) = rbs_app::user_session::open(
         &config,
         std::sync::Arc::new(|why| deliver(studio_host::Update::Error(why))),
@@ -6078,11 +6077,12 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
     // What closing the main window does (ADR-0056); a bad file means the default.
     let (mut bg, bg_note) = background::load(&config);
     user_notes.extend(bg_note);
-    // The experience level and the first run of a file from an older build, saved at
-    // once (ADR-0113 decisions 2 and 5). A failed save repeats this at the next start.
+    // Older files' fields (ADR-0113) and the log level of this run (ADR-0158), saved at
+    // once. A failed save repeats this at the next start.
     if bg.settle(existing_install) {
         let _ = background::save(&config, &bg);
     }
+    rbs_app::diag_log::apply(&bg);
     let (vcam, vcam_note) = vcam_page::Camera::load(&config);
     user_notes.extend(vcam_note);
     let (replay, replay_note) = replay_page::Replay::load(&config);
@@ -6467,8 +6467,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
         }
     });
 
-    // The Dock icon and Cmd+Tab bring a hidden main window back (ADR-0056 decision 6);
-    // without that way back, Close quits.
+    // Dock icon and Cmd+Tab bring a hidden main window back (ADR-0056 d. 6); else Close quits.
     #[cfg(target_os = "macos")]
     WAY_BACK.with(|w| w.set(rbs_app::native::route_show(show_from_system)));
     // Windows: the tray icon is the way back, made while Keep RBS running is set;

@@ -46,3 +46,24 @@ fn open(dir: &Path) -> std::io::Result<std::process::Child> {
     let program = "xdg-open";
     std::process::Command::new(program).arg(dir).spawn()
 }
+
+/// Opens `url` in the default browser; false when the opener did not start.
+pub fn open_url(url: &str) -> bool {
+    #[cfg(target_os = "macos")]
+    let spawned = std::process::Command::new("open").arg(url).spawn();
+    // `explorer <url>` hands it to the default browser without a console window.
+    #[cfg(windows)]
+    let spawned = std::process::Command::new("explorer").arg(url).spawn();
+    #[cfg(not(any(target_os = "macos", windows)))]
+    let spawned = std::process::Command::new("xdg-open").arg(url).spawn();
+    match spawned {
+        Ok(mut child) => {
+            // Reaped off the UI thread; it ends at once.
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+            true
+        }
+        Err(_) => false,
+    }
+}

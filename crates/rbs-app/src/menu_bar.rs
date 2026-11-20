@@ -766,8 +766,7 @@ impl CommandState for Shown<'_> {
                 Some(_) => Ok(()),
                 None => Err("The toolbar already has its default items.".to_owned()),
             },
-            // Only Go live is refused while streaming is off; End stream never is
-            // (ADR-0148 decision 8).
+            // Only Go live is refused while streaming is off, never End stream (ADR-0148 d. 8).
             "stream.toggle" if !s.streaming_shows() => Err(STREAMING_OFF.to_owned()),
             "stream.main.toggle" if !s.stream_shows(OutputCanvas::Main) => {
                 Err(STREAMING_OFF.to_owned())
@@ -1459,6 +1458,7 @@ pub fn settings_section(name: &str) -> Option<i32> {
         "ai_tools" => 10,
         "permissions" => 11,
         "add_ons" => 12,
+        "advanced" => 13,
         _ => return None,
     })
 }
@@ -2396,7 +2396,7 @@ mod tests {
             .map(|s| settings_section(s).expect("known section"))
             .collect();
         seen.sort_unstable();
-        assert_eq!(seen, (0..13).collect::<Vec<_>>());
+        assert_eq!(seen, (0..14).collect::<Vec<_>>());
         assert_eq!(settings_section("mixer"), None);
         let run = |t: &str| open_settings(&CommandId::parse(t).expect("id"));
         assert_eq!(run("ui.settings.open"), Some(Run::OpenSettings(None, None)));

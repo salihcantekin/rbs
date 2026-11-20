@@ -114,6 +114,8 @@ const AI_ACTIONS: &[Place] = &[at("ai_tools", "settings.ai-tools.actions")];
 const PERM_DEVICES: &[Place] = &[at("permissions", "settings.permissions.devices")];
 const PERM_HOLDER: &[Place] = &[at("permissions", "settings.permissions.holder")];
 const ADD_ONS: &[Place] = &[at("add_ons", "settings.add-ons.list")];
+const ADV_LOGGING: &[Place] = &[at("advanced", "settings.advanced.logging")];
+const ADV_REPORT: &[Place] = &[at("advanced", "settings.advanced.report")];
 /// The Encoding card's rows (`EncoderFields`), shared by Recording and Stream.
 const ENCODING: &[Place] = &[
     at("recording", "settings.recording.encoding"),
@@ -360,6 +362,61 @@ pub const SETTINGS: &[Setting] = &[
         "Available add-ons",
         "add-on addon download install remove update browser engine web page cef chromium",
         ADD_ONS,
+    ),
+    // Advanced (ADR-0158)
+    c(
+        "settings.advanced.logging",
+        "Logging",
+        "log logs logging diagnostics debug trace verbose level",
+        ADV_LOGGING,
+    ),
+    row(
+        "advanced.log-detail",
+        "Log detail",
+        "log level verbose debug trace errors warnings detailed everything diagnostics",
+        ADV_LOGGING,
+        Simple,
+    ),
+    row(
+        "advanced.log-reset",
+        "Back to Normal at next start",
+        "log level reset restart keep detailed",
+        ADV_LOGGING,
+        Simple,
+    ),
+    row(
+        "advanced.log-areas",
+        "Detail per area",
+        "log level area stream recording audio libraries rbs_log",
+        ADV_LOGGING,
+        Expert,
+    ),
+    c(
+        "settings.advanced.report",
+        "Bug report",
+        "bug report problem issue github logs crash support",
+        ADV_REPORT,
+    ),
+    row(
+        "advanced.save-logs",
+        "Save logs",
+        "export zip bug report support logs crash",
+        ADV_REPORT,
+        Simple,
+    ),
+    row(
+        "advanced.logs-folder",
+        "Logs folder",
+        "log files location path open show",
+        ADV_REPORT,
+        Simple,
+    ),
+    row(
+        "advanced.report-problem",
+        "Report a problem",
+        "bug issue github feedback support",
+        ADV_REPORT,
+        Simple,
     ),
     // Video
     c(

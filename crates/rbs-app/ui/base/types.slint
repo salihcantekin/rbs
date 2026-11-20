@@ -1501,6 +1501,7 @@ export struct PermissionRowData { kind: int, label: string, status: string, tone
 // One row of Settings › Add-ons (ADR-0145). `action` 0 none, 1 Download, 2 Cancel,
 // 3 Remove, 4 Update, 5 Retry (`rbs_app::add_on_text::Action`); `value` is shown
 // beside the button when not empty.
+export struct LogAreaRow { name: string, label: string, level: int }
 export struct AddOnRowData { id: string, label: string, help: string, problem: bool, value: string, action: int, action-text: string }
 
 export global Studio {
@@ -2441,6 +2442,28 @@ export global Studio {
     // (`id`, `action` as in `AddOnRowData`).
     in property <[AddOnRowData]> add-on-rows;
     callback add-on-action(string, int);
+
+    // Settings › Advanced (ADR-0158): Log detail as an index of Errors only, Warnings,
+    // Normal, Detailed, Everything; `log-env` is RBS_LOG while it sets the levels.
+    // `log-areas` rows carry an area name and its level (-1: same as Log detail).
+    in property <int> log-detail: 2;
+    in property <bool> log-detailed;
+    in property <bool> log-back-to-normal: true;
+    in property <string> log-env;
+    in property <[LogAreaRow]> log-areas;
+    in property <bool> log-areas-changed;
+    // A logs folder exists on this system.
+    in property <bool> can-save-logs: true;
+    // What the last Save logs did; tone as `SettingsStatus` (1 good, 2 problem).
+    in property <string> log-save-status;
+    in property <int> log-save-tone;
+    callback set-log-detail(int);
+    callback set-log-back-to-normal(bool);
+    callback set-log-area(string, int);
+    callback reset-log-areas();
+    callback save-logs();
+    callback open-logs-folder();
+    callback report-problem();
 }
 
 // From vcam.slint.

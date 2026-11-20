@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 /// `(year, month, day, hour, minute, second, millisecond)` of `t` in UTC. A time
 /// before 1970 reads as 1970-01-01.
-fn civil(t: SystemTime) -> (i64, i64, i64, u64, u64, u64, u32) {
+pub(crate) fn civil(t: SystemTime) -> (i64, i64, i64, u64, u64, u64, u32) {
     let d = t.duration_since(UNIX_EPOCH).unwrap_or_default();
     let secs = d.as_secs();
     let days = (secs / 86_400) as i64;

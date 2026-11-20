@@ -142,12 +142,12 @@ Never logged: text source contents, command and setting payloads, stream keys an
 
 `Lib` follows the `RBS_LOG` and per-area (Pro) settings only; the five Settings levels leave it at Warn, because a library may log per frame at Debug.
 
-## Settings › Advanced (planned)
+## Settings › Advanced
 
-Shown at every experience level, last in the App group. Planned cards (visual change; screenshots and owner approval first, CLAUDE.md rule 16):
+Section 13 of the Settings window (`ui.settings.open {section: "advanced"}`), last in the App group, shown at every experience level (`rbs-app` `advanced_page`, `AdvancedSettings` in `ui/studio_settings.slint`). Owner approved the proposal on 2026-11-20 (CLAUDE.md rule 16).
 
-- Logging: "Log detail" (Errors only, Warnings, Normal, Detailed, Everything); a Toggle "Back to Normal at next start" (on); a status line when a detailed level is on or `RBS_LOG` decides. Pro: a level per area and "Reset all".
-- Bug report: "Save logs…" (zip: the last three runs, crash reports, a system summary, a settings summary without keys or paths; non-blocking save dialog, ADR-0055), "Open the logs folder", "Report a problem on GitHub" (issue template `.github/ISSUE_TEMPLATE/bug_report.yml`, version and OS in the URL), and a note to look over the files before sending them.
+- Logging card (`settings.advanced.logging`): "Log detail" (Errors only, Warnings, Normal, Detailed, Everything; `app.toml` `log_detail`, absent = Normal); the Toggle "Back to Normal at next start" (on; `log_keep` is its opposite); a notice while a Detailed or Everything level is on. While `RBS_LOG` was set at start, the rows are disabled and say that it decides. Pro (or the card's Show): "Detail per area" with Reset all, then one row per area with "Same as Log detail" or a level (`[log_areas]` table, by area name). A change is saved and applied at once (`diag_log::apply`: Log detail for every area but `lib`, `lib` at Warn, then each area's level). At start `AppSettings::settle` puts Detailed and Everything levels, the per-area ones included, back to Normal unless kept.
+- Bug report card (`settings.advanced.report`): "Save logs…" asks where to save (the system dialog on macOS and Windows; on Linux the zip goes into the logs folder) and writes on a thread of its own (`rbs-save-logs`) a zip of stored entries: the files of the last three runs of `rbs` and `rbs-browser`, up to ten newest `.txt` crash reports, `system.txt` (the log header) and `settings.txt` (`app.toml`, which holds no keys or paths), after waiting up to 2 s for queued lines; then shows the file. "Open the logs folder". "Report on GitHub…" opens `<repository>/issues/new?template=bug_report.yml&version=<v>&os=<os>+<arch>` (`.github/ISSUE_TEMPLATE/bug_report.yml`). The last save's outcome shows under the rows.
 
 ## Errors and failure behaviour
 
@@ -175,7 +175,8 @@ No log macro in code listed in [hot-paths.md](../architecture/hot-paths.md). `ca
 - Facade (`crates/rbs-core/src/log.rs`), writer (`crates/rbs-log`), `rbs_crash::LogRedactor` and the xtask check: implemented with tests (2026-11-20).
 - `rbs-app`: the log starts first in `main` (`diag_log`), Normal levels, `Lib` at Warn, `RBS_LOG`; lines echo to standard error at a terminal or with `RBS_LOG`; every former `errln!` and `studio_ui::log` line and the UI stall watch log through the macros (2026-11-20).
 - `rbs-cli`: `start_stderr` before the arguments are parsed (`diag_log`); Warn for every area and `Lib`, then `RBS_LOG`, then `--log-level <levels>` (same grammar, anywhere on the line); its answers to its user stay `outln!`/`errln!` (2026-11-20).
-- Not yet: `rbs-browser-runner` (after stability WP-A), the recent lines in crash reports, new per-area lines, the summary timer, Settings › Advanced.
+- Settings › Advanced: built as above, with `rbs_log::write_zip` (2026-11-20).
+- Not yet: `rbs-browser-runner` (after stability WP-A), the recent lines in crash reports, new per-area lines, the summary timer.
 
 ## Open questions
 

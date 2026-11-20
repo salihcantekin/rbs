@@ -6,9 +6,12 @@
 //! - [`dock_badge`] and [`tray_state`]: the live state without a window (U4), with a
 //!   problem added to it, never in its place.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+
+use crate::diag_log::LogDetail;
 
 const FORMAT: u32 = 1;
 
@@ -101,7 +104,7 @@ impl Experience {
 }
 
 /// The app's own settings, which belong to this computer and to no output profile.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppSettings {
     /// The file's format; 1.
     pub format_version: u32,
@@ -141,6 +144,17 @@ pub struct AppSettings {
     /// (ADR-0108 decision 10). Absent: 30. Read through [`AppSettings::pause_release`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pause_release_s: Option<u32>,
+    /// Settings › Advanced › Log detail (ADR-0158 decision 7). Absent: Normal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_detail: Option<LogDetail>,
+    /// Keep a Detailed or Everything level at the next start ("Back to Normal at next
+    /// start" off). Absent: false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub log_keep: bool,
+    /// Pro: a level per area, by area name (`stream = "everything"`). Absent: none.
+    /// Last: a table after the values in TOML.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub log_areas: BTreeMap<String, LogDetail>,
 }
 
 /// The longest `pause_release_s` honoured: one hour.
@@ -158,7 +172,8 @@ impl AppSettings {
 
     /// Fills the fields an older file lacks (ADR-0113 decisions 2 and 5): an existing
     /// install reads as Pro with the first run done, a new one as Standard with the first
-    /// run to show. Returns whether anything changed, so the caller saves at once and the
+    /// run to show; a Detailed log level goes back to Normal ([`crate::diag_log::settle`]).
+    /// Returns whether anything changed, so the caller saves at once and the
     /// next start does not take its own files for an older install's.
     pub fn settle(&mut self, existing_install: bool) -> bool {
         let mut changed = false;
@@ -174,7 +189,8 @@ impl AppSettings {
             self.first_run_done = Some(existing_install);
             changed = true;
         }
-        changed
+        // A Detailed log level lasts one run unless kept (ADR-0158 decision 7).
+        crate::diag_log::settle(self) || changed
     }
 
     /// The level in use; Standard before [`AppSettings::settle`] ran.
@@ -218,6 +234,9 @@ impl Default for AppSettings {
             experience: None,
             first_run_done: None,
             pause_release_s: None,
+            log_detail: None,
+            log_keep: false,
+            log_areas: BTreeMap::new(),
         }
     }
 }
@@ -761,6 +780,37 @@ mod tests {
         };
         save(&d, &s).unwrap();
         assert_eq!(load(&d), (s, None));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn log_levels_round_trip_and_a_detailed_one_lasts_one_run() {
+        use crate::diag_log::LogDetail;
+        let d = dir("log-levels");
+        let mut s = AppSettings {
+            experience: Some(Experience::Pro),
+            first_run_done: Some(true),
+            log_detail: Some(LogDetail::Everything),
+            ..AppSettings::default()
+        };
+        s.log_areas.insert("stream".into(), LogDetail::Detailed);
+        s.log_areas.insert("lib".into(), LogDetail::Errors);
+        save(&d, &s).unwrap();
+        let text = std::fs::read_to_string(file(&d)).unwrap();
+        assert!(text.contains("log_detail = \"everything\""), "{text}");
+        assert!(text.contains("[log_areas]"), "{text}");
+        assert_eq!(load(&d), (s.clone(), None));
+        // The next start: back to Normal, the quiet area level kept.
+        assert!(s.settle(true));
+        assert_eq!(s.log_detail, None);
+        assert_eq!(s.log_areas.len(), 1);
+        assert_eq!(s.log_areas.get("lib"), Some(&LogDetail::Errors));
+        assert!(!s.settle(true));
+        // Kept on purpose: nothing changes.
+        s.log_detail = Some(LogDetail::Detailed);
+        s.log_keep = true;
+        assert!(!s.settle(true));
+        assert_eq!(s.log_detail, Some(LogDetail::Detailed));
         let _ = std::fs::remove_dir_all(&d);
     }
 

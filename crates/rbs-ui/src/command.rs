@@ -304,8 +304,7 @@ const AREA: Param = Param {
     required: true,
 };
 
-/// The Settings section to show; without it the window opens where it was, or at
-/// General.
+/// The Settings section to show; without it the window opens where it was, or General.
 const SECTION: Param = Param {
     name: "section",
     ty: ParamType::OneOf(&SETTINGS_SECTIONS),
@@ -331,13 +330,14 @@ const COMMAND: Param = Param {
 
 /// The sections of the Settings window, as `ui.settings.open {section}` names them,
 /// in the order of the window's section list.
-pub const SETTINGS_SECTIONS: [&str; 13] = [
+pub const SETTINGS_SECTIONS: [&str; 14] = [
     "general",
     "audio",
     "appearance",
     "shortcuts",
     "permissions",
     "add_ons",
+    "advanced",
     "video",
     "global_sources",
     "recording",
