@@ -267,8 +267,9 @@ impl Staged {
     }
 }
 
-/// Equal-size NV12 written by one compute dispatch. The buffer is cleared and filled
-/// for each frame, then copied into the download's staging buffer.
+/// Equal-size NV12 written by one compute dispatch. Each invocation writes whole words
+/// of a 4x2 block, so the buffer needs no clear; it is then copied into the download's
+/// staging buffer.
 struct Packed {
     pipeline: wgpu::ComputePipeline,
     buffer: wgpu::Buffer,
@@ -356,7 +357,7 @@ impl Packed {
             buffer,
             bind,
             len,
-            groups_x: (width / 2).div_ceil(8),
+            groups_x: width.div_ceil(4).div_ceil(8),
             groups_y: (height / 2).div_ceil(8),
         }
     }
@@ -757,7 +758,6 @@ impl YuvConverter {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("rbs-gpu yuv"),
             });
-        encoder.clear_buffer(&packed.buffer, 0, None);
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("rbs-gpu yuv"),

@@ -69,17 +69,27 @@ fn fs_chroma(@builtin(position) pos: vec4<f32>) -> @location(0) vec2<f32> {
 // END prime
 
 // BEGIN cs_store
-// Equal-size NV12, one dispatch (audit F-12). Each invocation loads its 2×2 canvas
-// texels once and writes four luma codes and one chroma pair into the packed image.
+// Equal-size NV12, one dispatch (audit F-12). Each invocation loads a 4×2 block of
+// canvas texels once and writes whole 32-bit words: four luma codes per row and the
+// two chroma pairs of the block's two 2×2 halves. No atomics and no clear: every
+// word of the picture is written by exactly one invocation. A block that reaches past
+// an odd number of 2-pixel columns repeats the last column into the row padding
+// (the stride is a multiple of 256, so the word stays inside the row).
 // Scaled kernels stay on the render passes above.
 override out_stride: u32 = 256u;
 
-@group(1) @binding(0) var<storage, read_write> packed: array<atomic<u32>>;
+@group(1) @binding(0) var<storage, read_write> packed: array<u32>;
 
-fn put_byte(offset: u32, code: u32) {
-    let word = offset >> 2u;
-    let shift = (offset & 3u) * 8u;
-    atomicOr(&packed[word], (code & 0xffu) << shift);
+fn pack4(a: u32, b: u32, c: u32, d: u32) -> u32 {
+    return (a & 0xffu) | ((b & 0xffu) << 8u) | ((c & 0xffu) << 16u) | ((d & 0xffu) << 24u);
+}
+
+/// Writes the luma words of rows `y` and `y + 1` and the chroma word at column `x`.
+fn store_words(x: u32, y: u32, height: u32, luma0: u32, luma1: u32, chroma: u32) {
+    let stride = out_stride;
+    packed[(y * stride + x) >> 2u] = luma0;
+    packed[((y + 1u) * stride + x) >> 2u] = luma1;
+    packed[(stride * height + (y / 2u) * stride + x) >> 2u] = chroma;
 }
 
 fn code_y(p: vec3<f32>) -> u32 {
@@ -94,38 +104,44 @@ fn code_c(p: vec3<f32>) -> vec2<u32> {
     return vec2<u32>(u32(c.x), u32(c.y));
 }
 
-fn write_block(x: i32, y: i32, p00: vec3<f32>, p10: vec3<f32>, p01: vec3<f32>, p11: vec3<f32>) {
-    let stride = out_stride;
-    let row = u32(y) * stride;
-    put_byte(row + u32(x), code_y(p00));
-    put_byte(row + u32(x + 1), code_y(p10));
-    let row1 = u32(y + 1) * stride;
-    put_byte(row1 + u32(x), code_y(p01));
-    put_byte(row1 + u32(x + 1), code_y(p11));
-    let avg = (p00 + p10 + p01 + p11) * 0.25;
-    let c = code_c(avg);
-    let chroma = stride * u32(textureDimensions(canvas).y) + (u32(y) / 2u) * stride + u32(x);
-    put_byte(chroma, c.x);
-    put_byte(chroma + 1u, c.y);
+/// Limited-range codes of a 4×2 block: `a*` is row `y`, `b*` row `y + 1`.
+fn write_block(
+    x: u32,
+    y: u32,
+    height: u32,
+    a0: vec3<f32>, a1: vec3<f32>, a2: vec3<f32>, a3: vec3<f32>,
+    b0: vec3<f32>, b1: vec3<f32>, b2: vec3<f32>, b3: vec3<f32>,
+) {
+    let left = code_c((a0 + a1 + b0 + b1) * 0.25);
+    let right = code_c((a2 + a3 + b2 + b3) * 0.25);
+    store_words(
+        x,
+        y,
+        height,
+        pack4(code_y(a0), code_y(a1), code_y(a2), code_y(a3)),
+        pack4(code_y(b0), code_y(b1), code_y(b2), code_y(b3)),
+        pack4(left.x, left.y, right.x, right.y),
+    );
 }
 // END cs_store
 
 // BEGIN cs_nv12
 @compute @workgroup_size(8, 8)
 fn cs_nv12(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let x = i32(gid.x) * 2;
-    let y = i32(gid.y) * 2;
     let dims = vec2<i32>(textureDimensions(canvas));
+    let x = i32(gid.x) * 4;
+    let y = i32(gid.y) * 2;
     if (x + 1 >= dims.x || y + 1 >= dims.y) {
         return;
     }
+    let x2 = min(x + 2, dims.x - 1);
+    let x3 = min(x + 3, dims.x - 1);
     write_block(
-        x,
-        y,
-        load_prime(x, y),
-        load_prime(x + 1, y),
-        load_prime(x, y + 1),
-        load_prime(x + 1, y + 1),
+        u32(x),
+        u32(y),
+        u32(dims.y),
+        load_prime(x, y), load_prime(x + 1, y), load_prime(x2, y), load_prime(x3, y),
+        load_prime(x, y + 1), load_prime(x + 1, y + 1), load_prime(x2, y + 1), load_prime(x3, y + 1),
     );
 }
 // END cs_nv12
@@ -408,19 +424,20 @@ fn fs_chroma_open(@builtin(position) pos: vec4<f32>) -> @location(0) vec2<f32> {
 // BEGIN cs_nv12_open
 @compute @workgroup_size(8, 8)
 fn cs_nv12_open(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let x = i32(gid.x) * 2;
-    let y = i32(gid.y) * 2;
     let dims = vec2<i32>(textureDimensions(canvas));
+    let x = i32(gid.x) * 4;
+    let y = i32(gid.y) * 2;
     if (x + 1 >= dims.x || y + 1 >= dims.y) {
         return;
     }
+    let x2 = min(x + 2, dims.x - 1);
+    let x3 = min(x + 3, dims.x - 1);
     write_block(
-        x,
-        y,
-        load_open(x, y),
-        load_open(x + 1, y),
-        load_open(x, y + 1),
-        load_open(x + 1, y + 1),
+        u32(x),
+        u32(y),
+        u32(dims.y),
+        load_open(x, y), load_open(x + 1, y), load_open(x2, y), load_open(x3, y),
+        load_open(x, y + 1), load_open(x + 1, y + 1), load_open(x2, y + 1), load_open(x3, y + 1),
     );
 }
 // END cs_nv12_open
@@ -563,25 +580,32 @@ fn code_c_full(p: vec3<f32>) -> vec2<u32> {
 
 @compute @workgroup_size(8, 8)
 fn cs_nv12_srgb(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let x = i32(gid.x) * 2;
-    let y = i32(gid.y) * 2;
     let dims = vec2<i32>(textureDimensions(canvas));
+    let x = i32(gid.x) * 4;
+    let y = i32(gid.y) * 2;
     if (x + 1 >= dims.x || y + 1 >= dims.y) {
         return;
     }
-    let p00 = load_srgb(x, y);
-    let p10 = load_srgb(x + 1, y);
-    let p01 = load_srgb(x, y + 1);
-    let p11 = load_srgb(x + 1, y + 1);
-    let stride = out_stride;
-    put_byte(u32(y) * stride + u32(x), code_y_full(p00));
-    put_byte(u32(y) * stride + u32(x + 1), code_y_full(p10));
-    put_byte(u32(y + 1) * stride + u32(x), code_y_full(p01));
-    put_byte(u32(y + 1) * stride + u32(x + 1), code_y_full(p11));
-    let c = code_c_full((p00 + p10 + p01 + p11) * 0.25);
-    let chroma = stride * u32(dims.y) + (u32(y) / 2u) * stride + u32(x);
-    put_byte(chroma, c.x);
-    put_byte(chroma + 1u, c.y);
+    let x2 = min(x + 2, dims.x - 1);
+    let x3 = min(x + 3, dims.x - 1);
+    let a0 = load_srgb(x, y);
+    let a1 = load_srgb(x + 1, y);
+    let a2 = load_srgb(x2, y);
+    let a3 = load_srgb(x3, y);
+    let b0 = load_srgb(x, y + 1);
+    let b1 = load_srgb(x + 1, y + 1);
+    let b2 = load_srgb(x2, y + 1);
+    let b3 = load_srgb(x3, y + 1);
+    let left = code_c_full((a0 + a1 + b0 + b1) * 0.25);
+    let right = code_c_full((a2 + a3 + b2 + b3) * 0.25);
+    store_words(
+        u32(x),
+        u32(y),
+        u32(dims.y),
+        pack4(code_y_full(a0), code_y_full(a1), code_y_full(a2), code_y_full(a3)),
+        pack4(code_y_full(b0), code_y_full(b1), code_y_full(b2), code_y_full(b3)),
+        pack4(left.x, left.y, right.x, right.y),
+    );
 }
 // END cs_nv12_srgb
 

@@ -70,6 +70,68 @@ fn download_delivers_nv12_codes_and_counts_the_cpu_copy() {
     assert_eq!(down.in_flight(), 0);
 }
 
+/// The equal-size NV12 dispatch writes 4x2 blocks as whole words. A width that is not
+/// a multiple of four ends in a half block: its last two columns must still be right.
+#[test]
+fn download_writes_every_column_of_a_width_that_ends_in_a_half_block() {
+    let Some(ctx) = common::gpu() else { return };
+    const W: u32 = 10;
+    const H: u32 = 4;
+    let mut pool = TexturePool::new();
+    let canvas = pool
+        .acquire(
+            ctx,
+            &rbs_gpu::TextureDesc::source(W, H, wgpu::TextureFormat::Rgba16Float),
+        )
+        .unwrap();
+    // Linear grey that rises with the column, the same on every row.
+    let level = |x: u32| (x + 1) as f32 / (W + 2) as f32;
+    let data: Vec<u8> = (0..H)
+        .flat_map(|_| 0..W)
+        .flat_map(|x| {
+            let v = level(x);
+            [v, v, v, 1.0]
+                .into_iter()
+                .flat_map(|c| common::f32_to_f16(c).to_le_bytes())
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    readback::upload(ctx, &pool, canvas, &data).unwrap();
+    let mut down = YuvDownload::new(ctx, YuvFormat::Nv12, W, H).unwrap();
+    let format = VideoFormat::new(
+        Size::new(W, H),
+        PixelFormat::Rgba16Float,
+        ColorSpace::LINEAR_BT709,
+    );
+    let frame = pool.frame(canvas, format, Timestamp::ZERO).unwrap();
+    assert!(down.submit(ctx, &pool, &frame).unwrap());
+    ctx.wait_idle().unwrap();
+    ctx.poll();
+    let frame = down.take_ready(ctx).unwrap().expect("a completed frame");
+    let FramePayload::System(sys) = frame.payload() else {
+        panic!("not a system frame");
+    };
+    let (luma, ls) = sys.plane(0).unwrap();
+    let (chroma, cs) = sys.plane(1).unwrap();
+    for y in 0..H as usize {
+        for x in 0..W {
+            let v = f64::from(level(x));
+            let want = (16.0 + 219.0 * (1.099 * v.powf(0.45) - 0.099)).round() as u8;
+            let got = luma[y * ls + x as usize];
+            assert!(
+                got.abs_diff(want) <= 1,
+                "luma at {x},{y}: {got} want {want}"
+            );
+        }
+    }
+    for y in 0..H as usize / 2 {
+        for x in 0..W as usize {
+            let got = chroma[y * cs + x];
+            assert!(got.abs_diff(128) <= 1, "chroma at {x},{y}: {got}");
+        }
+    }
+}
+
 #[test]
 fn download_refuses_when_the_ring_is_full_and_keeps_only_the_newest() {
     let Some(ctx) = common::gpu() else { return };
