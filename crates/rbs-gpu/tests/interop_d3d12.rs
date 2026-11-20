@@ -396,6 +396,8 @@ fn nv12_shared_texture_is_a_plane_pair() {
 
 fn nv12_texture(luid: u64) -> Option<D3d11> {
     use windows::Win32::Graphics::Direct3D11::D3D11_BIND_SHADER_RESOURCE;
+    // SAFETY: plain DXGI/D3D11 calls on objects created in this block; every
+    // out-pointer is a valid local `Option` that outlives the call.
     unsafe {
         let factory: IDXGIFactory4 = CreateDXGIFactory1().ok()?;
         let adapter: IDXGIAdapter = factory
