@@ -415,6 +415,10 @@ pub(crate) struct AmfEngine {
     drain_pending: bool,
     /// Rows of the luma and chroma planes.
     rows: [usize; 2],
+    /// Last `QueryTimeout` set, in milliseconds. `None` until the first attempt.
+    query_timeout_ms: Option<i64>,
+    /// The component refused `QueryTimeout`. A wait then sleeps 1 ms between polls.
+    query_timeout_refused: bool,
 }
 
 // SAFETY: the raw pointers are AMF interfaces owned by this engine. AMF objects may
@@ -454,6 +458,8 @@ impl AmfEngine {
             drained: false,
             drain_pending: false,
             rows: [plan.height as usize, plan.height.div_ceil(2) as usize],
+            query_timeout_ms: None,
+            query_timeout_refused: false,
         };
         let component = engine.component();
         for (name, value) in &properties {
@@ -529,6 +535,40 @@ impl AmfEngine {
             }
         }
         Ok((!sets.is_empty()).then_some(sets))
+    }
+
+    /// Sets `QueryTimeout` to `ms` milliseconds, capped at 1000. This driver's
+    /// encoder refuses a longer value (`AMF_OUT_OF_RANGE`). `true` when the
+    /// component accepted it, so `QueryOutput` blocks in the driver. A refusal is
+    /// remembered and later waits sleep instead.
+    fn arm_query_timeout(&mut self, ms: i64) -> bool {
+        if self.query_timeout_refused {
+            return false;
+        }
+        let ms = ms.clamp(0, 1000);
+        if self.query_timeout_ms == Some(ms) {
+            return true;
+        }
+        let name = if self.codec == CodecId::Hevc {
+            sys::HEVC_QUERY_TIMEOUT
+        } else {
+            sys::H264_QUERY_TIMEOUT
+        };
+        let component = self.component();
+        // SAFETY: an initialised component and a NUL-terminated name. The property
+        // is dynamic: it only changes how long the next QueryOutput waits.
+        let r = unsafe { set_property!(component, name, variant(Value::Int(ms))) }
+            .map_err(|m| EngineError::Failed(m, -1));
+        match r {
+            Ok(sys::AMF_OK) => {
+                self.query_timeout_ms = Some(ms);
+                true
+            }
+            _ => {
+                self.query_timeout_refused = true;
+                false
+            }
+        }
     }
 
     /// Sends a pending `Drain`. `INPUT_FULL` keeps it pending (retried while
@@ -705,6 +745,9 @@ impl Engine for AmfEngine {
         FRAMES_IN_FLIGHT
     }
 
+    // `keeps_input` stays false. `SubmitInput` converts the host surface in place,
+    // and submitting that surface again wrote through stale plane pointers.
+
     fn upload(&mut self, slot: usize, frame: &SystemFrame) -> Result<(), EngineError> {
         // A fresh surface for every frame (see the module documentation).
         self.staged[slot] = None;
@@ -839,8 +882,21 @@ impl Engine for AmfEngine {
         let deadline = Instant::now() + WAIT;
         let data = loop {
             self.try_drain()?;
+            let blocks = if wait {
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    return Err(EngineError::Broken(
+                        "AMF did not finish a picture within 10 s",
+                    ));
+                }
+                let ms = i64::try_from(left.as_millis()).unwrap_or(i64::MAX);
+                self.arm_query_timeout(ms.max(1))
+            } else {
+                self.arm_query_timeout(0)
+            };
             let mut raw: *mut sys::AMFData = ptr::null_mut();
-            // SAFETY: an initialised component and a valid out-pointer.
+            // SAFETY: an initialised component and a valid out-pointer. With a
+            // positive QueryTimeout the call blocks in the driver.
             let r = unsafe { vcall!(component, QueryOutput, &mut raw) }
                 .map_err(|m| EngineError::Failed(m, -1))?;
             let data = Com::new(raw);
@@ -848,7 +904,9 @@ impl Engine for AmfEngine {
                 (sys::AMF_OK, Some(d)) => break d,
                 (sys::AMF_OK | sys::AMF_REPEAT, None) if !wait => return Ok(None),
                 (sys::AMF_OK | sys::AMF_REPEAT, None) if Instant::now() < deadline => {
-                    std::thread::sleep(Duration::from_millis(1));
+                    if !blocks {
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
                 }
                 (sys::AMF_OK | sys::AMF_REPEAT, None) => {
                     return Err(EngineError::Broken(
