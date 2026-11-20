@@ -2622,9 +2622,7 @@ impl Ctx {
                     app.persist_now();
                 }
                 drop(app);
-                // Hiding the last window keeps the event loop (ADR-0056 decision 4).
-                // The toolbar Close button is inside `SC_CLOSE`, so the quit is sent
-                // after that returns, while the window is still shown.
+                // Hiding the last window keeps the loop (ADR-0056 d4); quit after SC_CLOSE.
                 entry::quit_loop();
                 slint::CloseRequestResponse::KeepWindowShown
             }

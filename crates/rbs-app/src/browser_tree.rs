@@ -150,6 +150,9 @@ impl RunnerBrowserTree {
     }
 
     /// Pages on this adapter copy into studio textures (ADR-0109 decision 8).
+    ///
+    /// Not called yet: `studio_host` `start` leaves the GPU path off until its sync
+    /// no longer waits on the CPU inside CEF's paint callback (ADR-0157).
     pub fn with_adapter(mut self, luid: u64) -> Self {
         self.adapter = Some(luid);
         self

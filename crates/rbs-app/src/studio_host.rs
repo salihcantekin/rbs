@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::sync::Weak;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
-use std::sync::mpsc::{self, Receiver, SendError, Sender, TryRecvError};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -77,6 +77,7 @@ mod device_sync;
 pub mod filters;
 mod interact;
 pub use interact::{InteractState, MAX_INTERACT};
+mod control_out;
 mod loudness;
 mod monitor;
 mod network;
@@ -89,6 +90,7 @@ mod stinger;
 pub mod sync_measure;
 mod text_live;
 mod text_measure;
+use control_out::ControlOut;
 mod text_resize;
 
 use crate::canvas_profile::CanvasProfile;
@@ -3616,26 +3618,6 @@ fn preview_desc(size: Size, fps: FrameRate) -> PreviewDesc {
     }
 }
 
-/// The control thread's command channel. Sending also unparks that thread once it
-/// has bound itself (ADR-0154). A bare channel send does not wake a `park`.
-pub(crate) struct ControlOut {
-    tx: Sender<Msg>,
-    wake: OnceLock<Arc<rbs_graph::runtime::ControlWake>>,
-}
-
-impl ControlOut {
-    // The same shape as `Sender::send`: the error hands the message back, so it is as
-    // large as `Msg`. Callers only test it; nothing moves it around.
-    #[allow(clippy::result_large_err)]
-    fn send(&self, msg: Msg) -> Result<(), SendError<Msg>> {
-        let sent = self.tx.send(msg);
-        if let Some(wake) = self.wake.get() {
-            wake.unpark();
-        }
-        sent
-    }
-}
-
 /// The running control thread. Dropping it stops the studio and joins the thread.
 pub struct StudioHost {
     tx: Option<Arc<ControlOut>>,
@@ -4679,9 +4661,6 @@ fn start(
     if let Some(dir) = profiles.clone() {
         tree = tree.with_profiles(dir);
     }
-    // The Windows GPU page path (`with_adapter`) stays off until its sync is fixed:
-    // the helper waited on the CPU inside CEF's paint callback and froze Interact.
-    // Pages use the shared-memory path meanwhile (stability plan WP-A).
     let browser = Arc::new(tree);
     let browser_tree: Option<Arc<dyn BrowserTree>> =
         Some(Arc::clone(&browser) as Arc<dyn BrowserTree>);
