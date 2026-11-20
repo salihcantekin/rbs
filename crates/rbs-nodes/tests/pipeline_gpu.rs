@@ -695,7 +695,10 @@ fn a_scene_hold_sends_the_scene_with_running_times_across_both_edges() {
     }
     // Program readbacks may still be in flight when the hold begins, and scene ones
     // when it ends: ticks around both edges do not wait for the GPU. Whichever
-    // readback is late, the properties below hold.
+    // readback is late, the properties below hold. Which one is late depends on the
+    // GPU's speed, so they do not count frames at the edges: a program readback still
+    // in flight when the hold begins is dropped (`hold_tick`), and two that complete on
+    // one run-path tick go out as the newer one.
     rig.tick_without_waiting();
     rig.tick_without_waiting();
     switch.hold(HoldPicture::Scene);
@@ -714,18 +717,29 @@ fn a_scene_hold_sends_the_scene_with_running_times_across_both_edges() {
     let seen = seen.lock().unwrap().clone();
     let cadence = Cadence::frames(Timestamp::ZERO, FrameRate::FPS_30);
     let frame = cadence.time_of(1).as_nanos() + 1;
-    // Strictly increasing, no gap: one frame per tick across both edges.
-    assert!(
-        seen.windows(2)
-            .all(|w| w[0].0 < w[1].0 && w[1].0.as_nanos() - w[0].0.as_nanos() <= frame),
-        "{seen:?}"
-    );
+    // Strictly increasing across both edges. No gap among frames converted on ticks
+    // that waited for the GPU and taken on the next tick (the last one is still on its
+    // way): ticks 0 and 1, and the last five.
+    assert!(seen.windows(2).all(|w| w[0].0 < w[1].0), "{seen:?}");
+    let gap = |w: &[(Timestamp, u8)]| w[1].0.as_nanos() - w[0].0.as_nanos() <= frame;
+    let waited = |r: std::ops::Range<u64>| r.map(|i| cadence.time_of(i)).collect::<Vec<_>>();
+    for run in [waited(0..2), waited(rig.tick - 6..rig.tick - 1)] {
+        let got: Vec<_> = seen
+            .iter()
+            .filter(|(t, _)| run.contains(t))
+            .copied()
+            .collect();
+        assert!(
+            got.len() == run.len() && got.windows(2).all(gap),
+            "{seen:?}"
+        );
+    }
     // Program, then the scene (black), then the program again: no program frame
     // inside the scene run, no scene frame after the program is back.
     let dark: Vec<bool> = seen.iter().map(|(_, y)| *y <= DARK).collect();
     let first_dark = dark.iter().position(|d| *d).expect("the scene went out");
     let last_dark = dark.iter().rposition(|d| *d).unwrap();
-    assert!(first_dark >= 4, "{seen:?}");
+    assert!(first_dark >= 2, "{seen:?}");
     assert!(dark[first_dark..=last_dark].iter().all(|d| *d), "{seen:?}");
     assert!(!dark[..first_dark].iter().any(|d| *d), "{seen:?}");
     assert!(
