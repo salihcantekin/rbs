@@ -6,7 +6,9 @@
 //! ceiling in `docs/quality/size-baseline.toml`; one that is not listed there may not
 //! pass the limit at all. An increase the owner approved in writing is recorded in
 //! `docs/quality/size-exceptions.toml` with `--except`. `--lower` writes smaller
-//! numbers down after a split. Neither file is edited by hand.
+//! numbers down after a split; `--lower --moved <old> <new>` (repeatable) first carries
+//! the ceilings of a moved or renamed item to its new key, so a move is not a new
+//! violation (ADR-0144, ADR-0159 decision 6). Neither file is edited by hand.
 //!
 //! Function lengths are measured from the `fn` line to the line where its braces close,
 //! counted on the text with comments, strings and character literals left out. That is
@@ -29,6 +31,8 @@ const SKIPPED_DIRS: &[&str] = &["target", "sys", "vendor", ".git"];
 
 pub const USAGE: &str = "usage: cargo xtask check-size
        cargo xtask check-size --lower
+       cargo xtask check-size --lower --moved <old> <new> [--moved <old> <new> ...]
+           <old>, <new>: a file, a `file::fn`, or a directory ending in `/`
        cargo xtask check-size --except <file or file::fn> <lines> <reason> <owner's approval> <date>";
 
 /// The measured sizes: files by path, functions by `path::name` (the longest of the
@@ -54,7 +58,8 @@ pub fn run(root: &Path, args: &[String]) -> Result<(), Vec<String>> {
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     match args.as_slice() {
         [] => check(root),
-        ["--lower"] => lower(root),
+        ["--lower"] => lower(root, &[]),
+        ["--lower", rest @ ..] => lower(root, &moves(rest)?),
         ["--seed"] => seed(root),
         ["--except", item, lines, reason, approved, date] => {
             let lines = lines
@@ -130,9 +135,98 @@ fn allowed(item: &str, limit: u32, ceilings: &BTreeMap<String, u32>, ex: &[Excep
         .fold(base, u32::max)
 }
 
-fn lower(root: &Path) -> Result<(), Vec<String>> {
-    let baseline = read_baseline(&read(root, BASELINE)?)?;
+/// The `--moved <old> <new>` pairs after `--lower`.
+fn moves(args: &[&str]) -> Result<Vec<(String, String)>, Vec<String>> {
+    let mut out = Vec::new();
+    let mut rest = args;
+    while let ["--moved", old, new, tail @ ..] = rest {
+        out.push(((*old).to_owned(), (*new).to_owned()));
+        rest = tail;
+    }
+    if rest.is_empty() && !out.is_empty() {
+        Ok(out)
+    } else {
+        Err(vec![USAGE.to_owned()])
+    }
+}
+
+/// The key `item` takes under the move `old` -> `new`, if the move covers it: the
+/// item itself, a function of a moved file (`old::fn`), or anything under a moved
+/// directory (`old` ending in `/`).
+fn moved_key(item: &str, old: &str, new: &str) -> Option<String> {
+    if old.ends_with('/') {
+        return item.strip_prefix(old).map(|rest| format!("{new}{rest}"));
+    }
+    if item == old {
+        return Some(new.to_owned());
+    }
+    item.strip_prefix(old)
+        .filter(|rest| rest.starts_with("::"))
+        .map(|rest| format!("{new}{rest}"))
+}
+
+/// Carries ceilings and exceptions to their new keys. Each move must cover at least one
+/// listed item, and a carried key must not already be listed. Returns one line per
+/// carried ceiling.
+pub fn carry(
+    baseline: &mut Sizes,
+    exceptions: &mut [Exception],
+    moves: &[(String, String)],
+) -> Result<Vec<String>, Vec<String>> {
+    let mut errors = Vec::new();
+    let mut carried = Vec::new();
+    for (old, new) in moves {
+        if old.ends_with('/') != new.ends_with('/') {
+            errors.push(format!(
+                "--moved {old} {new}: both or neither must end in /"
+            ));
+            continue;
+        }
+        let mut hits = 0;
+        for (kind, ceilings) in [
+            ("file", &mut baseline.files),
+            ("function", &mut baseline.functions),
+        ] {
+            let keys: Vec<(String, String)> = ceilings
+                .keys()
+                .filter_map(|k| moved_key(k, old, new).map(|n| (k.clone(), n)))
+                .collect();
+            for (from, to) in keys {
+                hits += 1;
+                if ceilings.contains_key(&to) {
+                    errors.push(format!("--moved {old} {new}: {to} is already listed"));
+                    continue;
+                }
+                if let Some(lines) = ceilings.remove(&from) {
+                    carried.push(format!("{kind} {from} -> {to}: ceiling {lines}"));
+                    ceilings.insert(to, lines);
+                }
+            }
+        }
+        for e in exceptions.iter_mut() {
+            if let Some(to) = moved_key(&e.item, old, new) {
+                hits += 1;
+                carried.push(format!("exception {} -> {to}", e.item));
+                e.item = to;
+            }
+        }
+        if hits == 0 {
+            errors.push(format!("--moved {old} {new}: nothing listed under {old}"));
+        }
+    }
+    if errors.is_empty() {
+        Ok(carried)
+    } else {
+        Err(errors)
+    }
+}
+
+fn lower(root: &Path, moves: &[(String, String)]) -> Result<(), Vec<String>> {
+    let mut baseline = read_baseline(&read(root, BASELINE)?)?;
     let mut exceptions = read_exceptions(&read(root, EXCEPTIONS)?)?;
+    for line in carry(&mut baseline, &mut exceptions, moves)? {
+        println!("check-size: carried {line}");
+    }
     let found = measure(root)?;
     let mut errors = Vec::new();
     let mut next = Sizes::default();
@@ -626,6 +720,90 @@ mod tests {
             date: "2026-11-20".into(),
         }];
         assert_eq!(read_exceptions(&write_exceptions(&ex)), Ok(ex));
+    }
+
+    fn listed() -> Sizes {
+        let mut base = Sizes::default();
+        base.files.insert("crates/a/src/host.rs".into(), 2500);
+        base.functions
+            .insert("crates/a/src/host.rs::run".into(), 300);
+        base.functions
+            .insert("crates/a/src/other.rs::go".into(), 250);
+        base
+    }
+
+    fn pair(old: &str, new: &str) -> Vec<(String, String)> {
+        vec![(old.to_owned(), new.to_owned())]
+    }
+
+    #[test]
+    fn a_moved_file_carries_its_ceiling_and_its_functions() {
+        let mut base = listed();
+        let lines = carry(
+            &mut base,
+            &mut [],
+            &pair("crates/a/src/host.rs", "crates/b/src/host.rs"),
+        )
+        .expect("carried");
+        assert_eq!(lines.len(), 2);
+        assert_eq!(base.files.get("crates/b/src/host.rs"), Some(&2500));
+        assert_eq!(base.functions.get("crates/b/src/host.rs::run"), Some(&300));
+        assert!(!base.files.contains_key("crates/a/src/host.rs"));
+        assert!(base.functions.contains_key("crates/a/src/other.rs::go"));
+    }
+
+    #[test]
+    fn a_moved_directory_carries_everything_under_it_and_exceptions_follow() {
+        let mut base = listed();
+        let mut ex = vec![Exception {
+            item: "crates/a/src/other.rs::go".into(),
+            lines: 260,
+            reason: "r".into(),
+            approved: "owner".into(),
+            date: "2026-11-20".into(),
+        }];
+        carry(&mut base, &mut ex, &pair("crates/a/src/", "crates/b/src/")).expect("carried");
+        assert_eq!(base.functions.get("crates/b/src/other.rs::go"), Some(&250));
+        assert_eq!(ex[0].item, "crates/b/src/other.rs::go");
+        assert!(base.files.keys().all(|k| k.starts_with("crates/b/")));
+    }
+
+    #[test]
+    fn a_renamed_function_carries_only_itself() {
+        let mut base = listed();
+        carry(
+            &mut base,
+            &mut [],
+            &pair("crates/a/src/host.rs::run", "crates/a/src/host.rs::serve"),
+        )
+        .expect("carried");
+        assert_eq!(
+            base.functions.get("crates/a/src/host.rs::serve"),
+            Some(&300)
+        );
+        assert_eq!(base.files.get("crates/a/src/host.rs"), Some(&2500));
+    }
+
+    #[test]
+    fn a_move_that_matches_nothing_or_collides_is_refused() {
+        let mut base = listed();
+        assert!(carry(&mut base, &mut [], &pair("crates/x.rs", "crates/y.rs")).is_err());
+        let mut base = listed();
+        let clash = pair("crates/a/src/other.rs::go", "crates/a/src/host.rs::run");
+        assert!(carry(&mut base, &mut [], &clash).is_err());
+        let mut base = listed();
+        assert!(carry(&mut base, &mut [], &pair("crates/a/src/", "crates/b/src")).is_err());
+    }
+
+    #[test]
+    fn moved_pairs_are_parsed_and_a_stray_argument_is_refused() {
+        assert_eq!(
+            moves(&["--moved", "a", "b", "--moved", "c", "d"]),
+            Ok(vec![("a".into(), "b".into()), ("c".into(), "d".into())])
+        );
+        assert!(moves(&["--moved", "a"]).is_err());
+        assert!(moves(&["--moved", "a", "b", "x"]).is_err());
+        assert!(moves(&[]).is_err());
     }
 
     /// The tree stays within its ceilings (runs with `cargo test --workspace`).
