@@ -6,6 +6,9 @@ use std::fs::File;
 use std::sync::Arc;
 
 use rbs_core::media::ContainerId;
+use rbs_sources::SourceTypes;
+
+use super::{MainDisplay, SourceKind};
 
 /// One marker as a chapter of a finished file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,4 +74,35 @@ impl HostSeams {
     pub(super) fn computer_key(&self, adapter: &str) -> String {
         format!("{adapter}|{}", self.os_version)
     }
+}
+
+/// Reads the main display for the Video settings row at start (ADR-0102 decision 8,
+/// [`super::HostConfig::main_display`]).
+pub type MainDisplayProbe = fn(&SourceTypes) -> Option<MainDisplay>;
+
+/// The default screen target's pixel size and scale (the first screen without a
+/// default). Not for macOS, where listing screens opens ScreenCaptureKit shareable
+/// content: the root passes the Core Graphics framebuffer size there.
+pub fn display_from_default_screen(sources: &SourceTypes) -> Option<MainDisplay> {
+    let screens = sources
+        .targets(&SourceKind::Screen.type_id())
+        .unwrap_or_default();
+    screens
+        .iter()
+        .find(|t| t.is_default)
+        .or_else(|| screens.first())
+        .and_then(|t| {
+            t.size.map(|size| MainDisplay {
+                size,
+                scale: t.scale,
+            })
+        })
+}
+
+/// The main display at start, from the root's probe.
+pub(super) fn probe_display(
+    probe: Option<MainDisplayProbe>,
+    sources: &SourceTypes,
+) -> Option<MainDisplay> {
+    probe.and_then(|probe| probe(sources))
 }

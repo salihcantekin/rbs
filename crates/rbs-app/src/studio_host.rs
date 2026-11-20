@@ -76,7 +76,9 @@ mod device_sync;
 mod failures;
 mod seams;
 use failures::{answer_on_panic, refused};
-pub use seams::{Applied, Chapter, ChapterWriter, FreeSpaceReader};
+pub use seams::{
+    Applied, Chapter, ChapterWriter, FreeSpaceReader, MainDisplayProbe, display_from_default_screen,
+};
 pub mod filters;
 mod interact;
 pub use interact::{InteractState, MAX_INTERACT};
@@ -3495,6 +3497,9 @@ pub struct HostConfig {
     pub chapters: Option<Arc<dyn ChapterWriter>>,
     /// The OS name and version in the calibration key; always pass it (ADR-0159).
     pub os_version: Option<String>,
+    /// The main display for the Video settings row at start (ADR-0102 decision 8);
+    /// `None`: unknown. Off macOS, roots pass [`display_from_default_screen`].
+    pub main_display: Option<MainDisplayProbe>,
     /// The calibration run's clock, pacer, file system and wall time (ADR-0087 step
     /// D1); `None`: the real ones. Tests inject a test clock and a fake sink.
     pub calibration_setup: Option<calibration::CalibrationSetup>,
@@ -3540,6 +3545,7 @@ impl HostConfig {
             read_free_space: None,
             chapters: None,
             os_version: None,
+            main_display: None,
             calibration_setup: None,
             add_ons: None,
             browser_runner: None,
@@ -4569,39 +4575,6 @@ fn round_cap(outs: &[CanvasOutputs], busy: bool) -> Duration {
     if running || busy { MAX_WAIT } else { IDLE_WAIT }
 }
 
-/// The main display for the Video settings row at startup (ADR-0102 decision 8).
-///
-/// On macOS this is the Core Graphics framebuffer and point width. It does not
-/// list screen targets. Other systems keep the default screen target's pixel
-/// size and scale.
-fn startup_main_display(sources: &rbs_sources::SourceTypes) -> Option<MainDisplay> {
-    #[cfg(target_os = "macos")]
-    {
-        // Listing screens would open ScreenCaptureKit shareable content.
-        let _ = sources;
-        rbs_capture_sck::main_display().map(|(width, height, scale)| MainDisplay {
-            size: (width, height),
-            scale,
-        })
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let screens = sources
-            .targets(&SourceKind::Screen.type_id())
-            .unwrap_or_default();
-        screens
-            .iter()
-            .find(|t| t.is_default)
-            .or_else(|| screens.first())
-            .and_then(|t| {
-                t.size.map(|size| MainDisplay {
-                    size,
-                    scale: t.scale,
-                })
-            })
-    }
-}
-
 fn start(
     config: HostConfig,
     adapters: impl FnOnce() -> (RecordAdapters, Vec<String>),
@@ -4674,7 +4647,7 @@ fn start(
         browser_tree.clone(),
     )
     .map_err(|e| e.to_string())?;
-    let display = startup_main_display(&adapters.sources);
+    let display = seams::probe_display(config.main_display, &adapters.sources);
     let installed = adapters.sources.installed();
     let kinds: Vec<SourceKind> = SourceKind::ALL
         .into_iter()

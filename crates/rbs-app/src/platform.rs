@@ -22,7 +22,20 @@ pub fn host_seams(config: &mut crate::studio_host::HostConfig) {
     config.system_probe = Some(crate::system_probe::factory());
     config.os_version = crate::system_probe::os_version();
     config.chapters = Some(std::sync::Arc::new(crate::chapters::MatroskaChapters));
+    config.main_display = Some(main_display);
 }
+
+/// The Core Graphics framebuffer and point width; it does not list screen targets.
+#[cfg(target_os = "macos")]
+fn main_display(_: &rbs_sources::SourceTypes) -> Option<crate::studio_host::MainDisplay> {
+    rbs_capture_sck::main_display().map(|(width, height, scale)| crate::studio_host::MainDisplay {
+        size: (width, height),
+        scale,
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+use crate::studio_host::display_from_default_screen as main_display;
 
 /// The virtual camera adapter of this platform, or why there is none, in the words
 /// Settings › Virtual camera shows. `config` is the RBS settings folder, where the
