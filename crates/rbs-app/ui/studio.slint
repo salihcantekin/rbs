@@ -1213,6 +1213,8 @@ component NativeMeter inherits Rectangle {
 // level, clip box and icon buttons on the first line, then the bar and the fader.
 component MeterView inherits Rectangle {
     in property <MeterRow> data;
+    // The accessible value (`Studio.meter-values`), apart from `data` so it redraws nothing.
+    in property <string> value;
     callback reset();
     // The master strip (ADR-0081): its own callbacks and its own menu (ADR-0092).
     in property <bool> master;
@@ -1225,7 +1227,7 @@ component MeterView inherits Rectangle {
     }
     accessible-role: progress-indicator;
     accessible-label: data.scene-level ? @tr("{}, level of this scene", root.title) : root.title;
-    accessible-value: data.value;
+    accessible-value: root.value;
     // The source's menu (ADR-0080): the "more" button, a right-click or the Menu key.
     // A source's menu, or the master's (ADR-0092: Show loudness and more).
     menu := CommandMenu {
@@ -1376,6 +1378,8 @@ component HiddenRow inherits Rectangle {
 // empty so "0 dB" lines up.
 component MeterStrip inherits Rectangle {
     in property <MeterRow> data;
+    // The accessible value (`Studio.meter-values`), apart from `data` so it redraws nothing.
+    in property <string> value;
     // False while the strip sits in a zero-wide cell of the other group: its bar is
     // clipped away, so the native layer must not draw it.
     in property <bool> shown: true;
@@ -1412,7 +1416,7 @@ component MeterStrip inherits Rectangle {
     property <length> step: root.slot + root.gap;
     accessible-role: progress-indicator;
     accessible-label: data.scene-level ? @tr("{}, level of this scene", root.title) : root.title;
-    accessible-value: data.live ? data.value : data.volume-text;
+    accessible-value: data.live ? root.value : data.volume-text;
     // A source's menu, or the master's (ADR-0092: Show loudness and more).
     menu := CommandMenu {
         context: root.master ? "mixer-master" : "mixer-source";
@@ -1627,6 +1631,7 @@ component MixerGroupCluster inherits Rectangle {
         height: root.height - root.body-y;
         master: true;
         data: Studio.master-meter[0];
+        value: Studio.master-meter-values[0];
         reset => { Studio.reset-master-clip(); }
     }
     if root.kind != 2: HorizontalLayout {
@@ -1636,7 +1641,7 @@ component MixerGroupCluster inherits Rectangle {
         height: root.height - root.body-y;
         spacing: 0px;
         alignment: start;
-        for m in Studio.meters: Rectangle {
+        for m[i] in Studio.meters: Rectangle {
             property <bool> show: (root.kind == 0 && !m.global) || (root.kind == 1 && m.global);
             // A source in the other group keeps a zero-wide cell, so it cannot open a hole
             // or push this group's strips apart.
@@ -1650,6 +1655,7 @@ component MixerGroupCluster inherits Rectangle {
                 height: parent.height;
                 shown: show;
                 data: m;
+                value: Studio.meter-values[i];
                 reset => { Studio.reset-clip(m.id); }
             }
         }
@@ -1958,10 +1964,11 @@ export component MixerPanel inherits Rectangle {
                     }
                 }
             }
-            for m in Studio.meters: VerticalLayout {
+            for m[i] in Studio.meters: VerticalLayout {
                 padding-bottom: m.global || root.scene-closed ? 0px : Tokens.space-1;
                 if !m.global && !root.scene-closed: MeterView {
                     data: m;
+                    value: Studio.meter-values[i];
                     reset => { Studio.reset-clip(m.id); }
                 }
             }
@@ -1974,10 +1981,11 @@ export component MixerPanel inherits Rectangle {
                     toggled(o) => { Sections.set-closed("mixer.global", !o); }
                 }
             }
-            for m in Studio.meters: VerticalLayout {
+            for m[i] in Studio.meters: VerticalLayout {
                 padding-bottom: !m.global || root.global-closed ? 0px : Tokens.space-1;
                 if m.global && !root.global-closed: MeterView {
                     data: m;
+                    value: Studio.meter-values[i];
                     reset => { Studio.reset-clip(m.id); }
                 }
             }
@@ -1993,6 +2001,7 @@ export component MixerPanel inherits Rectangle {
                 MeterView {
                     master: true;
                     data: Studio.master-meter[0];
+                    value: Studio.master-meter-values[0];
                     reset => { Studio.reset-master-clip(); }
                 }
             }

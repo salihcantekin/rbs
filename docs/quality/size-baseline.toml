@@ -7,11 +7,11 @@
 "crates/rbs-api/src/request.rs" = 4140
 "crates/rbs-api/src/types.rs" = 3208
 "crates/rbs-api/tests/json.rs" = 3540
-"crates/rbs-app/src/main.rs" = 6755
+"crates/rbs-app/src/main.rs" = 6750
 "crates/rbs-app/src/menu_bar.rs" = 2518
 "crates/rbs-app/src/record_profile.rs" = 2081
 "crates/rbs-app/src/studio_host.rs" = 18481
-"crates/rbs-app/src/studio_ui.rs" = 11008
+"crates/rbs-app/src/studio_ui.rs" = 10928
 "crates/rbs-app/tests/studio_record.rs" = 3156
 "crates/rbs-app/tests/studio_scenes.rs" = 2288
 "crates/rbs-app/tests/studio_stream.rs" = 2464

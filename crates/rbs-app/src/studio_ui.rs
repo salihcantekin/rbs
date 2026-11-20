@@ -68,11 +68,10 @@ use crate::ui::{
 
 /// Meter refresh while the Mixer is visible (U16: 30 Hz).
 pub const METER_PERIOD: Duration = Duration::from_millis(33);
-/// Accessible meter values change at most this often (U16).
 /// The speed a source gets when Scroll is first turned on, in canvas pixels per
 /// second (ADR-0150 decision 12).
 const NEW_SCROLL_SPEED: f32 = 100.0;
-
+/// Accessible meter values change at most this often (U16): every 30th meter tick.
 const REPORT_EVERY: u32 = 30;
 
 /// Codes of `Studio.rec-state`.
@@ -84,6 +83,7 @@ pub(crate) mod browser_props;
 pub(crate) mod destinations;
 pub(crate) mod filters;
 pub(crate) mod loudness;
+mod meter_values;
 pub(crate) mod monitor;
 pub(crate) mod silence;
 pub(crate) mod text_props;
@@ -406,8 +406,8 @@ pub struct StudioUi {
     /// The loudness meter (ADR-0092): the Master strip and Settings › Audio.
     loudness: loudness::LoudnessUi,
     meters: Rc<VecModel<MeterRow>>,
-    /// Source id to its Mixer row. Rebuilt when that row set changes, not on a tick.
-    meter_index: std::collections::HashMap<i32, usize>,
+    /// The Mixer rows' accessible values and the source id to row index.
+    meter_values: meter_values::MeterValues,
     /// Sources hidden from the Mixer (ADR-0080): names only, no meter slot.
     hidden_meters: Rc<VecModel<MeterRow>>,
     /// The Stats panel's lines ([`stat_lines`]).
@@ -766,7 +766,7 @@ impl StudioUi {
             monitor: monitor::MonitorUi::default(),
             loudness: loudness::LoudnessUi::default(),
             meters: Rc::new(VecModel::default()),
-            meter_index: std::collections::HashMap::new(),
+            meter_values: meter_values::MeterValues::default(),
             hidden_meters: Rc::new(VecModel::default()),
             stats: Rc::new(VecModel::default()),
             scale: Rc::new(VecModel::from(scale)),
@@ -916,6 +916,7 @@ impl StudioUi {
         g.set_meters(ModelRc::from(self.meters.clone()));
         g.set_hidden_meters(ModelRc::from(self.hidden_meters.clone()));
         g.set_master_meter(ModelRc::from(self.master_meter.clone()));
+        self.meter_values.attach(g);
         g.set_loudness_rows(ModelRc::from(self.loudness.rows.clone()));
         g.set_stats(ModelRc::from(self.stats.clone()));
         g.set_scale(ModelRc::from(self.scale.clone()));
@@ -6292,7 +6293,7 @@ impl StudioUi {
         self.sources.set_vec(Vec::new());
         self.scenes.set_vec(Vec::new());
         self.meters.set_vec(Vec::new());
-        self.meter_index.clear();
+        self.meter_values.clear();
         self.hidden_meters.set_vec(Vec::new());
         self.master_meter.set_vec(Vec::new());
         self.master_shown = None;
@@ -7495,7 +7496,6 @@ impl StudioUi {
                     },
                     name: r.name.as_str().into(),
                     icon: source_icon(r.kind).into(),
-                    value: "silent".into(),
                     global: r.global,
                     monitor: monitor::mode_code(r.audio.monitor),
                     solo: self.is_soloed(r.id.get()),
@@ -7514,13 +7514,14 @@ impl StudioUi {
                     row.peak = old.peak;
                     row.peak_zone = old.peak_zone;
                     row.clipped = old.clipped;
-                    row.value = old.value;
                 }
                 row
             })
             .collect();
-        reindex_meters(&mut self.meter_index, &mut self.slots, &meters);
+        let values = self.meter_values.carried(&meters);
+        reindex_meters(&mut self.meter_values.index, &mut self.slots, &meters);
         set_rows(&self.meters, meters);
+        self.meter_values.set_rows(values);
         // Hidden sources are heard but not metered: names only (ADR-0080).
         let hidden: Vec<MeterRow> = rows
             .iter()
@@ -7594,6 +7595,7 @@ impl StudioUi {
     /// The master strip's row: its name, fader and mute from the model, its meter
     /// parts from the last refresh (ADR-0081). One row while the studio has a mixer.
     fn show_master(&mut self) {
+        self.meter_values.show_master(self.master_slot.is_some());
         if self.master_slot.is_none() {
             self.master_meter.set_vec(Vec::new());
             self.master_shown = None;
@@ -7639,87 +7641,45 @@ impl StudioUi {
         self.filter_ui.levels(filter)
     }
 
-    /// One meter refresh: takes each source's peaks since the last call. `readouts`:
-    /// the accessible dB values are due here once a second; false while the shell's
-    /// one-second tick writes them ([`Self::report_meters`]), so they change in the
-    /// same turn as the other 1 Hz texts and cost no extra redraw.
-    pub fn tick_meters(&mut self, readouts: bool) {
+    /// One meter refresh: takes each source's peaks since the last call. The
+    /// accessible dB values are due once a second; they are written apart from the rows
+    /// ([`meter_values`]), so they cost no redraw.
+    pub fn tick_meters(&mut self) {
         let now = self.meter_start.elapsed();
         self.meter_ticks = self.meter_ticks.wrapping_add(1);
-        let report = readouts && self.meter_ticks.is_multiple_of(REPORT_EVERY);
+        let report = self.meter_ticks.is_multiple_of(REPORT_EVERY);
         for s in self.slots.iter_mut() {
             let view = meter_view(&s.level, &mut s.ballistics, now);
             let id = s.source.get() as i32;
-            let Some(&index) = self.meter_index.get(&id) else {
-                if report {
-                    let _ = s.ballistics.take_report();
-                }
+            let value = due_readout(report, &mut s.ballistics, &mut s.readout);
+            let Some(&index) = self.meter_values.index.get(&id) else {
                 continue;
             };
+            if let Some(text) = value {
+                self.meter_values.set(index, &text);
+            }
             // Write the row only when a snapped value changes: every write redraws
             // the whole window, so a silent or steady meter must not cost a frame
             // (audit U-02). The id is a map lookup, not a scan of the rows.
-            let value = due_readout(report, &mut s.ballistics, &mut s.readout);
             let native = crate::meter_bridge::set_view(id, &view);
-            write_meter_row(
-                &*self.meters,
-                index,
-                &mut s.shown,
-                &view,
-                value.as_deref(),
-                native,
-            );
+            write_meter_row(&*self.meters, index, &mut s.shown, &view, native);
         }
         if let Some((level, ballistics)) = &mut self.master_slot {
             let view = meter_view(level, ballistics, now);
-            let value = due_readout(report, ballistics, &mut self.master_readout);
+            if let Some(text) = due_readout(report, ballistics, &mut self.master_readout) {
+                self.meter_values.set_master(&text);
+            }
             let native = crate::meter_bridge::set_view(-1, &view);
             write_meter_row(
                 &*self.master_meter,
                 0,
                 &mut self.master_shown,
                 &view,
-                value.as_deref(),
                 native,
             );
         }
         crate::meter_bridge::flush();
         self.tick_loudness();
-    }
-
-    /// The accessible dB value of every meter (the highest level since the last
-    /// report), written only where it changed; called by the shell's one-second tick
-    /// while the meters run.
-    pub fn report_meters(&mut self) {
-        for s in self.slots.iter_mut() {
-            let id = s.source.get() as i32;
-            let level = s.ballistics.take_report();
-            let value: slint::SharedString = level.english().into();
-            let Some(&index) = self.meter_index.get(&id) else {
-                continue;
-            };
-            let Some(mut row) = self.meters.row_data(index) else {
-                continue;
-            };
-            if row.value != value {
-                row.value = value;
-                self.meters.set_row_data(index, row);
-                crate::measure_ui::count_meter_write();
-            }
-            s.readout = Some(level);
-        }
-        if let Some((_, ballistics)) = &mut self.master_slot {
-            let level = ballistics.take_report();
-            let value: slint::SharedString = level.english().into();
-            if let Some(mut row) = self.master_meter.row_data(0) {
-                if row.value != value {
-                    row.value = value;
-                    self.master_meter.set_row_data(0, row);
-                    crate::measure_ui::count_meter_write();
-                }
-                self.master_readout = Some(level);
-            }
-        }
     }
 }
 
@@ -7731,28 +7691,19 @@ fn mixer_source(r: &SourceRow) -> bool {
     r.visible && (r.meter.is_some() || r.kind.is_some_and(SourceKind::is_audio))
 }
 
-/// Paints `view` (and the readout `value`, when one is due) into `row` and says whether
-/// anything changed, so the caller writes the row back only then. While the native
-/// meter layer draws the bar (`native`, ADR-0035) only the clip box is painted: the
-/// zones and the peak stay as they are, so a moving level writes nothing.
+/// Paints `view` into `row` and says whether anything changed, so the caller writes
+/// the row back only then. While the native meter layer draws the bar (`native`,
+/// ADR-0035) only the clip box is painted: the zones and the peak stay as they are, so
+/// a moving level writes nothing.
 /// Only the tests call it now; the meter tick paints through its own path.
 #[cfg(test)]
-fn repaint(
-    row: &mut MeterRow,
-    view: &rbs_ui::meter::MeterView,
-    value: Option<&str>,
-    native: bool,
-) -> bool {
+fn repaint(row: &mut MeterRow, view: &rbs_ui::meter::MeterView, native: bool) -> bool {
     let next = snap_view(view);
-    let bar_changed = !snap_matches(meter_snap_row(row), next, native);
-    if bar_changed {
+    let changed = !snap_matches(meter_snap_row(row), next, native);
+    if changed {
         apply_snap(row, &next, native);
     }
-    let text_changed = value.is_some_and(|text| row.value != text);
-    if let Some(text) = value.filter(|_| text_changed) {
-        row.value = text.into();
-    }
-    bar_changed || text_changed
+    changed
 }
 
 /// The level a slot shows at `now`, after taking the peaks since the last call.
@@ -7816,42 +7767,31 @@ fn reindex_meters(
     !same
 }
 
-/// Writes `view` into the row at `index` when a snapped bar value or the readout
-/// changed. `shown` is that bar last written, so a steady tick does not read the row.
+/// Writes `view` into the row at `index` when a snapped bar value changed. `shown`
+/// is that bar last written, so a steady tick does not read the row.
 fn write_meter_row(
     rows: &dyn Model<Data = MeterRow>,
     index: usize,
     shown: &mut Option<MeterSnap>,
     view: &rbs_ui::meter::MeterView,
-    value: Option<&str>,
     native: bool,
 ) {
     let next = snap_view(view);
-    if value.is_none() && shown.is_some_and(|prev| snap_matches(prev, next, native)) {
+    if shown.is_some_and(|prev| snap_matches(prev, next, native)) {
         return;
     }
     let Some(mut row) = rows.row_data(index) else {
         return;
     };
-    let previous = match *shown {
-        Some(prev) => prev,
-        None => meter_snap_row(&row),
-    };
-    let bar_changed = !snap_matches(previous, next, native);
-    let text_changed = value.is_some_and(|text| row.value != text);
-    if !bar_changed && !text_changed {
-        *shown = Some(meter_snap_row(&row));
-        return;
-    }
-    if bar_changed {
+    let previous = shown.unwrap_or_else(|| meter_snap_row(&row));
+    if !snap_matches(previous, next, native) {
         apply_snap(&mut row, &next, native);
+        *shown = Some(meter_snap_row(&row));
+        rows.set_row_data(index, row);
+        crate::measure_ui::count_meter_write();
+    } else {
+        *shown = Some(meter_snap_row(&row));
     }
-    if let Some(text) = value.filter(|_| text_changed) {
-        row.value = text.into();
-    }
-    *shown = Some(meter_snap_row(&row));
-    rows.set_row_data(index, row);
-    crate::measure_ui::count_meter_write();
 }
 
 /// Snapped bar stored on a Mixer row. Compared by value so a tick does not clone the row.
@@ -9155,30 +9095,17 @@ mod tests {
         let mut meter = Meter::new();
         let now = Duration::from_millis(100);
         let mut row = MeterRow::default();
-        repaint(&mut row, &meter.view(now), None, false);
+        repaint(&mut row, &meter.view(now), false);
         assert!(
-            !repaint(&mut row, &meter.view(now), None, false),
+            !repaint(&mut row, &meter.view(now), false),
             "a silent meter painted again is no change"
         );
         meter.update(-12.0, now);
+        assert!(repaint(&mut row, &meter.view(now), false), "sound moves it");
         assert!(
-            repaint(&mut row, &meter.view(now), None, false),
-            "sound moves it"
-        );
-        assert!(
-            !repaint(&mut row, &meter.view(now), None, false),
+            !repaint(&mut row, &meter.view(now), false),
             "the same view again is no change, so the window is not redrawn"
         );
-        assert!(
-            repaint(&mut row, &meter.view(now), Some("-12 dBFS"), false),
-            "a new readout is"
-        );
-        assert!(!repaint(
-            &mut row,
-            &meter.view(now),
-            Some("-12 dBFS"),
-            false
-        ));
     }
 
     #[test]
@@ -9191,16 +9118,16 @@ mod tests {
         };
         let mut row = MeterRow::default();
         assert!(
-            !repaint(&mut row, &view(0.7, false), None, true),
+            !repaint(&mut row, &view(0.7, false), true),
             "a moving level costs no frame while the layer draws it (ADR-0035)"
         );
         assert_eq!(row.lo_to, 0.0, "the zones stay as they were");
         assert!(
-            repaint(&mut row, &view(0.9, true), None, true),
+            repaint(&mut row, &view(0.9, true), true),
             "the clip box is Slint's"
         );
         assert!(
-            repaint(&mut row, &view(0.9, true), None, false),
+            repaint(&mut row, &view(0.9, true), false),
             "Slint draws again"
         );
     }
@@ -9214,18 +9141,13 @@ mod tests {
             clipped: false,
         };
         let mut row = MeterRow::default();
-        assert!(repaint(&mut row, &view(0.5), None, false));
+        assert!(repaint(&mut row, &view(0.5), false));
         let tiny = 0.25 / METER_STEPS;
         assert!(
-            !repaint(&mut row, &view(0.5 + tiny), None, false),
+            !repaint(&mut row, &view(0.5 + tiny), false),
             "room noise that moves the bar by less than a pixel costs no frame"
         );
-        assert!(repaint(
-            &mut row,
-            &view(0.5 + 2.0 / METER_STEPS),
-            None,
-            false
-        ));
+        assert!(repaint(&mut row, &view(0.5 + 2.0 / METER_STEPS), false));
         assert!(snap(f32::NAN).is_nan(), "not a number stays as it is");
     }
 
@@ -9276,7 +9198,7 @@ mod tests {
             clipped: false,
         };
         let mut shown = None;
-        write_meter_row(&probe, at, &mut shown, &view(0.5), None, false);
+        write_meter_row(&probe, at, &mut shown, &view(0.5), false);
         assert_eq!(
             probe.reads.borrow().as_slice(),
             &[at],
@@ -9285,7 +9207,7 @@ mod tests {
         assert_eq!(probe.writes.borrow().as_slice(), &[at]);
         probe.reads.borrow_mut().clear();
         probe.writes.borrow_mut().clear();
-        write_meter_row(&probe, at, &mut shown, &view(0.5), None, false);
+        write_meter_row(&probe, at, &mut shown, &view(0.5), false);
         assert!(
             probe.reads.borrow().is_empty(),
             "an unchanged snap does not read the row"
@@ -9299,7 +9221,6 @@ mod tests {
             at,
             &mut shown,
             &view(0.5 + 0.25 / METER_STEPS),
-            None,
             false,
         );
         assert!(
@@ -9311,7 +9232,6 @@ mod tests {
             at,
             &mut shown,
             &view(0.5 + 2.0 / METER_STEPS),
-            None,
             false,
         );
         assert_eq!(probe.reads.borrow().as_slice(), &[at]);

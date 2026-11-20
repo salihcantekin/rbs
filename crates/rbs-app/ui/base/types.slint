@@ -1399,7 +1399,8 @@ export struct SourceSettingsData { id: int, name: string, kind-code: int, modes:
 export struct SourceTargetData { name: string, current: bool, index: int, heading: string, picture: image, has-picture: bool, wants-picture: bool }
 
 // One meter's moving parts as fractions of the bar (rbs_ui::meter::MeterView::zones),
-// its peak-hold position and zone, the clip latch and the accessible value (U16).
+// its peak-hold position and zone and the clip latch (U16). Its accessible value is in
+// `meter-values`, so its 1 Hz change redraws nothing.
 export struct MeterRow {
     // The source's id and whether its sound is muted (ADR-0059).
     id: int,
@@ -1410,7 +1411,7 @@ export struct MeterRow {
     name: string,
     icon: string,
     lo-from: float, lo-to: float, mi-from: float, mi-to: float, hi-from: float, hi-to: float,
-    peak: float, peak-zone: int, clipped: bool, value: string,
+    peak: float, peak-zone: int, clipped: bool,
     // A global source (ADR-0065): the Mixer groups it apart from the scene's own.
     global: bool,
     // Heard on the monitor (ADR-0097): 0 off, 1 monitor and output, 2 monitor only;
@@ -1527,6 +1528,12 @@ export global Studio {
     in property <[MeterRow]> hidden-meters;
     // The master strip (ADR-0081): one row while the studio has a mixer, else none.
     in property <[MeterRow]> master-meter;
+    // The meters' accessible values (U16), by the row of `meters` and of `master-meter`.
+    // Apart from the rows: only the accessible elements read them, so the value's
+    // change once a second redraws nothing (Slint redraws when a row it draws from
+    // changes, even when the drawn parts stay the same).
+    in property <[string]> meter-values;
+    in property <[string]> master-meter-values;
     // How many of `meters` are the scene's own and how many are global (Mixer groups).
     in property <int> meter-scenes;
     in property <int> meter-globals;

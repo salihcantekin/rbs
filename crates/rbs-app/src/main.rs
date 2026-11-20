@@ -1770,13 +1770,9 @@ impl Ctx {
         let Ok(mut app) = self.app.try_borrow_mut() else {
             return;
         };
-        // The other 1 Hz changes ride this tick: Stats held since the last one, and the
-        // meters' dB values while the meters run.
+        // The other 1 Hz changes ride this tick: Stats held since the last one.
         if let Some(stats) = self.held_stats.take() {
             let _ = app.studio.apply(studio_host::Update::Stats(stats));
-        }
-        if self.meter_timer.running() {
-            app.studio.report_meters();
         }
         // Since going live while live, else since the recording started.
         // The vertical chips' times (ADR-0111), also while the main canvas is idle.
@@ -2229,8 +2225,7 @@ impl Ctx {
     /// One meter refresh (the timer runs only while the Mixer shows meters).
     fn meter_tick(&self) {
         if let Ok(mut app) = self.app.try_borrow_mut() {
-            // While the one-second tick runs, it writes the dB values.
-            app.studio.tick_meters(!self.live_timer.running());
+            app.studio.tick_meters();
         }
     }
 
