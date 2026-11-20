@@ -108,6 +108,7 @@ rbs-import-obs = { path = "../rbs-import-obs" }
 fontique = "0.11.1"
 # Panic boundaries, crash reports and unclean-exit detection (ADR-0055).
 rbs-crash = { path = "../rbs-crash" }
+rbs-log = { path = "../rbs-log" }
 # Settings › Virtual camera and sending to it (ADR-0066 decisions 11 and 12).
 rbs-vcam = { path = "../rbs-vcam" }
 rbs-capture-test = { path = "../rbs-capture-test", optional = true }

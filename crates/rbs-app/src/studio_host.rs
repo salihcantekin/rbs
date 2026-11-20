@@ -4765,7 +4765,7 @@ fn start(
             .map(|d| {
                 let (file, note) = crate::text_timers::load(d);
                 if let Some(why) = note {
-                    rbs_crash::errln!("rbs: text timers were not read: {why}");
+                    rbs_core::warn!(rbs_core::log::Area::App, "text timers were not read: {why}");
                 }
                 file
             })
@@ -16549,10 +16549,8 @@ fn start_gate(
         }
         None => {
             if !profile.1 {
-                rbs_crash::errln!(
-                    "rbs: recording.iso.on_hardware_limit has a value this version does not \
-                     know; it behaves as \"ask\""
-                );
+                let what = "recording.iso.on_hardware_limit: unknown value; \"ask\"";
+                rbs_core::warn!(rbs_core::log::Area::Record, "{what}");
             }
             profile.0
         }

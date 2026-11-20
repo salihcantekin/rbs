@@ -339,7 +339,7 @@ pub fn apply(theme: &Theme<'_>, tokens: &Tokens<'_>, look: Option<&Look>) {
     #[cfg(windows)]
     theme.set_os_scheme(rbs_app::win::os_scheme_slot());
     if let Err(why) = result {
-        crate::studio_ui::log(&format!("token file not applied: {why}"));
+        rbs_core::warn!(rbs_core::log::Area::Ui, "token file not applied: {why}");
     }
     #[cfg(windows)]
     menus_follow(theme);

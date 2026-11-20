@@ -54,6 +54,7 @@ use quit::quitting;
 use rbs_api::types::OutputKind;
 use rbs_app::background::{self, OnClose, Request};
 use rbs_app::studio_host;
+use rbs_core::log::Area;
 use rbs_ui::command::{CommandId, CommandState};
 use rbs_ui::frame::{DropPlace, DropTarget, drop_target};
 use rbs_ui::layout::{Axis, Edge, Rect};
@@ -1931,10 +1932,11 @@ impl Ctx {
                 replay_page::update(app, &u);
             }
             for (id, picture, state) in applied.projectors {
-                studio_ui::log(&format!(
+                rbs_core::debug!(
+                    Area::Ui,
                     "projector: host says {id} is {state:?}, picture {}",
                     picture.is_some()
-                ));
+                );
                 let Some(canvas) = projector::canvas_of(id) else {
                     continue;
                 };
@@ -2492,8 +2494,7 @@ impl Ctx {
             };
             preview::set_marks(&app.main, marked, app.studio.marks());
             preview::set_marks(&app.main, other, &[]);
-            // The vertical picture is edited outside studio mode only (it shows the
-            // scene on air).
+            // The vertical picture is edited outside studio mode only (it shows the scene on air).
             let vertical_marks = if studio_mode {
                 &[][..]
             } else {
@@ -2546,7 +2547,7 @@ impl Ctx {
                     }
                     Err(e) => {
                         // No way back: Close quits, and the setting's hint says so.
-                        studio_ui::log(&format!("tray icon: {e}; closing the window quits"));
+                        rbs_core::info!(Area::Ui, "tray icon: {e}; closing the window quits");
                         WAY_BACK.with(|w| w.set(false));
                     }
                 }
@@ -3156,7 +3157,7 @@ impl Ctx {
                 .send(studio_host::Command::CloseProjector(projector::host_id(c)));
         }
         for &c in open.iter().filter(|c| !app.host_projectors.contains(c)) {
-            studio_ui::log(&format!("projector: asking the host for {c:?}"));
+            rbs_core::debug!(Area::Ui, "projector: asking the host for {c:?}");
             app.studio.send(studio_host::Command::OpenProjector {
                 id: projector::host_id(c),
                 canvas: host_canvas(c),
@@ -5834,7 +5835,7 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
                 // surface calls no notifier at all, so a log without this line means
                 // that fallback.
                 if matches!(state, slint::RenderingState::RenderingSetup) {
-                    studio_ui::log(&format!("ui: Slint renders with {}", graphics_api(api)));
+                    rbs_core::debug!(Area::Ui, "ui: Slint renders with {}", graphics_api(api));
                 }
                 if matches!(state, slint::RenderingState::BeforeRendering)
                     && let Some(main) = main.upgrade()
@@ -5849,7 +5850,7 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
                 }
             });
             if let Err(e) = set {
-                studio_ui::log(&format!("preview: no rendering notifier: {e:?}"));
+                rbs_core::warn!(Area::Ui, "preview: no rendering notifier: {e:?}");
             }
         }
     }
@@ -5884,6 +5885,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The name macOS shows for the app is "RBS", not the executable's file name.
     #[cfg(target_os = "macos")]
     rbs_app::native::set_app_name(c"RBS");
+    let _log = rbs_app::diag_log::start();
     let config = config::config_dir();
     // A second launch while RBS keeps running brings that RBS forward and ends here
     // (ADR-0056 decision 6).
@@ -5899,16 +5901,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let notice = match rbs_crash::install(&config.join("crash-reports")) {
         Ok(session) => {
             let notice = crash_notice(session.unclean());
-            // Clean on every exit through `exit`, also one with an error and one the
-            // system forces from inside the event loop without returning here; an
-            // uncaught panic on this thread is not clean.
+            // Clean on every exit through `exit`, also an error exit or one the system
+            // forces inside the event loop; an uncaught panic on this thread is not clean.
             if !session.end_clean_at_exit() {
-                rbs_crash::errln!("rbs: crash detection is off: no exit handler");
+                rbs_core::warn!(Area::App, "crash detection is off: no exit handler");
             }
             notice
         }
         Err(e) => {
-            rbs_crash::errln!("rbs: crash detection is off: {e}");
+            rbs_core::warn!(Area::App, "crash detection is off: {e}");
             None
         }
     };
@@ -5944,8 +5945,7 @@ fn show_from_system() {
 /// The notice for sessions that ended without a clean exit, if any.
 fn crash_notice(unclean: &[rbs_crash::Unclean]) -> Option<String> {
     unclean.last()?;
-    // A shutdown that ran past its budget (ADR-0156 decision 6) says so: the take may
-    // be cut short.
+    // A shutdown that ran past its budget (ADR-0156 decision 6) says so: the take may be cut short.
     let mut text = String::from(if unclean.iter().any(|u| u.unfinished.is_some()) {
         "RBS did not finish closing last time. The last recording may be cut short; a Matroska recording stays playable up to that moment."
     } else {
@@ -6297,20 +6297,20 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
         // read gives System default at full volume and is left as it is.
         let (monitor, note) = rbs_app::monitor_settings::load(&ctx.app.borrow().config);
         if let Some(why) = note {
-            rbs_crash::errln!("rbs: monitor settings: {why}");
+            rbs_core::warn!(Area::App, "monitor settings: {why}");
         }
         config.monitor = monitor;
         // Show loudness, the target and the true-peak limit (ADR-0092; `loudness.toml`).
         let (loudness, note) = rbs_app::loudness_settings::load(&ctx.app.borrow().config);
         if let Some(why) = note {
-            rbs_crash::errln!("rbs: loudness settings: {why}");
+            rbs_core::warn!(Area::App, "loudness settings: {why}");
         }
         config.loudness = loudness;
         // This computer's calibration (ADR-0087 decision 4), read with `app.toml`
         // before the control thread serves anything.
         let (calibration, note) = rbs_app::calibration_file::load(&ctx.app.borrow().config);
         if let Some(why) = note {
-            rbs_crash::errln!("rbs: calibration: {why}");
+            rbs_core::warn!(Area::App, "calibration: {why}");
         }
         config.calibration = calibration;
         config.read_free_space = Some(studio_host::FreeSpaceReader(std::sync::Arc::new(
@@ -6416,7 +6416,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
                 if let Ok(mut app) = ctx.app.try_borrow_mut() {
                     app.bg.background_notice_shown = true;
                     if let Err(e) = background::save(&app.config, &app.bg) {
-                        studio_ui::log(&format!("app.toml: {e}"));
+                        rbs_core::info!(Area::App, "app.toml: {e}");
                     }
                     ctx.hide_all(&mut app);
                 }
@@ -6454,7 +6454,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
     // they ask while live, save and stop the studio before the process ends.
     #[cfg(target_os = "macos")]
     if !rbs_app::native::route_quit(quit_from_system) {
-        rbs_crash::errln!("rbs: Quit ends the app without closing the studio first");
+        rbs_core::warn!(Area::App, "Quit skips closing the studio first");
     }
 
     // The Dock icon shows the RBS logo also without an app bundle (brand assets). Set
@@ -6463,7 +6463,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
     #[cfg(target_os = "macos")]
     entry::single_shot(std::time::Duration::ZERO, || {
         if !rbs_app::native::set_icon(include_bytes!("../assets/brand/icon-mac-1024.png")) {
-            rbs_crash::errln!("rbs: could not set the Dock icon");
+            rbs_core::warn!(Area::Ui, "could not set the Dock icon");
         }
     });
 
@@ -6479,7 +6479,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
         WAY_BACK.with(|w| w.set(true));
     }
     if !WAY_BACK.with(Cell::get) && OnClose::KeepRunning.supported() {
-        rbs_crash::errln!("rbs: no way back to a hidden window here; closing the window quits");
+        rbs_core::info!(Area::Ui, "no way back to a hidden window; Close quits");
     }
 
     // Hiding every window keeps the event loop (ADR-0056 decision 4); only Quit ends it.

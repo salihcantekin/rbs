@@ -421,7 +421,10 @@ mod mac {
             // SAFETY: the handle is the live NSView of this window, which the renderer
             // made layer-backed; this runs on the main thread that owns it.
             if let Err(e) = unsafe { layer.bridge.attach_to_ns_view(appkit.ns_view) } {
-                crate::studio_ui::log(&format!("meters: cannot attach the layer: {e}"));
+                rbs_core::warn!(
+                    rbs_core::log::Area::Ui,
+                    "meters: cannot attach the layer: {e}"
+                );
                 return false;
             }
             layer.attached = true;
@@ -679,7 +682,10 @@ mod win {
             // SAFETY: the handle is the live top-level window of this process; this runs
             // on the UI thread that owns it.
             if let Err(e) = unsafe { layer.bridge.solids.attach_to_hwnd(hwnd) } {
-                crate::studio_ui::log(&format!("meters: cannot attach the layer: {e}"));
+                rbs_core::warn!(
+                    rbs_core::log::Area::Ui,
+                    "meters: cannot attach the layer: {e}"
+                );
                 st.layer = None;
                 return false;
             }

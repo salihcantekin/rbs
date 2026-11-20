@@ -42,10 +42,11 @@ fn check_shutdown() {
         }
         Some(shutdown::State::Running { left, .. }) => entry::single_shot(left, check_shutdown),
         Some(shutdown::State::OverBudget(step)) => {
-            studio_ui::log(&format!(
+            rbs_core::error!(
+                rbs_core::log::Area::App,
                 "shutdown did not finish within its budget: {}",
                 step.name()
-            ));
+            );
             rbs_crash::exit_unfinished(step.name());
         }
     }
@@ -98,7 +99,10 @@ impl Ctx {
                     ctx.decide(request, false);
                 });
             } else {
-                studio_ui::log("a close or quit request was dropped: the app was busy");
+                rbs_core::warn!(
+                    rbs_core::log::Area::App,
+                    "a close or quit request was dropped: the app was busy"
+                );
             }
             return;
         };
@@ -195,10 +199,11 @@ impl Ctx {
                 check_shutdown();
             }
             Err(not_started) => {
-                studio_ui::log(&format!(
+                rbs_core::error!(
+                    rbs_core::log::Area::App,
                     "the shutdown thread did not start ({}); stopping after the loop",
                     not_started.error
-                ));
+                );
                 SHUTDOWN_INLINE.with(|s| *s.borrow_mut() = Some(not_started.work));
                 entry::quit_loop();
             }

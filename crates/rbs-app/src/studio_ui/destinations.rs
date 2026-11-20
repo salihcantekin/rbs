@@ -953,7 +953,7 @@ impl super::StudioUi {
             return;
         }
         for line in destination_log_lines(self.live_dests.iter().map(|(d, _)| d), &rows) {
-            super::log(&line);
+            rbs_core::info!(rbs_core::log::Area::Stream, "{}", line);
         }
         let now = Instant::now();
         self.live_dests = rows.into_iter().map(|d| (d, now)).collect();

@@ -11,7 +11,7 @@ use rbs_remote_settings::Access;
 use rbs_remote_settings::ai_tools as ai_settings;
 use slint::{ModelRc, VecModel};
 
-use super::{StudioUi, log, strings};
+use super::{StudioUi, strings};
 use crate::ui::{AiActionRow, Studio};
 
 /// Seconds since the Unix epoch.
@@ -51,7 +51,10 @@ impl StudioUi {
                 return;
             }
             Err(e) => {
-                log(&format!("AI tools: settings not locked: {e}"));
+                rbs_core::warn!(
+                    rbs_core::log::Area::Remote,
+                    "AI tools: settings not locked: {e}"
+                );
                 None
             }
         };
@@ -64,7 +67,7 @@ impl StudioUi {
                 p
             }
             Err(why) => {
-                log(&format!("AI tools did not start: {why}"));
+                rbs_core::error!(rbs_core::log::Area::Remote, "AI tools did not start: {why}");
                 self.ai_failure = Some(format!("AI tools did not start: {why}"));
                 return;
             }
@@ -88,7 +91,7 @@ impl StudioUi {
             return;
         }
         if let Some(why) = self.serve_ipc() {
-            log(&format!("AI tools did not start: {why}"));
+            rbs_core::error!(rbs_core::log::Area::Remote, "AI tools did not start: {why}");
             self.ai_started = false;
             self.ai_failure = Some(format!("AI tools did not start: {why}"));
             if !self.remote.enabled {
@@ -99,7 +102,7 @@ impl StudioUi {
         self.ai_failure = None;
         self.ai_forward.start();
         self.sync_remote();
-        log("AI tools started");
+        rbs_core::info!(rbs_core::log::Area::Remote, "AI tools started");
     }
 
     /// Serves IPC if the server does not yet; the reason when it cannot.
@@ -115,7 +118,10 @@ impl StudioUi {
         let shown = endpoint.to_string();
         match server.start_ipc(endpoint) {
             Ok(()) => {
-                log(&format!("AI tools: local IPC at {shown}"));
+                rbs_core::info!(
+                    rbs_core::log::Area::Remote,
+                    "AI tools: local IPC at {shown}"
+                );
                 None
             }
             Err(why) => Some(why),
@@ -133,7 +139,7 @@ impl StudioUi {
         self.ai_forward.stop();
         self.push_slot();
         self.sync_remote();
-        log("AI tools stopped");
+        rbs_core::info!(rbs_core::log::Area::Remote, "AI tools stopped");
     }
 
     /// AI tools stopped by something else than Stop; `why` shows on the page.
@@ -142,7 +148,7 @@ impl StudioUi {
         self.ai_failure = Some(why.to_owned());
         self.ai_forward.stop();
         self.push_slot();
-        log(&format!("AI tools: {why}"));
+        rbs_core::info!(rbs_core::log::Area::Remote, "AI tools: {why}");
     }
 
     /// The studio runs: start AI tools when "Start when RBS opens" is on.
@@ -161,7 +167,10 @@ impl StudioUi {
                     self.push_slot();
                 }
             }
-            Err(why) => log(&format!("AI tools settings not read again: {why}")),
+            Err(why) => rbs_core::warn!(
+                rbs_core::log::Area::Remote,
+                "AI tools settings not read again: {why}"
+            ),
         }
     }
 
@@ -179,7 +188,10 @@ impl StudioUi {
                 return;
             }
             Err(e) => {
-                log(&format!("AI tools: settings not locked: {e}"));
+                rbs_core::warn!(
+                    rbs_core::log::Area::Remote,
+                    "AI tools: settings not locked: {e}"
+                );
                 None
             }
         };
@@ -243,7 +255,7 @@ impl StudioUi {
     /// next connection.
     pub fn ai_new_token(&mut self) {
         self.change_ai(|config, _| ai_settings::rotate(config).map(|()| false));
-        log("AI tools: made a new token");
+        rbs_core::info!(rbs_core::log::Area::Remote, "AI tools: made a new token");
     }
 
     pub fn pick_ai_tool(&mut self, index: i32) {

@@ -135,7 +135,10 @@ pub fn install(main: &crate::ui::MainWindow, seconds: u64) {
         let installed =
             crate::entry::set_rendering_notifier(main.window(), move |s, _| record(&st, &s));
         if let Err(e) = installed {
-            rbs_crash::errln!("rbs measure: this renderer gives no frame notifications: {e:?}");
+            rbs_core::warn!(
+                rbs_core::log::Area::Ui,
+                "measure: this renderer gives no frame notifications: {e:?}"
+            );
         }
     }
     let weak = main.as_weak();

@@ -23,6 +23,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::Thread;
 use std::time::{Duration, Instant};
 
+use rbs_core::log::{Area, Level};
+
 /// An entry that runs this long is logged when it returns.
 pub const STALL: Duration = Duration::from_millis(100);
 /// An entry that runs this long without returning is logged by the watch thread.
@@ -68,7 +70,7 @@ pub fn loop_started() {
             let _ = watch.thread.set(handle.thread().clone());
             let _ = WATCH.set(watch);
         }
-        Err(e) => rbs_crash::errln!("rbs: ui: no stall watch: {e}"),
+        Err(e) => rbs_core::warn!(Area::Ui, "no stall watch: {e}"),
     }
 }
 
@@ -113,7 +115,7 @@ impl Drop for Entry {
         if let Some((watch, since, at)) = self.since.take() {
             watch.since.store(0, Ordering::Release);
             if let Some(stall) = finished(since, watch.now(), at) {
-                rbs_crash::errln!("rbs: ui: {}", stall.line());
+                stall.log();
             }
         }
     }
@@ -200,7 +202,7 @@ impl Watch {
                         at: self.place(since),
                         done: false,
                     };
-                    rbs_crash::errln!("rbs: ui: {}", stall.line());
+                    stall.log();
                 }
                 Look::Wait(left) => std::thread::park_timeout(left),
                 Look::Idle => {
@@ -226,6 +228,20 @@ struct Stall {
 }
 
 impl Stall {
+    /// Its level in the diagnostics log (ADR-0158 decision 9): a returned entry is
+    /// Debug, Warn from 1 s; one still running is Warn, Error from 4 s.
+    fn level(&self) -> Level {
+        match (self.done, self.took.as_secs()) {
+            (true, 0) => Level::Debug,
+            (true, _) | (false, 0..=3) => Level::Warn,
+            (false, _) => Level::Error,
+        }
+    }
+
+    fn log(&self) {
+        rbs_core::log_at!(self.level(), Area::Ui, "{}", self.line());
+    }
+
     fn line(&self) -> String {
         let place = self
             .at
@@ -341,6 +357,20 @@ mod tests {
         assert_eq!(stall.at, Some(at));
         assert!(stall.line().contains(file!()), "{}", stall.line());
         assert!(stall.line().contains("200 ms"), "{}", stall.line());
+    }
+
+    #[test]
+    fn stalls_log_at_the_level_of_their_length() {
+        let at = |ms, done| Stall {
+            took: Duration::from_millis(ms),
+            at: None,
+            done,
+        };
+        assert_eq!(at(200, true).level(), Level::Debug);
+        assert_eq!(at(1_500, true).level(), Level::Warn);
+        assert_eq!(at(1_000, false).level(), Level::Warn);
+        assert_eq!(at(2_000, false).level(), Level::Warn);
+        assert_eq!(at(4_000, false).level(), Level::Error);
     }
 
     #[test]

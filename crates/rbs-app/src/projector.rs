@@ -40,7 +40,6 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::entry;
-use crate::studio_ui::log;
 use crate::ui::{ProjectorWindow, Tokens};
 
 /// Every projector window's title starts with this.
@@ -236,7 +235,11 @@ pub fn sync(
                     w.window().request_redraw();
                 }
             });
-            log(&format!("projector: {} opened", param(content.canvas)));
+            rbs_core::info!(
+                rbs_core::log::Area::Ui,
+                "projector: {} opened",
+                param(content.canvas)
+            );
             slots.push(slot);
         }
     });
@@ -254,7 +257,7 @@ fn open_slot(
     let window = match made {
         Ok(w) => w,
         Err(e) => {
-            log(&format!("projector: no window: {e}"));
+            rbs_core::warn!(rbs_core::log::Area::Ui, "projector: no window: {e}");
             return None;
         }
     };
@@ -284,14 +287,17 @@ fn open_slot(
         }
     });
     if let Err(e) = set {
-        log(&format!("projector: no rendering notifier: {e:?}"));
+        rbs_core::warn!(
+            rbs_core::log::Area::Ui,
+            "projector: no rendering notifier: {e:?}"
+        );
     }
     entry::on_close_requested(window.window(), move || {
         emit(Event::Close(canvas));
         slint::CloseRequestResponse::HideWindow
     });
     if let Err(e) = window.show() {
-        log(&format!("projector: cannot show: {e}"));
+        rbs_core::warn!(rbs_core::log::Area::Ui, "projector: cannot show: {e}");
         return None;
     }
     #[cfg(windows)]
@@ -351,10 +357,11 @@ fn settle(canvas: ProjectorCanvas, tries: u32) {
         if again && tries < SETTLE_TRIES {
             settle(canvas, tries + 1);
         } else if again {
-            log(&format!(
+            rbs_core::warn!(
+                rbs_core::log::Area::Ui,
                 "projector: {} has no window to size",
                 param(canvas)
-            ));
+            );
         }
     });
 }
@@ -417,7 +424,8 @@ pub fn picture(canvas: ProjectorCanvas, endpoint: Option<PreviewEndpoint>) {
         if s.endpoint == endpoint {
             return;
         }
-        log(&format!(
+        rbs_core::info!(
+            rbs_core::log::Area::Ui,
             "projector: {} {}",
             param(canvas),
             if endpoint.is_some() {
@@ -425,7 +433,7 @@ pub fn picture(canvas: ProjectorCanvas, endpoint: Option<PreviewEndpoint>) {
             } else {
                 "has no picture"
             }
-        ));
+        );
         s.generation.fetch_add(1, Ordering::Relaxed);
         s.layer = None;
         s.endpoint.clone_from(&endpoint);
@@ -556,11 +564,12 @@ fn apply_size(s: &mut Slot) {
         let _ = w.request_inner_size(winit::dpi::PhysicalSize::new(size[0], size[1]));
         k
     });
-    log(&format!(
+    rbs_core::debug!(
+        rbs_core::log::Area::Ui,
         "projector: {} exact pixels, a fraction of 1/{}",
         param(s.canvas),
         k.unwrap_or(0)
-    ));
+    );
     s.exact_k = k;
 }
 
@@ -765,7 +774,10 @@ fn open_menu(pw: &ProjectorWindow, x: f32, y: f32) {
         }
     });
     if let Err(e) = posted {
-        log(&format!("projector: cannot open the menu: {e}"));
+        rbs_core::warn!(
+            rbs_core::log::Area::Ui,
+            "projector: cannot open the menu: {e}"
+        );
     }
 }
 
@@ -803,10 +815,11 @@ fn resized_by_hand(canvas: ProjectorCanvas) {
         if s.content.size != ProjectorSize::Exact || s.fullscreen.is_some() || s.pending.is_some() {
             return false;
         }
-        log(&format!(
+        rbs_core::debug!(
+            rbs_core::log::Area::Ui,
             "projector: {} resized by hand, now Window size",
             param(canvas)
-        ));
+        );
         s.content = s.content.clone().with_size(ProjectorSize::Window);
         s.exact_k = None;
         true
@@ -887,11 +900,13 @@ fn connect(canvas: ProjectorCanvas, endpoint: PreviewEndpoint, generation: Arc<A
                 Ok(sub) => {
                     let _ = entry::invoke(move || setup(canvas, sub, generation, at));
                 }
-                Err(e) => log(&format!("projector: cannot connect: {e}")),
+                Err(e) => {
+                    rbs_core::warn!(rbs_core::log::Area::Ui, "projector: cannot connect: {e}")
+                }
             },
         );
     if let Err(e) = spawned {
-        log(&format!("projector: no thread: {e}"));
+        rbs_core::warn!(rbs_core::log::Area::Ui, "projector: no thread: {e}");
     }
 }
 
@@ -912,7 +927,10 @@ fn setup(canvas: ProjectorCanvas, mut sub: PreviewSubscriber, generation: Arc<At
     let layer = match made {
         Ok(l) => l,
         Err(e) => {
-            log(&format!("projector: no layer in this session: {e}"));
+            rbs_core::warn!(
+                rbs_core::log::Area::Ui,
+                "projector: no layer in this session: {e}"
+            );
             return;
         }
     };
@@ -929,7 +947,11 @@ fn setup(canvas: ProjectorCanvas, mut sub: PreviewSubscriber, generation: Arc<At
     });
     // Placed now, and again on every draw (the window may not draw on its own).
     if let Some(w) = window.and_then(|w| w.upgrade()) {
-        log(&format!("projector: {} picture connected", param(canvas)));
+        rbs_core::debug!(
+            rbs_core::log::Area::Ui,
+            "projector: {} picture connected",
+            param(canvas)
+        );
         place_layer(canvas, &w);
         w.window().request_redraw();
     }
@@ -952,7 +974,10 @@ fn setup(canvas: ProjectorCanvas, mut sub: PreviewSubscriber, generation: Arc<At
                     Ok(None) => {}
                     Err(e) => {
                         if current() {
-                            log(&format!("projector: the picture ended: {e}"));
+                            rbs_core::warn!(
+                                rbs_core::log::Area::Ui,
+                                "projector: the picture ended: {e}"
+                            );
                         }
                         break;
                     }
@@ -960,7 +985,7 @@ fn setup(canvas: ProjectorCanvas, mut sub: PreviewSubscriber, generation: Arc<At
             }
         });
     if let Err(e) = spawned {
-        log(&format!("projector: no thread: {e}"));
+        rbs_core::warn!(rbs_core::log::Area::Ui, "projector: no thread: {e}");
     }
 }
 
@@ -1005,11 +1030,18 @@ fn place_layer(canvas: ProjectorCanvas, window: &ProjectorWindow) {
                 unsafe { st.layer.attach_to_hwnd(win32.hwnd) }
             };
             if let Err(e) = attach {
-                log(&format!("projector: cannot attach the layer: {e}"));
+                rbs_core::warn!(
+                    rbs_core::log::Area::Ui,
+                    "projector: cannot attach the layer: {e}"
+                );
                 return;
             }
             st.attached = true;
-            log(&format!("projector: {} layer attached", param(canvas)));
+            rbs_core::debug!(
+                rbs_core::log::Area::Ui,
+                "projector: {} layer attached",
+                param(canvas)
+            );
         }
         // Core Animation places in points; DirectComposition in physical pixels.
         let size = window.window().size();

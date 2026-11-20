@@ -40,6 +40,7 @@ pub mod calibration_file;
 pub mod canvas_profile;
 pub mod caption;
 pub mod device_sync_file;
+pub mod diag_log;
 pub mod edit_history;
 pub mod encoder_form;
 pub mod hotkeys;

@@ -322,8 +322,9 @@ impl Host {
                             && let Some(store) = self.add_ons.store()
                             && let Err(e) = store.clean(&self.add_ons.catalog[index])
                         {
-                            rbs_crash::errln!(
-                                "rbs: cleaning old versions of {} failed: {e}",
+                            rbs_core::warn!(
+                                rbs_core::log::Area::AddOns,
+                                "cleaning old versions of {} failed: {e}",
                                 self.add_ons.catalog[index].id
                             );
                         }
@@ -331,8 +332,9 @@ impl Host {
                     }
                     Err(e) => {
                         if let Some(reason) = e.fail_reason() {
-                            rbs_crash::errln!(
-                                "rbs: installing {} failed: {e}",
+                            rbs_core::error!(
+                                rbs_core::log::Area::AddOns,
+                                "installing {} failed: {e}",
                                 self.add_ons.catalog[index].id
                             );
                             self.add_ons.failed[index] = Some(reason);

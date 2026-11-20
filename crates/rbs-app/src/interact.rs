@@ -35,7 +35,6 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key as WKey, ModifiersState, NamedKey as WNamed};
 
 use crate::entry;
-use crate::studio_ui::log;
 use crate::ui::InteractWindow;
 
 /// How long connecting to the page's picture may take before it is given up.
@@ -154,7 +153,7 @@ pub fn open(source: SourceId, view: View, make: &dyn Fn(&InteractWindow)) {
     let window = match InteractWindow::new() {
         Ok(w) => w,
         Err(e) => {
-            log(&format!("interact: no window: {e}"));
+            rbs_core::warn!(rbs_core::log::Area::Browser, "interact: no window: {e}");
             return;
         }
     };
@@ -180,17 +179,23 @@ pub fn open(source: SourceId, view: View, make: &dyn Fn(&InteractWindow)) {
         }
     });
     if let Err(e) = set {
-        log(&format!("interact: no rendering notifier: {e:?}"));
+        rbs_core::warn!(
+            rbs_core::log::Area::Browser,
+            "interact: no rendering notifier: {e:?}"
+        );
     }
     entry::on_close_requested(window.window(), move || {
         emit(Event::Close(source));
         slint::CloseRequestResponse::HideWindow
     });
     if let Err(e) = window.show() {
-        log(&format!("interact: cannot show: {e}"));
+        rbs_core::warn!(rbs_core::log::Area::Browser, "interact: cannot show: {e}");
         return;
     }
-    log(&format!("interact: a window opened, page {w} x {h}"));
+    rbs_core::debug!(
+        rbs_core::log::Area::Browser,
+        "interact: a window opened, page {w} x {h}"
+    );
     // A page larger than most of its display opens smaller, in its shape.
     let weak = window.as_weak();
     entry::single_shot(Duration::ZERO, move || {
@@ -291,7 +296,7 @@ pub fn close(source: SourceId) {
     // Hidden outside the borrow: hiding may run the window's own handlers.
     if let Some(mut s) = slot {
         close_slot(&mut s);
-        log("interact: a window closed");
+        rbs_core::debug!(rbs_core::log::Area::Browser, "interact: a window closed");
     }
 }
 
@@ -336,11 +341,8 @@ pub fn picture(source: SourceId, endpoint: Option<PreviewEndpoint>) {
         if s.endpoint == endpoint {
             return;
         }
-        log(if endpoint.is_some() {
-            "interact: has a picture"
-        } else {
-            "interact: has no picture"
-        });
+        let has = if endpoint.is_some() { "has" } else { "has no" };
+        rbs_core::debug!(rbs_core::log::Area::Browser, "interact: {has} picture");
         s.generation.fetch_add(1, Ordering::Relaxed);
         s.layer = None;
         s.endpoint.clone_from(&endpoint);
@@ -481,11 +483,8 @@ fn on_event(
     let mut p = pointer.borrow_mut();
     match event {
         WindowEvent::Focused(on) => {
-            log(if *on {
-                "interact: focused"
-            } else {
-                "interact: not focused"
-            });
+            let not = if *on { "" } else { "not " };
+            rbs_core::debug!(rbs_core::log::Area::Browser, "interact: {not}focused");
             p.focused = *on;
             if !*on {
                 p.held = 0;
@@ -519,7 +518,10 @@ fn on_event(
     let modifiers = modifier_bits(p.modifiers, p.held);
     if !p.sent {
         p.sent = true;
-        log("interact: input goes to the page");
+        rbs_core::debug!(
+            rbs_core::log::Area::Browser,
+            "interact: input goes to the page"
+        );
     }
     let send = |e: InputEvent| emit(Event::Input(source, e));
     match event {
@@ -638,11 +640,14 @@ fn connect(source: SourceId, endpoint: PreviewEndpoint, generation: Arc<AtomicU6
                 Ok(sub) => {
                     let _ = entry::invoke(move || setup(source, sub, generation, at));
                 }
-                Err(e) => log(&format!("interact: cannot connect: {e}")),
+                Err(e) => rbs_core::warn!(
+                    rbs_core::log::Area::Browser,
+                    "interact: cannot connect: {e}"
+                ),
             },
         );
     if let Err(e) = spawned {
-        log(&format!("interact: no thread: {e}"));
+        rbs_core::warn!(rbs_core::log::Area::Browser, "interact: no thread: {e}");
     }
 }
 
@@ -663,7 +668,10 @@ fn setup(source: SourceId, mut sub: PreviewSubscriber, generation: Arc<AtomicU64
     let layer = match made {
         Ok(l) => l,
         Err(e) => {
-            log(&format!("interact: no layer in this session: {e}"));
+            rbs_core::warn!(
+                rbs_core::log::Area::Browser,
+                "interact: no layer in this session: {e}"
+            );
             return;
         }
     };
@@ -680,7 +688,7 @@ fn setup(source: SourceId, mut sub: PreviewSubscriber, generation: Arc<AtomicU64
         Some(s.window.as_weak())
     });
     if let Some(w) = window.and_then(|w| w.upgrade()) {
-        log("interact: picture connected");
+        rbs_core::debug!(rbs_core::log::Area::Browser, "interact: picture connected");
         place_layer(source, &w);
         w.window().request_redraw();
     }
@@ -703,7 +711,10 @@ fn setup(source: SourceId, mut sub: PreviewSubscriber, generation: Arc<AtomicU64
                     Ok(None) => {}
                     Err(e) => {
                         if current() {
-                            log(&format!("interact: the picture ended: {e}"));
+                            rbs_core::warn!(
+                                rbs_core::log::Area::Browser,
+                                "interact: the picture ended: {e}"
+                            );
                         }
                         break;
                     }
@@ -711,7 +722,7 @@ fn setup(source: SourceId, mut sub: PreviewSubscriber, generation: Arc<AtomicU64
             }
         });
     if let Err(e) = spawned {
-        log(&format!("interact: no thread: {e}"));
+        rbs_core::warn!(rbs_core::log::Area::Browser, "interact: no thread: {e}");
     }
 }
 
@@ -757,7 +768,10 @@ fn place_layer(source: SourceId, window: &InteractWindow) {
                 unsafe { st.layer.attach_to_hwnd(win32.hwnd) }
             };
             if let Err(e) = attach {
-                log(&format!("interact: cannot attach the layer: {e}"));
+                rbs_core::warn!(
+                    rbs_core::log::Area::Browser,
+                    "interact: cannot attach the layer: {e}"
+                );
                 return;
             }
             st.attached = true;
@@ -797,7 +811,7 @@ fn show(source: SourceId, frame: PreviewFrame) {
         {
             if !st.shown {
                 st.shown = true;
-                log("interact: first frame");
+                rbs_core::debug!(rbs_core::log::Area::Browser, "interact: first frame");
             }
             let now = st.clock.now();
             st.layer.show(frame, now);

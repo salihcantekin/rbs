@@ -68,7 +68,10 @@ fn schedule(weak: slint::Weak<MainWindow>, tries: u32) {
                 }
             }
             None if tries < TRIES => schedule(weak, tries + 1),
-            None => crate::studio_ui::log("title bar: the main window has no Win32 handle"),
+            None => rbs_core::warn!(
+                rbs_core::log::Area::Ui,
+                "title bar: the main window has no Win32 handle"
+            ),
         }
     });
 }
@@ -126,9 +129,10 @@ fn install(main: &MainWindow, hwnd: std::num::NonZeroIsize) {
         g.set_window_maximized(caption::maximized());
         g.set_custom_caption(true);
     } else {
-        crate::studio_ui::log(&format!(
+        rbs_core::warn!(
+            rbs_core::log::Area::Ui,
             "title bar: cannot remove the caption: {}",
             std::io::Error::last_os_error()
-        ));
+        );
     }
 }

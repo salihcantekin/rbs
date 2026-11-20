@@ -4,6 +4,7 @@
 //! output settings.
 
 use rbs_browser_ipc::control::Control;
+use rbs_core::log::Area;
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -250,8 +251,7 @@ impl VerticalChip {
     }
 }
 
-/// Why "Go live vertical" cannot start without a server (the toast adds "Vertical
-/// canvas: ").
+/// Why "Go live vertical" cannot start without a server (the toast adds "Vertical canvas: ").
 const VERTICAL_SETUP: &str = "Set up the vertical stream in Settings, Stream.";
 
 /// A vertical output's problem as a toast says it.
@@ -844,7 +844,7 @@ impl StudioUi {
             network: None,
             network_failure: None,
             ai: ai_settings::read(config).unwrap_or_else(|why| {
-                log(&format!("AI tools settings not used: {why}"));
+                rbs_core::warn!(Area::Remote, "AI tools settings not used: {why}");
                 AiToolsSettings::default()
             }),
             ai_started: false,
@@ -1295,8 +1295,7 @@ impl StudioUi {
         )
     }
 
-    /// What the Remote control section says about the server, and whether it is a
-    /// problem.
+    /// What the Remote control section says about the server, and whether it is a problem.
     fn remote_status(&self) -> (String, bool) {
         if !self.remote.enabled {
             return (String::new(), false);
@@ -1373,7 +1372,7 @@ impl StudioUi {
                 && server.serves_ws()
             {
                 server.stop_ws();
-                log("remote control off; AI tools keep running");
+                rbs_core::info!(Area::Remote, "off; AI tools keep running");
             }
             self.remote_failure = None;
             return;
@@ -1396,11 +1395,11 @@ impl StudioUi {
         };
         match started {
             Ok(()) => {
-                log(&format!("remote control on at {}", self.remote.address()));
+                rbs_core::info!(Area::Remote, "on at {}", self.remote.address());
                 self.remote_failure = None;
             }
             Err(e) => {
-                log(&format!("remote control did not start: {e}"));
+                rbs_core::error!(Area::Remote, "did not start: {e}");
                 let mut why = e.to_string();
                 if let Some(first) = why.get(..1) {
                     why.replace_range(..1, &first.to_uppercase());
@@ -1441,7 +1440,7 @@ impl StudioUi {
             control_waker: Box::new(host.api_waker()),
             audit: Box::new(move |a| {
                 forward.record(&a, unix_now(), flags.ai_tools_started());
-                log(&format!("remote control: {a:?}"));
+                rbs_core::debug!(Area::Remote, "{a:?}");
             }),
             ipc: None,
             levels: Some(host.level_feed()),
@@ -1453,7 +1452,7 @@ impl StudioUi {
         let (mut server, endpoint) = match RemoteServer::start_api(slot, options) {
             Ok(started) => started,
             Err(e) => {
-                log(&format!("remote control did not start: {e}"));
+                rbs_core::error!(Area::Remote, "did not start: {e}");
                 self.remote_failure = Some(format!("Remote control did not start: {e}"));
                 return false;
             }
@@ -1462,11 +1461,15 @@ impl StudioUi {
             Ok(e) => {
                 let shown = e.to_string();
                 match server.start_ipc(e) {
-                    Ok(()) => log(&format!("remote control: local IPC at {shown}")),
-                    Err(why) => log(&format!("remote control: no local IPC: {why}")),
+                    Ok(()) => rbs_core::info!(Area::Remote, "local IPC at {shown}"),
+                    Err(why) => {
+                        rbs_core::warn!(Area::Remote, "no local IPC: {why}")
+                    }
                 }
             }
-            Err(why) => log(&format!("remote control: no local IPC endpoint: {why}")),
+            Err(why) => {
+                rbs_core::warn!(Area::Remote, "no local IPC endpoint: {why}")
+            }
         }
         host.attach_api(
             endpoint,
@@ -1495,7 +1498,7 @@ impl StudioUi {
                 return None;
             }
             Err(e) => {
-                log(&format!("remote control settings not locked: {e}"));
+                rbs_core::warn!(Area::Remote, "settings not locked: {e}");
                 None
             }
         };
@@ -1511,13 +1514,11 @@ impl StudioUi {
                 let note = match &p.source {
                     Source::Own(path) => format!("Your own certificate, {}.", path.display()),
                     Source::Generated { created: true, .. } => {
-                        log("remote control: made a key and certificate for network access");
+                        rbs_core::info!(Area::Remote, "made a key and certificate");
                         "Made by RBS just now.".into()
                     }
                     Source::Generated { renewed: true, .. } => {
-                        log(
-                            "remote control: renewed the certificate (same key, so the key pin is unchanged)",
-                        );
+                        rbs_core::info!(Area::Remote, "renewed the certificate; same key pin",);
                         "Made by RBS. The certificate was renewed, so its fingerprint changed; the key pin did not.".into()
                     }
                     Source::Generated { .. } => "Made by RBS.".into(),
@@ -1531,15 +1532,16 @@ impl StudioUi {
                     note,
                     host: host_names.first().cloned(),
                 });
-                log(&format!(
-                    "remote control: network access on, key pin {}{}",
+                rbs_core::info!(
+                    Area::Remote,
+                    "network access on, key pin {}{}",
                     p.identity.key_pin(),
                     if self.remote.remote_admin {
                         ", remote admin allowed"
                     } else {
                         ""
                     }
-                ));
+                );
                 Some(NetworkOptions {
                     identity: p.identity,
                     host_names,
@@ -1547,9 +1549,7 @@ impl StudioUi {
                 })
             }
             Err(why) => {
-                log(&format!(
-                    "remote control: network access not started: {why}"
-                ));
+                rbs_core::warn!(Area::Remote, "network access not started: {why}");
                 self.network_failure = Some(why);
                 None
             }
@@ -1625,7 +1625,7 @@ impl StudioUi {
         drop(lock);
         match made {
             Ok(()) => {
-                log("remote control: made a new key; clients must pin it again");
+                rbs_core::info!(Area::Remote, "made a new key; clients must pin it again");
                 self.network_note.clear();
                 self.restart_remote();
             }
@@ -1658,7 +1658,7 @@ impl StudioUi {
         if let Some(h) = &self.host {
             h.detach_api();
         }
-        log("remote control off");
+        rbs_core::info!(Area::Remote, "off");
         Some(server)
     }
 
@@ -1808,7 +1808,7 @@ impl StudioUi {
                 Err(Busy)
             }
             Err(e) => {
-                log(&format!("remote control settings not locked: {e}"));
+                rbs_core::warn!(Area::Remote, "settings not locked: {e}");
                 Ok(None)
             }
         }
@@ -1846,7 +1846,7 @@ impl StudioUi {
                 }
             }
             Err(why) => {
-                log(&format!("remote control settings not read again: {why}"));
+                rbs_core::warn!(Area::Remote, "settings not read again: {why}");
             }
         }
     }
@@ -5096,10 +5096,11 @@ impl StudioUi {
                 video_encoder,
                 audio_encoder,
             } => {
-                log(&format!(
+                rbs_core::info!(
+                    Area::Stream,
                     "streaming to {url} (video: {video_encoder}, audio: {})",
                     audio_encoder.as_deref().unwrap_or("none")
-                ));
+                );
                 if self.st_state == st_state::OFF {
                     // A control API client went live: show it as if Go live was pressed.
                     let host = stream_profile::parse_server(&url)
@@ -5120,7 +5121,7 @@ impl StudioUi {
             // A control API client went live first while Go live was on its way: the
             // stream that runs is shown already.
             StreamUpdate::NotStarted(why) if self.st_state != st_state::STARTING => {
-                log(&format!("go live refused: {why}"));
+                rbs_core::warn!(Area::Stream, "go live refused: {why}");
             }
             StreamUpdate::NotStarted(why) => {
                 self.silence_checked = [false; 2];
@@ -5144,7 +5145,8 @@ impl StudioUi {
             }
             StreamUpdate::Link(link) => {
                 if link.connected != self.st_link.connected {
-                    log(&format!(
+                    rbs_core::info!(
+                        Area::Stream,
                         "stream {} (connected {} times, {} reconnect attempts)",
                         if link.connected {
                             "connected"
@@ -5153,7 +5155,7 @@ impl StudioUi {
                         },
                         link.connects,
                         link.reconnect_attempts
-                    ));
+                    );
                 }
                 self.st_link = link;
             }
@@ -5174,9 +5176,10 @@ impl StudioUi {
                 let asked = self.st_state == st_state::ENDING || failure.is_none();
                 self.st_state = st_state::OFF;
                 self.st_link = Link::default();
-                log(&format!(
+                rbs_core::info!(
+                    Area::Stream,
                     "stream ended: {frames} frames, {dropped} dropped, {connects} connections, failure: {failure:?}"
-                ));
+                );
                 let secs = duration.as_secs();
                 let time = if secs >= 3600 {
                     format!("{}:{:02}:{:02}", secs / 3600, secs / 60 % 60, secs % 60)
@@ -6554,7 +6557,7 @@ impl StudioUi {
                 self.cannot_record = cannot_record;
                 self.encoders_ready = false;
                 for n in notes {
-                    log(&n);
+                    rbs_core::info!(Area::Studio, "{n}");
                 }
                 self.state = 1;
                 self.send(Command::SetProfile(self.profile.clone()));
@@ -7046,11 +7049,12 @@ impl StudioUi {
                 audio_encoder,
                 separate,
             } => {
-                log(&format!(
+                rbs_core::info!(
+                    Area::Record,
                     "recording to {} (video: {video_encoder}, audio: {})",
                     path.display(),
                     audio_encoder.as_deref().unwrap_or("none")
-                ));
+                );
                 self.rec_state = rec_state::RECORDING;
                 self.rec_file = Some((path, Instant::now()));
                 self.rec_separate = separate;
@@ -7066,7 +7070,7 @@ impl StudioUi {
             // A recording started with the stream (or by a control API client) runs
             // while Record was on its way: the recording that runs is shown already.
             RecordingUpdate::NotStarted(why) if self.rec_state != rec_state::STARTING => {
-                log(&format!("record refused: {why}"));
+                rbs_core::warn!(Area::Record, "record refused: {why}");
             }
             RecordingUpdate::NotStarted(why) => {
                 self.silence_checked[0] = false;
@@ -7088,9 +7092,10 @@ impl StudioUi {
                 self.rec_file = None;
                 self.rec_file_audio = false;
                 self.rec_separate.clear();
-                log(&format!(
+                rbs_core::info!(
+                    Area::Record,
                     "recording stopped: {frames} frames, {dropped} dropped, {flush_lost} packets lost in the encoder, failure: {failure:?}"
-                ));
+                );
                 match failure {
                     None => {
                         let mut note = format!("Saved {}", path.display());
@@ -8440,11 +8445,6 @@ pub fn active_content(
             ]
         })
     })
-}
-
-/// A line for the developer log (stderr; nothing is shown to the user).
-pub fn log(line: &str) {
-    rbs_crash::errln!("rbs: {line}");
 }
 
 fn whole_fps(rate: rbs_core::timing::FrameRate) -> u32 {

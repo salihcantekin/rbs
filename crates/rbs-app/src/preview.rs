@@ -22,7 +22,6 @@ use rbs_ui::layout::Rect;
 use rbs_ui::transform::{self, MarkKind};
 use slint::ComponentHandle;
 
-use crate::studio_ui::log;
 use crate::ui::{MainWindow, Overlays, Shell, Studio, Theme};
 
 // Every mark of a selection reaches the layer.
@@ -89,13 +88,13 @@ pub fn connect(
                     let _ = crate::entry::invoke(move || setup(which, sub, d, generation));
                 }
                 Err(e) => {
-                    log(&format!("preview: cannot connect: {e}"));
+                    rbs_core::warn!(rbs_core::log::Area::Ui, "preview: cannot connect: {e}");
                     let _ = crate::entry::invoke(move || done(false));
                 }
             },
         );
     if let Err(e) = spawned {
-        log(&format!("preview: no thread: {e}"));
+        rbs_core::warn!(rbs_core::log::Area::Ui, "preview: no thread: {e}");
     }
 }
 
@@ -122,7 +121,10 @@ fn setup(which: Picture, mut sub: PreviewSubscriber, done: impl Fn(bool), genera
     let layer = match made {
         Ok(l) => l,
         Err(e) => {
-            log(&format!("preview: no layer in this session: {e}"));
+            rbs_core::warn!(
+                rbs_core::log::Area::Ui,
+                "preview: no layer in this session: {e}"
+            );
             done(false);
             return;
         }
@@ -159,7 +161,10 @@ fn setup(which: Picture, mut sub: PreviewSubscriber, done: impl Fn(bool), genera
                     Err(e) => {
                         // At quit the studio stops after `close`; that end is expected.
                         if current() {
-                            log(&format!("preview: the studio's preview ended: {e}"));
+                            rbs_core::warn!(
+                                rbs_core::log::Area::Ui,
+                                "preview: the studio's preview ended: {e}"
+                            );
                         }
                         break;
                     }
@@ -167,7 +172,7 @@ fn setup(which: Picture, mut sub: PreviewSubscriber, done: impl Fn(bool), genera
             }
         });
     if let Err(e) = spawned {
-        log(&format!("preview: no thread: {e}"));
+        rbs_core::warn!(rbs_core::log::Area::Ui, "preview: no thread: {e}");
     }
     done(true);
 }
@@ -222,7 +227,10 @@ fn place_one(window: &MainWindow, which: Picture) {
                 unsafe { st.layer.attach_to_hwnd(win32.hwnd) }
             };
             if let Err(e) = attach {
-                log(&format!("preview: cannot attach the layer: {e}"));
+                rbs_core::warn!(
+                    rbs_core::log::Area::Ui,
+                    "preview: cannot attach the layer: {e}"
+                );
                 return;
             }
             st.attached = true;

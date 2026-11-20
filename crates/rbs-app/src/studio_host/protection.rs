@@ -28,11 +28,6 @@ use super::{Host, OutputCanvas, Update, slot};
 /// How often the guard steps while an output runs.
 const STEP_INTERVAL: Duration = Duration::from_secs(1);
 
-/// A line for the developer log (stderr), as the app's other logs.
-fn log(line: &str) {
-    rbs_crash::errln!("rbs: {line}");
-}
-
 /// Makes the probe for a new guard: the OS probe in the app, a fake in tests.
 #[derive(Clone)]
 pub struct SystemProbeFactory(Arc<dyn Fn() -> Box<dyn SystemProbe> + Send + Sync>);
@@ -277,7 +272,10 @@ impl Host {
             let probe = self.protection.factory.as_ref().and_then(|f| {
                 ProbeWorker::spawn((f.0)(), now)
                     .map_err(|e| {
-                        log(&format!("protection probe did not start: {e}"));
+                        rbs_core::error!(
+                            rbs_core::log::Area::Record,
+                            "protection probe did not start: {e}"
+                        );
                     })
                     .ok()
             });
@@ -355,7 +353,7 @@ impl Host {
         for a in &status.alerts {
             let key = (a.kind, a.output, a.level);
             if a.level >= Level::Warning && !run.told.contains(&key) {
-                log(&format!("protection: {}", a.text));
+                rbs_core::info!(rbs_core::log::Area::Record, "protection: {}", a.text);
                 let stopping =
                     a.kind == AlertKind::Disk && a.level == Level::Critical && !stops.is_empty();
                 if !stopping {
@@ -372,7 +370,7 @@ impl Host {
             let Some(w) = watched.iter().find(|w| w.id == stop.output && !w.stream) else {
                 continue;
             };
-            log(&format!("protection: {}", stop.reason));
+            rbs_core::info!(rbs_core::log::Area::Record, "protection: {}", stop.reason);
             self.outs[slot(w.canvas)].protection_stop = Some(stop.reason.clone());
             notify(Update::Error(stop.reason));
             self.end_recording(w.canvas, notify);

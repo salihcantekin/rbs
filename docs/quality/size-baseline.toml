@@ -10,7 +10,7 @@
 "crates/rbs-app/src/main.rs" = 6756
 "crates/rbs-app/src/menu_bar.rs" = 2527
 "crates/rbs-app/src/record_profile.rs" = 2081
-"crates/rbs-app/src/studio_host.rs" = 18525
+"crates/rbs-app/src/studio_host.rs" = 18523
 "crates/rbs-app/src/studio_ui.rs" = 11008
 "crates/rbs-app/tests/studio_record.rs" = 3156
 "crates/rbs-app/tests/studio_scenes.rs" = 2288
@@ -35,7 +35,7 @@
 "crates/rbs-app/src/main.rs::install_studio" = 1050
 "crates/rbs-app/src/main.rs::run" = 467
 "crates/rbs-app/src/main.rs::sync" = 327
-"crates/rbs-app/src/main.rs::sync_studio" = 210
+"crates/rbs-app/src/main.rs::sync_studio" = 209
 "crates/rbs-app/src/menu_bar.rs::enabled" = 514
 "crates/rbs-app/src/menu_bar.rs::run" = 286
 "crates/rbs-app/src/shortcuts_page.rs::install" = 203

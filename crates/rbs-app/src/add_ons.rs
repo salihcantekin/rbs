@@ -49,7 +49,10 @@ pub fn catalog(target: &str) -> Vec<Entry> {
         .filter_map(|text| match rbs_add_ons::parse_entry(text, target) {
             Ok(entry) => entry,
             Err(e) => {
-                rbs_crash::errln!("rbs: a built-in add-on entry does not parse: {e}");
+                rbs_core::error!(
+                    rbs_core::log::Area::AddOns,
+                    "a built-in add-on entry does not parse: {e}"
+                );
                 None
             }
         })
