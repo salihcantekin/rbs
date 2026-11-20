@@ -136,11 +136,21 @@ impl Page {
 
 static PAGE: OnceLock<Page> = OnceLock::new();
 
-/// Non-zero while this tree copies CEF's texture into the studio's (Windows).
+/// The studio adapter's LUID while this tree copies CEF's texture into the studio's
+/// (Windows, ADR-0157 decision 8); 0 for software paint.
 #[cfg(windows)]
-static GPU_VENDOR: AtomicU32 = AtomicU32::new(0);
+static GPU_LUID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 #[cfg(windows)]
 static COPIER: OnceLock<gpu::Copier> = OnceLock::new();
+/// Counted copy failures since the last published picture (ADR-0157 decision 6).
+#[cfg(windows)]
+static GPU_FAILS: AtomicU32 = AtomicU32::new(0);
+/// A callback published nothing: the loop asks CEF for one new view paint.
+#[cfg(windows)]
+static GPU_REPAINT: AtomicBool = AtomicBool::new(false);
+/// Counted failures after which the tree falls back to shared memory (`copy`).
+#[cfg(windows)]
+const GPU_FAIL_LIMIT: u32 = 60;
 
 #[cfg(windows)]
 mod gpu;
@@ -167,15 +177,23 @@ wrap_app! {
             // Software paint, unless this tree was given studio textures (ADR-0109
             // decision 8). A child process sees the switch the browser process added.
             #[cfg(windows)]
-            let shared = GPU_VENDOR.load(Ordering::Relaxed) != 0
-                || line.has_switch(Some(&"rbs-shared-textures".into())) != 0;
+            let luid = GPU_LUID.load(Ordering::Relaxed);
+            #[cfg(windows)]
+            let shared = luid != 0 || line.has_switch(Some(&"rbs-shared-textures".into())) != 0;
             #[cfg(not(windows))]
             let shared = false;
             if shared {
-                // Marks the child processes. Naming a GPU vendor here left the page black.
+                // Marks the child processes, and pins CEF's GPU process to the
+                // studio's adapter (ADR-0157 decision 8). Vendor switches left the page
+                // black. The value format is checked on CEF 156 before the path is on.
                 #[cfg(windows)]
-                if GPU_VENDOR.load(Ordering::Relaxed) != 0 {
+                if luid != 0 {
                     line.append_switch(Some(&"rbs-shared-textures".into()));
+                    let value = format!("{:#x},{:#x}", luid >> 32, luid & 0xffff_ffff);
+                    line.append_switch_with_value(
+                        Some(&"use-adapter-luid".into()),
+                        Some(&value.as_str().into()),
+                    );
                 }
             } else {
                 line.append_switch(Some(&"disable-gpu".into()));
@@ -293,11 +311,35 @@ wrap_render_handler! {
                 return;
             };
             // CEF's handle is valid for this callback. A panic here would abort the
-            // helper (ADR-0055); the copy returns without a picture instead.
-            let handle = info.shared_texture_handle as *mut std::ffi::c_void;
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                copier.copy(handle, &page.ring);
-            }));
+            // helper (ADR-0055); the copy counts as failed instead.
+            let handle = info.shared_texture_handle;
+            let copied = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                copier.copy(handle, &page.ring)
+            }))
+            .unwrap_or(gpu::Copied::Failed);
+            // ADR-0157 decision 6: a published picture clears the count, no free
+            // slot leaves it, a busy mutex or a failed copy adds one; a failed open
+            // of CEF's texture means another adapter (decision 8).
+            let reason = match copied {
+                gpu::Copied::Published => {
+                    GPU_FAILS.store(0, Ordering::Relaxed);
+                    None
+                }
+                gpu::Copied::NoSlot => None,
+                gpu::Copied::Busy | gpu::Copied::Failed => {
+                    (GPU_FAILS.fetch_add(1, Ordering::Relaxed) + 1 >= GPU_FAIL_LIMIT)
+                        .then_some("copy")
+                }
+                gpu::Copied::OpenFailed => Some("open"),
+            };
+            if copied != gpu::Copied::Published {
+                GPU_REPAINT.store(true, Ordering::Relaxed);
+            }
+            if let Some(reason) = reason {
+                eprintln!("rbs-browser-cef: GPU path falls back to shared memory ({reason})");
+                page.code.store(exit::GPU_FALLBACK, Ordering::Release);
+                page.quit.store(true, Ordering::Release);
+            }
         }
     }
 }
@@ -900,13 +942,20 @@ fn run_browser(args: &args::Args, app: &mut App, engine: &engine::Engine) -> i32
         fps: i32::try_from(config.fps.clamp(1, 60)).unwrap_or(30),
     });
 
+    // The studio's textures and fence open before CEF starts; when they do not, this
+    // process sees another adapter and the tree falls back at once (ADR-0157
+    // decision 8). A LUID of 0 is not an adapter, so it falls back too.
     #[cfg(windows)]
     if let Some(share) = config.gpu {
-        if let Some(copier) = gpu::Copier::open(&share) {
-            // Non-zero selects the shared-texture command line. A vendor id of 0
-            // would leave the software switches on.
-            GPU_VENDOR.store(share.vendor.max(1), Ordering::Relaxed);
-            let _ = COPIER.set(copier);
+        match gpu::Copier::open(&share) {
+            Some(copier) if share.adapter_luid != 0 => {
+                GPU_LUID.store(share.adapter_luid, Ordering::Relaxed);
+                let _ = COPIER.set(copier);
+            }
+            _ => {
+                eprintln!("rbs-browser-cef: GPU path falls back to shared memory (open)");
+                return exit::GPU_FALLBACK;
+            }
         }
     }
 
@@ -1038,6 +1087,7 @@ fn remove_profile(profile: &std::path::Path) {
             Ok(()) => return,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
             Err(_) if std::time::Instant::now() < deadline => {
+                #[allow(clippy::disallowed_methods)] // After the browser closed, at exit.
                 std::thread::sleep(std::time::Duration::from_millis(20));
             }
             Err(_) => return,
@@ -1123,8 +1173,23 @@ fn browse(
     let pump = (period / 2).min(Duration::from_millis(10));
     let mut last_beat = Instant::now();
     page.ring.beat();
+    #[cfg(windows)]
+    let mut repaint_at: Option<Instant> = None;
     while !page.quit.load(Ordering::Acquire) && !stop.load(Ordering::Acquire) {
         do_message_loop_work();
+        // A dropped GPU frame is asked for again once, one page frame later, and not
+        // again until a paint arrives (ADR-0157 decision 6).
+        #[cfg(windows)]
+        if GPU_REPAINT.swap(false, Ordering::Relaxed) && repaint_at.is_none() {
+            repaint_at = Some(Instant::now() + period);
+        }
+        #[cfg(windows)]
+        if repaint_at.is_some_and(|at| Instant::now() >= at) {
+            repaint_at = None;
+            if let Some(host) = browser.host() {
+                host.invalidate(PaintElementType::VIEW);
+            }
+        }
         if last_beat.elapsed() >= HEARTBEAT_PERIOD / 2 && !page.unresponsive.load(Ordering::Acquire)
         {
             page.ring.beat();
@@ -1152,6 +1217,7 @@ fn browse(
                 reload(page, &browser, Start::Reload, true);
             }
         }
+        #[allow(clippy::disallowed_methods)] // The pump, between callbacks.
         std::thread::sleep(pump);
     }
 
@@ -1163,6 +1229,7 @@ fn browse(
         let deadline = Instant::now() + Duration::from_secs(2);
         while !page.closed.load(Ordering::Acquire) && Instant::now() < deadline {
             do_message_loop_work();
+            #[allow(clippy::disallowed_methods)] // The closing pump, between callbacks.
             std::thread::sleep(Duration::from_millis(5));
         }
     }

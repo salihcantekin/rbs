@@ -1,54 +1,66 @@
 //! Copies CEF's accelerated-paint texture into the studio's textures (ADR-0109
-//! decision 8, ADR-0132 decision 8). The copy finishes before the picture is
-//! published, so the studio samples only its own texture and never waits on CEF.
+//! decision 8, ADR-0157). The callback never waits on the CPU: it claims a free
+//! slot, records the copy, signals the studio's shared fence, flushes and publishes.
+//! The studio's supervisor hands the picture on only once that fence value has
+//! completed, so neither side ever blocks on the other.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use rbs_browser_ipc::GpuShare;
 use rbs_browser_shm::FrameRing;
-use windows::Win32::Foundation::{CloseHandle, HANDLE, HMODULE, WAIT_OBJECT_0};
+use windows::Win32::Foundation::{HANDLE, HMODULE};
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_UNKNOWN;
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_BOX, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_SDK_VERSION, D3D11CreateDevice,
-    ID3D11Device, ID3D11Device1, ID3D11Device5, ID3D11DeviceContext4, ID3D11Fence,
-    ID3D11Multithread, ID3D11Texture2D,
+    ID3D11Device1, ID3D11Device5, ID3D11DeviceContext4, ID3D11Fence, ID3D11Multithread,
+    ID3D11Texture2D,
 };
 use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory1, IDXGIFactory4, IDXGIKeyedMutex};
-use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
 use windows::core::Interface;
 
-/// How long the callback waits for one copy. The same bound as the keyed-mutex
-/// timeout in ADR-0132 decision 8.
-const COPY_WAIT_MS: u32 = 100;
+/// What one accelerated paint did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Copied {
+    /// The copy is recorded and the slot published.
+    Published,
+    /// Every slot was held: the frame is dropped (not counted as a failure).
+    NoSlot,
+    /// CEF's texture has a keyed mutex that was not free at once.
+    Busy,
+    /// The copy or the signal failed.
+    Failed,
+    /// CEF's texture did not open on the studio's adapter: fall back at once.
+    OpenFailed,
+}
+
+/// Which key, if any, guards CEF's texture. Found on the first paint.
+const MUTEX_UNKNOWN: u32 = 0;
+const MUTEX_NONE: u32 = 1;
+/// `MUTEX_KEY0 + key`: the key the consumer acquires.
+const MUTEX_KEY0: u32 = 2;
 
 pub struct Copier {
-    device: ID3D11Device,
+    device: ID3D11Device1,
     context: ID3D11DeviceContext4,
     fence: ID3D11Fence,
-    slots: [ID3D11Texture2D; 3],
-    event: HANDLE,
+    slots: Vec<ID3D11Texture2D>,
     value: AtomicU64,
+    mutex: AtomicU32,
+    stats: Option<Stats>,
 }
 
-// SAFETY: `event` is an owned kernel handle, closed in `Drop`. The paint callback
-// is the only user, and it does not run concurrently with `Drop`. The handle is
-// never dereferenced as a pointer.
+// SAFETY: CEF calls `copy` only on its UI thread, which is the thread that runs the
+// runner's message loop, opens the copier and drops it at exit; the COM objects are
+// therefore never used from two threads. The static `OnceLock` needs `Sync` only to
+// exist; no other thread reads it.
 unsafe impl Send for Copier {}
-// SAFETY: same as `Send`. The callback and `Drop` do not overlap.
+// SAFETY: as `Send`: one thread uses the value.
 unsafe impl Sync for Copier {}
 
-impl Drop for Copier {
-    fn drop(&mut self) {
-        // SAFETY: the event came from CreateEventW and has not been closed.
-        unsafe {
-            let _ = CloseHandle(self.event);
-        }
-    }
-}
-
 impl Copier {
-    /// Opens the studio's textures. `None` when this process cannot see them: the
-    /// caller stays on the shared-memory path.
+    /// Opens the studio's textures and fence on the adapter the studio named.
+    /// `None` when this process cannot see them: the tree falls back.
     pub fn open(share: &GpuShare) -> Option<Self> {
         let adapter = adapter(share.adapter_luid)?;
         let mut device = None;
@@ -86,83 +98,69 @@ impl Copier {
                 .ok()?;
         }
         let fence = fence?;
-        let open = |handle: u64| -> Option<ID3D11Texture2D> {
+        let mut slots = Vec::with_capacity(share.handles().len());
+        for &handle in share.handles() {
             // SAFETY: the handle is a studio texture duplicated into this process.
-            unsafe {
+            let texture: ID3D11Texture2D = unsafe {
                 device1
                     .OpenSharedResource1(HANDLE(handle as *mut std::ffi::c_void))
-                    .ok()
-            }
-        };
-        let slots = [
-            open(share.textures[0])?,
-            open(share.textures[1])?,
-            open(share.textures[2])?,
-        ];
-        // SAFETY: an unnamed auto-reset event this value closes.
-        let event = unsafe { CreateEventW(None, false, false, None).ok()? };
+                    .ok()?
+            };
+            slots.push(texture);
+        }
+        if slots.is_empty() {
+            return None;
+        }
         Some(Self {
-            device,
+            device: device1,
             context,
             fence,
             slots,
-            event,
             value: AtomicU64::new(0),
+            mutex: AtomicU32::new(MUTEX_UNKNOWN),
+            stats: std::env::var_os("RBS_BROWSER_GPU_STATS").map(|_| Stats::default()),
         })
     }
 
     /// Copies `source` (CEF's handle, valid for this callback) into a free studio
-    /// slot and publishes it. Drops the frame when no slot is free or the GPU does
-    /// not finish in time.
-    pub fn copy(&self, source: *mut std::ffi::c_void, ring: &FrameRing) {
+    /// slot, signals and publishes it. Never waits (ADR-0157 decision 1).
+    pub fn copy(&self, source: *mut std::ffi::c_void, ring: &FrameRing) -> Copied {
         let Some(slot) = ring.claim_gpu() else {
-            return;
+            return Copied::NoSlot;
         };
-        let device1: ID3D11Device1 = match self.device.cast() {
-            Ok(device) => device,
-            Err(_) => return,
+        let Some(dest) = self.slots.get(slot as usize) else {
+            ring.abandon_gpu(slot);
+            return Copied::Failed;
         };
-        // SAFETY: CEF passes a shared handle that stays valid for this callback.
-        // We do not close it.
-        let source: ID3D11Texture2D = match unsafe { device1.OpenSharedResource1(HANDLE(source)) } {
-            Ok(texture) => texture,
-            Err(_) => return,
+        let start = Instant::now();
+        // CEF's handle value may name another texture later, so it is opened per
+        // callback and never cached (ADR-0157 decision 7).
+        // SAFETY: CEF passes a shared handle that stays valid for this callback; we do
+        // not close it.
+        let opened: windows::core::Result<ID3D11Texture2D> =
+            unsafe { self.device.OpenSharedResource1(HANDLE(source)) };
+        let Ok(texture) = opened else {
+            ring.abandon_gpu(slot);
+            return Copied::OpenFailed;
         };
-        let dest = &self.slots[slot as usize];
-        // A shared texture Chromium has not released yet reads as black. Take its
-        // key, copy only when the source covers the slot, then hand the key back.
-        let mutex: Option<IDXGIKeyedMutex> = source.cast().ok();
-        let release = if let Some(mutex) = &mutex {
-            // SAFETY: the mutex belongs to `source`, which is live for this call.
-            let key = unsafe {
-                if mutex.AcquireSync(1, 16).is_ok() {
-                    Some(0)
-                } else if mutex.AcquireSync(0, 16).is_ok() {
-                    Some(1)
-                } else {
-                    None
-                }
-            };
-            let Some(key) = key else {
-                return;
-            };
-            Some((mutex, key))
-        } else {
-            None
+        let opened_at = Instant::now();
+        let Ok(mutex) = self.acquire(&texture) else {
+            ring.abandon_gpu(slot);
+            return Copied::Busy;
         };
         let value = self.value.fetch_add(1, Ordering::Relaxed) + 1;
-        // SAFETY: both textures are live on this device. The source box is inside
-        // the source (checked below) and the fence wait is bounded.
-        let copied = unsafe {
+        // SAFETY: both textures are live on this device; the source box is inside
+        // the source (checked first). No call here waits for the GPU.
+        let signalled = unsafe {
             let mut src_desc = std::mem::zeroed();
             let mut dst_desc = std::mem::zeroed();
-            source.GetDesc(&mut src_desc);
+            texture.GetDesc(&mut src_desc);
             dest.GetDesc(&mut dst_desc);
             let fits = src_desc.Width >= dst_desc.Width && src_desc.Height >= dst_desc.Height;
             if fits && src_desc.Width == dst_desc.Width && src_desc.Height == dst_desc.Height {
-                self.context.CopyResource(dest, &source);
+                self.context.CopyResource(dest, &texture);
             } else if fits {
-                let box_ = D3D11_BOX {
+                let region = D3D11_BOX {
                     left: 0,
                     top: 0,
                     front: 0,
@@ -171,21 +169,117 @@ impl Copier {
                     back: 1,
                 };
                 self.context
-                    .CopySubresourceRegion(dest, 0, 0, 0, 0, &source, 0, Some(&box_));
+                    .CopySubresourceRegion(dest, 0, 0, 0, 0, &texture, 0, Some(&region));
             }
-            let signalled = fits && self.context.Signal(&self.fence, value).is_ok();
-            self.context.Flush();
-            if let Some((mutex, key)) = &release {
-                let _ = mutex.ReleaseSync(*key);
-            }
-            signalled
-                && self.fence.SetEventOnCompletion(value, self.event).is_ok()
-                && WaitForSingleObject(self.event, COPY_WAIT_MS) == WAIT_OBJECT_0
+            fits && self.context.Signal(&self.fence, value).is_ok()
         };
-        if !copied {
-            return;
+        let copied_at = Instant::now();
+        // SAFETY: plain call on the live immediate context. It submits and does not
+        // wait for completion (a throttling driver may still block, so it is timed).
+        unsafe {
+            self.context.Flush();
+        }
+        if let Some((mutex, key)) = mutex {
+            // SAFETY: the mutex belongs to `texture`, live for this call, and this
+            // thread acquired `key` above.
+            let _ = unsafe { mutex.ReleaseSync(key) };
+        }
+        let flushed_at = Instant::now();
+        if !signalled {
+            ring.abandon_gpu(slot);
+            return Copied::Failed;
         }
         ring.publish_gpu(slot, value);
+        if let Some(stats) = &self.stats {
+            stats.add(
+                opened_at - start,
+                copied_at - opened_at,
+                flushed_at - copied_at,
+            );
+        }
+        Copied::Published
+    }
+
+    /// The keyed mutex of CEF's texture, acquired with a zero timeout, or `None`
+    /// when the texture has none. `Err` when it has one that is not free now. The
+    /// first paint logs which case it is (ADR-0157 decision 3).
+    #[allow(clippy::type_complexity)]
+    fn acquire(&self, texture: &ID3D11Texture2D) -> Result<Option<(IDXGIKeyedMutex, u64)>, ()> {
+        let known = self.mutex.load(Ordering::Relaxed);
+        if known == MUTEX_NONE {
+            return Ok(None);
+        }
+        let Ok(mutex) = texture.cast::<IDXGIKeyedMutex>() else {
+            if known == MUTEX_UNKNOWN {
+                eprintln!("rbs-browser-cef: CEF's paint texture has no keyed mutex");
+                self.mutex.store(MUTEX_NONE, Ordering::Relaxed);
+            }
+            return Ok(None);
+        };
+        let first = [0, 1];
+        let found = [u64::from(known.saturating_sub(MUTEX_KEY0))];
+        let keys: &[u64] = if known == MUTEX_UNKNOWN {
+            &first
+        } else {
+            &found
+        };
+        for &key in keys {
+            // SAFETY: the mutex belongs to `texture`, live for this call; a zero
+            // timeout never waits.
+            if unsafe { mutex.AcquireSync(key, 0) }.is_ok() {
+                if known == MUTEX_UNKNOWN {
+                    eprintln!("rbs-browser-cef: CEF's paint texture has a keyed mutex, key {key}");
+                    self.mutex.store(MUTEX_KEY0 + key as u32, Ordering::Relaxed);
+                }
+                return Ok(Some((mutex, key)));
+            }
+        }
+        Err(())
+    }
+}
+
+/// Callback times, printed every 120 published frames when `RBS_BROWSER_GPU_STATS`
+/// is set (ADR-0157 decision 11). Off by default.
+#[derive(Default)]
+struct Stats {
+    frames: AtomicU32,
+    open_ns: AtomicU64,
+    copy_ns: AtomicU64,
+    flush_ns: AtomicU64,
+    open_max: AtomicU64,
+    copy_max: AtomicU64,
+    flush_max: AtomicU64,
+}
+
+impl Stats {
+    fn add(&self, open: Duration, copy: Duration, flush: Duration) {
+        let parts = [
+            (&self.open_ns, &self.open_max, open),
+            (&self.copy_ns, &self.copy_max, copy),
+            (&self.flush_ns, &self.flush_max, flush),
+        ];
+        for (sum, max, d) in parts {
+            let ns = u64::try_from(d.as_nanos()).unwrap_or(u64::MAX);
+            sum.fetch_add(ns, Ordering::Relaxed);
+            max.fetch_max(ns, Ordering::Relaxed);
+        }
+        let frames = self.frames.fetch_add(1, Ordering::Relaxed) + 1;
+        if frames < 120 {
+            return;
+        }
+        let take = |a: &AtomicU64| a.swap(0, Ordering::Relaxed);
+        let us = |ns: u64| ns as f64 / 1000.0;
+        let n = u64::from(frames);
+        eprintln!(
+            "rbs-browser-cef gpu: {frames} frames, mean/max us: open {:.0}/{:.0} copy {:.0}/{:.0} flush {:.0}/{:.0}",
+            us(take(&self.open_ns) / n),
+            us(take(&self.open_max)),
+            us(take(&self.copy_ns) / n),
+            us(take(&self.copy_max)),
+            us(take(&self.flush_ns) / n),
+            us(take(&self.flush_max)),
+        );
+        self.frames.store(0, Ordering::Relaxed);
     }
 }
 

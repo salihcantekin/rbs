@@ -1,0 +1,16 @@
+# The workspace settings (see the root clippy.toml), repeated: clippy reads the first
+# clippy.toml it finds from a crate's directory upwards.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+
+# The helper never waits on the CPU in a CEF callback (ADR-0157 decision 1). A wait
+# outside the callbacks (the message loop's pump) takes a local `#[allow]` with a reason.
+disallowed-methods = [
+    { path = "std::thread::sleep", reason = "no CPU wait on CEF's UI thread (ADR-0157 decision 1)" },
+    { path = "windows::Win32::System::Threading::WaitForSingleObject", reason = "no CPU wait in a CEF callback (ADR-0157 decision 1)" },
+    { path = "windows::Win32::System::Threading::WaitForSingleObjectEx", reason = "no CPU wait in a CEF callback (ADR-0157 decision 1)" },
+    { path = "windows::Win32::System::Threading::WaitForMultipleObjects", reason = "no CPU wait in a CEF callback (ADR-0157 decision 1)" },
+    { path = "windows::Win32::System::Threading::Sleep", reason = "no CPU wait in a CEF callback (ADR-0157 decision 1)" },
+    { path = "windows::Win32::Graphics::Direct3D11::ID3D11Fence::SetEventOnCompletion", reason = "no CPU wait on the helper's copy (ADR-0157 decision 1)" },
+]

@@ -1,5 +1,5 @@
-//! Three studio-owned `Bgra8` textures a browser helper copies into (ADR-0109
-//! decision 8). Windows only. The helper never allocates the texture the render
+//! Studio-owned `Bgra8` textures a browser helper copies into, and the shared fence
+//! it signals after each copy (ADR-0109 decision 8, ADR-0157). Windows only. The helper never allocates the texture the render
 //! thread samples, so a dead helper cannot fault the studio.
 //!
 //! Marked low-level module (P11). Every `unsafe` block states its invariant.
@@ -27,13 +27,29 @@ use crate::error::GpuError;
 /// Textures and the fence, alive while the page's frames can still be imported.
 pub struct PageTextures {
     _device: ID3D11Device,
-    _textures: [ID3D11Texture2D; 3],
-    _fence: ID3D11Fence,
-    slots: [Held; 3],
+    _textures: Vec<ID3D11Texture2D>,
+    fence_object: FenceRead,
+    slots: Vec<Held>,
     fence: Held,
     luid: u64,
-    vendor: u32,
-    device_id: u32,
+}
+
+/// Reads a page fence's completed value from any thread. Never waits.
+#[derive(Clone)]
+pub struct FenceRead(ID3D11Fence);
+
+// SAFETY: the fence's device is multithread protected, and `GetCompletedValue` is a
+// read of the fence's value that D3D11 allows from any thread.
+unsafe impl Send for FenceRead {}
+// SAFETY: as `Send`; the only call is the read above.
+unsafe impl Sync for FenceRead {}
+
+impl FenceRead {
+    /// The completed value; `u64::MAX` when the device was removed.
+    pub fn completed(&self) -> u64 {
+        // SAFETY: plain read on a live fence.
+        unsafe { self.0.GetCompletedValue() }
+    }
 }
 
 struct Held {
@@ -56,9 +72,9 @@ impl Drop for Held {
 }
 
 impl PageTextures {
-    /// Three shared textures and one shared fence on the adapter `luid`.
-    pub fn create(luid: u64, width: u32, height: u32) -> Result<Self, GpuError> {
-        let (adapter, vendor, device_id) = adapter(luid)?;
+    /// `count` shared textures (at least 1) and one shared fence on the adapter `luid`.
+    pub fn create(luid: u64, width: u32, height: u32, count: usize) -> Result<Self, GpuError> {
+        let adapter = adapter(luid)?;
         let mut device = None;
         let mut context = None;
         // SAFETY: valid out pointers; the adapter is live for the call.
@@ -93,19 +109,32 @@ impl PageTextures {
             .map_err(|_| GpuError::Unsupported("D3D11 fence"))?;
         let fence = fence.ok_or(GpuError::Unsupported("D3D11 fence"))?;
         let (fence_object, fence) = share_fence(&fence)?;
-        let (t0, s0) = share_texture(&device, width, height)?;
-        let (t1, s1) = share_texture(&device, width, height)?;
-        let (t2, s2) = share_texture(&device, width, height)?;
+        let count = count.max(1);
+        let mut textures = Vec::with_capacity(count);
+        let mut slots = Vec::with_capacity(count);
+        for _ in 0..count {
+            let (texture, held) = share_texture(&device, width, height)?;
+            textures.push(texture);
+            slots.push(held);
+        }
         Ok(Self {
             _device: device,
-            _textures: [t0, t1, t2],
-            _fence: fence_object,
-            slots: [s0, s1, s2],
+            _textures: textures,
+            fence_object: FenceRead(fence_object),
+            slots,
             fence,
             luid,
-            vendor,
-            device_id,
         })
+    }
+
+    /// Number of slot textures.
+    pub fn count(&self) -> usize {
+        self.slots.len()
+    }
+
+    /// A reader of the fence's completed value, for the supervisor's gate.
+    pub fn fence_read(&self) -> FenceRead {
+        self.fence_object.clone()
     }
 
     /// The adapter the textures were created on.
@@ -113,14 +142,11 @@ impl PageTextures {
         self.luid
     }
 
-    /// DXGI vendor and device, for the helper's GPU-process command line.
-    pub fn vendor_device(&self) -> (u32, u32) {
-        (self.vendor, self.device_id)
-    }
-
-    /// Parent-process NT handle of slot `slot`.
-    pub fn texture(&self, slot: usize) -> u64 {
-        self.slots[slot.min(2)].handle.0 as usize as u64
+    /// Parent-process NT handle of slot `slot`, `None` past the last slot.
+    pub fn texture(&self, slot: usize) -> Option<u64> {
+        self.slots
+            .get(slot)
+            .map(|held| held.handle.0 as usize as u64)
     }
 
     /// Parent-process NT handle of the fence.
@@ -129,20 +155,21 @@ impl PageTextures {
     }
 
     /// The same objects as handle values valid in process `pid`.
-    pub fn duplicate_to(&self, pid: u32) -> Option<([u64; 3], u64)> {
+    /// A handle a duplicate failed on stays in the child until it exits.
+    pub fn duplicate_to(&self, pid: u32) -> Option<(Vec<u64>, u64)> {
         // SAFETY: opens the child only to duplicate our handles into it.
         let process = unsafe { OpenProcess(PROCESS_DUP_HANDLE, false, pid) }.ok()?;
-        let textures = [
-            dup(&process, self.slots[0].handle)?,
-            dup(&process, self.slots[1].handle)?,
-            dup(&process, self.slots[2].handle)?,
-        ];
-        let fence = dup(&process, self.fence.handle)?;
+        let textures: Option<Vec<u64>> = self
+            .slots
+            .iter()
+            .map(|held| dup(&process, held.handle))
+            .collect();
+        let fence = dup(&process, self.fence.handle);
         // SAFETY: we opened the process and are done with it.
         unsafe {
             let _ = CloseHandle(process);
         }
-        Some((textures, fence))
+        Some((textures?, fence?))
     }
 }
 
@@ -164,22 +191,19 @@ fn dup(process: &windows::Win32::Foundation::HANDLE, source: HANDLE) -> Option<u
     Some(target.0 as usize as u64)
 }
 
-fn adapter(luid: u64) -> Result<(IDXGIAdapter, u32, u32), GpuError> {
+fn adapter(luid: u64) -> Result<IDXGIAdapter, GpuError> {
     let id = LUID {
         LowPart: luid as u32,
         HighPart: (luid >> 32) as i32,
     };
-    // SAFETY: the factory enumerates one adapter and reads its description.
-    let (adapter, desc) = unsafe {
+    // SAFETY: the factory enumerates one adapter.
+    unsafe {
         let factory: IDXGIFactory4 =
             CreateDXGIFactory1().map_err(|_| GpuError::Unsupported("DXGI factory"))?;
-        let adapter: IDXGIAdapter = factory
+        factory
             .EnumAdapterByLuid(id)
-            .map_err(|_| GpuError::WrongAdapter)?;
-        let desc = adapter.GetDesc().map_err(|_| GpuError::WrongAdapter)?;
-        (adapter, desc)
-    };
-    Ok((adapter, desc.VendorId, desc.DeviceId))
+            .map_err(|_| GpuError::WrongAdapter)
+    }
 }
 
 fn share_texture(

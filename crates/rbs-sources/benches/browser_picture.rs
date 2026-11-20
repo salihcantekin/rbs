@@ -1,6 +1,8 @@
 //! Browser picture hand-off (ADR-0109 decision 8): the render thread's
 //! `BrowserFrameSink::take_due` (hot path, per tick) and the supervisor's
-//! `BrowserFrameSink::publish_at` with `BrowserPictureEdge::stamp`, 1920x1080 RGBA.
+//! `BrowserFrameSink::publish_at` with `BrowserPictureEdge::stamp`, and
+//! `BrowserFrameSink::publish_frame` while the render thread holds the last picture,
+//! 1920x1080 RGBA.
 //!
 //! `cargo bench -p rbs-sources --bench browser_picture`
 
@@ -49,6 +51,25 @@ fn bench(c: &mut Criterion) {
             sink.publish_at(&rgba, W, H, Some(stamp));
             drop(sink.take_due(stamp));
         });
+    });
+    // The supervisor's own buffer handed over while the render thread still holds the
+    // previous picture (the steady state of a painting page): the buffer for the next
+    // section copy comes from a picture the render thread let go, or is new.
+    group.bench_function("publish_frame_held_1080p", |b| {
+        let sink = BrowserFrameSink::new();
+        let mut buffer = rgba.clone();
+        let mut held = None;
+        b.iter_custom(|iters| {
+            let mut spent = Duration::ZERO;
+            for _ in 0..iters {
+                let start = std::time::Instant::now();
+                sink.publish_frame(&mut buffer, W, H, Some(Timestamp::ZERO));
+                spent += start.elapsed();
+                held = std::hint::black_box(sink.take_due(Timestamp::ZERO));
+            }
+            spent
+        });
+        drop(held);
     });
     group.finish();
 }

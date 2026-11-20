@@ -24,6 +24,10 @@ use rbs_browser_ipc::{
 };
 use rbs_browser_shm::{FrameRing, OwnedSoundPacket, RingReader, SlotLayout, SoundRing};
 
+mod gpu_gate;
+
+pub use gpu_gate::{FENCE_JUMP, FENCE_WAIT_PASSES, FenceView, GatePass, GpuGate};
+
 /// A running (or exited) helper as the studio sees it.
 #[derive(Debug)]
 pub struct HelperChild {
@@ -33,8 +37,12 @@ pub struct HelperChild {
     stdin: Option<ChildStdin>,
     ring: FrameRing,
     reader: RingReader,
-    /// GPU publish sequence already handed to the studio.
-    gpu_seen: u64,
+    /// The fence gate of a GPU page (ADR-0157); `None` on the shared-memory path.
+    gate: Option<GpuGate>,
+    /// The fence gate failed: the tree falls back to shared memory.
+    gpu_failed: bool,
+    /// `Configure` carried a GPU block.
+    gpu_requested: bool,
     /// The page's sound section, when the studio asked for sound.
     sound: Option<SoundRing>,
     sound_scratch: Vec<f32>,
@@ -79,14 +87,54 @@ impl HelperChild {
         self.ring.name()
     }
 
-    /// A GPU picture published since the last call: slot, fence value, paint time.
-    /// Does not copy pixels. Control thread only; never waits.
-    pub fn take_gpu(&mut self) -> Option<(u32, u64, u64)> {
-        let found = self.ring.take_gpu(&mut self.gpu_seen)?;
-        self.width = self.ring.width();
-        self.height = self.ring.height();
-        self.painted = found.2;
-        Some(found)
+    /// Gates this page's GPU pictures on `fence` (ADR-0157 decision 2).
+    pub fn set_gpu_gate(&mut self, fence: Box<dyn FenceView>) {
+        self.gate = Some(GpuGate::new(fence));
+    }
+
+    /// True when `Configure` carried a GPU block (the helper copies into studio
+    /// textures), whether or not a gate was set.
+    pub fn gpu_requested(&self) -> bool {
+        self.gpu_requested
+    }
+
+    /// True on the GPU path.
+    pub fn is_gpu(&self) -> bool {
+        self.gate.is_some()
+    }
+
+    /// True once the fence gate failed (the tree falls back to shared memory).
+    pub fn gpu_failed(&self) -> bool {
+        self.gpu_failed
+    }
+
+    /// A GPU picture whose copy has finished, with its lease held for the caller.
+    /// Does not copy pixels. Supervisor thread only; never waits.
+    pub fn take_gpu(&mut self) -> Option<rbs_browser_shm::GpuPicture> {
+        let gate = self.gate.as_mut()?;
+        match gate.pass(&self.ring) {
+            GatePass::Ready(picture) => {
+                self.width = self.ring.width();
+                self.height = self.ring.height();
+                self.painted = picture.painted;
+                Some(picture)
+            }
+            GatePass::Nothing => None,
+            GatePass::Failed => {
+                self.gpu_failed = true;
+                None
+            }
+        }
+    }
+
+    /// The latest finished GPU picture once more (a page shown again), leased.
+    pub fn take_gpu_again(&mut self) -> Option<rbs_browser_shm::GpuPicture> {
+        self.gate.as_mut()?.again(&self.ring)
+    }
+
+    /// Gives back a GPU lease the caller did not hand on.
+    pub fn release_gpu(&self, slot: u32) {
+        self.ring.lease_sub(slot);
     }
 
     /// Copies the newest published frame into [`HelperChild::frame`]. Returns true
@@ -300,6 +348,8 @@ pub fn spawn_helper_prepared(
         .spawn()
         .map_err(|error| error.to_string())?;
     if let Some(gpu) = prepare(child.id()) {
+        // Before `configure`: the helper opens the section only after reading it.
+        ring.set_gpu_slots(gpu.count);
         configure.gpu = Some(gpu);
     }
     let mut stdin = child
@@ -310,7 +360,9 @@ pub fn spawn_helper_prepared(
     let _ = stdin.flush();
     let reader = ring.reader();
     Ok(HelperChild {
-        gpu_seen: 0,
+        gate: None,
+        gpu_failed: false,
+        gpu_requested: configure.gpu.is_some(),
         child: Some(child),
         stdin: Some(stdin),
         ring,
@@ -339,8 +391,12 @@ fn encode_cause(cause: rbs_browser_ipc::exit::Cause) -> u8 {
         Cause::Other => 0,
         Cause::RuntimeMissing => 1,
         Cause::RuntimeMismatch => 2,
+        Cause::GpuFallback => CAUSE_GPU_FALLBACK,
     }
 }
+
+/// The supervisor's code for [`rbs_browser_ipc::exit::Cause::GpuFallback`].
+const CAUSE_GPU_FALLBACK: u8 = 3;
 
 /// Studio-side supervisor thread for one running helper (ADR-0109 decision 8). It
 /// exists only while the source is Active (P13). At the page's frame rate it copies the
@@ -392,11 +448,13 @@ pub enum PagePicture {
         /// A new paint, rather than the picture already held.
         fresh: bool,
     },
-    /// A studio texture the helper finished copying. No pixels in the buffer.
+    /// A studio texture the helper finished copying (its fence has completed). No
+    /// pixels in the buffer. The slot's lease is held for the closure, which hands it
+    /// to a frame (ADR-0157 decision 4).
     Texture {
-        /// Ring slot.
+        /// GPU slot.
         slot: u32,
-        /// Fence value the copy completed at. The helper has already waited.
+        /// Fence value the copy completed at.
         fence: u64,
     },
 }
@@ -492,14 +550,32 @@ impl Supervisor {
                     // Shown again: the last picture once more, so a page that
                     // paints nothing new still shows (its paint time stays, so it
                     // is due at once).
-                    if let Some((slot, fence, painted)) = child.take_gpu() {
-                        publish(
-                            &mut child.frame,
-                            child.width,
-                            child.height,
-                            painted,
-                            PagePicture::Texture { slot, fence },
-                        );
+                    if child.is_gpu() {
+                        let again = republish_flag.swap(false, Ordering::AcqRel);
+                        let picture = match child.take_gpu() {
+                            Some(p) => Some(p),
+                            None if again => child.take_gpu_again(),
+                            None => None,
+                        };
+                        if let Some(p) = picture {
+                            publish(
+                                &mut child.frame,
+                                child.ring.width(),
+                                child.ring.height(),
+                                p.painted,
+                                PagePicture::Texture {
+                                    slot: p.slot,
+                                    fence: p.fence,
+                                },
+                            );
+                        }
+                        if child.gpu_failed() {
+                            // The studio starts this page again on shared memory.
+                            child.close(STOP_GRACE);
+                            cause_flag.store(CAUSE_GPU_FALLBACK, Ordering::Release);
+                            exited_flag.store(true, Ordering::Release);
+                            break;
+                        }
                     } else {
                         let fresh = child.refresh();
                         // Shown again: the last picture once more, so a page that
@@ -594,6 +670,7 @@ impl Supervisor {
         match self.cause.load(std::sync::atomic::Ordering::Acquire) {
             1 => Cause::RuntimeMissing,
             2 => Cause::RuntimeMismatch,
+            CAUSE_GPU_FALLBACK => Cause::GpuFallback,
             _ => Cause::Other,
         }
     }
