@@ -59,7 +59,11 @@ pub(crate) fn quit_after_measure() {
         let ctx = crate::CTX.with(|c| c.borrow().clone());
         match ctx {
             Some(ctx) => match ctx.app.try_borrow_mut() {
-                Ok(mut app) => ctx.begin_quit(&mut app),
+                Ok(mut app) => {
+                    let started = std::time::Instant::now();
+                    ctx.begin_quit(&mut app);
+                    crate::measure_ui::report_close(started.elapsed());
+                }
                 Err(_) => entry::quit_loop(),
             },
             None => entry::quit_loop(),

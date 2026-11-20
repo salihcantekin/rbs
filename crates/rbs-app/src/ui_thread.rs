@@ -29,12 +29,28 @@ use rbs_core::log::{Area, Level};
 pub const STALL: Duration = Duration::from_millis(100);
 /// An entry that runs this long without returning is logged by the watch thread.
 pub const HANG: Duration = Duration::from_secs(1);
+/// An entry that runs this long is a long task: the UI could not answer input for
+/// that time. The measure mode counts them (performance-budgets spec, "Desktop UI").
+pub const LONG_TASK: Duration = Duration::from_millis(50);
+
+/// Told about every long task ([`LONG_TASK`]) with its time and the place its entry
+/// was installed ([`set_long_task_hook`]).
+pub type LongTaskHook = fn(Duration, &'static Location<'static>);
 
 thread_local! {
     /// This thread runs the UI event loop now.
     static UI: Cell<bool> = const { Cell::new(false) };
     /// Entries open on this thread; only the outermost one stamps.
     static DEPTH: Cell<u32> = const { Cell::new(0) };
+    /// Told about long tasks on this thread while set (the measure mode).
+    static LONG_TASKS: Cell<Option<LongTaskHook>> = const { Cell::new(None) };
+}
+
+/// Tells `hook` about every long task on the calling (UI) thread from now on; `None`
+/// stops it. Read only when an entry ran [`LONG_TASK`] or longer, so a quick entry
+/// costs nothing more.
+pub fn set_long_task_hook(hook: Option<LongTaskHook>) {
+    LONG_TASKS.with(|h| h.set(hook));
 }
 
 static WATCH: OnceLock<Arc<Watch>> = OnceLock::new();
@@ -114,10 +130,21 @@ impl Drop for Entry {
         DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
         if let Some((watch, since, at)) = self.since.take() {
             watch.since.store(0, Ordering::Release);
-            if let Some(stall) = finished(since, watch.now(), at) {
+            let now = watch.now();
+            tell_long(Duration::from_nanos(now.saturating_sub(since)), at);
+            if let Some(stall) = finished(since, now, at) {
                 stall.log();
             }
         }
+    }
+}
+
+/// Tells the long-task hook, if one is set, about an entry that took `took`.
+fn tell_long(took: Duration, at: &'static Location<'static>) {
+    if took >= LONG_TASK
+        && let Some(hook) = LONG_TASKS.with(Cell::get)
+    {
+        hook(took, at);
     }
 }
 
@@ -411,6 +438,30 @@ mod tests {
         })
         .join();
         assert!(r.is_err());
+    }
+
+    #[test]
+    fn only_long_tasks_reach_the_hook_while_it_is_set() {
+        thread_local! {
+            static SEEN: Cell<u32> = const { Cell::new(0) };
+        }
+        fn hook(took: Duration, _: &'static Location<'static>) {
+            assert!(took >= LONG_TASK);
+            SEEN.with(|s| s.set(s.get() + 1));
+        }
+        std::thread::spawn(|| {
+            let at = Location::caller();
+            tell_long(LONG_TASK, at);
+            set_long_task_hook(Some(hook));
+            tell_long(LONG_TASK - Duration::from_nanos(1), at);
+            tell_long(LONG_TASK, at);
+            tell_long(Duration::from_secs(2), at);
+            set_long_task_hook(None);
+            tell_long(Duration::from_secs(2), at);
+            assert_eq!(SEEN.with(Cell::get), 2);
+        })
+        .join()
+        .unwrap();
     }
 
     #[test]
