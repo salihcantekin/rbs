@@ -3624,6 +3624,9 @@ pub(crate) struct ControlOut {
 }
 
 impl ControlOut {
+    // The same shape as `Sender::send`: the error hands the message back, so it is as
+    // large as `Msg`. Callers only test it; nothing moves it around.
+    #[allow(clippy::result_large_err)]
     fn send(&self, msg: Msg) -> Result<(), SendError<Msg>> {
         let sent = self.tx.send(msg);
         if let Some(wake) = self.wake.get() {

@@ -692,12 +692,10 @@ impl BrowserFrameSink {
                     kept.retired = Some(held);
                 }
                 let painted = std::mem::take(rgba);
-                // The next section copy overwrites every byte before anything reads it.
-                // A page shown again republishes `kept.last` and does not read `rgba`.
-                rgba.reserve(expected);
-                // SAFETY: `expected` equals `painted.len()`, which was one full frame.
-                // `take_latest` writes that many bytes over this buffer before a read.
-                unsafe { rgba.set_len(expected) };
+                // The next section copy overwrites every byte. The buffer is zeroed, not
+                // left uninitialised: a `Vec` may only hold initialised bytes, and the
+                // fresh allocation is touched here instead of in that copy.
+                rgba.resize(expected, 0);
                 Bytes::from(painted)
             }
         };

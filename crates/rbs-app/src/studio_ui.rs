@@ -7730,6 +7730,8 @@ fn mixer_source(r: &SourceRow) -> bool {
 /// anything changed, so the caller writes the row back only then. While the native
 /// meter layer draws the bar (`native`, ADR-0035) only the clip box is painted: the
 /// zones and the peak stay as they are, so a moving level writes nothing.
+/// Only the tests call it now; the meter tick paints through its own path.
+#[cfg(test)]
 fn repaint(
     row: &mut MeterRow,
     view: &rbs_ui::meter::MeterView,

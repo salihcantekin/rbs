@@ -5,8 +5,8 @@
 //! when the text and the box are still that default, and it is not its own undo step:
 //! undoing the add still removes the source.
 
-use rbs_scene::model::SourceId;
 use rbs_scene::model::SettingValue;
+use rbs_scene::model::SourceId;
 
 use rbs_sources::types::keys;
 
@@ -92,7 +92,7 @@ pub(super) fn apply(host: &mut Host, id: SourceId, text: &str, size: [u32; 2]) -
         if !size_is_default(item.layout.size) {
             continue;
         }
-        let mut layout = item.layout.clone();
+        let mut layout = item.layout;
         layout.position = [
             layout.position[0] + layout.size[0] * 0.5 - fitted[0] * 0.5,
             layout.position[1] + layout.size[1] * 0.5 - fitted[1] * 0.5,

@@ -389,11 +389,11 @@ fn input_split(c: &mut Criterion) {
             // the phase lookup in the frame loop; the outputs are black-boxed below.
             let step = std::hint::black_box(1.0f64);
             let mut p = BEFORE as f64;
-            for frame in 0..frames {
+            for out in sinc_out.iter_mut().take(frames) {
                 let i = p.floor();
                 let at = i as usize - BEFORE;
                 kernel.coefficients(p - i, &mut weights);
-                sinc_out[frame] = apply(&weights, &input[at..at + TAPS]);
+                *out = apply(&weights, &input[at..at + TAPS]);
                 p += step;
             }
             std::hint::black_box(sinc_out.as_slice());
