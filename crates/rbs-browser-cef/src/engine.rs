@@ -10,7 +10,8 @@
 //!   `LD_LIBRARY_PATH`, so the loader already brought it in (or the process ended with
 //!   127 before `main`). Release builds have no `rpath=$ORIGIN`.
 //! - Windows: `libcef.dll` is delay-loaded. This loads it from `<lib>` before the first
-//!   CEF call, so the delay-load helper finds it by name.
+//!   CEF call, so the delay-load helper finds it by name. The resource packs are then
+//!   linked from `<res>` into `<lib>`, because this CEF loads them beside the DLL.
 //! - macOS: `cef_load_library` with the framework under `<lib>`.
 //!
 //! Then the library's CEF version is compared with the one this runner was built
@@ -164,10 +165,36 @@ mod windows {
             !AddDllDirectory(dir_w.as_ptr()).is_null()
                 && !LoadLibraryExW(dll_w.as_ptr(), std::ptr::null_mut(), flags).is_null()
         };
-        if loaded {
-            Ok(())
-        } else {
-            Err(exit::RUNTIME_MISSING)
+        if !loaded {
+            return Err(exit::RUNTIME_MISSING);
+        }
+        // CEF 131 and later load resources.pak and the chrome scale packs from the
+        // directory of libcef.dll and ignore resources_dir_path (CEF issue 3866).
+        // Those packs hold Blink's default resources. Without them a page draws
+        // its script and style text. The add-on keeps the packs in resources_dir.
+        if let Some(rt) = runtime {
+            link_resource_packs(rt);
+        }
+        Ok(())
+    }
+
+    /// Makes `resources.pak` and the chrome scale packs visible beside `libcef.dll`.
+    /// A hard link when the two directories share a volume, otherwise a copy.
+    /// Files already beside the DLL are left alone.
+    fn link_resource_packs(rt: &Runtime) {
+        for name in [
+            "resources.pak",
+            "chrome_100_percent.pak",
+            "chrome_200_percent.pak",
+        ] {
+            let from = rt.resources_dir.join(name);
+            let to = rt.library_dir.join(name);
+            if to.exists() || !from.is_file() {
+                continue;
+            }
+            if std::fs::hard_link(&from, &to).is_err() {
+                let _ = std::fs::copy(&from, &to);
+            }
         }
     }
 }

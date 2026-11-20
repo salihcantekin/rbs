@@ -304,6 +304,39 @@ fn restart_from_the_end_plays_from_the_start() {
 }
 
 #[test]
+fn a_new_file_stays_stopped_until_play() {
+    let factory = Arc::new(ScriptFactory::new(steps()));
+    let clock = Arc::new(TestClock::new());
+    let config = AudioGraphConfig::new(AudioFormat::STEREO_48K, BLOCK as u32, LATENCY).unwrap();
+    let mut pair = media_pair(
+        factory,
+        std::path::PathBuf::from(r"C:\clips\clip.mp4"),
+        true,
+        true,
+        clock.clone(),
+        config,
+    );
+    pair.control.set_on_air(true).unwrap();
+    pair.control.hold_until_play();
+    pair.sound.attach().unwrap();
+    pair.picture.wake(Timestamp::ZERO).unwrap();
+    assert_eq!(pair.control.state(), PlayState::Paused);
+    clock.set(ms(10));
+    let picture = &pair.picture;
+    wait_until(|| picture.worker_settled_at().is_some_and(|s| s >= ms(10)));
+    let _ = pair.picture.dequeue(ms(10));
+    let mark = pair.picture.last_mark();
+    assert!(mark.is_some());
+    clock.set(ms(400));
+    let picture = &pair.picture;
+    wait_until(|| picture.worker_settled_at().is_some_and(|s| s >= ms(400)));
+    let _ = pair.picture.dequeue(ms(400));
+    assert_eq!(pair.picture.last_mark(), mark);
+    pair.control.play().unwrap();
+    assert_eq!(pair.control.state(), PlayState::Playing);
+}
+
+#[test]
 fn a_source_paused_while_asleep_wakes_paused_at_its_cursor() {
     let factory = Arc::new(ScriptFactory::new(steps()));
     let clock = Arc::new(TestClock::new());
@@ -463,8 +496,8 @@ fn the_pause_release_frees_the_worker_and_play_resumes_at_the_cursor() {
     rig.run(450, 460);
     rig.pair.control.service();
     assert!(rig.pair.control.is_released());
-    assert!(rig.pair.picture.worker_joined());
-    assert!(!rig.pair.picture.decoder_held());
+    wait_until(|| rig.pair.picture.worker_joined());
+    wait_until(|| !rig.pair.picture.decoder_held());
     assert_eq!(rig.pair.control.state(), PlayState::Paused);
     assert_eq!(rig.pair.control.cursor(), Duration::from_millis(100));
     rig.run(460, 600);
@@ -512,7 +545,7 @@ fn a_seek_after_the_pause_release_shows_its_picture_and_releases_again() {
     rig.run(500, 510);
     rig.pair.control.service();
     assert!(rig.pair.control.is_released());
-    assert!(!rig.pair.picture.decoder_held());
+    wait_until(|| !rig.pair.picture.decoder_held());
     rig.run(510, 600);
     assert!(rig.marks.range(400..600).all(|(_, m)| *m == Some(3)));
     assert!(rig.blocks.range(250..).next().is_none());

@@ -129,9 +129,29 @@ impl Drop for Released<'_> {
     }
 }
 
+/// Clears the shared worker-thread slot when the worker returns, including on a panic.
+struct ClearThread(Arc<super::Shared>);
+
+impl Drop for ClearThread {
+    fn drop(&mut self) {
+        let mut slot = match self.0.worker_thread.lock() {
+            Ok(slot) => slot,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        *slot = None;
+    }
+}
+
 /// Runs one worker until the end of the file (without `loop`), a fault, or shutdown.
 pub(crate) fn run(job: Job) {
-    let _ = job.shared.worker_thread.set(thread::current());
+    {
+        let mut slot = match job.shared.worker_thread.lock() {
+            Ok(slot) => slot,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        *slot = Some(thread::current());
+    }
+    let _clear_thread = ClearThread(Arc::clone(&job.shared));
     let target = job.shared.decode_target();
     let mut opened = job.factory.open_for(&job.path, &target);
     // An adapter that cannot keep alpha passes the file to the next one that can
@@ -144,7 +164,7 @@ pub(crate) fn run(job: Job) {
             }
         }
     }
-    let mut decoder = match opened {
+    let decoder = match opened {
         Ok(decoder) => decoder,
         Err(error) => {
             let _ = job
@@ -153,8 +173,11 @@ pub(crate) fn run(job: Job) {
             return;
         }
     };
+    // Declared after the decoder is bound below so the flag clears only once the
+    // decoder has been dropped (callers wait on the flag for the file to be closed).
     job.progress.decoder_held.store(true, Ordering::Release);
     let _released = Released(&job.progress.decoder_held);
+    let mut decoder = decoder;
     // While `wake` is still blocked on `ready`. A test clock does not move here;
     // a wall clock does. The loop uses this so a test never sleeps out a frame delay.
     let wall_clock = clock_tracks_wall(job.clock.as_ref());

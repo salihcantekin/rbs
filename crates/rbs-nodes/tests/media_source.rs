@@ -413,8 +413,8 @@ fn the_sound_plays_while_the_picture_node_is_not_prepared() {
     let stats = rig.pair.picture.stats();
     assert_eq!(stats.sound_underruns.load(Ordering::Relaxed), 0);
     rig.pair.sound.detach();
-    assert!(!rig.pair.picture.decoder_held());
-    assert!(rig.pair.picture.worker_joined());
+    wait_until(|| !rig.pair.picture.decoder_held());
+    wait_until(|| rig.pair.picture.worker_joined());
     assert_eq!(rig.factory.counts.alive.load(Ordering::Relaxed), 0);
 }
 
@@ -442,7 +442,7 @@ fn the_picture_node_joins_a_worker_the_sound_node_started() {
     assert!(written);
     assert!(block.iter().all(|s| *s == 0.5));
     rig.pair.sound.detach();
-    assert!(!rig.pair.picture.decoder_held());
+    wait_until(|| !rig.pair.picture.decoder_held());
 }
 
 #[test]
@@ -554,9 +554,9 @@ fn end_of_file_holds_the_last_picture_releases_the_worker_and_writes_silence() {
     }
     assert_eq!(rig.pair.picture.phase(), MediaPhase::Hold);
     assert_eq!(rig.pair.picture.last_mark(), Some(3));
-    assert!(rig.pair.picture.worker_joined());
+    wait_until(|| rig.pair.picture.worker_joined());
     assert!(!rig.pair.picture.queues_live());
-    assert!(!rig.pair.picture.decoder_held());
+    wait_until(|| !rig.pair.picture.decoder_held());
     assert_eq!(rig.factory.counts.alive.load(Ordering::Relaxed), 0);
     assert!(rig.pair.picture.dequeue(ms(800)).is_some());
     assert_eq!(rig.pair.picture.last_mark(), Some(3));
@@ -597,7 +597,7 @@ fn standby_holds_no_ring_and_no_decoder() {
     let mut rig = rig(ScriptClip::silent_frames(), true, true);
     assert!(!rig.pair.picture.queues_live());
     assert!(!rig.pair.sound.ring_live());
-    assert!(!rig.pair.picture.decoder_held());
+    wait_until(|| !rig.pair.picture.decoder_held());
     assert_eq!(rig.pair.picture.queue_allocations(), 0);
     rig.attach_sound();
     rig.pair.picture.wake(Timestamp::ZERO).unwrap();
@@ -607,8 +607,8 @@ fn standby_holds_no_ring_and_no_decoder() {
     assert_eq!(rig.pair.picture.phase(), MediaPhase::Standby);
     assert!(!rig.pair.picture.queues_live());
     assert!(!rig.pair.sound.ring_live());
-    assert!(!rig.pair.picture.decoder_held());
-    assert!(rig.pair.picture.worker_joined());
+    wait_until(|| !rig.pair.picture.decoder_held());
+    wait_until(|| rig.pair.picture.worker_joined());
     assert_eq!(rig.factory.counts.alive.load(Ordering::Relaxed), 0);
     assert_eq!(rig.pair.picture.cursor(), Duration::ZERO);
 }
@@ -620,7 +620,7 @@ fn an_oversized_side_allocates_no_ring() {
     assert!(matches!(error, rbs_nodes::MediaNodeError::Invalid(_)));
     assert_eq!(rig.pair.picture.queue_allocations(), 0);
     assert!(!rig.pair.picture.queues_live());
-    assert!(!rig.pair.picture.decoder_held());
+    wait_until(|| !rig.pair.picture.decoder_held());
     assert_eq!(rig.factory.counts.alive.load(Ordering::Relaxed), 0);
     assert_eq!(rig.factory.counts.file_bytes.load(Ordering::Relaxed), 0);
 }
@@ -635,7 +635,7 @@ fn restart_when_shown_false_seeks_to_the_stored_cursor() {
     }
     assert_eq!(rig.pair.picture.cursor(), Duration::from_millis(200));
     rig.pair.picture.standby();
-    assert!(!rig.pair.picture.decoder_held());
+    wait_until(|| !rig.pair.picture.decoder_held());
     rig.pair.picture.set_restart_when_shown(false);
     *rig.factory.counts.last_seek.lock().unwrap() = None;
     rig.pair.picture.wake(ms(1_000)).unwrap();

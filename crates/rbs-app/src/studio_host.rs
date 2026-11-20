@@ -4676,6 +4676,9 @@ fn start(
     if let Some(dir) = profiles.clone() {
         tree = tree.with_profiles(dir);
     }
+    if let Some(luid) = gpu.adapter_luid() {
+        tree = tree.with_adapter(luid);
+    }
     let browser = Arc::new(tree);
     let browser_tree: Option<Arc<dyn BrowserTree>> =
         Some(Arc::clone(&browser) as Arc<dyn BrowserTree>);

@@ -1479,6 +1479,8 @@ impl SourceTypes {
             Arc::clone(&ctx.clock),
             ctx.audio,
         );
+        // A file added to a scene stays stopped until Play (owner, 2026-11-20).
+        pair.control.hold_until_play();
         pair.control
             .set_range(start, end)
             .map_err(|_| SourceError::InvalidSetting {

@@ -36,6 +36,7 @@ fn config() -> Configure {
         sound: String::new(),
         sample_rate: 0,
         page: rbs_browser_ipc::PageOptions::default(),
+        gpu: None,
     }
 }
 

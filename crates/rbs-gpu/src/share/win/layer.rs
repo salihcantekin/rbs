@@ -750,9 +750,10 @@ impl PreviewLayer {
                 .and_then(|()| self.manager.Present())
         };
         if r.is_err() {
-            self.lost = true;
-            self.shown = None;
-            self.detached = None;
+            // A present the compositor has not finished is not a lost device. Marking
+            // it lost froze the Interact window after the first busy second. The lost
+            // event above is the real device loss. This frame goes back; the picture
+            // already showing stays.
             drop(frame);
             self.retire(now);
             return;

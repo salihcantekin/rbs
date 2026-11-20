@@ -19,8 +19,8 @@ use std::time::{Duration, Instant};
 
 use rbs_browser_ipc::control::Control;
 use rbs_browser_ipc::{
-    Configure, HEARTBEAT_PERIOD, MAX_PAYLOAD, encode_configure, heartbeat_lost, restart_delay,
-    startup_lost,
+    Configure, GpuShare, HEARTBEAT_PERIOD, MAX_PAYLOAD, encode_configure, heartbeat_lost,
+    restart_delay, startup_lost,
 };
 use rbs_browser_shm::{FrameRing, OwnedSoundPacket, RingReader, SlotLayout, SoundRing};
 
@@ -33,6 +33,8 @@ pub struct HelperChild {
     stdin: Option<ChildStdin>,
     ring: FrameRing,
     reader: RingReader,
+    /// GPU publish sequence already handed to the studio.
+    gpu_seen: u64,
     /// The page's sound section, when the studio asked for sound.
     sound: Option<SoundRing>,
     sound_scratch: Vec<f32>,
@@ -70,6 +72,21 @@ impl HelperChild {
             }
             None => false,
         }
+    }
+
+    /// The name of the studio-allocated frame section.
+    pub fn frame_name(&self) -> &str {
+        self.ring.name()
+    }
+
+    /// A GPU picture published since the last call: slot, fence value, paint time.
+    /// Does not copy pixels. Control thread only; never waits.
+    pub fn take_gpu(&mut self) -> Option<(u32, u64, u64)> {
+        let found = self.ring.take_gpu(&mut self.gpu_seen)?;
+        self.width = self.ring.width();
+        self.height = self.ring.height();
+        self.painted = found.2;
+        Some(found)
     }
 
     /// Copies the newest published frame into [`HelperChild::frame`]. Returns true
@@ -248,6 +265,20 @@ pub fn spawn_helper_with_env(
     config: &Configure,
     layout: SlotLayout,
 ) -> Result<HelperChild, String> {
+    spawn_helper_prepared(program, args, env, config, layout, |_| None)
+}
+
+/// As [`spawn_helper_with_env`]. `prepare` runs after the process exists and before
+/// `configure` is written, so it can duplicate texture handles into that process.
+/// `Some` selects the GPU path for this tree (ADR-0109 decision 8).
+pub fn spawn_helper_prepared(
+    program: &Path,
+    args: &[&str],
+    env: &[(OsString, OsString)],
+    config: &Configure,
+    layout: SlotLayout,
+    prepare: impl FnOnce(u32) -> Option<GpuShare>,
+) -> Result<HelperChild, String> {
     // The studio owns this section before the process exists (ADR-0109 decision 8).
     let ring = FrameRing::create(config.width, config.height, layout).map_err(|e| e.to_string())?;
     let sound = if config.sample_rate > 0 {
@@ -268,6 +299,9 @@ pub fn spawn_helper_with_env(
         .stderr(Stdio::null())
         .spawn()
         .map_err(|error| error.to_string())?;
+    if let Some(gpu) = prepare(child.id()) {
+        configure.gpu = Some(gpu);
+    }
     let mut stdin = child
         .stdin
         .take()
@@ -276,6 +310,7 @@ pub fn spawn_helper_with_env(
     let _ = stdin.flush();
     let reader = ring.reader();
     Ok(HelperChild {
+        gpu_seen: 0,
         child: Some(child),
         stdin: Some(stdin),
         ring,
@@ -348,6 +383,24 @@ pub trait PageSound: Send + 'static {
     fn pump(&mut self);
 }
 
+/// What the supervisor hands the studio for one poll.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PagePicture {
+    /// Shared-memory pixels in the buffer. `fresh` is false when the page was shown
+    /// again and has not painted: the studio republishes the picture it kept.
+    Bytes {
+        /// A new paint, rather than the picture already held.
+        fresh: bool,
+    },
+    /// A studio texture the helper finished copying. No pixels in the buffer.
+    Texture {
+        /// Ring slot.
+        slot: u32,
+        /// Fence value the copy completed at. The helper has already waited.
+        fence: u64,
+    },
+}
+
 /// How often the supervisor reads page sound: often enough that a block is pushed
 /// well inside the audio graph's latency.
 pub const SOUND_POLL: Duration = Duration::from_millis(5);
@@ -366,7 +419,7 @@ impl Supervisor {
     pub fn start(
         child: HelperChild,
         fps: u32,
-        publish: impl FnMut(&mut Vec<u8>, u32, u32, u64, bool) + Send + 'static,
+        publish: impl FnMut(&mut Vec<u8>, u32, u32, u64, PagePicture) + Send + 'static,
     ) -> Result<Self, String> {
         Self::start_inner(child, fps, publish, None)
     }
@@ -376,7 +429,7 @@ impl Supervisor {
     pub fn start_with_sound(
         child: HelperChild,
         fps: u32,
-        publish: impl FnMut(&mut Vec<u8>, u32, u32, u64, bool) + Send + 'static,
+        publish: impl FnMut(&mut Vec<u8>, u32, u32, u64, PagePicture) + Send + 'static,
         sound: Box<dyn PageSound>,
     ) -> Result<Self, String> {
         Self::start_inner(child, fps, publish, Some(sound))
@@ -385,7 +438,7 @@ impl Supervisor {
     fn start_inner(
         mut child: HelperChild,
         fps: u32,
-        mut publish: impl FnMut(&mut Vec<u8>, u32, u32, u64, bool) + Send + 'static,
+        mut publish: impl FnMut(&mut Vec<u8>, u32, u32, u64, PagePicture) + Send + 'static,
         mut sound: Option<Box<dyn PageSound>>,
     ) -> Result<Self, String> {
         use std::sync::Arc;
@@ -439,21 +492,31 @@ impl Supervisor {
                     // Shown again: the last picture once more, so a page that
                     // paints nothing new still shows (its paint time stays, so it
                     // is due at once).
-                    let fresh = child.refresh();
-                    // Shown again: the last picture once more, so a page that
-                    // paints nothing new still shows (its paint time stays, so it
-                    // is due at once). `fresh` is false then: the closure republishes
-                    // the sink's bytes and does not read `frame`, which may be the
-                    // spare buffer waiting for the next section copy.
-                    let again = republish_flag.swap(false, Ordering::AcqRel);
-                    if fresh || (again && child.width > 0 && child.height > 0) {
+                    if let Some((slot, fence, painted)) = child.take_gpu() {
                         publish(
                             &mut child.frame,
                             child.width,
                             child.height,
-                            child.painted,
-                            fresh,
+                            painted,
+                            PagePicture::Texture { slot, fence },
                         );
+                    } else {
+                        let fresh = child.refresh();
+                        // Shown again: the last picture once more, so a page that
+                        // paints nothing new still shows (its paint time stays, so it
+                        // is due at once). `fresh` is false then: the closure republishes
+                        // the sink's bytes and does not read `frame`, which may be the
+                        // spare buffer waiting for the next section copy.
+                        let again = republish_flag.swap(false, Ordering::AcqRel);
+                        if fresh || (again && child.width > 0 && child.height > 0) {
+                            publish(
+                                &mut child.frame,
+                                child.width,
+                                child.height,
+                                child.painted,
+                                PagePicture::Bytes { fresh },
+                            );
+                        }
                     }
                     if !child.process_alive() || !child.check_heartbeat(Instant::now()) {
                         cause_flag.store(encode_cause(child.exit_cause()), Ordering::Release);

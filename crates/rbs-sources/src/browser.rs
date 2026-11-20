@@ -15,7 +15,7 @@ use rbs_audio_io::edge::EdgeClock;
 use rbs_browser_ipc::control::Control;
 use rbs_browser_ipc::{Configure, PageOptions, restart_delay};
 use rbs_core::media::{
-    ColorSpace, PixelFormat, PlaneLayout, Size, SystemFrame, VideoFormat, VideoFrame,
+    ColorSpace, FramePayload, PixelFormat, PlaneLayout, Size, SystemFrame, VideoFormat, VideoFrame,
     next_generation,
 };
 use rbs_core::time::{Clock, Timestamp};
@@ -321,6 +321,7 @@ impl BrowserSettings {
                 reload_on_file_change: self.reload_on_file_change,
                 profile_dir: String::new(),
             },
+            gpu: None,
         }
     }
 }
@@ -702,6 +703,19 @@ impl BrowserFrameSink {
             }
         };
         self.store_picture(kept, bytes, width, height, stamp);
+    }
+
+    /// Publishes a picture the helper already copied into a studio texture
+    /// (ADR-0109 decision 8). The render thread imports it; it does not upload.
+    /// Supervisor or control thread, never the render thread.
+    pub fn publish_native(&self, frame: VideoFrame, stamp: Option<Timestamp>) {
+        let replaced = self.take_pending();
+        drop(replaced);
+        if let Ok(mut slot) = self.pending.lock() {
+            *slot = Some(PendingPicture { frame, stamp });
+            self.fresh.store(true, Ordering::Release);
+        }
+        self.generation.fetch_add(1, Ordering::Release);
     }
 
     /// Puts the last picture back for a page that was shown again and has not painted.
@@ -1429,15 +1443,22 @@ impl Node<GpuRuntime> for BrowserSourceNode {
 
     fn process(&mut self, ctx: &mut ProcessCtx<'_, GpuRuntime>) -> Result<(), NodeError> {
         // The newest picture whose stamp is due (ADR-0109 decision 8). The output keeps
-        // it until the next one, as a still's does.
-        let Some(system) = self.control.frames().take_due(ctx.tick().time) else {
+        // it until the next one, as a still's does. A shared texture is imported; the
+        // shared-memory fallback is uploaded. A failed import leaves the last picture.
+        let Some(frame) = self.control.frames().take_due(ctx.tick().time) else {
             return Ok(());
         };
-        let texture = self
-            .upload
-            .upload(ctx.shared(), &mut ctx.local().pool, system)
-            .map_err(|_| NodeError::Backend("browser picture upload failed"))?;
-        drop(ctx.outputs().set_video(VIDEO_PIN, Some(texture))?);
+        let gpu = ctx.shared();
+        let (_, outputs, local) = ctx.parts();
+        let texture = match frame.payload() {
+            FramePayload::Native { .. } => local.importer.import(gpu, &mut local.pool, frame),
+            FramePayload::System(_) => self.upload.upload(gpu, &mut local.pool, frame),
+            _ => return Ok(()),
+        };
+        let Ok(texture) = texture else {
+            return Ok(());
+        };
+        drop(outputs.set_video(VIDEO_PIN, Some(texture))?);
         Ok(())
     }
 

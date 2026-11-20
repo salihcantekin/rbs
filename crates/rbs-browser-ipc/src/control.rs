@@ -84,7 +84,10 @@ pub fn decode(body: &[u8]) -> Option<Control> {
                 (!text.is_empty()).then(|| text.to_owned()),
             ))
         }
-        KIND_PAGE => PageOptions::decode(body.get(1..)?).map(|p| Control::Page(Box::new(p))),
+        KIND_PAGE => {
+            let mut rest = body.get(1..)?;
+            PageOptions::decode(&mut rest).map(|p| Control::Page(Box::new(p)))
+        }
         KIND_INPUT => InputEvent::decode(body.get(1..)?).map(Control::Input),
         KIND_SHOWN => Some(Control::Shown(*body.get(1)? != 0)),
         _ => None,
