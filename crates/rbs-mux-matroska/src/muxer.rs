@@ -174,6 +174,16 @@ fn nanos(t: Timestamp) -> i128 {
 }
 
 /// Refuses an in-band parameter set that differs from the codec private data's.
+fn sample_error(e: nal::SampleError) -> MuxError {
+    match e {
+        nal::SampleError::ParameterSetChanged => {
+            MuxError::InvalidPacket("parameter sets changed; Matroska needs a new output".into())
+        }
+        nal::SampleError::TooLarge => MuxError::Overflow("sample size"),
+        nal::SampleError::NoMedia => MuxError::InvalidPacket("packet without media".into()),
+    }
+}
+
 fn check_parameter_set(track: &Track, unit: &[u8]) -> Result<(), MuxError> {
     if nal::parameter_set(track.codec, unit) && !track.parameter_sets.iter().any(|p| p == unit) {
         return Err(MuxError::InvalidPacket(
@@ -679,43 +689,32 @@ impl Muxer for MatroskaMuxer {
                 (Payload::Shared(packet.data().clone()), data.len())
             }
             Kind::Video { length_size: None } => {
-                if let Some(sample) = packet
-                    .packet_share()
-                    .and_then(|share| share.get(&track.set_key))
-                {
-                    self.staging.extend_from_slice(&sample);
-                    (Payload::Staged { start: 0 }, sample.len())
-                } else {
-                    let staged = self.staging.len();
-                    let codec = track.codec;
-                    let sets = &track.parameter_sets;
-                    let converted = nal::annexb_to_length_prefixed_while(
-                        data,
-                        &mut self.staging,
-                        |unit, added| {
-                            if nal::parameter_set(codec, unit) && !sets.iter().any(|p| p == unit) {
-                                return Err(MuxError::InvalidPacket(
-                                    "parameter sets changed; Matroska needs a new output".into(),
-                                ));
+                let codec = track.codec;
+                let sets = &track.parameter_sets;
+                let convert = |out: &mut Vec<u8>| {
+                    nal::annexb_to_sample(codec, data, sets, MAX_SAMPLE_BYTES, out)
+                        .map_err(sample_error)
+                };
+                match packet.packet_share() {
+                    // Several outputs share this encode (ADR-0143 R3): the first one
+                    // converts into its own buffer and shares it, the others clone it.
+                    // Neither copies the sample before the cluster is written.
+                    Some(share) => {
+                        let sample = match share.get(&track.set_key) {
+                            Some(sample) => sample,
+                            None => {
+                                let mut buf = Vec::with_capacity(nal::annexb_sample_capacity(data));
+                                convert(&mut buf)?;
+                                let sample = Bytes::from(buf);
+                                share.store(&track.set_key, sample.clone());
+                                sample
                             }
-                            if !nal::in_length_prefixed_sample(codec, unit) {
-                                return Ok(false);
-                            }
-                            if added + 4 + unit.len() > MAX_SAMPLE_BYTES {
-                                return Err(MuxError::Overflow("sample size"));
-                            }
-                            Ok(true)
-                        },
-                    )?;
-                    if converted == 0 {
-                        return Err(MuxError::InvalidPacket("packet without media".into()));
+                        };
+                        let len = sample.len();
+                        (Payload::Shared(sample), len)
                     }
-                    if let Some(share) = packet.packet_share() {
-                        let sample =
-                            Bytes::copy_from_slice(&self.staging[staged..staged + converted]);
-                        share.store(&track.set_key, sample);
-                    }
-                    (Payload::Staged { start: 0 }, converted)
+                    // One output converts into the reused staging buffer.
+                    None => (Payload::Staged { start: 0 }, convert(&mut self.staging)?),
                 }
             }
             Kind::Obu => (Payload::Shared(packet.data().clone()), data.len()),

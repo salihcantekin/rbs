@@ -219,6 +219,55 @@ pub fn annexb_to_length_prefixed_while<E>(
     Ok(out.len() - start)
 }
 
+/// Why [`annexb_to_sample`] refused an access unit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SampleError {
+    /// An in-band parameter set is not one of the sample entry's sets.
+    ParameterSetChanged,
+    /// The sample would exceed the caller's bound.
+    TooLarge,
+    /// No unit is left after the filter: no slice, only sets or delimiters.
+    NoMedia,
+}
+
+/// The capacity [`annexb_to_sample`] needs for `data` in a fresh buffer, without a
+/// second walk. Each unit's 4-byte length replaces a start code of 3 or 4 bytes, so
+/// this holds up to 64 units with 3-byte codes; a sample with more grows once.
+pub fn annexb_sample_capacity(data: &[u8]) -> usize {
+    data.len().saturating_add(64)
+}
+
+/// Hot path. The one filter-and-prefix walk of fragmented MP4, MOV and Matroska:
+/// appends the units of an Annex B access unit that belong in a length-prefixed
+/// sample ([`in_length_prefixed_sample`]) to `out` with 4-byte lengths, checks that
+/// every in-band parameter set is one of `sets`, and keeps the sample within `max`
+/// bytes. Returns the bytes appended. On error `out` is left as it was. Does not
+/// allocate when `out` has [`annexb_sample_capacity`] spare.
+pub fn annexb_to_sample(
+    codec: rbs_core::media::CodecId,
+    data: &[u8],
+    sets: &[Vec<u8>],
+    max: usize,
+    out: &mut Vec<u8>,
+) -> Result<usize, SampleError> {
+    let added = annexb_to_length_prefixed_while(data, out, |unit, added| {
+        if parameter_set(codec, unit) && !sets.iter().any(|p| p == unit) {
+            return Err(SampleError::ParameterSetChanged);
+        }
+        if !in_length_prefixed_sample(codec, unit) {
+            return Ok(false);
+        }
+        if added + 4 + unit.len() > max {
+            return Err(SampleError::TooLarge);
+        }
+        Ok(true)
+    })?;
+    if added == 0 {
+        return Err(SampleError::NoMedia);
+    }
+    Ok(added)
+}
+
 /// A parameter set carried in the container's codec private data, not in the sample.
 pub fn parameter_set(codec: rbs_core::media::CodecId, unit: &[u8]) -> bool {
     use rbs_core::media::CodecId;
@@ -343,6 +392,39 @@ mod tests {
         0, 0, 1, 0x68, 3, // PPS
         0, 0, 0, 1, 0x65, 4, 5, 0, // IDR with a trailing zero
     ];
+
+    #[test]
+    fn a_sample_keeps_slices_and_drops_known_sets_and_delimiters() {
+        use rbs_core::media::CodecId;
+        let au = [&[0, 0, 0, 1, 0x09, 0xf0][..], ANNEXB].concat();
+        let sets = vec![vec![0x67, 1, 2], vec![0x68, 3]];
+        let mut out = vec![0xaa];
+        let added = annexb_to_sample(CodecId::H264, &au, &sets, usize::MAX, &mut out).unwrap();
+        assert_eq!(out, [0xaa, 0, 0, 0, 3, 0x65, 4, 5]);
+        assert_eq!(added, 7);
+        assert!(annexb_sample_capacity(&au) >= added);
+    }
+
+    #[test]
+    fn a_refused_sample_leaves_the_buffer_as_it_was() {
+        use rbs_core::media::CodecId;
+        let sets = vec![vec![0x67, 1, 2], vec![0x68, 3]];
+        let mut out = vec![0xaa];
+        let changed = [0, 0, 1, 0x65, 4, 0, 0, 1, 0x68, 9];
+        assert_eq!(
+            annexb_to_sample(CodecId::H264, &changed, &sets, usize::MAX, &mut out),
+            Err(SampleError::ParameterSetChanged)
+        );
+        assert_eq!(
+            annexb_to_sample(CodecId::H264, ANNEXB, &sets, 6, &mut out),
+            Err(SampleError::TooLarge)
+        );
+        assert_eq!(
+            annexb_to_sample(CodecId::H264, &ANNEXB[..12], &sets, usize::MAX, &mut out),
+            Err(SampleError::NoMedia)
+        );
+        assert_eq!(out, [0xaa]);
+    }
 
     #[test]
     fn iterates_annexb_units() {

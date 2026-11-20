@@ -86,8 +86,11 @@ impl Kind {
 }
 
 struct Sample {
-    /// The payload; empty for Annex B input, which is in `Track::staging`.
+    /// The payload; empty when `staged`.
     data: Bytes,
+    /// The payload is the next `size` bytes of `Track::staging` (Annex B input
+    /// converted by this muxer alone). Shared conversions stay in `data`.
+    staged: bool,
     dts: Timestamp,
     pts: Timestamp,
     duration: Option<Duration>,
@@ -165,6 +168,16 @@ fn nanos(t: Timestamp) -> i128 {
 }
 
 /// Refuses an in-band parameter set that differs from the sample entry's.
+fn sample_error(e: nal::SampleError) -> MuxError {
+    match e {
+        nal::SampleError::ParameterSetChanged => MuxError::InvalidPacket(
+            "parameter sets changed; a fragmented file needs a new output".into(),
+        ),
+        nal::SampleError::TooLarge => MuxError::Overflow("sample size"),
+        nal::SampleError::NoMedia => MuxError::InvalidPacket("packet without media".into()),
+    }
+}
+
 fn check_parameter_set(track: &Track, unit: &[u8]) -> Result<(), MuxError> {
     if nal::parameter_set(track.codec, unit) && !track.parameter_sets.iter().any(|p| p == unit) {
         return Err(MuxError::InvalidPacket(
@@ -917,10 +930,19 @@ impl Fmp4Muxer {
 
         let mdat = boxes::open(&mut chunk, b"mdat");
         for track in active() {
+            // In sample order: a track can hold staged and shared samples when a
+            // second output starts or stops sharing the encode mid-fragment.
+            let mut staged = 0;
             for s in &track.samples {
-                chunk.extend_from_slice(&s.data);
+                if s.staged {
+                    let end = staged + s.size as usize;
+                    chunk.extend_from_slice(&track.staging[staged..end]);
+                    staged = end;
+                } else {
+                    chunk.extend_from_slice(&s.data);
+                }
             }
-            chunk.extend_from_slice(&track.staging[..track.committed]);
+            debug_assert_eq!(staged, track.committed);
         }
         boxes::close(&mut chunk, mdat);
         debug_assert_eq!(chunk.len(), chunk.capacity());
@@ -1029,6 +1051,7 @@ impl Muxer for Fmp4Muxer {
         // error leaves no output and no state behind.
         let track = &mut self.tracks[index];
         let mut stored = packet.data().clone();
+        let mut staged = false;
         let size = match track.kind {
             Kind::Video {
                 length_size: Some(length_size),
@@ -1042,47 +1065,35 @@ impl Muxer for Fmp4Muxer {
                 data.len()
             }
             Kind::Video { length_size: None } => {
-                if let Some(sample) = packet
-                    .packet_share()
-                    .and_then(|share| share.get(&track.set_key))
-                {
-                    track.staging.extend_from_slice(&sample);
-                    stored = Bytes::new();
-                    sample.len()
-                } else {
-                    // One walk: check, drop parameter sets and delimiters, length-prefix.
-                    // A failure restores the staging buffer.
-                    let staged = track.staging.len();
-                    let codec = track.codec;
-                    let converted = {
-                        let sets = &track.parameter_sets;
-                        let staging = &mut track.staging;
-                        nal::annexb_to_length_prefixed_while(data, staging, |unit, added| {
-                            if nal::parameter_set(codec, unit) && !sets.iter().any(|p| p == unit) {
-                                return Err(MuxError::InvalidPacket(
-                                    "parameter sets changed; a fragmented file needs a new output"
-                                        .into(),
-                                ));
+                let codec = track.codec;
+                let sets = &track.parameter_sets;
+                let convert = |out: &mut Vec<u8>| {
+                    nal::annexb_to_sample(codec, data, sets, MAX_SAMPLE_BYTES, out)
+                        .map_err(sample_error)
+                };
+                match packet.packet_share() {
+                    // Several outputs share this encode (ADR-0143 R3): the first one
+                    // converts into its own buffer and shares it, the others clone it.
+                    // Neither copies the sample before the fragment is written.
+                    Some(share) => {
+                        stored = match share.get(&track.set_key) {
+                            Some(sample) => sample,
+                            None => {
+                                let mut buf = Vec::with_capacity(nal::annexb_sample_capacity(data));
+                                convert(&mut buf)?;
+                                let sample = Bytes::from(buf);
+                                share.store(&track.set_key, sample.clone());
+                                sample
                             }
-                            if !nal::in_length_prefixed_sample(codec, unit) {
-                                return Ok(false);
-                            }
-                            if added + 4 + unit.len() > MAX_SAMPLE_BYTES {
-                                return Err(MuxError::Overflow("sample size"));
-                            }
-                            Ok(true)
-                        })?
-                    };
-                    if converted == 0 {
-                        return Err(MuxError::InvalidPacket("packet without media".into()));
+                        };
+                        stored.len()
                     }
-                    if let Some(share) = packet.packet_share() {
-                        let sample =
-                            Bytes::copy_from_slice(&track.staging[staged..staged + converted]);
-                        share.store(&track.set_key, sample);
+                    // One output converts into the reused staging buffer.
+                    None => {
+                        stored = Bytes::new();
+                        staged = true;
+                        convert(&mut track.staging)?
                     }
-                    stored = Bytes::new();
-                    converted
                 }
             }
             Kind::Obu => data.len(),
@@ -1151,6 +1162,7 @@ impl Muxer for Fmp4Muxer {
         track.last_dts = Some(dts);
         track.samples.push(Sample {
             data: stored,
+            staged,
             dts,
             pts: packet.pts(),
             duration,

@@ -124,5 +124,45 @@ fn bench_write(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_write);
+/// F-02: one Annex B encode fanned out to 1, 2 and 3 outputs of this container, as
+/// the encoder node does it: with two or more filtered consumers each packet carries
+/// a packet share (attached on the clone, inside the timed loop), and every output
+/// gets its own clone.
+fn bench_fanout(c: &mut Criterion) {
+    let format = BitstreamFormat::AnnexB;
+    let mut group = c.benchmark_group("matroska_fanout");
+    let packets = gop(format);
+    let bytes: usize = packets.iter().map(|(_, p)| p.data().len()).sum();
+    group.throughput(Throughput::Bytes(bytes as u64));
+    for outputs in [1usize, 2, 3] {
+        group.bench_function(format!("gop_1s_annexb_outputs_{outputs}"), |b| {
+            b.iter_batched(
+                || {
+                    let muxers: Vec<_> = (0..outputs).map(|_| session(format)).collect();
+                    let outs: Vec<Vec<_>> = (0..outputs).map(|_| Vec::with_capacity(2)).collect();
+                    (muxers, outs)
+                },
+                |(mut muxers, mut outs)| {
+                    for (stream, packet) in &packets {
+                        let mut packet = packet.clone();
+                        if outputs > 1 {
+                            packet.attach_packet_share();
+                        }
+                        for (muxer, out) in muxers.iter_mut().zip(outs.iter_mut()) {
+                            muxer.write(*stream, black_box(&packet), out).unwrap();
+                        }
+                    }
+                    for (muxer, out) in muxers.iter_mut().zip(outs.iter_mut()) {
+                        muxer.finish(out).unwrap();
+                    }
+                    black_box(outs)
+                },
+                BatchSize::SmallInput,
+            );
+        });
+    }
+    group.finish();
+}
+
+criterion_group!(benches, bench_write, bench_fanout);
 criterion_main!(benches);

@@ -935,3 +935,74 @@ fn chapters_count_from_the_earliest_cluster_even_a_late_one() {
     let atom = segment.child(CHAPTERS).child(0x45b9).child(0xb6);
     assert_eq!(atom.child(0x91).uint(), 950_000_000);
 }
+
+/// F-02: an encode shared with another output starts or stops mid-fragment, so one
+/// track holds samples this muxer converted alone and samples it took from the packet
+/// share. Every output still writes the same bytes as a muxer that never shares, and
+/// the later output reuses the first one's buffer instead of copying it.
+#[test]
+fn shared_and_own_conversions_mixed_in_one_fragment_keep_their_order() {
+    let mut stream = h264_stream();
+    stream.bitstream = BitstreamFormat::AnnexB;
+    let config = MuxerConfig::new(ContainerId::Matroska, vec![stream]);
+    let idr = vec![
+        0, 0, 1, 0x09, 0xf0, 0, 0, 0, 1, 0x67, 0x64, 0x00, 0x1f, 0xac, 0xd9, 0x40, 0x50, 0x05, 0,
+        0, 1, 0x68, 0xeb, 0xe3, 0xcb, 0, 0, 0, 1, 0x06, 5, 0, 0, 1, 0x65, 1, 2,
+    ];
+    let packets: Vec<EncodedPacket> = (0..8u64)
+        .map(|i| {
+            let data = if i % 4 == 0 {
+                idr.clone()
+            } else {
+                vec![
+                    0, 0, 0, 1, 0x09, 0xf0, 0, 0, 1, 0x41, i as u8, 7, 0, 0, 1, 0x41, 9,
+                ]
+            };
+            video(i * 33, i * 33, i % 4 == 0, data, BitstreamFormat::AnnexB)
+        })
+        .collect();
+    let run = |share: &dyn Fn(u64) -> bool| {
+        let mut alone = MatroskaMuxerFactory.create(&config).unwrap();
+        let mut first = MatroskaMuxerFactory.create(&config).unwrap();
+        let mut second = MatroskaMuxerFactory.create(&config).unwrap();
+        let (mut a, mut b, mut c) = (Vec::new(), Vec::new(), Vec::new());
+        alone.begin(&mut a).unwrap();
+        first.begin(&mut b).unwrap();
+        second.begin(&mut c).unwrap();
+        for (i, packet) in packets.iter().enumerate() {
+            alone.write(StreamIndex(0), packet, &mut a).unwrap();
+            let mut shared = packet.clone();
+            if share(i as u64) {
+                shared.attach_packet_share();
+            }
+            first.write(StreamIndex(0), &shared, &mut b).unwrap();
+            let stored = shared.packet_share().and_then(|s| {
+                // The key is private to the muxer; any filled slot is the one it wrote.
+                s.get(&rbs_media_format::nal::parameter_set_key(&sets()))
+            });
+            assert_eq!(stored.is_some(), share(i as u64));
+            second.write(StreamIndex(0), &shared, &mut c).unwrap();
+        }
+        alone.finish(&mut a).unwrap();
+        first.finish(&mut b).unwrap();
+        second.finish(&mut c).unwrap();
+        let bytes =
+            |chunks: &[MuxChunk]| chunks.iter().map(|c| c.data.to_vec()).collect::<Vec<_>>();
+        assert_eq!(bytes(&b), bytes(&a));
+        assert_eq!(bytes(&c), bytes(&a));
+    };
+    run(&|i| i % 2 == 1);
+    run(&|i| (2..6).contains(&i));
+    run(&|_| true);
+}
+
+/// The SPS and PPS of `SYNTHETIC_AVCC`, in the order the muxers keep them.
+fn sets() -> Vec<Vec<u8>> {
+    let config = rbs_media_format::avc::AvcConfig::parse(SYNTHETIC_AVCC).unwrap();
+    config
+        .sps
+        .iter()
+        .chain(&config.pps)
+        .map(|s| s.to_vec())
+        .collect()
+}
