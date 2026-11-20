@@ -92,7 +92,7 @@ pub fn items(context: Context, target: &[(String, String)], state: &dyn CommandS
                 checkable: checked.is_some(),
                 checked: checked.unwrap_or(false),
                 choices: Vec::new(),
-                reason: disabled.unwrap_or_default(),
+                reason: disabled.map(String::from).unwrap_or_default(),
             },
             MenuItem::Choices {
                 title,
@@ -108,7 +108,7 @@ pub fn items(context: Context, target: &[(String, String)], state: &dyn CommandS
                 enabled: disabled.is_none() && !choices.is_empty(),
                 checkable: false,
                 checked: false,
-                reason: disabled.unwrap_or_default(),
+                reason: disabled.map(String::from).unwrap_or_default(),
                 choices: choices
                     .into_iter()
                     .map(|(t, id, current)| (t, id.to_string(), current))
@@ -275,7 +275,7 @@ mod tests {
     struct All;
 
     impl CommandState for All {
-        fn enabled(&self, _: &CommandId) -> Result<(), String> {
+        fn enabled(&self, _: &CommandId) -> Result<(), rbs_ui::command::Disabled> {
             Ok(())
         }
         fn checked(&self, id: &CommandId) -> bool {

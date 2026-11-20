@@ -33,7 +33,7 @@ impl Document for ThemeBody {
     }
 
     fn from_body(body: toml::Table) -> Result<Self, String> {
-        ThemeBody::from_body(body)
+        ThemeBody::from_body(body).map_err(|e| e.to_string())
     }
 
     fn to_body(&self) -> Result<toml::Table, String> {

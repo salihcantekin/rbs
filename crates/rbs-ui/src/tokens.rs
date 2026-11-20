@@ -338,6 +338,20 @@ impl fmt::Display for TokenError {
 
 impl std::error::Error for TokenError {}
 
+/// A token the app uses that a token file or resolved theme does not have (the
+/// generated `slot` and `apply_tokens` of `tokens_apply.rs`; only a token file of
+/// another build lacks one).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MissingToken(pub String);
+
+impl fmt::Display for MissingToken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "no {}", self.0)
+    }
+}
+
+impl std::error::Error for MissingToken {}
+
 fn colors(
     raw: BTreeMap<String, String>,
     expected: &[&str],

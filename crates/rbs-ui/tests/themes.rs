@@ -123,7 +123,11 @@ fn body_round_trips_with_unknown_names_kept_in_their_tables() {
 
 #[test]
 fn structural_errors_refuse_the_body() {
-    let refused = |text: &str| ThemeBody::from_body(toml::from_str(text).unwrap()).unwrap_err();
+    let refused = |text: &str| {
+        ThemeBody::from_body(toml::from_str(text).unwrap())
+            .unwrap_err()
+            .to_string()
+    };
     assert!(refused("author = \"x\"").contains("base is missing"));
     assert!(refused("base = \"sepia\"").contains("sepia"));
     assert!(refused("base = \"dark\"\nextra = 1").contains("unknown key extra"));

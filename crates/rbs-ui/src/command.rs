@@ -15,6 +15,9 @@
 
 use std::fmt;
 
+mod errors;
+pub use errors::{CommandIdError, Disabled};
+
 use crate::panel::{PanelId, built_in};
 use crate::workspace::{Toolbar, ToolbarItem, ToolbarStyle};
 
@@ -2045,18 +2048,6 @@ pub fn entry(base: &str) -> Option<&'static Entry> {
     ENTRIES.iter().find(|e| e.id == base)
 }
 
-/// Why a command id is not valid.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CommandIdError(pub String);
-
-impl fmt::Display for CommandIdError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for CommandIdError {}
-
 /// A command id with its parameters: `ui.area.toggle?area=left`. The panel id grammar
 /// (ADR-0017), with parameter values UTF-8, percent-encoded outside the id characters
 /// and ASCII capitals (`ui.workspace.switch?name=Live%20show`; `%` escapes are written
@@ -2252,7 +2243,7 @@ impl fmt::Display for CommandId {
 /// built. Calls are cheap reads of state the shell already has (no polling, U5).
 pub trait CommandState {
     /// `Ok(())` when the command can run now, else the reason shown as its tooltip.
-    fn enabled(&self, id: &CommandId) -> Result<(), String>;
+    fn enabled(&self, id: &CommandId) -> Result<(), Disabled>;
     /// For checkable entries: is it on (a toggle running, an area shown)?
     fn checked(&self, id: &CommandId) -> bool;
     /// For pickers: the choices as `(title, value, is the current one)`, in order.
@@ -2288,7 +2279,7 @@ pub enum MenuItem {
         /// Default shortcut text.
         shortcut: Option<&'static str>,
         /// Why it is disabled; `None` when enabled.
-        disabled: Option<String>,
+        disabled: Option<Disabled>,
         /// `Some` for checkable entries.
         checked: Option<bool>,
         /// Icon name from the icon set ([`icon`]).
@@ -2302,7 +2293,7 @@ pub enum MenuItem {
         icon: Option<&'static str>,
         /// Why the submenu cannot run; `None` when it can (entries inside may still
         /// be filtered out). Locked transforms set this so the menu greys out.
-        disabled: Option<String>,
+        disabled: Option<Disabled>,
         /// `(title, id to run, checked)`.
         choices: Vec<(String, CommandId, bool)>,
     },
@@ -2776,7 +2767,7 @@ pub fn app_menu(state: &dyn CommandState) -> Vec<(Menu, Vec<AppRow>)> {
             String,
             Option<&'static str>,
             Vec<(String, CommandId, bool)>,
-            Option<String>,
+            Option<Disabled>,
         )> = None;
         for (at, text) in ids.iter().enumerate() {
             if let Some(head) = text.strip_prefix('{') {
@@ -2798,7 +2789,7 @@ pub fn app_menu(state: &dyn CommandState) -> Vec<(Menu, Vec<AppRow>)> {
                         // Runnable entries keep the submenu open; an empty group
                         // (locked, wrong type, nothing selected) stays greyed out.
                         disabled: if choices.is_empty() {
-                            disabled.or_else(|| Some("Nothing to do.".to_owned()))
+                            disabled.or_else(|| Some("Nothing to do.".into()))
                         } else {
                             None
                         },
@@ -3479,7 +3470,7 @@ pub fn context_menu(
         String,
         Option<&'static str>,
         Vec<(String, CommandId, bool)>,
-        Option<String>,
+        Option<Disabled>,
     )> = None;
     for text in &ids {
         if let Some(head) = text.strip_prefix('{') {
@@ -3501,7 +3492,7 @@ pub fn context_menu(
                     // Runnable entries keep the submenu open; only an empty group
                     // stays greyed out (locked transform, no picture, …).
                     disabled: if choices.is_empty() {
-                        disabled.or_else(|| Some("Nothing to do.".to_owned()))
+                        disabled.or_else(|| Some("Nothing to do.".into()))
                     } else {
                         None
                     },
@@ -3699,7 +3690,7 @@ mod tests {
     struct Fake;
 
     impl CommandState for Fake {
-        fn enabled(&self, id: &CommandId) -> Result<(), String> {
+        fn enabled(&self, id: &CommandId) -> Result<(), Disabled> {
             if id.base() == "edit.redo" {
                 Err("Nothing to redo".into())
             } else {
@@ -4054,7 +4045,7 @@ mod tests {
     fn an_inline_picker_lists_its_choices_as_items_or_says_why_it_cannot() {
         struct Types(bool);
         impl CommandState for Types {
-            fn enabled(&self, _: &CommandId) -> Result<(), String> {
+            fn enabled(&self, _: &CommandId) -> Result<(), Disabled> {
                 if self.0 {
                     Ok(())
                 } else {
@@ -4089,7 +4080,7 @@ mod tests {
     struct Picky;
 
     impl CommandState for Picky {
-        fn enabled(&self, id: &CommandId) -> Result<(), String> {
+        fn enabled(&self, id: &CommandId) -> Result<(), Disabled> {
             match id.base() {
                 "scene.remove" => Err("The last scene cannot be removed.".into()),
                 _ => Ok(()),
@@ -4219,7 +4210,7 @@ mod tests {
         );
         struct OnAir;
         impl CommandState for OnAir {
-            fn enabled(&self, _: &CommandId) -> Result<(), String> {
+            fn enabled(&self, _: &CommandId) -> Result<(), Disabled> {
                 Ok(())
             }
             fn checked(&self, _: &CommandId) -> bool {
@@ -4303,7 +4294,7 @@ mod tests {
     struct Layouts;
 
     impl CommandState for Layouts {
-        fn enabled(&self, _: &CommandId) -> Result<(), String> {
+        fn enabled(&self, _: &CommandId) -> Result<(), Disabled> {
             Ok(())
         }
         fn checked(&self, _: &CommandId) -> bool {
