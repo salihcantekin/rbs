@@ -3727,8 +3727,14 @@ impl StudioHost {
 
 impl Drop for StudioHost {
     fn drop(&mut self) {
-        // Closing the channel ends the loop; the thread then shuts the studio down.
+        // An idle control thread is parked with no timeout. Dropping the sender
+        // disconnects it, but a parked thread does not notice until it is unparked,
+        // and the UI thread would wait on the join forever.
+        let wake = self.tx.as_ref().and_then(|out| out.wake.get().cloned());
         self.tx = None;
+        if let Some(wake) = wake {
+            wake.unpark();
+        }
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }

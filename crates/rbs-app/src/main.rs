@@ -2590,8 +2590,9 @@ impl Ctx {
     fn request(&self, request: Request) -> slint::CloseRequestResponse {
         let Ok(mut app) = self.app.try_borrow_mut() else {
             // Borrowed by a callback in progress: quit as before ADR-0056.
+            // Do not hide first: hiding every window keeps the loop running.
             entry::quit_loop();
-            return slint::CloseRequestResponse::HideWindow;
+            return slint::CloseRequestResponse::KeepWindowShown;
         };
         let live = app.studio.st_state != studio_ui::st_state::OFF;
         match background::on_request(&app.bg, request, live, Self::way_back()) {
@@ -2620,10 +2621,12 @@ impl Ctx {
                 if app.save_due {
                     app.persist_now();
                 }
-                let _ = app.main.hide();
                 drop(app);
+                // Hiding the last window keeps the event loop (ADR-0056 decision 4).
+                // The toolbar Close button is inside `SC_CLOSE`, so the quit is sent
+                // after that returns, while the window is still shown.
                 entry::quit_loop();
-                slint::CloseRequestResponse::HideWindow
+                slint::CloseRequestResponse::KeepWindowShown
             }
         }
     }
@@ -6469,7 +6472,6 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
                     if app.save_due {
                         app.persist_now();
                     }
-                    let _ = app.main.hide();
                 }
             });
             entry::quit_loop();

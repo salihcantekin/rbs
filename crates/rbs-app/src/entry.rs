@@ -52,13 +52,14 @@ pub fn invoke(f: impl FnOnce() + Send + 'static) -> Result<(), slint::EventLoopE
     slint::invoke_from_event_loop(move || guard(f))
 }
 
-/// Ends the UI event loop. Posted from another thread: a quit sent from inside the
-/// Windows close message runs at once and is then dropped, so the window hides and
-/// the process stays, with no tray icon to bring it back.
+/// Ends the UI event loop. The toolbar Close button posts `SC_CLOSE`, and Windows
+/// delivers `WM_CLOSE` inside that command. A quit started there is dropped: the
+/// window hides and the process stays. The quit is sent after that command returns.
 pub fn quit_loop() {
     let _ = std::thread::Builder::new()
         .name("rbs-quit".into())
         .spawn(|| {
+            std::thread::sleep(std::time::Duration::from_millis(200));
             let _ = slint::quit_event_loop();
         });
 }
