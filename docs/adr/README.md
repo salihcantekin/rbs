@@ -68,7 +68,7 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0053](0053-item-style-and-video-filter-chains.md) | Item shape, border and shadow drawn by the compositor; video filters as a per-source chain of GPU nodes | Accepted (partly superseded by ADR-0110) |
 | [0054](0054-preview-never-disappears.md) | The preview picture never disappears behind popups: split it around covers | Accepted |
 | [0055](0055-crash-resilience.md) | Crash resilience: a fault in the app must not end a recording or a stream | Accepted |
-| [0056](0056-keep-running-after-the-main-window-closes.md) | Keep running after the main window closes: Close and Quit are separate; Dock on macOS, tray icon on Windows | Accepted |
+| [0056](0056-keep-running-after-the-main-window-closes.md) | Keep running after the main window closes: Close and Quit are separate; Dock on macOS, tray icon on Windows | Accepted (decision 3 superseded in part by ADR-0156) |
 | [0057](0057-user-themes-and-appearance-settings.md) | User themes as checked token overrides in a theme library; Settings › Appearance picks and edits them | Accepted; decisions 1 and 3 superseded in part by ADR-0123 |
 | [0058](0058-crop-editing-of-sources.md) | Crop editing of sources: keep the scale, read the picture size from the capture node | Accepted |
 | [0059](0059-scenes-lock-and-source-audio-in-the-studio.md) | Scenes, item lock and source volume in the studio | Accepted |
@@ -163,4 +163,5 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0153](0153-a-transition-of-its-own-outside-studio-mode.md) | A transition kind of its own outside studio mode (Move by default); the rail's kind is for studio mode | Accepted |
 | [0154](0154-wake-the-control-thread-on-bypass.md) | Wake the control thread when a node is bypassed, and stop capping the control wait merely because a worker runs (supersedes part of ADR-0027 decision 6) | Accepted |
 | [0155](0155-one-noise-state-until-each-channel-is-selected.md) | One noise-suppression state until each channel is selected (supersedes part of ADR-0130 decision 5) | Accepted |
+| [0156](0156-ask-before-quitting-while-recording-and-stop-off-the-ui-thread.md) | Ask before quitting while recording too, and stop the studio on a shutdown thread with per-step budgets (supersedes part of ADR-0056 decision 3) | Accepted |
 | [0157](0157-browser-gpu-pages-sync-on-a-shared-fence.md) | Browser pages on the GPU sync on a shared fence; the helper never waits on the CPU (supersedes the Windows sync and ring-size clauses of ADR-0109 decision 8 and ADR-0132 decision 8) | Proposed |

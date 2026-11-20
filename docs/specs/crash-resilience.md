@@ -78,7 +78,17 @@ impl Session {
 }
 
 #[non_exhaustive]
-pub struct Unclean { pub pid: u32, pub report: Option<PathBuf> }
+pub struct Unclean {
+    pub pid: u32,
+    pub report: Option<PathBuf>,
+    /// The shutdown step that ran past its budget (ADR-0156), if that ended it.
+    pub unfinished: Option<String>,
+}
+
+/// Ends the process at once after a shutdown step ran past its budget (ADR-0156
+/// decision 6): writes the unfinished-shutdown note, keeps the marker, runs no exit
+/// handler.
+pub fn exit_unfinished(step: &str) -> !;
 
 /// `text` with the home directory as `~` and stream URLs redacted.
 pub fn redact(text: &str, home: Option<&str>) -> String;
@@ -100,8 +110,9 @@ pub const MAX_REPORTS_PER_PROCESS: u32 = 5;
 - **Running marker:** created as `starting-<pid>.tmp`, locked with `File::try_lock`, `started <unix seconds>` written, then renamed to `running-<pid>.lock`, and held for the life of the `Session`. `end_clean` writes `clean\n` into it while still locked, deletes it, then closes it. Renaming and deleting the open file works on Windows because std opens files with `FILE_SHARE_DELETE`. Dropping the `Session` without `end_clean` releases the lock and keeps the file, as a crash would.
 - **Unclean detection:** at `install`, every `running-*.lock` whose lock can be taken belongs to a process that ended without `end_clean`. A marker that holds `clean\n` is deleted without a notice. Each other one is listed in `unclean()` with that pid's newest report whose time is not before the marker's start, then deleted. A marker still locked belongs to a running instance and is left alone. A `starting-*.tmp` whose lock can be taken is deleted.
 - **Exit handler:** `end_clean_at_exit` stores the session and registers (once) an `atexit` handler in a marked low-level module. The handler runs on every exit through the C runtime's `exit`: a return from `main` and the OS's normal quit (macOS Cmd+Q and Quit call `exit` from inside `NSApplication`). It calls `end_clean` unless a panic on the thread that called `install` was not caught (`contain`), never waits on a lock and never unwinds. Aborts, signals, kills and native faults run no exit handler, nor does `std::process::exit` on Windows (std calls `ExitProcess`); the app on Windows returns from `main`.
-- **Quit on macOS:** `terminate:` (Cmd+Q, Dock > Quit, logout) never ends the app directly. `rbs_app::native::route_quit` (marked low-level module) adds `applicationShouldTerminate:` to the application delegate's class once the event loop exists; it answers `NSTerminateCancel` and queues the main window's close request on the event loop, which is the close button's path: it asks while live (U4), saves, and ends the event loop so that `main` stops the studio and returns. A panic in that path answers `NSTerminateNow`. If the delegate already answers the selector, nothing is routed and stderr says so.
-- The app calls `end_clean_at_exit` right after `install`, and shows one notice per start when `unclean()` is not empty, with the newest report's path and a note that reports may contain file names. When `install` fails, the app goes on and says so on stderr.
+- **Quit on macOS:** `terminate:` (Cmd+Q, Dock > Quit, logout) never ends the app directly. `rbs_app::native::route_quit` (marked low-level module) adds `applicationShouldTerminate:` to the application delegate's class once the event loop exists; it answers `NSTerminateCancel` and queues the main window's close request on the event loop, which is the close button's path: it asks while streaming or recording (U4, ADR-0156), saves, hides every window and stops the studio on the shutdown thread; the event loop ends after the last step and `main` returns. A panic in that path answers `NSTerminateNow`. If the delegate already answers the selector, nothing is routed and stderr says so.
+- **Unfinished shutdown (ADR-0156):** `exit_unfinished` writes `unfinished-<pid>-<unix seconds>.txt` (`create_new`, synced) with the line `shutdown did not finish: <step>`, then ends the process without exit handlers or static destructors (`_exit` on Unix, `TerminateProcess` on the current process on Windows, declared in the marked low-level module `hard_exit`), so the marker is kept. The note is not limited by `MAX_REPORTS_PER_PROCESS`. At `install`, an unclean marker's `unfinished` is the step of that pid's newest note not older than the marker's start; every note is deleted once read.
+- The app calls `end_clean_at_exit` right after `install`, and shows one notice per start when `unclean()` is not empty (when one has `unfinished`: "RBS did not finish closing last time. The last recording may be cut short; a Matroska recording stays playable up to that moment."), with the newest report's path and a note that reports may contain file names. When `install` fails, the app goes on and says so on stderr.
 - Nothing in this crate sends data anywhere.
 
 ### Standard output and error (`rbs-crash::out`)

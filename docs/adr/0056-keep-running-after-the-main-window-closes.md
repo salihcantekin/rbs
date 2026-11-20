@@ -1,6 +1,6 @@
 # ADR-0056: Keep running after the main window closes
 
-- Status: Accepted
+- Status: Accepted (decision 3 superseded in part by ADR-0156: Quit also asks while recording, and the studio stops on a shutdown thread)
 - Date: 2026-11-06
 - Deciders: Salih (owner)
 - Builds on: P13 / ADR-0013 (zero cost when unused), ADR-0015 (UI rules: U4, U5, U7, U9, U17, U18), ADR-0022 (Slint), ADR-0041 decision 7 (studio on its own control thread), ADR-0044 (control API), ADR-0051 (user data, read-only second instance), ADR-0055 decision 5 and PR #148 (Quit routed through the app's close path on macOS)
@@ -106,3 +106,5 @@ Concerns:
 7. `cargo tree -d` cannot be checked before the dependency is added. -> Open for the implementation PR.
 8. Idle cost worded two ways. -> Resolved: Standby follow-up is required (decision 5, first-round line 7).
 9. Process: the first-round resolution lines were written by the author. -> Noted; this second-round entry is the reviewer's verdict. Owner approval per ADR-0014 and the project's ADR policy.
+
+- 2026-11-20: decision 3, the Quit clause "while a stream runs it shows the main window and asks", is superseded in part by [ADR-0156](0156-ask-before-quitting-while-recording-and-stop-off-the-ui-thread.md): Quit also asks while a recording runs, in a card under Go live and Record, and the studio stops on a shutdown thread.
