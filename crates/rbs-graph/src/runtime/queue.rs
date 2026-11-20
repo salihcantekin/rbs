@@ -601,6 +601,7 @@ pub fn audio(
             desc: reader_descriptor(LinkKind::Audio),
             full: full_rx,
             free: free_tx,
+            installed: None,
             pending: None,
             expected: None,
             doorbell,
@@ -684,6 +685,10 @@ pub struct AudioReader {
     desc: NodeDescriptor,
     full: Receiver<AudioBuffer>,
     free: SyncSender<AudioBuffer>,
+    /// A block whose samples are installed in the output slot until the next tick.
+    /// Consumers of this tick read that slot; the buffer returns to the free channel
+    /// only after they have run.
+    installed: Option<AudioBuffer>,
     /// A block taken from the queue that waits while silence fills the gap before it.
     pending: Option<AudioBuffer>,
     /// Timestamp the next block should have, after the last one passed on.
@@ -701,6 +706,16 @@ impl AudioReader {
         self.stats.queued.fetch_sub(1, Ordering::AcqRel);
         Some(b)
     }
+
+    /// Puts the block installed for the previous tick back on the free channel.
+    /// Every consumer of that tick has already read the slot.
+    fn reclaim(&mut self, out: &mut super::schedule::AudioOut<'_>) {
+        let Some(mut buffer) = self.installed.take() else {
+            return;
+        };
+        let _ = out.swap_samples(&mut buffer.samples);
+        let _ = self.free.try_send(buffer);
+    }
 }
 
 impl<X: Runtime> Node<X> for AudioReader {
@@ -713,6 +728,9 @@ impl<X: Runtime> Node<X> for AudioReader {
     }
 
     fn release(&mut self, _: &mut PrepareCtx<'_, X>) {
+        if let Some(buffer) = self.installed.take() {
+            let _ = self.free.try_send(buffer);
+        }
         self.expected = None;
         while let Some(buffer) = self.take() {
             self.stats.skipped.fetch_add(1, Ordering::Relaxed);
@@ -721,12 +739,13 @@ impl<X: Runtime> Node<X> for AudioReader {
     }
 
     fn process(&mut self, ctx: &mut ProcessCtx<'_, X>) -> Result<(), NodeError> {
-        let Some(buffer) = self.take() else {
+        let draining = ctx.tick().draining;
+        let mut out = ctx.outputs().audio(0)?;
+        self.reclaim(&mut out);
+        let Some(mut buffer) = self.take() else {
             return Ok(());
         };
-        let draining = ctx.tick().draining;
         let duration = buffer.format.sample_rate.duration_of(buffer.frames as u64);
-        let mut out = ctx.outputs().audio(0)?;
         let n = buffer.format.channels.channels();
         if buffer.frames > out.capacity() {
             self.stats.skipped.fetch_add(1, Ordering::Relaxed);
@@ -745,6 +764,7 @@ impl<X: Runtime> Node<X> for AudioReader {
             .expected
             .map(|e| buffer.timestamp.saturating_since(e))
             .unwrap_or_default();
+        let stamp = buffer.timestamp;
         let result = if gap > duration / 2 && gap <= AUDIO_FILL_LIMIT {
             // Lost blocks before this one: silence at the expected time first.
             let at = self.expected.unwrap_or(buffer.timestamp);
@@ -757,21 +777,27 @@ impl<X: Runtime> Node<X> for AudioReader {
             self.pending = Some(buffer);
             self.doorbell.ring();
             return r.map_err(NodeError::from);
+        } else if out.swap_samples(&mut buffer.samples) {
+            let r = out.commit(buffer.format, buffer.timestamp, buffer.frames);
+            if r.is_err() {
+                let _ = out.swap_samples(&mut buffer.samples);
+                let _ = self.free.try_send(buffer);
+                return r.map_err(NodeError::from);
+            }
+            self.installed = Some(buffer);
+            r
         } else {
             let cap = buffer.capacity;
             for (c, dst) in out.channels_mut(n).enumerate() {
                 let src = &buffer.samples[c * cap..c * cap + buffer.frames];
                 dst[..buffer.frames].copy_from_slice(src);
             }
-            out.commit(buffer.format, buffer.timestamp, buffer.frames)
+            let r = out.commit(buffer.format, buffer.timestamp, buffer.frames);
+            let _ = self.free.try_send(buffer);
+            r
         };
-        self.expected = Some(buffer.timestamp + duration);
+        self.expected = Some(stamp + duration);
         self.stats.received.fetch_add(1, Ordering::Relaxed);
-        // The free channel has room for every buffer of this queue.
-        let _ = self.free.try_send(buffer);
-        // On a final tick (ADR-0045) it rings after every block it passed on, also the
-        // last: the partition's last final tick then passes nothing, which tells the
-        // consumer that its input ended.
         if draining || self.stats.queued.load(Ordering::Acquire) > 0 {
             self.doorbell.ring();
         }
