@@ -4803,6 +4803,7 @@ dependencies = [
 name = "rbs-capture"
 version = "0.0.1"
 dependencies = [
+ "allocation-counter",
  "criterion 0.8.2",
  "rbs-core",
 ]
