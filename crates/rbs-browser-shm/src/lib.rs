@@ -301,13 +301,15 @@ impl FrameRing {
     /// before it is adopted.
     pub fn lease_add(&self, slot: u32) {
         let slot = slot.min(SLOTS - 1) as usize;
-        self.word(GPU_LEASE + 4 * slot).fetch_add(1, Ordering::AcqRel);
+        self.word(GPU_LEASE + 4 * slot)
+            .fetch_add(1, Ordering::AcqRel);
     }
 
     /// One fewer reader. The slot may be written again at zero.
     pub fn lease_sub(&self, slot: u32) {
         let slot = slot.min(SLOTS - 1) as usize;
-        self.word(GPU_LEASE + 4 * slot).fetch_sub(1, Ordering::AcqRel);
+        self.word(GPU_LEASE + 4 * slot)
+            .fetch_sub(1, Ordering::AcqRel);
     }
 
     /// Helper side: the GPU copy into `slot` has finished at `fence`. The pixel
@@ -317,7 +319,8 @@ impl FrameRing {
         let index = slot as usize;
         self.dword(PAINTED + 8 * index)
             .store(os_monotonic_nanos(), Ordering::Relaxed);
-        self.dword(GPU_FENCE + 8 * index).store(fence, Ordering::Relaxed);
+        self.dword(GPU_FENCE + 8 * index)
+            .store(fence, Ordering::Relaxed);
         self.word(GPU_SLOT).store(slot, Ordering::Relaxed);
         self.dword(GPU_SEQ).fetch_add(1, Ordering::Release);
         self.dword(32).fetch_add(1, Ordering::Relaxed);
@@ -332,8 +335,12 @@ impl FrameRing {
             return None;
         }
         let slot = self.word(GPU_SLOT).load(Ordering::Relaxed).min(SLOTS - 1);
-        let fence = self.dword(GPU_FENCE + 8 * slot as usize).load(Ordering::Relaxed);
-        let painted = self.dword(PAINTED + 8 * slot as usize).load(Ordering::Relaxed);
+        let fence = self
+            .dword(GPU_FENCE + 8 * slot as usize)
+            .load(Ordering::Relaxed);
+        let painted = self
+            .dword(PAINTED + 8 * slot as usize)
+            .load(Ordering::Relaxed);
         *seen = seq;
         Some((slot, fence, painted))
     }

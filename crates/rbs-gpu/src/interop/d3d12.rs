@@ -185,7 +185,10 @@ fn open_planar(
         });
     }
     let (luma_format, chroma_format) = if ten_bit {
-        (wgpu::TextureFormat::R16Unorm, wgpu::TextureFormat::Rg16Unorm)
+        (
+            wgpu::TextureFormat::R16Unorm,
+            wgpu::TextureFormat::Rg16Unorm,
+        )
     } else {
         (wgpu::TextureFormat::R8Unorm, wgpu::TextureFormat::Rg8Unorm)
     };

@@ -891,7 +891,10 @@ fn run_browser(args: &args::Args, app: &mut App, engine: &engine::Engine) -> i32
         options: Mutex::new(config.page.clone()),
         css: Mutex::new(page_css(&config.page.css, config.transparent)),
         focused: AtomicBool::new(false),
-        cycle: Mutex::new(Cycle::new(CycleOptions::of(&config.page, config.transparent))),
+        cycle: Mutex::new(Cycle::new(CycleOptions::of(
+            &config.page,
+            config.transparent,
+        ))),
         ours: AtomicBool::new(false),
         epoch: Instant::now(),
         fps: i32::try_from(config.fps.clamp(1, 60)).unwrap_or(30),

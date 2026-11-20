@@ -4,8 +4,7 @@
 
 use cef::*;
 use rbs_browser_ipc::input::{
-    self as wire, Button, InputEvent, Key, key_char, mac_key_char, mac_key_code,
-    windows_key_code,
+    self as wire, Button, InputEvent, Key, key_char, mac_key_char, mac_key_code, windows_key_code,
 };
 
 /// CEF's event flags for the wire's modifier bits.
@@ -93,7 +92,12 @@ pub fn send(host: &BrowserHost, event: &InputEvent) {
 
 fn send_key(host: &BrowserHost, key: Key, down: bool, modifiers: u8) {
     let mac = cfg!(target_os = "macos");
-    let character = if mac { mac_key_char(key) } else { key_char(key) }.unwrap_or(0);
+    let character = if mac {
+        mac_key_char(key)
+    } else {
+        key_char(key)
+    }
+    .unwrap_or(0);
     let event = KeyEvent {
         type_: if down {
             KeyEventType::RAWKEYDOWN

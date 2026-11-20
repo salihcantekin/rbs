@@ -219,12 +219,7 @@ fn share_texture(
         )
     }
     .map_err(|_| GpuError::Unsupported("shared texture"))?;
-    Ok((
-        texture,
-        Held {
-            handle,
-        },
-    ))
+    Ok((texture, Held { handle }))
 }
 
 fn share_fence(fence: &ID3D11Fence) -> Result<(ID3D11Fence, Held), GpuError> {
@@ -237,10 +232,5 @@ fn share_fence(fence: &ID3D11Fence) -> Result<(ID3D11Fence, Held), GpuError> {
         )
     }
     .map_err(|_| GpuError::Unsupported("shared fence"))?;
-    Ok((
-        fence.clone(),
-        Held {
-            handle,
-        },
-    ))
+    Ok((fence.clone(), Held { handle }))
 }

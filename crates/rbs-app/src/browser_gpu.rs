@@ -47,7 +47,8 @@ impl PageSlots {
         // SAFETY: `lease_add` counted the one reference this lease releases. The
         // handle stays open while this `Arc` lives, which the lease and the grave
         // both hold. The helper writes the slot only while its lease count is zero.
-        let lease = unsafe { Lease::adopt(Arc::clone(self) as Arc<dyn LeaseOwner>, u64::from(slot)) };
+        let lease =
+            unsafe { Lease::adopt(Arc::clone(self) as Arc<dyn LeaseOwner>, u64::from(slot)) };
         let format = VideoFormat::new(
             Size::new(self.width, self.height),
             PixelFormat::Bgra8,

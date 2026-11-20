@@ -88,7 +88,11 @@ impl Copier {
         let fence = fence?;
         let open = |handle: u64| -> Option<ID3D11Texture2D> {
             // SAFETY: the handle is a studio texture duplicated into this process.
-            unsafe { device1.OpenSharedResource1(HANDLE(handle as *mut std::ffi::c_void)).ok() }
+            unsafe {
+                device1
+                    .OpenSharedResource1(HANDLE(handle as *mut std::ffi::c_void))
+                    .ok()
+            }
         };
         let slots = [
             open(share.textures[0])?,
@@ -120,11 +124,10 @@ impl Copier {
         };
         // SAFETY: CEF passes a shared handle that stays valid for this callback.
         // We do not close it.
-        let source: ID3D11Texture2D =
-            match unsafe { device1.OpenSharedResource1(HANDLE(source)) } {
-                Ok(texture) => texture,
-                Err(_) => return,
-            };
+        let source: ID3D11Texture2D = match unsafe { device1.OpenSharedResource1(HANDLE(source)) } {
+            Ok(texture) => texture,
+            Err(_) => return,
+        };
         let dest = &self.slots[slot as usize];
         // A shared texture Chromium has not released yet reads as black. Take its
         // key, copy only when the source covers the slot, then hand the key back.
@@ -167,16 +170,8 @@ impl Copier {
                     bottom: dst_desc.Height,
                     back: 1,
                 };
-                self.context.CopySubresourceRegion(
-                    dest,
-                    0,
-                    0,
-                    0,
-                    0,
-                    &source,
-                    0,
-                    Some(&box_),
-                );
+                self.context
+                    .CopySubresourceRegion(dest, 0, 0, 0, 0, &source, 0, Some(&box_));
             }
             let signalled = fits && self.context.Signal(&self.fence, value).is_ok();
             self.context.Flush();

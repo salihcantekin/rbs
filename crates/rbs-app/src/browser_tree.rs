@@ -13,9 +13,7 @@ use std::sync::{Arc, Mutex};
 use rbs_browser_ipc::Configure;
 use rbs_browser_ipc::control::Control;
 use rbs_browser_ipc::exit::Cause;
-use rbs_browser_runner::{
-    PagePicture, PageSound, Supervisor, runtime_env, spawn_helper_prepared,
-};
+use rbs_browser_runner::{PagePicture, PageSound, Supervisor, runtime_env, spawn_helper_prepared};
 use rbs_browser_shm::OwnedSoundPacket;
 use rbs_browser_shm::SlotLayout;
 use rbs_sources::{

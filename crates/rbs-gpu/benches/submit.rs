@@ -6,7 +6,7 @@
 
 #![allow(missing_docs)]
 
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 use rbs_gpu::{GpuContext, GpuRequest};
 
 const NODES: usize = 4;

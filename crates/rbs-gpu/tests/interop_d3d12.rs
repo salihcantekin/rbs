@@ -356,7 +356,12 @@ fn nv12_shared_texture_is_a_plane_pair() {
         VideoFrame::native(
             format,
             Timestamp::ZERO,
-            NativeSurface::d3d_shared_handle(made.texture_handle.0 as u64, true, D3dApi::D3d11, luid),
+            NativeSurface::d3d_shared_handle(
+                made.texture_handle.0 as u64,
+                true,
+                D3dApi::D3d11,
+                luid,
+            ),
             SurfaceSync::timeline_fence(made.fence_handle.0 as u64, 1),
             owner.lease(),
         )
@@ -366,8 +371,19 @@ fn nv12_shared_texture_is_a_plane_pair() {
     let rbs_core::media::FramePayload::Texture(id) = *imported.payload() else {
         panic!("import must return a texture frame");
     };
-    assert_eq!(pool.get(id).unwrap().desc().format, wgpu::TextureFormat::NV12);
-    let mut comp = Compositor::new(ctx, CanvasDesc { width: W, height: H }, 1).unwrap();
+    assert_eq!(
+        pool.get(id).unwrap().desc().format,
+        wgpu::TextureFormat::NV12
+    );
+    let mut comp = Compositor::new(
+        ctx,
+        CanvasDesc {
+            width: W,
+            height: H,
+        },
+        1,
+    )
+    .unwrap();
     let canvas = pool.acquire(ctx, &TextureDesc::canvas(W, H)).unwrap();
     let mut layer = Layer::new(id, 0.0, 0.0, W as f32, H as f32);
     layer.ycbcr = ColorSpace::BT709_LIMITED;
@@ -410,14 +426,20 @@ fn nv12_texture(luid: u64) -> Option<D3d11> {
             MipLevels: 1,
             ArraySize: 1,
             Format: DXGI_FORMAT_NV12,
-            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
             Usage: D3D11_USAGE_DEFAULT,
             BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
             CPUAccessFlags: 0,
-            MiscFlags: (D3D11_RESOURCE_MISC_SHARED_NTHANDLE.0 | D3D11_RESOURCE_MISC_SHARED.0) as u32,
+            MiscFlags: (D3D11_RESOURCE_MISC_SHARED_NTHANDLE.0 | D3D11_RESOURCE_MISC_SHARED.0)
+                as u32,
         };
         let mut texture = None;
-        device.CreateTexture2D(&desc, None, Some(&mut texture)).ok()?;
+        device
+            .CreateTexture2D(&desc, None, Some(&mut texture))
+            .ok()?;
         let texture = texture?;
         // One packed NV12 image: Y rows, then UV rows, at the driver's alignment.
         // A tight pitch, and a second UpdateSubresource for plane 1, left chroma at 0
