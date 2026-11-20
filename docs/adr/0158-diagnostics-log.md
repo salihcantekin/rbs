@@ -1,6 +1,6 @@
 # ADR-0158: A diagnostics log with levels, written to a rotating file off the calling thread
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-20
 - Deciders: Salih (owner; design approved 2026-11-20 in the logging thread); independent review pending
 
@@ -49,4 +49,4 @@ Independent AI sessions (ADR-0014), each given only the ADR, specs, principles a
 - **Round 2, changes requested (10 concerns).** The writer holding the secrets lock while scanning turned the panic hook's `try_lock` away: `LogRedactor` copies the list on change only. Two filter setters: apps use `rbs_log::set_filter` and `apply_level` only. Bridge formatting per frame on hot threads: thinned per call site before formatting. A compile-time check of the area count; a re-added secret moves to the end; repeat flush wording; the `rbs-log` thread in threads.md, `rbs-filters/src/node.rs` in the hot list, status.md; tests for filters before install and the call site's file; `write` kept out of line; xtask rejects macro imports.
 - **Round 3, changes requested (8 concerns).** A Windows file lock would stop every reader of the running log: Windows marks files in use by share mode instead (decision 5). Shared bridge slots could thin a later library error: errors are never thinned, slots are per file, line and level, 256 of them. Secrets matched after URL rewriting could miss a WHIP key: secrets first. The repeat wait restarted with every line: a 60 s deadline. Spec and code gaps (`home`, `echo`, the counted unbounded queue, two missing tests) closed; the xtask check also catches `crate::` calls in `rbs-core`, `pub use` and `as` imports and `use log` in hot files; the first file of a run, with the header, is never pruned; wording. The panic hook's skip during a microsecond copy is recorded as a known limit (decision 6).
 
-Owner approval: Salih approved the design and its decisions on 2026-11-20 before the review; the approval of this reviewed text is pending.
+Owner approval: Salih approved the design and its decisions on 2026-11-20 before the review, and approved this reviewed text on 2026-11-20.
