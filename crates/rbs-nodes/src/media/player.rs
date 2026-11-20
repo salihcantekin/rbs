@@ -51,6 +51,10 @@ pub(crate) struct Player {
     pub(crate) restart_when_shown: bool,
     pub(crate) phase: MediaPhase,
     worker: Option<Worker>,
+    /// Joins a worker that was signalled to stop. The control path does not wait
+    /// on it (ADR-0108 decision 7). The next start does, so two decoders of this
+    /// source are never open together.
+    reaper: Option<JoinHandle<()>>,
     pub(crate) ended: Arc<AtomicBool>,
     pub(crate) progress: Arc<Progress>,
     picture_in: bool,
@@ -64,6 +68,9 @@ pub(crate) struct Player {
     /// A program or hold scene draws the source (the binder's on-air set, ADR-0107
     /// decision 6). True until the host says otherwise.
     pub(crate) on_air: bool,
+    /// Play or Restart was pressed. Until then a file that goes on air stays
+    /// stopped on its first picture (owner, 2026-11-20).
+    pub(crate) started: bool,
     /// Stopped because only a preview scene draws the source: it plays when a program
     /// or hold scene draws it (ADR-0108 decision 10). Kept across Standby.
     pub(crate) cued: bool,
@@ -103,6 +110,7 @@ impl Player {
             restart_when_shown,
             phase: MediaPhase::Standby,
             worker: None,
+            reaper: None,
             ended: Arc::new(AtomicBool::new(false)),
             progress: Arc::new(Progress::default()),
             picture_in: false,
@@ -112,6 +120,7 @@ impl Player {
             attempts: 0,
             retry_after: None,
             on_air: true,
+            started: true,
             cued: false,
             released: false,
             pause_release: PAUSE_RELEASE,
@@ -154,6 +163,18 @@ impl Player {
     /// end play; without it a stored pause or end stays and a cued source plays.
     pub(crate) fn start_shown(&mut self, shared: &Arc<Shared>) -> Result<(), MediaNodeError> {
         let newest = shared.controls.newest();
+        // A take of a cued file still starts. A file that was never started and
+        // was not waiting in preview stays on its first picture.
+        if self.on_air && !self.started && !self.cued {
+            // Added to a scene: show the first picture and wait for Play.
+            if self.restart_when_shown {
+                shared.move_cursor(shared.range_start());
+            }
+            if !newest.paused {
+                self.write_now(shared, true);
+            }
+            return self.start(shared);
+        }
         if !self.on_air {
             let stored = self.ended_stored || (newest.paused && !self.cued);
             if !stored {
@@ -224,7 +245,10 @@ impl Player {
     /// newest control record (paused or playing). Control thread only. Blocks until
     /// the worker holds its first picture.
     pub(crate) fn start(&mut self, shared: &Arc<Shared>) -> Result<(), MediaNodeError> {
-        self.join_worker();
+        // The previous decoder must be gone before this one opens: it still writes
+        // the cursor and the worker-thread slot until it returns.
+        self.detach_worker();
+        self.wait_reaped();
         let was_released = std::mem::replace(&mut self.released, false);
         shared.offer_rings(None);
         self.phase = MediaPhase::Standby;
@@ -347,14 +371,45 @@ impl Player {
     }
 
     pub(crate) fn worker_joined(&self) -> bool {
-        self.worker.is_none()
+        match &self.reaper {
+            Some(reaper) => reaper.is_finished(),
+            None => self.worker.is_none(),
+        }
     }
 
+    /// Signals the worker to stop and hands the join to a reaper thread. Returns
+    /// without waiting (ADR-0108 decision 7).
     fn join_worker(&mut self) {
-        if let Some(worker) = self.worker.take() {
-            worker.shutdown.store(true, Ordering::Release);
-            worker.join.thread().unpark();
-            let _ = worker.join.join();
+        self.detach_worker();
+    }
+
+    fn detach_worker(&mut self) {
+        let Some(worker) = self.worker.take() else {
+            return;
+        };
+        worker.shutdown.store(true, Ordering::Release);
+        worker.join.thread().unpark();
+        let previous = self.reaper.take();
+        // A failed spawn drops the closure, which detaches the worker. It still
+        // sees the shutdown flag and exits on its own.
+        if let Ok(reaper) = thread::Builder::new()
+            .name("rbs-media-reaper".into())
+            .spawn(move || {
+                if let Some(previous) = previous {
+                    let _ = previous.join();
+                }
+                let _ = worker.join.join();
+            })
+        {
+            self.reaper = Some(reaper);
+        }
+    }
+
+    /// Waits for a reaper handed off earlier. The next start calls this so it
+    /// does not open a second decoder while the previous one is still closing.
+    fn wait_reaped(&mut self) {
+        if let Some(reaper) = self.reaper.take() {
+            let _ = reaper.join();
         }
     }
 }

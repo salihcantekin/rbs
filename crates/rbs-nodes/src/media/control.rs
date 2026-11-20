@@ -271,11 +271,17 @@ impl MediaControl {
         Self { shared }
     }
 
+    /// A newly added file waits on its first picture until Play or Restart.
+    pub fn hold_until_play(&self) {
+        self.shared.player().started = false;
+    }
+
     /// Plays from the cursor. From the end hold it restarts. Does nothing while
     /// playing.
     pub fn play(&self) -> Result<(), MediaNodeError> {
         let shared = Arc::clone(&self.shared);
         let mut player = shared.player();
+        player.started = true;
         let state = Self::state_of(&shared, &player);
         if Self::off_air(&player) {
             // Never plays in a preview: cued, it plays on the take.
@@ -350,6 +356,7 @@ impl MediaControl {
     pub fn restart(&self) -> Result<(), MediaNodeError> {
         let shared = Arc::clone(&self.shared);
         let mut player = shared.player();
+        player.started = true;
         let off_air = Self::off_air(&player);
         if off_air {
             player.cued = true;
@@ -413,7 +420,8 @@ impl MediaControl {
             match state {
                 PlayState::Cued => {
                     // `restart_when_shown` starts at the range start (the table),
-                    // also after a seek while cued.
+                    // also after a seek while cued. Going on air is a start.
+                    player.started = true;
                     player.cued = false;
                     let position = restart.then(|| shared.range_start());
                     Self::command(&shared, &mut player, false, position)
@@ -422,7 +430,7 @@ impl MediaControl {
                     let start = shared.range_start();
                     Self::start_at(&shared, &mut player, start, false)
                 }
-                PlayState::Paused if restart => {
+                PlayState::Paused if restart && player.started => {
                     let start = shared.range_start();
                     Self::command(&shared, &mut player, false, Some(start))
                 }

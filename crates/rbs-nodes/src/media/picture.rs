@@ -230,6 +230,11 @@ impl MediaPictureNode {
             Err(error) => Err(error),
         };
         self.take_rings(&player);
+        // A worker the sound node already started may be parked with the first
+        // picture held aside. Attaching wakes it so that picture is queued.
+        if result.is_ok() {
+            player.unpark();
+        }
         result
     }
 
@@ -569,8 +574,12 @@ impl MediaPictureNode {
         progress
             .queued_bytes
             .fetch_sub(item.bytes as u64, Ordering::Relaxed);
-        if self.shared.picture_waiting.load(Ordering::Acquire) {
-            if let Some(worker) = self.shared.worker_thread.get() {
+        if self.shared.picture_waiting.load(Ordering::Acquire)
+            && let Ok(slot) = self.shared.worker_thread.try_lock()
+        {
+            // try_lock: never waits on the render thread. A missed wake is the
+            // worker's own timeout, or the next picture slot it already has.
+            if let Some(worker) = slot.as_ref() {
                 worker.unpark();
             }
         }
@@ -613,13 +622,22 @@ impl Node<GpuRuntime> for MediaPictureNode {
             _ => super::luid_slot(None),
         };
         let previous = self.shared.import_luid.swap(luid, Ordering::AcqRel);
-        if previous != 0 && previous != luid && self.phase == MediaPhase::Playing {
-            // The render device moved to another adapter (a device loss): a run opened
-            // for the old one hands out surfaces the new device cannot import, so it
-            // opens again at the cursor.
-            return self
-                .restart()
-                .map_err(|error| NodeError::Failed(error.to_string()));
+        // The sound node can start the worker before this prepare, while the adapter
+        // is still unknown. That run decodes off the render device (a CPU copy, or
+        // another GPU), so the first time a scene opens the picture comes out a frame
+        // or two a second and the UI stalls on the same GPU. A run already open for a
+        // different adapter, including that unknown one, opens again here.
+        let running = previous != luid && (previous != 0 || luid != 0) && {
+            let player = self.shared.player();
+            player.phase == MediaPhase::Playing && !player.worker_joined()
+        };
+        if running {
+            // The new run must queue its first picture into the ring. Attaching
+            // after `start` returns leaves that picture in the worker's private
+            // list, and a paused file never wakes to publish it.
+            self.shared.picture_attached.store(true, Ordering::Release);
+            self.restart()
+                .map_err(|error| NodeError::Failed(error.to_string()))?;
         }
         let now = self.shared.player().clock().now();
         self.wake(now)

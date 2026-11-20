@@ -27,8 +27,12 @@
 //! host calls [`MediaControl::service`] on the control path: it releases the worker
 //! and the decoder of a source paused or cued for `pause_release_s`.
 //!
-//! Not in this step (ADR-0108 decisions 3, 5, 7, 11, 12): the probe and the open on a
-//! worker thread instead of the control thread, the reaper, the play range, live
+//! A released worker is signalled to stop and joined on `rbs-media-reaper`, not on
+//! the control path (ADR-0108 decision 7). The next start waits for that join, so
+//! two decoders of one source are never open together.
+//!
+//! Not in this step (ADR-0108 decisions 3, 5, 11, 12): the probe and the open on a
+//! worker thread instead of the control thread, the play range, live
 //! keys, native surfaces, and NV12/P010 upload.
 
 mod control;
@@ -39,7 +43,7 @@ mod sound;
 mod worker;
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use rbs_core::time::Timestamp;
@@ -172,9 +176,10 @@ pub(crate) struct Shared {
     /// The picture node is prepared: the worker queues pictures. Without it, pictures
     /// are decoded for the pass timing only, not copied or queued.
     pub(crate) picture_attached: AtomicBool,
-    /// The worker thread, set when it starts. The picture node uses it to wake a
-    /// worker that is waiting for a free picture slot. Lock-free after it is set.
-    pub(crate) worker_thread: OnceLock<std::thread::Thread>,
+    /// The worker thread, set when it starts and cleared when it returns. The
+    /// picture node uses it to wake a worker that is waiting for a free picture
+    /// slot. `process` only `try_lock`s, so it never waits.
+    pub(crate) worker_thread: Mutex<Option<std::thread::Thread>>,
     /// The worker is parked until a picture slot is free or the next sound block is due.
     pub(crate) picture_waiting: AtomicBool,
     /// A block time the sound node has seen, in nanoseconds plus one; 0 before its
@@ -240,7 +245,7 @@ impl Shared {
             inlet: Mutex::new(None),
             sound_attached: AtomicBool::new(false),
             picture_attached: AtomicBool::new(false),
-            worker_thread: OnceLock::new(),
+            worker_thread: Mutex::new(None),
             picture_waiting: AtomicBool::new(false),
             grid: AtomicU64::new(0),
             epoch: AtomicU32::new(0),
