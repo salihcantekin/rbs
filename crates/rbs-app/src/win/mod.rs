@@ -107,56 +107,64 @@ fn apps_use_light_theme() -> Option<bool> {
     (status == 0).then_some(value != 0)
 }
 
-/// Calls `on_change` on this thread when the user changes the Windows app theme.
-/// One watcher for the process; it waits on the registry, it does not poll.
+/// Remembers `on_change` for the process. The main window's procedure calls it when
+/// Windows sends `WM_SETTINGCHANGE` for the app theme (`ImmersiveColorSet`) or high
+/// contrast. No extra thread: the message arrives on the UI thread.
 pub fn watch_os_scheme(on_change: impl Fn() + Send + 'static) {
     use std::sync::atomic::{AtomicBool, Ordering};
     static STARTED: AtomicBool = AtomicBool::new(false);
     if STARTED.swap(true, Ordering::Relaxed) {
         return;
     }
-    let spawned = std::thread::Builder::new()
-        .name("rbs-os-scheme".into())
-        .spawn(move || watch_personalize(on_change))
-        .is_ok();
-    if !spawned {
-        STARTED.store(false, Ordering::Relaxed);
+    match SCHEME.lock() {
+        Ok(mut slot) => *slot = Some(Box::new(on_change)),
+        Err(poisoned) => *poisoned.into_inner() = Some(Box::new(on_change)),
     }
 }
 
-fn watch_personalize(on_change: impl Fn()) {
-    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
-    use windows_sys::Win32::System::Registry::{
-        HKEY_CURRENT_USER, KEY_NOTIFY, REG_NOTIFY_CHANGE_LAST_SET, RegCloseKey,
-        RegNotifyChangeKeyValue, RegOpenKeyExW,
-    };
-    use windows_sys::Win32::System::Threading::{CreateEventW, INFINITE, WaitForSingleObject};
-    let sub = windows_sys::w!("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize");
-    // SAFETY: the key path is a literal. The opened handle is closed before return.
-    // The event is a manual-reset kernel object this thread owns.
+static SCHEME: std::sync::Mutex<Option<Box<dyn Fn() + Send>>> = std::sync::Mutex::new(None);
+
+/// Runs the theme callback registered by [`watch_os_scheme`]. The window procedure
+/// calls this on the UI thread; the callback itself queues the UI update.
+pub(crate) fn notify_os_scheme() {
+    let guard = SCHEME
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(on_change) = guard.as_ref() {
+        on_change();
+    }
+}
+
+/// Whether this `WM_SETTINGCHANGE` is an app-theme or high-contrast change.
+/// `lparam` is null or a NUL-terminated wide string Windows owns for the call.
+pub(crate) fn theme_setting(wparam: usize, lparam: isize) -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::SPI_SETHIGHCONTRAST;
+    if wparam == SPI_SETHIGHCONTRAST as usize {
+        return true;
+    }
+    if lparam == 0 {
+        return false;
+    }
+    const NAME: *const u16 = windows_sys::w!("ImmersiveColorSet");
+    let p = lparam as *const u16;
+    // SAFETY: `NAME` is a NUL-terminated literal. A non-null WM_SETTINGCHANGE
+    // lParam is a NUL-terminated wide string for this call. The read stops at
+    // 64 units.
     unsafe {
-        let mut key = std::ptr::null_mut();
-        if RegOpenKeyExW(HKEY_CURRENT_USER, sub, 0, KEY_NOTIFY, &mut key) != 0 {
-            return;
-        }
-        let event = CreateEventW(std::ptr::null(), 1, 0, std::ptr::null());
-        if event.is_null() {
-            RegCloseKey(key);
-            return;
-        }
+        let mut i = 0;
         loop {
-            if RegNotifyChangeKeyValue(key, 0, REG_NOTIFY_CHANGE_LAST_SET, event, 1) != 0 {
-                break;
+            if i == 64 {
+                return false;
             }
-            if WaitForSingleObject(event, INFINITE) != WAIT_OBJECT_0 {
-                break;
+            let want = *NAME.add(i);
+            if *p.add(i) != want {
+                return false;
             }
-            on_change();
-            // Manual-reset: arm it again before the next wait.
-            windows_sys::Win32::System::Threading::ResetEvent(event);
+            if want == 0 {
+                return true;
+            }
+            i += 1;
         }
-        CloseHandle(event);
-        RegCloseKey(key);
     }
 }
 
