@@ -47,6 +47,10 @@ pub mod exit {
     /// The downloaded engine is another CEF version than the runner was built
     /// for: `browser_runtime_mismatch`.
     pub const RUNTIME_MISMATCH: i32 = 8;
+    /// The GPU path did not work in this tree (another adapter, the studio's
+    /// textures did not open, or copies kept failing): the studio starts the page
+    /// again on shared memory (ADR-0157 decision 9).
+    pub const GPU_FALLBACK: i32 = 9;
     /// What the OS loader returns when a load-time library is missing (Linux
     /// `libcef.so`): the process ends before `main`.
     pub const LOADER_MISSING: i32 = 127;
@@ -58,6 +62,9 @@ pub mod exit {
         RuntimeMissing,
         /// The engine is another version.
         RuntimeMismatch,
+        /// The GPU path failed; the page runs again on shared memory, with no
+        /// back-off (ADR-0157 decision 9).
+        GpuFallback,
         /// Anything else: a page, a crash, a bad section.
         Other,
     }
@@ -71,6 +78,7 @@ pub mod exit {
         match code {
             Some(RUNTIME_MISSING | LOADER_MISSING) => Cause::RuntimeMissing,
             Some(RUNTIME_MISMATCH) => Cause::RuntimeMismatch,
+            Some(GPU_FALLBACK) => Cause::GpuFallback,
             Some(BAD_CONFIGURE | NO_SECTION | INIT_FAILED | NO_BROWSER | RENDERER_GONE) => {
                 Cause::Other
             }
@@ -166,21 +174,33 @@ pub struct PageOptions {
     pub profile_dir: String,
 }
 
+/// Most textures a [`GpuShare`] names (the frame section's `MAX_GPU_SLOTS`).
+pub const MAX_GPU_TEXTURES: usize = 8;
+
+/// Version of the `Configure` GPU block (ADR-0157 decision 10). A block of another
+/// version is ignored: the page paints in software.
+pub const GPU_BLOCK_VERSION: u8 = 2;
+
 /// Studio-owned shared textures the helper copies into (ADR-0109 decision 8,
-/// ADR-0132 decision 8). Handle values are valid in the helper process. Absent on
-/// the shared-memory path.
+/// ADR-0157). Handle values are valid in the helper process. Absent on the
+/// shared-memory path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GpuShare {
-    /// Render adapter the textures were created on.
+    /// Render adapter the textures were created on; the helper runs CEF on it.
     pub adapter_luid: u64,
-    /// DXGI vendor id, so the helper's GPU process uses that adapter.
-    pub vendor: u32,
-    /// DXGI device id.
-    pub device: u32,
     /// Shared fence handle in the helper process.
     pub fence: u64,
-    /// Three texture handles in the helper process, in slot order.
-    pub textures: [u64; 3],
+    /// Texture handles in the helper process, in slot order; the first `count` hold.
+    pub textures: [u64; MAX_GPU_TEXTURES],
+    /// How many textures there are (the frame section's GPU slot count).
+    pub count: u32,
+}
+
+impl GpuShare {
+    /// The texture handles that hold.
+    pub fn handles(&self) -> &[u64] {
+        &self.textures[..(self.count as usize).min(MAX_GPU_TEXTURES)]
+    }
 }
 
 impl Default for PageOptions {
@@ -240,39 +260,46 @@ impl PageOptions {
 
     fn encode_gpu(body: &mut Vec<u8>, gpu: &GpuShare) {
         body.extend_from_slice(b"RBSg");
+        body.push(GPU_BLOCK_VERSION);
         body.extend_from_slice(&gpu.adapter_luid.to_le_bytes());
-        body.extend_from_slice(&gpu.vendor.to_le_bytes());
-        body.extend_from_slice(&gpu.device.to_le_bytes());
         body.extend_from_slice(&gpu.fence.to_le_bytes());
-        for handle in gpu.textures {
+        let handles = gpu.handles();
+        body.push(handles.len() as u8);
+        for handle in handles {
             body.extend_from_slice(&handle.to_le_bytes());
         }
     }
 
+    /// `Some(None)` without a block or with a block of another version; `None` for
+    /// a malformed block of this version.
     fn decode_gpu(rest: &[u8]) -> Option<Option<GpuShare>> {
-        if rest.is_empty() || !rest.starts_with(b"RBSg") {
+        let Some(tail) = rest.strip_prefix(b"RBSg") else {
+            return Some(None);
+        };
+        let (&version, mut tail) = tail.split_first()?;
+        if version != GPU_BLOCK_VERSION {
             return Some(None);
         }
-        if rest.len() < 4 + 8 + 4 + 4 + 8 + 24 {
-            return None;
-        }
-        let mut tail = &rest[4..];
         let take = |tail: &mut &[u8]| -> Option<u64> {
             let v = u64::from_le_bytes(tail.get(..8)?.try_into().ok()?);
             *tail = tail.get(8..)?;
             Some(v)
         };
         let adapter_luid = take(&mut tail)?;
-        let vendor = take_u32(&mut tail)?;
-        let device = take_u32(&mut tail)?;
         let fence = take(&mut tail)?;
-        let textures = [take(&mut tail)?, take(&mut tail)?, take(&mut tail)?];
+        let (&count, mut tail) = tail.split_first()?;
+        if count == 0 || usize::from(count) > MAX_GPU_TEXTURES {
+            return None;
+        }
+        let mut textures = [0; MAX_GPU_TEXTURES];
+        for handle in textures.iter_mut().take(usize::from(count)) {
+            *handle = take(&mut tail)?;
+        }
         Some(Some(GpuShare {
             adapter_luid,
-            vendor,
-            device,
             fence,
             textures,
+            count: u32::from(count),
         }))
     }
 
@@ -463,14 +490,27 @@ mod tests {
         let gpu = Configure {
             gpu: Some(GpuShare {
                 adapter_luid: 7,
-                vendor: 0x10DE,
-                device: 0x2484,
                 fence: 11,
-                textures: [1, 2, 3],
+                textures: [1, 2, 3, 4, 0, 0, 0, 0],
+                count: 4,
             }),
             ..page
         };
-        assert_eq!(decode_configure(&encode_configure(&gpu)), Some(gpu));
+        let encoded = encode_configure(&gpu);
+        assert_eq!(decode_configure(&encoded), Some(gpu.clone()));
+        // A block of another version is ignored: shared memory.
+        let tag = encoded.windows(4).position(|w| w == b"RBSg").unwrap();
+        let mut other = encoded.clone();
+        other[tag + 4] = GPU_BLOCK_VERSION + 1;
+        assert_eq!(
+            decode_configure(&other).map(|c| c.gpu),
+            Some(None),
+            "unknown GPU block version"
+        );
+        // A malformed block of this version is refused.
+        let mut bad = encoded;
+        bad[tag + 4 + 1 + 16] = 0;
+        assert_eq!(decode_configure(&bad), None, "zero textures");
     }
 
     #[test]

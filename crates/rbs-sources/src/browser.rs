@@ -680,9 +680,15 @@ impl BrowserFrameSink {
         let Ok(mut kept) = self.kept.lock() else {
             return;
         };
-        if kept.retired.as_ref().is_some_and(Bytes::is_unique) {
-            kept.retired = None;
-        }
+        // Bytes the render thread let go since the last publish: the buffer for the
+        // next section copy, so a painting page allocates nothing per frame.
+        let spare = match kept.retired.take() {
+            Some(bytes) if bytes.is_unique() => Some(bytes),
+            other => {
+                kept.retired = other;
+                None
+            }
+        };
         let bytes = match kept.last.take().map(Bytes::try_into_mut) {
             Some(Ok(mut reuse)) if reuse.len() == rgba.len() => {
                 reuse.copy_from_slice(rgba);
@@ -693,10 +699,14 @@ impl BrowserFrameSink {
                     kept.retired = Some(held);
                 }
                 let painted = std::mem::take(rgba);
-                // The next section copy overwrites every byte. The buffer is zeroed, not
-                // left uninitialised: a `Vec` may only hold initialised bytes, and the
-                // fresh allocation is touched here instead of in that copy.
-                rgba.resize(expected, 0);
+                // The next section copy overwrites every byte. A unique `Bytes` turns
+                // back into its `Vec` without a copy and holds the old picture's
+                // (initialised) bytes. Only without one is a buffer allocated, zeroed
+                // because a `Vec` may only hold initialised bytes.
+                match spare.map(Vec::from) {
+                    Some(reuse) if reuse.len() == expected => *rgba = reuse,
+                    _ => rgba.resize(expected, 0),
+                }
                 Bytes::from(painted)
             }
         };
@@ -883,6 +893,9 @@ pub struct BrowserControlSidecar {
     background: AtomicBool,
     /// A background page that lost its slot to a shown page (`browser_cap`).
     capped: AtomicBool,
+    /// The GPU path failed for this source: later starts use shared memory until
+    /// the source is stopped (ADR-0157 decision 9). Kept here, not in the scene.
+    shared_memory: AtomicBool,
 }
 
 /// The parts of a browser node a start needs (see [`BrowserControlSidecar::start`]).
@@ -926,7 +939,19 @@ impl BrowserControlSidecar {
             shown: AtomicBool::new(true),
             background: AtomicBool::new(false),
             capped: AtomicBool::new(false),
+            shared_memory: AtomicBool::new(false),
         }
+    }
+
+    /// True once this source's GPU path fell back to shared memory, until the source
+    /// is stopped (ADR-0157 decision 9). Never waits.
+    pub fn gpu_fell_back(&self) -> bool {
+        self.shared_memory.load(Ordering::Acquire)
+    }
+
+    /// Stopping the source gives the next start the GPU path again.
+    pub(crate) fn clear_gpu_fallback(&self) {
+        self.shared_memory.store(false, Ordering::Release);
     }
 
     fn set_starter(&self, starter: Starter) {
@@ -1008,10 +1033,19 @@ impl BrowserControlSidecar {
         }
         let sound = starter.sound.clone();
         drop(guard);
-        match tree.start(&configure, self.sink(), sound) {
+        let started = if self.shared_memory.load(Ordering::Acquire) {
+            tree.start_on_shared_memory(&configure, self.sink(), sound)
+        } else {
+            tree.start(&configure, self.sink(), sound)
+        };
+        match started {
             Ok(mut session) => {
                 session.refresh_sink(&self.sink);
                 if session.poll().is_some() {
+                    if session.gpu_fallback() {
+                        session.stop();
+                        return self.restart_on_shared_memory();
+                    }
                     let engine = session.exit_reason();
                     self.budget.release(self.source);
                     self.set_engine_reason(engine);
@@ -1113,6 +1147,18 @@ impl BrowserControlSidecar {
             return;
         };
         if session.poll().is_some() {
+            if session.gpu_fallback() {
+                session.stop();
+                *guard = None;
+                drop(guard);
+                // Not an exit: no back-off, the slot stays held, and the last
+                // picture stays in the sink until the new tree paints.
+                if self.restart_on_shared_memory().is_err() {
+                    self.budget.release(self.source);
+                    self.exited.store(true, Ordering::Release);
+                }
+                return;
+            }
             self.engine
                 .store(encode_engine(session.exit_reason()), Ordering::Release);
             session.stop();
@@ -1122,6 +1168,21 @@ impl BrowserControlSidecar {
             return;
         }
         session.refresh_sink(&self.sink);
+    }
+
+    /// Starts the tree again on shared memory after its GPU path failed (ADR-0157
+    /// decision 9). A tree already on shared memory that reports one is a helper
+    /// fault and counts as an exit.
+    fn restart_on_shared_memory(&self) -> Result<bool, StartFailure> {
+        if self.shared_memory.swap(true, Ordering::AcqRel) {
+            self.budget.release(self.source);
+            return Err(StartFailure {
+                error: BrowserStartError::Exited,
+                reason: HELPER_EXIT,
+                exit: true,
+            });
+        }
+        self.start()
     }
 
     /// The engine reason of the last exit or refused start
@@ -1203,6 +1264,17 @@ pub trait BrowserTree: Send + Sync {
         let _ = profile_id;
         None
     }
+
+    /// Starts the tree with no GPU block in `Configure`, after this source's GPU path
+    /// failed (ADR-0157 decision 9). A tree without a GPU path starts as usual.
+    fn start_on_shared_memory(
+        &self,
+        config: &Configure,
+        sink: Arc<BrowserFrameSink>,
+        sound: Option<Arc<crate::BrowserSound>>,
+    ) -> Result<Box<dyn BrowserSession>, String> {
+        self.start(config, sink, sound)
+    }
 }
 
 /// One running tree. `poll` and `stop` run on the control thread, never in `process`.
@@ -1216,6 +1288,12 @@ pub trait BrowserSession: Send {
     /// other exit ([`HELPER_EXIT`]).
     fn exit_reason(&self) -> Option<&'static str> {
         None
+    }
+    /// After [`BrowserSession::poll`] saw an exit: true when the tree ended because
+    /// its GPU path failed, so the source starts it again on shared memory with no
+    /// back-off (ADR-0157 decision 9).
+    fn gpu_fallback(&self) -> bool {
+        false
     }
     /// Copies the latest helper frame into `sink`.
     fn refresh_sink(&mut self, sink: &BrowserFrameSink) {
@@ -1362,6 +1440,7 @@ impl BrowserSourceNode {
             return;
         }
         self.control.clear_session();
+        self.control.clear_gpu_fallback();
         self.control.frames().clear();
         self.budget.release(self.source);
     }
@@ -1535,6 +1614,36 @@ mod tests {
         // The frame's own bookkeeping may allocate; the pixels are not copied anew.
         let fresh = allocation_counter::measure(|| sink.publish(&[2; 16], 2, 2));
         assert!(info.bytes_total <= fresh.bytes_total, "{info:?} {fresh:?}");
+    }
+
+    /// A painting page whose render thread always holds the last picture allocates
+    /// no new pixel buffer once it is running (ADR-0157 work, WP-D's zero-fill).
+    #[test]
+    fn a_painting_page_reuses_the_buffer_the_render_thread_let_go() {
+        let sink = BrowserFrameSink::new();
+        let mut buf = vec![1u8; 64 * 64 * 4];
+        let mut held = None;
+        for value in 0..3u8 {
+            buf.fill(value);
+            sink.publish_frame(&mut buf, 64, 64, None);
+            held = sink.take_due(Timestamp::ZERO);
+        }
+        let mut last = 0;
+        let info = allocation_counter::measure(|| {
+            buf.fill(9);
+            sink.publish_frame(&mut buf, 64, 64, None);
+            held = sink.take_due(Timestamp::ZERO);
+            if let Some(frame) = &held
+                && let rbs_core::media::FramePayload::System(system) = frame.payload()
+            {
+                last = system.data()[0];
+            }
+        });
+        assert_eq!(last, 9, "the new picture went out");
+        assert_eq!(buf.len(), 64 * 64 * 4);
+        // Bookkeeping may allocate; no buffer of the picture's size does.
+        assert!(info.bytes_total < 64 * 64 * 4, "{info:?}");
+        drop(held);
     }
 
     #[test]

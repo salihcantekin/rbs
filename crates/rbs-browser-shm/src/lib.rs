@@ -11,7 +11,7 @@
 //! ```text
 //! offset  size  field
 //! 0       4     magic "RBSB" (0x4253_4252, little-endian u32)
-//! 4       4     layout version (1)
+//! 4       4     layout version (2)
 //! 8       4     width
 //! 12      4     height
 //! 16      4     pixel layout: 1 = Rgba8 straight alpha, 2 = Bgra8 premultiplied alpha
@@ -23,13 +23,30 @@
 //! 48      24    paint time of slots 0, 1 and 2: OS monotonic nanoseconds
 //!               ([`os_monotonic_nanos`]) the helper took when it started to fill the
 //!               slot; 0 = unknown (ADR-0109 decision 8)
-//! 72      24    GPU fence value of slots 0, 1 and 2 (0 until a GPU publish)
-//! 96      12    GPU lease count of slots 0, 1 and 2
-//! 108     4     slot of the latest GPU publish
-//! 112     8     GPU publish sequence (0 until the first)
-//! 120     8     reserved (0)
-//! 128     ...   three slots of width * height * 4 bytes, sRGB
+//! 72      56    reserved (0)
+//! 128     256   GPU block (version 2, ADR-0157), below
+//! 384     ...   three slots of width * height * 4 bytes, sRGB
 //! ```
+//!
+//! The GPU block, at offset 128, describes the studio's shared textures when the
+//! helper copies CEF's accelerated paint into them (Windows, ADR-0157):
+//!
+//! ```text
+//! offset  size  field
+//! 128     4     GPU slot count (0 = no GPU path, at most 8)
+//! 132     4     slot of the latest GPU publish
+//! 136     8     GPU publish sequence (0 until the first)
+//! 144     32    state word of GPU slots 0..8: bit 31 = the helper writes it,
+//!               bits 0..30 = studio leases
+//! 176     64    fence value of GPU slots 0..8
+//! 240     64    paint time of GPU slots 0..8 (OS monotonic nanoseconds)
+//! 304     80    reserved (0)
+//! ```
+//!
+//! The GPU protocol (ADR-0157 decision 4): the helper claims a slot only with a
+//! compare-and-swap from 0 to `WRITING`, never the slot published last, and clears its
+//! bit with `fetch_and`; the studio leases with `fetch_add`, backs off when it saw
+//! `WRITING`, and checks the publish sequence again after its lease is held.
 //!
 //! The helper is untrusted: the reader copies bytes out with a raw copy and never
 //! forms a reference to memory the helper may write. A corrupt exchange word gives a
@@ -50,25 +67,35 @@ pub fn os_monotonic_nanos() -> u64 {
     os::monotonic_nanos()
 }
 
-/// Header size in bytes; slots start here.
-pub const HEADER: usize = 128;
+/// Header size in bytes (layout version 2); slots start here.
+pub const HEADER: usize = 384;
 /// Number of frame slots.
 pub const SLOTS: u32 = 3;
 /// `RBSB`.
 pub const MAGIC: u32 = 0x4253_4252;
 /// Layout version.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
+/// Most GPU slots a section describes.
+pub const MAX_GPU_SLOTS: u32 = 8;
+/// GPU slots a page gets by default (ADR-0157 decision 5).
+pub const DEFAULT_GPU_SLOTS: u32 = 4;
+/// State-word bit: the helper is writing this GPU slot.
+pub const WRITING: u32 = 1 << 31;
 const DIRTY: u32 = 0b100;
 /// Header offset of slot 0's paint time; slots 1 and 2 follow.
 const PAINTED: usize = 48;
-/// Fence value of GPU slot 0; slots 1 and 2 follow.
-const GPU_FENCE: usize = 72;
-/// Lease count of GPU slot 0; slots 1 and 2 follow.
-const GPU_LEASE: usize = 96;
+/// GPU slot count.
+const GPU_COUNT: usize = 128;
 /// Slot index of the latest GPU publish.
-const GPU_SLOT: usize = 108;
+const GPU_SLOT: usize = 132;
 /// How many GPU pictures the helper has published.
-const GPU_SEQ: usize = 112;
+const GPU_SEQ: usize = 136;
+/// State word of GPU slot 0; the others follow.
+const GPU_STATE: usize = 144;
+/// Fence value of GPU slot 0; the others follow.
+const GPU_FENCE: usize = 176;
+/// Paint time of GPU slot 0; the others follow.
+const GPU_PAINTED: usize = 240;
 const INDEX: u32 = 0b011;
 
 /// Pixel layout of the slots.
@@ -111,6 +138,20 @@ pub fn section_bytes(width: u32, height: u32) -> Option<usize> {
         .checked_add(HEADER)
 }
 
+/// A GPU picture the studio holds a lease on ([`FrameRing::take_gpu`]). The caller
+/// hands the lease to a frame or gives it back with [`FrameRing::lease_sub`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GpuPicture {
+    /// GPU slot.
+    pub slot: u32,
+    /// Fence value the helper signals when its copy into the slot is done.
+    pub fence: u64,
+    /// Paint time (OS monotonic nanoseconds; 0 when unknown).
+    pub painted: u64,
+    /// Publish sequence it was taken at.
+    pub seq: u64,
+}
+
 /// One mapped frame section. The studio [`FrameRing::create`]s it; the helper
 /// [`FrameRing::open`]s it by name.
 pub struct FrameRing {
@@ -136,6 +177,17 @@ impl FrameRing {
     /// Creates a new section with a unique name (studio side). Allocated before the
     /// helper is spawned; the studio owns it (ADR-0109 decision 8).
     pub fn create(width: u32, height: u32, layout: SlotLayout) -> io::Result<Self> {
+        Self::create_with_gpu(width, height, layout, 0)
+    }
+
+    /// As [`Self::create`], with `gpu_slots` GPU slots described (at most
+    /// [`MAX_GPU_SLOTS`]; 0 = no GPU path).
+    pub fn create_with_gpu(
+        width: u32,
+        height: u32,
+        layout: SlotLayout,
+        gpu_slots: u32,
+    ) -> io::Result<Self> {
         let total = section_bytes(width, height)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "frame too large"))?;
         let slot = slot_bytes(width, height).unwrap_or(0);
@@ -147,6 +199,8 @@ impl FrameRing {
             layout,
             slot,
         };
+        ring.word(GPU_COUNT)
+            .store(gpu_slots.min(MAX_GPU_SLOTS), Ordering::Relaxed);
         ring.word(0).store(MAGIC, Ordering::Relaxed);
         ring.word(4).store(VERSION, Ordering::Relaxed);
         ring.word(8).store(width, Ordering::Relaxed);
@@ -175,6 +229,8 @@ impl FrameRing {
         if probe.word(0).load(Ordering::Acquire) != MAGIC {
             return Err(bad("frame section magic"));
         }
+        // The studio and the runner ship together: another layout is refused, and the
+        // helper exits before it paints (ADR-0157 decision 10).
         if probe.word(4).load(Ordering::Relaxed) != VERSION {
             return Err(bad("frame section version"));
         }
@@ -285,64 +341,128 @@ impl FrameRing {
         true
     }
 
-    /// Helper side: a slot whose lease is zero, or `None` when every slot is still
-    /// on the studio's GPU. Never waits.
+    /// Studio side, before the helper opens the section: describe `count` GPU slots
+    /// (at most [`MAX_GPU_SLOTS`]).
+    pub fn set_gpu_slots(&self, count: u32) {
+        self.word(GPU_COUNT)
+            .store(count.min(MAX_GPU_SLOTS), Ordering::Release);
+    }
+
+    /// GPU slots this section describes; 0 without a GPU path.
+    pub fn gpu_slots(&self) -> u32 {
+        self.word(GPU_COUNT)
+            .load(Ordering::Relaxed)
+            .min(MAX_GPU_SLOTS)
+    }
+
+    fn state(&self, slot: u32) -> &AtomicU32 {
+        self.word(GPU_STATE + 4 * slot.min(MAX_GPU_SLOTS - 1) as usize)
+    }
+
+    /// Helper side: claims a free GPU slot (`compare_exchange(0, WRITING)`), never
+    /// the slot published last. `None` when none is free. Never waits.
     pub fn claim_gpu(&self) -> Option<u32> {
-        (0..SLOTS).find(|&slot| self.lease(slot) == 0)
+        let count = self.gpu_slots();
+        let latest = (self.dword(GPU_SEQ).load(Ordering::Acquire) > 0)
+            .then(|| self.word(GPU_SLOT).load(Ordering::Relaxed));
+        (0..count)
+            .filter(|&slot| Some(slot) != latest)
+            .find(|&slot| {
+                self.state(slot)
+                    .compare_exchange(0, WRITING, Ordering::Acquire, Ordering::Relaxed)
+                    .is_ok()
+            })
     }
 
-    /// How many studio frames still read this GPU slot.
-    pub fn lease(&self, slot: u32) -> u32 {
-        let slot = slot.min(SLOTS - 1) as usize;
-        self.word(GPU_LEASE + 4 * slot).load(Ordering::Acquire)
+    /// Helper side: gives a claimed slot up without publishing it.
+    pub fn abandon_gpu(&self, slot: u32) {
+        if slot < self.gpu_slots() {
+            self.state(slot).fetch_and(!WRITING, Ordering::Release);
+        }
     }
 
-    /// One more reader of a GPU slot. The lease that owns the frame calls this
-    /// before it is adopted.
-    pub fn lease_add(&self, slot: u32) {
-        let slot = slot.min(SLOTS - 1) as usize;
-        self.word(GPU_LEASE + 4 * slot)
-            .fetch_add(1, Ordering::AcqRel);
-    }
-
-    /// One fewer reader. The slot may be written again at zero.
-    pub fn lease_sub(&self, slot: u32) {
-        let slot = slot.min(SLOTS - 1) as usize;
-        self.word(GPU_LEASE + 4 * slot)
-            .fetch_sub(1, Ordering::AcqRel);
-    }
-
-    /// Helper side: the GPU copy into `slot` has finished at `fence`. The pixel
-    /// slots are not written. Never waits.
+    /// Helper side: the copy into the claimed `slot` signals `fence` when done.
+    /// Publishes the slot and clears its `WRITING` bit. Never waits.
     pub fn publish_gpu(&self, slot: u32, fence: u64) {
-        let slot = slot.min(SLOTS - 1);
+        if slot >= self.gpu_slots() {
+            return;
+        }
         let index = slot as usize;
-        self.dword(PAINTED + 8 * index)
+        self.dword(GPU_PAINTED + 8 * index)
             .store(os_monotonic_nanos(), Ordering::Relaxed);
         self.dword(GPU_FENCE + 8 * index)
             .store(fence, Ordering::Relaxed);
         self.word(GPU_SLOT).store(slot, Ordering::Relaxed);
         self.dword(GPU_SEQ).fetch_add(1, Ordering::Release);
+        self.state(slot).fetch_and(!WRITING, Ordering::Release);
         self.dword(32).fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Studio side: the GPU picture published since `seen`, and the sequence to
-    /// pass next time. `None` when nothing new arrived. Does not copy pixels and
-    /// does not take the lease: the caller adds it when it builds the frame.
-    pub fn take_gpu(&self, seen: &mut u64) -> Option<(u32, u64, u64)> {
+    /// Studio side: leases the GPU picture published since `seen` and returns it,
+    /// with `seen` moved to its sequence. `None` when nothing new is there, or when
+    /// the slot was being written or a newer picture came while it leased (then
+    /// `seen` stays, and the next call tries again). Never waits.
+    pub fn take_gpu(&self, seen: &mut u64) -> Option<GpuPicture> {
+        let picture = self.lease_latest(Some(*seen))?;
+        *seen = picture.seq;
+        Some(picture)
+    }
+
+    /// Studio side: leases the latest published GPU picture even when it was taken
+    /// before (a page shown again). `None` before the first publish or on a race.
+    pub fn lease_latest_gpu(&self) -> Option<GpuPicture> {
+        self.lease_latest(None)
+    }
+
+    fn lease_latest(&self, seen: Option<u64>) -> Option<GpuPicture> {
         let seq = self.dword(GPU_SEQ).load(Ordering::Acquire);
-        if seq == *seen {
+        if seq == 0 || seen == Some(seq) {
             return None;
         }
-        let slot = self.word(GPU_SLOT).load(Ordering::Relaxed).min(SLOTS - 1);
+        let slot = self.word(GPU_SLOT).load(Ordering::Relaxed);
+        if slot >= self.gpu_slots() {
+            return None;
+        }
+        let old = self.state(slot).fetch_add(1, Ordering::AcqRel);
+        if old & WRITING != 0 {
+            self.state(slot).fetch_sub(1, Ordering::Release);
+            return None;
+        }
         let fence = self
             .dword(GPU_FENCE + 8 * slot as usize)
             .load(Ordering::Relaxed);
         let painted = self
-            .dword(PAINTED + 8 * slot as usize)
+            .dword(GPU_PAINTED + 8 * slot as usize)
             .load(Ordering::Relaxed);
-        *seen = seq;
-        Some((slot, fence, painted))
+        if self.dword(GPU_SEQ).load(Ordering::Acquire) != seq {
+            self.state(slot).fetch_sub(1, Ordering::Release);
+            return None;
+        }
+        Some(GpuPicture {
+            slot,
+            fence,
+            painted,
+            seq,
+        })
+    }
+
+    /// Studio leases on a GPU slot.
+    pub fn lease(&self, slot: u32) -> u32 {
+        self.state(slot).load(Ordering::Acquire) & !WRITING
+    }
+
+    /// One more lease on a slot the studio already leases (a clone of a frame).
+    pub fn lease_add(&self, slot: u32) {
+        if slot < self.gpu_slots() {
+            self.state(slot).fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Gives one lease back. The helper may claim the slot once none is left.
+    pub fn lease_sub(&self, slot: u32) {
+        if slot < self.gpu_slots() {
+            self.state(slot).fetch_sub(1, Ordering::Release);
+        }
     }
 
     /// Studio side: the paint time (OS monotonic nanoseconds) of the frame the last
@@ -735,21 +855,162 @@ mod tests {
         assert_eq!(helper.layout(), SlotLayout::Bgra8Premultiplied);
     }
 
+    fn gpu_ring(slots: u32) -> FrameRing {
+        FrameRing::create_with_gpu(2, 2, SlotLayout::Bgra8Premultiplied, slots).unwrap()
+    }
+
     #[test]
-    fn a_gpu_publish_names_the_slot_and_does_not_copy_pixels() {
-        let studio = FrameRing::create(2, 2, SlotLayout::Rgba8Straight).unwrap();
+    fn a_gpu_publish_is_leased_once_and_names_its_slot_and_fence() {
+        let studio = gpu_ring(4);
+        let helper = FrameRing::open(studio.name(), 2, 2).unwrap();
+        assert_eq!(helper.gpu_slots(), 4);
         let mut seen = 0;
         assert!(studio.take_gpu(&mut seen).is_none());
-        assert_eq!(studio.claim_gpu(), Some(0));
-        studio.lease_add(0);
-        assert!(studio.claim_gpu().is_some());
-        assert_ne!(studio.claim_gpu(), Some(0));
-        studio.publish_gpu(1, 9);
-        let (slot, fence, _) = studio.take_gpu(&mut seen).unwrap();
-        assert_eq!((slot, fence), (1, 9));
-        assert!(studio.take_gpu(&mut seen).is_none());
-        studio.lease_sub(0);
-        assert_eq!(studio.claim_gpu(), Some(0));
+        let slot = helper.claim_gpu().unwrap();
+        helper.publish_gpu(slot, 9);
+        let picture = studio.take_gpu(&mut seen).unwrap();
+        assert_eq!((picture.slot, picture.fence), (slot, 9));
+        assert_eq!(studio.lease(slot), 1);
+        assert!(studio.take_gpu(&mut seen).is_none(), "taken once");
+        studio.lease_sub(slot);
+        assert_eq!(studio.lease(slot), 0);
+    }
+
+    #[test]
+    fn the_helper_never_claims_a_leased_writing_or_latest_slot() {
+        let ring = gpu_ring(4);
+        let a = ring.claim_gpu().unwrap();
+        ring.publish_gpu(a, 1);
+        // `a` is the latest publish: never claimed, even with no lease.
+        let mut claimed = Vec::new();
+        while let Some(slot) = ring.claim_gpu() {
+            claimed.push(slot);
+        }
+        assert_eq!(claimed.len(), 3);
+        assert!(!claimed.contains(&a));
+        // Each claimed slot is WRITING: a lease on it backs off.
+        ring.abandon_gpu(claimed[0]);
+        let mut seen = 0;
+        let leased = ring.take_gpu(&mut seen).unwrap();
+        assert_eq!(leased.slot, a);
+        // A leased slot is not claimed after it stops being the latest.
+        ring.publish_gpu(claimed[1], 2);
+        assert_ne!(ring.claim_gpu(), Some(a));
+    }
+
+    #[test]
+    fn a_lease_on_a_slot_being_written_backs_off_and_keeps_the_publish_unseen() {
+        let ring = gpu_ring(4);
+        let slot = ring.claim_gpu().unwrap();
+        ring.publish_gpu(slot, 1);
+        // A helper that dies between storing the index and clearing its bit leaves
+        // WRITING set on the latest slot.
+        ring.state(slot).fetch_or(WRITING, Ordering::Relaxed);
+        let mut seen = 0;
+        assert!(ring.take_gpu(&mut seen).is_none());
+        assert_eq!(seen, 0, "not seen: tried again next pass");
+        assert_eq!(ring.lease(slot), 0, "the tentative lease was given back");
+        ring.state(slot).fetch_and(!WRITING, Ordering::Relaxed);
+        assert_eq!(ring.take_gpu(&mut seen).map(|p| p.slot), Some(slot));
+        assert_eq!(seen, 1);
+    }
+
+    #[test]
+    fn a_shown_again_page_leases_its_latest_picture_once_more() {
+        let ring = gpu_ring(4);
+        let slot = ring.claim_gpu().unwrap();
+        ring.publish_gpu(slot, 5);
+        let mut seen = 0;
+        let first = ring.take_gpu(&mut seen).unwrap();
+        let again = ring.lease_latest_gpu().unwrap();
+        assert_eq!((again.slot, again.fence), (first.slot, 5));
+        assert_eq!(ring.lease(slot), 2);
+    }
+
+    #[test]
+    fn a_section_without_gpu_slots_has_no_gpu_path() {
+        let ring = FrameRing::create(2, 2, SlotLayout::Rgba8Straight).unwrap();
+        assert_eq!(ring.gpu_slots(), 0);
+        assert_eq!(ring.claim_gpu(), None);
+        ring.publish_gpu(0, 1);
+        assert!(ring.take_gpu(&mut 0).is_none());
+        assert_eq!(gpu_ring(99).gpu_slots(), MAX_GPU_SLOTS);
+    }
+
+    #[test]
+    fn another_layout_version_is_refused() {
+        let studio = gpu_ring(4);
+        studio.word(4).store(1, Ordering::Relaxed);
+        assert!(FrameRing::open(studio.name(), 2, 2).is_err());
+    }
+
+    /// The helper claims, "writes" (fills the slot's marker with its fence value)
+    /// and publishes on one thread while the studio leases, checks the marker and
+    /// releases on another: a leased slot never changes under its lease, and the
+    /// studio sees the newest publishes (ADR-0157 decisions 4 and 11).
+    #[test]
+    fn a_leased_slot_is_never_written_under_racing_claims_and_leases() {
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicBool;
+        // The studio side decides when the run ends (after it took enough pictures),
+        // so the result does not depend on how the two threads are scheduled.
+        const TAKE: u32 = 2_000;
+        let ring = Arc::new(gpu_ring(4));
+        let markers: Arc<Vec<AtomicU64>> = Arc::new((0..4).map(|_| AtomicU64::new(0)).collect());
+        let stop = Arc::new(AtomicBool::new(false));
+        let helper = {
+            let (ring, markers, stop) =
+                (Arc::clone(&ring), Arc::clone(&markers), Arc::clone(&stop));
+            std::thread::spawn(move || {
+                let mut fence = 0u64;
+                while !stop.load(Ordering::Acquire) {
+                    let Some(slot) = ring.claim_gpu() else {
+                        std::hint::spin_loop();
+                        continue;
+                    };
+                    fence += 1;
+                    markers[slot as usize].store(fence, Ordering::Relaxed);
+                    ring.publish_gpu(slot, fence);
+                }
+                fence
+            })
+        };
+        // Hang guard only: the loop ends on the count, not on time.
+        let guard = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let mut seen = 0;
+        let mut held: Vec<GpuPicture> = Vec::new();
+        let mut last = 0;
+        let mut taken = 0u32;
+        while taken < TAKE {
+            assert!(
+                std::time::Instant::now() < guard,
+                "hung after {taken} pictures"
+            );
+            if let Some(p) = ring.take_gpu(&mut seen) {
+                assert_eq!(markers[p.slot as usize].load(Ordering::Relaxed), p.fence);
+                assert!(p.fence > last, "{} after {last}", p.fence);
+                last = p.fence;
+                taken += 1;
+                held.push(p);
+            }
+            // Hold up to two pictures, like the importer's on-air and hand-back.
+            if held.len() > 2 {
+                let p = held.remove(0);
+                assert_eq!(markers[p.slot as usize].load(Ordering::Relaxed), p.fence);
+                ring.lease_sub(p.slot);
+            }
+        }
+        stop.store(true, Ordering::Release);
+        let final_fence = helper.join().unwrap();
+        for p in held {
+            assert_eq!(markers[p.slot as usize].load(Ordering::Relaxed), p.fence);
+            ring.lease_sub(p.slot);
+        }
+        // The newest publish is still there to take.
+        if last < final_fence {
+            let p = ring.take_gpu(&mut seen).unwrap();
+            assert_eq!(p.fence, final_fence);
+        }
     }
 
     #[test]

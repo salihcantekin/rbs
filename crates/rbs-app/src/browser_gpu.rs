@@ -1,4 +1,4 @@
-//! Studio side of a browser page's shared textures (ADR-0109 decision 8).
+//! Studio side of a browser page's shared textures (ADR-0109 decision 8, ADR-0157).
 //!
 //! The textures live in [`PageSlots`]. A frame's lease holds that `Arc`, and so does
 //! a grave the control thread drains, so the last Direct3D release is not on the
@@ -39,14 +39,23 @@ impl PageSlots {
         }))
     }
 
-    /// A frame on slot `slot`. The copy has already finished (the helper waited),
-    /// so the sync is [`SurfaceSync::Ready`].
-    pub fn picture(self: &Arc<Self>, slot: u32, stamp: Option<Timestamp>) -> VideoFrame {
-        let slot = slot.min(2);
-        self.ring.lease_add(slot);
-        // SAFETY: `lease_add` counted the one reference this lease releases. The
-        // handle stays open while this `Arc` lives, which the lease and the grave
-        // both hold. The helper writes the slot only while its lease count is zero.
+    /// A reader of the page fence's completed value, for the supervisor's gate.
+    pub fn fence_read(&self) -> rbs_gpu::browser_pages::FenceRead {
+        self.textures.fence_read()
+    }
+
+    /// A frame on slot `slot`, taking over the lease the supervisor's gate already
+    /// holds (ADR-0157 decision 4). The fence has completed, so the sync is
+    /// [`SurfaceSync::Ready`] (decision 2). `None`, with the lease given back, for a
+    /// slot this page has no texture for.
+    pub fn picture(self: &Arc<Self>, slot: u32, stamp: Option<Timestamp>) -> Option<VideoFrame> {
+        let Some(handle) = self.textures.texture(slot as usize) else {
+            self.ring.lease_sub(slot);
+            return None;
+        };
+        // SAFETY: the gate counted the one reference this lease releases. The handle
+        // stays open while this `Arc` lives, which the lease and the grave both hold.
+        // The helper claims a slot only while its lease count is zero.
         let lease =
             unsafe { Lease::adopt(Arc::clone(self) as Arc<dyn LeaseOwner>, u64::from(slot)) };
         let format = VideoFormat::new(
@@ -54,15 +63,11 @@ impl PageSlots {
             PixelFormat::Bgra8,
             ColorSpace::SRGB,
         );
-        let surface = NativeSurface::d3d_shared_handle(
-            self.textures.texture(slot as usize),
-            true,
-            D3dApi::D3d11,
-            self.textures.luid(),
-        );
+        let surface =
+            NativeSurface::d3d_shared_handle(handle, true, D3dApi::D3d11, self.textures.luid());
         // SAFETY: the handle names this slot's texture on `luid`. It stays valid
         // until the lease releases, and the helper does not write it meanwhile.
-        unsafe {
+        Some(unsafe {
             VideoFrame::native(
                 format,
                 stamp.unwrap_or(Timestamp::ZERO),
@@ -70,7 +75,7 @@ impl PageSlots {
                 SurfaceSync::Ready,
                 lease,
             )
-        }
+        })
     }
 }
 

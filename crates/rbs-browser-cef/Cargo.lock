@@ -864,6 +864,7 @@ dependencies = [
  "objc2-foundation",
  "rbs-browser-ipc",
  "rbs-browser-shm",
+ "windows",
  "windows-sys 0.61.2",
 ]
 

@@ -199,17 +199,48 @@ impl BrowserTree for RunnerBrowserTree {
         sink: Arc<BrowserFrameSink>,
         sound: Option<Arc<BrowserSound>>,
     ) -> Result<Box<dyn BrowserSession>, String> {
+        self.start_on(config, sink, sound, self.adapter)
+    }
+
+    fn start_on_shared_memory(
+        &self,
+        config: &Configure,
+        sink: Arc<BrowserFrameSink>,
+        sound: Option<Arc<BrowserSound>>,
+    ) -> Result<Box<dyn BrowserSession>, String> {
+        self.start_on(config, sink, sound, None)
+    }
+}
+
+impl RunnerBrowserTree {
+    /// Starts a tree; with `adapter`, its pages copy into studio textures there.
+    fn start_on(
+        &self,
+        config: &Configure,
+        sink: Arc<BrowserFrameSink>,
+        sound: Option<Arc<BrowserSound>>,
+        adapter: Option<u64>,
+    ) -> Result<Box<dyn BrowserSession>, String> {
+        #[cfg(not(windows))]
+        let _ = adapter;
         let runner = self
             .runner
             .as_ref()
             .ok_or_else(|| "no browser runner was found next to the app".to_owned())?;
         let args: Vec<&str> = runner.args.iter().map(String::as_str).collect();
         #[cfg(windows)]
-        let textures = self.adapter.and_then(|luid| {
+        let textures = adapter.and_then(|luid| {
             crate::browser_gpu::sweep();
-            rbs_gpu::browser_pages::PageTextures::create(luid, config.width, config.height).ok()
+            rbs_gpu::browser_pages::PageTextures::create(
+                luid,
+                config.width,
+                config.height,
+                rbs_browser_shm::DEFAULT_GPU_SLOTS as usize,
+            )
+            .ok()
         });
-        let child = spawn_helper_prepared(
+        #[allow(unused_mut)] // Only Windows sets the fence gate.
+        let mut child = spawn_helper_prepared(
             &runner.program,
             &args,
             &self.env(),
@@ -218,17 +249,20 @@ impl BrowserTree for RunnerBrowserTree {
             |pid| {
                 #[cfg(windows)]
                 {
-                    return textures.as_ref().and_then(|textures| {
+                    textures.as_ref().and_then(|textures| {
                         let (handles, fence) = textures.duplicate_to(pid)?;
-                        let (vendor, device) = textures.vendor_device();
-                        Some(rbs_browser_ipc::GpuShare {
+                        let mut share = rbs_browser_ipc::GpuShare {
                             adapter_luid: textures.luid(),
-                            vendor,
-                            device,
                             fence,
-                            textures: handles,
-                        })
-                    });
+                            textures: [0; rbs_browser_ipc::MAX_GPU_TEXTURES],
+                            count: 0,
+                        };
+                        for (to, from) in share.textures.iter_mut().zip(&handles) {
+                            *to = *from;
+                            share.count += 1;
+                        }
+                        Some(share)
+                    })
                 }
                 #[cfg(not(windows))]
                 {
@@ -247,6 +281,18 @@ impl BrowserTree for RunnerBrowserTree {
             )
             .ok()
         });
+        // The fence gate hands a picture on only once its copy has finished
+        // (ADR-0157 decision 2). Only a page with textures gets one.
+        #[cfg(windows)]
+        if child.gpu_requested() {
+            let Some(slots) = &slots else {
+                // The helper copies into textures the studio cannot show: start
+                // again without them.
+                child.close(std::time::Duration::ZERO);
+                return self.start_on(config, sink, sound, None);
+            };
+            child.set_gpu_gate(Box::new(Fence(slots.fence_read())));
+        }
         #[cfg(not(windows))]
         let slots = None::<()>;
         // The supervisor thread exists only while the source is Active (P13). It
@@ -271,8 +317,8 @@ impl BrowserTree for RunnerBrowserTree {
                 PagePicture::Bytes { fresh: false } => sink.republish(),
                 PagePicture::Texture { slot, .. } => {
                     #[cfg(windows)]
-                    if let Some(slots) = &kept {
-                        sink.publish_native(slots.picture(slot, stamp), stamp);
+                    if let Some(frame) = kept.as_ref().and_then(|s| s.picture(slot, stamp)) {
+                        sink.publish_native(frame, stamp);
                     }
                     #[cfg(not(windows))]
                     {
@@ -298,6 +344,17 @@ impl BrowserTree for RunnerBrowserTree {
             #[cfg(windows)]
             slots,
         }))
+    }
+}
+
+/// The supervisor's view of a page's shared fence (ADR-0157 decision 2).
+#[cfg(windows)]
+struct Fence(rbs_gpu::browser_pages::FenceRead);
+
+#[cfg(windows)]
+impl rbs_browser_runner::FenceView for Fence {
+    fn completed(&self) -> u64 {
+        self.0.completed()
     }
 }
 
@@ -376,8 +433,12 @@ impl BrowserSession for RunnerSession {
         match self.supervisor.exit_cause() {
             Cause::RuntimeMissing => Some(BROWSER_RUNTIME_MISSING),
             Cause::RuntimeMismatch => Some(BROWSER_RUNTIME_MISMATCH),
-            Cause::Other => None,
+            Cause::GpuFallback | Cause::Other => None,
         }
+    }
+
+    fn gpu_fallback(&self) -> bool {
+        self.supervisor.exit_cause() == Cause::GpuFallback
     }
 }
 
