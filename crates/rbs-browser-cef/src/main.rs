@@ -155,6 +155,16 @@ const GPU_FAIL_LIMIT: u32 = 60;
 #[cfg(windows)]
 mod gpu;
 
+/// The `--use-adapter-luid` value for `luid`: Chromium parses decimal `<high>,<low>`
+/// with a signed high part and an unsigned low part (`ui/gl/gl_display.cc`); hex fails
+/// and makes the GPU process exit (seen on CEF 156, ADR-0157 decision 8).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn adapter_luid_switch(luid: u64) -> String {
+    let high = (luid >> 32) as u32 as i32;
+    let low = luid as u32;
+    format!("{high},{low}")
+}
+
 fn page() -> Option<&'static Page> {
     PAGE.get()
 }
@@ -185,11 +195,12 @@ wrap_app! {
             if shared {
                 // Marks the child processes, and pins CEF's GPU process to the
                 // studio's adapter (ADR-0157 decision 8). Vendor switches left the page
-                // black. The value format is checked on CEF 156 before the path is on.
+                // black. Chromium reads the value as decimal `<high>,<low>` (ui/gl/gl_display.cc);
+                // anything else makes the GPU process fail at EGL start.
                 #[cfg(windows)]
                 if luid != 0 {
                     line.append_switch(Some(&"rbs-shared-textures".into()));
-                    let value = format!("{:#x},{:#x}", luid >> 32, luid & 0xffff_ffff);
+                    let value = adapter_luid_switch(luid);
                     line.append_switch_with_value(
                         Some(&"use-adapter-luid".into()),
                         Some(&value.as_str().into()),
@@ -1306,5 +1317,18 @@ fn apply_options(page: &Page, browser: &Browser, options: &PageOptions) {
     if css_changed && let Some(frame) = browser.main_frame() {
         let script = css_script(&css);
         frame.execute_java_script(Some(&script.as_str().into()), None, 0);
+    }
+}
+
+#[cfg(test)]
+mod adapter_switch_tests {
+    use super::adapter_luid_switch;
+
+    #[test]
+    fn the_adapter_luid_is_decimal_high_comma_low() {
+        assert_eq!(adapter_luid_switch(0x0000_0000_0001_2345), "0,74565");
+        assert_eq!(adapter_luid_switch((7 << 32) | 0xffff_fff0), "7,4294967280");
+        // A high part with its top bit set is negative, as Chromium's int32 reads it.
+        assert_eq!(adapter_luid_switch(0xffff_ffff_0000_0001), "-1,1");
     }
 }
