@@ -19,8 +19,9 @@ path = "src/main.rs"
 fault-injection = []
 # `RBS_DEMO_SOURCES=1` adds the deterministic reference adapters (synthetic displays,
 # cameras and audio), for screenshots and UI checks on machines without devices. Off
-# in normal builds. Media uses `rbs-media-decode-test` always until FFmpeg ships.
-demo-sources = ["dep:rbs-capture-test", "dep:rbs-audio-io-test"]
+# in normal builds. Media uses `rbs-media-decode-test` always until FFmpeg ships. The
+# adapter list is rbs-platform's (ADR-0160).
+demo-sources = ["rbs-platform/demo-sources"]
 # Development only: the UI reloads from `ui/` when a `.slint` file is saved
 # (`cargo xtask ui-dev`, testing strategy "UI live preview"). Never in builds that ship.
 ui-live-preview = ["rbs-app-ui/live-preview"]
@@ -52,8 +53,9 @@ serde_json = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 # Application layer: a composition root (ADR-0041 decision 7). The studio runs in this
-# process on its own control thread; with rbs-cli, this is the only place that names
-# adapters (P1, src/platform.rs).
+# process on its own control thread. Its built-in adapters come from rbs-platform, the
+# list rbs-cli uses too (ADR-0160, P1, src/platform.rs); the adapters below are the
+# ones its other code names directly.
 rbs-core = { path = "../rbs-core" }
 rbs-engine = { path = "../rbs-engine" }
 rbs-graph = { path = "../rbs-graph" }
@@ -62,13 +64,13 @@ rbs-audio = { path = "../rbs-audio" }
 rbs-scene = { path = "../rbs-scene" }
 rbs-sources = { path = "../rbs-sources" }
 rbs-text = { path = "../rbs-text" }
-rbs-text-parley = { path = "../rbs-text-parley" }
 rbs-filters = { path = "../rbs-filters" }
 rbs-audio-filters = { path = "../rbs-audio-filters" }
 rbs-params = { path = "../rbs-params" }
 # CaptureError::Cancelled from OS pickers.
 rbs-capture = { path = "../rbs-capture" }
 rbs-record = { path = "../rbs-record" }
+rbs-platform = { path = "../rbs-platform" }
 # The recording manifest and its markers (ADR-0089).
 rbs-manifest = { path = "../rbs-manifest" }
 rbs-project = { path = "../rbs-project" }
@@ -79,19 +81,12 @@ rbs-add-ons-sys = { path = "../rbs-add-ons-sys" }
 rbs-browser-ipc = { path = "../rbs-browser-ipc" }
 rbs-browser-shm = { path = "../rbs-browser-shm" }
 rbs-thread-os = { path = "../rbs-thread-os" }
+# Markers into a finished MKV, and file URLs (studio host; ADR-0159 decision 4 moves
+# both behind HostConfig).
 rbs-mux-matroska = { path = "../rbs-mux-matroska" }
-rbs-mux-fmp4 = { path = "../rbs-mux-fmp4" }
-rbs-mux-wav = { path = "../rbs-mux-wav" }
-rbs-mux-flac = { path = "../rbs-mux-flac" }
-rbs-codec-pcm = { path = "../rbs-codec-pcm" }
-rbs-codec-flac = { path = "../rbs-codec-flac" }
 rbs-transport-file = { path = "../rbs-transport-file" }
-# Go live (src/stream_profile.rs): the stream's URL, secret and reconnect policy, and
-# the pure-Rust stream adapters every platform registers, as `rbs-cli stream` does.
+# Go live (src/stream_profile.rs): the stream's URL, secret and reconnect policy.
 rbs-transport = { path = "../rbs-transport" }
-rbs-transport-rtmp = { path = "../rbs-transport-rtmp" }
-rbs-transport-srt = { path = "../rbs-transport-srt" }
-rbs-mux-mpegts = { path = "../rbs-mux-mpegts" }
 rbs-codec = { path = "../rbs-codec" }
 # The control API (ADR-0044): the control thread serves its requests.
 rbs-api = { path = "../rbs-api" }
@@ -111,11 +106,6 @@ rbs-crash = { path = "../rbs-crash" }
 rbs-log = { path = "../rbs-log" }
 # Settings › Virtual camera and sending to it (ADR-0066 decisions 11 and 12).
 rbs-vcam = { path = "../rbs-vcam" }
-rbs-capture-test = { path = "../rbs-capture-test", optional = true }
-rbs-audio-io-test = { path = "../rbs-audio-io-test", optional = true }
-# Stand-in media decoder until an FFmpeg adapter ships (ADR-0108 / ADR-0007).
-rbs-media-decode-test = { path = "../rbs-media-decode-test" }
-rbs-media-anim = { path = "../rbs-media-anim" }
 # Free disk space and memory for recording protection (ADR-0090 decision 11).
 rbs-system-probe = { path = "../rbs-system-probe" }
 
@@ -139,23 +129,6 @@ tray-icon = { version = "=0.24.2", default-features = false }
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_LibraryLoader", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging", "Win32_UI_Shell", "Win32_UI_HiDpi", "Win32_UI_Controls", "Win32_UI_Input_KeyboardAndMouse", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi"] }
 # The stream key in the Windows Credential Manager (src/stream_key.rs).
 keyring = { version = "3.6.3", default-features = false, features = ["windows-native"] }
-rbs-capture-wgc = { path = "../rbs-capture-wgc" }
-rbs-capture-mf = { path = "../rbs-capture-mf" }
-rbs-media-mf = { path = "../rbs-media-mf" }
-rbs-audio-io-wasapi = { path = "../rbs-audio-io-wasapi" }
-rbs-codec-nvenc = { path = "../rbs-codec-nvenc" }
-rbs-codec-amf = { path = "../rbs-codec-amf" }
-rbs-codec-mf = { path = "../rbs-codec-mf" }
-rbs-vcam-mf = { path = "../rbs-vcam-mf" }
-
-[target.'cfg(target_os = "linux")'.dependencies]
-rbs-capture-pipewire = { path = "../rbs-capture-pipewire" }
-rbs-audio-io-pipewire = { path = "../rbs-audio-io-pipewire" }
-rbs-codec-nvenc = { path = "../rbs-codec-nvenc" }
-rbs-codec-amf = { path = "../rbs-codec-amf" }
-rbs-codec-qsv = { path = "../rbs-codec-qsv" }
-rbs-codec-vaapi = { path = "../rbs-codec-vaapi" }
-rbs-codec-ffmpeg = { path = "../rbs-codec-ffmpeg" }
 
 # Audio meters as Core Animation layers (src/native, ADR-0035). Same objc2 versions as
 # wgpu-hal, raw-window-metal and rbs-gpu's preview layer, so nothing new is built.
@@ -166,13 +139,9 @@ objc2 = "0.6.3"
 objc2-quartz-core = { version = "0.3.2", default-features = false, features = ["std", "CALayer", "CATransaction", "objc2-core-foundation", "objc2-core-graphics"] }
 objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFCGTypes"] }
 objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGColor"] }
-# The platform's adapters (src/platform.rs).
+# The main display's size at start (studio host; ADR-0159 decision 4 moves it behind
+# HostConfig).
 rbs-capture-sck = { path = "../rbs-capture-sck" }
-rbs-capture-avf = { path = "../rbs-capture-avf" }
-rbs-media-avf = { path = "../rbs-media-avf" }
-rbs-audio-io-coreaudio = { path = "../rbs-audio-io-coreaudio" }
-rbs-codec-videotoolbox = { path = "../rbs-codec-videotoolbox" }
-rbs-codec-audiotoolbox = { path = "../rbs-codec-audiotoolbox" }
 
 [target.'cfg(windows)'.build-dependencies]
 # Embeds assets/brand/rbs.ico as the executable's icon (build.rs).
@@ -194,6 +163,10 @@ rbs-capture-test = { path = "../rbs-capture-test" }
 rbs-audio-io-test = { path = "../rbs-audio-io-test" }
 rbs-vcam-test = { path = "../rbs-vcam-test" }
 rbs-text-test = { path = "../rbs-text-test" }
+# Recording and scene tests name these adapters directly.
+rbs-mux-wav = { path = "../rbs-mux-wav" }
+rbs-codec-pcm = { path = "../rbs-codec-pcm" }
+rbs-media-decode-test = { path = "../rbs-media-decode-test" }
 # The audio graph check (examples/audio_graph.rs) is a composition root: it wires the
 # platform's audio and AAC adapters into the engine. Every one builds on every platform.
 rbs-audio-io = { path = "../rbs-audio-io" }
