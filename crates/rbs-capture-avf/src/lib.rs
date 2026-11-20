@@ -94,4 +94,5 @@ mod platform {
     }
 }
 
+#[cfg(target_os = "macos")]
 pub(crate) use rbs_capture::handoff::SurfaceConsumer as Consumer;
