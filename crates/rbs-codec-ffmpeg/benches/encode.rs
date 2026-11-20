@@ -1,8 +1,8 @@
 //! Micro-benchmark of the AAC encode path (measure-performance skill, ADR-0009):
 //! `submit` plus `drain` of one 10 ms stereo 48 kHz block, which encodes a packet
 //! every 2.13 blocks. `fake` measures the session alone (staging, timeline) on every
-//! platform; `ffmpeg` adds libavcodec's encoder on Linux with its default coder
-//! (twoloop), and `ffmpeg_<coder>` with each `aac_coder` option this FFmpeg opens.
+//! platform; `ffmpeg` adds libavcodec's encoder on Linux with the adapter's default
+//! coder (fast), and `ffmpeg_<coder>` with each `aac_coder` option this FFmpeg opens.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)] // Benchmarks fail by panicking.
 

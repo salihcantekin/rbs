@@ -11,7 +11,7 @@
 use rbs_api::types::OutputKind;
 use rbs_scene::model::SourceMonitor;
 use rbs_scene::{CenterAxis, FitMode};
-use rbs_ui::command::{CommandId, CommandState, Kind, MenuItem, menus};
+use rbs_ui::command::{CommandId, CommandState, Disabled, Kind, MenuItem, menus};
 use rbs_ui::layout::RailAt;
 use rbs_ui::panel::PanelId;
 use rbs_ui::projector::{ProjectorCanvas, ProjectorSize};
@@ -92,7 +92,7 @@ struct Shape;
 
 #[cfg(test)]
 impl CommandState for Shape {
-    fn enabled(&self, _: &CommandId) -> Result<(), String> {
+    fn enabled(&self, _: &CommandId) -> Result<(), Disabled> {
         Ok(())
     }
     fn checked(&self, _: &CommandId) -> bool {
@@ -307,27 +307,27 @@ impl Shown<'_> {
     }
 
     /// The source an id names (`source` or `item`), or the selected one.
-    fn source(&self, id: &CommandId) -> Result<SourceFacts, String> {
+    fn source(&self, id: &CommandId) -> Result<SourceFacts, Disabled> {
         self.studio
             .source_facts(id.param("source"), id.param("item"))
             .ok_or_else(|| match (id.param("source"), id.param("item")) {
-                (None, None) => "No source is selected.".to_owned(),
-                _ => "The source is not in this scene.".to_owned(),
+                (None, None) => "No source is selected.".into(),
+                _ => "The source is not in this scene.".into(),
             })
     }
 
     /// The scene an id names, or the one being worked on.
-    fn scene(&self, id: &CommandId) -> Result<i32, String> {
+    fn scene(&self, id: &CommandId) -> Result<i32, Disabled> {
         self.studio
             .scene_target(id.param("scene"))
-            .ok_or_else(|| "The scene is gone.".to_owned())
+            .ok_or_else(|| "The scene is gone.".into())
     }
 
-    fn running(&self) -> Result<(), String> {
+    fn running(&self) -> Result<(), Disabled> {
         match self.studio.state {
             1 => Ok(()),
-            0 => Err("The studio is starting.".to_owned()),
-            _ => Err("The studio stopped.".to_owned()),
+            0 => Err("The studio is starting.".into()),
+            _ => Err("The studio stopped.".into()),
         }
     }
 
@@ -338,10 +338,10 @@ impl Shown<'_> {
 
     /// Whether an item edit with `canvas=vertical` can run: the vertical canvas exists
     /// and shows the scene being edited (not in studio mode, ADR-0093 decision 7).
-    fn vertical_edited(&self) -> Result<(), String> {
+    fn vertical_edited(&self) -> Result<(), Disabled> {
         self.has_vertical()?;
         if self.studio.studio_mode {
-            return Err("In studio mode the vertical canvas shows the scene on air.".to_owned());
+            return Err("In studio mode the vertical canvas shows the scene on air.".into());
         }
         Ok(())
     }
@@ -363,18 +363,18 @@ impl Shown<'_> {
     }
 
     /// The window of the projector `id` names, while open.
-    fn projector_window(&self, id: &CommandId) -> Result<&crate::projector::Shown, String> {
-        let canvas = Self::projector_canvas(id).ok_or_else(|| "Name a canvas.".to_owned())?;
+    fn projector_window(&self, id: &CommandId) -> Result<&crate::projector::Shown, Disabled> {
+        let canvas = Self::projector_canvas(id).ok_or(Disabled::from("Name a canvas."))?;
         self.projectors
             .iter()
             .find(|p| p.canvas == canvas)
-            .ok_or_else(|| "The projector is not open.".to_owned())
+            .ok_or_else(|| "The projector is not open.".into())
     }
 
-    fn has_vertical(&self) -> Result<(), String> {
+    fn has_vertical(&self) -> Result<(), Disabled> {
         match self.studio.vertical {
             Some(_) => Ok(()),
-            None => Err("Add a vertical output first.".to_owned()),
+            None => Err("Add a vertical output first.".into()),
         }
     }
 }
@@ -419,13 +419,13 @@ impl Shown<'_> {
 }
 
 impl CommandState for Shown<'_> {
-    fn enabled(&self, id: &CommandId) -> Result<(), String> {
+    fn enabled(&self, id: &CommandId) -> Result<(), Disabled> {
         let s = self.studio;
         // Scene, source and item ids are unique only within a scene collection.
         if let Some(c) = id.param("collection")
             && s.current_collection().as_deref() != Some(c)
         {
-            return Err("In another scene collection.".to_owned());
+            return Err("In another scene collection.".into());
         }
         match id.base() {
             "edit.undo" => {
@@ -433,30 +433,30 @@ impl CommandState for Shown<'_> {
                 s.next_undo
                     .as_ref()
                     .map(|_| ())
-                    .ok_or_else(|| "Nothing to undo.".to_owned())
+                    .ok_or_else(|| "Nothing to undo.".into())
             }
             "edit.redo" => {
                 self.running()?;
                 s.next_redo
                     .as_ref()
                     .map(|_| ())
-                    .ok_or_else(|| "Nothing to redo.".to_owned())
+                    .ok_or_else(|| "Nothing to redo.".into())
             }
             "ui.area.toggle" => match side(id) {
                 Some(sd) if self.areas().any(|(a, has, _)| a == sd && has) => Ok(()),
-                _ => Err("This area has no panels.".to_owned()),
+                _ => Err("This area has no panels.".into()),
             },
             "ui.area.hide_all" | "ui.area.show_all" => {
                 if self.areas().any(|(_, has, _)| has) {
                     Ok(())
                 } else {
-                    Err("No area beside the centre has panels.".to_owned())
+                    Err("No area beside the centre has panels.".into())
                 }
             }
             "source.add" => {
                 self.running()?;
                 if id.param("kind") == Some(EXISTING) && !self.studio.has_existing_sources() {
-                    return Err("No other scene has a source to add.".to_owned());
+                    return Err("No other scene has a source to add.".into());
                 }
                 Ok(())
             }
@@ -480,11 +480,11 @@ impl CommandState for Shown<'_> {
             "scene.audio.reset_source" => {
                 self.running()?;
                 let scene = self.scene(id)?;
-                let source = heard_source(id).ok_or_else(|| "No source is named.".to_owned())?;
+                let source = heard_source(id).ok_or("No source is named.")?;
                 if self.studio.has_scene_level(scene, source) {
                     Ok(())
                 } else {
-                    Err("The scene uses the source's own level.".to_owned())
+                    Err("The scene uses the source's own level.".into())
                 }
             }
             "scene.remove" => {
@@ -493,25 +493,19 @@ impl CommandState for Shown<'_> {
                 if s.scene_count() > 1 {
                     Ok(())
                 } else {
-                    Err("The last scene cannot be removed.".to_owned())
+                    Err("The last scene cannot be removed.".into())
                 }
             }
             "scene.move" => {
                 self.running()?;
                 let scene = self.scene(id)?;
-                let (up, down) = s
-                    .scene_ends(scene)
-                    .ok_or_else(|| "The scene is gone.".to_owned())?;
+                let (up, down) = s.scene_ends(scene).ok_or("The scene is gone.")?;
                 match id.param("direction") {
                     Some("up") | Some("front") if up => Ok(()),
                     Some("down") | Some("back") if down => Ok(()),
-                    Some("up") | Some("front") => {
-                        Err("This scene is already the first.".to_owned())
-                    }
-                    Some("down") | Some("back") => {
-                        Err("This scene is already the last.".to_owned())
-                    }
-                    _ => Err("Choose which way to move the scene.".to_owned()),
+                    Some("up") | Some("front") => Err("This scene is already the first.".into()),
+                    Some("down") | Some("back") => Err("This scene is already the last.".into()),
+                    _ => Err("Choose which way to move the scene.".into()),
                 }
             }
             "source.active.toggle" => {
@@ -527,7 +521,7 @@ impl CommandState for Shown<'_> {
                 self.source(id)?;
                 match s.attributes_clipboard {
                     Some(_) => Ok(()),
-                    None => Err("Copy a source's attributes first.".to_owned()),
+                    None => Err("Copy a source's attributes first.".into()),
                 }
             }
             "item.visible.toggle" | "source.rename" | "source.delete" | "item.remove" => {
@@ -538,10 +532,10 @@ impl CommandState for Shown<'_> {
                 self.running()?;
                 let f = self.source(id)?;
                 if !f.picture {
-                    return Err("This source has no layer.".to_owned());
+                    return Err("This source has no layer.".into());
                 }
                 if f.locked {
-                    return Err("Unlock the source to change its layer order.".to_owned());
+                    return Err("Unlock the source to change its layer order.".into());
                 }
                 match id.param("direction") {
                     Some("up") if f.can_up => Ok(()),
@@ -549,12 +543,12 @@ impl CommandState for Shown<'_> {
                     Some("front") if f.can_up => Ok(()),
                     Some("back") if f.can_down => Ok(()),
                     Some("up") | Some("front") => {
-                        Err("This source is already the top layer.".to_owned())
+                        Err("This source is already the top layer.".into())
                     }
                     Some("down") | Some("back") => {
-                        Err("This source is already the bottom layer.".to_owned())
+                        Err("This source is already the bottom layer.".into())
                     }
-                    _ => Err("Say whether to move the source forward or back.".to_owned()),
+                    _ => Err("Say whether to move the source forward or back.".into()),
                 }
             }
             "filter.add" => {
@@ -567,7 +561,7 @@ impl CommandState for Shown<'_> {
                             .iter()
                             .any(|(_, i)| i == t) =>
                     {
-                        Err("That filter type is not available for this source.".to_owned())
+                        Err("That filter type is not available for this source.".into())
                     }
                     _ => Ok(()),
                 }
@@ -577,7 +571,7 @@ impl CommandState for Shown<'_> {
                 if self.source(id)?.reloadable {
                     Ok(())
                 } else {
-                    Err("This source has nothing to open again.".to_owned())
+                    Err("This source has nothing to open again.".into())
                 }
             }
             "source.settings" => {
@@ -585,7 +579,7 @@ impl CommandState for Shown<'_> {
                 if self.source(id)?.has_settings {
                     Ok(())
                 } else {
-                    Err("This source has no settings window.".to_owned())
+                    Err("This source has no settings window.".into())
                 }
             }
             "ui.properties.show" => {
@@ -593,14 +587,14 @@ impl CommandState for Shown<'_> {
                 let f = self.source(id)?;
                 match id.param("tab") {
                     Some("filters") if f.picture => Ok(()),
-                    Some("filters") => Err("This source has no picture filters.".to_owned()),
+                    Some("filters") => Err("This source has no picture filters.".into()),
                     Some("source") if f.reloadable => Ok(()),
-                    Some("source") => Err("This source has no target to change.".to_owned()),
+                    Some("source") => Err("This source has no target to change.".into()),
                     Some("audio") if f.audio => Ok(()),
-                    Some("audio") => Err("This source has no sound.".to_owned()),
+                    Some("audio") => Err("This source has no sound.".into()),
                     Some("transform") if f.picture => Ok(()),
-                    Some("transform") => Err("This source has no picture.".to_owned()),
-                    _ => Err("Say which Properties tab to open.".to_owned()),
+                    Some("transform") => Err("This source has no picture.".into()),
+                    _ => Err("Say which Properties tab to open.".into()),
                 }
             }
             "item.flip" | "item.rotate" | "item.align" | "item.fit" | "item.reset_transform" => {
@@ -610,13 +604,13 @@ impl CommandState for Shown<'_> {
                 }
                 let f = self.source(id)?;
                 if !f.picture {
-                    return Err("The source has no picture.".to_owned());
+                    return Err("The source has no picture.".into());
                 }
                 if f.locked {
-                    return Err("Unlock the source to change its transform.".to_owned());
+                    return Err("Unlock the source to change its transform.".into());
                 }
                 if matches!(id.base(), "item.fit" | "item.reset_transform") && !f.sized {
-                    return Err("The source has no picture yet.".to_owned());
+                    return Err("The source has no picture yet.".into());
                 }
                 Ok(())
             }
@@ -625,7 +619,7 @@ impl CommandState for Shown<'_> {
                 if self.source(id)?.picture {
                     Ok(())
                 } else {
-                    Err("The source has no picture.".to_owned())
+                    Err("The source has no picture.".into())
                 }
             }
             "source.muted.toggle" => {
@@ -633,7 +627,7 @@ impl CommandState for Shown<'_> {
                 if self.source(id)?.audio {
                     Ok(())
                 } else {
-                    Err("The source has no sound in the Mixer.".to_owned())
+                    Err("The source has no sound in the Mixer.".into())
                 }
             }
             "source.mixer_hidden.toggle" | "source.monitor" | "source.monitor_solo.toggle" => {
@@ -641,7 +635,7 @@ impl CommandState for Shown<'_> {
                 if self.source(id)?.audio {
                     Ok(())
                 } else {
-                    Err("The source has no sound in the Mixer.".to_owned())
+                    Err("The source has no sound in the Mixer.".into())
                 }
             }
             "loudness.shown.toggle" => self.running(),
@@ -650,16 +644,16 @@ impl CommandState for Shown<'_> {
                 if s.loudness_shown() {
                     Ok(())
                 } else {
-                    Err("Loudness is not shown.".to_owned())
+                    Err("Loudness is not shown.".into())
                 }
             }
             "mixer.hide_all" | "mixer.hide_muted" | "mixer.unhide_all" => {
                 self.running()?;
                 let (shown, muted, hidden) = s.mixer_counts();
                 match id.base() {
-                    "mixer.hide_all" if shown == 0 => Err("Every source is hidden.".to_owned()),
-                    "mixer.hide_muted" if muted == 0 => Err("No shown source is muted.".to_owned()),
-                    "mixer.unhide_all" if hidden == 0 => Err("No source is hidden.".to_owned()),
+                    "mixer.hide_all" if shown == 0 => Err("Every source is hidden.".into()),
+                    "mixer.hide_muted" if muted == 0 => Err("No shown source is muted.".into()),
+                    "mixer.unhide_all" if hidden == 0 => Err("No source is hidden.".into()),
                     _ => Ok(()),
                 }
             }
@@ -668,7 +662,7 @@ impl CommandState for Shown<'_> {
                 if s.studio_mode {
                     Ok(())
                 } else {
-                    Err("Studio mode is off.".to_owned())
+                    Err("Studio mode is off.".into())
                 }
             }
             "scene.select" => self.running(),
@@ -677,17 +671,17 @@ impl CommandState for Shown<'_> {
                 scene_position(id)
                     .and_then(|n| s.scene_at(n))
                     .map(|_| ())
-                    .ok_or_else(|| "No scene is at this position.".to_owned())
+                    .ok_or_else(|| "No scene is at this position.".into())
             }
             "scene.next" | "scene.previous" => {
                 self.running()?;
                 s.scene_step(1)
                     .map(|_| ())
-                    .ok_or_else(|| "There is only one scene.".to_owned())
+                    .ok_or_else(|| "There is only one scene.".into())
             }
             "ui.panel.maximize" => match panel_of(id) {
                 Some(p) if self.workspace.is_open(&p) => Ok(()),
-                _ => Err("The panel is not open.".to_owned()),
+                _ => Err("The panel is not open.".into()),
             },
             "ui.profile.new"
             | "ui.profile.duplicate"
@@ -704,36 +698,33 @@ impl CommandState for Shown<'_> {
                 let (kind, op) = entry_op(id.base()).ok_or("Unknown command.")?;
                 self.studio
                     .entry_blocked(kind == EntryKind::Collection, op.name())
+                    .map_err(Disabled::from)
             }
-            "ui.layout.undo" if !self.can_undo => {
-                Err("There is no layout change to undo.".to_owned())
-            }
-            "ui.layout.redo" if !self.can_redo => {
-                Err("There is no layout change to redo.".to_owned())
-            }
+            "ui.layout.undo" if !self.can_undo => Err("There is no layout change to undo.".into()),
+            "ui.layout.redo" if !self.can_redo => Err("There is no layout change to redo.".into()),
             "ui.panel.collapse" | "ui.panel.auto_hide" | "ui.panel.move" | "ui.panel.float"
             | "ui.panel.close" => {
                 let Some(c) = self.panel_caps(id) else {
-                    return Err("The panel is not open.".to_owned());
+                    return Err("The panel is not open.".into());
                 };
                 match id.base() {
                     // The lock stops what rearranges; collapse and auto-hide still work.
                     "ui.panel.move" | "ui.panel.float" | "ui.panel.close"
                         if self.workspace.locked =>
                     {
-                        Err("The layout is locked.".to_owned())
+                        Err("The layout is locked.".into())
                     }
                     "ui.panel.collapse" if !c.can_collapse => Err(
                         "Preview and Program, and the last open stack of the centre, stay open."
-                            .to_owned(),
+                            .into(),
                     ),
                     "ui.panel.auto_hide" if !c.can_hide => Err(
                         "Only a stack at the edge of the main window can hide, and not the \
                          only stack of the centre."
-                            .to_owned(),
+                            .into(),
                     ),
                     "ui.panel.move" if id.param("to") == Some("next_stack") && c.stacks < 2 => {
-                        Err("This window has one tab stack.".to_owned())
+                        Err("This window has one tab stack.".into())
                     }
                     _ => Ok(()),
                 }
@@ -741,22 +732,22 @@ impl CommandState for Shown<'_> {
             "ui.layout.rail_size" => match (self.workspace.studio_rail(), id.param("px")) {
                 (None, _) => Err("This workspace has no Preview and Program side by side in \
                                   the centre."
-                    .to_owned()),
+                    .into()),
                 (Some(_), Some(px)) if px.parse::<u32>().is_ok() => Ok(()),
-                _ => Err("The width is a whole number of pixels.".to_owned()),
+                _ => Err("The width is a whole number of pixels.".into()),
             },
             "ui.layout.studio_rail" => match self.workspace.studio_rail() {
                 Some(_) => Ok(()),
                 None => Err("This workspace has no Preview and Program side by side in \
                              the centre."
-                    .to_owned()),
+                    .into()),
             },
             "ui.workspace.reset" => match rbs_ui::builtin::by_name(&self.workspace.name) {
-                None => Err("Only a built-in workspace has a default layout.".to_owned()),
+                None => Err("Only a built-in workspace has a default layout.".into()),
                 Some(mut d) => {
                     d.name.clone_from(&self.workspace.name);
                     if d == *self.workspace {
-                        Err("The workspace already has its default layout.".to_owned())
+                        Err("The workspace already has its default layout.".into())
                     } else {
                         Ok(())
                     }
@@ -764,27 +755,27 @@ impl CommandState for Shown<'_> {
             },
             "ui.toolbar.reset" => match self.workspace.toolbar {
                 Some(_) => Ok(()),
-                None => Err("The toolbar already has its default items.".to_owned()),
+                None => Err("The toolbar already has its default items.".into()),
             },
             // Only Go live is refused while streaming is off, never End stream (ADR-0148 d. 8).
-            "stream.toggle" if !s.streaming_shows() => Err(STREAMING_OFF.to_owned()),
+            "stream.toggle" if !s.streaming_shows() => Err(STREAMING_OFF.into()),
             "stream.main.toggle" if !s.stream_shows(OutputCanvas::Main) => {
-                Err(STREAMING_OFF.to_owned())
+                Err(STREAMING_OFF.into())
             }
             "stream.toggle" if s.go_live_is_vertical() => {
                 CommandId::parse("stream.vertical.toggle")
-                    .map_err(|e| e.to_string())
+                    .map_err(Disabled::from)
                     .and_then(|v| self.enabled(&v))
             }
             "stream.toggle" | "stream.main.toggle" => match s.st_state {
                 st_state::LIVE | st_state::STARTING => Ok(()),
-                st_state::ENDING => Err("The stream is ending.".to_owned()),
+                st_state::ENDING => Err("The stream is ending.".into()),
                 _ => {
                     self.running()?;
                     if s.rec_state != rec_state::OFF {
-                        return Err("Stop the recording to go live.".to_owned());
+                        return Err("Stop the recording to go live.".into());
                     }
-                    s.cannot_record.clone().map_or(Ok(()), Err)
+                    s.cannot_record.clone().map_or(Ok(()), |r| Err(r.into()))
                 }
             },
             "vcam.toggle" => {
@@ -807,7 +798,7 @@ impl CommandState for Shown<'_> {
                 if s.st_state == st_state::LIVE || matches!(s.vertical_st, VerticalOut::On) {
                     Ok(())
                 } else {
-                    Err("Hold works while a stream is live.".to_owned())
+                    Err("Hold works while a stream is live.".into())
                 }
             }
             "output.break_toggle" => {
@@ -818,7 +809,7 @@ impl CommandState for Shown<'_> {
                 if live || recording {
                     Ok(())
                 } else {
-                    Err("Break works while a stream is live or a recording runs.".to_owned())
+                    Err("Break works while a stream is live or a recording runs.".into())
                 }
             }
             "record.pause_toggle" => {
@@ -827,7 +818,7 @@ impl CommandState for Shown<'_> {
                 if s.rec_state == rec_state::RECORDING || vertical {
                     Ok(())
                 } else {
-                    Err("Pause works while a recording runs.".to_owned())
+                    Err("Pause works while a recording runs.".into())
                 }
             }
             "marker.add" => {
@@ -836,7 +827,7 @@ impl CommandState for Shown<'_> {
                 if s.rec_state == rec_state::RECORDING || vertical {
                     Ok(())
                 } else {
-                    Err("Markers are added while a recording runs.".to_owned())
+                    Err("Markers are added while a recording runs.".into())
                 }
             }
             "canvas.auto_layout" => {
@@ -845,7 +836,7 @@ impl CommandState for Shown<'_> {
             }
             "ui.projector.open" => {
                 if !cfg!(any(target_os = "macos", windows)) {
-                    return Err("Projectors need macOS or Windows.".to_owned());
+                    return Err("Projectors need macOS or Windows.".into());
                 }
                 if self.projector_kept(id) {
                     return Ok(());
@@ -854,26 +845,26 @@ impl CommandState for Shown<'_> {
                 match Self::projector_canvas(id) {
                     Some(ProjectorCanvas::Main) => Ok(()),
                     Some(ProjectorCanvas::Vertical) => self.has_vertical(),
-                    None => Err("Name a canvas.".to_owned()),
+                    None => Err("Name a canvas.".into()),
                 }
             }
             "ui.projector.size" => self.projector_window(id).map(|_| ()),
             // Also one waiting for its canvas.
             "ui.projector.close" if self.projector_kept(id) => Ok(()),
-            "ui.projector.close" => Err("The projector is not open.".to_owned()),
+            "ui.projector.close" => Err("The projector is not open.".into()),
             // A line that informs: never run.
             "ui.projector.shared" => {
                 self.projector_window(id)?;
-                Err("The size a video call receives from this window.".to_owned())
+                Err("The size a video call receives from this window.".into())
             }
             "canvas.vertical_size" => {
                 self.running()?;
                 self.has_vertical()?;
                 if size_of(id).is_none() {
-                    return Err("Say the width and height in pixels.".to_owned());
+                    return Err("Say the width and height in pixels.".into());
                 }
                 if s.vertical_st.busy() || s.vertical_rec.busy() {
-                    return Err("Stop the vertical outputs first.".to_owned());
+                    return Err("Stop the vertical outputs first.".into());
                 }
                 Ok(())
             }
@@ -881,7 +872,7 @@ impl CommandState for Shown<'_> {
                 self.running()?;
                 self.has_vertical()?;
                 if s.vertical_st.busy() || s.vertical_rec.busy() {
-                    return Err("Stop the vertical outputs first.".to_owned());
+                    return Err("Stop the vertical outputs first.".into());
                 }
                 Ok(())
             }
@@ -890,43 +881,43 @@ impl CommandState for Shown<'_> {
                 if self.replay.can_save {
                     Ok(())
                 } else if self.replay.armed {
-                    Err("A clip is being saved.".to_owned())
+                    Err("A clip is being saved.".into())
                 } else {
-                    Err("Arm the replay buffer first.".to_owned())
+                    Err("Arm the replay buffer first.".into())
                 }
             }
             "stream.vertical.toggle" => match s.vertical_st {
                 VerticalOut::On | VerticalOut::Starting => Ok(()),
-                VerticalOut::Ending => Err("The vertical stream is ending.".to_owned()),
+                VerticalOut::Ending => Err("The vertical stream is ending.".into()),
                 VerticalOut::Off => {
                     self.running()?;
                     self.has_vertical()?;
                     if !s.stream_available(OutputCanvas::Vertical) {
-                        return Err(STREAMING_OFF.to_owned());
+                        return Err(STREAMING_OFF.into());
                     }
-                    s.cannot_record.clone().map_or(Ok(()), Err)
+                    s.cannot_record.clone().map_or(Ok(()), |r| Err(r.into()))
                 }
             },
             "record.vertical.toggle" => match s.vertical_rec {
                 VerticalOut::On => Ok(()),
-                VerticalOut::Starting => Err("The vertical recording is starting.".to_owned()),
-                VerticalOut::Ending => Err("The vertical recording is stopping.".to_owned()),
+                VerticalOut::Starting => Err("The vertical recording is starting.".into()),
+                VerticalOut::Ending => Err("The vertical recording is stopping.".into()),
                 VerticalOut::Off => {
                     self.running()?;
                     self.has_vertical()?;
-                    s.recording_blocked(true).map_or(Ok(()), Err)
+                    s.recording_blocked(true).map_or(Ok(()), |r| Err(r.into()))
                 }
             },
             "record.toggle" | "record.main.toggle" => match s.rec_state {
                 rec_state::RECORDING => Ok(()),
-                rec_state::STARTING => Err("The recording is starting.".to_owned()),
-                rec_state::STOPPING => Err("The recording is stopping.".to_owned()),
+                rec_state::STARTING => Err("The recording is starting.".into()),
+                rec_state::STOPPING => Err("The recording is stopping.".into()),
                 _ => {
                     self.running()?;
                     if s.st_state != st_state::OFF {
-                        return Err("End the stream to record.".to_owned());
+                        return Err("End the stream to record.".into());
                     }
-                    s.recording_blocked(false).map_or(Ok(()), Err)
+                    s.recording_blocked(false).map_or(Ok(()), |r| Err(r.into()))
                 }
             },
             _ => Ok(()),

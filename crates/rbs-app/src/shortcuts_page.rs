@@ -890,7 +890,7 @@ mod tests {
     struct State;
 
     impl CommandState for State {
-        fn enabled(&self, _: &CommandId) -> Result<(), String> {
+        fn enabled(&self, _: &CommandId) -> Result<(), rbs_ui::command::Disabled> {
             Ok(())
         }
         fn checked(&self, _: &CommandId) -> bool {

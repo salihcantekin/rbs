@@ -9655,10 +9655,10 @@ mod tests {
     fn stream_items_follow_streaming_availability() {
         use crate::menu_bar::{Shown, toolbar};
         use rbs_app::stream_destinations::Canvas;
-        use rbs_ui::command::{CommandId, CommandState};
+        use rbs_ui::command::{CommandId, CommandState, Disabled};
         let (mut ui, d) = ui("stream-items");
         let ws = rbs_ui::builtin::edit();
-        let fixed = |ui: &StudioUi| -> (Vec<String>, bool, Result<(), String>) {
+        let fixed = |ui: &StudioUi| -> (Vec<String>, bool, Result<(), Disabled>) {
             let shown = Shown {
                 workspace: &ws,
                 workspaces: &[],
@@ -9684,7 +9684,7 @@ mod tests {
         let (ids, applies, enabled) = fixed(&ui);
         assert_eq!(ids, ["record.toggle"]);
         assert!(!applies);
-        assert_eq!(enabled, Err(rbs_app::studio_host::STREAMING_OFF.to_owned()));
+        assert_eq!(enabled, Err(rbs_app::studio_host::STREAMING_OFF.into()));
         // A first destination: Go live is back.
         ui.stream.server = "rtmp://live.example.com/app".into();
         assert!(ui.stream_available(OutputCanvas::Main));

@@ -565,15 +565,107 @@ fn known_table(name: &str) -> Option<&'static str> {
     None
 }
 
+/// Why display text is refused ([`plain_line`]); `what` names the text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LineError {
+    /// More than `max` characters.
+    TooLong {
+        /// The text, as a phrase ("author").
+        what: &'static str,
+        /// The limit in characters.
+        max: usize,
+    },
+    /// A control character or a text direction mark.
+    ControlCharacter {
+        /// The text, as a phrase ("author").
+        what: &'static str,
+    },
+}
+
+impl fmt::Display for LineError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            LineError::TooLong { what, max } => {
+                write!(f, "{what} is longer than {max} characters")
+            }
+            LineError::ControlCharacter { what } => {
+                write!(f, "{what} has a control character or text direction mark")
+            }
+        }
+    }
+}
+
+impl std::error::Error for LineError {}
+
+/// Why [`ThemeBody::from_body`] refuses a body. The text names the key or token.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ThemeBodyError {
+    /// No `base` key.
+    BaseMissing,
+    /// `base` is not a string.
+    BaseNotString,
+    /// `base` names no built-in theme.
+    UnknownBase(String),
+    /// `author`, `description` or `effects` is not a string.
+    NotString(&'static str),
+    /// `author` or `description` is not plain display text.
+    Text(LineError),
+    /// `effects` is not a valid name.
+    InvalidEffects(String),
+    /// A token table (`[colors]`, ...) is not a table.
+    NotTable(&'static str),
+    /// A top-level key the format does not have.
+    UnknownKey(String),
+    /// A token name that is not valid, in `table`.
+    InvalidName {
+        /// The name as written.
+        name: String,
+        /// The table it is in.
+        table: &'static str,
+    },
+    /// A known token in the wrong table.
+    WrongTable {
+        /// The token.
+        name: String,
+        /// The table it belongs in.
+        home: &'static str,
+        /// The table it is in.
+        table: &'static str,
+    },
+}
+
+impl fmt::Display for ThemeBodyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ThemeBodyError::BaseMissing => f.write_str("base is missing"),
+            ThemeBodyError::BaseNotString => f.write_str("base must be a string"),
+            ThemeBodyError::UnknownBase(b) => {
+                write!(f, "base {b:?} is not one of {}", THEMES.join(", "))
+            }
+            ThemeBodyError::NotString(key) => write!(f, "{key} must be a string"),
+            ThemeBodyError::Text(e) => e.fmt(f),
+            ThemeBodyError::InvalidEffects(e) => write!(f, "effects {e:?} is not a valid name"),
+            ThemeBodyError::NotTable(table) => write!(f, "[{table}] must be a table"),
+            ThemeBodyError::UnknownKey(key) => write!(f, "unknown key {key}"),
+            ThemeBodyError::InvalidName { name, table } => {
+                write!(f, "invalid token name {name:?} in [{table}]")
+            }
+            ThemeBodyError::WrongTable { name, home, table } => {
+                write!(f, "{name} belongs in [{home}], not [{table}]")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ThemeBodyError {}
+
 /// Display text: one line, no control characters or text direction marks.
-fn plain_line(s: &str, max: usize, what: &str) -> Result<(), String> {
+fn plain_line(s: &str, max: usize, what: &'static str) -> Result<(), LineError> {
     if s.chars().count() > max {
-        return Err(format!("{what} is longer than {max} characters"));
+        return Err(LineError::TooLong { what, max });
     }
     if s.chars().any(|c| c.is_control() || is_direction_mark(c)) {
-        return Err(format!(
-            "{what} has a control character or text direction mark"
-        ));
+        return Err(LineError::ControlCharacter { what });
     }
     Ok(())
 }
@@ -603,18 +695,19 @@ impl ThemeBody {
     /// that is not a table, an invalid token name, a known token in the wrong table
     /// and invalid display text. A known token with a value of the wrong kind is kept
     /// in [`ThemeBody::invalid`] for [`Tokens::resolve`] to report.
-    pub fn from_body(mut body: toml::Table) -> Result<ThemeBody, String> {
+    pub fn from_body(mut body: toml::Table) -> Result<ThemeBody, ThemeBodyError> {
         let base = match body.remove("base") {
-            Some(toml::Value::String(b)) => Base::from_name(&b)
-                .ok_or_else(|| format!("base {b:?} is not one of {}", THEMES.join(", ")))?,
-            Some(_) => return Err("base must be a string".into()),
-            None => return Err("base is missing".into()),
+            Some(toml::Value::String(b)) => {
+                Base::from_name(&b).ok_or(ThemeBodyError::UnknownBase(b))?
+            }
+            Some(_) => return Err(ThemeBodyError::BaseNotString),
+            None => return Err(ThemeBodyError::BaseMissing),
         };
         let mut theme = ThemeBody::new(base);
         for (key, max) in [("author", MAX_AUTHOR), ("description", MAX_DESCRIPTION)] {
             match body.remove(key) {
                 Some(toml::Value::String(s)) => {
-                    plain_line(&s, max, key)?;
+                    plain_line(&s, max, key).map_err(ThemeBodyError::Text)?;
                     let slot = if key == "author" {
                         &mut theme.author
                     } else {
@@ -622,27 +715,27 @@ impl ThemeBody {
                     };
                     *slot = Some(s);
                 }
-                Some(_) => return Err(format!("{key} must be a string")),
+                Some(_) => return Err(ThemeBodyError::NotString(key)),
                 None => {}
             }
         }
         match body.remove(EFFECTS_KEY) {
             Some(toml::Value::String(e)) => {
                 if !valid_name(&e) {
-                    return Err(format!("effects {e:?} is not a valid name"));
+                    return Err(ThemeBodyError::InvalidEffects(e));
                 }
                 // Calm is the same as no key, and is written as no key.
                 if e != Effects::Calm.name() {
                     theme.effects = Some(e);
                 }
             }
-            Some(_) => return Err("effects must be a string".into()),
+            Some(_) => return Err(ThemeBodyError::NotString(EFFECTS_KEY)),
             None => {}
         }
         for table in TABLES {
             let entries = match body.remove(table) {
                 Some(toml::Value::Table(t)) => t,
-                Some(_) => return Err(format!("[{table}] must be a table")),
+                Some(_) => return Err(ThemeBodyError::NotTable(table)),
                 None => continue,
             };
             for (name, value) in entries {
@@ -650,14 +743,19 @@ impl ThemeBody {
             }
         }
         if let Some(extra) = body.keys().next() {
-            return Err(format!("unknown key {extra}"));
+            return Err(ThemeBodyError::UnknownKey(extra.clone()));
         }
         Ok(theme)
     }
 
-    fn read_entry(&mut self, table: &str, name: String, value: toml::Value) -> Result<(), String> {
+    fn read_entry(
+        &mut self,
+        table: &'static str,
+        name: String,
+        value: toml::Value,
+    ) -> Result<(), ThemeBodyError> {
         if !valid_name(&name) {
-            return Err(format!("invalid token name {name:?} in [{table}]"));
+            return Err(ThemeBodyError::InvalidName { name, table });
         }
         let Some(home) = known_table(&name) else {
             self.unknown
@@ -667,7 +765,7 @@ impl ThemeBody {
             return Ok(());
         };
         if home != table {
-            return Err(format!("{name} belongs in [{home}], not [{table}]"));
+            return Err(ThemeBodyError::WrongTable { name, home, table });
         }
         let wrong = |why: &str| (table.to_owned(), value.clone(), why.to_owned());
         let bad = match table {
@@ -1504,7 +1602,7 @@ impl Look<'_> {
                         } else if let Err(why) =
                             plain_line(name, MAX_FONT_NAME, "a font family name")
                         {
-                            p.push(ThemeProblem::at(t.name, why));
+                            p.push(ThemeProblem::at(t.name, why.to_string()));
                         }
                     }
                 }

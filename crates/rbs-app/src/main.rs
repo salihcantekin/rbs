@@ -776,7 +776,7 @@ impl App {
         if let Ok(cid) = rbs_ui::command::CommandId::parse(id)
             && let Err(reason) = shown.enabled(&cid)
         {
-            self.show_error(UiError::Other(reason));
+            self.show_error(UiError::Other(reason.into_string()));
             return;
         }
         let Some(run) = menu_bar::run(id, &shown) else {

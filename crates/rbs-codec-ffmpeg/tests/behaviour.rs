@@ -312,7 +312,7 @@ fn the_next_timeline_after_a_flush_opens_a_new_context() {
 
 /// Each `aac_coder` opens through the layout check (`frame_size` 1024 by field and by
 /// option, `initial_padding` 1024), so packets keep the same size, delay and timing as
-/// the default coder. An unknown coder, and `anmr` (experimental in FFmpeg, which the
+/// the default coder, which is `fast`. An unknown coder, and `anmr` (experimental in FFmpeg, which the
 /// adapter does not unlock), are refused at create, not at the first frame.
 #[cfg(target_os = "linux")]
 #[test]
@@ -338,9 +338,10 @@ fn every_aac_coder_keeps_frame_size_and_delay() {
             assert_eq!(a.duration(), b.duration(), "{coder}: packet {i}");
         }
         assert_monotonic(coder, &out);
-        // The option reaches the encoder: twoloop is the default, fast is not.
+        // The option reaches the encoder: fast is the adapter's default, twoloop
+        // (libavcodec's own default) is not.
         let same = default.iter().zip(&out).all(|(a, b)| a.data() == b.data());
-        assert_eq!(same, coder == "twoloop", "{coder}: payloads");
+        assert_eq!(same, coder == "fast", "{coder}: payloads");
     }
     for refused in ["anmr", "nosuch"] {
         let config = base.clone().with_adapter_option("aac_coder", refused);

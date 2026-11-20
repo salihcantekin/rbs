@@ -580,7 +580,7 @@ UI side, layer path (macOS, `rbs-gpu` feature `preview-layer`, [ADR-0034](../adr
 
 ```rust
 pub struct LayerRect { pub x: f64, pub y: f64, pub width: f64, pub height: f64 } // points, top-left origin
-pub const DEFAULT_RETIRE_AFTER: Duration;  // 34 ms: two refresh periods at 60 Hz
+pub const DEFAULT_RETIRE_AFTER: Duration;  // 34 ms: two refresh periods at 60 Hz; defined on every platform without the feature (ADR-0159)
 
 impl PreviewLayer {                       // not Send: the UI's main thread
     /// A Core Animation layer for the subscriber's surfaces (resize-aspect, above the
@@ -647,7 +647,7 @@ impl PreviewSubscriber {
 }
 
 pub struct LayerRect { pub x: f64, pub y: f64, pub width: f64, pub height: f64 } // physical pixels, top-left origin
-pub const DEFAULT_RETIRE_POLL: Duration;  // 4 ms
+pub const DEFAULT_RETIRE_POLL: Duration;  // 4 ms; defined on every platform without the feature (ADR-0159)
 
 impl PreviewLayer {                       // not Send: the window's thread
     /// D3D11 device on the engine's adapter, the shared textures as composition swapchain

@@ -4,11 +4,13 @@
 //! scripts of the UI crates (`rbs-app-ui-base`, `rbs-app-ui-single` and the facade
 //! `rbs-app-ui`, ADR-0138 decision 3), so both build modes share one generator.
 
-use std::fmt::Write as _;
+use std::fmt::{self, Write as _};
 use std::path::Path;
 use std::time::SystemTime;
 
-use crate::tokens::{BUTTON_FILLS, BUTTON_SURFACES, Tokens, button_outline, panel_outline};
+use crate::tokens::{
+    BUTTON_FILLS, BUTTON_SURFACES, TokenError, Tokens, button_outline, panel_outline,
+};
 
 /// `color.surface.base` -> `surface-base`; `space.1` -> `space-1`.
 fn ident(name: &str, strip: &str) -> String {
@@ -374,23 +376,23 @@ pub fn tokens_apply_rs(t: &Tokens) -> Result<String, std::fmt::Error> {
     )?;
     writeln!(
         s,
-        "pub fn slot(theme: &rbs_ui::tokens::ResolvedTheme, font: &str) -> Result<ThemeSlot, String> {{"
+        "pub fn slot(theme: &rbs_ui::tokens::ResolvedTheme, font: &str) -> Result<ThemeSlot, rbs_ui::tokens::MissingToken> {{"
     )?;
     writeln!(
         s,
-        "    let color = |n: &str| theme.colors.get(n).map(|c| slint::Color::from_argb_u8(c.a, c.r, c.g, c.b)).ok_or_else(|| format!(\"no {{n}}\"));"
+        "    let color = |n: &str| theme.colors.get(n).map(|c| slint::Color::from_argb_u8(c.a, c.r, c.g, c.b)).ok_or_else(|| rbs_ui::tokens::MissingToken(n.to_owned()));"
     )?;
     writeln!(
         s,
-        "    let length = |n: &str| theme.length.get(n).copied().ok_or_else(|| format!(\"no {{n}}\"));"
+        "    let length = |n: &str| theme.length.get(n).copied().ok_or_else(|| rbs_ui::tokens::MissingToken(n.to_owned()));"
     )?;
     writeln!(
         s,
-        "    let duration = |n: &str| theme.duration.get(n).map(|v| i64::from(*v)).ok_or_else(|| format!(\"no {{n}}\"));"
+        "    let duration = |n: &str| theme.duration.get(n).map(|v| i64::from(*v)).ok_or_else(|| rbs_ui::tokens::MissingToken(n.to_owned()));"
     )?;
     writeln!(
         s,
-        "    let style = |n: &str| theme.type_styles.get(n).copied().ok_or_else(|| format!(\"no {{n}}\"));"
+        "    let style = |n: &str| theme.type_styles.get(n).copied().ok_or_else(|| rbs_ui::tokens::MissingToken(n.to_owned()));"
     )?;
     for name in t.type_styles.keys() {
         writeln!(s, "    let {} = style(\"{name}\")?;", rust(name, ""))?;
@@ -432,16 +434,16 @@ pub fn tokens_apply_rs(t: &Tokens) -> Result<String, std::fmt::Error> {
     )?;
     writeln!(
         s,
-        "pub fn apply_tokens(theme: &Theme<'_>, tokens: &Tokens<'_>, file: &rbs_ui::tokens::Tokens, slots: [ThemeSlot; 2]) -> Result<(), String> {{"
+        "pub fn apply_tokens(theme: &Theme<'_>, tokens: &Tokens<'_>, file: &rbs_ui::tokens::Tokens, slots: [ThemeSlot; 2]) -> Result<(), rbs_ui::tokens::MissingToken> {{"
     )?;
     writeln!(
         s,
-        "    let length = |n: &str| file.length.get(n).copied().ok_or_else(|| format!(\"no {{n}}\"));"
+        "    let length = |n: &str| file.length.get(n).copied().ok_or_else(|| rbs_ui::tokens::MissingToken(n.to_owned()));"
     )?;
     if t.duration.keys().any(|n| !themeable(n)) {
         writeln!(
             s,
-            "    let duration = |n: &str| file.duration.get(n).map(|v| i64::from(*v)).ok_or_else(|| format!(\"no {{n}}\"));"
+            "    let duration = |n: &str| file.duration.get(n).map(|v| i64::from(*v)).ok_or_else(|| rbs_ui::tokens::MissingToken(n.to_owned()));"
         )?;
     }
     for name in t.length.keys().filter(|n| !themeable(n)) {
@@ -505,14 +507,40 @@ pub fn write_generated(path: &Path, text: &str, modified: SystemTime) -> std::io
         .set_modified(modified)
 }
 
+/// Why [`write_token_files`] failed; the text names the file.
+#[derive(Debug)]
+pub enum TokenFilesError {
+    /// The built-in token file does not load.
+    Tokens(TokenError),
+    /// Generating a file's text failed.
+    Generate(&'static str, fmt::Error),
+    /// Writing a file failed.
+    Write(&'static str, std::io::Error),
+}
+
+impl fmt::Display for TokenFilesError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TokenFilesError::Tokens(e) => e.fmt(f),
+            TokenFilesError::Generate(file, e) => write!(f, "generating {file}: {e}"),
+            TokenFilesError::Write(file, e) => write!(f, "writing {file}: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for TokenFilesError {}
+
 /// Writes `tokens.slint` and `tokens_apply.rs` for the built-in token file into `dir`,
 /// with `modified` as their modification time (see [`write_generated`]).
-pub fn write_token_files(dir: &Path, modified: SystemTime) -> Result<(), String> {
-    let tokens = Tokens::built_in().map_err(|e| e.to_string())?;
-    let slint = tokens_slint(&tokens).map_err(|e| format!("generating tokens.slint: {e}"))?;
-    write_generated(&dir.join("tokens.slint"), &slint, modified)
-        .map_err(|e| format!("writing tokens.slint: {e}"))?;
-    let apply = tokens_apply_rs(&tokens).map_err(|e| format!("generating tokens_apply.rs: {e}"))?;
-    write_generated(&dir.join("tokens_apply.rs"), &apply, modified)
-        .map_err(|e| format!("writing tokens_apply.rs: {e}"))
+pub fn write_token_files(dir: &Path, modified: SystemTime) -> Result<(), TokenFilesError> {
+    let tokens = Tokens::built_in().map_err(TokenFilesError::Tokens)?;
+    for (file, text) in [
+        ("tokens.slint", tokens_slint(&tokens)),
+        ("tokens_apply.rs", tokens_apply_rs(&tokens)),
+    ] {
+        let text = text.map_err(|e| TokenFilesError::Generate(file, e))?;
+        write_generated(&dir.join(file), &text, modified)
+            .map_err(|e| TokenFilesError::Write(file, e))?;
+    }
+    Ok(())
 }

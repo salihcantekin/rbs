@@ -19,12 +19,12 @@ impl Document for ShortcutsDoc {
 
     fn from_body(body: toml::Table) -> Result<Self, String> {
         let doc: ShortcutsDoc = document::from_body(body)?;
-        doc.validate()?;
+        doc.validate().map_err(|e| e.to_string())?;
         Ok(doc)
     }
 
     fn to_body(&self) -> Result<toml::Table, String> {
-        self.validate()?;
+        self.validate().map_err(|e| e.to_string())?;
         document::body_of(self)
     }
 }

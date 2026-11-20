@@ -58,10 +58,7 @@ use crate::error::GpuError;
 /// `COMPOSITIONOBJECT_READ | COMPOSITIONOBJECT_WRITE` (dcomptypes.h).
 const COMPOSITIONOBJECT_ALL_ACCESS: u32 = 0x0003;
 
-/// How often the UI checks a replaced frame's buffer while one waits: the desktop
-/// compositor gives a buffer back at its next composition after the replacing present,
-/// within one refresh period.
-pub const DEFAULT_RETIRE_POLL: Duration = Duration::from_millis(4);
+use crate::share::DEFAULT_RETIRE_POLL;
 
 /// A rectangle in the window's client area in physical pixels, origin at the top left.
 #[derive(Debug, Clone, Copy, PartialEq)]

@@ -11,7 +11,7 @@ mod solid;
 mod subscriber;
 
 #[cfg(feature = "preview-layer")]
-pub use layer::{DEFAULT_RETIRE_POLL, LayerRect, PreviewLayer};
+pub use layer::{LayerRect, PreviewLayer};
 pub use publisher::PreviewPublisher;
 #[cfg(feature = "preview-layer")]
 pub use solid::{Solid, SolidGroup, SolidLayer};

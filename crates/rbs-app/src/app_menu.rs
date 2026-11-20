@@ -79,7 +79,7 @@ impl Row {
             shortcut: shortcut(&id).unwrap_or_default(),
             value: String::new(),
             enabled: disabled.is_none(),
-            reason: disabled.unwrap_or_default(),
+            reason: disabled.map(String::from).unwrap_or_default(),
             checkable: checked.is_some(),
             checked: checked.unwrap_or(false),
             id,
@@ -160,7 +160,7 @@ fn rows_of(
                     enabled: open,
                     checkable: true,
                     checked: current,
-                    reason: disabled.clone().unwrap_or_default(),
+                    reason: disabled.clone().map(String::from).unwrap_or_default(),
                     up: None,
                     down: None,
                 }
@@ -187,7 +187,7 @@ fn rows_of(
                     .map(|c| c.0.clone())
                     .unwrap_or_default(),
                 enabled: disabled.is_none() && !choices.is_empty(),
-                reason: disabled.unwrap_or_default(),
+                reason: disabled.map(String::from).unwrap_or_default(),
                 icon: icon.unwrap_or(""),
                 id: at.to_string(),
                 ..Row::plain(Kind::Picker, &title)
@@ -221,7 +221,7 @@ mod tests {
     struct State;
 
     impl CommandState for State {
-        fn enabled(&self, id: &CommandId) -> Result<(), String> {
+        fn enabled(&self, id: &CommandId) -> Result<(), rbs_ui::command::Disabled> {
             match id.base() {
                 "edit.redo" => Err("Nothing to redo.".into()),
                 _ => Ok(()),
