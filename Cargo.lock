@@ -5449,6 +5449,7 @@ dependencies = [
 name = "rbs-scene"
 version = "0.0.1"
 dependencies = [
+ "criterion 0.8.2",
  "rbs-core",
  "rbs-graph",
 ]
