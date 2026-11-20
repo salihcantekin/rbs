@@ -5,7 +5,10 @@ description: Write an Architecture Decision Record for RBS when a decision is ha
 
 # Write an ADR
 
-1. Check `docs/adr/README.md` for an existing ADR on the topic. If one exists and you disagree, write a superseding ADR; never edit an accepted one (only its status line).
+1. Check `docs/adr/README.md` for an existing ADR on the topic. If one exists, decide which case you are in (owner decision D1, 2026-11-20):
+   - **A factual error** in an accepted ADR (a wrong file, API name, number, platform fact or measurement; the decision itself stays): fix it in place and append a `## Review` record that says what was wrong, what it says now, who found it and the date. No new ADR.
+   - **A changed decision** (anything a reviewer would check code against differently): write a short superseding ADR that names the decisions it replaces, set the old one's status line to `Superseded by ADR-NNNN`, and do not change its text otherwise. The new ADR needs the independent review of step 7 and the owner's approval.
+   - When unsure which case it is, treat it as a changed decision.
 2. Copy `docs/adr/template.md` to `docs/adr/NNNN-short-kebab-title.md` with the next free number.
 3. Fill in:
    - **Context:** the forces and constraints, with links to specs, issues and measurements. No solution here.

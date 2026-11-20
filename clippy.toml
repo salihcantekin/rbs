@@ -1,0 +1,9 @@
+# Workspace clippy settings (quality plan WP-01). Clippy reads the first clippy.toml
+# it finds from a crate's directory upwards, so a crate with its own file
+# (rbs-app, rbs-cli, rbs-mcp) repeats these lines there.
+
+# Tests may unwrap, expect and panic: a failed test is the report (CLAUDE.md rule 8
+# is about library code).
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true

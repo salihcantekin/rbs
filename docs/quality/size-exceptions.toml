@@ -1,0 +1,3 @@
+# Approved size increases for `cargo xtask check-size`. Do not edit by hand.
+# An entry is added with `cargo xtask check-size --except` after the owner approves
+# in writing; `--lower` removes it once the item no longer needs it.

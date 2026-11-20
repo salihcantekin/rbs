@@ -1,3 +1,6 @@
+# Pinned so every machine (Mac, SC-PC, the cloud) lints with the same clippy and the
+# same lints fire everywhere (quality plan WP-01). Raise it in its own change, with
+# `cargo xtask verify` and clippy on Linux, macOS and Windows.
 [toolchain]
-channel = "stable"
+channel = "1.97.0"
 components = ["rustfmt", "clippy"]

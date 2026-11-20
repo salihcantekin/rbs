@@ -10,13 +10,13 @@ A headless live production engine in Rust (capture, compose, encode, stream, rec
 
 1. **English only.** Code, identifiers, comments, docs, commit messages and PR text are in English, even when the conversation is in another language ([ADR-0011](docs/adr/0011-english-only-repository.md)).
 2. **Spec first.** Before implementing a public API, port, node type or crate, find its spec in `docs/specs`. If it is missing or wrong, update the spec in the same change and say so. Do not invent contracts in code alone.
-3. **Respect the layers.** Core and port crates never depend on adapters, vendor SDKs, FFmpeg, OS media APIs or UI toolkits (principle P1). Only the composition roots `rbs-app`, `rbs-cli` and `rbs-mcp` (planned, ADR-0052) wire adapters together.
+3. **Respect the layers.** Core and port crates never depend on adapters, vendor SDKs, FFmpeg, OS media APIs or UI toolkits (principle P1). Only the composition roots `rbs-app`, `rbs-cli` and `rbs-mcp` (ADR-0052) wire adapters together.
 4. **Capabilities, not vendors.** Never branch on vendor or device model names in engine code. Add a capability instead (P3).
 5. **Real-time paths.** No allocation, blocking, I/O or contended locks in audio callbacks or `Node::process` (P6). Use pre-allocated buffers and lock-free queues.
 6. **Zero-copy by default.** Pass GPU texture handles; never read frames back to the CPU on the default path (P4).
 7. **`unsafe` discipline.** Only in adapter crates or marked low-level modules, every block with a `// SAFETY:` comment explaining the invariant. Run the `risky-review` skill.
 8. **No panics across boundaries.** Port and plugin calls return typed errors. No `unwrap()`/`expect()` in library code except for proven invariants with a comment.
-9. **Do not change accepted ADRs.** Write a new ADR that supersedes it (appending a `## Review` record is allowed).
+9. **Do not change accepted decisions.** A changed decision gets a short new ADR that supersedes the old one, with an independent review and the owner's approval. A factual error in an accepted ADR (a wrong name, number, file or platform fact, the decision unchanged) is fixed in place with a `## Review` record saying what changed and why (owner decision D1, 2026-11-20; `write-adr` skill).
 10. **Zero cost when unused.** Design every feature with the Installed / Standby / Active lifecycle (P13, [ADR-0013](docs/adr/0013-zero-cost-when-unused.md)). Installed items add no threads, polling, GPU resources, device handles or per-frame work. Never add per-iteration checks in hot loops that test whether a feature is enabled; keep inactive nodes out of the scheduled graph instead.
 11. **Never review your own architecture.** ADRs, port changes, public contract changes (plugin SDK, control API, scene format), crate layering changes and new core/port dependencies need an independent review: a human, or a fresh AI session that gets only the proposal, specs and code (P14, [ADR-0014](docs/adr/0014-review-policy.md), `architecture-review` skill). An ADR stays `Proposed` until that review is recorded and the owner approves.
 12. **Hot paths need numbers and a human.** Code edited inside, or called directly from, the [hot paths](docs/architecture/hot-paths.md) needs before/after measurements, the `hot-path-review` checklist and a human maintainer's approval (P15). Your own checklist is never the only review.
@@ -50,6 +50,7 @@ A git worktree is a second checkout. Cargo puts `target/` in that checkout unles
 ## Commands
 
 ```sh
+cargo xtask verify                # mandatory before every push (see below)
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace            # or: cargo nextest run --workspace (CI uses nextest)
@@ -58,7 +59,12 @@ cargo xtask check-ui              # after any change under crates/rbs-app/ui (ru
 cargo xtask affected test         # before a push: changed crates and their dependents only
 cargo xtask affected clippy
 cargo xtask ui-dev                # UI work: run the app; saving a .slint file reloads it (no Rust build)
+cargo xtask check-size            # long files and functions may not grow (docs/quality/size-baseline.toml)
 ```
+
+`cargo xtask verify` runs fmt, `check-layers`, `check-ui` and `check-size`, then `affected clippy` and `affected test`, and prints one result line. Run it before every push and paste that line in the commit or PR; GitHub CI stays manual (owner decision D3, 2026-11-20). `cargo xtask verify --quick` runs only the first four, for the merger's check of a merge result. Like `check-ui`'s files, `docs/quality/size-baseline.toml` and `size-exceptions.toml` are never edited by hand: `check-size --lower` after a split, and `check-size --except` only after the owner's written approval.
+
+Pushing straight to `main` is allowed during development (owner decision D2, 2026-11-20): check `git log origin/main` first, since other sessions push too, and add an independent review where rules 11 and 12 ask for one. A hot-path or contract change carries its measurement note (before/after numbers, machine) in the commit message or its ADR.
 
 A task is done when all of them pass, the acceptance criteria are met, and specs are in sync. Saying it works is not evidence; show the command output.
 

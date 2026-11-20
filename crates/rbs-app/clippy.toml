@@ -1,3 +1,9 @@
+# Tests may unwrap, expect and panic (the root clippy.toml; clippy reads only this file
+# for this crate, so the lines are repeated here).
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+
 # Crash resilience in the desktop app (ADR-0055, spec crash-resilience.md).
 disallowed-methods = [
     # Decision 2: toolkit entry points only through `src/entry.rs`, whose wrappers run

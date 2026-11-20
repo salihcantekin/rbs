@@ -12,11 +12,18 @@
 //! (`affected`, `docs/specs/testing-strategy.md`).
 //!
 //! `cargo xtask ui-dev` runs the app with the UI live preview (`ui_dev`).
+//!
+//! `cargo xtask check-size` keeps long files and functions from growing (`check_size`).
+//!
+//! `cargo xtask verify` runs all of the above that a push needs, in one command
+//! (`verify`, owner decision D3 of 2026-11-20).
 
 mod affected;
+mod check_size;
 mod check_ui;
 mod ui_dev;
 mod ui_split;
+mod verify;
 
 use std::env;
 use std::fs;
@@ -91,6 +98,28 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Some("check-size") => {
+            let rest: Vec<String> = args.collect();
+            match check_size::run(&workspace_root(), &rest) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(errors) => {
+                    for error in errors {
+                        eprintln!("check-size: {error}");
+                    }
+                    ExitCode::from(1)
+                }
+            }
+        }
+        Some("verify") => {
+            let rest: Vec<String> = args.collect();
+            match verify::run(&workspace_root(), &rest) {
+                Ok(code) => code,
+                Err(error) => {
+                    eprintln!("verify: {error}");
+                    ExitCode::from(2)
+                }
+            }
+        }
         Some("ui-dev") => {
             let rest: Vec<String> = args.collect();
             match ui_dev::run(&workspace_root(), &rest) {
@@ -103,8 +132,10 @@ fn main() -> ExitCode {
         }
         _ => {
             eprintln!(
-                "usage: cargo xtask check-layers\n{}\n{}\n{}",
+                "usage: cargo xtask check-layers\n{}\n{}\n{}\n{}\n{}",
+                verify::USAGE,
                 check_ui::USAGE,
+                check_size::USAGE,
                 affected::USAGE,
                 ui_dev::USAGE
             );
@@ -329,6 +360,24 @@ fn deny(from: &str, to: &str) -> Option<String> {
             &["serde", "toml"],
             "the plugin SDK is the manifest types and does not see the engine",
         ),
+        Class::Denoise => deny_named(
+            to,
+            to_class,
+            &["realfft"],
+            "the speech denoiser is pure DSP on realfft (ADR-0130)",
+        ),
+        Class::RecordingModel => deny_named(
+            to,
+            to_class,
+            &["rbs-core", "toml"],
+            "the recording model sees no engine, port, adapter or UI crate (ADR-0089)",
+        ),
+        Class::EditorProject => deny_named(
+            to,
+            to_class,
+            &["rbs-core", "rbs-manifest"],
+            "an editor project is written from the recording manifest only (ADR-0089)",
+        ),
         Class::Plugin => deny_named(
             to,
             to_class,
@@ -369,6 +418,11 @@ fn deny_support(from: &str, to: &str, to_class: Option<Class>) -> Option<String>
     if from == "rbs-browser-shm" && matches!(to, "libc" | "windows") {
         return None;
     }
+    // OS facts shared by adapters and composition roots: free space, memory and
+    // the app identity that holds the OS privacy grants (ADR-0090, ADR-0141).
+    if from == "rbs-system-probe" && matches!(to, "libc" | "windows-sys") {
+        return None;
+    }
     let _ = to_class;
     Some("adapter support never depends on an adapter or a vendor SDK".to_owned())
 }
@@ -391,13 +445,26 @@ fn deny_engine(from: &str, to: &str, to_class: Option<Class>) -> Option<String> 
             | Class::Import
             | Class::Tool
             | Class::Plugin
-            | Class::PluginSdk,
+            | Class::PluginSdk
+            | Class::EditorProject,
         ) => Some("the engine never depends on an adapter, the control API or the UI".to_owned()),
         // Support crates that carry OS bindings stay with their adapters.
-        Some(Class::Support) if matches!(to, "rbs-browser-shm" | "rbs-vcam-mf-source") => {
+        Some(Class::Support)
+            if matches!(
+                to,
+                "rbs-browser-shm" | "rbs-vcam-mf-source" | "rbs-system-probe"
+            ) =>
+        {
             Some("the engine never reaches OS bindings through a support crate".to_owned())
         }
-        Some(Class::Core | Class::Helper | Class::Support | Class::Engine) => None,
+        Some(
+            Class::Core
+            | Class::Helper
+            | Class::Support
+            | Class::Engine
+            | Class::Denoise
+            | Class::RecordingModel,
+        ) => None,
         None if is_ui_toolkit(to) || is_ffmpeg(to) || is_os_media(to) && from != "rbs-gpu" => Some(
             "OS media and UI toolkits stay in adapters; wgpu stays in the GPU crates".to_owned(),
         ),
@@ -433,7 +500,10 @@ fn deny_adapter(from: &str, to: &str, to_class: Option<Class>) -> Option<String>
             | Class::Import
             | Class::Tool
             | Class::Plugin
-            | Class::PluginSdk,
+            | Class::PluginSdk
+            | Class::Denoise
+            | Class::RecordingModel
+            | Class::EditorProject,
         ) => Some("an adapter sees its port, foundation and its support crate".to_owned()),
         Some(Class::Core | Class::Helper | Class::Support) => None,
         None if is_ui_toolkit(to) => Some("an adapter does not use a UI toolkit".to_owned()),
@@ -517,6 +587,12 @@ enum Class {
     Tool,
     PluginSdk,
     Plugin,
+    /// `rbs-denoise`: the speech denoiser (ADR-0130).
+    Denoise,
+    /// `rbs-manifest`: the recording model (ADR-0089).
+    RecordingModel,
+    /// `rbs-project`: editor projects, used only by composition roots (ADR-0089).
+    EditorProject,
 }
 
 /// `None` for a crate from outside the workspace. A workspace crate that is missing
@@ -528,7 +604,9 @@ fn class(name: &str) -> Option<Class> {
         "rbs-params" | "rbs-media-format" | "rbs-crash" | "rbs-vcam-ring" | "rbs-browser-ipc" => {
             Class::Helper
         }
-        "rbs-codec-hw" | "rbs-vcam-mf-source" | "rbs-browser-shm" => Class::Support,
+        "rbs-codec-hw" | "rbs-vcam-mf-source" | "rbs-browser-shm" | "rbs-system-probe" => {
+            Class::Support
+        }
         "rbs-gpu" | "rbs-audio" | "rbs-audio-filters" | "rbs-engine" | "rbs-nodes"
         | "rbs-sources" | "rbs-record" | "rbs-filters" => Class::Engine,
         "rbs-api" => Class::Control,
@@ -544,6 +622,9 @@ fn class(name: &str) -> Option<Class> {
         "rbs-plugin-sdk" => Class::PluginSdk,
         "rbs-plugin-host" => Class::Plugin,
         "xtask" => Class::Tool,
+        "rbs-denoise" => Class::Denoise,
+        "rbs-manifest" => Class::RecordingModel,
+        "rbs-project" => Class::EditorProject,
         "rbs-capture-wgc"
         | "rbs-capture-sck"
         | "rbs-capture-avf"
@@ -574,10 +655,12 @@ fn class(name: &str) -> Option<Class> {
         | "rbs-transport-rtmp"
         | "rbs-transport-srt"
         | "rbs-thread-os"
-        | "rbs-system-probe"
         | "rbs-vcam-mf"
         | "rbs-vcam-test"
         | "rbs-media-decode-test"
+        | "rbs-media-anim"
+        | "rbs-media-avf"
+        | "rbs-media-mf"
         | "rbs-text-test"
         | "rbs-text-parley"
         | "rbs-browser-runner"
@@ -702,6 +785,25 @@ mod tests {
         assert!(deny("rbs-browser-runner", "rbs-browser-shm").is_none());
         assert!(deny("rbs-sources", "rbs-browser-shm").is_some());
         assert!(deny("rbs-app", "rbs-browser-shm").is_none());
+    }
+
+    #[test]
+    fn adapters_share_os_facts_through_the_system_probe() {
+        assert!(deny("rbs-capture-sck", "rbs-system-probe").is_none());
+        assert!(deny("rbs-system-probe", "windows-sys").is_none());
+        assert!(deny("rbs-system-probe", "rbs-capture-sck").is_some());
+        assert!(deny("rbs-record", "rbs-system-probe").is_some());
+    }
+
+    #[test]
+    fn the_recording_model_and_editor_projects_stay_small() {
+        assert!(deny("rbs-record", "rbs-manifest").is_none());
+        assert!(deny("rbs-manifest", "rbs-graph").is_some());
+        assert!(deny("rbs-project", "rbs-manifest").is_none());
+        assert!(deny("rbs-record", "rbs-project").is_some());
+        assert!(deny("rbs-cli", "rbs-project").is_none());
+        assert!(deny("rbs-audio-filters", "rbs-denoise").is_none());
+        assert!(deny("rbs-denoise", "rbs-core").is_some());
     }
 
     /// The CEF runner is outside the workspace, so check its manifest here.

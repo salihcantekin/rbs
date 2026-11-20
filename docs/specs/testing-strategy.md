@@ -56,7 +56,7 @@ A change to the root `Cargo.toml`, `.cargo/`, `.config/`, a toolchain file or an
 
 When the selection holds `rbs-app`, `test` builds the whole workspace and runs only the selected packages' tests (`cargo nextest run --workspace -E 'package(=a) | package(=b)'`). A `-p` subset resolves features over the subset alone, so it compiles third-party crates and about 46 workspace crates a second time with other features: `-p rbs-app` beside a workspace build took 248 s and 7 GB of disk, while the workspace build after a change in `rbs-app` takes about 70 s (4-core cloud container, 2026-11-17). A filter of the caller's own (`-- -E ...`) keeps `-p`. Every `cargo` that xtask starts drops the `CARGO_MANIFEST_DIR` and `CARGO_PKG_*` variables `cargo run` set for xtask; passed on, they made `ring`'s build script rerun, and every switch between `cargo xtask affected test` and a plain `cargo test` rebuilt `ring`, `rustls` and everything above them (about 200 s).
 
-Before a pull request is pushed, `cargo fmt --all -- --check`, `cargo xtask affected clippy` and `cargo xtask affected test` are enough. The whole workspace runs once after a batch of merges, not before each one.
+Before a push, `cargo xtask verify` is mandatory (owner decision D3, 2026-11-20): it runs `cargo fmt --all -- --check`, `check-layers`, `check-ui` and `check-size` (the quick part, `--quick` alone), then `cargo xtask affected clippy` and `cargo xtask affected test`, and ends with one result line. The affected part is skipped when a quick check fails. The whole workspace runs once after a batch of merges, not before each one.
 
 ### UI live preview
 
