@@ -948,18 +948,18 @@ impl Client {
         self.event("stream.state", ok)
     }
 
-    /// The next event of `name` whose data `ok` accepts; earlier ones are dropped.
+    /// The next event of `name` whose data `ok` accepts; earlier ones of `name` are
+    /// dropped, other topics stay queued (topics are not ordered against each other).
     fn event(&mut self, name: &str, ok: impl Fn(&serde_json::Value) -> bool) -> serde_json::Value {
         let topic = |e: &serde_json::Value| e["params"]["topic"] == name;
-        while !self.events.is_empty() {
-            let e = self.events.remove(0);
-            if topic(&e) && ok(&e["params"]["data"]) {
-                return e;
-            }
-        }
         loop {
-            let v = self.rx.recv_timeout(LIMIT).expect("an event");
-            if topic(&v) && ok(&v["params"]["data"]) {
+            let v = match self.events.iter().position(topic) {
+                Some(i) => self.events.remove(i),
+                None => self.rx.recv_timeout(LIMIT).expect("an event"),
+            };
+            if !topic(&v) {
+                self.events.push(v);
+            } else if ok(&v["params"]["data"]) {
                 return v;
             }
         }
