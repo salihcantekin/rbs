@@ -101,6 +101,9 @@ pub struct Unclean {
     pub pid: u32,
     /// Its newest crash report, when it wrote one.
     pub report: Option<PathBuf>,
+    /// The shutdown step that had not finished when it gave up waiting and ended
+    /// itself ([`exit_unfinished`], ADR-0156 decision 6); `None` for any other end.
+    pub unfinished: Option<String>,
 }
 
 /// This process's running marker, held locked for the life of the session.
@@ -163,6 +166,81 @@ pub fn install(dir: &Path) -> io::Result<Session> {
     let _ = INSTALL_THREAD.set(std::thread::current().id());
     set_hook(dir.to_owned());
     open_session(dir, std::process::id(), unix_now())
+}
+
+/// Ends the process at once because its shutdown did not finish in time (ADR-0156
+/// decision 6): writes `unfinished-<pid>-<secs>.txt` naming `step` into the report
+/// directory, keeps the running marker, and ends without exit handlers or static
+/// destructors, which a thread that is still stuck may block. The next start sees the
+/// marker as [`Unclean`] with `unfinished` set.
+pub fn exit_unfinished(step: &str) -> ! {
+    if let Some(dir) = REPORT_DIR.get() {
+        let _ = write_unfinished(dir, std::process::id(), unix_now(), step);
+    }
+    hard_exit::now(1)
+}
+
+/// Writes the unfinished-shutdown note of process `pid` at `secs`.
+fn write_unfinished(dir: &Path, pid: u32, secs: u64, step: &str) -> io::Result<PathBuf> {
+    fs::create_dir_all(dir)?;
+    let path = dir.join(format!("unfinished-{pid}-{secs}.txt"));
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)?;
+    file.write_all(format!("{UNFINISHED_PREFIX}{step}\n").as_bytes())?;
+    file.sync_all()?;
+    Ok(path)
+}
+
+/// The first line of an unfinished-shutdown note, before the step's name.
+const UNFINISHED_PREFIX: &str = "shutdown did not finish: ";
+
+/// An unfinished-shutdown note's name: `(pid, secs)`.
+fn unfinished_name(name: &str) -> Option<(u32, u64)> {
+    let rest = name.strip_prefix("unfinished-")?.strip_suffix(".txt")?;
+    let (pid, secs) = rest.split_once('-')?;
+    Some((pid.parse().ok()?, secs.parse().ok()?))
+}
+
+/// Low-level module (CLAUDE.md rule 7): ends the process without the C runtime's exit
+/// handlers. Std has no such call on Unix (`process::exit` runs `atexit`), and on
+/// Windows `ExitProcess` runs DLL detach under the loader lock.
+mod hard_exit {
+    #[cfg(unix)]
+    unsafe extern "C" {
+        /// POSIX `_exit`: ends the process; no `atexit` handlers, no stdio flush.
+        fn _exit(code: std::ffi::c_int) -> !;
+    }
+
+    #[cfg(windows)]
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetCurrentProcess() -> *mut std::ffi::c_void;
+        fn TerminateProcess(process: *mut std::ffi::c_void, code: u32) -> i32;
+    }
+
+    /// Ends this process with `code`.
+    pub(super) fn now(code: u8) -> ! {
+        #[cfg(unix)]
+        // SAFETY: `_exit` takes a plain integer and never returns; no Rust state is
+        // touched afterwards.
+        unsafe {
+            _exit(std::ffi::c_int::from(code))
+        }
+        #[cfg(windows)]
+        {
+            // SAFETY: `GetCurrentProcess` returns a pseudo handle that needs no
+            // closing; `TerminateProcess` on it ends this process and does not return
+            // when it succeeds.
+            unsafe {
+                TerminateProcess(GetCurrentProcess(), u32::from(code));
+            }
+            std::process::abort()
+        }
+        #[cfg(not(any(unix, windows)))]
+        std::process::abort()
+    }
 }
 
 static REPORT_DIR: OnceLock<PathBuf> = OnceLock::new();
@@ -346,11 +424,14 @@ fn open_session(dir: &Path, pid: u32, now: u64) -> io::Result<Session> {
     fs::create_dir_all(dir)?;
     let mut reports: Vec<((u64, u32), u32, PathBuf)> = Vec::new();
     let mut markers: Vec<(u32, PathBuf)> = Vec::new();
+    let mut notes: Vec<(u32, u64, PathBuf)> = Vec::new();
     for entry in fs::read_dir(dir)?.flatten() {
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
         if let Some((pid, secs, serial)) = report_name(name) {
             reports.push(((secs, serial), pid, entry.path()));
+        } else if let Some((pid, secs)) = unfinished_name(name) {
+            notes.push((pid, secs, entry.path()));
         } else if let Some(pid) = name
             .strip_prefix("running-")
             .and_then(|r| r.strip_suffix(".lock"))
@@ -384,11 +465,27 @@ fn open_session(dir: &Path, pid: u32, now: u64) -> io::Result<Session> {
             .rev()
             .find(|((secs, _), p, _)| *p == old_pid && *secs >= started)
             .map(|(_, _, path)| path.clone());
+        let unfinished = notes
+            .iter()
+            .filter(|(p, secs, _)| *p == old_pid && *secs >= started)
+            .max_by_key(|(_, secs, _)| *secs)
+            .and_then(|(_, _, path)| fs::read_to_string(path).ok())
+            .map(|text| {
+                let line = text.lines().next().unwrap_or_default();
+                line.strip_prefix(UNFINISHED_PREFIX)
+                    .unwrap_or(line)
+                    .to_owned()
+            });
         unclean.push(Unclean {
             pid: old_pid,
             report,
+            unfinished,
         });
         let _ = fs::remove_file(&path);
+    }
+    // Notes are read once: the notice above is their only use.
+    for (_, _, path) in notes {
+        let _ = fs::remove_file(path);
     }
     // Old reports go, except those the notice is about to show.
     let excess = reports.len().saturating_sub(KEEP_REPORTS);
@@ -687,6 +784,40 @@ mod tests {
     }
 
     #[test]
+    fn an_unfinished_shutdown_names_its_step_once() {
+        let dir = temp_dir("unfinished");
+        let ended = open_session(&dir, 900, 1_000).unwrap();
+        // A note of an earlier process with the same pid is not this one's.
+        write_unfinished(&dir, 900, 999, "older").unwrap();
+        write_unfinished(&dir, 900, 1_005, "studio").unwrap();
+        drop(ended);
+        let next = open_session(&dir, 901, 2_000).unwrap();
+        assert_eq!(next.unclean().len(), 1);
+        assert_eq!(next.unclean()[0].unfinished.as_deref(), Some("studio"));
+        drop(next);
+        // Read once: the start after that says nothing more about it.
+        let after = open_session(&dir, 902, 3_000).unwrap();
+        assert!(
+            after
+                .unclean()
+                .iter()
+                .all(|u| u.pid != 900 && u.unfinished.is_none())
+        );
+        after.end_clean();
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_crash_without_a_note_is_not_unfinished() {
+        let dir = temp_dir("no-note");
+        drop(open_session(&dir, 910, 1_000).unwrap());
+        let next = open_session(&dir, 911, 2_000).unwrap();
+        assert_eq!(next.unclean()[0].unfinished, None);
+        next.end_clean();
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn contain_marks_the_thread_while_inside() {
         assert_eq!(CONTAINED.with(Cell::get), 0);
         let inner = contain(|| CONTAINED.with(Cell::get)).unwrap();
@@ -716,7 +847,8 @@ mod tests {
             next.unclean(),
             &[Unclean {
                 pid: 100,
-                report: Some(newest)
+                report: Some(newest),
+                unfinished: None,
             }]
         );
         assert!(!dir.join("running-100.lock").exists());
