@@ -62,6 +62,8 @@ pub(super) fn log_update(kind: Option<Kind>, u: &Update) {
         (_, Update::Failed(why)) => {
             rbs_core::error!(Area::Studio, "the studio stopped: {why}");
         }
+        // Sent only by fault-injection builds (tests, ADR-0055).
+        #[cfg(feature = "fault-injection")]
         (_, Update::Recovered { stopped }) => {
             rbs_core::info!(
                 Area::Studio,

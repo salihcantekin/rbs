@@ -32,7 +32,8 @@ usage: cargo xtask affected [--base <rev>] [--head <rev>] [list|check|clippy|tes
           request selects; sources are still read from the working tree)
   list    print the affected packages, one per line (default)
   check   cargo check --all-targets on them
-  clippy  cargo clippy --all-targets -- -D warnings on them
+  clippy  cargo clippy --all-targets -- -D warnings on them, then once more on their
+          libraries and binaries alone, with no dev-dependency features
   test    cargo nextest run on them (cargo test when nextest is not installed); when a
           UI crate is selected, also checks the UI live preview build (ADR-0138)";
 
@@ -486,7 +487,7 @@ fn cargo(
             if nextest {
                 command
                     .args(["nextest", "run"])
-                    .args(nextest_packages(selection, extra).unwrap_or(packages))
+                    .args(nextest_packages(selection, extra).unwrap_or_else(|| packages.clone()))
                     .args(extra);
             } else {
                 eprintln!("affected: cargo-nextest is not installed; using cargo test");
@@ -501,6 +502,9 @@ fn cargo(
     eprintln!("affected: {action} on {count}");
     let status = command.status().map_err(|e| format!("run {cargo}: {e}"))?;
     if !status.success() {
+        return Ok(ExitCode::from(1));
+    }
+    if action == "clippy" && !normal_build_clippy(root, &packages)? {
         return Ok(ExitCode::from(1));
     }
     if action == "test" && selects_ui(selection) {
@@ -522,6 +526,25 @@ fn cargo(
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Lints the libraries and binaries of `packages` the way a release build compiles
+/// them. `--all-targets` also builds the tests, and the features a crate's own
+/// dev-dependencies turn on (`rbs-app`'s `fault-injection`) then reach its library too,
+/// so code that compiles only with such a feature would pass unseen. Crates without
+/// such features reuse the first run's results.
+fn normal_build_clippy(root: &Path, packages: &[String]) -> Result<bool, String> {
+    eprintln!("affected: clippy on the libraries and binaries without test features");
+    let (cargo, mut command) = crate::cargo_command();
+    let status = command
+        .current_dir(root)
+        .arg("clippy")
+        .args(packages)
+        // No target flags: the default targets, libraries and binaries.
+        .args(["--", "-D", "warnings"])
+        .status()
+        .map_err(|e| format!("run {cargo}: {e}"))?;
+    Ok(status.success())
 }
 
 #[cfg(test)]
