@@ -11,12 +11,13 @@
 //! - `start` creates the media source and an asynchronous source reader with format
 //!   converters disabled, sets the chosen native type and requests samples. Media
 //!   Foundation calls the reader callback on its work queue threads.
-//! - The callback copies each sample's picture into the buffer of a free slot of the
-//!   lock-free [`Ring`] (one copy, counted in `cpu_copied`) and publishes the slot.
-//!   USB cameras deliver into system memory. This copy is not the GPU upload: the
-//!   capture node still uploads the system frame. Nothing is read back from a GPU.
-//! - `latest_frame` on the render thread takes the newest slot and returns a system
-//!   frame sharing the slot's buffer. It does not allocate, lock or call into the OS.
+//! - The callback, for NV12 when the request names a D3D adapter, copies the locked
+//!   picture into an NT shared texture and publishes the handle. Every other picture
+//!   is copied into the slot's system buffer. Either way the Media Foundation buffer
+//!   is unlocked before the callback returns, and the copy is counted in `cpu_copied`.
+//! - `latest_frame` on the render thread takes the newest slot. A texture slot is a
+//!   native frame; a system slot shares the slot's buffer. It does not allocate, lock
+//!   or call into the OS.
 //!
 //! On other platforms the factory compiles and probes as unavailable, so the engine can
 //! register it unconditionally.
@@ -30,14 +31,17 @@ use std::sync::Arc;
 use bytes::BytesMut;
 use rbs_capture::handoff::Ring;
 use rbs_core::media::{
-    Bytes, ColorPrimaries, ColorRange, ColorSpace, Lease, LeaseOwner, MatrixCoefficients,
-    PixelFormat, PlaneLayout, Size, SystemFrame, TransferFunction, VideoFormat, VideoFrame,
+    Bytes, ColorPrimaries, ColorRange, ColorSpace, D3dApi, Lease, LeaseOwner, MatrixCoefficients,
+    NativeSurface, PixelFormat, PlaneLayout, Size, SurfaceSync, SystemFrame, TransferFunction,
+    VideoFormat, VideoFrame,
 };
 use rbs_core::time::Timestamp;
 
 /// Planes a frame can have (`rbs_core`'s limit for system frames).
 const MAX_PLANES: usize = 3;
 
+#[cfg(windows)]
+mod gpu_nv12;
 #[cfg(windows)]
 mod win;
 
@@ -246,17 +250,35 @@ pub(crate) fn copy_picture(
     Some((planes, count))
 }
 
+/// A slot published as an NT shared texture instead of system bytes.
+#[derive(Clone, Copy)]
+pub(crate) struct NativeSlot {
+    /// NT handle of the slot's texture. Stays open while this `Shared` lives.
+    pub texture: u64,
+    /// NT handle of the session fence.
+    pub fence: u64,
+    /// Value signalled after this picture was written.
+    pub value: u64,
+    /// Adapter the texture was created on.
+    pub luid: u64,
+}
+
 /// One slot's picture.
 pub(crate) struct Slot {
     pub(crate) data: Bytes,
     pub(crate) planes: [PlaneLayout; MAX_PLANES],
     pub(crate) plane_count: usize,
+    /// Set when the picture is an NT texture. `data` is then empty.
+    pub(crate) native: Option<NativeSlot>,
 }
 
 /// The ring and the pictures its slots hold. Frames hold an `Arc` of it.
 pub(crate) struct Shared {
     pub(crate) ring: Ring,
     slots: Box<[UnsafeCell<Slot>]>,
+    /// NV12 textures the native slots name. Kept here so a lease keeps the handles open.
+    #[cfg(windows)]
+    gpu: Option<gpu_nv12::GpuRing>,
 }
 
 // SAFETY: a slot's cell is written only by the producer while it holds the slot's claim
@@ -270,6 +292,27 @@ unsafe impl Sync for Shared {}
 
 impl Shared {
     pub(crate) fn new() -> Self {
+        #[cfg(windows)]
+        {
+            Self::with_ring(None)
+        }
+        #[cfg(not(windows))]
+        {
+            Self::with_ring()
+        }
+    }
+
+    #[cfg(windows)]
+    fn with_ring(gpu: Option<gpu_nv12::GpuRing>) -> Self {
+        Self::build(gpu)
+    }
+
+    #[cfg(not(windows))]
+    fn with_ring() -> Self {
+        Self::build()
+    }
+
+    fn build(#[cfg(windows)] gpu: Option<gpu_nv12::GpuRing>) -> Self {
         Self {
             ring: Ring::new(&[0; RING_SLOTS]),
             slots: (0..RING_SLOTS)
@@ -278,10 +321,46 @@ impl Shared {
                         data: Bytes::new(),
                         planes: [PlaneLayout::default(); MAX_PLANES],
                         plane_count: 0,
+                        native: None,
                     })
                 })
                 .collect(),
+            #[cfg(windows)]
+            gpu,
         }
+    }
+
+    /// A ring whose NV12 slots are NT shared textures on `luid`. `None` when the
+    /// device cannot create them; the caller keeps the system-memory copy.
+    #[cfg(windows)]
+    pub(crate) fn with_nv12(luid: u64, size: Size) -> Option<Self> {
+        let gpu = gpu_nv12::GpuRing::open(luid, size, RING_SLOTS)?;
+        Some(Self::with_ring(Some(gpu)))
+    }
+
+    /// Copies a packed NV12 picture into this slot's shared texture and records the
+    /// handle. `None` when this ring has no textures or the copy fails; the caller
+    /// then keeps the system-memory picture.
+    ///
+    /// # Safety
+    ///
+    /// The caller holds `slot`'s claim. `src` addresses `pitch` bytes per luma row
+    /// for `height` rows, then the chroma rows, and stays readable until this returns.
+    #[cfg(windows)]
+    pub(crate) unsafe fn upload_nv12(
+        &self,
+        slot: usize,
+        src: *const u8,
+        pitch: u32,
+        height: u32,
+    ) -> Option<()> {
+        let native = self.gpu.as_ref()?.write(slot, src, pitch, height)?;
+        // SAFETY: the caller holds the claim.
+        let contents = unsafe { self.slot_mut(slot) }?;
+        contents.native = Some(native);
+        contents.data = Bytes::new();
+        contents.plane_count = 0;
+        Some(())
     }
 
     /// The slot's contents, for the producer.
@@ -359,6 +438,7 @@ pub(crate) unsafe fn fill_slot(
     contents.data = data;
     contents.planes = planes;
     contents.plane_count = count;
+    contents.native = None;
     Some(())
 }
 
@@ -406,6 +486,32 @@ impl Consumer {
         let contents = unsafe { &*cell.get() };
         let size = Size::new(meta.width, meta.height);
         let format = VideoFormat::new(size, self.format.pixel_format, self.format.color);
+        if let Some(native) = contents.native {
+            // SAFETY: `texture` and `fence` are NT handles owned by `shared.gpu`, which
+            // this lease keeps alive. The producer signalled `value` after writing the
+            // texture and does not write it again until the lease is released.
+            let frame = unsafe {
+                VideoFrame::native(
+                    format,
+                    Timestamp::from_nanos(meta.timestamp),
+                    NativeSurface::d3d_shared_handle(
+                        native.texture,
+                        true,
+                        D3dApi::D3d11,
+                        native.luid,
+                    ),
+                    SurfaceSync::timeline_fence(native.fence, native.value),
+                    lease,
+                )
+            };
+            self.format = format;
+            self.delivered += 1;
+            return Some(
+                frame
+                    .with_sequence(meta.sequence)
+                    .with_source_time(meta.source_time),
+            );
+        }
         let planes = contents.planes.get(..contents.plane_count)?;
         // A reference count clone: the producer promoted the buffer to shared storage.
         let system = SystemFrame::new(format, contents.data.clone(), planes).ok()?;
@@ -604,6 +710,41 @@ mod tests {
         assert!(shared.ring.is_idle());
         assert_eq!(consumer.delivered(), 1);
         assert_eq!(shared.ring.misuses(), 0);
+    }
+
+    #[test]
+    fn a_native_slot_is_a_shared_d3d11_frame() {
+        let shared = Arc::new(Shared::new());
+        let format = VideoFormat::new(
+            Size::new(8, 8),
+            PixelFormat::Nv12,
+            ColorSpace::BT709_LIMITED,
+        );
+        let mut consumer = Consumer::new(Arc::clone(&shared), format);
+        let Some(slot) = shared.ring.claim() else {
+            panic!("slot");
+        };
+        // SAFETY: this thread holds the claim.
+        unsafe {
+            let Some(contents) = shared.slot_mut(slot) else {
+                panic!("slot contents");
+            };
+            contents.native = Some(NativeSlot {
+                texture: 11,
+                fence: 22,
+                value: 3,
+                luid: 44,
+            });
+        }
+        shared.ring.publish(slot, FrameMeta::new(50, 7, 0, 8, 8));
+        let Some(frame) = consumer.next() else {
+            panic!("frame");
+        };
+        assert_eq!(frame.memory_kind(), MemoryKind::D3d11);
+        assert_eq!(frame.format().pixel_format, PixelFormat::Nv12);
+        assert_eq!(frame.sequence(), 7);
+        drop(frame);
+        assert!(shared.ring.is_idle());
     }
 
     #[test]
