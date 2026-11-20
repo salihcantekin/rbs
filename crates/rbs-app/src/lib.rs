@@ -39,6 +39,7 @@ pub mod browser_tree;
 pub mod calibration_file;
 pub mod canvas_profile;
 pub mod caption;
+pub mod chapters;
 pub mod device_sync_file;
 pub mod diag_log;
 pub mod edit_history;

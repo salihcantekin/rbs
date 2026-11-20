@@ -6289,7 +6289,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
         config.autosave = autosave;
         config.key_account = key_account;
         config.virtual_camera = ctx.app.borrow().vcam.factory();
-        config.system_probe = Some(studio_host::protection::SystemProbeFactory::os());
+        rbs_app::platform::host_seams(&mut config);
         config.config_dir = Some(ctx.app.borrow().config.clone());
         config.swap_after_transition = ctx.app.borrow().bg.swap_after_transition;
         config.media_pause_release = ctx.app.borrow().bg.pause_release();

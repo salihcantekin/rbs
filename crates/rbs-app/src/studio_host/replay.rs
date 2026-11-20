@@ -358,12 +358,8 @@ impl Host {
             n += 1;
         }
         let container = self.profile.format.container();
-        let writer = ClipWriter::new(
-            &self.adapters,
-            &rbs_transport::file_url(&path),
-            container,
-        )
-        .map_err(|e| e.to_string())?;
+        let writer = ClipWriter::new(&self.adapters, &rbs_transport::file_url(&path), container)
+            .map_err(|e| e.to_string())?;
         Ok(Box::new(move || {
             match writer.write(&clip, &streams) {
                 Ok(_) => Ok(path),

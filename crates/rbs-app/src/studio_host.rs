@@ -74,7 +74,9 @@ pub use attributes::{AttributeTargetView, AttributesView};
 mod calibration;
 mod device_sync;
 mod failures;
+mod seams;
 use failures::{answer_on_panic, refused};
+pub use seams::{Applied, Chapter, ChapterWriter, FreeSpaceReader};
 pub mod filters;
 mod interact;
 pub use interact::{InteractState, MAX_INTERACT};
@@ -1939,9 +1941,9 @@ struct RecordingMarkers {
     flush_at: Option<u64>,
     /// A flush wrote the manifest during the recording.
     flushed: bool,
-    /// The master is Matroska: a clean stop adds the markers as chapters
-    /// (ADR-0089 decision 14).
-    matroska: bool,
+    /// The master is Matroska and the root writes chapters: a clean stop adds the
+    /// markers as chapters (ADR-0089 decision 14).
+    chapters: Option<Arc<dyn ChapterWriter>>,
 }
 
 impl RecordingMarkers {
@@ -1972,7 +1974,7 @@ impl RecordingMarkers {
                 stopped_ns: 0,
                 flush_at: None,
                 flushed: false,
-                matroska: false,
+                chapters: None,
             });
         }
         let file = path.file_name()?.to_str()?;
@@ -1995,7 +1997,7 @@ impl RecordingMarkers {
             stopped_ns: 0,
             flush_at: None,
             flushed: false,
-            matroska: false,
+            chapters: None,
         })
     }
 
@@ -2081,9 +2083,13 @@ impl RecordingMarkers {
     /// that cannot take chapters is left as it is; only a read or write failure is an
     /// error.
     fn write_chapters(&self) -> Result<(), String> {
-        if !self.matroska || self.log.markers().is_empty() {
+        let Some(writer) = self
+            .chapters
+            .as_ref()
+            .filter(|_| !self.log.markers().is_empty())
+        else {
             return Ok(());
-        }
+        };
         let Some((file, timing)) = self
             .manifest
             .files
@@ -2093,11 +2099,11 @@ impl RecordingMarkers {
         else {
             return Ok(());
         };
-        let mut chapters: Vec<rbs_mux_matroska::Chapter<'_>> = self
+        let mut chapters: Vec<Chapter<'_>> = self
             .log
             .markers()
             .iter()
-            .map(|m| rbs_mux_matroska::Chapter {
+            .map(|m| Chapter {
                 start_ns: m.t_ns.saturating_sub(timing.start_offset_ns),
                 title: &m.label,
             })
@@ -2112,13 +2118,8 @@ impl RecordingMarkers {
             .write(true)
             .open(self.dir.join(&file.file_name))
             .map_err(|e| e.to_string())?;
-        match rbs_mux_matroska::append_chapters(&mut media, &chapters) {
-            Ok(()) => Ok(()),
-            Err(rbs_mux_matroska::ChapterError::Io(e)) => Err(e.to_string()),
-            // Written by another Matroska adapter, or by an output that could not
-            // seek: the file takes no chapters, and the manifest keeps the markers.
-            Err(_) => Ok(()),
-        }
+        // `NotSupported`: the file takes no chapters, and the manifest keeps the markers.
+        writer.append(&mut media, &chapters).map(|_| ())
     }
 
     /// The recording paused (`true`) or resumed at `at_ns` on the master clock: later
@@ -3489,6 +3490,9 @@ pub struct HostConfig {
     /// decision 1), on the probe's own short-lived thread; `None`: free space is
     /// unknown.
     pub read_free_space: Option<FreeSpaceReader>,
+    /// Writes markers into a finished Matroska master as chapters (ADR-0159 decision 4);
+    /// `None`: the markers stay in the manifest only.
+    pub chapters: Option<Arc<dyn ChapterWriter>>,
     /// The calibration run's clock, pacer, file system and wall time (ADR-0087 step
     /// D1); `None`: the real ones. Tests inject a test clock and a fake sink.
     pub calibration_setup: Option<calibration::CalibrationSetup>,
@@ -3502,16 +3506,6 @@ pub struct HostConfig {
     #[cfg(feature = "fault-injection")]
     #[doc(hidden)]
     pub fault: Option<Fault>,
-}
-
-/// Reads a recording folder's free space for the estimate ([`HostConfig::read_free_space`]).
-#[derive(Clone)]
-pub struct FreeSpaceReader(pub rbs_record::estimate::ReadFreeSpace);
-
-impl std::fmt::Debug for FreeSpaceReader {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("FreeSpaceReader")
-    }
 }
 
 impl HostConfig {
@@ -3542,6 +3536,7 @@ impl HostConfig {
             system_probe: None,
             calibration: crate::calibration_file::CalibrationFile::default(),
             read_free_space: None,
+            chapters: None,
             calibration_setup: None,
             add_ons: None,
             browser_runner: None,
@@ -3877,6 +3872,8 @@ struct Host {
     /// This thread's own queue, for results from picker threads. Weak, so dropping
     /// the [`StudioHost`] still ends the thread.
     inbox: std::sync::Weak<ControlOut>,
+    /// The root's chapter writer ([`HostConfig::chapters`]).
+    chapters: Option<Arc<dyn ChapterWriter>>,
     /// The stinger's file look (ADR-0140 decision 3).
     stinger: stinger::StingerFile,
     /// Saves the collection after a change ([`HostConfig::autosave`]).
@@ -4620,8 +4617,7 @@ fn start(
     let loaded = config.collection.clone();
     let mut collection = config.collection.unwrap_or_default();
     let (canvas, scene) = shown_scene(&mut collection, config.size, config.fps)?;
-    // The collection's canvas, which may differ from `config.size` (only the preview's
-    // aspect ratio is chosen from that).
+    // The collection's canvas; `config.size` only chose the preview's aspect ratio.
     let (run_size, run_fps) = collection
         .canvas(canvas)
         .map_or((config.size, config.fps), |c| (c.size, c.frame_rate));
@@ -4839,6 +4835,7 @@ fn start(
         switch_pending: None,
         switch_seq: 0,
         inbox: Weak::new(),
+        chapters: config.chapters,
         stinger: stinger::StingerFile::default(),
         add_ons,
         levels,
@@ -7868,7 +7865,8 @@ impl Host {
                 scene,
             )
             .map(|mut m| {
-                m.matroska = r.container == ContainerId::Matroska;
+                m.chapters =
+                    (self.chapters.clone()).filter(|_| r.container == ContainerId::Matroska);
                 m
             });
             // Tracked together with the master, after the last panic point of the
