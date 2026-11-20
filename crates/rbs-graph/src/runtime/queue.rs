@@ -713,7 +713,7 @@ impl AudioReader {
         let Some(mut buffer) = self.installed.take() else {
             return;
         };
-        let _ = out.swap_samples(&mut buffer.samples);
+        let _ = out.swap_samples(&mut buffer.samples, buffer.capacity);
         let _ = self.free.try_send(buffer);
     }
 }
@@ -777,10 +777,10 @@ impl<X: Runtime> Node<X> for AudioReader {
             self.pending = Some(buffer);
             self.doorbell.ring();
             return r.map_err(NodeError::from);
-        } else if out.swap_samples(&mut buffer.samples) {
+        } else if out.swap_samples(&mut buffer.samples, buffer.capacity) {
             let r = out.commit(buffer.format, buffer.timestamp, buffer.frames);
             if r.is_err() {
-                let _ = out.swap_samples(&mut buffer.samples);
+                let _ = out.swap_samples(&mut buffer.samples, buffer.capacity);
                 let _ = self.free.try_send(buffer);
                 return r.map_err(NodeError::from);
             }

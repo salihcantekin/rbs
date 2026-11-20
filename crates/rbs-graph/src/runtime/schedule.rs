@@ -523,11 +523,12 @@ impl AudioOut<'_> {
             .take(channels.min(MAX_CHANNELS))
     }
 
-    /// Exchanges the slot's sample buffer with `samples` when they are the same length.
-    /// The audio queue uses this so a consumer reads the queued block itself. `false`
-    /// when the lengths differ; nothing moves.
-    pub(crate) fn swap_samples(&mut self, samples: &mut Box<[f32]>) -> bool {
-        if samples.len() != self.slot.samples.len() {
+    /// Exchanges the slot's sample buffer with `samples` when both hold the same number
+    /// of channels of `capacity` frames each (the same channel stride and the same
+    /// length). The audio queue uses this so a consumer reads the queued block itself.
+    /// `false` when the stride or the length differs; nothing moves.
+    pub(crate) fn swap_samples(&mut self, samples: &mut Box<[f32]>, capacity: usize) -> bool {
+        if capacity != self.slot.capacity || samples.len() != self.slot.samples.len() {
             return false;
         }
         std::mem::swap(&mut self.slot.samples, samples);
@@ -582,5 +583,31 @@ impl AudioOut<'_> {
             _ => return Err(OutputError::UnsupportedSamples(self.pin)),
         }
         self.commit(format, block.timestamp(), frames)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn swap_samples_needs_the_same_channel_stride_and_length() {
+        let mut slot = AudioSlot::new(480);
+        let marker = slot.samples.as_ptr();
+        let mut out = AudioOut {
+            pin: 0,
+            slot: &mut slot,
+        };
+        // Same length, another channel stride: refused, nothing moves.
+        let mut other = vec![1.0_f32; 480 * MAX_CHANNELS].into_boxed_slice();
+        assert!(!out.swap_samples(&mut other, 240));
+        // Another length: refused.
+        let mut short = vec![1.0_f32; 240 * MAX_CHANNELS].into_boxed_slice();
+        assert!(!out.swap_samples(&mut short, 480));
+        assert_eq!(out.slot.samples.as_ptr(), marker);
+        // Same stride and length: the buffers trade places.
+        assert!(out.swap_samples(&mut other, 480));
+        assert_eq!(other.as_ptr(), marker);
+        assert_eq!(out.slot.samples[0], 1.0);
     }
 }
