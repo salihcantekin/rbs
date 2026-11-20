@@ -107,6 +107,68 @@ mod hardware {
     use rbs_core::registry::{AdapterFactory, AdapterId, ProbeError};
     use rbs_core::time::MonotonicClock;
 
+    /// The fixture's pipe. Tests wait on the read end instead of sleeping. The
+    /// deadline stays the hang guard.
+    struct Pulse {
+        read: i32,
+        write: i32,
+    }
+
+    impl Pulse {
+        fn new() -> Self {
+            let mut fds = [0i32; 2];
+            // SAFETY: `fds` is a valid out pair. The write end is non-blocking so the
+            // audio callback never waits on a full pipe.
+            let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
+            assert_eq!(rc, 0, "fixture pipe");
+            // SAFETY: both descriptors came from `pipe`. Clearing cloexec lets the
+            // fixture child inherit the write end.
+            unsafe {
+                let flags = libc::fcntl(fds[1], libc::F_GETFL);
+                libc::fcntl(fds[1], libc::F_SETFL, flags | libc::O_NONBLOCK);
+                let flags = libc::fcntl(fds[1], libc::F_GETFD);
+                libc::fcntl(fds[1], libc::F_SETFD, flags & !libc::FD_CLOEXEC);
+            }
+            fixture::set_pulse(fds[1]);
+            Self {
+                read: fds[0],
+                write: fds[1],
+            }
+        }
+
+        /// `true` when the fixture wrote a byte before `deadline`.
+        fn wait(&self, deadline: Instant) -> bool {
+            let left = deadline.saturating_duration_since(Instant::now());
+            let ms = i32::try_from(left.as_millis()).unwrap_or(i32::MAX);
+            let mut poll = libc::pollfd {
+                fd: self.read,
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            // SAFETY: `poll` refers to this pipe's read end, which stays open.
+            let ready = unsafe { libc::poll(&mut poll, 1, ms) };
+            if ready > 0 {
+                let mut buf = [0u8; 64];
+                // SAFETY: `read` is this pipe's read end and `buf` is writable.
+                unsafe { libc::read(self.read, buf.as_mut_ptr().cast(), buf.len()) };
+                true
+            } else {
+                false
+            }
+        }
+    }
+
+    impl Drop for Pulse {
+        fn drop(&mut self) {
+            fixture::set_pulse(-1);
+            // SAFETY: both descriptors were opened by `pipe` and are closed once.
+            unsafe {
+                libc::close(self.read);
+                libc::close(self.write);
+            }
+        }
+    }
+
     /// The fixture child playing a tone; killed by `remove`.
     struct Hooks {
         child: Mutex<Option<Child>>,
@@ -185,18 +247,19 @@ mod hardware {
         }
     }
 
-    fn start_fixture() -> Child {
+    fn start_fixture(pulse: &Pulse) -> Child {
         let exe = std::env::current_exe().unwrap_or_default();
         let child = Command::new(exe)
             .args(["fixture_process", "--exact", "--ignored", "--nocapture"])
             .env(super::FIXTURE, "1")
+            .env("RBS_FIXTURE_FD", pulse.write.to_string())
             .spawn();
         assert!(child.is_ok(), "cannot start the fixture: {child:?}");
         child.unwrap_or_else(|_| unreachable!())
     }
 
     /// Waits (hang guard 5 s) until the fixture plays and is listed.
-    fn fixture_endpoint(backend: &CoreAudioBackend, pid: u32) -> EndpointId {
+    fn fixture_endpoint(backend: &CoreAudioBackend, pid: u32, pulse: &Pulse) -> EndpointId {
         let id = EndpointId::new(format!("app:{pid}"));
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline {
@@ -206,7 +269,9 @@ mod hardware {
             if listed {
                 return id;
             }
-            std::thread::sleep(Duration::from_millis(20));
+            if !pulse.wait(deadline) {
+                break;
+            }
         }
         panic!("the fixture never appeared as a playing process");
     }
@@ -235,10 +300,11 @@ mod hardware {
             "grant the microphone permission to the terminal running the test"
         );
         silent_loopback_delivers(&backend);
-        excludes_own_process(&backend);
-        let child = start_fixture();
-        let app = fixture_endpoint(&backend, child.id());
-        delivers_the_tone(&backend, &app);
+        let pulse = Pulse::new();
+        excludes_own_process(&backend, &pulse);
+        let child = start_fixture(&pulse);
+        let app = fixture_endpoint(&backend, child.id(), &pulse);
+        delivers_the_tone(&backend, &app, &pulse);
         let hooks = Hooks {
             child: Mutex::new(Some(child)),
             id: app.clone(),
@@ -298,6 +364,7 @@ mod hardware {
         // A hang guard: 100 ms of audio is due well within it.
         let deadline = Instant::now() + Duration::from_secs(2);
         while got < want && Instant::now() < deadline {
+            // No fixture is playing. The capture callback must not signal this wait (P6).
             std::thread::sleep(Duration::from_millis(10));
             let mut out: Vec<&mut [f32]> = buffers.iter_mut().map(|b| &mut b[..]).collect();
             if let Ok(read) = stream.read(&mut out) {
@@ -313,7 +380,7 @@ mod hardware {
     }
 
     /// RMS of about `seconds` of the first channel of the default output loopback.
-    fn loopback_rms(backend: &CoreAudioBackend, exclude: bool, seconds: f32) -> f32 {
+    fn loopback_rms(backend: &CoreAudioBackend, pulse: &Pulse, exclude: bool, seconds: f32) -> f32 {
         let endpoints = backend.enumerate(EndpointKind::OutputLoopback);
         let Some(endpoint) = endpoints.ok().and_then(|e| e.into_iter().next()) else {
             panic!("no output loopback endpoint");
@@ -332,7 +399,7 @@ mod hardware {
         // A hang guard.
         let deadline = Instant::now() + Duration::from_secs(5);
         while collected.len() < want && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(10));
+            let _ = pulse.wait(deadline);
             let mut out: Vec<&mut [f32]> = buffers.iter_mut().map(|b| &mut b[..]).collect();
             if let Ok(read) = stream.read(&mut out) {
                 collected.extend_from_slice(&buffers[0][..read.frames]);
@@ -346,7 +413,7 @@ mod hardware {
 
     /// `exclude_own_process` (ADR-0096): a tone played by this very process is in the
     /// output loopback unless the flag is set. Needs nothing else playing.
-    fn excludes_own_process(backend: &CoreAudioBackend) {
+    fn excludes_own_process(backend: &CoreAudioBackend, pulse: &Pulse) {
         assert!(backend.probe().is_ok_and(|caps| {
             caps.get(&rbs_audio_io::caps::LOOPBACK_EXCLUDE_SELF)
                 == Some(&CapabilityValue::Flag(true))
@@ -357,17 +424,17 @@ mod hardware {
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut included = 0.0;
         while included <= 0.01 && Instant::now() < deadline {
-            included = loopback_rms(backend, false, 0.5);
+            included = loopback_rms(backend, pulse, false, 0.5);
         }
         eprintln!("loopback with own tone: rms {included:.4}");
         assert!(included > 0.01, "this process's tone was not captured");
-        let excluded = loopback_rms(backend, true, 0.5);
+        let excluded = loopback_rms(backend, pulse, true, 0.5);
         eprintln!("loopback excluding own process: rms {excluded:.5}");
         assert!(excluded < 0.001, "own sound leaked: rms {excluded}");
     }
 
     /// The application tap delivers what the fixture plays: a 440 Hz tone.
-    fn delivers_the_tone(backend: &CoreAudioBackend, app: &EndpointId) {
+    fn delivers_the_tone(backend: &CoreAudioBackend, app: &EndpointId, pulse: &Pulse) {
         let clock = Arc::new(MonotonicClock::new());
         let stream = backend.open_input(&InputRequest::new(app.clone(), clock));
         let Ok(mut stream) = stream else {
@@ -381,7 +448,7 @@ mod hardware {
         let mut collected: Vec<f32> = Vec::new();
         let deadline = Instant::now() + Duration::from_secs(3);
         while collected.len() < rate && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(10));
+            let _ = pulse.wait(deadline);
             if let Ok(read) = stream.read(&mut [&mut left, &mut right]) {
                 collected.extend_from_slice(&left[..read.frames]);
             }
@@ -409,6 +476,7 @@ mod hardware {
 mod fixture {
     use std::ffi::c_void;
     use std::ptr::NonNull;
+    use std::sync::atomic::{AtomicI32, Ordering};
     use std::time::Duration;
 
     use objc2_core_audio::{
@@ -421,6 +489,24 @@ mod fixture {
 
     /// Longest the fixture plays if nobody kills it (a hang guard).
     const LIFETIME: Duration = Duration::from_secs(60);
+
+    /// Write end inherited from the parent, or set in-process. The callback only
+    /// writes one byte; a full pipe returns at once.
+    static PULSE: AtomicI32 = AtomicI32::new(-1);
+
+    pub(super) fn set_pulse(fd: i32) {
+        PULSE.store(fd, Ordering::Relaxed);
+    }
+
+    fn poke() {
+        let fd = PULSE.load(Ordering::Relaxed);
+        if fd >= 0 {
+            let byte = [1u8];
+            // SAFETY: `fd` is the non-blocking write end, or already closed (then
+            // `write` fails and the byte is discarded).
+            unsafe { libc::write(fd, byte.as_ptr().cast(), 1) };
+        }
+    }
 
     struct Tone {
         phase: f32,
@@ -457,6 +543,7 @@ mod fixture {
                 }
             }
             tone.phase = phase;
+            poke();
         }
         0
     }
@@ -484,6 +571,11 @@ mod fixture {
     }
 
     pub(super) fn play_tone() {
+        if let Ok(fd) = std::env::var("RBS_FIXTURE_FD")
+            && let Ok(fd) = fd.parse()
+        {
+            set_pulse(fd);
+        }
         let device: AudioObjectID = get(
             kAudioObjectSystemObject as AudioObjectID,
             kAudioHardwarePropertyDefaultOutputDevice,
@@ -504,6 +596,8 @@ mod fixture {
             );
             AudioDeviceStart(device, proc_id);
         }
+        poke();
+        // The parent kills this process. The sleep is only the hang guard if it does not.
         std::thread::sleep(LIFETIME);
     }
 }
@@ -576,6 +670,8 @@ mod hardware_output {
                 start.elapsed() < GUARD,
                 "the device did not pull {frames} frames"
             );
+            // The render callback must not signal this wait (P6). The device pulls
+            // every few milliseconds; this is only the hang guard's poll.
             std::thread::sleep(Duration::from_millis(5));
         }
     }
