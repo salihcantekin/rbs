@@ -400,6 +400,13 @@ impl UserSession {
         }
     }
 
+    /// Hands the writer over for the shutdown thread (ADR-0156 decision 5): the caller
+    /// flushes and drops it there, which joins the writer thread and releases the
+    /// writer lock. From now on this session saves nothing, as a read-only one.
+    pub fn take_saver(&mut self) -> Option<Saver> {
+        self.saver.take()
+    }
+
     /// Runs `task` on the writer thread after every save asked for so far, and waits
     /// for its result. Refused when changes are not saved (read-only).
     fn run<R: Send + 'static>(

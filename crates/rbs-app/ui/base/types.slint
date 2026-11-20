@@ -808,15 +808,19 @@ export global Shell {
     in-out property <Cover> top-toast;
     // The End stream question's card while it shows.
     in-out property <Cover> confirm-cover;
-    // The main window was closed while a stream runs: the frame asks first (U4).
+    // Quit while a stream or a recording runs: the frame asks first (U4, ADR-0156).
     in property <bool> quit-confirm;
+    // What the quit ends, so the question names it: 1 the stream, 2 the recording,
+    // 3 both.
+    in property <int> quit-ending: 1;
     // The first Close to the background says once where RBS went (ADR-0056): 0 none,
     // 1 macOS (the Dock), 2 Windows (the notification area).
     in property <int> background-notice;
     callback background-notice-ok();
     // Cmd+W on macOS: Close, as the main window's close button (ADR-0056).
     callback close-main();
-    callback quit-end-stream();
+    // The quit question's answers: end what runs and quit, or keep it.
+    callback quit-end-live();
     callback quit-keep();
     // The toolbar row's groups (ADR-0071): the items before its flexible space and the
     // items after it, and whether the toolbar is shown.

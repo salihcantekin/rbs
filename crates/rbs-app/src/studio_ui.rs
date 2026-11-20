@@ -1652,14 +1652,14 @@ impl StudioUi {
     }
 
     /// Stops the control API server, if it runs: connected apps are disconnected.
-    pub fn stop_remote(&mut self) {
-        if let Some(server) = self.remote_server.take() {
-            if let Some(h) = &self.host {
-                h.detach_api();
-            }
-            drop(server);
-            log("remote control off");
+    /// Stops remote control; the caller drops the server where it may wait (ADR-0156).
+    pub fn stop_remote(&mut self) -> Option<RemoteServer> {
+        let server = self.remote_server.take()?;
+        if let Some(h) = &self.host {
+            h.detach_api();
         }
+        log("remote control off");
+        Some(server)
     }
 
     pub fn set_remote_enabled(&mut self, on: bool) {

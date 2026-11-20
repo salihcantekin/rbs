@@ -52,16 +52,11 @@ pub fn invoke(f: impl FnOnce() + Send + 'static) -> Result<(), slint::EventLoopE
     slint::invoke_from_event_loop(move || guard(f))
 }
 
-/// Ends the UI event loop. The toolbar Close button posts `SC_CLOSE`, and Windows
-/// delivers `WM_CLOSE` inside that command. A quit started there is dropped: the
-/// window hides and the process stays. The quit is sent after that command returns.
+/// Ends the UI event loop. Slint posts the quit as an event that the loop takes on a
+/// clean stack, also when this runs inside a platform close message (ADR-0156
+/// decision 2). Called once the shutdown's last step has finished.
 pub fn quit_loop() {
-    let _ = std::thread::Builder::new()
-        .name("rbs-quit".into())
-        .spawn(|| {
-            std::thread::sleep(std::time::Duration::from_millis(200));
-            let _ = slint::quit_event_loop();
-        });
+    let _ = slint::quit_event_loop();
 }
 
 /// `slint::spawn_local` with every poll of the task guarded: a panic ends the task.

@@ -35,6 +35,7 @@ mod preview;
 mod preview_edit;
 mod privacy;
 mod projector;
+mod quit;
 mod replay_page;
 mod reveal;
 mod shortcuts_page;
@@ -49,8 +50,9 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use quit::quitting;
 use rbs_api::types::OutputKind;
-use rbs_app::background::{self, Action, OnClose, Request};
+use rbs_app::background::{self, OnClose, Request};
 use rbs_app::studio_host;
 use rbs_ui::command::{CommandId, CommandState};
 use rbs_ui::frame::{DropPlace, DropTarget, drop_target};
@@ -1714,6 +1716,10 @@ impl Ctx {
     /// Views are never updated from inside a callback, so creating or hiding
     /// windows cannot re-enter borrowed state.
     fn update(&self, f: impl FnOnce(&mut App) + 'static) {
+        // While quitting, changes are dropped (ADR-0156 decision 3).
+        if quitting() {
+            return;
+        }
         match self.app.try_borrow_mut() {
             Ok(mut app) => entry::guard(|| f(&mut app)),
             Err(_) => self.queue.borrow_mut().push(Box::new(f)),
@@ -1834,6 +1840,11 @@ impl Ctx {
 
     /// Applies an update from the studio.
     fn studio_update(&self, u: studio_host::Update) {
+        // While quitting nothing may change on screen or in the layout after the last
+        // save (ADR-0156 decision 3).
+        if quitting() {
+            return;
+        }
         // Stats come once a second while an output runs: held for the one-second tick,
         // which shows them with the times in one turn and without a full sync.
         let u = match u {
@@ -2585,50 +2596,6 @@ impl Ctx {
         WAY_BACK.with(Cell::get)
     }
 
-    /// A Close or a Quit (ADR-0056 decision 3). Returns what the close handler answers
-    /// the toolkit.
-    fn request(&self, request: Request) -> slint::CloseRequestResponse {
-        let Ok(mut app) = self.app.try_borrow_mut() else {
-            // Borrowed by a callback in progress: quit as before ADR-0056.
-            // Do not hide first: hiding every window keeps the loop running.
-            entry::quit_loop();
-            return slint::CloseRequestResponse::KeepWindowShown;
-        };
-        let live = app.studio.st_state != studio_ui::st_state::OFF;
-        match background::on_request(&app.bg, request, live, Self::way_back()) {
-            Action::Hide { notice: true } => {
-                // Said once, in the frame, before the windows go (OK hides them).
-                let kind = if cfg!(target_os = "macos") { 1 } else { 2 };
-                app.main.global::<Shell>().set_background_notice(kind);
-                slint::CloseRequestResponse::KeepWindowShown
-            }
-            Action::Hide { notice: false } => {
-                self.hide_all(&mut app);
-                slint::CloseRequestResponse::KeepWindowShown
-            }
-            Action::AskEndStream => {
-                // Ending a stream cannot be undone: the frame asks first (U4), in a
-                // window the user can see.
-                if app.hidden {
-                    self.show_all(&mut app);
-                }
-                app.main.window().set_minimized(false);
-                app.main.global::<Shell>().set_quit_confirm(true);
-                slint::CloseRequestResponse::KeepWindowShown
-            }
-            Action::Quit => {
-                app.exiting = true;
-                if app.save_due {
-                    app.persist_now();
-                }
-                drop(app);
-                // Hiding the last window keeps the loop (ADR-0056 d4); quit after SC_CLOSE.
-                entry::quit_loop();
-                slint::CloseRequestResponse::KeepWindowShown
-            }
-        }
-    }
-
     /// Hides every RBS window and keeps running (ADR-0056 decisions 3 and 5): Settings
     /// closes as by its own close button, floating windows hide without a layout
     /// change, the preview unsubscribes and the meters stop.
@@ -2665,6 +2632,10 @@ impl Ctx {
 
     /// Shows the windows hidden by [`Self::hide_all`] again and connects the preview.
     fn show_all(&self, app: &mut App) {
+        // A window never comes back while quitting (ADR-0156 decision 3).
+        if quitting() {
+            return;
+        }
         if !app.hidden {
             let _ = app.main.show();
             window_place::raise(app.main.window());
@@ -5973,9 +5944,13 @@ fn show_from_system() {
 /// The notice for sessions that ended without a clean exit, if any.
 fn crash_notice(unclean: &[rbs_crash::Unclean]) -> Option<String> {
     unclean.last()?;
-    let mut text = String::from(
-        "RBS closed unexpectedly last time. Your scenes were kept as last saved, and a Matroska recording stays playable up to that moment.",
-    );
+    // A shutdown that ran past its budget (ADR-0156 decision 6) says so: the take may
+    // be cut short.
+    let mut text = String::from(if unclean.iter().any(|u| u.unfinished.is_some()) {
+        "RBS did not finish closing last time. The last recording may be cut short; a Matroska recording stays playable up to that moment."
+    } else {
+        "RBS closed unexpectedly last time. Your scenes were kept as last saved, and a Matroska recording stays playable up to that moment."
+    });
     if let Some(report) = unclean.iter().rev().find_map(|u| u.report.as_ref()) {
         text.push_str(&format!(
             " A report was saved at {} (it may contain file names).",
@@ -6461,18 +6436,17 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
         });
     }
     {
-        // Quitting ends the stream: the studio host's shutdown ends it cleanly.
+        // Quitting ends what runs: the studio host's shutdown ends the stream and closes
+        // the recording cleanly (ADR-0156).
         let ctx = ctx.clone();
-        main.global::<Shell>().on_quit_end_stream(move || {
+        main.global::<Shell>().on_quit_end_live(move || {
             entry::guard(|| {
-                if let Ok(mut app) = ctx.app.try_borrow_mut() {
-                    app.exiting = true;
-                    if app.save_due {
-                        app.persist_now();
-                    }
+                if !quitting()
+                    && let Ok(mut app) = ctx.app.try_borrow_mut()
+                {
+                    ctx.begin_quit(&mut app);
                 }
             });
-            entry::quit_loop();
         });
     }
 
@@ -6516,22 +6490,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
         measure_ui::install(&main, seconds);
     }
     slint::run_event_loop_until_quit()?;
-    let _ = main.hide();
-    // The layer's frames go back before the studio and its publisher stop.
-    #[cfg(any(target_os = "macos", windows))]
-    preview::close();
-    projector::close_all();
-    interact::close_all();
-    if let Ok(mut app) = ctx.app.try_borrow_mut() {
-        if app.save_due {
-            app.persist_now();
-        }
-        // Disconnects remote control apps, then stops the studio and joins its thread.
-        app.studio.stop_remote();
-        app.studio.host = None;
-        // The last changes reach the disk before the app ends.
-        app.studio.user.flush();
-    }
+    ctx.after_loop(&main);
     CTX.with(|c| c.borrow_mut().take());
     Ok(())
 }

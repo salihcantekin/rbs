@@ -1540,6 +1540,60 @@ component EndStreamCard inherits Rectangle {
     }
 }
 
+// Quit while a stream or a recording runs asks first (U4, ADR-0156 decision 1): a card
+// under Go live and Record, like End stream's, whose words name what ends. Keep has the
+// focus, so a stray Enter does not end anything.
+component QuitCard inherits Rectangle {
+    property <int> ending: Shell.quit-ending;
+    property <Cover> rect: { x: self.x, y: self.y, width: self.width, height: self.height };
+    init => { Shell.confirm-cover = rect; keep.focus(); }
+    changed rect => { Shell.confirm-cover = rect; }
+    width: lay.preferred-width;
+    height: lay.preferred-height;
+    background: Theme.surface-overlay;
+    border-color: Theme.border-strong;
+    border-width: Tokens.size-border;
+    border-radius: Tokens.radius-md;
+    accessible-role: groupbox;
+    accessible-label: question.text;
+    lay := VerticalLayout {
+        padding: Tokens.space-3;
+        spacing: Tokens.space-2;
+        question := Text {
+            text: root.ending == 3 ? @tr("End the stream and the recording, and quit?")
+                : root.ending == 2 ? @tr("Stop recording and quit?")
+                : @tr("End the stream and quit?");
+            color: Theme.text-primary;
+            font-size: Tokens.type-label-size;
+            font-weight: Tokens.type-label-weight;
+        }
+        Text {
+            text: root.ending == 3 ? @tr("Viewers see the stream end. The recording is saved up to now.")
+                : root.ending == 2 ? @tr("The recording is saved up to now.")
+                : @tr("Viewers see it end.");
+            color: Theme.text-secondary;
+            font-size: Tokens.type-body-size;
+        }
+        HorizontalLayout {
+            alignment: end;
+            spacing: Tokens.space-2;
+            Button {
+                text: root.ending == 3 ? @tr("End both and quit")
+                    : root.ending == 2 ? @tr("Stop recording and quit")
+                    : @tr("End stream and quit");
+                kind: "live";
+                clicked => { Shell.quit-end-live(); }
+            }
+            keep := Button {
+                text: root.ending == 3 ? @tr("Keep both")
+                    : root.ending == 2 ? @tr("Keep recording")
+                    : @tr("Keep streaming");
+                clicked => { Shell.quit-keep(); }
+            }
+        }
+    }
+}
+
 // Record or Go live while no microphone is heard asks first (UI spec, "Silent output
 // warning"): the reason, what it means, "Don't ask again" and the answers. Cancel
 // has the focus, so a stray Enter does not start a silent output.
@@ -1859,29 +1913,6 @@ component FrameBar inherits Rectangle {
                     ws-menu.open-from({ x: root.ws-menu-x, y: root.height }, 0px, root.height);
                 }
                 open-add-source(x) => { add-source-menu.open-from({ x: x - root.absolute-position.x, y: root.height }, 0px, root.height); }
-            }
-            // Closing while live ends the stream: asked first, in the frame (U4).
-            if Shell.quit-confirm: HorizontalLayout {
-                horizontal-stretch: 0;
-                spacing: Tokens.space-2;
-                accessible-role: groupbox;
-                accessible-label: @tr("End the stream and quit?");
-                init => { keep-live.focus(); }
-                Text {
-                    text: @tr("End the stream and quit?");
-                    color: Theme.text-primary;
-                    font-size: Tokens.type-body-size;
-                    vertical-alignment: center;
-                }
-                Button {
-                    text: @tr("End stream and quit");
-                    kind: "live";
-                    clicked => { Shell.quit-end-stream(); }
-                }
-                keep-live := Button {
-                    text: @tr("Keep streaming");
-                    clicked => { Shell.quit-keep(); }
-                }
             }
             // Network access (ADR-0046 decision 7): shown in every workspace while other
             // computers can connect, in words.
@@ -2493,6 +2524,11 @@ export component MainWindow inherits Window {
                 Shell.app-menu-asked += 1;
                 return accept;
             }
+            // Escape answers the quit question as Keep (ADR-0156 decision 1).
+            if e.text == Key.Escape && Shell.quit-confirm {
+                Shell.quit-keep();
+                return accept;
+            }
             // Escape answers the silent output question as Cancel.
             if e.text == Key.Escape && !Shell.quit-confirm && Shell.silent-confirm != 0 {
                 Shell.silent-answer(false, false);
@@ -2641,6 +2677,13 @@ export component MainWindow inherits Window {
         dismiss => { Studio.dismiss-marker(); }
     }
     // End stream asks first (U4), in a card under Go live and Record.
+    // Quit while streaming or recording asks in the same place (ADR-0156 decision 1).
+    if Shell.quit-confirm: QuitCard {
+        x: parent.width - self.width - Tokens.space-2;
+        y: Shell.error-kind != 0 || Shell.background-notice != 0
+            ? Shell.top-toast.y + Shell.top-toast.height + Tokens.space-2
+            : frame.height + Tokens.space-1;
+    }
     if (Shell.end-stream-confirm || Shell.end-vertical-confirm) && !Shell.quit-confirm: EndStreamCard {
         x: parent.width - self.width - Tokens.space-2;
         // Under the error bar while one shows, so neither covers the other.

@@ -309,3 +309,31 @@ mod tests {
         set_hidden(false);
     }
 }
+
+/// Tells macOS that a user-initiated task runs until the process ends, so App Nap does
+/// not throttle the hidden app's shutdown (ADR-0156 decision 3). The activity is never
+/// ended: the process ends with it. Main thread only.
+pub fn begin_quit_activity() {
+    /// `NSActivityUserInitiated`: user-initiated work that also keeps idle system sleep
+    /// away (`NSActivityIdleSystemSleepDisabled` is part of it).
+    const USER_INITIATED: u64 = 0x00FF_FFFF | (1 << 20);
+    let reason = ns_string(c"Closing the recording and stopping the studio");
+    if reason.is_null() {
+        return;
+    }
+    // SAFETY: `processInfo` is a plain getter. `beginActivityWithOptions:reason:` takes
+    // an option mask and an `NSString`, and returns an autoreleased token object; it is
+    // retained so the activity lasts until the process ends (the token is leaked on
+    // purpose). On the main thread.
+    unsafe {
+        let process: *mut AnyObject = msg_send![class!(NSProcessInfo), processInfo];
+        if process.is_null() {
+            return;
+        }
+        let token: *mut AnyObject =
+            msg_send![process, beginActivityWithOptions: USER_INITIATED, reason: reason];
+        if !token.is_null() {
+            let _: *mut AnyObject = msg_send![token, retain];
+        }
+    }
+}

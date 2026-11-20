@@ -281,11 +281,11 @@ pub fn covers(window: &MainWindow, out: &mut Vec<Rect>) {
     if shell.get_error_kind() != 0 || shell.get_background_notice() != 0 {
         out.push(toast(shell.get_top_toast()));
     }
-    // The End stream question (U4), under Go live and Record.
-    if (shell.get_end_stream_confirm()
+    // The End stream, silent output and quit questions (U4), under Go live and Record.
+    if shell.get_end_stream_confirm()
         || shell.get_end_vertical_confirm()
-        || shell.get_silent_confirm() != 0)
-        && !shell.get_quit_confirm()
+        || shell.get_silent_confirm() != 0
+        || shell.get_quit_confirm()
     {
         out.push(toast(shell.get_confirm_cover()));
     }

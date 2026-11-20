@@ -292,19 +292,53 @@ pub enum Action {
         /// Say once where RBS went before hiding.
         notice: bool,
     },
-    /// Show the main window and ask "End the stream and quit?".
-    AskEndStream,
+    /// Show the main window and ask before quitting, naming what ends (ADR-0156
+    /// decision 1).
+    AskBeforeQuit(Ending),
     /// Save, stop the studio and end the process.
     Quit,
 }
 
-/// What a Close or a Quit does now (ADR-0056 decision 3). `way_back`: a hidden window
-/// can be brought back (Dock reopen on macOS, the tray icon on Windows); without one,
-/// Close is Quit (decision 6).
+/// What a quit would end, so the question names it (ADR-0156 decision 1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ending {
+    /// A stream (main or vertical) and no recording.
+    Stream,
+    /// A recording (main or vertical) and no stream.
+    Recording,
+    /// A stream and a recording.
+    Both,
+}
+
+impl Ending {
+    /// What ends when RBS quits now; `None` when nothing does. `problem` is ignored.
+    pub fn of(live: LiveState) -> Option<Self> {
+        match (live.streaming, live.recording) {
+            (true, false) => Some(Self::Stream),
+            (false, true) => Some(Self::Recording),
+            (true, true) => Some(Self::Both),
+            (false, false) => None,
+        }
+    }
+
+    /// `Shell.quit-ending`'s code: 1 stream, 2 recording, 3 both (0 is no question).
+    pub fn code(self) -> i32 {
+        match self {
+            Self::Stream => 1,
+            Self::Recording => 2,
+            Self::Both => 3,
+        }
+    }
+}
+
+/// What a Close or a Quit does now (ADR-0056 decision 3, ADR-0156 decision 1).
+/// `live`: what runs now; a stream or a recording makes Quit ask first. `way_back`: a
+/// hidden window can be brought back (Dock reopen on macOS, the tray icon on Windows);
+/// without one, Close is Quit (ADR-0056 decision 6).
 pub fn on_request(
     settings: &AppSettings,
     request: Request,
-    stream_live: bool,
+    live: LiveState,
     way_back: bool,
 ) -> Action {
     let keep = request == Request::Close
@@ -315,8 +349,8 @@ pub fn on_request(
         Action::Hide {
             notice: !settings.background_notice_shown,
         }
-    } else if stream_live {
-        Action::AskEndStream
+    } else if let Some(ending) = Ending::of(live) {
+        Action::AskBeforeQuit(ending)
     } else {
         Action::Quit
     }
@@ -456,15 +490,54 @@ mod tests {
         }
     }
 
+    /// Every live state: nothing, stream, recording, both, each also with a problem.
+    fn every_live_state() -> Vec<LiveState> {
+        let mut all = Vec::new();
+        for streaming in [false, true] {
+            for recording in [false, true] {
+                for problem in [false, true] {
+                    all.push(LiveState {
+                        streaming,
+                        recording,
+                        problem,
+                    });
+                }
+            }
+        }
+        all
+    }
+
+    /// What Quit does in `live`.
+    fn quit_in(live: LiveState) -> Action {
+        match Ending::of(live) {
+            Some(e) => Action::AskBeforeQuit(e),
+            None => Action::Quit,
+        }
+    }
+
+    #[test]
+    fn ending_names_what_runs() {
+        let s = |streaming, recording| LiveState {
+            streaming,
+            recording,
+            problem: true,
+        };
+        assert_eq!(Ending::of(s(false, false)), None);
+        assert_eq!(Ending::of(s(true, false)), Some(Ending::Stream));
+        assert_eq!(Ending::of(s(false, true)), Some(Ending::Recording));
+        assert_eq!(Ending::of(s(true, true)), Some(Ending::Both));
+        let codes: Vec<i32> = [Ending::Stream, Ending::Recording, Ending::Both]
+            .iter()
+            .map(|e| e.code())
+            .collect();
+        assert_eq!(codes, [1, 2, 3]);
+    }
+
     #[test]
     fn quit_setting_makes_close_quit() {
-        for live in [false, true] {
+        for live in every_live_state() {
             for way_back in [false, true] {
-                let want = if live {
-                    Action::AskEndStream
-                } else {
-                    Action::Quit
-                };
+                let want = quit_in(live);
                 assert_eq!(on_request(&quit(), Request::Close, live, way_back), want);
                 assert_eq!(on_request(&quit(), Request::Quit, live, way_back), want);
             }
@@ -474,15 +547,17 @@ mod tests {
     #[test]
     fn keep_running_hides_without_asking() {
         if !OnClose::KeepRunning.supported() {
-            // Linux: Close always quits.
-            assert_eq!(
-                on_request(&keep(true), Request::Close, false, true),
-                Action::Quit
-            );
+            // Linux: Close always quits, asking first while something runs.
+            for live in every_live_state() {
+                assert_eq!(
+                    on_request(&keep(true), Request::Close, live, true),
+                    quit_in(live)
+                );
+            }
             return;
         }
-        // Nothing ends, so nothing is asked, also while live.
-        for live in [false, true] {
+        // Nothing ends, so nothing is asked, also while streaming or recording.
+        for live in every_live_state() {
             assert_eq!(
                 on_request(&keep(true), Request::Close, live, true),
                 Action::Hide { notice: false }
@@ -490,32 +565,38 @@ mod tests {
         }
         // The first time says where RBS went.
         assert_eq!(
-            on_request(&keep(false), Request::Close, false, true),
+            on_request(&keep(false), Request::Close, LiveState::default(), true),
             Action::Hide { notice: true }
         );
     }
 
     #[test]
-    fn quit_asks_while_live_whatever_the_setting() {
-        for s in [keep(true), quit()] {
-            assert_eq!(
-                on_request(&s, Request::Quit, true, true),
-                Action::AskEndStream
-            );
-            assert_eq!(on_request(&s, Request::Quit, false, true), Action::Quit);
+    fn quit_asks_while_streaming_or_recording_whatever_the_setting() {
+        for s in [keep(true), keep(false), quit()] {
+            for live in every_live_state() {
+                for way_back in [false, true] {
+                    assert_eq!(on_request(&s, Request::Quit, live, way_back), quit_in(live));
+                }
+            }
         }
+        let recording = LiveState {
+            recording: true,
+            ..LiveState::default()
+        };
+        assert_eq!(
+            on_request(&quit(), Request::Quit, recording, true),
+            Action::AskBeforeQuit(Ending::Recording)
+        );
     }
 
     #[test]
     fn no_way_back_means_close_quits() {
-        assert_eq!(
-            on_request(&keep(true), Request::Close, false, false),
-            Action::Quit
-        );
-        assert_eq!(
-            on_request(&keep(true), Request::Close, true, false),
-            Action::AskEndStream
-        );
+        for live in every_live_state() {
+            assert_eq!(
+                on_request(&keep(true), Request::Close, live, false),
+                quit_in(live)
+            );
+        }
     }
 
     #[test]

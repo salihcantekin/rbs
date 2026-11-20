@@ -166,7 +166,9 @@ pub fn install(main: &crate::ui::MainWindow, seconds: u64) {
                 }
                 report(&st.phases, scale);
                 ACTIVE.with(|a| *a.borrow_mut() = None);
-                let _ = slint::quit_event_loop();
+                // Quits as the user's Quit does, so a run also measures the shutdown
+                // (ADR-0156); queued, since this tick holds the window.
+                crate::quit::quit_after_measure();
             }
             return;
         }
