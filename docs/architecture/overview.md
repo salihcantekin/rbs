@@ -24,10 +24,11 @@ RBS is a headless engine built around a **media graph**: a set of nodes (sources
 
 | Layer | Crates | May depend on |
 | --- | --- | --- |
-| Foundation | `rbs-core` (time, clock, timing, media types, capabilities, registry, the thread policy port, errors, metrics) | std, small utility crates (`bytes`) |
+| Foundation | `rbs-core` (time, clock, timing, media types, capabilities, registry, the thread policy port, errors, metrics, the diagnostics log facade `log`, ADR-0158) | std, small utility crates (`bytes`) |
 | Audio filters | `rbs-audio-filters` (Gain, Noise gate, Ducker, Noise suppression, the audio filter node; ADR-0082, ADR-0130) | `rbs-core`, `rbs-graph`, `rbs-params`, `rbs-denoise` |
 | Speech denoiser | `rbs-denoise` (RNNoise, a vendored and patched copy of `nnnoiseless`; ADR-0130) | `realfft` |
 | Settings schema | `rbs-params` (the field, value and validation types every filter kind shares; ADR-0082) | none (std only) |
+| Diagnostics log | `rbs-log` (the rotating log file, redaction and the `log` crate bridge; ADR-0158). Used only by composition roots and the browser helper executables (xtask class Diagnostics) | `rbs-core`, `rbs-crash`, `log` |
 | Format helpers | `rbs-media-format` (H.264/HEVC Annex B and length-prefixed conversion, parameter-set parsing, FLV tag bodies, ADTS; pure functions shared by muxer and transport adapters, ADR-0019), `rbs-browser-ipc` (browser helper messages and page rules; ADR-0109. Not CEF), `rbs-vcam-ring` (the virtual camera's shared-memory frame ring between an adapter and its consumer process; `std` only; ADR-0066) | Foundation only |
 | Engine | `rbs-graph`, `rbs-scene`, `rbs-gpu`, `rbs-audio`, `rbs-engine` (engine loop: a worker thread per partition, control loop, shutdown; ADR-0027), `rbs-nodes` (built-in nodes wrapping the ports: capture sources, video export, encoders, outputs; ADR-0038), `rbs-sources` (scene source types to nodes through registered adapters; ADR-0039), `rbs-record` (the recording of a canvas: scene, encoders, muxed output on the engine; ADR-0040) | Foundation, ports, `wgpu`, the recording model (`rbs-manifest`), the speech denoiser (`rbs-denoise`); `rbs-engine` only `rbs-core` and `rbs-graph` |
 | Ports | `rbs-capture`, `rbs-audio-io`, `rbs-codec`, `rbs-mux`, `rbs-transport`, `rbs-vcam` (virtual camera; ADR-0066), `rbs-media-decode` (local media-file decode; ADR-0108. FFmpeg adapter not linked yet), `rbs-text` (text layout and drawing; ADR-0129) | Foundation only |

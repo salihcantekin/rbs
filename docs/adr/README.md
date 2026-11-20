@@ -165,3 +165,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0155](0155-one-noise-state-until-each-channel-is-selected.md) | One noise-suppression state until each channel is selected (supersedes part of ADR-0130 decision 5) | Accepted |
 | [0156](0156-ask-before-quitting-while-recording-and-stop-off-the-ui-thread.md) | Ask before quitting while recording too, and stop the studio on a shutdown thread with per-step budgets (supersedes part of ADR-0056 decision 3) | Accepted |
 | [0157](0157-browser-gpu-pages-sync-on-a-shared-fence.md) | Browser pages on the GPU sync on a shared fence; the helper never waits on the CPU (supersedes the Windows sync and ring-size clauses of ADR-0109 decision 8 and ADR-0132 decision 8) | Proposed |
+| [0158](0158-diagnostics-log.md) | A diagnostics log with levels: a facade in `rbs-core`, a rotating file written off the calling thread by `rbs-log`, nothing on hot paths | Proposed |
