@@ -18,6 +18,7 @@
 mod app;
 mod args;
 mod control;
+mod diag_log;
 mod interrupt;
 mod obs_import;
 mod permissions;
@@ -66,7 +67,14 @@ fn project(p: &args::ProjectArgs) -> Result<(), String> {
 }
 
 fn main() -> ExitCode {
-    let raw: Vec<String> = std::env::args().skip(1).collect();
+    let mut raw: Vec<String> = std::env::args().skip(1).collect();
+    let _log = match args::take_log_level(&mut raw).and_then(|l| diag_log::start(l.as_deref())) {
+        Ok(run) => run,
+        Err(e) => {
+            rbs_crash::errln!("{e}\n\n{}", args::USAGE);
+            return ExitCode::from(2);
+        }
+    };
     match args::parse(raw.iter().map(String::as_str)) {
         Ok(Command::Help) => {
             rbs_crash::outln!("{}", args::USAGE);

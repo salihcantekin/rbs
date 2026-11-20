@@ -88,14 +88,35 @@ impl Writer {
         Ok(w)
     }
 
+    /// A writer without a file: every line goes to standard error only (the CLI).
+    pub fn stderr(home: Option<String>) -> Writer {
+        Writer {
+            dir: PathBuf::new(),
+            prefix: String::new(),
+            limits: Limits::default(),
+            part: Part {
+                time: String::new(),
+                pid: 0,
+                segment: 0,
+            },
+            out: None,
+            written: 0,
+            redactor: LogRedactor::new(home),
+            ring: Arc::new(Mutex::new(VecDeque::with_capacity(RING_LINES))),
+            last: None,
+            repeats: 0,
+            echo: true,
+        }
+    }
+
     /// The ring this writer fills.
     pub fn ring(&self) -> Ring {
         Arc::clone(&self.ring)
     }
 
-    /// The file written now.
-    pub fn path(&self) -> PathBuf {
-        self.dir.join(files::name(&self.prefix, &self.part))
+    /// The file written now; `None` for a standard error writer.
+    pub fn path(&self) -> Option<PathBuf> {
+        (!self.prefix.is_empty()).then(|| self.dir.join(files::name(&self.prefix, &self.part)))
     }
 
     /// Whether a repeat count waits to be written.
@@ -230,7 +251,25 @@ mod tests {
 
     fn read(w: &mut Writer) -> String {
         w.flush_file();
-        std::fs::read_to_string(w.path()).unwrap()
+        std::fs::read_to_string(w.path().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn a_standard_error_writer_has_no_file_and_still_fills_the_ring() {
+        let mut w = Writer::stderr(Some("/home/ada".to_owned()));
+        assert_eq!(w.path(), None);
+        w.line(&line("opened /home/ada/a.mkv", 1), 0);
+        w.line(&line("opened /home/ada/a.mkv", 1), 0);
+        w.end_repeat();
+        w.flush_file();
+        let ring: Vec<String> = w.ring().lock().unwrap().iter().cloned().collect();
+        assert_eq!(ring.len(), 2);
+        assert!(
+            ring[0].ends_with("[rbs-control] opened ~/a.mkv"),
+            "{}",
+            ring[0]
+        );
+        assert_eq!(ring[1], "(repeated once)");
     }
 
     #[test]
@@ -309,6 +348,7 @@ mod tests {
         w.flush_file();
         assert!(
             w.path()
+                .unwrap()
                 .ends_with(format!("rbs-20261120T152735Z-42.{}.log", w.part.segment))
         );
         assert!(w.part.segment > 1);

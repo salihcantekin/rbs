@@ -66,11 +66,13 @@ fn start_file() {
                     }
                 }
             }
-            Err(e) => rbs_core::warn!(Area::App, "{e}; levels stay Normal"),
+            Err(e) => rbs_core::warn!(Area::App, "RBS_LOG: {e}; levels stay Normal"),
         }
     }
     rbs_log::bridge_log_crate();
-    rbs_core::info!(Area::App, "log file {}", logger.path().display());
+    if let Some(path) = logger.path() {
+        rbs_core::info!(Area::App, "log file {}", path.display());
+    }
 }
 
 /// The first lines of the file: what a bug report needs to know about this build.

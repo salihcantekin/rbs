@@ -4,6 +4,7 @@
 //! [`Logger::sink`] is installed with `rbs_core::log::install`. The sink formats a line
 //! on the calling thread and hands it over without waiting; the thread redacts it,
 //! writes it, rotates and prunes files and keeps the last lines in memory.
+//! [`start_stderr`] does the same without a file, writing to standard error.
 //!
 //! Used only by composition roots and helper executables (xtask layer class
 //! Diagnostics).
@@ -114,7 +115,7 @@ impl Sink for FileSink {
 pub struct Logger {
     sink: &'static FileSink,
     ring: Ring,
-    path: PathBuf,
+    path: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for Logger {
@@ -140,6 +141,17 @@ pub fn start(config: Config) -> std::io::Result<Logger> {
         &config.header,
         config.echo,
     )?;
+    spawn(writer, config.queue, config.now)
+}
+
+/// Starts the `rbs-log` thread with no file: each line, redacted and with repeats
+/// collapsed, goes to standard error (the CLI, whose user reads its terminal).
+/// `queue` and `home` as in [`Config`].
+pub fn start_stderr(queue: usize, home: Option<String>) -> std::io::Result<Logger> {
+    spawn(Writer::stderr(home), queue, SystemTime::now)
+}
+
+fn spawn(writer: Writer, queue: usize, now: fn() -> SystemTime) -> std::io::Result<Logger> {
     let ring = writer.ring();
     let path = writer.path();
     let (tx, rx) = mpsc::channel();
@@ -155,9 +167,9 @@ pub fn start(config: Config) -> std::io::Result<Logger> {
     let sink: &'static FileSink = Box::leak(Box::new(FileSink {
         tx,
         queued,
-        capacity: config.queue.max(1),
+        capacity: queue.max(1),
         dropped,
-        now: config.now,
+        now,
     }));
     Ok(Logger { sink, ring, path })
 }
@@ -242,9 +254,9 @@ impl Logger {
         }
     }
 
-    /// The file written when the run started.
-    pub fn path(&self) -> &Path {
-        &self.path
+    /// The file written when the run started; `None` for [`start_stderr`].
+    pub fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
     }
 }
 

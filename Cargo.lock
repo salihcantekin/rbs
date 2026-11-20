@@ -4936,6 +4936,7 @@ dependencies = [
  "rbs-gpu",
  "rbs-graph",
  "rbs-import-obs",
+ "rbs-log",
  "rbs-mux-flac",
  "rbs-mux-fmp4",
  "rbs-mux-matroska",

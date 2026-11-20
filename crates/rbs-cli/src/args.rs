@@ -263,6 +263,11 @@ usage:
   rbs-cli obs-import check|run <collection.json> [--profile <folder>] [--scene <name>]...
                        [--no-global-audio] [--no-audio-filters] [--no-video-filters] [--no-canvas]
 
+any command:
+  --log-level LEVELS   diagnostics lines to standard error: off, error, warn
+                       (default), info, debug or trace, or per area
+                       (info,stream=trace); wins over RBS_LOG
+
 record options:
   --seconds N          stop after N seconds (default: Enter or Ctrl+C)
   --size WxH           canvas size (default 1920x1080)
@@ -495,6 +500,28 @@ pub fn container_of(path: &Path) -> Result<ContainerId, String> {
             path.display()
         )),
     }
+}
+
+/// Removes `--log-level <levels>` or `--log-level=<levels>` from `args`, wherever it
+/// is, and returns its value (the last one when given twice).
+pub fn take_log_level(args: &mut Vec<String>) -> Result<Option<String>, String> {
+    let mut found = None;
+    let mut i = 0;
+    while i < args.len() {
+        if let Some(v) = args[i].strip_prefix("--log-level=") {
+            found = Some(v.to_owned());
+            args.remove(i);
+        } else if args[i] == "--log-level" {
+            if i + 1 >= args.len() {
+                return Err("--log-level needs levels, such as debug".into());
+            }
+            found = Some(args.remove(i + 1));
+            args.remove(i);
+        } else {
+            i += 1;
+        }
+    }
+    Ok(found)
 }
 
 /// Parses the arguments after the program name.
@@ -860,6 +887,24 @@ fn record<'a>(mut it: impl Iterator<Item = &'a str>, stream: bool) -> Result<Rec
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+
+    #[test]
+    fn the_log_level_is_taken_from_anywhere() {
+        let mut a: Vec<String> = ["record", "a.mkv", "--log-level", "debug", "--fps", "30"]
+            .map(String::from)
+            .into();
+        assert_eq!(take_log_level(&mut a), Ok(Some("debug".into())));
+        assert_eq!(a, ["record", "a.mkv", "--fps", "30"]);
+        let mut a: Vec<String> = ["--log-level=info,stream=trace", "devices"]
+            .map(String::from)
+            .into();
+        assert_eq!(take_log_level(&mut a), Ok(Some("info,stream=trace".into())));
+        assert_eq!(a, ["devices"]);
+        let mut a: Vec<String> = ["devices"].map(String::from).into();
+        assert_eq!(take_log_level(&mut a), Ok(None));
+        let mut a: Vec<String> = ["devices", "--log-level"].map(String::from).into();
+        assert!(take_log_level(&mut a).is_err());
+    }
 
     fn parse_record(args: &[&str]) -> Result<RecordArgs, String> {
         match parse(std::iter::once("record").chain(args.iter().copied()))? {

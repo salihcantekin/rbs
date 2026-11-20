@@ -33,7 +33,7 @@ fn macros_and_library_records_reach_the_file() {
     assert_eq!(::log::max_level(), ::log::LevelFilter::Debug);
 
     assert!(logger.flush(Duration::from_secs(20)));
-    let text = std::fs::read_to_string(logger.path()).unwrap();
+    let text = std::fs::read_to_string(logger.path().unwrap()).unwrap();
     let msgs: Vec<&str> = text
         .lines()
         .map(|l| l.split_once("] ").map_or(l, |(_, m)| m))

@@ -60,6 +60,8 @@ rbs-user-data = { path = "../rbs-user-data" }
 rbs-ui = { path = "../rbs-ui" }
 # Lines to stdout and stderr that never panic when the pipe closes (`outln!`, `errln!`).
 rbs-crash = { path = "../rbs-crash" }
+# The diagnostics log, to standard error (ADR-0158).
+rbs-log = { path = "../rbs-log" }
 serde_json = "1"
 
 [target.'cfg(windows)'.dependencies]

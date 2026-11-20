@@ -25,7 +25,12 @@ fn lines_reach_the_file_and_the_ring() {
     config.home = None;
     config.header = vec!["RBS test".to_owned()];
     let logger = start(config).unwrap();
-    assert!(logger.path().ends_with("rbs-20261120T152735Z-7.log"));
+    assert!(
+        logger
+            .path()
+            .unwrap()
+            .ends_with("rbs-20261120T152735Z-7.log")
+    );
 
     let sink = logger.sink();
     for _ in 0..3 {
@@ -39,7 +44,7 @@ fn lines_reach_the_file_and_the_ring() {
     }
     assert!(logger.flush(GUARD));
 
-    let text = std::fs::read_to_string(logger.path()).unwrap();
+    let text = std::fs::read_to_string(logger.path().unwrap()).unwrap();
     let thread = std::thread::current().name().unwrap_or("?").to_owned();
     let expected = format!(
         "RBS test\n2026-11-20T15:27:35.123Z WARN  stream [{thread}] reconnecting to srt://h:1?<redacted>\n(repeated 2 times)\n"

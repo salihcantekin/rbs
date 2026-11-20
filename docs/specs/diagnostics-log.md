@@ -91,11 +91,12 @@ pub struct Config {
     pub echo: bool,               // also to standard error, from the writer thread
 }
 pub fn start(config: Config) -> io::Result<Logger>;   // prunes, opens, spawns `rbs-log`
+pub fn start_stderr(queue: usize, home: Option<String>) -> io::Result<Logger>; // no file: standard error only (CLI)
 impl Logger {
     pub fn sink(&self) -> &'static dyn rbs_core::log::Sink;  // to pass to install
     pub fn flush(&self, wait: Duration) -> bool;              // true when written in time
     pub fn recent(&self) -> Vec<String>;                      // last 500 lines, never waits
-    pub fn path(&self) -> &Path;                              // the current file
+    pub fn path(&self) -> Option<&Path>;                      // the first file; None for start_stderr
 }
 pub fn default_dir() -> Option<PathBuf>;                     // per OS, RBS_LOG_DIR first
 pub fn parse_filters(text: &str) -> Result<Vec<(Option<Area>, Filter)>, ParseError>;
@@ -113,7 +114,7 @@ pub fn apply_level(filter: Filter);                          // every area but L
 - The memory ring keeps the last 500 redacted lines; the writer holds its lock only to push one line. `recent()` copies it with a `try_lock` and returns an empty list rather than wait (it is called from the panic hook); a crash report then says the recent lines were not available. Crash reports run `rbs_crash::redact` over the copied lines, which also removes stream hosts.
 - `flush(wait)` sends a flush request and waits at most `wait` for its answer: the lines are then written to the file (handed to the OS; no `fsync`). It must not be called on the UI thread.
 - `rbs_log::set_filter` sets the process-wide filter and, for `Area::Lib`, `log::set_max_level` to the same level (Trace becomes Debug). `rbs_log::apply_level(filter)` is the Settings level: every area but `Lib`. Apps set levels only through these two; `rbs_core::log::set_filter` and `set_all` are low level (tests, and `set_all` also raises `Lib`).
-- The bridge maps `log` records to `Area::Lib` with their target in front of the message. Before formatting it counts lines per call site (64 hashed slots, a relaxed counter each): a site (file, line and level; 256 slots; records without a static file share one) writes its first 10 lines, then one line in 1000, and errors are never thinned, so a library that warns on every frame costs a load, a branch and an atomic add per frame on that thread, never a format.
+- The bridge maps `log` records to `Area::Lib` with their target in front of the message. Before formatting it counts lines per call site: a site (file, line and level; 256 slots; records without a static file share one) writes its first 10 lines, then one line in 1000, and errors are never thinned, so a library that warns on every frame costs a load, a branch and an atomic add per frame on that thread, never a format.
 
 Folders: macOS `~/Library/Logs/RBS/`, Windows `%LOCALAPPDATA%\RBS\logs\`, Linux `$XDG_STATE_HOME/rbs/logs/` (default `~/.local/state/rbs/logs/`). `RBS_LOG_DIR` wins.
 
@@ -173,7 +174,8 @@ No log macro in code listed in [hot-paths.md](../architecture/hot-paths.md). `ca
 
 - Facade (`crates/rbs-core/src/log.rs`), writer (`crates/rbs-log`), `rbs_crash::LogRedactor` and the xtask check: implemented with tests (2026-11-20).
 - `rbs-app`: the log starts first in `main` (`diag_log`), Normal levels, `Lib` at Warn, `RBS_LOG`; lines echo to standard error at a terminal or with `RBS_LOG`; every former `errln!` and `studio_ui::log` line and the UI stall watch log through the macros (2026-11-20).
-- Not yet: `rbs-cli` (standard error sink, `--log-level`), `rbs-browser-runner` (after stability WP-A), the recent lines in crash reports, new per-area lines, the summary timer, Settings › Advanced.
+- `rbs-cli`: `start_stderr` before the arguments are parsed (`diag_log`); Warn for every area and `Lib`, then `RBS_LOG`, then `--log-level <levels>` (same grammar, anywhere on the line); its answers to its user stay `outln!`/`errln!` (2026-11-20).
+- Not yet: `rbs-browser-runner` (after stability WP-A), the recent lines in crash reports, new per-area lines, the summary timer, Settings › Advanced.
 
 ## Open questions
 

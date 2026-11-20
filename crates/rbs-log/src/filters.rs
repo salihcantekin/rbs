@@ -41,7 +41,7 @@ pub struct ParseError(pub String);
 
 impl fmt::Display for ParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "RBS_LOG: cannot read {:?}", self.0)
+        write!(f, "cannot read the log level {:?}", self.0)
     }
 }
 
