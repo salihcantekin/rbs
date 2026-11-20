@@ -1001,6 +1001,7 @@ impl Recording {
             settings.audio_graph,
             &Chains::default(),
             crate::studio::native_encode_of(&gpu),
+            None,
         )?;
         let mut studio = Studio::start_with(
             engine,
