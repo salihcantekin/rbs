@@ -1,6 +1,6 @@
 # ADR-0159: The studio host in its own toolkit-free crate, then split by concern
 
-- Status: Proposed
+- Status: Accepted (three independent review rounds and the owner's approval 2026-11-20, see Review)
 - Date: 2026-11-20
 - Deciders: salihcantekin
 
@@ -80,3 +80,4 @@ ADR-0144 accepted the direction (quality plan WP-12 to WP-14) and asked for this
   1. `preview_hold` reads two `rbs-gpu` constants exported only under `preview-layer`, so the crate alone would not build on macOS and Windows -> seam commit exports them without the feature; `device-check` builds the crate alone on both.
   2. The xtask dev-edge rule must be its own branch before the early return -> stated in decision 3.
   3. Public items the integration tests and `main.rs` need, and `add_ons::target()` -> decisions 2 and 5.
+- **Owner approval: salihcantekin, 2026-11-20 17:47 UTC** (decision card in the WP-L project thread). Status set to Accepted.

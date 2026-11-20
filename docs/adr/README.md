@@ -166,4 +166,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0156](0156-ask-before-quitting-while-recording-and-stop-off-the-ui-thread.md) | Ask before quitting while recording too, and stop the studio on a shutdown thread with per-step budgets (supersedes part of ADR-0056 decision 3) | Accepted |
 | [0157](0157-browser-gpu-pages-sync-on-a-shared-fence.md) | Browser pages on the GPU sync on a shared fence; the helper never waits on the CPU (supersedes the Windows sync and ring-size clauses of ADR-0109 decision 8 and ADR-0132 decision 8) | Proposed |
 | [0158](0158-diagnostics-log.md) | A diagnostics log with levels: a facade in `rbs-core`, a rotating file written off the calling thread by `rbs-log`, nothing on hot paths | Accepted |
-| [0159](0159-studio-host-in-its-own-crate.md) | The studio host in its own toolkit-free crate `rbs-studio-host`, adapters only through `HostConfig`, then split by concern | Proposed |
+| [0159](0159-studio-host-in-its-own-crate.md) | The studio host in its own toolkit-free crate `rbs-studio-host`, adapters only through `HostConfig`, then split by concern | Accepted |
