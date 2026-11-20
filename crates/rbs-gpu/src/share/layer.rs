@@ -85,9 +85,7 @@ pub struct PreviewLayer {
     wanted: [Option<Mark>; MAX_MARKS],
 }
 
-/// Default time a replaced surface stays with the UI: two refresh periods at 60 Hz. See
-/// [`PreviewLayer::set_retire_after`].
-pub const DEFAULT_RETIRE_AFTER: Duration = Duration::from_millis(34);
+use super::DEFAULT_RETIRE_AFTER;
 
 impl PreviewLayer {
     /// A layer for `subscriber`'s surfaces, not yet in a window. Shows nothing until the
