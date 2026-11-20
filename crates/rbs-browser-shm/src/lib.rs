@@ -952,16 +952,18 @@ mod tests {
     fn a_leased_slot_is_never_written_under_racing_claims_and_leases() {
         use std::sync::Arc;
         use std::sync::atomic::AtomicBool;
+        // The studio side decides when the run ends (after it took enough pictures),
+        // so the result does not depend on how the two threads are scheduled.
+        const TAKE: u32 = 2_000;
         let ring = Arc::new(gpu_ring(4));
         let markers: Arc<Vec<AtomicU64>> = Arc::new((0..4).map(|_| AtomicU64::new(0)).collect());
-        let done = Arc::new(AtomicBool::new(false));
+        let stop = Arc::new(AtomicBool::new(false));
         let helper = {
-            let (ring, markers, done) =
-                (Arc::clone(&ring), Arc::clone(&markers), Arc::clone(&done));
+            let (ring, markers, stop) =
+                (Arc::clone(&ring), Arc::clone(&markers), Arc::clone(&stop));
             std::thread::spawn(move || {
                 let mut fence = 0u64;
-                let mut published = 0u32;
-                while published < 20_000 {
+                while !stop.load(Ordering::Acquire) {
                     let Some(slot) = ring.claim_gpu() else {
                         std::hint::spin_loop();
                         continue;
@@ -969,17 +971,21 @@ mod tests {
                     fence += 1;
                     markers[slot as usize].store(fence, Ordering::Relaxed);
                     ring.publish_gpu(slot, fence);
-                    published += 1;
                 }
-                done.store(true, Ordering::Release);
                 fence
             })
         };
+        // Hang guard only: the loop ends on the count, not on time.
+        let guard = std::time::Instant::now() + std::time::Duration::from_secs(30);
         let mut seen = 0;
         let mut held: Vec<GpuPicture> = Vec::new();
         let mut last = 0;
         let mut taken = 0u32;
-        while !done.load(Ordering::Acquire) {
+        while taken < TAKE {
+            assert!(
+                std::time::Instant::now() < guard,
+                "hung after {taken} pictures"
+            );
             if let Some(p) = ring.take_gpu(&mut seen) {
                 assert_eq!(markers[p.slot as usize].load(Ordering::Relaxed), p.fence);
                 assert!(p.fence > last, "{} after {last}", p.fence);
@@ -994,12 +1000,12 @@ mod tests {
                 ring.lease_sub(p.slot);
             }
         }
+        stop.store(true, Ordering::Release);
+        let final_fence = helper.join().unwrap();
         for p in held {
             assert_eq!(markers[p.slot as usize].load(Ordering::Relaxed), p.fence);
             ring.lease_sub(p.slot);
         }
-        let final_fence = helper.join().unwrap();
-        assert!(taken > 0);
         // The newest publish is still there to take.
         if last < final_fence {
             let p = ring.take_gpu(&mut seen).unwrap();
