@@ -377,6 +377,24 @@ fn rows_where(rx: &Receiver<Update>, mut ok: impl FnMut(&[SourceRow]) -> bool) -
     })
 }
 
+/// Adds a text "Title" and returns its row once the measure off the control thread has
+/// replaced the default box: a test that reads or edits the box waits for that.
+fn add_text(host: &StudioHost, rx: &Receiver<Update>) -> SourceRow {
+    host.send(Command::AddText {
+        text: "Title".into(),
+    });
+    let default = rbs_scene::model::SettingValue::Int(i64::from(rbs_sources::text::DEFAULT_BOX[0]));
+    let measured = |r: &SourceRow| {
+        r.kind == Some(SourceKind::Text)
+            && r.text
+                .as_ref()
+                .and_then(|t| t.get("width"))
+                .is_some_and(|w| *w != default)
+    };
+    let rows = rows_where(rx, |r| r.iter().any(measured));
+    rows.into_iter().find(measured).unwrap()
+}
+
 fn request(path: PathBuf, encoder: Option<&str>) -> RecordRequest {
     let mut video = VideoSettings::default();
     video.rate_control = RateControl::Cbr {
@@ -1004,14 +1022,7 @@ fn a_text_box_is_locked_while_a_take_records_its_picture_separately() {
         Update::Failed(e) => panic!("{e}"),
         _ => None,
     });
-    host.send(Command::AddText {
-        text: "Title".into(),
-    });
-    let rows = rows_where(&rx, |r| r.iter().any(|r| r.kind == Some(SourceKind::Text)));
-    let text = rows
-        .into_iter()
-        .find(|r| r.kind == Some(SourceKind::Text))
-        .unwrap();
+    let text = add_text(&host, &rx);
     let width = |w: i64| {
         let mut patch = std::collections::BTreeMap::new();
         patch.insert("width".to_owned(), serde_json::json!(w));
@@ -1088,14 +1099,7 @@ fn the_patches_of_one_field_drag_undo_as_one_step() {
         Update::Failed(e) => panic!("{e}"),
         _ => None,
     });
-    host.send(Command::AddText {
-        text: "Title".into(),
-    });
-    let rows = rows_where(&rx, |r| r.iter().any(|r| r.kind == Some(SourceKind::Text)));
-    let text = rows
-        .into_iter()
-        .find(|r| r.kind == Some(SourceKind::Text))
-        .unwrap();
+    let text = add_text(&host, &rx);
     let int =
         |r: &rbs_app::studio_host::SourceRow, key: &str| match r.text.as_ref().unwrap().get(key) {
             Some(rbs_scene::model::SettingValue::Int(i)) => *i,
@@ -1145,14 +1149,7 @@ fn fit_box_to_text_and_the_font_list_answer_the_text_tab() {
         Update::Failed(e) => panic!("{e}"),
         _ => None,
     });
-    host.send(Command::AddText {
-        text: "Title".into(),
-    });
-    let rows = rows_where(&rx, |r| r.iter().any(|r| r.kind == Some(SourceKind::Text)));
-    let text = rows
-        .into_iter()
-        .find(|r| r.kind == Some(SourceKind::Text))
-        .unwrap();
+    let text = add_text(&host, &rx);
     let int =
         |r: &rbs_app::studio_host::SourceRow, key: &str| match r.text.as_ref().unwrap().get(key) {
             Some(rbs_scene::model::SettingValue::Int(i)) => *i,

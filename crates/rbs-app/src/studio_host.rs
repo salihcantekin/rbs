@@ -14192,7 +14192,7 @@ impl Host {
         for source in self.collection.sources() {
             source.id.hash(&mut hasher);
             let state = states.iter().find(|st| st.source == source.id);
-            state.and_then(|st| st.failed.as_deref()).hash(&mut hasher);
+            (state.is_some(), state.and_then(|st| st.failed.as_deref())).hash(&mut hasher);
             state
                 .and_then(|st| st.fault)
                 .map(|f| f as u8)

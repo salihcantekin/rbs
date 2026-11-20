@@ -732,6 +732,26 @@ fn a_control_api_client_drives_the_studio() {
 /// Text sources through the control API (protocol 1.75, ADR-0129 decision 8): added
 /// with their text, edited with `source.set_text` and `source.set_settings`, their
 /// `file` refused, the font list read from the worker.
+/// The id `source.add` answered, once its text row shows a measured box: a new text
+/// source starts with the default box and is measured off the control thread.
+fn measured(updates: &Receiver<Update>, added: &Value) -> u64 {
+    let id = added["result"]["source"].as_u64().expect("a source id");
+    let default = rbs_scene::model::SettingValue::Int(i64::from(rbs_sources::text::DEFAULT_BOX[0]));
+    next(updates, |u| match u {
+        Update::Sources(rows) => rows
+            .iter()
+            .any(|r| {
+                u64::from(r.id.get()) == id
+                    && r.text
+                        .as_ref()
+                        .and_then(|t| t.get("width"))
+                        .is_some_and(|w| *w != default)
+            })
+            .then_some(id),
+        _ => None,
+    })
+}
+
 #[test]
 fn a_control_api_client_adds_and_edits_a_text_source() {
     let Some(gpu) = gpu() else { return };
@@ -789,9 +809,9 @@ fn a_control_api_client_adds_and_edits_a_text_source() {
         json!({"protocols": ["1.0"], "client": {"name": "test", "version": "1"}}),
     );
 
-    // Added with its text and a box: measured, or the default when the measure is late.
+    // Added with the default box; the test waits for the measure that replaces it.
     let added = c.call("source.add", json!({"kind": "text", "text": "Hello"}));
-    let id = added["result"]["source"].as_u64().expect("a source id");
+    let id = measured(&updates, &added);
     let got = c.call("source.get_settings", json!({"source": id}));
     let settings = &got["result"]["settings"];
     assert_eq!(settings["text"], "Hello", "{got}");
