@@ -19,6 +19,14 @@ fn measure(f: &mut dyn FnMut()) -> u64 {
     info.count_total + info.count_current.unsigned_abs()
 }
 
+/// `owned_resources` counts every stream in this process. The hardware tests must
+/// not overlap: one test's capture thread is two resources, which the other test
+/// would read as a leak after `stop`.
+fn one_hardware_test_at_a_time() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Environment variable that makes this binary play the fixture tone.
 #[cfg(windows)]
 const FIXTURE: &str = "RBS_WASAPI_FIXTURE";
@@ -35,6 +43,7 @@ fn fixture_process() {
 
 #[test]
 fn probes_and_stays_idle() {
+    let _one = one_hardware_test_at_a_time();
     use std::sync::Arc;
 
     use rbs_audio_io::{AudioBackend, AudioIoError, EndpointId, EndpointKind, InputRequest};
@@ -75,6 +84,7 @@ fn probes_and_stays_idle() {
 #[ignore = "slow: about 15 s of real audio through WASAPI on a machine with audio \
             endpoints; needs RBS_AUDIO_HW=1"]
 fn slow_hardware_conformance() {
+    let _one = one_hardware_test_at_a_time();
     if std::env::var_os("RBS_AUDIO_HW").is_none_or(|v| v.is_empty()) {
         eprintln!("RBS_AUDIO_HW is not set: hardware conformance skipped");
         return;
@@ -446,6 +456,7 @@ fn outputs_are_listed_with_a_device_key_and_open_in_standby() {
 #[test]
 #[ignore = "slow: plays about 0.5 s of silence on the default output; needs RBS_AUDIO_HW=1"]
 fn slow_hardware_output() {
+    let _one = one_hardware_test_at_a_time();
     if std::env::var_os("RBS_AUDIO_HW").is_none_or(|v| v.is_empty()) {
         eprintln!("RBS_AUDIO_HW is not set: hardware output skipped");
         return;
