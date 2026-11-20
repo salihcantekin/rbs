@@ -253,10 +253,10 @@ impl BrowserTree for RunnerBrowserTree {
         let mut edge = sound
             .as_ref()
             .map(|sound| BrowserPictureEdge::new(sound.clock()));
-        #[cfg_attr(not(windows), allow(unused_variables))]
+        #[cfg(windows)]
         let kept = slots.clone();
         #[cfg(not(windows))]
-        let _keep_type = slots;
+        let _ = slots;
         let publish = move |rgba: &mut Vec<u8>, width, height, painted, picture: PagePicture| {
             let stamp = edge
                 .as_mut()
