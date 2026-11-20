@@ -120,6 +120,84 @@ impl MeterView {
             peak_zone,
         }
     }
+
+    /// The master's loudness bar (ADR-0092 decision 7) read from this view: `level` is
+    /// the short-term loudness and `peak` the target, both as positions on the scale.
+    /// The fill is the first zone (the others stay empty) and the target is the peak
+    /// line: a mark `mark` thick centred on the target, kept inside `bar`.
+    pub fn loudness_frames(&self, bar: Rect, orientation: Orientation, mark: f32) -> MeterFrames {
+        let level = unit(self.level);
+        let target = unit(self.peak);
+        let mark = if mark.is_finite() { mark.max(0.0) } else { 0.0 };
+        let (fill, line) = match orientation {
+            Orientation::Vertical => (
+                Rect {
+                    x: bar.x,
+                    y: bar.y + bar.h * (1.0 - level),
+                    w: bar.w,
+                    h: bar.h * level,
+                },
+                Rect {
+                    x: bar.x,
+                    y: bar.y
+                        + (bar.h * (1.0 - target) - mark / 2.0)
+                            .min(bar.h - mark)
+                            .max(0.0),
+                    w: bar.w,
+                    h: mark.min(bar.h),
+                },
+            ),
+            Orientation::Horizontal => (
+                Rect {
+                    x: bar.x,
+                    y: bar.y,
+                    w: bar.w * level,
+                    h: bar.h,
+                },
+                Rect {
+                    x: bar.x + (bar.w * target - mark / 2.0).min(bar.w - mark).max(0.0),
+                    y: bar.y,
+                    w: mark.min(bar.w),
+                    h: bar.h,
+                },
+            ),
+        };
+        let empty = |r: Rect| Rect {
+            w: 0.0,
+            h: 0.0,
+            ..r
+        };
+        MeterFrames {
+            zones: [fill, empty(fill), empty(fill)],
+            peak: Some(line),
+            peak_zone: 0,
+        }
+    }
+}
+
+/// What a bar on a native meter layer shows (ADR-0035).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum BarKind {
+    /// A level meter: [`MeterView::frames`] in the meter zone colours.
+    #[default]
+    Level,
+    /// The master's loudness bar: [`MeterView::loudness_frames`] with a target mark
+    /// `mark` logical pixels thick (`size.meter.target`), in `color.loudness.fill` and
+    /// `color.loudness.target`.
+    Loudness {
+        /// The target mark's thickness.
+        mark: f32,
+    },
+}
+
+impl BarKind {
+    /// Where `view`'s moving parts go inside `bar`.
+    pub fn frames(self, view: &MeterView, bar: Rect, orientation: Orientation) -> MeterFrames {
+        match self {
+            BarKind::Level => view.frames(bar, orientation),
+            BarKind::Loudness { mark } => view.loudness_frames(bar, orientation, mark),
+        }
+    }
 }
 
 /// Which way a meter's bar grows.
@@ -273,6 +351,41 @@ impl Meter {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_loudness_bar_fills_to_the_reading_and_marks_the_target() {
+        let bar = Rect {
+            x: 10.0,
+            y: 20.0,
+            w: 6.0,
+            h: 100.0,
+        };
+        let view = MeterView {
+            level: 0.25,
+            peak: 0.75,
+            clipped: false,
+        };
+        let f = BarKind::Loudness { mark: 2.0 }.frames(&view, bar, Orientation::Vertical);
+        assert_eq!(f.zones[0].y, 95.0, "the fill grows from the bottom");
+        assert_eq!(f.zones[0].h, 25.0);
+        assert_eq!(f.zones[1].h, 0.0, "one colour only");
+        assert_eq!(f.zones[2].w, 0.0);
+        let mark = f.peak.unwrap_or_default();
+        assert_eq!((mark.y, mark.h), (44.0, 2.0), "centred on the target");
+        let top = MeterView {
+            level: 1.0,
+            peak: 1.0,
+            clipped: false,
+        };
+        let f = top.loudness_frames(bar, Orientation::Horizontal, 2.0);
+        assert_eq!(f.zones[0].w, 6.0);
+        let mark = f.peak.unwrap_or_default();
+        assert_eq!(mark.x, 14.0, "a target at the top stays inside the bar");
+        assert_eq!(
+            BarKind::Level.frames(&view, bar, Orientation::Vertical),
+            view.frames(bar, Orientation::Vertical)
+        );
+    }
+
     use super::*;
 
     fn ms(v: u64) -> Duration {

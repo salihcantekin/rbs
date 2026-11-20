@@ -15,7 +15,7 @@ use objc2_core_graphics::CGColor;
 use objc2_quartz_core::{CALayer, CATransaction};
 use rbs_app::native::{MeterBridgeLayer, MeterColors, MeterGeometry};
 use rbs_ui::layout::Rect;
-use rbs_ui::meter::{MeterView, Orientation, position};
+use rbs_ui::meter::{BarKind, MeterView, Orientation, position};
 use rbs_ui::tokens::Tokens;
 
 /// Changes layers the way the bridge does: in an explicit transaction without
@@ -70,6 +70,7 @@ fn geometry(i: usize) -> MeterGeometry {
             h: 6.0,
         },
         orientation: Orientation::Vertical,
+        kind: BarKind::Level,
     }
 }
 
@@ -214,6 +215,7 @@ fn edges_snap_to_device_pixels() {
             h: 6.0,
         },
         orientation: Orientation::Vertical,
+        kind: BarKind::Level,
     }]);
     bridge.show(&[MeterView {
         level: 0.77,
@@ -321,6 +323,29 @@ fn a_scale_change_resnaps_existing_meters() {
 }
 
 #[test]
+fn the_loudness_bar_is_a_fill_and_a_target_mark() {
+    let mut bridge = MeterBridgeLayer::new(&colors());
+    bridge.set_meters(&[MeterGeometry {
+        kind: BarKind::Loudness { mark: 2.0 },
+        ..geometry(0)
+    }]);
+    bridge.show(&[MeterView {
+        level: 0.5,
+        peak: 0.75,
+        clipped: false,
+    }]);
+    let subs = sublayers(&bridge);
+    assert_eq!(subs[0].frame().size.height, 50.0, "the fill");
+    assert!(subs[1].isHidden() && subs[2].isHidden(), "one colour only");
+    assert_eq!(
+        subs[3].frame().origin.y,
+        34.0,
+        "the mark centred on the target"
+    );
+    assert!(!subs[3].isHidden());
+}
+
+#[test]
 fn colour_changes_apply_at_once() {
     let tokens = Tokens::built_in().unwrap();
     let dark = MeterColors::from_tokens(&tokens, "dark").unwrap();
@@ -366,6 +391,7 @@ fn horizontal_meters_grow_rightward() {
             h: 6.0,
         },
         orientation: Orientation::Horizontal,
+        kind: BarKind::Level,
     };
     bridge.set_meters(&[g]);
     let v = MeterView {
@@ -422,6 +448,7 @@ fn input_that_is_not_finite_never_reaches_core_animation() {
             h: 6.0,
         },
         orientation: Orientation::Vertical,
+        kind: BarKind::Level,
     };
     bridge.set_meters(&[bad]);
     bridge.show(&[MeterView {

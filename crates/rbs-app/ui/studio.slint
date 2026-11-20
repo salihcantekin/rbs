@@ -950,7 +950,9 @@ export component LoudnessButton inherits HorizontalLayout {
 }
 
 // The master's loudness bar: short-term loudness on the meter law, and the target as a
-// mark across it. Vertical in a column strip, horizontal in a row.
+// mark across it. Vertical in a column strip, horizontal in a row. Like `NativeMeter`, it
+// tells the shell where it is (key -2), and while the native meter layer shows
+// (`Studio.native-meters`, ADR-0035) the layer draws the fill and the mark.
 export component LoudnessBar inherits Rectangle {
     in property <bool> vertical;
     background: Theme.surface-sunken;
@@ -959,22 +961,32 @@ export component LoudnessBar inherits Rectangle {
     border-radius: Tokens.radius-sm;
     clip: true;
     accessible-role: none;
-    if Studio.loudness.has && root.vertical: Rectangle {
+    property <int> epoch: Studio.meter-epoch;
+    function report() {
+        Studio.meter-placed(-2, root.absolute-position.x, root.absolute-position.y, root.width, root.height, root.vertical, true);
+    }
+    init => { root.report(); }
+    changed absolute-position => { root.report(); }
+    changed width => { root.report(); }
+    changed height => { root.report(); }
+    changed epoch => { root.report(); }
+    changed vertical => { root.report(); }
+    if !Studio.native-meters && Studio.loudness.has && root.vertical: Rectangle {
         y: parent.height * (1 - Studio.loudness.at);
         height: parent.height * Studio.loudness.at;
         background: Theme.loudness-fill;
     }
-    if Studio.loudness.has && !root.vertical: Rectangle {
+    if !Studio.native-meters && Studio.loudness.has && !root.vertical: Rectangle {
         x: 0;
         width: parent.width * Studio.loudness.at;
         background: Theme.loudness-fill;
     }
-    if root.vertical: Rectangle {
+    if !Studio.native-meters && root.vertical: Rectangle {
         y: max(0px, parent.height * (1 - Studio.loudness.target-at) - Tokens.size-meter-target / 2);
         height: Tokens.size-meter-target;
         background: Theme.loudness-target;
     }
-    if !root.vertical: Rectangle {
+    if !Studio.native-meters && !root.vertical: Rectangle {
         x: max(0px, parent.width * Studio.loudness.target-at - Tokens.size-meter-target / 2);
         width: Tokens.size-meter-target;
         background: Theme.loudness-target;
@@ -1742,6 +1754,7 @@ export component MixerPanel inherits Rectangle {
     // A source added or removed makes or drops a bar too.
     property <int> meter-count: Studio.meters.length + Studio.master-meter.length;
     changed meter-count => { Studio.meters-relayout(); }
+    changed loudness-shown => { Studio.meters-relayout(); }
     if !root.any: EmptyState {
         width: parent.width;
         height: parent.height;

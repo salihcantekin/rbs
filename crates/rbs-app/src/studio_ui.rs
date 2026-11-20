@@ -7678,8 +7678,8 @@ impl StudioUi {
                 native,
             );
         }
+        self.tick_loudness(report);
         crate::meter_bridge::flush();
-        self.tick_loudness();
     }
 }
 

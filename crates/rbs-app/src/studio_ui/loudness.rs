@@ -1,9 +1,11 @@
 //! The loudness meter in the UI (ADR-0092 decision 7): the Master strip's loudness bar,
 //! its number, the true-peak dot and the details, and Settings › Audio › Loudness.
 //! Both read one [`LoudnessUi`], filled from the host's [`Update::Loudness`]; the
-//! values come from the running meter's lock-free readout at the Mixer's refresh rate,
-//! and only while Show loudness is on (P13). A string is formatted again only when the
-//! tenth it shows changes, so a steady tenth is not rebuilt on that tick.
+//! values come from the running meter's lock-free readout, and only while Show loudness
+//! is on (P13). The bar follows the readout at the Mixer's refresh rate, drawn by the
+//! native meter layer where one shows (ADR-0035), so it redraws nothing; the numbers
+//! change at most once a second (owner, 2026-11-20), since every changed string redraws
+//! the whole window. A string is formatted again only when the tenth it shows changes.
 
 use std::rc::Rc;
 
@@ -68,22 +70,60 @@ struct LoudnessPaint {
     at: f32,
     target_at: f32,
     over: bool,
+    has: bool,
 }
 
 impl LoudnessPaint {
     /// The row for this reading, or `None` when every shown tenth, the bar, the target
-    /// mark and the true-peak dot are unchanged. A steady tenth keeps its string.
-    fn refresh(&mut self, l: &Loudness, target: f32, limit: f32) -> Option<LoudnessData> {
-        let has = l.short_term.is_finite();
-        let at = if has {
-            meter::position(l.short_term)
-        } else {
-            0.0
-        };
-        let target_at = meter::position(target);
+    /// mark and the true-peak dot are unchanged. A steady tenth keeps its string. The
+    /// strings are looked at only when `texts` (once a second, or on a settings change)
+    /// or before the first ones; the bar is left as it is while `native` (the layer
+    /// draws it).
+    fn refresh(
+        &mut self,
+        l: &Loudness,
+        target: f32,
+        limit: f32,
+        texts: bool,
+        native: bool,
+    ) -> Option<LoudnessData> {
+        let (has, at, target_at) = bar(l, target);
         let over = l.true_peak.is_finite() && l.true_peak > limit;
         let preset = loudness_settings::preset_of(target);
+        // A value that comes or goes changes what is shown at once ("—" or a number).
+        let due = texts || !self.short_text.ready || has != self.has;
+        let formatted = due && self.texts(l, target, limit, preset);
+        let at = if native { self.at } else { at };
+        let same_place = self.at.to_bits() == at.to_bits()
+            && self.target_at.to_bits() == target_at.to_bits()
+            && self.over == over
+            && self.has == has;
+        if !formatted && same_place {
+            return None;
+        }
+        self.at = at;
+        self.target_at = target_at;
+        self.over = over;
+        self.has = has;
+        Some(LoudnessData {
+            on: true,
+            has,
+            short_text: self.short_text.text.clone(),
+            at,
+            target_at,
+            target_text: self.target_text.text.clone(),
+            over,
+            momentary: self.momentary.text.clone(),
+            integrated: self.integrated.text.clone(),
+            range: self.range.text.clone(),
+            true_peak: self.true_peak.text.clone(),
+            limit_text: self.limit_text.text.clone(),
+        })
+    }
 
+    /// Formats the strings whose tenth changed; true when any did.
+    fn texts(&mut self, l: &Loudness, target: f32, limit: f32, preset: Option<usize>) -> bool {
+        let has = l.short_term.is_finite();
         let mut formatted = false;
         formatted |= self.short_text.update(shown_tenth(l.short_term), || {
             if has {
@@ -110,31 +150,20 @@ impl LoudnessPaint {
         formatted |= self
             .limit_text
             .update(shown_tenth(limit), || with_unit(limit, "dBTP"));
-
-        let same_place = self.at.to_bits() == at.to_bits()
-            && self.target_at.to_bits() == target_at.to_bits()
-            && self.over == over;
-        if !formatted && same_place {
-            return None;
-        }
-        self.at = at;
-        self.target_at = target_at;
-        self.over = over;
-        Some(LoudnessData {
-            on: true,
-            has,
-            short_text: self.short_text.text.clone(),
-            at,
-            target_at,
-            target_text: self.target_text.text.clone(),
-            over,
-            momentary: self.momentary.text.clone(),
-            integrated: self.integrated.text.clone(),
-            range: self.range.text.clone(),
-            true_peak: self.true_peak.text.clone(),
-            limit_text: self.limit_text.text.clone(),
-        })
+        formatted
     }
+}
+
+/// Whether the reading has a short-term value, the bar's top and the target mark, as
+/// positions on the meter scale.
+fn bar(l: &Loudness, target: f32) -> (bool, f32, f32) {
+    let has = l.short_term.is_finite();
+    let at = if has {
+        meter::position(l.short_term)
+    } else {
+        0.0
+    };
+    (has, at, meter::position(target))
 }
 
 /// `v` with one decimal and a real minus sign ("−14.2").
@@ -208,16 +237,17 @@ impl StudioUi {
             self.loudness.rows.set_vec(Vec::new());
             self.loudness.paint = LoudnessPaint::default();
         } else {
-            self.tick_loudness();
+            self.tick_loudness(true);
         }
         true
     }
 
     /// One refresh of the Mixer's loudness row (with the meters, while the Mixer
-    /// shows). Strings are formatted only when the tenth they show changes; the bar,
-    /// the target mark and the true-peak dot still follow the raw reading. The row is
-    /// replaced only when what it shows changes.
-    pub(super) fn tick_loudness(&mut self) {
+    /// shows). The strings are looked at only when `texts` (once a second) and formatted
+    /// only when the tenth they show changes; the bar, the target mark and the
+    /// true-peak dot follow the raw reading, the bar on the native meter layer where it
+    /// shows. The row is replaced only when what it shows changes.
+    pub(super) fn tick_loudness(&mut self, texts: bool) {
         let (values, target, limit) = {
             let Some(v) = &self.loudness.view else {
                 return;
@@ -231,7 +261,17 @@ impl StudioUi {
                 v.true_peak_limit,
             )
         };
-        let Some(row) = self.loudness.paint.refresh(&values, target, limit) else {
+        let (_, at, target_at) = bar(&values, target);
+        let native = crate::meter_bridge::set_view(
+            crate::meter_bridge::LOUDNESS_KEY,
+            &meter::MeterView {
+                level: at,
+                peak: target_at,
+                clipped: false,
+            },
+        );
+        let paint = &mut self.loudness.paint;
+        let Some(row) = paint.refresh(&values, target, limit, texts, native) else {
             return;
         };
         match self.loudness.rows.row_data(0) {
@@ -332,7 +372,7 @@ mod tests {
     /// A freshly formatted row, the same strings the meter shows on a first reading.
     fn row(l: &Loudness, target: f32, limit: f32) -> LoudnessData {
         LoudnessPaint::default()
-            .refresh(l, target, limit)
+            .refresh(l, target, limit, true, false)
             .expect("a fresh reading builds a row")
     }
 
@@ -395,7 +435,7 @@ mod tests {
         l.range = 8.01;
         l.true_peak = -1.04;
         let a = paint
-            .refresh(&l, -14.0, -1.0)
+            .refresh(&l, -14.0, -1.0, true, false)
             .expect("the first reading builds a row");
         assert_eq!(a, row(&l, -14.0, -1.0));
         let short = a.short_text.as_str().as_ptr();
@@ -405,7 +445,9 @@ mod tests {
         // Still −15.2. The bar moves; the strings stay the same allocation.
         l.short_term = -15.21;
         l.momentary = -16.24;
-        let b = paint.refresh(&l, -14.0, -1.0).expect("the bar still moves");
+        let b = paint
+            .refresh(&l, -14.0, -1.0, true, false)
+            .expect("the bar still moves");
         assert_eq!(b, row(&l, -14.0, -1.0));
         assert_eq!(b.short_text.as_str().as_ptr(), short);
         assert_eq!(b.true_peak.as_str().as_ptr(), peak);
@@ -413,12 +455,12 @@ mod tests {
         assert_ne!(b.at.to_bits(), a.at.to_bits());
 
         // Nothing shown changed: no new row, so nothing is formatted.
-        assert!(paint.refresh(&l, -14.0, -1.0).is_none());
+        assert!(paint.refresh(&l, -14.0, -1.0, true, false).is_none());
 
         // −15.3. Short-term is rebuilt. A true peak still on −1.0 is not.
         l.short_term = -15.26;
         let c = paint
-            .refresh(&l, -14.0, -1.0)
+            .refresh(&l, -14.0, -1.0, true, false)
             .expect("a new tenth rebuilds");
         assert_eq!(c.short_text.as_str(), "\u{2212}15.3");
         assert_eq!(c, row(&l, -14.0, -1.0));
@@ -428,11 +470,51 @@ mod tests {
         // The dot lights inside the same true-peak tenth (−1.0), without a new string.
         l.true_peak = -0.96;
         let d = paint
-            .refresh(&l, -14.0, -1.0)
+            .refresh(&l, -14.0, -1.0, true, false)
             .expect("the dot still lights");
         assert!(d.over);
         assert_eq!(d.true_peak.as_str(), "\u{2212}1.0 dBTP");
         assert_eq!(d.true_peak.as_str().as_ptr(), peak);
         assert_eq!(d, row(&l, -14.0, -1.0));
+    }
+
+    #[test]
+    fn the_numbers_wait_for_their_tick_and_the_native_layer_keeps_the_bar() {
+        let mut paint = LoudnessPaint::default();
+        let mut l = Loudness::NONE;
+        l.short_term = -15.2;
+        let first = paint
+            .refresh(&l, -14.0, -1.0, false, false)
+            .expect("the first reading is formatted at once");
+        assert_eq!(first.short_text, "\u{2212}15.2");
+
+        l.short_term = -20.0;
+        let moved = paint
+            .refresh(&l, -14.0, -1.0, false, false)
+            .expect("the bar Slint draws moves");
+        assert_eq!(
+            moved.short_text, "\u{2212}15.2",
+            "the number waits for its tick"
+        );
+        assert!(
+            paint.refresh(&l, -14.0, -1.0, false, false).is_none(),
+            "nothing else changed"
+        );
+
+        l.short_term = -25.0;
+        assert!(
+            paint.refresh(&l, -14.0, -1.0, false, true).is_none(),
+            "a moving bar on the native layer writes nothing (ADR-0035)"
+        );
+        let tick = paint
+            .refresh(&l, -14.0, -1.0, true, true)
+            .expect("the once-a-second tick shows the number");
+        assert_eq!(tick.short_text, "\u{2212}25.0");
+
+        l.short_term = f32::NEG_INFINITY;
+        let gone = paint
+            .refresh(&l, -14.0, -1.0, false, true)
+            .expect("a value that goes shows at once");
+        assert!(!gone.has);
     }
 }

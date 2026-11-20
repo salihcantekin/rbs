@@ -9,6 +9,9 @@
 //! bars' backgrounds; [`set_view`] then takes each meter's view for the bridge and the
 //! meter rows keep only what Slint still draws (the clip box and the readout).
 //!
+//! The master's loudness bar (ADR-0092 decision 7) is one more bar, key
+//! [`LOUDNESS_KEY`], drawn as a fill and the target mark ([`BarKind::Loudness`]).
+//!
 //! macOS has the layer `rbs_app::native::MeterBridgeLayer` (Core Animation), Windows
 //! `rbs_gpu::share::SolidLayer` (DirectComposition, on the device the preview layer
 //! made). Elsewhere, in a floating window, and while covered, Slint draws the meters as before (decision 6).
@@ -21,7 +24,7 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 
 use rbs_ui::layout::Rect;
-use rbs_ui::meter::MeterView;
+use rbs_ui::meter::{BarKind, MeterView};
 
 use crate::ui::MainWindow;
 
@@ -51,6 +54,9 @@ struct State {
     sweep: Sweep,
     /// The bars that told where they are since the check asked them.
     seen: Vec<i32>,
+    /// The loudness target mark's thickness (`size.meter.target`, logical pixels).
+    #[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
+    mark: f32,
     #[cfg(any(target_os = "macos", windows))]
     layer: Option<imp::Layer>,
 }
@@ -72,6 +78,19 @@ enum Sweep {
 
 thread_local! {
     static STATE: RefCell<State> = RefCell::new(State::default());
+}
+
+/// The key of the master's loudness bar: the master is -1, sources are 0 and up.
+pub const LOUDNESS_KEY: i32 = -2;
+
+/// What the bar with `key` shows; `mark` is the loudness target mark's thickness.
+#[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
+fn kind_of(key: i32, mark: f32) -> BarKind {
+    if key == LOUDNESS_KEY {
+        BarKind::Loudness { mark }
+    } else {
+        BarKind::Level
+    }
 }
 
 /// Whether this platform has a meter layer.
@@ -391,6 +410,8 @@ mod mac {
             mid: c(theme.get_meter_mid()),
             high: c(theme.get_meter_high()),
             clip: c(theme.get_meter_clip()),
+            loudness_fill: c(theme.get_loudness_fill()),
+            loudness_target: c(theme.get_loudness_target()),
         }
     }
 
@@ -439,6 +460,11 @@ mod mac {
         layer
             .bridge
             .set_corner_radius(window.global::<Tokens>().get_radius_sm());
+        let mark = window.global::<Tokens>().get_size_meter_target();
+        if st.mark != mark {
+            st.mark = mark;
+            st.dirty = true;
+        }
         crate::preview::covers(window, &mut layer.covers);
         let covered = layer.covers.iter().any(|c| overlaps(*c, viewport));
         layer.bridge.set_hidden(covered);
@@ -459,11 +485,12 @@ mod mac {
             return;
         };
         st.dirty = false;
+        let mark = st.mark;
         layer.bridge.set_rect(viewport);
         layer.geometry.clear();
         layer
             .geometry
-            .extend(st.bars.values().map(|b| MeterGeometry {
+            .extend(st.bars.iter().map(|(&key, b)| MeterGeometry {
                 bar: Rect {
                     x: b.rect.x - viewport.x,
                     y: b.rect.y - viewport.y,
@@ -482,6 +509,7 @@ mod mac {
                 } else {
                     Orientation::Horizontal
                 },
+                kind: super::kind_of(key, mark),
             }));
         layer.bridge.set_meters(&layer.geometry);
         layer.bridge.show(&st.views);
@@ -509,17 +537,22 @@ mod win {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     use rbs_gpu::share::{LayerRect, Solid, SolidGroup, SolidLayer};
     use rbs_ui::layout::Rect;
-    use rbs_ui::meter::{MeterView, Orientation};
+    use rbs_ui::meter::{BarKind, MeterView, Orientation};
     use slint::ComponentHandle;
 
     use super::{State, overlaps};
     use crate::ui::{MainWindow, Theme, Tokens};
+
+    /// The bar colours: `color.meter.low`, `.mid`, `.high`, then `color.loudness.fill`
+    /// and `color.loudness.target`.
+    type Colors = [[u8; 4]; 5];
 
     /// One bar: where it is relative to the viewport (logical pixels), which way it grows
     /// and what it shows now.
     struct Meter {
         bar: Rect,
         orientation: Orientation,
+        kind: BarKind,
         shown: Option<MeterView>,
     }
 
@@ -528,8 +561,8 @@ mod win {
     pub(super) struct Bridge {
         solids: SolidLayer,
         meters: Vec<Meter>,
-        /// `color.meter.low`, `.mid`, `.high`.
-        zones: [[u8; 4]; 3],
+        /// The bar colours ([`Colors`]).
+        zones: Colors,
         /// Window scale factor: logical to physical pixels.
         scale: f32,
         /// The bar's rounded ends (`radius.sm`, logical pixels).
@@ -597,10 +630,15 @@ mod win {
         i: usize,
         m: &Meter,
         v: MeterView,
-        zones: [[u8; 4]; 3],
+        colors: Colors,
         scale: f32,
     ) {
-        let f = v.frames(m.bar, m.orientation);
+        let f = m.kind.frames(&v, m.bar, m.orientation);
+        let [low, mid, high, fill, target] = colors;
+        let (zones, peak) = match m.kind {
+            BarKind::Level => ([low, mid, high], [low, mid, high][f.peak_zone.min(2)]),
+            BarKind::Loudness { .. } => ([fill, fill, fill], target),
+        };
         scratch.clear();
         for (r, rgba) in f.zones.iter().zip(zones) {
             scratch.push(Solid {
@@ -611,7 +649,7 @@ mod win {
         if let Some(p) = f.peak {
             scratch.push(Solid {
                 rect: physical(p, scale),
-                rgba: zones.get(f.peak_zone).copied().unwrap_or(zones[0]),
+                rgba: peak,
             });
         }
         solids.set_solids(i, scratch);
@@ -623,7 +661,7 @@ mod win {
         covers: Vec<Rect>,
     }
 
-    fn zone_colors(window: &MainWindow) -> [[u8; 4]; 3] {
+    fn zone_colors(window: &MainWindow) -> Colors {
         let theme = window.global::<Theme>();
         let c = |c: slint::Color| {
             let c = c.to_argb_u8();
@@ -633,6 +671,8 @@ mod win {
             c(theme.get_meter_low()),
             c(theme.get_meter_mid()),
             c(theme.get_meter_high()),
+            c(theme.get_loudness_fill()),
+            c(theme.get_loudness_target()),
         ]
     }
 
@@ -695,6 +735,11 @@ mod win {
         let zones = zone_colors(window);
         let scale = window.window().scale_factor();
         let radius = window.global::<Tokens>().get_radius_sm();
+        let mark = window.global::<Tokens>().get_size_meter_target();
+        if st.mark != mark {
+            st.mark = mark;
+            st.dirty = true;
+        }
         let bridge = &mut layer.bridge;
         if bridge.zones != zones {
             bridge.zones = zones;
@@ -728,11 +773,12 @@ mod win {
             return;
         };
         st.dirty = false;
+        let mark = st.mark;
         let b = &mut layer.bridge;
         let scale = b.scale;
         b.solids.set_rect(physical(viewport, scale));
         b.meters.clear();
-        b.meters.extend(st.bars.values().map(|bar| {
+        b.meters.extend(st.bars.iter().map(|(&key, bar)| {
             let rel = Rect {
                 x: bar.rect.x - viewport.x,
                 y: bar.rect.y - viewport.y,
@@ -746,6 +792,7 @@ mod win {
                 } else {
                     Orientation::Horizontal
                 },
+                kind: super::kind_of(key, mark),
                 shown: None,
             }
         }));

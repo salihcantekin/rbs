@@ -4,6 +4,8 @@
 //! the clip indicator's outline) and keeps the accessible element. This layer draws what
 //! moves at the meter rate: the lit zones, the peak-hold line and the lit clip
 //! indicator. An update is one Core Animation transaction; the toolkit does not redraw.
+//! The master's loudness bar (ADR-0092 decision 7) is a bar of its own kind
+//! ([`BarKind::Loudness`]): its fill and its target mark.
 
 use std::ffi::c_void;
 use std::ptr::NonNull;
@@ -15,7 +17,7 @@ use objc2_core_foundation::{CFRetained, CGPoint, CGRect, CGSize};
 use objc2_core_graphics::CGColor;
 use objc2_quartz_core::{CAAutoresizingMask, CACornerMask, CALayer, CATransaction};
 use rbs_ui::layout::Rect;
-use rbs_ui::meter::{MeterView, Orientation};
+use rbs_ui::meter::{BarKind, MeterView, Orientation};
 use rbs_ui::tokens::{Color, Tokens};
 
 /// Where one meter's moving parts go, relative to the bridge's rectangle (top-left
@@ -28,9 +30,12 @@ pub struct MeterGeometry {
     pub clip: Rect,
     /// Which way the bar grows.
     pub orientation: Orientation,
+    /// What the bar shows.
+    pub kind: BarKind,
 }
 
-/// The meter colour tokens of one theme (`color.meter.low`, `.mid`, `.high`, `.clip`).
+/// The meter colour tokens of one theme (`color.meter.low`, `.mid`, `.high`, `.clip`,
+/// `color.loudness.fill`, `.target`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MeterColors {
     /// `color.meter.low`.
@@ -41,6 +46,10 @@ pub struct MeterColors {
     pub high: Color,
     /// `color.meter.clip`.
     pub clip: Color,
+    /// `color.loudness.fill`.
+    pub loudness_fill: Color,
+    /// `color.loudness.target`.
+    pub loudness_target: Color,
 }
 
 impl MeterColors {
@@ -54,6 +63,8 @@ impl MeterColors {
             mid: get("color.meter.mid")?,
             high: get("color.meter.high")?,
             clip: get("color.meter.clip")?,
+            loudness_fill: get("color.loudness.fill")?,
+            loudness_target: get("color.loudness.target")?,
         })
     }
 }
@@ -62,6 +73,8 @@ impl MeterColors {
 struct CgColors {
     zones: [CFRetained<CGColor>; 3],
     clip: CFRetained<CGColor>,
+    /// The loudness bar's fill and target mark.
+    loudness: [CFRetained<CGColor>; 2],
 }
 
 impl CgColors {
@@ -73,6 +86,7 @@ impl CgColors {
         CgColors {
             zones: [cg(c.low), cg(c.mid), cg(c.high)],
             clip: cg(c.clip),
+            loudness: [cg(c.loudness_fill), cg(c.loudness_target)],
         }
     }
 }
@@ -93,11 +107,13 @@ impl MeterLayers {
     /// Draws `v` with the current geometry, colours and scale. Call inside a transaction.
     fn draw(&mut self, v: MeterView, colors: &CgColors, scale: f64) {
         self.shown = Some(v);
-        let f = v.frames(self.geometry.bar, self.geometry.orientation);
+        let g = self.geometry;
+        let f = g.kind.frames(&v, g.bar, g.orientation);
         for (l, r) in self.zones.iter().zip(f.zones) {
             place(l, Some(r), scale);
         }
-        if f.peak.is_some() && self.peak_zone != f.peak_zone {
+        let level = matches!(g.kind, BarKind::Level);
+        if level && f.peak.is_some() && self.peak_zone != f.peak_zone {
             self.peak_zone = f.peak_zone;
             self.peak
                 .setBackgroundColor(Some(&colors.zones[f.peak_zone]));
@@ -126,6 +142,26 @@ impl MeterLayers {
             layer.setCornerRadius(radius);
             layer.setMaskedCorners(corners);
         }
+    }
+
+    /// Gives the layers the colours of the bar's kind.
+    fn paint(&self, colors: &CgColors) {
+        match self.geometry.kind {
+            BarKind::Level => {
+                for (l, c) in self.zones.iter().zip(&colors.zones) {
+                    l.setBackgroundColor(Some(c));
+                }
+                self.peak
+                    .setBackgroundColor(Some(&colors.zones[self.peak_zone.min(2)]));
+            }
+            BarKind::Loudness { .. } => {
+                for l in &self.zones {
+                    l.setBackgroundColor(Some(&colors.loudness[0]));
+                }
+                self.peak.setBackgroundColor(Some(&colors.loudness[1]));
+            }
+        }
+        self.clip.setBackgroundColor(Some(&colors.clip));
     }
 
     /// Draws the shown view again (after a geometry, scale or colour change), so the
@@ -348,15 +384,20 @@ impl MeterBridgeLayer {
                     shown: None,
                     peak_zone: 0,
                 };
+                m.paint(&self.colors);
                 m.round(self.radius);
                 self.meters.push(m);
             }
             for (m, g) in self.meters.iter_mut().zip(geometry) {
                 if m.geometry != *g {
                     let turned = m.geometry.orientation != g.orientation;
+                    let recoloured = m.geometry.kind != g.kind;
                     m.geometry = *g;
                     if turned {
                         m.round(self.radius);
+                    }
+                    if recoloured {
+                        m.paint(&self.colors);
                     }
                     m.redraw(&self.colors, scale);
                 }
@@ -368,13 +409,8 @@ impl MeterBridgeLayer {
     pub fn set_colors(&mut self, colors: &MeterColors) {
         self.colors = CgColors::new(colors);
         transaction(|| {
-            for m in &mut self.meters {
-                for (l, c) in m.zones.iter().zip(&self.colors.zones) {
-                    l.setBackgroundColor(Some(c));
-                }
-                m.peak
-                    .setBackgroundColor(Some(&self.colors.zones[m.peak_zone]));
-                m.clip.setBackgroundColor(Some(&self.colors.clip));
+            for m in &self.meters {
+                m.paint(&self.colors);
             }
         });
     }

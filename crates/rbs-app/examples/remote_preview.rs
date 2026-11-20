@@ -72,7 +72,7 @@ mod demo {
     };
     use rbs_gpu::{GpuContext, GpuRequest};
     use rbs_ui::layout::Rect;
-    use rbs_ui::meter::{Meter, MeterView, Orientation};
+    use rbs_ui::meter::{BarKind, Meter, MeterView, Orientation};
     use slint::wgpu_30::{WGPUConfiguration, wgpu};
     use slint::{ComponentHandle, Model, VecModel};
 
@@ -383,6 +383,16 @@ mod demo {
         usage.ru_maxrss as f64 / (1024.0 * 1024.0)
     }
 
+    /// A level meter not placed yet (the first layout places it).
+    fn unplaced_meter() -> MeterGeometry {
+        MeterGeometry {
+            bar: Rect::default(),
+            clip: Rect::default(),
+            orientation: Orientation::Vertical,
+            kind: BarKind::Level,
+        }
+    }
+
     pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         let mode = match std::env::var("RBS_PREVIEW_MODE").as_deref() {
             Ok("slint") => Mode::Slint,
@@ -535,14 +545,7 @@ mod demo {
                 clock: MonotonicClock::new(),
                 bridge,
                 bridge_attached: false,
-                meter_geometry: vec![
-                    MeterGeometry {
-                        bar: Rect::default(),
-                        clip: Rect::default(),
-                        orientation: Orientation::Vertical,
-                    };
-                    meter_count
-                ],
+                meter_geometry: vec![unplaced_meter(); meter_count],
             });
         });
 
@@ -936,7 +939,7 @@ mod demo {
     #[cfg(windows)]
     mod no_meter_bridge {
         use rbs_ui::layout::Rect;
-        use rbs_ui::meter::{MeterView, Orientation};
+        use rbs_ui::meter::{BarKind, MeterView, Orientation};
 
         #[derive(Clone)]
         #[allow(
@@ -947,6 +950,7 @@ mod demo {
             pub bar: Rect,
             pub clip: Rect,
             pub orientation: Orientation,
+            pub kind: BarKind,
         }
 
         /// Uninhabited: never constructed on Windows.
