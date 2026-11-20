@@ -1,5 +1,6 @@
 //! Free space, volume and available memory from the operating system, for recording
 //! protection (ADR-0090 decision 11, spec `docs/specs/recording-protection.md`).
+//! Adapter support: it only reads OS information and never changes OS state.
 //!
 //! Every call may block (a network drive can take seconds or hang), so callers run
 //! them on a worker thread, never on a real-time or control thread. A platform without

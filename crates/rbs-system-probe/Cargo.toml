@@ -1,6 +1,6 @@
 [package]
 name = "rbs-system-probe"
-description = "OS adapter for recording protection (ADR-0090): free space and volume of a folder, and available system memory; which app holds the OS privacy grants (ADR-0141)."
+description = "Read-only OS information shared by adapters and composition roots: free space and volume of a folder and available memory for recording protection (ADR-0090), and which app holds the OS privacy grants (ADR-0141)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,8 +8,10 @@ repository.workspace = true
 license.workspace = true
 publish.workspace = true
 
-# Adapter (docs/architecture/overview.md#layers): plain functions over OS calls and no
-# other RBS crate. The composition roots implement `rbs_record::protection::SystemProbe`
+# Adapter support (docs/architecture/overview.md#layers; ADR-0090 decision 11): plain
+# functions that read OS information and never change OS state, no other RBS crate, and
+# `libc` and `windows-sys` only (`cargo xtask check-layers`). Adapters (ADR-0141) and the
+# composition roots use it. The composition roots implement `rbs_record::protection::SystemProbe`
 # over them (ADR-0090 decision 11).
 [dependencies]
 

@@ -12,7 +12,7 @@ Warn early, while a take runs, when a disk a recording writes to is about to fil
 | --- | --- | --- |
 | `Guard` (pure state machine), `ProtectionSettings`, `Sample`, `GuardStatus` | `rbs-record` (`protection`) | No OS call, no clock read, no thread. Tested with synthetic samples |
 | `SystemProbe` port, `ProbeWorker` (one worker thread, request cadence, timeout) | `rbs-record` (`protection`) | Takes the caller's master-clock time |
-| OS readings (`volume_space`, `available_memory`) | `rbs-system-probe` (adapter) | Plain functions; `unsafe` FFI with `// SAFETY:` comments; no other RBS crate |
+| OS readings (`volume_space`, `available_memory`) | `rbs-system-probe` (adapter support) | Plain functions, read-only OS information; `unsafe` FFI with `// SAFETY:` comments; no other RBS crate; `libc` and `windows-sys` only |
 | Host wiring, `protection.status`, `protection.changed` | `rbs-app` (`studio_host::protection`) | `SystemProbeFactory::os()` in the app, a fake in tests |
 
 ## Lifetime and cost

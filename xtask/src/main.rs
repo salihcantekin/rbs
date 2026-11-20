@@ -418,8 +418,9 @@ fn deny_support(from: &str, to: &str, to_class: Option<Class>) -> Option<String>
     if from == "rbs-browser-shm" && matches!(to, "libc" | "windows") {
         return None;
     }
-    // OS facts shared by adapters and composition roots: free space, memory and
-    // the app identity that holds the OS privacy grants (ADR-0090, ADR-0141).
+    // Read-only OS information shared by adapters and composition roots: free space,
+    // memory and the app identity that holds the OS privacy grants (ADR-0090, ADR-0141).
+    // It never changes OS state; anything that does belongs in an adapter.
     if from == "rbs-system-probe" && matches!(to, "libc" | "windows-sys") {
         return None;
     }
