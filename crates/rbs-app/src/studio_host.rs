@@ -4603,10 +4603,10 @@ fn startup_main_display(sources: &rbs_sources::SourceTypes) -> Option<MainDispla
     {
         // Listing screens would open ScreenCaptureKit shareable content.
         let _ = sources;
-        return rbs_capture_sck::main_display().map(|(width, height, scale)| MainDisplay {
+        rbs_capture_sck::main_display().map(|(width, height, scale)| MainDisplay {
             size: (width, height),
             scale,
-        });
+        })
     }
     #[cfg(not(target_os = "macos"))]
     {
