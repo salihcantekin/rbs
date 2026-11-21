@@ -1,6 +1,6 @@
 # ADR-0109: A browser source is CEF in a helper process, one process per Active source
 
-- Status: Accepted; the word "sandboxed" in decision 1 is relaxed for now by [ADR-0145](0145-add-ons-one-place-to-download-and-install.md) decision 3
+- Status: Accepted; the word "sandboxed" in decision 1 is relaxed for now by [ADR-0145](0145-add-ons-one-place-to-download-and-install.md) decision 3; decision 8's Windows sync and ring-size clauses are superseded by [ADR-0157](0157-browser-gpu-pages-sync-on-a-shared-fence.md)
 - Date: 2026-11-12
 - Deciders: Salih (owner)
 - Builds on: [ADR-0006](0006-three-tier-plugin-model.md), [ADR-0016](0016-native-desktop-ui.md), [ADR-0052](0052-ai-agent-control-through-mcp.md), [ADR-0055](0055-crash-resilience.md), [ADR-0106](0106-picture-and-sound-on-one-source.md), [ADR-0107](0107-temporal-sources-sleep-when-hidden.md)

@@ -1,6 +1,6 @@
 # ADR-0132: The browser source runs CEF fetched on first use, with custom CSS, reload, interaction and an opt-in sign-in
 
-- Status: Accepted; partly superseded by [ADR-0145](0145-add-ons-one-place-to-download-and-install.md) (decision 12 there lists the clauses)
+- Status: Accepted; partly superseded by [ADR-0145](0145-add-ons-one-place-to-download-and-install.md) (decision 12 there lists the clauses); decision 8's Windows keyed-mutex clause and, until the studio has a metrics view, its "the metrics count it" are superseded by [ADR-0157](0157-browser-gpu-pages-sync-on-a-shared-fence.md)
 - Date: 2026-11-16
 - Deciders: Salih (owner)
 - Builds on: [ADR-0109](0109-browser-source.md), [ADR-0006](0006-three-tier-plugin-model.md), [ADR-0013](0013-zero-cost-when-unused.md), [ADR-0052](0052-ai-agent-control-through-mcp.md), [ADR-0106](0106-picture-and-sound-on-one-source.md), [ADR-0107](0107-temporal-sources-sleep-when-hidden.md), [ADR-0125](0125-projector-windows.md)
