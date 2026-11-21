@@ -162,6 +162,7 @@ Severity is the cost if the path is in use, not the difficulty of the change.
 - **Larger change:** Store undo as the inverse command and validate only the invariants that command can affect. Journal commands and rewrite the document on a timer or on close. Do not skip the old-file parse on the current `write` path. That parse is the guarantee that a broken body is kept.
 - **Benefit:** Fader drags and text edits stop allocating the rest of the document. Autosave stops building a second collection that is thrown away, once a journal replaces per-edit rewrite.
 - **Risk:** An invariant that only the full walk catches could commit. The volume path already rejects a bad factor before `apply`.
+- **Done (2026-11-21):** Field edits apply in place (`rbs-scene` `collection/field.rs`, F-09a). The studio host hands the collection to autosave when its epoch and `generation` changed, instead of comparing it with a kept copy each round (13.7 µs per round) and cloning twice per edit (78 µs each, 300 sources); one clone per edit for the writer remains. The writer thread keeps a `Written` record and does not parse a file it wrote itself (`document::write_known`), and leaves an unchanged file in place: a 77 KiB save drops from 5.7 ms to 2.0 ms p50 (`cargo bench -p rbs-user-data --bench save`, 4 vCPU cloud container). The journal is not built: what is left is one 78 µs copy per user-paced edit and one render per save.
 
 ### F-10: The control round builds every source row, then compares
 

@@ -377,11 +377,18 @@ impl<T: Document> Library<T> {
     }
 
     /// Replaces the contents and name of an existing entry.
-    pub fn save(
+    pub fn save(&self, lock: &WriterLock, id: &EntryId, entry: &Entry<T>) -> Result<(), DataError> {
+        self.save_known(lock, id, entry, &mut document::Written::default())
+    }
+
+    /// [`Self::save`] for the one writer, which keeps what it wrote: an entry file it
+    /// wrote and nobody changed since is not parsed again ([`document::write_known`]).
+    pub fn save_known(
         &self,
         _lock: &WriterLock,
         id: &EntryId,
         entry: &Entry<T>,
+        written: &mut document::Written,
     ) -> Result<(), DataError> {
         let name = check_name(&entry.name)?;
         let path = self.path(id);
@@ -398,7 +405,7 @@ impl<T: Document> Library<T> {
         if !same {
             self.check_free(&name, Some(id))?;
         }
-        document::write(&path, &entry.document, Some(&name))
+        document::write_known(&path, &entry.document, Some(&name), written)
     }
 
     /// Renames an entry; its id stays.
