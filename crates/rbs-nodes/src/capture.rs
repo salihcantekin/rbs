@@ -3,6 +3,8 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 use rbs_capture::{
     CaptureError, CaptureFactory, CaptureRequest, CaptureSession, GpuDeviceId, GpuImportTarget,
@@ -11,6 +13,7 @@ use rbs_capture::{
 use rbs_core::capability::CapabilityValue;
 use rbs_core::fault::SourceFault;
 use rbs_core::media::{FramePayload, MemoryKind, PixelFormat, Size};
+use rbs_core::time::Timestamp;
 use rbs_gpu::context::CAP_P010;
 use rbs_gpu::node::GpuRuntime;
 use rbs_gpu::upload::{SourceUpload, UPLOAD_FORMATS};
@@ -22,6 +25,10 @@ use rbs_graph::runtime::{Node, NodeError, PrepareCtx, ProcessCtx, WarmCtx};
 pub const CAPTURE_NODE_TYPE: &str = "org.rbs.capture";
 /// Index of the "video" output pin.
 pub const VIDEO_PIN: usize = 0;
+/// How long an open and start on the opening thread may take before the source fails
+/// with a recoverable error and [`SourceFault::Other`] (ADR-0152 decision 5's start
+/// limit, `start_timeout`). Counted on the master clock from `prepare`.
+pub const START_LIMIT: Duration = Duration::from_secs(15);
 
 /// The capture source's descriptor: kind `Source`, output "video".
 pub fn capture_descriptor() -> NodeDescriptor {
@@ -52,6 +59,10 @@ pub struct CaptureNodeStats {
     /// The cause of the node's last failure, as [`SourceFault::code`]; 0 while it runs
     /// (ADR-0077). Read it with [`Self::fault`].
     pub fault: AtomicU8,
+    /// Microseconds from the last `prepare` to the capture time of the first frame
+    /// after it (ADR-0152 `warm_up_ms`), 0 while unknown. Kept after `release`, so it
+    /// is the last warm-up. Read it with [`Self::warm_up`].
+    pub warm_up_us: AtomicU64,
 }
 
 impl CaptureNodeStats {
@@ -67,6 +78,15 @@ impl CaptureNodeStats {
         let packed = self.picture_size.load(Ordering::Relaxed);
         let (w, h) = ((packed >> 32) as u32, packed as u32);
         (w > 0 && h > 0).then_some((w, h))
+    }
+
+    /// The last time from Active to first picture (ADR-0152 decision 10's
+    /// `warm_up_ms`); `None` before a first frame.
+    pub fn warm_up(&self) -> Option<Duration> {
+        match self.warm_up_us.load(Ordering::Relaxed) {
+            0 => None,
+            us => Some(Duration::from_micros(us)),
+        }
     }
 }
 
@@ -136,14 +156,46 @@ pub fn complete_request(ctx: &GpuContext, mut request: CaptureRequest) -> Captur
     request
 }
 
-/// Opens a capture session when it joins the schedule and puts its newest frame on the
-/// "video" output each render tick: native surfaces through the render runtime's
-/// importer (zero copy), system-memory frames through a [`SourceUpload`].
+/// What the opening thread hands to the node: a started session, or why it failed.
+type Opened = Result<Box<dyn CaptureSession>, CaptureError>;
+
+/// Opens and starts a session (may block: never on the render thread).
+fn open_and_start(factory: &dyn CaptureFactory, request: &CaptureRequest) -> Opened {
+    let mut session = factory.open(request)?;
+    session.start()?;
+    Ok(session)
+}
+
+/// Puts a capture session's newest frame on the "video" output each render tick:
+/// native surfaces through the render runtime's importer (zero copy), system-memory
+/// frames through a [`SourceUpload`].
+///
+/// `prepare` starts the open and returns without waiting (ADR-0152 decision 5): a
+/// thread of the node opens and starts the session and hands it over through a
+/// one-slot lock-free ring, and `process` takes it on the first tick after it
+/// arrived. Until then the output stays empty. An adapter that declares
+/// `capture.start.instant` is opened in `prepare` itself ([`Self::open_inline`]).
 pub struct CaptureSourceNode {
     descriptor: NodeDescriptor,
     factory: Arc<dyn CaptureFactory>,
     request: CaptureRequest,
     session: Option<Box<dyn CaptureSession>>,
+    /// Open in `prepare` instead of on the opening thread.
+    inline: bool,
+    /// The opening thread's hand-off while an open is pending, kept until `release`
+    /// so the ring is never freed on the render thread.
+    opening: Option<rtrb::Consumer<Opened>>,
+    /// The newest opening thread and the master time it started, joined by the next
+    /// one so one device is never opened twice at once.
+    worker: Option<(JoinHandle<()>, Timestamp)>,
+    /// The failure of the last open, returned on every tick until the executor
+    /// bypasses the node (ADR-0024 restarts it).
+    failed: Option<NodeError>,
+    /// Master time of the last `prepare`: the start of the warm-up and the start
+    /// limit.
+    opened_at: Timestamp,
+    /// True until the first frame after `prepare` (its warm-up is stored).
+    first_frame: bool,
     upload: SourceUpload,
     stats: Arc<CaptureNodeStats>,
     /// The size last stored in `stats.picture_size`, packed.
@@ -160,15 +212,133 @@ impl CaptureSourceNode {
             factory,
             request,
             session: None,
+            inline: false,
+            opening: None,
+            worker: None,
+            failed: None,
+            opened_at: Timestamp::ZERO,
+            first_frame: false,
             upload: SourceUpload::new(),
             stats: Arc::default(),
             shown_size: 0,
         }
     }
 
+    /// Opens and starts the session in `prepare` on the calling thread, as for an
+    /// adapter whose `open` and `start` return at once (`capture.start.instant`,
+    /// capture port spec). The default opens on a thread of the node.
+    #[must_use]
+    pub fn open_inline(mut self, inline: bool) -> Self {
+        self.inline = inline;
+        self
+    }
+
     /// The node's counters.
     pub fn stats(&self) -> Arc<CaptureNodeStats> {
         Arc::clone(&self.stats)
+    }
+
+    /// Records why an open failed.
+    fn record_fault(&self, e: &CaptureError) {
+        self.stats
+            .fault
+            .store(capture_fault(e).code(), Ordering::Relaxed);
+    }
+
+    /// Takes a started session: its format is the picture size until a frame says
+    /// otherwise.
+    fn adopt(&mut self, session: Box<dyn CaptureSession>) {
+        self.shown_size = pack(session.format().size);
+        self.stats
+            .picture_size
+            .store(self.shown_size, Ordering::Relaxed);
+        self.session = Some(session);
+    }
+
+    /// Starts the opening thread. It first joins the previous one (a source shown again
+    /// while its last open still runs), so the device is never opened twice at once.
+    /// A previous open older than [`START_LIMIT`] that has still not returned is
+    /// waited for by no new thread: `prepare` fails and is retried with back-off
+    /// (ADR-0024), so a hung device costs one thread, not one per retry.
+    fn spawn_open(&mut self, request: CaptureRequest) -> Result<(), NodeError> {
+        if let Some((handle, since)) = &self.worker
+            && !handle.is_finished()
+            && self.opened_at.saturating_since(*since) >= START_LIMIT
+        {
+            self.stats
+                .fault
+                .store(SourceFault::Other.code(), Ordering::Relaxed);
+            return Err(NodeError::Failed(
+                "capture open: the previous open has not returned".into(),
+            ));
+        }
+        let (mut tx, rx) = rtrb::RingBuffer::<Opened>::new(1);
+        let factory = Arc::clone(&self.factory);
+        let previous = self.worker.take().map(|(handle, _)| handle);
+        let spawned = thread::Builder::new()
+            .name("rbs-capture-open".into())
+            .spawn(move || {
+                if let Some(previous) = previous {
+                    let _ = previous.join();
+                }
+                if tx.is_abandoned() {
+                    return;
+                }
+                let opened = open_and_start(&*factory, &request);
+                // The node let go while this open ran (`release`): stop the session
+                // here. A ring dropped later drops the session with it, which
+                // releases everything too (capture port).
+                if tx.is_abandoned() {
+                    if let Ok(mut session) = opened {
+                        session.stop();
+                    }
+                    return;
+                }
+                // One slot, one push: never full.
+                let _ = tx.push(opened);
+            });
+        match spawned {
+            Ok(handle) => {
+                self.worker = Some((handle, self.opened_at));
+                self.opening = Some(rx);
+                Ok(())
+            }
+            Err(e) => Err(NodeError::Failed(format!("capture open thread: {e}"))),
+        }
+    }
+
+    /// While no session runs: takes the session the opening thread handed over, or
+    /// returns the open's failure. No allocation and no wait; the ring stays with the
+    /// node until `release`.
+    fn take_opened(&mut self, now: Timestamp) -> Result<(), NodeError> {
+        if let Some(e) = &self.failed {
+            return Err(e.clone());
+        }
+        let Some(opening) = self.opening.as_mut() else {
+            return Err(NodeError::NotReady);
+        };
+        let failure = match opening.pop() {
+            Ok(Ok(session)) => {
+                self.adopt(session);
+                return Ok(());
+            }
+            // An error path, once per failed open: the error's text is dropped here.
+            Ok(Err(e)) => {
+                self.record_fault(&e);
+                capture_error(&e)
+            }
+            Err(rtrb::PopError::Empty) if now.saturating_since(self.opened_at) < START_LIMIT => {
+                return Ok(());
+            }
+            Err(rtrb::PopError::Empty) => {
+                self.stats
+                    .fault
+                    .store(SourceFault::Other.code(), Ordering::Relaxed);
+                NodeError::Backend("capture start timed out")
+            }
+        };
+        self.failed = Some(failure.clone());
+        Err(failure)
     }
 }
 
@@ -207,40 +377,30 @@ impl Node<GpuRuntime> for CaptureSourceNode {
     fn prepare(&mut self, ctx: &mut PrepareCtx<'_, GpuRuntime>) -> Result<(), NodeError> {
         let request = complete_request(ctx.shared, self.request.clone());
         self.stats.fault.store(0, Ordering::Relaxed);
-        let mut session = self
-            .factory
-            .open(&request)
-            .inspect_err(|e| {
-                self.stats
-                    .fault
-                    .store(capture_fault(e).code(), Ordering::Relaxed);
-            })
+        self.failed = None;
+        self.opened_at = request.clock.now();
+        self.first_frame = true;
+        if !self.inline {
+            return self.spawn_open(request);
+        }
+        let session = open_and_start(&*self.factory, &request)
+            .inspect_err(|e| self.record_fault(e))
             .map_err(|e| match e {
                 e if !e.is_recoverable() => capture_error(&e),
                 e => NodeError::Failed(format!("capture open: {e}")),
             })?;
-        // `start` may block briefly; this is the control thread (capture port spec).
-        session
-            .start()
-            .inspect_err(|e| {
-                self.stats
-                    .fault
-                    .store(capture_fault(e).code(), Ordering::Relaxed);
-            })
-            .map_err(|e| match e {
-                e if !e.is_recoverable() => capture_error(&e),
-                e => NodeError::Failed(format!("capture start: {e}")),
-            })?;
-        self.shown_size = pack(session.format().size);
-        self.stats
-            .picture_size
-            .store(self.shown_size, Ordering::Relaxed);
-        self.session = Some(session);
+        self.adopt(session);
         Ok(())
     }
 
     fn process(&mut self, ctx: &mut ProcessCtx<'_, GpuRuntime>) -> Result<(), NodeError> {
-        let session = self.session.as_mut().ok_or(NodeError::NotReady)?;
+        if self.session.is_none() {
+            self.take_opened(ctx.tick().time)?;
+        }
+        let Some(session) = self.session.as_mut() else {
+            // The open is still running: the output stays empty.
+            return Ok(());
+        };
         let frame = match session.latest_frame() {
             // No new frame: the slot keeps the last one.
             Ok(None) => return Ok(()),
@@ -255,6 +415,16 @@ impl Node<GpuRuntime> for CaptureSourceNode {
         };
         // A resized target: one comparison per new frame, one store per resize.
         let size = pack(frame.format().size);
+        if self.first_frame {
+            // Once per `prepare`: the warm-up, from the frame's capture time.
+            self.first_frame = false;
+            let us = frame
+                .timestamp()
+                .saturating_since(self.opened_at)
+                .as_micros();
+            let us = u64::try_from(us).unwrap_or(u64::MAX).max(1);
+            self.stats.warm_up_us.store(us, Ordering::Relaxed);
+        }
         if size != self.shown_size {
             self.shown_size = size;
             self.stats.picture_size.store(size, Ordering::Relaxed);
@@ -307,6 +477,9 @@ impl Node<GpuRuntime> for CaptureSourceNode {
         if let Some(mut session) = self.session.take() {
             session.stop();
         }
+        // An open still running sees the ring abandoned and stops its own session.
+        self.opening = None;
+        self.failed = None;
         self.shown_size = 0;
         self.stats.picture_size.store(0, Ordering::Relaxed);
         // The decoder's pipelines and bind groups go too: nothing GPU-side in Standby

@@ -245,6 +245,7 @@ Constants in `rbs_capture::caps`.
 | `capture.frame_rate.max` | Int (frames per second) | Highest rate the adapter can deliver |
 | `capture.frames.in_flight` | Int | Frames the consumer may hold at once |
 | `capture.hdr` | Flag | Can deliver HDR (`rgba16f`, PQ or scRGB) for HDR displays |
+| `capture.start.instant` | Flag | `open` and `start` return at once, without waiting on the OS or a device (the synthetic test adapter). The capture source node then opens in `prepare` on the control thread; without it the node opens on a thread of its own and `prepare` does not wait (ADR-0152 decision 5, io-nodes spec). No OS adapter declares it |
 | `capture.permission.<camera\|display\|window>` | Flag | The OS has a user permission for this kind (ADR-0141). Absent: `permission` is always `Granted` and a UI says no permission is needed |
 | `capture.permission.<kind>.restart` | Flag | A grant made while the app runs applies only after it restarts (macOS screen recording) |
 | `capture.permission.<kind>.prompt` | Flag | `request_permission(kind)` can show the OS prompt in this process now. Absent: it never prompts |

@@ -11,7 +11,7 @@
 "crates/rbs-app/src/menu_bar.rs" = 2518
 "crates/rbs-app/src/studio_ui.rs" = 10928
 "crates/rbs-record/src/studio.rs" = 6081
-"crates/rbs-record/tests/studio.rs" = 3328
+"crates/rbs-record/tests/studio.rs" = 3241
 "crates/rbs-scene/src/collection.rs" = 2992
 "crates/rbs-scene/tests/binder.rs" = 2882
 "crates/rbs-scene/tests/collection.rs" = 2759

@@ -122,10 +122,9 @@ fn rig(
         let request = CaptureRequest::new(TargetId::new("test-window-0"), Arc::new(clock))
             .with_frame_rate(rate)
             .with_pixel_formats(&[PixelFormat::Bgra8]);
-        producers.push(rig.add(Box::new(CaptureSourceNode::new(
-            Arc::new(TestCaptureFactory::new()),
-            request,
-        ))));
+        producers.push(rig.add(Box::new(
+            CaptureSourceNode::new(Arc::new(TestCaptureFactory::new()), request).open_inline(true),
+        )));
     }
     let (w, h) = (W as f32, H as f32);
     let layers = producers

@@ -1,0 +1,102 @@
+//! What each built-in source type supports for its activity policy (ADR-0152
+//! decisions 4 and 5): when it runs and what it does when it comes back.
+
+use rbs_graph::node::NodeTypeId;
+use rbs_scene::activity::{ActivityTraits, OnReturn, Run};
+
+use crate::types::{SourceClass, class_of};
+
+/// What a built-in source type supports for its activity policy (ADR-0152); any
+/// other type, plugins included, is [`ActivityTraits::PLACED`]. The same answer as
+/// [`NodeTypeTable`]'s `NodeTypes::activity`, for the host's checks.
+pub fn activity_traits(type_id: &NodeTypeId) -> ActivityTraits {
+    match class_of(type_id) {
+        Some(SourceClass::Media) => MEDIA_ACTIVITY,
+        Some(SourceClass::Browser) => BROWSER_ACTIVITY,
+        Some(SourceClass::Capture(_)) => CAPTURE_ACTIVITY,
+        _ => ActivityTraits::PLACED,
+    }
+}
+
+/// A display, window or camera (ADR-0152 decision 5, phase 4): open while placed by
+/// default, so a cut to it is never black and an exclusive device stays held. With
+/// `shown` or `on_air` the session stops below that level and opens again on the
+/// capture node's own thread when the source comes back (the layer is empty for the
+/// warm-up). No `on_return`: a live picture has no position. Linked while warm, as
+/// today.
+pub const CAPTURE_ACTIVITY: ActivityTraits = ActivityTraits::new(
+    &[Run::Placed, Run::Shown, Run::OnAir],
+    &[],
+    Run::Placed,
+    None,
+    true,
+);
+
+/// A media file (ADR-0152 decision 4, ADR-0108): Active while a shown scene draws
+/// it, starting over when it goes on air again. `continue` comes with phase 5.
+pub const MEDIA_ACTIVITY: ActivityTraits = ActivityTraits::new(
+    &[Run::Placed, Run::Shown, Run::OnAir],
+    &[OnReturn::Resume, OnReturn::Restart],
+    Run::Shown,
+    Some(OnReturn::Restart),
+    false,
+);
+
+/// A browser page (ADR-0152 decision 4, ADR-0109): Active while a shown scene draws
+/// it; `run: placed` is ADR-0149's background page (process running, picture node
+/// unscheduled, one picture per second, sound dropped). `on_return: restart`
+/// reloads a running page when it goes on air (decision 6).
+pub const BROWSER_ACTIVITY: ActivityTraits = ActivityTraits::new(
+    &[Run::Placed, Run::Shown, Run::OnAir],
+    &[OnReturn::Continue, OnReturn::Restart],
+    Run::Shown,
+    Some(OnReturn::Continue),
+    false,
+);
+
+#[cfg(test)]
+mod activity_tests {
+    use super::*;
+    use crate::registry::NodeTypeTable;
+    use crate::types;
+    use rbs_graph::node::NodeTypeId;
+    use rbs_scene::binder::NodeTypes;
+
+    /// Every built-in type declares a default it allows, and only media and browser
+    /// leave the placed rule by default (ADR-0152 decisions 4 and 5); captures may.
+    #[test]
+    fn built_in_activity_defaults_are_allowed_and_only_media_and_browser_are_temporal() {
+        let table = NodeTypeTable::default();
+        for name in types::ALL {
+            let traits = table.activity(&NodeTypeId::new(name));
+            assert!(traits.runs.contains(&traits.default_run), "{name}");
+            assert_eq!(
+                traits.default_on_return.is_some(),
+                !traits.on_returns.is_empty(),
+                "{name}"
+            );
+            assert!(
+                traits
+                    .default_on_return
+                    .is_none_or(|o| traits.on_returns.contains(&o)),
+                "{name}"
+            );
+            let temporal = traits.default_run != Run::Placed;
+            let expected = matches!(name, types::MEDIA_SOURCE | types::BROWSER_SOURCE);
+            assert_eq!(temporal, expected, "{name}");
+            let capture = matches!(
+                name,
+                types::DISPLAY_SOURCE | types::WINDOW_SOURCE | types::CAMERA_SOURCE
+            );
+            assert_eq!(
+                traits.runs.contains(&Run::OnAir),
+                expected || capture,
+                "{name}"
+            );
+        }
+        assert_eq!(
+            table.activity(&NodeTypeId::new("org.example.plugin")),
+            ActivityTraits::PLACED
+        );
+    }
+}
