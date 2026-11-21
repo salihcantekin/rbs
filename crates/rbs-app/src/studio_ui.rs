@@ -3478,14 +3478,6 @@ impl StudioUi {
         self.send(Command::UndoDelete);
     }
 
-    /// Undo (`back`) or redo the newest scene edit (Ctrl/Cmd+Z, the Undo and Redo
-    /// buttons). A box on its way is still applied first: the studio takes commands
-    /// in order.
-    pub fn undo_edit(&mut self, back: bool) {
-        self.deleted.clear();
-        self.send(if back { Command::Undo } else { Command::Redo });
-    }
-
     /// The encoder settings of an [`output`].
     fn encoding_of(&self, out: i32) -> Encoding {
         if out == output::DESTINATION

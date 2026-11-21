@@ -750,7 +750,10 @@ fn a_crop_keeps_the_scale_is_one_undo_step_and_regions_fit_the_canvas() {
     }));
 
     // Undo brings the whole picture and its box back.
-    host.send(Command::Undo);
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::EditUndo),
+        reply: rbs_studio_host::studio_host::ApiReply::QuietIf(rbs_api::ErrorKind::Conflict),
+    });
     let rows = rows_where(&rx, |r| r[0].layout.is_some_and(|l| l.crop.right == 0));
     assert_eq!(rows[0].layout.unwrap(), before);
 
@@ -909,7 +912,10 @@ fn a_marked_microphone_records_its_own_file_next_to_the_master() {
     }
 
     // The mark is one undo step.
-    host.send(Command::Undo);
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::EditUndo),
+        reply: rbs_studio_host::studio_host::ApiReply::QuietIf(rbs_api::ErrorKind::Conflict),
+    });
     rows_where(&rx, |r| {
         r.iter()
             .any(|r| r.id == mic.id && r.record_separately.is_none())
@@ -1078,8 +1084,14 @@ fn a_text_box_is_locked_while_a_take_records_its_picture_separately() {
     });
     assert!(why.contains("Stop recording to change the box"), "{why}");
     // Undo the mark first, then the earlier box change: the box step is refused.
-    host.send(Command::Undo);
-    host.send(Command::Undo);
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::EditUndo),
+        reply: rbs_studio_host::studio_host::ApiReply::QuietIf(rbs_api::ErrorKind::Conflict),
+    });
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::EditUndo),
+        reply: rbs_studio_host::studio_host::ApiReply::QuietIf(rbs_api::ErrorKind::Conflict),
+    });
     let why = next(&rx, |u| match u {
         Update::Error(why) => Some(why),
         _ => None,
@@ -1138,12 +1150,18 @@ fn the_patches_of_one_field_drag_undo_as_one_step() {
         r.iter()
             .any(|r| r.id == text.id && int(r, "width") == start + 30)
     });
-    host.send(Command::Undo);
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::EditUndo),
+        reply: rbs_studio_host::studio_host::ApiReply::QuietIf(rbs_api::ErrorKind::Conflict),
+    });
     rows_where(&rx, |r| {
         r.iter()
             .any(|r| r.id == text.id && int(r, "width") == start + 5)
     });
-    host.send(Command::Undo);
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::EditUndo),
+        reply: rbs_studio_host::studio_host::ApiReply::QuietIf(rbs_api::ErrorKind::Conflict),
+    });
     rows_where(&rx, |r| {
         r.iter()
             .any(|r| r.id == text.id && int(r, "width") == start)
@@ -1205,7 +1223,10 @@ fn fit_box_to_text_and_the_font_list_answer_the_text_tab() {
         (a[0] - b[0]).abs() < 0.5 && (a[1] - b[1]).abs() < 0.5,
         "{a:?} {b:?}"
     );
-    host.send(Command::Undo);
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::EditUndo),
+        reply: rbs_studio_host::studio_host::ApiReply::QuietIf(rbs_api::ErrorKind::Conflict),
+    });
     rows_where(&rx, |r| {
         r.iter()
             .any(|r| r.id == text.id && int(r, "width") == fitted + 200)

@@ -730,7 +730,10 @@ fn looks_and_sample_pictures_from_the_library_are_one_undo_step_each() {
     });
 
     // Undo takes the shape look back, then the colour look's change.
-    host.send(Command::Undo);
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::EditUndo),
+        reply: rbs_studio_host::studio_host::ApiReply::QuietIf(rbs_api::ErrorKind::Conflict),
+    });
     rows(&|r| {
         r.iter().any(|s| {
             s.id == screen
@@ -738,7 +741,10 @@ fn looks_and_sample_pictures_from_the_library_are_one_undo_step_each() {
                     .is_some_and(|l| l.style.shape != rbs_scene::model::Shape::Circle)
         })
     });
-    host.send(Command::Undo);
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::EditUndo),
+        reply: rbs_studio_host::studio_host::ApiReply::QuietIf(rbs_api::ErrorKind::Conflict),
+    });
     let got = rows(&|r| {
         chain(r, screen)
             .first()

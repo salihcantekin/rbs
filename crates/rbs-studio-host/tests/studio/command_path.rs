@@ -477,7 +477,10 @@ fn scene_edits_from_the_window_are_api_calls_and_undo_steps() {
     assert!(three.contains(&"Talk".to_owned()), "{three:?}");
 
     // Undo takes back the duplicate only.
-    s.host.send(Command::Undo);
+    s.host.send(Command::Api {
+        call: Box::new(rbs_api::Command::EditUndo),
+        reply: rbs_studio_host::studio_host::ApiReply::QuietIf(rbs_api::ErrorKind::Conflict),
+    });
     s.ask(rbs_api::Command::SceneList).unwrap();
     let two = names(&s);
     assert_eq!(two.len(), 2, "{two:?}");

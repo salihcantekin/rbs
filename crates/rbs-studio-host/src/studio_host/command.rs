@@ -33,11 +33,6 @@ pub enum Command {
     /// The toast's Undo after a delete: undoes the newest edit if it is a delete, else
     /// nothing (another edit came after it).
     UndoDelete,
-    /// Undo the newest scene edit (U4): an add, a delete, a layer move or a box; all
-    /// the boxes of one drag are one edit. [`Update::History`] says what is next.
-    Undo,
-    /// Redo the edit undone last.
-    Redo,
     /// Move a scene to where scene `to` is in the scene list (a row dragged onto
     /// another); one undo step.
     MoveSceneTo {
@@ -632,6 +627,9 @@ pub enum ApiReply {
     /// A refusal is logged and not shown: high-rate live input, and refusals the
     /// window ignores (Undo with nothing to undo).
     Quiet,
+    /// As [`ApiReply::Shown`], except a refusal of this kind, which is logged and
+    /// not shown: Undo with nothing to undo is `conflict`, a refused step is shown.
+    QuietIf(rbs_api::ErrorKind),
     /// As [`ApiReply::Shown`], and [`Update::ApiAnswer`] with this ticket carries the
     /// result, a refusal or a caught panic included.
     Ticket(u64),

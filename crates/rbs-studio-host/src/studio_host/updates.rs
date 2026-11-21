@@ -249,7 +249,7 @@ pub enum Update {
         /// Only its item in one scene went (Remove from scene, ADR-0065).
         from_scene: bool,
     },
-    /// What [`Command::Undo`] and [`Command::Redo`] would apply now (`None`: nothing).
+    /// What `edit.undo` and `edit.redo` would apply now (`None`: nothing).
     /// Sent when it changes.
     History {
         /// The next undo.

@@ -87,9 +87,7 @@ paths! {
     // edit.undo has no only-if-a-delete condition
     UndoDelete => Missing,
     // quiet when there is nothing to undo
-    Undo => Pending(&["edit.undo"]),
     // as Undo
-    Redo => Pending(&["edit.redo"]),
     // scene.move has no target scene
     MoveSceneTo => Missing,
     // item.move has no target item
@@ -245,7 +243,7 @@ mod tests {
     /// which must pick its method from host state may raise `TRANSLATES` by as many
     /// as `PENDING` falls; any other rise needs the owner's written approval.
     const TRANSLATES: usize = 22;
-    const PENDING: usize = 31;
+    const PENDING: usize = 29;
     const CONTRACT: usize = 10;
     const MISSING: usize = 20;
     const VIEW: usize = 13;

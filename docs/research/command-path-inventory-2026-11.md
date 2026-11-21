@@ -49,8 +49,8 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `RemoveGlobal` | Moved to `Command::Api` (step 3) | global.remove |
 | `AddGlobalSource` | Pending | source.add (global: true) |
 | `UndoDelete` | Missing | edit.undo has no only-if-a-delete condition |
-| `Undo` | Pending | edit.undo; quiet when there is nothing to undo, but a refused step (`undo_conflict`) is shown: neither `Shown` nor `Quiet` does both, so the window needs to tell the two apart; the window cannot skip the call itself, since an undo pressed right after an edit arrives before the history update (step 3 left it) |
-| `Redo` | Pending | edit.redo; as Undo |
+| `Undo` | Moved to `Command::Api` (step 3) | edit.undo, sent with `ApiReply::QuietIf(conflict)`: nothing to undo says nothing, a refused step (`undo_conflict`) is shown |
+| `Redo` | Moved to `Command::Api` (step 3) | edit.redo, sent with `ApiReply::QuietIf(conflict)`: nothing to undo says nothing, a refused step (`undo_conflict`) is shown |
 | `MoveSource` | Moved to `Command::Api` (step 2) | item.move |
 | `MoveScene` | Moved to `Command::Api` (step 1) | scene.move |
 | `MoveSceneTo` | Missing | scene.move has no target scene |

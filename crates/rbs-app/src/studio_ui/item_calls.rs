@@ -1,9 +1,11 @@
 //! Item operations of the window, sent as control API commands (ADR-0163 step 2):
 //! the Sources row's eye, lock and layer buttons, Add existing source, and the
-//! timed show of an item.
+//! timed show of an item, and Undo and Redo.
 
 use rbs_api::Command as C;
 use rbs_api::request as rq;
+
+use rbs_app::studio_host::ApiReply;
 
 use super::StudioUi;
 
@@ -74,5 +76,16 @@ impl StudioUi {
     /// Live timed show for a hidden item (ADR-0105).
     pub fn show_item(&mut self, item: i32) {
         self.call(C::ItemShow(rq::ShowItem { item: item as u32 }));
+    }
+
+    /// Undo (`back`) or redo the newest scene edit (Ctrl/Cmd+Z, the Undo and Redo
+    /// buttons). A box on its way is still applied first: the studio takes commands
+    /// in order.
+    pub fn undo_edit(&mut self, back: bool) {
+        self.deleted.clear();
+        let call = if back { C::EditUndo } else { C::EditRedo };
+        // Nothing to undo says nothing (the buttons are disabled then); a refused
+        // step is shown.
+        self.call_as(call, ApiReply::QuietIf(rbs_api::ErrorKind::Conflict));
     }
 }
