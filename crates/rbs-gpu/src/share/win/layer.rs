@@ -388,11 +388,21 @@ impl PreviewLayer {
         self.leave_window();
         self.placed = None;
         self.awaiting_frame = false;
-        if let Some(old) = self.shown.take() {
-            self.detached = Some(old);
+        // The frame on the surface's current buffer is held as `detached` (it never
+        // reports available); every other frame retires and is polled. That is the
+        // shown frame, unless a kept frame's `SetBuffer` succeeded after it (ADR-0161).
+        let kept = self.pending.clear();
+        let shown = self.shown.take();
+        let (hold, retire) = match kept {
+            Some(k) if self.current == Some(k.slot()) => (Some(k), shown),
+            k => (shown, k),
+        };
+        if let Some(old) = retire {
+            self.retiring.push(old);
         }
-        // Never presented, but its buffer may be the surface's current one.
-        if let Some(old) = self.pending.clear() {
+        if let Some(new) = hold
+            && let Some(old) = self.detached.replace(new)
+        {
             self.retiring.push(old);
         }
         self.give_back(now);
@@ -762,7 +772,7 @@ impl PreviewLayer {
                 // this one included, goes back at once.
                 debug_assert!(self.lost, "frame slot {} outside the ring", frame.slot());
                 drop(frame);
-                drop(self.pending.clear());
+                debug_assert!(!self.pending.waiting(), "callers take the kept frame first");
                 self.shown = None;
                 self.detached = None;
                 self.current = None;
@@ -836,8 +846,8 @@ impl PreviewLayer {
     }
 
     /// Frames whose present failed and that were never shown: replaced by a newer
-    /// frame, given up after the retry window, or dropped at `detach` or a loss
-    /// (ADR-0161).
+    /// frame, given up after the retry window, or retired at `detach` (ADR-0161). A
+    /// loss is not counted; [`PreviewLayer::lost`] reports it.
     pub fn frames_not_presented(&self) -> u64 {
         self.pending.missed()
     }

@@ -71,12 +71,17 @@ impl<F> PresentRetry<F> {
         old
     }
 
-    /// The kept frame, to present again or to give up at `now`.
+    /// The kept frame, to present again or to give up at `now`. Nothing at the
+    /// instant of its first failure: the callers retire right after `show`, and the
+    /// compositor has not had a chance to clear yet.
     pub(crate) fn take_due(&mut self, now: Timestamp) -> Retry<F> {
+        let since = self.since.unwrap_or(now);
+        if self.frame.is_none() || (self.since.is_some() && now == since) {
+            return Retry::Nothing;
+        }
         let Some(frame) = self.frame.take() else {
             return Retry::Nothing;
         };
-        let since = self.since.unwrap_or(now);
         if now.saturating_since(since) >= RETRY_FOR {
             self.since = None;
             self.missed += 1;
@@ -170,6 +175,31 @@ mod tests {
         }
         assert_eq!(t, 10 + 1_000, "given up at one second, not before");
         assert!(!r.waiting());
+        assert_eq!(r.missed(), 1);
+    }
+
+    /// A retire at the instant of the failure does not retry; one later does.
+    #[test]
+    fn no_retry_at_the_instant_of_the_failure() {
+        let mut r = PresentRetry::new();
+        r.hold(4, at(20));
+        assert_eq!(r.take_due(at(20)), Retry::Nothing);
+        assert!(r.waiting());
+        assert_eq!(r.take_due(at(24)), Retry::Again(4));
+        assert_eq!(r.failures(), 1);
+    }
+
+    /// A success ends the window: a later failure gets a full second again.
+    #[test]
+    fn a_success_resets_the_retry_window() {
+        let mut r = PresentRetry::new();
+        r.hold(1, at(0));
+        assert_eq!(r.take_due(at(900)), Retry::Again(1));
+        r.presented();
+        r.hold(2, at(1_500));
+        assert_eq!(r.take_due(at(2_400)), Retry::Again(2), "not given up");
+        r.hold(2, at(2_400));
+        assert_eq!(r.take_due(at(2_500)), Retry::GiveUp(2));
         assert_eq!(r.missed(), 1);
     }
 
