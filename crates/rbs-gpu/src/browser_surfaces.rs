@@ -54,6 +54,35 @@ impl PageSurfaces {
             .map(|s| std::ptr::from_ref::<IOSurfaceRef>(s) as usize)
     }
 
+    /// Device checks only (ADR-0167 decision 10): reads `points` pixels of `slot`
+    /// spread over the surface, as BGRA, through a read-only CPU lock. Never on the
+    /// frame path.
+    #[doc(hidden)]
+    pub fn sample(&self, slot: usize, points: usize) -> Option<Vec<[u8; 4]>> {
+        use objc2_io_surface::IOSurfaceLockOptions;
+        let surface = self.surfaces.get(slot)?;
+        // SAFETY: a read-only lock of a live surface; `seed` may be null.
+        if unsafe { surface.lock(IOSurfaceLockOptions::ReadOnly, std::ptr::null_mut()) } != 0 {
+            return None;
+        }
+        let (w, h, row) = (surface.width(), surface.height(), surface.bytes_per_row());
+        let base = surface.base_address().as_ptr().cast::<u8>();
+        let side = points.isqrt().max(2);
+        let mut out = Vec::with_capacity(side * side);
+        for j in 0..side {
+            for i in 0..side {
+                let (x, y) = (i * (w - 1) / (side - 1), j * (h - 1) / (side - 1));
+                // SAFETY: `x < w` and `y < h`; the locked surface is `h` rows of
+                // `row` bytes with 4 bytes per pixel.
+                let px = unsafe { std::ptr::read(base.add(y * row + x * 4).cast::<[u8; 4]>()) };
+                out.push(px);
+            }
+        }
+        // SAFETY: matches the lock above.
+        unsafe { surface.unlock(IOSurfaceLockOptions::ReadOnly, std::ptr::null_mut()) };
+        Some(out)
+    }
+
     /// One new send right per surface (`IOSurfaceCreateMachPort`), in slot order, for
     /// the handover. The caller owns the rights.
     pub fn mach_ports(&self) -> Result<Vec<u32>, GpuError> {

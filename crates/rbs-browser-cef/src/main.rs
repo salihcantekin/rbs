@@ -30,7 +30,7 @@
 //! sandbox (ADR-0132 steps).
 
 use std::io::Read;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -145,25 +145,59 @@ static PAGE: OnceLock<Page> = OnceLock::new();
 static GPU_LUID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 #[cfg(windows)]
 static COPIER: OnceLock<gpu::Copier> = OnceLock::new();
+/// macOS: the copier into the studio's IOSurfaces (ADR-0167).
+#[cfg(target_os = "macos")]
+static METAL: OnceLock<gpu_metal::Copier> = OnceLock::new();
 /// Counted copy failures since the last published picture (ADR-0157 decision 6).
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 static GPU_FAILS: AtomicU32 = AtomicU32::new(0);
 /// A callback published nothing: the loop asks CEF for one new view paint.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 static GPU_REPAINT: AtomicBool = AtomicBool::new(false);
 /// Why the callback ended the GPU path: 0 none, 1 `open`, 2 `copy` (decision 9).
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 static FALLBACK_REASON: AtomicU8 = AtomicU8::new(0);
 /// OS monotonic nanoseconds of the first paint that found no free GPU slot since the
 /// last one that did; 0 while slots are free (ADR-0157 decision 5).
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 static NO_SLOT_SINCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// Counted failures after which the tree falls back to shared memory (`copy`).
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 const GPU_FAIL_LIMIT: u32 = 60;
+
+/// Ends the GPU path with `code` (1 `open`, 2 `copy`); the paint loop writes the line
+/// (no pipe write in a callback, ADR-0157 decision 1).
+#[cfg(target_os = "macos")]
+fn metal_fallback(page: &Page, code: u8) {
+    let _ = FALLBACK_REASON.compare_exchange(0, code, Ordering::Relaxed, Ordering::Relaxed);
+    page.code.store(exit::GPU_FALLBACK, Ordering::Release);
+    page.quit.store(true, Ordering::Release);
+}
+
+/// Publishes the finished copies in claim order and counts what happened (ADR-0167
+/// decision 5): a publish with no failure resets the count, a failed copy adds one,
+/// a copy in flight for 30 page frames falls back with `copy`. CEF's UI thread only.
+#[cfg(target_os = "macos")]
+fn metal_collect(page: &Page, copier: &gpu_metal::Copier, now: u64) {
+    let done = copier.collect(&page.ring, now);
+    if done.published > 0 && done.failed == 0 {
+        GPU_FAILS.store(0, Ordering::Relaxed);
+    }
+    if done.failed > 0 {
+        GPU_REPAINT.store(true, Ordering::Relaxed);
+        if GPU_FAILS.fetch_add(done.failed, Ordering::Relaxed) + done.failed >= GPU_FAIL_LIMIT {
+            metal_fallback(page, 2);
+        }
+    }
+    if done.timed_out {
+        metal_fallback(page, 2);
+    }
+}
 
 #[cfg(windows)]
 mod gpu;
+#[cfg(target_os = "macos")]
+mod gpu_metal;
 mod pump;
 
 /// The `--use-adapter-luid` value for `luid`: Chromium parses decimal `<high>,<low>`
@@ -216,9 +250,13 @@ wrap_app! {
             let browser_process = process_type.is_none_or(|t| t.to_string().is_empty());
             #[cfg(windows)]
             let luid = GPU_LUID.load(Ordering::Relaxed);
-            #[cfg(not(windows))]
+            // macOS has no adapter switch: any non-zero value keeps GPU compositing
+            // on, and the copy runs on the one Metal device (ADR-0167 decision 2).
+            #[cfg(target_os = "macos")]
+            let luid = u64::from(METAL.get().is_some());
+            #[cfg(not(any(windows, target_os = "macos")))]
             let luid = 0;
-            let pin = std::env::var_os("RBS_BROWSER_NO_ADAPTER_SWITCH").is_none();
+            let pin = cfg!(windows) && std::env::var_os("RBS_BROWSER_NO_ADAPTER_SWITCH").is_none();
             for (name, value) in gpu_switches(browser_process, luid, pin) {
                 match value {
                     Some(value) => line.append_switch_with_value(
@@ -347,6 +385,45 @@ wrap_render_handler! {
                 // adds no per-frame pass. The GPU path replaces this.
                 SlotLayout::Rgba8Straight => bgra_premultiplied_to_rgba(pixels, slot, transparent),
             });
+        }
+
+        #[cfg(target_os = "macos")]
+        fn on_accelerated_paint(
+            &self,
+            _browser: Option<&mut Browser>,
+            type_: PaintElementType,
+            _dirty_rects: Option<&[Rect]>,
+            info: Option<&AcceleratedPaintInfo>,
+        ) {
+            if type_ != PaintElementType::VIEW {
+                return;
+            }
+            let (Some(info), Some(page), Some(copier)) = (info, page(), METAL.get()) else {
+                return;
+            };
+            let now = os_monotonic_nanos();
+            // Finished copies first: they free slots for this one.
+            metal_collect(page, copier, now);
+            // CEF's surface is valid for this callback. A panic here would abort the
+            // helper (ADR-0055); the copy counts as failed instead.
+            let surface = info.shared_texture_io_surface;
+            let copied = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                copier.copy(surface, &page.ring, now)
+            }))
+            .unwrap_or(gpu_metal::Copied::Failed);
+            if copied == gpu_metal::Copied::NoSlot {
+                let _ = NO_SLOT_SINCE.compare_exchange(0, now.max(1), Ordering::Relaxed, Ordering::Relaxed);
+            } else {
+                NO_SLOT_SINCE.store(0, Ordering::Relaxed);
+            }
+            if copied == gpu_metal::Copied::Failed
+                && GPU_FAILS.fetch_add(1, Ordering::Relaxed) + 1 >= GPU_FAIL_LIMIT
+            {
+                metal_fallback(page, 2);
+            }
+            if copied != gpu_metal::Copied::Recorded {
+                GPU_REPAINT.store(true, Ordering::Relaxed);
+            }
         }
 
         #[cfg(windows)]
@@ -1060,6 +1137,21 @@ fn run_browser(args: &args::Args, app: &mut App, engine: &engine::Engine) -> i32
             }
         }
     }
+    // macOS: fetch the studio's surfaces right after `Configure`, before CEF starts
+    // (ADR-0167 decision 3). Waits at most 2 s for the studio's reply, outside any
+    // CEF callback.
+    #[cfg(target_os = "macos")]
+    if let Some(rbs_browser_ipc::GpuShare::Metal(share)) = config.gpu.clone() {
+        match gpu_metal::Copier::open(&share, config.width, config.height, config.fps) {
+            Ok(copier) => {
+                let _ = METAL.set(copier);
+            }
+            Err(reason) => {
+                eprintln!("rbs-browser-cef: GPU path falls back to shared memory ({reason})");
+                return exit::GPU_FALLBACK;
+            }
+        }
+    }
 
     // Control messages, then stdin closing: the studio's stop (ADR-0109 decision 8,
     // ADR-0132 decision 8). The loop takes them on CEF's UI thread.
@@ -1238,10 +1330,14 @@ fn browse(
 ) -> i32 {
     // The first navigation: the cycle starts in it already.
     page.ours.store(true, Ordering::Release);
-    #[cfg_attr(not(windows), allow(unused_mut))] // Set below on Windows only.
+    #[cfg_attr(not(any(windows, target_os = "macos")), allow(unused_mut))] // GPU path only.
     let mut window = WindowInfo::default().set_as_windowless(Default::default());
     #[cfg(windows)]
     if COPIER.get().is_some() {
+        window.shared_texture_enabled = 1;
+    }
+    #[cfg(target_os = "macos")]
+    if METAL.get().is_some() {
         window.shared_texture_enabled = 1;
     }
     let browser_settings = BrowserSettings {
@@ -1280,13 +1376,13 @@ fn browse(
 
     // CEF runs when it asks for work (`pump`); the loop's own timers below bound the
     // wait (stability plan WP-J).
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     let period = Duration::from_secs(1) / config.fps.clamp(1, 60);
     let mut last_beat = Instant::now();
     page.ring.beat();
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     let mut repaint_at: Option<Instant> = None;
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     let mut shortage = SlotShortage::default();
     let mut work = true;
     while !page.quit.load(Ordering::Acquire) && !stop.load(Ordering::Acquire) {
@@ -1294,20 +1390,26 @@ fn browse(
             do_message_loop_work();
             pump::PUMP.worked();
         }
+        // Finished copies go out in claim order; a copy stuck on the GPU ends the
+        // path (ADR-0167 decisions 4 and 5).
+        #[cfg(target_os = "macos")]
+        if let Some(copier) = METAL.get() {
+            metal_collect(page, copier, os_monotonic_nanos());
+        }
         // A dropped GPU frame is asked for again once, one page frame later, and not
         // again until a paint arrives (ADR-0157 decision 6).
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         if GPU_REPAINT.swap(false, Ordering::Relaxed) && repaint_at.is_none() {
             repaint_at = Some(Instant::now() + period);
         }
         // A long shortage of free slots is logged here, never in the callback.
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         if let Some(line) =
             shortage.check(NO_SLOT_SINCE.load(Ordering::Relaxed), os_monotonic_nanos())
         {
             eprintln!("rbs-browser-cef: {line}");
         }
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         if repaint_at.is_some_and(|at| Instant::now() >= at) {
             repaint_at = None;
             if let Some(host) = browser.host() {
@@ -1357,7 +1459,7 @@ fn browse(
         if watched.is_some() {
             until = until.min(last_check + FILE_CHECK);
         }
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         if let Some(at) = repaint_at {
             until = until.min(at);
         }
@@ -1366,7 +1468,7 @@ fn browse(
         }
         work = pump::PUMP.wait(until).work;
     }
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     match FALLBACK_REASON.load(Ordering::Relaxed) {
         1 => eprintln!("rbs-browser-cef: GPU path falls back to shared memory (open)"),
         2 => eprintln!("rbs-browser-cef: GPU path falls back to shared memory (copy)"),

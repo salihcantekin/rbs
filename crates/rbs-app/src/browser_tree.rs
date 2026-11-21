@@ -157,6 +157,21 @@ impl HostBrowserTree for RunnerBrowserTree {
     }
 }
 
+/// The adapter a tree's GPU pages copy on: the D3D LUID on Windows, the `MTLDevice`
+/// registry id on macOS when the system has exactly one Metal device (ADR-0167
+/// decision 2). `None`: shared memory.
+fn gpu_adapter(gpu: &rbs_gpu::GpuContext) -> Option<u64> {
+    #[cfg(target_os = "macos")]
+    {
+        if rbs_gpu::browser_surfaces::metal_device_count() != 1 {
+            return None;
+        }
+        rbs_gpu::browser_surfaces::metal_registry_id(gpu)
+    }
+    #[cfg(not(target_os = "macos"))]
+    gpu.adapter_luid()
+}
+
 /// The studio host's browser trees in this root: a [`RunnerBrowserTree`] with the
 /// runner of [`resolve_runner`], or the one given (ADR-0159 decision 4).
 #[derive(Debug, Clone, Default)]
@@ -186,11 +201,12 @@ impl BrowserTrees for RunnerTrees {
             tree = tree.with_profiles(dir);
         }
         // Pages copy into textures on the studio's adapter (ADR-0157, accepted
-        // 2026-11-21) where it has a LUID, which is on Windows only.
+        // 2026-11-21) where it has a LUID, which is on Windows only. On macOS they
+        // copy into IOSurfaces when the system has one Metal device (ADR-0167).
         // `RBS_BROWSER_SHARED_MEMORY` keeps every page on shared memory, for a
         // device check or a driver that misbehaves.
         if std::env::var_os("RBS_BROWSER_SHARED_MEMORY").is_none_or(|v| v.is_empty())
-            && let Some(luid) = gpu.adapter_luid()
+            && let Some(luid) = gpu_adapter(gpu)
         {
             tree = tree.with_adapter(luid);
         }
@@ -243,7 +259,7 @@ impl RunnerBrowserTree {
         sound: Option<Arc<BrowserSound>>,
         adapter: Option<u64>,
     ) -> Result<Box<dyn BrowserSession>, String> {
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "macos")))]
         let _ = adapter;
         let runner = self
             .runner
@@ -261,7 +277,20 @@ impl RunnerBrowserTree {
             )
             .ok()
         });
-        #[allow(unused_mut)] // Only Windows sets the fence gate.
+        // macOS: the slot surfaces, offered to the helper on a Mach service once its
+        // pid is known (ADR-0167 decision 3).
+        #[cfg(target_os = "macos")]
+        let surfaces = adapter.and_then(|_| {
+            rbs_gpu::browser_surfaces::PageSurfaces::create(
+                config.width,
+                config.height,
+                rbs_browser_shm::DEFAULT_GPU_SLOTS as usize,
+            )
+            .ok()
+        });
+        #[cfg(target_os = "macos")]
+        let mut offer: Option<crate::browser_metal::Offer> = None;
+        #[allow(unused_mut)] // Only Windows and macOS set a gate.
         let mut child = spawn_helper_prepared(
             &runner.program,
             &args,
@@ -286,7 +315,19 @@ impl RunnerBrowserTree {
                         Some(rbs_browser_ipc::GpuShare::D3d(share))
                     })
                 }
-                #[cfg(not(windows))]
+                #[cfg(target_os = "macos")]
+                {
+                    let made = surfaces
+                        .as_ref()
+                        .zip(adapter)
+                        .and_then(|(s, id)| Some((crate::browser_metal::Offer::new(s, pid)?, id)));
+                    made.map(|(made, registry_id)| {
+                        let share = made.share(registry_id);
+                        offer = Some(made);
+                        share
+                    })
+                }
+                #[cfg(not(any(windows, target_os = "macos")))]
                 {
                     let _ = pid;
                     None
@@ -321,7 +362,29 @@ impl RunnerBrowserTree {
                 config.fps,
             );
         }
-        #[cfg(not(windows))]
+        #[cfg(target_os = "macos")]
+        let slots = surfaces.and_then(|surfaces| {
+            crate::browser_metal::PageSlots::open(
+                child.frame_name(),
+                config.width,
+                config.height,
+                surfaces,
+            )
+            .ok()
+        });
+        // The helper publishes only finished copies, so the gate has no fence
+        // (ADR-0167 decision 6); the surfaces stay on offer until it takes them.
+        #[cfg(target_os = "macos")]
+        if child.gpu_requested() {
+            let (Some(_), Some(offer)) = (&slots, offer.take()) else {
+                child.close(std::time::Duration::ZERO);
+                return self.start_on(config, sink, sound, None);
+            };
+            sink.clear_failed_imports();
+            child.set_fenceless_gate(Box::new(Imports(Arc::clone(&sink))), config.fps);
+            child.set_handover(Box::new(offer));
+        }
+        #[cfg(not(any(windows, target_os = "macos")))]
         let slots = None::<()>;
         // The supervisor thread exists only while the source is Active (P13). It
         // stamps each picture on the master clock at the edge, by the rule the page's
@@ -330,9 +393,9 @@ impl RunnerBrowserTree {
         let mut edge = sound
             .as_ref()
             .map(|sound| BrowserPictureEdge::new(sound.clock()));
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         let kept = slots.clone();
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "macos")))]
         let _ = slots;
         let publish = move |rgba: &mut Vec<u8>, width, height, painted, picture: PagePicture| {
             let stamp = edge
@@ -344,11 +407,11 @@ impl RunnerBrowserTree {
                 }
                 PagePicture::Bytes { fresh: false } => sink.republish(),
                 PagePicture::Texture { slot, .. } => {
-                    #[cfg(windows)]
+                    #[cfg(any(windows, target_os = "macos"))]
                     if let Some(frame) = kept.as_ref().and_then(|s| s.picture(slot, stamp)) {
                         sink.publish_native(frame, stamp);
                     }
-                    #[cfg(not(windows))]
+                    #[cfg(not(any(windows, target_os = "macos")))]
                     {
                         let _ = (slot, stamp);
                     }
@@ -369,9 +432,25 @@ impl RunnerBrowserTree {
         Ok(Box::new(RunnerSession {
             supervisor,
             _live: Live::new(&self.live),
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "macos"))]
             slots,
         }))
+    }
+}
+
+/// The supervisor's view of a macOS page: no fence, only the render thread's failed
+/// imports of its pictures (ADR-0167 decision 6).
+#[cfg(target_os = "macos")]
+struct Imports(Arc<BrowserFrameSink>);
+
+#[cfg(target_os = "macos")]
+impl rbs_browser_runner::FenceView for Imports {
+    fn completed(&self) -> u64 {
+        0
+    }
+
+    fn failed_imports(&self) -> u32 {
+        self.0.failed_imports()
     }
 }
 
@@ -435,6 +514,11 @@ struct RunnerSession {
     _live: Live,
     #[cfg(windows)]
     slots: Option<std::sync::Arc<crate::browser_gpu::PageSlots>>,
+    /// macOS: the surfaces, freed when the last frame lease goes (the importer's
+    /// cached texture retains each surface, so no handle hold is needed, decision 8).
+    #[cfg(target_os = "macos")]
+    #[allow(dead_code)] // Held, not read: it keeps the surfaces for the session's life.
+    slots: Option<std::sync::Arc<crate::browser_metal::PageSlots>>,
 }
 
 /// A session dropped without [`BrowserSession::stop`] still buries its slots, so a
