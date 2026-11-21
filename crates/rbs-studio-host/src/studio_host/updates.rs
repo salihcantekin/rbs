@@ -104,8 +104,6 @@ pub enum Update {
     /// A held T-bar ended other than by going to 0 (ADR-0135 decision 14): the rail's
     /// T-bar goes back to 0.
     TBarReset,
-    /// The playback devices, answering [`Command::ListMonitorDevices`].
-    MonitorDevices(Vec<api::MonitorDevice>),
     /// The second canvas runs (`Some`) or does not (`None`), sent when it changes
     /// (ADR-0093) and once at the start.
     Vertical(Option<VerticalState>),

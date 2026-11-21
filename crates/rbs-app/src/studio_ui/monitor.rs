@@ -1,14 +1,14 @@
 //! The monitor output in the UI (ADR-0097 F1): the headphones button of each Mixer
 //! strip, the Mixer's monitor row and Settings › Audio › Monitor. All three read one
-//! [`MonitorUi`], filled from the host's [`Update::Monitor`] and
-//! [`Update::MonitorDevices`], and send the host's monitor commands.
+//! [`MonitorUi`], filled from the host's [`Update::Monitor`] and the answer to
+//! `monitor.devices`, and send the monitor's control API calls.
 //!
 //! The device list is asked for only while something shows it: the Mixer's row (shown
 //! only while the monitor is wanted) or the Audio settings page (decision 7).
 
 use rbs_api::types as api;
-use rbs_app::studio_host::{Command, Update};
-use rbs_scene::model::{SourceId, SourceMonitor};
+use rbs_app::studio_host::Update;
+use rbs_scene::model::SourceMonitor;
 use rbs_ui::fader;
 use slint::Model;
 
@@ -24,11 +24,11 @@ pub fn mode_code(m: SourceMonitor) -> i32 {
     }
 }
 
-fn mode_of(code: i32) -> Option<SourceMonitor> {
+fn mode_of(code: i32) -> Option<api::MonitorMode> {
     match code {
-        0 => Some(SourceMonitor::Off),
-        1 => Some(SourceMonitor::Also),
-        2 => Some(SourceMonitor::Only),
+        0 => Some(api::MonitorMode::Off),
+        1 => Some(api::MonitorMode::Also),
+        2 => Some(api::MonitorMode::Only),
         _ => None,
     }
 }
@@ -41,7 +41,7 @@ pub struct MonitorUi {
     /// The playback devices, once listed.
     devices: Vec<api::MonitorDevice>,
     /// A list was asked for and has not come back.
-    listing: bool,
+    listing: Option<u64>,
     /// The Audio settings page is shown.
     page_shown: bool,
     /// The level in words while a fader drag has not yet been confirmed by the host.
@@ -181,9 +181,11 @@ impl StudioUi {
                 }
                 true
             }
-            Update::MonitorDevices(d) => {
-                self.monitor.devices = d.clone();
-                self.monitor.listing = false;
+            Update::ApiAnswer { ticket, result } if self.monitor.listing == Some(*ticket) => {
+                self.monitor.listing = None;
+                if let Ok(rbs_api::Response::MonitorDevices(list)) = result {
+                    self.monitor.devices = list.devices.clone();
+                }
                 true
             }
             _ => false,
@@ -237,10 +239,12 @@ impl StudioUi {
         let Some(monitor) = mode_of(code) else {
             return;
         };
-        self.send(Command::SetSourceMonitor {
-            id: SourceId::from_raw(id as u32),
-            monitor,
-        });
+        self.call(rbs_api::Command::SourceSetMonitor(
+            rbs_api::request::SetSourceMonitor {
+                source: id as u32,
+                monitor,
+            },
+        ));
     }
 
     /// Solos a source on the monitor or ends its solo; other soloed sources stay.
@@ -251,14 +255,18 @@ impl StudioUi {
         if on {
             solo.push(id);
         }
-        self.send(Command::SetMonitorSolo(
-            solo.into_iter().map(SourceId::from_raw).collect(),
+        self.call(rbs_api::Command::MonitorSetSolo(
+            rbs_api::request::SetMonitorSolo { sources: solo },
         ));
     }
 
     /// Ends solo for every source.
     pub fn end_monitor_solo(&mut self) {
-        self.send(Command::SetMonitorSolo(Vec::new()));
+        self.call(rbs_api::Command::MonitorSetSolo(
+            rbs_api::request::SetMonitorSolo {
+                sources: Vec::new(),
+            },
+        ));
     }
 
     /// The words for a fader position while it is dragged, before the host confirms it.
@@ -269,7 +277,11 @@ impl StudioUi {
     /// The monitor volume from a fader position (sent when a drag ends).
     pub fn set_monitor_volume(&mut self, position: f32) {
         self.monitor.drag_text = Some(fader::volume_text(fader::volume_at(position)));
-        self.send(Command::SetMonitorVolume(fader::volume_at(position)));
+        self.call(rbs_api::Command::MonitorSetVolume(
+            rbs_api::request::SetMonitorVolume {
+                volume: fader::volume_at(position),
+            },
+        ));
     }
 
     /// Chooses the device at `index` of the shown list (0: System default).
@@ -282,14 +294,15 @@ impl StudioUi {
                 None => return,
             },
         };
-        self.send(Command::SetMonitorDevice(device));
+        self.call(rbs_api::Command::MonitorSetDevice(
+            rbs_api::request::SetMonitorDevice { device },
+        ));
     }
 
     /// Asks the host for the playback devices (a picker is shown).
     pub fn list_monitor_devices(&mut self) {
-        if !self.monitor.listing {
-            self.monitor.listing = true;
-            self.send(Command::ListMonitorDevices);
+        if self.monitor.listing.is_none() {
+            self.monitor.listing = Some(self.ask(rbs_api::Command::MonitorDevices));
         }
     }
 
@@ -373,8 +386,12 @@ mod tests {
 
     #[test]
     fn mode_codes_round_trip() {
-        for m in [SourceMonitor::Off, SourceMonitor::Also, SourceMonitor::Only] {
-            assert_eq!(mode_of(mode_code(m)), Some(m));
+        for (m, a) in [
+            (SourceMonitor::Off, api::MonitorMode::Off),
+            (SourceMonitor::Also, api::MonitorMode::Also),
+            (SourceMonitor::Only, api::MonitorMode::Only),
+        ] {
+            assert_eq!(mode_of(mode_code(m)), Some(a));
         }
         assert_eq!(mode_of(3), None);
     }

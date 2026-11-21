@@ -81,11 +81,8 @@ paths! {
     AddSourceWithAudio => Pending(&["source.add"]),
     // split: the OS permission prompt and system picker stay in the window (LocalOnly)
     AddSource => Pending(&["source.add"]),
-    DeleteSource => Pending(&["source.delete"]),
     // must still send Update::Deleted for the undo toast
     RemoveFromScene => Pending(&["item.remove"]),
-    SetGlobal => Pending(&["global.add", "global.remove"]),
-    RemoveGlobal => Pending(&["global.remove"]),
     // global: true
     AddGlobalSource => Pending(&["source.add"]),
     // edit.undo has no only-if-a-delete condition
@@ -104,21 +101,13 @@ paths! {
     EnsureEncoders => WindowOnly(View),
     SetSceneOwnLevels => Translates(&["scene.audio.own", "scene.audio.shared"]),
     ResetSceneLevel => Translates(&["scene.audio.reset_source"]),
-    AddVerticalCanvas => Pending(&["canvas.add_vertical"]),
-    RemoveVerticalCanvas => Pending(&["canvas.remove_vertical"]),
     AutoLayoutVertical => Translates(&["canvas.auto_layout"]),
     SetVerticalSize => Translates(&["canvas.set_vertical_size"]),
     SetMasterVolume => Translates(&["canvas.set_master_volume"]),
     SetMasterMuted => Translates(&["canvas.set_master_muted"]),
     SetLoudnessShown => Translates(&["loudness.set_enabled"]),
     SetLoudnessSettings => Translates(&["settings.set"]),
-    SetSourceMonitor => Pending(&["source.set_monitor"]),
-    SetMonitorSolo => Pending(&["monitor.set_solo"]),
-    SetMonitorDevice => Pending(&["monitor.set_device"]),
-    SetMonitorVolume => Pending(&["monitor.set_volume"]),
-    ListMonitorDevices => Pending(&["monitor.devices"]),
     SetSourceMixerHidden => Translates(&["source.set_mixer_hidden"]),
-    AddFilter => Pending(&["filter.add"]),
     // no voice chain method
     AddVoiceChain => Missing,
     ApplyLook => Translates(&["look.apply"]),
@@ -141,9 +130,6 @@ paths! {
     SetSourceFill => Pending(&["source.set_settings"]),
     // also adds a border to the item style in one undo step; no method
     SetSourceFilled => Missing,
-    RemoveFilter => Pending(&["filter.remove"]),
-    MoveFilter => Pending(&["filter.move"]),
-    SetFilterEnabled => Pending(&["filter.set_enabled"]),
     // window then restores stored values on an unchanged release
     SetFilterValues => Pending(&["filter.set_settings"]),
     PreviewFilter => WindowOnly(Preview),
@@ -161,7 +147,6 @@ paths! {
     CloseSourceSettings => WindowOnly(View),
     // source.set_settings needs gesture; its text-file refusal moves to the caller checks
     SetSourceSettings => Contract(&["source.set_settings"]),
-    ReloadSource => Pending(&["source.reload"]),
     BrowserControl => Pending(&["browser.reload", "browser.run_script"]),
     // window stops the page first, API does not
     ForgetBrowserSignIn => Pending(&["browser.forget_sign_in"]),
@@ -185,10 +170,6 @@ paths! {
     // no method for the shown region (ADR-0058 Show buttons); source.set_region is the capture region
     SetSourceRegion => Missing,
     SetRecordSeparately => Pending(&["source.set_record_separately"]),
-    SetSourceCaptureRegion => Pending(&["source.set_region"]),
-    SetDisplayChrome => Pending(&["source.set_chrome"]),
-    FitDisplayChrome => Pending(&["source.fit_chrome"]),
-    ResetDisplayChrome => Pending(&["source.reset_chrome"]),
     // item.set_style needs gesture
     SetSourceStyle => Contract(&["item.set_style"]),
     // item.set_scroll needs gesture
@@ -270,7 +251,7 @@ mod tests {
     /// which must pick its method from host state may raise `TRANSLATES` by as many
     /// as `PENDING` falls; any other rise needs the owner's written approval.
     const TRANSLATES: usize = 22;
-    const PENDING: usize = 56;
+    const PENDING: usize = 37;
     const CONTRACT: usize = 10;
     const MISSING: usize = 20;
     const VIEW: usize = 13;

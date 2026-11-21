@@ -48,8 +48,8 @@ use rbs_remote_settings::ai_tools::{self as ai_settings, AiToolsSettings};
 use rbs_remote_settings::{self as remote_profile, Access, RemoteProfile};
 use rbs_scene::activity::OnReturn;
 use rbs_scene::model::{
-    Border, ChromeFill, DisplayChrome, ItemStyle, Layout, SceneId, Scroll, ScrollDirection,
-    ScrollRepeat, ScrollStart, Shape, SourceId, SourceRegion, VideoAs,
+    Border, ItemStyle, Layout, SceneId, Scroll, ScrollDirection, ScrollRepeat, ScrollStart, Shape,
+    SourceId, VideoAs,
 };
 use rbs_sources::permissions::PermissionKind;
 use rbs_transport::Secret;
@@ -86,6 +86,7 @@ pub(crate) mod destinations;
 pub(crate) mod filters;
 mod item_calls;
 mod library_ops;
+mod output_calls;
 mod scene_calls;
 mod source_calls;
 pub use library_ops::EntryWrite;
@@ -2188,11 +2189,6 @@ impl StudioUi {
         });
     }
 
-    /// Reload on the Source tab: a source that is not running is tried again.
-    pub fn reload_source(&mut self, id: i32) {
-        self.send(Command::ReloadSource(SourceId::from_raw(id as u32)));
-    }
-
     /// Play or pause a media file, by its play state now (ADR-0108 decision 10).
     pub fn media_play_pause(&mut self, id: i32) {
         let playing = self
@@ -2267,30 +2263,10 @@ impl StudioUi {
         });
     }
 
-    pub fn delete_source(&mut self, id: i32) {
-        self.deleted.clear();
-        self.send(Command::DeleteSource(SourceId::from_raw(id as u32)));
-    }
-
     /// Remove from scene (ADR-0065): the Sources row's remove button and Delete key.
     pub fn remove_from_scene(&mut self, id: i32) {
         self.deleted.clear();
         self.send(Command::RemoveFromScene(SourceId::from_raw(id as u32)));
-    }
-
-    /// Show in every scene (Properties' Toggle, ADR-0065).
-    pub fn set_global(&mut self, id: i32, global: bool) {
-        self.deleted.clear();
-        self.send(Command::SetGlobal {
-            id: SourceId::from_raw(id as u32),
-            global,
-        });
-    }
-
-    /// Settings › Global sources' Remove.
-    pub fn remove_global(&mut self, id: i32) {
-        self.deleted.clear();
-        self.send(Command::RemoveGlobal(SourceId::from_raw(id as u32)));
     }
 
     /// Settings › Global sources: a kind was picked; its devices are listed.
@@ -2354,10 +2330,9 @@ impl StudioUi {
                 self.send(Command::AddGlobalSource { kind, target });
             }
         } else if let Some(id) = self.global_existing.get(i - self.global_targets.len()) {
-            self.send(Command::SetGlobal {
-                id: *id,
-                global: true,
-            });
+            self.call(rbs_api::Command::GlobalAdd(rbs_api::request::AddGlobal {
+                source: id.get(),
+            }));
         }
         self.global_option = -1;
     }
@@ -2822,88 +2797,6 @@ impl StudioUi {
             id: SourceId::from_raw(id as u32),
             region,
         });
-    }
-
-    /// Capture region on the source (ADR-0103). `clear` removes the region.
-    pub fn set_source_capture_region(
-        &mut self,
-        id: i32,
-        clear: bool,
-        left: i32,
-        top: i32,
-        right: i32,
-        bottom: i32,
-    ) {
-        if self.host.is_none() {
-            return;
-        }
-        let region = if clear {
-            None
-        } else {
-            Some(SourceRegion::new(
-                left.max(0) as u32,
-                top.max(0) as u32,
-                right.max(0) as u32,
-                bottom.max(0) as u32,
-            ))
-        };
-        self.send(Command::SetSourceCaptureRegion {
-            id: SourceId::from_raw(id as u32),
-            region,
-        });
-    }
-
-    /// Display chrome (ADR-0104). `on` false turns chrome off.
-    #[allow(clippy::too_many_arguments)] // One argument per field of the chrome form.
-    pub fn set_display_chrome(
-        &mut self,
-        id: i32,
-        on: bool,
-        top: i32,
-        right: i32,
-        bottom: i32,
-        left: i32,
-        fill: i32,
-    ) {
-        if self.host.is_none() {
-            return;
-        }
-        let chrome = if on {
-            let fill = if fill == 1 {
-                ChromeFill::Fit
-            } else {
-                ChromeFill::Cover
-            };
-            Some(
-                DisplayChrome::new(
-                    top.max(0) as u32,
-                    right.max(0) as u32,
-                    bottom.max(0) as u32,
-                    left.max(0) as u32,
-                )
-                .with_fill(fill),
-            )
-        } else {
-            None
-        };
-        self.send(Command::SetDisplayChrome {
-            id: SourceId::from_raw(id as u32),
-            chrome,
-        });
-    }
-
-    pub fn fit_display_chrome(&mut self, id: i32) {
-        if self.host.is_none() {
-            return;
-        }
-        self.send(Command::FitDisplayChrome(SourceId::from_raw(id as u32)));
-    }
-
-    pub fn reset_display_chrome(&mut self, id: i32) {
-        if self.host.is_none() {
-            return;
-        }
-        self.send(Command::ResetDisplayChrome(SourceId::from_raw(id as u32)));
     }
 
     /// Shape and border of a video source's picture (the Properties fields). `shape`:
@@ -5957,16 +5850,6 @@ impl StudioUi {
         self.send(Command::SetSeparateFiles(self.separate_files.clone()));
     }
 
-    /// Keeps and saves whether Record and Go live also act on the vertical outputs
-    /// (ADR-0111), and tells the host.
-    pub fn set_vertical_flags(&mut self, flags: VerticalFlags) {
-        self.vertical_flags = flags;
-        if let Err(why) = self.user.set_section(vertical_outputs::SECTION, &flags) {
-            self.profile_note = format!("The output choice was not saved: {why}");
-        }
-        self.send(Command::SetVerticalFlags(flags));
-    }
-
     fn send_vertical_profiles(&self) {
         self.send(Command::SetSeparateFiles(self.separate_files.clone()));
         self.send(Command::SetVerticalFlags(self.vertical_flags));
@@ -6135,8 +6018,8 @@ impl StudioUi {
             return out;
         }
         match u {
-            Update::Monitor(_) | Update::MonitorDevices(_) | Update::Loudness(_) => {} // taken above
-            Update::ApiAnswer { .. } => {} // no window call asks for one yet (ADR-0163)
+            Update::Monitor(_) | Update::Loudness(_) => {} // taken above
+            Update::ApiAnswer { .. } => {}                 // a question no longer asked (ADR-0163)
             Update::TBarReset => self.tbar_resets = self.tbar_resets.wrapping_add(1),
             Update::AddOns(list) => self.add_ons = list.add_ons,
             Update::OpenAddOn(id) => self.open_add_on = Some(id),

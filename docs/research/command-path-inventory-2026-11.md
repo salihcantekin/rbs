@@ -2,7 +2,7 @@
 
 First-pass classification of every `rbs_studio_host::Command` variant on main `c424931` for [ADR-0163](../adr/0163-one-command-path-for-the-window-and-the-api.md) (one command path, quality plan WP-20). Made by reading each variant's handler arm and the control API method names (`rbs_api::Command::method`), corrected after the ADR's first review. Each namespace step checks its rows again against the code and the control API spec; where a row is wrong, the step's `Command::path` arm is the record, not this table.
 
-Step 0 moved `ResetLoudness` to `Command::Api`; step 1 (scenes and transitions) moved ten scene variants and made Switch scene and Studio mode translations; step 2 (items) moved the Sources row's lock, eye and layer buttons, Add existing source and the timed show; step 3 (sources, first part) moved rename, the per-source slide, keep open, the sync offset, Duplicate source, Copy, Paste and Reset attributes and the companion audio; `command_path.rs` holds the current counts. First-pass counts: 21 Translates (already run through `run_ui_api` or `ApiTarget::run`), 83 Pending, 10 Contract, 20 Missing, 27 WindowOnly (13 View, 9 LocalOnly, 2 Preview, 3 Mirror). Total 161. Corrected after review rounds 1 to 3.
+Step 0 moved `ResetLoudness` to `Command::Api`; step 1 (scenes and transitions) moved ten scene variants and made Switch scene and Studio mode translations; step 2 (items) moved the Sources row's lock, eye and layer buttons, Add existing source and the timed show; step 3 (sources, first part) moved rename, the per-source slide, keep open, the sync offset, Duplicate source, Copy, Paste and Reset attributes, Delete source, the companion audio, global sources, the capture region and display chrome; step 4 (filters) moved add, remove, move and on/off of a filter; step 5 (audio) moved the monitor mode, solo, device, volume and the device list (the first ticketed answer); step 6 (outputs, first part) moved adding and removing the vertical canvas; `command_path.rs` holds the current counts. First-pass counts: 21 Translates (already run through `run_ui_api` or `ApiTarget::run`), 83 Pending, 10 Contract, 20 Missing, 27 WindowOnly (13 View, 9 LocalOnly, 2 Preview, 3 Mirror). Total 161. Corrected after review rounds 1 to 3.
 
 ## Known differences between the two paths
 
@@ -31,6 +31,8 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | Media play, pause, seek, restart | Forces the next media-state publish | Does not | `source_settings.rs`, `api_source2.rs` |
 | Pause, hold, break refusals | Own sentence ("The recording could not pause or resume: ...") | `ApiError` message | `stream.rs` |
 | Lock, eye and layer buttons on a row that is gone | Host refused "There is no source ..." | The window sends nothing (it names the row's item) | `studio_ui/item_calls.rs` |
+| Stop recording (main and vertical) | `end_recording`: ends the output gracefully (`ending`), stops at once only when that fails; silent when nothing records | `stop_recording` at once; `conflict` "nothing records" | `recording.rs`, `api_record.rs` |
+| End stream, stop the virtual camera, disarm replay with nothing running | Silent | `conflict` | `outputs.rs`, `api_record.rs`, `api_vcam.rs` |
 | A refused source edit (rename, slide, companion) | Error bar, then a publish | Error bar only; nothing changed, so nothing to publish | `studio_host.rs` `answer` |
 | Companion audio for a source that is gone | "There is no source ..." | "no source N" | `api_studio.rs` |
 
@@ -41,13 +43,13 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `ListTargets` | Pending | source.targets |
 | `AddSourceWithAudio` | Pending | source.add (with_audio: true); split as AddSource |
 | `AddSource` | Pending | source.add; split: the OS permission prompt and system picker stay in the window (LocalOnly) |
-| `DeleteSource` | Pending | source.delete |
+| `DeleteSource` | Moved to `Command::Api` (step 3) | source.delete |
 | `RemoveFromScene` | Pending | item.remove; must still send Update::Deleted for the undo toast |
-| `SetGlobal` | Pending | global.add, global.remove |
-| `RemoveGlobal` | Pending | global.remove |
+| `SetGlobal` | Moved to `Command::Api` (step 3) | global.add, global.remove |
+| `RemoveGlobal` | Moved to `Command::Api` (step 3) | global.remove |
 | `AddGlobalSource` | Pending | source.add (global: true) |
 | `UndoDelete` | Missing | edit.undo has no only-if-a-delete condition |
-| `Undo` | Pending | edit.undo; quiet when there is nothing to undo |
+| `Undo` | Pending | edit.undo; quiet when there is nothing to undo, but a refused step (`undo_conflict`) is shown: neither `Shown` nor `Quiet` does both, so the window needs to tell the two apart; the window cannot skip the call itself, since an undo pressed right after an edit arrives before the history update (step 3 left it) |
 | `Redo` | Pending | edit.redo; as Undo |
 | `MoveSource` | Moved to `Command::Api` (step 2) | item.move |
 | `MoveScene` | Moved to `Command::Api` (step 1) | scene.move |
@@ -60,8 +62,8 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `EnsureEncoders` | WindowOnly View |  |
 | `SetSceneOwnLevels` | Translates | scene.audio.own, scene.audio.shared |
 | `ResetSceneLevel` | Translates | scene.audio.reset_source |
-| `AddVerticalCanvas` | Pending | canvas.add_vertical |
-| `RemoveVerticalCanvas` | Pending | canvas.remove_vertical |
+| `AddVerticalCanvas` | Moved to `Command::Api` (step 6) | canvas.add_vertical |
+| `RemoveVerticalCanvas` | Moved to `Command::Api` (step 6) | canvas.remove_vertical |
 | `AutoLayoutVertical` | Translates | canvas.auto_layout |
 | `SetVerticalSize` | Translates | canvas.set_vertical_size |
 | `SetMasterVolume` | Translates | canvas.set_master_volume |
@@ -69,13 +71,13 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `SetLoudnessShown` | Translates | loudness.set_enabled |
 | `ResetLoudness` | Moved to `Command::Api` (step 0) | loudness.reset |
 | `SetLoudnessSettings` | Translates | settings.set |
-| `SetSourceMonitor` | Pending | source.set_monitor |
-| `SetMonitorSolo` | Pending | monitor.set_solo |
-| `SetMonitorDevice` | Pending | monitor.set_device |
-| `SetMonitorVolume` | Pending | monitor.set_volume |
-| `ListMonitorDevices` | Pending | monitor.devices |
+| `SetSourceMonitor` | Moved to `Command::Api` (step 5) | source.set_monitor |
+| `SetMonitorSolo` | Moved to `Command::Api` (step 5) | monitor.set_solo |
+| `SetMonitorDevice` | Moved to `Command::Api` (step 5) | monitor.set_device |
+| `SetMonitorVolume` | Moved to `Command::Api` (step 5) | monitor.set_volume |
+| `ListMonitorDevices` | Moved to `Command::Api` (step 5) | monitor.devices; the first ticketed question: `Update::ApiAnswer` replaces `Update::MonitorDevices` |
 | `SetSourceMixerHidden` | Translates | source.set_mixer_hidden |
-| `AddFilter` | Pending | filter.add |
+| `AddFilter` | Moved to `Command::Api` (step 4) | filter.add |
 | `AddVoiceChain` | Missing | no voice chain method |
 | `ApplyLook` | Translates | look.apply |
 | `AddSample` | Translates | source.add_sample |
@@ -86,14 +88,14 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `AddBrowser` | Missing | source.add has no URL |
 | `AddText` | Pending | source.add |
 | `FitTextBox` | Missing | no fit-box method |
-| `ListTextFonts` | Pending | text.fonts |
+| `ListTextFonts` | Pending | text.fonts; while the list is being read the window path answers later by itself, the API refuses `not_ready` (the window would have to ask again) |
 | `TextTimer` | Pending | text.timer |
 | `SetSourceFill` | Pending | source.set_settings |
 | `SetSourceFilled` | Missing | also adds a border to the item style in one undo step; no method |
-| `RemoveFilter` | Pending | filter.remove |
-| `MoveFilter` | Pending | filter.move |
-| `SetFilterEnabled` | Pending | filter.set_enabled |
-| `SetFilterValues` | Pending | filter.set_settings; window then restores stored values on an unchanged release |
+| `RemoveFilter` | Moved to `Command::Api` (step 4) | filter.remove |
+| `MoveFilter` | Moved to `Command::Api` (step 4) | filter.move |
+| `SetFilterEnabled` | Moved to `Command::Api` (step 4) | filter.set_enabled |
+| `SetFilterValues` | Pending | filter.set_settings; window then restores stored values on an unchanged release; an unchanged release restores the stored values, the API does not (step 4 left it) |
 | `PreviewFilter` | WindowOnly Preview |  |
 | `RestoreFilter` | WindowOnly Preview |  |
 | `OpenSyncMeasure` | WindowOnly View |  |
@@ -107,7 +109,7 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `OpenSourceSettings` | WindowOnly View |  |
 | `CloseSourceSettings` | WindowOnly View |  |
 | `SetSourceSettings` | Contract | source.set_settings needs gesture; its text-file refusal moves to the caller checks |
-| `ReloadSource` | Pending | source.reload; the window publishes after a restart, the API does not (step 3 left it) |
+| `ReloadSource` | Moved to `Command::Api` (step 3) | source.reload; the API now publishes after a restart, as the window did |
 | `BrowserControl` | Pending | browser.reload, browser.run_script |
 | `ForgetBrowserSignIn` | Pending | browser.forget_sign_in; window stops the page first, API does not |
 | `Media` | Pending | media.play, media.pause, media.seek, media.restart; window forces the next media-state publish |
@@ -115,7 +117,7 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `RenameSource` | Moved to `Command::Api` (step 3) | source.rename |
 | `SetGlide` | Moved to `Command::Api` (step 1) | collection.set_glide |
 | `SetTransition` | Pending | collection.set_transition |
-| `SetSourceActivity` | Pending | source.set_activity; the window sends an `ActivityChoice`, which needs a mapping to the API values (step 3 left it) |
+| `SetSourceActivity` | Pending | source.set_activity; the window sends an `ActivityChoice` and keeps the stored linger, while the API call sets `linger_s` (absent is 0): the window must send the linger it shows (step 3 left it) |
 | `SetSourceGlide` | Moved to `Command::Api` (step 3) | source.set_glide |
 | `AddExistingSource` | Moved to `Command::Api` (step 2) | item.add |
 | `AddScene` | Moved to `Command::Api` (step 1) | scene.add |
@@ -142,10 +144,10 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `TransformSource` | Contract | item.flip/rotate/fit/align/reset_transform need gesture |
 | `SetSourceRegion` | Missing | no method for the shown region (ADR-0058 Show buttons); source.set_region is the capture region |
 | `SetRecordSeparately` | Pending | source.set_record_separately |
-| `SetSourceCaptureRegion` | Pending | source.set_region |
-| `SetDisplayChrome` | Pending | source.set_chrome |
-| `FitDisplayChrome` | Pending | source.fit_chrome |
-| `ResetDisplayChrome` | Pending | source.reset_chrome |
+| `SetSourceCaptureRegion` | Moved to `Command::Api` (step 3) | source.set_region |
+| `SetDisplayChrome` | Moved to `Command::Api` (step 3) | source.set_chrome |
+| `FitDisplayChrome` | Moved to `Command::Api` (step 3) | source.fit_chrome |
+| `ResetDisplayChrome` | Moved to `Command::Api` (step 3) | source.reset_chrome |
 | `SetItemShowFor` | Moved to `Command::Api` (step 2) | item.set_show_for |
 | `ShowItem` | Moved to `Command::Api` (step 2) | item.show |
 | `SetSourceStyle` | Contract | item.set_style needs gesture |
@@ -198,4 +200,4 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `ReadPermissions` | WindowOnly LocalOnly |  |
 | `RequestPermission` | WindowOnly LocalOnly |  |
 | `ListAddOns` | Pending | addon.list |
-| `AddOn` | Pending | addon.install, addon.cancel, addon.clean, addon.remove |
+| `AddOn` | Pending | addon.install, addon.cancel, addon.clean, addon.remove; Update (install, then clean the old version when done) has no single API call |

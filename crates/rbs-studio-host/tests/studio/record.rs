@@ -1323,7 +1323,14 @@ fn separate_files_clean_up_after_a_refused_or_panicked_start() {
 
     // The marked microphone is deleted during the take: the take goes on and stops
     // cleanly, and both files are complete.
-    host.send(Command::DeleteSource(mic.id));
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::SourceDelete(
+            rbs_api::request::SourceRef {
+                source: mic.id.get(),
+            },
+        )),
+        reply: rbs_studio_host::studio_host::ApiReply::Shown,
+    });
     rows_where(&rx, |r| r.len() == 1);
     match stop_recording(&host, &rx, &clock) {
         RecordingUpdate::Stopped { failure, .. } => assert_eq!(failure, None),

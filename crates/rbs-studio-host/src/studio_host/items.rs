@@ -867,28 +867,6 @@ impl Host {
                     Err(e) => notify(Update::Error(e.text().into())),
                 }
             }
-            Command::SetSourceCaptureRegion { id, region } => {
-                match self.set_capture_region(id, region) {
-                    Ok(true) => self.apply(notify),
-                    Ok(false) => {}
-                    Err(e) => notify(Update::Error(e.text().into())),
-                }
-            }
-            Command::SetDisplayChrome { id, chrome } => match self.set_display_chrome(id, chrome) {
-                Ok(true) => self.apply(notify),
-                Ok(false) => {}
-                Err(e) => notify(Update::Error(e.text().into())),
-            },
-            Command::FitDisplayChrome(id) => match self.fit_display_chrome(id) {
-                Ok(true) => self.apply(notify),
-                Ok(false) => {}
-                Err(e) => notify(Update::Error(e.text().into())),
-            },
-            Command::ResetDisplayChrome(id) => match self.reset_display_chrome(id) {
-                Ok(true) => self.apply(notify),
-                Ok(false) => {}
-                Err(e) => notify(Update::Error(e.text().into())),
-            },
             Command::SetSourceStyle {
                 gesture,
                 id,

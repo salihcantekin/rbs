@@ -34,7 +34,10 @@ pub(super) fn a_saved_vertical_canvas_runs_again_when_the_collection_opens() {
     assert_eq!(state.canvas, vertical);
     assert_eq!(state.size, Size::new(1080, 1920));
     assert!(state.follow);
-    host.send(Command::RemoveVerticalCanvas);
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::CanvasRemoveVertical(Default::default())),
+        reply: rbs_studio_host::studio_host::ApiReply::Shown,
+    });
     next(&updates, |u| match u {
         Update::Vertical(None) => Some(()),
         Update::Error(e) => panic!("{e}"),
@@ -79,18 +82,23 @@ pub(super) fn the_control_api_adds_and_removes_the_vertical_canvas() {
 
 #[test]
 pub(super) fn style_crop_and_transform_on_the_vertical_canvas_leave_the_main_layout() {
-    use rbs_core::media::Size;
     use rbs_scene::model::{ItemStyle, Shape, SourceId};
-    use rbs_studio_host::studio_host::{Command, OutputCanvas, TransformOp, VerticalCanvas};
+    use rbs_studio_host::studio_host::{Command, OutputCanvas, TransformOp};
     let Some((host, updates, _api, mut c)) = start() else {
         return;
     };
     let id = SourceId::from_raw(add(&mut c, "screen", "Screen") as u32);
-    host.send(Command::AddVerticalCanvas(VerticalCanvas {
-        size: Size::new(1080, 1920),
-        follow: true,
-        layout: None,
-    }));
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::CanvasAddVertical(
+            rbs_api::request::AddVerticalCanvas {
+                width: None,
+                height: None,
+                follow: None,
+                layout: None,
+            },
+        )),
+        reply: rbs_studio_host::studio_host::ApiReply::Shown,
+    });
     let rows = next(&updates, |u| match u {
         Update::Sources(r) if r.iter().any(|r| r.vertical_layout.is_some()) => Some(r),
         Update::Error(e) => panic!("{e}"),
@@ -237,7 +245,7 @@ pub(super) fn properties_scroll_sets_the_layout_and_pauses_the_run() {
 #[test]
 pub(super) fn the_control_api_arranges_and_resizes_the_vertical_canvas() {
     use rbs_core::media::Size;
-    use rbs_studio_host::studio_host::{Command, VerticalCanvas};
+    use rbs_studio_host::studio_host::Command;
     let Some((host, updates, _api, mut c)) = start() else {
         return;
     };
@@ -257,11 +265,17 @@ pub(super) fn the_control_api_arranges_and_resizes_the_vertical_canvas() {
         )),
         "not_found"
     );
-    host.send(Command::AddVerticalCanvas(VerticalCanvas {
-        size: Size::new(1080, 1920),
-        follow: true,
-        layout: None,
-    }));
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::CanvasAddVertical(
+            rbs_api::request::AddVerticalCanvas {
+                width: None,
+                height: None,
+                follow: None,
+                layout: None,
+            },
+        )),
+        reply: rbs_studio_host::studio_host::ApiReply::Shown,
+    });
     let rows = next(&updates, |u| match u {
         Update::Sources(r) if r.iter().any(|r| r.vertical_layout.is_some()) => Some(r),
         Update::Error(e) => panic!("{e}"),

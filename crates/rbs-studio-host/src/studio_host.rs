@@ -54,7 +54,7 @@ use rbs_scene::model::{
     Border, CanvasId, Crop, DisplayChrome, FilterId, ItemContent, ItemId, ItemStyle, Layout,
     MAX_SCROLL_SPEED, MIN_SCROLL_SPEED, MasterAudio, RecordSeparately, Scene, SceneId, SceneItem,
     SceneScope, Scroll, ScrollDirection, ScrollRepeat, ScrollStart, SettingValue, Settings, Shadow,
-    Shape, Source, SourceAudio, SourceId, SourceMonitor, SourceRegion, VideoAs,
+    Shape, Source, SourceAudio, SourceId, SourceRegion, VideoAs,
 };
 use rbs_scene::{
     AutoLayout, CenterAxis, ChromeFill, FitMode, Removed, SceneError, SceneLevel, Undo,
@@ -674,10 +674,7 @@ impl Host {
             | Command::ListAddOns
             | Command::AddOn { .. }
             | Command::RequestPermission(..)
-            | Command::DeleteSource(..)
             | Command::RemoveFromScene(..)
-            | Command::SetGlobal { .. }
-            | Command::RemoveGlobal(..)
             | Command::AddGlobalSource { .. }
             | Command::UndoDelete
             | Command::Undo
@@ -691,21 +688,13 @@ impl Host {
             | Command::SetSceneOwnLevels { .. }
             | Command::ResetSceneLevel { .. }
             | Command::SetSourceMixerHidden { .. } => self.source_command(c, notify),
-            Command::AddVerticalCanvas(..)
-            | Command::RemoveVerticalCanvas
-            | Command::AutoLayoutVertical(..)
+            Command::AutoLayoutVertical(..)
             | Command::SetVerticalSize(..)
             | Command::SetMasterVolume { .. }
             | Command::SetMasterMuted { .. }
             | Command::SetLoudnessShown(..)
-            | Command::SetLoudnessSettings { .. }
-            | Command::SetSourceMonitor { .. }
-            | Command::SetMonitorSolo(..)
-            | Command::SetMonitorDevice(..)
-            | Command::SetMonitorVolume(..)
-            | Command::ListMonitorDevices => self.canvas_and_mix_command(c, notify),
-            Command::AddFilter { .. }
-            | Command::AddVoiceChain(..)
+            | Command::SetLoudnessSettings { .. } => self.canvas_and_mix_command(c, notify),
+            Command::AddVoiceChain(..)
             | Command::AddSample { .. }
             | Command::AddStamp { .. }
             | Command::AddImage { .. }
@@ -719,9 +708,6 @@ impl Host {
             | Command::SetSourceFill { .. }
             | Command::SetSourceFilled { .. }
             | Command::ApplyLook { .. }
-            | Command::RemoveFilter(..)
-            | Command::MoveFilter { .. }
-            | Command::SetFilterEnabled { .. }
             | Command::SetFilterValues { .. }
             | Command::PreviewFilter { .. }
             | Command::RestoreFilter(..)
@@ -736,7 +722,6 @@ impl Host {
             | Command::CloseSourceSettings
             | Command::SetSourceSettings { .. }
             | Command::Media { .. }
-            | Command::ReloadSource(..)
             | Command::ForgetBrowserSignIn(..)
             | Command::BrowserControl { .. } => self.source_edit_command(c, notify),
             Command::SetTransition(..)
@@ -751,10 +736,6 @@ impl Host {
             | Command::TransformSource { .. } => self.item_command(c, notify),
             Command::SetSourceRegion { .. }
             | Command::SetRecordSeparately { .. }
-            | Command::SetSourceCaptureRegion { .. }
-            | Command::SetDisplayChrome { .. }
-            | Command::FitDisplayChrome(..)
-            | Command::ResetDisplayChrome(..)
             | Command::SetSourceStyle { .. }
             | Command::SetSourceScroll { .. }
             | Command::ScrollLive { .. } => self.item_display_command(c, notify),

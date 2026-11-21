@@ -929,7 +929,7 @@ impl App {
                 let flags = self.studio.vertical_flags.set(kind, on);
                 self.studio.set_vertical_flags(flags);
             }
-            Run::RemoveVertical => self.studio.send(studio_host::Command::RemoveVerticalCanvas),
+            Run::RemoveVertical => self.studio.remove_vertical(),
             Run::AutoLayoutVertical(mode) => {
                 self.studio
                     .send(studio_host::Command::AutoLayoutVertical(mode));
@@ -3556,9 +3556,6 @@ fn install_name_prompt(g: &Overlays<'_>, ctx: &Ctx) {
 /// The Add vertical output dialog: Add and Remove send the host's commands and close
 /// it (a refusal comes back as a notice); Escape or Cancel closes it.
 fn install_vertical_prompt(g: &Overlays<'_>, ctx: &Ctx) {
-    use rbs_app::studio_host::{Command, VerticalCanvas};
-    use rbs_core::media::Size;
-    use rbs_scene::AutoLayout;
     {
         let ctx = ctx.clone();
         g.on_vertical_accepted(move || {
@@ -3578,17 +3575,8 @@ fn install_vertical_prompt(g: &Overlays<'_>, ctx: &Ctx) {
                         );
                         return;
                     }
-                    let layout = match o.get_vertical_layout() {
-                        1 => Some(AutoLayout::Fit),
-                        2 => Some(AutoLayout::Fill),
-                        3 => Some(AutoLayout::Stack),
-                        _ => None,
-                    };
-                    app.studio.send(Command::AddVerticalCanvas(VerticalCanvas {
-                        size: Size::new(w as u32, h as u32),
-                        follow: o.get_vertical_follow(),
-                        layout,
-                    }));
+                    let (follow, layout) = (o.get_vertical_follow(), o.get_vertical_layout());
+                    app.studio.add_vertical(w as u32, h as u32, follow, layout);
                     o.set_vertical_open(false);
                 });
             });
@@ -3599,7 +3587,7 @@ fn install_vertical_prompt(g: &Overlays<'_>, ctx: &Ctx) {
         g.on_vertical_removed(move || {
             entry::guard(|| {
                 ctx.update(|app: &mut App| {
-                    app.studio.send(Command::RemoveVerticalCanvas);
+                    app.studio.remove_vertical();
                     app.main.global::<Overlays>().set_vertical_open(false);
                 });
             });

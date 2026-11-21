@@ -68,7 +68,7 @@ pub struct SceneList {
 pub(super) const VERTICAL_MIN_SIDE: u32 = 64;
 pub(super) const VERTICAL_MAX_SIDE: u32 = 8192;
 
-/// What [`Command::AddVerticalCanvas`] makes (ADR-0093 decision 8).
+/// What `canvas.add_vertical` makes (ADR-0093 decision 8).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct VerticalCanvas {
     /// The picture size, for example 1080x1920 or 720x1280. It runs at the main canvas's

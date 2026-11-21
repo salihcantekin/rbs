@@ -572,9 +572,13 @@ fn the_properties_tabs_commands_edit_filters_and_the_sync_offset() {
             .unwrap_or_default()
     };
 
-    host.send(Command::AddFilter {
-        source: screen,
-        type_id: "org.rbs.filter.sharpen".into(),
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::FilterAdd(rbs_api::request::AddFilter {
+            source: screen.get(),
+            type_id: "org.rbs.filter.sharpen".into(),
+            settings: None,
+        })),
+        reply: rbs_studio_host::studio_host::ApiReply::Shown,
     });
     let got = rows(&|r| chain(r).len() == 1);
     let filter = chain(&got)[0].id;
@@ -594,12 +598,24 @@ fn the_properties_tabs_commands_edit_filters_and_the_sync_offset() {
     let got = rows(&|r| chain(r).first().and_then(|f| f.values) == Some(dragged));
     assert_eq!(chain(&got)[0].name, "Sharpen");
 
-    host.send(Command::SetFilterEnabled {
-        filter,
-        enabled: false,
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::FilterSetEnabled(
+            rbs_api::request::SetFilterEnabled {
+                filter: filter.get(),
+                enabled: false,
+            },
+        )),
+        reply: rbs_studio_host::studio_host::ApiReply::Shown,
     });
     rows(&|r| chain(r).first().is_some_and(|f| !f.enabled));
-    host.send(Command::RemoveFilter(filter));
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::FilterRemove(
+            rbs_api::request::FilterRef {
+                filter: filter.get(),
+            },
+        )),
+        reply: rbs_studio_host::studio_host::ApiReply::Shown,
+    });
     rows(&|r| chain(r).is_empty());
 
     host.send(Command::Api {

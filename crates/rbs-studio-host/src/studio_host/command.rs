@@ -22,23 +22,10 @@ pub enum Command {
         /// What it captures.
         target: Target,
     },
-    /// Delete a source from every scene and the global sources (glossary: "Delete source").
-    DeleteSource(SourceId),
     /// Remove a source's item from the edited scene, or its global item (glossary:
     /// "Remove from scene", ADR-0065); the source goes too when that was its last
     /// placement.
     RemoveFromScene(SourceId),
-    /// Make a source global on the studio's canvas (`true`: it leaves the canvas's
-    /// scenes, ADR-0065) or move its global item into the edited scene (`false`).
-    SetGlobal {
-        /// The source.
-        id: SourceId,
-        /// Global, else back in the edited scene.
-        global: bool,
-    },
-    /// Remove a source from the global sources (Settings › Global sources); the
-    /// source goes too when that was its last placement.
-    RemoveGlobal(SourceId),
     /// Add a new source of `kind` capturing `target` as a global source (one undo
     /// step).
     AddGlobalSource {
@@ -111,14 +98,6 @@ pub enum Command {
         /// The source.
         source: SourceId,
     },
-    /// Adds a vertical second canvas and runs it beside the main one (ADR-0093 decision
-    /// 8): the canvas is made, follows the main canvas's program scene when asked, gets
-    /// an Auto layout of the program scene when asked, and starts running (one output
-    /// can take it, one picture can show it). [`Update::Vertical`] answers. Not on the undo stack.
-    AddVerticalCanvas(VerticalCanvas),
-    /// Stops the second canvas and removes it from the collection (its outputs must be
-    /// stopped first). [`Update::Vertical`] answers.
-    RemoveVerticalCanvas,
     /// Arranges the scene the vertical canvas shows (`canvas.auto_layout`, protocol
     /// 1.44). One undo step; a refusal comes back as [`Update::Error`].
     AutoLayoutVertical(rbs_api::request::VerticalLayout),
@@ -146,23 +125,6 @@ pub enum Command {
         /// dBTP.
         true_peak_limit: f32,
     },
-    /// Whether a source is heard on the monitor (ADR-0097 decision 5). A live control:
-    /// not on the undo stack; the device opens or closes on the host's next round.
-    SetSourceMonitor {
-        /// The source.
-        id: SourceId,
-        /// Off, Only or Also.
-        monitor: SourceMonitor,
-    },
-    /// The sources soloed on the monitor (session state, never saved); empty ends solo.
-    SetMonitorSolo(Vec<SourceId>),
-    /// The monitor device (`None`: System default), saved in `monitor.toml`.
-    SetMonitorDevice(Option<String>),
-    /// The monitor volume, linear from 0 to 1, saved in `monitor.toml`.
-    SetMonitorVolume(f32),
-    /// Lists the playback devices ([`Update::MonitorDevices`] answers). Enumerates:
-    /// sent only while a device picker is shown (ADR-0097 decision 7).
-    ListMonitorDevices,
     /// Hide a source from the Mixer or show it again (ADR-0080). A live view choice like
     /// the mute: not on the undo stack; the sound is untouched.
     SetSourceMixerHidden {
@@ -170,14 +132,6 @@ pub enum Command {
         id: SourceId,
         /// Hidden from the Mixer.
         hidden: bool,
-    },
-    /// Add a filter of a built-in type with its defaults at the end of a source's chain
-    /// (ADR-0062; one undo step).
-    AddFilter {
-        /// The source.
-        source: SourceId,
-        /// The filter type's id.
-        type_id: String,
     },
     /// Add the voice chain to a sound source (ADR-0130 decision 10; one undo step).
     AddVoiceChain(SourceId),
@@ -253,22 +207,6 @@ pub enum Command {
         /// Draw the fill.
         on: bool,
     },
-    /// Remove a filter (one undo step).
-    RemoveFilter(FilterId),
-    /// Move a filter to `index` in its chain (one undo step).
-    MoveFilter {
-        /// The filter.
-        filter: FilterId,
-        /// Its new place, 0 first.
-        index: usize,
-    },
-    /// Turn a filter on or off (one undo step).
-    SetFilterEnabled {
-        /// The filter.
-        filter: FilterId,
-        /// On.
-        enabled: bool,
-    },
     /// Write a filter's full values (a released slider, a colour, Reset to defaults;
     /// one undo step).
     SetFilterValues {
@@ -333,11 +271,9 @@ pub enum Command {
         /// step; 0 never joins.
         gesture: u64,
     },
-    /// Try a source that is not running again with its stored settings (ADR-0077).
-    ReloadSource(SourceId),
     /// A message to a browser source's running page: reload it, or run a script
     /// (ADR-0132 decision 5, ADR-0149 decision 3). A reload of a page that does not
-    /// run is [`Command::ReloadSource`].
+    /// run is the `source.reload` call.
     BrowserControl {
         /// The browser source.
         id: SourceId,
@@ -464,24 +400,6 @@ pub enum Command {
         /// What changes.
         patch: RecordPatch,
     },
-    /// Capture region on the source (ADR-0103). One undo step; does not restart capture.
-    SetSourceCaptureRegion {
-        /// The source.
-        id: SourceId,
-        /// The region, or `None` to clear.
-        region: Option<SourceRegion>,
-    },
-    /// Display chrome insets (ADR-0104). One undo step.
-    SetDisplayChrome {
-        /// The source.
-        id: SourceId,
-        /// The chrome, or `None` to turn it off.
-        chrome: Option<DisplayChrome>,
-    },
-    /// Places the item with the stored chrome fill (ADR-0104).
-    FitDisplayChrome(SourceId),
-    /// Copies chrome from the display work area (ADR-0104).
-    ResetDisplayChrome(SourceId),
     /// Shape and border of a video source's picture (ADR-0053), replacing the whole
     /// style of the layout the canvas shows. A style that is not valid is refused with
     /// [`Update::Error`].

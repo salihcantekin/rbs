@@ -639,14 +639,6 @@ impl Host {
     /// The window commands of this concern, routed by `Host::command`.
     pub(super) fn canvas_and_mix_command(&mut self, c: Command, notify: &dyn Fn(Update)) {
         match c {
-            Command::AddVerticalCanvas(spec) => {
-                let done = self.add_vertical(spec);
-                self.answer_live(done, notify);
-            }
-            Command::RemoveVerticalCanvas => {
-                let done = self.remove_vertical();
-                self.answer_live(done, notify);
-            }
             Command::AutoLayoutVertical(mode) => {
                 self.run_ui_api(
                     rbs_api::Command::CanvasAutoLayout(rbs_api::request::CanvasAutoLayout {
@@ -704,29 +696,6 @@ impl Host {
                     }),
                     notify,
                 );
-            }
-            Command::SetSourceMonitor { id, monitor } => {
-                let done = self.set_source_monitor(id, monitor);
-                self.answer_live(done, notify);
-            }
-            Command::SetMonitorSolo(sources) => {
-                let raw: Vec<u32> = sources.iter().map(|s| s.get()).collect();
-                if let Err(e) = self.set_monitor_solo(&raw) {
-                    notify(Update::Error(e.text().to_owned()));
-                }
-            }
-            Command::SetMonitorDevice(device) => {
-                if let Err(e) = self.set_monitor_device(device) {
-                    notify(Update::Error(e.text().to_owned()));
-                }
-            }
-            Command::SetMonitorVolume(volume) => {
-                if let Err(e) = self.set_monitor_volume(volume) {
-                    notify(Update::Error(e.text().to_owned()));
-                }
-            }
-            Command::ListMonitorDevices => {
-                notify(Update::MonitorDevices(self.api_monitor_devices().devices));
             }
             // Routed elsewhere by `Host::command`.
             _ => {}

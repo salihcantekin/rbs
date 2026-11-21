@@ -179,7 +179,14 @@ fn sources_are_added_deleted_and_restored_through_the_host() {
     assert_eq!(rows[0].name, format!("{} 2", rows[1].name));
 
     // Delete, then undo.
-    host.send(Command::DeleteSource(mic_id));
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::SourceDelete(
+            rbs_api::request::SourceRef {
+                source: mic_id.get(),
+            },
+        )),
+        reply: ApiReply::Shown,
+    });
     let name = next(&rx, |u| match u {
         Update::Deleted { name: n, .. } => Some(n),
         _ => None,
@@ -383,7 +390,14 @@ fn edits_are_undone_and_redone_and_a_drag_is_one_step() {
     rows_where(&rx, |r| {
         r[0].layout.is_some_and(|l| l.position == [30.0, 0.0])
     });
-    host.send(Command::DeleteSource(screen));
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::SourceDelete(
+            rbs_api::request::SourceRef {
+                source: screen.get(),
+            },
+        )),
+        reply: ApiReply::Shown,
+    });
     rows_where(&rx, |r| r.len() == 1);
     let (undo, redo) = history(&rx);
     assert_eq!(undo.map(|s| s.kind), Some(EditKind::Delete));
@@ -805,7 +819,12 @@ fn a_source_is_pointed_at_another_target_keeping_its_place_and_one_undo_step() {
         target: mics[1].clone(),
     });
     // A healthy source is left running: reload finds no failure record.
-    host.send(Command::ReloadSource(id));
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::SourceReload(
+            rbs_api::request::ReloadSource { source: id.get() },
+        )),
+        reply: ApiReply::Shown,
+    });
     host.send(Command::Undo);
     let (undo, redo) = history(&rx);
     assert_eq!(

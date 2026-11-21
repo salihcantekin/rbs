@@ -740,12 +740,6 @@ impl Host {
     /// The window commands of this concern, routed by `Host::command`.
     pub(super) fn source_edit_command(&mut self, c: Command, notify: &dyn Fn(Update)) {
         match c {
-            Command::AddFilter { source, type_id } => {
-                let done = self
-                    .add_filter(source, &type_id, &std::collections::BTreeMap::new())
-                    .map(|_| true);
-                self.answer(done, notify);
-            }
             Command::AddVoiceChain(source) => {
                 let done = self.add_voice_chain(source);
                 self.answer(done, notify);
@@ -815,18 +809,6 @@ impl Host {
                     notify,
                 );
             }
-            Command::RemoveFilter(filter) => {
-                let done = self.remove_filter(filter).map(|()| true);
-                self.answer(done, notify);
-            }
-            Command::MoveFilter { filter, index } => {
-                let done = self.move_filter(filter, index);
-                self.answer(done, notify);
-            }
-            Command::SetFilterEnabled { filter, enabled } => {
-                let done = self.set_filter_enabled(filter, enabled);
-                self.answer(done, notify);
-            }
             Command::SetFilterValues { filter, values } => {
                 let done = self.set_filter_values(filter, values);
                 // An unchanged release still puts the collection's values back on air.
@@ -880,11 +862,6 @@ impl Host {
                 }
                 self.media_sent = None;
             }
-            Command::ReloadSource(id) => match self.reload_source(id) {
-                Ok(Reload::Retargeted) => self.answer(Ok(true), notify),
-                Ok(Reload::Restarted(done)) => self.answer_live(Ok(done), notify),
-                Err(e) => self.answer_live(Err(e), notify),
-            },
             Command::ForgetBrowserSignIn(id) => {
                 let done = self
                     .forget_sign_in(id, true)

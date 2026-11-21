@@ -107,12 +107,14 @@ impl ApiTarget<'_> {
                 .browser_input(p.source, &p.events)
                 .map(|()| Response::Done(Empty {})),
             C::SourceReload(p) => {
-                if host
+                match host
                     .reload_source(SourceId::from_raw(p.source))
                     .map_err(|e| refused(&e))?
-                    == Reload::Retargeted
                 {
-                    host.apply(notify);
+                    Reload::Retargeted => host.apply(notify),
+                    // A restarted source's status is news (as the window had it).
+                    Reload::Restarted(true) => host.publish(notify),
+                    Reload::Restarted(false) => {}
                 }
                 Ok(Response::Done(Empty {}))
             }
