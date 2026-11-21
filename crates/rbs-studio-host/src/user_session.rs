@@ -26,6 +26,9 @@ use crate::canvas_profile::{self, CanvasProfile};
 use crate::record_profile;
 use crate::stream_profile;
 
+mod later;
+pub use later::Pending;
+
 /// Name of the entries made when there are none, and of the migrated ones.
 pub const DEFAULT_NAME: &str = "Default";
 
@@ -691,27 +694,13 @@ impl UserSession {
     /// Adds the output profile in the file `from` (a clashing name gets a number);
     /// returns its name.
     pub fn import_profile(&self, from: &Path) -> Result<String, String> {
-        let from = from.to_owned();
-        self.run(move |data, lock, _| {
-            data.profiles()
-                .import(lock, &from)
-                .map(|(_, name)| name)
-                .map_err(|e| e.to_string())
-        })?
+        self.run(later::import_profile(from.to_owned()))?
     }
 
     /// Adds the scene collection in the file `from` (a clashing name gets a number);
     /// returns its name.
     pub fn import_collection(&self, from: &Path) -> Result<String, String> {
-        let from = from.to_owned();
-        self.run(move |data, lock, _| {
-            let (id, name) = data
-                .scene_collections()
-                .import(lock, &from)
-                .map_err(|e| e.to_string())?;
-            own_profiles(data, lock, &id)?;
-            Ok(name)
-        })?
+        self.run(later::import_collection(from.to_owned()))?
     }
 
     /// Writes an OBS import plan (ADR-0131 decision 9) on the writer thread: a new
