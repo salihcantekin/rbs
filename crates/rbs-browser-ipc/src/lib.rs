@@ -27,6 +27,7 @@ pub mod automation;
 pub mod control;
 pub mod input;
 pub mod page;
+pub mod profile;
 pub mod runtime;
 
 /// Exit codes of the CEF runner (`rbs-browser-cef`). Any exit makes the source

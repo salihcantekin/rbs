@@ -49,6 +49,7 @@ use rbs_browser_shm::{
 
 mod engine;
 mod input;
+mod profile;
 
 // Exit codes, numbered in `rbs-browser-ipc`. Any exit is Unavailable to the studio;
 // the runtime ones name why (add-ons spec "Browser engine consumer").
@@ -1075,6 +1076,7 @@ fn run_browser(args: &args::Args, app: &mut App, engine: &engine::Engine) -> i32
         }
         dir
     } else {
+        profile::sweep_stale_in_background();
         let Some(dir) = new_profile_dir() else {
             return exit::INIT_FAILED;
         };
@@ -1189,9 +1191,10 @@ fn new_profile_dir() -> Option<std::path::PathBuf> {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |since| since.subsec_nanos());
     for attempt in 0..8u32 {
-        let path = std::env::temp_dir().join(format!(
-            "rbs-browser-{}-{nanos:x}-{attempt}",
-            std::process::id()
+        let path = std::env::temp_dir().join(rbs_browser_ipc::profile::profile_name(
+            std::process::id(),
+            nanos,
+            attempt,
         ));
         #[cfg(unix)]
         let builder = {

@@ -859,6 +859,7 @@ name = "rbs-browser-cef"
 version = "0.0.1"
 dependencies = [
  "cef",
+ "libc",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
