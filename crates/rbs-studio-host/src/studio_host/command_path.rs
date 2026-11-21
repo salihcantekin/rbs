@@ -158,9 +158,7 @@ paths! {
     // no method for the shown region (ADR-0058 Show buttons); source.set_region is the capture region
     SetSourceRegion => Missing,
     // item.set_style needs gesture
-    SetSourceStyle => Contract(&["item.set_style"]),
     // item.set_scroll needs gesture
-    SetSourceScroll => Contract(&["item.set_scroll"]),
     // record.start builds its request from host state; the window sends its own RecordRequest
     StartRecording => Contract(&["record.start"]),
     // as StartRecording
@@ -231,7 +229,7 @@ mod tests {
     /// as `PENDING` falls; any other rise needs the owner's written approval.
     const TRANSLATES: usize = 22;
     const PENDING: usize = 17;
-    const CONTRACT: usize = 9;
+    const CONTRACT: usize = 7;
     const MISSING: usize = 20;
     const VIEW: usize = 13;
     const LOCAL_ONLY: usize = 9;

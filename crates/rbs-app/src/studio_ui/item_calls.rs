@@ -106,3 +106,35 @@ impl StudioUi {
         self.call_as(call, ApiReply::QuietIf(rbs_api::ErrorKind::Conflict));
     }
 }
+
+impl StudioUi {
+    /// `item.set_style` for the row's item on the canvas Properties edits.
+    pub(super) fn send_style(&self, id: i32, style: &rbs_scene::model::ItemStyle, gesture: u64) {
+        if let Some(item) = self.row_item(id) {
+            self.call(C::ItemSetStyle(rq::SetItemStyle {
+                item,
+                style: rbs_app::studio_host::style_for_api(style),
+                canvas: self.props_target(id),
+                gesture,
+            }));
+        }
+    }
+
+    /// `item.set_scroll` for the row's item on the canvas Properties edits; `None`
+    /// stops it.
+    pub(super) fn send_scroll(
+        &self,
+        id: i32,
+        scroll: Option<&rbs_scene::model::Scroll>,
+        gesture: u64,
+    ) {
+        if let Some(item) = self.row_item(id) {
+            self.call(C::ItemSetScroll(rq::SetItemScroll {
+                item,
+                scroll: scroll.map(rbs_app::studio_host::scroll_for_api),
+                canvas: self.props_target(id),
+                gesture,
+            }));
+        }
+    }
+}

@@ -153,7 +153,7 @@ pub(super) fn api_look_group(group: rbs_scene::look::LookGroup) -> rbs_api::requ
 }
 
 /// The control API's form of a style (ADR-0053).
-pub(super) fn api_style(s: &ItemStyle) -> api::ItemStyle {
+pub fn api_style(s: &ItemStyle) -> api::ItemStyle {
     let (shape, radius) = match s.shape {
         Shape::Rectangle { radius } => (api::ShapeKind::Rectangle, radius),
         Shape::Circle => (api::ShapeKind::Circle, 0.0),
@@ -178,7 +178,7 @@ pub(super) fn api_style(s: &ItemStyle) -> api::ItemStyle {
 }
 
 /// The API form of a scroll (ADR-0150).
-pub(super) fn api_scroll(s: &Scroll) -> api::ItemScroll {
+pub fn api_scroll(s: &Scroll) -> api::ItemScroll {
     api::ItemScroll {
         direction: match s.direction {
             ScrollDirection::Right => api::ScrollDirection::Right,

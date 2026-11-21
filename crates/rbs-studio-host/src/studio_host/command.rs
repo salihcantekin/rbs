@@ -322,34 +322,6 @@ pub enum Command {
         /// Which part.
         region: CropRegion,
     },
-    /// Shape and border of a video source's picture (ADR-0053), replacing the whole
-    /// style of the layout the canvas shows. A style that is not valid is refused with
-    /// [`Update::Error`].
-    SetSourceStyle {
-        /// Styles with the same number other than 0 that follow each other are one undo
-        /// step (one slider drag); 0 is a step of its own.
-        gesture: u64,
-        /// The source.
-        id: SourceId,
-        /// The new style.
-        style: ItemStyle,
-        /// The canvas whose layout changes: the vertical canvas's own layout only while
-        /// it shows the scene being edited (ADR-0093 decision 4).
-        canvas: OutputCanvas,
-    },
-    /// Sets or clears the scroll of a video source's picture (ADR-0150) on the layout
-    /// the canvas shows; refused with [`Update::Error`] when out of range.
-    SetSourceScroll {
-        /// Edits with the same number other than 0 that follow each other are one undo
-        /// step (one field drag); 0 is a step of its own.
-        gesture: u64,
-        /// The source.
-        id: SourceId,
-        /// The scroll, or `None` to stop scrolling.
-        scroll: Option<Scroll>,
-        /// The canvas whose layout changes, as for [`Command::SetSourceStyle`].
-        canvas: OutputCanvas,
-    },
     /// Start recording the program ([`Update::Recording`] says how it went).
     StartRecording(RecordRequest),
     /// Start recording the vertical canvas ([`Update::VerticalRecording`] says how it

@@ -2818,12 +2818,7 @@ impl StudioUi {
             .with_border(border.then_some(Border::new(width, color)))
             .with_shadow(shadow);
         self.deleted.clear();
-        self.send(Command::SetSourceStyle {
-            gesture: ui_gesture(gesture),
-            id: SourceId::from_raw(id as u32),
-            style,
-            canvas: self.props_target(id),
-        });
+        self.send_style(id, &style, ui_gesture(gesture));
     }
 
     /// The scroll of a video source's picture (Properties, Scroll; ADR-0150 decision
@@ -2878,12 +2873,7 @@ impl StudioUi {
             None
         };
         self.deleted.clear();
-        self.send(Command::SetSourceScroll {
-            gesture: ui_gesture(gesture),
-            id: SourceId::from_raw(id as u32),
-            scroll,
-            canvas: self.props_target(id),
-        });
+        self.send_scroll(id, scroll.as_ref(), ui_gesture(gesture));
     }
 
     fn rows_scroll(&self, id: i32) -> Option<Scroll> {
