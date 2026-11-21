@@ -749,7 +749,7 @@ enum Class {
 /// from this match is reported by `check_workspace`, which fails the build.
 fn class(name: &str) -> Option<Class> {
     Some(match name {
-        "rbs-core" | "rbs-graph" | "rbs-scene" | "rbs-capture" | "rbs-audio-io" | "rbs-codec"
+        "rbs-core" | "rbs-graph" | "rbs-scene" | "rbs-capture" | "rbs-audio-io" | "rbs-input" | "rbs-codec"
         | "rbs-mux" | "rbs-transport" | "rbs-vcam" | "rbs-media-decode" | "rbs-text" => Class::Core,
         "rbs-params" | "rbs-media-format" | "rbs-crash" | "rbs-vcam-ring" | "rbs-browser-ipc" => {
             Class::Helper
