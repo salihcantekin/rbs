@@ -149,7 +149,7 @@ fn own_profile(copy: SourceCopy, source: &Source) -> Result<SourceCopy, Refusal>
     if crate::browser_profiles::id_of(source).is_none() {
         return Ok(copy);
     }
-    let id = crate::browser_profiles::new_id().map_err(Refusal::Invalid)?;
+    let id = crate::browser_profiles::new_id().map_err(|e| Refusal::Invalid(e.to_string()))?;
     Ok(copy.with_setting(rbs_sources::types::keys::PROFILE_ID, SettingValue::Text(id)))
 }
 

@@ -2,7 +2,7 @@
 
 - Status: Draft
 - Owner crate(s): `rbs-plugin-sdk`, `rbs-plugin-host` (planned)
-- Related ADRs: [0006](../adr/0006-three-tier-plugin-model.md), [0003](../adr/0003-ports-and-adapters.md)
+- Related ADRs: [0006](../adr/0006-three-tier-plugin-model.md), [0003](../adr/0003-ports-and-adapters.md), [0162](../adr/0162-extension-ready-registries-and-plugin-order.md)
 
 ## Purpose
 
@@ -60,6 +60,26 @@ Plugin panels are declarative and rendered natively by the host (ADR-0016, UI ru
 - **Events:** user actions arrive at the plugin as `action(node_id, kind, value)` callbacks with no direct access to the UI thread.
 - **Lifecycle:** a hidden panel moves to Standby (ADR-0013): no events, patches are queued and coalesced, and the plugin is told so it can stop work. A crashed or unresponsive panel is replaced by an error card with a reload button.
 - **Accessibility and i18n:** every node with text carries a Fluent message id or plugin-provided localised string; interactive nodes require an accessible label.
+
+## Registries
+
+Owner: ADR-0162. Every type a plugin can add will be looked up in a runtime registry, never in a compiled list, and built-in types register through the same call (the `org.rbs.*` prefix is reserved for them).
+
+| Registry | State |
+| --- | --- |
+| Adapters (`rbs_core::registry::Registry`) | Runtime, filled by `rbs-platform` |
+| Node types (`rbs_sources::NodeTypeTable`) | Ids are open; behaviour (`live_settings`, `live_keys`, `activity`) still matches `SourceClass`; ADR-0162 step 2 |
+| Video filter types (`rbs_filters::catalogue()`) | Compiled list; becomes a registry in ADR-0162 step 1 |
+| Audio filter types (`rbs_audio_filters::catalogue()`) | Compiled list; ADR-0162 step 1 |
+| Source types (`rbs_sources::SourceClass`, `rbs_api::SourceKind`) | Closed enums; ADR-0162 step 2 |
+| Transitions (`rbs_scene::TransitionKind`) | Closed enum; an unknown kind refuses the document until ADR-0162 step 2; registry in step 5 |
+| Output kinds, automation triggers | No registry yet; ADR-0162 step 5 |
+
+A plugin type is registered from its manifest's declarations (name, fields, pins and, for data-only filters, a value-to-uniform mapping; the manifest gains these in ADR-0162 step 3); its code is not loaded, compiled or started until an instance becomes Active. A saved document that names a type nobody registered loads, keeps the item and its settings, shows it as missing and saves it back unchanged.
+
+## Order
+
+The tiers arrive as sandbox, then process, then native (ADR-0162 decision 2). Plugins are installed as add-ons of kind `plugin` (ADR-0145). The `rbs:plugin@1` WIT world and SDK 1.0 get their own ADR before the sandbox loader is built.
 
 ## Open questions
 

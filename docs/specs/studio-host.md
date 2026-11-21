@@ -1,7 +1,7 @@
 # Spec: Studio host
 
 - Status: Draft
-- Owner crate(s): `rbs-studio-host` (today still `crates/rbs-studio-host/src/studio_host.rs` and `studio_host/`; the move of ADR-0159 decision 6 is next)
+- Owner crate(s): `rbs-studio-host` (`crates/rbs-studio-host/src/studio_host.rs` and `studio_host/`, ADR-0159 decisions 6 and 8)
 - Related ADRs: ADR-0041 (control thread), ADR-0044 (control API), ADR-0055 (caught panics), ADR-0156 (shutdown, `ControlOut`), ADR-0158 (diagnostics log), ADR-0159 (this crate)
 
 ## Purpose
@@ -68,6 +68,20 @@ None of its own. The host sends commands to the engine and never runs on a [hot 
 - `slow_a_matroska_master_gets_its_markers_as_chapters` (seam `chapters`).
 - `studio_host::failures::tests::a_kind_is_the_variant_name_without_its_payload`.
 
+## Modules
+
+`studio_host.rs` keeps the `Host` state, `Command` routing and the shared constants; ADR-0159 decision 8 split the rest by concern under `studio_host/`:
+
+| Concern | Modules |
+| --- | --- |
+| Thread and seams | `handle` (`StudioHost`, the control API it serves), `config` (`HostConfig`, test faults), `start`, `control_loop`, `seams`, `failures`, `refusal` |
+| Window interface | `command`, `updates`, `views`, `rows`, `publish_cost` (tests) |
+| Control API | `control_api` (with `control_api/api_*`), `api_answers`, `api_convert` |
+| Outputs | `outputs`, `output_state`, `recording`, `recording_markers`, `stream`, `replay`, `projector`, `on_air`, `cues` |
+| Scenes and sources | `scenes`, `sources`, `source_settings`, `items`, `targets`, `pickers`, `crop`, `held`, `history`, `canvas`, `filters`, `interact`, `stinger`, `text_live`, `text_measure`, `text_resize`, `scene_cache` |
+| Audio and devices | `loudness`, `monitor`, `device_sync`, `sync_measure`, `calibration`, `attributes`, `network`, `protection` |
+| Other | `add_ons`, `obs_import_api`, `control_out`, `log_summary`, `support` (shared conversions), `tests` |
+
 ## Open questions
 
-- The split by concern (ADR-0159 decision 8) adds modules `recording`, `stream`, `scenes`, `sources`, `outputs`, `projector` and `api`. This spec lists them when they land.
+- State structs per concern (ADR-0159 decision 8) are not done yet: every module still works on `Host`'s fields.
