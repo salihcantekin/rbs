@@ -255,13 +255,18 @@ fn push_dep_table(
 fn denied(from: &str, to: &str, dev: bool) -> Option<String> {
     // Before the dev-edge shortcut: no crate may reach every adapter through a
     // dev-dependency on the platform list either (ADR-0160 decision 5).
-    if let Some(why) = deny_platform_user(from, to) {
+    if let Some(why) = deny_platform_user(from, to).or_else(|| deny_host_user(from, to)) {
         return Some(why);
     }
     if !dev {
         return deny(from, to);
     }
     let from_class = class(from);
+    // Before the early return below: the host's tests may name adapters, but never a
+    // root, an app UI crate or a toolkit (ADR-0159 decision 3).
+    if from_class == Some(Class::StudioHost) {
+        return deny_host_dev(from, to);
+    }
     let watched = matches!(
         from_class,
         Some(Class::Core | Class::Helper | Class::Support | Class::Engine)
@@ -304,7 +309,7 @@ fn deny(from: &str, to: &str) -> Option<String> {
     if to == "rbs-log" && !(class(from) == Some(Class::App) || from == "rbs-browser-runner") {
         return Some("only composition roots and the browser helpers use rbs-log".to_owned());
     }
-    if let Some(why) = deny_platform_user(from, to) {
+    if let Some(why) = deny_platform_user(from, to).or_else(|| deny_host_user(from, to)) {
         return Some(why);
     }
     let from_class = class(from)?;
@@ -421,6 +426,7 @@ fn deny(from: &str, to: &str) -> Option<String> {
             "the plugin host reads manifests and does not load libraries or see the engine",
         ),
         Class::Platform => deny_platform(to, to_class),
+        Class::StudioHost => deny_studio_host(to, to_class),
         Class::App | Class::Tool => None,
     }
 }
@@ -433,6 +439,66 @@ fn deny_platform_user(from: &str, to: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+/// Only composition roots use the studio host; its own test edge is exempt
+/// (ADR-0159 decision 3).
+fn deny_host_user(from: &str, to: &str) -> Option<String> {
+    if to == "rbs-studio-host" && from != to && class(from) != Some(Class::App) {
+        Some("only composition roots use the studio host (ADR-0159)".to_owned())
+    } else {
+        None
+    }
+}
+
+/// The studio host (ADR-0159 decision 3): foundation and ports, helpers, engine
+/// crates, the control API, the UI model, settings, user data, add-ons, importers,
+/// the recording model, editor projects and four plain data crates. No adapter,
+/// support crate, control transport, rbs-log, app UI crate, root or toolkit.
+fn deny_studio_host(to: &str, to_class: Option<Class>) -> Option<String> {
+    let allowed = match to_class {
+        Some(
+            Class::Core
+            | Class::Helper
+            | Class::Engine
+            | Class::Control
+            | Class::Ui
+            | Class::Settings
+            | Class::UserData
+            | Class::AddOns
+            | Class::Import
+            | Class::RecordingModel
+            | Class::EditorProject,
+        ) => true,
+        Some(_) => false,
+        None => matches!(to, "serde" | "serde_json" | "toml" | "chrono"),
+    };
+    if allowed {
+        None
+    } else {
+        Some(
+            "the studio host sees no adapter, toolkit or OS binding; adapters come through HostConfig (ADR-0159)"
+                .to_owned(),
+        )
+    }
+}
+
+/// The studio host's dev-dependencies: itself, adapters for tests and what the host
+/// may use, but no composition root, app UI crate or toolkit (ADR-0159 decision 3).
+fn deny_host_dev(from: &str, to: &str) -> Option<String> {
+    let to_class = class(to);
+    if to == from || to_class == Some(Class::Adapter) {
+        return None;
+    }
+    if matches!(to_class, Some(Class::App | Class::AppUi)) || is_ui_toolkit(to) || to == "winit" {
+        return Some(
+            "the studio host's tests link no root, app UI or toolkit (ADR-0159)".to_owned(),
+        );
+    }
+    if to_class.is_some() {
+        return deny_studio_host(to, to_class);
+    }
+    None
 }
 
 /// The platform adapter list (ADR-0160 decision 5): ports, helpers, support crates
@@ -520,7 +586,8 @@ fn deny_engine(from: &str, to: &str, to_class: Option<Class>) -> Option<String> 
             | Class::PluginSdk
             | Class::Diagnostics
             | Class::EditorProject
-            | Class::Platform,
+            | Class::Platform
+            | Class::StudioHost,
         ) => Some("the engine never depends on an adapter, the control API or the UI".to_owned()),
         // Support crates that carry OS bindings stay with their adapters.
         Some(Class::Support)
@@ -578,7 +645,8 @@ fn deny_adapter(from: &str, to: &str, to_class: Option<Class>) -> Option<String>
             | Class::Denoise
             | Class::RecordingModel
             | Class::EditorProject
-            | Class::Platform,
+            | Class::Platform
+            | Class::StudioHost,
         ) => Some("an adapter sees its port, foundation and its support crate".to_owned()),
         // Diagnostics: only rbs-browser-runner gets here (the rbs-log rule in `deny`).
         Some(Class::Core | Class::Helper | Class::Support | Class::Diagnostics) => None,
@@ -673,6 +741,8 @@ enum Class {
     EditorProject,
     /// `rbs-platform`: the built-in adapter list of rbs-app and rbs-cli (ADR-0160).
     Platform,
+    /// `rbs-studio-host`: the studio host, free of toolkits and adapters (ADR-0159).
+    StudioHost,
 }
 
 /// `None` for a crate from outside the workspace. A workspace crate that is missing
@@ -701,6 +771,7 @@ fn class(name: &str) -> Option<Class> {
         "rbs-import-obs" => Class::Import,
         "rbs-app" | "rbs-cli" | "rbs-mcp" => Class::App,
         "rbs-platform" => Class::Platform,
+        "rbs-studio-host" => Class::StudioHost,
         "rbs-plugin-sdk" => Class::PluginSdk,
         "rbs-plugin-host" => Class::Plugin,
         "xtask" => Class::Tool,
@@ -897,6 +968,29 @@ mod tests {
         assert!(denied("rbs-mcp", "rbs-platform", true).is_some());
         assert!(denied("rbs-record", "rbs-platform", true).is_some());
         assert!(denied("rbs-app", "rbs-platform", true).is_none());
+    }
+
+    #[test]
+    fn the_studio_host_sees_no_adapter_or_toolkit() {
+        assert!(deny("rbs-studio-host", "rbs-record").is_none());
+        assert!(deny("rbs-studio-host", "rbs-api").is_none());
+        assert!(deny("rbs-studio-host", "chrono").is_none());
+        assert!(deny("rbs-studio-host", "rbs-mux-matroska").is_some());
+        assert!(deny("rbs-studio-host", "rbs-system-probe").is_some());
+        assert!(deny("rbs-studio-host", "rbs-api-ws").is_some());
+        assert!(deny("rbs-studio-host", "rbs-log").is_some());
+        assert!(deny("rbs-studio-host", "slint").is_some());
+        assert!(deny("rbs-studio-host", "keyring").is_some());
+        // Dev edges: adapters and the self edge are allowed, a toolkit or root is not.
+        assert!(denied("rbs-studio-host", "rbs-mux-matroska", true).is_none());
+        assert!(denied("rbs-studio-host", "rbs-studio-host", true).is_none());
+        assert!(denied("rbs-studio-host", "slint", true).is_some());
+        assert!(denied("rbs-studio-host", "rbs-app", true).is_some());
+        // Only roots use it.
+        assert!(deny("rbs-app", "rbs-studio-host").is_none());
+        assert!(deny("rbs-cli", "rbs-studio-host").is_none());
+        assert!(deny("rbs-record", "rbs-studio-host").is_some());
+        assert!(denied("rbs-ui", "rbs-studio-host", true).is_some());
     }
 
     #[test]
