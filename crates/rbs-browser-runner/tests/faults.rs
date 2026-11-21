@@ -15,8 +15,8 @@ use std::time::{Duration, Instant};
 use rbs_browser_ipc::exit::Cause;
 use rbs_browser_ipc::{Configure, D3dShare, GpuShare, HEARTBEAT_LIMIT, MAX_GPU_TEXTURES};
 use rbs_browser_runner::{
-    FENCE_JUMP, FenceView, HelperChild, PagePicture, Supervisor, spawn_helper,
-    spawn_helper_prepared,
+    FENCE_JUMP, FenceView, HANDOVER_LIMIT, HandoverPoll, HelperChild, PagePicture,
+    SurfaceHandover, Supervisor, spawn_helper, spawn_helper_prepared,
 };
 use rbs_browser_shm::{FrameRing, SlotLayout};
 
@@ -303,4 +303,72 @@ fn a_removed_device_mid_run_falls_back_and_gives_every_lease_back() {
     assert_eq!(sup.exit_cause(), Cause::GpuFallback);
     sup.stop().unwrap();
     assert_no_lease(&view);
+}
+
+/// A handover the test drives: what `poll` answers, and whether `close` ran.
+#[derive(Debug)]
+struct TestHandover(Arc<Mutex<(HandoverPoll, bool)>>);
+
+impl SurfaceHandover for TestHandover {
+    fn poll(&mut self) -> HandoverPoll {
+        self.0.lock().unwrap().0
+    }
+    fn close(&mut self) {
+        self.0.lock().unwrap().1 = true;
+    }
+}
+
+fn spawn_with_handover(state: &Arc<Mutex<(HandoverPoll, bool)>>) -> HelperChild {
+    let fence = Arc::new(AtomicU64::new(DONE));
+    let mut child = spawn_gpu(&[], &fence);
+    child.set_handover(Box::new(TestHandover(Arc::clone(state))));
+    let start = Instant::now();
+    // The deadline starts only once the helper has beaten.
+    until("first heartbeat", || {
+        child.check_heartbeat(Instant::now()) && child.has_beaten()
+    });
+    assert!(start.elapsed() < GUARD);
+    child
+}
+
+/// A helper that never takes the surfaces falls back with `open` exactly
+/// [`HANDOVER_LIMIT`] after the first pass that saw its heartbeat, and the offer is
+/// withdrawn (ADR-0167 decision 3). Times are the test's, not waited for.
+#[test]
+fn a_handover_that_is_never_taken_falls_back_after_its_limit() {
+    let state = Arc::new(Mutex::new((HandoverPoll::Waiting, false)));
+    let mut child = spawn_with_handover(&state);
+    let t0 = Instant::now();
+    let _ = child.take_gpu(t0);
+    let _ = child.take_gpu(t0 + HANDOVER_LIMIT - Duration::from_millis(1));
+    assert!(!child.gpu_failed(), "failed before the limit");
+    assert!(!state.lock().unwrap().1);
+    let _ = child.take_gpu(t0 + HANDOVER_LIMIT);
+    assert!(child.gpu_failed(), "no fallback at the limit");
+    assert!(state.lock().unwrap().1, "the offer was not withdrawn");
+    child.close(Duration::ZERO);
+}
+
+/// A finished handover stops being polled and never fails the page.
+#[test]
+fn a_finished_handover_never_fails_the_page() {
+    let state = Arc::new(Mutex::new((HandoverPoll::Done, false)));
+    let mut child = spawn_with_handover(&state);
+    let t0 = Instant::now();
+    let _ = child.take_gpu(t0);
+    // Even a later "failed" answer is never read again.
+    state.lock().unwrap().0 = HandoverPoll::Failed;
+    let _ = child.take_gpu(t0 + HANDOVER_LIMIT * 2);
+    assert!(!child.gpu_failed());
+    child.close(Duration::ZERO);
+}
+
+/// A handover that fails falls back at once.
+#[test]
+fn a_failed_handover_falls_back_at_once() {
+    let state = Arc::new(Mutex::new((HandoverPoll::Failed, false)));
+    let mut child = spawn_with_handover(&state);
+    let _ = child.take_gpu(Instant::now());
+    assert!(child.gpu_failed());
+    child.close(Duration::ZERO);
 }

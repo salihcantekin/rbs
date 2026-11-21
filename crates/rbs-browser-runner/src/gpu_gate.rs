@@ -8,6 +8,11 @@
 //! late (a game on the same card) still shows every taken picture in turn at the
 //! page rate. A picture that does not finish within [`FENCE_WAIT_FRAMES`] page
 //! frames of being taken, measured on the supervisor's clock, fails the gate.
+//!
+//! On macOS the helper publishes a slot only after its copy completed (ADR-0167
+//! decision 6): the gate runs without a fence ([`GpuGate::fenceless`]), passes each
+//! picture on at once, and checks that the fence word, the helper's claim sequence,
+//! rises with every publish.
 
 use std::time::{Duration, Instant};
 
@@ -61,6 +66,8 @@ pub struct GpuGate {
     newest: u64,
     /// Why the gate failed: `fence` or `import` (ADR-0157 decision 9).
     reason: Option<&'static str>,
+    /// No fence: a published picture's copy has already finished (ADR-0167).
+    fenceless: bool,
 }
 
 impl std::fmt::Debug for GpuGate {
@@ -85,6 +92,18 @@ impl GpuGate {
             limit: Duration::from_secs(1) * FENCE_WAIT_FRAMES / fps.clamp(1, 60),
             newest: 0,
             reason: None,
+            fenceless: false,
+        }
+    }
+
+    /// A gate for a page whose helper publishes only finished copies (macOS,
+    /// ADR-0167 decision 6). `view` gives the failed imports; its fence value is not
+    /// read. A picture passes on its first pass; a fence word (the claim sequence)
+    /// that does not rise above the newest seen fails the gate with `fence`.
+    pub fn fenceless(view: Box<dyn FenceView>, fps: u32) -> Self {
+        Self {
+            fenceless: true,
+            ..Self::new(view, fps)
         }
     }
 
@@ -92,6 +111,17 @@ impl GpuGate {
     pub fn pass(&mut self, ring: &FrameRing, now: Instant) -> GatePass {
         if self.fence.failed_imports() >= IMPORT_FAILURES {
             return self.fail(ring, "import");
+        }
+        if self.fenceless {
+            let Some(new) = ring.take_gpu(&mut self.seen) else {
+                return GatePass::Nothing;
+            };
+            if new.fence <= self.newest {
+                ring.lease_sub(new.slot);
+                return self.fail(ring, "fence");
+            }
+            self.newest = new.fence;
+            return GatePass::Ready(new);
         }
         if self.next.is_none()
             && let Some(new) = ring.take_gpu(&mut self.seen)
@@ -124,6 +154,11 @@ impl GpuGate {
     /// finished. Its lease is the caller's.
     pub fn again(&mut self, ring: &FrameRing) -> Option<GpuPicture> {
         let picture = ring.lease_latest_gpu()?;
+        if self.fenceless {
+            // The same picture again is allowed; a value above the newest seen is a
+            // publish `pass` has not taken yet, which is just as finished.
+            return Some(picture);
+        }
         let completed = self.fence.completed();
         // The same validity rule as [`GpuGate::pass`]: a removed device or an
         // implausible value lets nothing through.
@@ -229,6 +264,62 @@ mod tests {
         let slot = ring.claim_gpu()?;
         ring.publish_gpu(slot, fence);
         Some(slot)
+    }
+
+    fn fenceless() -> (FrameRing, Arc<AtomicU32>, GpuGate, Instant) {
+        let ring = FrameRing::create_with_gpu(2, 2, SlotLayout::Bgra8Premultiplied, 4).unwrap();
+        let failed = Arc::new(AtomicU32::new(0));
+        // A fence that never moves: the fence-less gate must not read it.
+        let view = Imports(Arc::new(AtomicU64::new(0)), Arc::clone(&failed));
+        let gate = GpuGate::fenceless(Box::new(view), FPS);
+        (ring, failed, gate, Instant::now())
+    }
+
+    /// Without a fence a published picture goes out on the first pass with its
+    /// lease, and shown again it is leased once more (ADR-0167 decision 6).
+    #[test]
+    fn a_fenceless_gate_passes_each_picture_at_once() {
+        let (ring, _, mut gate, t0) = fenceless();
+        assert_eq!(gate.pass(&ring, t0), GatePass::Nothing);
+        let slot = publish(&ring, 1).unwrap();
+        let GatePass::Ready(p) = gate.pass(&ring, t0) else {
+            panic!("not passed at once")
+        };
+        assert_eq!((p.slot, p.fence), (slot, 1));
+        assert_eq!(ring.lease(slot), 1);
+        assert_eq!(gate.pass(&ring, t0), GatePass::Nothing, "taken once");
+        // Long after, still no timeout: nothing waits.
+        assert_eq!(gate.pass(&ring, t0 + FRAME * 1_000), GatePass::Nothing);
+        let again = gate.again(&ring).unwrap();
+        assert_eq!(again.slot, slot);
+        assert_eq!(ring.lease(slot), 2);
+        let second = publish(&ring, 2).unwrap();
+        assert!(matches!(gate.pass(&ring, t0), GatePass::Ready(p) if p.slot == second));
+    }
+
+    /// A claim sequence that does not rise fails the gate with `fence`.
+    #[test]
+    fn a_fenceless_gate_fails_on_a_sequence_that_does_not_rise() {
+        let (ring, _, mut gate, t0) = fenceless();
+        publish(&ring, 5).unwrap();
+        let GatePass::Ready(p) = gate.pass(&ring, t0) else {
+            panic!()
+        };
+        ring.lease_sub(p.slot);
+        let slot = publish(&ring, 5).unwrap();
+        assert_eq!(gate.pass(&ring, t0), GatePass::Failed);
+        assert_eq!(gate.reason(), Some("fence"));
+        assert_eq!(ring.lease(slot), 0, "the lease is given back");
+    }
+
+    /// Failed imports still fall a fence-less page back with `import`.
+    #[test]
+    fn a_fenceless_gate_keeps_the_import_fallback() {
+        let (ring, failed, mut gate, t0) = fenceless();
+        failed.store(IMPORT_FAILURES, Ordering::Relaxed);
+        publish(&ring, 1).unwrap();
+        assert_eq!(gate.pass(&ring, t0), GatePass::Failed);
+        assert_eq!(gate.reason(), Some("import"));
     }
 
     #[test]

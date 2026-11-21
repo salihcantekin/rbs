@@ -29,6 +29,30 @@ mod gpu_gate;
 
 pub use gpu_gate::{FENCE_JUMP, FENCE_WAIT_FRAMES, FenceView, GatePass, GpuGate, IMPORT_FAILURES};
 
+/// How long the studio offers a page's surfaces after the helper's first heartbeat
+/// (macOS, ADR-0167 decision 3); then the tree falls back with `open`.
+pub const HANDOVER_LIMIT: Duration = Duration::from_secs(5);
+
+/// Where a surface handover stands (ADR-0167 decision 3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HandoverPoll {
+    /// No valid request yet.
+    Waiting,
+    /// The helper has the surfaces.
+    Done,
+    /// The handover failed.
+    Failed,
+}
+
+/// The studio's side of a page's surface handover, polled on the supervisor's pass.
+/// Implementations never wait (zero-timeout calls only).
+pub trait SurfaceHandover: Send + std::fmt::Debug {
+    /// Answers a valid request if one is queued.
+    fn poll(&mut self) -> HandoverPoll;
+    /// Withdraws the offer (deadline or stop).
+    fn close(&mut self);
+}
+
 /// A running (or exited) helper as the studio sees it.
 #[derive(Debug)]
 pub struct HelperChild {
@@ -44,6 +68,10 @@ pub struct HelperChild {
     gpu_failed: bool,
     /// `Configure` carried a GPU block.
     gpu_requested: bool,
+    /// The surfaces still on offer (macOS), and the offer's deadline once the helper
+    /// has beaten.
+    handover: Option<Box<dyn SurfaceHandover>>,
+    handover_deadline: Option<Instant>,
     /// The page's sound section, when the studio asked for sound.
     sound: Option<SoundRing>,
     sound_scratch: Vec<f32>,
@@ -94,6 +122,45 @@ impl HelperChild {
         self.gate = Some(GpuGate::new(fence, fps));
     }
 
+    /// Gates this page's pictures without a fence: the helper publishes finished
+    /// copies only (macOS, ADR-0167 decision 6). `view` gives the failed imports.
+    pub fn set_fenceless_gate(&mut self, view: Box<dyn FenceView>, fps: u32) {
+        self.gate = Some(GpuGate::fenceless(view, fps));
+    }
+
+    /// Offers the page's surfaces through `handover` until the helper takes them or
+    /// [`HANDOVER_LIMIT`] after its first heartbeat (ADR-0167 decision 3).
+    pub fn set_handover(&mut self, handover: Box<dyn SurfaceHandover>) {
+        self.handover = Some(handover);
+        self.handover_deadline = None;
+    }
+
+    /// Polls the surface handover. `false` once it failed or ran out of time: the GPU
+    /// path ends with reason `open`. Never waits.
+    fn poll_handover(&mut self, now: Instant) -> bool {
+        let Some(handover) = self.handover.as_mut() else {
+            return true;
+        };
+        match handover.poll() {
+            HandoverPoll::Done => {
+                self.handover = None;
+                return true;
+            }
+            HandoverPoll::Failed => {}
+            HandoverPoll::Waiting => {
+                if self.handover_deadline.is_none() && (self.last_beat != 0 || self.ring.heartbeat() != 0) {
+                    self.handover_deadline = Some(now + HANDOVER_LIMIT);
+                }
+                if self.handover_deadline.is_none_or(|at| now < at) {
+                    return true;
+                }
+                handover.close();
+            }
+        }
+        self.handover = None;
+        false
+    }
+
     /// True when `Configure` carried a GPU block (the helper copies into studio
     /// textures), whether or not a gate was set.
     pub fn gpu_requested(&self) -> bool {
@@ -113,6 +180,17 @@ impl HelperChild {
     /// A GPU picture whose copy has finished, with its lease held for the caller.
     /// Does not copy pixels. Supervisor thread only; never waits.
     pub fn take_gpu(&mut self, now: Instant) -> Option<rbs_browser_shm::GpuPicture> {
+        if !self.poll_handover(now) {
+            if let Some(gate) = self.gate.as_mut() {
+                gate.release(&self.ring);
+            }
+            self.gpu_failed = true;
+            rbs_core::warn!(
+                Area::Browser,
+                "browser page falls back to shared memory: open"
+            );
+            return None;
+        }
         let gate = self.gate.as_mut()?;
         match gate.pass(&self.ring, now) {
             GatePass::Ready(picture) => {
@@ -379,6 +457,8 @@ pub fn spawn_helper_prepared(
     let reader = ring.reader();
     Ok(HelperChild {
         gate: None,
+        handover: None,
+        handover_deadline: None,
         gpu_failed: false,
         gpu_requested: configure.gpu.is_some(),
         child: Some(child),
