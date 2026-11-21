@@ -111,10 +111,6 @@ paths! {
     SetMasterMuted => Translates(&["canvas.set_master_muted"]),
     SetLoudnessShown => Translates(&["loudness.set_enabled"]),
     SetLoudnessSettings => Translates(&["settings.set"]),
-    SetSourceMonitor => Pending(&["source.set_monitor"]),
-    SetMonitorSolo => Pending(&["monitor.set_solo"]),
-    SetMonitorDevice => Pending(&["monitor.set_device"]),
-    SetMonitorVolume => Pending(&["monitor.set_volume"]),
     ListMonitorDevices => Pending(&["monitor.devices"]),
     SetSourceMixerHidden => Translates(&["source.set_mixer_hidden"]),
     // no voice chain method
@@ -265,7 +261,7 @@ mod tests {
     /// which must pick its method from host state may raise `TRANSLATES` by as many
     /// as `PENDING` falls; any other rise needs the owner's written approval.
     const TRANSLATES: usize = 22;
-    const PENDING: usize = 51;
+    const PENDING: usize = 47;
     const CONTRACT: usize = 10;
     const MISSING: usize = 20;
     const VIEW: usize = 13;

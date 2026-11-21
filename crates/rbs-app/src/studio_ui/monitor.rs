@@ -8,7 +8,7 @@
 
 use rbs_api::types as api;
 use rbs_app::studio_host::{Command, Update};
-use rbs_scene::model::{SourceId, SourceMonitor};
+use rbs_scene::model::SourceMonitor;
 use rbs_ui::fader;
 use slint::Model;
 
@@ -24,11 +24,11 @@ pub fn mode_code(m: SourceMonitor) -> i32 {
     }
 }
 
-fn mode_of(code: i32) -> Option<SourceMonitor> {
+fn mode_of(code: i32) -> Option<api::MonitorMode> {
     match code {
-        0 => Some(SourceMonitor::Off),
-        1 => Some(SourceMonitor::Also),
-        2 => Some(SourceMonitor::Only),
+        0 => Some(api::MonitorMode::Off),
+        1 => Some(api::MonitorMode::Also),
+        2 => Some(api::MonitorMode::Only),
         _ => None,
     }
 }
@@ -237,10 +237,12 @@ impl StudioUi {
         let Some(monitor) = mode_of(code) else {
             return;
         };
-        self.send(Command::SetSourceMonitor {
-            id: SourceId::from_raw(id as u32),
-            monitor,
-        });
+        self.call(rbs_api::Command::SourceSetMonitor(
+            rbs_api::request::SetSourceMonitor {
+                source: id as u32,
+                monitor,
+            },
+        ));
     }
 
     /// Solos a source on the monitor or ends its solo; other soloed sources stay.
@@ -251,14 +253,18 @@ impl StudioUi {
         if on {
             solo.push(id);
         }
-        self.send(Command::SetMonitorSolo(
-            solo.into_iter().map(SourceId::from_raw).collect(),
+        self.call(rbs_api::Command::MonitorSetSolo(
+            rbs_api::request::SetMonitorSolo { sources: solo },
         ));
     }
 
     /// Ends solo for every source.
     pub fn end_monitor_solo(&mut self) {
-        self.send(Command::SetMonitorSolo(Vec::new()));
+        self.call(rbs_api::Command::MonitorSetSolo(
+            rbs_api::request::SetMonitorSolo {
+                sources: Vec::new(),
+            },
+        ));
     }
 
     /// The words for a fader position while it is dragged, before the host confirms it.
@@ -269,7 +275,11 @@ impl StudioUi {
     /// The monitor volume from a fader position (sent when a drag ends).
     pub fn set_monitor_volume(&mut self, position: f32) {
         self.monitor.drag_text = Some(fader::volume_text(fader::volume_at(position)));
-        self.send(Command::SetMonitorVolume(fader::volume_at(position)));
+        self.call(rbs_api::Command::MonitorSetVolume(
+            rbs_api::request::SetMonitorVolume {
+                volume: fader::volume_at(position),
+            },
+        ));
     }
 
     /// Chooses the device at `index` of the shown list (0: System default).
@@ -282,7 +292,9 @@ impl StudioUi {
                 None => return,
             },
         };
-        self.send(Command::SetMonitorDevice(device));
+        self.call(rbs_api::Command::MonitorSetDevice(
+            rbs_api::request::SetMonitorDevice { device },
+        ));
     }
 
     /// Asks the host for the playback devices (a picker is shown).
@@ -373,8 +385,12 @@ mod tests {
 
     #[test]
     fn mode_codes_round_trip() {
-        for m in [SourceMonitor::Off, SourceMonitor::Also, SourceMonitor::Only] {
-            assert_eq!(mode_of(mode_code(m)), Some(m));
+        for (m, a) in [
+            (SourceMonitor::Off, api::MonitorMode::Off),
+            (SourceMonitor::Also, api::MonitorMode::Also),
+            (SourceMonitor::Only, api::MonitorMode::Only),
+        ] {
+            assert_eq!(mode_of(mode_code(m)), Some(a));
         }
         assert_eq!(mode_of(3), None);
     }

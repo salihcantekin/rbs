@@ -144,20 +144,6 @@ pub enum Command {
         /// dBTP.
         true_peak_limit: f32,
     },
-    /// Whether a source is heard on the monitor (ADR-0097 decision 5). A live control:
-    /// not on the undo stack; the device opens or closes on the host's next round.
-    SetSourceMonitor {
-        /// The source.
-        id: SourceId,
-        /// Off, Only or Also.
-        monitor: SourceMonitor,
-    },
-    /// The sources soloed on the monitor (session state, never saved); empty ends solo.
-    SetMonitorSolo(Vec<SourceId>),
-    /// The monitor device (`None`: System default), saved in `monitor.toml`.
-    SetMonitorDevice(Option<String>),
-    /// The monitor volume, linear from 0 to 1, saved in `monitor.toml`.
-    SetMonitorVolume(f32),
     /// Lists the playback devices ([`Update::MonitorDevices`] answers). Enumerates:
     /// sent only while a device picker is shown (ADR-0097 decision 7).
     ListMonitorDevices,

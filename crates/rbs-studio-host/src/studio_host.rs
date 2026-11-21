@@ -54,7 +54,7 @@ use rbs_scene::model::{
     Border, CanvasId, Crop, DisplayChrome, FilterId, ItemContent, ItemId, ItemStyle, Layout,
     MAX_SCROLL_SPEED, MIN_SCROLL_SPEED, MasterAudio, RecordSeparately, Scene, SceneId, SceneItem,
     SceneScope, Scroll, ScrollDirection, ScrollRepeat, ScrollStart, SettingValue, Settings, Shadow,
-    Shape, Source, SourceAudio, SourceId, SourceMonitor, SourceRegion, VideoAs,
+    Shape, Source, SourceAudio, SourceId, SourceRegion, VideoAs,
 };
 use rbs_scene::{
     AutoLayout, CenterAxis, ChromeFill, FitMode, Removed, SceneError, SceneLevel, Undo,
@@ -698,10 +698,6 @@ impl Host {
             | Command::SetMasterMuted { .. }
             | Command::SetLoudnessShown(..)
             | Command::SetLoudnessSettings { .. }
-            | Command::SetSourceMonitor { .. }
-            | Command::SetMonitorSolo(..)
-            | Command::SetMonitorDevice(..)
-            | Command::SetMonitorVolume(..)
             | Command::ListMonitorDevices => self.canvas_and_mix_command(c, notify),
             Command::AddVoiceChain(..)
             | Command::AddSample { .. }

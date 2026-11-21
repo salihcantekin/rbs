@@ -387,22 +387,32 @@ fn the_ui_commands_drive_the_monitor_and_report_it() {
     assert!(s.available && !s.wanted && !s.playing);
     let mic: SourceId = mic.unwrap();
     assert!(!devices.unwrap().is_empty());
-    host.send(Command::SetSourceMonitor {
-        id: mic,
-        monitor: SourceMonitor::Also,
-    });
+    let api = |call| {
+        host.send(Command::Api {
+            call: Box::new(call),
+            reply: rbs_studio_host::studio_host::ApiReply::Shown,
+        })
+    };
+    let source_monitor = |monitor| {
+        rbs_api::Command::SourceSetMonitor(rbs_api::request::SetSourceMonitor {
+            source: mic.get(),
+            monitor,
+        })
+    };
+    let solo =
+        |sources| rbs_api::Command::MonitorSetSolo(rbs_api::request::SetMonitorSolo { sources });
+    api(source_monitor(rbs_api::types::MonitorMode::Also));
     monitor_until(&updates, |s| s.playing);
     assert!(streams_reach(&audio, 2));
-    host.send(Command::SetMonitorVolume(0.5));
+    api(rbs_api::Command::MonitorSetVolume(
+        rbs_api::request::SetMonitorVolume { volume: 0.5 },
+    ));
     monitor_until(&updates, |s| s.volume == 0.5);
     // Solo keeps the monitor wanted after the source's own monitor goes off.
-    host.send(Command::SetMonitorSolo(vec![mic]));
+    api(solo(vec![mic.get()]));
     monitor_until(&updates, |s| s.solo == [mic.get()]);
-    host.send(Command::SetSourceMonitor {
-        id: mic,
-        monitor: SourceMonitor::Off,
-    });
-    host.send(Command::SetMonitorSolo(Vec::new()));
+    api(source_monitor(rbs_api::types::MonitorMode::Off));
+    api(solo(Vec::new()));
     monitor_until(&updates, |s| !s.wanted && !s.playing && s.solo.is_empty());
     assert!(streams_reach(&audio, 1));
     drop(host);

@@ -705,26 +705,6 @@ impl Host {
                     notify,
                 );
             }
-            Command::SetSourceMonitor { id, monitor } => {
-                let done = self.set_source_monitor(id, monitor);
-                self.answer_live(done, notify);
-            }
-            Command::SetMonitorSolo(sources) => {
-                let raw: Vec<u32> = sources.iter().map(|s| s.get()).collect();
-                if let Err(e) = self.set_monitor_solo(&raw) {
-                    notify(Update::Error(e.text().to_owned()));
-                }
-            }
-            Command::SetMonitorDevice(device) => {
-                if let Err(e) = self.set_monitor_device(device) {
-                    notify(Update::Error(e.text().to_owned()));
-                }
-            }
-            Command::SetMonitorVolume(volume) => {
-                if let Err(e) = self.set_monitor_volume(volume) {
-                    notify(Update::Error(e.text().to_owned()));
-                }
-            }
             Command::ListMonitorDevices => {
                 notify(Update::MonitorDevices(self.api_monitor_devices().devices));
             }
