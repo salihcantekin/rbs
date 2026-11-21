@@ -35,7 +35,7 @@ The Rust types in `rbs_input` are the source of truth; the signatures below are 
 /// A point in the OS desktop space: Windows physical pixels of the virtual screen
 /// (per-monitor DPI aware v2; negative left of or above the primary monitor),
 /// macOS points in the global display space (origin top-left of the main display).
-pub struct DesktopPoint { pub x: f64, pub y: f64 }
+pub struct DesktopPoint { pub x: f64, pub y: f64 }   // DesktopPoint::new(x, y)
 
 #[non_exhaustive] pub enum Button { Left, Right, Middle, Back, Forward }
 
@@ -151,6 +151,8 @@ No variant carries heap data.
 | `input.buttons` | Flag | Button down and up |
 | `input.wheel` | Flag | Wheel |
 | `input.keys` | Flag | Keys (phase 2) |
+
+The keys are the constants `rbs_input::caps::{POINTER, BUTTONS, WHEEL, KEYS}`.
 
 ## Tests
 

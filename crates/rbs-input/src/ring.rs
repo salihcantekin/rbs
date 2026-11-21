@@ -128,6 +128,8 @@ impl EventRing {
     }
 
     /// Consumer, when a subscription takes the ring: forget what an earlier one left.
+    /// A push that raced the previous subscription's end on a full ring can still count
+    /// one drop after this; `dropped` is a diagnostics counter and accepts that.
     pub(crate) fn reset(&self) {
         self.tail
             .store(self.head.load(Ordering::Acquire), Ordering::Release);
@@ -369,6 +371,8 @@ mod tests {
         }
         producer.join().expect("producer thread panicked");
         assert_eq!(got + ring.dropped(), TOTAL);
+        // The final drain alone reads a full ring, whatever the interleaving.
+        assert!(got >= EVENT_RING as u64);
     }
 
     #[test]
