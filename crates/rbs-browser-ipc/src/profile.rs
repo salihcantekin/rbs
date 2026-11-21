@@ -9,6 +9,7 @@
 //! are tested without CEF; the runner supplies the liveness check.
 
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 /// Prefix of a temporary profile directory's name.
 pub const PREFIX: &str = "rbs-browser-";
@@ -42,13 +43,15 @@ fn all_digits(s: &str, radix: u32) -> bool {
 
 /// Temporary profile directories in `dir` left by processes that are gone: the name is
 /// one [`profile_name`] makes, the entry is a real directory (not a link), its owner is
-/// not `own_pid`, and `alive` says the owner no longer runs. `alive` is asked once per
-/// candidate; an owner whose state is unknown must count as alive. A directory that
-/// cannot be read yields nothing.
+/// not `own_pid`, and `alive` says the owner no longer runs. `alive` gets the owner's
+/// pid and the directory's creation time where the OS records one, so a runner can tell
+/// a pid the OS has since given to a process started after the directory (not the
+/// owner). It is asked once per candidate; an owner whose state is unknown must count
+/// as alive. A directory that cannot be read yields nothing.
 pub fn stale_profiles(
     dir: &Path,
     own_pid: u32,
-    mut alive: impl FnMut(u32) -> bool,
+    mut alive: impl FnMut(u32, Option<SystemTime>) -> bool,
 ) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
@@ -63,11 +66,22 @@ pub fn stale_profiles(
         if pid == own_pid || !entry.file_type().is_ok_and(|t| t.is_dir()) {
             continue;
         }
-        if !alive(pid) {
+        let created = entry.metadata().ok().and_then(|m| m.created().ok());
+        if !alive(pid, created) {
             stale.push(entry.path());
         }
     }
     stale
+}
+
+/// Whether a running process that started at `started` can be the owner of a profile
+/// directory created at `created`. The owner made its directory after it started, so a
+/// process that started later only reuses the pid. Unknown times keep the owner.
+pub fn may_own(started: Option<SystemTime>, created: Option<SystemTime>) -> bool {
+    match (started, created) {
+        (Some(started), Some(created)) => started <= created,
+        _ => true,
+    }
 }
 
 #[cfg(test)]
@@ -118,7 +132,7 @@ mod tests {
         )
         .unwrap();
         let mut asked = Vec::new();
-        let mut stale = stale_profiles(&dir, 7, |pid| {
+        let mut stale = stale_profiles(&dir, 7, |pid, _| {
             asked.push(pid);
             pid == 11
         });
@@ -136,8 +150,40 @@ mod tests {
     }
 
     #[test]
+    fn a_process_started_after_the_directory_does_not_own_it() {
+        let t = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000);
+        let later = t + std::time::Duration::from_secs(1);
+        assert!(may_own(Some(t), Some(later)));
+        assert!(may_own(Some(t), Some(t)));
+        assert!(!may_own(Some(later), Some(t)));
+        assert!(may_own(None, Some(t)));
+        assert!(may_own(Some(t), None));
+    }
+
+    #[test]
+    fn a_directory_comes_with_its_creation_time_where_known() {
+        let dir = std::env::temp_dir().join(format!("rbs-ipc-created-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(profile_name(10, 0xab, 0))).unwrap();
+        let mut times = Vec::new();
+        let stale = stale_profiles(&dir, 7, |_, created| {
+            times.push(created);
+            false
+        });
+        assert_eq!(stale.len(), 1);
+        assert_eq!(times.len(), 1);
+        // Linux without statx support and some file systems record no creation time.
+        if let Ok(expected) =
+            std::fs::metadata(dir.join(profile_name(10, 0xab, 0))).and_then(|m| m.created())
+        {
+            assert_eq!(times[0], Some(expected));
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn a_missing_directory_has_no_stale_profiles() {
         let dir = std::env::temp_dir().join(format!("rbs-ipc-no-dir-{}", std::process::id()));
-        assert!(stale_profiles(&dir, 1, |_| false).is_empty());
+        assert!(stale_profiles(&dir, 1, |_, _| false).is_empty());
     }
 }

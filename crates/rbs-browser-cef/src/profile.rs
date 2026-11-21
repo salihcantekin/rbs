@@ -5,6 +5,8 @@
 //! directory. Each browser process sweeps those of dead owners once at start, on a
 //! short-lived thread, so the start does not wait for it.
 
+use std::time::SystemTime;
+
 use rbs_browser_ipc::profile::stale_profiles;
 
 /// Starts the one-shot sweep of stale temporary profiles. A failure to remove one is
@@ -22,12 +24,15 @@ pub fn sweep_stale_in_background() {
         });
 }
 
-/// Whether process `pid` still runs. Unknown counts as alive.
+/// Whether process `pid` still runs and may be the owner of a directory created at
+/// `created` (a pid the OS gave to a later process is not). Unknown counts as alive.
 #[cfg(windows)]
-fn process_alive(pid: u32) -> bool {
-    use windows::Win32::Foundation::{CloseHandle, ERROR_INVALID_PARAMETER, STILL_ACTIVE};
+fn process_alive(pid: u32, created: Option<SystemTime>) -> bool {
+    use windows::Win32::Foundation::{
+        CloseHandle, ERROR_INVALID_PARAMETER, FILETIME, STILL_ACTIVE,
+    };
     use windows::Win32::System::Threading::{
-        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        GetExitCodeProcess, GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
     };
     // SAFETY: OpenProcess has no preconditions; the handle is closed below.
     let process = match unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) } {
@@ -40,14 +45,36 @@ fn process_alive(pid: u32) -> bool {
     let mut code = 0_u32;
     // SAFETY: `process` is a valid handle and `code` a valid out pointer.
     let read = unsafe { GetExitCodeProcess(process, &mut code) }.is_ok();
+    let mut times = [FILETIME::default(); 4];
+    let [start, exit, kernel, user] = &mut times;
+    // SAFETY: `process` is a valid handle opened with query rights; the four out
+    // pointers are distinct valid locals.
+    let started = unsafe { GetProcessTimes(process, start, exit, kernel, user) }
+        .is_ok()
+        .then(|| filetime_to_system(*start))
+        .flatten();
     // SAFETY: `process` was opened above and is not used after this.
     let _ = unsafe { CloseHandle(process) };
-    !read || code == STILL_ACTIVE.0 as u32
+    let running = !read || code == STILL_ACTIVE.0 as u32;
+    running && rbs_browser_ipc::profile::may_own(started, created)
 }
 
-/// Whether process `pid` still runs. Unknown counts as alive.
+/// A FILETIME (100 ns ticks since 1601-01-01 UTC) as a `SystemTime`.
+#[cfg(windows)]
+fn filetime_to_system(t: windows::Win32::Foundation::FILETIME) -> Option<SystemTime> {
+    /// 100 ns ticks from 1601-01-01 to 1970-01-01.
+    const UNIX_EPOCH_TICKS: u64 = 116_444_736_000_000_000;
+    let ticks = (u64::from(t.dwHighDateTime) << 32) | u64::from(t.dwLowDateTime);
+    let since_unix = ticks.checked_sub(UNIX_EPOCH_TICKS)?;
+    SystemTime::UNIX_EPOCH.checked_add(std::time::Duration::from_nanos(
+        since_unix.checked_mul(100)?,
+    ))
+}
+
+/// Whether process `pid` still runs. Unknown counts as alive. Unix reports no portable
+/// process start time, so a reused pid keeps its directory until the pid is free.
 #[cfg(unix)]
-fn process_alive(pid: u32) -> bool {
+fn process_alive(pid: u32, _created: Option<SystemTime>) -> bool {
     let Ok(pid) = libc::pid_t::try_from(pid) else {
         return true;
     };
