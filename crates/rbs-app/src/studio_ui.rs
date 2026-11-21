@@ -88,6 +88,7 @@ mod item_calls;
 mod library_ops;
 mod output_calls;
 mod scene_calls;
+mod settings_mirror;
 mod source_calls;
 mod text_calls;
 pub use library_ops::EntryWrite;
@@ -5739,11 +5740,18 @@ impl StudioUi {
             self.edit.reset();
             self.vedit.reset();
         }
-        if self.monitor_update(&u) || self.loudness_update(&u) {
+        if self.monitor_update(&u) || self.loudness_update(&u) || self.mirror_update(&u) {
             return out;
         }
         match u {
-            Update::Monitor(_) | Update::Loudness(_) => {} // taken above
+            // Taken above.
+            Update::Monitor(_)
+            | Update::Loudness(_)
+            | Update::Profile(_)
+            | Update::StreamProfile(_)
+            | Update::SeparateFiles(_)
+            | Update::VerticalProfile(_)
+            | Update::VerticalStreamProfile(_) => {}
             Update::ApiAnswer { ticket, result } => self.api_answer(ticket, result, &mut out),
             Update::TBarReset => self.tbar_resets = self.tbar_resets.wrapping_add(1),
             Update::AddOns(list) => self.add_ons = list.add_ons,
@@ -6204,23 +6212,6 @@ impl StudioUi {
                 // A control API client changed the choice: show and save it.
                 self.set_vertical_flags(flags);
             }
-            Update::Profile(p) => {
-                // A control API client changed the settings: show and save them.
-                self.profile = p;
-                self.folder_serial += 1;
-                self.save_profile();
-            }
-            Update::StreamProfile(p) => {
-                // A control API client changed the stream settings: show and save
-                // them. It cannot change the server or the key, so a server being
-                // typed here, or a key saved meanwhile, stays.
-                self.stream.reconnect = p.reconnect;
-                self.stream.srt_latency_ms = p.srt_latency_ms;
-                self.stream.encoding = p.encoding;
-                self.stream.auto_record = p.auto_record;
-                self.stream.hold_picture = p.hold_picture;
-                self.save_stream();
-            }
             Update::StreamDestinations(d) => {
                 // `stream.destination.set_enabled`. A section this version must not
                 // overwrite (written by a newer RBS) stays; the control thread gets
@@ -6258,7 +6249,10 @@ impl StudioUi {
             }
             Update::VirtualCamera(status) => out.camera = Some(status),
             // The replay buffer's page in the shell takes these (ADR-0088).
-            Update::Replay(_) | Update::ReplaySaved(_) => out.replay.push(u),
+            Update::Replay(_)
+            | Update::ReplaySaved(_)
+            | Update::ReplaySetup(_)
+            | Update::SwapAfterTransition(_) => out.shell.push(u),
             Update::Stats(stats) => {
                 let rows: Vec<StatRow> = stat_lines(&stats)
                     .into_iter()
@@ -7160,8 +7154,9 @@ pub struct Applied {
     pub obs_imported: Option<bool>,
     /// The virtual camera started or stopped sending (`Some(None)`: it does not send).
     pub camera: Option<Option<rbs_app::studio_host::CameraStatus>>,
-    /// Replay buffer updates (ADR-0088), for the shell's replay page.
-    pub replay: Vec<Update>,
+    /// Updates of settings the shell keeps: the replay buffer (ADR-0088) and Swap
+    /// after transition.
+    pub shell: Vec<Update>,
     /// Projector news (ADR-0125): a host id, its picture and its state, for the
     /// shell's projector windows.
     pub projectors: Vec<(
@@ -8748,7 +8743,7 @@ mod tests {
         assert_eq!((c.value.as_str(), c.bad), ("Not connected", true));
     }
 
-    fn ui(name: &str) -> (StudioUi, std::path::PathBuf) {
+    pub(super) fn ui(name: &str) -> (StudioUi, std::path::PathBuf) {
         let d = std::env::temp_dir().join(format!("rbs-app-ui-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();

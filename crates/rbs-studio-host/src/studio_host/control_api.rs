@@ -8,6 +8,7 @@ mod api_collection;
 mod api_item;
 mod api_item2;
 mod api_item3;
+mod api_output_settings;
 mod api_record;
 mod api_scene;
 mod api_settings;

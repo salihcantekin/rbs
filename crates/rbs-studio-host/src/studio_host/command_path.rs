@@ -124,8 +124,7 @@ paths! {
     // becomes Translates (branches on the preview)
     SwitchScene => Translates(&["scene.switch", "canvas.set_preview"]),
     SetStudioMode => Translates(&["canvas.set_preview"]),
-    // no settings.set field
-    SetSwapAfterTransition => Missing,
+    SetSwapAfterTransition => WindowOnly(Mirror),
     SetSourceBox => Pending(&["item.set_box"]),
     // item.set_crop needs gesture
     SetSourceCrop => Contract(&["item.set_crop"]),
@@ -137,14 +136,11 @@ paths! {
     StartVerticalRecording => Contract(&["record.start"]),
     // as StartStream
     StartVerticalStream => Contract(&["stream.start"]),
-    // no settings.set field
-    SetVerticalProfile => Missing,
-    // no settings.set field
-    SetVerticalStreamProfile => Missing,
-    // no settings.set field
-    SetStreamDestinations => Missing,
-    // no settings.set field
-    SetSeparateFiles => Missing,
+    SetVerticalProfile => WindowOnly(Mirror),
+    SetVerticalStreamProfile => WindowOnly(Mirror),
+    // servers and key flags are the local user's; on/off is stream.destination.set_enabled
+    SetStreamDestinations => WindowOnly(LocalOnly),
+    SetSeparateFiles => WindowOnly(Mirror),
     SetVerticalPicture => WindowOnly(View),
     OpenProjector => WindowOnly(View),
     CloseProjector => WindowOnly(View),
@@ -161,8 +157,7 @@ paths! {
     StartVirtualCamera => Contract(&["vcam.start"]),
     StopVirtualCamera => Pending(&["vcam.stop"]),
     SetVirtualCamera => WindowOnly(LocalOnly),
-    // no settings.set field
-    SetReplay => Missing,
+    SetReplay => WindowOnly(Mirror),
     SaveReplay => Pending(&["replay.save"]),
     AddMarker => Translates(&["marker.add"]),
     RemoveMarkers => Translates(&["marker.remove"]),
@@ -198,14 +193,16 @@ mod tests {
     /// ADR-0163 decision 5: these counts may only fall. A step that moves a handler
     /// which must pick its method from host state may raise `TRANSLATES` by as many
     /// as `PENDING` falls; any other rise needs the owner's written approval.
+    /// `LOCAL_ONLY` 9 to 10 and `MIRROR` 3 to 8 are approved by ADR-0164 decision 9
+    /// (owner, 2026-11-21).
     const TRANSLATES: usize = 22;
     const PENDING: usize = 16;
     const CONTRACT: usize = 6;
-    const MISSING: usize = 7;
+    const MISSING: usize = 1;
     const VIEW: usize = 13;
-    const LOCAL_ONLY: usize = 9;
+    const LOCAL_ONLY: usize = 10;
     const PREVIEW: usize = 2;
-    const MIRROR: usize = 3;
+    const MIRROR: usize = 8;
 
     fn count(f: impl Fn(&CommandPath) -> bool) -> usize {
         Command::paths().iter().filter(|(_, p)| f(p)).count()

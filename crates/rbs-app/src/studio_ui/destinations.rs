@@ -398,11 +398,15 @@ impl super::StudioUi {
         self.stream_form_idle() && self.destinations_note.is_empty()
     }
 
-    /// The Use on Go live switch of `id`.
+    /// The Use on Go live switch of `id`: `stream.destination.set_enabled` (ADR-0164
+    /// decision 5). The control thread's `Update::StreamDestinations` shows and saves
+    /// the change, as for any other caller.
     pub fn dest_set_enabled(&mut self, id: i32, on: bool) {
         let Ok(id) = u32::try_from(id) else { return };
-        if self.destinations_editable() && self.destinations.set_enabled(id, on) {
-            self.save_destinations();
+        if self.destinations_editable() && self.destinations.clone().set_enabled(id, on) {
+            self.call(rbs_api::Command::StreamDestinationSetEnabled(
+                rbs_api::request::SetDestinationEnabled { id, enabled: on },
+            ));
         }
     }
 

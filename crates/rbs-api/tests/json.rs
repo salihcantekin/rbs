@@ -640,10 +640,7 @@ fn every_request() -> Vec<Request> {
                 hold_scene: None,
                 hold_sound: None,
             }),
-            loudness: Some(LoudnessSettings {
-                target: -16.0,
-                true_peak_limit: -1.0,
-            }),
+            ..settings::patch_rest()
         })),
         c(Command::EventsSubscribe(Subscribe {
             topics: vec![Topic::RecordState, Topic::AudioLevels],
@@ -823,6 +820,8 @@ fn engine() -> AddOnRef {
 
 #[path = "json/scrolls.rs"]
 mod scrolls;
+#[path = "json/settings.rs"]
+mod settings;
 #[path = "json/transforms.rs"]
 mod transforms;
 /// A scroll that sets every field away from its default.
@@ -1074,16 +1073,14 @@ fn every_result_and_event_type_round_trips() {
     });
     round_trip(&Snapshot {
         seq: seq.clone(),
-        data: Settings {
-            profiles: vec![profile()],
-            canvas: canvas(),
-            stream: Some(stream_settings()),
-            vertical: None,
-            loudness: Some(LoudnessSettings {
+        data: settings::plain(
+            vec![profile()],
+            Some(stream_settings()),
+            Some(LoudnessSettings {
                 target: -14.0,
                 true_peak_limit: -1.0,
             }),
-        },
+        ),
     });
     round_trip(&StreamStarted {
         video_encoder: "VideoToolbox".into(),
@@ -1126,13 +1123,7 @@ fn every_result_and_event_type_round_trips() {
             recorded_ms: 0,
         }),
         EventPayload::CanvasChanged(canvas()),
-        EventPayload::SettingsChanged(Settings {
-            profiles: vec![],
-            canvas: canvas(),
-            stream: None,
-            vertical: None,
-            loudness: None,
-        }),
+        EventPayload::SettingsChanged(settings::plain(vec![], None, None)),
         EventPayload::AudioLevels(vec![SourceLevels {
             source: 2,
             peak_db: vec![-6.0, -7.5],
@@ -1840,14 +1831,7 @@ fn stream_state_has_a_stable_wire_form() {
 fn stream_settings_are_a_minor_addition() {
     let old: SettingsPatch = serde_json::from_value(json!({"canvas": null})).unwrap();
     assert_eq!(old.stream, None);
-    let text = serde_json::to_value(Settings {
-        profiles: vec![],
-        canvas: canvas(),
-        stream: None,
-        vertical: None,
-        loudness: None,
-    })
-    .unwrap();
+    let text = serde_json::to_value(settings::plain(vec![], None, None)).unwrap();
     assert!(text.get("stream").is_none(), "{text}");
     let got = serde_json::to_value(stream_settings()).unwrap();
     assert!(got.get("server").is_none(), "{got}");

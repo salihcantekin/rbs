@@ -1407,4 +1407,5 @@ impl rbs_mux::Muxer for FakeMuxer {
     }
 }
 
+mod output_settings;
 mod part_two;

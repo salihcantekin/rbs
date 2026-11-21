@@ -9,12 +9,11 @@ use serde::{Deserialize, Serialize};
 use crate::event::Topic;
 use crate::scope::{Scope, ScopeSet};
 use crate::types::{
-    CalibrationState, Canvas, CanvasRecordState, CanvasStreamState, CaptureTarget, EstimateAnswer,
+    CalibrationState, CanvasRecordState, CanvasStreamState, CaptureTarget, EstimateAnswer,
     EstimateSummary, FilterTypeList, Library, LoudnessStatus, MonitorDeviceList, MonitorMode,
     MonitorStatus, OutputCanvas, OutputKind, OutputProfile, OutputTarget, OutputsResult,
-    ProtectionStatus, RecordState, RecordingProfile, ReplayStatus, SceneList, SeqMap, Settings,
-    SkippedTrack, Snapshot, SourceInfo, SourceKind, StreamSettingsPatch, StreamState, StudioInfo,
-    VcamStatus,
+    ProtectionStatus, RecordState, ReplayStatus, SceneList, SeqMap, Settings, SkippedTrack,
+    Snapshot, SourceInfo, SourceKind, StreamState, StudioInfo, VcamStatus,
 };
 use crate::types::{DeviceKey, DeviceSyncEntry};
 use crate::types::{ItemScroll, ItemStyle};
@@ -22,11 +21,13 @@ use crate::types::{ItemScroll, ItemStyle};
 mod add_source;
 mod item_edits;
 mod methods;
+mod settings_patch;
 mod transform;
 mod wire;
 pub use add_source::AddSource;
 pub use item_edits::*;
 pub use methods::METHODS;
+pub use settings_patch::SettingsPatch;
 pub use transform::*;
 use wire::WireRequest;
 
@@ -1825,23 +1826,6 @@ pub struct EntryRef {
     pub id: String,
 }
 
-/// `settings.set`: the sections given replace the current ones.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SettingsPatch {
-    /// New recording profiles.
-    #[serde(default)]
-    pub profiles: Option<Vec<RecordingProfile>>,
-    /// A new canvas; the studio restarts with it. Refused while recording.
-    #[serde(default)]
-    pub canvas: Option<Canvas>,
-    /// New stream settings (protocol 1.2). Refused while a stream runs.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stream: Option<StreamSettingsPatch>,
-    /// The loudness meter's target and true-peak limit (protocol 1.59).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub loudness: Option<crate::types::LoudnessSettings>,
-}
-
 /// `events.subscribe`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Subscribe {
@@ -2325,11 +2309,18 @@ impl Command {
             Command::AddonInstall(_) | Command::AddonUpdate(_) => true,
             Command::RecordStartToFile(p) => !is_local_path(&p.path),
             Command::CollectionSetStingerFile(p) => !is_local_path(&p.path),
-            Command::SettingsSet(p) => p.profiles.as_ref().is_some_and(|profiles| {
-                profiles
+            Command::SettingsSet(p) => {
+                let far = |f: &str| !f.is_empty() && !is_local_path(f);
+                p.profiles
                     .iter()
-                    .any(|r| !r.folder.is_empty() && !is_local_path(&r.folder))
-            }),
+                    .flatten()
+                    .chain(p.vertical_profile.iter().flatten().map(|b| &**b))
+                    .any(|r| far(&r.folder))
+                    || p.replay
+                        .as_ref()
+                        .and_then(|r| r.folder.as_deref())
+                        .is_some_and(far)
+            }
             _ => false,
         }
     }
