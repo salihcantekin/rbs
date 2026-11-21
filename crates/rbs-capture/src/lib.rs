@@ -20,11 +20,13 @@ pub mod edge {
 mod error;
 mod framebuffer;
 pub mod handoff;
+mod mapping;
 mod session;
 mod target;
 
 pub use error::{CaptureError, ErrorDomain};
 pub use framebuffer::{DisplayReading, DisplayScale, FramebufferChoice, choose_framebuffer};
+pub use mapping::{Cover, MappingRegistration, MappingSwitch, PictureMapping};
 pub use session::{
     CaptureChange, CaptureFactory, CaptureRequest, CaptureSession, CaptureStats, GpuDeviceId,
     GpuImportTarget, SyncKind,

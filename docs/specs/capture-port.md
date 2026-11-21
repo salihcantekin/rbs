@@ -161,7 +161,8 @@ pub struct CaptureRequest {
     pub size: Option<Size>,                // cameras only
     pub cursor: bool,
     pub clock: Arc<dyn Clock>,             // master clock (ADR-0004)
-}   // + new / with_* builders
+    pub mapping: Option<MappingSwitch>,    // host's switch for the picture mapping (ADR-0165); None by default
+}   // + new / with_* builders (with_mapping)
 
 /// Where native frames are imported; filled in by rbs-gpu (P4).
 #[non_exhaustive]
@@ -193,6 +194,7 @@ pub trait CaptureSession: Send {
     fn stats(&self) -> CaptureStats;                       // delivered, dropped, cpu_copied
     fn reconfigure(&mut self, change: CaptureChange) -> Result<(), CaptureError>; // Cursor | FrameRate; default Unsupported
     fn target_to_store(&self) -> Option<TargetId>;         // id to store from now on; default None
+    fn latest_mapping(&self) -> Option<PictureMapping>;    // REAL-TIME; mapping of the newest frame; default None
 }
 ```
 
@@ -207,6 +209,38 @@ Dropping a session releases everything it holds, including what `start` acquired
 - Within one process the adapter keeps accepting every id that ever named the choice, so sessions opened from an older stored id keep working until the process ends.
 - Adapters whose ids never change keep the default `None`. Adding the method with a default is a minor version.
 - Cost: a scene that stores such ids is rewritten after starts (a dirty project). The alternative, a stable id with the token kept by the adapter, needs adapter-owned persistence, which the port does not have. No host calls the method yet; wiring it into the scene binder is open.
+
+### Picture mapping
+
+ADR-0165 decision 5. A pointer filter turns a desktop point from the input port into a pixel of the captured picture with the mapping of the frame it draws on. Types in `rbs_capture` (`mapping.rs`):
+
+```rust
+#[non_exhaustive] pub enum Cover { Unknown, Clear, Covered }
+
+#[non_exhaustive] #[derive(Clone, Copy)]
+pub struct PictureMapping {
+    pub frame_time: Timestamp,   // the VideoFrame timestamp this mapping belongs to
+    pub origin: [f64; 2],        // desktop point of the picture's top-left pixel corner
+    pub scale: [f64; 2],         // picture pixels per desktop unit
+    pub picture: Size,           // the picture's size in pixels
+    pub cover: Cover,            // window captures: the covered test at the adapter's last check
+}   // new(frame_time, origin, scale, picture), with_cover, to_picture(desktop) -> [f64; 2], contains(desktop)
+
+#[derive(Clone)] pub struct MappingSwitch;   // new, is_on, set(bool), register(callback) -> MappingRegistration
+pub struct MappingRegistration;               // Drop unregisters
+```
+
+Desktop units are the input port's (Windows physical pixels of the virtual screen, macOS global points); `picture = (desktop - origin) * scale`. ADR-0165 names the window frame and the buffer placement (offset and fit scaling inside the output buffer) as parts of the mapping; both are affine, so the adapter folds them into `origin` and `scale` and the type needs no field for them.
+
+Rules:
+
+1. **Opt-in.** The host owns one `MappingSwitch` per source entry, kept across reopened sessions, and passes it with `CaptureRequest::with_mapping`. It sets it on the control thread to "any pointer filter of this source is scheduled". Off by default: an adapter does no mapping work (no thread, no OS query, no window event hook) while it is off or missing (P13).
+2. **Registration.** A session whose adapter declares `capture.mapping` for the target's kind registers one callback on the switch on the control path (`start`), and holds the returned `MappingRegistration` until `stop` or drop. `register` calls the callback once with the current state under the switch's lock, and `set` calls it on each change under the same lock, so no flip is lost between reading the state and registering; the callback starts or stops the adapter's mapping thread there. A later registration replaces an earlier one; dropping an old registration never removes a newer one. The callback runs under the switch's lock, so it only signals (stores an atomic, unparks or posts to the mapping thread): it never joins a thread, never waits on a lock the adapter holds while it drops a registration, never calls back into the switch and never panics, and it holds only weak references to adapter state. The adapter joins its mapping thread itself, after dropping the registration. A registration that replaces another first calls the old callback with `false`. `stop` and drop end all mapping work, whatever the switch's state.
+3. **Real-time read.** `latest_mapping` follows the `latest_frame` rules below (no allocation, lock, wait, I/O or logging). It returns the mapping of the newest frame `latest_frame` returned, with that frame's `timestamp` as `frame_time`, so a reader can tell when the two do not match; `None` while the switch is off, before the first mapped frame (an adapter that starts its mapping work when the switch turns on maps within 10 frames; the conformance check allows that), after `stop`, and for kinds outside `capture.mapping` (the default method).
+4. **Covered test.** `cover` answers for the pointer position at the adapter's last check, not for each click (macOS: the existing 50 ms window-list poll; Windows: a 50 ms `GetCursorPos` poll that skips while the pointer stands still, plus `EVENT_OBJECT_LOCATIONCHANGE` and `EVENT_SYSTEM_FOREGROUND` for the target). Displays report `Unknown`.
+5. **DPI (Windows).** Monitor rectangles and window frames are read per-monitor DPI aware v2, the same as the input adapter's thread, so the two coordinate sets match.
+
+Implementation status: the types, the trait method, the conformance check and the reference adapter (display at `DISPLAY_ORIGIN` left of the primary, window at `WINDOW_ORIGIN`, scale 1, the window `Clear`). Windows Graphics Capture and ScreenCaptureKit do not declare `capture.mapping` yet (a later PR, built and checked on a device).
 
 `latest_frame` rules (real-time, called by the render thread on every tick):
 
@@ -242,6 +276,7 @@ Constants in `rbs_capture::caps`.
 | `capture.pixel_formats` | Set of `PixelFormat::as_str` names | Formats the adapter can deliver natively |
 | `capture.memory` | Set of `MemoryKind::as_str` names | Memory kinds frames can be delivered in |
 | `capture.cursor` | Flag | Cursor can be composited by the OS |
+| `capture.mapping` | Set of kinds | Kinds for which `latest_mapping` gives a desktop to picture mapping while the request's switch is on (ADR-0165) |
 | `capture.frame_rate.max` | Int (frames per second) | Highest rate the adapter can deliver |
 | `capture.frames.in_flight` | Int | Frames the consumer may hold at once |
 | `capture.hdr` | Flag | Can deliver HDR (`rgba16f`, PQ or scRGB) for HDR displays |
@@ -387,9 +422,9 @@ The render tick pulls with `latest_frame`; adapters do not push frames into the 
 - `options.process_threads`: the process's threads, listed by the suite itself rather than reported by the adapter. Only meaningful when the test binary runs one test at a time; the reference adapter's conformance test is alone in its binary for that reason. `process_threads` returns thread ids (`conformance::process_thread_ids` reads `/proc/self/task`). The suite compares ids, not counts: threads that existed before `open` may end meanwhile, and a thread that did not exist before fails the check unless the kernel marks it exiting (`PF_EXITING` in `/proc/self/task/<id>/stat`). A joined thread can still be listed for a moment, because the kernel wakes the joiner before it removes the exiting task; counting it made the PipeWire conformance test fail on CI now and then, in both directions (an earlier session's exiting thread in the baseline, or the session's own joined thread after `drop`). No waiting is involved; checked over 20,000 spawn-and-join rounds on Linux 6.18, every joined thread still listed was marked exiting.
 - `options.strict`: every skip is a failure. Self-hosted hardware runners use it.
 
-Checks: probe returns within 1 s (the fastest of up to three calls, so one-time process costs do not count; a hang guard; the 50 ms probe budget is a performance budget, not a pass/fail check, and is an open measurement item in [performance budgets](performance-budgets.md) until a probe benchmark exists, ADR-0032) and never panics; `enumerate` agrees with `capture.target.enumerate` and returns only the asked kind; `pick` returns `Unsupported` when not declared (declared pickers need a user and are skipped); unknown id returns `TargetNotFound`; GPU memory kinds are refused without a matching import target; every declared pixel format and memory kind is delivered, and request order decides both; then for each enumerable target: no frames and no resources in Standby, an id from `target_to_store` opens, timestamps and sequence numbers per invariants 2 and 3, latest wins after a pause, no allocation or free in `latest_frame` plus drop, frames in flight, resize, stop, restart, resources back to baseline after stop and after drop, and finally target loss.
+Checks: probe returns within 1 s (the fastest of up to three calls, so one-time process costs do not count; a hang guard; the 50 ms probe budget is a performance budget, not a pass/fail check, and is an open measurement item in [performance budgets](performance-budgets.md) until a probe benchmark exists, ADR-0032) and never panics; `enumerate` agrees with `capture.target.enumerate` and returns only the asked kind; `pick` returns `Unsupported` when not declared (declared pickers need a user and are skipped); unknown id returns `TargetNotFound`; GPU memory kinds are refused without a matching import target; every declared pixel format and memory kind is delivered, and request order decides both; then for each enumerable target: no frames and no resources in Standby, an id from `target_to_store` opens, timestamps and sequence numbers per invariants 2 and 3, latest wins after a pause, no allocation or free in `latest_frame` plus drop, frames in flight, resize, stop, restart, resources back to baseline after stop and after drop; the picture mapping (none while the switch is off, the newest frame's time and size while it is on for a kind in `capture.mapping`, none for other kinds, none after it goes off or after `stop`, and a mapping again for a session opened while the switch is already on; the check holds one frame at a time); and finally target loss.
 
-`rbs-capture-test` runs the suite strictly against the reference adapter and against wrappers that each break one invariant (allocates per frame, frames before start, delivers after stop, hides drops, lags one frame behind the newest, keeps a three-frame queue, leaks a frame on drop, ignores target loss, stale format after resize) to prove each check fails.
+`rbs-capture-test` runs the suite strictly against the reference adapter and against wrappers that each break one invariant (allocates per frame, frames before start, delivers after stop, hides drops, lags one frame behind the newest, keeps a three-frame queue, leaks a frame on drop, ignores target loss, stale format after resize, keeps a mapping after the switch went off, tags the mapping with another frame's time) to prove each check fails.
 
 ## Adapters planned
 

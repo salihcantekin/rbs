@@ -23,8 +23,9 @@ use std::time::Duration;
 use rbs_capture::conformance::TestHooks;
 use rbs_capture::{
     CameraMode, CaptureError, CaptureFactory, CaptureRequest, CaptureSession, CaptureStats,
-    CaptureTarget, ErrorDomain, Permission, REGION_GRAB_LONG, RegionGrab, THUMBNAIL_MAX, TargetId,
-    TargetKind, Thumbnail, caps,
+    CaptureTarget, Cover, ErrorDomain, MappingRegistration, MappingSwitch, Permission,
+    PictureMapping, REGION_GRAB_LONG, RegionGrab, THUMBNAIL_MAX, TargetId, TargetKind, Thumbnail,
+    caps,
 };
 use rbs_core::capability::{CapabilitySet, CapabilityValue};
 use rbs_core::media::{
@@ -55,6 +56,12 @@ const SCREEN_FORMATS: [PixelFormat; 2] = [PixelFormat::Bgra8, PixelFormat::Nv12]
 /// Largest size a window can be resized to; ring buffers are allocated for it so a
 /// resize never allocates on the render thread.
 const WINDOW_MAX: (u32, u32) = (1280, 720);
+
+/// Desktop point of the test display's top-left corner (ADR-0165 decision 5): left of
+/// a primary monitor, as on a real two-monitor desktop.
+pub const DISPLAY_ORIGIN: [f64; 2] = [-1280.0, 0.0];
+/// Desktop point of the test window's top-left corner. The window is never covered.
+pub const WINDOW_ORIGIN: [f64; 2] = [100.0, 50.0];
 
 /// The adapter's own source clock, as a function of master time: offset by
 /// [`SOURCE_OFFSET`] and running fast by [`SOURCE_DRIFT_PPM`].
@@ -288,6 +295,10 @@ impl AdapterFactory for TestCaptureFactory {
             )
             .with(caps::MEMORY, set(&[MemoryKind::System.as_str()]))
             .with(caps::CURSOR, CapabilityValue::Flag(false))
+            .with(
+                caps::MAPPING,
+                set(&[TargetKind::Display.as_str(), TargetKind::Window.as_str()]),
+            )
             .with(caps::FRAME_RATE_MAX, CapabilityValue::Int(60))
             .with(
                 caps::FRAMES_IN_FLIGHT,
@@ -421,7 +432,19 @@ impl CaptureFactory for TestCaptureFactory {
             TargetKind::Camera => size,
             _ => Size::new(target.max.0, target.max.1),
         };
+        // Only a session given a switch knows its desktop place, so a session without
+        // one does no mapping work per frame (P13).
+        let desktop = match (&request.mapping, target.info.kind) {
+            (Some(_), TargetKind::Display) => Some((DISPLAY_ORIGIN, Cover::Unknown)),
+            (Some(_), TargetKind::Window) => Some((WINDOW_ORIGIN, Cover::Clear)),
+            _ => None,
+        };
         Ok(Box::new(TestSession {
+            switch: desktop.and(request.mapping.clone()),
+            desktop,
+            mapping_on: Arc::new(AtomicBool::new(false)),
+            registration: None,
+            mapping: None,
             format: VideoFormat::new(size, pixel_format, color),
             capacity,
             rate,
@@ -606,6 +629,16 @@ struct Active {
 }
 
 struct TestSession {
+    /// The host's mapping switch, for displays and windows only.
+    switch: Option<MappingSwitch>,
+    /// Where the target sits on the synthetic desktop, and its covered state.
+    desktop: Option<([f64; 2], Cover)>,
+    /// Set by the switch's callback; read once per delivered frame.
+    mapping_on: Arc<AtomicBool>,
+    /// Held while started (ADR-0165 decision 5).
+    registration: Option<MappingRegistration>,
+    /// The mapping of the newest delivered frame.
+    mapping: Option<PictureMapping>,
     format: VideoFormat,
     capacity: Size,
     rate: FrameRate,
@@ -667,6 +700,14 @@ impl CaptureSession for TestSession {
             self.capacity,
             Arc::clone(&self.live),
         ));
+        if let Some(switch) = &self.switch {
+            let on = Arc::downgrade(&self.mapping_on);
+            self.registration = Some(switch.register(move |state| {
+                if let Some(on) = on.upgrade() {
+                    on.store(state, Ordering::Release);
+                }
+            }));
+        }
         self.active = Some(Active {
             cadence: Cadence::frames(origin, self.rate),
             last_index: None,
@@ -678,6 +719,9 @@ impl CaptureSession for TestSession {
     }
 
     fn stop(&mut self) {
+        self.registration = None;
+        self.mapping_on.store(false, Ordering::Release);
+        self.mapping = None;
         if let Some(active) = self.active.take() {
             // The session's two references are `ring` and `owner`; any more are leases
             // of frames still held. Keep such a ring until the session is dropped or
@@ -755,6 +799,13 @@ impl CaptureSession for TestSession {
         let timestamp = mapped.min(now).max(floor);
         self.last_timestamp = Some(timestamp);
         self.stats.delivered += 1;
+        self.mapping = match self.desktop {
+            Some((origin, cover)) if self.mapping_on.load(Ordering::Acquire) => Some(
+                PictureMapping::new(timestamp, origin, [1.0, 1.0], self.format.size)
+                    .with_cover(cover),
+            ),
+            _ => None,
+        };
         Ok(Some(
             VideoFrame::system(timestamp, system, Some(lease))
                 .with_sequence(active.sequence_base + index)
@@ -764,6 +815,11 @@ impl CaptureSession for TestSession {
 
     fn stats(&self) -> CaptureStats {
         self.stats
+    }
+
+    fn latest_mapping(&self) -> Option<PictureMapping> {
+        self.mapping
+            .filter(|_| self.mapping_on.load(Ordering::Acquire))
     }
 }
 
