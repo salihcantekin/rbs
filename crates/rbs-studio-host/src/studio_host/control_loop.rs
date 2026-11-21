@@ -399,7 +399,7 @@ pub(super) fn drive_outputs(
 }
 
 /// The drivers with deadlines of their own, in `round`'s order: stats, protection,
-/// camera, monitor, calibration, markers, media, replay, cues, transitions and the
+/// camera, monitor, calibration, markers, media, replay, cues, lingers, transitions and the
 /// engine's collection.
 pub(super) fn drive_timed(
     host: &mut Host,
@@ -442,6 +442,13 @@ pub(super) fn drive_timed(
         host.apply(notify);
     }
     if let Some(left) = host.studio.cue_wait(now) {
+        arm(wait, armed, left);
+    }
+    // A source leaves its linger on the master clock; none lingering arms nothing (ADR-0152).
+    if host.studio.linger_due(now) {
+        host.apply(notify);
+    }
+    if let Some(left) = host.studio.linger_wait(now) {
         arm(wait, armed, left);
     }
     // A running transition steps on the master clock; none arms nothing (P13).

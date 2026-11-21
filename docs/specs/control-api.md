@@ -547,6 +547,13 @@ Source rows carry `kind` `image` and `color` for those picture sources. A client
 - **State.** `record.state` and `record.canvas_state` add `paused` (bool), `paused_ms` and `recorded_ms`; `state` stays `recording` while paused. `paused` is set from the call on, including the ticks before the pause begins. `paused_ms` (time left out so far) and `recorded_ms` (time since the start less `paused_ms`) are as of the change; they are published on each pause and resume, never per frame, so a client counts on from them while not paused.
 - **Older clients and servers.** A 1.60 client ignores the new fields; a 1.60 server answers the methods `method_not_found` and omits the fields, which read as not paused.
 
+### Protocol 1.98: a source's warm-up (ADR-0152 decision 10, phase 3)
+
+- **`warm_up_ms` on `source.list` rows.** Milliseconds from the last time the source became Active to its first picture: for display, window and camera sources, measured by the capture node from the frame's capture time (io-nodes spec). Absent before a first picture and for other types. Kept while the source sleeps (`run: shown` or `on_air`), replaced at each wake. Live state like `input_late_frames`: only `source.list` answers carry it, not `source.changed`, so a wake sends no event (the event follows when the row publisher reports activity, ADR-0152 decision 10's `activity` field, not built yet).
+- **`linger_s` takes effect.** From 1.98 a `linger_s` set with `source.set_activity` (1.95) keeps the source running, warm, for that many seconds after it leaves the screen (scene model spec, "Linger"); a 1.95 to 1.97 server saved it and ignored it. No wire change.
+- **Older clients and servers.** A response field: a 1.97 client ignores it, a 1.97 server never sends it.
+- **As built.** `rbs-api` `types::SourceInfo::warm_up_ms`; `rbs-nodes` `CaptureNodeStats::warm_up`; `rbs-record` `Studio::warm_up`. Tests: `rbs-api/tests/json.rs` (`filter_latency_fields_are_optional_and_round_trip`), `rbs-record/tests/studio/activity.rs`, `rbs-nodes/tests/capture_open.rs`.
+
 ### Protocol 1.97: a transition kind of its own outside studio mode (ADR-0153)
 
 - **`collection.set_transition {..., direct_kind?}`.** `direct_kind` is the kind a program change uses while the canvas is not in studio mode (no preview scene; further canvases follow the main canvas's mode): `cut`, `fade`, `move` (the default), `swipe`, `slide` or `stinger`. `kind` stays the kind of studio mode. Both use the same settings (`fade`, `swipe`, `slide`, `stinger`, Move's glide). It merges with the other parts in one undo step.

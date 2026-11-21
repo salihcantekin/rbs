@@ -596,6 +596,18 @@ impl SceneCollection {
     /// `visible_sources`, not from here. For a canvas that follows another, only
     /// scenes the leader can show count.
     pub fn warm_sources(&self, canvas: CanvasId, types: &dyn NodeTypes) -> BTreeSet<SourceId> {
+        self.warm_sources_with(canvas, types, &BTreeSet::new())
+    }
+
+    /// Like [`Self::warm_sources`], also counting the sources in `lingering` as warm
+    /// whatever their `run` (ADR-0152 decision 4: a lingering source that no shown
+    /// scene draws does what a warm one of its type does).
+    pub fn warm_sources_with(
+        &self,
+        canvas: CanvasId,
+        types: &dyn NodeTypes,
+        lingering: &BTreeSet<SourceId>,
+    ) -> BTreeSet<SourceId> {
         let Some(c) = self.canvas(canvas) else {
             return BTreeSet::new();
         };
@@ -621,7 +633,8 @@ impl SceneCollection {
                 self.source(*id).is_some_and(|source| {
                     let traits = types.activity(&source.type_id);
                     traits.linked_while_warm
-                        && traits.effective(Some(&source.activity)).run == Run::Placed
+                        && (traits.effective(Some(&source.activity)).run == Run::Placed
+                            || lingering.contains(id))
                 })
             })
             .filter(|id| {

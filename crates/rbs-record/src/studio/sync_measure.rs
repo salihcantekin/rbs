@@ -440,6 +440,19 @@ impl Studio {
         self.input_counters(source).map(|c| c.resyncs)
     }
 
+    /// The last time from Active to first picture of a capture source (ADR-0152
+    /// `warm_up_ms`), while it has an instance: kept while it sleeps, replaced at
+    /// each wake.
+    pub fn warm_up(&self, source: SourceId) -> Option<Duration> {
+        self.entries
+            .iter()
+            .filter(|e| e.source == source)
+            .find_map(|e| match e.instance.as_ref().map(|i| &i.watch) {
+                Some(Watch::Video(stats)) => stats.warm_up(),
+                _ => None,
+            })
+    }
+
     /// The counters of `source`'s audio input, when it has one running (late frames
     /// and resyncs show how much jitter headroom is spent; ADR-0130 decision 9).
     pub fn input_counters(&self, source: SourceId) -> Option<rbs_audio::InputCounters> {

@@ -65,6 +65,9 @@ fn a_camera_that_runs_only_when_shown_closes_off_screen_and_opens_on_the_cut() {
     let reached = run_until(&mut studio, &clock, |s| s.picture_size(shy).is_some());
     assert!(reached, "the shy camera opened when shown");
     assert!(r.capture.live_buffers() > buffers);
+    // Its warm-up is known once a picture came (ADR-0152 `warm_up_ms`).
+    let reached = run_until(&mut studio, &clock, |s| s.warm_up(shy).is_some());
+    assert!(reached, "no warm-up after the first picture");
 
     // Off air again, once the outgoing scene's transition ended: it closes; the warm
     // one stays.
@@ -78,6 +81,10 @@ fn a_camera_that_runs_only_when_shown_closes_off_screen_and_opens_on_the_cut() {
     let reached = run_until(&mut studio, &clock, |_| r.capture.live_buffers() <= buffers);
     assert!(reached, "the shy camera is still open");
     assert_eq!(studio.picture_size(shy), None);
+    assert!(
+        studio.warm_up(shy).is_some(),
+        "the last warm-up is kept while asleep"
+    );
     let (_, errors) = studio.shutdown();
     assert!(errors.is_empty(), "{errors:?}");
 }
@@ -169,6 +176,89 @@ fn a_background_page_runs_hidden_while_placed_and_stops_when_it_no_longer_is_one
     studio.update(&col, &r.adapters.sources).unwrap();
     assert!(!studio.browser_running(page));
     assert_eq!(tree.stops.load(Ordering::Relaxed), 1);
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
+#[test]
+fn a_camera_that_lingers_stays_open_off_screen_until_its_time_is_up() {
+    // ADR-0152 phase 3: a `run: shown` camera with a 10 s linger keeps its session
+    // after its scene goes off air, and the studio puts it to Standby once the engine
+    // clock passes the end. The host's control loop asks `linger_due`/`linger_wait`.
+    use std::time::Duration;
+
+    use rbs_core::time::Clock;
+    use rbs_scene::activity::{Run, SourceActivity};
+    use rbs_scene::model::SceneScope;
+
+    let Some(gpu) = gpu() else { return };
+    let r = rig();
+    let (mut col, main) = scene();
+    let live = col.canvas(main).unwrap().program.unwrap();
+    let (other, _) = col.add_scene("Other", SceneScope::Shared).unwrap();
+    let (cam, _) = col
+        .add_source(
+            "Lingering camera",
+            NodeTypeId::new_static(types::CAMERA_SOURCE),
+            Settings::new(),
+        )
+        .unwrap();
+    col.add_item(
+        other,
+        ItemContent::Source(cam),
+        Layout::new([0.0, 0.0], [20.0, 11.0]),
+        None,
+    )
+    .unwrap();
+    col.set_source_activity(cam, SourceActivity::new(Some(Run::Shown), None, Some(10)))
+        .unwrap();
+    col.set_program(main, Some(other)).unwrap();
+    let (engine, clock) = engine_at_start();
+    let mut settings = StudioSettings::new(main);
+    settings.audio = false;
+    let mut studio = Studio::start(engine, gpu, &col, &r.adapters.sources, &settings).unwrap();
+    let running = |s: &Studio| {
+        s.sources()
+            .into_iter()
+            .any(|x| x.name == "Lingering camera")
+    };
+    let mut rec = OutputSettings::new("mem://main", ContainerId::Matroska);
+    rec.audio = None;
+    studio.start_output(&r.adapters, &rec).unwrap();
+    let reached = run_until(&mut studio, &clock, |s| s.picture_size(cam).is_some());
+    assert!(reached, "the camera opened on air");
+    assert_eq!(
+        studio.linger_wait(clock.now()),
+        None,
+        "nothing lingers on air"
+    );
+
+    // Off air: it lingers, still open.
+    col.set_program(main, Some(live)).unwrap();
+    studio.update(&col, &r.adapters.sources).unwrap();
+    studio.end_transitions();
+    studio.update(&col, &r.adapters.sources).unwrap();
+    assert!(running(&studio));
+    assert!(studio.is_lingering(cam));
+    assert_eq!(
+        studio.linger_wait(clock.now()),
+        Some(Duration::from_secs(10))
+    );
+    assert!(!studio.linger_due(clock.now()));
+
+    // Its time is up: the update the host makes puts it to Standby.
+    clock.advance(Duration::from_secs(10));
+    assert!(studio.linger_due(clock.now()));
+    studio.update(&col, &r.adapters.sources).unwrap();
+    assert!(!running(&studio));
+    assert!(!studio.is_lingering(cam));
+    assert_eq!(
+        studio.linger_wait(clock.now()),
+        None,
+        "no wake is left armed"
+    );
+    let reached = run_until(&mut studio, &clock, |s| s.picture_size(cam).is_none());
+    assert!(reached, "the camera closed after its linger");
     let (_, errors) = studio.shutdown();
     assert!(errors.is_empty(), "{errors:?}");
 }

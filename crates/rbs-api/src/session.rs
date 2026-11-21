@@ -28,6 +28,8 @@ use crate::types::SourceLevels;
 
 /// The protocol version this server speaks.
 ///
+/// 1.98 adds `warm_up_ms` on a source in `source.list` (ADR-0152 decision 10): the
+/// last time from Active to its first picture.
 /// 1.97 adds the collection's kind outside studio mode (ADR-0153): `direct_kind` on
 /// `collection.set_transition` and on the collection's `transition`.
 /// 1.96 adds page input and Forget sign-in (ADR-0132): `browser.input` and
@@ -127,7 +129,7 @@ use crate::types::SourceLevels;
 /// `record.start`, `tracks` on a running recording and `record_separately` on a source.
 /// 1.45 adds `"wav"` and `"flac"` on a recording profile (the mix with no picture).
 /// 1.44 is the vertical canvas layouts.
-pub const PROTOCOL_VERSION: &str = "1.97";
+pub const PROTOCOL_VERSION: &str = "1.98";
 
 /// Caps and timeouts (ADR-0044 decision 12). The defaults are the version 1 values in
 /// the control API spec.
