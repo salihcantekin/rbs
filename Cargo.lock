@@ -4612,6 +4612,7 @@ dependencies = [
  "rbs-graph",
  "rbs-import-obs",
  "rbs-log",
+ "rbs-mach",
  "rbs-manifest",
  "rbs-mcp",
  "rbs-media-decode-test",
@@ -5161,12 +5162,14 @@ dependencies = [
  "objc2-core-foundation",
  "objc2-core-graphics",
  "objc2-core-video",
+ "objc2-foundation 0.3.2",
  "objc2-io-surface",
  "objc2-metal 0.3.2",
  "objc2-quartz-core 0.3.2",
  "pollster",
  "rbs-core",
  "rbs-graph",
+ "rbs-mach",
  "wgpu",
  "windows",
  "windows-numerics",
@@ -5208,6 +5211,13 @@ dependencies = [
  "log",
  "rbs-core",
  "rbs-crash",
+]
+
+[[package]]
+name = "rbs-mach"
+version = "0.0.1"
+dependencies = [
+ "mach2",
 ]
 
 [[package]]

@@ -135,6 +135,8 @@ keyring = { version = "3.6.3", default-features = false, features = ["windows-na
 # Audio meters as Core Animation layers (src/native, ADR-0035). Same objc2 versions as
 # wgpu-hal, raw-window-metal and rbs-gpu's preview layer, so nothing new is built.
 [target.'cfg(target_os = "macos")'.dependencies]
+# The browser page surface handover (ADR-0167 decision 3).
+rbs-mach = { path = "../rbs-mach" }
 # The stream key in the macOS Keychain (src/stream_key.rs).
 keyring = { version = "3.6.3", default-features = false, features = ["apple-native"] }
 objc2 = "0.6.3"

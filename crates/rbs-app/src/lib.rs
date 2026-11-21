@@ -36,6 +36,8 @@ pub mod ai_tools;
 pub mod background;
 #[cfg(windows)]
 mod browser_gpu;
+#[cfg(target_os = "macos")]
+mod browser_metal;
 pub use rbs_studio_host::browser_profiles;
 pub mod browser_tree;
 pub use rbs_studio_host::calibration_file;

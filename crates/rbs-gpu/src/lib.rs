@@ -25,6 +25,8 @@
 
 #[cfg(windows)]
 pub mod browser_pages;
+#[cfg(target_os = "macos")]
+pub mod browser_surfaces;
 pub mod budget;
 pub mod compositor;
 pub mod context;

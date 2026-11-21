@@ -55,11 +55,13 @@
 use std::io;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
+mod copy_queue;
 mod gpu_slots;
 pub mod sound;
 
 use gpu_slots::{FRAMES, GPU_COUNT};
 
+pub use copy_queue::{Collected, CopyDone, CopyQueue};
 pub use sound::{MAX_SOUND_CHANNELS, OwnedSoundPacket, SoundPacket, SoundRing};
 
 /// The OS monotonic clock in nanoseconds (`CLOCK_MONOTONIC` on Unix,

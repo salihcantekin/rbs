@@ -40,7 +40,13 @@ windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Graphics_Di
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.3"
-objc2-foundation = "0.3.2"
+objc2-foundation = { version = "0.3.2", features = ["NSArray"] }
+# The GPU page path (ADR-0167): the surface handover, IOSurfaces and the Metal copy.
+rbs-mach = { path = "../rbs-mach" }
+block2 = "0.6"
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std"] }
+objc2-io-surface = { version = "0.3.2", default-features = false, features = ["std", "IOSurfaceRef", "IOSurfaceTypes", "libc", "objc2-core-foundation"] }
+objc2-metal = { version = "0.3.2", default-features = false, features = ["std", "block2", "MTLAllocation", "MTLDevice", "MTLPixelFormat", "MTLResource", "MTLTexture", "MTLCommandQueue", "MTLCommandBuffer", "MTLCommandEncoder", "MTLBlitCommandEncoder", "MTLTypes", "objc2-io-surface"] }
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSApplication", "NSResponder", "NSEvent", "NSRunningApplication"] }
 
 [lints.rust]
