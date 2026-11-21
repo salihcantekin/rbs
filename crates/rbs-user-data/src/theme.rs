@@ -11,7 +11,7 @@ use std::path::Path;
 use rbs_ui::tokens::{Base, MAX_THEME_FILE, ThemeBody};
 use serde::{Deserialize, Serialize};
 
-use crate::document::{self, Document};
+use crate::document::{self, BodyError, Document};
 use crate::library::EntryId;
 
 /// Format 2 adds the `effects` key (ADR-0120 decision 2). A theme is written as format 2
@@ -24,19 +24,19 @@ impl Document for ThemeBody {
 
     /// Format 1 to 2 changes nothing: format 2 only adds an optional key. A format 1
     /// file with an `effects` key (a hand edit) is read and honoured.
-    fn upgrade(from: u32, body: &mut toml::Table) -> Result<(), String> {
+    fn upgrade(from: u32, body: &mut toml::Table) -> Result<(), BodyError> {
         let _ = body;
         match from {
             1 => Ok(()),
-            _ => Err(format!("format {from} cannot be read")),
+            _ => Err(BodyError::NoUpgrade(from)),
         }
     }
 
-    fn from_body(body: toml::Table) -> Result<Self, String> {
-        ThemeBody::from_body(body).map_err(|e| e.to_string())
+    fn from_body(body: toml::Table) -> Result<Self, BodyError> {
+        ThemeBody::from_body(body).map_err(BodyError::Theme)
     }
 
-    fn to_body(&self) -> Result<toml::Table, String> {
+    fn to_body(&self) -> Result<toml::Table, BodyError> {
         Ok(ThemeBody::to_body(self))
     }
 
@@ -184,7 +184,7 @@ impl Document for Appearance {
     const KIND: &'static str = "appearance";
     const FORMAT: u32 = 4;
 
-    fn upgrade(from: u32, body: &mut toml::Table) -> Result<(), String> {
+    fn upgrade(from: u32, body: &mut toml::Table) -> Result<(), BodyError> {
         match from {
             1 => {
                 body.entry("density")
@@ -198,19 +198,24 @@ impl Document for Appearance {
             }
             // Format 4 adds the density "roomy" (ADR-0112); a format 3 file reads as is.
             3 => Ok(()),
-            other => Err(format!("format {other} cannot be read")),
+            other => Err(BodyError::NoUpgrade(other)),
         }
     }
 
-    fn from_body(body: toml::Table) -> Result<Self, String> {
+    fn from_body(body: toml::Table) -> Result<Self, BodyError> {
         let f: AppearanceFile = document::from_body(body)?;
         let mode = match f.mode.as_str() {
             "system" => AppearanceMode::System,
             "fixed" => AppearanceMode::Fixed,
-            m => return Err(format!("mode {m:?} is not system or fixed")),
+            m => {
+                return Err(BodyError::Value(format!(
+                    "mode {m:?} is not system or fixed"
+                )));
+            }
         };
         let id = |s: &str, what: &str| {
-            ThemeId::parse(s).ok_or_else(|| format!("{what} {s:?} is not a theme id"))
+            ThemeId::parse(s)
+                .ok_or_else(|| BodyError::Value(format!("{what} {s:?} is not a theme id")))
         };
         // System mode is the built-in pair. A theme the user chose is Fixed mode, so a
         // saved custom dark or light slot is not applied.
@@ -223,16 +228,20 @@ impl Document for Appearance {
             "regular" => rbs_ui::tokens::Density::Regular,
             "compact" => rbs_ui::tokens::Density::Compact,
             "roomy" => rbs_ui::tokens::Density::Roomy,
-            d => return Err(format!("density {d:?} is not regular, compact or roomy")),
+            d => {
+                return Err(BodyError::Value(format!(
+                    "density {d:?} is not regular, compact or roomy"
+                )));
+            }
         };
         let Some(compact_steps) = u8::try_from(f.compact_steps)
             .ok()
             .filter(|n| (1..=3).contains(n))
         else {
-            return Err(format!(
+            return Err(BodyError::Value(format!(
                 "compact_steps {} is not 1, 2 or 3",
                 f.compact_steps
-            ));
+            )));
         };
         Ok(Appearance {
             mode,
@@ -244,7 +253,7 @@ impl Document for Appearance {
         })
     }
 
-    fn to_body(&self) -> Result<toml::Table, String> {
+    fn to_body(&self) -> Result<toml::Table, BodyError> {
         document::body_of(&AppearanceFile {
             mode: match self.mode {
                 AppearanceMode::System => "system",

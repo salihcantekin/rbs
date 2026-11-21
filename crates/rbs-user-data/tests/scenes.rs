@@ -15,7 +15,7 @@ use rbs_scene::model::{
 };
 use rbs_scene::{SceneAudio, SceneCollection, SceneLevel};
 use rbs_user_data::document;
-use rbs_user_data::{DataError, UserData};
+use rbs_user_data::{BodyError, DataError, UserData};
 
 fn ty(name: &str) -> NodeTypeId {
     NodeTypeId::new(format!("org.rbs.source.{name}"))
@@ -248,7 +248,7 @@ layout = { position = [0.0, 0.0], size = [1920.0, 1080.0] }
 fn invalid(body: &str) -> String {
     let text = format!("format = 1\nkind = \"scene-collection\"\n{body}");
     match document::parse::<SceneCollection>(&text) {
-        Err(DataError::Invalid(why)) => why,
+        Err(DataError::Invalid(why)) => why.to_string(),
         other => panic!("expected Invalid for {body:?}, got {other:?}"),
     }
 }
@@ -329,8 +329,11 @@ fn show_for_ms_round_trips_and_an_older_format_refuses_it() {
         "format = 12\nkind = \"scene-collection\"\n{CANVAS}{SOURCE}\n[[scenes]]\nid = 0\nname = \"S\"\n[[scenes.items]]\nid = 0\nsource = 0\nshow_for_ms = 4000\nlayout = {{ position = [0.0, 0.0], size = [1.0, 1.0] }}\n"
     );
     match document::parse::<SceneCollection>(&older) {
-        Err(DataError::Invalid(why)) => assert!(why.contains("show_for_ms"), "{why}"),
-        other => panic!("expected Invalid, got {other:?}"),
+        Err(DataError::Invalid(BodyError::LaterKey { keys, since, .. })) => {
+            assert!(keys.contains("show_for_ms"), "{keys}");
+            assert_eq!(since, 13);
+        }
+        other => panic!("expected LaterKey, got {other:?}"),
     }
 }
 
@@ -732,8 +735,11 @@ fn a_changed_canvas_keeps_its_layout_space_in_the_file() {
 
     let older = "format = 14\nkind = \"scene-collection\"\n[[canvases]]\nid = 0\nname = \"M\"\nwidth = 1080\nheight = 1920\nlayout_width = 1920\nlayout_height = 1080\nframe_rate = [30, 1]\n";
     match document::parse::<SceneCollection>(older) {
-        Err(DataError::Invalid(why)) => assert!(why.contains("layout_width"), "{why}"),
-        other => panic!("expected Invalid, got {other:?}"),
+        Err(DataError::Invalid(BodyError::LaterKey { keys, since, .. })) => {
+            assert!(keys.contains("layout_width"), "{keys}");
+            assert_eq!(since, 15);
+        }
+        other => panic!("expected LaterKey, got {other:?}"),
     }
 }
 
@@ -764,8 +770,11 @@ fn a_source_recorded_separately_raises_the_format_and_an_older_file_refuses_it()
 
     let older = "format = 15\nkind = \"scene-collection\"\n[[sources]]\nid = 0\nname = \"Mic\"\ntype = \"org.rbs.source.audio-input\"\nrecord_separately = { audio = true }\n";
     match document::parse::<SceneCollection>(older) {
-        Err(DataError::Invalid(why)) => assert!(why.contains("record_separately"), "{why}"),
-        other => panic!("expected Invalid, got {other:?}"),
+        Err(DataError::Invalid(BodyError::LaterKey { keys, since, .. })) => {
+            assert!(keys.contains("record_separately"), "{keys}");
+            assert_eq!(since, 16);
+        }
+        other => panic!("expected LaterKey, got {other:?}"),
     }
 }
 
@@ -807,8 +816,11 @@ fn a_picture_form_raises_the_format_to_18_and_an_older_file_refuses_it() {
 
     let body = "kind = \"scene-collection\"\n[[sources]]\nid = 0\nname = \"Logo\"\ntype = \"org.rbs.source.image\"\nrecord_separately = { video = true, video_as = \"image\" }\n";
     match document::parse::<SceneCollection>(&format!("format = 17\n{body}")) {
-        Err(DataError::Invalid(why)) => assert!(why.contains("video_as"), "{why}"),
-        other => panic!("expected Invalid, got {other:?}"),
+        Err(DataError::Invalid(BodyError::LaterKey { keys, since, .. })) => {
+            assert!(keys.contains("video_as"), "{keys}");
+            assert_eq!(since, 18);
+        }
+        other => panic!("expected LaterKey, got {other:?}"),
     }
     let ok = document::parse::<SceneCollection>(&format!("format = 18\n{body}"))
         .unwrap()
@@ -869,8 +881,11 @@ fn scene_levels_raise_the_format_round_trip_and_an_older_file_refuses_them() {
         "format = 16\nkind = \"scene-collection\"\n[next]\nscene = 1\n{scene}[scenes.audio]\n"
     );
     match document::parse::<SceneCollection>(&older) {
-        Err(DataError::Invalid(why)) => assert!(why.contains("audio"), "{why}"),
-        other => panic!("expected Invalid, got {other:?}"),
+        Err(DataError::Invalid(BodyError::LaterKey { keys, since, .. })) => {
+            assert!(keys.contains("audio"), "{keys}");
+            assert_eq!(since, 17);
+        }
+        other => panic!("expected LaterKey, got {other:?}"),
     }
     // A level for a source that does not exist is refused (scene-model invariant 4).
     let dangling = format!(
@@ -965,8 +980,11 @@ fn the_kind_outside_studio_mode_round_trips_in_format_27_and_older_formats_refus
     // A format 26 file cannot carry it.
     let hand = text.replace("format = 27", "format = 26");
     match document::parse::<SceneCollection>(&hand) {
-        Err(DataError::Invalid(why)) => assert!(why.contains("transition.direct"), "{why}"),
-        other => panic!("expected Invalid, got {other:?}"),
+        Err(DataError::Invalid(BodyError::LaterKey { keys, since, .. })) => {
+            assert!(keys.contains("transition.direct"), "{keys}");
+            assert_eq!(since, 27);
+        }
+        other => panic!("expected LaterKey, got {other:?}"),
     }
     // An unknown kind is refused.
     let odd = text.replace("direct = \"fade\"", "direct = \"spin\"");

@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::document::{self, Document};
+use crate::document::{self, BodyError, Document};
 use crate::library::EntryId;
 
 /// The entries in use. An id that no longer exists is treated as unset.
@@ -39,11 +39,14 @@ impl Document for Current {
     const KIND: &'static str = "current";
     const FORMAT: u32 = 1;
 
-    fn from_body(body: toml::Table) -> Result<Self, String> {
+    fn from_body(body: toml::Table) -> Result<Self, BodyError> {
         let b: Body = document::from_body(body)?;
         let id = |v: Option<String>, what: &str| {
-            v.map(|s| EntryId::parse(&s).ok_or_else(|| format!("{what} {s:?} is not an id")))
-                .transpose()
+            v.map(|s| {
+                EntryId::parse(&s)
+                    .ok_or_else(|| BodyError::Value(format!("{what} {s:?} is not an id")))
+            })
+            .transpose()
         };
         Ok(Self {
             profile: id(b.profile, "profile")?,
@@ -51,7 +54,7 @@ impl Document for Current {
         })
     }
 
-    fn to_body(&self) -> Result<toml::Table, String> {
+    fn to_body(&self) -> Result<toml::Table, BodyError> {
         document::body_of(&Body {
             profile: self.profile.as_ref().map(|i| i.as_str().to_owned()),
             scene_collection: self

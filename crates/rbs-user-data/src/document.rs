@@ -37,16 +37,16 @@ pub trait Document: Sized {
     /// Upgrades `body` (the file without `format`, `kind` and `name`) from format `from`
     /// to `from + 1`. The default refuses: a kind starts at format 1 with nothing to
     /// upgrade.
-    fn upgrade(from: u32, body: &mut toml::Table) -> Result<(), String> {
+    fn upgrade(from: u32, body: &mut toml::Table) -> Result<(), BodyError> {
         let _ = body;
-        Err(format!("format {from} cannot be read"))
+        Err(BodyError::NoUpgrade(from))
     }
 
     /// The document from its body in the current format.
-    fn from_body(body: toml::Table) -> Result<Self, String>;
+    fn from_body(body: toml::Table) -> Result<Self, BodyError>;
 
     /// The body in the current format. Must not use the keys `format`, `kind` or `name`.
-    fn to_body(&self) -> Result<toml::Table, String>;
+    fn to_body(&self) -> Result<toml::Table, BodyError>;
 
     /// The `format` [`render`] writes for this value. At least 1 and at most
     /// [`Document::FORMAT`]. The default is [`Document::FORMAT`]. A scene collection
@@ -58,18 +58,134 @@ pub trait Document: Sized {
 }
 
 /// A body from a serde type (helper for [`Document::to_body`]).
-pub fn body_of<T: Serialize>(value: &T) -> Result<toml::Table, String> {
-    match toml::Value::try_from(value).map_err(|e| e.to_string())? {
+pub fn body_of<T: Serialize>(value: &T) -> Result<toml::Table, BodyError> {
+    match toml::Value::try_from(value).map_err(|e| BodyError::Encode(e.to_string()))? {
         toml::Value::Table(t) => Ok(t),
-        _ => Err("a document body must be a table".to_owned()),
+        _ => Err(BodyError::NotATable),
     }
 }
 
 /// A serde type from a body (helper for [`Document::from_body`]).
-pub fn from_body<T: DeserializeOwned>(body: toml::Table) -> Result<T, String> {
+pub fn from_body<T: DeserializeOwned>(body: toml::Table) -> Result<T, BodyError> {
     toml::Value::Table(body)
         .try_into()
-        .map_err(|e: toml::de::Error| e.message().to_owned())
+        .map_err(|e: toml::de::Error| BodyError::Shape(e.message().to_owned()))
+}
+
+/// Why a document's contents are not valid: its body could not be read, upgraded or
+/// written, or the file around it breaks a limit. Carried by [`DataError::Invalid`].
+/// The text of each kind is the one shown to the user.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BodyError {
+    /// A key is unknown or missing, or a value has the wrong type (the TOML reader's
+    /// reason).
+    Shape(String),
+    /// A value breaks a rule of this kind of document (the reason in words, naming the
+    /// value).
+    Value(String),
+    /// A body could not be turned into TOML (the TOML writer's reason).
+    Encode(String),
+    /// A body is not a TOML table.
+    NotATable,
+    /// The `name` is not text.
+    NameNotText,
+    /// No upgrade step from this format exists.
+    NoUpgrade(u32),
+    /// A file of an older format uses keys that only a later format has. Such a file
+    /// was not written by RBS and is refused rather than upgraded.
+    LaterKey {
+        /// The file's format.
+        found: u32,
+        /// The keys, as shown to the user, for example ``source `monitor` ``.
+        keys: &'static str,
+        /// The format that added them.
+        since: u32,
+    },
+    /// The body uses `format`, `kind` or `name`.
+    ReservedKey(String),
+    /// [`Document::write_format`] is outside `1..=FORMAT`.
+    WriteFormat {
+        /// The format asked for.
+        format: u32,
+        /// The newest format of the kind.
+        newest: u32,
+    },
+    /// The file is larger than the kind allows.
+    TooLarge {
+        /// Its size in bytes, if known (`None` when it grew while being read).
+        size: Option<u64>,
+        /// The limit in bytes.
+        max: u64,
+    },
+    /// The document would be written larger than the kind allows.
+    WouldBeTooLarge {
+        /// Its size in bytes.
+        size: u64,
+        /// The limit in bytes.
+        max: u64,
+    },
+    /// The scene model refused the collection.
+    Scene(rbs_scene::SceneError),
+    /// A theme body is not valid.
+    Theme(rbs_ui::tokens::ThemeBodyError),
+    /// A shortcuts document is not valid.
+    Shortcuts(rbs_ui::shortcut::ShortcutsDocError),
+}
+
+impl fmt::Display for BodyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            BodyError::Shape(why) | BodyError::Value(why) | BodyError::Encode(why) => why.fmt(f),
+            BodyError::NotATable => f.write_str("a document body must be a table"),
+            BodyError::NameNotText => f.write_str("name must be text"),
+            BodyError::NoUpgrade(from) => write!(f, "format {from} cannot be read"),
+            BodyError::LaterKey { found, keys, since } => {
+                write!(f, "format {found} has no {keys} (format {since})")
+            }
+            BodyError::ReservedKey(k) => write!(f, "the key {k:?} is reserved"),
+            BodyError::WriteFormat { format, newest } => {
+                write!(f, "write format {format} is outside 1..={newest}")
+            }
+            BodyError::TooLarge {
+                size: Some(size),
+                max,
+            } => write!(f, "the file is {size} bytes; at most {max} are read"),
+            BodyError::TooLarge { size: None, max } => {
+                write!(f, "the file is larger than {max} bytes")
+            }
+            BodyError::WouldBeTooLarge { size, max } => write!(
+                f,
+                "the document would be {size} bytes; at most {max} are allowed"
+            ),
+            BodyError::Scene(e) => e.fmt(f),
+            BodyError::Theme(e) => e.fmt(f),
+            BodyError::Shortcuts(e) => e.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for BodyError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            BodyError::Scene(e) => Some(e),
+            BodyError::Theme(e) => Some(e),
+            BodyError::Shortcuts(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+impl From<rbs_scene::SceneError> for BodyError {
+    fn from(e: rbs_scene::SceneError) -> Self {
+        BodyError::Scene(e)
+    }
+}
+
+impl From<BodyError> for DataError {
+    fn from(e: BodyError) -> Self {
+        DataError::Invalid(e)
+    }
 }
 
 /// Why user data could not be read or written.
@@ -96,8 +212,8 @@ pub enum DataError {
         /// The newest format this build reads.
         supported: u32,
     },
-    /// The document's contents are not valid (the reason in words).
-    Invalid(String),
+    /// The document's contents are not valid.
+    Invalid(BodyError),
     /// A name is empty, too long or has control characters.
     BadName(String),
     /// Another entry already has this name (compared ignoring case).
@@ -131,6 +247,7 @@ impl std::error::Error for DataError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             DataError::Io(e) => Some(e),
+            DataError::Invalid(e) => Some(e),
             _ => None,
         }
     }
@@ -195,12 +312,12 @@ pub fn parse<T: Document>(text: &str) -> Result<Read<T>, DataError> {
     let name = match table.remove(NAME_KEY) {
         None => None,
         Some(toml::Value::String(n)) => Some(n),
-        Some(_) => return Err(DataError::Invalid("name must be text".to_owned())),
+        Some(_) => return Err(BodyError::NameNotText.into()),
     };
     for from in format..T::FORMAT {
-        T::upgrade(from, &mut table).map_err(DataError::Invalid)?;
+        T::upgrade(from, &mut table)?;
     }
-    let document = T::from_body(table).map_err(DataError::Invalid)?;
+    let document = T::from_body(table)?;
     Ok(Read {
         name,
         format,
@@ -210,13 +327,14 @@ pub fn parse<T: Document>(text: &str) -> Result<Read<T>, DataError> {
 
 /// The text of a document in the current format, with `name` if given.
 pub fn render<T: Document>(document: &T, name: Option<&str>) -> Result<String, DataError> {
-    let body = document.to_body().map_err(DataError::Invalid)?;
+    let body = document.to_body()?;
     let format = document.write_format();
     if format == 0 || format > T::FORMAT {
-        return Err(DataError::Invalid(format!(
-            "write format {format} is outside 1..={}",
-            T::FORMAT
-        )));
+        return Err(BodyError::WriteFormat {
+            format,
+            newest: T::FORMAT,
+        }
+        .into());
     }
     let mut table = toml::Table::new();
     table.insert(
@@ -229,18 +347,19 @@ pub fn render<T: Document>(document: &T, name: Option<&str>) -> Result<String, D
     }
     for (k, v) in body {
         if table.contains_key(&k) {
-            return Err(DataError::Invalid(format!("the key {k:?} is reserved")));
+            return Err(BodyError::ReservedKey(k).into());
         }
         table.insert(k, v);
     }
-    let text = toml::to_string(&table).map_err(|e| DataError::Invalid(e.to_string()))?;
+    let text = toml::to_string(&table).map_err(|e| BodyError::Encode(e.to_string()))?;
     // Never write what could not be read back.
     let max = T::MAX_SIZE.min(MAX_FILE);
     if text.len() as u64 > max {
-        return Err(DataError::Invalid(format!(
-            "the document would be {} bytes; at most {max} are allowed",
-            text.len()
-        )));
+        return Err(BodyError::WouldBeTooLarge {
+            size: text.len() as u64,
+            max,
+        }
+        .into());
     }
     Ok(text)
 }
@@ -260,16 +379,16 @@ fn read_text(path: &Path, max: u64) -> Result<Option<String>, DataError> {
     };
     let len = f.metadata()?.len();
     if len > max {
-        return Err(DataError::Invalid(format!(
-            "the file is {len} bytes; at most {max} are read"
-        )));
+        return Err(BodyError::TooLarge {
+            size: Some(len),
+            max,
+        }
+        .into());
     }
     let mut text = String::new();
     io::Read::read_to_string(&mut io::Read::take(f, max + 1), &mut text)?;
     if text.len() as u64 > max {
-        return Err(DataError::Invalid(format!(
-            "the file is larger than {max} bytes"
-        )));
+        return Err(BodyError::TooLarge { size: None, max }.into());
     }
     Ok(Some(text))
 }
@@ -402,7 +521,7 @@ pub fn peek<T: Document>(path: &Path) -> Result<Option<Envelope>, DataError> {
     let name = match table.get(NAME_KEY) {
         None => None,
         Some(toml::Value::String(n)) => Some(n.clone()),
-        Some(_) => return Err(DataError::Invalid("name must be text".to_owned())),
+        Some(_) => return Err(BodyError::NameNotText.into()),
     };
     Ok(Some(Envelope { format, kind, name }))
 }
@@ -447,26 +566,91 @@ pub fn aside_path(path: &Path, why: &str) -> PathBuf {
 ///   even when this build cannot parse it ([`scan_format`]);
 /// - a file of an older format is copied to [`backup_path`] once;
 /// - a file that does not load as a document of this kind (broken by hand, also only
-///   in its body, or another kind) is moved to [`unreadable_path`] first.
+///   in its body, or another kind) is moved to [`unreadable_path`] first;
+/// - a file that already holds exactly the rendered bytes is left as it is.
 pub fn write<T: Document>(path: &Path, document: &T, name: Option<&str>) -> Result<(), DataError> {
+    write_known(path, document, name, &mut Written::default())
+}
+
+/// [`write`] for the one writer that keeps a [`Written`]: a file that still holds the
+/// bytes this writer last wrote there is not parsed again (audit F-09). Rendering is
+/// deterministic and only a valid document of this build is rendered, so such a file
+/// loads; a file changed since, by hand or by another program, is checked as
+/// [`write`] checks it.
+pub fn write_known<T: Document>(
+    path: &Path,
+    document: &T,
+    name: Option<&str>,
+    written: &mut Written,
+) -> Result<(), DataError> {
     let text = render(document, name)?;
-    let writing = document.write_format();
     if let Some(old) = read_text_unbounded(path)? {
-        // The whole document, not only its envelope: a hand edit that breaks the body
-        // (a typo'd key, a broken invariant) must be kept too.
-        match peek_text::<T>(&old).and_then(|f| parse::<T>(&old).map(|_| f)) {
-            Ok(found) if found < writing => {
-                let backup = backup_path(path, found);
-                if !backup.exists() {
-                    write_atomic(&backup, old.as_bytes())?;
-                }
-            }
-            Ok(_) => {}
-            Err(e @ DataError::Newer { .. }) => return Err(e),
-            Err(_) => fs::rename(path, unreadable_path(path))?,
+        if old == text {
+            written.note(path, &text);
+            return Ok(());
+        }
+        if !written.holds(path, &old) {
+            check_previous::<T>(path, &old, document.write_format())?;
         }
     }
-    write_atomic(path, text.as_bytes())
+    // A failed write may leave either file: check it again next time.
+    written.forget(path);
+    write_atomic(path, text.as_bytes())?;
+    written.note(path, &text);
+    Ok(())
+}
+
+/// The [`write`] rules for the file about to be replaced, whose text is `old`.
+fn check_previous<T: Document>(path: &Path, old: &str, writing: u32) -> Result<(), DataError> {
+    // The whole document, not only its envelope: a hand edit that breaks the body
+    // (a typo'd key, a broken invariant) must be kept too.
+    match peek_text::<T>(old).and_then(|f| parse::<T>(old).map(|_| f)) {
+        Ok(found) if found < writing => {
+            let backup = backup_path(path, found);
+            if !backup.exists() {
+                write_atomic(&backup, old.as_bytes())?;
+            }
+            Ok(())
+        }
+        Ok(_) => Ok(()),
+        Err(e @ DataError::Newer { .. }) => Err(e),
+        Err(_) => Ok(fs::rename(path, unreadable_path(path))?),
+    }
+}
+
+/// What one writer last wrote to each file ([`write_known`]): the length and a hash of
+/// the bytes, never the text, so it stays small. A file whose bytes give the same
+/// length and hash is taken as unchanged; a 64-bit hash makes a hand edit that keeps
+/// both vanishingly unlikely.
+#[derive(Debug, Default)]
+pub struct Written {
+    files: std::collections::HashMap<PathBuf, (usize, u64)>,
+}
+
+impl Written {
+    fn print(text: &str) -> (usize, u64) {
+        use std::hash::{Hash, Hasher};
+        // Fixed keys: the same bytes give the same hash in every run.
+        let mut h = std::hash::DefaultHasher::new();
+        text.hash(&mut h);
+        (text.len(), h.finish())
+    }
+
+    fn note(&mut self, path: &Path, text: &str) {
+        self.files.insert(path.to_path_buf(), Self::print(text));
+    }
+
+    fn forget(&mut self, path: &Path) {
+        self.files.remove(path);
+    }
+
+    /// Whether `path`, whose text is now `text`, still holds what was last written.
+    fn holds(&self, path: &Path, text: &str) -> bool {
+        self.files
+            .get(path)
+            .is_some_and(|&(len, _)| len == text.len())
+            && self.files.get(path) == Some(&Self::print(text))
+    }
 }
 
 /// The format of a document text of kind `T`, or why it is not one.

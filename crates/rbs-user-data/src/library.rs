@@ -15,7 +15,7 @@ use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 
 use crate::WriterLock;
-use crate::document::{self, DataError, Document};
+use crate::document::{self, BodyError, DataError, Document};
 
 /// Longest entry name, in characters.
 pub const MAX_NAME: usize = 64;
@@ -280,9 +280,9 @@ impl<T: Document> Library<T> {
         for (id, path) in ids {
             let named = document::peek::<T>(&path).and_then(|e| {
                 let e = e.ok_or_else(|| DataError::NotFound(id.to_string()))?;
-                let name = e
-                    .name
-                    .ok_or_else(|| DataError::Invalid("the entry has no name".to_owned()))?;
+                let name = e.name.ok_or_else(|| {
+                    DataError::Invalid(BodyError::Value("the entry has no name".to_owned()))
+                })?;
                 check_name(&name)
             });
             match named {
@@ -307,9 +307,9 @@ impl<T: Document> Library<T> {
     fn read(&self, path: &Path) -> Result<Entry<T>, DataError> {
         let read = document::read::<T>(path)?
             .ok_or_else(|| DataError::NotFound(path.display().to_string()))?;
-        let name = read
-            .name
-            .ok_or_else(|| DataError::Invalid("the entry has no name".to_owned()))?;
+        let name = read.name.ok_or_else(|| {
+            DataError::Invalid(BodyError::Value("the entry has no name".to_owned()))
+        })?;
         Ok(Entry {
             name: check_name(&name)?,
             document: read.document,
@@ -359,7 +359,7 @@ impl<T: Document> Library<T> {
         (2..u32::MAX)
             .map(|n| EntryId(format!("{}-{n}", base.as_str())))
             .find(free)
-            .ok_or_else(|| DataError::Invalid("no free id".to_owned()))
+            .ok_or_else(|| DataError::Invalid(BodyError::Value("no free id".to_owned())))
     }
 
     /// Adds an entry named `name`; its id is made from the name.
@@ -377,11 +377,18 @@ impl<T: Document> Library<T> {
     }
 
     /// Replaces the contents and name of an existing entry.
-    pub fn save(
+    pub fn save(&self, lock: &WriterLock, id: &EntryId, entry: &Entry<T>) -> Result<(), DataError> {
+        self.save_known(lock, id, entry, &mut document::Written::default())
+    }
+
+    /// [`Self::save`] for the one writer, which keeps what it wrote: an entry file it
+    /// wrote and nobody changed since is not parsed again ([`document::write_known`]).
+    pub fn save_known(
         &self,
         _lock: &WriterLock,
         id: &EntryId,
         entry: &Entry<T>,
+        written: &mut document::Written,
     ) -> Result<(), DataError> {
         let name = check_name(&entry.name)?;
         let path = self.path(id);
@@ -398,7 +405,7 @@ impl<T: Document> Library<T> {
         if !same {
             self.check_free(&name, Some(id))?;
         }
-        document::write(&path, &entry.document, Some(&name))
+        document::write_known(&path, &entry.document, Some(&name), written)
     }
 
     /// Renames an entry; its id stays.
@@ -463,9 +470,9 @@ impl<T: Document> Library<T> {
             _ => false,
         };
         if inside {
-            return Err(DataError::Invalid(
+            return Err(DataError::Invalid(BodyError::Value(
                 "export to a file outside the library folder".to_owned(),
-            ));
+            )));
         }
         document::write(to, &entry.document, Some(&entry.name))
     }
@@ -506,7 +513,7 @@ impl<T: Document> Library<T> {
                 format!("{}{suffix}", head.trim_end())
             })
             .find(|n| free(n))
-            .ok_or_else(|| DataError::Invalid("no free name".to_owned()))
+            .ok_or_else(|| DataError::Invalid(BodyError::Value("no free name".to_owned())))
     }
 
     /// [`Library::create`] under the first free name for `wanted`

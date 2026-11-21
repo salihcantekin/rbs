@@ -1919,8 +1919,8 @@ struct Host {
     permission_refused: Vec<PermissionKind>,
     /// The generation of the region-preview grab that may still deliver (ADR-0103).
     region_grabs: Arc<AtomicU64>,
-    /// The collection as last handed to `autosave`.
-    saved: Option<SceneCollection>,
+    /// [`Host::save_stamp`] as last handed to `autosave` or loaded (epoch 0 at start).
+    saved: Option<(u64, u64)>,
     studio: Studio,
     adapters: RecordAdapters,
     collection: SceneCollection,
@@ -2724,16 +2724,6 @@ impl Host {
                     EventPayload::CanvasChanged(now)
                 });
             self.settings_changed();
-        }
-    }
-
-    /// Hands the collection to autosave when it changed since it was last handed.
-    fn publish_save(&mut self) {
-        if let Some(save) = &self.autosave
-            && self.saved.as_ref() != Some(&self.collection)
-        {
-            save.save(&self.collection);
-            self.saved = Some(self.collection.clone());
         }
     }
 

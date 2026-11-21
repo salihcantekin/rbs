@@ -5,8 +5,8 @@
 mod common;
 
 use common::TempDir;
-use rbs_user_data::DataError;
 use rbs_user_data::document::{self, Document, backup_path};
+use rbs_user_data::{BodyError, DataError};
 
 /// Format 3 of a test kind: `title` (was `heading` in 2, `head` in 1).
 #[derive(Debug, PartialEq)]
@@ -18,25 +18,27 @@ impl Document for Note {
     const KIND: &'static str = "note";
     const FORMAT: u32 = 3;
 
-    fn upgrade(from: u32, body: &mut toml::Table) -> Result<(), String> {
+    fn upgrade(from: u32, body: &mut toml::Table) -> Result<(), BodyError> {
         let (old, new) = match from {
             1 => ("head", "heading"),
             2 => ("heading", "title"),
-            _ => return Err(format!("format {from} cannot be read")),
+            _ => return Err(BodyError::NoUpgrade(from)),
         };
-        let v = body.remove(old).ok_or("missing")?;
+        let v = body
+            .remove(old)
+            .ok_or_else(|| BodyError::Value("missing".to_owned()))?;
         body.insert(new.to_owned(), v);
         Ok(())
     }
 
-    fn from_body(mut body: toml::Table) -> Result<Self, String> {
+    fn from_body(mut body: toml::Table) -> Result<Self, BodyError> {
         match body.remove("title") {
             Some(toml::Value::String(title)) if body.is_empty() => Ok(Self { title }),
-            _ => Err("bad note".to_owned()),
+            _ => Err(BodyError::Value("bad note".to_owned())),
         }
     }
 
-    fn to_body(&self) -> Result<toml::Table, String> {
+    fn to_body(&self) -> Result<toml::Table, BodyError> {
         let mut t = toml::Table::new();
         t.insert("title".to_owned(), self.title.clone().into());
         Ok(t)
@@ -152,10 +154,10 @@ fn reserved_keys_cannot_be_used_by_a_body() {
     impl Document for Bad {
         const KIND: &'static str = "bad";
         const FORMAT: u32 = 1;
-        fn from_body(_: toml::Table) -> Result<Self, String> {
+        fn from_body(_: toml::Table) -> Result<Self, BodyError> {
             Ok(Bad)
         }
-        fn to_body(&self) -> Result<toml::Table, String> {
+        fn to_body(&self) -> Result<toml::Table, BodyError> {
             let mut t = toml::Table::new();
             t.insert("kind".to_owned(), "x".into());
             Ok(t)
@@ -163,7 +165,7 @@ fn reserved_keys_cannot_be_used_by_a_body() {
     }
     assert!(matches!(
         document::render(&Bad, None),
-        Err(DataError::Invalid(_))
+        Err(DataError::Invalid(BodyError::ReservedKey(_)))
     ));
 }
 
@@ -266,4 +268,84 @@ fn an_oversized_file_in_the_way_is_moved_aside_or_kept_if_newer() {
         document::write(&newer, &note("x"), None),
         Err(DataError::Newer { found: 99, .. })
     ));
+}
+
+/// A kind that counts how often a body is read, for the known-writer test only.
+#[derive(Debug, PartialEq)]
+struct Counted(String);
+
+static COUNTED_READS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+impl Document for Counted {
+    const KIND: &'static str = "counted";
+    const FORMAT: u32 = 1;
+
+    fn upgrade(from: u32, _: &mut toml::Table) -> Result<(), BodyError> {
+        Err(BodyError::NoUpgrade(from))
+    }
+
+    fn from_body(mut body: toml::Table) -> Result<Self, BodyError> {
+        COUNTED_READS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        match body.remove("text") {
+            Some(toml::Value::String(t)) if body.is_empty() => Ok(Self(t)),
+            _ => Err(BodyError::Value("bad counted".to_owned())),
+        }
+    }
+
+    fn to_body(&self) -> Result<toml::Table, BodyError> {
+        let mut t = toml::Table::new();
+        t.insert("text".to_owned(), self.0.clone().into());
+        Ok(t)
+    }
+}
+
+#[test]
+fn the_known_writer_parses_only_files_it_did_not_write_and_skips_unchanged_ones() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let reads = || COUNTED_READS.load(SeqCst);
+    let d = TempDir::new("doc-known");
+    let path = d.path().join("c.toml");
+    let mut written = document::Written::default();
+    let doc = |t: &str| Counted(t.to_owned());
+    let read = |p: &std::path::Path| document::read::<Counted>(p).unwrap().unwrap().document;
+
+    // Its own files are not parsed again.
+    document::write_known(&path, &doc("one"), None, &mut written).unwrap();
+    document::write_known(&path, &doc("two"), None, &mut written).unwrap();
+    let before = reads();
+    assert_eq!(read(&path), doc("two"));
+    assert_eq!(reads(), before + 1);
+    document::write_known(&path, &doc("three"), None, &mut written).unwrap();
+    assert_eq!(reads(), before + 1, "a file it wrote is not parsed");
+
+    // An unchanged document is not written again.
+    #[cfg(unix)]
+    let inode = || std::os::unix::fs::MetadataExt::ino(&std::fs::metadata(&path).unwrap());
+    #[cfg(unix)]
+    let first = inode();
+    document::write_known(&path, &doc("three"), None, &mut written).unwrap();
+    document::write(&path, &doc("three"), None).unwrap();
+    #[cfg(unix)]
+    assert_eq!(inode(), first, "the file was replaced");
+    assert_eq!(reads(), before + 1, "an unchanged file is not parsed");
+
+    // A file changed by hand is checked in full: kept when valid, moved aside when not.
+    let by_hand = document::render(&doc("by hand"), None).unwrap();
+    std::fs::write(&path, &by_hand).unwrap();
+    document::write_known(&path, &doc("four"), None, &mut written).unwrap();
+    assert_eq!(reads(), before + 2, "a hand-written file is parsed");
+    let broken = "format = 1\nkind = \"counted\"\ntext = 5\n";
+    std::fs::write(&path, broken).unwrap();
+    document::write_known(&path, &doc("five"), None, &mut written).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(d.path().join("c.toml.unreadable.bak")).unwrap(),
+        broken
+    );
+    assert_eq!(read(&path), doc("five"));
+
+    // A plain write keeps no record: the next known write parses that file.
+    document::write(&path, &doc("six"), None).unwrap();
+    let before = reads();
+    document::write_known(&path, &doc("seven"), None, &mut written).unwrap();
+    assert_eq!(reads(), before + 1);
 }
