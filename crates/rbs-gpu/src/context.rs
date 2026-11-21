@@ -210,6 +210,14 @@ impl GpuContext {
             ..Default::default()
         };
         let (device, queue, sync_file) = request_device(&adapter, &device_desc)?;
+        // Called once, by wgpu, when the device goes: lost (a driver reset, a removed
+        // GPU) or destroyed when the context is dropped.
+        device.set_device_lost_callback(|reason, message| match reason {
+            wgpu::DeviceLostReason::Destroyed => {
+                rbs_core::debug!(rbs_core::log::Area::Gpu, "device released");
+            }
+            _ => rbs_core::error!(rbs_core::log::Area::Gpu, "device lost: {message}"),
+        });
         let capabilities = CapabilitySet::new()
             .with(CAP_SOFTWARE, CapabilityValue::Flag(is_software(&info)))
             .with(
