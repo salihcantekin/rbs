@@ -849,6 +849,9 @@ fn main_window(file: &TokenFile, s: &ThemeSlot, vertical: bool) -> MainWindow {
     )
     .expect("the tokens apply");
     let shell = w.global::<Shell>();
+    // The testing backend has no system menu bar: on macOS Slint would draw the menu
+    // bar above the frame bar, inside the window, where the app never shows it.
+    shell.set_native_menu_bar(false);
     shell.set_toolbar(model(Vec::new()));
     shell.set_toolbar_end(model(vec![item("studio.mode", "Studio mode")]));
     shell.set_toolbar_fixed(model(vec![

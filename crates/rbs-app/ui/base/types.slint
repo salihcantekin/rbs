@@ -756,8 +756,10 @@ export global Shell {
     // Transition rail (ADR-0064). Empty when it has none.
     in property <string> transition-keys;
     // The menu bar shows: macOS's system menu bar. Windows and Linux use the RBS menu
-    // (ADR-0069). A binding, so every window (main and floating) gets it.
-    out property <bool> native-menu-bar: Platform.os == OperatingSystemType.macos;
+    // (ADR-0069). A binding, so every window (main and floating) gets it. In-out only
+    // for rendered tests: Slint's testing backend has no system menu bar, so on macOS
+    // Slint would draw the bar inside the window, where the app never shows it.
+    in-out property <bool> native-menu-bar: Platform.os == OperatingSystemType.macos;
     // Counts `ui.app_menu.open` runs and F10 presses: each opens the RBS menu with its
     // search field.
     in-out property <int> app-menu-asked;
