@@ -1050,7 +1050,10 @@ impl Host {
                     self.run_ui_api(rbs_api::Command::CanvasSetPreview(call), notify);
                 }
             }
-            Command::SetSwapAfterTransition(on) => self.swap_after_transition = on,
+            Command::SetSwapAfterTransition(on) => {
+                self.swap_after_transition = on;
+                self.settings_changed();
+            }
             // Routed elsewhere by `Host::command`.
             _ => {}
         }

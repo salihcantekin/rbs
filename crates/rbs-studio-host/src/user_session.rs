@@ -451,6 +451,19 @@ impl UserSession {
         Ok(())
     }
 
+    /// Removes a profile section (its settings go back to their defaults) and saves
+    /// the profile. Refused, with the reason, when another RBS holds the user data.
+    pub fn remove_section(&mut self, name: &str) -> Result<(), SessionError> {
+        let Some(saver) = &self.saver else {
+            return Err(read_only_note());
+        };
+        self.profile.remove(name);
+        saver
+            .shared
+            .push(Job::Profile(self.profile_id.clone(), self.profile.clone()));
+        Ok(())
+    }
+
     /// What saves the scene collection after a change, for the studio's control
     /// thread; `None` when changes are not saved (read-only).
     pub fn collection_saver(&self) -> Option<CollectionSaver> {

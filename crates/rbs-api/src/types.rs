@@ -6,8 +6,10 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+mod output_settings;
 mod scroll;
 mod serde_defaults;
+pub use output_settings::{ReplaySettings, SeparateFilesSettings, Settings};
 pub use scroll::{
     ItemScroll, ScrollDirection, ScrollFinished, ScrollRepeat, ScrollReturn, ScrollStart,
 };
@@ -1250,32 +1252,12 @@ pub struct StreamSettingsPatch {
 
 /// A field that is present, `null` included: `Some(value)`. An absent field takes the
 /// `default` (`None`).
-fn present<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
+pub(crate) fn present<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
 where
     D: serde::Deserializer<'de>,
     T: Deserialize<'de>,
 {
     Option::<T>::deserialize(d).map(Some)
-}
-
-/// Settings the control thread owns.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Settings {
-    /// Recording profiles.
-    pub profiles: Vec<RecordingProfile>,
-    /// The canvas.
-    pub canvas: Canvas,
-    /// The stream settings (protocol 1.2); absent while the app is still starting and
-    /// from servers that do not stream.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stream: Option<StreamSettings>,
-    /// Whether Record and Go live also act on the vertical outputs (protocol 1.42;
-    /// read only here, set with `output.set_with_vertical`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub vertical: Option<VerticalWithMain>,
-    /// The loudness meter's target and true-peak limit (protocol 1.59).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub loudness: Option<LoudnessSettings>,
 }
 
 /// What a recording is doing.
