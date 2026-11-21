@@ -104,9 +104,16 @@ fn grave() -> &'static Mutex<Grave<PageSlots>> {
 /// Drops pages no frame has referenced for [`crate::page_grave::HANDLE_HOLD`], so no
 /// importer can still match their handle values (ADR-0157 decision 13). Control thread.
 pub fn sweep() {
-    if let Ok(mut grave) = grave().lock() {
-        grave.sweep(Instant::now());
-    }
+    lock_grave().sweep(Instant::now());
+}
+
+/// The grave, also after a panic while it was held: its list stays sound, and a
+/// poisoned lock must not keep a page's textures and handles forever (round-5
+/// review).
+fn lock_grave() -> std::sync::MutexGuard<'static, Grave<PageSlots>> {
+    grave()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// True while the sweeper thread runs.
@@ -121,9 +128,7 @@ const SWEEP_EVERY: Duration = Duration::from_secs(1);
 /// the last page of a removed source, is still released on time (P13, capture-port
 /// invariant 8, round-4 review).
 pub fn bury(slots: Arc<PageSlots>) {
-    if let Ok(mut grave) = grave().lock() {
-        grave.bury(slots, Instant::now());
-    }
+    lock_grave().bury(slots, Instant::now());
     if !SWEEPING.swap(true, Ordering::AcqRel) {
         let spawned = std::thread::Builder::new()
             .name("rbs-browser-grave".into())
@@ -136,13 +141,11 @@ pub fn bury(slots: Arc<PageSlots>) {
 }
 
 fn sweep_until_empty() {
+    rbs_crash::report_panics_on_this_thread();
     loop {
         #[allow(clippy::disallowed_methods)] // Its own thread, between sweeps.
         std::thread::sleep(SWEEP_EVERY);
-        let Ok(mut grave) = grave().lock() else {
-            SWEEPING.store(false, Ordering::Release);
-            return;
-        };
+        let mut grave = lock_grave();
         grave.sweep(Instant::now());
         if grave.is_empty() {
             // Under the lock: a page buried after this starts a new sweeper.

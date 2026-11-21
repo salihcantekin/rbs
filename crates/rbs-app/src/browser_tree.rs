@@ -419,6 +419,18 @@ struct RunnerSession {
     slots: Option<std::sync::Arc<crate::browser_gpu::PageSlots>>,
 }
 
+/// A session dropped without [`BrowserSession::stop`] still buries its slots, so a
+/// page's textures and handles are never freed while a frame may hold them (ADR-0157
+/// decision 13, round-5 review).
+#[cfg(windows)]
+impl Drop for RunnerSession {
+    fn drop(&mut self) {
+        if let Some(slots) = self.slots.take() {
+            crate::browser_gpu::bury(slots);
+        }
+    }
+}
+
 impl BrowserSession for RunnerSession {
     fn poll(&mut self) -> Option<i32> {
         // An exit or a lost heartbeat (ADR-0109 decision 8), seen by the supervisor.

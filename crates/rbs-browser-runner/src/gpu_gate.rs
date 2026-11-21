@@ -108,7 +108,12 @@ impl GpuGate {
     /// finished. Its lease is the caller's.
     pub fn again(&mut self, ring: &FrameRing) -> Option<GpuPicture> {
         let picture = ring.lease_latest_gpu()?;
-        if self.fence.completed() >= picture.fence {
+        let completed = self.fence.completed();
+        // The same validity rule as [`GpuGate::pass`]: a removed device or an
+        // implausible value lets nothing through.
+        let valid = completed != u64::MAX
+            && completed <= self.newest.max(picture.fence).saturating_add(FENCE_JUMP);
+        if valid && completed >= picture.fence {
             return Some(picture);
         }
         ring.lease_sub(picture.slot);
@@ -205,37 +210,73 @@ mod tests {
         }
     }
 
-    /// A GPU shared with a game finishes each copy two publishes late. Pictures keep
-    /// going out and the gate never fails, at the 5 ms sound poll and at the plain
-    /// half-frame poll (round-4 review).
+    /// Runs 300 page frames where each copy completes `lag` after its publish (on
+    /// the clock, not on the publish count) and the studio holds each ready lease
+    /// for two frames, as the importer and compositor do. Returns the pictures that
+    /// went out; panics if the gate fails.
+    fn late_fence_run(slots: u32, lag: Duration, poll: Duration) -> u32 {
+        let ring = FrameRing::create_with_gpu(2, 2, SlotLayout::Bgra8Premultiplied, slots).unwrap();
+        let value = Arc::new(AtomicU64::new(0));
+        let mut gate = GpuGate::new(Box::new(Fence(Arc::clone(&value))), FPS);
+        let t0 = Instant::now();
+        let mut now = t0;
+        let mut fence = 0_u64;
+        let mut next_publish = t0;
+        let mut in_flight: std::collections::VecDeque<(u64, Instant)> = Default::default();
+        let mut held: std::collections::VecDeque<(u32, Instant)> = Default::default();
+        let mut ready = 0;
+        while now < t0 + FRAME * 300 {
+            while held.front().is_some_and(|&(_, until)| until <= now) {
+                let (slot, _) = held.pop_front().unwrap();
+                ring.lease_sub(slot);
+            }
+            if now >= next_publish {
+                next_publish += FRAME;
+                if publish(&ring, fence + 1).is_some() {
+                    fence += 1;
+                    in_flight.push_back((fence, now + lag));
+                }
+            }
+            while in_flight.front().is_some_and(|&(_, done)| done <= now) {
+                let (done, _) = in_flight.pop_front().unwrap();
+                value.store(done, Ordering::Relaxed);
+            }
+            match gate.pass(&ring, now) {
+                GatePass::Ready(p) => {
+                    ready += 1;
+                    held.push_back((p.slot, now + FRAME * 2));
+                }
+                GatePass::Failed => panic!("failed: {slots} slots, poll {poll:?}"),
+                GatePass::Nothing => {}
+            }
+            now += poll;
+        }
+        ready
+    }
+
+    /// A GPU shared with a game finishes each copy two frames late while the studio
+    /// holds each picture two frames. The gate never fails, at the 5 ms sound poll and
+    /// at the plain half-frame poll (round-4 review). With the default four slots the
+    /// waiting pictures and the held leases leave the helper short of free slots, so
+    /// about four in five pictures go out; six slots show nearly all (round-5 review,
+    /// ADR-0157 decision 5).
     #[test]
     fn a_fence_two_frames_behind_keeps_pictures_flowing_and_never_fails() {
-        for poll in [Duration::from_millis(5), FRAME / 2] {
-            let (ring, value, mut gate, t0) = setup();
-            let mut now = t0;
-            let mut published = 0_u64;
-            let mut next_publish = t0;
-            let mut ready = 0;
-            while now < t0 + FRAME * 300 {
-                if now >= next_publish {
-                    next_publish += FRAME;
-                    if publish(&ring, published + 1).is_some() {
-                        published += 1;
-                    }
-                    value.store(published.saturating_sub(2), Ordering::Relaxed);
-                }
-                match gate.pass(&ring, now) {
-                    GatePass::Ready(p) => {
-                        ready += 1;
-                        ring.lease_sub(p.slot);
-                    }
-                    GatePass::Failed => panic!("failed at poll {poll:?}"),
-                    GatePass::Nothing => {}
-                }
-                now += poll;
-            }
-            assert!(ready > 280, "only {ready} of 300 pictures at poll {poll:?}");
+        let sound = Duration::from_millis(5);
+        for slots in [4, 6] {
+            assert!(late_fence_run(slots, FRAME * 2, FRAME / 2) > 150);
         }
+        let four = late_fence_run(4, FRAME * 2, sound);
+        assert!(four > 220, "only {four} of 300 pictures with four slots");
+        let six = late_fence_run(6, FRAME * 2, sound);
+        assert!(six > 290, "only {six} of 300 pictures with six slots");
+    }
+
+    /// A copy that finishes within the frame loses nothing with four slots.
+    #[test]
+    fn a_fence_on_time_shows_every_picture_with_four_slots() {
+        let ready = late_fence_run(4, FRAME / 4, Duration::from_millis(5));
+        assert!(ready > 295, "only {ready} of 300 pictures");
     }
 
     /// A helper whose GPU hangs keeps publishing; the waiting picture's timer runs

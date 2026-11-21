@@ -134,6 +134,14 @@ impl HelperChild {
         self.gate.as_mut()?.again(&self.ring)
     }
 
+    /// Gives back the leases of the pictures waiting at the fence gate (a stop, an
+    /// exit or a fallback).
+    pub fn release_gate(&mut self) {
+        if let Some(gate) = self.gate.as_mut() {
+            gate.release(&self.ring);
+        }
+    }
+
     /// Gives back a GPU lease the caller did not hand on.
     pub fn release_gpu(&self, slot: u32) {
         self.ring.lease_sub(slot);
@@ -604,7 +612,8 @@ impl Supervisor {
                         let again = republish_flag.swap(false, Ordering::AcqRel);
                         let picture = match child.take_gpu(Instant::now()) {
                             Some(p) => Some(p),
-                            None if again => child.take_gpu_again(),
+                            // A failed tree publishes nothing more.
+                            None if again && !child.gpu_failed() => child.take_gpu_again(),
                             None => None,
                         };
                         if let Some(p) = picture {
@@ -651,6 +660,8 @@ impl Supervisor {
                     }
                     std::thread::park_timeout(if shown { period } else { hidden_period });
                 }
+                // The pictures still waiting at the fence gate give their leases back.
+                child.release_gate();
                 // A stop, not an exit: let the helper shut down cleanly, here and not
                 // on the caller's thread.
                 if !exited_flag.load(Ordering::Acquire) {
