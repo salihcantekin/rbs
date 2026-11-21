@@ -5393,10 +5393,12 @@ export component FeatureSection inherits VerticalLayout {
             }
         }
     }
-    // Hidden, not removed, so @children keep their values.
+    // Hidden, not removed, so @children keep their values. Hidden, they ask for no
+    // width either, so a closed body does not widen a narrow panel.
     Rectangle {
         visible: !root.closed;
         height: root.closed ? 0px : inner.preferred-height;
+        min-width: root.closed ? 0px : inner.min-width;
         inner := VerticalLayout {
             spacing: Tokens.size-field-gap;
             @children

@@ -924,14 +924,30 @@ export component LoudnessReadout inherits Rectangle {
     property <color> lamp: Studio.loudness.over ? Theme.meter-clip : Theme.text-disabled;
     accessible-role: text;
     accessible-label: Studio.loudness.has ? @tr("Loudness {} LUFS", Studio.loudness.short-text) : @tr("Loudness, no value yet");
-    if root.compact: HorizontalLayout {
-        spacing: 0px;
+    // The unit under the number, at the dB scale's size: the slot is one control high,
+    // and "LUFS" beside the number does not fit the control column.
+    if root.compact: VerticalLayout {
         alignment: center;
-        Icon { name: IconName.dot; ink: root.lamp; }
+        spacing: 0px;
+        HorizontalLayout {
+            spacing: 0px;
+            alignment: center;
+            height: Tokens.size-meter-scale-line;
+            Icon { name: IconName.dot; ink: root.lamp; }
+            Text {
+                text: root.number;
+                color: Theme.text-primary;
+                font-size: Tokens.type-caption-size;
+                vertical-alignment: center;
+                accessible-role: none;
+            }
+        }
         Text {
-            text: root.number;
-            color: Theme.text-primary;
-            font-size: Tokens.type-caption-size;
+            height: Tokens.size-meter-scale-line;
+            text: "LUFS";
+            color: Theme.text-secondary;
+            font-size: Tokens.size-meter-scale;
+            horizontal-alignment: center;
             vertical-alignment: center;
             accessible-role: none;
         }
@@ -1028,15 +1044,18 @@ component LoudnessLine inherits HorizontalLayout {
 // The loudness details (ADR-0092): every value of `loudness.status`, the target, and
 // Reset. Drawn in the Mixer under its own "Loudness" header (closed by default) after
 // the master: under it in rows, as a column beside it in columns.
+// `compact` (the columns' Loudness column, as tall as a strip): the lines sit with no
+// gap, and Settings and Reset are icon buttons in the column's header instead.
 export component LoudnessDetails inherits VerticalLayout {
-    spacing: Tokens.space-1;
+    in property <bool> compact;
+    spacing: root.compact ? 0px : Tokens.space-1;
     LoudnessLine { label: @tr("Short-term"); value: Studio.loudness.has ? @tr("{} LUFS", Studio.loudness.short-text) : ""; strong: true; }
     LoudnessLine { label: @tr("Momentary"); value: Studio.loudness.momentary; }
     LoudnessLine { label: @tr("Integrated"); value: Studio.loudness.integrated; strong: true; }
     LoudnessLine { label: @tr("Range"); value: Studio.loudness.range; }
     LoudnessLine { label: @tr("True peak"); value: Studio.loudness.true-peak; }
     LoudnessLine { label: @tr("Target"); value: Studio.loudness.target-text; }
-    HorizontalLayout {
+    if !root.compact: HorizontalLayout {
         padding-top: Tokens.space-1;
         spacing: Tokens.space-2;
         alignment: end;
@@ -1871,8 +1890,18 @@ export component MixerPanel inherits Rectangle {
                             min-width: 0px;
                             overflow: elide;
                         }
+                        IconButton {
+                            icon: IconName.gear;
+                            name: @tr("Loudness settings");
+                            clicked => { Studio.open-loudness-settings(); }
+                        }
+                        IconButton {
+                            icon: IconName.reset;
+                            name: @tr("Reset loudness");
+                            clicked => { Studio.reset-loudness(); }
+                        }
                     }
-                    LoudnessDetails { }
+                    LoudnessDetails { compact: true; }
                     Rectangle { vertical-stretch: 1; }
                 }
                 if Studio.monitor-wanted: Rectangle {
@@ -2798,6 +2827,7 @@ component ScrollFields inherits FeatureSection {
         spacing: Tokens.size-field-gap;
         Field {
             horizontal-stretch: 1;
+            preferred-width: 0px;
             label: @tr("Speed");
             NumberField {
                 label: @tr("Scroll speed of {} in pixels per second", data.name);
@@ -2809,6 +2839,7 @@ component ScrollFields inherits FeatureSection {
         }
         Field {
             horizontal-stretch: 1;
+            preferred-width: 0px;
             label: @tr("Gap");
             NumberField {
                 label: @tr("Gap between copies of {} in pixels", data.name);
@@ -2818,8 +2849,14 @@ component ScrollFields inherits FeatureSection {
                 edited(v) => { root.set(true, data.scroll-dir, data.scroll-speed, max(0, min(16384, v)), data.scroll-repeat, data.scroll-start, data.scroll-fade, self.gesture); }
             }
         }
+    }
+    // Two fields a row, so the tab fits the right dock's default width; Edge fade
+    // keeps the column width of the row above.
+    HorizontalLayout {
+        spacing: Tokens.size-field-gap;
         Field {
             horizontal-stretch: 1;
+            preferred-width: 0px;
             label: @tr("Edge fade");
             NumberField {
                 label: @tr("Edge fade of {} in pixels", data.name);
@@ -2829,30 +2866,27 @@ component ScrollFields inherits FeatureSection {
                 edited(v) => { root.set(true, data.scroll-dir, data.scroll-speed, data.scroll-gap, data.scroll-repeat, data.scroll-start, max(0, min(2048, v)), self.gesture); }
             }
         }
+        Rectangle { horizontal-stretch: 1; preferred-width: 0px; }
     }
-    HorizontalLayout {
-        spacing: Tokens.size-field-gap;
-        Field {
-            horizontal-stretch: 1;
-            label: @tr("Repeat");
-            SegmentedControl {
-                label: @tr("Scroll repeat of {}", data.name);
-                options: [@tr("Loop"), @tr("Once")];
-                index: data.scroll-repeat;
-                enabled: data.scroll-on && !data.locked;
-                selected(i) => { if i != data.scroll-repeat { root.set(true, data.scroll-dir, data.scroll-speed, data.scroll-gap, i, data.scroll-start, data.scroll-fade, 0); } }
-            }
+    // Repeat and Start one under the other: side by side they are wider than the dock.
+    Field {
+        label: @tr("Repeat");
+        SegmentedControl {
+            label: @tr("Scroll repeat of {}", data.name);
+            options: [@tr("Loop"), @tr("Once")];
+            index: data.scroll-repeat;
+            enabled: data.scroll-on && !data.locked;
+            selected(i) => { if i != data.scroll-repeat { root.set(true, data.scroll-dir, data.scroll-speed, data.scroll-gap, i, data.scroll-start, data.scroll-fade, 0); } }
         }
-        Field {
-            horizontal-stretch: 1;
-            label: @tr("Start");
-            SegmentedControl {
-                label: @tr("Where the scroll of {} starts", data.name);
-                options: [@tr("Inside"), @tr("Outside")];
-                index: data.scroll-start;
-                enabled: data.scroll-on && !data.locked;
-                selected(i) => { if i != data.scroll-start { root.set(true, data.scroll-dir, data.scroll-speed, data.scroll-gap, data.scroll-repeat, i, data.scroll-fade, 0); } }
-            }
+    }
+    Field {
+        label: @tr("Start");
+        SegmentedControl {
+            label: @tr("Where the scroll of {} starts", data.name);
+            options: [@tr("Inside"), @tr("Outside")];
+            index: data.scroll-start;
+            enabled: data.scroll-on && !data.locked;
+            selected(i) => { if i != data.scroll-start { root.set(true, data.scroll-dir, data.scroll-speed, data.scroll-gap, data.scroll-repeat, i, data.scroll-fade, 0); } }
         }
     }
     // ADR-0152 phase 5: a scroll that continues goes on where it would be had it kept
