@@ -77,7 +77,8 @@ mod failures;
 mod seams;
 use failures::{answer_on_panic, refused};
 pub use seams::{
-    Applied, Chapter, ChapterWriter, FreeSpaceReader, MainDisplayProbe, display_from_default_screen,
+    Applied, BrowserTrees, Chapter, ChapterWriter, EngineRuntime, EngineSlot, FreeSpaceReader,
+    HostBrowserTree, MainDisplayProbe, display_from_default_screen,
 };
 pub mod filters;
 mod interact;
@@ -3507,8 +3508,9 @@ pub struct HostConfig {
     /// [`crate::add_ons::system_setup`] in the app). `None`: `addon.list`
     /// shows the built-in catalog as not installed and installs are refused.
     pub add_ons: Option<crate::add_ons::AddOnsSetup>,
-    /// The browser runner (tests); `None`: [`crate::browser_tree::resolve_runner`].
-    pub browser_runner: Option<crate::browser_tree::Runner>,
+    /// Makes the browser tree at each start (ADR-0159 decision 4); `None`: no helper,
+    /// so browser sources are Unavailable with `helper_missing`.
+    pub browser: Option<Arc<dyn BrowserTrees>>,
     /// A step to panic at once (tests only, ADR-0055).
     #[cfg(feature = "fault-injection")]
     #[doc(hidden)]
@@ -3548,7 +3550,7 @@ impl HostConfig {
             main_display: None,
             calibration_setup: None,
             add_ons: None,
-            browser_runner: None,
+            browser: None,
             #[cfg(feature = "fault-injection")]
             fault: None,
         }
@@ -4038,9 +4040,9 @@ struct Host {
     /// The browser runner tree (ADR-0109), as the studio takes it.
     browser_tree: Option<Arc<dyn BrowserTree>>,
     /// The same tree: whether it needs the engine and whether a runner is alive.
-    browser: Arc<crate::browser_tree::RunnerBrowserTree>,
+    browser: Arc<dyn HostBrowserTree>,
     /// The installed browser engine the tree passes to each runner (ADR-0145).
-    engine_slot: Arc<crate::browser_tree::EngineSlot>,
+    engine_slot: Arc<EngineSlot>,
     /// `browser-profiles/`, where kept sign-ins live (ADR-0132 decision 10); `None`
     /// when this run keeps none.
     profiles_dir: Option<std::path::PathBuf>,
@@ -4605,25 +4607,20 @@ fn start(
         .as_ref()
         .and_then(|setup| crate::browser_profiles::dir_beside(&setup.root));
     let add_ons = add_ons::AddOnsHost::new(config.add_ons);
-    let engine_slot = Arc::new(crate::browser_tree::EngineSlot::default());
+    let engine_slot = Arc::new(EngineSlot::default());
     if collection
         .sources()
         .any(|s| s.type_id.as_str() == types::BROWSER_SOURCE)
     {
         engine_slot.set(add_ons.browser_engine());
     }
-    let mut tree = crate::browser_tree::RunnerBrowserTree::new(
-        config
-            .browser_runner
-            .or_else(crate::browser_tree::resolve_runner),
+    let browser = seams::browser_tree(
+        config.browser.as_ref(),
         Arc::clone(&engine_slot),
+        profiles.clone(),
+        &gpu,
     );
-    if let Some(dir) = profiles.clone() {
-        tree = tree.with_profiles(dir);
-    }
-    let browser = Arc::new(tree);
-    let browser_tree: Option<Arc<dyn BrowserTree>> =
-        Some(Arc::clone(&browser) as Arc<dyn BrowserTree>);
+    let browser_tree: Option<Arc<dyn BrowserTree>> = Some(Arc::clone(&browser) as _);
     let mut settings = StudioSettings::new(canvas);
     // Width and height stay as configured. The ring follows the canvas that runs:
     // a saved collection can use another rate than the one the descriptor was built with.

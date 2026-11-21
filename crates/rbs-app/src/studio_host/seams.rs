@@ -3,10 +3,14 @@
 
 use std::fmt::Debug;
 use std::fs::File;
-use std::sync::Arc;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use rbs_core::media::ContainerId;
-use rbs_sources::SourceTypes;
+use rbs_gpu::GpuContext;
+use rbs_sources::{
+    BrowserFrameSink, BrowserSession, BrowserSound, BrowserTree, HELPER_MISSING, SourceTypes,
+};
 
 use super::{MainDisplay, SourceKind};
 
@@ -105,4 +109,109 @@ pub(super) fn probe_display(
     sources: &SourceTypes,
 ) -> Option<MainDisplay> {
     probe.and_then(|probe| probe(sources))
+}
+
+/// The installed browser engine as the runner needs it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EngineRuntime {
+    /// The installed version's directory (it holds the marker).
+    pub root: PathBuf,
+    /// The directory that holds the library.
+    pub library_dir: PathBuf,
+}
+
+/// The engine slot the host sets after resolving the add-on, and the tree reads at
+/// each start. Shared by one host and its tree.
+#[derive(Debug, Default)]
+pub struct EngineSlot {
+    runtime: Mutex<Option<EngineRuntime>>,
+}
+
+impl EngineSlot {
+    /// Sets or clears the installed engine.
+    pub fn set(&self, runtime: Option<EngineRuntime>) {
+        if let Ok(mut slot) = self.runtime.lock() {
+            *slot = runtime;
+        }
+    }
+
+    /// The installed engine, if any.
+    pub fn get(&self) -> Option<EngineRuntime> {
+        self.runtime.lock().ok().and_then(|slot| slot.clone())
+    }
+}
+
+/// A browser tree as the host keeps it: the sources' tree, and the two questions the
+/// add-ons code asks.
+pub trait HostBrowserTree: BrowserTree {
+    /// True while a helper the tree started is alive (or still stopping).
+    fn in_use(&self) -> bool;
+    /// True when a start would be refused only for want of the engine add-on.
+    fn needs_engine(&self) -> bool;
+}
+
+/// Makes the browser tree for a studio start ([`super::HostConfig::browser`]), after
+/// the GPU context exists, so a root can read the adapter from it.
+pub trait BrowserTrees: Send + Sync + Debug {
+    /// The tree that reads the installed engine from `engine` and keeps signed-in
+    /// profiles under `profiles`.
+    fn create(
+        &self,
+        engine: Arc<EngineSlot>,
+        profiles: Option<PathBuf>,
+        gpu: &Arc<GpuContext>,
+    ) -> Arc<dyn HostBrowserTree>;
+}
+
+/// The tree without a browser helper: every start is `helper_missing`, as a runner
+/// tree without a runner answers.
+#[derive(Debug, Default)]
+pub(super) struct NoRunnerTree {
+    profiles: Option<PathBuf>,
+}
+
+impl BrowserTree for NoRunnerTree {
+    fn start(
+        &self,
+        _config: &rbs_browser_ipc::Configure,
+        _sink: Arc<BrowserFrameSink>,
+        _sound: Option<Arc<BrowserSound>>,
+    ) -> Result<Box<dyn BrowserSession>, String> {
+        Err(HELPER_MISSING.to_owned())
+    }
+
+    fn unavailable(&self) -> Option<&'static str> {
+        Some(HELPER_MISSING)
+    }
+
+    fn profile_dir(&self, profile_id: &str) -> Option<String> {
+        if !rbs_sources::is_profile_id(profile_id) {
+            return None;
+        }
+        let dir = self.profiles.as_ref()?.join(profile_id);
+        Some(dir.to_string_lossy().into_owned())
+    }
+}
+
+impl HostBrowserTree for NoRunnerTree {
+    fn in_use(&self) -> bool {
+        false
+    }
+
+    fn needs_engine(&self) -> bool {
+        false
+    }
+}
+
+/// The tree for a start: the root's, or [`NoRunnerTree`] without one.
+pub(super) fn browser_tree(
+    trees: Option<&Arc<dyn BrowserTrees>>,
+    engine: Arc<EngineSlot>,
+    profiles: Option<PathBuf>,
+    gpu: &Arc<GpuContext>,
+) -> Arc<dyn HostBrowserTree> {
+    match trees {
+        Some(trees) => trees.create(engine, profiles, gpu),
+        None => Arc::new(NoRunnerTree { profiles }),
+    }
 }

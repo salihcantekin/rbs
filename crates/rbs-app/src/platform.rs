@@ -23,6 +23,9 @@ pub fn host_seams(config: &mut crate::studio_host::HostConfig) {
     config.os_version = crate::system_probe::os_version();
     config.chapters = Some(std::sync::Arc::new(crate::chapters::MatroskaChapters));
     config.main_display = Some(main_display);
+    config.browser = Some(std::sync::Arc::new(
+        crate::browser_tree::RunnerTrees::resolved(),
+    ));
 }
 
 /// The Core Graphics framebuffer and point width; it does not list screen targets.

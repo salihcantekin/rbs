@@ -12,9 +12,9 @@ use rbs_api::event::{EventPayload, StateKey, Topic};
 use rbs_api::types as api;
 use rbs_api::{ApiError, ErrorKind};
 
+use super::EngineRuntime;
 use super::{AddOnAction, Host, Msg, Update};
 use crate::add_ons::{AddOnsSetup, BROWSER_ENGINE};
-use crate::browser_tree::EngineRuntime;
 
 /// What an install thread reports.
 #[derive(Debug)]

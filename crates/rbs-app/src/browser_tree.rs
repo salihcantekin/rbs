@@ -7,9 +7,10 @@
 //! `rbs-browser-helper` is found through `CARGO_BIN_EXE_rbs-browser-helper` only.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 
+use crate::studio_host::{BrowserTrees, HostBrowserTree};
 use rbs_browser_ipc::Configure;
 use rbs_browser_ipc::control::Control;
 use rbs_browser_ipc::exit::Cause;
@@ -85,35 +86,7 @@ fn shipped_runner(dir: &Path) -> Option<PathBuf> {
     (cfg!(target_os = "macos") && bundled.is_file()).then_some(bundled)
 }
 
-/// The installed browser engine as the runner needs it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EngineRuntime {
-    /// The installed version's directory (it holds the marker).
-    pub root: PathBuf,
-    /// The directory that holds the library.
-    pub library_dir: PathBuf,
-}
-
-/// The engine slot the host sets after resolving the add-on, and the tree reads at
-/// each start. Shared by one host and its tree.
-#[derive(Debug, Default)]
-pub struct EngineSlot {
-    runtime: Mutex<Option<EngineRuntime>>,
-}
-
-impl EngineSlot {
-    /// Sets or clears the installed engine.
-    pub fn set(&self, runtime: Option<EngineRuntime>) {
-        if let Ok(mut slot) = self.runtime.lock() {
-            *slot = runtime;
-        }
-    }
-
-    /// The installed engine, if any.
-    pub fn get(&self) -> Option<EngineRuntime> {
-        self.runtime.lock().ok().and_then(|slot| slot.clone())
-    }
-}
+pub use crate::studio_host::{EngineRuntime, EngineSlot};
 
 /// Starts the runner for each browser source.
 #[derive(Debug)]
@@ -173,6 +146,48 @@ impl RunnerBrowserTree {
             .get()
             .map(|rt| runtime_env(&rt.root, &rt.library_dir))
             .unwrap_or_default()
+    }
+}
+
+impl HostBrowserTree for RunnerBrowserTree {
+    fn in_use(&self) -> bool {
+        RunnerBrowserTree::in_use(self)
+    }
+
+    fn needs_engine(&self) -> bool {
+        RunnerBrowserTree::needs_engine(self)
+    }
+}
+
+/// The studio host's browser trees in this root: a [`RunnerBrowserTree`] with the
+/// runner of [`resolve_runner`], or the one given (ADR-0159 decision 4).
+#[derive(Debug, Clone, Default)]
+pub struct RunnerTrees {
+    /// `None`: every start is `helper_missing`.
+    pub runner: Option<Runner>,
+}
+
+impl RunnerTrees {
+    /// The runner this process starts ([`resolve_runner`]).
+    pub fn resolved() -> Self {
+        Self {
+            runner: resolve_runner(),
+        }
+    }
+}
+
+impl BrowserTrees for RunnerTrees {
+    fn create(
+        &self,
+        engine: Arc<EngineSlot>,
+        profiles: Option<PathBuf>,
+        _gpu: &Arc<rbs_gpu::GpuContext>,
+    ) -> Arc<dyn HostBrowserTree> {
+        let mut tree = RunnerBrowserTree::new(self.runner.clone(), engine);
+        if let Some(dir) = profiles {
+            tree = tree.with_profiles(dir);
+        }
+        Arc::new(tree)
     }
 }
 
