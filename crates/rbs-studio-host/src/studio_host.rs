@@ -106,6 +106,7 @@ use api_convert::*;
 pub use command::*;
 use control_api::*;
 use recording_markers::*;
+pub use refusal::Refusal;
 pub use rows::*;
 pub use updates::*;
 mod command;
@@ -118,6 +119,7 @@ mod projector;
 mod publish_cost;
 mod recording;
 mod recording_markers;
+mod refusal;
 mod rows;
 mod scenes;
 mod source_settings;
@@ -624,6 +626,12 @@ impl From<String> for StartError {
     }
 }
 
+impl From<Refusal> for StartError {
+    fn from(e: Refusal) -> Self {
+        Self::Message(e.into_text())
+    }
+}
+
 impl StartError {
     fn into_message(self) -> String {
         match self {
@@ -1086,14 +1094,16 @@ impl StreamRequest {
     /// (`None`: the best one). Says why when they cannot be used: no server, a server
     /// that is not valid, or settings out of range. The key is not checked here: the
     /// host reads it from the key store when the stream starts.
-    pub fn from_profile(p: &StreamProfile, encoder: Option<String>) -> Result<Self, String> {
+    pub fn from_profile(p: &StreamProfile, encoder: Option<String>) -> Result<Self, Refusal> {
         if let Some(why) = p.problem() {
-            return Err(why);
+            return Err(Refusal::Invalid(why));
         }
         if p.server.is_empty() {
-            return Err("Enter the server in Settings, Stream.".into());
+            return Err(Refusal::Invalid(
+                "Enter the server in Settings, Stream.".to_owned(),
+            ));
         }
-        let server = parse_server(&p.server)?;
+        let server = parse_server(&p.server).map_err(|e| Refusal::Invalid(e.to_string()))?;
         Ok(Self {
             url: p.server.clone(),
             input: server.protocol.input(),
@@ -1107,9 +1117,9 @@ impl StreamRequest {
     /// The stream's shared settings (encoding, output size) without a server: the
     /// base each destination's request is built on when the canvas's first slot does
     /// not exist (ADR-0148 decision 6). Its own URL is empty and never used.
-    pub fn from_settings(p: &StreamProfile, encoder: Option<String>) -> Result<Self, String> {
+    pub fn from_settings(p: &StreamProfile, encoder: Option<String>) -> Result<Self, Refusal> {
         if let Some(why) = p.problem() {
-            return Err(why);
+            return Err(Refusal::Invalid(why));
         }
         let e = &p.encoding;
         Ok(Self {
@@ -1185,50 +1195,6 @@ pub struct SceneList {
     pub stinger_alpha_unsupported: bool,
     /// Every source of the collection, by name.
     pub sources: Vec<SourceEntry>,
-}
-
-/// Why a scene, item or source edit was refused (ADR-0059): words for the UI, and the
-/// control API's error kind.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Refusal {
-    /// The object does not exist (any more).
-    NotFound(String),
-    /// The request is not valid (an empty name, a volume out of range).
-    Invalid(String),
-    /// It conflicts with the state (a taken name, the last scene).
-    Conflict(String),
-    /// Something else went wrong.
-    Failed(String),
-}
-
-impl Refusal {
-    /// In words.
-    pub fn text(&self) -> &str {
-        match self {
-            Self::NotFound(s) | Self::Invalid(s) | Self::Conflict(s) | Self::Failed(s) => s,
-        }
-    }
-
-    fn of(e: &SceneError) -> Self {
-        match e {
-            SceneError::UnknownSource(_)
-            | SceneError::UnknownScene(_)
-            | SceneError::UnknownItem(_)
-            | SceneError::UnknownFilter(_) => Self::NotFound(edit_error(e)),
-            SceneError::DuplicateName(_) | SceneError::StingerPlaced(_) => {
-                Self::Conflict(edit_error(e))
-            }
-            SceneError::EmptyName
-            | SceneError::InvalidVolume
-            | SceneError::InvalidSyncOffset
-            | SceneError::InvalidShowFor
-            | SceneError::InvalidActivity
-            | SceneError::InvalidTransition
-            | SceneError::ChromeNotDisplay
-            | SceneError::IndexOutOfRange(_) => Self::Invalid(edit_error(e)),
-            _ => Self::Failed(edit_error(e)),
-        }
-    }
 }
 
 /// Smallest and largest side of a vertical canvas the control API accepts: even (the
@@ -1906,8 +1872,6 @@ struct Host {
     media_sent: Option<Vec<MediaTick>>,
     /// The Show cues sent last ([`Update::Cues`]).
     cues_sent: Vec<(ItemId, u32)>,
-    /// The collection's level edits the rows last showed (F-10).
-    levels_seen: Option<rbs_scene::LevelEdits>,
     /// The generation of the thumbnail request that may still deliver (ADR-0077).
     thumbs: Arc<AtomicU64>,
     /// OS permission prompts showing now, each with the commands waiting for its
@@ -1929,8 +1893,9 @@ struct Host {
     /// Bumped when the whole collection value is replaced. Together with
     /// [`SceneCollection::generation`] it says whether source rows must be rebuilt.
     collection_epoch: u64,
-    /// The last [`Self::list_stamp`]. `None` until the first publish.
-    list_stamp: Option<u64>,
+    /// The last [`Self::compute_list_stamp`] and the collection's level edits the
+    /// rows showed then (F-10). `None` until the first publish.
+    list_stamp: Option<(u64, rbs_scene::LevelEdits)>,
     canvas: CanvasId,
     /// The canvas's program scene: the one the Sources panel and the source commands
     /// edit (kept in step by [`Host::keep_program`]).
@@ -2691,7 +2656,7 @@ impl Host {
         size: Size,
         fps: FrameRate,
         notify: &dyn Fn(Update),
-    ) -> Result<(), String> {
+    ) -> Result<(), Refusal> {
         let before = self.api_canvas();
         let result = self.set_canvas(size, fps);
         self.canvas_changed(before, notify);
@@ -2828,17 +2793,21 @@ impl Host {
     /// in the canvas's layout space and are fitted when drawn (ADR-0110). When the new
     /// canvas does not start, the old one starts again and the error says why; when
     /// that fails too, `dead` says why.
-    fn set_canvas(&mut self, size: Size, fps: FrameRate) -> Result<(), String> {
+    fn set_canvas(&mut self, size: Size, fps: FrameRate) -> Result<(), Refusal> {
         if self.any_recording() {
-            return Err("Stop the recording before changing the canvas.".into());
+            return Err(Refusal::Conflict(
+                "Stop the recording before changing the canvas.".to_owned(),
+            ));
         }
         if self.any_streaming() {
-            return Err("End the stream before changing the canvas.".into());
+            return Err(Refusal::Conflict(
+                "End the stream before changing the canvas.".to_owned(),
+            ));
         }
         let canvas = self
             .collection
             .canvas(self.canvas)
-            .ok_or("the canvas is gone")?;
+            .ok_or_else(|| Refusal::Failed("the canvas is gone".to_owned()))?;
         let (old_size, old_fps) = (canvas.size, canvas.frame_rate);
         if (old_size, old_fps) == (size, fps) {
             return Ok(());
@@ -2846,7 +2815,7 @@ impl Host {
         let before = self.collection.clone();
         self.collection
             .set_canvas_format(self.canvas, size, fps)
-            .map_err(|e| format!("canvas: {e:?}"))?;
+            .map_err(|e| Refusal::Failed(format!("canvas: {e:?}")))?;
         // Layouts stay in the canvas's layout space (ADR-0110). Flattening fits them
         // into `size`; returning to the layout size shows the stored boxes again.
         self.restarting = true;
@@ -2870,12 +2839,12 @@ impl Host {
                 let again = self.restart();
                 self.restarting = false;
                 match again {
-                    Ok(()) => Err(format!(
+                    Ok(()) => Err(Refusal::Failed(format!(
                         "The canvas {} x {} cannot be used: {why}",
                         size.width, size.height
-                    )),
+                    ))),
                     Err(again) => {
-                        self.dead = Some(again);
+                        self.dead = Some(again.into_text());
                         Err(why)
                     }
                 }
@@ -2987,11 +2956,11 @@ impl Host {
     }
 
     /// Starts a new studio for the collection as it is.
-    fn restart(&mut self) -> Result<(), String> {
+    fn restart(&mut self) -> Result<(), Refusal> {
         let canvas = self
             .collection
             .canvas(self.canvas)
-            .ok_or("the canvas is gone")?;
+            .ok_or_else(|| Refusal::Failed("the canvas is gone".to_owned()))?;
         let mut settings = StudioSettings::new(self.canvas);
         let preview = self
             .preview_surfaces
@@ -3025,7 +2994,7 @@ impl Host {
             &settings,
             self.browser_tree.clone(),
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| Refusal::Failed(e.to_string()))?;
         self.studio = studio;
         self.clock = clock;
         self.studio.set_text_timers(&timers);
@@ -3325,19 +3294,10 @@ impl Host {
         }
         let stamp = self.compute_list_stamp();
         let levels = self.collection.level_edits();
-        if self.list_stamp != Some(stamp) {
-            self.list_stamp = Some(stamp);
-            self.levels_seen = Some(levels);
-            self.publish_scene_list(notify);
-            self.publish_rows(notify);
-        } else if let Some(seen) = self.levels_seen.replace(levels)
-            && seen != levels
-        {
-            // Only live levels moved (F-10): a fader step patches the rows it moves.
-            if seen.master != levels.master {
-                self.patch_master(notify);
-            }
-            if seen.source_audio != levels.source_audio && !self.patch_source_audio(notify) {
+        match self.list_stamp.replace((stamp, levels)) {
+            Some((was, seen)) if was == stamp => self.patch_levels(seen, levels, notify),
+            _ => {
+                self.publish_scene_list(notify);
                 self.publish_rows(notify);
             }
         }
@@ -3793,15 +3753,18 @@ fn encoder_catalog(adapters: &RecordAdapters) -> (Vec<EncoderInfo>, Option<Strin
 fn only_encoder<F: ?Sized + AdapterFactory>(
     all: &Registry<F>,
     id: &str,
-) -> Result<Registry<F>, String> {
+) -> Result<Registry<F>, Refusal> {
     let factory = all
         .select(&Requirement::new())
         .candidates
         .into_iter()
         .find(|f| f.id().as_str() == id)
-        .ok_or_else(|| format!("The encoder {id} is not available on this system."))?;
+        .ok_or_else(|| {
+            Refusal::Failed(format!("The encoder {id} is not available on this system."))
+        })?;
     let mut only = Registry::new();
-    only.register(factory).map_err(|e| e.to_string())?;
+    only.register(factory)
+        .map_err(|e| Refusal::Failed(e.to_string()))?;
     only.probe_all();
     Ok(only)
 }
@@ -3868,14 +3831,14 @@ fn shown_scene(
     collection: &mut SceneCollection,
     size: Size,
     fps: FrameRate,
-) -> Result<(CanvasId, SceneId), String> {
+) -> Result<(CanvasId, SceneId), Refusal> {
     let first = collection.canvases().next().map(|c| c.id);
     let canvas = match first {
         Some(c) => c,
         None => {
             collection
                 .add_canvas("Main", size, fps)
-                .map_err(|e| format!("canvas: {e:?}"))?
+                .map_err(|e| Refusal::Failed(format!("canvas: {e:?}")))?
                 .0
         }
     };
@@ -3890,14 +3853,14 @@ fn shown_scene(
         None => {
             collection
                 .add_scene("Scene", SceneScope::Shared)
-                .map_err(|e| format!("scene: {e:?}"))?
+                .map_err(|e| Refusal::Failed(format!("scene: {e:?}")))?
                 .0
         }
     };
     if program != Some(scene) {
         collection
             .set_program(canvas, Some(scene))
-            .map_err(|e| format!("program: {e:?}"))?;
+            .map_err(|e| Refusal::Failed(format!("program: {e:?}")))?;
     }
     Ok((canvas, scene))
 }

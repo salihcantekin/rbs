@@ -355,6 +355,22 @@ impl Host {
         notify(Update::Master(master));
     }
 
+    /// Only live levels moved since `seen` (F-10): a fader step patches the rows it
+    /// moves.
+    pub(super) fn patch_levels(
+        &mut self,
+        seen: rbs_scene::LevelEdits,
+        levels: rbs_scene::LevelEdits,
+        notify: &dyn Fn(Update),
+    ) {
+        if seen.master != levels.master {
+            self.patch_master(notify);
+        }
+        if seen.source_audio != levels.source_audio && !self.patch_source_audio(notify) {
+            self.publish_rows(notify);
+        }
+    }
+
     /// After edits that only set sources' audio: writes the new audio into the rows
     /// already sent and sends [`Update::SourceAudio`] instead of every row (F-10).
     /// False when the change moves more than those fields (a sync offset changes the

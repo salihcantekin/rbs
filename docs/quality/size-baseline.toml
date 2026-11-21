@@ -15,7 +15,7 @@
 "crates/rbs-scene/src/collection.rs" = 2990
 "crates/rbs-scene/tests/binder.rs" = 2882
 "crates/rbs-scene/tests/collection.rs" = 2759
-"crates/rbs-studio-host/src/studio_host.rs" = 4599
+"crates/rbs-studio-host/src/studio_host.rs" = 4562
 "crates/rbs-ui/src/command.rs" = 4398
 "crates/rbs-ui/src/workspace.rs" = 2798
 

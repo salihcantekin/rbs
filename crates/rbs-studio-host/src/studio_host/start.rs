@@ -19,7 +19,8 @@ pub(super) fn start(
     notes.push(format!("gpu: {}", gpu.adapter_name()));
     let loaded = config.collection.as_ref().map(|c| (0, c.generation()));
     let mut collection = config.collection.unwrap_or_default();
-    let (canvas, scene) = shown_scene(&mut collection, config.size, config.fps)?;
+    let (canvas, scene) =
+        shown_scene(&mut collection, config.size, config.fps).map_err(Refusal::into_text)?;
     // The collection's canvas; `config.size` only chose the preview's aspect ratio.
     let (run_size, run_fps) = collection
         .canvas(canvas)
@@ -81,7 +82,6 @@ pub(super) fn start(
         collection_epoch: 0,
         list_stamp: None,
         cues_sent: Vec::new(),
-        levels_seen: None,
         canvas,
         scene,
         rows: Vec::new(),

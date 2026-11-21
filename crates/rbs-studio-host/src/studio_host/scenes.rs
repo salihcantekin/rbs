@@ -30,14 +30,17 @@ impl Host {
         next: SceneCollection,
         autosave: Option<CollectionSaver>,
         notify: &dyn Fn(Update),
-    ) -> Result<(), String> {
+    ) -> Result<(), Refusal> {
         if self.any_recording() {
-            let why = "Stop the recording before switching scene collections.".to_owned();
+            let why = Refusal::Conflict(
+                "Stop the recording before switching scene collections.".to_owned(),
+            );
             self.canvas_changed(self.api_canvas(), notify);
             return Err(why);
         }
         if self.any_streaming() {
-            let why = "End the stream before switching scene collections.".to_owned();
+            let why =
+                Refusal::Conflict("End the stream before switching scene collections.".to_owned());
             self.canvas_changed(self.api_canvas(), notify);
             return Err(why);
         }
@@ -57,7 +60,9 @@ impl Host {
             Ok(shown) => shown,
             Err(why) => {
                 self.canvas_changed(before, notify);
-                return Err(format!("The scene collection cannot be used: {why}"));
+                return Err(Refusal::Failed(format!(
+                    "The scene collection cannot be used: {why}"
+                )));
             }
         };
         // Whatever the old collection's last change was, it is saved before this one.
@@ -91,9 +96,11 @@ impl Host {
                 (self.collection, self.canvas, self.scene) = old;
                 self.held = old_held;
                 if let Err(again) = self.restart() {
-                    self.dead = Some(again);
+                    self.dead = Some(again.into_text());
                 }
-                Err(format!("The scene collection cannot run: {why}"))
+                Err(Refusal::Failed(format!(
+                    "The scene collection cannot run: {why}"
+                )))
             }
         };
         self.canvas_changed(before, notify);
@@ -105,7 +112,7 @@ impl Host {
         &mut self,
         id: SceneId,
         direction: rbs_api::request::LayerDirection,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, Refusal> {
         use rbs_api::request::LayerDirection::*;
         let undo = match direction {
             Up => self.collection.move_scene(self.canvas, id, true),
@@ -113,7 +120,7 @@ impl Host {
             Front => self.collection.move_scene_to_end(self.canvas, id, true),
             Back => self.collection.move_scene_to_end(self.canvas, id, false),
         }
-        .map_err(|e| edit_error(&e))?;
+        .map_err(|e| Refusal::of(&e))?;
         let Some(undo) = undo else {
             return Ok(false);
         };
@@ -127,11 +134,11 @@ impl Host {
     }
 
     /// Puts scene `id` where scene `to` is in the scene list.
-    pub(super) fn move_scene_to(&mut self, id: SceneId, to: SceneId) -> Result<bool, String> {
+    pub(super) fn move_scene_to(&mut self, id: SceneId, to: SceneId) -> Result<bool, Refusal> {
         let undo = self
             .collection
             .move_scene_to(self.canvas, id, to)
-            .map_err(|e| edit_error(&e))?;
+            .map_err(|e| Refusal::of(&e))?;
         let Some(undo) = undo else {
             return Ok(false);
         };

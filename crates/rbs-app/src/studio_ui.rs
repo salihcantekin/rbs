@@ -4641,6 +4641,7 @@ impl StudioUi {
                 .destinations
                 .get(canvas.first())
                 .is_none_or(|d| d.enabled);
+        let encoder = self.encoder_id(&p.encoding);
         if first_on || !self.destinations.available(canvas, p) {
             if !first_exists(p) {
                 return Err((rbs_app::studio_host::STREAMING_OFF.to_owned(), true));
@@ -4648,10 +4649,9 @@ impl StudioUi {
             if let Some(why) = p.missing() {
                 return Err((why.to_owned(), true));
             }
-            return StreamRequest::from_profile(p, self.encoder_id(&p.encoding))
-                .map_err(|why| (why, false));
+            return StreamRequest::from_profile(p, encoder).map_err(|why| (why.into_text(), false));
         }
-        StreamRequest::from_settings(p, self.encoder_id(&p.encoding)).map_err(|why| (why, false))
+        StreamRequest::from_settings(p, encoder).map_err(|why| (why.into_text(), false))
     }
 
     /// "Record vertical": records the vertical canvas with its own recording settings
@@ -4731,7 +4731,7 @@ impl StudioUi {
         if !url.is_empty()
             && let Err(why) = stream_profile::parse_server(url)
         {
-            self.stream_note = why;
+            self.stream_note = why.to_string();
             // The field shows the server in use.
             self.server_serial += 1;
             return;

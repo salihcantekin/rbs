@@ -13,6 +13,7 @@ use rbs_transport::{ReconnectPolicy, TransportInput};
 use serde::{Deserialize, Serialize};
 
 use crate::record_profile::{Encoding, OutputSize, RateMode, output_size_problem};
+use crate::studio_host::Refusal;
 
 /// The file format version this build writes and reads.
 const FORMAT: u32 = 1;
@@ -76,22 +77,77 @@ pub struct Server {
     pub host: String,
 }
 
+/// Why a server address cannot be used. Each kind keeps the address (or the part of it
+/// named); the text is shown under the Server field.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerError {
+    /// No `scheme://`.
+    NoScheme(String),
+    /// A scheme other than rtmp, rtmps or srt (the scheme).
+    Unsupported(String),
+    /// Options after `?` (the address before them): secrets belong in the key field.
+    Options(String),
+    /// An IPv6 `[` without its `]`.
+    Unclosed(String),
+    /// No server name.
+    NoHost(String),
+    /// A port that is not 1 to 65535.
+    BadPort {
+        /// The address.
+        url: String,
+        /// The port as written.
+        port: String,
+    },
+    /// An RTMP address without an application name.
+    NoApp(String),
+    /// An SRT address without a port.
+    NoPort(String),
+}
+
+impl std::fmt::Display for ServerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ServerError::NoScheme(url) => write!(
+                f,
+                "{url} is not a server address: it starts with rtmp://, rtmps:// or srt://."
+            ),
+            ServerError::Unsupported(other) => write!(
+                f,
+                "RBS streams over rtmp://, rtmps:// and srt:// so far; {other}:// is not supported yet."
+            ),
+            ServerError::Options(url) => write!(
+                f,
+                "{url}: an address cannot have options after ?. Put the stream key or stream id in the Stream key field."
+            ),
+            ServerError::Unclosed(url) => write!(f, "{url}: the address in [ ] is not closed."),
+            ServerError::NoHost(url) => write!(f, "{url} has no server name."),
+            ServerError::BadPort { url, port } => write!(f, "{url}: {port} is not a port number."),
+            ServerError::NoApp(url) => write!(
+                f,
+                "{url} has no application name: it looks like rtmp://server/app."
+            ),
+            ServerError::NoPort(url) => {
+                write!(f, "{url} has no port: it looks like srt://server:port.")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ServerError {}
+
 /// Checks a server URL: `rtmp://host[:port]/app`, `rtmps://host[:port]/app` (RTMP over
 /// TLS, ADR-0127 decision 10; the same protocol for everything else) or
 /// `srt://host:port`.
-pub fn parse_server(url: &str) -> Result<Server, String> {
+pub fn parse_server(url: &str) -> Result<Server, ServerError> {
     let Some((scheme, rest)) = url.split_once("://") else {
-        return Err(format!(
-            "{url} is not a server address: it starts with rtmp://, rtmps:// or srt://."
-        ));
+        return Err(ServerError::NoScheme(url.to_owned()));
     };
     let protocol = match scheme.to_ascii_lowercase().as_str() {
         "rtmp" | "rtmps" => Protocol::Rtmp,
         "srt" => Protocol::Srt,
         other => {
-            return Err(format!(
-                "RBS streams over rtmp://, rtmps:// and srt:// so far; {other}:// is not supported yet."
-            ));
+            return Err(ServerError::Unsupported(other.to_owned()));
         }
     };
     let (authority, path) = match rest.split_once('/') {
@@ -101,16 +157,15 @@ pub fn parse_server(url: &str) -> Result<Server, String> {
     if rest.contains('?') {
         // `?streamid=` or `?passphrase=` would put a secret in the URL, the settings
         // file and the log: secrets go in the Stream key field only.
-        return Err(format!(
-            "{}: an address cannot have options after ?. Put the stream key or stream id in the Stream key field.",
-            url.split_once('?').map_or(url, |(u, _)| u)
+        return Err(ServerError::Options(
+            url.split_once('?').map_or(url, |(u, _)| u).to_owned(),
         ));
     }
     let (host, port) = match authority.strip_prefix('[') {
         // An IPv6 address: `[::1]:port`.
         Some(v6) => match v6.split_once(']') {
             Some((h, after)) => (h, after.strip_prefix(':')),
-            None => return Err(format!("{url}: the address in [ ] is not closed.")),
+            None => return Err(ServerError::Unclosed(url.to_owned())),
         },
         None => match authority.rsplit_once(':') {
             Some((h, p)) => (h, Some(p)),
@@ -118,20 +173,21 @@ pub fn parse_server(url: &str) -> Result<Server, String> {
         },
     };
     if host.is_empty() || host.chars().any(|c| c.is_whitespace() || c == '@') {
-        return Err(format!("{url} has no server name."));
+        return Err(ServerError::NoHost(url.to_owned()));
     }
     if let Some(p) = port
         && p.parse::<u16>().map_or(true, |p| p == 0)
     {
-        return Err(format!("{url}: {p} is not a port number."));
+        return Err(ServerError::BadPort {
+            url: url.to_owned(),
+            port: p.to_owned(),
+        });
     }
     match protocol {
-        Protocol::Rtmp if path.trim_matches('/').is_empty() => Err(format!(
-            "{url} has no application name: it looks like rtmp://server/app."
-        )),
-        Protocol::Srt if port.is_none() => Err(format!(
-            "{url} has no port: it looks like srt://server:port."
-        )),
+        Protocol::Rtmp if path.trim_matches('/').is_empty() => {
+            Err(ServerError::NoApp(url.to_owned()))
+        }
+        Protocol::Srt if port.is_none() => Err(ServerError::NoPort(url.to_owned())),
         _ => Ok(Server {
             protocol,
             host: host.to_owned(),
@@ -252,7 +308,7 @@ impl StreamProfile {
         if !self.server.is_empty()
             && let Err(why) = parse_server(&self.server)
         {
-            return Some(why);
+            return Some(why.to_string());
         }
         if let Some(ms) = self.srt_latency_ms
             && ms == 0
@@ -306,7 +362,7 @@ impl StreamProfile {
     /// These settings with what a control API client may change (`settings.set`)
     /// replaced: the server and the key stay. Refused, in words, when the result cannot
     /// be used.
-    pub fn with_api(&self, patch: &rbs_api::types::StreamSettingsPatch) -> Result<Self, String> {
+    pub fn with_api(&self, patch: &rbs_api::types::StreamSettingsPatch) -> Result<Self, Refusal> {
         let mut p = self.clone();
         p.reconnect = patch.reconnect;
         p.srt_latency_ms = patch.srt_latency_ms;
@@ -332,24 +388,26 @@ impl StreamProfile {
         if let Some(name) = &p.encoding.profile
             && !["high", "main", "baseline"].contains(&name.as_str())
         {
-            return Err(format!(
+            return Err(Refusal::Invalid(format!(
                 "codec profile {name:?} is not high, main or baseline"
-            ));
+            )));
         }
         if p.encoding
             .encoder
             .as_ref()
             .is_some_and(|id| id.is_empty() || id.len() > 128 || id.chars().any(char::is_control))
         {
-            return Err("the encoder id is not an adapter id".into());
+            return Err(Refusal::Invalid(
+                "the encoder id is not an adapter id".into(),
+            ));
         }
         match p.problem() {
             // The saved server is not the caller's to read: a problem with it is not
             // repeated.
-            Some(_) if !p.server.is_empty() && parse_server(&p.server).is_err() => {
-                Err("the saved server cannot be used: see Settings, Stream".into())
-            }
-            Some(why) => Err(why),
+            Some(_) if !p.server.is_empty() && parse_server(&p.server).is_err() => Err(
+                Refusal::Failed("the saved server cannot be used: see Settings, Stream".into()),
+            ),
+            Some(why) => Err(Refusal::Invalid(why)),
             None => Ok(p),
         }
     }
@@ -508,7 +566,7 @@ mod tests {
             ("rtmp://x/app?key=secret", "Stream key field"),
         ];
         for (url, why) in bad {
-            let e = parse_server(url).unwrap_err();
+            let e = parse_server(url).unwrap_err().to_string();
             assert!(e.contains(why), "{url}: {e}");
             assert!(
                 !e.contains("secret"),
@@ -731,10 +789,10 @@ mod tests {
         assert!(p.with_api(&patch).unwrap().auto_record);
         patch.auto_record = None;
         patch.encoding.video_kbps = 1;
-        assert!(p.with_api(&patch).unwrap_err().contains("bitrate"));
+        assert!(p.with_api(&patch).unwrap_err().text().contains("bitrate"));
         patch.encoding.video_kbps = 6_000;
         patch.encoding.profile = Some("high10".into());
-        assert!(p.with_api(&patch).unwrap_err().contains("high10"));
+        assert!(p.with_api(&patch).unwrap_err().text().contains("high10"));
         patch.encoding.profile = Some("main".into());
         patch.encoding.encoder = Some("x".repeat(200));
         assert!(p.with_api(&patch).is_err());
@@ -743,7 +801,7 @@ mod tests {
         patch.encoding.video_kbps = 6_000;
         p.server = "srt://secret.example.com".into();
         let why = p.with_api(&patch).unwrap_err();
-        assert!(!why.contains("secret"), "{why}");
+        assert!(!why.text().contains("secret"), "{why}");
         assert_eq!(StreamProfile::new().to_api().protocol, None);
     }
 

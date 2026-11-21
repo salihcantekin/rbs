@@ -22,7 +22,7 @@ fn read(p: &ObsImport) -> Result<ApiSource, ApiError> {
 fn plan(p: &ObsImport) -> Result<rbs_import_obs::ImportPlan, ApiError> {
     let source = read(p)?;
     obs_import::plan_api(&source, p.choose.as_ref())
-        .map_err(|m| ApiError::new(ErrorKind::InvalidParams, m))
+        .map_err(|m| ApiError::new(ErrorKind::InvalidParams, m.to_string()))
 }
 
 /// `import.obs.scan`.
