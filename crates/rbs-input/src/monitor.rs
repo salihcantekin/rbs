@@ -1,7 +1,9 @@
 //! The shared monitor: one OS listener per process, reference-counted by subscriptions
 //! (`docs/specs/input-port.md`, invariants 1-3 and 7).
 
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::cell::Cell;
+use std::marker::PhantomData;
+use std::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use rbs_core::capability::{CapabilityKey, CapabilitySet, CapabilityValue};
@@ -31,14 +33,18 @@ pub trait InputBackend: Send + Sync + 'static {
 pub trait RunningInput: Send {
     /// The union of the subscriptions' masks changed (control thread, never empty).
     fn set_mask(&mut self, mask: EventMask);
-    /// Removes the OS listener and joins the adapter's thread (control thread).
+    /// Removes the OS listener and joins the adapter's thread (control thread). Called
+    /// while the monitor's lock is held: neither this nor the listener thread may call
+    /// back into the [`InputMonitor`], or it deadlocks.
     fn stop(self: Box<Self>);
 }
 
 struct Channel {
     ring: EventRing,
-    /// The subscription's mask bits; 0 while the channel is free or ending.
-    mask: AtomicU8,
+    /// The subscription's mask bits in the low byte and its generation above them;
+    /// 0 while the channel is free or ending. Read by the producer as one value, so an
+    /// event is always pushed with the generation of the mask that let it through.
+    state: AtomicU32,
     /// Live handles: the `Subscription` and the `InputReader`. Free at 0.
     handles: AtomicU8,
 }
@@ -54,7 +60,7 @@ impl Shared {
             channels: (0..MAX_SUBSCRIPTIONS)
                 .map(|_| Channel {
                     ring: EventRing::new(),
-                    mask: AtomicU8::new(0),
+                    state: AtomicU32::new(0),
                     handles: AtomicU8::new(0),
                 })
                 .collect(),
@@ -63,10 +69,12 @@ impl Shared {
     }
 }
 
-/// Where an adapter delivers input. Used from the adapter's one listener thread;
-/// every method is real-time safe (no allocation, lock or wait).
+/// Where an adapter delivers input. `Send` but not `Sync`: the rings are
+/// single-producer, so the adapter uses it from its one listener thread. Every method is
+/// real-time safe (no allocation, lock or wait).
 pub struct InputSink {
     shared: Arc<Shared>,
+    _one_thread: PhantomData<Cell<()>>,
 }
 
 impl InputSink {
@@ -79,8 +87,9 @@ impl InputSink {
     pub fn event(&self, timed: TimedEvent) {
         let class = timed.event.class().bits();
         for channel in self.shared.channels.iter() {
-            if channel.mask.load(Ordering::Acquire) & class != 0 {
-                channel.ring.push(&timed);
+            let state = channel.state.load(Ordering::Acquire);
+            if state as u8 & class != 0 {
+                channel.ring.push(&timed, state >> 8);
             }
         }
     }
@@ -90,9 +99,16 @@ struct State {
     running: Option<Box<dyn RunningInput>>,
     shared: Option<Arc<Shared>>,
     masks: [EventMask; MAX_SUBSCRIPTIONS],
+    /// The last subscription generation handed out (24 bits, never 0).
+    generation: u32,
 }
 
 impl State {
+    fn next_generation(&mut self) -> u32 {
+        self.generation = (self.generation % 0x00ff_ffff) + 1;
+        self.generation
+    }
+
     fn union(&self) -> EventMask {
         self.masks
             .iter()
@@ -128,6 +144,7 @@ impl InputMonitor {
                     running: None,
                     shared: None,
                     masks: [EventMask::NONE; MAX_SUBSCRIPTIONS],
+                    generation: 0,
                 }),
             }),
         }
@@ -187,6 +204,7 @@ impl InputMonitor {
                 let shared = Arc::new(Shared::new());
                 let sink = InputSink {
                     shared: Arc::clone(&shared),
+                    _one_thread: PhantomData,
                 };
                 let running = self.inner.backend.start(mask, sink)?;
                 state.running = Some(running);
@@ -195,12 +213,15 @@ impl InputMonitor {
             }
         };
         let channel = &shared.channels[slot];
-        // The channel's mask has been 0 since the last subscription on it ended, so the
-        // producer pushes nothing new; at most one push that read the old mask just
-        // before can land after this reset (a stale event with an older time).
+        // A push that read the previous subscription's state just before it ended can
+        // still land after this reset; it carries that subscription's generation, and
+        // the reader skips it (spec invariant 3).
+        let generation = state.next_generation();
         channel.ring.reset();
         channel.handles.store(2, Ordering::Release);
-        channel.mask.store(mask.bits(), Ordering::Release);
+        channel
+            .state
+            .store(u32::from(mask.bits()) | generation << 8, Ordering::Release);
         state.masks[slot] = mask;
         drop(state);
         Ok((
@@ -210,7 +231,12 @@ impl InputMonitor {
                 slot,
                 mask,
             },
-            InputReader { shared, slot, mask },
+            InputReader {
+                shared,
+                slot,
+                mask,
+                generation,
+            },
         ))
     }
 }
@@ -250,7 +276,7 @@ impl Subscription {
 impl Drop for Subscription {
     fn drop(&mut self) {
         let channel = &self.shared.channels[self.slot];
-        channel.mask.store(0, Ordering::Release);
+        channel.state.store(0, Ordering::Release);
         let mut state = self.inner.lock();
         let ours = state
             .shared
@@ -282,6 +308,7 @@ pub struct InputReader {
     shared: Arc<Shared>,
     slot: usize,
     mask: EventMask,
+    generation: u32,
 }
 
 impl InputReader {
@@ -292,7 +319,9 @@ impl InputReader {
 
     /// The next event in arrival order, if any.
     pub fn next_event(&mut self) -> Option<TimedEvent> {
-        self.shared.channels[self.slot].ring.pop()
+        self.shared.channels[self.slot]
+            .ring
+            .pop(self.generation, self.mask)
     }
 
     /// The newest pointer sample at or before `time`. `None` without the pointer class,

@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering, fence};
 
 use rbs_core::time::Timestamp;
 
-use crate::event::{Button, DesktopPoint, InputEvent, PointerSample, TimedEvent};
+use crate::event::{Button, DesktopPoint, EventMask, InputEvent, PointerSample, TimedEvent};
 
 /// Events each subscription's ring holds.
 pub const EVENT_RING: usize = 256;
@@ -56,8 +56,10 @@ impl EventRing {
         &self.slots[(index % EVENT_RING as u64) as usize]
     }
 
-    /// Producer. Drops the newest event and counts it when the ring is full.
-    pub(crate) fn push(&self, timed: &TimedEvent) {
+    /// Producer. `generation` names the subscription the producer saw on this channel;
+    /// the reader skips events of any other. Drops the newest event and counts it when
+    /// the ring is full.
+    pub(crate) fn push(&self, timed: &TimedEvent, generation: u32) {
         let head = self.head.load(Ordering::Relaxed);
         let tail = self.tail.load(Ordering::Acquire);
         if head.wrapping_sub(tail) >= EVENT_RING as u64 {
@@ -81,13 +83,16 @@ impl EventRing {
         slot.time.store(timed.time.as_nanos(), Ordering::Relaxed);
         slot.x.store(at.x.to_bits(), Ordering::Relaxed);
         slot.y.store(at.y.to_bits(), Ordering::Relaxed);
-        slot.tag.store(tag, Ordering::Relaxed);
+        slot.tag
+            .store(tag | u64::from(generation) << 32, Ordering::Relaxed);
         slot.wheel.store(wheel, Ordering::Relaxed);
         self.head.store(head.wrapping_add(1), Ordering::Release);
     }
 
-    /// Consumer.
-    pub(crate) fn pop(&self) -> Option<TimedEvent> {
+    /// Consumer. Returns only events pushed for `generation` whose class is in `mask`,
+    /// so a push that read an earlier subscription's mask just before this one took the
+    /// channel never reaches this reader (spec invariant 3).
+    pub(crate) fn pop(&self, generation: u32, mask: EventMask) -> Option<TimedEvent> {
         loop {
             let tail = self.tail.load(Ordering::Relaxed);
             let head = self.head.load(Ordering::Acquire);
@@ -115,6 +120,9 @@ impl EventRing {
                 // Not written by `push`; skip rather than invent an event.
                 _ => continue,
             };
+            if (tag >> 32) as u32 != generation || !mask.contains(event.class()) {
+                continue;
+            }
             return Some(TimedEvent { time, event });
         }
     }
@@ -182,12 +190,14 @@ impl PointerHistory {
         let done = 2 * n + 2;
         for _ in 0..READ_ATTEMPTS {
             let before = slot.seq.load(Ordering::Acquire);
-            if before > done + 1 {
+            if before > done {
+                // A newer sample took the slot (or is being written into it): sample `n`
+                // and every older one are gone.
                 return Err(());
             }
             if before != done {
-                // Being written (odd) by a writer that lapped us; try again.
-                continue;
+                // Not written yet as sample `n`; cannot happen for `n < count`.
+                return Ok(None);
             }
             let time = slot.time.load(Ordering::Relaxed);
             let x = slot.x.load(Ordering::Relaxed);
@@ -229,7 +239,11 @@ mod tests {
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
+    use std::sync::atomic::AtomicBool;
+
     use super::*;
+
+    const GEN: u32 = 7;
 
     fn ts(ms: u64) -> Timestamp {
         Timestamp::from_nanos(ms * 1_000_000)
@@ -274,46 +288,106 @@ mod tests {
             },
         ];
         for e in &events {
-            ring.push(e);
+            ring.push(e, GEN);
         }
         for e in &events {
-            assert_eq!(ring.pop().as_ref(), Some(e));
+            assert_eq!(ring.pop(GEN, EventMask::MOUSE).as_ref(), Some(e));
         }
-        assert_eq!(ring.pop(), None);
+        assert_eq!(ring.pop(GEN, EventMask::MOUSE), None);
     }
 
     #[test]
     fn full_ring_drops_the_newest_and_counts() {
         let ring = EventRing::new();
         for ms in 0..EVENT_RING as u64 + 3 {
-            ring.push(&click(ms));
+            ring.push(&click(ms), GEN);
         }
         assert_eq!(ring.dropped(), 3);
-        assert_eq!(ring.pop().map(|e| e.time), Some(ts(0)));
+        assert_eq!(ring.pop(GEN, EventMask::MOUSE).map(|e| e.time), Some(ts(0)));
         let mut last = None;
-        while let Some(e) = ring.pop() {
+        while let Some(e) = ring.pop(GEN, EventMask::MOUSE) {
             last = Some(e.time);
         }
         assert_eq!(last, Some(ts(EVENT_RING as u64 - 1)));
     }
 
     #[test]
+    fn events_of_another_generation_or_class_are_skipped() {
+        let ring = EventRing::new();
+        // A push that read the previous subscription's state just before the reset.
+        ring.push(&click(1), GEN - 1);
+        ring.push(
+            &TimedEvent {
+                time: ts(2),
+                event: InputEvent::Wheel {
+                    at: DesktopPoint::new(0.0, 0.0),
+                    dx: 0.0,
+                    dy: 1.0,
+                },
+            },
+            GEN,
+        );
+        ring.push(&click(3), GEN);
+        assert_eq!(
+            ring.pop(GEN, EventMask::BUTTONS).map(|e| e.time),
+            Some(ts(3))
+        );
+        assert_eq!(ring.pop(GEN, EventMask::BUTTONS), None);
+    }
+
+    #[test]
+    fn racing_producer_and_consumer_keep_order_and_lose_nothing_counted() {
+        let ring = Arc::new(EventRing::new());
+        const TOTAL: u64 = 100_000;
+        let producer = {
+            let ring = Arc::clone(&ring);
+            std::thread::spawn(move || {
+                for ms in 1..=TOTAL {
+                    ring.push(&click(ms), GEN);
+                }
+            })
+        };
+        // Hang guard only (ADR-0032).
+        let guard = Instant::now() + Duration::from_secs(30);
+        let mut last = 0;
+        let mut got = 0u64;
+        loop {
+            assert!(Instant::now() < guard, "producer did not finish");
+            // Read before popping: an empty pop after the producer finished means done.
+            let finished = producer.is_finished();
+            match ring.pop(GEN, EventMask::MOUSE) {
+                Some(e) => {
+                    let ms = e.time.as_nanos() / 1_000_000;
+                    assert!(ms > last, "out of order: {ms} after {last}");
+                    assert_eq!(e, click(ms));
+                    last = ms;
+                    got += 1;
+                }
+                None if finished => break,
+                None => {}
+            }
+        }
+        producer.join().expect("producer thread panicked");
+        assert_eq!(got + ring.dropped(), TOTAL);
+    }
+
+    #[test]
     fn reset_forgets_old_events() {
         let ring = EventRing::new();
-        ring.push(&click(1));
+        ring.push(&click(1), GEN);
         ring.reset();
-        assert_eq!(ring.pop(), None);
-        ring.push(&click(2));
-        assert_eq!(ring.pop().map(|e| e.time), Some(ts(2)));
+        assert_eq!(ring.pop(GEN, EventMask::MOUSE), None);
+        ring.push(&click(2), GEN);
+        assert_eq!(ring.pop(GEN, EventMask::MOUSE).map(|e| e.time), Some(ts(2)));
     }
 
     #[test]
     fn pop_does_not_allocate() {
         let ring = EventRing::new();
         for ms in 0..100 {
-            ring.push(&click(ms));
+            ring.push(&click(ms), GEN);
             let info = allocation_counter::measure(|| {
-                std::hint::black_box(ring.pop());
+                std::hint::black_box(ring.pop(GEN, EventMask::MOUSE));
             });
             assert_eq!(info.count_total, 0);
         }
@@ -351,28 +425,43 @@ mod tests {
     #[test]
     fn racing_reader_never_sees_a_torn_sample() {
         // Every sample written has y == -x and time == x ms, so a torn read shows up.
+        // The writer runs until the reader has checked enough samples; no timing.
         let history = Arc::new(PointerHistory::new());
+        let stop = Arc::new(AtomicBool::new(false));
         let writer = {
             let history = Arc::clone(&history);
+            let stop = Arc::clone(&stop);
             std::thread::spawn(move || {
-                for ms in 1..=200_000u64 {
+                let mut ms = 0u64;
+                while !stop.load(Ordering::Acquire) {
+                    ms += 1;
                     history.write(&sample(ms));
+                    if ms.is_multiple_of(64) {
+                        // Lets the reader run on a machine with one core.
+                        std::thread::yield_now();
+                    }
                 }
+                ms
             })
         };
-        // Hang guard only (ADR-0032); the loop ends when the writer finishes.
+        // Hang guard only (ADR-0032).
         let guard = Instant::now() + Duration::from_secs(30);
         let mut seen = 0u64;
-        while !writer.is_finished() {
-            assert!(Instant::now() < guard, "writer did not finish");
+        let mut newest = 0u64;
+        while seen < 2_000 {
+            assert!(Instant::now() < guard, "too few consistent reads");
+            std::thread::yield_now();
             if let Some(s) = history.at(None) {
                 assert_eq!(s.at.y, -s.at.x);
                 assert_eq!(s.time, ts(s.at.x as u64));
-                seen += 1;
+                if s.at.x as u64 > newest {
+                    newest = s.at.x as u64;
+                    seen += 1;
+                }
             }
         }
-        writer.join().expect("writer thread panicked");
-        std::hint::black_box(seen);
-        assert_eq!(history.at(None), Some(sample(200_000)));
+        stop.store(true, Ordering::Release);
+        let written = writer.join().expect("writer thread panicked");
+        assert_eq!(history.at(None), Some(sample(written)));
     }
 }

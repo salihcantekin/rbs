@@ -49,7 +49,9 @@ pub struct TimedEvent { pub time: Timestamp, pub event: InputEvent }   // master
 pub struct PointerSample { pub time: Timestamp, pub at: DesktopPoint }
 
 /// Which event classes a subscription wants. KEYS is named now and refused until phase 2.
-pub struct EventMask(u8);   // POINTER, BUTTONS, WHEEL, KEYS; union, contains, is_empty
+pub struct EventMask(u8);   // NONE, POINTER, BUTTONS, WHEEL, KEYS, MOUSE (the three mouse classes);
+                            // union (also `|`), without, contains, intersects, is_empty
+// Button::ALL lists the buttons in a fixed order; InputEvent::class gives an event's class.
 ```
 
 ### Adapter trait
@@ -68,7 +70,9 @@ pub trait RunningInput: Send {
     /// The union of the subscribers' masks changed (control thread). The adapter
     /// stops asking the OS for classes no longer wanted.
     fn set_mask(&mut self, mask: EventMask);
-    /// Removes the OS listener and joins the adapter's thread (control thread).
+    /// Removes the OS listener and joins the adapter's thread (control thread). Called
+    /// while the monitor's lock is held: neither `stop` nor the listener thread may call
+    /// back into the InputMonitor (deadlock).
     fn stop(self: Box<Self>);
 }
 ```
@@ -84,8 +88,10 @@ Adapters stamp events with master time through their own `EdgeClock` over the OS
 
 ```rust
 pub struct InputMonitor;   // InputMonitor::new(Box<dyn InputBackend>)
-impl InputMonitor {
+impl InputMonitor {   // Clone: clones share the listener
     pub fn capabilities(&self) -> CapabilitySet;
+    pub fn backend_name(&self) -> &'static str;
+    pub fn is_running(&self) -> bool;
     /// Control thread. The first subscription starts the backend; later ones only widen
     /// its mask. Fails with Unsupported for a class the backend lacks (KEYS in phase 1),
     /// Busy when MAX_SUBSCRIPTIONS are open, or the backend's start error.
@@ -94,11 +100,12 @@ impl InputMonitor {
 
 /// Control-side handle. Dropping it ends the subscription; the last one stops the backend
 /// (joins its thread), so it is dropped on the control thread, never on a real-time thread.
-pub struct Subscription;
+pub struct Subscription;   // mask()
 
 /// Reader-side handle, Send, for the thread that consumes events (the render thread).
 pub struct InputReader;
 impl InputReader {
+    pub fn mask(&self) -> EventMask;
     /// Next event in arrival order, if any. Wait-free, no allocation.
     pub fn next_event(&mut self) -> Option<TimedEvent>;
     /// Newest pointer sample at or before `time`; None when the history has none
@@ -116,11 +123,11 @@ Constants: `MAX_SUBSCRIPTIONS` = 8, `EVENT_RING` = 256 events per subscription, 
 
 1. **Zero cost when unused (P13).** A monitor with no subscription has no thread, no OS listener and no ring memory. Ring and history memory is allocated by the first `subscribe` and freed when the backend stops.
 2. **One listener.** At most one running backend per monitor; its mask is the union of the open subscriptions' masks, updated with `set_mask` on every subscribe and drop.
-3. **Mask enforcement.** A reader never receives an event of a class its subscription did not ask for. The host decides which masks a consumer may ask for (plugin permissions, ADR-0165 decision 3).
+3. **Mask enforcement.** A reader never receives an event of a class its subscription did not ask for, nor an event pushed for an earlier subscription on the same channel: each subscription has a generation, the producer reads mask and generation as one value and stamps each event with it, and the reader skips any other generation or class. The host decides which masks a consumer may ask for (plugin permissions, ADR-0165 decision 3).
 4. **Ring full.** A full event ring drops the newest event and counts it in `dropped`; the producer never waits.
-5. **Pointer history.** The newest `POINTER_HISTORY` samples, overwritten in place. Each slot carries a sequence number written before and after the sample; a reader that sees them differ (or odd) reads the slot again, at most a few times, and otherwise skips it, so it never uses a torn sample and never spins without bound. Pointer moves never go into the event ring.
+5. **Pointer history.** The newest `POINTER_HISTORY` samples, overwritten in place. Each slot carries a sequence number written before and after the sample; a reader that sees them differ (or odd) reads the slot again, at most a few times, and otherwise skips it, so it never uses a torn sample and never spins without bound. Pointer moves never go into the event ring. While no subscription asks for the pointer the backend writes no samples, so the history may hold old ones when the pointer class comes back; consumers check `time`.
 6. **Times.** Event and sample times are master time and do not decrease within one backend run.
-7. **Threads.** `subscribe` and `Subscription` drop run on the control thread. `InputReader` methods run on any one thread at a time and are real-time safe (no allocation, lock or wait). `InputSink` methods run on the adapter's threads and are real-time safe.
+7. **Threads.** `subscribe` and `Subscription` drop run on the control thread. `InputReader` methods run on any one thread at a time and are real-time safe (no allocation, lock or wait). `InputSink` is `Send` but not `Sync` and its methods run on the adapter's one listener thread; they are real-time safe.
 8. **No input leaves the engine.** The port never logs event contents (only counts and faults, ADR-0158) and offers no way to read input outside a subscription.
 
 ### Errors
@@ -147,7 +154,7 @@ No variant carries heap data.
 
 ## Tests
 
-Unit tests in `rbs-input` with a scripted test backend: start on first subscribe and stop on last drop; mask union and `set_mask`; mask filtering per reader; ring full drops the newest and counts; pointer history lookup at, before and after the kept window; a writer thread and a reader thread racing on the history never yield a torn sample (bounded run with a hang guard, ADR-0032); `KEYS` refused; `Busy` at `MAX_SUBSCRIPTIONS`; no allocation on `next_event` and `pointer_at` (allocation counter).
+Unit tests in `rbs-input` with a scripted test backend: start on first subscribe and stop on last drop; mask union and `set_mask`; mask filtering per reader; ring full drops the newest and counts; pointer history lookup at, before and after the kept window; a writer thread and a reader thread racing on the history never yield a torn sample, and a producer and a consumer racing on an event ring keep order and account for every event (progress-bounded runs with a hang guard, ADR-0032); events of an earlier generation or another class are skipped; `KEYS` refused; `Busy` at `MAX_SUBSCRIPTIONS`; no allocation on `next_event` and `pointer_at` (allocation counter).
 
 ## Implementation status
 

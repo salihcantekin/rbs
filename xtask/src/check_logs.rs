@@ -51,6 +51,9 @@ pub const HOT: &[&str] = &[
     "rbs-media-format/src/",
     "rbs-core/src/time.rs",
     "rbs-core/src/timing.rs",
+    "rbs-core/src/timing/",
+    "rbs-input/src/ring.rs",
+    "rbs-input/src/monitor.rs",
     "rbs-core/src/media/",
 ];
 
