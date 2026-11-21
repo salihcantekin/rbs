@@ -2,7 +2,7 @@
 
 First-pass classification of every `rbs_studio_host::Command` variant on main `c424931` for [ADR-0163](../adr/0163-one-command-path-for-the-window-and-the-api.md) (one command path, quality plan WP-20). Made by reading each variant's handler arm and the control API method names (`rbs_api::Command::method`), corrected after the ADR's first review. Each namespace step checks its rows again against the code and the control API spec; where a row is wrong, the step's `Command::path` arm is the record, not this table.
 
-Step 0 moved `ResetLoudness` to `Command::Api`; step 1 (scenes and transitions) moved ten scene variants and made Switch scene and Studio mode translations; `command_path.rs` holds the current counts. First-pass counts: 21 Translates (already run through `run_ui_api` or `ApiTarget::run`), 83 Pending, 10 Contract, 20 Missing, 27 WindowOnly (13 View, 9 LocalOnly, 2 Preview, 3 Mirror). Total 161. Corrected after review rounds 1 to 3.
+Step 0 moved `ResetLoudness` to `Command::Api`; step 1 (scenes and transitions) moved ten scene variants and made Switch scene and Studio mode translations; step 2 (items) moved the Sources row's lock, eye and layer buttons, Add existing source and the timed show; `command_path.rs` holds the current counts. First-pass counts: 21 Translates (already run through `run_ui_api` or `ApiTarget::run`), 83 Pending, 10 Contract, 20 Missing, 27 WindowOnly (13 View, 9 LocalOnly, 2 Preview, 3 Mirror). Total 161. Corrected after review rounds 1 to 3.
 
 ## Known differences between the two paths
 
@@ -30,6 +30,7 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | Filter values on an unchanged release | Restores the stored values | Does not | `source_settings.rs`, `api_canvas.rs` |
 | Media play, pause, seek, restart | Forces the next media-state publish | Does not | `source_settings.rs`, `api_source2.rs` |
 | Pause, hold, break refusals | Own sentence ("The recording could not pause or resume: ...") | `ApiError` message | `stream.rs` |
+| Lock, eye and layer buttons on a row that is gone | Host refused "There is no source ..." | The window sends nothing (it names the row's item) | `studio_ui/item_calls.rs` |
 
 ## Variants
 
@@ -46,11 +47,11 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `UndoDelete` | Missing | edit.undo has no only-if-a-delete condition |
 | `Undo` | Pending | edit.undo; quiet when there is nothing to undo |
 | `Redo` | Pending | edit.redo; as Undo |
-| `MoveSource` | Pending | item.move |
+| `MoveSource` | Moved to `Command::Api` (step 2) | item.move |
 | `MoveScene` | Moved to `Command::Api` (step 1) | scene.move |
 | `MoveSceneTo` | Missing | scene.move has no target scene |
 | `MoveSourceTo` | Missing | item.move has no target item |
-| `SetSourceLocked` | Pending | item.set_locked |
+| `SetSourceLocked` | Moved to `Command::Api` (step 2) | item.set_locked |
 | `SetSourceVolume` | Translates | source.set_volume, scene.audio.set |
 | `SetSourceMuted` | Translates | source.set_muted, scene.audio.set |
 | `SetMetersUi` | WindowOnly View |  |
@@ -114,7 +115,7 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `SetTransition` | Pending | collection.set_transition |
 | `SetSourceActivity` | Pending | source.set_activity |
 | `SetSourceGlide` | Pending | source.set_glide |
-| `AddExistingSource` | Pending | item.add |
+| `AddExistingSource` | Moved to `Command::Api` (step 2) | item.add |
 | `AddScene` | Moved to `Command::Api` (step 1) | scene.add |
 | `DuplicateScene` | Moved to `Command::Api` (step 1) | scene.duplicate |
 | `DuplicateSceneWithCopies` | Moved to `Command::Api` (step 1) | scene.duplicate |
@@ -133,7 +134,7 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `Rehearse` | Missing | starts a rehearsal on the engine; no method (ui.transition.rehearse is the registry entry) |
 | `SetSwapAfterTransition` | Missing | no settings.set field |
 | `SetSourceActive` | Pending | source.set_active |
-| `SetSourceVisible` | Pending | item.set_visible |
+| `SetSourceVisible` | Moved to `Command::Api` (step 2) | item.set_visible |
 | `SetSourceBox` | Pending | item.set_box |
 | `SetSourceCrop` | Contract | item.set_crop needs gesture |
 | `TransformSource` | Contract | item.flip/rotate/fit/align/reset_transform need gesture |
@@ -143,8 +144,8 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `SetDisplayChrome` | Pending | source.set_chrome |
 | `FitDisplayChrome` | Pending | source.fit_chrome |
 | `ResetDisplayChrome` | Pending | source.reset_chrome |
-| `SetItemShowFor` | Pending | item.set_show_for |
-| `ShowItem` | Pending | item.show |
+| `SetItemShowFor` | Moved to `Command::Api` (step 2) | item.set_show_for |
+| `ShowItem` | Moved to `Command::Api` (step 2) | item.show |
 | `SetSourceStyle` | Contract | item.set_style needs gesture |
 | `SetSourceScroll` | Contract | item.set_scroll needs gesture |
 | `ScrollLive` | Pending | item.scroll_pause, item.scroll_resume, item.scroll_restart, item.scroll_speed |

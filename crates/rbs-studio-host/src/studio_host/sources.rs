@@ -1146,17 +1146,6 @@ impl Host {
         Ok(true)
     }
 
-    /// Show or hide a source's item in the program scene; `Ok(false)` when it already is.
-    pub(super) fn set_source_visible(
-        &mut self,
-        id: SourceId,
-        visible: bool,
-    ) -> Result<bool, Refusal> {
-        let (_, item) = self.item_of(id)?;
-        let item = item.id;
-        self.set_item_visible(item, visible)
-    }
-
     /// A source's volume or mute (ADR-0059): a live control, not on the undo stack,
     /// sent to the mixer without rebinding. `Ok(false)` when nothing changed.
     pub(super) fn set_source_audio(
@@ -1435,11 +1424,6 @@ impl Host {
             }
             Command::Undo => self.step(true, notify),
             Command::Redo => self.step(false, notify),
-            Command::MoveSource { id, direction } => match self.move_source(id, direction) {
-                Ok(true) => self.apply(notify),
-                Ok(false) => {}
-                Err(e) => notify(Update::Error(e.into_text())),
-            },
             Command::MoveSourceTo { id, to } => match self.move_source_to(id, to) {
                 Ok(true) => self.apply(notify),
                 Ok(false) => {}
@@ -1455,13 +1439,6 @@ impl Host {
                 Ok(false) => {}
                 Err(e) => notify(Update::Error(e.into_text())),
             },
-            Command::SetSourceLocked { id, locked } => {
-                let done = self
-                    .item_of(id)
-                    .map(|(_, i)| i.id)
-                    .and_then(|item| self.set_item_locked(item, locked));
-                self.answer(done, notify);
-            }
             Command::SetSourceVolume { id, volume } => {
                 let call = if self.levels_take(id) {
                     rbs_api::Command::SceneAudioSet(rbs_api::request::SetSceneLevel {

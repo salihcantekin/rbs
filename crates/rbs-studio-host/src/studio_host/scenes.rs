@@ -1041,10 +1041,6 @@ impl Host {
                 let done = self.set_source_glide(id, custom, duration_ms, easing);
                 self.answer(done, notify);
             }
-            Command::AddExistingSource(id) => {
-                let done = self.add_existing(id).map(|_| true);
-                self.answer(done, notify);
-            }
             Command::DuplicateSource(id) => {
                 let done = self.api_source_duplicate(in_scene(id), notify);
                 self.answer_api(done, notify);

@@ -757,13 +757,6 @@ impl Host {
     /// The window commands of this concern, routed by `Host::command`.
     pub(super) fn item_command(&mut self, c: Command, notify: &dyn Fn(Update)) {
         match c {
-            Command::SetSourceVisible { id, visible } => {
-                match self.set_source_visible(id, visible) {
-                    Ok(true) => self.apply(notify),
-                    Ok(false) => {}
-                    Err(e) => notify(Update::Error(e.into_text())),
-                }
-            }
             Command::SetSourceBox {
                 seq,
                 gesture,
@@ -892,18 +885,6 @@ impl Host {
                 Err(e) => notify(Update::Error(e.text().into())),
             },
             Command::ResetDisplayChrome(id) => match self.reset_display_chrome(id) {
-                Ok(true) => self.apply(notify),
-                Ok(false) => {}
-                Err(e) => notify(Update::Error(e.text().into())),
-            },
-            Command::SetItemShowFor { item, show_for_ms } => {
-                match self.set_item_show_for(item, show_for_ms) {
-                    Ok(true) => self.apply(notify),
-                    Ok(false) => {}
-                    Err(e) => notify(Update::Error(e.text().into())),
-                }
-            }
-            Command::ShowItem(item) => match self.show_item(item) {
                 Ok(true) => self.apply(notify),
                 Ok(false) => {}
                 Err(e) => notify(Update::Error(e.text().into())),

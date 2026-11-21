@@ -55,14 +55,6 @@ pub enum Command {
     Undo,
     /// Redo the edit undone last.
     Redo,
-    /// Move a source among the sources with a picture in the program scene
-    /// (`up` / `down` one step, `front` / `back` to an end). Nothing happens at that end.
-    MoveSource {
-        /// The source.
-        id: SourceId,
-        /// Which way (ADR-0084 Arrange).
-        direction: rbs_api::request::LayerDirection,
-    },
     /// Move a scene to where scene `to` is in the scene list (a row dragged onto
     /// another); one undo step.
     MoveSceneTo {
@@ -78,13 +70,6 @@ pub enum Command {
         id: SourceId,
         /// The source whose place it takes.
         to: SourceId,
-    },
-    /// Lock or unlock a source in the program scene (one undo step, ADR-0059).
-    SetSourceLocked {
-        /// The source.
-        id: SourceId,
-        /// Locked.
-        locked: bool,
     },
     /// A source's volume, a linear factor from 0 to 1 (ADR-0059). A live control: not
     /// on the undo stack, and it reaches the mixer without rebinding the scene. The
@@ -418,9 +403,6 @@ pub enum Command {
         /// `0` linear, `1` ease-in-out when `custom`.
         easing: u8,
     },
-    /// Place a source the collection already has into the program scene, on top (one
-    /// undo step); it runs as one instance in every scene that places it.
-    AddExistingSource(SourceId),
     /// Duplicate source (ADR-0133 decision 3, one undo step).
     DuplicateSource(SourceId),
     /// Copy attributes of a source (ADR-0133 decision 6): the attribute clipboard.
@@ -471,13 +453,6 @@ pub enum Command {
         id: SourceId,
         /// Open while a scene that places it is on air or in preview.
         active: bool,
-    },
-    /// Show or hide a source in the program scene (one undo step).
-    SetSourceVisible {
-        /// The source.
-        id: SourceId,
-        /// Shown.
-        visible: bool,
     },
     /// Place a video source's picture: the box's top-left corner and size in canvas
     /// pixels. Rotation, crop and opacity stay. A size of zero or a value that is not
@@ -568,15 +543,6 @@ pub enum Command {
     FitDisplayChrome(SourceId),
     /// Copies chrome from the display work area (ADR-0104).
     ResetDisplayChrome(SourceId),
-    /// How long Show draws a hidden item (ADR-0105). One undo step.
-    SetItemShowFor {
-        /// The scene item.
-        item: ItemId,
-        /// Milliseconds, or `None` to clear.
-        show_for_ms: Option<u32>,
-    },
-    /// Live timed show until `now + show_for_ms` (ADR-0105).
-    ShowItem(ItemId),
     /// Shape and border of a video source's picture (ADR-0053), replacing the whole
     /// style of the layout the canvas shows. A style that is not valid is refused with
     /// [`Update::Error`].

@@ -47,7 +47,7 @@ use rbs_record::Link;
 use rbs_remote_settings::ai_tools::{self as ai_settings, AiToolsSettings};
 use rbs_remote_settings::{self as remote_profile, Access, RemoteProfile};
 use rbs_scene::model::{
-    Border, ChromeFill, DisplayChrome, ItemId, ItemStyle, Layout, SceneId, Scroll, ScrollDirection,
+    Border, ChromeFill, DisplayChrome, ItemStyle, Layout, SceneId, Scroll, ScrollDirection,
     ScrollRepeat, ScrollStart, Shape, SourceId, SourceRegion, VideoAs,
 };
 use rbs_sources::permissions::PermissionKind;
@@ -83,6 +83,7 @@ pub(crate) mod attributes;
 pub(crate) mod browser_props;
 pub(crate) mod destinations;
 pub(crate) mod filters;
+mod item_calls;
 mod library_ops;
 mod scene_calls;
 pub use library_ops::EntryWrite;
@@ -2368,14 +2369,6 @@ impl StudioUi {
     }
 
     /// Lock or unlock a source on the picture panel (the Sources row's lock button).
-    pub fn set_source_locked(&mut self, id: i32, locked: bool) {
-        self.deleted.clear();
-        self.send(Command::SetSourceLocked {
-            id: SourceId::from_raw(id as u32),
-            locked,
-        });
-    }
-
     /// Flip, turn, fit or centre a source's picture (ADR-0084), on `canvas`, or
     /// without one on the canvas Properties edits.
     pub fn transform_source(&mut self, id: i32, op: TransformOp, canvas: Option<OutputCanvas>) {
@@ -2655,14 +2648,6 @@ impl StudioUi {
         });
     }
 
-    /// Places a source of another scene into the scene on air (Add source, Existing
-    /// source); it is selected once it is there.
-    pub fn add_existing_source(&mut self, id: i32) {
-        self.deleted.clear();
-        self.adding = true;
-        self.send(Command::AddExistingSource(SourceId::from_raw(id as u32)));
-    }
-
     /// Opens the Add source picker for a source type (its devices are listed by the
     /// studio and fill the rows when they arrive) or for the sources of other scenes.
     /// A picker that is open is replaced.
@@ -2791,16 +2776,6 @@ impl StudioUi {
             .collect();
     }
 
-    /// One layer up (drawn over the source above it in the list) or down.
-    /// Show or hide a source in the program scene (the Sources row's eye button).
-    pub fn set_source_visible(&mut self, id: i32, visible: bool) {
-        self.deleted.clear();
-        self.send(Command::SetSourceVisible {
-            id: SourceId::from_raw(id as u32),
-            visible,
-        });
-    }
-
     /// Puts scene `id` where scene `to` is in the scene list (a row dragged onto
     /// another).
     pub fn move_scene_to(&mut self, id: i32, to: i32) {
@@ -2817,14 +2792,6 @@ impl StudioUi {
         self.send(Command::SetSourceActive {
             id: SourceId::from_raw(id as u32),
             active,
-        });
-    }
-
-    pub fn move_source(&mut self, id: i32, direction: rbs_api::request::LayerDirection) {
-        self.deleted.clear();
-        self.send(Command::MoveSource {
-            id: SourceId::from_raw(id as u32),
-            direction,
         });
     }
 
@@ -2970,30 +2937,6 @@ impl StudioUi {
             return;
         }
         self.send(Command::ResetDisplayChrome(SourceId::from_raw(id as u32)));
-    }
-
-    /// Stored timed-show duration on the item (ADR-0105). `show_for_ms` 0 clears.
-    pub fn set_item_show_for(&mut self, item: i32, show_for_ms: i32) {
-        if self.host.is_none() {
-            return;
-        }
-        let show_for_ms = if show_for_ms <= 0 {
-            None
-        } else {
-            Some((show_for_ms as u32).min(rbs_scene::MAX_SHOW_FOR_MS))
-        };
-        self.send(Command::SetItemShowFor {
-            item: ItemId::from_raw(item as u32),
-            show_for_ms,
-        });
-    }
-
-    /// Live timed show for a hidden item (ADR-0105).
-    pub fn show_item(&mut self, item: i32) {
-        if self.host.is_none() {
-            return;
-        }
-        self.send(Command::ShowItem(ItemId::from_raw(item as u32)));
     }
 
     /// Shape and border of a video source's picture (the Properties fields). `shape`:

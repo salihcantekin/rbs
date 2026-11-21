@@ -20,8 +20,8 @@ use rbs_gpu::{GpuContext, GpuError, GpuRequest};
 use rbs_record::RecordAdapters;
 use rbs_studio_host::edit_history::{EditKind, StepInfo};
 use rbs_studio_host::studio_host::{
-    Command, Fault, HostConfig, MainDisplayProbe, SourceKind, SourceRow, SourceStatus, StudioHost,
-    Target, Update, display_from_default_screen,
+    ApiReply, Command, Fault, HostConfig, MainDisplayProbe, SourceKind, SourceRow, SourceStatus,
+    StudioHost, Target, Update, display_from_default_screen,
 };
 
 /// Hang guard only: every wait ends as soon as its update arrives.
@@ -102,6 +102,18 @@ fn rows_where(rx: &Receiver<Update>, mut ok: impl FnMut(&[SourceRow]) -> bool) -
         Update::Sources(rows) if ok(&rows) => Some(rows),
         _ => None,
     })
+}
+
+/// The Sources row's layer buttons: an `item.move` call, as the window sends it
+/// (ADR-0163).
+fn move_item(host: &StudioHost, item: u32, direction: rbs_api::request::LayerDirection) {
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::ItemMove(rbs_api::request::MoveItem {
+            item,
+            direction,
+        })),
+        reply: ApiReply::Shown,
+    });
 }
 
 fn targets(host: &StudioHost, rx: &Receiver<Update>, kind: SourceKind) -> Vec<Target> {
@@ -214,23 +226,15 @@ fn sources_change_layer_order_and_box_through_the_host() {
     // Top first: the camera was added last, so it is over the screen.
     assert_eq!(rows[0].kind, Some(SourceKind::Camera));
     let (camera, screen) = (rows[0].id, rows[1].id);
+    let camera_item = rows[0].item.get();
     let camera_box = rows[0].layout.expect("a camera has a picture");
 
     // Already the top layer: nothing to do, so no update; the down move answers.
-    host.send(Command::MoveSource {
-        id: camera,
-        direction: rbs_api::request::LayerDirection::Up,
-    });
-    host.send(Command::MoveSource {
-        id: camera,
-        direction: rbs_api::request::LayerDirection::Down,
-    });
+    move_item(&host, camera_item, rbs_api::request::LayerDirection::Up);
+    move_item(&host, camera_item, rbs_api::request::LayerDirection::Down);
     let rows = rows_where(&rx, |r| r.len() == 2 && r[0].id == screen);
     assert_eq!(rows[1].id, camera);
-    host.send(Command::MoveSource {
-        id: camera,
-        direction: rbs_api::request::LayerDirection::Up,
-    });
+    move_item(&host, camera_item, rbs_api::request::LayerDirection::Up);
     rows_where(&rx, |r| r.len() == 2 && r[0].id == camera);
 
     // A new box keeps the rest of the layout.
@@ -276,10 +280,7 @@ fn sources_change_layer_order_and_box_through_the_host() {
         target: inputs[0].clone(),
     });
     rows_where(&rx, |r| r.len() == 3);
-    host.send(Command::MoveSource {
-        id: camera,
-        direction: rbs_api::request::LayerDirection::Down,
-    });
+    move_item(&host, camera_item, rbs_api::request::LayerDirection::Down);
     let rows = rows_where(&rx, |r| r.len() == 3 && r[2].id == camera);
     assert_eq!(rows[1].id, screen, "{rows:?}");
     assert!(rows[0].layout.is_none(), "audio has no box");
@@ -330,6 +331,7 @@ fn edits_are_undone_and_redone_and_a_drag_is_one_step() {
     });
     let rows = rows_where(&rx, |r| r.len() == 2);
     let (camera, screen) = (rows[0].id, rows[1].id);
+    let camera_item = rows[0].item.get();
     let start = rows[0].layout.unwrap();
     let (undo, redo) = history(&rx);
     assert_eq!(undo.as_ref().map(|s| s.kind), Some(EditKind::Add));
@@ -358,10 +360,7 @@ fn edits_are_undone_and_redone_and_a_drag_is_one_step() {
     rows_where(&rx, |r| {
         r[0].layout.is_some_and(|l| l.size == [320.0, 180.0])
     });
-    host.send(Command::MoveSource {
-        id: camera,
-        direction: rbs_api::request::LayerDirection::Down,
-    });
+    move_item(&host, camera_item, rbs_api::request::LayerDirection::Down);
     rows_where(&rx, |r| r[0].id == screen);
 
     // Undo the move, the resize, then the whole drag in one step.

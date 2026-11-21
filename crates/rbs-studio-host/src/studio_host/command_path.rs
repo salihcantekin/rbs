@@ -94,12 +94,10 @@ paths! {
     Undo => Pending(&["edit.undo"]),
     // as Undo
     Redo => Pending(&["edit.redo"]),
-    MoveSource => Pending(&["item.move"]),
     // scene.move has no target scene
     MoveSceneTo => Missing,
     // item.move has no target item
     MoveSourceTo => Missing,
-    SetSourceLocked => Pending(&["item.set_locked"]),
     SetSourceVolume => Translates(&["source.set_volume", "scene.audio.set"]),
     SetSourceMuted => Translates(&["source.set_muted", "scene.audio.set"]),
     SetMetersUi => WindowOnly(View),
@@ -175,7 +173,6 @@ paths! {
     SetTransition => Pending(&["collection.set_transition"]),
     SetSourceActivity => Pending(&["source.set_activity"]),
     SetSourceGlide => Pending(&["source.set_glide"]),
-    AddExistingSource => Pending(&["item.add"]),
     DuplicateSource => Pending(&["source.duplicate"]),
     CopyAttributes => Pending(&["source.copy_attributes"]),
     OpenAttributes => WindowOnly(View),
@@ -189,7 +186,6 @@ paths! {
     // no settings.set field
     SetSwapAfterTransition => Missing,
     SetSourceActive => Pending(&["source.set_active"]),
-    SetSourceVisible => Pending(&["item.set_visible"]),
     SetSourceBox => Pending(&["item.set_box"]),
     // item.set_crop needs gesture
     SetSourceCrop => Contract(&["item.set_crop"]),
@@ -202,8 +198,6 @@ paths! {
     SetDisplayChrome => Pending(&["source.set_chrome"]),
     FitDisplayChrome => Pending(&["source.fit_chrome"]),
     ResetDisplayChrome => Pending(&["source.reset_chrome"]),
-    SetItemShowFor => Pending(&["item.set_show_for"]),
-    ShowItem => Pending(&["item.show"]),
     // item.set_style needs gesture
     SetSourceStyle => Contract(&["item.set_style"]),
     // item.set_scroll needs gesture
@@ -285,7 +279,7 @@ mod tests {
     /// which must pick its method from host state may raise `TRANSLATES` by as many
     /// as `PENDING` falls; any other rise needs the owner's written approval.
     const TRANSLATES: usize = 22;
-    const PENDING: usize = 71;
+    const PENDING: usize = 65;
     const CONTRACT: usize = 10;
     const MISSING: usize = 20;
     const VIEW: usize = 13;
