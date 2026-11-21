@@ -818,10 +818,6 @@ impl Host {
                     .region_grabs
                     .fetch_add(1, AtomicOrdering::AcqRel);
             }
-            Command::SetSourceSettings { id, patch, gesture } => {
-                let done = self.patch_source_settings_in(id, &patch, gesture);
-                self.answer(done, notify);
-            }
             Command::ForgetBrowserSignIn(id) => {
                 let done = self
                     .forget_sign_in(id, true)

@@ -52,6 +52,7 @@ impl ControlTarget for ApiTarget<'_> {
         clear_window_gesture(&mut command);
         self.host.check_on_air(caller.irreversible, &command)?;
         self.host.check_network(caller.irreversible, &command)?;
+        self.host.check_text_file(&command)?;
         self.host
             .check_local_only(caller.token.is_some(), &command)?;
         self.handle(command, events)

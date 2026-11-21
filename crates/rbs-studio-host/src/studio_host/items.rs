@@ -860,49 +860,13 @@ impl Host {
 
     /// The window commands of this concern, routed by `Host::command`.
     pub(super) fn item_display_command(&mut self, c: Command, notify: &dyn Fn(Update)) {
-        match c {
-            Command::SetSourceRegion { id, region } => match self.set_source_region(id, region) {
+        // Other commands are routed elsewhere by `Host::command`.
+        if let Command::SetSourceRegion { id, region } = c {
+            match self.set_source_region(id, region) {
                 Ok(true) => self.apply(notify),
                 Ok(false) => {}
                 Err(e) => notify(Update::Error(e.text())),
-            },
-            Command::SetSourceStyle {
-                gesture,
-                id,
-                style,
-                canvas,
-            } => {
-                let edit = self
-                    .item_of(id)
-                    .map(|(_, item)| item.id)
-                    .and_then(|item| self.set_item_style(item, style, gesture, canvas));
-                match edit {
-                    Ok(true) => self.apply(notify),
-                    Ok(false) => {}
-                    Err(e) => notify(Update::Error(e.into_text())),
-                }
             }
-            Command::SetSourceScroll {
-                gesture,
-                id,
-                scroll,
-                canvas,
-            } => {
-                let edit = if scroll.is_some_and(|s| !s.is_valid()) {
-                    Err(Refusal::Invalid(SCROLL_ERROR.to_owned()))
-                } else {
-                    self.item_of(id)
-                        .map(|(_, item)| item.id)
-                        .and_then(|item| self.set_item_scroll(item, scroll, gesture, canvas))
-                };
-                match edit {
-                    Ok(true) => self.apply(notify),
-                    Ok(false) => {}
-                    Err(e) => notify(Update::Error(e.into_text())),
-                }
-            }
-            // Routed elsewhere by `Host::command`.
-            _ => {}
         }
     }
 }

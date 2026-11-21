@@ -103,6 +103,8 @@ mod api_convert;
 mod control_api;
 use api_answers::*;
 use api_convert::*;
+/// The API forms of a style and a scroll, for the window's calls (ADR-0164).
+pub use api_convert::{api_scroll as scroll_for_api, api_style as style_for_api};
 pub use command::*;
 pub use command_path::{CommandPath, WindowReason};
 use control_api::*;
@@ -721,7 +723,6 @@ impl Host {
             | Command::StopThumbnails
             | Command::OpenSourceSettings(..)
             | Command::CloseSourceSettings
-            | Command::SetSourceSettings { .. }
             | Command::ForgetBrowserSignIn(..)
             | Command::BrowserControl { .. } => self.source_edit_command(c, notify),
             Command::OpenAttributes { .. }
@@ -732,9 +733,7 @@ impl Host {
             Command::SetSourceBox { .. }
             | Command::SetSourceCrop { .. }
             | Command::TransformSource { .. } => self.item_command(c, notify),
-            Command::SetSourceRegion { .. }
-            | Command::SetSourceStyle { .. }
-            | Command::SetSourceScroll { .. } => self.item_display_command(c, notify),
+            Command::SetSourceRegion { .. } => self.item_display_command(c, notify),
             Command::StartRecording(..)
             | Command::StartVerticalRecording(..)
             | Command::SetVerticalProfile(..)

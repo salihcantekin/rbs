@@ -558,6 +558,7 @@ Protocol 1.100 adds everything [ADR-0164](../adr/0164-protocol-minor-for-the-win
   - Bit 63 marks the desktop app's own drags. The server clears it from every client's gesture, including `item.set_box`'s, so a client's drag never joins one of the window's steps.
   - Use values below 2^53. Larger values are accepted, but JSON clients lose precision.
   - Two clients that reuse a number on the same kind of edit can join one step.
+- **The text-file rule is a caller check.** `source.set_settings` still refuses a text source's `file` with `forbidden` for every API caller. The check now runs with the other caller checks, so the desktop app's own calls pass (ADR-0164 decision 7).
 - **Older servers.** A 1.99 server answers `invalid_params` for `gesture` on `item.set_crop`, `item.set_scroll`, `source.set_settings` and the transform methods, and ignores it on `item.set_style`. Check for 1.100 first.
 - **As built (step 1).**
   - `rbs-api` `request.rs`: the `gesture` fields.

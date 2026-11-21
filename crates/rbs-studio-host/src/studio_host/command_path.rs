@@ -138,7 +138,6 @@ paths! {
     OpenSourceSettings => WindowOnly(View),
     CloseSourceSettings => WindowOnly(View),
     // source.set_settings needs gesture; its text-file refusal moves to the caller checks
-    SetSourceSettings => Contract(&["source.set_settings"]),
     BrowserControl => Pending(&["browser.reload", "browser.run_script"]),
     // window stops the page first, API does not
     ForgetBrowserSignIn => Pending(&["browser.forget_sign_in"]),
@@ -159,9 +158,7 @@ paths! {
     // no method for the shown region (ADR-0058 Show buttons); source.set_region is the capture region
     SetSourceRegion => Missing,
     // item.set_style needs gesture
-    SetSourceStyle => Contract(&["item.set_style"]),
     // item.set_scroll needs gesture
-    SetSourceScroll => Contract(&["item.set_scroll"]),
     // record.start builds its request from host state; the window sends its own RecordRequest
     StartRecording => Contract(&["record.start"]),
     // as StartRecording
@@ -232,7 +229,7 @@ mod tests {
     /// as `PENDING` falls; any other rise needs the owner's written approval.
     const TRANSLATES: usize = 22;
     const PENDING: usize = 17;
-    const CONTRACT: usize = 10;
+    const CONTRACT: usize = 7;
     const MISSING: usize = 20;
     const VIEW: usize = 13;
     const LOCAL_ONLY: usize = 9;

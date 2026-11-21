@@ -896,7 +896,7 @@ fn a_control_api_client_adds_and_edits_a_text_source() {
         !file["error"]["message"].as_str().unwrap().contains("/etc"),
         "{file}"
     );
-
+    window_passes_the_text_file_rule(&host, &updates, id as u32);
     // A box edit makes the text crisp (ADR-0129 decision 12): the box and the font
     // size double with the item, in one undo step.
     let before = c.call("source.get_settings", json!({"source": id}))["result"]["settings"].clone();
@@ -979,4 +979,30 @@ fn a_control_api_client_adds_and_edits_a_text_source() {
 
     drop(host);
     drop(api);
+}
+
+/// The window is the person at this computer: the text-file rule is a caller check its
+/// own `source.set_settings` does not meet (ADR-0164 decision 7).
+fn window_passes_the_text_file_rule(host: &StudioHost, updates: &Receiver<Update>, id: u32) {
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::SourceSetSettings(
+            rbs_api::request::SetSourceSettings {
+                source: id,
+                settings: [("file".to_owned(), json!("/no/such/file.txt"))].into(),
+                gesture: 0,
+            },
+        )),
+        reply: rbs_studio_host::studio_host::ApiReply::Ticket(1),
+    });
+    let window = next(updates, |u| match u {
+        Update::ApiAnswer { ticket: 1, result } => Some(result),
+        _ => None,
+    });
+    assert!(
+        window
+            .as_ref()
+            .err()
+            .is_none_or(|e| e.kind != rbs_api::ErrorKind::Forbidden),
+        "{window:?}"
+    );
 }

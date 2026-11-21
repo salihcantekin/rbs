@@ -954,11 +954,7 @@ fn a_browser_page_keeps_its_page_settings_through_the_host() {
     let set = |key: &str, value: serde_json::Value| {
         let mut patch = std::collections::BTreeMap::new();
         patch.insert(key.to_owned(), value);
-        host.send(Command::SetSourceSettings {
-            id,
-            patch,
-            gesture: 0,
-        });
+        host.send(crate::set_settings(id, patch, 0));
     };
     set(keys::URL, serde_json::json!("https://example.com/"));
     set(keys::TRANSPARENT, serde_json::json!(true));

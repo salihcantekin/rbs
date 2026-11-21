@@ -112,7 +112,7 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `StopThumbnails` | WindowOnly View |  |
 | `OpenSourceSettings` | WindowOnly View |  |
 | `CloseSourceSettings` | WindowOnly View |  |
-| `SetSourceSettings` | Contract | source.set_settings needs gesture; its text-file refusal moves to the caller checks |
+| `SetSourceSettings` | Moved to `Command::Api` (ADR-0164 step 1) | source.set_settings with `gesture`; the text-file refusal is a caller check, so the window passes |
 | `ReloadSource` | Moved to `Command::Api` (step 3) | source.reload; the API now publishes after a restart, as the window did |
 | `BrowserControl` | Pending | browser.reload, browser.run_script; stays: the window's Reload restarts a page that is not running, `browser.reload` refuses it (`browser_not_running`) |
 | `ForgetBrowserSignIn` | Pending | browser.forget_sign_in; stays: the window stops the page first so its profile can be removed, the API does not (an API change for Group B) |
@@ -144,8 +144,8 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `SetSourceActive` | Moved to `Command::Api` (step 3) | source.set_active |
 | `SetSourceVisible` | Moved to `Command::Api` (step 2) | item.set_visible |
 | `SetSourceBox` | Pending | item.set_box |
-| `SetSourceCrop` | Contract | item.set_crop needs gesture |
-| `TransformSource` | Contract | item.flip/rotate/fit/align/reset_transform need gesture |
+| `SetSourceCrop` | Contract | item.set_crop has `gesture` (1.100); the window still waits for the ticketed `CropPlaced` answer, as `SetSourceBox` does |
+| `TransformSource` | Contract | the item transform methods have `gesture` (1.100); `SetAngle` and `ResetRotation` have no API method yet |
 | `SetSourceRegion` | Missing | no method for the shown region (ADR-0058 Show buttons); source.set_region is the capture region |
 | `SetRecordSeparately` | Moved to `Command::Api` (step 6) | source.set_record_separately |
 | `SetSourceCaptureRegion` | Moved to `Command::Api` (step 3) | source.set_region |
@@ -154,8 +154,8 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `ResetDisplayChrome` | Moved to `Command::Api` (step 3) | source.reset_chrome |
 | `SetItemShowFor` | Moved to `Command::Api` (step 2) | item.set_show_for |
 | `ShowItem` | Moved to `Command::Api` (step 2) | item.show |
-| `SetSourceStyle` | Contract | item.set_style needs gesture |
-| `SetSourceScroll` | Contract | item.set_scroll needs gesture |
+| `SetSourceStyle` | Moved to `Command::Api` (ADR-0164 step 1) | item.set_style with `gesture` |
+| `SetSourceScroll` | Moved to `Command::Api` (ADR-0164 step 1) | item.set_scroll with `gesture` |
 | `ScrollLive` | Moved to `Command::Api` (step 6) | item.scroll_pause, item.scroll_resume, item.scroll_restart (the API now publishes the views after a control, as the window path did) |
 | `StartRecording` | Contract | record.start builds its request from host state; the window sends its own RecordRequest |
 | `StopRecording` | Moved to `Command::Api` (step 6) | record.stop |

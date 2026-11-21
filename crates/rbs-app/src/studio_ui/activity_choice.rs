@@ -3,10 +3,9 @@
 //! that send a pick. The lists' words are in the `.slint` files, in the same order.
 
 use rbs_scene::activity::{OnReturn, Run};
-use rbs_scene::model::SourceId;
 
 use super::StudioUi;
-use crate::studio_host::{ActivityChoice, Command, SourceKind, api_return, api_run};
+use crate::studio_host::{ActivityChoice, SourceKind, api_return, api_run};
 
 /// A web page or a display, window or camera: "While in a scene", "While shown",
 /// "Only on air".
@@ -147,12 +146,7 @@ impl StudioUi {
             return;
         }
         self.deleted.clear();
-        self.send(Command::SetSourceScroll {
-            gesture: 0,
-            id: SourceId::from_raw(id as u32),
-            scroll: Some(scroll.with_on_return(on_return)),
-            canvas: self.props_target(id),
-        });
+        self.send_scroll(id, Some(&scroll.with_on_return(on_return)), 0);
     }
 
     fn pick_activity(

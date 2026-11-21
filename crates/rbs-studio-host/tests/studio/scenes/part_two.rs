@@ -87,7 +87,13 @@ pub(super) fn style_crop_and_transform_on_the_vertical_canvas_leave_the_main_lay
     let Some((host, updates, _api, mut c)) = start() else {
         return;
     };
-    let id = SourceId::from_raw(add(&mut c, "screen", "Screen") as u32);
+    let raw = add(&mut c, "screen", "Screen");
+    let id = SourceId::from_raw(raw as u32);
+    let item = sources(&mut c)
+        .iter()
+        .find(|r| r["id"] == raw)
+        .map(|r| r["item"].as_u64().unwrap() as u32)
+        .unwrap();
     host.send(Command::Api {
         call: Box::new(rbs_api::Command::CanvasAddVertical(
             rbs_api::request::AddVerticalCanvas {
@@ -106,12 +112,11 @@ pub(super) fn style_crop_and_transform_on_the_vertical_canvas_leave_the_main_lay
     });
     let main = rows[0].layout.unwrap();
     // The vertical layout is the canvas's own from the first change on.
-    host.send(Command::SetSourceStyle {
-        gesture: 0,
-        id,
-        style: ItemStyle::new(Shape::Circle),
-        canvas: OutputCanvas::Vertical,
-    });
+    host.send(crate::set_style(
+        item,
+        &ItemStyle::new(Shape::Circle),
+        OutputCanvas::Vertical,
+    ));
     let rows = next(&updates, |u| match u {
         Update::Sources(r)
             if r[0]
@@ -163,12 +168,11 @@ pub(super) fn style_crop_and_transform_on_the_vertical_canvas_leave_the_main_lay
     // In studio mode the vertical canvas is not edited: the style is refused.
     let program = scenes(&mut c)["program"].clone();
     ok(&c.call("canvas.set_preview", json!({"scene": program})));
-    host.send(Command::SetSourceStyle {
-        gesture: 0,
-        id,
-        style: ItemStyle::new(Shape::Ellipse),
-        canvas: OutputCanvas::Vertical,
-    });
+    host.send(crate::set_style(
+        item,
+        &ItemStyle::new(Shape::Ellipse),
+        OutputCanvas::Vertical,
+    ));
     next(&updates, |u| match u {
         Update::Error(_) => Some(()),
         _ => None,
@@ -182,13 +186,12 @@ pub(super) fn style_crop_and_transform_on_the_vertical_canvas_leave_the_main_lay
 #[test]
 pub(super) fn properties_scroll_sets_the_layout_and_pauses_the_run() {
     use rbs_api::request::ScrollItem;
-    use rbs_scene::model::{Scroll, ScrollDirection, SourceId};
+    use rbs_scene::model::{Scroll, ScrollDirection};
     use rbs_studio_host::studio_host::{ApiReply, Command, OutputCanvas};
     let Some((host, updates, _api, mut c)) = start() else {
         return;
     };
     let raw = add(&mut c, "screen", "Screen");
-    let id = SourceId::from_raw(raw as u32);
     let item = sources(&mut c)
         .iter()
         .find(|r| r["id"] == raw)
@@ -208,12 +211,7 @@ pub(super) fn properties_scroll_sets_the_layout_and_pauses_the_run() {
         _ => None,
     });
     let ticker = Scroll::new(ScrollDirection::Left, 120.0);
-    host.send(Command::SetSourceScroll {
-        gesture: 0,
-        id,
-        scroll: Some(ticker),
-        canvas: OutputCanvas::Main,
-    });
+    host.send(crate::set_scroll(item, Some(ticker), OutputCanvas::Main));
     next(&updates, |u| match u {
         Update::Sources(r) if r[0].layout.is_some_and(|l| l.scroll == Some(ticker)) => Some(()),
         Update::Error(e) => panic!("{e}"),
@@ -231,12 +229,11 @@ pub(super) fn properties_scroll_sets_the_layout_and_pauses_the_run() {
         Update::Error(e) => panic!("{e}"),
         _ => None,
     });
-    host.send(Command::SetSourceScroll {
-        gesture: 0,
-        id,
-        scroll: Some(Scroll::new(ScrollDirection::Left, 0.0)),
-        canvas: OutputCanvas::Main,
-    });
+    host.send(crate::set_scroll(
+        item,
+        Some(Scroll::new(ScrollDirection::Left, 0.0)),
+        OutputCanvas::Main,
+    ));
     next(&updates, |u| match u {
         Update::Error(e) if e.contains("speed") => Some(()),
         _ => None,

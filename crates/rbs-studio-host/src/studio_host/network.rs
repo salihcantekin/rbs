@@ -118,6 +118,27 @@ fn local_only(method: &str) -> ApiError {
 }
 
 impl Host {
+    /// A text source's `file` would put any readable file on air: no API caller but
+    /// the window may set it until token scopes exist (ADR-0129 decision 8). A caller
+    /// check, so the window's own call through `Command::Api` passes (ADR-0164
+    /// decision 7).
+    pub(super) fn check_text_file(&self, command: &Command) -> Result<(), ApiError> {
+        let Command::SourceSetSettings(p) = command else {
+            return Ok(());
+        };
+        let text = self
+            .collection
+            .source(SourceId::from_raw(p.source))
+            .is_some_and(|s| SourceKind::of(&s.type_id) == Some(SourceKind::Text));
+        if text && p.settings.contains_key(keys::FILE) {
+            return Err(ApiError::new(
+                ErrorKind::Forbidden,
+                "the control API cannot set a text source's file",
+            ));
+        }
+        Ok(())
+    }
+
     /// Refuses a token a write that would leave a browser source running the user's
     /// script inside a signed-in account (`local_only`, ADR-0149 decision 3). The
     /// desktop app and a same-user IPC peer without a token may.

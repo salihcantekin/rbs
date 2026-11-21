@@ -226,17 +226,6 @@ pub enum Command {
     OpenSourceSettings(SourceId),
     /// The Source settings window closed: drop a late region preview.
     CloseSourceSettings,
-    /// Change a source's stored settings by a patch (a `null` removes a key; one undo
-    /// step, ADR-0077): what Apply and OK of the Source settings window send.
-    SetSourceSettings {
-        /// The source.
-        id: SourceId,
-        /// The keys to change.
-        patch: BTreeMap<String, serde_json::Value>,
-        /// Patches that share a non-zero gesture (one drag of a field) are one undo
-        /// step; 0 never joins.
-        gesture: u64,
-    },
     /// A message to a browser source's running page: reload it, or run a script
     /// (ADR-0132 decision 5, ADR-0149 decision 3). A reload of a page that does not
     /// run is the `source.reload` call.
@@ -332,34 +321,6 @@ pub enum Command {
         id: SourceId,
         /// Which part.
         region: CropRegion,
-    },
-    /// Shape and border of a video source's picture (ADR-0053), replacing the whole
-    /// style of the layout the canvas shows. A style that is not valid is refused with
-    /// [`Update::Error`].
-    SetSourceStyle {
-        /// Styles with the same number other than 0 that follow each other are one undo
-        /// step (one slider drag); 0 is a step of its own.
-        gesture: u64,
-        /// The source.
-        id: SourceId,
-        /// The new style.
-        style: ItemStyle,
-        /// The canvas whose layout changes: the vertical canvas's own layout only while
-        /// it shows the scene being edited (ADR-0093 decision 4).
-        canvas: OutputCanvas,
-    },
-    /// Sets or clears the scroll of a video source's picture (ADR-0150) on the layout
-    /// the canvas shows; refused with [`Update::Error`] when out of range.
-    SetSourceScroll {
-        /// Edits with the same number other than 0 that follow each other are one undo
-        /// step (one field drag); 0 is a step of its own.
-        gesture: u64,
-        /// The source.
-        id: SourceId,
-        /// The scroll, or `None` to stop scrolling.
-        scroll: Option<Scroll>,
-        /// The canvas whose layout changes, as for [`Command::SetSourceStyle`].
-        canvas: OutputCanvas,
     },
     /// Start recording the program ([`Update::Recording`] says how it went).
     StartRecording(RecordRequest),

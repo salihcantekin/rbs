@@ -194,3 +194,19 @@ impl StudioUi {
         ));
     }
 }
+
+impl StudioUi {
+    /// `source.set_settings` for source `id`: one undo step, or part of `gesture`'s.
+    pub(super) fn send_settings(
+        &self,
+        id: i32,
+        settings: std::collections::BTreeMap<String, serde_json::Value>,
+        gesture: u64,
+    ) {
+        self.call(C::SourceSetSettings(rq::SetSourceSettings {
+            source: id as u32,
+            settings,
+            gesture,
+        }));
+    }
+}
