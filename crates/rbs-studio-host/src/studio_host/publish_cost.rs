@@ -171,6 +171,23 @@ fn slow_publish_cost_when_nothing_changed() {
             (allocations() - before) as f64 / f64::from(STEPS),
             took.as_secs_f64() * 1e6 / f64::from(STEPS)
         );
+        // A master fader step.
+        let canvas = host.canvas;
+        let before = allocations();
+        let started = Instant::now();
+        for i in 0..STEPS {
+            let volume = f64::from(i % 100) as f32 / 100.0;
+            host.collection
+                .set_canvas_master_volume(canvas, volume)
+                .unwrap();
+            host.publish(&quiet);
+        }
+        let took = started.elapsed();
+        rbs_crash::errln!(
+            "F-10 master step, {n} sources: {:.0} allocations and {:.1} µs per step",
+            (allocations() - before) as f64 / f64::from(STEPS),
+            took.as_secs_f64() * 1e6 / f64::from(STEPS)
+        );
     }
 }
 
@@ -232,4 +249,40 @@ fn a_running_show_cue_sends_its_time_and_not_the_rows() {
     assert!(host.cues_sent[0].1 > 0 && host.cues_sent[0].1 <= 5_000);
     // The engine's clock does not move here: the next round has nothing new.
     assert_eq!(sent(&mut host), Vec::<String>::new());
+}
+
+/// F-10: a fader step or a mute sends the new audio alone, and the rows it patches
+/// equal rows built from scratch. A sync offset still sends the rows: it changes the
+/// device peers of other sources.
+#[test]
+fn a_fader_step_patches_the_rows_instead_of_sending_them() {
+    let Some(mut host) = host(4) else { return };
+    let _ = sent(&mut host);
+    let _ = sent(&mut host);
+    let mic = host
+        .collection
+        .sources()
+        .find(|s| s.type_id.as_str() == types::AUDIO_INPUT_SOURCE)
+        .map(|s| s.id)
+        .unwrap();
+    host.collection.set_source_volume(mic, 0.25).unwrap();
+    assert_eq!(sent(&mut host), vec!["SourceAudio".to_owned()]);
+    host.collection.set_source_muted(mic, true).unwrap();
+    assert_eq!(sent(&mut host), vec!["SourceAudio".to_owned()]);
+    assert_eq!(host.rows, host.rows());
+    assert_eq!(host.heard, host.rows_of(host.scene));
+    assert_eq!(host.globals_shown, host.global_rows());
+    let row = host.heard.iter().find(|r| r.id == mic).unwrap();
+    assert_eq!((row.audio.volume, row.audio.muted), (0.25, true));
+    // The canvas master patches the scene list only.
+    let canvas = host.canvas;
+    host.collection
+        .set_canvas_master_volume(canvas, 0.5)
+        .unwrap();
+    assert_eq!(sent(&mut host), vec!["Master".to_owned()]);
+    assert_eq!(host.scenes_shown.as_ref(), Some(&host.scene_list()));
+    host.collection.set_source_sync_offset(mic, 40).unwrap();
+    let updates = sent(&mut host);
+    assert!(updates.iter().any(|u| u == "Sources"), "{updates:?}");
+    assert_eq!(host.rows, host.rows());
 }

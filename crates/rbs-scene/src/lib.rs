@@ -27,8 +27,8 @@ pub mod model;
 pub use arrange::{AutoItem, AutoLayout, CenterAxis, FitMode, FlipState, auto_layout};
 pub use attributes::AttributeGroup;
 pub use collection::{
-    Duplicated, IdCounters, MAX_CANVAS_SIDE, MAX_FRAME_RATE, MAX_LAYERS, MAX_NESTING_DEPTH, OnAir,
-    Removed, SceneCollection, SceneError, SourceCopy, SourceFields, Undo,
+    Duplicated, IdCounters, LevelEdits, MAX_CANVAS_SIDE, MAX_FRAME_RATE, MAX_LAYERS,
+    MAX_NESTING_DEPTH, OnAir, Removed, SceneCollection, SceneError, SourceCopy, SourceFields, Undo,
 };
 pub use crop::{place_chrome, recrop_keeping, visible_size};
 pub use flatten::{Affine2, FlatLayer, ScrollKey};

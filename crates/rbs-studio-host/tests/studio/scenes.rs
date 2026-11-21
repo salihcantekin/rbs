@@ -454,11 +454,12 @@ fn items_lock_and_hide_and_sources_mute_rename_and_change_volume() {
         scenes(&mut c)["master"],
         json!({"volume": 0.25, "muted": true})
     );
-    // The UI hears it too.
+    // The UI hears it too: a master-only change patches the list it has (F-10).
     next(&updates, |u| match u {
         Update::Scenes(l) if l.master.muted && (l.master.volume - 0.25).abs() < f32::EPSILON => {
             Some(())
         }
+        Update::Master(m) if m.muted && (m.volume - 0.25).abs() < f32::EPSILON => Some(()),
         _ => None,
     });
     for bad in [json!(1.5), json!(-0.1)] {

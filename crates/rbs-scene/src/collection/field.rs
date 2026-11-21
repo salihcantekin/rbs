@@ -8,7 +8,38 @@
 
 use super::{NextIds, Op, SceneCollection, SceneError, Undo};
 
+/// How many committed edits only changed live levels (scene model spec). Each also
+/// counts in [`SceneCollection::generation`], so `generation` minus both counts is a
+/// revision of everything else (audit F-10: a fader step patches the rows it moves).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct LevelEdits {
+    /// Field edits whose records are all `SourceAudio` changes (volume, mute,
+    /// monitor, sync offset, Mixer visibility).
+    pub source_audio: u64,
+    /// Field edits whose records are all canvas master changes.
+    pub master: u64,
+}
+
+impl LevelEdits {
+    /// Edits that changed more than live levels, given the collection's generation.
+    pub fn others(&self, generation: u64) -> u64 {
+        generation
+            .wrapping_sub(self.source_audio)
+            .wrapping_sub(self.master)
+    }
+}
+
 impl SceneCollection {
+    /// Edits committed since this collection was created. Not part of the file.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// How many of [`SceneCollection::generation`]'s edits only changed live levels.
+    pub fn level_edits(&self) -> LevelEdits {
+        self.level_edits
+    }
+
     /// A live level edit whose new value is already in range. It cannot break names,
     /// nesting or cycles, so the full document walk adds nothing.
     pub(super) fn field_edit(op: &Op) -> bool {
@@ -22,9 +53,15 @@ impl SceneCollection {
 
     /// Commits a field edit (`field_edit` is true for `op`) without a copy.
     pub(super) fn apply_field(&mut self, op: Op, next: NextIds) -> Result<Undo, SceneError> {
+        let kind = level_kind(&op);
         let inverse = self.perform_field(op)?;
         self.next = next;
         self.generation = self.generation.wrapping_add(1);
+        match kind {
+            Some(Level::Source) => bump(&mut self.level_edits, |l| &mut l.source_audio),
+            Some(Level::Master) => bump(&mut self.level_edits, |l| &mut l.master),
+            None => {}
+        }
         Ok(Undo(inverse))
     }
 
@@ -53,6 +90,32 @@ impl SceneCollection {
         inverse.reverse();
         Ok(Op::Batch(inverse))
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Level {
+    Source,
+    Master,
+}
+
+/// Which level counter a field edit adds to: only when every record is of one kind.
+fn level_kind(op: &Op) -> Option<Level> {
+    match op {
+        Op::SetSourceAudio { .. } => Some(Level::Source),
+        Op::SetCanvasMaster { .. } => Some(Level::Master),
+        Op::Batch(ops) => {
+            let first = level_kind(ops.first()?)?;
+            ops.iter()
+                .all(|o| level_kind(o) == Some(first))
+                .then_some(first)
+        }
+        _ => None,
+    }
+}
+
+fn bump(edits: &mut LevelEdits, counter: impl Fn(&mut LevelEdits) -> &mut u64) {
+    let c = counter(edits);
+    *c = c.wrapping_add(1);
 }
 
 #[cfg(test)]
@@ -105,6 +168,35 @@ mod tests {
         assert_eq!(col.apply_field(op, next), Err(SceneError::UndoConflict));
         assert_eq!(col, before);
         assert_eq!(col.generation(), generation);
+    }
+
+    /// F-10: level-only edits are counted apart, so `others` moves only for the rest.
+    #[test]
+    fn level_edits_count_only_edits_that_change_levels_alone() {
+        let (mut col, a, b) = studio();
+        let canvas = col.canvases().next().unwrap().id;
+        let others = |c: &SceneCollection| c.level_edits().others(c.generation());
+        let start = others(&col);
+        col.set_source_volume(a, 0.4).unwrap();
+        col.set_source_muted(b, true).unwrap();
+        col.set_canvas_master_volume(canvas, 0.5).unwrap();
+        assert_eq!(col.level_edits().source_audio, 2);
+        assert_eq!(col.level_edits().master, 1);
+        assert_eq!(others(&col), start);
+        // A batch of both kinds, a refused edit and a rename are not level-only.
+        let master = Op::SetCanvasMaster {
+            canvas,
+            expected: col.canvases().next().unwrap().master,
+            new: MasterAudio::new(0.2, false),
+        };
+        let next = col.next.clone();
+        col.apply_field(Op::Batch(vec![set(&col, a, 0.1), master]), next)
+            .unwrap();
+        assert_eq!(others(&col), start + 1);
+        assert!(col.set_source_volume(a, -1.0).is_err());
+        col.rename_source(a, "A2").unwrap();
+        assert_eq!(others(&col), start + 2);
+        assert_eq!(col.level_edits().source_audio, 2);
     }
 
     #[test]
