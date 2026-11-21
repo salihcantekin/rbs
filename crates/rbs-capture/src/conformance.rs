@@ -22,7 +22,7 @@ use rbs_core::time::{Clock, MonotonicClock, TestClock, Timestamp};
 use crate::caps;
 use crate::{
     CaptureError, CaptureFactory, CaptureRequest, CaptureSession, GpuDeviceId, GpuImportTarget,
-    Permission, SyncKind, THUMBNAIL_MAX, TargetId, TargetKind,
+    MappingSwitch, Permission, SyncKind, THUMBNAIL_MAX, TargetId, TargetKind,
 };
 
 /// Lets time pass between polls.
@@ -483,6 +483,74 @@ impl Suite<'_> {
             .open(&self.request(target, pixel_formats, memory))
     }
 
+    /// ADR-0165 decision 5: a mapping only while the switch is on, for the newest frame,
+    /// with that frame's time and size; never for a kind outside `capture.mapping`.
+    fn check_mapping(
+        &mut self,
+        kind: TargetKind,
+        id: &TargetId,
+        declared: bool,
+    ) -> Result<(), Failure> {
+        const CHECK: &str = "mapping";
+        let switch = MappingSwitch::new();
+        let request = self.request(id, &[], &[]).with_mapping(switch.clone());
+        let mut session = self.factory.open(&request).map_err(|e| Failure {
+            check: CHECK,
+            detail: format!("{kind} {id}: open with a mapping switch: {e}"),
+        })?;
+        session.start().map_err(|e| Failure {
+            check: CHECK,
+            detail: format!("{id}: start: {e}"),
+        })?;
+        let frame = self.next_frame(CHECK, id, session.as_mut())?;
+        drop(frame);
+        ensure(CHECK, session.latest_mapping().is_none(), || {
+            format!("{id}: a mapping while the switch is off")
+        })?;
+        switch.set(true);
+        let frame = self.next_frame(CHECK, id, session.as_mut())?;
+        let mapping = session.latest_mapping();
+        if declared {
+            let Some(mapping) = mapping else {
+                return fail(CHECK, format!("{id}: no mapping while the switch is on"));
+            };
+            ensure(CHECK, mapping.frame_time == frame.timestamp(), || {
+                format!(
+                    "{id}: mapping for {:?}, newest frame {:?}",
+                    mapping.frame_time,
+                    frame.timestamp()
+                )
+            })?;
+            ensure(CHECK, mapping.picture == frame.format().size, || {
+                format!(
+                    "{id}: mapping picture {:?}, frame {:?}",
+                    mapping.picture,
+                    frame.format().size
+                )
+            })?;
+        } else {
+            ensure(CHECK, mapping.is_none(), || {
+                format!(
+                    "{kind} {id}: a mapping for a kind outside {}",
+                    caps::MAPPING
+                )
+            })?;
+        }
+        drop(frame);
+        switch.set(false);
+        let frame = self.next_frame(CHECK, id, session.as_mut())?;
+        drop(frame);
+        ensure(CHECK, session.latest_mapping().is_none(), || {
+            format!("{id}: a mapping after the switch went off")
+        })?;
+        session.stop();
+        ensure(CHECK, session.latest_mapping().is_none(), || {
+            format!("{id}: a mapping after stop")
+        })?;
+        self.pass(CHECK);
+        Ok(())
+    }
+
     /// Polls until a frame arrives or the timeout passes.
     fn next_frame(
         &mut self,
@@ -629,6 +697,11 @@ impl Suite<'_> {
         self.check_formats(&testable)?;
         for (kind, id) in &testable {
             self.check_session(*kind, id)?;
+        }
+        let mapped = symbols(caps, &caps::MAPPING);
+        for (kind, id) in &testable {
+            let declared = mapped.iter().any(|k| k == kind.as_str());
+            self.check_mapping(*kind, id, declared)?;
         }
         // Target loss last: it removes the targets.
         match self.options.hooks {

@@ -42,6 +42,8 @@ mod broken {
         IgnoresTargetLoss,
         /// Keeps reporting the size from `open` after a resize.
         StaleFormat,
+        /// Keeps the last mapping after the mapping switch went off (ADR-0165).
+        MapsWhileOff,
     }
 
     pub struct Factory<'a> {
@@ -77,6 +79,7 @@ mod broken {
                 format,
                 queue: VecDeque::with_capacity(64),
                 stopped_once: false,
+                last_mapping: std::cell::Cell::new(None),
             }))
         }
     }
@@ -99,6 +102,7 @@ mod broken {
         format: VideoFormat,
         queue: VecDeque<VideoFrame>,
         stopped_once: bool,
+        last_mapping: std::cell::Cell<Option<rbs_capture::PictureMapping>>,
     }
 
     impl Drop for Session {
@@ -120,6 +124,16 @@ mod broken {
         }
         fn start(&mut self) -> Result<(), CaptureError> {
             self.inner.start()
+        }
+        fn latest_mapping(&self) -> Option<rbs_capture::PictureMapping> {
+            let now = self.inner.latest_mapping();
+            if matches!(self.fault, Fault::MapsWhileOff) {
+                if now.is_some() {
+                    self.last_mapping.set(now);
+                }
+                return self.last_mapping.get();
+            }
+            now
         }
         fn stop(&mut self) {
             self.stopped_once = true;
@@ -201,6 +215,7 @@ fn suite_catches_broken_adapters() {
         (Fault::LeaksOnDrop, "drop"),
         (Fault::IgnoresTargetLoss, "target lost"),
         (Fault::StaleFormat, "format"),
+        (Fault::MapsWhileOff, "mapping"),
     ] {
         let inner: &'static TestCaptureFactory = Box::leak(Box::new(TestCaptureFactory::new()));
         let factory = broken::Factory { inner, fault };
