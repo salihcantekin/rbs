@@ -419,10 +419,23 @@ const HEAD_BYTES: u64 = 4096;
 
 /// Reads a document file; `Ok(None)` if there is none.
 pub fn read<T: Document>(path: &Path) -> Result<Option<Read<T>>, DataError> {
-    match read_text(path, T::MAX_SIZE)? {
+    let read = match read_text(path, T::MAX_SIZE)? {
         Some(text) => parse(&text).map(Some),
         None => Ok(None),
+    };
+    // The file by name only (ADR-0158 spec, "What is logged": file details at Debug).
+    let file = file_name(path);
+    match &read {
+        Ok(Some(_)) => rbs_core::debug!(Area::UserData, "read {file}"),
+        Ok(None) => rbs_core::debug!(Area::UserData, "no {file} yet"),
+        Err(e) => rbs_core::debug!(Area::UserData, "{file} not read: {e}"),
     }
+    read
+}
+
+/// A path's last part, for a log line.
+fn file_name(path: &Path) -> std::borrow::Cow<'_, str> {
+    path.file_name().unwrap_or_default().to_string_lossy()
 }
 
 /// A document's envelope: what [`peek`] reads without the body.
@@ -598,6 +611,7 @@ pub fn write_known<T: Document>(
     written.forget(path);
     write_atomic(path, text.as_bytes())?;
     written.note(path, &text);
+    rbs_core::debug!(Area::UserData, "wrote {}", file_name(path));
     Ok(())
 }
 
