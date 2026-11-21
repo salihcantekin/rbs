@@ -39,6 +39,7 @@ mod control;
 mod pcm;
 mod picture;
 mod player;
+mod return_edge;
 mod sound;
 mod worker;
 
@@ -52,6 +53,7 @@ use rbs_graph::node::{LinkKind, NodeDescriptor, NodeKind, NodeTypeId, Pin};
 pub use control::{MediaControl, PlayState, RECORDS as MEDIA_CONTROL_RECORDS};
 pub use picture::{MediaNodeError, MediaPhase, MediaPictureNode};
 pub use player::PAUSE_RELEASE;
+pub use return_edge::ReturnEdge;
 pub use sound::MediaSoundNode;
 
 /// Type id of the picture node.

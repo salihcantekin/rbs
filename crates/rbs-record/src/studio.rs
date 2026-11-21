@@ -2788,7 +2788,7 @@ impl Studio {
                 // where it stopped (ADR-0152 decision 6, ADR-0108 decision 10).
                 if let (Some(control), Some(on_return)) = (self.media_controls.get(&id), on_return)
                 {
-                    control.set_restart_when_shown(on_return == OnReturn::Restart);
+                    control.set_on_return(rbs_sources::media_return_edge(on_return));
                 }
                 // A running page with `restart` reloads on its on-air edge; the
                 // runner keeps the last picture until the new first paint, at most
@@ -3070,7 +3070,7 @@ impl Studio {
                     let (level, on_return) = self.binder.level_of(entry.source);
                     if let Some(on_return) = on_return {
                         m.control
-                            .set_restart_when_shown(on_return == OnReturn::Restart);
+                            .set_on_return(rbs_sources::media_return_edge(on_return));
                     }
                     let _ = m.control.set_on_air(level == Level::OnAir);
                     self.engine.adopt::<GpuRuntime>(

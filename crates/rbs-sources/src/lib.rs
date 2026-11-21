@@ -36,6 +36,7 @@ pub mod text_resize;
 pub mod text_worker;
 pub mod types;
 
+pub use activity::media_return_edge;
 pub use browser::{
     BROWSER_CAP, BROWSER_KEYS, BROWSER_LIVE_KEYS, BROWSER_NO_ADDRESS, BROWSER_NODE_TYPE,
     BROWSER_RUNTIME_MISMATCH, BROWSER_RUNTIME_MISSING, BrowserBudget, BrowserClaim,

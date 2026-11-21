@@ -16,6 +16,7 @@ use rbs_core::time::Timestamp;
 use super::Shared;
 use super::picture::{MediaNodeError, MediaPhase};
 use super::player::Player;
+use super::return_edge::{Resumed, ReturnEdge};
 
 /// Records kept in the handle.
 pub const RECORDS: usize = 4;
@@ -263,7 +264,7 @@ impl View {
 /// not an undo step, and does not replace the source.
 #[derive(Clone)]
 pub struct MediaControl {
-    shared: Arc<Shared>,
+    pub(super) shared: Arc<Shared>,
 }
 
 impl MediaControl {
@@ -314,6 +315,7 @@ impl MediaControl {
     pub fn pause(&self) -> Result<(), MediaNodeError> {
         let shared = Arc::clone(&self.shared);
         let mut player = shared.player();
+        player.anchor = None;
         match Self::state_of(&shared, &player) {
             PlayState::Playing | PlayState::Standby => {
                 player.cued = false;
@@ -333,6 +335,7 @@ impl MediaControl {
     pub fn seek(&self, position: Duration) -> Result<(), MediaNodeError> {
         let shared = Arc::clone(&self.shared);
         let mut player = shared.player();
+        player.anchor = None;
         let position = match self.duration() {
             Some(duration) => position.min(duration),
             None => position,
@@ -356,6 +359,7 @@ impl MediaControl {
     pub fn restart(&self) -> Result<(), MediaNodeError> {
         let shared = Arc::clone(&self.shared);
         let mut player = shared.player();
+        player.anchor = None;
         player.started = true;
         let off_air = Self::off_air(&player);
         if off_air {
@@ -417,14 +421,28 @@ impl MediaControl {
         let state = Self::state_of(&shared, &player);
         let restart = player.restart_when_shown;
         if on_air {
+            let instant = Self::instant(&shared, player.clock().now());
+            let resumed = player.continue_at(&shared, instant);
             match state {
                 PlayState::Cued => {
                     // `restart_when_shown` starts at the range start (the table),
-                    // also after a seek while cued. Going on air is a start.
+                    // also after a seek while cued; `continue` where it would be.
+                    // Going on air is a start.
                     player.started = true;
                     player.cued = false;
-                    let position = restart.then(|| shared.range_start());
-                    Self::command(&shared, &mut player, false, position)
+                    match resumed {
+                        Some(Resumed::Ended(at)) => {
+                            player.ended_stored = true;
+                            Self::command(&shared, &mut player, true, Some(at))
+                        }
+                        Some(Resumed::At(at)) => {
+                            Self::command(&shared, &mut player, false, Some(at))
+                        }
+                        None => {
+                            let position = restart.then(|| shared.range_start());
+                            Self::command(&shared, &mut player, false, position)
+                        }
+                    }
                 }
                 PlayState::Ended if restart => {
                     let start = shared.range_start();
@@ -437,10 +455,13 @@ impl MediaControl {
                 _ => Ok(()),
             }
         } else if state == PlayState::Playing {
-            // A take swapped it out: cued where it stopped, or at the start.
+            // A take swapped it out: cued where it stopped, or at the start; with
+            // `continue` the anchor says where it would be on the next take.
             player.cued = true;
             let position = restart.then(|| shared.range_start());
-            Self::command(&shared, &mut player, true, position)
+            let paused = Self::command(&shared, &mut player, true, position);
+            player.anchor_leaving(&shared);
+            paused
         } else {
             Ok(())
         }
@@ -466,11 +487,11 @@ impl MediaControl {
     /// The live `restart_when_shown` key (ADR-0108 decision 12): read by the next
     /// transition of the on-air table and the next wake.
     pub fn set_restart_when_shown(&self, on: bool) {
-        let mut player = self.shared.player();
-        match player.armed.as_mut() {
-            Some((_, saved)) => *saved = on,
-            None => player.restart_when_shown = on,
-        }
+        self.set_on_return(if on {
+            ReturnEdge::Restart
+        } else {
+            ReturnEdge::Resume
+        });
     }
 
     /// Arms the source as the stinger for one transition (ADR-0140 decision 4): a
@@ -485,12 +506,12 @@ impl MediaControl {
         if player.armed.is_none() {
             let saved = (
                 player.loop_flag.load(Ordering::Acquire),
-                player.restart_when_shown,
+                player.return_edge(),
             );
             player.armed = Some(saved);
         }
         player.loop_flag.store(false, Ordering::Release);
-        player.restart_when_shown = false;
+        player.set_return_edge(ReturnEdge::Resume);
         player.cued = false;
         let had_alpha = shared.keep_alpha.swap(true, Ordering::AcqRel);
         if !had_alpha && player.phase != MediaPhase::Standby && !player.worker_joined() {
@@ -527,11 +548,11 @@ impl MediaControl {
     pub fn disarm(&self) {
         let shared = Arc::clone(&self.shared);
         let mut player = shared.player();
-        let Some((looped, restart)) = player.armed.take() else {
+        let Some((looped, edge)) = player.armed.take() else {
             return;
         };
         player.loop_flag.store(looped, Ordering::Release);
-        player.restart_when_shown = restart;
+        player.set_return_edge(edge);
         shared.keep_alpha.store(false, Ordering::Release);
     }
 
