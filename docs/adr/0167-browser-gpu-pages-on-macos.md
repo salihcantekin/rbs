@@ -1,6 +1,6 @@
 # ADR-0167: Browser pages on macOS paint into studio-owned IOSurfaces
 
-- Status: Proposed
+- Status: Accepted (owner, 2026-11-21)
 - Date: 2026-11-21
 - Deciders: Salih (owner)
 - Extends: [ADR-0157](0157-browser-gpu-pages-sync-on-a-shared-fence.md) to macOS. It supersedes nothing: ADR-0157 says "macOS (IOSurface) is unchanged by this decision and still paints in software", and this ADR is that missing decision. ADR-0109 decision 8 ("the studio owns the textures ... a texture goes back only after the studio's GPU work that reads it has finished") holds unchanged.
@@ -64,4 +64,4 @@ Round 1: independent AI session (given only this ADR, the principles, ADR-0157, 
 
 Round 2 (confirm): a fresh independent AI session (same inputs), 2026-11-21. Verdict: approve with notes, none blocking. All round-1 concerns resolved in the Decision text; the single writer holds because the loop that calls `do_message_loop_work` is CEF's UI thread (`external_message_pump`). Notes, all written into decisions 3, 4 and 6 by the author: (1) receive with the audit trailer; (2) the handover deadline starts at the first heartbeat, not the spawn; (3) the UI thread owns the last reference to the slot set; (4) `rbs-mach` is macOS-only, low-level, in the layers table, with its own message ids; (5) the studio's Mach server is injected into the supervisor from `rbs-app`; (6) `PUMP.wake()` instead of `schedule(0)`; (7) the claim order lives in helper memory; (8) drain a bounded number of queued requests per pass; (9) the gate's rising check is strict in `pass`, equal in `again`.
 
-The owner's approval is still needed.
+Owner's acceptance, 2026-11-21 22:11 UTC: Salih accepted this ADR in the project thread ("ADR-0167 kabul"), after round 2.
