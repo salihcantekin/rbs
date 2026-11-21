@@ -10,9 +10,9 @@ use rbs_scene::ScrollKey;
 use rbs_scene::activity::Level;
 use rbs_scene::binder::BoundLayer;
 use rbs_scene::model::{CanvasId, ItemId, ScrollDirection, ScrollRepeat};
-use rbs_sources::scroll::once_distance;
+use rbs_sources::scroll::{ScrollRuns, once_distance};
 
-use super::Studio;
+use super::{ScrollHandover, Studio};
 
 /// A live call on an item's scroll run (ADR-0150 decision 11). Not saved, not undone;
 /// it acts on the run, so every item that shares it moves too.
@@ -102,6 +102,21 @@ pub(crate) fn keys_of<'a>(
 }
 
 impl Studio {
+    /// The scroll run of every key a list draws (ADR-0150 decision 5).
+    pub fn scroll_runs(&self) -> &ScrollRuns {
+        &self.scroll_runs
+    }
+
+    /// The scroll runs to hand to the studio that replaces this one
+    /// ([`super::StudioSettings::scroll_runs`]), taken at the engine's time now.
+    pub fn scroll_handover(&self) -> ScrollHandover {
+        ScrollHandover {
+            runs: self.scroll_runs.clone(),
+            at: self.engine.clock().now(),
+            lingers: self.binder.lingers(),
+        }
+    }
+
     /// Starts the runs of keys new to the lists and ends those no list draws any more
     /// (keeping a continuing one while its source is placed, ADR-0152 decision 6), at
     /// the engine's time now.

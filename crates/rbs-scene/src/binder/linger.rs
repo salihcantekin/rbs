@@ -74,6 +74,18 @@ impl Linger {
         self.until.values().min().copied()
     }
 
+    /// Each lingering source and when its linger ends.
+    pub(super) fn ends(&self) -> &BTreeMap<SourceId, Timestamp> {
+        &self.until
+    }
+
+    /// Takes over the lingers of a binder this one replaces, already moved to this
+    /// clock (ADR-0152 decision 8): the next sync keeps those whose source is still
+    /// not running, not Off and whose time is not up.
+    pub(super) fn adopt(&mut self, ends: BTreeMap<SourceId, Timestamp>) {
+        self.until = ends;
+    }
+
     /// Whether `id` is lingering now.
     pub(super) fn contains(&self, id: SourceId) -> bool {
         self.until.contains_key(&id)

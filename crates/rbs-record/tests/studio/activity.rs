@@ -216,7 +216,8 @@ fn a_camera_that_lingers_stays_open_off_screen_until_its_time_is_up() {
     let (engine, clock) = engine_at_start();
     let mut settings = StudioSettings::new(main);
     settings.audio = false;
-    let mut studio = Studio::start(engine, gpu, &col, &r.adapters.sources, &settings).unwrap();
+    let mut studio =
+        Studio::start(engine, gpu.clone(), &col, &r.adapters.sources, &settings).unwrap();
     let running = |s: &Studio| {
         s.sources()
             .into_iter()
@@ -246,8 +247,25 @@ fn a_camera_that_lingers_stays_open_off_screen_until_its_time_is_up() {
     );
     assert!(!studio.linger_due(clock.now()));
 
+    // A studio restart 4 s in hands the linger over: the new studio's clock is behind
+    // the old one, and 6 s are left on it (ADR-0152 decision 8).
+    clock.advance(Duration::from_secs(4));
+    let handover = studio.scroll_handover();
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+    let (engine, clock) = engine_at_start();
+    settings.scroll_runs = Some(handover);
+    let mut studio = Studio::start(engine, gpu, &col, &r.adapters.sources, &settings).unwrap();
+    studio.start_output(&r.adapters, &rec).unwrap();
+    assert!(studio.is_lingering(cam));
+    assert!(running(&studio));
+    assert_eq!(
+        studio.linger_wait(clock.now()),
+        Some(Duration::from_secs(6))
+    );
+
     // Its time is up: the update the host makes puts it to Standby.
-    clock.advance(Duration::from_secs(10));
+    clock.advance(Duration::from_secs(6));
     assert!(studio.linger_due(clock.now()));
     studio.update(&col, &r.adapters.sources).unwrap();
     assert!(!running(&studio));
