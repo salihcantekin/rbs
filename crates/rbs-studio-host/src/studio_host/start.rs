@@ -32,6 +32,7 @@ pub(super) fn start(
     // Signed-in profiles sit beside the add-ons, in the local data directory.
     let profiles = config.add_ons.as_ref().and_then(profiles_dir);
     let add_ons = add_ons::AddOnsHost::new(config.add_ons);
+    add_ons.finish_updates();
     let engine_slot = engine_slot(&collection, &add_ons);
     let browser = seams::browser_tree(
         config.browser.as_ref(),

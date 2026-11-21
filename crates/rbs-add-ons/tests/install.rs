@@ -568,3 +568,50 @@ fn a_sharing_violation_is_retried_on_the_injected_clock() {
     assert_eq!(rig.fs.pauses.load(Ordering::Relaxed), 9);
     assert!(rig.addons.installed(&entry).is_none());
 }
+
+#[test]
+fn an_update_cleans_at_the_next_start_after_a_quit_before_its_clean() {
+    let rig = Rig::new();
+    for v in ["1.0.0", "1.2.0"] {
+        rig.put(v);
+    }
+    let bytes = Archive::runtime().bytes();
+    let next = entry_for(&bytes, "2.0.0");
+    rig.addons.mark_clean_pending(&next).unwrap();
+    rig.install(&next, &MemFetch::serving(URL, &bytes)).unwrap();
+    // The app quit here; the next start reads the same folder.
+    let again = AddOns::new(
+        rig.root().parent().unwrap().to_owned(),
+        Arc::clone(&rig.fs) as _,
+    );
+    assert!(again.clean_pending(&next));
+    assert_eq!(again.finish_update(&next), Ok(true));
+    let left: Vec<bool> = ["1.0.0", "1.2.0", "2.0.0"]
+        .iter()
+        .map(|v| rig.root().join(v).exists())
+        .collect();
+    assert_eq!(left, [false, true, true], "cleaned as Clean does");
+    assert!(!again.clean_pending(&next));
+    assert_eq!(again.finish_update(&next), Ok(false), "once");
+}
+
+#[test]
+fn an_update_that_did_not_finish_keeps_the_old_version_and_drops_its_note() {
+    let rig = Rig::new();
+    let old = rig.put("1.0.0");
+    let next = entry_for(&Archive::runtime().bytes(), "2.0.0");
+    rig.addons.mark_clean_pending(&next).unwrap();
+    assert_eq!(rig.addons.finish_update(&next), Ok(false));
+    assert!(rig.addons.installed(&old).is_some());
+    assert!(!rig.addons.clean_pending(&next));
+}
+
+#[test]
+fn remove_takes_a_pending_update_note_with_it() {
+    let rig = Rig::new();
+    let entry = rig.put("1.0.0");
+    rig.addons.mark_clean_pending(&entry).unwrap();
+    rig.addons.remove(&entry).unwrap();
+    assert!(!rig.addons.clean_pending(&entry));
+    assert!(rig.addons.installed(&entry).is_none());
+}
