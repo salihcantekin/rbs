@@ -274,11 +274,9 @@ pub enum Command {
         /// step; 0 never joins.
         gesture: u64,
     },
-    /// Try a source that is not running again with its stored settings (ADR-0077).
-    ReloadSource(SourceId),
     /// A message to a browser source's running page: reload it, or run a script
     /// (ADR-0132 decision 5, ADR-0149 decision 3). A reload of a page that does not
-    /// run is [`Command::ReloadSource`].
+    /// run is the `source.reload` call.
     BrowserControl {
         /// The browser source.
         id: SourceId,

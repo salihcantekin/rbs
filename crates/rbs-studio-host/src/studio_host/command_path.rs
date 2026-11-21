@@ -148,7 +148,6 @@ paths! {
     CloseSourceSettings => WindowOnly(View),
     // source.set_settings needs gesture; its text-file refusal moves to the caller checks
     SetSourceSettings => Contract(&["source.set_settings"]),
-    ReloadSource => Pending(&["source.reload"]),
     BrowserControl => Pending(&["browser.reload", "browser.run_script"]),
     // window stops the page first, API does not
     ForgetBrowserSignIn => Pending(&["browser.forget_sign_in"]),
@@ -253,7 +252,7 @@ mod tests {
     /// which must pick its method from host state may raise `TRANSLATES` by as many
     /// as `PENDING` falls; any other rise needs the owner's written approval.
     const TRANSLATES: usize = 22;
-    const PENDING: usize = 39;
+    const PENDING: usize = 38;
     const CONTRACT: usize = 10;
     const MISSING: usize = 20;
     const VIEW: usize = 13;

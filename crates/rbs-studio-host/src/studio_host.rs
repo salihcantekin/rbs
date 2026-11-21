@@ -723,7 +723,6 @@ impl Host {
             | Command::CloseSourceSettings
             | Command::SetSourceSettings { .. }
             | Command::Media { .. }
-            | Command::ReloadSource(..)
             | Command::ForgetBrowserSignIn(..)
             | Command::BrowserControl { .. } => self.source_edit_command(c, notify),
             Command::SetTransition(..)

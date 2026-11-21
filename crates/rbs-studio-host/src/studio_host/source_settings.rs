@@ -861,11 +861,6 @@ impl Host {
                 }
                 self.media_sent = None;
             }
-            Command::ReloadSource(id) => match self.reload_source(id) {
-                Ok(Reload::Retargeted) => self.answer(Ok(true), notify),
-                Ok(Reload::Restarted(done)) => self.answer_live(Ok(done), notify),
-                Err(e) => self.answer_live(Err(e), notify),
-            },
             Command::ForgetBrowserSignIn(id) => {
                 let done = self
                     .forget_sign_in(id, true)

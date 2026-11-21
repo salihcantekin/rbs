@@ -819,7 +819,12 @@ fn a_source_is_pointed_at_another_target_keeping_its_place_and_one_undo_step() {
         target: mics[1].clone(),
     });
     // A healthy source is left running: reload finds no failure record.
-    host.send(Command::ReloadSource(id));
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::SourceReload(
+            rbs_api::request::ReloadSource { source: id.get() },
+        )),
+        reply: ApiReply::Shown,
+    });
     host.send(Command::Undo);
     let (undo, redo) = history(&rx);
     assert_eq!(

@@ -109,7 +109,7 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `OpenSourceSettings` | WindowOnly View |  |
 | `CloseSourceSettings` | WindowOnly View |  |
 | `SetSourceSettings` | Contract | source.set_settings needs gesture; its text-file refusal moves to the caller checks |
-| `ReloadSource` | Pending | source.reload; the window publishes after a restart, the API does not (step 3 left it) |
+| `ReloadSource` | Moved to `Command::Api` (step 3) | source.reload; the API now publishes after a restart, as the window did |
 | `BrowserControl` | Pending | browser.reload, browser.run_script |
 | `ForgetBrowserSignIn` | Pending | browser.forget_sign_in; window stops the page first, API does not |
 | `Media` | Pending | media.play, media.pause, media.seek, media.restart; window forces the next media-state publish |
