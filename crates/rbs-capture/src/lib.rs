@@ -12,7 +12,11 @@
 pub mod camera;
 pub mod caps;
 pub mod conformance;
-pub mod edge;
+/// The clock edge of a capture adapter. Moved to [`rbs_core::timing`] by ADR-0165;
+/// re-exported here so adapters keep `rbs_capture::edge::EdgeClock`.
+pub mod edge {
+    pub use rbs_core::timing::EdgeClock;
+}
 mod error;
 mod framebuffer;
 pub mod handoff;

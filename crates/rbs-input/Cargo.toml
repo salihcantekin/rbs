@@ -1,0 +1,18 @@
+[package]
+name = "rbs-input"
+description = "Input port for RBS: mouse (and later keyboard) events from the desktop, one shared monitor, lock-free delivery."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rbs-core = { path = "../rbs-core" }
+
+[dev-dependencies]
+allocation-counter = "0.8"
+
+[lints]
+workspace = true
