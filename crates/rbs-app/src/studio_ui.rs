@@ -6607,7 +6607,7 @@ impl StudioUi {
                 self.failure = why.clone();
                 out.error = Some(format!("The studio stopped: {why}"));
             }
-            Update::Heard(rows) => self.set_heard(&rows),
+            Update::Heard(rows) => self.take_heard(rows),
             Update::ScenePreview(endpoint) => {
                 self.scene_preview_ready = false;
                 self.scene_preview_failed = false;
@@ -6629,14 +6629,9 @@ impl StudioUi {
             } => out.interacts.push((source, picture, state)),
             Update::Media(ticks) => self.set_media_ticks(ticks),
             Update::Cues(cues) => self.set_cues(cues),
-            Update::Sources(rows) => {
-                self.set_rows(rows);
-                out.focus_shape = self.focus_shape.take();
-                out.focus_text = self.focus_text.take();
-                out.focus_browser = self.focus_browser.take();
-                self.refresh_existing();
-                self.refresh_marks();
-            }
+            Update::Sources(rows) => self.take_rows(rows, &mut out),
+            Update::SourceAudio(patches) => self.patch_audio(&patches, &mut out),
+            Update::Master(master) => self.patch_master(master),
             Update::Vertical(v) => {
                 if v.is_none() {
                     self.settings_canvas = OutputCanvas::Main;

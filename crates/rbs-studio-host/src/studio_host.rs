@@ -1906,6 +1906,8 @@ struct Host {
     media_sent: Option<Vec<MediaTick>>,
     /// The Show cues sent last ([`Update::Cues`]).
     cues_sent: Vec<(ItemId, u32)>,
+    /// The collection's level edits the rows last showed (F-10).
+    levels_seen: Option<rbs_scene::LevelEdits>,
     /// The generation of the thumbnail request that may still deliver (ADR-0077).
     thumbs: Arc<AtomicU64>,
     /// OS permission prompts showing now, each with the commands waiting for its
@@ -3322,63 +3324,22 @@ impl Host {
             notify(Update::Loudness(loudness));
         }
         let stamp = self.compute_list_stamp();
+        let levels = self.collection.level_edits();
         if self.list_stamp != Some(stamp) {
             self.list_stamp = Some(stamp);
-            let scenes = self.scene_list();
-            if self.scenes_shown.as_ref() != Some(&scenes) {
-                self.scenes_shown = Some(scenes.clone());
-                let listed = api_scenes(&scenes);
-                self.scene_answer
-                    .store(scene_cache::SceneAnswerKey::of(self), listed.clone());
-                self.events
-                    .changed(StateKey::topic(Topic::SceneChanged), move || {
-                        EventPayload::SceneChanged(listed)
-                    });
-                notify(Update::Scenes(scenes));
+            self.levels_seen = Some(levels);
+            self.publish_scene_list(notify);
+            self.publish_rows(notify);
+        } else if let Some(seen) = self.levels_seen.replace(levels)
+            && seen != levels
+        {
+            // Only live levels moved (F-10): a fader step patches the rows it moves.
+            if seen.master != levels.master {
+                self.patch_master(notify);
             }
-            // `source.changed` and the Mixer: the program scene (ADR-0061 decision 8).
-            let heard = self.rows_of(self.scene);
-            let globals = self.global_rows();
-            if heard != self.heard || globals != self.globals_shown {
-                if heard != self.heard {
-                    let listed: Vec<api::SourceInfo> = heard.iter().map(api_source).collect();
-                    self.events
-                        .changed(StateKey::topic(Topic::SourceChanged), || {
-                            EventPayload::SourceChanged(listed)
-                        });
-                }
-                self.heard = heard.clone();
-                self.globals_shown = globals.clone();
-                // The Mixer hears the global sources with the program (ADR-0065).
-                let mut mixed = globals;
-                mixed.extend(heard);
-                notify(Update::Heard(mixed));
+            if seen.source_audio != levels.source_audio && !self.patch_source_audio(notify) {
+                self.publish_rows(notify);
             }
-            let rows = self.rows();
-            if rows != self.rows {
-                let mut refused: Vec<PermissionKind> = rows
-                    .iter()
-                    .filter_map(|r| match r.status {
-                        SourceStatus::Unavailable {
-                            fault: SourceFault::PermissionDenied,
-                            ..
-                        } => PermissionKind::of_type(&r.kind?.type_id()),
-                        _ => None,
-                    })
-                    .collect();
-                refused.sort_by_key(|k| PermissionKind::ALL.iter().position(|a| a == k));
-                refused.dedup();
-                if refused != self.permission_refused {
-                    if refused.iter().any(|k| !self.permission_refused.contains(k)) {
-                        self.send_permissions(notify);
-                    }
-                    self.permission_refused = refused;
-                }
-                self.rows = rows.clone();
-                notify(Update::Sources(rows));
-            }
-            // The meters are on the rows above, and every meter is in the stamp.
-            self.publish_levels();
         }
         self.publish_cues(notify);
         let picture = self.studio.scene_preview();
@@ -3417,7 +3378,11 @@ impl Host {
     fn compute_list_stamp(&self) -> u64 {
         let mut hasher = DefaultHasher::new();
         self.collection_epoch.hash(&mut hasher);
-        self.collection.generation().hash(&mut hasher);
+        // Live level edits are left out: `publish` patches the rows they move.
+        self.collection
+            .level_edits()
+            .others(self.collection.generation())
+            .hash(&mut hasher);
         self.scene.hash(&mut hasher);
         self.preview().hash(&mut hasher);
         self.edited().hash(&mut hasher);

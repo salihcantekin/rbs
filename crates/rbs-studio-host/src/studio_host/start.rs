@@ -81,6 +81,7 @@ pub(super) fn start(
         collection_epoch: 0,
         list_stamp: None,
         cues_sent: Vec::new(),
+        levels_seen: None,
         canvas,
         scene,
         rows: Vec::new(),
