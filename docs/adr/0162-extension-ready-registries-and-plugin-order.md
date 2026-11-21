@@ -62,7 +62,7 @@ Each closed list was right when it was written. The risk is that every new featu
 - The control API and scene format keep their current enums until step 2; adding the id form is a contract change with its own review (P14).
 - `wasmtime` is a large dependency; it lives only in `rbs-plugin-host`, which only composition roots may use (enforced by `check-layers` from step 3).
 - Step 1, which looked like a small refactor, edits a type called from `FilterNode::process`, so it needs measurements and the owner's hot-path sign-off.
-- Follow-ups in this change: plugin SDK spec "Registries" and "Order" sections; principle P16 and CLAUDE.md rule 19 (marked Proposed); a dated line in ADR-0006's Consequences. Later: `add-ons.md` `Kind::Plugin` (step 3), `scene-model.md` missing-type rule (step 2), `video-filters.md` and `audio-filters.md` catalogue sections (step 1).
+- Follow-ups in this change: plugin SDK spec "Registries" and "Order" sections; principle P16 and CLAUDE.md rule 19; a dated line in ADR-0006's Consequences. Later: `add-ons.md` `Kind::Plugin` (step 3), `scene-model.md` missing-type rule (step 2), `video-filters.md` and `audio-filters.md` catalogue sections (step 1).
 
 ## Alternatives considered
 
