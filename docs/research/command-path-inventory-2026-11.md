@@ -88,7 +88,7 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `AddBrowser` | Missing | source.add has no URL |
 | `AddText` | Pending | source.add |
 | `FitTextBox` | Missing | no fit-box method |
-| `ListTextFonts` | Pending | text.fonts; while the list is being read the window path answers later by itself, the API refuses `not_ready` (the window would have to ask again) |
+| `ListTextFonts` | Moved to `Command::Api` (step 3) | text.fonts with `ApiReply::QuietTicket`; on `not_ready` the host still sends `Update::TextFonts` once the list is read, as the window path did |
 | `TextTimer` | Pending | text.timer |
 | `SetSourceFill` | Pending | source.set_settings |
 | `SetSourceFilled` | Missing | also adds a border to the item style in one undo step; no method |

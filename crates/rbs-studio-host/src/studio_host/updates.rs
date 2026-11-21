@@ -223,8 +223,9 @@ pub enum Update {
     },
     /// What the Source settings window of a source shows ([`Command::OpenSourceSettings`]).
     SourceSettings(SourceSettingsView),
-    /// The installed font families, sorted ([`Command::ListTextFonts`]); empty when
-    /// no text renderer is installed.
+    /// The installed font families, sorted, once a `text.fonts` call found them still
+    /// being read (the window's font picker waits for them); empty when no text
+    /// renderer is installed.
     TextFonts(Vec<String>),
     /// What the Measure sync offset window shows; `None` closes it (ADR-0126).
     SyncMeasure(Option<SyncMeasureView>),

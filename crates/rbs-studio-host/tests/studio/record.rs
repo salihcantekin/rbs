@@ -1188,9 +1188,17 @@ fn fit_box_to_text_and_the_font_list_answer_the_text_tab() {
     };
     let fitted = int(&text, "width");
     let item = text.layout.unwrap();
-    host.send(Command::ListTextFonts);
+    // The font list is read: answered at once, or pushed once it is (ADR-0163).
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::TextFonts),
+        reply: rbs_studio_host::studio_host::ApiReply::QuietTicket(9),
+    });
     next(&rx, |u| match u {
         Update::TextFonts(_) => Some(()),
+        Update::ApiAnswer {
+            ticket: 9,
+            result: Ok(_),
+        } => Some(()),
         _ => None,
     });
     // A wider box, then fitted again: back to the text's width, same centre.

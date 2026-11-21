@@ -173,8 +173,6 @@ pub enum Command {
     /// Fit a text source's box to its text (ADR-0129 decision 13, Fit box to text):
     /// the item keeps its centre and its scale. One undo step.
     FitTextBox(SourceId),
-    /// Read the installed font families for the font picker ([`Update::TextFonts`]).
-    ListTextFonts,
     /// Start, pause or reset a text source's timer (`text.timer`).
     TextTimer {
         /// The countdown or stopwatch.
@@ -633,6 +631,9 @@ pub enum ApiReply {
     /// As [`ApiReply::Shown`], and [`Update::ApiAnswer`] with this ticket carries the
     /// result, a refusal or a caught panic included.
     Ticket(u64),
+    /// As [`ApiReply::Ticket`], but a refusal is not shown: the window handles the
+    /// answer itself (the font list while it is being read).
+    QuietTicket(u64),
 }
 
 /// What [`Command::AddOn`] does: the commands of an add-on's row.

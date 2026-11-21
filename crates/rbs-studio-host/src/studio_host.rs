@@ -657,14 +657,14 @@ impl Host {
     fn api_command(&mut self, call: rbs_api::Command, reply: ApiReply, notify: &dyn Fn(Update)) {
         let result = self.run_api(call, notify);
         let shown = match (&result, reply) {
-            (Ok(_), _) | (_, ApiReply::Quiet) => false,
+            (Ok(_), _) | (_, ApiReply::Quiet | ApiReply::QuietTicket(_)) => false,
             (Err(e), ApiReply::QuietIf(kind)) => e.kind != kind,
             (Err(_), ApiReply::Shown | ApiReply::Ticket(_)) => true,
         };
         if let (Err(e), true) = (&result, shown) {
             notify(Update::Error(e.message.clone()));
         }
-        if let ApiReply::Ticket(ticket) = reply {
+        if let ApiReply::Ticket(ticket) | ApiReply::QuietTicket(ticket) = reply {
             notify(Update::ApiAnswer { ticket, result });
         }
     }
@@ -703,7 +703,6 @@ impl Host {
             | Command::AddMedia { .. }
             | Command::SetStingerFile(..)
             | Command::FitTextBox(..)
-            | Command::ListTextFonts
             | Command::TextTimer { .. }
             | Command::AddText { .. }
             | Command::AddBrowser { .. }
