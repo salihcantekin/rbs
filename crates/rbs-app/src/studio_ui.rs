@@ -2376,7 +2376,7 @@ impl StudioUi {
         } else {
             RecordPatch::enabled(enabled)
         };
-        self.send(Command::SetRecordSeparately { id, patch });
+        self.call(patch.call(id));
     }
 
     /// The form of a marked source (Properties' Recording dropdown, ADR-0117): for a
@@ -2403,7 +2403,7 @@ impl StudioUi {
             },
             _ => return,
         };
-        self.send(Command::SetRecordSeparately { id, patch });
+        self.call(patch.call(id));
     }
 
     /// Mute or unmute a source's sound (the Mixer row's speaker, Properties' Mute).
@@ -2507,7 +2507,7 @@ impl StudioUi {
             _ => rbs_scene::TransitionKind::Move,
         };
         if t != self.transition {
-            self.send(Command::SetTransition(t));
+            self.send_transition(t);
         }
     }
 
@@ -2516,7 +2516,7 @@ impl StudioUi {
         let mut t = self.transition;
         t.direct = kind;
         if t != self.transition {
-            self.send(Command::SetTransition(t));
+            self.send_transition(t);
         }
     }
 
@@ -2528,15 +2528,15 @@ impl StudioUi {
         match self.transition.kind {
             rbs_scene::TransitionKind::Fade => {
                 t.fade.duration_ms = ms;
-                self.send(Command::SetTransition(t));
+                self.send_transition(t);
             }
             rbs_scene::TransitionKind::Swipe => {
                 t.swipe.duration_ms = ms;
-                self.send(Command::SetTransition(t));
+                self.send_transition(t);
             }
             rbs_scene::TransitionKind::Slide => {
                 t.slide.duration_ms = ms;
-                self.send(Command::SetTransition(t));
+                self.send_transition(t);
             }
             rbs_scene::TransitionKind::Cut => {}
             _ => self.send_glide(ms, self.glide.easing != rbs_scene::GlideEasing::Linear),
@@ -2549,7 +2549,7 @@ impl StudioUi {
         let mut t = self.transition;
         t.stinger.cut_ms = u32::try_from(ms).ok();
         if t != self.transition {
-            self.send(Command::SetTransition(t));
+            self.send_transition(t);
         }
     }
 
@@ -2570,7 +2570,7 @@ impl StudioUi {
         let keep = self.transition.fade.via.unwrap_or([0, 0, 0]);
         t.fade.via = via.then(|| rgb_hex(color).unwrap_or(keep));
         if t != self.transition {
-            self.send(Command::SetTransition(t));
+            self.send_transition(t);
         }
     }
 
@@ -2591,7 +2591,7 @@ impl StudioUi {
             _ => rbs_scene::SwipeDirection::Left,
         };
         if t != self.transition {
-            self.send(Command::SetTransition(t));
+            self.send_transition(t);
         }
     }
 
@@ -2893,21 +2893,6 @@ impl StudioUi {
         });
     }
 
-    /// Pause (0), Resume (1) or Restart (2) of a source's scroll on the canvas
-    /// Properties edits: live, not an undo step.
-    pub fn scroll_live(&mut self, id: i32, action: i32) {
-        let control = match action {
-            0 => rbs_record::ScrollControl::Pause,
-            1 => rbs_record::ScrollControl::Resume,
-            _ => rbs_record::ScrollControl::Restart,
-        };
-        self.send(Command::ScrollLive {
-            id: SourceId::from_raw(id as u32),
-            canvas: self.props_target(id),
-            control,
-        });
-    }
-
     fn rows_scroll(&self, id: i32) -> Option<Scroll> {
         self.rows
             .iter()
@@ -2934,7 +2919,7 @@ impl StudioUi {
     }
 
     /// The canvas Properties edits for source `id`.
-    fn props_target(&self, id: i32) -> OutputCanvas {
+    pub(super) fn props_target(&self, id: i32) -> OutputCanvas {
         self.rows
             .iter()
             .find(|r| r.id.get() as i32 == id)

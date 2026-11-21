@@ -181,19 +181,28 @@ pub(super) fn style_crop_and_transform_on_the_vertical_canvas_leave_the_main_lay
 /// range scroll and a live call without a scroll are refused in words.
 #[test]
 pub(super) fn properties_scroll_sets_the_layout_and_pauses_the_run() {
-    use rbs_record::ScrollControl;
+    use rbs_api::request::ScrollItem;
     use rbs_scene::model::{Scroll, ScrollDirection, SourceId};
-    use rbs_studio_host::studio_host::{Command, OutputCanvas};
+    use rbs_studio_host::studio_host::{ApiReply, Command, OutputCanvas};
     let Some((host, updates, _api, mut c)) = start() else {
         return;
     };
-    let id = SourceId::from_raw(add(&mut c, "screen", "Screen") as u32);
-    let live = |control| Command::ScrollLive {
-        id,
-        canvas: OutputCanvas::Main,
-        control,
+    let raw = add(&mut c, "screen", "Screen");
+    let id = SourceId::from_raw(raw as u32);
+    let item = sources(&mut c)
+        .iter()
+        .find(|r| r["id"] == raw)
+        .map(|r| r["item"].as_u64().unwrap() as u32)
+        .unwrap();
+    // As the window's Pause and Resume buttons send them (ADR-0163).
+    let live = |call: fn(ScrollItem) -> rbs_api::Command| Command::Api {
+        call: Box::new(call(ScrollItem {
+            item,
+            canvas: OutputCanvas::Main,
+        })),
+        reply: ApiReply::Shown,
     };
-    host.send(live(ScrollControl::Pause));
+    host.send(live(rbs_api::Command::ItemScrollPause));
     next(&updates, |u| match u {
         Update::Error(e) if e.contains("does not scroll") => Some(()),
         _ => None,
@@ -210,13 +219,13 @@ pub(super) fn properties_scroll_sets_the_layout_and_pauses_the_run() {
         Update::Error(e) => panic!("{e}"),
         _ => None,
     });
-    host.send(live(ScrollControl::Pause));
+    host.send(live(rbs_api::Command::ItemScrollPause));
     next(&updates, |u| match u {
         Update::Sources(r) if r[0].scroll_paused == [true, false] => Some(()),
         Update::Error(e) => panic!("{e}"),
         _ => None,
     });
-    host.send(live(ScrollControl::Resume));
+    host.send(live(rbs_api::Command::ItemScrollResume));
     next(&updates, |u| match u {
         Update::Sources(r) if r[0].scroll_paused == [false, false] => Some(()),
         Update::Error(e) => panic!("{e}"),

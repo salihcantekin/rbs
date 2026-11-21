@@ -280,9 +280,6 @@ pub enum Command {
         /// What to do.
         op: MediaOp,
     },
-    /// The collection's transition (ADR-0128): kind and each kind's settings. One undo
-    /// step.
-    SetTransition(rbs_scene::CollectionTransition),
     /// Ask for what the Reset source (`paste` false) or Paste attributes dialog shows
     /// ([`Update::Attributes`]).
     OpenAttributes {
@@ -367,14 +364,6 @@ pub enum Command {
         /// Which part.
         region: CropRegion,
     },
-    /// Record the source's feeds as files of their own from the next recording on,
-    /// or stop (ADR-0086, ADR-0117, `source.set_record_separately`). One undo step.
-    SetRecordSeparately {
-        /// The source.
-        id: SourceId,
-        /// What changes.
-        patch: RecordPatch,
-    },
     /// Shape and border of a video source's picture (ADR-0053), replacing the whole
     /// style of the layout the canvas shows. A style that is not valid is refused with
     /// [`Update::Error`].
@@ -402,16 +391,6 @@ pub enum Command {
         scroll: Option<Scroll>,
         /// The canvas whose layout changes, as for [`Command::SetSourceStyle`].
         canvas: OutputCanvas,
-    },
-    /// A live call on a source's scroll run (ADR-0150 decision 11): not saved, not
-    /// undone.
-    ScrollLive {
-        /// The source.
-        id: SourceId,
-        /// The canvas whose run it acts on.
-        canvas: OutputCanvas,
-        /// Pause, resume, restart or a speed.
-        control: ScrollControl,
     },
     /// Start recording the program ([`Update::Recording`] says how it went).
     StartRecording(RecordRequest),
@@ -769,6 +748,22 @@ impl RecordPatch {
             enabled: Some(on),
             ..Self::default()
         }
+    }
+
+    /// The `source.set_record_separately` call for `source` (the window sends it
+    /// through `Command::Api`, ADR-0163).
+    pub fn call(self, source: SourceId) -> rbs_api::Command {
+        rbs_api::Command::SourceSetRecordSeparately(rbs_api::request::SetRecordSeparately {
+            source: source.get(),
+            enabled: self.enabled,
+            video: self.video,
+            audio: self.audio,
+            video_as: self.video_as.map(|form| match form {
+                VideoAs::Video => rbs_api::request::VideoAs::Video,
+                VideoAs::Image => rbs_api::request::VideoAs::Image,
+                _ => rbs_api::request::VideoAs::Auto,
+            }),
+        })
     }
 
     pub(super) fn from_api(p: &rbs_api::request::SetRecordSeparately) -> Self {

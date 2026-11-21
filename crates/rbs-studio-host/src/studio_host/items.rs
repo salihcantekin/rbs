@@ -447,11 +447,12 @@ impl Host {
     }
 
     /// A live call on an item's scroll run (ADR-0150 decision 11).
-    pub(super) fn api_scroll_control(
+    pub(super) fn api_scroll(
         &mut self,
         item: u32,
         on: OutputCanvas,
         control: ScrollControl,
+        notify: &dyn Fn(Update),
     ) -> Result<Response, ApiError> {
         let canvas = self.edit_canvas(on).map_err(|e| refused(&e))?;
         let id = ItemId::from_raw(item);
@@ -468,7 +469,11 @@ impl Host {
             ));
         }
         match self.studio.scroll_control(id, canvas, control) {
-            Ok(_) => Ok(Response::Done(Empty {})),
+            Ok(_) => {
+                // The views, as the window's Properties buttons always had (ADR-0163).
+                self.publish(notify);
+                Ok(Response::Done(Empty {}))
+            }
             Err(ScrollRefused::NoScroll) => Err(ApiError::new(
                 ErrorKind::InvalidParams,
                 "This source does not scroll on that canvas.",
@@ -860,13 +865,6 @@ impl Host {
                 Ok(false) => {}
                 Err(e) => notify(Update::Error(e.text())),
             },
-            Command::SetRecordSeparately { id, patch } => {
-                match self.set_record_separately(id, patch) {
-                    Ok(true) => self.apply(notify),
-                    Ok(false) => {}
-                    Err(e) => notify(Update::Error(e.text().into())),
-                }
-            }
             Command::SetSourceStyle {
                 gesture,
                 id,
@@ -899,29 +897,6 @@ impl Host {
                 match edit {
                     Ok(true) => self.apply(notify),
                     Ok(false) => {}
-                    Err(e) => notify(Update::Error(e.into_text())),
-                }
-            }
-            Command::ScrollLive {
-                id,
-                canvas,
-                control,
-            } => {
-                let target = self
-                    .item_of(id)
-                    .map(|(_, item)| item.id)
-                    .and_then(|item| self.edit_canvas(canvas).map(|c| (item, c)));
-                match target {
-                    Ok((item, c)) => match self.studio.scroll_control(item, c, control) {
-                        Ok(_) => self.publish(notify),
-                        Err(ScrollRefused::NoScroll) => notify(Update::Error(
-                            "This source does not scroll on that canvas.".into(),
-                        )),
-                        Err(_) => notify(Update::Error(
-                            "This source is not on a scene a canvas shows, so its scroll is not running."
-                                .into(),
-                        )),
-                    },
                     Err(e) => notify(Update::Error(e.into_text())),
                 }
             }

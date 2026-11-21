@@ -112,3 +112,92 @@ impl StudioUi {
         }
     }
 }
+
+impl StudioUi {
+    /// Sends the parts of `t` that differ from the transition the window last saw as
+    /// `collection.set_transition` (ADR-0163): a change made elsewhere meanwhile to
+    /// another part is kept.
+    pub(super) fn send_transition(&self, t: rbs_scene::CollectionTransition) {
+        self.call(C::CollectionSetTransition(transition_patch(
+            &self.transition,
+            &t,
+        )));
+    }
+}
+
+/// The `collection.set_transition` request that turns `old` into `new`.
+fn transition_patch(
+    old: &rbs_scene::CollectionTransition,
+    new: &rbs_scene::CollectionTransition,
+) -> rq::SetCollectionTransition {
+    rq::SetCollectionTransition {
+        kind: (old.kind != new.kind).then(|| transition_kind(new.kind)),
+        direct_kind: (old.direct != new.direct).then(|| transition_kind(new.direct)),
+        fade: (old.fade != new.fade).then(|| api::FadeTransition {
+            duration_ms: new.fade.duration_ms,
+            easing: easing(new.fade.easing),
+            via: new
+                .fade
+                .via
+                .map(|[r, g, b]| format!("#{r:02x}{g:02x}{b:02x}")),
+        }),
+        swipe: (old.swipe != new.swipe).then(|| swipe(new.swipe)),
+        slide: (old.slide != new.slide).then(|| swipe(new.slide)),
+        stinger: (old.stinger != new.stinger).then(|| api::StingerTransition {
+            source: new.stinger.source.map(|id| id.get()),
+            cut_ms: new.stinger.cut_ms,
+            cut_found_ms: None,
+        }),
+    }
+}
+
+fn transition_kind(k: rbs_scene::TransitionKind) -> api::TransitionKind {
+    match k {
+        rbs_scene::TransitionKind::Cut => api::TransitionKind::Cut,
+        rbs_scene::TransitionKind::Fade => api::TransitionKind::Fade,
+        rbs_scene::TransitionKind::Swipe => api::TransitionKind::Swipe,
+        rbs_scene::TransitionKind::Slide => api::TransitionKind::Slide,
+        rbs_scene::TransitionKind::Stinger => api::TransitionKind::Stinger,
+        _ => api::TransitionKind::Move,
+    }
+}
+
+fn easing(e: rbs_scene::GlideEasing) -> api::GlideEasing {
+    match e {
+        rbs_scene::GlideEasing::Linear => api::GlideEasing::Linear,
+        _ => api::GlideEasing::EaseInOut,
+    }
+}
+
+fn swipe(s: rbs_scene::SwipeSettings) -> api::SwipeTransition {
+    api::SwipeTransition {
+        duration_ms: s.duration_ms,
+        easing: easing(s.easing),
+        direction: match s.direction {
+            rbs_scene::SwipeDirection::Right => api::SwipeDirection::Right,
+            rbs_scene::SwipeDirection::Up => api::SwipeDirection::Up,
+            rbs_scene::SwipeDirection::Down => api::SwipeDirection::Down,
+            _ => api::SwipeDirection::Left,
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_transition_patch_carries_only_the_parts_that_changed() {
+        let old = rbs_scene::CollectionTransition::default();
+        let mut new = old;
+        new.fade.via = Some([0x1a, 0x2b, 0x3c]);
+        let p = transition_patch(&old, &new);
+        assert_eq!(p.fade.and_then(|f| f.via).as_deref(), Some("#1a2b3c"));
+        assert!(p.kind.is_none() && p.direct_kind.is_none() && p.swipe.is_none());
+        assert!(p.slide.is_none() && p.stinger.is_none());
+        assert_eq!(
+            transition_patch(&old, &old),
+            rq::SetCollectionTransition::default()
+        );
+    }
+}

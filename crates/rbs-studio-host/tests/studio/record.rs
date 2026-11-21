@@ -577,6 +577,14 @@ fn ready(gpu: Arc<GpuContext>, clock: &TestClock, fault: Fault) -> (StudioHost, 
     (host, rx)
 }
 
+/// Marks a source to record separately, as the window does (`source.set_record_separately`).
+fn mark(id: rbs_scene::model::SourceId, patch: RecordPatch) -> Command {
+    Command::Api {
+        call: Box::new(patch.call(id)),
+        reply: rbs_studio_host::studio_host::ApiReply::Shown,
+    }
+}
+
 /// Stops the recording and returns how it ended, moving the clock so its tail ends.
 fn stop_recording(host: &StudioHost, rx: &Receiver<Update>, clock: &TestClock) -> RecordingUpdate {
     host.send(Command::Api {
@@ -817,10 +825,7 @@ fn a_marked_microphone_records_its_own_file_next_to_the_master() {
     assert!(plain.is_file());
     assert!(!dir.join("plain").exists());
 
-    host.send(Command::SetRecordSeparately {
-        id: mic.id,
-        patch: RecordPatch::enabled(true),
-    });
+    host.send(mark(mic.id, RecordPatch::enabled(true)));
     rows_where(&rx, |r| {
         r.iter()
             .any(|r| r.id == mic.id && r.record_separately.audio)
@@ -971,17 +976,14 @@ fn a_marked_screen_records_its_own_video_file_next_to_the_master() {
             },
         ),
     ] {
-        host.send(Command::SetRecordSeparately { id, patch });
+        host.send(mark(id, patch));
         next(&rx, |u| match u {
             Update::Error(why) => Some(why),
             Update::Sources(r) => panic!("a refused mark changed the rows: {r:?}"),
             _ => None,
         });
     }
-    host.send(Command::SetRecordSeparately {
-        id: display.id,
-        patch: RecordPatch::enabled(true),
-    });
+    host.send(mark(display.id, RecordPatch::enabled(true)));
     rows_where(&rx, |r| {
         r.iter()
             .any(|r| r.id == display.id && r.record_separately.video)
@@ -1055,10 +1057,7 @@ fn a_text_box_is_locked_while_a_take_records_its_picture_separately() {
     };
     // A box change before the take, to undo during it.
     host.send(width(300));
-    host.send(Command::SetRecordSeparately {
-        id: text.id,
-        patch: RecordPatch::enabled(true),
-    });
+    host.send(mark(text.id, RecordPatch::enabled(true)));
     rows_where(&rx, |r| {
         r.iter()
             .any(|r| r.id == text.id && r.record_separately.video)
@@ -1278,10 +1277,7 @@ fn marked(
     let rows = rows_where(&rx, |r| r.len() == 2);
     let find = |k: SourceKind| rows.iter().find(|r| r.kind == Some(k)).unwrap().clone();
     let (display, mic) = (find(SourceKind::Screen), find(SourceKind::AudioInput));
-    host.send(Command::SetRecordSeparately {
-        id: mic.id,
-        patch: RecordPatch::enabled(true),
-    });
+    host.send(mark(mic.id, RecordPatch::enabled(true)));
     rows_where(&rx, |r| {
         r.iter()
             .any(|r| r.id == mic.id && r.record_separately.audio)
@@ -1319,13 +1315,13 @@ fn separate_files_clean_up_after_a_refused_or_panicked_start() {
     let (host, rx, display, mic) = marked(gpu, &clock, Some(Fault::AfterOutputStart));
 
     // A picture source has no sound of its own to mark.
-    host.send(Command::SetRecordSeparately {
-        id: display.id,
-        patch: RecordPatch {
+    host.send(mark(
+        display.id,
+        RecordPatch {
             audio: Some(true),
             ..RecordPatch::default()
         },
-    });
+    ));
     next(&rx, |u| match u {
         Update::Error(why) => Some(why),
         _ => None,

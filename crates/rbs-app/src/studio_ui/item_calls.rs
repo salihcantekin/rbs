@@ -18,6 +18,23 @@ impl StudioUi {
             .map(|r| r.item.get())
     }
 
+    /// Pause (0), Resume (1) or Restart (2) of a source's scroll on the canvas
+    /// Properties edits: live, not an undo step (`item.scroll_*`).
+    pub fn scroll_live(&mut self, id: i32, action: i32) {
+        let Some(item) = self.row_item(id) else {
+            return;
+        };
+        let at = rq::ScrollItem {
+            item,
+            canvas: self.props_target(id),
+        };
+        self.call(match action {
+            0 => C::ItemScrollPause(at),
+            1 => C::ItemScrollResume(at),
+            _ => C::ItemScrollRestart(at),
+        });
+    }
+
     pub fn set_source_locked(&mut self, id: i32, locked: bool) {
         self.deleted.clear();
         if let Some(item) = self.row_item(id) {

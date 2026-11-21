@@ -725,8 +725,7 @@ impl Host {
             | Command::Media { .. }
             | Command::ForgetBrowserSignIn(..)
             | Command::BrowserControl { .. } => self.source_edit_command(c, notify),
-            Command::SetTransition(..)
-            | Command::OpenAttributes { .. }
+            Command::OpenAttributes { .. }
             | Command::SwitchScene(..)
             | Command::SetStudioMode(..)
             | Command::Rehearse
@@ -735,10 +734,8 @@ impl Host {
             | Command::SetSourceCrop { .. }
             | Command::TransformSource { .. } => self.item_command(c, notify),
             Command::SetSourceRegion { .. }
-            | Command::SetRecordSeparately { .. }
             | Command::SetSourceStyle { .. }
-            | Command::SetSourceScroll { .. }
-            | Command::ScrollLive { .. } => self.item_display_command(c, notify),
+            | Command::SetSourceScroll { .. } => self.item_display_command(c, notify),
             Command::StartRecording(..)
             | Command::StartVerticalRecording(..)
             | Command::SetVerticalProfile(..)

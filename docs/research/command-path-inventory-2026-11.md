@@ -28,6 +28,9 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | Remove from scene | Sends `Update::Deleted` (undo toast) | Sends nothing | `sources.rs`, `api_source2.rs` |
 | Forget sign-in | Stops the page first | Does not | `source_settings.rs`, `api_source2.rs` |
 | Filter values on an unchanged release | Restores the stored values | Does not | `source_settings.rs`, `api_canvas.rs` |
+| Collection transition | Sends the whole transition it last saw | A patch of the parts given; the stinger cut point is checked against the file's length | `scenes.rs` `set_transition`; the window now sends only the parts that changed |
+| Scroll controls | Published the views after a control | Did not; now publishes too (step 6) | `items.rs` `api_scroll` |
+| Canvas change | Always sends `Update::Canvas`, also for a refusal or an unchanged canvas | Nothing for those | `canvas.rs`, `api_settings.rs` (why `SetCanvas` stays) |
 | Media play, pause, seek, restart | Forces the next media-state publish | Does not | `source_settings.rs`, `api_source2.rs` |
 | Pause, hold, break refusals | Own sentence ("The recording could not pause or resume: ...") | `ApiError` message | `stream.rs` |
 | Lock, eye and layer buttons on a row that is gone | Host refused "There is no source ..." | The window sends nothing (it names the row's item) | `studio_ui/item_calls.rs` |
@@ -116,7 +119,7 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `SetCompanionAudio` | Moved to `Command::Api` (step 3) | source.set_companion_audio |
 | `RenameSource` | Moved to `Command::Api` (step 3) | source.rename |
 | `SetGlide` | Moved to `Command::Api` (step 1) | collection.set_glide |
-| `SetTransition` | Pending | collection.set_transition |
+| `SetTransition` | Moved to `Command::Api` (step 6) | collection.set_transition, with only the parts that changed |
 | `SetSourceActivity` | Moved to `Command::Api` (step 3) | source.set_activity with the linger the row shows; `set_source_activity` now stores a value equal to the type default as absent for both paths |
 | `SetSourceGlide` | Moved to `Command::Api` (step 3) | source.set_glide |
 | `AddExistingSource` | Moved to `Command::Api` (step 2) | item.add |
@@ -143,7 +146,7 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `SetSourceCrop` | Contract | item.set_crop needs gesture |
 | `TransformSource` | Contract | item.flip/rotate/fit/align/reset_transform need gesture |
 | `SetSourceRegion` | Missing | no method for the shown region (ADR-0058 Show buttons); source.set_region is the capture region |
-| `SetRecordSeparately` | Pending | source.set_record_separately |
+| `SetRecordSeparately` | Moved to `Command::Api` (step 6) | source.set_record_separately |
 | `SetSourceCaptureRegion` | Moved to `Command::Api` (step 3) | source.set_region |
 | `SetDisplayChrome` | Moved to `Command::Api` (step 3) | source.set_chrome |
 | `FitDisplayChrome` | Moved to `Command::Api` (step 3) | source.fit_chrome |
@@ -152,7 +155,7 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `ShowItem` | Moved to `Command::Api` (step 2) | item.show |
 | `SetSourceStyle` | Contract | item.set_style needs gesture |
 | `SetSourceScroll` | Contract | item.set_scroll needs gesture |
-| `ScrollLive` | Pending | item.scroll_pause, item.scroll_resume, item.scroll_restart, item.scroll_speed |
+| `ScrollLive` | Moved to `Command::Api` (step 6) | item.scroll_pause, item.scroll_resume, item.scroll_restart (the API now publishes the views after a control, as the window path did) |
 | `StartRecording` | Contract | record.start builds its request from host state; the window sends its own RecordRequest |
 | `StopRecording` | Moved to `Command::Api` (step 6) | record.stop |
 | `StartVerticalRecording` | Contract | as StartRecording |
@@ -170,7 +173,7 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `OpenInteract` | WindowOnly View |  |
 | `CloseInteract` | WindowOnly View |  |
 | `InteractInput` | Pending | browser.input; quiet answer (input to a closed page is ignored today) |
-| `SetCanvas` | Pending | settings.set (canvas) |
+| `SetCanvas` | Pending | settings.set (canvas); stays: the window closes its preview first and waits for `Update::Canvas`, which the API path does not send for an unchanged canvas or a refusal, so the preview would stay closed |
 | `SetProfile` | WindowOnly Mirror |  |
 | `StartStream` | Contract | stream.start takes no request; the window sends its own StreamRequest |
 | `EndStream` | Moved to `Command::Api` (step 6) | stream.stop |

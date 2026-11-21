@@ -1020,10 +1020,6 @@ impl Host {
     /// The window commands of this concern, routed by `Host::command`.
     pub(super) fn scene_command(&mut self, c: Command, notify: &dyn Fn(Update)) {
         match c {
-            Command::SetTransition(t) => {
-                let done = self.put_transition(t);
-                self.answer(done, notify);
-            }
             Command::OpenAttributes { source, paste } => {
                 match self.attributes_view(source, paste) {
                     Ok(view) => notify(Update::Attributes(view)),

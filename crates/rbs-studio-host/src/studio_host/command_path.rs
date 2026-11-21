@@ -148,7 +148,6 @@ paths! {
     ForgetBrowserSignIn => Pending(&["browser.forget_sign_in"]),
     // window forces the next media-state publish
     Media => Pending(&["media.play", "media.pause", "media.seek", "media.restart"]),
-    SetTransition => Pending(&["collection.set_transition"]),
     OpenAttributes => WindowOnly(View),
     // becomes Translates (branches on the preview)
     SwitchScene => Translates(&["scene.switch", "canvas.set_preview"]),
@@ -164,12 +163,10 @@ paths! {
     TransformSource => Contract(&["item.flip", "item.rotate", "item.fit", "item.align", "item.reset_transform"]),
     // no method for the shown region (ADR-0058 Show buttons); source.set_region is the capture region
     SetSourceRegion => Missing,
-    SetRecordSeparately => Pending(&["source.set_record_separately"]),
     // item.set_style needs gesture
     SetSourceStyle => Contract(&["item.set_style"]),
     // item.set_scroll needs gesture
     SetSourceScroll => Contract(&["item.set_scroll"]),
-    ScrollLive => Pending(&["item.scroll_pause", "item.scroll_resume", "item.scroll_restart", "item.scroll_speed"]),
     // record.start builds its request from host state; the window sends its own RecordRequest
     StartRecording => Contract(&["record.start"]),
     // as StartRecording
@@ -239,7 +236,7 @@ mod tests {
     /// which must pick its method from host state may raise `TRANSLATES` by as many
     /// as `PENDING` falls; any other rise needs the owner's written approval.
     const TRANSLATES: usize = 22;
-    const PENDING: usize = 25;
+    const PENDING: usize = 22;
     const CONTRACT: usize = 10;
     const MISSING: usize = 20;
     const VIEW: usize = 13;

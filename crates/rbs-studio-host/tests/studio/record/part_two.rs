@@ -224,13 +224,13 @@ pub(super) fn the_estimate_lists_a_start_and_its_separate_files_without_opening_
     let Some(gpu) = gpu() else { return };
     let clock = TestClock::new();
     let (host, rx, display, mic) = marked(gpu, &clock, None);
-    host.send(Command::SetRecordSeparately {
-        id: display.id,
-        patch: RecordPatch {
+    host.send(mark(
+        display.id,
+        RecordPatch {
             video: Some(true),
             ..RecordPatch::default()
         },
-    });
+    ));
     rows_where(&rx, |r| {
         r.iter()
             .any(|r| r.id == display.id && r.record_separately.video)
@@ -364,10 +364,7 @@ pub(super) fn mark_screens(host: &StudioHost, rx: &Receiver<Update>, n: usize) -
     }
     let rows = rows_where(rx, |r| r.len() == n);
     for r in &rows {
-        host.send(Command::SetRecordSeparately {
-            id: r.id,
-            patch: RecordPatch::enabled(true),
-        });
+        host.send(mark(r.id, RecordPatch::enabled(true)));
     }
     rows_where(rx, |r| {
         r.iter().filter(|r| r.record_separately.video).count() == n

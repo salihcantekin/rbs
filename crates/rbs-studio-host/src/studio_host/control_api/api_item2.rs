@@ -90,13 +90,13 @@ impl ApiTarget<'_> {
                 Ok(Response::Done(Empty {}))
             }
             C::ItemScrollPause(p) => {
-                host.api_scroll_control(p.item, p.canvas, ScrollControl::Pause)
+                host.api_scroll(p.item, p.canvas, ScrollControl::Pause, notify)
             }
             C::ItemScrollResume(p) => {
-                host.api_scroll_control(p.item, p.canvas, ScrollControl::Resume)
+                host.api_scroll(p.item, p.canvas, ScrollControl::Resume, notify)
             }
             C::ItemScrollRestart(p) => {
-                host.api_scroll_control(p.item, p.canvas, ScrollControl::Restart)
+                host.api_scroll(p.item, p.canvas, ScrollControl::Restart, notify)
             }
             C::ItemScrollSpeed(p) => {
                 if !(MIN_SCROLL_SPEED..=MAX_SCROLL_SPEED).contains(&p.speed) {
@@ -105,7 +105,8 @@ impl ApiTarget<'_> {
                         "speed must be 1 to 4000; pause is item.scroll_pause",
                     ));
                 }
-                host.api_scroll_control(p.item, p.canvas, ScrollControl::Speed(f64::from(p.speed)))
+                let speed = ScrollControl::Speed(f64::from(p.speed));
+                host.api_scroll(p.item, p.canvas, speed, notify)
             }
             C::EditUndo | C::EditRedo => {
                 let done = host.undo_or_redo(matches!(command, C::EditUndo));
