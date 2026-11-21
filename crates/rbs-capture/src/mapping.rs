@@ -8,7 +8,7 @@
 //! mapping" in `docs/specs/capture-port.md`.
 
 use std::fmt;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering, fence};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use rbs_core::media::Size;
@@ -228,6 +228,131 @@ impl Drop for MappingRegistration {
     }
 }
 
+/// Reads of a [`MappingCell`] that see a write in progress try again at most this
+/// many times, then report no mapping for that read.
+const CELL_READ_TRIES: usize = 4;
+
+const COVER_NONE: u64 = 0;
+const COVER_UNKNOWN: u64 = 1;
+const COVER_CLEAR: u64 = 2;
+const COVER_COVERED: u64 = 3;
+
+/// The newest [`PictureMapping`] of one source, lent from the capture source node to
+/// the pointer filters of that source's chain (ADR-0165 decision 5).
+///
+/// Owned by the host's source entry beside its [`MappingSwitch`], so a rebuilt capture
+/// node keeps writing the cell the filters read. Lock-free: [`publish`](Self::publish)
+/// and [`get`](Self::get) never wait, allocate or lock, so both run on real-time
+/// threads. One writer at a time is the rule (the scheduled capture node); a publish
+/// that finds another publish in progress is skipped, never torn. Clones share the
+/// cell.
+#[derive(Clone, Default)]
+pub struct MappingCell {
+    inner: Arc<CellInner>,
+}
+
+#[derive(Default)]
+struct CellInner {
+    /// Even while stable, odd while a publish is in progress.
+    seq: AtomicU64,
+    /// `COVER_NONE` for no mapping, else the cover plus one.
+    cover: AtomicU64,
+    time: AtomicU64,
+    origin: [AtomicU64; 2],
+    scale: [AtomicU64; 2],
+    /// Width in the high 32 bits, height in the low.
+    picture: AtomicU64,
+}
+
+impl fmt::Debug for MappingCell {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MappingCell")
+            .field("mapping", &self.get())
+            .finish()
+    }
+}
+
+impl MappingCell {
+    /// An empty cell.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Stores the newest frame's mapping, or `None` (writer thread; real-time).
+    /// Skipped if another publish is in progress.
+    pub fn publish(&self, mapping: Option<PictureMapping>) {
+        let inner = &*self.inner;
+        let seq = inner.seq.load(Ordering::Relaxed);
+        if seq & 1 == 1
+            || inner
+                .seq
+                .compare_exchange(seq, seq + 1, Ordering::Relaxed, Ordering::Relaxed)
+                .is_err()
+        {
+            return;
+        }
+        fence(Ordering::Release);
+        match mapping {
+            None => inner.cover.store(COVER_NONE, Ordering::Relaxed),
+            Some(m) => {
+                let cover = match m.cover {
+                    Cover::Clear => COVER_CLEAR,
+                    Cover::Covered => COVER_COVERED,
+                    Cover::Unknown => COVER_UNKNOWN,
+                };
+                inner.cover.store(cover, Ordering::Relaxed);
+                inner.time.store(m.frame_time.as_nanos(), Ordering::Relaxed);
+                for i in 0..2 {
+                    inner.origin[i].store(m.origin[i].to_bits(), Ordering::Relaxed);
+                    inner.scale[i].store(m.scale[i].to_bits(), Ordering::Relaxed);
+                }
+                inner.picture.store(
+                    u64::from(m.picture.width) << 32 | u64::from(m.picture.height),
+                    Ordering::Relaxed,
+                );
+            }
+        }
+        inner.seq.store(seq + 2, Ordering::Release);
+    }
+
+    /// The newest published mapping (any thread; real-time). `None` when none was
+    /// published, the last publish was `None`, or a publish kept the read from a
+    /// stable copy [`CELL_READ_TRIES`] times in a row.
+    pub fn get(&self) -> Option<PictureMapping> {
+        let inner = &*self.inner;
+        for _ in 0..CELL_READ_TRIES {
+            let before = inner.seq.load(Ordering::Acquire);
+            if before & 1 == 1 {
+                std::hint::spin_loop();
+                continue;
+            }
+            let cover = inner.cover.load(Ordering::Relaxed);
+            let time = inner.time.load(Ordering::Relaxed);
+            let origin = [0, 1].map(|i| f64::from_bits(inner.origin[i].load(Ordering::Relaxed)));
+            let scale = [0, 1].map(|i| f64::from_bits(inner.scale[i].load(Ordering::Relaxed)));
+            let picture = inner.picture.load(Ordering::Relaxed);
+            fence(Ordering::Acquire);
+            if inner.seq.load(Ordering::Relaxed) != before {
+                continue;
+            }
+            let cover = match cover {
+                COVER_NONE => return None,
+                COVER_CLEAR => Cover::Clear,
+                COVER_COVERED => Cover::Covered,
+                _ => Cover::Unknown,
+            };
+            // Truncation intended: the two halves were packed from two `u32`s.
+            #[allow(clippy::cast_possible_truncation)]
+            let size = Size::new((picture >> 32) as u32, picture as u32);
+            return Some(
+                PictureMapping::new(Timestamp::from_nanos(time), origin, scale, size)
+                    .with_cover(cover),
+            );
+        }
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::mpsc;
@@ -328,5 +453,93 @@ mod tests {
             assert!(switch.is_on());
             drop(reg);
         }
+    }
+    #[test]
+    fn a_cell_keeps_the_newest_publish() {
+        let cell = MappingCell::new();
+        assert_eq!(cell.get(), None);
+        let m = PictureMapping::new(
+            Timestamp::from_nanos(7),
+            [-1920.5, 12.0],
+            [2.0, 1.5],
+            Size::new(3840, 2160),
+        )
+        .with_cover(Cover::Covered);
+        cell.clone().publish(Some(m));
+        assert_eq!(cell.get(), Some(m));
+        cell.publish(Some(m.with_cover(Cover::Clear)));
+        assert_eq!(cell.get().map(|m| m.cover), Some(Cover::Clear));
+        cell.publish(None);
+        assert_eq!(cell.get(), None);
+    }
+
+    #[test]
+    fn a_cell_read_racing_a_writer_is_never_torn() {
+        // Every published mapping has origin x == time and scale x == time + 1, so a
+        // torn read shows as a mismatch. Progress-bounded (ADR-0032): the reader
+        // stops after enough stable reads, the writer when told.
+        let cell = MappingCell::new();
+        let stop = Arc::new(AtomicBool::new(false));
+        let writer = {
+            let (cell, stop) = (cell.clone(), Arc::clone(&stop));
+            std::thread::spawn(move || {
+                let mut n = 1u64;
+                while !stop.load(Ordering::Acquire) {
+                    #[allow(clippy::cast_precision_loss)]
+                    let f = n as f64;
+                    cell.publish(Some(PictureMapping::new(
+                        Timestamp::from_nanos(n),
+                        [f, f],
+                        [f + 1.0, 1.0],
+                        Size::new(1, 1),
+                    )));
+                    n += 1;
+                    std::thread::yield_now();
+                }
+            })
+        };
+        let mut seen = 0;
+        let mut last = 0;
+        let guard = std::time::Instant::now();
+        while seen < 2000 {
+            // A hang guard only (the writer died or never ran), not a timing wait.
+            assert!(
+                guard.elapsed() < std::time::Duration::from_secs(10),
+                "only {seen} reads in 10 s"
+            );
+            if let Some(m) = cell.get() {
+                let t = m.frame_time.as_nanos();
+                #[allow(clippy::cast_precision_loss)]
+                let f = t as f64;
+                assert_eq!(m.origin, [f, f], "torn read at {t}");
+                assert_eq!(m.scale[0], f + 1.0, "torn read at {t}");
+                assert!(t >= last, "went back from {last} to {t}");
+                last = t;
+                seen += 1;
+            }
+            std::thread::yield_now();
+        }
+        stop.store(true, Ordering::Release);
+        writer.join().expect("writer thread panicked");
+    }
+    #[test]
+    fn the_per_frame_calls_do_not_allocate() {
+        let switch = MappingSwitch::new();
+        let cell = MappingCell::new();
+        let m = PictureMapping::new(
+            Timestamp::from_nanos(1),
+            [0.0; 2],
+            [1.0; 2],
+            Size::new(8, 8),
+        );
+        let info = allocation_counter::measure(|| {
+            for _ in 0..100 {
+                std::hint::black_box(switch.is_on());
+                cell.publish(Some(m));
+                std::hint::black_box(cell.get());
+            }
+            cell.publish(None);
+        });
+        assert_eq!(info.count_total, 0);
     }
 }
