@@ -162,7 +162,7 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `SetVerticalProfile` | Missing | no settings.set field |
 | `SetVerticalStreamProfile` | Missing | no settings.set field |
 | `SetStreamDestinations` | Missing | no settings.set field |
-| `SetVerticalFlags` | Pending | output.set_with_vertical |
+| `SetVerticalFlags` | Moved to `Command::Api` (step 6) | output.set_with_vertical, one call per choice that changed (and both at the start) |
 | `SetSeparateFiles` | Missing | no settings.set field |
 | `SetVerticalPicture` | WindowOnly View |  |
 | `OpenProjector` | WindowOnly View |  |

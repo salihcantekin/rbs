@@ -744,7 +744,6 @@ impl Host {
             | Command::SetVerticalProfile(..)
             | Command::SetVerticalStreamProfile(..)
             | Command::SetStreamDestinations(..)
-            | Command::SetVerticalFlags(..)
             | Command::SetSeparateFiles(..)
             | Command::SetVerticalPicture(..)
             | Command::OpenProjector { .. }

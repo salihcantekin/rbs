@@ -719,12 +719,6 @@ impl Host {
                 self.streaming.destinations_unloaded = unloaded;
                 self.availability_changed();
             }
-            Command::SetVerticalFlags(flags) => {
-                if flags != self.verticals.vertical_flags {
-                    self.verticals.vertical_flags = flags;
-                    self.settings_changed();
-                }
-            }
             Command::SetSeparateFiles(files) => {
                 self.recording.separate_files = files.enabled;
                 self.recording.limit_policy = files.limit_policy();

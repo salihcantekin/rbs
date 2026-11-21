@@ -431,9 +431,6 @@ pub enum Command {
     /// live of each canvas sends to every enabled, configured one. `true`: the section
     /// did not load, so streaming counts as available (ADR-0148 decision 1).
     SetStreamDestinations(Destinations, bool),
-    /// Whether Record and Go live also act on the vertical outputs (ADR-0111), as the
-    /// output profile saved them. Sent at start and after each change.
-    SetVerticalFlags(VerticalFlags),
     /// The output profile's Separate files settings: whether Record and
     /// `record.start` without `iso` write the separate files (ADR-0086 decision 4),
     /// and the hardware limit policy (ADR-0087 decision 5). Sent at start and after

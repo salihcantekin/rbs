@@ -182,7 +182,6 @@ paths! {
     SetVerticalStreamProfile => Missing,
     // no settings.set field
     SetStreamDestinations => Missing,
-    SetVerticalFlags => Pending(&["output.set_with_vertical"]),
     // no settings.set field
     SetSeparateFiles => Missing,
     SetVerticalPicture => WindowOnly(View),
@@ -242,7 +241,7 @@ mod tests {
     /// which must pick its method from host state may raise `TRANSLATES` by as many
     /// as `PENDING` falls; any other rise needs the owner's written approval.
     const TRANSLATES: usize = 22;
-    const PENDING: usize = 28;
+    const PENDING: usize = 27;
     const CONTRACT: usize = 10;
     const MISSING: usize = 20;
     const VIEW: usize = 13;
