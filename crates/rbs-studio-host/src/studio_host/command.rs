@@ -201,9 +201,6 @@ pub enum Command {
     StartSyncMeasure(SourceId),
     /// The Measure window closed: a measurement it started is cancelled.
     CloseSyncMeasure,
-    /// Give the other sources of a source's audio device its offset (ADR-0126
-    /// decision 9).
-    ApplySyncToDeviceSources(SourceId),
     /// Point a source at another target of its kind, keeping its name, layout, filters
     /// and place in every scene (one undo step, ADR-0077).
     RetargetSource {

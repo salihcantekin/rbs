@@ -2161,9 +2161,9 @@ impl StudioUi {
 
     /// The other sources of a source's microphone take its sync offset.
     pub fn apply_sync_to_device_sources(&mut self, id: i32) {
-        self.send(Command::ApplySyncToDeviceSources(SourceId::from_raw(
-            id as u32,
-        )));
+        self.call(rbs_api::Command::SyncApplyToDeviceSources(
+            rbs_api::request::SyncApplyToDeviceSources { source: id as u32 },
+        ));
     }
 
     /// The Source settings window was closed: its content is dropped.

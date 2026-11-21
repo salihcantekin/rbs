@@ -132,7 +132,6 @@ paths! {
     StartSyncMeasure => Pending(&["sync.measure_start"]),
     // as StartSyncMeasure
     CloseSyncMeasure => Pending(&["sync.measure_cancel"]),
-    ApplySyncToDeviceSources => Pending(&["sync.apply_to_device_sources"]),
     RetargetSource => Pending(&["source.retarget"]),
     GrabThumbnails => WindowOnly(View),
     StopThumbnails => WindowOnly(View),
@@ -232,7 +231,7 @@ mod tests {
     /// which must pick its method from host state may raise `TRANSLATES` by as many
     /// as `PENDING` falls; any other rise needs the owner's written approval.
     const TRANSLATES: usize = 22;
-    const PENDING: usize = 18;
+    const PENDING: usize = 17;
     const CONTRACT: usize = 10;
     const MISSING: usize = 20;
     const VIEW: usize = 13;

@@ -105,7 +105,7 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `OpenSyncMeasure` | WindowOnly View |  |
 | `StartSyncMeasure` | Pending | sync.measure_start; refusals go to the Measure view, needs a ticketed answer |
 | `CloseSyncMeasure` | Pending | sync.measure_cancel; as StartSyncMeasure |
-| `ApplySyncToDeviceSources` | Pending | sync.apply_to_device_sources |
+| `ApplySyncToDeviceSources` | Moved to `Command::Api` (step 6) | sync.apply_to_device_sources |
 | `SetSourceSyncOffset` | Moved to `Command::Api` (step 3) | source.set_sync_offset |
 | `RetargetSource` | Pending | source.retarget; the API target keeps only adapter and target id, the window also sends the name, app and sound (step 3 left it) |
 | `GrabThumbnails` | WindowOnly View |  |
@@ -114,8 +114,8 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `CloseSourceSettings` | WindowOnly View |  |
 | `SetSourceSettings` | Contract | source.set_settings needs gesture; its text-file refusal moves to the caller checks |
 | `ReloadSource` | Moved to `Command::Api` (step 3) | source.reload; the API now publishes after a restart, as the window did |
-| `BrowserControl` | Pending | browser.reload, browser.run_script |
-| `ForgetBrowserSignIn` | Pending | browser.forget_sign_in; window stops the page first, API does not |
+| `BrowserControl` | Pending | browser.reload, browser.run_script; stays: the window's Reload restarts a page that is not running, `browser.reload` refuses it (`browser_not_running`) |
+| `ForgetBrowserSignIn` | Pending | browser.forget_sign_in; stays: the window stops the page first so its profile can be removed, the API does not (an API change for Group B) |
 | `Media` | Moved to `Command::Api` (step 6) | media.play, media.pause, media.seek, media.restart (the API now also forces the next media-state publish) |
 | `SetCompanionAudio` | Moved to `Command::Api` (step 3) | source.set_companion_audio |
 | `RenameSource` | Moved to `Command::Api` (step 3) | source.rename |
@@ -173,7 +173,7 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `CloseProjector` | WindowOnly View |  |
 | `OpenInteract` | WindowOnly View |  |
 | `CloseInteract` | WindowOnly View |  |
-| `InteractInput` | Pending | browser.input; quiet answer (input to a closed page is ignored today) |
+| `InteractInput` | Pending | browser.input; stays: one wire event per mouse move, the API takes a checked list of its own event form; input to a page not in Interact is ignored, the API refuses it |
 | `SetCanvas` | Pending | settings.set (canvas); stays: the window closes its preview first and waits for `Update::Canvas`, which the API path does not send for an unchanged canvas or a refusal, so the preview would stay closed |
 | `SetProfile` | WindowOnly Mirror |  |
 | `StartStream` | Contract | stream.start takes no request; the window sends its own StreamRequest |

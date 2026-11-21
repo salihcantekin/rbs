@@ -798,10 +798,6 @@ impl Host {
                 self.start_sync_measure_window(reference, notify);
             }
             Command::CloseSyncMeasure => self.close_sync_measure_window(notify),
-            Command::ApplySyncToDeviceSources(id) => {
-                let done = self.apply_to_device_sources(id).map(|n| n > 0);
-                self.answer_live(done, notify);
-            }
             Command::RetargetSource { id, target } => {
                 let done = self.retarget_source(id, &target);
                 self.answer(done, notify);
