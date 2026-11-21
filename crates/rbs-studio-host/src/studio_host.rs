@@ -687,8 +687,6 @@ impl Host {
             | Command::RequestPermission(..)
             | Command::AddGlobalSource { .. }
             | Command::UndoDelete
-            | Command::MoveSourceTo { .. }
-            | Command::MoveSceneTo { .. }
             | Command::SetSourceVolume { .. }
             | Command::SetSourceMuted { .. }
             | Command::SetMetersUi(..)
@@ -708,9 +706,7 @@ impl Host {
             | Command::AddImage { .. }
             | Command::AddMedia { .. }
             | Command::SetStingerFile(..)
-            | Command::FitTextBox(..)
             | Command::AddBrowser { .. }
-            | Command::SetSourceFilled { .. }
             | Command::ApplyLook { .. }
             | Command::SetFilterValues { .. }
             | Command::PreviewFilter { .. }
@@ -733,7 +729,6 @@ impl Host {
             Command::SetSourceBox { .. }
             | Command::SetSourceCrop { .. }
             | Command::TransformSource { .. } => self.item_command(c, notify),
-            Command::SetSourceRegion { .. } => self.item_display_command(c, notify),
             Command::StartRecording(..)
             | Command::StartVerticalRecording(..)
             | Command::SetVerticalProfile(..)

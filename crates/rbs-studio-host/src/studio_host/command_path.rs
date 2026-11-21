@@ -88,10 +88,6 @@ paths! {
     UndoDelete => Missing,
     // quiet when there is nothing to undo
     // as Undo
-    // scene.move has no target scene
-    MoveSceneTo => Missing,
-    // item.move has no target item
-    MoveSourceTo => Missing,
     SetSourceVolume => Translates(&["source.set_volume", "scene.audio.set"]),
     SetSourceMuted => Translates(&["source.set_muted", "scene.audio.set"]),
     SetMetersUi => WindowOnly(View),
@@ -119,10 +115,6 @@ paths! {
     SetStingerFile => Missing,
     // source.add has no URL
     AddBrowser => Missing,
-    // no fit-box method
-    FitTextBox => Missing,
-    // also adds a border to the item style in one undo step; no method
-    SetSourceFilled => Missing,
     // window then restores stored values on an unchanged release
     SetFilterValues => Pending(&["filter.set_settings"]),
     PreviewFilter => WindowOnly(Preview),
@@ -153,10 +145,8 @@ paths! {
     SetSourceBox => Pending(&["item.set_box"]),
     // item.set_crop needs gesture
     SetSourceCrop => Contract(&["item.set_crop"]),
-    // item.flip/rotate/fit/align/reset_transform need gesture
+    // SetAngle and ResetRotation have no method (ADR-0166)
     TransformSource => Contract(&["item.flip", "item.rotate", "item.fit", "item.align", "item.reset_transform"]),
-    // no method for the shown region (ADR-0058 Show buttons); source.set_region is the capture region
-    SetSourceRegion => Missing,
     // item.set_style needs gesture
     // item.set_scroll needs gesture
     // record.start builds its request from host state; the window sends its own RecordRequest
@@ -230,7 +220,7 @@ mod tests {
     const TRANSLATES: usize = 22;
     const PENDING: usize = 17;
     const CONTRACT: usize = 7;
-    const MISSING: usize = 20;
+    const MISSING: usize = 15;
     const VIEW: usize = 13;
     const LOCAL_ONLY: usize = 9;
     const PREVIEW: usize = 2;

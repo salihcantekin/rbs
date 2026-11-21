@@ -33,22 +33,6 @@ pub enum Command {
     /// The toast's Undo after a delete: undoes the newest edit if it is a delete, else
     /// nothing (another edit came after it).
     UndoDelete,
-    /// Move a scene to where scene `to` is in the scene list (a row dragged onto
-    /// another); one undo step.
-    MoveSceneTo {
-        /// The scene.
-        id: SceneId,
-        /// The scene whose place it takes.
-        to: SceneId,
-    },
-    /// Move a source to where source `to` is in the program scene's layer order (a
-    /// row dragged onto another row of the Sources list); one undo step.
-    MoveSourceTo {
-        /// The source.
-        id: SourceId,
-        /// The source whose place it takes.
-        to: SourceId,
-    },
     /// A source's volume, a linear factor from 0 to 1 (ADR-0059). A live control: not
     /// on the undo stack, and it reaches the mixer without rebinding the scene. The
     /// window's fader: while the program scene keeps its own levels and places the
@@ -163,18 +147,6 @@ pub enum Command {
     AddBrowser {
         /// `http`, `https`, or `file` URL.
         url: String,
-    },
-    /// Fit a text source's box to its text (ADR-0129 decision 13, Fit box to text):
-    /// the item keeps its centre and its scale. One undo step.
-    FitTextBox(SourceId),
-    /// Whether a colour source draws its fill. Off leaves the inside empty and, when
-    /// the shape has no border, turns a border on so the shape stays visible. One
-    /// undo step.
-    SetSourceFilled {
-        /// The source.
-        id: SourceId,
-        /// Draw the fill.
-        on: bool,
     },
     /// Write a filter's full values (a released slider, a colour, Reset to defaults;
     /// one undo step).
@@ -313,14 +285,6 @@ pub enum Command {
         /// The canvas whose layout changes: the vertical canvas's own layout only while
         /// it shows the scene being edited (ADR-0093 decision 4).
         canvas: OutputCanvas,
-    },
-    /// Show a part of a video source's picture filling as much of the canvas as fits
-    /// (ADR-0058, Properties' Show buttons). One undo step.
-    SetSourceRegion {
-        /// The source.
-        id: SourceId,
-        /// Which part.
-        region: CropRegion,
     },
     /// Start recording the program ([`Update::Recording`] says how it went).
     StartRecording(RecordRequest),

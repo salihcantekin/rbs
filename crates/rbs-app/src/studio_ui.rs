@@ -31,11 +31,10 @@ use rbs_app::stream_profile::{
     self, HoldPicture, HoldSound, SRT_DEFAULT_LATENCY_MS, SRT_LATENCIES_MS, StreamProfile,
 };
 use rbs_app::studio_host::{
-    Command, CropRegion, EncoderInfo, EncoderOptions, HoldNote, MainDisplay, OutputCanvas,
-    RecordPatch, RecordPause, RecordRequest, RecordingUpdate, SEPARATE_VIDEO_LIMIT, SceneList,
-    SourceKind, SourceRow, SourceSettingsView, SourceStatus, Stats, StreamHold, StreamRequest,
-    StreamUpdate, StudioHost, SyncMeasurePhase, SyncMeasureRefusal, SyncMeasureView, Target,
-    TransformOp, Update,
+    Command, EncoderInfo, EncoderOptions, HoldNote, MainDisplay, OutputCanvas, RecordPatch,
+    RecordPause, RecordRequest, RecordingUpdate, SEPARATE_VIDEO_LIMIT, SceneList, SourceKind,
+    SourceRow, SourceSettingsView, SourceStatus, Stats, StreamHold, StreamRequest, StreamUpdate,
+    StudioHost, SyncMeasurePhase, SyncMeasureRefusal, SyncMeasureView, Target, TransformOp, Update,
 };
 use rbs_app::user_session::{
     DEFAULT_NAME, RECORDING, RECORDING_VERTICAL, STREAM, STREAM_VERTICAL, UserSession,
@@ -2716,26 +2715,6 @@ impl StudioUi {
             .collect();
     }
 
-    /// Puts scene `id` where scene `to` is in the scene list (a row dragged onto
-    /// another).
-    pub fn move_scene_to(&mut self, id: i32, to: i32) {
-        self.deleted.clear();
-        self.send(Command::MoveSceneTo {
-            id: SceneId::from_raw(id as u32),
-            to: SceneId::from_raw(to as u32),
-        });
-    }
-
-    /// Puts source `id` where source `to` is in the layer order (a row dragged onto
-    /// another).
-    pub fn move_source_to(&mut self, id: i32, to: i32) {
-        self.deleted.clear();
-        self.send(Command::MoveSourceTo {
-            id: SourceId::from_raw(id as u32),
-            to: SourceId::from_raw(to as u32),
-        });
-    }
-
     /// A video source's box on the canvas, in canvas pixels (the Properties fields;
     /// the picture panel's drags go through [`PreviewEdit`], numbered).
     /// Boxes that share a non-zero `gesture` (one drag of a field) are one undo step.
@@ -2765,26 +2744,6 @@ impl StudioUi {
             crop: crop.map(|v| v.max(0) as u32),
             keep_scale: true,
             canvas: self.props_target(id),
-        });
-    }
-
-    /// Shows a part of a video source's picture (Properties' Show buttons): 0 the whole
-    /// picture, 1 canvas size centred, 2 left half, 3 right half.
-    pub fn set_source_region(&mut self, id: i32, region: i32) {
-        let region = match region {
-            0 => CropRegion::Full,
-            1 => CropRegion::CanvasCentred,
-            2 => CropRegion::LeftHalf,
-            3 => CropRegion::RightHalf,
-            _ => return,
-        };
-        if self.host.is_none() {
-            return;
-        }
-        self.deleted.clear();
-        self.send(Command::SetSourceRegion {
-            id: SourceId::from_raw(id as u32),
-            region,
         });
     }
 
@@ -5342,23 +5301,6 @@ impl StudioUi {
             text_props::countdown_patch(until, target, seconds),
             gesture,
         );
-    }
-
-    /// Fit box to text.
-    pub fn fit_text_box(&mut self, id: i32) {
-        if self.text_settings.contains_key(&id) {
-            self.deleted.clear();
-            self.send(Command::FitTextBox(SourceId::from_raw(id as u32)));
-        }
-    }
-
-    /// Turns a colour source's fill on or off. Off leaves the inside empty.
-    pub fn set_source_filled(&mut self, id: i32, on: bool) {
-        self.deleted.clear();
-        self.send(Command::SetSourceFilled {
-            id: SourceId::from_raw(id as u32),
-            on,
-        });
     }
 
     /// Adds a sample picture to the scene being edited (ADR-0075). The new source

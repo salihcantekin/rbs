@@ -6,6 +6,7 @@ mod api_canvas;
 mod api_collection;
 mod api_item;
 mod api_item2;
+mod api_item3;
 mod api_record;
 mod api_scene;
 mod api_settings;
@@ -165,13 +166,16 @@ impl ApiTarget<'_> {
             | C::BrowserInput(..)
             | C::SourceReload(..)
             | C::ItemRemove(..)
-            | C::SceneMove(..)
             | C::SourceSetActive(..)
             | C::LookList
             | C::LookApply(..)
             | C::SourceAddSample(..) => self.answer_source2(command),
+            C::ItemMove(..)
+            | C::SceneMove(..)
+            | C::ItemFitTextBox(..)
+            | C::ItemSetFilled(..)
+            | C::ItemSetShownRegion(..) => self.answer_item3(command),
             C::ItemSetBox(..)
-            | C::ItemMove(..)
             | C::GlobalList
             | C::GlobalAdd(..)
             | C::GlobalRemove(..)

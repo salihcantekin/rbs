@@ -1,9 +1,11 @@
-//! Item operations of the window, sent as control API commands (ADR-0163 step 2):
-//! the Sources row's eye, lock and layer buttons, Add existing source, and the
-//! timed show of an item, and Undo and Redo.
+//! Item operations of the window, sent as control API commands (ADR-0163 step 2,
+//! ADR-0164 step 2): the Sources row's eye, lock and layer buttons and drags, Add
+//! existing source, the timed show of an item, Undo and Redo, the Show buttons, Fit
+//! box to text and a shape's fill.
 
 use rbs_api::Command as C;
 use rbs_api::request as rq;
+use rbs_api::types::OutputCanvas;
 
 use rbs_app::studio_host::ApiReply;
 
@@ -54,7 +56,73 @@ impl StudioUi {
     pub fn move_source(&mut self, id: i32, direction: rq::LayerDirection) {
         self.deleted.clear();
         if let Some(item) = self.row_item(id) {
-            self.call(C::ItemMove(rq::MoveItem { item, direction }));
+            self.call(C::ItemMove(rq::MoveItem {
+                item,
+                direction: Some(direction),
+                to_item: None,
+            }));
+        }
+    }
+
+    /// Puts source `id` where source `to` is in the layer order (a row dragged onto
+    /// another). A place in another scene (a global source) changes nothing.
+    pub fn move_source_to(&mut self, id: i32, to: i32) {
+        self.deleted.clear();
+        if let (Some(item), Some(to)) = (self.row_item(id), self.row_item(to)) {
+            self.call_as(
+                C::ItemMove(rq::MoveItem {
+                    item,
+                    direction: None,
+                    to_item: Some(to),
+                }),
+                ApiReply::QuietIf(rbs_api::ErrorKind::InvalidParams),
+            );
+        }
+    }
+
+    /// Shows a part of a video source's picture (Properties' Show buttons): 0 the whole
+    /// picture, 1 canvas size centred, 2 left half, 3 right half. Main canvas only.
+    pub fn set_source_region(&mut self, id: i32, region: i32) {
+        let region = match region {
+            0 => rq::ShownRegion::Full,
+            1 => rq::ShownRegion::CanvasCentred,
+            2 => rq::ShownRegion::LeftHalf,
+            3 => rq::ShownRegion::RightHalf,
+            _ => return,
+        };
+        self.deleted.clear();
+        if let Some(item) = self.row_item(id) {
+            self.call(C::ItemSetShownRegion(rq::SetItemShownRegion {
+                item,
+                region,
+                canvas: OutputCanvas::Main,
+            }));
+        }
+    }
+
+    /// Fit box to text.
+    pub fn fit_text_box(&mut self, id: i32) {
+        if !self.text_settings.contains_key(&id) {
+            return;
+        }
+        self.deleted.clear();
+        if let Some(item) = self.row_item(id) {
+            self.call(C::ItemFitTextBox(rq::FitTextBox {
+                item,
+                canvas: OutputCanvas::Main,
+            }));
+        }
+    }
+
+    /// Turns a colour source's fill on or off. Off leaves the inside empty.
+    pub fn set_source_filled(&mut self, id: i32, on: bool) {
+        self.deleted.clear();
+        if let Some(item) = self.row_item(id) {
+            self.call(C::ItemSetFilled(rq::SetItemFilled {
+                item,
+                on,
+                canvas: OutputCanvas::Main,
+            }));
         }
     }
 

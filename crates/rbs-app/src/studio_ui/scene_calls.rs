@@ -49,7 +49,19 @@ impl StudioUi {
         self.deleted.clear();
         self.call(C::SceneMove(rq::MoveScene {
             scene: id as u32,
-            direction,
+            direction: Some(direction),
+            to_scene: None,
+        }));
+    }
+
+    /// Puts scene `id` where scene `to` is in the scene list (a row dragged onto
+    /// another).
+    pub fn move_scene_to(&mut self, id: i32, to: i32) {
+        self.deleted.clear();
+        self.call(C::SceneMove(rq::MoveScene {
+            scene: id as u32,
+            direction: None,
+            to_scene: Some(to as u32),
         }));
     }
 

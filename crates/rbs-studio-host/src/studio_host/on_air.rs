@@ -37,6 +37,7 @@ const OFF_AIR: &[&str] = &[
 const BY_TARGET: &[&str] = &[
     "item.set_style",
     "item.set_crop",
+    "item.set_shown_region",
     "item.flip",
     "item.rotate",
     "item.fit",

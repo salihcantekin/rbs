@@ -752,10 +752,6 @@ impl Host {
                 Ok(_) => self.apply(notify),
                 Err(e) => notify(Update::Error(e.text().to_owned())),
             },
-            Command::FitTextBox(id) => {
-                let done = self.fit_text_box(id);
-                self.answer(done, notify);
-            }
             // Without its engine Browser leads to Settings › Add-ons and adds nothing
             // (ADR-0145 decision 8).
             Command::AddBrowser { .. } if self.browser_needs_engine() => {
@@ -763,11 +759,6 @@ impl Host {
             }
             Command::AddBrowser { url } => match self.add_browser_page(&url) {
                 Ok(_) => self.apply(notify),
-                Err(e) => notify(Update::Error(e.text().to_owned())),
-            },
-            Command::SetSourceFilled { id, on } => match self.set_source_filled(id, on) {
-                Ok(true) => self.apply(notify),
-                Ok(false) => {}
                 Err(e) => notify(Update::Error(e.text().to_owned())),
             },
             Command::ApplyLook { source, look } => {

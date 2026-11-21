@@ -700,18 +700,14 @@ impl Host {
         Ok(true)
     }
 
-    /// Shows `region` of a source's picture (Properties' Region menu).
-    pub(super) fn set_source_region(
+    /// Shows `region` of an item's picture on canvas `on` (Properties' Show buttons).
+    pub(super) fn set_shown_region(
         &mut self,
-        id: SourceId,
+        item: ItemId,
         region: CropRegion,
+        on: OutputCanvas,
     ) -> Result<bool, CropRefusal> {
-        let item = self
-            .item_of(id)
-            .map_err(|e| CropRefusal::NotFound(e.into_text()))?
-            .1
-            .id;
-        let (source, old, own) = self.crop_target(item)?;
+        let (source, old, own) = self.crop_target_on(item, on)?;
         let size = self
             .sizes
             .get(&source)
@@ -719,7 +715,7 @@ impl Host {
             .ok_or(CropRefusal::NoPicture)?;
         let canvas = self
             .collection
-            .canvas(self.canvas)
+            .canvas(own.unwrap_or(self.canvas))
             .map(|c| (c.size.width, c.size.height))
             .ok_or_else(|| CropRefusal::Failed("the canvas is gone".into()))?;
         let crop = region.crop(size, canvas);
@@ -855,18 +851,6 @@ impl Host {
             }
             // Routed elsewhere by `Host::command`.
             _ => {}
-        }
-    }
-
-    /// The window commands of this concern, routed by `Host::command`.
-    pub(super) fn item_display_command(&mut self, c: Command, notify: &dyn Fn(Update)) {
-        // Other commands are routed elsewhere by `Host::command`.
-        if let Command::SetSourceRegion { id, region } = c {
-            match self.set_source_region(id, region) {
-                Ok(true) => self.apply(notify),
-                Ok(false) => {}
-                Err(e) => notify(Update::Error(e.text())),
-            }
         }
     }
 }

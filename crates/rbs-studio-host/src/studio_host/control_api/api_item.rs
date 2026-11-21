@@ -27,29 +27,6 @@ impl ApiTarget<'_> {
                     ok: true,
                 }))
             }
-            C::ItemMove(p) => {
-                let source = host
-                    .collection
-                    .item(ItemId::from_raw(p.item))
-                    .and_then(|(_, it)| match it.content {
-                        ItemContent::Source(id) => Some(id),
-                        _ => None,
-                    })
-                    .ok_or_else(|| {
-                        ApiError::new(
-                            ErrorKind::NotFound,
-                            "This source is not in the scene any more.",
-                        )
-                    })?;
-                match host.move_source(source, p.direction) {
-                    Ok(true) => {
-                        host.apply(notify);
-                        Ok(Response::Done(Empty {}))
-                    }
-                    Ok(false) => Ok(Response::Done(Empty {})),
-                    Err(e) => Err(ApiError::new(ErrorKind::Conflict, e.into_text())),
-                }
-            }
             C::GlobalList => Ok(Response::GlobalSources(GlobalSourceList {
                 sources: host.global_rows().iter().map(api_source).collect(),
             })),
