@@ -71,7 +71,6 @@
 "crates/rbs-scene/src/collection.rs::perform" = 568
 "crates/rbs-scene/tests/binder.rs::check_consistent" = 218
 "crates/rbs-sources/examples/scene_sources.rs::run" = 321
-"crates/rbs-studio-host/src/studio_host/recording.rs::start_recording_with_tracks" = 237
 "crates/rbs-studio-host/tests/studio/api.rs::a_control_api_client_adds_and_edits_a_text_source" = 227
 "crates/rbs-studio-host/tests/studio/api.rs::a_control_api_client_drives_the_studio" = 600
 "crates/rbs-studio-host/tests/studio/record.rs::markers_go_into_the_manifest_when_the_recording_stops" = 205
