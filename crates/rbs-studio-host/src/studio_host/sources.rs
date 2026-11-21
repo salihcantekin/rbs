@@ -55,7 +55,7 @@ impl Host {
         }
     }
 
-    pub(super) fn add(&mut self, kind: SourceKind, target: &Target) -> Result<SourceId, String> {
+    pub(super) fn add(&mut self, kind: SourceKind, target: &Target) -> Result<SourceId, Refusal> {
         // A screen or window is as large as fits with its own aspect ratio, centred
         // (a 21:9 display is not squeezed into a 16:9 canvas); audio has no picture,
         // the item only places it in the scene.
@@ -80,11 +80,11 @@ impl Host {
         &self,
         kind: SourceKind,
         target: &Target,
-    ) -> Result<(Settings, Layout), String> {
+    ) -> Result<(Settings, Layout), Refusal> {
         let canvas = self
             .collection
             .canvas(self.canvas)
-            .ok_or("the canvas is gone")?;
+            .ok_or_else(|| Refusal::Failed("the canvas is gone".to_owned()))?;
         let (w, h) = (canvas.size.width, canvas.size.height);
         let mut settings = Settings::new();
         settings.insert(
@@ -362,7 +362,7 @@ impl Host {
         kind: SourceKind,
         target: &Target,
     ) -> Result<SourceId, Refusal> {
-        let (settings, layout) = self.new_source(kind, target).map_err(Refusal::Failed)?;
+        let (settings, layout) = self.new_source(kind, target)?;
         self.add_global_with(&target.name, kind, settings, layout)
     }
 
@@ -422,11 +422,11 @@ impl Host {
         name: &str,
         settings: Settings,
         layout: Layout,
-    ) -> Result<SourceId, String> {
+    ) -> Result<SourceId, Refusal> {
         let (id, source) = self
             .collection
             .add_source(name, kind.type_id(), settings)
-            .map_err(|e| format!("{e:?}"))?;
+            .map_err(|e| Refusal::Failed(format!("{e:?}")))?;
         match self.collection.add_item(
             self.edited(),
             ItemContent::Source(id),
@@ -441,7 +441,7 @@ impl Host {
             }
             Err(e) => {
                 let _ = self.collection.undo(source);
-                Err(format!("{e:?}"))
+                Err(Refusal::Failed(format!("{e:?}")))
             }
         }
     }
@@ -533,7 +533,7 @@ impl Host {
                 ));
             }
         };
-        let (mut settings, layout) = self.new_source(kind, &target).map_err(Refusal::Failed)?;
+        let (mut settings, layout) = self.new_source(kind, &target)?;
         if exclude {
             settings.insert(keys::EXCLUDE_OWN_PROCESS.into(), SettingValue::Bool(true));
         }
@@ -583,7 +583,7 @@ impl Host {
             .find(|s| s.companion_of() == Some(picture))
             .map(|s| s.id)
             .ok_or_else(|| Refusal::NotFound("This source has no companion sound.".into()))?;
-        self.delete(id).map(|_| ()).map_err(Refusal::Failed)
+        self.delete(id).map(|_| ())
     }
 
     /// Adds a sample covering the canvas: a background at the bottom of the scene
@@ -1023,23 +1023,25 @@ impl Host {
     }
 
     /// Deletes a source from every scene; returns its name.
-    pub(super) fn delete(&mut self, id: SourceId) -> Result<String, String> {
+    pub(super) fn delete(&mut self, id: SourceId) -> Result<String, Refusal> {
         let name = self
             .collection
             .source(id)
             .map(|s| s.name.clone())
-            .ok_or("This source is not in the scene any more.")?;
+            .ok_or_else(|| {
+                Refusal::NotFound("This source is not in the scene any more.".to_owned())
+            })?;
         let undo = self
             .collection
             .delete_source(id)
-            .map_err(|e| format!("{e:?}"))?;
+            .map_err(|e| Refusal::Failed(format!("{e:?}")))?;
         self.history.record(EditKind::Delete, &name, 0, vec![undo]);
         Ok(name)
     }
 
     /// Over (`up`) or under the next source with a picture; sound-only items do not
     /// count, because they draw nothing. `Ok(false)` when there is none that way.
-    pub(super) fn move_source_to(&mut self, id: SourceId, to: SourceId) -> Result<bool, String> {
+    pub(super) fn move_source_to(&mut self, id: SourceId, to: SourceId) -> Result<bool, Refusal> {
         if id == to {
             return Ok(false);
         }
@@ -1053,7 +1055,7 @@ impl Host {
         let undo = self
             .collection
             .move_item(item, index)
-            .map_err(|e| edit_error(&e))?;
+            .map_err(|e| Refusal::of(&e))?;
         let name = self.name_of(id);
         self.history.record(EditKind::Order, &name, 0, vec![undo]);
         Ok(true)
@@ -1061,11 +1063,15 @@ impl Host {
 
     /// Releases the device (`active` false) or keeps it open. `Ok(false)` when it
     /// already is. Hiding a source does not call this.
-    pub(super) fn set_source_active(&mut self, id: SourceId, active: bool) -> Result<bool, String> {
+    pub(super) fn set_source_active(
+        &mut self,
+        id: SourceId,
+        active: bool,
+    ) -> Result<bool, Refusal> {
         let source = self
             .collection
             .source(id)
-            .ok_or_else(|| format!("There is no source {}.", id.get()))?;
+            .ok_or_else(|| Refusal::NotFound(format!("There is no source {}.", id.get())))?;
         if source.standby() == !active {
             return Ok(false);
         }
@@ -1080,7 +1086,7 @@ impl Host {
         let undo = self
             .collection
             .set_source_settings_and_hints(id, settings, hints)
-            .map_err(|e| edit_error(&e))?;
+            .map_err(|e| Refusal::of(&e))?;
         self.history
             .record(EditKind::SourceSettings, &name, 0, vec![undo]);
         Ok(true)
@@ -1090,7 +1096,7 @@ impl Host {
         &mut self,
         id: SourceId,
         direction: rbs_api::request::LayerDirection,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, Refusal> {
         use rbs_api::request::LayerDirection::*;
         let (index, item) = self.item_of(id)?;
         let item = item.id;
@@ -1117,7 +1123,7 @@ impl Host {
         let undo = self
             .collection
             .move_item(item, to)
-            .map_err(|e| edit_error(&e))?;
+            .map_err(|e| Refusal::of(&e))?;
         let name = self.name_of(id);
         self.history.record(EditKind::Order, &name, 0, vec![undo]);
         Ok(true)
@@ -1128,11 +1134,10 @@ impl Host {
         &mut self,
         id: SourceId,
         visible: bool,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, Refusal> {
         let (_, item) = self.item_of(id)?;
         let item = item.id;
         self.set_item_visible(item, visible)
-            .map_err(|e| e.text().to_owned())
     }
 
     /// A source's volume or mute (ADR-0059): a live control, not on the undo stack,
@@ -1340,14 +1345,11 @@ impl Host {
             Command::AddOn { id, action } => self.addon_command(&id, action, notify),
             Command::RequestPermission(kind) => self.ask_permission(kind, None, notify),
             Command::AddSourceWithAudio { kind, target } => {
-                let done = self
-                    .add(kind, &target)
-                    .map_err(Refusal::Failed)
-                    .and_then(|id| {
-                        self.add_companion(id, true).inspect_err(|_| {
-                            let _ = self.delete(id);
-                        })
-                    });
+                let done = self.add(kind, &target).and_then(|id| {
+                    self.add_companion(id, true).inspect_err(|_| {
+                        let _ = self.delete(id);
+                    })
+                });
                 match done {
                     Ok(_) => self.apply(notify),
                     Err(e) => notify(Update::Error(e.text().to_owned())),
@@ -1356,7 +1358,7 @@ impl Host {
             Command::AddSource { kind, target } if target.picker => self.pick(kind, &target),
             Command::AddSource { kind, target } => match self.add(kind, &target) {
                 Ok(_) => self.apply(notify),
-                Err(e) => notify(Update::Error(e)),
+                Err(e) => notify(Update::Error(e.into_text())),
             },
             Command::DeleteSource(id) => match self.delete(id) {
                 Ok(name) => {
@@ -1366,12 +1368,11 @@ impl Host {
                         from_scene: false,
                     });
                 }
-                Err(e) => notify(Update::Error(e)),
+                Err(e) => notify(Update::Error(e.into_text())),
             },
             Command::RemoveFromScene(id) => {
                 let done = self
                     .item_of(id)
-                    .map_err(Refusal::NotFound)
                     .map(|(_, i)| i.id)
                     .and_then(|item| self.remove_from_scene(item));
                 match done {
@@ -1415,32 +1416,31 @@ impl Host {
             Command::MoveSource { id, direction } => match self.move_source(id, direction) {
                 Ok(true) => self.apply(notify),
                 Ok(false) => {}
-                Err(e) => notify(Update::Error(e)),
+                Err(e) => notify(Update::Error(e.into_text())),
             },
             Command::MoveSourceTo { id, to } => match self.move_source_to(id, to) {
                 Ok(true) => self.apply(notify),
                 Ok(false) => {}
-                Err(e) => notify(Update::Error(e)),
+                Err(e) => notify(Update::Error(e.into_text())),
             },
             Command::MoveScene { id, direction } => match self.move_scene(id, direction) {
                 Ok(true) => self.apply(notify),
                 Ok(false) => {}
-                Err(e) => notify(Update::Error(e)),
+                Err(e) => notify(Update::Error(e.into_text())),
             },
             Command::MoveSceneTo { id, to } => match self.move_scene_to(id, to) {
                 Ok(true) => self.apply(notify),
                 Ok(false) => {}
-                Err(e) => notify(Update::Error(e)),
+                Err(e) => notify(Update::Error(e.into_text())),
             },
             Command::SetSourceActive { id, active } => match self.set_source_active(id, active) {
                 Ok(true) => self.apply(notify),
                 Ok(false) => {}
-                Err(e) => notify(Update::Error(e)),
+                Err(e) => notify(Update::Error(e.into_text())),
             },
             Command::SetSourceLocked { id, locked } => {
                 let done = self
                     .item_of(id)
-                    .map_err(Refusal::NotFound)
                     .map(|(_, i)| i.id)
                     .and_then(|item| self.set_item_locked(item, locked));
                 self.answer(done, notify);

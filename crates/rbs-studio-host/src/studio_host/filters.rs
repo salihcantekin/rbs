@@ -509,7 +509,7 @@ impl Host {
         records: &mut Vec<rbs_scene::Undo>,
     ) -> Result<(), Refusal> {
         if let Some(style) = look.style {
-            let (_, item) = self.item_of(source).map_err(Refusal::NotFound)?;
+            let (_, item) = self.item_of(source)?;
             let (item_id, mut layout) = (item.id, self.shown_layout(item));
             let own = item
                 .overrides

@@ -47,7 +47,7 @@ impl ApiTarget<'_> {
                         Ok(Response::Done(Empty {}))
                     }
                     Ok(false) => Ok(Response::Done(Empty {})),
-                    Err(e) => Err(ApiError::new(ErrorKind::Conflict, e)),
+                    Err(e) => Err(ApiError::new(ErrorKind::Conflict, e.into_text())),
                 }
             }
             C::GlobalList => Ok(Response::GlobalSources(GlobalSourceList {

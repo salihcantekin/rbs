@@ -279,7 +279,7 @@ impl Host {
     /// item in the scene being edited (or its global item), with its companion copied
     /// muted. A camera copy starts in standby. One undo step.
     pub(super) fn duplicate_source(&mut self, id: SourceId) -> Result<Duplicate, Refusal> {
-        let (_, item) = self.item_of(id).map_err(Refusal::NotFound)?;
+        let (_, item) = self.item_of(id)?;
         let item = item.id;
         let source = self
             .collection
@@ -433,7 +433,7 @@ impl Host {
 
     /// Every group's value of a source and its item on `on`, now.
     fn snapshot_of(&self, id: SourceId, on: OutputCanvas) -> Result<AttributeSnapshot, Refusal> {
-        let (_, item) = self.item_of(id).map_err(Refusal::NotFound)?;
+        let (_, item) = self.item_of(id)?;
         let item = item.id;
         let state = self
             .collection

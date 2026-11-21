@@ -4,8 +4,8 @@ use super::*;
 
 impl Host {
     /// The program scene's item that places `id`, and its index (0 is the bottom).
-    pub(super) fn item_of(&self, id: SourceId) -> Result<(usize, &SceneItem), String> {
-        let gone = || "This source is not in the scene any more.".to_owned();
+    pub(super) fn item_of(&self, id: SourceId) -> Result<(usize, &SceneItem), Refusal> {
+        let gone = || Refusal::NotFound("This source is not in the scene any more.".to_owned());
         let find = |scene: SceneId| {
             self.collection.scene(scene).and_then(|s| {
                 s.items
@@ -141,7 +141,7 @@ impl Host {
         })?;
         let visible = visible_size(picture, source.region, Crop::default())
             .ok_or_else(|| Refusal::Invalid("The region leaves no picture.".into()))?;
-        let item = self.item_of(id).map_err(Refusal::NotFound)?.1.id;
+        let item = self.item_of(id)?.1.id;
         let (_, old, own) = self.crop_target(item).map_err(|e| match e {
             CropRefusal::NotFound(t) => Refusal::NotFound(t),
             CropRefusal::Invalid(t) => Refusal::Invalid(t),
@@ -219,7 +219,7 @@ impl Host {
         let picture = self.sizes.get(&id).copied().ok_or_else(|| {
             Refusal::Invalid("This source has no picture yet, so its size is not known.".into())
         })?;
-        let item = self.item_of(id).map_err(Refusal::NotFound)?.1.id;
+        let item = self.item_of(id)?.1.id;
         let (_, old, own) = self.crop_target(item).map_err(|e| match e {
             CropRefusal::NotFound(t) => Refusal::NotFound(t),
             CropRefusal::Invalid(t) => Refusal::Invalid(t),
@@ -319,7 +319,7 @@ impl Host {
                 "Position and size must be numbers, and the size cannot be 0.".into(),
             ));
         }
-        let (_, item) = self.item_of(id).map_err(Refusal::NotFound)?;
+        let (_, item) = self.item_of(id)?;
         // The layout the canvas shows: its own if the item has one, else the default.
         let mut layout = self.shown_layout(item);
         let own = item
@@ -350,12 +350,14 @@ impl Host {
         style: ItemStyle,
         gesture: u64,
         on: OutputCanvas,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, Refusal> {
         if !style.is_valid() {
-            return Err(STYLE_ERROR.into());
+            return Err(Refusal::Invalid(STYLE_ERROR.into()));
         }
         let Some((_, found)) = self.collection.item(item) else {
-            return Err("This source is not in the scene any more.".to_owned());
+            return Err(Refusal::NotFound(
+                "This source is not in the scene any more.".to_owned(),
+            ));
         };
         let found = found.clone();
         let (mut layout, own) = match on {
@@ -367,7 +369,7 @@ impl Host {
                     .then_some(self.canvas),
             ),
             OutputCanvas::Vertical => {
-                let (_, layout, own) = self.crop_target_on(item, on).map_err(|e| e.text())?;
+                let (_, layout, own) = self.crop_target_on(item, on)?;
                 (layout, own)
             }
         };
@@ -377,7 +379,7 @@ impl Host {
         layout.style = style;
         let undo = self
             .save_live_layout(item, own, layout)
-            .map_err(|e| edit_error(&e))?;
+            .map_err(|e| Refusal::of(&e))?;
         let name = match found.content {
             ItemContent::Source(id) => self.name_of(id),
             _ => String::new(),
@@ -395,9 +397,11 @@ impl Host {
         scroll: Option<Scroll>,
         gesture: u64,
         on: OutputCanvas,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, Refusal> {
         let Some((_, found)) = self.collection.item(item) else {
-            return Err("This source is not in the scene any more.".to_owned());
+            return Err(Refusal::NotFound(
+                "This source is not in the scene any more.".to_owned(),
+            ));
         };
         let found = found.clone();
         let (mut layout, own) = match on {
@@ -409,7 +413,7 @@ impl Host {
                     .then_some(self.canvas),
             ),
             OutputCanvas::Vertical => {
-                let (_, layout, own) = self.crop_target_on(item, on).map_err(|e| e.text())?;
+                let (_, layout, own) = self.crop_target_on(item, on)?;
                 (layout, own)
             }
         };
@@ -419,7 +423,7 @@ impl Host {
         layout.scroll = scroll;
         let undo = self
             .save_live_layout(item, own, layout)
-            .map_err(|e| edit_error(&e))?;
+            .map_err(|e| Refusal::of(&e))?;
         let name = match found.content {
             ItemContent::Source(id) => self.name_of(id),
             _ => String::new(),
@@ -681,7 +685,11 @@ impl Host {
         id: SourceId,
         region: CropRegion,
     ) -> Result<bool, CropRefusal> {
-        let item = self.item_of(id).map_err(CropRefusal::NotFound)?.1.id;
+        let item = self
+            .item_of(id)
+            .map_err(|e| CropRefusal::NotFound(e.into_text()))?
+            .1
+            .id;
         let (source, old, own) = self.crop_target(item)?;
         let size = self
             .sizes
@@ -738,7 +746,7 @@ impl Host {
                 match self.set_source_visible(id, visible) {
                     Ok(true) => self.apply(notify),
                     Ok(false) => {}
-                    Err(e) => notify(Update::Error(e)),
+                    Err(e) => notify(Update::Error(e.into_text())),
                 }
             }
             Command::SetSourceBox {
@@ -797,7 +805,7 @@ impl Host {
                 let [l, t, r, b] = crop;
                 let edit = self
                     .item_of(id)
-                    .map_err(CropRefusal::NotFound)
+                    .map_err(|e| CropRefusal::NotFound(e.into_text()))
                     .map(|(_, item)| item.id)
                     .and_then(|item| {
                         self.set_item_crop(item, Crop::new(l, t, r, b), keep_scale, gesture, canvas)
@@ -821,10 +829,10 @@ impl Host {
                 gesture,
                 canvas,
             } => {
-                let edit = match self.item_of(id).map(|(_, item)| item.id) {
-                    Ok(item) => self.transform_item(item, op, gesture, canvas),
-                    Err(t) => Err(Refusal::NotFound(t)),
-                };
+                let edit = self
+                    .item_of(id)
+                    .map(|(_, item)| item.id)
+                    .and_then(|item| self.transform_item(item, op, gesture, canvas));
                 match edit {
                     Ok(true) => self.apply(notify),
                     Ok(false) => {}
@@ -898,7 +906,7 @@ impl Host {
                 match edit {
                     Ok(true) => self.apply(notify),
                     Ok(false) => {}
-                    Err(e) => notify(Update::Error(e)),
+                    Err(e) => notify(Update::Error(e.into_text())),
                 }
             }
             Command::SetSourceScroll {
@@ -908,7 +916,7 @@ impl Host {
                 canvas,
             } => {
                 let edit = if scroll.is_some_and(|s| !s.is_valid()) {
-                    Err(SCROLL_ERROR.to_owned())
+                    Err(Refusal::Invalid(SCROLL_ERROR.to_owned()))
                 } else {
                     self.item_of(id)
                         .map(|(_, item)| item.id)
@@ -917,7 +925,7 @@ impl Host {
                 match edit {
                     Ok(true) => self.apply(notify),
                     Ok(false) => {}
-                    Err(e) => notify(Update::Error(e)),
+                    Err(e) => notify(Update::Error(e.into_text())),
                 }
             }
             Command::ScrollLive {
@@ -925,11 +933,10 @@ impl Host {
                 canvas,
                 control,
             } => {
-                let target = self.item_of(id).map(|(_, item)| item.id).and_then(|item| {
-                    self.edit_canvas(canvas)
-                        .map(|c| (item, c))
-                        .map_err(|e| e.text().to_owned())
-                });
+                let target = self
+                    .item_of(id)
+                    .map(|(_, item)| item.id)
+                    .and_then(|item| self.edit_canvas(canvas).map(|c| (item, c)));
                 match target {
                     Ok((item, c)) => match self.studio.scroll_control(item, c, control) {
                         Ok(_) => self.publish(notify),
@@ -941,7 +948,7 @@ impl Host {
                                 .into(),
                         )),
                     },
-                    Err(e) => notify(Update::Error(e)),
+                    Err(e) => notify(Update::Error(e.into_text())),
                 }
             }
             // Routed elsewhere by `Host::command`.

@@ -591,7 +591,7 @@ impl Host {
                     .into(),
             )
         })?;
-        let (_, item) = self.item_of(id).map_err(Refusal::NotFound)?;
+        let (_, item) = self.item_of(id)?;
         if self
             .globals()
             .is_some_and(|g| self.scene_of(item.id) == Some(g))

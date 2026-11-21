@@ -84,7 +84,7 @@ impl Host {
         &mut self,
         id: SceneId,
         direction: rbs_api::request::LayerDirection,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, Refusal> {
         use rbs_api::request::LayerDirection::*;
         let undo = match direction {
             Up => self.collection.move_scene(self.canvas, id, true),
@@ -92,7 +92,7 @@ impl Host {
             Front => self.collection.move_scene_to_end(self.canvas, id, true),
             Back => self.collection.move_scene_to_end(self.canvas, id, false),
         }
-        .map_err(|e| edit_error(&e))?;
+        .map_err(|e| Refusal::of(&e))?;
         let Some(undo) = undo else {
             return Ok(false);
         };
@@ -106,11 +106,11 @@ impl Host {
     }
 
     /// Puts scene `id` where scene `to` is in the scene list.
-    pub(super) fn move_scene_to(&mut self, id: SceneId, to: SceneId) -> Result<bool, String> {
+    pub(super) fn move_scene_to(&mut self, id: SceneId, to: SceneId) -> Result<bool, Refusal> {
         let undo = self
             .collection
             .move_scene_to(self.canvas, id, to)
-            .map_err(|e| edit_error(&e))?;
+            .map_err(|e| Refusal::of(&e))?;
         let Some(undo) = undo else {
             return Ok(false);
         };

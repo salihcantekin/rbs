@@ -543,6 +543,18 @@ enum CropRefusal {
     Conflict(String),
 }
 
+impl From<CropRefusal> for Refusal {
+    fn from(e: CropRefusal) -> Self {
+        let text = e.text();
+        match e {
+            CropRefusal::NotFound(_) => Refusal::NotFound(text),
+            CropRefusal::Invalid(_) => Refusal::Invalid(text),
+            CropRefusal::NoPicture | CropRefusal::Conflict(_) => Refusal::Conflict(text),
+            CropRefusal::Failed(_) => Refusal::Failed(text),
+        }
+    }
+}
+
 impl CropRefusal {
     fn text(&self) -> String {
         match self {
@@ -1201,6 +1213,13 @@ pub enum Refusal {
 impl Refusal {
     /// In words.
     pub fn text(&self) -> &str {
+        match self {
+            Self::NotFound(s) | Self::Invalid(s) | Self::Conflict(s) | Self::Failed(s) => s,
+        }
+    }
+
+    /// In words, for the UI edge ([`Update::Error`]).
+    pub fn into_text(self) -> String {
         match self {
             Self::NotFound(s) | Self::Invalid(s) | Self::Conflict(s) | Self::Failed(s) => s,
         }
