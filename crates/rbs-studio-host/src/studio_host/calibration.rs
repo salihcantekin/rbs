@@ -599,8 +599,10 @@ impl Host {
         let path = self.recording_file(c);
         let r = self
             .profile_request(c, path.clone())
-            .map_err(RunRefusal::NotFound)?;
-        let canvas = self.output_canvas(c).map_err(RunRefusal::NotFound)?;
+            .map_err(|e| RunRefusal::NotFound(e.into_text()))?;
+        let canvas = self
+            .output_canvas(c)
+            .map_err(|e| RunRefusal::NotFound(e.into_text()))?;
         let out = self.master_settings(canvas, &r, &path);
         let folder = path.parent().map(Path::to_path_buf).unwrap_or_default();
         let separate = (c == OutputCanvas::Main && self.separate_files && self.marks_separate())

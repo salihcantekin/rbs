@@ -607,7 +607,7 @@ impl Host {
         c: OutputCanvas,
         all: bool,
         iso: Option<bool>,
-    ) -> Result<api::EstimateAnswer, String> {
+    ) -> Result<api::EstimateAnswer, Refusal> {
         self.ensure_encoders();
         let canvases: Vec<OutputCanvas> = if all { self.output_canvases() } else { vec![c] };
         let mut settings = Vec::new();
@@ -1311,10 +1311,10 @@ impl Host {
         &self,
         c: OutputCanvas,
         path: PathBuf,
-    ) -> Result<RecordRequest, String> {
+    ) -> Result<RecordRequest, Refusal> {
         let p = self.record_profile(c);
         if let Some(why) = p.problem() {
-            return Err(why);
+            return Err(Refusal::Invalid(why));
         }
         // A saved encoder this system does not have falls back to the best one, as the
         // UI's automatic choice does.
@@ -1375,6 +1375,7 @@ impl Host {
             Err(why.clone())
         } else {
             self.profile_request(c, self.recording_file(c))
+                .map_err(Refusal::into_text)
                 .and_then(|r| {
                     self.start_recording(c, &r, Some(API_PROFILE_ID.into()), StartGate::Older)
                         .map_err(StartError::into_message)
@@ -1496,14 +1497,17 @@ impl Host {
 /// Makes a separate-files recording's folder and its parents. `create_dir`, not
 /// `create_dir_all`, for the folder itself: it fails when the folder exists, so a
 /// folder RBS did not make is never written into or cleaned up.
-fn make_recording_folder(folder: &Path) -> Result<(), String> {
+fn make_recording_folder(folder: &Path) -> Result<(), Refusal> {
     if let Some(parent) = folder.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("Cannot make the folder {}: {e}", parent.display()))?;
+        std::fs::create_dir_all(parent).map_err(|e| {
+            Refusal::Failed(format!("Cannot make the folder {}: {e}", parent.display()))
+        })?;
     }
     std::fs::create_dir(folder).map_err(|e| match e.kind() {
-        std::io::ErrorKind::AlreadyExists => format!("{} already exists.", folder.display()),
-        _ => format!("Cannot make the folder {}: {e}", folder.display()),
+        std::io::ErrorKind::AlreadyExists => {
+            Refusal::Conflict(format!("{} already exists.", folder.display()))
+        }
+        _ => Refusal::Failed(format!("Cannot make the folder {}: {e}", folder.display())),
     })
 }
 

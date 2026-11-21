@@ -155,7 +155,7 @@ impl RecordingMarkers {
 
     /// Writes the editor project next to the manifest, when the setting asked for
     /// one and the stop rewrite made the manifest complete. `Ok(None)`: none asked.
-    pub(super) fn write_project(&self) -> Result<Option<String>, String> {
+    pub(super) fn write_project(&self) -> Result<Option<String>, Refusal> {
         let Some(project) = self.project else {
             return Ok(None);
         };
@@ -171,7 +171,7 @@ impl RecordingMarkers {
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
             })
-            .map_err(|e| e.to_string())
+            .map_err(|e| Refusal::Failed(e.to_string()))
     }
 
     /// The markers as chapters inside a Matroska master (ADR-0089 decision 14), after
@@ -181,7 +181,7 @@ impl RecordingMarkers {
     /// is on it; one after the master's end is left out (the manifest keeps it). A file
     /// that cannot take chapters is left as it is; only a read or write failure is an
     /// error.
-    pub(super) fn write_chapters(&self) -> Result<(), String> {
+    pub(super) fn write_chapters(&self) -> Result<(), Refusal> {
         let Some(writer) = self
             .chapters
             .as_ref()
@@ -216,9 +216,12 @@ impl RecordingMarkers {
             .read(true)
             .write(true)
             .open(self.dir.join(&file.file_name))
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| Refusal::Failed(e.to_string()))?;
         // `NotSupported`: the file takes no chapters, and the manifest keeps the markers.
-        writer.append(&mut media, &chapters).map(|_| ())
+        writer
+            .append(&mut media, &chapters)
+            .map(|_| ())
+            .map_err(Refusal::Failed)
     }
 
     /// The recording paused (`true`) or resumed at `at_ns` on the master clock: later
@@ -235,7 +238,7 @@ impl RecordingMarkers {
     }
 
     /// Writes the manifest with the markers, at stop. Nothing to write is `Ok`.
-    pub(super) fn write(&mut self) -> Result<(), String> {
+    pub(super) fn write(&mut self) -> Result<(), Refusal> {
         // A plain recording writes a manifest only when it has markers or writes an
         // editor project (ADR-0089 decision 5, owner choice 1).
         if !self.folder && self.log.markers().is_empty() && self.project.is_none() {
@@ -252,7 +255,8 @@ impl RecordingMarkers {
         self.manifest.markers = self.log.markers().to_vec();
         self.manifest.pauses = self.log.pauses().rows(self.stopped_ns);
         self.apply_ended();
-        rbs_manifest::write(&self.dir, &self.name, &self.manifest).map_err(|e| e.to_string())?;
+        rbs_manifest::write(&self.dir, &self.name, &self.manifest)
+            .map_err(|e| Refusal::Failed(e.to_string()))?;
         self.log.mark_flushed();
         self.dirty = false;
         Ok(())
@@ -262,7 +266,7 @@ impl RecordingMarkers {
     /// markers so far, rewritten while the recording runs, so a crash loses at most
     /// the last 5 seconds of markers. `now_ns` is the host clock. The stop still
     /// rewrites it whole.
-    pub(super) fn flush(&mut self, now_ns: u64) -> Result<(), String> {
+    pub(super) fn flush(&mut self, now_ns: u64) -> Result<(), Refusal> {
         self.flush_at = None;
         if !self.log.has_pending() {
             return Ok(());
@@ -272,14 +276,16 @@ impl RecordingMarkers {
             self.log.mark_flushed();
             if self.flushed {
                 self.flushed = false;
-                return std::fs::remove_file(self.dir.join(&self.name)).map_err(|e| e.to_string());
+                return std::fs::remove_file(self.dir.join(&self.name))
+                    .map_err(|e| Refusal::Failed(e.to_string()));
             }
             return Ok(());
         }
         self.manifest.markers = self.log.markers().to_vec();
         let ran = now_ns.saturating_sub(self.log.t0_ns());
         self.manifest.pauses = self.log.pauses().rows(ran);
-        rbs_manifest::write(&self.dir, &self.name, &self.manifest).map_err(|e| e.to_string())?;
+        rbs_manifest::write(&self.dir, &self.name, &self.manifest)
+            .map_err(|e| Refusal::Failed(e.to_string()))?;
         self.log.mark_flushed();
         self.flushed = true;
         // The stop rewrite still runs: an open pause and the stop fields change.

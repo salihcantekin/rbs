@@ -13,7 +13,7 @@ use std::time::Duration;
 use rbs_core::time::Timestamp;
 use rbs_record::{AudioSettings, Clip, ClipWriter, ReplaySettings};
 
-use super::{Host, Msg, Update};
+use super::{Host, Msg, Refusal, Update};
 use crate::replay_settings::ReplaySetup;
 
 /// How often the buffer's state goes out while it is armed (no timer while disarmed:
@@ -87,9 +87,9 @@ impl ReplayHost {
 impl Host {
     /// The studio's replay settings from the saved recording profile and the user's
     /// replay setup.
-    fn replay_settings(&self) -> Result<ReplaySettings, String> {
+    fn replay_settings(&self) -> Result<ReplaySettings, Refusal> {
         if let Some(why) = self.replay.setup.problem() {
-            return Err(why);
+            return Err(Refusal::Invalid(why));
         }
         let audio = self
             .replay
@@ -112,20 +112,20 @@ impl Host {
     }
 
     /// Arms the buffer. An error says why not; the buffer stays disarmed.
-    pub(super) fn arm_replay(&mut self, notify: &dyn Fn(Update)) -> Result<(), String> {
+    pub(super) fn arm_replay(&mut self, notify: &dyn Fn(Update)) -> Result<(), Refusal> {
         if self.studio.replay_armed() {
             return Ok(());
         }
         // Also covers the re-arm after a studio restart (ADR-0087 step D1).
         if let Some(why) = self.calibration_blocks() {
-            return Err(format!("{why}."));
+            return Err(Refusal::Conflict(format!("{why}.")));
         }
         // The buffer encodes, so it needs the encoder probe a start would do.
         self.note_encoders(notify);
         let settings = self.replay_settings()?;
         self.studio
             .arm_replay(&self.adapters, &settings)
-            .map_err(|e| format!("The replay buffer did not start: {e}"))?;
+            .map_err(|e| Refusal::Failed(format!("The replay buffer did not start: {e}")))?;
         self.replay.wanted = true;
         self.replay.due = Some(self.clock.now());
         self.replay_changed(notify);
@@ -143,15 +143,19 @@ impl Host {
 
     /// Asks the buffer for a clip of the last `seconds` (all of it for `None`). The file
     /// is written when the ring node has cut it ([`Host::report_replay`]).
-    pub(super) fn save_replay(&mut self, seconds: Option<u32>) -> Result<(), String> {
+    pub(super) fn save_replay(&mut self, seconds: Option<u32>) -> Result<(), Refusal> {
         if !self.studio.replay_armed() {
-            return Err("The replay buffer is not armed.".into());
+            return Err(Refusal::Conflict(
+                "The replay buffer is not armed.".to_owned(),
+            ));
         }
         if self.replay.pending {
-            return Err("A clip is being cut already.".into());
+            return Err(Refusal::Conflict("A clip is being cut already.".to_owned()));
         }
         if self.replay.writing >= MAX_WRITERS {
-            return Err("Clips are being written already; try again in a moment.".into());
+            return Err(Refusal::Conflict(
+                "Clips are being written already; try again in a moment.".to_owned(),
+            ));
         }
         let length = seconds.map(|s| Duration::from_secs(u64::from(s)));
         match self.studio.request_replay_clip(length) {
@@ -159,8 +163,10 @@ impl Host {
                 self.replay.pending = true;
                 Ok(())
             }
-            Some(Err(_)) => Err("A clip is being cut already.".into()),
-            None => Err("The replay buffer is not armed.".into()),
+            Some(Err(_)) => Err(Refusal::Conflict("A clip is being cut already.".to_owned())),
+            None => Err(Refusal::Conflict(
+                "The replay buffer is not armed.".to_owned(),
+            )),
         }
     }
 
@@ -174,8 +180,8 @@ impl Host {
         if let Err(why) = self.arm_replay(notify) {
             self.replay.wanted = false;
             self.replay.due = None;
-            self.replay.last_error = Some(why.clone());
-            notify(Update::Error(why));
+            self.replay.last_error = Some(why.text().to_owned());
+            notify(Update::Error(why.into_text()));
             self.replay_changed(notify);
         }
     }
@@ -323,7 +329,7 @@ impl Host {
                     self.replay_saved(Err(format!("The clip writer could not start: {e}")), notify);
                 }
             }
-            Err(why) => self.replay_saved(Err(why), notify),
+            Err(why) => self.replay_saved(Err(why.into_text()), notify),
         }
         self.replay_changed(notify);
     }
@@ -333,11 +339,11 @@ impl Host {
     fn clip_job(
         &self,
         clip: Clip,
-    ) -> Result<Box<dyn FnOnce() -> Result<PathBuf, String> + Send>, String> {
+    ) -> Result<Box<dyn FnOnce() -> Result<PathBuf, String> + Send>, Refusal> {
         let streams = self
             .studio
             .replay_streams()
-            .ok_or("The replay buffer is not armed.")?
+            .ok_or_else(|| Refusal::Failed("The replay buffer is not armed.".to_owned()))?
             .to_vec();
         let folder = self
             .replay
@@ -345,8 +351,9 @@ impl Host {
             .folder
             .clone()
             .unwrap_or_else(|| self.profile.folder.clone());
-        std::fs::create_dir_all(&folder)
-            .map_err(|e| format!("Cannot make the folder {}: {e}", folder.display()))?;
+        std::fs::create_dir_all(&folder).map_err(|e| {
+            Refusal::Failed(format!("Cannot make the folder {}: {e}", folder.display()))
+        })?;
         let stamp = chrono::Local::now()
             .naive_local()
             .format("%Y-%m-%d %H-%M-%S");
@@ -359,7 +366,7 @@ impl Host {
         }
         let container = self.profile.format.container();
         let writer = ClipWriter::new(&self.adapters, &rbs_transport::file_url(&path), container)
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| Refusal::Failed(e.to_string()))?;
         Ok(Box::new(move || {
             match writer.write(&clip, &streams) {
                 Ok(_) => Ok(path),

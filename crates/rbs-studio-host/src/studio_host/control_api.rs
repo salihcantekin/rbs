@@ -276,7 +276,7 @@ impl ApiTarget<'_> {
             ));
         }
         let mut request = host.profile_request(c, path).map_err(|why| match c {
-            OutputCanvas::Main => failed(why),
+            OutputCanvas::Main => failed(why.into_text()),
             OutputCanvas::Vertical => failed(format!("the vertical recording: {why}")),
         })?;
         request.iso = iso;

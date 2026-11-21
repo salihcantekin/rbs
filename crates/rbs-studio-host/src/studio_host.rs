@@ -543,6 +543,14 @@ enum CropRefusal {
     Conflict(String),
 }
 
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.text())
+    }
+}
+
+impl std::error::Error for Refusal {}
+
 impl From<CropRefusal> for Refusal {
     fn from(e: CropRefusal) -> Self {
         let text = e.text();
@@ -630,6 +638,12 @@ enum StartError {
 impl From<String> for StartError {
     fn from(message: String) -> Self {
         Self::Message(message)
+    }
+}
+
+impl From<Refusal> for StartError {
+    fn from(e: Refusal) -> Self {
+        Self::Message(e.into_text())
     }
 }
 
@@ -3867,15 +3881,18 @@ fn encoder_catalog(adapters: &RecordAdapters) -> (Vec<EncoderInfo>, Option<Strin
 fn only_encoder<F: ?Sized + AdapterFactory>(
     all: &Registry<F>,
     id: &str,
-) -> Result<Registry<F>, String> {
+) -> Result<Registry<F>, Refusal> {
     let factory = all
         .select(&Requirement::new())
         .candidates
         .into_iter()
         .find(|f| f.id().as_str() == id)
-        .ok_or_else(|| format!("The encoder {id} is not available on this system."))?;
+        .ok_or_else(|| {
+            Refusal::Failed(format!("The encoder {id} is not available on this system."))
+        })?;
     let mut only = Registry::new();
-    only.register(factory).map_err(|e| e.to_string())?;
+    only.register(factory)
+        .map_err(|e| Refusal::Failed(e.to_string()))?;
     only.probe_all();
     Ok(only)
 }

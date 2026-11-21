@@ -161,7 +161,7 @@ impl ApiTarget<'_> {
                 };
                 host.record_estimate(c, all, p.iso)
                     .map(Response::RecordEstimate)
-                    .map_err(failed)
+                    .map_err(|e| failed(e.into_text()))
             }
             C::RecordStartToFile(p) => {
                 check_profile(&p.profile)?;
