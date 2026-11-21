@@ -34,23 +34,24 @@ The owner approved one short ADR for one minor (2026-11-21 19:09 UTC). The proto
 2. **Gestures.**
    - `item.set_crop`, `item.set_style`, `item.set_scroll`, `source.set_settings` and the item transform methods take an optional `gesture: u64`, as `item.set_box` does since 1.34.
    - The merge rule stays the one `History::record` has: same non-zero gesture and same edit kind as the newest step.
-   - Gestures are split into two ranges:
-     - The window numbers its gestures from 2^63, so a client's gesture never joins a window step.
-     - Clients use values below 2^53 (the JSON safe range).
+   - Bit 63 marks a window gesture:
+     - The window ORs bit 63 into every non-zero gesture it sends. It keeps its bit 61 (`ui_gesture`) and bit 62 (vertical) marks below it.
+     - The host clears bit 63 of every gesture that arrives through `handle_as`, which is every caller but the window. So a client's gesture never joins a window step, and it is masked, never refused.
+     - A test checks that a client gesture equal to a window gesture does not join the window's step.
+   - Clients should use values below 2^53 (the JSON safe range). Larger values are not refused.
    - Two clients that reuse a number on the same kind can join steps. The spec says so, and no `Caller` change is needed.
    - A gesture never refuses a call on 1.100.
 3. **Output starts: no new fields.**
    - The window sends `record.start {profile: "default", canvas, iso}` and `stream.start {canvas}`, as a client does.
    - The start gate is already the same: the window sends neither `acknowledge_heavy` nor `on_hardware_limit`.
-   - The open difference is `iso`: the window always sends `true`, while `record.start` reads Separate files. That step makes the window send what the setting says, or lists it in the inventory.
-   - The window's own checks become refusals with `data.reason`. Older clients ignore `data`. Each reason comes with an error kind:
-
-     | `data.reason` | Kind |
-     | --- | --- |
-     | `recording_blocked` | `conflict` |
-     | `profile_problem` | `invalid_params` |
-     | `vertical_not_set_up` | `conflict` |
-     | `streaming_off` | `conflict` |
+   - The open difference is `iso`. The window always sends `true`, while `record.start` uses Separate files when `iso` is absent (`api_item2.rs`). The spec and the `RecordStart` doc comment wrongly say that absent means `true`.
+     - The window sends `iso` absent.
+     - The spec and the doc comment are corrected: absent means `separate_files.enabled`.
+   - The window's own checks are refusals that stay `failed`, as today. 1.100 only adds `data.reason`, which older clients ignore:
+     - `recording_blocked`
+     - `profile_problem`
+     - `vertical_not_set_up`
+     - `streaming_off`
 
      The window offers its "set up" action from the reason.
    - A test compares the window's request builder with the host's for the same settings, on an injected clock (rule 14).
@@ -58,16 +59,18 @@ The owner approved one short ADR for one minor (2026-11-21 19:09 UTC). The proto
 5. **Settings fields and mirrors.**
    - `settings.set` / `settings.get` add five fields:
 
-     | Field | Refused with `conflict` |
-     | --- | --- |
-     | `swap_after_transition` | never |
-     | `separate_files` | while a recording runs |
-     | `replay` | never: a change applies at the next arm, and a running buffer keeps its settings |
-     | `vertical_profile` | while a vertical recording uses it |
-     | `vertical_stream` | while the vertical stream runs |
+     | Field | Shape | Refused with `conflict` |
+     | --- | --- | --- |
+     | `swap_after_transition` | bool | never |
+     | `separate_files` | `{enabled, on_hardware_limit}`, as `SeparateFiles` | while a recording runs |
+     | `replay` | `{arm_on_start, length_secs, memory_mib, audio, folder}`, with the `ReplaySetup` bounds | never: a change applies at the next arm, and a running buffer keeps its settings |
+     | `vertical_profile` | one `profiles` entry (same id and folder rules), or `null` | while a vertical recording uses it |
+     | `vertical_stream` | the `stream` patch shape | while the vertical stream runs |
 
-   - `vertical_stream` follows the `stream` rule: no server and no key.
-   - For `vertical_profile` and `vertical_stream`, `null` removes the saved section, and the main one applies.
+   - `vertical_profile: null` removes the saved vertical section, and the main profile applies (`SetVerticalProfile(None)`).
+   - `vertical_stream` follows the `stream` rule:
+     - No server and no key are ever written or erased.
+     - `null` is `invalid_params`, because removing the section would erase the server the local user entered.
    - A patch is checked whole before anything is applied, as today.
    - `rbs-app` owns all five files, so these variants become WindowOnly Mirror:
      - `SetSwapAfterTransition`
@@ -75,10 +78,11 @@ The owner approved one short ADR for one minor (2026-11-21 19:09 UTC). The proto
      - `SetReplay`
      - `SetVerticalProfile`
      - `SetVerticalStreamProfile`
-   - A client's change comes back to the window, which saves it without overwriting a form being edited, as the `Update::StreamProfile` arm does. Each field has its own update: `Update::SwapAfterTransition`, `Update::SeparateFiles`, `Update::ReplaySetup`, `Update::VerticalProfile` and `Update::VerticalStreamProfile`.
+   - A client's change comes back to the window, which saves it. Each update replaces the fields a client can set and keeps the local-user fields, as the `Update::StreamProfile` arm keeps the server and key. Each field has its own update: `Update::SwapAfterTransition`, `Update::SeparateFiles`, `Update::ReplaySetup`, `Update::VerticalProfile` and `Update::VerticalStreamProfile`.
    - **Stream destinations get no settings field.**
      - `SetStreamDestinations` splits. Switching a destination on or off goes through `stream.destination.set_enabled` (1.74) via `Command::Api`.
-     - Everything else stays LocalOnly: adding, removing, renaming, server, key, encoding, order, reconnect and SRT latency. The spec's local-user list gains rename, encoding, order, reconnect and SRT latency.
+     - Everything else stays in a LocalOnly window command, because the variant carries servers and key flags. Those are already local-user items, so this needs no new ADR-0163 reason.
+     - Renaming, encoding, order, reconnect and SRT latency of the destinations after the first are named as a parity gap and a follow-up. They are not in this minor.
 6. **New methods and fields.** A client has no edited scene, so the methods that change an item take an item id.
 
    | Addition | Scope / effect | For |
@@ -92,7 +96,7 @@ The owner approved one short ADR for one minor (2026-11-21 19:09 UTC). The proto
    | `item.fit_text_box {item, canvas}`: keeps the centre and the scale | control / edit | `FitTextBox` |
    | `item.set_filled {item, on, canvas}`: the fill is the source's setting, shared by every scene that places it. Turning it off adds a border to that item's style on `canvas`. One undo step. | control / edit | `SetSourceFilled` |
    | `item.set_shown_region {item, region: full / canvas_centred / left_half / right_half, canvas}` | control / edit | `SetSourceRegion` |
-   | `canvas.rehearse`: refused with `conflict` and a `data.reason` (`not_studio_mode`, `transition_running`, `rehearsing`, `no_duration`). The window answers quietly. The `ui.transition.rehearse` registry entry resolves to it. | control / edit (preview only, not on air) | `Rehearse` |
+   | `canvas.rehearse {canvas}`: refused with `conflict` and a `data.reason`. A Cut or a 0 s duration is `no_duration`, and a transition that runs or holds is `transition_running`. The other reasons are `not_studio_mode` and `rehearsing`. The window answers quietly. The `ui.transition.rehearse` registry entry resolves to it. | control / edit (preview only, not on air) | `Rehearse` |
    | `addon.update {id}`: installs the new version, then cleans the old one. It reaches the network as `addon.install` does. | plugins / destructive | `AddOn` Update |
 
    The `stamp` values for `source.add` kind `color` are `circle`, `square`, `rectangle`, `rounded_rectangle`, `ellipse`, `triangle` and `arrow`. The spec gives each one's box and radius as `add_stamp` has them.
@@ -102,17 +106,27 @@ The owner approved one short ADR for one minor (2026-11-21 19:09 UTC). The proto
    - The clean starts from the install's done event, with no polling (P13).
    - If the app quits between the install and the clean, the next start uses the newest complete version and cleans the older one once, at start.
 
-   `source.retarget` gets no new fields. For every caller, the host fills the name, the app and the sound from its own target list. A picker target stays in the window, split as `AddSource`.
+   `source.retarget` gets no new fields:
+   - For every caller, the host fills the name, the app and the sound from its own target list.
+   - A target that is not in that list is `not_found`.
+   - A picker target is chosen in the window before the call, as `AddSource` is split. That adds no window-only variant.
+
+   On a 1.99 server, every new method answers `method_not_found`.
 7. **Local files and the network: today's rules, one place.**
-   - A `path` (image, media, stinger) must be a local absolute path, as ADR-0052 decision 4 and `network.rs` `is_local_path` require today.
-   - `source.add` with kind `browser` needs the irreversible-actions permission whatever the URL. So does writing any key in `BROWSER_NETWORK_KEYS`.
-   - The new `path` fields join `Command::reaches_network` on the API thread.
+   - A relative path is `invalid_params`.
+   - A path or folder that is not local needs the irreversible-actions permission, as `network.rs` `is_local_path` requires today (ADR-0052 decision 4).
+   - `source.add` with kind `browser` needs that permission whatever the URL. So does writing a browser network key, as `network.rs` counts them today (`keep_running` only when true).
+   - These join `Command::reaches_network` on the API thread:
+     - the new `path` fields
+     - `replay.folder` and `vertical_profile.folder`
+
+     The spec's replay paragraph ("no API to change them") is updated.
    - A text source's `file` stays refused for every API caller except the window. "API caller" means every caller but the window, with or without a token, `rbs-cli` and MCP over IPC included.
    - That check moves from the `source.set_settings` handler to `handle_as` on the control thread, next to `check_network`, because it needs the source's kind.
 8. **Extension-ready.** `item.fit_text_box`, `item.set_filled` and `filter.add_voice_chain` are type-specific methods. They test an existing `SourceKind`, which rule 19 allows, and add no closed list. When the type registry exists (ADR-0162), they become actions of their type's entry.
 9. **Steps and ratchet.**
    - The code follows one namespace per step, as in ADR-0163. Each step adds its fields with a conformance case (including the 1.99 behaviour), a window test per move and the spec rows, then lowers the counts.
-   - `MIRROR` may rise from 3 to 8 (decision 5) and `LOCAL_ONLY` from 9 to 10 (the destination split). The owner's approval of this ADR is that approval.
+   - `MIRROR` may rise from 3 to 8 (decision 5) and `LOCAL_ONLY` from 9 to 10 (the destination split). The owner's approval of this ADR is that approval, and the commit that raises a count cites it (ADR-0163 decision 5).
    - No step may change what the user sees without the owner's OK.
    - Target after the steps: `CONTRACT` 0, `MISSING` 1 (`SetLibrary`, decision 10), `PENDING` 15. Those 15 are:
      - rows that stay for a visible reason: `SetCanvas`, `SaveReplay`, `StopVirtualCamera`, `SetFilterValues`, `BrowserControl` and `InteractInput` (see the inventory)
@@ -143,6 +157,8 @@ The owner approved one short ADR for one minor (2026-11-21 19:09 UTC). The proto
 ## Review
 
 ### Round 1: independent AI session, 2026-11-21, changes requested
+
+Round 2 superseded the resolutions of items 1, 6, 8 and 15. Their final form is under rounds 2 and 3.
 
 - Reviewer: independent AI session
 - Date: 2026-11-21
@@ -193,3 +209,30 @@ Round 1 items 3, 4, 5, 7, 9, 13, 17 and 18 were confirmed resolved. Sixteen new 
 14. **Decision 8 wording.** Reworded.
 15. **Counts.** Corrected, and the constants are stated (decision 9).
 16. **Image decode errors.** No path in the text, `invalid_params` (decision 6).
+
+### Round 3: independent AI session, 2026-11-21, changes requested
+
+- Reviewer: independent AI session
+- Date: 2026-11-21
+- Verdict: changes requested
+
+Round 2 items 1, 2, 4, 5, 6, 8, 9, 11, 12, 13, 14, 15 and 16 were confirmed resolved. The counts were checked against `command_path.rs`, the 1.99 unknown-field lists against `request.rs`, the merge rule against `edit_history.rs`, and the method table against `METHODS`: all consistent.
+
+Nine new or remaining concerns were raised, and each is resolved in this revision:
+
+1. **Gesture ranges were not enforced.** The window ORs in bit 63, and the host clears it for every other caller. Values are masked, never refused, and a test covers it (decision 2).
+2. **The start reasons changed existing error kinds.** The refusals keep `failed`, and only `data.reason` is added (decision 3).
+3. **The new folders skipped the network check.** `replay.folder` and `vertical_profile.folder` join `reaches_network`, relative paths are `invalid_params`, and the spec's replay paragraph is updated (decision 7).
+4. **`vertical_stream: null` could erase the server.** It is now refused, the server and key are always kept, and `null` applies to `vertical_profile` only (decision 5).
+5. **The field shapes were undefined.** Each field now has its shape, and `separate_files` carries `on_hardware_limit` (decision 5).
+6. **The local-user list growth contradicted ADR-0163.** The remainder stays LocalOnly because it carries servers and key flags, and the other fields are a named parity gap (decision 5).
+7. **The `iso` default.** The window sends it absent, and the spec and doc comment are corrected (decision 3).
+8. **The path rule.** Reworded to today's permission rule, with `keep_running` counted only when true (decision 7).
+9. **The `Update::StreamProfile` claim.** Reworded (decision 5).
+
+Nits applied:
+- the rehearse reasons and its `canvas`
+- `method_not_found` for every new method on 1.99
+- the retarget picker split adds no variant, and its `not_found`
+- round 1 items 1, 6, 8 and 15 marked as superseded
+- the ratchet commit cites this ADR's approval.
