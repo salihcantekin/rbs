@@ -122,10 +122,8 @@ impl RunnerBrowserTree {
         self
     }
 
-    /// Pages on this adapter copy into studio textures (ADR-0109 decision 8).
-    ///
-    /// Not called yet: `studio_host` `start` leaves the GPU path off until its sync
-    /// no longer waits on the CPU inside CEF's paint callback (ADR-0157).
+    /// Pages on this adapter copy into studio textures (ADR-0109 decision 8,
+    /// ADR-0157). [`RunnerTrees`] names the studio's adapter.
     pub fn with_adapter(mut self, luid: u64) -> Self {
         self.adapter = Some(luid);
         self
@@ -181,11 +179,20 @@ impl BrowserTrees for RunnerTrees {
         &self,
         engine: Arc<EngineSlot>,
         profiles: Option<PathBuf>,
-        _gpu: &Arc<rbs_gpu::GpuContext>,
+        gpu: &Arc<rbs_gpu::GpuContext>,
     ) -> Arc<dyn HostBrowserTree> {
         let mut tree = RunnerBrowserTree::new(self.runner.clone(), engine);
         if let Some(dir) = profiles {
             tree = tree.with_profiles(dir);
+        }
+        // Pages copy into textures on the studio's adapter (ADR-0157, accepted
+        // 2026-11-21) where it has a LUID, which is on Windows only.
+        // `RBS_BROWSER_SHARED_MEMORY` keeps every page on shared memory, for a
+        // device check or a driver that misbehaves.
+        if std::env::var_os("RBS_BROWSER_SHARED_MEMORY").is_none_or(|v| v.is_empty())
+            && let Some(luid) = gpu.adapter_luid()
+        {
+            tree = tree.with_adapter(luid);
         }
         Arc::new(tree)
     }
