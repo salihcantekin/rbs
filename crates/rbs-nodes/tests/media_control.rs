@@ -16,7 +16,7 @@ use rbs_core::registry::{AdapterFactory, AdapterId, ProbeError};
 use rbs_core::time::{TestClock, Timestamp};
 use rbs_media_decode::{DecodeError, InterleavedPcm, MediaDecoder, MediaDecoderFactory};
 use rbs_media_decode_test::{ScriptClip, ScriptFactory};
-use rbs_nodes::{MediaPair, MediaPlayState as PlayState, media_pair};
+use rbs_nodes::{MediaPair, MediaPlayState as PlayState, MediaReturnEdge, media_pair};
 
 const BLOCK: usize = 480;
 const LATENCY: Duration = Duration::from_millis(50);
@@ -1005,4 +1005,122 @@ fn a_live_restart_when_shown_applies_at_the_next_take() {
     rig.run(210, 400);
     assert_eq!(rig.pair.control.state(), PlayState::Cued);
     assert_eq!(rig.pair.control.cursor(), Duration::from_millis(100));
+}
+
+/// A rig on air with `on_return: continue` (ADR-0152 decision 6).
+fn rig_continue(loop_playback: bool) -> Rig {
+    let rig = rig_with(loop_playback, false, true);
+    rig.pair.control.set_on_return(MediaReturnEdge::Continue);
+    rig
+}
+
+#[test]
+fn with_continue_a_take_back_plays_where_it_would_be() {
+    let mut rig = rig_continue(false);
+    rig.run(0, 260);
+    // Off air at 250 ms: the pause instant is 300 ms, media 150 ms.
+    rig.pair.control.set_on_air(false).unwrap();
+    rig.run(260, 300);
+    assert_eq!(rig.pair.control.state(), PlayState::Cued);
+    // Back at 290 ms: the play instant is 340 ms, so media 150 + 40 ms, heard one
+    // lead later.
+    rig.pair.control.set_on_air(true).unwrap();
+    assert_eq!(rig.pair.control.state(), PlayState::Playing);
+    rig.run(300, 800);
+    assert!(rig.blocks.range(300..490).next().is_none());
+    assert!(all(rig.block(490), 0.5));
+    assert!(all(rig.block(500), 0.75));
+    assert!(!rig.blocks.contains_key(&600));
+    assert_eq!(rig.underruns(), 0);
+}
+
+#[test]
+fn with_continue_and_loop_the_position_wraps_in_the_range() {
+    let mut rig = rig_continue(true);
+    rig.run(0, 260);
+    rig.pair.control.set_on_air(false).unwrap();
+    rig.run(260, 400);
+    // Back at 390 ms: media 150 + (440 - 300) = 290 ms, then the next pass.
+    rig.pair.control.set_on_air(true).unwrap();
+    rig.run(400, 900);
+    assert!(all(rig.block(590), 0.75));
+    assert!(all(rig.block(600), 0.25));
+    assert!(all(rig.block(700), 0.5));
+    assert_eq!(rig.underruns(), 0);
+}
+
+#[test]
+fn with_continue_past_the_end_without_loop_it_is_ended() {
+    let mut rig = rig_continue(false);
+    rig.run(0, 260);
+    rig.pair.control.set_on_air(false).unwrap();
+    rig.run(260, 600);
+    rig.pair.control.set_on_air(true).unwrap();
+    assert_eq!(rig.pair.control.state(), PlayState::Ended);
+    rig.run(600, 900);
+    assert!(rig.blocks.range(300..).next().is_none());
+    assert_eq!(rig.marks[&890], Some(3), "the last picture holds");
+}
+
+#[test]
+fn with_continue_a_film_paused_before_it_left_resumes_where_it_stopped() {
+    let mut rig = rig_continue(false);
+    rig.run(0, 210);
+    rig.pair.control.pause().unwrap();
+    rig.run(210, 300);
+    rig.pair.control.set_on_air(false).unwrap();
+    rig.run(300, 400);
+    rig.pair.control.set_on_air(true).unwrap();
+    assert_eq!(rig.pair.control.state(), PlayState::Paused);
+}
+
+#[test]
+fn with_continue_a_film_that_sleeps_off_air_wakes_where_it_would_be() {
+    // `run: shown`: off air the nodes are released, nothing decodes; on air again
+    // the new worker starts at the anchored position plus the time since.
+    let mut rig = rig_continue(false);
+    rig.run(0, 160);
+    rig.pair.control.set_on_air(false).unwrap();
+    rig.run(160, 220);
+    // Media 50 ms at the pause instant 200 ms.
+    assert_eq!(rig.pair.control.cursor(), Duration::from_millis(50));
+    rig.pair.picture.standby();
+    rig.pair.sound.detach();
+    rig.clock.set(ms(250));
+    rig.pair.control.set_on_air(true).unwrap();
+    rig.pair.sound.attach().unwrap();
+    rig.pair.picture.wake(ms(250)).unwrap();
+    assert_eq!(rig.pair.control.state(), PlayState::Playing);
+    // Media 50 + 50 ms: the second picture's sound, then the third's; the first
+    // picture's sound is not heard again.
+    assert_eq!(rig.pair.control.cursor(), Duration::from_millis(100));
+    rig.blocks.clear();
+    rig.run(260, 700);
+    let heard: Vec<&Vec<f32>> = rig.blocks.values().filter(|b| !all(b, 0.0)).collect();
+    assert!(
+        heard.first().is_some_and(|b| all(b, 0.5)),
+        "{:?}",
+        heard.first()
+    );
+    assert!(heard.iter().any(|b| all(b, 0.75)));
+    assert!(!heard.iter().any(|b| all(b, 0.25)));
+}
+
+#[test]
+fn with_continue_a_film_never_on_air_starts_at_the_range_start() {
+    let mut rig = rig_with(false, false, false);
+    rig.pair.control.set_on_return(MediaReturnEdge::Continue);
+    rig.run(0, 100);
+    rig.pair.control.play().unwrap();
+    rig.pair.control.seek(Duration::from_millis(200)).unwrap();
+    rig.run(100, 200);
+    assert_eq!(rig.pair.control.state(), PlayState::Cued);
+    rig.pair.control.set_on_air(true).unwrap();
+    rig.run(200, 700);
+    let heard: Vec<&Vec<f32>> = rig.blocks.values().filter(|b| !all(b, 0.0)).collect();
+    assert!(
+        heard.first().is_some_and(|b| all(b, 0.25)),
+        "{:?}",
+        heard.first()
+    );
 }

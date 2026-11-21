@@ -22,6 +22,7 @@ use rbs_media_decode::MediaDecoderFactory;
 use super::Shared;
 use super::control::Record;
 use super::picture::{MediaNodeError, MediaPhase};
+use super::return_edge::Resumed;
 use super::worker::{self, Job, Pending, Progress};
 
 /// The picture rings of one worker run.
@@ -49,6 +50,12 @@ pub(crate) struct Player {
     config: AudioGraphConfig,
     pub(crate) loop_flag: Arc<AtomicBool>,
     pub(crate) restart_when_shown: bool,
+    /// `on_return: continue` (ADR-0152 decision 6); `restart_when_shown` is false.
+    pub(crate) continues: bool,
+    /// Where a `continue` film was when it left air playing.
+    pub(crate) anchor: Option<super::return_edge::Anchor>,
+    /// The source has been on air since it was created.
+    pub(crate) aired: bool,
     pub(crate) phase: MediaPhase,
     worker: Option<Worker>,
     /// Joins a worker that was signalled to stop. The control path does not wait
@@ -85,8 +92,8 @@ pub(crate) struct Player {
     /// keeps its worker for the full time.
     pub(crate) started_at: rbs_core::time::Timestamp,
     /// Armed as the stinger (ADR-0140 decision 4): the saved `loop` and
-    /// `restart_when_shown` keys, given back when the transition ends.
-    pub(crate) armed: Option<(bool, bool)>,
+    /// return edge, given back when the transition ends.
+    pub(crate) armed: Option<(bool, super::return_edge::ReturnEdge)>,
 }
 
 /// The default of the `pause_release_s` app setting (ADR-0108 decision 10).
@@ -108,6 +115,9 @@ impl Player {
             config,
             loop_flag: Arc::new(AtomicBool::new(loop_playback)),
             restart_when_shown,
+            continues: false,
+            anchor: None,
+            aired: false,
             phase: MediaPhase::Standby,
             worker: None,
             reaper: None,
@@ -189,7 +199,18 @@ impl Player {
             return self.start(shared);
         }
         let was_cued = std::mem::replace(&mut self.cued, false);
-        if self.restart_when_shown {
+        if let Some(resumed) = self.continue_at(shared, self.clock.now()) {
+            // `continue`: where it would be had it kept playing (ADR-0152 decision 6).
+            let (position, ended) = match resumed {
+                Resumed::At(position) => (position, false),
+                Resumed::Ended(position) => (position, true),
+            };
+            self.ended_stored = ended;
+            shared.move_cursor(position);
+            if newest.paused != ended {
+                self.write_now(shared, ended);
+            }
+        } else if self.restart_when_shown {
             self.ended_stored = false;
             shared.move_cursor(shared.range_start());
             if newest.paused {

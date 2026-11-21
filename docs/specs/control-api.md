@@ -547,6 +547,12 @@ Source rows carry `kind` `image` and `color` for those picture sources. A client
 - **State.** `record.state` and `record.canvas_state` add `paused` (bool), `paused_ms` and `recorded_ms`; `state` stays `recording` while paused. `paused` is set from the call on, including the ticks before the pause begins. `paused_ms` (time left out so far) and `recorded_ms` (time since the start less `paused_ms`) are as of the change; they are published on each pause and resume, never per frame, so a client counts on from them while not paused.
 - **Older clients and servers.** A 1.60 client ignores the new fields; a 1.60 server answers the methods `method_not_found` and omits the fields, which read as not paused.
 
+### Protocol 1.99: a film continues (ADR-0152 decision 6, phase 5)
+
+- **`on_return: "continue"` for media.** `source.set_activity` of a media source accepts `on_return: "continue"`, and `source.get_activity` lists it in `on_returns`. On air again, the film plays where it would be had it kept playing while away: the position where it left air plus the time since, wrapped into the play range with `loop`, ended past the end without it (scene sources spec, "Continue"). A film paused or ended before it left air resumes as with `resume`. Not kept across an app restart (then it is `resume`).
+- **Older clients and servers.** A new value of an existing request field (ADR-0111): a 1.98 server answers `invalid_params`, so a client checks for 1.99 first. A 1.98 client that reads a policy with `continue` treats the unknown value generically.
+- **As built.** `rbs-nodes` `media::ReturnEdge`, `MediaControl::set_on_return`; `rbs-sources` `MEDIA_ACTIVITY`, `media_return_edge`. Tests: `rbs-nodes/tests/media_control.rs` (`with_continue_*`), `rbs-sources` `activity_tests`.
+
 ### Protocol 1.98: a source's warm-up (ADR-0152 decision 10, phase 3)
 
 - **`warm_up_ms` on `source.list` rows.** Milliseconds from the last time the source became Active to its first picture: for display, window and camera sources, measured by the capture node from the frame's capture time (io-nodes spec). Absent before a first picture and for other types. Kept while the source sleeps (`run: shown` or `on_air`), replaced at each wake. Live state like `input_late_frames`: only `source.list` answers carry it, not `source.changed`, so a wake sends no event (the event follows when the row publisher reports activity, ADR-0152 decision 10's `activity` field, not built yet).

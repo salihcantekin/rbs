@@ -33,14 +33,25 @@ pub const CAPTURE_ACTIVITY: ActivityTraits = ActivityTraits::new(
 );
 
 /// A media file (ADR-0152 decision 4, ADR-0108): Active while a shown scene draws
-/// it, starting over when it goes on air again. `continue` comes with phase 5.
+/// it, starting over when it goes on air again; `continue` picks up where it would
+/// be had it kept playing (phase 5).
 pub const MEDIA_ACTIVITY: ActivityTraits = ActivityTraits::new(
     &[Run::Placed, Run::Shown, Run::OnAir],
-    &[OnReturn::Resume, OnReturn::Restart],
+    &[OnReturn::Resume, OnReturn::Restart, OnReturn::Continue],
     Run::Shown,
     Some(OnReturn::Restart),
     false,
 );
+
+/// The return edge a media file's control handle takes for `on_return` (ADR-0152
+/// decisions 6 and 7).
+pub fn media_return_edge(on_return: OnReturn) -> rbs_nodes::MediaReturnEdge {
+    match on_return {
+        OnReturn::Restart => rbs_nodes::MediaReturnEdge::Restart,
+        OnReturn::Continue => rbs_nodes::MediaReturnEdge::Continue,
+        _ => rbs_nodes::MediaReturnEdge::Resume,
+    }
+}
 
 /// A browser page (ADR-0152 decision 4, ADR-0109): Active while a shown scene draws
 /// it; `run: placed` is ADR-0149's background page (process running, picture node
@@ -98,5 +109,16 @@ mod activity_tests {
             table.activity(&NodeTypeId::new("org.example.plugin")),
             ActivityTraits::PLACED
         );
+    }
+
+    /// A film offers `continue` (phase 5), and each `on_return` reaches its handle
+    /// as its own return edge.
+    #[test]
+    fn a_film_continues_and_each_return_reaches_its_handle() {
+        use rbs_nodes::MediaReturnEdge as Edge;
+        assert!(MEDIA_ACTIVITY.on_returns.contains(&OnReturn::Continue));
+        assert_eq!(media_return_edge(OnReturn::Restart), Edge::Restart);
+        assert_eq!(media_return_edge(OnReturn::Resume), Edge::Resume);
+        assert_eq!(media_return_edge(OnReturn::Continue), Edge::Continue);
     }
 }

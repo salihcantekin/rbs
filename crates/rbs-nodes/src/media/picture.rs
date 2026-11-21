@@ -13,6 +13,7 @@ use rbs_graph::runtime::{Node, NodeError, PrepareCtx, ProcessCtx, WarmCtx};
 
 use super::control::{Verdict, View};
 use super::player::{Player, Rings, User};
+use super::return_edge::ReturnEdge;
 use super::worker::{Pending, Progress};
 use super::{MediaStats, Shared, VIDEO_PIN, media_descriptor};
 
@@ -119,7 +120,11 @@ impl MediaPictureNode {
 
     /// Stored until the next start. Not applied to a worker that is already playing.
     pub fn set_restart_when_shown(&mut self, on: bool) {
-        self.shared.player().restart_when_shown = on;
+        self.shared.player().set_return_edge(if on {
+            ReturnEdge::Restart
+        } else {
+            ReturnEdge::Resume
+        });
     }
 
     /// `loop` as stored now.
