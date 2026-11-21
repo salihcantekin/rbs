@@ -656,10 +656,15 @@ impl Host {
     /// [`Command::Api`]: the call, answered as the window asked (ADR-0163 decision 2).
     fn api_command(&mut self, call: rbs_api::Command, reply: ApiReply, notify: &dyn Fn(Update)) {
         let result = self.run_api(call, notify);
-        if let (Err(e), ApiReply::Shown | ApiReply::Ticket(_)) = (&result, reply) {
+        let shown = match (&result, reply) {
+            (Ok(_), _) | (_, ApiReply::Quiet | ApiReply::QuietTicket(_)) => false,
+            (Err(e), ApiReply::QuietIf(kind)) => e.kind != kind,
+            (Err(_), ApiReply::Shown | ApiReply::Ticket(_)) => true,
+        };
+        if let (Err(e), true) = (&result, shown) {
             notify(Update::Error(e.message.clone()));
         }
-        if let ApiReply::Ticket(ticket) = reply {
+        if let ApiReply::Ticket(ticket) | ApiReply::QuietTicket(ticket) = reply {
             notify(Update::ApiAnswer { ticket, result });
         }
     }
@@ -676,8 +681,6 @@ impl Host {
             | Command::RequestPermission(..)
             | Command::AddGlobalSource { .. }
             | Command::UndoDelete
-            | Command::Undo
-            | Command::Redo
             | Command::MoveSourceTo { .. }
             | Command::MoveSceneTo { .. }
             | Command::SetSourceVolume { .. }
@@ -700,7 +703,6 @@ impl Host {
             | Command::AddMedia { .. }
             | Command::SetStingerFile(..)
             | Command::FitTextBox(..)
-            | Command::ListTextFonts
             | Command::TextTimer { .. }
             | Command::AddText { .. }
             | Command::AddBrowser { .. }
@@ -742,7 +744,6 @@ impl Host {
             | Command::SetVerticalProfile(..)
             | Command::SetVerticalStreamProfile(..)
             | Command::SetStreamDestinations(..)
-            | Command::SetVerticalFlags(..)
             | Command::SetSeparateFiles(..)
             | Command::SetVerticalPicture(..)
             | Command::OpenProjector { .. }
@@ -757,8 +758,6 @@ impl Host {
             | Command::StartVirtualCamera { .. }
             | Command::StopVirtualCamera
             | Command::SetReplay(..)
-            | Command::ArmReplay
-            | Command::DisarmReplay
             | Command::AddMarker
             | Command::RemoveMarkers(..) => self.output_command(c, notify),
             Command::PauseRecording

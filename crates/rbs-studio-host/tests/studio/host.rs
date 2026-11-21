@@ -371,12 +371,21 @@ fn edits_are_undone_and_redone_and_a_drag_is_one_step() {
     rows_where(&rx, |r| r[0].id == screen);
 
     // Undo the move, the resize, then the whole drag in one step.
-    host.send(Command::Undo);
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::EditUndo),
+        reply: rbs_studio_host::studio_host::ApiReply::QuietIf(rbs_api::ErrorKind::Conflict),
+    });
     rows_where(&rx, |r| r[0].id == camera);
-    host.send(Command::Undo);
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::EditUndo),
+        reply: rbs_studio_host::studio_host::ApiReply::QuietIf(rbs_api::ErrorKind::Conflict),
+    });
     let rows = rows_where(&rx, |r| r[0].layout.is_some_and(|l| l.size == start.size));
     assert_eq!(rows[0].layout.unwrap().position, [30.0, 0.0]);
-    host.send(Command::Undo);
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::EditUndo),
+        reply: rbs_studio_host::studio_host::ApiReply::QuietIf(rbs_api::ErrorKind::Conflict),
+    });
     let rows = rows_where(&rx, |r| {
         r[0].layout.is_some_and(|l| l.position == start.position)
     });
@@ -386,7 +395,10 @@ fn edits_are_undone_and_redone_and_a_drag_is_one_step() {
     assert_eq!(redo.map(|s| s.kind), Some(EditKind::Place));
 
     // Redo the drag, then a new edit clears what was left to redo.
-    host.send(Command::Redo);
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::EditRedo),
+        reply: rbs_studio_host::studio_host::ApiReply::QuietIf(rbs_api::ErrorKind::Conflict),
+    });
     rows_where(&rx, |r| {
         r[0].layout.is_some_and(|l| l.position == [30.0, 0.0])
     });
@@ -405,22 +417,37 @@ fn edits_are_undone_and_redone_and_a_drag_is_one_step() {
     // The toast's Undo brings the screen back; after another edit it does nothing.
     host.send(Command::UndoDelete);
     rows_where(&rx, |r| r.len() == 2);
-    host.send(Command::Undo);
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::EditUndo),
+        reply: rbs_studio_host::studio_host::ApiReply::QuietIf(rbs_api::ErrorKind::Conflict),
+    });
     rows_where(&rx, |r| {
         r.len() == 2 && r[0].layout.is_some_and(|l| l.position == start.position)
     });
     host.send(Command::UndoDelete);
     // Undo everything: the adds go too.
-    host.send(Command::Undo);
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::EditUndo),
+        reply: rbs_studio_host::studio_host::ApiReply::QuietIf(rbs_api::ErrorKind::Conflict),
+    });
     rows_where(&rx, |r| r.len() == 1);
-    host.send(Command::Undo);
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::EditUndo),
+        reply: rbs_studio_host::studio_host::ApiReply::QuietIf(rbs_api::ErrorKind::Conflict),
+    });
     rows_where(&rx, |r| r.is_empty());
     let (undo, redo) = history(&rx);
     assert!(undo.is_none());
     assert_eq!(redo.map(|s| s.kind), Some(EditKind::Add));
     // Nothing to undo: nothing happens.
-    host.send(Command::Undo);
-    host.send(Command::Redo);
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::EditUndo),
+        reply: rbs_studio_host::studio_host::ApiReply::QuietIf(rbs_api::ErrorKind::Conflict),
+    });
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::EditRedo),
+        reply: rbs_studio_host::studio_host::ApiReply::QuietIf(rbs_api::ErrorKind::Conflict),
+    });
     let rows = rows_where(&rx, |r| r.len() == 1);
     assert_eq!(
         rows[0].id, screen,
@@ -825,7 +852,10 @@ fn a_source_is_pointed_at_another_target_keeping_its_place_and_one_undo_step() {
         )),
         reply: ApiReply::Shown,
     });
-    host.send(Command::Undo);
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::EditUndo),
+        reply: rbs_studio_host::studio_host::ApiReply::QuietIf(rbs_api::ErrorKind::Conflict),
+    });
     let (undo, redo) = history(&rx);
     assert_eq!(
         undo.map(|s| s.kind),

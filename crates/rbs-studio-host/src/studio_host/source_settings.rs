@@ -756,7 +756,6 @@ impl Host {
                 let done = self.fit_text_box(id);
                 self.answer(done, notify);
             }
-            Command::ListTextFonts => self.list_text_fonts(notify),
             Command::TextTimer { source, action } => match self.studio.text_timer(source, action) {
                 Ok(_) => self.save_text_timers(),
                 Err(rbs_record::TimerRefused::NotATimer) => notify(Update::Error(

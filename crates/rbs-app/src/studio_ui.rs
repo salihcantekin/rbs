@@ -89,6 +89,7 @@ mod library_ops;
 mod output_calls;
 mod scene_calls;
 mod source_calls;
+mod text_calls;
 pub use library_ops::EntryWrite;
 mod live_ticks;
 pub(crate) mod loudness;
@@ -312,8 +313,9 @@ pub struct StudioUi {
     /// The open Add source picker (ADR-0094 B1) and whether the dialog must be redrawn.
     add_picker: Option<add_picker::AddPicker>,
     picker_dirty: bool,
-    /// The font the font picker marks as current.
-    font_current: String,
+    /// The font the font picker marks as current, and the ticket of the
+    /// `text.fonts` question it waits on.
+    font: (String, Option<u64>),
     /// The Library's looks (set once) and sample pictures (made when the panel first
     /// shows, ADR-0075).
     library_looks: Rc<VecModel<LookData>>,
@@ -743,7 +745,7 @@ impl StudioUi {
             reveal_shape: false,
             focus_shape: None,
             focus_text: None,
-            font_current: String::new(),
+            font: (String::new(), None),
             text_settings: std::collections::BTreeMap::new(),
             focus_browser: None,
             browser_rows: std::collections::BTreeMap::new(),
@@ -3478,14 +3480,6 @@ impl StudioUi {
         self.send(Command::UndoDelete);
     }
 
-    /// Undo (`back`) or redo the newest scene edit (Ctrl/Cmd+Z, the Undo and Redo
-    /// buttons). A box on its way is still applied first: the studio takes commands
-    /// in order.
-    pub fn undo_edit(&mut self, back: bool) {
-        self.deleted.clear();
-        self.send(if back { Command::Undo } else { Command::Redo });
-    }
-
     /// The encoder settings of an [`output`].
     fn encoding_of(&self, out: i32) -> Encoding {
         if out == output::DESTINATION
@@ -5414,24 +5408,6 @@ impl StudioUi {
         });
     }
 
-    /// Opens the font picker for a text source; the families are asked for.
-    pub fn open_font_picker(&mut self, id: i32) {
-        let Some(settings) = self.text_settings.get(&id) else {
-            return;
-        };
-        let current = match settings.get(rbs_sources::types::keys::FONT) {
-            Some(rbs_scene::model::SettingValue::Text(f)) => f.clone(),
-            _ => String::new(),
-        };
-        self.add_picker = Some(add_picker::AddPicker::fonts(
-            SourceId::from_raw(id as u32),
-            &current,
-        ));
-        self.font_current = current;
-        self.picker_dirty = true;
-        self.send(Command::ListTextFonts);
-    }
-
     /// The fill of a colour source. A colour that is not `#rrggbb` or `#rrggbbaa`
     /// changes nothing.
     pub fn set_source_fill(&mut self, id: i32, color: &str) {
@@ -5846,7 +5822,7 @@ impl StudioUi {
 
     fn send_vertical_profiles(&self) {
         self.send(Command::SetSeparateFiles(self.separate_files.clone()));
-        self.send(Command::SetVerticalFlags(self.vertical_flags));
+        self.send_vertical_flags();
         self.send(Command::SetVerticalProfile(self.vertical_profile.clone()));
         self.send(Command::SetVerticalStreamProfile(
             self.vertical_stream.clone(),
@@ -6013,7 +5989,7 @@ impl StudioUi {
         }
         match u {
             Update::Monitor(_) | Update::Loudness(_) => {} // taken above
-            Update::ApiAnswer { .. } => {}                 // a question no longer asked (ADR-0163)
+            Update::ApiAnswer { ticket, result } => self.api_answer(ticket, result),
             Update::TBarReset => self.tbar_resets = self.tbar_resets.wrapping_add(1),
             Update::AddOns(list) => self.add_ons = list.add_ons,
             Update::OpenAddOn(id) => self.open_add_on = Some(id),
@@ -6298,7 +6274,7 @@ impl StudioUi {
             }
             Update::TextFonts(families) => {
                 if let Some(p) = &mut self.add_picker
-                    && p.answer_fonts(&families, &self.font_current)
+                    && p.answer_fonts(&families, &self.font.0)
                 {
                     self.picker_dirty = true;
                 }
