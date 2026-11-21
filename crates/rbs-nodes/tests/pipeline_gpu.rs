@@ -187,7 +187,7 @@ fn pipeline_from(
     if !formats.is_empty() {
         request = request.with_pixel_formats(formats);
     }
-    let capture = CaptureSourceNode::new(factory, request);
+    let capture = CaptureSourceNode::new(factory, request).open_inline(true);
     let stats = capture.stats();
     let capture = rig.add(Box::new(capture));
     let (comp, _layers) = CompositorNode::new(
@@ -634,10 +634,9 @@ fn held_pipeline_of(still: bool) -> Option<Holdable> {
             StillSourceNode::new(4, 4, vec![255; 4 * 4 * 4]).unwrap(),
         ))
     } else {
-        rig.add(Box::new(CaptureSourceNode::new(
-            Arc::new(TestCaptureFactory::new()),
-            request,
-        )))
+        rig.add(Box::new(
+            CaptureSourceNode::new(Arc::new(TestCaptureFactory::new()), request).open_inline(true),
+        ))
     };
     let canvas = CanvasDesc {
         width: W,

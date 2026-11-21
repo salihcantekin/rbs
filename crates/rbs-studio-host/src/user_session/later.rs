@@ -13,7 +13,7 @@ use std::task::{Context, Poll, Waker};
 use rbs_import_obs::ImportPlan;
 use rbs_user_data::{EntryId, UserData, WriterLock};
 
-use super::{Job, Names, UserSession, own_profiles, read_only_note, scrub_profile};
+use super::{Job, Names, SessionError, UserSession, own_profiles, read_only_note, scrub_profile};
 
 /// The result of writer-thread work, once it ran; `Err` with a note when changes are
 /// not saved (read-only) or the writer stopped first.
@@ -23,7 +23,7 @@ pub struct Pending<R> {
 }
 
 struct State<R> {
-    value: Option<Result<R, String>>,
+    value: Option<Result<R, SessionError>>,
     waker: Option<Waker>,
 }
 
@@ -34,7 +34,7 @@ struct Slot<R> {
 }
 
 impl<R> Slot<R> {
-    fn fill(mut self, value: Result<R, String>) {
+    fn fill(mut self, value: Result<R, SessionError>) {
         if let Some(state) = self.state.take() {
             put(&state, value);
         }
@@ -44,12 +44,12 @@ impl<R> Slot<R> {
 impl<R> Drop for Slot<R> {
     fn drop(&mut self) {
         if let Some(state) = self.state.take() {
-            put(&state, Err("the user data writer stopped".to_owned()));
+            put(&state, Err(SessionError::WriterStopped));
         }
     }
 }
 
-fn put<R>(state: &Mutex<State<R>>, value: Result<R, String>) {
+fn put<R>(state: &Mutex<State<R>>, value: Result<R, SessionError>) {
     let waker = match state.lock() {
         Ok(mut s) => {
             s.value = Some(value);
@@ -74,7 +74,7 @@ impl<R> Pending<R> {
         (Self { state }, slot)
     }
 
-    fn ready(value: Result<R, String>) -> Self {
+    fn ready(value: Result<R, SessionError>) -> Self {
         let (pending, slot) = Self::new();
         slot.fill(value);
         pending
@@ -82,11 +82,11 @@ impl<R> Pending<R> {
 }
 
 impl<R> Future for Pending<R> {
-    type Output = Result<R, String>;
+    type Output = Result<R, SessionError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let Ok(mut s) = self.state.lock() else {
-            return Poll::Ready(Err("the user data writer stopped".to_owned()));
+            return Poll::Ready(Err(SessionError::WriterStopped));
         };
         match s.value.take() {
             Some(v) => Poll::Ready(v),
@@ -103,7 +103,7 @@ impl UserSession {
     /// [`UserSession::run`] does, without waiting for it.
     pub(super) fn later<R: Send + 'static>(
         &self,
-        task: impl FnOnce(&UserData, &WriterLock, &Names) -> Result<R, String> + Send + 'static,
+        task: impl FnOnce(&UserData, &WriterLock, &Names) -> Result<R, SessionError> + Send + 'static,
     ) -> Pending<R> {
         let Some(saver) = self.saver.as_ref() else {
             return Pending::ready(Err(read_only_note()));
@@ -125,7 +125,7 @@ impl UserSession {
         self.later(move |data, _, _| {
             data.profiles()
                 .export_with(&id, &to, scrub_profile)
-                .map_err(|e| e.to_string())
+                .map_err(SessionError::from)
         })
     }
 
@@ -136,7 +136,7 @@ impl UserSession {
             data.scene_collections()
                 // A kept sign-in belongs to this computer (ADR-0132 decision 10).
                 .export_with(&id, &to, crate::browser_profiles::strip)
-                .map_err(|e| e.to_string())
+                .map_err(SessionError::from)
         })
     }
 
@@ -158,7 +158,7 @@ impl UserSession {
             data.themes()
                 .import(lock, &from)
                 .map(|(id, _)| id)
-                .map_err(|e| e.to_string())
+                .map_err(SessionError::from)
         })
     }
 
@@ -166,7 +166,7 @@ impl UserSession {
     /// before.
     pub fn export_theme(&self, id: &EntryId, to: &Path) -> Pending<()> {
         let (id, to) = (id.clone(), to.to_owned());
-        self.later(move |data, _, _| data.themes().export(&id, &to).map_err(|e| e.to_string()))
+        self.later(move |data, _, _| data.themes().export(&id, &to).map_err(SessionError::from))
     }
 
     /// [`UserSession::import_obs`] without waiting.
@@ -185,7 +185,8 @@ pub type ObsWritten = (
 /// Writes an OBS import plan (ADR-0131 decision 9).
 pub(super) fn import_obs(
     plan: ImportPlan,
-) -> impl FnOnce(&UserData, &WriterLock, &Names) -> Result<ObsWritten, String> + Send + 'static {
+) -> impl FnOnce(&UserData, &WriterLock, &Names) -> Result<ObsWritten, SessionError> + Send + 'static
+{
     move |data, lock, _| {
         let key = std::cell::RefCell::new(None);
         let written = crate::obs_import::write(
@@ -199,31 +200,33 @@ pub(super) fn import_obs(
             rbs_ui::shortcut::Platform::current(),
             &|p| p.is_dir(),
         );
-        written.map(|w| (w, key.into_inner()))
+        written
+            .map(|w| (w, key.into_inner()))
+            .map_err(SessionError::from)
     }
 }
 
 /// Adds the output profile in the file `from`; its name.
 pub(super) fn import_profile(
     from: PathBuf,
-) -> impl FnOnce(&UserData, &WriterLock, &Names) -> Result<String, String> + Send + 'static {
+) -> impl FnOnce(&UserData, &WriterLock, &Names) -> Result<String, SessionError> + Send + 'static {
     move |data, lock, _| {
         data.profiles()
             .import(lock, &from)
             .map(|(_, name)| name)
-            .map_err(|e| e.to_string())
+            .map_err(SessionError::from)
     }
 }
 
 /// Adds the scene collection in the file `from`, with profiles of its own; its name.
 pub(super) fn import_collection(
     from: PathBuf,
-) -> impl FnOnce(&UserData, &WriterLock, &Names) -> Result<String, String> + Send + 'static {
+) -> impl FnOnce(&UserData, &WriterLock, &Names) -> Result<String, SessionError> + Send + 'static {
     move |data, lock, _| {
         let (id, name) = data
             .scene_collections()
             .import(lock, &from)
-            .map_err(|e| e.to_string())?;
+            .map_err(SessionError::from)?;
         own_profiles(data, lock, &id)?;
         Ok(name)
     }
@@ -298,10 +301,10 @@ mod tests {
         let (other, _) = open(&d, quiet());
         assert!(!other.writable());
         let file = d.join("x.toml");
-        assert_eq!(
+        assert!(matches!(
             block_on(other.export_profile_later(&file)),
-            Err(read_only_note())
-        );
+            Err(SessionError::ReadOnly)
+        ));
         assert!(!file.exists());
         drop((s, other));
         let _ = std::fs::remove_dir_all(&d);
@@ -311,9 +314,9 @@ mod tests {
     fn a_job_the_writer_never_ran_reports_that_it_stopped() {
         let (pending, slot) = Pending::<()>::new();
         drop(slot);
-        assert_eq!(
+        assert!(matches!(
             block_on(pending),
-            Err("the user data writer stopped".to_owned())
-        );
+            Err(SessionError::WriterStopped)
+        ));
     }
 }

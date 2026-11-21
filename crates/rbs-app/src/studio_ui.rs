@@ -6052,7 +6052,7 @@ impl StudioUi {
             self.profile_loaded();
         }
         self.refresh_library();
-        result
+        result.map_err(String::from)
     }
 
     /// Shows the output profile in use and hands its settings and stream key account
@@ -6099,7 +6099,7 @@ impl StudioUi {
                     }
                     (d, String::new())
                 }
-                Err(why) => (rbs_app::stream_destinations::Destinations::default(), why),
+                Err(e) => (Default::default(), e.to_string()),
             };
     }
 
@@ -6196,14 +6196,14 @@ impl StudioUi {
             self.profile_loaded();
         }
         self.refresh_library();
-        result
+        result.map_err(String::from)
     }
 
     /// Output profile menu: renames the profile in use.
     pub fn rename_profile(&mut self, name: &str) -> Result<(), String> {
         let result = self.user.rename_profile(name);
         self.refresh_library();
-        result
+        result.map_err(String::from)
     }
 
     /// Output profile menu: deletes the profile `id` and its stream key. Deleting the
@@ -6402,7 +6402,7 @@ impl StudioUi {
     pub fn rename_collection(&mut self, name: &str) -> Result<(), String> {
         let result = self.user.rename_collection(name);
         self.refresh_library();
-        result
+        result.map_err(String::from)
     }
 
     /// Scene collection menu: deletes the collection `id`. Deleting the one in use
@@ -6417,7 +6417,7 @@ impl StudioUi {
         if id != self.user.collection_id {
             let result = self.user.delete_collection(&id);
             self.refresh_library();
-            return result;
+            return result.map_err(String::from);
         }
         self.can_switch_collection()?;
         let (other, prefer_default_name) = match self
@@ -8644,7 +8644,7 @@ fn section<S: serde::de::DeserializeOwned>(
             None => (s, None),
             Some(why) => (default(), Some(why)),
         },
-        Err(why) => (default(), Some(why)),
+        Err(why) => (default(), Some(why.to_string())),
     }
 }
 

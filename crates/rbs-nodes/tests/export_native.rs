@@ -253,10 +253,9 @@ fn pipeline() -> Option<Built> {
     let request = CaptureRequest::new(TargetId::new("test-window-0"), Arc::new(clock))
         .with_frame_rate(FrameRate::FPS_30)
         .with_pixel_formats(&[PixelFormat::Bgra8]);
-    let capture = rig.add(Box::new(CaptureSourceNode::new(
-        Arc::new(TestCaptureFactory::new()),
-        request,
-    )));
+    let capture = rig.add(Box::new(
+        CaptureSourceNode::new(Arc::new(TestCaptureFactory::new()), request).open_inline(true),
+    ));
     let (comp, _layers) = CompositorNode::new(
         CanvasDesc {
             width: W,

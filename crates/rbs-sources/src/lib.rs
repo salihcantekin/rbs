@@ -19,6 +19,7 @@
 //! The crate never depends on an adapter (P1): adapters come in as port factory trait
 //! objects, and engine code never names a vendor (P3).
 
+mod activity;
 mod browser;
 mod browser_sound;
 mod filters;

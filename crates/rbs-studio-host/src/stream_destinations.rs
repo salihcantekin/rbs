@@ -285,23 +285,51 @@ impl std::fmt::Display for DestinationError {
 
 impl std::error::Error for DestinationError {}
 
+/// Why the saved destinations are not used; the text is the note under the list.
+#[non_exhaustive]
+#[derive(Debug)]
+pub enum SectionError {
+    /// Saved by a newer RBS (its format): kept, and only the first destination streams.
+    Newer(u32),
+    /// A value breaks a rule (the reason).
+    Invalid(String),
+    /// The section does not load.
+    Unreadable(rbs_user_data::DataError),
+}
+
+impl std::fmt::Display for SectionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SectionError::Newer(format) => write!(
+                f,
+                "stream destinations were saved by a newer RBS (format {format}), so this \
+                 version streams to the first destination only and does not change them"
+            ),
+            SectionError::Invalid(why) => write!(f, "stream destinations: {why}"),
+            SectionError::Unreadable(e) => write!(f, "stream destinations: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for SectionError {}
+
 impl Destinations {
     /// The destinations a saved section gives: none when it is absent or does not load.
     /// `Err` when it was written by a newer RBS: it is then read as none and must not be
     /// overwritten.
-    pub fn from_section(saved: Result<Option<Destinations>, String>) -> Result<Self, String> {
+    pub fn from_section(
+        saved: Result<Option<Destinations>, rbs_user_data::DataError>,
+    ) -> Result<Self, SectionError> {
         match saved {
-            Ok(Some(d)) if d.format_version > FORMAT_VERSION => Err(format!(
-                "stream destinations were saved by a newer RBS (format {}), so this version \
-                 streams to the first destination only and does not change them",
-                d.format_version
-            )),
+            Ok(Some(d)) if d.format_version > FORMAT_VERSION => {
+                Err(SectionError::Newer(d.format_version))
+            }
             Ok(Some(d)) => match d.problem() {
                 None => Ok(d),
-                Some(why) => Err(format!("stream destinations: {why}")),
+                Some(why) => Err(SectionError::Invalid(why)),
             },
             Ok(None) => Ok(Self::default()),
-            Err(why) => Err(format!("stream destinations: {why}")),
+            Err(e) => Err(SectionError::Unreadable(e)),
         }
     }
 
@@ -717,7 +745,7 @@ mod tests {
         assert!(!text.contains("key ="), "{text}");
         let back: Destinations = toml::from_str(&text).unwrap();
         assert_eq!(back, d);
-        assert_eq!(Destinations::from_section(Ok(Some(back))), Ok(d));
+        assert_eq!(Destinations::from_section(Ok(Some(back))).ok(), Some(d));
     }
 
     #[test]
@@ -741,6 +769,6 @@ mod tests {
             .entries
             .push(Destination::new(VERTICAL_FIRST, Canvas::Main, "", CUSTOM));
         assert!(swapped.problem().is_some());
-        assert!(Destinations::from_section(Err("unreadable".into())).is_err());
+        assert!(Destinations::from_section(Err(rbs_user_data::DataError::NoVersion)).is_err());
     }
 }

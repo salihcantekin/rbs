@@ -24,6 +24,10 @@ pub const FRAME_RATE_MAX: CapabilityKey = CapabilityKey::new_static("capture.fra
 pub const FRAMES_IN_FLIGHT: CapabilityKey = CapabilityKey::new_static("capture.frames.in_flight");
 /// Flag: HDR delivery for HDR displays.
 pub const HDR: CapabilityKey = CapabilityKey::new_static("capture.hdr");
+/// Flag: `open` and `start` return at once, without waiting on the OS or a device, so
+/// the host may call them on its control thread (ADR-0152 decision 5). Absent: they
+/// may block, and the host calls them on a thread of its own.
+pub const START_INSTANT: CapabilityKey = CapabilityKey::new_static("capture.start.instant");
 
 /// Flag: the OS has a user permission for capturing cameras (ADR-0141).
 pub const PERMISSION_CAMERA: CapabilityKey = CapabilityKey::new_static("capture.permission.camera");

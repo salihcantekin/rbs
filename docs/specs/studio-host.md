@@ -47,7 +47,7 @@ A composition root fills these `HostConfig` fields (ADR-0159 decision 4). The ho
 
 ### Errors
 
-A refused command or step is a `Refusal` (`NotFound`, `Invalid`, `Conflict`, `Failed`, each with the words shown to the user; quality plan WP-25). `refused` maps it to the control API kind (`not_found`, `invalid_params`, `conflict`, `failed`); a method whose answer kind the protocol already fixes keeps that kind and takes the words. The UI edge (`Update::Error` and the other `Update` results) carries the words. Data types have their own errors: `DestinationError`, `ServerError` (`stream_profile::parse_server`), `KeyStoreError`, and `rbs_user_data::DataError` for user data.
+A refused command or step is a `Refusal` (`NotFound`, `Invalid`, `Conflict`, `Failed`, each with the words shown to the user; quality plan WP-25). `refused` maps it to the control API kind (`not_found`, `invalid_params`, `conflict`, `failed`); a method whose answer kind the protocol already fixes keeps that kind and takes the words. The UI edge (`Update::Error` and the other `Update` results) carries the words. Data types have their own errors: `DestinationError`, `stream_destinations::SectionError`, `ServerError` (`stream_profile::parse_server`), `KeyStoreError`, and `rbs_user_data::DataError` for user data. `UserSession` steps fail with `SessionError` (`Data(DataError)`, `ReadOnly`, `WriterStopped`, `ProfileInUse`, `CollectionInUse`, `NewerSection`, `NoProfileId`); `UserSession::section` returns the `DataError`. A window takes the words (`From<SessionError> for String`, `entry::when_done`).
 
 ### Thread
 

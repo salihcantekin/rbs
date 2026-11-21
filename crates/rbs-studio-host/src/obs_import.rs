@@ -301,11 +301,10 @@ pub fn write(
     save_key: &dyn Fn(&str, Secret) -> Result<(), stream_key::KeyStoreError>,
     platform: Platform,
     folder_exists: &dyn Fn(&Path) -> bool,
-) -> Result<Written, String> {
+) -> Result<Written, rbs_user_data::DataError> {
     let collection = data
         .scene_collections()
-        .create_free(lock, &plan.name, &plan.collection)
-        .map_err(|e| e.to_string())?;
+        .create_free(lock, &plan.name, &plan.collection)?;
     let mut notes = Vec::new();
     let step =
         |what: &str, why: String| ReportEntry::new(Outcome::Skipped, Area::Profile, what, "", why);

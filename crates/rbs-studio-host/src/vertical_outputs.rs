@@ -38,7 +38,7 @@ impl Default for VerticalFlags {
 impl VerticalFlags {
     /// The flags a saved section gives: the defaults when it is absent, does not load,
     /// or was written by a newer RBS.
-    pub fn from_section(saved: Result<Option<VerticalFlags>, String>) -> Self {
+    pub fn from_section<E>(saved: Result<Option<VerticalFlags>, E>) -> Self {
         match saved {
             Ok(Some(f)) if f.format_version <= FORMAT_VERSION => f,
             _ => Self::default(),
@@ -135,16 +135,19 @@ mod tests {
     fn a_missing_broken_or_newer_section_reads_as_the_defaults() {
         let d = VerticalFlags::default();
         assert!(d.record_with_main && d.stream_with_main);
-        assert_eq!(VerticalFlags::from_section(Ok(None)), d);
-        assert_eq!(VerticalFlags::from_section(Err("bad".into())), d);
+        assert_eq!(VerticalFlags::from_section(Ok::<_, ()>(None)), d);
+        assert_eq!(
+            VerticalFlags::from_section(Err::<Option<VerticalFlags>, &str>("bad")),
+            d
+        );
         let newer = VerticalFlags {
             format_version: FORMAT_VERSION + 1,
             record_with_main: false,
             stream_with_main: false,
         };
-        assert_eq!(VerticalFlags::from_section(Ok(Some(newer))), d);
+        assert_eq!(VerticalFlags::from_section(Ok::<_, ()>(Some(newer))), d);
         let saved = d.set(OutputKind::Stream, false);
-        assert_eq!(VerticalFlags::from_section(Ok(Some(saved))), saved);
+        assert_eq!(VerticalFlags::from_section(Ok::<_, ()>(Some(saved))), saved);
     }
 
     #[test]
