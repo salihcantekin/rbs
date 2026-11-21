@@ -354,6 +354,8 @@ impl Studio {
         for e in &mut self.entries {
             e.scheduled = super::in_plan(&self.binder, e, &scheduled);
         }
+        // Filter scheduling, input offsets and mapping switches follow too.
+        self.apply_input_offsets(&scheduled);
         self.layers.send(
             node_layers(&self.bound, &plan, &self.scroll_runs),
             &self.gpu,

@@ -110,3 +110,58 @@ fn without_a_monitor_the_mapping_stays_off() {
     assert_eq!(on, (false, false));
     assert_eq!(off, (false, false));
 }
+
+#[test]
+fn the_switch_stays_on_while_another_pointer_filter_of_the_source_runs() {
+    let Some(gpu) = gpu() else { return };
+    let monitor = InputMonitor::new(Box::new(Backend));
+    let mut r = rig();
+    r.adapters.sources.set_input(monitor.clone());
+    let (mut col, canvas) = scene();
+    let display = col
+        .sources()
+        .find(|s| s.type_id.as_str() == types::DISPLAY_SOURCE)
+        .map(|s| s.id)
+        .unwrap();
+    let add = |col: &mut rbs_scene::SceneCollection, id: &str| {
+        col.add_filter(display, NodeTypeId::new(id), Settings::new())
+            .unwrap()
+            .0
+    };
+    let rings = add(&mut col, rbs_filters::CLICK_RINGS);
+    let halo = add(&mut col, rbs_filters::POINTER_HALO);
+    let (engine, clock) = engine_at_start();
+    let mut studio = Studio::start(
+        engine,
+        gpu,
+        &col,
+        &r.adapters.sources,
+        &StudioSettings::new(canvas),
+    )
+    .unwrap();
+    let out = studio
+        .start_output(
+            &r.adapters,
+            &OutputSettings::new("mem://pointer-two", ContainerId::Matroska),
+        )
+        .unwrap();
+    let frames = |s: &Studio| s.filter_stats(halo).map_or(0, |st| st.frames());
+    assert!(run_until(&mut studio, &clock, |s| frames(s) >= 3));
+    assert!(studio.pointer_mapping_on(display));
+
+    // One leaves (removed): the other still wants the mapping.
+    col.remove_filter(display, rings).unwrap();
+    studio.update(&col, &r.adapters.sources).unwrap();
+    assert!(studio.filter_stats(rings).is_none());
+    assert!(studio.pointer_mapping_on(display), "the halo still runs");
+
+    // The last one leaves: off, and the monitor stops.
+    col.remove_filter(display, halo).unwrap();
+    studio.update(&col, &r.adapters.sources).unwrap();
+    assert!(!studio.pointer_mapping_on(display));
+    assert!(run_until(&mut studio, &clock, |_| !monitor.is_running()));
+
+    studio.stop_output(out).unwrap();
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+}
