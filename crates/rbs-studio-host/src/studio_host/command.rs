@@ -121,28 +121,6 @@ pub enum Command {
         /// The sample's id (`rbs_sources::still::SAMPLES`).
         sample: String,
     },
-    /// Add a colour shape on the scene being edited, centred, one undo step.
-    /// 0 circle, 1 square, 2 rectangle, 3 rounded rectangle, 4 ellipse, 5 triangle,
-    /// 6 arrow.
-    AddStamp {
-        /// Which shape.
-        kind: u8,
-    },
-    /// Add an image source from a PNG file, fitted into the canvas, one undo step.
-    AddImage {
-        /// The file.
-        path: std::path::PathBuf,
-    },
-    /// Add a media file source (ADR-0108), centred at half the canvas, one undo step.
-    AddMedia {
-        /// A local regular file. The demo decoder ignores contents.
-        path: std::path::PathBuf,
-    },
-    /// Add a browser page (ADR-0109), fitted to the canvas, one undo step.
-    AddBrowser {
-        /// `http`, `https`, or `file` URL.
-        url: String,
-    },
     /// Write a filter's full values (a released slider, a colour, Reset to defaults;
     /// one undo step).
     SetFilterValues {
@@ -264,19 +242,6 @@ pub enum Command {
         crop: [u32; 4],
         /// Keep the scale (else the cropped picture fills the box).
         keep_scale: bool,
-        /// The canvas whose layout changes: the vertical canvas's own layout only while
-        /// it shows the scene being edited (ADR-0093 decision 4).
-        canvas: OutputCanvas,
-    },
-    /// Flip, turn, fit or centre a video source's picture on the layout the canvas
-    /// shows (ADR-0084). One undo step; a refusal is an [`Update::Error`].
-    TransformSource {
-        /// The source.
-        id: SourceId,
-        /// What to do.
-        op: TransformOp,
-        /// Moves that share a non-zero gesture are one undo step. 0 never joins.
-        gesture: u64,
         /// The canvas whose layout changes: the vertical canvas's own layout only while
         /// it shows the scene being edited (ADR-0093 decision 4).
         canvas: OutputCanvas,

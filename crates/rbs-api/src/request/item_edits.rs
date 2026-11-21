@@ -107,3 +107,24 @@ pub struct SetStingerFile {
     /// needs the irreversible-actions permission.
     pub path: String,
 }
+
+/// A shape for `source.add` kind `color` (protocol 1.100): its box and radius are
+/// those of the window's Add source › Shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Stamp {
+    /// A circle.
+    Circle,
+    /// A square.
+    Square,
+    /// A rectangle, 1.6 times as wide as high.
+    Rectangle,
+    /// A rectangle with rounded corners.
+    RoundedRectangle,
+    /// An ellipse.
+    Ellipse,
+    /// A triangle.
+    Triangle,
+    /// An arrow pointing right.
+    Arrow,
+}

@@ -7,7 +7,7 @@ use rbs_api::Command as C;
 use rbs_api::request as rq;
 use rbs_api::types::OutputCanvas;
 
-use rbs_app::studio_host::ApiReply;
+use rbs_app::studio_host::{ApiReply, TransformOp};
 
 use super::StudioUi;
 
@@ -122,6 +122,87 @@ impl StudioUi {
                 item,
                 on,
                 canvas: OutputCanvas::Main,
+            }));
+        }
+    }
+
+    /// Flip, turn, fit or centre a source's picture (ADR-0084), on `canvas`, or
+    /// without one on the canvas Properties edits: the item method of `op`.
+    pub fn transform_source(&mut self, id: i32, op: TransformOp, canvas: Option<OutputCanvas>) {
+        use rbs_scene::{CenterAxis, FitMode};
+        self.deleted.clear();
+        let Some(item) = self.row_item(id) else {
+            return;
+        };
+        let canvas = canvas.unwrap_or_else(|| self.props_target(id));
+        let gesture = 0;
+        let flip = |axis| {
+            C::ItemFlip(rq::FlipItem {
+                item,
+                axis,
+                canvas,
+                gesture,
+            })
+        };
+        self.call(match op {
+            TransformOp::FlipHorizontal => flip(rq::Axis::Horizontal),
+            TransformOp::FlipVertical => flip(rq::Axis::Vertical),
+            TransformOp::Turn(degrees) => C::ItemRotate(rq::RotateItem {
+                item,
+                degrees: degrees.round() as i32,
+                canvas,
+                gesture,
+            }),
+            TransformOp::SetAngle(degrees) => {
+                return self.send_rotation(item, degrees, canvas, gesture);
+            }
+            TransformOp::Fit(mode) => C::ItemFit(rq::FitItem {
+                item,
+                mode: match mode {
+                    FitMode::Fill => rq::FitKind::Fill,
+                    FitMode::Stretch => rq::FitKind::Stretch,
+                    _ => rq::FitKind::Fit,
+                },
+                canvas,
+                gesture,
+            }),
+            TransformOp::Center(axis) => C::ItemAlign(rq::AlignItem {
+                item,
+                axis: Some(match axis {
+                    CenterAxis::Horizontal => rq::AlignAxis::Horizontal,
+                    CenterAxis::Vertical => rq::AlignAxis::Vertical,
+                    _ => rq::AlignAxis::Both,
+                }),
+                canvas,
+                gesture,
+            }),
+            TransformOp::Reset => C::ItemResetTransform(rq::ResetItemTransform {
+                item,
+                canvas,
+                gesture,
+            }),
+        });
+    }
+
+    /// Sets the picture's rotation in degrees clockwise (Properties' rotation field
+    /// and its drag, ADR-0166). Moves that share `gesture` are one undo step.
+    pub fn set_source_rotation(&mut self, id: i32, degrees: f32, gesture: i32) {
+        self.deleted.clear();
+        if let Some(item) = self.row_item(id) {
+            let canvas = self.props_target(id);
+            self.send_rotation(item, degrees, canvas, super::ui_gesture(gesture));
+        }
+    }
+
+    /// `item.set_rotation`, wrapped into `0..360` first as the field's value always
+    /// was; a value that is not finite changes nothing.
+    fn send_rotation(&self, item: u32, degrees: f32, canvas: OutputCanvas, gesture: u64) {
+        if degrees.is_finite() {
+            self.call(C::ItemSetRotation(rq::SetItemRotation {
+                item,
+                degrees: f64::from(degrees.rem_euclid(360.0)),
+                canvas,
+                gesture,
             }));
         }
     }

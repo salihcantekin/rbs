@@ -27,7 +27,15 @@ impl StudioUi {
 
     /// The answer to a question the window asked by ticket (`Update::ApiAnswer`);
     /// one no longer asked is dropped.
-    pub(super) fn api_answer(&mut self, ticket: u64, result: Result<Response, ApiError>) {
+    pub(super) fn api_answer(
+        &mut self,
+        ticket: u64,
+        result: Result<Response, ApiError>,
+        out: &mut super::Applied,
+    ) {
+        if ticket == super::add_calls::BROWSER_TICKET {
+            return self.browser_answer(result, out);
+        }
         if self.font.1 != Some(ticket) {
             return;
         }
@@ -72,6 +80,9 @@ impl StudioUi {
 /// `source.add` for a text source showing `text` in the scene the window edits.
 pub(super) fn add_text_call(text: &str) -> rbs_api::request::AddSource {
     rbs_api::request::AddSource {
+        stamp: None,
+        path: None,
+        url: None,
         kind: rbs_api::types::SourceKind::Text,
         adapter: String::new(),
         target: String::new(),

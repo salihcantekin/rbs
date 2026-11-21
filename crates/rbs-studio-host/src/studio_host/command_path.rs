@@ -103,14 +103,6 @@ paths! {
     SetSourceMixerHidden => Translates(&["source.set_mixer_hidden"]),
     ApplyLook => Translates(&["look.apply"]),
     AddSample => Translates(&["source.add_sample"]),
-    // no shape source in source.add
-    AddStamp => Missing,
-    // source.add has no file path, and the box is sized from the image
-    AddImage => Missing,
-    // source.add has no file path
-    AddMedia => Missing,
-    // source.add has no URL
-    AddBrowser => Missing,
     // window then restores stored values on an unchanged release
     SetFilterValues => Pending(&["filter.set_settings"]),
     PreviewFilter => WindowOnly(Preview),
@@ -141,8 +133,6 @@ paths! {
     SetSourceBox => Pending(&["item.set_box"]),
     // item.set_crop needs gesture
     SetSourceCrop => Contract(&["item.set_crop"]),
-    // SetAngle and ResetRotation have no method (ADR-0166)
-    TransformSource => Contract(&["item.flip", "item.rotate", "item.fit", "item.align", "item.reset_transform"]),
     // item.set_style needs gesture
     // item.set_scroll needs gesture
     // record.start builds its request from host state; the window sends its own RecordRequest
@@ -215,8 +205,8 @@ mod tests {
     /// as `PENDING` falls; any other rise needs the owner's written approval.
     const TRANSLATES: usize = 22;
     const PENDING: usize = 17;
-    const CONTRACT: usize = 7;
-    const MISSING: usize = 13;
+    const CONTRACT: usize = 6;
+    const MISSING: usize = 9;
     const VIEW: usize = 13;
     const LOCAL_ONLY: usize = 9;
     const PREVIEW: usize = 2;

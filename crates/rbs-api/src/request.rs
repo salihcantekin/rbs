@@ -19,9 +19,13 @@ use crate::types::{
 use crate::types::{DeviceKey, DeviceSyncEntry};
 use crate::types::{ItemScroll, ItemStyle};
 
+mod add_source;
 mod item_edits;
+mod methods;
 mod transform;
+pub use add_source::AddSource;
 pub use item_edits::*;
+pub use methods::METHODS;
 pub use transform::*;
 
 /// Parameters of a method that takes none. Unknown fields are ignored.
@@ -74,40 +78,6 @@ impl std::fmt::Debug for Authenticate {
 pub struct TargetsParams {
     /// The kind whose capture targets to list.
     pub kind: SourceKind,
-}
-
-/// `source.add`: a source of `kind` capturing one target, on top of the program scene.
-/// A `text` source (protocol 1.75, ADR-0129 decision 8) has no target: `adapter` and
-/// `target` may be left out and are ignored, and `text` is what it shows.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AddSource {
-    /// Its kind.
-    pub kind: SourceKind,
-    /// The adapter that listed the target (empty for `text`).
-    #[serde(default)]
-    pub adapter: String,
-    /// The target's id for that adapter (empty for `text`).
-    #[serde(default)]
-    pub target: String,
-    /// Its name; `null` lets the server pick one.
-    #[serde(default)]
-    pub name: Option<String>,
-    /// The scene it is placed in (protocol 1.9); absent: the program scene.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scene: Option<u32>,
-    /// Add it as a global source of the studio's canvas instead (protocol 1.10,
-    /// ADR-0065): shown and heard in every scene; `scene` is then not allowed.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub global: bool,
-    /// Also add the sound that belongs to the picture (protocol 1.26, ADR-0096): a
-    /// display's system sound without RBS's own sound, a window's application sound.
-    /// Default false; the picture and its sound are one undo step.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub with_audio: bool,
-    /// The text a `text` source shows (protocol 1.75); absent: "Text". Not allowed for
-    /// other kinds.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub text: Option<String>,
 }
 
 /// `source.set_text` (protocol 1.75, ADR-0129 decision 8): replaces a text source's
@@ -1947,6 +1917,8 @@ pub enum Command {
     ItemAlign(AlignItem),
     /// `item.reset_transform` (protocol 1.18).
     ItemResetTransform(ResetItemTransform),
+    /// `item.set_rotation` (protocol 1.100, ADR-0166).
+    ItemSetRotation(SetItemRotation),
     /// `item.fit_text_box` (protocol 1.100).
     ItemFitTextBox(FitTextBox),
     /// `item.set_filled` (protocol 1.100).
@@ -2283,190 +2255,6 @@ pub enum Command {
     AddonRemove(AddOnRef),
 }
 
-impl Command {
-    /// Its method name.
-    pub fn method(&self) -> &'static str {
-        match self {
-            Command::StudioGet => "studio.get",
-            Command::SourceList => "source.list",
-            Command::SourceTargets(_) => "source.targets",
-            Command::SourceAdd(_) => "source.add",
-            Command::SourceDelete(_) => "source.delete",
-            Command::ItemSetStyle(_) => "item.set_style",
-            Command::ItemSetCrop(_) => "item.set_crop",
-            Command::ItemFlip(_) => "item.flip",
-            Command::ItemRotate(_) => "item.rotate",
-            Command::ItemFit(_) => "item.fit",
-            Command::ItemAlign(_) => "item.align",
-            Command::ItemResetTransform(_) => "item.reset_transform",
-            Command::ItemFitTextBox(_) => "item.fit_text_box",
-            Command::ItemSetFilled(_) => "item.set_filled",
-            Command::ItemSetShownRegion(_) => "item.set_shown_region",
-            Command::CanvasAutoLayout(_) => "canvas.auto_layout",
-            Command::CanvasSetVerticalSize(_) => "canvas.set_vertical_size",
-            Command::SceneList => "scene.list",
-            Command::SceneAdd(_) => "scene.add",
-            Command::SceneRemove(_) => "scene.remove",
-            Command::SceneRename(_) => "scene.rename",
-            Command::SceneSetTransition(_) => "scene.set_transition",
-            Command::SceneDuplicate(_) => "scene.duplicate",
-            Command::SourceDuplicate(_) => "source.duplicate",
-            Command::SourceReset(_) => "source.reset",
-            Command::SourceCopyAttributes(_) => "source.copy_attributes",
-            Command::SourceAttributesClipboard => "source.attributes_clipboard",
-            Command::SourceSetText(_) => "source.set_text",
-            Command::TextFonts => "text.fonts",
-            Command::SourcePasteAttributes(_) => "source.paste_attributes",
-            Command::SceneSwitch(_) => "scene.switch",
-            Command::SourceRename(_) => "source.rename",
-            Command::SourceSetVolume(_) => "source.set_volume",
-            Command::SourceSetMuted(_) => "source.set_muted",
-            Command::SourceSetMixerHidden(_) => "source.set_mixer_hidden",
-            Command::CanvasSetMasterVolume(_) => "canvas.set_master_volume",
-            Command::CanvasSetMasterMuted(_) => "canvas.set_master_muted",
-            Command::ItemAdd(_) => "item.add",
-            Command::FilterTypes(_) => "filter.types",
-            Command::FilterAdd(_) => "filter.add",
-            Command::FilterAddVoiceChain(_) => "filter.add_voice_chain",
-            Command::FilterRemove(_) => "filter.remove",
-            Command::FilterMove(_) => "filter.move",
-            Command::FilterSetEnabled(_) => "filter.set_enabled",
-            Command::FilterSetSettings(_) => "filter.set_settings",
-            Command::SourceSetSyncOffset(_) => "source.set_sync_offset",
-            Command::SyncMeasureStart(_) => "sync.measure_start",
-            Command::SyncMeasureCancel(_) => "sync.measure_cancel",
-            Command::SyncDevices => "sync.devices",
-            Command::SyncForgetDevice(_) => "sync.forget_device",
-            Command::SyncApplyToDeviceSources(_) => "sync.apply_to_device_sources",
-            Command::SourceRetarget(_) => "source.retarget",
-            Command::SourceReload(_) => "source.reload",
-            Command::BrowserReload(_) => "browser.reload",
-            Command::BrowserRunScript(_) => "browser.run_script",
-            Command::BrowserForgetSignIn(_) => "browser.forget_sign_in",
-            Command::BrowserInput(_) => "browser.input",
-            Command::SourceGetSettings(_) => "source.get_settings",
-            Command::MediaPlay(_) => "media.play",
-            Command::MediaPause(_) => "media.pause",
-            Command::MediaSeek(_) => "media.seek",
-            Command::MediaRestart(_) => "media.restart",
-            Command::MediaState(_) => "media.state",
-            Command::SourceSetSettings(_) => "source.set_settings",
-            Command::SourceSetCompanionAudio(_) => "source.set_companion_audio",
-            Command::CanvasAddVertical(_) => "canvas.add_vertical",
-            Command::CanvasRemoveVertical(_) => "canvas.remove_vertical",
-            Command::SettingsRecentTargets(_) => "settings.recent_targets",
-            Command::SettingsClearRecentTargets(_) => "settings.clear_recent_targets",
-            Command::SceneSources(_) => "scene.sources",
-            Command::CanvasSetPreview(_) => "canvas.set_preview",
-            Command::CanvasTransition(_) => "canvas.transition",
-            Command::CanvasTransitionProgress(_) => "canvas.transition_progress",
-            Command::ItemRemove(_) => "item.remove",
-            Command::ItemMove(_) => "item.move",
-            Command::SceneMove(_) => "scene.move",
-            Command::SourceSetActive(_) => "source.set_active",
-            Command::LookList => "look.list",
-            Command::LookApply(_) => "look.apply",
-            Command::SourceAddSample(_) => "source.add_sample",
-            Command::ItemSetBox(_) => "item.set_box",
-            Command::GlobalList => "global.list",
-            Command::GlobalAdd(_) => "global.add",
-            Command::GlobalRemove(_) => "global.remove",
-            Command::ItemSetVisible(_) => "item.set_visible",
-            Command::ItemSetLocked(_) => "item.set_locked",
-            Command::ItemSetShowFor(_) => "item.set_show_for",
-            Command::ItemShow(_) => "item.show",
-            Command::ItemSetScroll(_) => "item.set_scroll",
-            Command::ItemScrollPause(_) => "item.scroll_pause",
-            Command::ItemScrollResume(_) => "item.scroll_resume",
-            Command::ItemScrollRestart(_) => "item.scroll_restart",
-            Command::ItemScrollSpeed(_) => "item.scroll_speed",
-            Command::EditUndo => "edit.undo",
-            Command::EditRedo => "edit.redo",
-            Command::OutputProfiles => "output.profiles",
-            Command::RecordStart(_) => "record.start",
-            Command::RecordEstimate(_) => "record.estimate",
-            Command::RecordStartToFile(_) => "record.start_to_file",
-            Command::RecordStop(_) => "record.stop",
-            Command::RecordPause(_) => "record.pause",
-            Command::RecordResume(_) => "record.resume",
-            Command::RecordPauseToggle(_) => "record.pause_toggle",
-            Command::RecordStatus(_) => "record.status",
-            Command::StreamStart(_) => "stream.start",
-            Command::StreamStop(_) => "stream.stop",
-            Command::StreamHold(_) => "stream.hold",
-            Command::StreamResume(_) => "stream.resume",
-            Command::StreamHoldToggle(_) => "stream.hold_toggle",
-            Command::OutputBreakToggle => "output.break_toggle",
-            Command::OutputSetWithVertical(_) => "output.set_with_vertical",
-            Command::StreamStatus(_) => "stream.status",
-            Command::StreamDestinations(_) => "stream.destinations",
-            Command::StreamDestinationStart(_) => "stream.destination.start",
-            Command::StreamDestinationStop(_) => "stream.destination.stop",
-            Command::StreamDestinationSetEnabled(_) => "stream.destination.set_enabled",
-            Command::ReplayStatus => "replay.status",
-            Command::ProtectionStatus => "protection.status",
-            Command::CalibrationRun(_) => "calibration.run",
-            Command::CalibrationCancel => "calibration.cancel",
-            Command::CalibrationStatus => "calibration.status",
-            Command::SourceSetMonitor(_) => "source.set_monitor",
-            Command::MonitorStatus => "monitor.status",
-            Command::MonitorDevices => "monitor.devices",
-            Command::MonitorSetDevice(_) => "monitor.set_device",
-            Command::MonitorSetVolume(_) => "monitor.set_volume",
-            Command::MonitorSetSolo(_) => "monitor.set_solo",
-            Command::LoudnessStatus => "loudness.status",
-            Command::LoudnessSetEnabled(_) => "loudness.set_enabled",
-            Command::LoudnessReset => "loudness.reset",
-            Command::ReplayArm => "replay.arm",
-            Command::ReplayDisarm => "replay.disarm",
-            Command::ReplaySave(_) => "replay.save",
-            Command::VcamStatus => "vcam.status",
-            Command::VcamStart => "vcam.start",
-            Command::VcamStop => "vcam.stop",
-            Command::SettingsGet => "settings.get",
-            Command::SettingsSet(_) => "settings.set",
-            Command::ProfileList => "profile.list",
-            Command::ProfileSwitch(_) => "profile.switch",
-            Command::CollectionList => "collection.list",
-            Command::CollectionSwitch(_) => "collection.switch",
-            Command::CollectionSetGlide(_) => "collection.set_glide",
-            Command::CollectionSetStingerFile(_) => "collection.set_stinger_file",
-            Command::CollectionSetTransition(_) => "collection.set_transition",
-            Command::SourceSetGlide(_) => "source.set_glide",
-            Command::SourceSetActivity(_) => "source.set_activity",
-            Command::SourceGetActivity(_) => "source.get_activity",
-            Command::SourceSetRegion(_) => "source.set_region",
-            Command::SourceSetRecordSeparately(_) => "source.set_record_separately",
-            Command::MarkerAdd(_) => "marker.add",
-            Command::MarkerRemove(_) => "marker.remove",
-            Command::ProjectExport(_) => "project.export",
-            Command::SourceGetRegion(_) => "source.get_region",
-            Command::SourceSetChrome(_) => "source.set_chrome",
-            Command::SourceGetChrome(_) => "source.get_chrome",
-            Command::SourceFitChrome(_) => "source.fit_chrome",
-            Command::SourceResetChrome(_) => "source.reset_chrome",
-            Command::SceneAudioGet(_) => "scene.audio.get",
-            Command::SceneAudioSet(_) => "scene.audio.set",
-            Command::SceneAudioOwn(_) => "scene.audio.own",
-            Command::SceneAudioShared(_) => "scene.audio.shared",
-            Command::SceneAudioResetSource(_) => "scene.audio.reset_source",
-            Command::EventsSubscribe(_) => "events.subscribe",
-            Command::TokensList => "tokens.list",
-            Command::TokensCreate(_) => "tokens.create",
-            Command::TokensRevoke(_) => "tokens.revoke",
-            Command::ImportObsScan => "import.obs.scan",
-            Command::ImportObsCheck(_) => "import.obs.check",
-            Command::ImportObsRun(_) => "import.obs.run",
-            Command::TextTimer(_) => "text.timer",
-            Command::AddonList => "addon.list",
-            Command::AddonInstall(_) => "addon.install",
-            Command::AddonCancel(_) => "addon.cancel",
-            Command::AddonClean(_) => "addon.clean",
-            Command::AddonRemove(_) => "addon.remove",
-        }
-    }
-}
-
 /// Everything a client may send.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(from = "WireRequest", into = "WireRequest")]
@@ -2521,7 +2309,10 @@ impl Command {
     pub fn reaches_network(&self) -> bool {
         use crate::location::is_local_path;
         match self {
-            Command::SourceAdd(p) => p.kind == SourceKind::Browser,
+            Command::SourceAdd(p) => {
+                p.kind == SourceKind::Browser
+                    || p.path.as_deref().is_some_and(|f| !is_local_path(f))
+            }
             // Downloads from the catalog's hosts (ADR-0145 decision 9).
             Command::AddonInstall(_) => true,
             Command::RecordStartToFile(p) => !is_local_path(&p.path),
@@ -2585,290 +2376,6 @@ impl Effect {
         matches!(self, Effect::Live | Effect::Destructive)
     }
 }
-
-/// Every method of protocol version 1 and its scope (ADR-0044 decision 10).
-pub const METHODS: &[MethodInfo] = &[
-    m("session.hello", None, Effect::Read),
-    m("session.authenticate", None, Effect::Read),
-    m("api.describe", Some(Scope::Read), Effect::Read),
-    m("studio.get", Some(Scope::Read), Effect::Read),
-    m("source.list", Some(Scope::Read), Effect::Read),
-    m("source.targets", Some(Scope::Control), Effect::Read),
-    m("source.add", Some(Scope::Control), Effect::Edit),
-    m("source.delete", Some(Scope::Control), Effect::Edit),
-    m("item.set_style", Some(Scope::Control), Effect::Edit),
-    m("item.set_crop", Some(Scope::Control), Effect::Edit),
-    m("item.flip", Some(Scope::Control), Effect::Edit),
-    m("item.rotate", Some(Scope::Control), Effect::Edit),
-    m("item.fit", Some(Scope::Control), Effect::Edit),
-    m("item.align", Some(Scope::Control), Effect::Edit),
-    m("item.reset_transform", Some(Scope::Control), Effect::Edit),
-    m("item.fit_text_box", Some(Scope::Control), Effect::Edit),
-    m("item.set_filled", Some(Scope::Control), Effect::Edit),
-    m("item.set_shown_region", Some(Scope::Control), Effect::Edit),
-    m("scene.list", Some(Scope::Read), Effect::Read),
-    m("scene.add", Some(Scope::Control), Effect::Edit),
-    m("scene.remove", Some(Scope::Control), Effect::Edit),
-    m("scene.rename", Some(Scope::Control), Effect::Edit),
-    m("scene.set_transition", Some(Scope::Control), Effect::Edit),
-    m("scene.duplicate", Some(Scope::Control), Effect::Edit),
-    m("source.duplicate", Some(Scope::Control), Effect::Edit),
-    m("source.reset", Some(Scope::Control), Effect::Destructive),
-    m("source.copy_attributes", Some(Scope::Control), Effect::Edit),
-    m(
-        "source.attributes_clipboard",
-        Some(Scope::Read),
-        Effect::Read,
-    ),
-    m(
-        "source.paste_attributes",
-        Some(Scope::Control),
-        Effect::Destructive,
-    ),
-    m("source.set_text", Some(Scope::Control), Effect::Edit),
-    m("text.fonts", Some(Scope::Read), Effect::Read),
-    m("scene.switch", Some(Scope::Control), Effect::Edit),
-    m("source.rename", Some(Scope::Control), Effect::Edit),
-    m("source.set_volume", Some(Scope::Control), Effect::Edit),
-    m("source.set_muted", Some(Scope::Control), Effect::Edit),
-    m(
-        "source.set_mixer_hidden",
-        Some(Scope::Control),
-        Effect::Edit,
-    ),
-    m(
-        "canvas.set_master_volume",
-        Some(Scope::Control),
-        Effect::Edit,
-    ),
-    m(
-        "canvas.set_master_muted",
-        Some(Scope::Control),
-        Effect::Edit,
-    ),
-    m("item.add", Some(Scope::Control), Effect::Edit),
-    m("filter.types", Some(Scope::Read), Effect::Read),
-    m("filter.add", Some(Scope::Control), Effect::Edit),
-    m("filter.add_voice_chain", Some(Scope::Control), Effect::Edit),
-    m("filter.remove", Some(Scope::Control), Effect::Edit),
-    m("filter.move", Some(Scope::Control), Effect::Edit),
-    m("filter.set_enabled", Some(Scope::Control), Effect::Edit),
-    m("filter.set_settings", Some(Scope::Control), Effect::Edit),
-    m(
-        "source.set_sync_offset",
-        Some(Scope::Control),
-        Effect::Destructive,
-    ),
-    m("sync.measure_start", Some(Scope::Control), Effect::Edit),
-    m("sync.measure_cancel", Some(Scope::Control), Effect::Edit),
-    m("sync.devices", Some(Scope::Read), Effect::Read),
-    m(
-        "sync.forget_device",
-        Some(Scope::Control),
-        Effect::Destructive,
-    ),
-    m(
-        "sync.apply_to_device_sources",
-        Some(Scope::Control),
-        Effect::Destructive,
-    ),
-    m("source.retarget", Some(Scope::Control), Effect::Edit),
-    m("source.reload", Some(Scope::Control), Effect::Edit),
-    // They change what is on air, and a page can fetch (ADR-0132 decision 9,
-    // ADR-0149 decision 7).
-    m("browser.reload", Some(Scope::Control), Effect::Live),
-    m("browser.run_script", Some(Scope::Control), Effect::Live),
-    // A click can do anything in a page (ADR-0132 decision 9); a forgotten sign-in
-    // cannot come back (decision 10).
-    m("browser.input", Some(Scope::Control), Effect::Live),
-    m(
-        "browser.forget_sign_in",
-        Some(Scope::Control),
-        Effect::Destructive,
-    ),
-    m("source.get_settings", Some(Scope::Control), Effect::Read),
-    m("media.play", Some(Scope::Control), Effect::Edit),
-    m("media.pause", Some(Scope::Control), Effect::Edit),
-    m("media.seek", Some(Scope::Control), Effect::Edit),
-    m("media.restart", Some(Scope::Control), Effect::Edit),
-    m("media.state", Some(Scope::Read), Effect::Read),
-    m("source.set_settings", Some(Scope::Control), Effect::Edit),
-    m(
-        "source.set_companion_audio",
-        Some(Scope::Control),
-        Effect::Edit,
-    ),
-    m("canvas.add_vertical", Some(Scope::Control), Effect::Edit),
-    m("canvas.auto_layout", Some(Scope::Control), Effect::Edit),
-    m(
-        "canvas.set_vertical_size",
-        Some(Scope::Control),
-        Effect::Edit,
-    ),
-    m(
-        "canvas.remove_vertical",
-        Some(Scope::Control),
-        Effect::Destructive,
-    ),
-    m(
-        "settings.recent_targets",
-        Some(Scope::Control),
-        Effect::Read,
-    ),
-    m(
-        "settings.clear_recent_targets",
-        Some(Scope::Control),
-        Effect::Destructive,
-    ),
-    m("item.set_visible", Some(Scope::Control), Effect::Edit),
-    m("item.set_locked", Some(Scope::Control), Effect::Edit),
-    m("item.set_show_for", Some(Scope::Control), Effect::Edit),
-    m("item.show", Some(Scope::Control), Effect::Edit),
-    m("item.set_scroll", Some(Scope::Control), Effect::Edit),
-    m("item.scroll_pause", Some(Scope::Control), Effect::Edit),
-    m("item.scroll_resume", Some(Scope::Control), Effect::Edit),
-    m("item.scroll_restart", Some(Scope::Control), Effect::Edit),
-    m("item.scroll_speed", Some(Scope::Control), Effect::Edit),
-    m("scene.sources", Some(Scope::Read), Effect::Read),
-    m("canvas.set_preview", Some(Scope::Control), Effect::Edit),
-    m("canvas.transition", Some(Scope::Control), Effect::Edit),
-    m(
-        "canvas.transition_progress",
-        Some(Scope::Control),
-        Effect::Edit,
-    ),
-    m("item.remove", Some(Scope::Control), Effect::Edit),
-    m("item.move", Some(Scope::Control), Effect::Edit),
-    m("scene.move", Some(Scope::Control), Effect::Edit),
-    m("source.set_active", Some(Scope::Control), Effect::Edit),
-    m("look.list", Some(Scope::Read), Effect::Read),
-    m("look.apply", Some(Scope::Control), Effect::Edit),
-    m("source.add_sample", Some(Scope::Control), Effect::Edit),
-    m("item.set_box", Some(Scope::Control), Effect::Edit),
-    m("global.list", Some(Scope::Read), Effect::Read),
-    m("global.add", Some(Scope::Control), Effect::Edit),
-    m("global.remove", Some(Scope::Control), Effect::Edit),
-    m("edit.undo", Some(Scope::Control), Effect::Edit),
-    m("edit.redo", Some(Scope::Control), Effect::Edit),
-    m("output.profiles", Some(Scope::Read), Effect::Read),
-    m("record.start", Some(Scope::Control), Effect::Live),
-    m("record.estimate", Some(Scope::Read), Effect::Read),
-    m("record.start_to_file", Some(Scope::Admin), Effect::Live),
-    m("record.stop", Some(Scope::Control), Effect::Live),
-    m("record.pause", Some(Scope::Control), Effect::Live),
-    m("record.resume", Some(Scope::Control), Effect::Live),
-    m("record.pause_toggle", Some(Scope::Control), Effect::Live),
-    m("record.status", Some(Scope::Read), Effect::Read),
-    m("stream.start", Some(Scope::Control), Effect::Live),
-    m("stream.stop", Some(Scope::Control), Effect::Live),
-    m("stream.hold", Some(Scope::Control), Effect::Live),
-    m("stream.resume", Some(Scope::Control), Effect::Live),
-    m("stream.hold_toggle", Some(Scope::Control), Effect::Live),
-    m("output.break_toggle", Some(Scope::Control), Effect::Live),
-    m("stream.status", Some(Scope::Read), Effect::Read),
-    m("stream.destinations", Some(Scope::Read), Effect::Read),
-    m(
-        "stream.destination.start",
-        Some(Scope::Control),
-        Effect::Live,
-    ),
-    m(
-        "stream.destination.stop",
-        Some(Scope::Control),
-        Effect::Live,
-    ),
-    m(
-        "stream.destination.set_enabled",
-        Some(Scope::Control),
-        Effect::Live,
-    ),
-    m(
-        "output.set_with_vertical",
-        Some(Scope::Control),
-        Effect::Edit,
-    ),
-    m("replay.status", Some(Scope::Read), Effect::Read),
-    m("protection.status", Some(Scope::Read), Effect::Read),
-    m("calibration.run", Some(Scope::Admin), Effect::Live),
-    m("calibration.cancel", Some(Scope::Admin), Effect::Live),
-    m("calibration.status", Some(Scope::Read), Effect::Read),
-    m("source.set_monitor", Some(Scope::Control), Effect::Edit),
-    m("monitor.status", Some(Scope::Read), Effect::Read),
-    m("monitor.devices", Some(Scope::Read), Effect::Read),
-    m("monitor.set_device", Some(Scope::Admin), Effect::Edit),
-    m("monitor.set_volume", Some(Scope::Control), Effect::Edit),
-    m("monitor.set_solo", Some(Scope::Control), Effect::Edit),
-    m("loudness.status", Some(Scope::Read), Effect::Read),
-    m(
-        "loudness.set_enabled",
-        Some(Scope::Control),
-        Effect::Destructive,
-    ),
-    m("loudness.reset", Some(Scope::Control), Effect::Destructive),
-    m("replay.arm", Some(Scope::Control), Effect::Live),
-    m("replay.disarm", Some(Scope::Control), Effect::Live),
-    m("replay.save", Some(Scope::Control), Effect::Edit),
-    m("vcam.status", Some(Scope::Read), Effect::Read),
-    m("vcam.start", Some(Scope::Control), Effect::Live),
-    m("vcam.stop", Some(Scope::Control), Effect::Live),
-    m("settings.get", Some(Scope::Admin), Effect::Read),
-    m("settings.set", Some(Scope::Admin), Effect::Edit),
-    m("profile.list", Some(Scope::Read), Effect::Read),
-    m("profile.switch", Some(Scope::Admin), Effect::Live),
-    m("collection.list", Some(Scope::Read), Effect::Read),
-    m("collection.switch", Some(Scope::Control), Effect::Live),
-    m("collection.set_glide", Some(Scope::Control), Effect::Edit),
-    m(
-        "collection.set_stinger_file",
-        Some(Scope::Control),
-        Effect::Edit,
-    ),
-    m(
-        "collection.set_transition",
-        Some(Scope::Control),
-        Effect::Edit,
-    ),
-    m("source.set_glide", Some(Scope::Control), Effect::Edit),
-    m("source.set_activity", Some(Scope::Control), Effect::Edit),
-    m("source.get_activity", Some(Scope::Read), Effect::Read),
-    m("source.set_region", Some(Scope::Control), Effect::Edit),
-    m(
-        "source.set_record_separately",
-        Some(Scope::Control),
-        Effect::Edit,
-    ),
-    m("marker.add", Some(Scope::Control), Effect::Edit),
-    m("marker.remove", Some(Scope::Control), Effect::Destructive),
-    m("project.export", Some(Scope::Control), Effect::Edit),
-    m("source.get_region", Some(Scope::Control), Effect::Read),
-    m("source.set_chrome", Some(Scope::Control), Effect::Edit),
-    m("source.get_chrome", Some(Scope::Control), Effect::Read),
-    m("source.fit_chrome", Some(Scope::Control), Effect::Edit),
-    m("source.reset_chrome", Some(Scope::Control), Effect::Edit),
-    m("scene.audio.get", Some(Scope::Read), Effect::Read),
-    m("scene.audio.set", Some(Scope::Control), Effect::Edit),
-    m("scene.audio.own", Some(Scope::Control), Effect::Edit),
-    m("scene.audio.shared", Some(Scope::Control), Effect::Edit),
-    m(
-        "scene.audio.reset_source",
-        Some(Scope::Control),
-        Effect::Edit,
-    ),
-    m("events.subscribe", Some(Scope::Read), Effect::Read),
-    m("events.unsubscribe", Some(Scope::Read), Effect::Read),
-    m("tokens.list", Some(Scope::Tokens), Effect::Read),
-    m("tokens.create", Some(Scope::Tokens), Effect::Destructive),
-    m("tokens.revoke", Some(Scope::Tokens), Effect::Destructive),
-    m("import.obs.scan", Some(Scope::Admin), Effect::Read),
-    m("import.obs.check", Some(Scope::Admin), Effect::Read),
-    m("import.obs.run", Some(Scope::Admin), Effect::Destructive),
-    m("text.timer", Some(Scope::Control), Effect::Edit),
-    m("addon.list", Some(Scope::Read), Effect::Read),
-    m("addon.install", Some(Scope::Plugins), Effect::Edit),
-    m("addon.cancel", Some(Scope::Plugins), Effect::Edit),
-    m("addon.clean", Some(Scope::Plugins), Effect::Destructive),
-    m("addon.remove", Some(Scope::Plugins), Effect::Destructive),
-];
 
 /// The client-scoped `ui.*` methods (control API spec, "Client-scoped UI commands").
 /// The API thread routes them to a UI client, so they are not in [`METHODS`]; the
@@ -3001,6 +2508,8 @@ enum WireRequest {
     ItemAlign(AlignItem),
     #[serde(rename = "item.reset_transform")]
     ItemResetTransform(ResetItemTransform),
+    #[serde(rename = "item.set_rotation")]
+    ItemSetRotation(SetItemRotation),
     #[serde(rename = "item.fit_text_box")]
     ItemFitTextBox(FitTextBox),
     #[serde(rename = "item.set_filled")]
@@ -3476,6 +2985,7 @@ wire_conversions! {
     SourceSetCompanionAudio, SettingsClearRecentTargets, CanvasTransitionProgress,
     StreamDestinationStart, StreamDestinationSetEnabled, CollectionSetTransition,
     SourceSetRecordSeparately,
+    ItemSetRotation,
     ]
 }
 

@@ -382,6 +382,9 @@ fn rows_where(rx: &Receiver<Update>, mut ok: impl FnMut(&[SourceRow]) -> bool) -
 fn add_text(host: &StudioHost, rx: &Receiver<Update>) -> SourceRow {
     host.send(Command::Api {
         call: Box::new(rbs_api::Command::SourceAdd(rbs_api::request::AddSource {
+            stamp: None,
+            path: None,
+            url: None,
             kind: rbs_api::types::SourceKind::Text,
             adapter: String::new(),
             target: String::new(),

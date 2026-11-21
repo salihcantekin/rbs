@@ -77,3 +77,26 @@ fn set_scroll(
         reply: rbs_studio_host::studio_host::ApiReply::Shown,
     }
 }
+
+/// Add source › Browser as the window sends it (ADR-0164 step 3), answered as `reply`.
+fn add_browser(
+    url: &str,
+    reply: rbs_studio_host::studio_host::ApiReply,
+) -> rbs_studio_host::studio_host::Command {
+    rbs_studio_host::studio_host::Command::Api {
+        call: Box::new(rbs_api::Command::SourceAdd(rbs_api::request::AddSource {
+            kind: rbs_api::types::SourceKind::Browser,
+            adapter: String::new(),
+            target: String::new(),
+            name: None,
+            scene: None,
+            global: false,
+            with_audio: false,
+            text: None,
+            stamp: None,
+            path: None,
+            url: Some(url.to_owned()),
+        })),
+        reply,
+    }
+}

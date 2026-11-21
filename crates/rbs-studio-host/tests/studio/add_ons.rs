@@ -417,18 +417,22 @@ fn add_source_browser_leads_to_the_engine_until_it_is_installed() {
     });
 
     // No engine: Browser leads to the add-on and adds no source.
-    host.send(Command::AddBrowser {
-        url: "https://example.com/".into(),
-    });
-    let shown = next(&updates, |u| match u {
-        Update::OpenAddOn(id) => Some(id),
+    let quiet = rbs_studio_host::studio_host::ApiReply::QuietTicket(4);
+    host.send(crate::add_browser("https://example.com/", quiet));
+    let refused = next(&updates, |u| match u {
+        Update::ApiAnswer {
+            ticket: 4,
+            result: Err(e),
+        } => Some(e),
         Update::Sources(rows) => {
             assert_eq!(rows.len(), 1, "no source was added");
             None
         }
         _ => None,
     });
-    assert_eq!(shown, engine);
+    let data = refused.data.expect("a reason");
+    assert_eq!(data["reason"], "needs_addon");
+    assert_eq!(data["addon"], engine);
 
     // Installed: Browser adds a page.
     host.send(Command::AddOn {
@@ -441,9 +445,8 @@ fn add_source_browser_leads_to_the_engine_until_it_is_installed() {
         }
         _ => None,
     });
-    host.send(Command::AddBrowser {
-        url: "https://example.com/two".into(),
-    });
+    let shown = rbs_studio_host::studio_host::ApiReply::Shown;
+    host.send(crate::add_browser("https://example.com/two", shown));
     next(&updates, |u| match u {
         Update::OpenAddOn(_) => panic!("the engine is installed"),
         Update::Sources(rows) => (rows.len() == 2).then_some(()),

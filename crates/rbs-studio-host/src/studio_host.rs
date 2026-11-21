@@ -701,10 +701,6 @@ impl Host {
             | Command::SetLoudnessShown(..)
             | Command::SetLoudnessSettings { .. } => self.canvas_and_mix_command(c, notify),
             Command::AddSample { .. }
-            | Command::AddStamp { .. }
-            | Command::AddImage { .. }
-            | Command::AddMedia { .. }
-            | Command::AddBrowser { .. }
             | Command::ApplyLook { .. }
             | Command::SetFilterValues { .. }
             | Command::PreviewFilter { .. }
@@ -724,9 +720,9 @@ impl Host {
             | Command::SetStudioMode(..)
             | Command::Rehearse
             | Command::SetSwapAfterTransition(..) => self.scene_command(c, notify),
-            Command::SetSourceBox { .. }
-            | Command::SetSourceCrop { .. }
-            | Command::TransformSource { .. } => self.item_command(c, notify),
+            Command::SetSourceBox { .. } | Command::SetSourceCrop { .. } => {
+                self.item_command(c, notify)
+            }
             Command::StartRecording(..)
             | Command::StartVerticalRecording(..)
             | Command::SetVerticalProfile(..)

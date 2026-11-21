@@ -949,7 +949,7 @@ fn a_browser_page_keeps_its_page_settings_through_the_host() {
         Update::Failed(e) => panic!("{e}"),
         _ => None,
     });
-    host.send(Command::AddBrowser { url: String::new() });
+    host.send(crate::add_browser("", ApiReply::Shown));
     let rows = rows_where(&rx, |r| r.iter().any(|r| r.browser.is_some()));
     let id = rows.iter().find(|r| r.browser.is_some()).unwrap().id;
     let set = |key: &str, value: serde_json::Value| {

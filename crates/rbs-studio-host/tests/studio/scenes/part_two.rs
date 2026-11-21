@@ -83,7 +83,7 @@ pub(super) fn the_control_api_adds_and_removes_the_vertical_canvas() {
 #[test]
 pub(super) fn style_crop_and_transform_on_the_vertical_canvas_leave_the_main_layout() {
     use rbs_scene::model::{ItemStyle, Shape, SourceId};
-    use rbs_studio_host::studio_host::{Command, OutputCanvas, TransformOp};
+    use rbs_studio_host::studio_host::{Command, OutputCanvas};
     let Some((host, updates, _api, mut c)) = start() else {
         return;
     };
@@ -147,11 +147,14 @@ pub(super) fn style_crop_and_transform_on_the_vertical_canvas_leave_the_main_lay
         rows[0].vertical_layout.map(|l| l.style.shape),
         Some(Shape::Circle)
     );
-    host.send(Command::TransformSource {
-        id,
-        op: TransformOp::FlipHorizontal,
-        gesture: 0,
-        canvas: OutputCanvas::Vertical,
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::ItemFlip(rbs_api::request::FlipItem {
+            item,
+            axis: rbs_api::request::Axis::Horizontal,
+            canvas: OutputCanvas::Vertical,
+            gesture: 0,
+        })),
+        reply: rbs_studio_host::studio_host::ApiReply::Shown,
     });
     let rows = next(&updates, |u| match u {
         Update::Sources(r)

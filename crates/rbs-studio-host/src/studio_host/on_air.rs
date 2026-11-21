@@ -43,6 +43,7 @@ const BY_TARGET: &[&str] = &[
     "item.fit",
     "item.align",
     "item.reset_transform",
+    "item.set_rotation",
     "item.set_visible",
     "item.set_locked",
     "item.set_show_for",

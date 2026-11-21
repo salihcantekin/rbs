@@ -659,7 +659,7 @@ impl Host {
 
     /// Adds a colour shape, centred on the canvas being edited. The picture is a tiny
     /// texture; the shape is the item's outline, so the colour fills the box.
-    pub(super) fn add_stamp(&mut self, kind: u8) -> Result<SourceId, Refusal> {
+    pub(super) fn add_stamp(&mut self, kind: u8, name: Option<&str>) -> Result<SourceId, Refusal> {
         let canvas = self
             .collection
             .canvas(self.canvas)
@@ -698,11 +698,21 @@ impl Host {
         // The shape is the item's box. The texture only carries the fill.
         settings.insert(keys::WIDTH.into(), SettingValue::Int(2));
         settings.insert(keys::HEIGHT.into(), SettingValue::Int(2));
-        self.add_still(base, SourceKind::Color, settings, layout, None)
+        self.add_still(
+            name.unwrap_or(base),
+            SourceKind::Color,
+            settings,
+            layout,
+            None,
+        )
     }
 
     /// Adds a PNG file as an image source, fitted inside half the canvas and centred.
-    pub(super) fn add_image_file(&mut self, path: &std::path::Path) -> Result<SourceId, Refusal> {
+    pub(super) fn add_image_file(
+        &mut self,
+        path: &std::path::Path,
+        name: Option<&str>,
+    ) -> Result<SourceId, Refusal> {
         let (pw, ph, _) = rbs_sources::still::decode_png(path).map_err(Refusal::Invalid)?;
         let canvas = self
             .collection
@@ -730,11 +740,21 @@ impl Host {
             .and_then(|s| s.to_str())
             .filter(|s| !s.is_empty())
             .unwrap_or("Image");
-        self.add_still(base, SourceKind::Image, settings, layout, None)
+        self.add_still(
+            name.unwrap_or(base),
+            SourceKind::Image,
+            settings,
+            layout,
+            None,
+        )
     }
 
     /// Adds a local media file as a source, centred at half the canvas.
-    pub(super) fn add_browser_page(&mut self, url: &str) -> Result<SourceId, Refusal> {
+    pub(super) fn add_browser_page(
+        &mut self,
+        url: &str,
+        name: Option<&str>,
+    ) -> Result<SourceId, Refusal> {
         let canvas = self
             .collection
             .canvas(self.canvas)
@@ -751,10 +771,20 @@ impl Host {
         rbs_sources::validate_settings(&SourceKind::Browser.type_id(), &settings)
             .map_err(|error| Refusal::Invalid(error.to_string()))?;
         let layout = Layout::fit(canvas.size.width, canvas.size.height, w as u32, h as u32);
-        self.add_still("Page", SourceKind::Browser, settings, layout, None)
+        self.add_still(
+            name.unwrap_or("Page"),
+            SourceKind::Browser,
+            settings,
+            layout,
+            None,
+        )
     }
 
-    pub(super) fn add_media_file(&mut self, path: &std::path::Path) -> Result<SourceId, Refusal> {
+    pub(super) fn add_media_file(
+        &mut self,
+        path: &std::path::Path,
+        name: Option<&str>,
+    ) -> Result<SourceId, Refusal> {
         let canvas = self
             .collection
             .canvas(self.canvas)
@@ -778,6 +808,7 @@ impl Host {
             .and_then(|s| s.to_str())
             .filter(|s| !s.is_empty())
             .unwrap_or("Media");
+        let base = name.unwrap_or(base);
         let name = unique_name(&self.collection, base);
         let (source, undo_source) = self
             .collection
