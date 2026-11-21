@@ -84,6 +84,7 @@ mod hold;
 mod iso_audio;
 mod iso_video;
 mod latency;
+mod linger;
 mod loudness;
 mod meters;
 mod monitor;
@@ -92,6 +93,7 @@ mod rehearse;
 mod replay;
 mod scroll;
 mod stinger;
+mod studio_mode;
 mod sync_measure;
 mod transition;
 pub use hold::{HOLD_SCENE_TIMEOUT, HoldFallback, HoldRefused, HoldSound, HoldState};
@@ -1586,7 +1588,7 @@ impl Studio {
         }
 
         let mut graph = GraphDescription::new();
-        let mut binder = SceneBinder::new(sources.node_types());
+        let mut binder = SceneBinder::new(sources.node_types()).with_clock(engine.clock());
         if settings.audio {
             binder = binder.with_audio(parts.audio);
         }
@@ -3476,20 +3478,6 @@ impl Studio {
             picture: (id, stats),
         });
         Ok(())
-    }
-
-    /// Where a UI connects to the preview scene's picture (studio mode, ADR-0061), once
-    /// it runs. `None` outside studio mode and without a preview description.
-    pub fn scene_preview(&self) -> Option<PreviewEndpoint> {
-        self.scene_preview
-            .as_ref()
-            .and_then(|sp| sp.picture.1.endpoint())
-    }
-
-    /// True while the preview scene's compositor and picture run (studio mode with a
-    /// preview description, ADR-0061).
-    pub fn studio_mode(&self) -> bool {
-        self.scene_preview.is_some()
     }
 
     /// Volume and mute only (ADR-0059, ADR-0081): takes the sources' `audio` (with the

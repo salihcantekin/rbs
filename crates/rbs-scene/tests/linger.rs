@@ -228,10 +228,11 @@ fn off_delete_and_a_linger_set_to_zero_end_it_at_once() {
                     .set_source_settings_and_hints(r.cam, source.settings, hints)
                     .unwrap();
             }
-            1 => r
-                .col
-                .set_source_activity(r.cam, SourceActivity::new(Some(Run::Shown), None, None))
-                .unwrap(),
+            1 => {
+                r.col
+                    .set_source_activity(r.cam, SourceActivity::new(Some(Run::Shown), None, None))
+                    .unwrap();
+            }
             _ => {
                 r.col.delete_source(r.cam).unwrap();
                 r.sync();
