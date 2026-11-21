@@ -698,6 +698,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
 
 [[package]]
+name = "mach2"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b0d28e293f2b8c9d2b2d1c0193bd3c1cbdc0d2cf396888dc01162f7cf9d6c3f3"
+
+[[package]]
 name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -767,6 +773,31 @@ dependencies = [
  "libc",
  "objc2",
  "objc2-core-foundation",
+]
+
+[[package]]
+name = "objc2-io-surface"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "180788110936d59bab6bd83b6060ffdfffb3b922ba1396b312ae795e1de9d81d"
+dependencies = [
+ "bitflags",
+ "libc",
+ "objc2",
+ "objc2-core-foundation",
+]
+
+[[package]]
+name = "objc2-metal"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a0125f776a10d00af4152d74616409f0d4a2053a6f57fa5b7d6aa2854ac04794"
+dependencies = [
+ "bitflags",
+ "block2",
+ "objc2",
+ "objc2-foundation",
+ "objc2-io-surface",
 ]
 
 [[package]]
@@ -858,13 +889,18 @@ dependencies = [
 name = "rbs-browser-cef"
 version = "0.0.1"
 dependencies = [
+ "block2",
  "cef",
  "libc",
  "objc2",
  "objc2-app-kit",
+ "objc2-core-foundation",
  "objc2-foundation",
+ "objc2-io-surface",
+ "objc2-metal",
  "rbs-browser-ipc",
  "rbs-browser-shm",
+ "rbs-mach",
  "windows",
  "windows-sys 0.61.2",
 ]
@@ -879,6 +915,13 @@ version = "0.0.1"
 dependencies = [
  "libc",
  "windows",
+]
+
+[[package]]
+name = "rbs-mach"
+version = "0.0.1"
+dependencies = [
+ "mach2",
 ]
 
 [[package]]

@@ -82,13 +82,12 @@ pub(super) fn the_control_api_adds_and_removes_the_vertical_canvas() {
 
 #[test]
 pub(super) fn style_crop_and_transform_on_the_vertical_canvas_leave_the_main_layout() {
-    use rbs_scene::model::{ItemStyle, Shape, SourceId};
+    use rbs_scene::model::{ItemStyle, Shape};
     use rbs_studio_host::studio_host::{Command, OutputCanvas};
     let Some((host, updates, _api, mut c)) = start() else {
         return;
     };
     let raw = add(&mut c, "screen", "Screen");
-    let id = SourceId::from_raw(raw as u32);
     let item = sources(&mut c)
         .iter()
         .find(|r| r["id"] == raw)
@@ -129,14 +128,14 @@ pub(super) fn style_crop_and_transform_on_the_vertical_canvas_leave_the_main_lay
         _ => None,
     });
     assert_eq!(rows[0].layout, Some(main));
-    host.send(Command::SetSourceCrop {
-        seq: 9,
-        gesture: 0,
-        id,
-        crop: [10, 0, 0, 0],
-        keep_scale: false,
-        canvas: OutputCanvas::Vertical,
-    });
+    host.send(crate::set_crop(
+        item,
+        [10, 0, 0, 0],
+        false,
+        OutputCanvas::Vertical,
+        0,
+        9,
+    ));
     let rows = next(&updates, |u| match u {
         Update::Sources(r) if r[0].vertical_layout.is_some_and(|l| l.crop.left == 10) => Some(r),
         Update::Error(e) => panic!("{e}"),
@@ -1210,8 +1209,7 @@ pub(super) fn a_page_keep_running_setting_is_written_to_its_activity_policy() {
 /// window's own number: the server clears the window's bit from it.
 #[test]
 pub(super) fn a_client_gesture_never_joins_a_window_step() {
-    use rbs_scene::model::SourceId;
-    use rbs_studio_host::studio_host::{Command, OutputCanvas, WINDOW_GESTURE};
+    use rbs_studio_host::studio_host::{OutputCanvas, WINDOW_GESTURE};
     let Some((host, updates, _api, mut c)) = start() else {
         return;
     };
@@ -1229,14 +1227,14 @@ pub(super) fn a_client_gesture_never_joins_a_window_step() {
         }
     };
     let gesture = WINDOW_GESTURE | 7;
-    host.send(Command::SetSourceCrop {
-        seq: 1,
+    host.send(crate::set_crop(
+        item as u32,
+        [0, 0, 10, 0],
+        false,
+        OutputCanvas::Main,
         gesture,
-        id: SourceId::from_raw(raw as u32),
-        crop: [0, 0, 10, 0],
-        keep_scale: false,
-        canvas: OutputCanvas::Main,
-    });
+        1,
+    ));
     next(&updates, right(10));
     ok(&c.call(
         "item.set_crop",

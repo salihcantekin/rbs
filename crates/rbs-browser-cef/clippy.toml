@@ -13,4 +13,6 @@ disallowed-methods = [
     { path = "windows::Win32::System::Threading::WaitForMultipleObjects", reason = "no CPU wait in a CEF callback (ADR-0157 decision 1)" },
     { path = "windows::Win32::System::Threading::Sleep", reason = "no CPU wait in a CEF callback (ADR-0157 decision 1)" },
     { path = "windows::Win32::Graphics::Direct3D11::ID3D11Fence::SetEventOnCompletion", reason = "no CPU wait on the helper's copy (ADR-0157 decision 1)" },
+    { path = "objc2_metal::MTLCommandBuffer::waitUntilCompleted", reason = "no CPU wait on the helper's copy (ADR-0167 decision 4)" },
+    { path = "objc2_metal::MTLCommandBuffer::waitUntilScheduled", reason = "no CPU wait on the helper's copy (ADR-0167 decision 4)" },
 ]

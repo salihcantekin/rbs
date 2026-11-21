@@ -18,7 +18,7 @@ pub(super) fn each_output_profile_has_its_own_stream_key() {
     // Another profile: the default profile's key is not its key.
     let b = rbs_studio_host::stream_key::account("studio-b");
     host.send(Command::SetKeyAccount(b.clone()));
-    host.send(Command::StartStream(request()));
+    host.send(crate::go_live(rbs_api::types::OutputTarget::Main));
     assert_eq!(stream(&rx), StreamUpdate::NoKey);
     host.send(Command::SaveStreamKey(Some(rbs_transport::Secret::new(
         "b_key",
@@ -447,7 +447,7 @@ pub(super) fn the_window_holds_and_resumes_the_stream() {
             _ => None,
         })
     };
-    host.send(Command::StartStream(request()));
+    host.send(crate::go_live(rbs_api::types::OutputTarget::Main));
     assert!(matches!(stream(&rx), StreamUpdate::Started { .. }));
     host.send(Command::HoldStream);
     assert_eq!(held(&rx), [Some(true), None]);
@@ -501,7 +501,7 @@ pub(super) fn a_control_api_client_holds_a_stream_and_takes_a_break() {
     assert_eq!(none["error"]["data"]["kind"], "conflict", "{none}");
     let none = c.call("output.break_toggle", main.clone());
     assert_eq!(none["error"]["data"]["kind"], "conflict", "{none}");
-    host.send(Command::StartStream(request()));
+    host.send(crate::go_live(rbs_api::types::OutputTarget::Main));
     assert!(matches!(stream(&rx), StreamUpdate::Started { .. }));
     let live = c.event("stream.state", |d| d["state"] == "live");
     assert_eq!(live["params"]["data"]["held"], false, "{live}");
@@ -587,7 +587,7 @@ pub(super) fn a_control_api_client_holds_a_stream_with_a_scene() {
     add_display(&host, &rx);
     let added = c.call("scene.add", serde_json::json!({"name": "Break"}));
     let brk = added["result"]["scene"].as_u64().unwrap();
-    host.send(Command::StartStream(request()));
+    host.send(crate::go_live(rbs_api::types::OutputTarget::Main));
     assert!(matches!(stream(&rx), StreamUpdate::Started { .. }));
     c.event("stream.state", |d| d["state"] == "live");
 
@@ -675,21 +675,13 @@ pub(super) fn stream_markers_mark_a_running_recording_when_the_profile_asks() {
             stream_events: on,
             ..Default::default()
         };
-        host.send(Command::StartRecording(RecordRequest {
-            path: dir.join(name),
-            container: ContainerId::Matroska,
-            encoder: None,
-            video: Some(VideoSettings::default()),
-            audio_bitrate_bps: 128_000,
-            bit_depth: None,
-            size: None,
-            iso: false,
-            editor_project: None,
-            markers,
-        }));
+        let mut profile = crate::profile_into(&dir.join(name), None);
+        profile.markers = markers;
+        host.send(Command::SetProfile(profile));
+        host.send(crate::record_file(&dir.join(name)));
         assert!(matches!(recording(&rx), RecordingUpdate::Started { .. }));
         clock.advance(Duration::from_secs(2));
-        host.send(Command::StartStream(request()));
+        host.send(crate::go_live(rbs_api::types::OutputTarget::Main));
         assert!(matches!(stream(&rx), StreamUpdate::Started { .. }));
         clock.advance(Duration::from_secs(3));
         host.send(Command::Api {
@@ -763,18 +755,7 @@ pub(super) fn markers_while_paused_sit_on_the_join_and_the_manifest_lists_the_pa
     let dir = std::env::temp_dir().join(format!("rbs-app-pause-markers-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    host.send(Command::StartRecording(RecordRequest {
-        path: dir.join("take.mkv"),
-        container: ContainerId::Matroska,
-        encoder: None,
-        video: Some(VideoSettings::default()),
-        audio_bitrate_bps: 128_000,
-        bit_depth: None,
-        size: None,
-        iso: false,
-        editor_project: None,
-        markers: rbs_studio_host::record_profile::MarkerSettings::default(),
-    }));
+    host.send(crate::record_file(&dir.join("take.mkv")));
     assert!(matches!(recording(&rx), RecordingUpdate::Started { .. }));
     let s = 1_000_000_000u64;
     clock.advance(Duration::from_secs(2));
@@ -930,7 +911,7 @@ pub(super) fn go_live_sends_to_every_enabled_destination_with_its_own_key() {
     let (host, rx) = host(gpu, keys.clone(), Arc::clone(&server), &TestClock::new());
     add_display(&host, &rx);
     host.send(Command::SetStreamDestinations(destinations(&keys), false));
-    host.send(Command::StartStream(request()));
+    host.send(crate::go_live(rbs_api::types::OutputTarget::Main));
     match stream(&rx) {
         StreamUpdate::Started { url, .. } => assert_eq!(url, URL),
         other => panic!("{other:?}"),
@@ -981,7 +962,7 @@ pub(super) fn a_destination_that_drops_ends_alone_and_the_stream_goes_on() {
     let (host, rx) = host(gpu, keys.clone(), Arc::clone(&server), &TestClock::new());
     add_display(&host, &rx);
     host.send(Command::SetStreamDestinations(destinations(&keys), false));
-    host.send(Command::StartStream(request()));
+    host.send(crate::go_live(rbs_api::types::OutputTarget::Main));
     assert!(matches!(stream(&rx), StreamUpdate::Started { .. }));
     link_where(&rx, |l| l.connected && l.connects == 2);
 

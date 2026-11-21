@@ -104,11 +104,24 @@ fn camera(rx: &Receiver<Update>) -> Option<CameraStatus> {
     })
 }
 
-fn start(host: &StudioHost) {
-    host.send(Command::StartVirtualCamera {
+/// The camera settings the window sends before its first start, with the
+/// install state not read yet (starting says whether it is added).
+fn ready(host: &StudioHost) {
+    host.send(Command::SetVirtualCamera(CameraSetup {
+        state: None,
         width: 640,
         height: 360,
         fps: FrameRate::new(15, 1).unwrap(),
+        busy: false,
+    }));
+}
+
+/// The window's start (ADR-0164 decision 4): `vcam.start` with the settings
+/// [`set_up`] gave.
+fn start(host: &StudioHost) {
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::VcamStart),
+        reply: rbs_studio_host::studio_host::ApiReply::QuietIf(rbs_api::ErrorKind::Conflict),
     });
 }
 
@@ -118,6 +131,7 @@ fn the_camera_sends_until_stopped_and_across_a_canvas_change() {
     let factory = Arc::new(TestVcamFactory::new());
     factory.install().unwrap();
     let (host, rx) = studio(gpu, Some(Arc::clone(&factory)));
+    ready(&host);
     start(&host);
     let s = camera(&rx).expect("sending");
     assert_eq!((s.width, s.height, s.rate), (640, 360, 15));
@@ -153,29 +167,39 @@ fn a_start_is_refused_without_the_camera() {
     let Some(gpu) = gpu() else { return };
     // Not added.
     let (host, rx) = studio(Arc::clone(&gpu), Some(Arc::new(TestVcamFactory::new())));
+    ready(&host);
     start(&host);
-    let error = next(&rx, |u| match u {
-        Update::Error(e) => Some(e),
-        _ => None,
-    });
+    let error = refused(&rx);
     assert!(
         error.starts_with("The virtual camera did not start"),
         "{error}"
     );
-    assert_eq!(camera(&rx), None);
     drop(host);
     // No adapter on this platform.
     let (host, rx) = studio(gpu, None);
+    ready(&host);
     start(&host);
-    let error = next(&rx, |u| match u {
-        Update::Error(e) => Some(e),
-        _ => None,
-    });
+    let error = refused(&rx);
     assert_eq!(
         error,
-        "The virtual camera is not available on this computer."
+        "the virtual camera is not available on this computer"
     );
-    assert_eq!(camera(&rx), None);
+}
+
+/// A refused start: the camera's state (still off) for the Sending card and the
+/// error, in either order; returns the error.
+fn refused(rx: &Receiver<Update>) -> String {
+    let (mut error, mut off) = (None, false);
+    next(rx, |u| {
+        match u {
+            Update::Error(e) => error = Some(e),
+            Update::VirtualCamera(None) => off = true,
+            Update::VirtualCamera(Some(s)) => panic!("sending: {s:?}"),
+            _ => {}
+        }
+        (off && error.is_some()).then_some(())
+    });
+    error.unwrap()
 }
 
 struct ChannelSender(Sender<serde_json::Value>);

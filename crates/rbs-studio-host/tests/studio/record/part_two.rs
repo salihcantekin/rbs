@@ -28,7 +28,7 @@ pub(super) fn markers_go_into_the_manifest_when_the_recording_stops() {
 
     // A plain recording (`iso` off).
     let plain = dir.join("plain.mkv");
-    host.send(Command::StartRecording(request(plain.clone(), None)));
+    crate::record_into(&host, plain.clone(), None);
     assert!(matches!(recording(&rx), RecordingUpdate::Started { .. }));
     clock.advance(Duration::from_secs(3));
     let added = api.call(
@@ -113,7 +113,7 @@ pub(super) fn markers_go_into_the_manifest_when_the_recording_stops() {
 
     // No marker: no sidecar.
     let quiet = dir.join("quiet.mkv");
-    host.send(Command::StartRecording(request(quiet.clone(), None)));
+    crate::record_into(&host, quiet.clone(), None);
     assert!(matches!(recording(&rx), RecordingUpdate::Started { .. }));
     stop_recording(&host, &rx, &clock);
     assert!(quiet.is_file());
@@ -122,14 +122,19 @@ pub(super) fn markers_go_into_the_manifest_when_the_recording_stops() {
     // A recording folder: the markers join the start manifest.
     api.reconnect();
     let take = dir.join("take.mkv");
-    host.send(Command::StartRecording(with_tracks(take, None)));
-    assert!(matches!(recording(&rx), RecordingUpdate::Started { .. }));
+    crate::record_with_tracks(&host, take, None);
+    // Named by the time: its folder holds the manifest.
+    let folder = match recording(&rx) {
+        RecordingUpdate::Started { path, .. } => path.parent().unwrap().to_owned(),
+        other => panic!("{other:?}"),
+    };
+    let name = folder.file_name().unwrap().to_str().unwrap().to_owned();
     clock.advance(Duration::from_secs(2));
     let added = api.call("marker.add", serde_json::json!({"canvas": "main"}));
     assert_eq!(added["result"]["markers"][0]["index"], 1, "{added}");
     written_some(&rx, &clock);
     stop_recording(&host, &rx, &clock);
-    let text = std::fs::read_to_string(dir.join("take").join("recording.rbs.toml")).unwrap();
+    let text = std::fs::read_to_string(folder.join("recording.rbs.toml")).unwrap();
     let manifest = rbs_manifest::RecordingManifest::from_toml(&text).unwrap();
     assert_eq!(manifest.markers.len(), 1, "{text}");
     assert_eq!(manifest.markers[0].label, "Marker 1");
@@ -159,40 +164,14 @@ pub(super) fn markers_go_into_the_manifest_when_the_recording_stops() {
         done.duration_ns >= timing.start_offset_ns + timing.duration_ns,
         "{text}"
     );
-    // `project.export` writes the project next to the manifest, never replacing one.
-    api.reconnect();
-    let first = api.call(
-        "project.export",
-        serde_json::json!({"recording": "take", "format": "fcpxml"}),
-    );
-    assert_eq!(
-        first["result"],
-        serde_json::json!({"file": "take.fcpxml", "missing": []}),
-        "{first}"
-    );
-    let second = api.call(
-        "project.export",
-        serde_json::json!({"recording": "take", "format": "fcpxml"}),
-    );
-    assert_eq!(second["result"]["file"], "take 2.fcpxml", "{second}");
-    let project = std::fs::read_to_string(dir.join("take").join("take.fcpxml")).unwrap();
-    assert!(project.contains("<fcpxml version=\"1.9\">"), "{project}");
-    assert!(project.contains("master.mkv"), "{project}");
-    // FCP7 XML, the format DaVinci Resolve reads markers from.
-    let xml = api.call(
-        "project.export",
-        serde_json::json!({"recording": "take", "format": "xmeml"}),
-    );
-    assert_eq!(xml["result"]["file"], "take.xml", "{xml}");
-    let project = std::fs::read_to_string(dir.join("take").join("take.xml")).unwrap();
-    assert!(project.contains("<xmeml version=\"5\">"), "{project}");
-    assert!(project.contains("master.mkv"), "{project}");
+    exports_beside_the_manifest(&mut api, &folder, &name);
 
     // The editor project setting: a plain take keeps its timing and writes its
     // project when it stops, with no marker.
-    let mut with_project = request(dir.join("edit.mkv"), None);
+    let mut with_project = crate::profile_into(&dir.join("edit.mkv"), None);
     with_project.editor_project = Some(rbs_studio_host::record_profile::EditorProject::Fcpxml);
-    host.send(Command::StartRecording(with_project));
+    host.send(Command::SetProfile(with_project));
+    host.send(crate::record_file(&dir.join("edit.mkv")));
     assert!(matches!(recording(&rx), RecordingUpdate::Started { .. }));
     written_some(&rx, &clock);
     let stopped = stop_recording(&host, &rx, &clock);
@@ -215,10 +194,47 @@ pub(super) fn markers_go_into_the_manifest_when_the_recording_stops() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// `project.export` writes the project next to the manifest of the take `name` in
+/// `folder`, never replacing one.
+fn exports_beside_the_manifest(api: &mut ApiClient, folder: &std::path::Path, name: &str) {
+    api.reconnect();
+    let first = api.call(
+        "project.export",
+        serde_json::json!({"recording": name, "format": "fcpxml"}),
+    );
+    assert_eq!(
+        first["result"],
+        serde_json::json!({"file": format!("{name}.fcpxml"), "missing": []}),
+        "{first}"
+    );
+    let second = api.call(
+        "project.export",
+        serde_json::json!({"recording": name, "format": "fcpxml"}),
+    );
+    assert_eq!(
+        second["result"]["file"],
+        format!("{name} 2.fcpxml"),
+        "{second}"
+    );
+    let project = std::fs::read_to_string(folder.join(format!("{name}.fcpxml"))).unwrap();
+    assert!(project.contains("<fcpxml version=\"1.9\">"), "{project}");
+    assert!(project.contains("master.mkv"), "{project}");
+    // FCP7 XML, the format DaVinci Resolve reads markers from.
+    let xml = api.call(
+        "project.export",
+        serde_json::json!({"recording": name, "format": "xmeml"}),
+    );
+    assert_eq!(xml["result"]["file"], format!("{name}.xml"), "{xml}");
+    let project = std::fs::read_to_string(folder.join(format!("{name}.xml"))).unwrap();
+    assert!(project.contains("<xmeml version=\"5\">"), "{project}");
+    assert!(project.contains("master.mkv"), "{project}");
+}
+
 /// `record.estimate` (protocol 1.53, ADR-0087 step C2a): the plan of a start of the
 /// saved profile next to what runs, its separate files listed with their cost, and
 /// the live limit of separate video files (3 while the encoder's capacity is
 /// unknown). It opens nothing.
+
 #[test]
 pub(super) fn the_estimate_lists_a_start_and_its_separate_files_without_opening_anything() {
     let Some(gpu) = gpu() else { return };
@@ -954,7 +970,7 @@ pub(super) fn starts_are_refused_while_the_test_runs_and_a_cancel_ends_it() {
     }
     // The desktop's Record says why.
     let path = dir.join("rec").join("x.mkv");
-    host.send(Command::StartRecording(request(path, None)));
+    crate::record_into(&host, path, None);
     match recording(&rx) {
         RecordingUpdate::NotStarted(why) => {
             assert!(why.contains("Test this computer is running"), "{why}");
@@ -1029,9 +1045,10 @@ pub(super) fn scene_markers_and_the_marker_lead_follow_the_request() {
     let second = added["result"]["scene"].clone();
     assert!(second.is_u64(), "{added}");
 
-    let mut with_lead = request(dir.join("auto.mkv"), None);
+    let mut with_lead = crate::profile_into(&dir.join("auto.mkv"), None);
     with_lead.markers.lead_ms = 2_000;
-    host.send(Command::StartRecording(with_lead));
+    host.send(Command::SetProfile(with_lead));
+    host.send(crate::record_file(&dir.join("auto.mkv")));
     assert!(matches!(recording(&rx), RecordingUpdate::Started { .. }));
     clock.advance(Duration::from_secs(5));
     let switched = api.call("scene.switch", serde_json::json!({"scene": second}));
@@ -1075,9 +1092,10 @@ pub(super) fn scene_markers_and_the_marker_lead_follow_the_request() {
     );
 
     // Scene markers off: a switch marks nothing, so the plain take writes no manifest.
-    let mut quiet = request(dir.join("quiet.mkv"), None);
+    let mut quiet = crate::profile_into(&dir.join("quiet.mkv"), None);
     quiet.markers.scene_changes = false;
-    host.send(Command::StartRecording(quiet));
+    host.send(Command::SetProfile(quiet));
+    host.send(crate::record_file(&dir.join("quiet.mkv")));
     assert!(matches!(recording(&rx), RecordingUpdate::Started { .. }));
     clock.advance(Duration::from_secs(1));
     let back = api.call("scene.switch", serde_json::json!({"scene": first}));
@@ -1109,7 +1127,7 @@ pub(super) fn the_window_adds_and_takes_back_a_marker() {
         })
     };
 
-    host.send(Command::StartRecording(request(dir.join("ui.mkv"), None)));
+    crate::record_into(&host, dir.join("ui.mkv"), None);
     assert!(matches!(recording(&rx), RecordingUpdate::Started { .. }));
     clock.advance(Duration::from_secs(3));
     host.send(Command::AddMarker);
@@ -1165,10 +1183,7 @@ pub(super) fn markers_reach_the_manifest_while_recording() {
         }
     };
 
-    host.send(Command::StartRecording(request(
-        dir.join("flush.mkv"),
-        None,
-    )));
+    crate::record_into(&host, dir.join("flush.mkv"), None);
     assert!(matches!(recording(&rx), RecordingUpdate::Started { .. }));
     clock.advance(Duration::from_secs(1));
     let added = api.call("marker.add", serde_json::json!({"label": "Keep"}));
@@ -1252,10 +1267,11 @@ pub(super) fn slow_a_matroska_master_gets_its_markers_as_chapters() {
     let mut api = ApiClient::attach(&host);
 
     let path = dir.join("chapters.mkv");
-    let mut r = request(path.clone(), None);
+    let mut r = crate::profile_into(&path, None);
     // The editor project setting keeps the master's timing.
     r.editor_project = Some(rbs_studio_host::record_profile::EditorProject::Xmeml);
-    host.send(Command::StartRecording(r));
+    host.send(Command::SetProfile(r));
+    host.send(crate::record_file(&path));
     assert!(matches!(recording(&rx), RecordingUpdate::Started { .. }));
     // The real muxer refuses a stream more than its interleaving bound (1 s) behind
     // the other: the clock moves slowly enough for the software GPU's video to keep up
@@ -1338,10 +1354,7 @@ pub(super) fn the_window_pauses_and_resumes_the_recording() {
         })
     };
 
-    host.send(Command::StartRecording(request(
-        dir.join("pause.mkv"),
-        None,
-    )));
+    crate::record_into(&host, dir.join("pause.mkv"), None);
     assert!(matches!(recording(&rx), RecordingUpdate::Started { .. }));
     clock.advance(Duration::from_secs(2));
     host.send(Command::PauseRecording);
@@ -1417,7 +1430,7 @@ pub(super) fn a_token_without_the_permission_cannot_change_what_is_on_air() {
     );
     assert!(quiet.get("error").is_none(), "{quiet}");
 
-    host.send(Command::StartRecording(request(dir.join("take.mkv"), None)));
+    crate::record_into(&host, dir.join("take.mkv"), None);
     assert!(matches!(recording(&rx), RecordingUpdate::Started { .. }));
 
     let louder = api.call(

@@ -126,13 +126,6 @@ pub enum Update {
         /// Taken.
         ok: bool,
     },
-    /// The answer to [`Command::SetSourceCrop`] number `seq`, as [`Update::BoxPlaced`].
-    CropPlaced {
-        /// The request's number.
-        seq: u64,
-        /// Taken.
-        ok: bool,
-    },
     /// The studio runs. `preview`: where the UI connects to the canvas preview (`None`
     /// where the platform has none). `kinds`: the kinds the adapters can add.
     Started {

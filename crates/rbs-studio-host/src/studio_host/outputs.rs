@@ -705,10 +705,6 @@ impl Host {
     /// The window commands of this concern, routed by `Host::command`.
     pub(super) fn output_command(&mut self, c: Command, notify: &dyn Fn(Update)) {
         match c {
-            Command::StartRecording(r) => self.record_asked(OutputCanvas::Main, &r, notify),
-            Command::StartVerticalRecording(r) => {
-                self.record_asked(OutputCanvas::Vertical, &r, notify);
-            }
             Command::SetVerticalProfile(profile) => {
                 self.recording.vertical_profile = profile;
                 self.settings_changed();
@@ -762,19 +758,6 @@ impl Host {
                 if profile != self.recording.profile {
                     self.recording.profile = profile;
                     self.settings_changed();
-                }
-            }
-            Command::StartStream(r) => self.stream_asked(OutputCanvas::Main, &r, notify),
-            Command::StartVerticalStream(r) => {
-                self.stream_asked(OutputCanvas::Vertical, &r, notify);
-            }
-            Command::StartVirtualCamera { width, height, fps } => {
-                // An API client started it first: show the camera that runs, no error.
-                if self.vcam.camera.is_some() {
-                    notify(Update::VirtualCamera(self.camera_status()));
-                } else {
-                    let settings = VirtualCameraSettings::new(width, height, fps);
-                    let _ = self.start_camera_asked(settings, notify, true);
                 }
             }
             Command::StopVirtualCamera => self.stop_camera(notify),

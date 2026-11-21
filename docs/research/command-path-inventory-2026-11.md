@@ -144,7 +144,7 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `SetSourceActive` | Moved to `Command::Api` (step 3) | source.set_active |
 | `SetSourceVisible` | Moved to `Command::Api` (step 2) | item.set_visible |
 | `SetSourceBox` | Pending | item.set_box |
-| `SetSourceCrop` | Contract | item.set_crop has `gesture` (1.100); the window still waits for the ticketed `CropPlaced` answer, as `SetSourceBox` does |
+| `SetSourceCrop` | Moved to `Command::Api` | item.set_crop with `gesture`, answered by ticket; a refusal puts the handles back (ADR-0164 step 6) |
 | `TransformSource` | Moved to `Command::Api` (ADR-0166) | the item transform methods and item.set_rotation; the window maps each op |
 | `SetSourceRegion` | Moved to `Command::Api` (ADR-0164 step 2) | item.set_shown_region; the window names the main canvas, as before (the vertical canvas's Show buttons are a follow-up) |
 | `SetRecordSeparately` | Moved to `Command::Api` (step 6) | source.set_record_separately |
@@ -157,11 +157,11 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `SetSourceStyle` | Moved to `Command::Api` (ADR-0164 step 1) | item.set_style with `gesture` |
 | `SetSourceScroll` | Moved to `Command::Api` (ADR-0164 step 1) | item.set_scroll with `gesture` |
 | `ScrollLive` | Moved to `Command::Api` (step 6) | item.scroll_pause, item.scroll_resume, item.scroll_restart (the API now publishes the views after a control, as the window path did) |
-| `StartRecording` | Contract | record.start builds its request from host state; the window sends its own RecordRequest |
+| `StartRecording` | Moved to `Command::Api` | record.start {profile: "default", canvas} with `iso` absent; refusals carry `data.reason` (ADR-0164 step 6) |
 | `StopRecording` | Moved to `Command::Api` (step 6) | record.stop |
-| `StartVerticalRecording` | Contract | as StartRecording |
+| `StartVerticalRecording` | Moved to `Command::Api` | as StartRecording, `canvas: "vertical"` (ADR-0164 step 6) |
 | `StopVerticalRecording` | Moved to `Command::Api` (step 6) | record.stop |
-| `StartVerticalStream` | Contract | as StartStream |
+| `StartVerticalStream` | Moved to `Command::Api` | as StartStream, `canvas: "vertical"` (ADR-0164 step 6) |
 | `EndVerticalStream` | Moved to `Command::Api` (step 6) | stream.stop |
 | `SetVerticalProfile` | WindowOnly(Mirror) | settings.set `vertical_profile` (ADR-0164 step 5); the window saves the file it owns |
 | `SetVerticalStreamProfile` | WindowOnly(Mirror) | settings.set `vertical_stream` (ADR-0164 step 5); the window saves the file it owns |
@@ -176,9 +176,9 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `InteractInput` | Pending | browser.input; stays: one wire event per mouse move, the API takes a checked list of its own event form; input to a page not in Interact is ignored, the API refuses it |
 | `SetCanvas` | Pending | settings.set (canvas); stays: the window closes its preview first and waits for `Update::Canvas`, which the API path does not send for an unchanged canvas or a refusal, so the preview would stay closed |
 | `SetProfile` | WindowOnly Mirror |  |
-| `StartStream` | Contract | stream.start takes no request; the window sends its own StreamRequest |
+| `StartStream` | Moved to `Command::Api` | stream.start {canvas}; the host builds from the saved settings, refusals carry `data.reason` (ADR-0164 step 6) |
 | `EndStream` | Moved to `Command::Api` (step 6) | stream.stop |
-| `StartVirtualCamera` | Contract | vcam.start takes no size or rate |
+| `StartVirtualCamera` | Moved to `Command::Api` | vcam.start after `SetVirtualCamera`; the window is quiet on `conflict` (ADR-0164 step 6) |
 | `StopVirtualCamera` | Pending | vcam.stop; stays: the window path sends `VirtualCamera(None)` even when nothing sends, the API refuses |
 | `SetVirtualCamera` | WindowOnly LocalOnly |  |
 | `SetReplay` | WindowOnly(Mirror) | settings.set `replay` (ADR-0164 step 5); the window saves the file it owns |

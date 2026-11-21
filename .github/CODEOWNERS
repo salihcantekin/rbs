@@ -18,6 +18,10 @@
 /crates/rbs-sources/src/browser.rs @salihcantekin
 /crates/rbs-sources/src/browser_sound.rs @salihcantekin
 /crates/rbs-browser-shm/src/sound.rs @salihcantekin
+/crates/rbs-browser-shm/src/gpu_slots.rs @salihcantekin
+/crates/rbs-browser-shm/src/copy_queue.rs @salihcantekin
+/crates/rbs-browser-cef/src/gpu.rs @salihcantekin
+/crates/rbs-browser-cef/src/gpu_metal.rs @salihcantekin
 /crates/rbs-engine/src/worker.rs @salihcantekin
 /crates/rbs-codec*/          @salihcantekin
 /crates/rbs-mux*/            @salihcantekin

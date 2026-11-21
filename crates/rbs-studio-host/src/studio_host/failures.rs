@@ -81,18 +81,39 @@ pub(super) fn log_api_refusal(method: &str, e: &ApiError) {
 
 /// What the UI waits for after `c`, if `c` panics before answering.
 pub(super) fn answer_on_panic(c: &Command) -> Option<Update> {
-    let why = || rbs_crash::CAUGHT_TEXT.to_owned();
     match c {
-        Command::StartRecording(_) => Some(Update::Recording(RecordingUpdate::NotStarted(why()))),
-        Command::StartStream(_) => Some(Update::Stream(StreamUpdate::NotStarted(why()))),
-        Command::StartVerticalRecording(_) => Some(Update::VerticalRecording(
-            RecordingUpdate::NotStarted(why()),
-        )),
-        Command::StartVerticalStream(_) => {
-            Some(Update::VerticalStream(StreamUpdate::NotStarted(why())))
-        }
+        Command::Api { call, .. } => api_answer_on_panic(call),
         _ => None,
     }
+}
+
+/// What the window waits for after its control API `call`, if the call panics: its
+/// Record and Go live (ADR-0164 decision 3), one canvas each, and a recording into
+/// a named file wait for their start.
+pub(super) fn api_answer_on_panic(call: &rbs_api::Command) -> Option<Update> {
+    start_refused(call, rbs_crash::CAUGHT_TEXT)
+}
+
+/// The update the window's start `call` waits for when it ends unstarted, `why`.
+pub(super) fn start_refused(call: &rbs_api::Command, why: &str) -> Option<Update> {
+    let why = || why.to_owned();
+    let canvas = |t: Option<rbs_api::types::OutputTarget>| t.unwrap_or_default().single();
+    let (record, canvas) = match call {
+        rbs_api::Command::RecordStart(p) => (true, canvas(p.canvas)?),
+        rbs_api::Command::RecordStartToFile(p) => (true, p.canvas.unwrap_or_default()),
+        rbs_api::Command::StreamStart(p) => (false, canvas(p.canvas)?),
+        _ => return None,
+    };
+    let vertical = match canvas {
+        rbs_api::types::OutputCanvas::Main => false,
+        rbs_api::types::OutputCanvas::Vertical => true,
+    };
+    Some(match (record, vertical) {
+        (true, false) => Update::Recording(RecordingUpdate::NotStarted(why())),
+        (false, false) => Update::Stream(StreamUpdate::NotStarted(why())),
+        (true, true) => Update::VerticalRecording(RecordingUpdate::NotStarted(why())),
+        (false, true) => Update::VerticalStream(StreamUpdate::NotStarted(why())),
+    })
 }
 
 /// A refusal as a control API error.
