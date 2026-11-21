@@ -80,6 +80,7 @@ pub(super) fn start(
         collection,
         collection_epoch: 0,
         list_stamp: None,
+        cues_sent: Vec::new(),
         canvas,
         scene,
         rows: Vec::new(),

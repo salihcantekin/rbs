@@ -173,6 +173,7 @@ Severity is the cost if the path is in use, not the difficulty of the change.
 - **Larger change:** One snapshot per real edit. Volume patches one row. Sources, Properties, and the Mixer should not share one row type that includes layout, filters, browser settings, and the cue clock.
 - **Benefit:** Idle control-thread allocations drop out. Fader drags and timed shows stop redrawing the window at the control rate.
 - **Risk:** A missed dirty bit shows a stale Sources list until the next edit.
+- **Status (2026-11-21):** local change done. The round already skipped the rebuild when a stamp of the collection's generation and the runtime state was unchanged, and `Heard` already kept the painted bars. What remained: the stamp itself cloned every source state (`Studio::sources`) and looked up device peers on each round, `publish_levels` rebuilt its list each round, and the Show cue clock was part of the stamp and of `SourceRow`. Now the stamp reads the borrowed `Studio::source_health`, device peers are left to the generation, the levels list is rebuilt only with the rows, and cue time travels in `Update::Cues`, which the window patches into the rows it changes. An unchanged `publish` makes 0 allocations, down from 25 at 10 sources and 112 at 50 (`studio_host/publish_cost.rs`, a test asserts 0), and a running cue no longer rebuilds the lists. Open: the larger change. A fader step still rebuilds every row, about 1,000 allocations at 50 sources (debug build, same file).
 
 ### F-11: A shared export readback locks on every repeated frame
 
