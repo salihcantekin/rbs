@@ -30,6 +30,8 @@
 //! sandbox (ADR-0132 steps).
 
 use std::io::Read;
+#[cfg(windows)]
+use std::sync::atomic::AtomicU8;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -148,6 +150,9 @@ static GPU_FAILS: AtomicU32 = AtomicU32::new(0);
 /// A callback published nothing: the loop asks CEF for one new view paint.
 #[cfg(windows)]
 static GPU_REPAINT: AtomicBool = AtomicBool::new(false);
+/// Why the callback ended the GPU path: 0 none, 1 `open`, 2 `copy` (decision 9).
+#[cfg(windows)]
+static FALLBACK_REASON: AtomicU8 = AtomicU8::new(0);
 /// OS monotonic nanoseconds of the first paint that found no free GPU slot since the
 /// last one that did; 0 while slots are free (ADR-0157 decision 5).
 #[cfg(windows)]
@@ -379,7 +384,10 @@ wrap_render_handler! {
                 GPU_REPAINT.store(true, Ordering::Relaxed);
             }
             if let Some(reason) = reason {
-                eprintln!("rbs-browser-cef: GPU path falls back to shared memory ({reason})");
+                // The paint loop writes the line: no pipe write in the callback
+                // (decision 1).
+                let code = if reason == "open" { 1 } else { 2 };
+                let _ = FALLBACK_REASON.compare_exchange(0, code, Ordering::Relaxed, Ordering::Relaxed);
                 page.code.store(exit::GPU_FALLBACK, Ordering::Release);
                 page.quit.store(true, Ordering::Release);
             }
@@ -1308,6 +1316,12 @@ fn browse(
         }
         #[allow(clippy::disallowed_methods)] // The pump, between callbacks.
         std::thread::sleep(pump);
+    }
+    #[cfg(windows)]
+    match FALLBACK_REASON.load(Ordering::Relaxed) {
+        1 => eprintln!("rbs-browser-cef: GPU path falls back to shared memory (open)"),
+        2 => eprintln!("rbs-browser-cef: GPU path falls back to shared memory (copy)"),
+        _ => {}
     }
 
     if !page.closed.load(Ordering::Acquire) {
