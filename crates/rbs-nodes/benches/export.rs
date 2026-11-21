@@ -102,10 +102,9 @@ fn rig(ctx: &Arc<GpuContext>, picture: Option<HoldPicture>, scene: bool) -> Rig 
     let request = CaptureRequest::new(TargetId::new("test-window-0"), Arc::new(clock))
         .with_frame_rate(FrameRate::FPS_60)
         .with_pixel_formats(&[PixelFormat::Bgra8]);
-    let capture = rig.add(Box::new(CaptureSourceNode::new(
-        Arc::new(TestCaptureFactory::new()),
-        request,
-    )));
+    let capture = rig.add(Box::new(
+        CaptureSourceNode::new(Arc::new(TestCaptureFactory::new()), request).open_inline(true),
+    ));
     let canvas = CanvasDesc {
         width: W,
         height: H,

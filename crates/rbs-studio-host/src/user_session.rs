@@ -26,7 +26,9 @@ use crate::canvas_profile::{self, CanvasProfile};
 use crate::record_profile;
 use crate::stream_profile;
 
+mod error;
 mod later;
+pub use error::SessionError;
 pub use later::{ObsWritten, Pending};
 
 /// Name of the entries made when there are none, and of the migrated ones.
@@ -362,12 +364,15 @@ fn write_jobs(shared: &Shared, data: &UserData, lock: &WriterLock, on_error: &dy
 
 /// Gives every kept browser profile of the saved collection `id` a new id (a copied
 /// or imported collection never shares a sign-in, ADR-0132 decision 10). Writer thread.
-fn own_profiles(data: &UserData, lock: &WriterLock, id: &EntryId) -> Result<(), String> {
+fn own_profiles(data: &UserData, lock: &WriterLock, id: &EntryId) -> Result<(), SessionError> {
     let lib = data.scene_collections();
-    let mut entry = lib.load(id).map_err(|e| e.to_string())?;
+    let mut entry = lib.load(id).map_err(SessionError::from)?;
     let empty = std::collections::BTreeSet::new();
-    if crate::browser_profiles::renew(&mut entry.document, &empty, true)? > 0 {
-        lib.save(lock, id, &entry).map_err(|e| e.to_string())?;
+    if crate::browser_profiles::renew(&mut entry.document, &empty, true)
+        .map_err(SessionError::NoProfileId)?
+        > 0
+    {
+        lib.save(lock, id, &entry).map_err(SessionError::from)?;
     }
     Ok(())
 }
@@ -419,25 +424,23 @@ impl UserSession {
     }
 
     /// A profile section; `Err` with the reason if it is there but cannot be used.
-    pub fn section<S: DeserializeOwned>(&self, name: &str) -> Result<Option<S>, String> {
-        self.profile.get(name).map_err(|e| e.to_string())
+    pub fn section<S: DeserializeOwned>(&self, name: &str) -> Result<Option<S>, DataError> {
+        self.profile.get(name)
     }
 
     /// Replaces a profile section and saves the profile. Refused, with the reason,
     /// when the saved section was written by a newer RBS, or when another RBS holds the
     /// user data.
-    pub fn set_section<S: Serialize>(&mut self, name: &str, value: &S) -> Result<(), String> {
+    pub fn set_section<S: Serialize>(&mut self, name: &str, value: &S) -> Result<(), SessionError> {
         let Some(saver) = &self.saver else {
             return Err(read_only_note());
         };
         match self.profile.set(name, value) {
             Ok(()) => {}
             Err(DataError::Newer { .. }) => {
-                return Err(
-                    "they were saved by a newer RBS, so this version does not change them".into(),
-                );
+                return Err(SessionError::NewerSection);
             }
-            Err(e) => return Err(e.to_string()),
+            Err(e) => return Err(e.into()),
         }
         saver
             .shared
@@ -480,7 +483,7 @@ impl UserSession {
     fn run<R: Send + 'static>(
         &self,
         task: impl FnOnce(&UserData, &WriterLock, &Names) -> R + Send + 'static,
-    ) -> Result<R, String> {
+    ) -> Result<R, SessionError> {
         let saver = self.saver.as_ref().ok_or_else(read_only_note)?;
         self.revision.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = mpsc::channel();
@@ -489,8 +492,7 @@ impl UserSession {
             .push(Job::Run(Box::new(move |data, lock, names| {
                 let _ = tx.send(task(data, lock, names));
             })));
-        rx.recv()
-            .map_err(|_| "the user data writer stopped".to_owned())
+        rx.recv().map_err(|_| SessionError::WriterStopped)
     }
 
     fn save_current(&self) {
@@ -514,11 +516,11 @@ impl UserSession {
 
     /// Uses the output profile `id` from now on (its sections replace
     /// [`UserSession::profile`]) and saves the choice.
-    pub fn switch_profile(&mut self, id: &EntryId) -> Result<(), String> {
+    pub fn switch_profile(&mut self, id: &EntryId) -> Result<(), SessionError> {
         // A save of that profile still waiting is written first; saves of others do not
         // hold the switch.
         self.flush_entry(&Key::Profile(id.clone()));
-        let entry = self.data.profiles().load(id).map_err(|e| e.to_string())?;
+        let entry = self.data.profiles().load(id).map_err(SessionError::from)?;
         if let Some(s) = &self.saver {
             Names::set(&s.shared.names.profiles, id, &entry.name);
         }
@@ -532,7 +534,7 @@ impl UserSession {
     /// Makes an output profile named `name` with default settings, or a copy of the
     /// one in use (`copy`), and returns its id. The stream key is not copied: it
     /// belongs to one profile.
-    pub fn new_profile(&self, name: &str, copy: bool) -> Result<EntryId, String> {
+    pub fn new_profile(&self, name: &str, copy: bool) -> Result<EntryId, SessionError> {
         let name = name.to_owned();
         let from = copy.then(|| self.profile_id.clone());
         self.run(move |data, lock, _| {
@@ -541,12 +543,12 @@ impl UserSession {
                 Some(from) => lib.duplicate(lock, &from, &name),
                 None => lib.create(lock, &name, &OutputProfile::new()),
             }
-            .map_err(|e| e.to_string())
+            .map_err(SessionError::from)
         })?
     }
 
     /// Renames the output profile in use.
-    pub fn rename_profile(&mut self, name: &str) -> Result<(), String> {
+    pub fn rename_profile(&mut self, name: &str) -> Result<(), SessionError> {
         let id = self.profile_id.clone();
         let name = rename(self, id, name, true)?;
         self.profile_name = name;
@@ -555,21 +557,21 @@ impl UserSession {
 
     /// Deletes the output profile `id`, which must not be the one in use (ADR-0051:
     /// its file is moved to `deleted/`). The caller removes its stream key.
-    pub fn delete_profile(&self, id: &EntryId) -> Result<(), String> {
+    pub fn delete_profile(&self, id: &EntryId) -> Result<(), SessionError> {
         if *id == self.profile_id {
-            return Err("the output profile in use cannot be deleted".into());
+            return Err(SessionError::ProfileInUse);
         }
         let id = id.clone();
         self.run(move |data, lock, _| {
             data.profiles()
                 .delete(lock, &id)
                 .map(|_| ())
-                .map_err(|e| e.to_string())
+                .map_err(SessionError::from)
         })?
     }
 
     /// Loads the scene collection `id`, to run it.
-    pub fn load_collection(&self, id: &EntryId) -> Result<(String, SceneCollection), String> {
+    pub fn load_collection(&self, id: &EntryId) -> Result<(String, SceneCollection), SessionError> {
         // A save of it still waiting is written first; saves of others do not hold the
         // switch.
         self.flush_entry(&Key::Collection(id.clone()));
@@ -577,7 +579,7 @@ impl UserSession {
             .data
             .scene_collections()
             .load(id)
-            .map_err(|e| e.to_string())?;
+            .map_err(SessionError::from)?;
         self.own_loaded_profiles(id, &mut entry.document);
         Ok((entry.name, entry.document))
     }
@@ -644,7 +646,7 @@ impl UserSession {
         name: &str,
         canvas: &CanvasProfile,
         copy: bool,
-    ) -> Result<EntryId, String> {
+    ) -> Result<EntryId, SessionError> {
         let name = name.to_owned();
         let from = copy.then(|| self.collection_id.clone());
         let starter = starter_collection(canvas);
@@ -655,7 +657,7 @@ impl UserSession {
                 Some(from) => lib.duplicate(lock, &from, &name),
                 None => lib.create(lock, &name, &starter),
             }
-            .map_err(|e| e.to_string())?;
+            .map_err(SessionError::from)?;
             if copied {
                 own_profiles(data, lock, &id)?;
             }
@@ -664,7 +666,7 @@ impl UserSession {
     }
 
     /// Renames the scene collection in use.
-    pub fn rename_collection(&mut self, name: &str) -> Result<(), String> {
+    pub fn rename_collection(&mut self, name: &str) -> Result<(), SessionError> {
         let id = self.collection_id.clone();
         let name = rename(self, id, name, false)?;
         self.collection_name = name;
@@ -673,33 +675,33 @@ impl UserSession {
 
     /// Writes the output profile in use, as last saved, to `to` (one file), without
     /// what belongs to this computer only ([`scrub_profile`]).
-    pub fn export_profile(&self, to: &Path) -> Result<(), String> {
+    pub fn export_profile(&self, to: &Path) -> Result<(), SessionError> {
         self.flush();
         self.data
             .profiles()
             .export_with(&self.profile_id, to, scrub_profile)
-            .map_err(|e| e.to_string())
+            .map_err(SessionError::from)
     }
 
     /// Writes the scene collection in use, as last saved, to `to` (one file).
-    pub fn export_collection(&self, to: &Path) -> Result<(), String> {
+    pub fn export_collection(&self, to: &Path) -> Result<(), SessionError> {
         self.flush();
         self.data
             .scene_collections()
             // A kept sign-in belongs to this computer (ADR-0132 decision 10).
             .export_with(&self.collection_id, to, crate::browser_profiles::strip)
-            .map_err(|e| e.to_string())
+            .map_err(SessionError::from)
     }
 
     /// Adds the output profile in the file `from` (a clashing name gets a number);
     /// returns its name.
-    pub fn import_profile(&self, from: &Path) -> Result<String, String> {
+    pub fn import_profile(&self, from: &Path) -> Result<String, SessionError> {
         self.run(later::import_profile(from.to_owned()))?
     }
 
     /// Adds the scene collection in the file `from` (a clashing name gets a number);
     /// returns its name.
-    pub fn import_collection(&self, from: &Path) -> Result<String, String> {
+    pub fn import_collection(&self, from: &Path) -> Result<String, SessionError> {
         self.run(later::import_collection(from.to_owned()))?
     }
 
@@ -715,7 +717,7 @@ impl UserSession {
             crate::obs_import::Written,
             Option<(String, rbs_transport::Secret)>,
         ),
-        String,
+        SessionError,
     > {
         let saver = self.saver.as_ref().ok_or_else(read_only_note)?;
         import_on(&saver.shared, plan)
@@ -724,15 +726,15 @@ impl UserSession {
     /// Deletes the scene collection `id`, which must not be the one in use (its file
     /// is moved to `deleted/`). Its OBS import report, if any, is removed with it
     /// (ADR-0131 decision 11).
-    pub fn delete_collection(&self, id: &EntryId) -> Result<(), String> {
+    pub fn delete_collection(&self, id: &EntryId) -> Result<(), SessionError> {
         if *id == self.collection_id {
-            return Err("the scene collection in use cannot be deleted".into());
+            return Err(SessionError::CollectionInUse);
         }
         let id = id.clone();
         self.run(move |data, lock, _| {
             data.scene_collections()
                 .delete(lock, &id)
-                .map_err(|e| e.to_string())?;
+                .map_err(SessionError::from)?;
             let _ = std::fs::remove_file(crate::obs_import::report_path(data.root(), &id));
             Ok(())
         })?
@@ -764,7 +766,7 @@ impl UserSession {
         self.later(move |data, lock, _| {
             data.themes()
                 .create(lock, &name, &theme)
-                .map_err(|e| e.to_string())
+                .map_err(SessionError::from)
         })
     }
 
@@ -774,7 +776,7 @@ impl UserSession {
         self.later(move |data, lock, _| {
             data.themes()
                 .save(lock, &id, &Entry::new(name, theme))
-                .map_err(|e| e.to_string())
+                .map_err(SessionError::from)
         })
     }
 
@@ -784,7 +786,7 @@ impl UserSession {
         self.later(move |data, lock, _| {
             data.themes()
                 .rename(lock, &id, &name)
-                .map_err(|e| e.to_string())
+                .map_err(SessionError::from)
         })
     }
 
@@ -795,14 +797,14 @@ impl UserSession {
             data.themes()
                 .delete(lock, &id)
                 .map(|_| ())
-                .map_err(|e| e.to_string())
+                .map_err(SessionError::from)
         })
     }
 
     /// Records the user's shortcut changes (ADR-0060).
     pub fn set_shortcuts(&self, doc: &rbs_ui::shortcut::ShortcutsDoc) -> Pending<()> {
         let doc = doc.clone();
-        self.later(move |data, lock, _| data.set_shortcuts(lock, &doc).map_err(|e| e.to_string()))
+        self.later(move |data, lock, _| data.set_shortcuts(lock, &doc).map_err(SessionError::from))
     }
 
     /// Records the appearance choice.
@@ -810,7 +812,7 @@ impl UserSession {
         let appearance = appearance.clone();
         self.later(move |data, lock, _| {
             data.set_appearance(lock, &appearance)
-                .map_err(|e| e.to_string())
+                .map_err(SessionError::from)
         })
     }
 }
@@ -836,7 +838,7 @@ pub fn scrub_profile(p: &mut OutputProfile) {
 /// Renames entry `id` of the profiles (`profile`) or the collections on the writer
 /// thread, so saves asked for before keep the old name and later ones the new.
 /// Returns the name as saved (trimmed).
-fn rename(s: &UserSession, id: EntryId, name: &str, profile: bool) -> Result<String, String> {
+fn rename(s: &UserSession, id: EntryId, name: &str, profile: bool) -> Result<String, SessionError> {
     let name = name.trim().to_owned();
     let given = name.clone();
     s.run(move |data, lock, names| {
@@ -845,14 +847,14 @@ fn rename(s: &UserSession, id: EntryId, name: &str, profile: bool) -> Result<Str
         } else {
             data.scene_collections().rename(lock, &id, &given)
         };
-        done.map_err(|e| e.to_string())?;
+        done.map_err(SessionError::from)?;
         let map = if profile {
             &names.profiles
         } else {
             &names.collections
         };
         Names::set(map, &id, &given);
-        Ok::<(), String>(())
+        Ok::<(), SessionError>(())
     })??;
     Ok(name)
 }
@@ -890,7 +892,7 @@ impl CollectionSaver {
             crate::obs_import::Written,
             Option<(String, rbs_transport::Secret)>,
         ),
-        String,
+        SessionError,
     > {
         import_on(&self.shared, plan)
     }
@@ -910,7 +912,7 @@ impl CollectionSaver {
 
 /// Runs [`crate::obs_import::write`] on the writer thread and waits for it; the stream
 /// key comes back for the caller to hand to the key store's owner.
-type ImportResult = Result<ObsWritten, String>;
+type ImportResult = Result<ObsWritten, SessionError>;
 
 fn import_on(shared: &Shared, plan: rbs_import_obs::ImportPlan) -> ImportResult {
     let (tx, rx) = mpsc::channel();
@@ -918,12 +920,11 @@ fn import_on(shared: &Shared, plan: rbs_import_obs::ImportPlan) -> ImportResult 
     shared.push(Job::Run(Box::new(move |data, lock, names| {
         let _ = tx.send(task(data, lock, names));
     })));
-    rx.recv()
-        .map_err(|_| "the user data writer stopped".to_owned())?
+    rx.recv().map_err(|_| SessionError::WriterStopped)?
 }
 
-fn read_only_note() -> String {
-    "another RBS is running with the same settings, so changes here are not saved".into()
+fn read_only_note() -> SessionError {
+    SessionError::ReadOnly
 }
 
 /// A collection with one canvas of `canvas` and one shared scene on air: what a new

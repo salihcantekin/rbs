@@ -294,6 +294,9 @@ impl AdapterFactory for TestCaptureFactory {
                 CapabilityValue::Int(FRAMES_IN_FLIGHT as i64),
             )
             .with(caps::HDR, CapabilityValue::Flag(false))
+            // Nothing waits: the studio opens test captures on its control thread, so
+            // tests see the first frame on the first tick.
+            .with(caps::START_INSTANT, CapabilityValue::Flag(true))
             .with(HARDWARE, CapabilityValue::Flag(false));
         let mut set = set;
         for kind in TargetKind::ALL {

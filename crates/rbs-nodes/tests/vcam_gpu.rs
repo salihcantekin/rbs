@@ -153,10 +153,9 @@ fn rig_of(
     } else {
         let request = CaptureRequest::new(TargetId::new("test-window-0"), Arc::new(clock))
             .with_frame_rate(canvas_rate);
-        rig.add(Box::new(CaptureSourceNode::new(
-            Arc::new(TestCaptureFactory::new()),
-            request,
-        )))
+        rig.add(Box::new(
+            CaptureSourceNode::new(Arc::new(TestCaptureFactory::new()), request).open_inline(true),
+        ))
     };
     let (comp, _layers) = CompositorNode::new(
         CanvasDesc {
@@ -339,6 +338,7 @@ fn two_cameras_of_one_share_use_one_readback() {
                     CaptureRequest::new(TargetId::new("test-window-0"), Arc::new(TestClock::new()))
                         .with_frame_rate(FrameRate::FPS_30),
                 )
+                .open_inline(true)
                 .descriptor()
                 .clone(),
             ))
@@ -347,11 +347,14 @@ fn two_cameras_of_one_share_use_one_readback() {
         graph.set_state(id, Lifecycle::Active).unwrap();
         ctl.adopt(
             id,
-            Box::new(CaptureSourceNode::new(
-                Arc::new(TestCaptureFactory::new()),
-                CaptureRequest::new(TargetId::new("test-window-0"), Arc::new(TestClock::new()))
-                    .with_frame_rate(FrameRate::FPS_30),
-            )),
+            Box::new(
+                CaptureSourceNode::new(
+                    Arc::new(TestCaptureFactory::new()),
+                    CaptureRequest::new(TargetId::new("test-window-0"), Arc::new(TestClock::new()))
+                        .with_frame_rate(FrameRate::FPS_30),
+                )
+                .open_inline(true),
+            ),
         )
         .unwrap();
         id
