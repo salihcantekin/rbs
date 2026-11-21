@@ -42,6 +42,7 @@ mod quit;
 mod replay_page;
 mod reveal;
 mod shortcuts_page;
+mod studio_start;
 mod studio_ui;
 mod title_bar;
 mod vcam_page;
@@ -5990,8 +5991,6 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
     let (replay, replay_note) = replay_page::Replay::load(&config);
     user_notes.extend(replay_note);
     let first_canvas = rbs_app::user_session::first_canvas(&collection);
-    let autosave = user.collection_saver();
-    let key_account = rbs_app::stream_key::account(user.profile_id.as_str());
     let store = WorkspaceStore::new(config::workspace_dir(&config));
     let name = config::last_workspace(&config).unwrap_or_else(|| "Edit".to_owned());
     let mut error = None;
@@ -6167,6 +6166,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
     install_app_menu(&main.global::<AppMenus>(), &ctx);
     shortcuts_page::install_press(&main.global::<Shortcuts>(), &ctx);
     install_studio(&main.global::<Studio>(), &ctx);
+    studio_start::install(&main.global::<Studio>(), &ctx);
     install_meter_bridge(&main);
     install_sections(&main.global::<Sections>(), &ctx);
     install_experience(&main.global::<Experience>());
@@ -6183,99 +6183,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
         });
     });
     // The studio: its own control thread (ADR-0041 decision 7), on the saved canvas.
-    let studio_canvas = {
-        let c = ctx.app.borrow().studio.canvas;
-        let mut config = studio_host::HostConfig::canvas(c.size(), c.frame_rate());
-        config.keys = keys;
-        config.collection = Some(collection);
-        config.autosave = autosave;
-        config.key_account = key_account;
-        config.virtual_camera = ctx.app.borrow().vcam.factory();
-        rbs_app::platform::host_seams(&mut config);
-        config.config_dir = Some(ctx.app.borrow().config.clone());
-        config.swap_after_transition = ctx.app.borrow().bg.swap_after_transition;
-        config.media_pause_release = ctx.app.borrow().bg.pause_release();
-        // The monitor device belongs to this computer (ADR-0097); a file that cannot be
-        // read gives System default at full volume and is left as it is.
-        let (monitor, note) = rbs_app::monitor_settings::load(&ctx.app.borrow().config);
-        if let Some(why) = note {
-            rbs_core::warn!(Area::App, "monitor settings: {why}");
-        }
-        config.monitor = monitor;
-        // Show loudness, the target and the true-peak limit (ADR-0092; `loudness.toml`).
-        let (loudness, note) = rbs_app::loudness_settings::load(&ctx.app.borrow().config);
-        if let Some(why) = note {
-            rbs_core::warn!(Area::App, "loudness settings: {why}");
-        }
-        config.loudness = loudness;
-        // This computer's calibration (ADR-0087 decision 4), read with `app.toml`
-        // before the control thread serves anything.
-        let (calibration, note) = rbs_app::calibration_file::load(&ctx.app.borrow().config);
-        if let Some(why) = note {
-            rbs_core::warn!(Area::App, "calibration: {why}");
-        }
-        config.calibration = calibration;
-        config.read_free_space = Some(studio_host::FreeSpaceReader(std::sync::Arc::new(
-            |folder: &std::path::Path| {
-                rbs_system_probe::volume_space(folder)
-                    .map(|s| s.free_bytes)
-                    .map_err(|e| e.to_string())
-            },
-        )));
-        // The built-in add-on catalog (ADR-0145); nothing is read until asked.
-        config.add_ons = rbs_app::add_ons::system_setup();
-        config
-    };
-    match studio_host::StudioHost::spawn(
-        studio_canvas,
-        rbs_app::platform::adapters,
-        || {
-            // A hardware adapter, else a software one (a virtual machine, for example):
-            // slow, but the app still works.
-            let ctx = match rbs_gpu::GpuContext::new(&rbs_gpu::GpuRequest::default()) {
-                Err(rbs_gpu::GpuError::NoAdapter) => {
-                    rbs_gpu::GpuContext::new(&rbs_gpu::GpuRequest {
-                        allow_software: true,
-                        ..rbs_gpu::GpuRequest::default()
-                    })
-                }
-                other => other,
-            };
-            ctx.map(std::sync::Arc::new)
-                .map_err(|e| format!("no usable GPU: {e}"))
-        },
-        || {
-            let mut engine = rbs_engine::Engine::new();
-            engine.set_thread_policy(Some(std::sync::Arc::new(
-                rbs_thread_os::OsThreadPolicy::new(),
-            )));
-            engine
-        },
-        deliver,
-    ) {
-        Ok(host) => ctx.update(move |app| {
-            app.studio.host = Some(host);
-            // Remote control, if the user turned it on (off by default: nothing starts).
-            app.studio.sync_remote();
-            // Recent actions and connected AI tools redraw the page when they change. Runs on
-            // the API thread; `entry::invoke` guards the body on the UI thread.
-            app.studio.ai_forward.notify_with(|| {
-                let _ = entry::invoke(|| {
-                    if let Some(ctx) = CTX.with(|c| c.borrow().clone()) {
-                        ctx.update(|_| {});
-                    }
-                });
-            });
-            // AI tools, if "Start when RBS opens" is on (ADR-0134 decision 2).
-            app.studio.ai_autostart();
-            vcam_page::studio_started(app);
-            replay_page::started(app);
-        }),
-        Err(e) => ctx.update(move |app| {
-            app.studio.state = 2;
-            app.studio.failure = e.to_string();
-        }),
-    }
+    studio_start::first(&ctx, keys, collection);
     ctx.update(App::refresh_list);
     // Shortcuts: the user's file, and global shortcuts if any are bound (ADR-0060).
     {
