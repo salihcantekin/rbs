@@ -147,7 +147,24 @@ impl GpuContext {
                 (rank(&info, request.power), backend_rank(info.backend))
             })
             .ok_or(GpuError::NoAdapter)?;
-        Self::on_adapter(instance, adapter)
+        let info = adapter.get_info();
+        let context = Self::on_adapter(instance, adapter)?;
+        // The adapter chosen, once per context (ADR-0158 spec, "What is logged").
+        let level = if is_software(&info) {
+            rbs_core::log::Level::Warn
+        } else {
+            rbs_core::log::Level::Info
+        };
+        rbs_core::log_at!(
+            level,
+            rbs_core::log::Area::Gpu,
+            "adapter {} ({:?}, {:?}, driver {})",
+            info.name,
+            info.backend,
+            info.device_type,
+            info.driver
+        );
+        Ok(context)
     }
 
     /// A second, independent device and queue on this context's adapter, with the same
