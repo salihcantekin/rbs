@@ -262,6 +262,11 @@ fn click_rings_draw_a_ring_in_the_button_colour() {
     let at = rig.last_time().as_nanos() + 1;
     script.click(at, 104.0, 54.0);
     tick_past(&mut rig, at);
+    assert_eq!(
+        format(&rig),
+        Some(PixelFormat::Rgba8),
+        "no ring before a frame at or after the click"
+    );
     // The ring starts with the first frame stamped at or after the click.
     rig.set_input(Picture::solid(8, 8, [0.0, 0.5, 0.0, 1.0]).encoded());
     rig.tick();
