@@ -145,34 +145,7 @@ pub fn install(g: &Appearance<'_>, ctx: &Ctx) {
         });
         Change::Page
     });
-    on!(on_delete, |app, page, _file| {
-        let Some(ThemeId::User(id)) = selected_id(page) else {
-            return;
-        };
-        let base = page
-            .ui
-            .index_of(&ThemeId::User(id.clone()))
-            .and_then(|i| page.ui.entries[i].body.as_ref())
-            .map_or(Base::Dark, |b| b.base);
-        let deleted = app.studio.user.delete_theme(&id);
-        when_written(deleted, move |app, page, file, result| {
-            match result {
-                // A deleted theme in use: its slots take the built-in theme of its base
-                // and the choice is saved (themes spec, "Deleting").
-                Ok(()) => {
-                    if let Some(next) = page.ui.forget(&id, base) {
-                        save_choice(app, &next);
-                    }
-                }
-                Err(why) => page.note = why,
-            }
-            page.ui.selected = None;
-            page.ui.refresh(app.studio.user.data(), file);
-            // A deleted theme in use falls back to its base (themes spec).
-            Change::Look
-        });
-        Change::Page
-    });
+    on!(on_delete, |app, page, _file| { delete_selected(app, page) });
     {
         let ctx = ctx.clone();
         g.on_import(move || entry::guard(|| transfer(&ctx, true)));
@@ -259,24 +232,7 @@ pub fn install(g: &Appearance<'_>, ctx: &Ctx) {
     on!(on_reset, |_app, page, file, name: SharedString| {
         edited(page.ui.reset(&file, &name, Instant::now()))
     });
-    on!(on_save, |app, page, _file| {
-        let Some((id, name, body)) = page.ui.to_save() else {
-            return;
-        };
-        let saved = app.studio.user.save_theme(&id, &name, body);
-        when_written(saved, |app, page, file, result| {
-            match result {
-                Ok(()) => {
-                    page.ui.saved();
-                    page.ui.refresh(app.studio.user.data(), file);
-                    page.note.clear();
-                }
-                Err(why) => page.note = why,
-            }
-            Change::Look
-        });
-        Change::Page
-    });
+    on!(on_save, |app, page, _file| { save_draft(app, page) });
     on!(on_cancel, |_app, page, _file| {
         page.ui.cancel();
         Change::Look
@@ -291,6 +247,56 @@ pub fn install(g: &Appearance<'_>, ctx: &Ctx) {
         }
         Change::Look
     });
+}
+
+/// Deletes the selected user theme once the writer thread did it.
+fn delete_selected(app: &mut App, page: &mut Page) -> Change {
+    let Some(ThemeId::User(id)) = selected_id(page) else {
+        return Change::Page;
+    };
+    let base = page
+        .ui
+        .index_of(&ThemeId::User(id.clone()))
+        .and_then(|i| page.ui.entries[i].body.as_ref())
+        .map_or(Base::Dark, |b| b.base);
+    let deleted = app.studio.user.delete_theme(&id);
+    when_written(deleted, move |app, page, file, result| {
+        match result {
+            // A deleted theme in use: its slots take the built-in theme of its base
+            // and the choice is saved (themes spec, "Deleting").
+            Ok(()) => {
+                if let Some(next) = page.ui.forget(&id, base) {
+                    save_choice(app, &next);
+                }
+            }
+            Err(why) => page.note = why,
+        }
+        page.ui.selected = None;
+        page.ui.refresh(app.studio.user.data(), file);
+        // A deleted theme in use falls back to its base (themes spec).
+        Change::Look
+    });
+    Change::Page
+}
+
+/// Saves the theme draft once the writer thread did it.
+fn save_draft(app: &mut App, page: &mut Page) -> Change {
+    let Some((id, name, body)) = page.ui.to_save() else {
+        return Change::Page;
+    };
+    let saved = app.studio.user.save_theme(&id, &name, body);
+    when_written(saved, |app, page, file, result| {
+        match result {
+            Ok(()) => {
+                page.ui.saved();
+                page.ui.refresh(app.studio.user.data(), file);
+                page.note.clear();
+            }
+            Err(why) => page.note = why,
+        }
+        Change::Look
+    });
+    Change::Page
 }
 
 /// What a callback changed.
