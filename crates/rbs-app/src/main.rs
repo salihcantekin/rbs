@@ -29,6 +29,7 @@ mod look;
 mod measure_ui;
 mod menu_bar;
 mod meter_bridge;
+mod meters_ui;
 mod obs_import_page;
 mod permissions_page;
 #[cfg(any(target_os = "macos", windows))]
@@ -2386,7 +2387,7 @@ impl Ctx {
         if vertical_main.is_none() {
             app.studio.vertical_picture_failed = false;
         }
-        let mixer_shown = in_main("rbs.mixer").is_some() || float_has("rbs.mixer");
+        let mixer_shown = !app.hidden && (in_main("rbs.mixer").is_some() || float_has("rbs.mixer"));
         use studio_ui::preview_state as ps;
         let s = &app.studio;
         let state = match s.state {
@@ -2469,10 +2470,7 @@ impl Ctx {
         } else {
             self.meter_timer.stop();
         }
-        if mixer_shown != app.meters_ui {
-            s.send(studio_host::Command::SetMetersUi(mixer_shown));
-            app.meters_ui = mixer_shown;
-        }
+        meters_ui::send(s, &mut app.meters_ui, mixer_shown);
 
         #[cfg(any(target_os = "macos", windows))]
         {
@@ -2620,6 +2618,7 @@ impl Ctx {
         }
         app.vertical_preview_endpoint = None;
         self.meter_timer.stop();
+        meters_ui::send(&app.studio, &mut app.meters_ui, false);
         app.hidden = true;
         #[cfg(target_os = "macos")]
         rbs_app::native::set_hidden(true);
