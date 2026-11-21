@@ -1384,8 +1384,6 @@ impl Host {
                     self.step(true, notify);
                 }
             }
-            Command::Undo => self.step(true, notify),
-            Command::Redo => self.step(false, notify),
             Command::MoveSourceTo { id, to } => match self.move_source_to(id, to) {
                 Ok(true) => self.apply(notify),
                 Ok(false) => {}

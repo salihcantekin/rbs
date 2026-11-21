@@ -49,8 +49,8 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `RemoveGlobal` | Moved to `Command::Api` (step 3) | global.remove |
 | `AddGlobalSource` | Pending | source.add (global: true) |
 | `UndoDelete` | Missing | edit.undo has no only-if-a-delete condition |
-| `Undo` | Pending | edit.undo; quiet when there is nothing to undo, but a refused step (`undo_conflict`) is shown: neither `Shown` nor `Quiet` does both, so the window needs to tell the two apart; the window cannot skip the call itself, since an undo pressed right after an edit arrives before the history update (step 3 left it) |
-| `Redo` | Pending | edit.redo; as Undo |
+| `Undo` | Moved to `Command::Api` (step 3) | edit.undo, sent with `ApiReply::QuietIf(conflict)`: nothing to undo says nothing, a refused step (`undo_conflict`) is shown |
+| `Redo` | Moved to `Command::Api` (step 3) | edit.redo, sent with `ApiReply::QuietIf(conflict)`: nothing to undo says nothing, a refused step (`undo_conflict`) is shown |
 | `MoveSource` | Moved to `Command::Api` (step 2) | item.move |
 | `MoveScene` | Moved to `Command::Api` (step 1) | scene.move |
 | `MoveSceneTo` | Missing | scene.move has no target scene |
@@ -88,7 +88,7 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `AddBrowser` | Missing | source.add has no URL |
 | `AddText` | Pending | source.add |
 | `FitTextBox` | Missing | no fit-box method |
-| `ListTextFonts` | Pending | text.fonts; while the list is being read the window path answers later by itself, the API refuses `not_ready` (the window would have to ask again) |
+| `ListTextFonts` | Moved to `Command::Api` (step 3) | text.fonts with `ApiReply::QuietTicket`; on `not_ready` the host still sends `Update::TextFonts` once the list is read, as the window path did |
 | `TextTimer` | Pending | text.timer |
 | `SetSourceFill` | Pending | source.set_settings |
 | `SetSourceFilled` | Missing | also adds a border to the item style in one undo step; no method |
@@ -162,7 +162,7 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `SetVerticalProfile` | Missing | no settings.set field |
 | `SetVerticalStreamProfile` | Missing | no settings.set field |
 | `SetStreamDestinations` | Missing | no settings.set field |
-| `SetVerticalFlags` | Pending | output.set_with_vertical |
+| `SetVerticalFlags` | Moved to `Command::Api` (step 6) | output.set_with_vertical, one call per choice that changed (and both at the start) |
 | `SetSeparateFiles` | Missing | no settings.set field |
 | `SetVerticalPicture` | WindowOnly View |  |
 | `OpenProjector` | WindowOnly View |  |
@@ -175,12 +175,12 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `StartStream` | Contract | stream.start takes no request; the window sends its own StreamRequest |
 | `EndStream` | Moved to `Command::Api` (step 6) | stream.stop |
 | `StartVirtualCamera` | Contract | vcam.start takes no size or rate |
-| `StopVirtualCamera` | Pending | vcam.stop |
+| `StopVirtualCamera` | Pending | vcam.stop; stays: the window path sends `VirtualCamera(None)` even when nothing sends, the API refuses |
 | `SetVirtualCamera` | WindowOnly LocalOnly |  |
 | `SetReplay` | Missing | no settings.set field |
-| `ArmReplay` | Pending | replay.arm |
-| `DisarmReplay` | Pending | replay.disarm |
-| `SaveReplay` | Pending | replay.save |
+| `ArmReplay` | Moved to `Command::Api` (step 6) | replay.arm (a refusal because it is already armed stays quiet) |
+| `DisarmReplay` | Moved to `Command::Api` (step 6) | replay.disarm (a refusal because it is not armed stays quiet) |
+| `SaveReplay` | Pending | replay.save; stays: the window shows a refused save in its `ReplaySaved` notice, the API answers an error |
 | `AddMarker` | Translates | marker.add |
 | `RemoveMarkers` | Translates | marker.remove |
 | `PauseRecording` | Translates | record.pause_toggle (own error sentence around the refusal) |

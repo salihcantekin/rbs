@@ -58,10 +58,15 @@ impl ApiTarget<'_> {
                         families: families.as_ref().clone(),
                     }))
                 }
-                rbs_record::TextFonts::NotReady => Err(ApiError::new(
-                    ErrorKind::NotReady,
-                    "the font list is being read; ask again shortly",
-                )),
+                rbs_record::TextFonts::NotReady => {
+                    // The window's picker gets the list once it is read (the control
+                    // loop sends `Update::TextFonts`), as it always did.
+                    host.texts.fonts_wanted = true;
+                    Err(ApiError::new(
+                        ErrorKind::NotReady,
+                        "the font list is being read; ask again shortly",
+                    ))
+                }
                 rbs_record::TextFonts::Unavailable => Err(ApiError::new(
                     ErrorKind::Failed,
                     "no text renderer is installed",

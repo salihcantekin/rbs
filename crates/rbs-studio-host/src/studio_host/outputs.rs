@@ -719,12 +719,6 @@ impl Host {
                 self.streaming.destinations_unloaded = unloaded;
                 self.availability_changed();
             }
-            Command::SetVerticalFlags(flags) => {
-                if flags != self.verticals.vertical_flags {
-                    self.verticals.vertical_flags = flags;
-                    self.settings_changed();
-                }
-            }
             Command::SetSeparateFiles(files) => {
                 self.recording.separate_files = files.enabled;
                 self.recording.limit_policy = files.limit_policy();
@@ -783,12 +777,6 @@ impl Host {
                 self.replay.setup = setup;
                 self.replay_changed(notify);
             }
-            Command::ArmReplay => {
-                if let Err(why) = self.arm_replay(notify) {
-                    notify(Update::Error(why.into_text()));
-                }
-            }
-            Command::DisarmReplay => self.disarm_replay(notify),
             Command::AddMarker => {
                 self.run_ui_api(
                     rbs_api::Command::MarkerAdd(rbs_api::request::MarkerAdd::default()),

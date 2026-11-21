@@ -323,7 +323,10 @@ fn the_buffer_arms_holds_the_past_saves_a_clip_and_disarms() {
         ..ReplaySetup::default()
     };
     host.send(Command::SetReplay(setup));
-    host.send(Command::ArmReplay);
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::ReplayArm),
+        reply: rbs_studio_host::studio_host::ApiReply::QuietIf(rbs_api::ErrorKind::Conflict),
+    });
     // The buffer holds a past once frames were encoded: the test moves the clock.
     next_while(
         &rx,
@@ -349,7 +352,10 @@ fn the_buffer_arms_holds_the_past_saves_a_clip_and_disarms() {
     assert!(written.starts_with(HEADER), "{written:?}");
     assert!(written.ends_with(TRAILER), "{written:?}");
 
-    host.send(Command::DisarmReplay);
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::ReplayDisarm),
+        reply: rbs_studio_host::studio_host::ApiReply::QuietIf(rbs_api::ErrorKind::Conflict),
+    });
     next_while(
         &rx,
         || clock.advance(Duration::from_millis(33)),

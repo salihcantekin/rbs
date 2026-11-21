@@ -33,11 +33,6 @@ pub enum Command {
     /// The toast's Undo after a delete: undoes the newest edit if it is a delete, else
     /// nothing (another edit came after it).
     UndoDelete,
-    /// Undo the newest scene edit (U4): an add, a delete, a layer move or a box; all
-    /// the boxes of one drag are one edit. [`Update::History`] says what is next.
-    Undo,
-    /// Redo the edit undone last.
-    Redo,
     /// Move a scene to where scene `to` is in the scene list (a row dragged onto
     /// another); one undo step.
     MoveSceneTo {
@@ -178,8 +173,6 @@ pub enum Command {
     /// Fit a text source's box to its text (ADR-0129 decision 13, Fit box to text):
     /// the item keeps its centre and its scale. One undo step.
     FitTextBox(SourceId),
-    /// Read the installed font families for the font picker ([`Update::TextFonts`]).
-    ListTextFonts,
     /// Start, pause or reset a text source's timer (`text.timer`).
     TextTimer {
         /// The countdown or stopwatch.
@@ -438,9 +431,6 @@ pub enum Command {
     /// live of each canvas sends to every enabled, configured one. `true`: the section
     /// did not load, so streaming counts as available (ADR-0148 decision 1).
     SetStreamDestinations(Destinations, bool),
-    /// Whether Record and Go live also act on the vertical outputs (ADR-0111), as the
-    /// output profile saved them. Sent at start and after each change.
-    SetVerticalFlags(VerticalFlags),
     /// The output profile's Separate files settings: whether Record and
     /// `record.start` without `iso` write the separate files (ADR-0086 decision 4),
     /// and the hardware limit policy (ADR-0087 decision 5). Sent at start and after
@@ -510,11 +500,6 @@ pub enum Command {
     /// start and after each change; a buffer that runs keeps the settings it started
     /// with until it is armed again.
     SetReplay(crate::replay_settings::ReplaySetup),
-    /// Arm the replay buffer; answered with [`Update::Replay`], and an
-    /// [`Update::Error`] when it did not start.
-    ArmReplay,
-    /// Disarm the replay buffer and free what it held; answered with [`Update::Replay`].
-    DisarmReplay,
     /// Save the last `seconds` (all of the buffer for `None`) as a clip file; answered
     /// with [`Update::ReplaySaved`] once it is written.
     SaveReplay {
@@ -632,9 +617,15 @@ pub enum ApiReply {
     /// A refusal is logged and not shown: high-rate live input, and refusals the
     /// window ignores (Undo with nothing to undo).
     Quiet,
+    /// As [`ApiReply::Shown`], except a refusal of this kind, which is logged and
+    /// not shown: Undo with nothing to undo is `conflict`, a refused step is shown.
+    QuietIf(rbs_api::ErrorKind),
     /// As [`ApiReply::Shown`], and [`Update::ApiAnswer`] with this ticket carries the
     /// result, a refusal or a caught panic included.
     Ticket(u64),
+    /// As [`ApiReply::Ticket`], but a refusal is not shown: the window handles the
+    /// answer itself (the font list while it is being read).
+    QuietTicket(u64),
 }
 
 /// What [`Command::AddOn`] does: the commands of an add-on's row.

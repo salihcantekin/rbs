@@ -32,10 +32,21 @@ impl StudioUi {
     /// Asks a control API question whose answer comes back as an
     /// `Update::ApiAnswer` with the returned ticket (ADR-0163 decision 2).
     pub fn ask(&self, call: rbs_api::Command) -> u64 {
-        // Unique for the process: an answer is matched to its question only.
-        static NEXT: AtomicU64 = AtomicU64::new(1);
-        let ticket = NEXT.fetch_add(1, Ordering::Relaxed);
+        let ticket = next_ticket();
         self.call_as(call, ApiReply::Ticket(ticket));
         ticket
     }
+
+    /// As [`StudioUi::ask`], but a refusal is not shown: the asker handles it.
+    pub fn ask_quietly(&self, call: rbs_api::Command) -> u64 {
+        let ticket = next_ticket();
+        self.call_as(call, ApiReply::QuietTicket(ticket));
+        ticket
+    }
+}
+
+/// A ticket unique for the process: an answer is matched to its question only.
+fn next_ticket() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
 }

@@ -1,7 +1,7 @@
 //! The replay buffer in the shell (ADR-0088): the `ReplayBuffer` global's callbacks on
 //! the main window, floating windows and the Settings window, the saved settings
 //! (`replay.toml`), and the texts the buffer's state becomes. The buffer itself runs in
-//! the studio host ([`rbs_app::studio_host::Command::ArmReplay`] and friends).
+//! the studio host (`replay.arm` and `replay.disarm` through `Command::Api`, ADR-0163).
 
 use std::path::{Path, PathBuf};
 
@@ -124,7 +124,8 @@ pub fn started(app: &mut App) {
     let arm = setup.arm_on_start;
     app.studio.send(Command::SetReplay(setup));
     if arm {
-        app.studio.send(Command::ArmReplay);
+        let quiet = rbs_app::studio_host::ApiReply::QuietIf(rbs_api::ErrorKind::Conflict);
+        app.studio.call_as(rbs_api::Command::ReplayArm, quiet);
     }
 }
 
@@ -149,11 +150,16 @@ pub fn toggle(app: &mut App, on: bool) {
     if on == app.replay.armed() {
         return;
     }
-    app.studio.send(if on {
-        Command::ArmReplay
+    let call = if on {
+        rbs_api::Command::ReplayArm
     } else {
-        Command::DisarmReplay
-    });
+        rbs_api::Command::ReplayDisarm
+    };
+    // Already as asked (a control API client was first) says nothing, as before.
+    app.studio.call_as(
+        call,
+        rbs_app::studio_host::ApiReply::QuietIf(rbs_api::ErrorKind::Conflict),
+    );
 }
 
 /// Save the whole past as a clip.
