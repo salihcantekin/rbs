@@ -450,11 +450,9 @@ impl ApiTarget<'_> {
         host.report_link(c, notify);
         host.publish(notify);
         result.map_err(|why| {
-            failed(
-                hidden
-                    .iter()
-                    .fold(why, |w, url| w.replace(url.as_str(), "the saved server")),
-            )
+            failed(hidden.iter().fold(why.into_text(), |w, url| {
+                w.replace(url.as_str(), "the saved server")
+            }))
         })?;
         Ok(Response::Done(Empty {}))
     }
@@ -553,7 +551,7 @@ impl ApiTarget<'_> {
                 "no stream key is saved{which}: enter it in Settings, Stream"
             ))),
             Ok(_) => Err(failed("the stream did not start")),
-            Err(why) => Err(hide(why)),
+            Err(why) => Err(hide(why.into_text())),
         }
     }
 }

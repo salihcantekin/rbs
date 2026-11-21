@@ -44,9 +44,9 @@ impl ApiTarget<'_> {
                         let Some(current) = &host.stream_profile else {
                             return Err(failed("the studio is still starting; try again"));
                         };
-                        let stream = current
-                            .with_api(patch)
-                            .map_err(|why| ApiError::new(ErrorKind::InvalidParams, why))?;
+                        let stream = current.with_api(patch).map_err(|why| {
+                            ApiError::new(ErrorKind::InvalidParams, why.into_text())
+                        })?;
                         output_size_for_canvas(stream.output_size, host.main_canvas_size())?;
                         if host.outs[0].streaming.is_some() && stream != *current {
                             return Err(ApiError::new(
@@ -105,7 +105,7 @@ impl ApiTarget<'_> {
                     if loudness.is_some() {
                         host.undo_loudness_save();
                     }
-                    return Err(failed(e));
+                    return Err(failed(e.into_text()));
                 }
                 if let Some(profile) = profile
                     && profile != host.profile

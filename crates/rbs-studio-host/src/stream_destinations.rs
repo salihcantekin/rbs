@@ -250,6 +250,41 @@ pub fn first_exists(stream: &StreamProfile) -> bool {
     !stream.server.trim().is_empty()
 }
 
+/// Why a destination edit was refused. The text is shown to the user.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DestinationError {
+    /// The canvas already has [`MAX_DESTINATIONS_PER_CANVAS`] destinations.
+    TooMany,
+    /// The canvas already has [`MAX_OWN_ENCODINGS_PER_CANVAS`] destinations with their
+    /// own encoding.
+    TooManyOwnEncodings,
+    /// Every destination id is used.
+    NoIdLeft,
+    /// No destination has this id.
+    NotFound(u32),
+}
+
+impl std::fmt::Display for DestinationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DestinationError::TooMany => write!(
+                f,
+                "A stream has at most {MAX_DESTINATIONS_PER_CANVAS} destinations."
+            ),
+            DestinationError::TooManyOwnEncodings => write!(
+                f,
+                "A stream has at most {MAX_OWN_ENCODINGS_PER_CANVAS} destinations with their \
+                 own encoding."
+            ),
+            DestinationError::NoIdLeft => f.write_str("no destination id is left"),
+            DestinationError::NotFound(id) => write!(f, "there is no destination {id}"),
+        }
+    }
+}
+
+impl std::error::Error for DestinationError {}
+
 impl Destinations {
     /// The destinations a saved section gives: none when it is absent or does not load.
     /// `Err` when it was written by a newer RBS: it is then read as none and must not be
@@ -293,7 +328,7 @@ impl Destinations {
                 && !d.server.is_empty()
                 && let Err(why) = parse_server(&d.server)
             {
-                return Some(why);
+                return Some(why.to_string());
             }
             if d.srt_latency_ms == Some(0) {
                 return Some("An SRT latency of 0 ms is not possible.".into());
@@ -405,22 +440,25 @@ impl Destinations {
 
     /// Adds a destination to `canvas` and returns its id. Refused, in words, at the
     /// limit.
-    pub fn add(&mut self, canvas: Canvas, name: &str, service: &str) -> Result<u32, String> {
+    pub fn add(
+        &mut self,
+        canvas: Canvas,
+        name: &str,
+        service: &str,
+    ) -> Result<u32, DestinationError> {
         let others = self
             .entries
             .iter()
             .filter(|d| d.canvas == canvas && !d.is_first())
             .count();
         if others + 1 >= MAX_DESTINATIONS_PER_CANVAS {
-            return Err(format!(
-                "A stream has at most {MAX_DESTINATIONS_PER_CANVAS} destinations."
-            ));
+            return Err(DestinationError::TooMany);
         }
         let id = self.next_id;
         self.next_id = self
             .next_id
             .checked_add(1)
-            .ok_or("no destination id is left")?;
+            .ok_or(DestinationError::NoIdLeft)?;
         self.entries
             .push(Destination::new(id, canvas, name, service));
         Ok(id)
@@ -429,7 +467,7 @@ impl Destinations {
     /// Removes destination `id`'s entry and returns it (its key is the caller's to
     /// delete). For a first destination the entry may be missing (`Ok(None)`); the
     /// caller empties its stream section (ADR-0148 decision 3).
-    pub fn remove(&mut self, id: u32) -> Result<Option<Destination>, String> {
+    pub fn remove(&mut self, id: u32) -> Result<Option<Destination>, DestinationError> {
         if id == MAIN_FIRST || id == VERTICAL_FIRST {
             let at = self.entries.iter().position(|d| d.id == id);
             return Ok(at.map(|at| self.entries.remove(at)));
@@ -438,7 +476,7 @@ impl Destinations {
             .entries
             .iter()
             .position(|d| d.id == id)
-            .ok_or_else(|| format!("there is no destination {id}"))?;
+            .ok_or(DestinationError::NotFound(id))?;
         Ok(Some(self.entries.remove(at)))
     }
 
@@ -471,14 +509,18 @@ impl Destinations {
 
     /// Sets how `id` is encoded. Refused, in words, past
     /// [`MAX_OWN_ENCODINGS_PER_CANVAS`] or for an unknown id.
-    pub fn set_encoding(&mut self, id: u32, encoding: DestinationEncoding) -> Result<(), String> {
+    pub fn set_encoding(
+        &mut self,
+        id: u32,
+        encoding: DestinationEncoding,
+    ) -> Result<(), DestinationError> {
         let canvas = match id {
             MAIN_FIRST => Canvas::Main,
             VERTICAL_FIRST => Canvas::Vertical,
             _ => self
                 .get(id)
                 .map(|d| d.canvas)
-                .ok_or_else(|| format!("there is no destination {id}"))?,
+                .ok_or(DestinationError::NotFound(id))?,
         };
         if encoding.is_own() {
             let own = self
@@ -487,10 +529,7 @@ impl Destinations {
                 .filter(|d| d.canvas == canvas && d.id != id && d.encoding.is_own())
                 .count();
             if own >= MAX_OWN_ENCODINGS_PER_CANVAS {
-                return Err(format!(
-                    "A stream has at most {MAX_OWN_ENCODINGS_PER_CANVAS} destinations with their \
-                     own encoding."
-                ));
+                return Err(DestinationError::TooManyOwnEncodings);
             }
         }
         if let Some(d) = self.entry_mut(id) {

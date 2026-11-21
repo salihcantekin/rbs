@@ -2,7 +2,8 @@
 //!
 //! 300 sources with a few settings each, 10 scenes of 30 items. A field edit is a
 //! volume change (a fader sample); a structural edit is a rename, which still
-//! copies and validates the whole collection.
+//! copies and validates the whole collection. `collection_eq` and `collection_clone`
+//! are the walk and the copy the studio host's autosave hand-off used per round.
 //!
 //! Run: `cargo bench -p rbs-scene --bench edit`.
 
@@ -83,6 +84,16 @@ fn edits(c: &mut Criterion) {
             };
             black_box(col.rename_source(source, name).expect("rename"));
         });
+    });
+    // What the studio host's autosave hand-off paid per control round before F-09b:
+    // an equality walk against the last saved copy, and on a change two clones.
+    let (col, _) = studio();
+    let copy = col.clone();
+    c.bench_function("collection_eq_300_sources", |b| {
+        b.iter(|| black_box(black_box(&col) == black_box(&copy)));
+    });
+    c.bench_function("collection_clone_300_sources", |b| {
+        b.iter(|| black_box(black_box(&col).clone()));
     });
 }
 

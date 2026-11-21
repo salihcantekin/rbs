@@ -40,10 +40,14 @@ A composition root fills these `HostConfig` fields (ADR-0159 decision 4). The ho
 | `browser` | `Option<Arc<dyn BrowserTrees>>`, where `create(&self, Arc<EngineSlot>, Option<PathBuf>, &Arc<GpuContext>) -> Arc<dyn HostBrowserTree>` | The host's runner-less tree: browser sources are Unavailable with `helper_missing`, `in_use` and `needs_engine` are false. |
 | `os_version` | `Option<String>` | `""` in the calibration key. A root always passes it. |
 | `system_probe`, `read_free_space` | `Option<SystemProbeFactory>`, `Option<FreeSpaceReader>` | No free-space or memory facts. |
-| `keys` | `Arc<dyn KeyStore>` (not optional) | The root passes the system key store, tests a `MemoryKeyStore`. |
+| `keys` | `Arc<dyn KeyStore>` (not optional), where `read`, `write` and `remove` fail with `KeyStoreError` (`Broken`, `Os(reason)`) | The root passes the system key store, tests a `MemoryKeyStore`. |
 | `add_ons` | `Option<AddOnsSetup>` | `addon.list` answers that add-ons are not set up. |
 
 `file_url` is the port function `rbs_transport::file_url`. The system implementations (`SystemKeyStore`, `add_ons::system_setup`, `system_probe::factory`, `browser_tree::RunnerTrees`, `chapters::MatroskaChapters`, `platform::host_seams`) stay in `rbs-app`.
+
+### Errors
+
+A refused command or step is a `Refusal` (`NotFound`, `Invalid`, `Conflict`, `Failed`, each with the words shown to the user; quality plan WP-25). `refused` maps it to the control API kind (`not_found`, `invalid_params`, `conflict`, `failed`); a method whose answer kind the protocol already fixes keeps that kind and takes the words. The UI edge (`Update::Error` and the other `Update` results) carries the words. Data types have their own errors: `DestinationError`, `ServerError` (`stream_profile::parse_server`), `KeyStoreError`, and `rbs_user_data::DataError` for user data.
 
 ### Thread
 

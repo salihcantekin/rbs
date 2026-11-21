@@ -50,7 +50,7 @@ impl ApiTarget<'_> {
                 }
                 let settings = VirtualCameraSettings::new(setup.width, setup.height, setup.fps);
                 host.start_camera_asked(settings, notify, false)
-                    .map_err(failed)?;
+                    .map_err(|e| failed(e.into_text()))?;
                 host.publish(notify);
                 Ok(Response::Done(Empty {}))
             }
@@ -118,7 +118,7 @@ impl ApiTarget<'_> {
                         "the replay buffer is already armed",
                     ));
                 }
-                host.arm_replay(notify).map_err(failed)?;
+                host.arm_replay(notify).map_err(|e| failed(e.into_text()))?;
                 host.publish(notify);
                 Ok(Response::Done(Empty {}))
             }
@@ -154,7 +154,7 @@ impl ApiTarget<'_> {
                 // The file is written on a worker: the answer says the clip was
                 // requested, and `replay.changed` carries where it went.
                 host.save_replay(p.seconds)
-                    .map_err(|why| ApiError::new(ErrorKind::Conflict, why))?;
+                    .map_err(|why| ApiError::new(ErrorKind::Conflict, why.into_text()))?;
                 host.replay_changed(notify);
                 host.publish(notify);
                 Ok(Response::Done(Empty {}))

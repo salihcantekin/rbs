@@ -107,10 +107,6 @@ impl Host {
             .item(item)
             .and_then(|(_, i)| i.show_for_ms)
             .unwrap_or(0);
-        let cue_remaining_ms = self
-            .studio
-            .cue_remaining_ms(item, self.clock.now())
-            .unwrap_or(0);
         (
             cap_has,
             cap_l,
@@ -125,7 +121,6 @@ impl Host {
             chrome_fill,
             has_work_rect,
             show_for_ms,
-            cue_remaining_ms,
         )
     }
 

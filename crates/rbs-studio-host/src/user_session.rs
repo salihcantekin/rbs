@@ -285,6 +285,10 @@ impl Drop for Saver {
 }
 
 fn write_jobs(shared: &Shared, data: &UserData, lock: &WriterLock, on_error: &dyn Fn(String)) {
+    // What the saves below wrote, so an autosave over its own last write does not
+    // parse that file again (audit F-09). A task's writes are not noted: the next save
+    // of a file a task changed checks it in full.
+    let mut written = rbs_user_data::document::Written::default();
     loop {
         let job = {
             let Ok(mut q) = shared.queue.lock() else {
@@ -322,14 +326,14 @@ fn write_jobs(shared: &Shared, data: &UserData, lock: &WriterLock, on_error: &dy
             Job::Collection(id, col) => {
                 let name = Names::of(&names.collections, &id);
                 data.scene_collections()
-                    .save(lock, &id, &Entry::new(name.clone(), col))
+                    .save_known(lock, &id, &Entry::new(name.clone(), col), &mut written)
                     .err()
                     .map(|e| format!("The scene collection {name:?} could not be saved: {e}"))
             }
             Job::Profile(id, p) => {
                 let name = Names::of(&names.profiles, &id);
                 data.profiles()
-                    .save(lock, &id, &Entry::new(name.clone(), p))
+                    .save_known(lock, &id, &Entry::new(name.clone(), p), &mut written)
                     .err()
                     .map(|e| format!("The output profile {name:?} could not be saved: {e}"))
             }

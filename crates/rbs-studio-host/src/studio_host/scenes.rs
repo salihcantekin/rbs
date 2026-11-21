@@ -3,6 +3,26 @@
 use super::*;
 
 impl Host {
+    /// Hands the collection to autosave when it changed since it was last handed, so
+    /// a round with no edit neither walks nor copies the collection (audit F-09).
+    /// Every edit bumps [`SceneCollection::generation`] and every replacement bumps
+    /// the epoch, so an equal stamp means the same value. An edit and its undo give a
+    /// new stamp and one more save, which the writer finds unchanged and does not write.
+    pub(super) fn publish_save(&mut self) {
+        let stamp = self.save_stamp();
+        if let Some(save) = &self.autosave
+            && self.saved != Some(stamp)
+        {
+            save.save(&self.collection);
+            self.saved = Some(stamp);
+        }
+    }
+
+    /// Which value of the collection runs: the epoch and the generation.
+    pub(super) fn save_stamp(&self) -> (u64, u64) {
+        (self.collection_epoch, self.collection.generation())
+    }
+
     /// Runs `next` instead of the collection that runs now (the studio restarts);
     /// on a failure the one before runs again. Always sends [`Update::Canvas`].
     pub(super) fn switch_collection(
@@ -10,21 +30,25 @@ impl Host {
         next: SceneCollection,
         autosave: Option<CollectionSaver>,
         notify: &dyn Fn(Update),
-    ) -> Result<(), String> {
+    ) -> Result<(), Refusal> {
         if self.any_recording() {
-            let why = "Stop the recording before switching scene collections.".to_owned();
+            let why = Refusal::Conflict(
+                "Stop the recording before switching scene collections.".to_owned(),
+            );
             self.canvas_changed(self.api_canvas(), notify);
             return Err(why);
         }
         if self.any_streaming() {
-            let why = "End the stream before switching scene collections.".to_owned();
+            let why =
+                Refusal::Conflict("End the stream before switching scene collections.".to_owned());
             self.canvas_changed(self.api_canvas(), notify);
             return Err(why);
         }
         // The pages of the collection before go: their Interact windows close.
         self.close_all_interacts(notify);
         let before = self.api_canvas();
-        let loaded = next.clone();
+        // Fixing up a missing canvas or scene below is an edit: it is saved.
+        let loaded = next.generation();
         let mut next = next;
         let (size, fps) = self
             .collection
@@ -36,7 +60,9 @@ impl Host {
             Ok(shown) => shown,
             Err(why) => {
                 self.canvas_changed(before, notify);
-                return Err(format!("The scene collection cannot be used: {why}"));
+                return Err(Refusal::Failed(format!(
+                    "The scene collection cannot be used: {why}"
+                )));
             }
         };
         // Whatever the old collection's last change was, it is saved before this one.
@@ -57,7 +83,7 @@ impl Host {
                 // The new collection's timers, not the old one's.
                 self.studio.set_text_timers(&[]);
                 self.text_timers_restored = false;
-                self.saved = Some(loaded);
+                self.saved = Some((self.collection_epoch, loaded));
                 self.history.clear();
                 // The attribute clipboard belongs to the old collection (ADR-0133).
                 if self.attribute_clipboard.take().is_some() {
@@ -70,9 +96,11 @@ impl Host {
                 (self.collection, self.canvas, self.scene) = old;
                 self.held = old_held;
                 if let Err(again) = self.restart() {
-                    self.dead = Some(again);
+                    self.dead = Some(again.into_text());
                 }
-                Err(format!("The scene collection cannot run: {why}"))
+                Err(Refusal::Failed(format!(
+                    "The scene collection cannot run: {why}"
+                )))
             }
         };
         self.canvas_changed(before, notify);
@@ -84,7 +112,7 @@ impl Host {
         &mut self,
         id: SceneId,
         direction: rbs_api::request::LayerDirection,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, Refusal> {
         use rbs_api::request::LayerDirection::*;
         let undo = match direction {
             Up => self.collection.move_scene(self.canvas, id, true),
@@ -92,7 +120,7 @@ impl Host {
             Front => self.collection.move_scene_to_end(self.canvas, id, true),
             Back => self.collection.move_scene_to_end(self.canvas, id, false),
         }
-        .map_err(|e| edit_error(&e))?;
+        .map_err(|e| Refusal::of(&e))?;
         let Some(undo) = undo else {
             return Ok(false);
         };
@@ -106,11 +134,11 @@ impl Host {
     }
 
     /// Puts scene `id` where scene `to` is in the scene list.
-    pub(super) fn move_scene_to(&mut self, id: SceneId, to: SceneId) -> Result<bool, String> {
+    pub(super) fn move_scene_to(&mut self, id: SceneId, to: SceneId) -> Result<bool, Refusal> {
         let undo = self
             .collection
             .move_scene_to(self.canvas, id, to)
-            .map_err(|e| edit_error(&e))?;
+            .map_err(|e| Refusal::of(&e))?;
         let Some(undo) = undo else {
             return Ok(false);
         };

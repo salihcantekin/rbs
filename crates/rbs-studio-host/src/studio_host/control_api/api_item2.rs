@@ -9,8 +9,7 @@ impl ApiTarget<'_> {
         let host = &mut *self.host;
         match command {
             C::ItemSetStyle(p) => {
-                let style = scene_style(&p.style)
-                    .map_err(|why| ApiError::new(ErrorKind::InvalidParams, why))?;
+                let style = scene_style(&p.style).map_err(|why| refused(&why))?;
                 // The canvas comes first in the error order (protocol 1.44).
                 host.edit_canvas(p.canvas).map_err(|e| refused(&e))?;
                 let item = ItemId::from_raw(p.item);
@@ -45,7 +44,7 @@ impl ApiTarget<'_> {
                 }
                 if host
                     .set_item_style(item, style, 0, p.canvas)
-                    .map_err(failed)?
+                    .map_err(|e| failed(e.into_text()))?
                 {
                     host.apply(notify);
                 }
@@ -53,10 +52,7 @@ impl ApiTarget<'_> {
             }
             C::ItemSetScroll(p) => {
                 let scroll = match &p.scroll {
-                    Some(s) => Some(
-                        scene_scroll(s)
-                            .map_err(|why| ApiError::new(ErrorKind::InvalidParams, why))?,
-                    ),
+                    Some(s) => Some(scene_scroll(s).map_err(|why| refused(&why))?),
                     None => None,
                 };
                 // The canvas comes first in the error order (protocol 1.44).
@@ -87,7 +83,7 @@ impl ApiTarget<'_> {
                 }
                 if host
                     .set_item_scroll(item, scroll, 0, p.canvas)
-                    .map_err(failed)?
+                    .map_err(|e| failed(e.into_text()))?
                 {
                     host.apply(notify);
                 }
@@ -161,7 +157,7 @@ impl ApiTarget<'_> {
                 };
                 host.record_estimate(c, all, p.iso)
                     .map(Response::RecordEstimate)
-                    .map_err(failed)
+                    .map_err(|e| failed(e.into_text()))
             }
             C::RecordStartToFile(p) => {
                 check_profile(&p.profile)?;

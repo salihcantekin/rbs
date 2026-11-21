@@ -16,8 +16,8 @@ pub struct SystemKeyStore;
 
 #[cfg(any(target_os = "macos", windows))]
 impl SystemKeyStore {
-    fn entry(account: &str) -> Result<keyring::Entry, String> {
-        keyring::Entry::new(SERVICE, account).map_err(|e| e.to_string())
+    fn entry(account: &str) -> Result<keyring::Entry, KeyStoreError> {
+        keyring::Entry::new(SERVICE, account).map_err(|e| KeyStoreError::Os(e.to_string()))
     }
 }
 
@@ -33,22 +33,22 @@ impl KeyStore for SystemKeyStore {
     fn persistent(&self) -> bool {
         true
     }
-    fn read(&self, account: &str) -> Result<Option<Secret>, String> {
+    fn read(&self, account: &str) -> Result<Option<Secret>, KeyStoreError> {
         match Self::entry(account)?.get_password() {
             Ok(k) => Ok(Some(Secret::new(k))),
             Err(keyring::Error::NoEntry) => Ok(None),
-            Err(e) => Err(e.to_string()),
+            Err(e) => Err(KeyStoreError::Os(e.to_string())),
         }
     }
-    fn write(&self, account: &str, key: &Secret) -> Result<(), String> {
+    fn write(&self, account: &str, key: &Secret) -> Result<(), KeyStoreError> {
         Self::entry(account)?
             .set_password(key.expose())
-            .map_err(|e| e.to_string())
+            .map_err(|e| KeyStoreError::Os(e.to_string()))
     }
-    fn remove(&self, account: &str) -> Result<(), String> {
+    fn remove(&self, account: &str) -> Result<(), KeyStoreError> {
         match Self::entry(account)?.delete_credential() {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(e) => Err(e.to_string()),
+            Err(e) => Err(KeyStoreError::Os(e.to_string())),
         }
     }
 }
