@@ -652,9 +652,19 @@ pub struct StudioUi {
     switch_seq: u64,
     /// A scene collection switch the studio has not answered yet.
     switching: Option<Switching>,
+    /// What a profile or collection switch still waits for before it is answered.
+    wait: SwitchWait,
+}
+
+/// What a profile or collection switch waits for.
+#[derive(Default)]
+struct SwitchWait {
+    /// The writer thread reads a profile or collection for a switch
+    /// ([`library_ops::EntryWrite`]): another switch waits for it.
+    loading: bool,
     /// The `seq` of a control API switch ([`Update::SwitchRequested`]) to answer with
-    /// the next [`Command::SetLibrary`] sent while no collection switch runs.
-    api_switch: Option<u64>,
+    /// the next [`Command::SetLibrary`] sent while no switch loads or runs.
+    api: Option<u64>,
 }
 
 /// A scene collection the studio is asked to run.
@@ -909,7 +919,7 @@ impl StudioUi {
             collection_rows: Rc::new(VecModel::default()),
             switch_seq: 0,
             switching: None,
-            api_switch: None,
+            wait: SwitchWait::default(),
         };
         ui.load_canvas_sections();
         ui.note_destinations();
@@ -5504,8 +5514,8 @@ impl StudioUi {
         let profiles = self.user.profiles();
         let collections = self.user.collections();
         // A control API switch is answered once nothing of it is left to do.
-        let answered = if self.switching.is_none() {
-            self.api_switch.take()
+        let answered = if self.switching.is_none() && !self.wait.loading {
+            self.wait.api.take()
         } else {
             None
         };
@@ -5719,23 +5729,6 @@ impl StudioUi {
         Ok(())
     }
 
-    /// Output profile menu: uses the profile `id` (refused while live).
-    pub fn switch_profile(&mut self, id: &str) -> Result<(), String> {
-        let id = EntryId::parse(id).ok_or("that output profile is gone")?;
-        if id == self.user.profile_id {
-            return Ok(());
-        }
-        self.idle_for("switching output profiles")?;
-        let result = self.user.switch_profile(&id);
-        // The studio gets the profile's settings and key account before the list
-        // that shows it in use.
-        if result.is_ok() {
-            self.profile_loaded();
-        }
-        self.refresh_library();
-        result.map_err(String::from)
-    }
-
     /// Shows the output profile in use and hands its settings and stream key account
     /// to the studio.
     /// Reads the profile's sections beside the recording and stream ones: the
@@ -5792,7 +5785,7 @@ impl StudioUi {
         }
     }
 
-    fn profile_loaded(&mut self) {
+    pub(super) fn profile_loaded(&mut self) {
         let (profile, why) = section(
             &self.user,
             RECORDING,
@@ -5857,29 +5850,12 @@ impl StudioUi {
         ));
     }
 
-    /// Scene collection menu: runs the collection `id` (refused while live; the studio
-    /// restarts, so the preview connects again).
-    pub fn switch_collection(
-        &mut self,
-        id: &str,
-        close_preview: impl FnOnce(),
-    ) -> Result<(), String> {
-        let id = EntryId::parse(id).ok_or("that scene collection is gone")?;
-        if id == self.user.collection_id {
-            return Ok(());
-        }
-        self.can_switch_collection()?;
-        let (name, collection) = self.user.load_collection(&id)?;
-        self.ask_switch(id, name, collection, None, false, close_preview);
-        Ok(())
-    }
-
-    fn can_switch_collection(&self) -> Result<(), String> {
+    pub(super) fn can_switch_collection(&self) -> Result<(), String> {
         self.idle_for("switching scene collections")?;
         if self.state != 1 || self.host.is_none() {
             return Err("Scene collections can be switched once the studio runs.".into());
         }
-        if self.switching.is_some() || self.canvas_restarting {
+        if self.switching.is_some() || self.canvas_restarting || self.wait.loading {
             return Err("The studio is still restarting.".into());
         }
         Ok(())
@@ -6518,7 +6494,7 @@ impl StudioUi {
                 collection,
                 id,
             } => {
-                self.api_switch = Some(seq);
+                self.wait.api = Some(seq);
                 out.switch = Some((collection, id));
             }
             Update::ObsImported { shortcuts } => {
@@ -9473,12 +9449,13 @@ mod tests {
             id: id.as_str().to_owned(),
         });
         assert_eq!(out.switch, Some((false, id.as_str().to_owned())));
-        assert_eq!(ui.api_switch, Some(7));
+        assert_eq!(ui.wait.api, Some(7));
         // Refused while live: still answered, and the one in use stays.
         ui.st_state = st_state::LIVE;
         assert!(ui.switch_profile(id.as_str()).is_err());
+        assert!(!ui.wait.loading);
         ui.refresh_library();
-        assert_eq!(ui.api_switch, None);
+        assert_eq!(ui.wait.api, None);
         assert_ne!(ui.user.profile_id, id);
         ui.st_state = st_state::OFF;
         ui.apply(Update::SwitchRequested {
@@ -9486,8 +9463,17 @@ mod tests {
             collection: false,
             id: id.as_str().to_owned(),
         });
-        ui.switch_profile(id.as_str()).unwrap();
-        assert_eq!(ui.api_switch, None);
+        let write = ui.switch_profile(id.as_str()).unwrap();
+        // Answered once the writer thread read it, not before.
+        ui.refresh_library();
+        assert_eq!(ui.wait.api, Some(8));
+        assert!(
+            ui.switch_profile(id.as_str()).is_err(),
+            "one switch at a time"
+        );
+        library_ops::finish(&mut ui, write).unwrap();
+        assert!(!ui.wait.loading);
+        assert_eq!(ui.wait.api, None);
         assert_eq!(ui.user.profile_id, id);
         assert!(
             ui.library_choices(false)

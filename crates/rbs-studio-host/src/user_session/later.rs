@@ -234,7 +234,7 @@ pub(super) fn import_collection(
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)] // Tests fail by panicking.
-mod tests {
+pub(super) mod tests {
     use std::sync::Arc;
     use std::task::Wake;
     use std::thread::Thread;
@@ -245,7 +245,7 @@ mod tests {
     use crate::record_profile::RecordProfile;
 
     /// Runs `f` to its end on this thread: parks until the writer thread wakes it.
-    fn block_on<F: Future>(f: F) -> F::Output {
+    pub(crate) fn block_on<F: Future>(f: F) -> F::Output {
         struct Unpark(Thread);
         impl Wake for Unpark {
             fn wake(self: Arc<Self>) {
@@ -263,7 +263,7 @@ mod tests {
         }
     }
 
-    fn dir(name: &str) -> PathBuf {
+    pub(crate) fn dir(name: &str) -> PathBuf {
         let d =
             std::env::temp_dir().join(format!("rbs-session-later-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
@@ -271,7 +271,7 @@ mod tests {
         d
     }
 
-    fn quiet() -> OnError {
+    pub(crate) fn quiet() -> OnError {
         Arc::new(|_| {})
     }
 

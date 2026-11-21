@@ -807,12 +807,12 @@ impl App {
             }
             Run::Profile(id) => {
                 let done = self.studio.switch_profile(&id);
-                self.library_done(done);
+                library_transfer::when_answered(self, done, App::library_done);
             }
             Run::Collection(id) => {
                 self.dismiss_source_settings();
-                let done = self.studio.switch_collection(&id, close_preview);
-                self.library_done(done);
+                let done = self.studio.switch_collection(&id);
+                library_transfer::when_answered(self, done, App::library_done);
             }
             Run::Scene(id) => self.studio.switch_scene(id),
             Run::Layout(c) => self.command(c, Origin::Command),
@@ -987,10 +987,10 @@ impl App {
             }
             (EntryOp::Import | EntryOp::Export, _) if !window => {}
             (EntryOp::Delete, _) if window => self.ask_name = Some(Ask::Entry(kind, op)),
-            (_, name) => match self.entry_command(kind, op, name.as_deref().unwrap_or("")) {
-                Ok(Some(write)) => library_transfer::when_written(write, App::library_done),
-                done => self.library_done(done.map(drop)),
-            },
+            (_, name) => {
+                let done = self.entry_command(kind, op, name.as_deref().unwrap_or(""));
+                library_transfer::when_answered(self, done, App::library_done);
+            }
         }
     }
 
@@ -1931,13 +1931,13 @@ impl Ctx {
             if let Some((collection, id)) = applied.switch {
                 let done = if collection {
                     app.dismiss_source_settings();
-                    app.studio.switch_collection(&id, close_preview)
+                    app.studio.switch_collection(&id)
                 } else {
                     app.studio.switch_profile(&id)
                 };
-                // Answers the host, also when the switch was refused.
+                // Answers the host when refused; a started switch once it is done.
                 app.studio.refresh_library();
-                app.library_done(done);
+                library_transfer::when_answered(app, done, App::library_done);
             }
         });
     }

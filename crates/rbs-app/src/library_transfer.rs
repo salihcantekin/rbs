@@ -5,7 +5,7 @@ use std::cell::Cell;
 
 use slint::ComponentHandle;
 
-use super::{App, CTX, Overlays, close_preview, entry, file_dialog, menu_bar};
+use super::{App, CTX, Overlays, entry, file_dialog, menu_bar};
 
 /// Which library a menu imports into or exports from.
 #[derive(Clone, Copy)]
@@ -79,7 +79,7 @@ thread_local! {
 }
 
 /// Awaits a profile or collection change on the writer thread, finishes it on the UI
-/// thread and hands the result to `then`.
+/// thread and hands the result to `then`; a next step it leaves is awaited first.
 pub(crate) fn when_written(
     write: crate::studio_ui::EntryWrite,
     then: impl FnOnce(&mut App, Result<(), String>) + 'static,
@@ -90,10 +90,25 @@ pub(crate) fn when_written(
             return;
         };
         ctx.update(move |app| {
-            let done = finish.and_then(|f| f(&mut app.studio, crate::close_preview));
-            then(app, done);
+            match finish.and_then(|f| f(&mut app.studio, crate::close_preview)) {
+                Ok(Some(next)) => when_written(next, then),
+                done => then(app, done.map(drop)),
+            }
         });
     });
+}
+
+/// Hands an entry command's outcome to `then`: at once, or once the writer thread
+/// did its part.
+pub(crate) fn when_answered(
+    app: &mut App,
+    done: Result<Option<crate::studio_ui::EntryWrite>, String>,
+    then: impl FnOnce(&mut App, Result<(), String>) + 'static,
+) {
+    match done {
+        Ok(Some(write)) => when_written(write, then),
+        done => then(app, done.map(drop)),
+    }
 }
 
 /// Writer-thread work a studio answer started (the collection a switch left is
@@ -151,7 +166,7 @@ impl App {
             (EntryKind::Collection, EntryOp::Delete) => {
                 self.dismiss_source_settings();
                 let id = self.studio.user.collection_id.as_str().to_owned();
-                self.studio.delete_collection(&id, close_preview)
+                self.studio.delete_collection(&id).map(Some)
             }
             (EntryKind::Profile, EntryOp::Import | EntryOp::Export) => {
                 let name = self.studio.user.profile_name.clone();
