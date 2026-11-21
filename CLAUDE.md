@@ -31,6 +31,7 @@ A headless live production engine in Rust (capture, compose, encode, stream, rec
     - Never edit those two files by hand. When your change lowers a count, run `cargo xtask check-ui --lower`. When a count would rise, stop and ask the owner; only after written approval run `cargo xtask check-ui --except <check> <count> <file> <reason> <owner's approval> <date>`.
     - The checks see only what they count. Every other rule (tokens, library components, row anatomy, `Toggle` for a setting, `DialogActions` for window buttons, glossary terms) is checked with the UI review checklist.
     - Screenshots for the owner's approval of a visual change are dark and light (the only built-in themes, [ADR-0123](docs/adr/0123-remove-the-high-contrast-theme.md)).
+19. **Build features extension-ready.** A new source, filter, transition, output, adapter or automation trigger registers through a registry (or keeps its built-in special-casing in one place its ADR names), is stored and addressed by a type id, declares its settings as an `rbs-params` schema, and uses only what a plugin could also be given (ports, lent frames, host services). No new closed `match` on built-in types in the engine or studio host. A feature that cannot meet this says why in its ADR (owner, 2026-11-21; principle P16, [ADR-0162](docs/adr/0162-extension-ready-registries-and-plugin-order.md)).
 
 ## Workspace layout
 
