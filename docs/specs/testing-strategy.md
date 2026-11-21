@@ -12,6 +12,7 @@
 | Conformance suites | One per port; every adapter runs it | Hosted CI (software adapters), self-hosted (hardware) |
 | Fuzzing | Parsers and protocol handlers (`cargo fuzz`) | Nightly |
 | Miri / sanitizers | Crates with `unsafe` | Hosted CI where supported |
+| Model-checked tests | Lock-free protocols shared between processes: the browser GPU slot section (`loom`, built only with `--cfg loom`) | On demand, before a change to the protocol is merged |
 | Golden image tests | Compositor and filters render reference scenes; compared with tolerance | Hosted CI with software rendering (WARP / lavapipe) |
 | Scenario benchmarks | End-to-end headless scenes with budgets | Self-hosted GPU runners, nightly |
 | Soak tests | 4-hour stream + record per tier-1 platform | Before each release |
@@ -38,6 +39,7 @@ Binding ([ADR-0032](../adr/0032-fast-deterministic-tests.md); procedure: `test-r
 | The crates a change touches | `cargo test -p <crate>` (or `cargo nextest run -p <crate>`) |
 | Everything a branch can break | `cargo xtask affected test` (also `check`, `clippy`, `list`; `--base <rev>`, extra arguments after `--`) |
 | Whole fast tier | `cargo nextest run --workspace` (or `cargo test --workspace`) |
+| Model-check the browser GPU slot protocol | `RUSTFLAGS="--cfg loom" cargo test -p rbs-browser-shm --release --lib loom` with its own `CARGO_TARGET_DIR` (the flag rebuilds every dependency); each test runs the studio on a spawned thread, because loom 0.7 misses an earlier load by the other thread when a thread loads a word and then writes it |
 | Slow tier | `cargo nextest run --workspace --run-ignored only -E 'test(/^slow_/)'` |
 | Stress one test binary | run it 50 times pinned to two cores (`taskset -c 0,1`) with busy loops on the others |
 

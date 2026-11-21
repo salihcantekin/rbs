@@ -16,3 +16,8 @@ libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Memory", "Win32_System_Performance"] }
+
+# Model-checked tests of the GPU slot protocol (ADR-0157 decisions 4 and 11), only
+# under `RUSTFLAGS="--cfg loom"` in tests; never part of a normal build.
+[target.'cfg(loom)'.dev-dependencies]
+loom = "0.7"
