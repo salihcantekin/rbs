@@ -155,14 +155,25 @@ impl GpuContext {
         } else {
             rbs_core::log::Level::Info
         };
+        // Metal reports no driver name or version: the part is left out then.
+        let driver = [info.driver.as_str(), info.driver_info.as_str()]
+            .iter()
+            .filter(|s| !s.is_empty())
+            .copied()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let driver = if driver.is_empty() {
+            String::new()
+        } else {
+            format!(", driver {driver}")
+        };
         rbs_core::log_at!(
             level,
             rbs_core::log::Area::Gpu,
-            "adapter {} ({:?}, {:?}, driver {})",
+            "adapter {} ({:?}, {:?}{driver})",
             info.name,
             info.backend,
-            info.device_type,
-            info.driver
+            info.device_type
         );
         Ok(context)
     }
