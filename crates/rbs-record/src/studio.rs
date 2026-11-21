@@ -204,6 +204,9 @@ pub struct ScrollHandover {
     /// The old clock's time when they were taken; the new studio's start time is the
     /// same instant on its clock, so the runs move by the difference (either sign).
     pub at: Timestamp,
+    /// When each lingering source's linger ends, on the old clock; moved the same way
+    /// (ADR-0152 decision 8).
+    pub lingers: BTreeMap<SourceId, Timestamp>,
 }
 
 impl StudioSettings {
@@ -1588,7 +1591,7 @@ impl Studio {
         }
 
         let mut graph = GraphDescription::new();
-        let mut binder = SceneBinder::new(sources.node_types()).with_clock(engine.clock());
+        let mut binder = linger::binder(sources, &engine, settings.scroll_runs.as_ref());
         if settings.audio {
             binder = binder.with_audio(parts.audio);
         }
@@ -2501,22 +2504,6 @@ impl Studio {
         });
     }
 
-    /// Sends each program compositor's layers, gliding a scene change that is still
-    /// moving. The preview picture is not glided.
-    /// The scroll run of every key a list draws (ADR-0150 decision 5).
-    pub fn scroll_runs(&self) -> &ScrollRuns {
-        &self.scroll_runs
-    }
-
-    /// The scroll runs to hand to the studio that replaces this one
-    /// ([`StudioSettings::scroll_runs`]), taken at the engine's time now.
-    pub fn scroll_handover(&self) -> ScrollHandover {
-        ScrollHandover {
-            runs: self.scroll_runs.clone(),
-            at: self.engine.clock().now(),
-        }
-    }
-
     /// The run key of every scrolling layer a list draws, and of every item a shown
     /// program or preview scene fades to 0 (ADR-0150 decision 5).
     fn scroll_keys(&self) -> BTreeSet<rbs_scene::ScrollKey> {
@@ -2554,6 +2541,8 @@ impl Studio {
         keys
     }
 
+    /// Sends each program compositor's layers, gliding a scene change that is still
+    /// moving. The preview picture is not glided.
     fn send_program_layers(&mut self, plan: &rbs_graph::description::SchedulePlan) {
         self.keep_scroll_runs();
         let now = self.engine.clock().now();

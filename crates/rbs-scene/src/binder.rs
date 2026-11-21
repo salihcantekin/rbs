@@ -680,6 +680,20 @@ impl SceneBinder {
         self.state.linger.contains(source)
     }
 
+    /// Each lingering source and when its linger ends, on this binder's clock: what a
+    /// studio restart hands over (ADR-0152 decision 8).
+    pub fn lingers(&self) -> BTreeMap<SourceId, Timestamp> {
+        self.state.linger.ends().clone()
+    }
+
+    /// Takes over the lingers of the binder this one replaces, with their ends moved
+    /// to this binder's clock; before the first sync, which keeps those whose source
+    /// is not running again, not Off and whose time is not up.
+    pub fn with_lingers(mut self, lingers: BTreeMap<SourceId, Timestamp>) -> Self {
+        self.state.linger.adopt(lingers);
+        self
+    }
+
     /// Also binds audio (ADR-0039): one mixer node per canvas and the audio-only
     /// source nodes go into `partition`, an audio partition (ADR-0037; never
     /// `PartitionId::RENDER`, which ticks at frame rate). Each mixer gets a link from

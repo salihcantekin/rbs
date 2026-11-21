@@ -5,9 +5,35 @@
 use std::time::Duration;
 
 use rbs_core::time::Timestamp;
+use rbs_scene::binder::SceneBinder;
 use rbs_scene::model::SourceId;
+use rbs_sources::SourceTypes;
 
-use super::Studio;
+use super::{Engine, ScrollHandover, Studio};
+
+/// The studio's binder on the engine clock, with the lingers of the studio it
+/// replaces moved to that clock by the signed difference (ADR-0152 decision 8).
+pub(super) fn binder(
+    sources: &SourceTypes,
+    engine: &Engine,
+    handover: Option<&ScrollHandover>,
+) -> SceneBinder {
+    let clock = engine.clock();
+    let now = clock.now();
+    let binder = SceneBinder::new(sources.node_types()).with_clock(clock);
+    let Some(h) = handover.filter(|h| !h.lingers.is_empty()) else {
+        return binder;
+    };
+    let shift = i128::from(now.as_nanos()) - i128::from(h.at.as_nanos());
+    let moved = h.lingers.iter().map(|(id, end)| {
+        let end = i128::from(end.as_nanos()) + shift;
+        (
+            *id,
+            Timestamp::from_nanos(u64::try_from(end.max(0)).unwrap_or(u64::MAX)),
+        )
+    });
+    binder.with_lingers(moved.collect())
+}
 
 impl Studio {
     /// How long the control thread may sleep before the soonest linger ends; zero
