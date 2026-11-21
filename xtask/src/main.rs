@@ -1016,10 +1016,12 @@ mod tests {
         for (_, to, _) in edges {
             // `windows-sys` loads the downloaded engine on Windows (add-ons spec,
             // "Browser engine consumer"); `windows` copies the page into the studio's
-            // shared textures with Direct3D 11 (ADR-0109 decision 8).
+            // shared textures with Direct3D 11 (ADR-0109 decision 8). `libc` checks on
+            // Unix whether the owner of a stale temporary profile still runs (scene
+            // sources spec, browser runner; `windows` does it on Windows).
             let allowed = matches!(
                 to.as_str(),
-                "cef" | "rbs-browser-ipc" | "rbs-browser-shm" | "windows-sys" | "windows"
+                "cef" | "rbs-browser-ipc" | "rbs-browser-shm" | "windows-sys" | "windows" | "libc"
             ) || to.starts_with("objc2");
             assert!(allowed, "rbs-browser-cef must not depend on {to}");
         }
