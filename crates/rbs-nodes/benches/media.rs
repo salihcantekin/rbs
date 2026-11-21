@@ -43,10 +43,17 @@ fn pair(clock: &Arc<TestClock>) -> MediaPair {
     )
 }
 
+/// Waits until the worker has settled at `t`. A real-time bound is only a hang guard
+/// (ADR-0032).
 fn settle(pair: &MediaPair, clock: &TestClock, t: Timestamp) {
     clock.set(t);
+    let guard = Instant::now();
     while !(pair.picture.worker_ended() || pair.picture.worker_settled_at().is_some_and(|s| s >= t))
     {
+        assert!(
+            guard.elapsed() < Duration::from_secs(10),
+            "hang guard: the media worker did not settle at {t:?}"
+        );
         std::thread::yield_now();
     }
 }
@@ -87,6 +94,9 @@ fn bench(c: &mut Criterion) {
                 let start = Instant::now();
                 black_box(pair.sound.fill(t - LATENCY, &mut [&mut l, &mut r], BLOCK));
                 spent += start.elapsed();
+                // The picture node takes its pictures too, untimed: a worker whose
+                // picture ring is full and never returned does not move on.
+                black_box(pair.picture.dequeue(t));
             }
             pair.picture.standby();
             spent
