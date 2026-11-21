@@ -168,4 +168,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0158](0158-diagnostics-log.md) | A diagnostics log with levels: a facade in `rbs-core`, a rotating file written off the calling thread by `rbs-log`, nothing on hot paths | Accepted |
 | [0159](0159-studio-host-in-its-own-crate.md) | The studio host in its own toolkit-free crate `rbs-studio-host`, adapters only through `HostConfig`, then split by concern | Accepted |
 | [0160](0160-one-platform-adapter-list.md) | One platform adapter list in `rbs-platform`, shared by `rbs-app` and `rbs-cli`; only composition roots may depend on it | Accepted |
-| [0161](0161-preview-layer-keeps-a-frame-whose-present-failed.md) | The Windows preview layer keeps a frame whose present failed and presents it again (supersedes the failed-present clause of ADR-0036 decision 7) | Proposed |
+| [0161](0161-preview-layer-keeps-a-frame-whose-present-failed.md) | The Windows preview layer keeps a frame whose present failed and presents it again (supersedes the failed-present clause of ADR-0036 decision 7) | Accepted |

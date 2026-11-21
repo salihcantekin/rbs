@@ -1,6 +1,6 @@
 # ADR-0161: The Windows preview layer keeps a frame whose present failed and presents it again
 
-- Status: Proposed
+- Status: Accepted (owner, 2026-11-21)
 - Date: 2026-11-21
 - Deciders: Salih (owner)
 - Supersedes: [ADR-0036](0036-windows-preview-layer.md) decision 7, only the clause "or a failed `Present`" (a failed present counted as a lost presentation manager). The rest of decision 7 stays: replaced frames go back by `IsAvailable`, the lost event is a loss, a lost manager releases every frame.
@@ -58,4 +58,6 @@ Round 2 (confirm): a fresh independent AI session (this ADR, ADR-0036, ADR-0014,
 
 Resolutions by the author, 2026-11-21: (1) doc fixed; (2) replaced by a `debug_assert!`; (3) `take_due` gives nothing at the instant of the first failure (decision 3; test `no_retry_at_the_instant_of_the_failure`); (4) at `detach` the frame on the current buffer is the detached one and the shown frame retires and is polled (decision 4); (5) test `a_success_resets_the_retry_window`. Windows-target clippy (`-p rbs-gpu --features preview-layer --all-targets -D warnings`) clean after these.
 
-Still open before acceptance: the Windows build and an SC-PC run with an Interact sweep (counts, `IsAvailable` of a set but unpresented buffer), and the owner's approval.
+SC-PC check, 2026-11-21 (physical console, RTX 4090, dev build of `7512346` with a temporary log line whenever either count changed, not committed): `device-check lint on Windows: passed: clippy ok (11 warnings, 322 s), clippy-browser-runner ok (0 warnings, 23 s)`; `present_retry` tests 6 passed; `device-check app on Windows: passed: build ok (151 s), app ok (151 s, quit 1233 ms, 0 panics, 0 error lines, dev build)` with the owner using a browser page's Interact window. No present failed in that run (both counts stayed 0, no `interact:` Warn line, no fallback), so the retry path itself was not exercised on hardware; the normal path is unchanged. The `IsAvailable` behaviour of a set but unpresented buffer is still unobserved.
+
+Accepted by the owner, 2026-11-21.
