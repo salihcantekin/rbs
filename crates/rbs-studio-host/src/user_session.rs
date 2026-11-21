@@ -26,6 +26,7 @@ use crate::canvas_profile::{self, CanvasProfile};
 use crate::record_profile;
 use crate::stream_profile;
 
+mod entries;
 mod error;
 mod later;
 pub use error::SessionError;
@@ -535,23 +536,15 @@ impl UserSession {
     /// one in use (`copy`), and returns its id. The stream key is not copied: it
     /// belongs to one profile.
     pub fn new_profile(&self, name: &str, copy: bool) -> Result<EntryId, SessionError> {
-        let name = name.to_owned();
-        let from = copy.then(|| self.profile_id.clone());
-        self.run(move |data, lock, _| {
-            let lib = data.profiles();
-            match from {
-                Some(from) => lib.duplicate(lock, &from, &name),
-                None => lib.create(lock, &name, &OutputProfile::new()),
-            }
-            .map_err(SessionError::from)
-        })?
+        self.run(entries::new_profile(
+            name,
+            copy.then(|| self.profile_id.clone()),
+        ))?
     }
 
     /// Renames the output profile in use.
     pub fn rename_profile(&mut self, name: &str) -> Result<(), SessionError> {
-        let id = self.profile_id.clone();
-        let name = rename(self, id, name, true)?;
-        self.profile_name = name;
+        self.profile_name = self.run(entries::rename(self.profile_id.clone(), name, true))??;
         Ok(())
     }
 
@@ -561,13 +554,7 @@ impl UserSession {
         if *id == self.profile_id {
             return Err(SessionError::ProfileInUse);
         }
-        let id = id.clone();
-        self.run(move |data, lock, _| {
-            data.profiles()
-                .delete(lock, &id)
-                .map(|_| ())
-                .map_err(SessionError::from)
-        })?
+        self.run(entries::delete_profile(id.clone()))?
     }
 
     /// Loads the scene collection `id`, to run it.
@@ -647,29 +634,14 @@ impl UserSession {
         canvas: &CanvasProfile,
         copy: bool,
     ) -> Result<EntryId, SessionError> {
-        let name = name.to_owned();
         let from = copy.then(|| self.collection_id.clone());
-        let starter = starter_collection(canvas);
-        self.run(move |data, lock, _| {
-            let lib = data.scene_collections();
-            let copied = from.is_some();
-            let id = match from {
-                Some(from) => lib.duplicate(lock, &from, &name),
-                None => lib.create(lock, &name, &starter),
-            }
-            .map_err(SessionError::from)?;
-            if copied {
-                own_profiles(data, lock, &id)?;
-            }
-            Ok(id)
-        })?
+        self.run(entries::new_collection(name, from, canvas))?
     }
 
     /// Renames the scene collection in use.
     pub fn rename_collection(&mut self, name: &str) -> Result<(), SessionError> {
-        let id = self.collection_id.clone();
-        let name = rename(self, id, name, false)?;
-        self.collection_name = name;
+        self.collection_name =
+            self.run(entries::rename(self.collection_id.clone(), name, false))??;
         Ok(())
     }
 
@@ -730,14 +702,7 @@ impl UserSession {
         if *id == self.collection_id {
             return Err(SessionError::CollectionInUse);
         }
-        let id = id.clone();
-        self.run(move |data, lock, _| {
-            data.scene_collections()
-                .delete(lock, &id)
-                .map_err(SessionError::from)?;
-            let _ = std::fs::remove_file(crate::obs_import::report_path(data.root(), &id));
-            Ok(())
-        })?
+        self.run(entries::delete_collection(id.clone()))?
     }
 }
 
@@ -833,30 +798,6 @@ pub fn scrub_profile(p: &mut OutputProfile) {
             let _ = p.set(name, &st);
         }
     }
-}
-
-/// Renames entry `id` of the profiles (`profile`) or the collections on the writer
-/// thread, so saves asked for before keep the old name and later ones the new.
-/// Returns the name as saved (trimmed).
-fn rename(s: &UserSession, id: EntryId, name: &str, profile: bool) -> Result<String, SessionError> {
-    let name = name.trim().to_owned();
-    let given = name.clone();
-    s.run(move |data, lock, names| {
-        let done = if profile {
-            data.profiles().rename(lock, &id, &given)
-        } else {
-            data.scene_collections().rename(lock, &id, &given)
-        };
-        done.map_err(SessionError::from)?;
-        let map = if profile {
-            &names.profiles
-        } else {
-            &names.collections
-        };
-        Names::set(map, &id, &given);
-        Ok::<(), SessionError>(())
-    })??;
-    Ok(name)
 }
 
 /// A library's entries by name; nothing when it cannot be listed.

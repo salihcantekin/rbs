@@ -53,7 +53,6 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use library_transfer::{Library, transfer};
 use quit::quitting;
 use rbs_api::types::OutputKind;
 use rbs_app::background::{self, OnClose, Request};
@@ -394,7 +393,6 @@ impl MenuModels {
 }
 
 impl App {
-    /// Shows why an Output profile or Scene collection menu action did not work.
     fn library_done(&mut self, done: Result<(), String>) {
         if let Err(e) = done {
             self.show_error(UiError::Other(e));
@@ -986,56 +984,10 @@ impl App {
             }
             (EntryOp::Import | EntryOp::Export, _) if !window => {}
             (EntryOp::Delete, _) if window => self.ask_name = Some(Ask::Entry(kind, op)),
-            (_, name) => {
-                let done = self.entry_command(kind, op, name.as_deref().unwrap_or(""));
-                self.library_done(done);
-            }
-        }
-    }
-
-    /// Runs `op` on the Output profile or Scene collection in use; `name` is the new
-    /// entry's name (trimmed) for New, Duplicate and Rename.
-    fn entry_command(
-        &mut self,
-        kind: menu_bar::EntryKind,
-        op: menu_bar::EntryOp,
-        name: &str,
-    ) -> Result<(), String> {
-        use menu_bar::{EntryKind, EntryOp};
-        let name = name.trim();
-        if matches!(op, EntryOp::New | EntryOp::Duplicate | EntryOp::Rename) && name.is_empty() {
-            return Err("Give it a name.".to_owned());
-        }
-        let copy = op == EntryOp::Duplicate;
-        match (kind, op) {
-            (EntryKind::Profile, EntryOp::New | EntryOp::Duplicate) => {
-                self.studio.new_profile(name, copy)
-            }
-            (EntryKind::Profile, EntryOp::Rename) => self.studio.rename_profile(name),
-            (EntryKind::Profile, EntryOp::Delete) => {
-                let id = self.studio.user.profile_id.as_str().to_owned();
-                self.studio.delete_profile(&id)
-            }
-            (EntryKind::Collection, EntryOp::New | EntryOp::Duplicate) => {
-                self.dismiss_source_settings();
-                self.studio.new_collection(name, copy, close_preview)
-            }
-            (EntryKind::Collection, EntryOp::Rename) => self.studio.rename_collection(name),
-            (EntryKind::Collection, EntryOp::Delete) => {
-                self.dismiss_source_settings();
-                let id = self.studio.user.collection_id.as_str().to_owned();
-                self.studio.delete_collection(&id, close_preview)
-            }
-            (EntryKind::Profile, EntryOp::Import | EntryOp::Export) => {
-                let name = self.studio.user.profile_name.clone();
-                transfer(Library::Profiles, op == EntryOp::Import, name);
-                Ok(())
-            }
-            (EntryKind::Collection, EntryOp::Import | EntryOp::Export) => {
-                let name = self.studio.user.collection_name.clone();
-                transfer(Library::Collections, op == EntryOp::Import, name);
-                Ok(())
-            }
+            (_, name) => match self.entry_command(kind, op, name.as_deref().unwrap_or("")) {
+                Ok(Some(write)) => library_transfer::when_written(write, App::library_done),
+                done => self.library_done(done.map(drop)),
+            },
         }
     }
 
@@ -1870,6 +1822,7 @@ impl Ctx {
             if let Some(notice) = applied.notice {
                 app.show_error(UiError::Notice(notice));
             }
+            library_transfer::when_left(applied.written);
             if let Some(endpoint) = applied.preview {
                 app.preview_endpoint = Some(endpoint.clone());
                 // A hidden window connects when it shows again (ADR-0056 decision 5).
@@ -3576,14 +3529,20 @@ fn install_name_prompt(g: &Overlays<'_>, ctx: &Ctx) {
         g.on_name_accepted(move |name| {
             let name = name.to_string();
             ctx.update(move |app: &mut App| {
+                // One answer at a time: an Enter while the writer thread works is dropped.
+                if library_transfer::NAME_WRITING.get() {
+                    return;
+                }
                 let done = match app.name_for {
                     Some(Ask::Entry(kind, op)) => app.entry_command(kind, op, &name),
-                    _ => app.save_workspace_as(&name),
+                    _ => app.save_workspace_as(&name).map(|()| None),
                 };
-                let o = app.main.global::<Overlays>();
                 match done {
-                    Ok(()) => o.set_name_open(false),
-                    Err(e) => o.set_name_error(e.into()),
+                    Ok(Some(write)) => {
+                        library_transfer::NAME_WRITING.set(true);
+                        library_transfer::when_written(write, App::name_answered);
+                    }
+                    done => app.name_answered(done.map(drop)),
                 }
             });
         });

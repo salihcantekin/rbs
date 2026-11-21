@@ -74,7 +74,7 @@ impl<R> Pending<R> {
         (Self { state }, slot)
     }
 
-    fn ready(value: Result<R, SessionError>) -> Self {
+    pub(super) fn ready(value: Result<R, SessionError>) -> Self {
         let (pending, slot) = Self::new();
         slot.fill(value);
         pending
@@ -241,6 +241,7 @@ mod tests {
 
     use super::super::{OnError, RECORDING, open};
     use super::*;
+    use crate::canvas_profile::CanvasProfile;
     use crate::record_profile::RecordProfile;
 
     /// Runs `f` to its end on this thread: parks until the writer thread wakes it.
@@ -318,5 +319,31 @@ mod tests {
             block_on(pending),
             Err(SessionError::WriterStopped)
         ));
+    }
+
+    #[test]
+    fn entry_writes_later_answer_once_written() {
+        let d = dir("entries");
+        let (mut s, _) = open(&d, quiet());
+        let id =
+            block_on(s.new_collection_later("Show", &CanvasProfile::default(), false)).unwrap();
+        assert!(s.collections().iter().any(|(c, n)| *c == id && n == "Show"));
+        assert!(matches!(
+            block_on(s.delete_collection_later(&s.collection_id.clone())),
+            Err(SessionError::CollectionInUse)
+        ));
+        // The collection a switch left goes, then the one in use takes the name.
+        let left = s.collection_id.clone();
+        s.collection_switched(&id, "Show");
+        let renamed = block_on(s.delete_left_collection_later(&left, Some("Default"))).unwrap();
+        assert_eq!(renamed.unwrap().unwrap(), "Default");
+        assert!(s.collections().iter().all(|(c, _)| *c != left));
+        assert_eq!(
+            block_on(s.rename_profile_later("  Live  ")).unwrap(),
+            "Live"
+        );
+        let made = block_on(s.new_profile_later("Spare", false)).unwrap();
+        block_on(s.delete_profile_later(&made)).unwrap();
+        assert!(s.profiles().iter().all(|(p, _)| *p != made));
     }
 }
