@@ -1,6 +1,6 @@
 # ADR-0164: One protocol minor for the window commands that are left
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-21
 - Deciders: Salih Cantekin (owner)
 
@@ -267,3 +267,7 @@ Nits applied:
 - `replay.folder: null` is the profile's folder
 - `vertical_not_set_up` applies only with a vertical canvas
 - the spec's `stream.start` sentence is fixed in the outputs step.
+
+### Owner decision
+
+Salih Cantekin accepted this ADR on 2026-11-21 at 20:28 UTC, after review round 4. That acceptance also approves the `MIRROR` 3 to 8 and `LOCAL_ONLY` 9 to 10 rises in decision 9.
