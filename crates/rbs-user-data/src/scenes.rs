@@ -93,7 +93,7 @@ use rbs_scene::{ChromeFill, DisplayChrome};
 use rbs_scene::{IdCounters, MAX_GLIDE_MS, SceneCollection, SceneTransition};
 use serde::{Deserialize, Serialize};
 
-use crate::document::{self, Document};
+use crate::document::{self, BodyError, Document};
 
 #[derive(Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
@@ -258,14 +258,14 @@ fn rgb_text(c: [u8; 3]) -> String {
     format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2])
 }
 
-fn rgb_parse(t: &str) -> Result<[u8; 3], String> {
+fn rgb_parse(t: &str) -> Result<[u8; 3], BodyError> {
     let hex = t
         .strip_prefix('#')
         .filter(|h| h.len() == 6 && h.is_ascii())
-        .ok_or_else(|| format!("`{t}` is not a colour of the form #rrggbb"))?;
+        .ok_or_else(|| BodyError::Value(format!("`{t}` is not a colour of the form #rrggbb")))?;
     let byte = |i: usize| {
         u8::from_str_radix(&hex[i..i + 2], 16)
-            .map_err(|_| format!("`{t}` is not a colour of the form #rrggbb"))
+            .map_err(|_| BodyError::Value(format!("`{t}` is not a colour of the form #rrggbb")))
     };
     Ok([byte(0)?, byte(2)?, byte(4)?])
 }
@@ -297,17 +297,17 @@ impl From<CollectionTransition> for TransitionDoc {
 }
 
 impl TryFrom<TransitionDoc> for CollectionTransition {
-    type Error = String;
+    type Error = BodyError;
 
-    fn try_from(doc: TransitionDoc) -> Result<Self, String> {
+    fn try_from(doc: TransitionDoc) -> Result<Self, BodyError> {
         let mut t = CollectionTransition::default();
         if let Some(kind) = doc.kind {
             t.kind = TransitionKind::parse(&kind)
-                .ok_or_else(|| format!("unknown transition kind `{kind}`"))?;
+                .ok_or_else(|| BodyError::Value(format!("unknown transition kind `{kind}`")))?;
         }
         if let Some(kind) = doc.direct {
             t.direct = TransitionKind::parse(&kind)
-                .ok_or_else(|| format!("unknown transition kind `{kind}`"))?;
+                .ok_or_else(|| BodyError::Value(format!("unknown transition kind `{kind}`")))?;
         }
         if let Some(f) = doc.fade {
             t.fade = FadeSettings {
@@ -316,12 +316,13 @@ impl TryFrom<TransitionDoc> for CollectionTransition {
                 via: f.via.as_deref().map(rgb_parse).transpose()?,
             };
         }
-        let swipe = |s: SwipeDoc| -> Result<SwipeSettings, String> {
+        let swipe = |s: SwipeDoc| -> Result<SwipeSettings, BodyError> {
             Ok(SwipeSettings {
                 duration_ms: s.duration_ms,
                 easing: s.easing.into(),
-                direction: SwipeDirection::parse(&s.direction)
-                    .ok_or_else(|| format!("unknown direction `{}`", s.direction))?,
+                direction: SwipeDirection::parse(&s.direction).ok_or_else(|| {
+                    BodyError::Value(format!("unknown direction `{}`", s.direction))
+                })?,
             })
         };
         if let Some(s) = doc.swipe {
@@ -489,24 +490,29 @@ impl ActivityDoc {
         })
     }
 
-    fn activity(&self, source: &str) -> Result<SourceActivity, String> {
+    fn activity(&self, source: &str) -> Result<SourceActivity, BodyError> {
         let run = self
             .run
             .as_deref()
-            .map(|r| Run::parse(r).ok_or_else(|| format!("{source}: unknown `activity.run` {r:?}")))
+            .map(|r| {
+                Run::parse(r).ok_or_else(|| {
+                    BodyError::Value(format!("{source}: unknown `activity.run` {r:?}"))
+                })
+            })
             .transpose()?;
         let on_return = self
             .on_return
             .as_deref()
             .map(|o| {
-                OnReturn::parse(o)
-                    .ok_or_else(|| format!("{source}: unknown `activity.on_return` {o:?}"))
+                OnReturn::parse(o).ok_or_else(|| {
+                    BodyError::Value(format!("{source}: unknown `activity.on_return` {o:?}"))
+                })
             })
             .transpose()?;
         if self.linger_s.is_some_and(|l| l > MAX_LINGER_S) {
-            return Err(format!(
+            return Err(BodyError::Value(format!(
                 "{source}: `activity.linger_s` is over {MAX_LINGER_S}"
-            ));
+            )));
         }
         Ok(SourceActivity::new(run, on_return, self.linger_s))
     }
@@ -536,15 +542,16 @@ impl RecordSeparatelyDoc {
         }
     }
 
-    fn flag(&self) -> Result<RecordSeparately, String> {
+    fn flag(&self) -> Result<RecordSeparately, BodyError> {
         let video_as = match self.video_as.as_deref() {
             None => VideoAs::Auto,
-            Some(text) => {
-                VideoAs::parse(text).ok_or_else(|| format!("unknown `video_as` value {text:?}"))?
-            }
+            Some(text) => VideoAs::parse(text)
+                .ok_or_else(|| BodyError::Value(format!("unknown `video_as` value {text:?}")))?,
         };
         if video_as != VideoAs::Auto && !self.video {
-            return Err("`video_as` needs `video = true`".to_owned());
+            return Err(BodyError::Value(
+                "`video_as` needs `video = true`".to_owned(),
+            ));
         }
         Ok(RecordSeparately::new(self.video, self.audio).with_video_as(video_as))
     }
@@ -596,7 +603,7 @@ impl ChromeDoc {
         }
     }
 
-    fn chrome(&self) -> Result<DisplayChrome, String> {
+    fn chrome(&self) -> Result<DisplayChrome, BodyError> {
         let fill = match self.fill {
             FillName::Cover => ChromeFill::Cover,
             FillName::Fit => ChromeFill::Fit,
@@ -709,12 +716,13 @@ impl SceneTransitionDoc {
         }
     }
 
-    fn transition(self, scene: &str) -> Result<Option<SceneTransition>, String> {
+    fn transition(self, scene: &str) -> Result<Option<SceneTransition>, BodyError> {
         let kind = self
             .kind
             .map(|k| {
-                TransitionKind::parse(&k)
-                    .ok_or_else(|| format!("scene {scene:?}: unknown transition kind `{k}`"))
+                TransitionKind::parse(&k).ok_or_else(|| {
+                    BodyError::Value(format!("scene {scene:?}: unknown transition kind `{k}`"))
+                })
             })
             .transpose()?;
         let t = SceneTransition {
@@ -722,9 +730,9 @@ impl SceneTransitionDoc {
             duration_ms: self.duration_ms,
         };
         if !t.is_valid() {
-            return Err(format!(
+            return Err(BodyError::Value(format!(
                 "scene {scene:?}: transition duration above {MAX_GLIDE_MS} ms"
-            ));
+            )));
         }
         Ok(Some(t).filter(|t| !t.is_empty()))
     }
@@ -764,17 +772,17 @@ impl SceneAudioDoc {
         }
     }
 
-    fn audio(self, scene: &str) -> Result<SceneAudio, String> {
+    fn audio(self, scene: &str) -> Result<SceneAudio, BodyError> {
         let mut levels = BTreeMap::new();
         for l in self.levels {
             // Range checks are the collection's (`InvalidVolume`).
             #[allow(clippy::cast_possible_truncation)] // A volume is 0 to 1.
             let level = SceneLevel::new(l.volume.map(|v| v as f32), l.muted);
             if levels.insert(SourceId::from_raw(l.source), level).is_some() {
-                return Err(format!(
+                return Err(BodyError::Value(format!(
                     "scene {scene:?} lists source {} twice in its levels",
                     l.source
-                ));
+                )));
             }
         }
         Ok(SceneAudio::new(levels))
@@ -1000,8 +1008,8 @@ fn color_doc(c: [u8; 4]) -> String {
 }
 
 /// `#rrggbb` (opaque) or `#rrggbbaa`, hexadecimal digits in either case.
-fn color(text: &str) -> Result<[u8; 4], String> {
-    let bad = || format!("colour {text:?} is not #rrggbb or #rrggbbaa");
+fn color(text: &str) -> Result<[u8; 4], BodyError> {
+    let bad = || BodyError::Value(format!("colour {text:?} is not #rrggbb or #rrggbbaa"));
     let hex = text.strip_prefix('#').ok_or_else(bad)?;
     if !(hex.len() == 6 || hex.len() == 8) || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(bad());
@@ -1042,13 +1050,15 @@ impl StyleDoc {
     }
 
     /// The model's style; validity of the numbers is checked with the collection.
-    fn style(&self) -> Result<ItemStyle, String> {
+    fn style(&self) -> Result<ItemStyle, BodyError> {
         let shape = match self.shape {
             ShapeName::Rectangle => Shape::Rectangle {
                 radius: self.radius as f32,
             },
             _ if self.radius != 0.0 => {
-                return Err("radius is only for shape = \"rectangle\"".into());
+                return Err(BodyError::Value(
+                    "radius is only for shape = \"rectangle\"".into(),
+                ));
             }
             ShapeName::Circle => Shape::Circle,
             ShapeName::Ellipse => Shape::Ellipse,
@@ -1093,7 +1103,7 @@ impl LayoutDoc {
         }
     }
 
-    fn layout(&self) -> Result<Layout, String> {
+    fn layout(&self) -> Result<Layout, BodyError> {
         let [left, top, right, bottom] = self.crop;
         Ok(
             Layout::new(self.position.map(|v| v as f32), self.size.map(|v| v as f32))
@@ -1106,7 +1116,7 @@ impl LayoutDoc {
     }
 }
 
-fn settings_doc(s: &Settings) -> Result<BTreeMap<String, Value>, String> {
+fn settings_doc(s: &Settings) -> Result<BTreeMap<String, Value>, BodyError> {
     s.iter()
         .map(|(k, v)| {
             let v = match v {
@@ -1114,7 +1124,11 @@ fn settings_doc(s: &Settings) -> Result<BTreeMap<String, Value>, String> {
                 SettingValue::Int(i) => Value::Int(*i),
                 SettingValue::Float(f) => Value::Float(*f),
                 SettingValue::Text(t) => Value::Text(t.clone()),
-                _ => return Err(format!("setting {k:?} has a type documents cannot hold")),
+                _ => {
+                    return Err(BodyError::Value(format!(
+                        "setting {k:?} has a type documents cannot hold"
+                    )));
+                }
             };
             Ok((k.clone(), v))
         })
@@ -1267,6 +1281,11 @@ fn any_layout_scrolls(body: &toml::Table) -> bool {
         })
 }
 
+/// An older file that uses keys only format `since` has.
+fn later(found: u32, keys: &'static str, since: u32) -> BodyError {
+    BodyError::LaterKey { found, keys, since }
+}
+
 impl Document for SceneCollection {
     const KIND: &'static str = "scene-collection";
     const FORMAT: u32 = 27;
@@ -1384,15 +1403,13 @@ impl Document for SceneCollection {
     /// 27 adds the optional `transition.direct` (ADR-0153); a format 26 or older body is
     /// a format 27 body without it (Move outside studio mode), and a file is written as
     /// 27 only when it is not Move.
-    fn upgrade(from: u32, body: &mut toml::Table) -> Result<(), String> {
+    fn upgrade(from: u32, body: &mut toml::Table) -> Result<(), BodyError> {
         let direct = body
             .get("transition")
             .and_then(toml::Value::as_table)
             .is_some_and(|t| t.contains_key("direct"));
         if (1..=26).contains(&from) && direct {
-            return Err(format!(
-                "format {from} has no `transition.direct` (format 27)"
-            ));
+            return Err(later(from, "`transition.direct`", 27));
         }
         if from == 26 {
             return Ok(());
@@ -1405,9 +1422,7 @@ impl Document for SceneCollection {
             .filter_map(toml::Value::as_table)
             .any(|s| s.contains_key("activity"));
         if (1..=23).contains(&from) && has_activity {
-            return Err(format!(
-                "format {from} has no source `activity` (format 24)"
-            ));
+            return Err(later(from, "source `activity`", 24));
         }
         if (1..=24).contains(&from) {
             migrate_restart_when_shown(body);
@@ -1419,7 +1434,7 @@ impl Document for SceneCollection {
             return Ok(());
         }
         if (1..=22).contains(&from) && any_layout_scrolls(body) {
-            return Err(format!("format {from} has no layout `scroll` (format 23)"));
+            return Err(later(from, "layout `scroll`", 23));
         }
         if from == 22 {
             return Ok(());
@@ -1434,9 +1449,7 @@ impl Document for SceneCollection {
             .and_then(toml::Value::as_table)
             .is_some_and(|t| t.contains_key("stinger"));
         if (1..=20).contains(&from) && stung {
-            return Err(format!(
-                "format {from} has no `transition.stinger` (format 21)"
-            ));
+            return Err(later(from, "`transition.stinger`", 21));
         }
         if from == 20 {
             return Ok(());
@@ -1449,15 +1462,13 @@ impl Document for SceneCollection {
             .filter_map(toml::Value::as_table)
             .any(|s| s.contains_key("transition_in"));
         if (1..=19).contains(&from) && overridden {
-            return Err(format!(
-                "format {from} has no scene `transition_in` (format 20)"
-            ));
+            return Err(later(from, "scene `transition_in`", 20));
         }
         match from {
             19 => Ok(()),
             1..=18 => {
                 if body.contains_key("transition") {
-                    return Err(format!("format {from} has no `transition` (format 19)"));
+                    return Err(later(from, "`transition`", 19));
                 }
                 let still = body
                     .get("glide")
@@ -1483,9 +1494,7 @@ impl Document for SceneCollection {
                     .filter_map(toml::Value::as_table)
                     .any(|c| c.contains_key("follow") || c.contains_key("fallback"));
                 if from < 9 && late {
-                    return Err(format!(
-                        "format {from} has no canvas `follow` or `fallback` (format 9)"
-                    ));
+                    return Err(later(from, "canvas `follow` or `fallback`", 9));
                 }
                 let monitored = body
                     .get("sources")
@@ -1495,7 +1504,7 @@ impl Document for SceneCollection {
                     .filter_map(toml::Value::as_table)
                     .any(|s| s.contains_key("monitor"));
                 if from < 10 && monitored {
-                    return Err(format!("format {from} has no source `monitor` (format 10)"));
+                    return Err(later(from, "source `monitor`", 10));
                 }
                 let ordered = body
                     .get("canvases")
@@ -1505,7 +1514,7 @@ impl Document for SceneCollection {
                     .filter_map(toml::Value::as_table)
                     .any(|c| c.contains_key("order"));
                 if from < 11 && ordered {
-                    return Err(format!("format {from} has no canvas `order` (format 11)"));
+                    return Err(later(from, "canvas `order`", 11));
                 }
                 let glided = body.contains_key("glide")
                     || body
@@ -1516,7 +1525,7 @@ impl Document for SceneCollection {
                         .filter_map(toml::Value::as_table)
                         .any(|s| s.contains_key("glide"));
                 if from < 12 && glided {
-                    return Err(format!("format {from} has no `glide` (format 12)"));
+                    return Err(later(from, "`glide`", 12));
                 }
                 let timed = body
                     .get("scenes")
@@ -1530,9 +1539,7 @@ impl Document for SceneCollection {
                     .filter_map(toml::Value::as_table)
                     .any(|i| i.contains_key("show_for_ms"));
                 if from < 13 && timed {
-                    return Err(format!(
-                        "format {from} has no item `show_for_ms` (format 13)"
-                    ));
+                    return Err(later(from, "item `show_for_ms`", 13));
                 }
                 let regioned = body
                     .get("sources")
@@ -1542,9 +1549,7 @@ impl Document for SceneCollection {
                     .filter_map(toml::Value::as_table)
                     .any(|s| s.contains_key("region") || s.contains_key("chrome"));
                 if from < 14 && regioned {
-                    return Err(format!(
-                        "format {from} has no source `region` or `chrome` (format 14)"
-                    ));
+                    return Err(later(from, "source `region` or `chrome`", 14));
                 }
                 let layout_space = body
                     .get("canvases")
@@ -1554,9 +1559,7 @@ impl Document for SceneCollection {
                     .filter_map(toml::Value::as_table)
                     .any(|c| c.contains_key("layout_width") || c.contains_key("layout_height"));
                 if from < 15 && layout_space {
-                    return Err(format!(
-                        "format {from} has no canvas `layout_width` or `layout_height` (format 15)"
-                    ));
+                    return Err(later(from, "canvas `layout_width` or `layout_height`", 15));
                 }
                 let separate = body
                     .get("sources")
@@ -1566,9 +1569,7 @@ impl Document for SceneCollection {
                     .filter_map(toml::Value::as_table)
                     .any(|s| s.contains_key("record_separately"));
                 if from < 16 && separate {
-                    return Err(format!(
-                        "format {from} has no source `record_separately` (format 16)"
-                    ));
+                    return Err(later(from, "source `record_separately`", 16));
                 }
                 let levels = body
                     .get("scenes")
@@ -1578,7 +1579,7 @@ impl Document for SceneCollection {
                     .filter_map(toml::Value::as_table)
                     .any(|s| s.contains_key("audio"));
                 if from < 17 && levels {
-                    return Err(format!("format {from} has no scene `audio` (format 17)"));
+                    return Err(later(from, "scene `audio`", 17));
                 }
                 let video_as = body
                     .get("sources")
@@ -1590,17 +1591,15 @@ impl Document for SceneCollection {
                     .filter_map(toml::Value::as_table)
                     .any(|r| r.contains_key("video_as"));
                 if video_as {
-                    return Err(format!(
-                        "format {from} has no `record_separately.video_as` (format 18)"
-                    ));
+                    return Err(later(from, "`record_separately.video_as`", 18));
                 }
                 Ok(())
             }
-            _ => Err(format!("format {from} cannot be read")),
+            _ => Err(BodyError::NoUpgrade(from)),
         }
     }
 
-    fn to_body(&self) -> Result<toml::Table, String> {
+    fn to_body(&self) -> Result<toml::Table, BodyError> {
         let n = self.id_counters();
         let glide = (!self.glide().is_default()).then(|| GlideDoc::from(self.glide()));
         let transition =
@@ -1654,7 +1653,7 @@ impl Document for SceneCollection {
                                 settings: settings_doc(&f.settings)?,
                             })
                         })
-                        .collect::<Result<_, String>>()?,
+                        .collect::<Result<_, BodyError>>()?,
                     volume: wide(s.audio.volume),
                     muted: s.audio.muted,
                     sync_offset_ms: s.audio.sync_offset_ms,
@@ -1669,14 +1668,19 @@ impl Document for SceneCollection {
                     activity: ActivityDoc::from(s.activity),
                 })
             })
-            .collect::<Result<_, String>>()?;
+            .collect::<Result<_, BodyError>>()?;
         let scenes = self
             .scenes()
             .map(|s| {
                 let canvas = match s.scope {
                     SceneScope::Shared => None,
                     SceneScope::Canvas(c) => Some(c.get()),
-                    _ => return Err(format!("{} has a scope documents cannot hold", s.id)),
+                    _ => {
+                        return Err(BodyError::Value(format!(
+                            "{} has a scope documents cannot hold",
+                            s.id
+                        )));
+                    }
                 };
                 let items = s
                     .items
@@ -1686,10 +1690,10 @@ impl Document for SceneCollection {
                             ItemContent::Source(id) => (Some(id.get()), None),
                             ItemContent::Scene(id) => (None, Some(id.get())),
                             _ => {
-                                return Err(format!(
+                                return Err(BodyError::Value(format!(
                                     "{} places content documents cannot hold",
                                     i.id
-                                ));
+                                )));
                             }
                         };
                         Ok(ItemDoc {
@@ -1710,7 +1714,7 @@ impl Document for SceneCollection {
                                 .collect(),
                         })
                     })
-                    .collect::<Result<_, String>>()?;
+                    .collect::<Result<_, BodyError>>()?;
                 Ok(SceneDoc {
                     id: s.id.get(),
                     name: s.name.clone(),
@@ -1720,7 +1724,7 @@ impl Document for SceneCollection {
                     transition_in: s.transition_in.map(SceneTransitionDoc::of),
                 })
             })
-            .collect::<Result<_, String>>()?;
+            .collect::<Result<_, BodyError>>()?;
         document::body_of(&Body {
             next: Next {
                 canvas: n.canvas,
@@ -1737,15 +1741,16 @@ impl Document for SceneCollection {
         })
     }
 
-    fn from_body(body: toml::Table) -> Result<Self, String> {
+    fn from_body(body: toml::Table) -> Result<Self, BodyError> {
         let b: Body = document::from_body(body)?;
         let canvases = b
             .canvases
             .into_iter()
             .map(|c| {
                 let [num, den] = c.frame_rate;
-                let rate = FrameRate::new(num, den)
-                    .ok_or_else(|| format!("canvas {:?}: frame rate {num}/{den}", c.name))?;
+                let rate = FrameRate::new(num, den).ok_or_else(|| {
+                    BodyError::Value(format!("canvas {:?}: frame rate {num}/{den}", c.name))
+                })?;
                 let mut canvas = Canvas::new(
                     CanvasId::from_raw(c.id),
                     &c.name,
@@ -1768,15 +1773,15 @@ impl Document for SceneCollection {
                     (None, None) => canvas.size,
                     (Some(w), Some(h)) => Size::new(w, h),
                     _ => {
-                        return Err(format!(
+                        return Err(BodyError::Value(format!(
                             "canvas {:?}: layout_width and layout_height are set together",
                             c.name
-                        ));
+                        )));
                     }
                 };
                 Ok(canvas)
             })
-            .collect::<Result<Vec<_>, String>>()?;
+            .collect::<Result<Vec<_>, BodyError>>()?;
         let sources = b
             .sources
             .into_iter()
@@ -1820,7 +1825,7 @@ impl Document for SceneCollection {
                     .unwrap_or_default();
                 Ok(source)
             })
-            .collect::<Result<Vec<_>, String>>()?;
+            .collect::<Result<Vec<_>, BodyError>>()?;
         let scenes = b
             .scenes
             .into_iter()
@@ -1845,10 +1850,10 @@ impl Document for SceneCollection {
                             (Some(id), None) => ItemContent::Source(SourceId::from_raw(id)),
                             (None, Some(id)) => ItemContent::Scene(SceneId::from_raw(id)),
                             _ => {
-                                return Err(format!(
+                                return Err(BodyError::Value(format!(
                                     "item {} in scene {:?} must have either source or scene",
                                     i.id, s.name
-                                ));
+                                )));
                             }
                         };
                         let mut item =
@@ -1859,18 +1864,18 @@ impl Document for SceneCollection {
                         for o in i.overrides {
                             let canvas = CanvasId::from_raw(o.canvas);
                             if item.overrides.insert(canvas, o.layout.layout()?).is_some() {
-                                return Err(format!(
+                                return Err(BodyError::Value(format!(
                                     "item {} has two layouts for canvas {}",
                                     i.id, o.canvas
-                                ));
+                                )));
                             }
                         }
                         Ok(item)
                     })
-                    .collect::<Result<_, String>>()?;
+                    .collect::<Result<_, BodyError>>()?;
                 Ok(scene)
             })
-            .collect::<Result<Vec<_>, String>>()?;
+            .collect::<Result<Vec<_>, BodyError>>()?;
         let n = b.next;
         let glide = b.glide.map(CollectionGlide::from).unwrap_or_default();
         let transition = b
@@ -1892,6 +1897,6 @@ impl Document for SceneCollection {
             glide,
             transition,
         )
-        .map_err(|e| e.to_string())
+        .map_err(BodyError::Scene)
     }
 }

@@ -78,4 +78,3 @@
 "crates/rbs-studio-host/tests/studio/api.rs::a_control_api_client_drives_the_studio" = 600
 "crates/rbs-studio-host/tests/studio/record.rs::markers_go_into_the_manifest_when_the_recording_stops" = 205
 "crates/rbs-ui/src/command.rs::context_menu" = 205
-"crates/rbs-user-data/src/scenes.rs::upgrade" = 215

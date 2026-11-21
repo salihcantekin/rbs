@@ -43,7 +43,7 @@ Signed-in browser profiles (ADR-0132 decision 10) are machine data too: `browser
 
 ### Documents (`document`)
 
-A kind implements `Document`: `KIND`, `FORMAT` (the newest version this build reads, from 1), `from_body`, `to_body` and optionally `upgrade(from, body)` (one step, `from` to `from + 1`). `write_format` is the version [`render`] writes for one value, at least 1 and at most `FORMAT` (the default is `FORMAT`). A scene collection writes 15 when no source records separately and 16 when one does, so a file that never uses the later key stays readable by the previous build. The file is a TOML table:
+A kind implements `Document`: `KIND`, `FORMAT` (the newest version this build reads, from 1), `from_body`, `to_body` and optionally `upgrade(from, body)` (one step, `from` to `from + 1`), each returning `BodyError` when it refuses. `write_format` is the version [`render`] writes for one value, at least 1 and at most `FORMAT` (the default is `FORMAT`). A scene collection writes 15 when no source records separately and 16 when one does, so a file that never uses the later key stays readable by the previous build. The file is a TOML table:
 
 | Key | Meaning |
 | --- | --- |
@@ -111,7 +111,9 @@ A document that fails any of these is `DataError::Invalid` with the reason. A ch
 
 ## Errors and failure behaviour
 
-`DataError` (non-exhaustive): `Io`, `Syntax`, `NoVersion`, `WrongKind { found, expected }`, `Newer { found, supported }`, `Invalid(reason)`, `BadName(reason)`, `NameTaken(name)`, `NotFound(id)`. Nothing panics. A file that cannot be read is reported and left as it is; the caller decides what to use instead (the app: the defaults, with a note, and it does not overwrite the file).
+`DataError` (non-exhaustive): `Io`, `Syntax`, `NoVersion`, `WrongKind { found, expected }`, `Newer { found, supported }`, `Invalid(BodyError)`, `BadName(reason)`, `NameTaken(name)`, `NotFound(id)`. Nothing panics.
+
+`BodyError` (non-exhaustive) says why contents are not valid; its text is the reason shown to the user: `Shape(reason)` (a key unknown or missing, or a value of the wrong type: the TOML reader's reason), `Value(reason)` (a value breaks a rule of the kind, named in the reason), `Encode(reason)`, `NotATable`, `NameNotText`, `NoUpgrade(format)` (no step from that format), `LaterKey { found, keys, since }` (an older file uses keys only format `since` has; refused, not upgraded), `ReservedKey(key)`, `WriteFormat { format, newest }`, `TooLarge { size, max }` (reading), `WouldBeTooLarge { size, max }` (writing), `Scene(SceneError)` (the loader's `from_parts` refused the collection), `Theme(ThemeBodyError)` and `Shortcuts(ShortcutsDocError)` (the `rbs-ui` checks). No library function returns a `String` error (quality plan WP-10). A file that cannot be read is reported and left as it is; the caller decides what to use instead (the app: the defaults, with a note, and it does not overwrite the file).
 
 ## Performance requirements
 

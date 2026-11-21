@@ -7,7 +7,7 @@
 
 use rbs_ui::shortcut::ShortcutsDoc;
 
-use crate::document::{self, Document};
+use crate::document::{self, BodyError, Document};
 
 /// Largest shortcuts file, in bytes (spec).
 pub const MAX_SHORTCUTS_FILE: u64 = 64 * 1024;
@@ -17,14 +17,14 @@ impl Document for ShortcutsDoc {
     const FORMAT: u32 = 1;
     const MAX_SIZE: u64 = MAX_SHORTCUTS_FILE;
 
-    fn from_body(body: toml::Table) -> Result<Self, String> {
+    fn from_body(body: toml::Table) -> Result<Self, BodyError> {
         let doc: ShortcutsDoc = document::from_body(body)?;
-        doc.validate().map_err(|e| e.to_string())?;
+        doc.validate().map_err(BodyError::Shortcuts)?;
         Ok(doc)
     }
 
-    fn to_body(&self) -> Result<toml::Table, String> {
-        self.validate().map_err(|e| e.to_string())?;
+    fn to_body(&self) -> Result<toml::Table, BodyError> {
+        self.validate().map_err(BodyError::Shortcuts)?;
         document::body_of(self)
     }
 }

@@ -5,8 +5,8 @@
 mod common;
 
 use common::TempDir;
-use rbs_user_data::DataError;
 use rbs_user_data::document::{self, Document, backup_path};
+use rbs_user_data::{BodyError, DataError};
 
 /// Format 3 of a test kind: `title` (was `heading` in 2, `head` in 1).
 #[derive(Debug, PartialEq)]
@@ -18,25 +18,27 @@ impl Document for Note {
     const KIND: &'static str = "note";
     const FORMAT: u32 = 3;
 
-    fn upgrade(from: u32, body: &mut toml::Table) -> Result<(), String> {
+    fn upgrade(from: u32, body: &mut toml::Table) -> Result<(), BodyError> {
         let (old, new) = match from {
             1 => ("head", "heading"),
             2 => ("heading", "title"),
-            _ => return Err(format!("format {from} cannot be read")),
+            _ => return Err(BodyError::NoUpgrade(from)),
         };
-        let v = body.remove(old).ok_or("missing")?;
+        let v = body
+            .remove(old)
+            .ok_or_else(|| BodyError::Value("missing".to_owned()))?;
         body.insert(new.to_owned(), v);
         Ok(())
     }
 
-    fn from_body(mut body: toml::Table) -> Result<Self, String> {
+    fn from_body(mut body: toml::Table) -> Result<Self, BodyError> {
         match body.remove("title") {
             Some(toml::Value::String(title)) if body.is_empty() => Ok(Self { title }),
-            _ => Err("bad note".to_owned()),
+            _ => Err(BodyError::Value("bad note".to_owned())),
         }
     }
 
-    fn to_body(&self) -> Result<toml::Table, String> {
+    fn to_body(&self) -> Result<toml::Table, BodyError> {
         let mut t = toml::Table::new();
         t.insert("title".to_owned(), self.title.clone().into());
         Ok(t)
@@ -152,10 +154,10 @@ fn reserved_keys_cannot_be_used_by_a_body() {
     impl Document for Bad {
         const KIND: &'static str = "bad";
         const FORMAT: u32 = 1;
-        fn from_body(_: toml::Table) -> Result<Self, String> {
+        fn from_body(_: toml::Table) -> Result<Self, BodyError> {
             Ok(Bad)
         }
-        fn to_body(&self) -> Result<toml::Table, String> {
+        fn to_body(&self) -> Result<toml::Table, BodyError> {
             let mut t = toml::Table::new();
             t.insert("kind".to_owned(), "x".into());
             Ok(t)
@@ -163,7 +165,7 @@ fn reserved_keys_cannot_be_used_by_a_body() {
     }
     assert!(matches!(
         document::render(&Bad, None),
-        Err(DataError::Invalid(_))
+        Err(DataError::Invalid(BodyError::ReservedKey(_)))
     ));
 }
 

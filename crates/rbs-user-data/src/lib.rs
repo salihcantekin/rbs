@@ -28,7 +28,7 @@ pub mod theme;
 use std::path::{Path, PathBuf};
 
 pub use current::Current;
-pub use document::{DataError, Document};
+pub use document::{BodyError, DataError, Document};
 pub use library::{Entry, EntryId, Library, Listed, Listing};
 pub use profile::OutputProfile;
 pub use theme::{Appearance, AppearanceMode, ThemeId};

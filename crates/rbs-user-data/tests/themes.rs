@@ -71,7 +71,7 @@ fn refused_theme_documents() {
         ("base = \"dark\"\nauthor = \"a\\u0007\"\n", "control"),
     ] {
         match refused(&format!("{head}{body}")) {
-            DataError::Invalid(r) => assert!(r.contains(why), "{r}"),
+            DataError::Invalid(r) => assert!(r.to_string().contains(why), "{r}"),
             e => panic!("{e:?}"),
         }
     }

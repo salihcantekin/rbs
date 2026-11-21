@@ -11,7 +11,7 @@
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use crate::document::{DataError, Document, FORMAT_KEY, KIND_KEY, NAME_KEY};
+use crate::document::{BodyError, DataError, Document, FORMAT_KEY, KIND_KEY, NAME_KEY};
 
 /// The key of a section's own format version. Each section owner bumps it whenever an
 /// older build could not read the section (for example a new field, when the type
@@ -45,7 +45,7 @@ impl OutputProfile {
             .try_into()
             .map(Some)
             .map_err(|e: toml::de::Error| {
-                DataError::Invalid(format!("[{section}]: {}", e.message()))
+                BodyError::Shape(format!("[{section}]: {}", e.message())).into()
             })
     }
 
@@ -58,7 +58,7 @@ impl OutputProfile {
     /// when the user asks to reset them.
     pub fn set<S: Serialize>(&mut self, section: &str, value: &S) -> Result<(), DataError> {
         check_section(section)?;
-        match toml::Value::try_from(value).map_err(|e| DataError::Invalid(e.to_string()))? {
+        match toml::Value::try_from(value).map_err(|e| BodyError::Encode(e.to_string()))? {
             v @ toml::Value::Table(_) => {
                 let version = |v: &toml::Value| match v.get(SECTION_VERSION) {
                     Some(toml::Value::Integer(n)) => u32::try_from(*n).ok(),
@@ -76,9 +76,7 @@ impl OutputProfile {
                 self.sections.insert(section.to_owned(), v);
                 Ok(())
             }
-            _ => Err(DataError::Invalid(format!(
-                "section {section:?} must be a table"
-            ))),
+            _ => Err(BodyError::Value(format!("section {section:?} must be a table")).into()),
         }
     }
 
@@ -88,18 +86,19 @@ impl OutputProfile {
     }
 }
 
-fn check_section(section: &str) -> Result<(), DataError> {
-    let ok = !section.is_empty()
+fn section_name_ok(section: &str) -> bool {
+    !section.is_empty()
         && ![FORMAT_KEY, KIND_KEY, NAME_KEY].contains(&section)
         && section.bytes().all(|b| {
             b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_' || b == b'.'
-        });
-    if ok {
+        })
+}
+
+fn check_section(section: &str) -> Result<(), DataError> {
+    if section_name_ok(section) {
         Ok(())
     } else {
-        Err(DataError::Invalid(format!(
-            "{section:?} is not a section name"
-        )))
+        Err(BodyError::Value(format!("{section:?} is not a section name")).into())
     }
 }
 
@@ -107,17 +106,19 @@ impl Document for OutputProfile {
     const KIND: &'static str = "output-profile";
     const FORMAT: u32 = 1;
 
-    fn from_body(body: toml::Table) -> Result<Self, String> {
+    fn from_body(body: toml::Table) -> Result<Self, BodyError> {
         for (k, v) in &body {
-            check_section(k).map_err(|e| e.to_string())?;
+            if !section_name_ok(k) {
+                return Err(BodyError::Value(format!("{k:?} is not a section name")));
+            }
             if !v.is_table() {
-                return Err(format!("{k:?} must be a section ([{k}])"));
+                return Err(BodyError::Value(format!("{k:?} must be a section ([{k}])")));
             }
         }
         Ok(Self { sections: body })
     }
 
-    fn to_body(&self) -> Result<toml::Table, String> {
+    fn to_body(&self) -> Result<toml::Table, BodyError> {
         Ok(self.sections.clone())
     }
 }
