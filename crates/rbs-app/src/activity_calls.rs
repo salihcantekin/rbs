@@ -6,12 +6,22 @@ use crate::ui::Studio;
 
 /// The Studio callbacks of the activity rows, on one window's global.
 pub fn install(g: &Studio<'_>, ctx: &Ctx) {
-    let on = |pick: fn(&mut App, i32, i32)| {
-        let c = ctx.clone();
-        move |id: i32, index: i32| entry::guard(|| c.update(move |app| pick(app, id, index)))
-    };
-    g.on_set_source_run(on(|app, id, i| app.studio.set_source_run(id, i)));
-    g.on_set_source_on_return(on(|app, id, i| app.studio.set_source_on_return(id, i)));
-    g.on_set_source_linger(on(|app, id, i| app.studio.set_source_linger(id, i)));
-    g.on_set_source_scroll_return(on(|app, id, i| app.studio.set_source_scroll_return(id, i)));
+    let c = ctx.clone();
+    g.on_set_source_run(move |id, i| {
+        entry::guard(|| c.update(move |app: &mut App| app.studio.set_source_run(id, i)));
+    });
+    let c = ctx.clone();
+    g.on_set_source_on_return(move |id, i| {
+        entry::guard(|| c.update(move |app: &mut App| app.studio.set_source_on_return(id, i)));
+    });
+    let c = ctx.clone();
+    g.on_set_source_linger(move |id, i| {
+        entry::guard(|| c.update(move |app: &mut App| app.studio.set_source_linger(id, i)));
+    });
+    let c = ctx.clone();
+    g.on_set_source_scroll_return(move |id, i| {
+        entry::guard(|| {
+            c.update(move |app: &mut App| app.studio.set_source_scroll_return(id, i));
+        });
+    });
 }
