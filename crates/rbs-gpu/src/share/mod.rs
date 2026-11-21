@@ -28,6 +28,8 @@ mod geometry;
 mod layer;
 #[cfg(target_vendor = "apple")]
 mod mach;
+#[cfg(any(test, all(windows, feature = "preview-layer")))]
+mod present_retry;
 #[cfg(target_vendor = "apple")]
 mod publisher;
 #[cfg(any(
