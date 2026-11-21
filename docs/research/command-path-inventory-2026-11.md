@@ -175,12 +175,12 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `StartStream` | Contract | stream.start takes no request; the window sends its own StreamRequest |
 | `EndStream` | Moved to `Command::Api` (step 6) | stream.stop |
 | `StartVirtualCamera` | Contract | vcam.start takes no size or rate |
-| `StopVirtualCamera` | Pending | vcam.stop |
+| `StopVirtualCamera` | Pending | vcam.stop; stays: the window path sends `VirtualCamera(None)` even when nothing sends, the API refuses |
 | `SetVirtualCamera` | WindowOnly LocalOnly |  |
 | `SetReplay` | Missing | no settings.set field |
-| `ArmReplay` | Pending | replay.arm |
-| `DisarmReplay` | Pending | replay.disarm |
-| `SaveReplay` | Pending | replay.save |
+| `ArmReplay` | Moved to `Command::Api` (step 6) | replay.arm (a refusal because it is already armed stays quiet) |
+| `DisarmReplay` | Moved to `Command::Api` (step 6) | replay.disarm (a refusal because it is not armed stays quiet) |
+| `SaveReplay` | Pending | replay.save; stays: the window shows a refused save in its `ReplaySaved` notice, the API answers an error |
 | `AddMarker` | Translates | marker.add |
 | `RemoveMarkers` | Translates | marker.remove |
 | `PauseRecording` | Translates | record.pause_toggle (own error sentence around the refusal) |

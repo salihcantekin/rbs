@@ -758,8 +758,6 @@ impl Host {
             | Command::StartVirtualCamera { .. }
             | Command::StopVirtualCamera
             | Command::SetReplay(..)
-            | Command::ArmReplay
-            | Command::DisarmReplay
             | Command::AddMarker
             | Command::RemoveMarkers(..) => self.output_command(c, notify),
             Command::PauseRecording

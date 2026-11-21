@@ -500,11 +500,6 @@ pub enum Command {
     /// start and after each change; a buffer that runs keeps the settings it started
     /// with until it is armed again.
     SetReplay(crate::replay_settings::ReplaySetup),
-    /// Arm the replay buffer; answered with [`Update::Replay`], and an
-    /// [`Update::Error`] when it did not start.
-    ArmReplay,
-    /// Disarm the replay buffer and free what it held; answered with [`Update::Replay`].
-    DisarmReplay,
     /// Save the last `seconds` (all of the buffer for `None`) as a clip file; answered
     /// with [`Update::ReplaySaved`] once it is written.
     SaveReplay {

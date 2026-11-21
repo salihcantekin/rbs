@@ -777,12 +777,6 @@ impl Host {
                 self.replay.setup = setup;
                 self.replay_changed(notify);
             }
-            Command::ArmReplay => {
-                if let Err(why) = self.arm_replay(notify) {
-                    notify(Update::Error(why.into_text()));
-                }
-            }
-            Command::DisarmReplay => self.disarm_replay(notify),
             Command::AddMarker => {
                 self.run_ui_api(
                     rbs_api::Command::MarkerAdd(rbs_api::request::MarkerAdd::default()),

@@ -202,8 +202,6 @@ paths! {
     SetVirtualCamera => WindowOnly(LocalOnly),
     // no settings.set field
     SetReplay => Missing,
-    ArmReplay => Pending(&["replay.arm"]),
-    DisarmReplay => Pending(&["replay.disarm"]),
     SaveReplay => Pending(&["replay.save"]),
     AddMarker => Translates(&["marker.add"]),
     RemoveMarkers => Translates(&["marker.remove"]),
@@ -241,7 +239,7 @@ mod tests {
     /// which must pick its method from host state may raise `TRANSLATES` by as many
     /// as `PENDING` falls; any other rise needs the owner's written approval.
     const TRANSLATES: usize = 22;
-    const PENDING: usize = 27;
+    const PENDING: usize = 25;
     const CONTRACT: usize = 10;
     const MISSING: usize = 20;
     const VIEW: usize = 13;
