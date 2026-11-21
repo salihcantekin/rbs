@@ -27,7 +27,7 @@ use rbs_core::log::Area;
 
 mod gpu_gate;
 
-pub use gpu_gate::{FENCE_JUMP, FENCE_WAIT_FRAMES, FenceView, GatePass, GpuGate};
+pub use gpu_gate::{FENCE_JUMP, FENCE_WAIT_FRAMES, FenceView, GatePass, GpuGate, IMPORT_FAILURES};
 
 /// A running (or exited) helper as the studio sees it.
 #[derive(Debug)]
@@ -124,6 +124,11 @@ impl HelperChild {
             GatePass::Nothing => None,
             GatePass::Failed => {
                 self.gpu_failed = true;
+                let reason = gate.reason().unwrap_or("fence");
+                rbs_core::warn!(
+                    Area::Browser,
+                    "browser page falls back to shared memory: {reason}"
+                );
                 None
             }
         }
