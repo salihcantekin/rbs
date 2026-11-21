@@ -11,6 +11,10 @@
 //!   after [`STALL`] or more, the UI thread logs one line with the time and the place.
 //!   An entry that does not return is seen by the watch thread `rbs-ui-watch`, which
 //!   logs after [`HANG`], then again each time the wait doubles.
+//! - [`os_loop`] wraps a loop the OS runs inside an entry (the projector's native menu,
+//!   ADR-0137 decision 1): the time the user spends in it is not the entry's, and the
+//!   entries that loop runs are watched as outermost ones, so a stall in one of them is
+//!   still seen.
 //!
 //! Cost: two clock reads and three atomic operations per outermost entry, nothing in
 //! nested ones. The watch thread is parked while the UI thread is idle; while the UI
@@ -42,6 +46,8 @@ thread_local! {
     static UI: Cell<bool> = const { Cell::new(false) };
     /// Entries open on this thread; only the outermost one stamps.
     static DEPTH: Cell<u32> = const { Cell::new(0) };
+    /// Nanoseconds the open outermost entry spent in [`os_loop`]; taken when it ends.
+    static AWAY: Cell<u64> = const { Cell::new(0) };
     /// Told about long tasks on this thread while set (the measure mode).
     static LONG_TASKS: Cell<Option<LongTaskHook>> = const { Cell::new(None) };
 }
@@ -105,6 +111,34 @@ pub fn run_loop<R>(run: impl FnOnce() -> R) -> R {
     ran
 }
 
+/// Runs `run`, a call in which the OS runs its own loop on the UI thread until the user
+/// is done (a native menu, ADR-0137 decision 1). While it runs, the open entry is not
+/// timed, so the watch does not report the user's time in the menu as a stall, and the
+/// entries the OS loop runs stamp as outermost ones, so a real stall in one of them is
+/// reported with its own place. After it, the open entry is timed again without that
+/// time. Off the UI thread, or before the watch started, it only runs `run`.
+pub fn os_loop<R>(run: impl FnOnce() -> R) -> R {
+    let Some(watch) = WATCH.get().filter(|_| on_ui_thread()) else {
+        return run();
+    };
+    let depth = DEPTH.with(|d| d.replace(0));
+    let away = AWAY.with(Cell::take);
+    // The open entry's stamp (0: none is open); the watch sees the thread idle.
+    let since = watch.since.swap(0, Ordering::SeqCst);
+    let at = watch.try_place(since);
+    let from = watch.now();
+    let ran = run();
+    let spent = watch.now().saturating_sub(from);
+    DEPTH.with(|d| d.set(depth));
+    if since == 0 {
+        AWAY.with(|a| a.set(away));
+    } else {
+        AWAY.with(|a| a.set(away.saturating_add(spent)));
+        watch.stamp(since.saturating_add(spent), at);
+    }
+    ran
+}
+
 /// Called by each UI entry point with the place it was installed. The returned value
 /// ends the entry when dropped (also while unwinding).
 pub fn enter(at: &'static Location<'static>) -> Entry {
@@ -130,6 +164,8 @@ impl Drop for Entry {
         DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
         if let Some((watch, since, at)) = self.since.take() {
             watch.since.store(0, Ordering::Release);
+            // Time in an OS loop (`os_loop`) is not the entry's.
+            let since = since.saturating_add(AWAY.with(Cell::take));
             let now = watch.now();
             tell_long(Duration::from_nanos(now.saturating_sub(since)), at);
             if let Some(stall) = finished(since, now, at) {
@@ -192,8 +228,14 @@ impl Watch {
     /// The UI thread begins an outermost entry; returns its stamp.
     fn begin(&self, at: &'static Location<'static>) -> u64 {
         let since = self.now();
+        self.stamp(since, Some(at));
+        since
+    }
+
+    /// The open entry, installed at `at`, is timed from `since` on (UI thread).
+    fn stamp(&self, since: u64, at: Option<&'static Location<'static>>) {
         if let Ok(mut place) = self.at.try_lock() {
-            *place = (since, Some(at));
+            *place = (since, at);
         }
         // SeqCst with the watch thread's flag store and stamp load: one of the two sides
         // always sees the other, so a busy UI thread never leaves the watch parked.
@@ -203,7 +245,15 @@ impl Watch {
         {
             t.unpark();
         }
-        since
+    }
+
+    /// Where the entry stamped `since` was installed, if known, without waiting for the
+    /// lock (UI thread).
+    fn try_place(&self, since: u64) -> Option<&'static Location<'static>> {
+        let place = *self.at.try_lock().ok()?;
+        (since != 0 && place.0 == since)
+            .then_some(place.1)
+            .flatten()
     }
 
     /// Where the entry stamped `since` was installed, if known.
@@ -459,6 +509,45 @@ mod tests {
             set_long_task_hook(None);
             tell_long(Duration::from_secs(2), at);
             assert_eq!(SEEN.with(Cell::get), 2);
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[test]
+    fn an_os_loop_is_not_the_entrys_time_but_its_entries_are_watched() {
+        std::thread::spawn(|| {
+            UI.with(|u| u.set(true));
+            loop_started();
+            let watch = WATCH.get().expect("the watch started");
+            let at = Location::caller();
+            let outer = enter(at);
+            let since = watch.since.load(Ordering::SeqCst);
+            assert_ne!(since, 0);
+            let mut spent = 0;
+            let mut inner_since = 0;
+            os_loop(|| {
+                assert_eq!(watch.since.load(Ordering::SeqCst), 0, "not timed");
+                assert_eq!(DEPTH.with(Cell::get), 0);
+                let from = watch.now();
+                let inner = enter(Location::caller());
+                inner_since = inner.since.as_ref().map_or(0, |s| s.1);
+                drop(inner);
+                spent = watch.now() - from;
+            });
+            assert!(inner_since != 0, "an entry the OS loop runs stamps");
+            assert_eq!(DEPTH.with(Cell::get), 1);
+            let after = watch.since.load(Ordering::SeqCst);
+            assert!(after >= since + spent, "timed again without the loop");
+            assert_eq!(after - since, AWAY.with(Cell::get));
+            assert_eq!(watch.place(after), Some(at));
+            drop(outer);
+            assert_eq!(AWAY.with(Cell::get), 0, "taken when the entry ends");
+            assert_eq!(watch.since.load(Ordering::SeqCst), 0);
+            // With no entry open, nothing is shifted.
+            os_loop(|| ());
+            assert_eq!(AWAY.with(Cell::get), 0);
+            loop_ended();
         })
         .join()
         .unwrap();

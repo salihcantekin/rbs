@@ -64,7 +64,7 @@ Owner request 2026-11-21 (the window must survive a studio that stopped). It nee
 - When the studio stops (`Update::Failed`), the picture layers close at once (`studio_start::after_apply`): a native layer draws above the panel and would keep the last frame over the note and the button.
 - Pressing it, on the UI thread: every update a studio started before now is dropped from then on (a generation number checked when the update reaches the UI thread); the preview layers, projectors and Interact windows close; remote control and AI tools stop (`sync_remote` without a host); the panels show "The program is starting." (state 0), and the button hides (`Studio.restart-busy`).
 - The old `StudioHost` is dropped on a thread `rbs-studio-stop`, which joins its control thread; the UI thread never waits for it (ADR-0156). Its outputs had already ended when it stopped.
-- When it has stopped: the collection in use is read as last saved (`UserSession::load_collection`, which first writes a save of it still waiting), and a new studio starts on the same canvas with the same stream-key store, the same per-computer files read again (monitor, loudness, calibration) and a new collection saver. Once it runs, remote control, AI tools (when "Start when RBS opens" is on), the virtual camera check and the replay buffer set-up run as at launch. Its `Update::Started` brings the preview back.
+- When it has stopped: the collection in use is read as last saved on the user-data writer thread, behind every save asked for before (`UserSession::load_collection_later`, awaited with `entry::when_done`; the button stays hidden while it reads, `Restart::Reading`), and a new studio starts on the same canvas with the same stream-key store, the same per-computer files read again (monitor, loudness, calibration) and a new collection saver. Once it runs, remote control, AI tools (when "Start when RBS opens" is on), the virtual camera check and the replay buffer set-up run as at launch. Its `Update::Started` brings the preview back.
 - When it has not stopped within 8 s (the studio budget of ADR-0156 decision 5): the panels say "The studio is not running: the studio did not stop. Quit RBS and open it again." and the button stays hidden. If the old studio stops later, the text becomes "… the studio stopped." and the button shows again.
 - A collection that cannot be read, or a studio that cannot start, leaves state 2 with the reason; the button shows again.
 - Zero cost (P13): nothing runs while the studio runs; the stop thread and the budget timer exist only during a restart.
@@ -145,7 +145,7 @@ macro_rules! errln { ... }
 
 `disallowed-methods` in the app crate bans: the Slint functions wrapped by `entry.rs` (allowed inside it only); `rfd::FileDialog::{pick_file, pick_files, pick_folder, pick_folders, save_file}` and `rfd::MessageDialog::show`; `slint::run_event_loop`; `slint::ComponentHandle::run` (allowed once, in `main`); `std::thread::sleep` (allowed at the studio thread's shutdown, with a comment). Examples that are measurement tools allow them at file level. UI code uses `rfd::AsyncFileDialog` (or `AsyncMessageDialog`) under `entry::spawn_local`.
 
-### UI thread waits and stalls (`rbs-app` `src/ui_thread.rs`)
+### UI thread waits and stalls (`rbs-studio-host` `src/ui_thread.rs`, `rbs_app::ui_thread`)
 
 The waiting rule and the thread map are in [threads.md](../architecture/threads.md). At run time:
 
@@ -162,6 +162,8 @@ pub fn on_ui_thread() -> bool;
 pub fn assert_off_ui(what: &str);
 /// Stamps one UI entry; the entry ends when the value drops.
 pub fn enter(at: &'static Location<'static>) -> Entry;
+/// Runs a call in which the OS runs its own loop until the user is done (a native menu).
+pub fn os_loop<R>(run: impl FnOnce() -> R) -> R;
 pub const STALL: Duration; // 100 ms
 pub const HANG: Duration;  // 1 s
 ```
@@ -171,10 +173,11 @@ pub const HANG: Duration;  // 1 s
 - Every wrapper in `entry.rs` (and so `Ctx::update`) calls `enter` with the place the entry was installed (`#[track_caller]`; for `Ctx::update`, the `on!` site). Only the outermost entry on the UI thread stamps; nested ones and other threads only count depth.
 - An entry that returns after `STALL` or more logs, on the UI thread, `rbs: ui: the UI thread was busy <ms> ms in the entry installed at <file:line:col>`.
 - The thread `rbs-ui-watch` logs `rbs: ui: the UI thread is not answering: busy <ms> ms so far in the entry installed at <place>` when one entry has run `HANG`, then at 2, 4, 8 ... times `HANG` while it still runs. The place is `an unknown entry` when the UI thread could not take the place's lock (it only tries it). It parks with no timeout while no entry runs; the first entry after that unparks it.
+- `os_loop` wraps the projector's native menu (ADR-0137 decision 1), whose OS loop runs inside the entry that opened it until the user picks or dismisses. While it runs, the open entry is not timed (the watch sees the thread idle) and the entries that loop runs stamp as outermost ones, so a stall in one of them is still logged with its own place. After it, the open entry is timed again, and its stall line and long-task time leave out the time in the menu. Off the UI thread, or before the watch started, it only runs the call.
 - Not covered: time Slint spends outside our entry points (its own layout and rendering, OS calls in its event dispatch).
-- Cost: per outermost entry two clock reads, two atomic stores, one atomic swap and one uncontended `try_lock`, measured at 284 ns per entry in an unoptimised test build (Linux cloud container, 1,000,000 entries); nothing per nested entry. One parked thread; while the UI works, the watch wakes at most about once per `HANG`. Lines go to standard error until the diagnostics log (quality plan WP-21) exists.
+- Cost: per outermost entry two clock reads, two atomic stores, one atomic swap and one uncontended `try_lock`, measured at 284 ns per entry in an unoptimised test build (Linux cloud container, 1,000,000 entries); nothing per nested entry (one thread-local take more per outermost entry for `os_loop`). One parked thread; while the UI works, the watch wakes at most about once per `HANG`. Lines go to standard error until the diagnostics log (quality plan WP-21) exists.
 
-Tests (`ui_thread::tests`): the watch's decisions with a fed clock (idle parks, a short entry is never reported, a hang is reported at 1 s, 2 s, 4 s, a new entry starts over), the stall line with its place, the debug check fails on a marked thread and not after `loop_ended`, nested entries stamp once.
+Tests (`ui_thread::tests`): the watch's decisions with a fed clock (idle parks, a short entry is never reported, a hang is reported at 1 s, 2 s, 4 s, a new entry starts over), the stall line with its place, the debug check fails on a marked thread and not after `loop_ended`, nested entries stamp once, an `os_loop` is not the open entry's time while the entries it runs stamp.
 
 ### Build
 
