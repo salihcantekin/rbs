@@ -1,6 +1,7 @@
 //! Layer order and the type-specific item edits: `item.move`, `scene.move` (with
 //! `to_item` / `to_scene` since protocol 1.100), `item.fit_text_box`,
-//! `item.set_filled` and `item.set_shown_region` (protocol 1.100, ADR-0164 decision 6).
+//! `item.set_filled`, `item.set_shown_region` and `collection.set_stinger_file`
+//! (protocol 1.100, ADR-0164 decision 6).
 
 use serde::{Deserialize, Serialize};
 
@@ -94,4 +95,15 @@ pub struct SetItemShownRegion {
     /// The canvas whose layout changes: `"main"` (the default) or `"vertical"`.
     #[serde(default, skip_serializing_if = "is_main")]
     pub canvas: OutputCanvas,
+}
+
+/// `collection.set_stinger_file` (protocol 1.100, ADR-0140): a new media source for
+/// `path` that no scene places, made the stinger with the transition set to Stinger.
+/// One undo step; answers `source.add`'s `{source}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetStingerFile {
+    /// A local absolute path. A relative path is `invalid_params`; any other path
+    /// needs the irreversible-actions permission.
+    pub path: String,
 }

@@ -1,4 +1,5 @@
-//! Layer order to a place and the item edits of protocol 1.100 (ADR-0164 decision 6).
+//! Layer order to a place, the item edits, the voice chain and the stinger file of
+//! protocol 1.100 (ADR-0164 decision 6).
 
 use super::*;
 
@@ -81,4 +82,43 @@ fn the_type_specific_item_edits_name_their_type() {
     );
     assert_eq!(kind(&gone), "not_found", "{gone}");
     drop(host);
+}
+
+/// `filter.add_voice_chain` puts the four voice filters on a sound source in one undo
+/// step and refuses a picture source; `collection.set_stinger_file` needs an absolute
+/// path and answers the new source.
+#[test]
+fn the_voice_chain_and_the_stinger_file_are_api_calls() {
+    let Some((host, _updates, _api, mut c)) = start() else {
+        return;
+    };
+    let mic = add(&mut c, "audio_input", "Mic");
+    let screen = add(&mut c, "screen", "Screen");
+    let filters = |c: &mut Client| {
+        sources(c)
+            .iter()
+            .find(|s| s["id"] == mic)
+            .and_then(|s| s["filters"].as_array().map(Vec::len))
+            .unwrap_or(0)
+    };
+    ok(&c.call("filter.add_voice_chain", json!({"source": mic})));
+    assert_eq!(filters(&mut c), 4);
+    ok(&c.call("edit.undo", json!({})));
+    assert_eq!(filters(&mut c), 0);
+    let picture = c.call("filter.add_voice_chain", json!({"source": screen}));
+    assert_eq!(kind(&picture), "invalid_params", "{picture}");
+
+    let relative = c.call("collection.set_stinger_file", json!({"path": "sting.mov"}));
+    assert_eq!(kind(&relative), "invalid_params", "{relative}");
+    let dir = std::env::temp_dir().join(format!("rbs-stinger-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("sting.mov");
+    std::fs::write(&file, b"demo").unwrap();
+    let set = c.call(
+        "collection.set_stinger_file",
+        json!({"path": file.display().to_string()}),
+    );
+    assert!(ok(&set)["source"].as_u64().is_some(), "{set}");
+    drop(host);
+    let _ = std::fs::remove_dir_all(&dir);
 }

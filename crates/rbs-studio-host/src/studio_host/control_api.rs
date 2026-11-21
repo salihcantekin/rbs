@@ -2,6 +2,7 @@
 
 use super::*;
 
+mod api_add;
 mod api_canvas;
 mod api_collection;
 mod api_item;
@@ -249,6 +250,9 @@ impl ApiTarget<'_> {
             | C::AddonRemove(..)
             | C::CollectionSetGlide(..)
             | C::SceneSetTransition(..) => self.answer_settings(command),
+            C::FilterAddVoiceChain(..) | C::CollectionSetStingerFile(..) => {
+                self.answer_add(command)
+            }
             C::CollectionSetTransition(..)
             | C::SourceSetGlide(..)
             | C::SourceSetRegion(..)

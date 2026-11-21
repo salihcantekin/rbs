@@ -2003,6 +2003,8 @@ pub enum Command {
     FilterTypes(FilterTypesParams),
     /// `filter.add` (protocol 1.8).
     FilterAdd(AddFilter),
+    /// `filter.add_voice_chain` (protocol 1.100).
+    FilterAddVoiceChain(SourceRef),
     /// `filter.remove` (protocol 1.8).
     FilterRemove(FilterRef),
     /// `filter.move` (protocol 1.8).
@@ -2207,6 +2209,8 @@ pub enum Command {
     CollectionSwitch(EntryRef),
     /// `collection.set_glide` (protocol 1.35, ADR-0100).
     CollectionSetGlide(SetCollectionGlide),
+    /// `collection.set_stinger_file` (protocol 1.100).
+    CollectionSetStingerFile(SetStingerFile),
     /// `collection.set_transition` (protocol 1.81, ADR-0128).
     CollectionSetTransition(SetCollectionTransition),
     /// `source.set_glide` (protocol 1.35, ADR-0100).
@@ -2323,6 +2327,7 @@ impl Command {
             Command::ItemAdd(_) => "item.add",
             Command::FilterTypes(_) => "filter.types",
             Command::FilterAdd(_) => "filter.add",
+            Command::FilterAddVoiceChain(_) => "filter.add_voice_chain",
             Command::FilterRemove(_) => "filter.remove",
             Command::FilterMove(_) => "filter.move",
             Command::FilterSetEnabled(_) => "filter.set_enabled",
@@ -2425,6 +2430,7 @@ impl Command {
             Command::CollectionList => "collection.list",
             Command::CollectionSwitch(_) => "collection.switch",
             Command::CollectionSetGlide(_) => "collection.set_glide",
+            Command::CollectionSetStingerFile(_) => "collection.set_stinger_file",
             Command::CollectionSetTransition(_) => "collection.set_transition",
             Command::SourceSetGlide(_) => "source.set_glide",
             Command::SourceSetActivity(_) => "source.set_activity",
@@ -2519,6 +2525,7 @@ impl Command {
             // Downloads from the catalog's hosts (ADR-0145 decision 9).
             Command::AddonInstall(_) => true,
             Command::RecordStartToFile(p) => !is_local_path(&p.path),
+            Command::CollectionSetStingerFile(p) => !is_local_path(&p.path),
             Command::SettingsSet(p) => p.profiles.as_ref().is_some_and(|profiles| {
                 profiles
                     .iter()
@@ -2642,6 +2649,7 @@ pub const METHODS: &[MethodInfo] = &[
     m("item.add", Some(Scope::Control), Effect::Edit),
     m("filter.types", Some(Scope::Read), Effect::Read),
     m("filter.add", Some(Scope::Control), Effect::Edit),
+    m("filter.add_voice_chain", Some(Scope::Control), Effect::Edit),
     m("filter.remove", Some(Scope::Control), Effect::Edit),
     m("filter.move", Some(Scope::Control), Effect::Edit),
     m("filter.set_enabled", Some(Scope::Control), Effect::Edit),
@@ -2810,6 +2818,11 @@ pub const METHODS: &[MethodInfo] = &[
     m("collection.list", Some(Scope::Read), Effect::Read),
     m("collection.switch", Some(Scope::Control), Effect::Live),
     m("collection.set_glide", Some(Scope::Control), Effect::Edit),
+    m(
+        "collection.set_stinger_file",
+        Some(Scope::Control),
+        Effect::Edit,
+    ),
     m(
         "collection.set_transition",
         Some(Scope::Control),
@@ -3044,6 +3057,8 @@ enum WireRequest {
     FilterTypes(FilterTypesParams),
     #[serde(rename = "filter.add")]
     FilterAdd(AddFilter),
+    #[serde(rename = "filter.add_voice_chain")]
+    FilterAddVoiceChain(SourceRef),
     #[serde(rename = "filter.remove")]
     FilterRemove(FilterRef),
     #[serde(rename = "filter.move")]
@@ -3248,6 +3263,8 @@ enum WireRequest {
     CollectionSwitch(EntryRef),
     #[serde(rename = "collection.set_glide")]
     CollectionSetGlide(SetCollectionGlide),
+    #[serde(rename = "collection.set_stinger_file")]
+    CollectionSetStingerFile(SetStingerFile),
     #[serde(rename = "collection.set_transition")]
     CollectionSetTransition(SetCollectionTransition),
     #[serde(rename = "source.set_glide")]
@@ -3316,24 +3333,42 @@ enum WireRequest {
     AddonRemove(AddOnRef),
 }
 
-/// `impl From<WireRequest> for Request`: the arms that differ, then the methods whose
-/// wire and command variants share a name and carry their parameters unchanged.
-macro_rules! from_wire {
-    ({ $($special:tt)* } [$($plain:ident),* $(,)?]) => {
+/// `From<WireRequest> for Request` and back: the arms that differ, then the methods
+/// whose wire and command variants share a name and carry their parameters unchanged.
+macro_rules! wire_conversions {
+    (
+        from_wire { $($from:tt)* }
+        to_wire { $($to:tt)* }
+        command_to_wire { $($command:tt)* }
+        same [$($same:ident),* $(,)?]
+    ) => {
         impl From<WireRequest> for Request {
             fn from(w: WireRequest) -> Self {
                 use Command as C;
                 match w {
-                    $($special)*
-                    $(WireRequest::$plain(p) => Request::Command(C::$plain(p)),)*
+                    $($from)*
+                    $(WireRequest::$same(p) => Request::Command(C::$same(p)),)*
+                }
+            }
+        }
+
+        impl From<Request> for WireRequest {
+            fn from(r: Request) -> Self {
+                use Command as C;
+                match r {
+                    $($to)*
+                    Request::Command(c) => match c {
+                        $($command)*
+                        $(C::$same(p) => WireRequest::$same(p),)*
+                    },
                 }
             }
         }
     };
 }
 
-from_wire! {
-    {
+wire_conversions! {
+    from_wire {
         WireRequest::Hello(p) => Request::Hello(p),
         WireRequest::Authenticate(p) => Request::Authenticate(p),
         WireRequest::Describe(_) => Request::Describe,
@@ -3346,30 +3381,12 @@ from_wire! {
         }
         WireRequest::TextFonts(_) => Request::Command(C::TextFonts),
         WireRequest::SyncDevices(_) => Request::Command(C::SyncDevices),
-        WireRequest::SyncApplyToDeviceSources(p) => {
-            Request::Command(C::SyncApplyToDeviceSources(p))
-        }
-        WireRequest::SourceSetCompanionAudio(p) => {
-            Request::Command(C::SourceSetCompanionAudio(p))
-        }
-        WireRequest::SettingsClearRecentTargets(p) => {
-            Request::Command(C::SettingsClearRecentTargets(p))
-        }
-        WireRequest::CanvasTransitionProgress(p) => {
-            Request::Command(C::CanvasTransitionProgress(p))
-        }
         WireRequest::LookList(_) => Request::Command(C::LookList),
         WireRequest::GlobalList(_) => Request::Command(C::GlobalList),
         WireRequest::EditUndo(_) => Request::Command(C::EditUndo),
         WireRequest::EditRedo(_) => Request::Command(C::EditRedo),
         WireRequest::OutputProfiles(_) => Request::Command(C::OutputProfiles),
         WireRequest::OutputBreakToggle(_) => Request::Command(C::OutputBreakToggle),
-        WireRequest::StreamDestinationStart(p) => {
-            Request::Command(C::StreamDestinationStart(p))
-        }
-        WireRequest::StreamDestinationSetEnabled(p) => {
-            Request::Command(C::StreamDestinationSetEnabled(p))
-        }
         WireRequest::ReplayStatus(_) => Request::Command(C::ReplayStatus),
         WireRequest::ProtectionStatus(_) => Request::Command(C::ProtectionStatus),
         WireRequest::CalibrationCancel(_) => Request::Command(C::CalibrationCancel),
@@ -3386,17 +3403,50 @@ from_wire! {
         WireRequest::SettingsGet(_) => Request::Command(C::SettingsGet),
         WireRequest::ProfileList(_) => Request::Command(C::ProfileList),
         WireRequest::CollectionList(_) => Request::Command(C::CollectionList),
-        WireRequest::CollectionSetTransition(p) => {
-            Request::Command(C::CollectionSetTransition(p))
-        }
-        WireRequest::SourceSetRecordSeparately(p) => {
-            Request::Command(C::SourceSetRecordSeparately(p))
-        }
         WireRequest::TokensList(_) => Request::Command(C::TokensList),
         WireRequest::ImportObsScan(_) => Request::Command(C::ImportObsScan),
         WireRequest::AddonList(_) => Request::Command(C::AddonList),
     }
-    [
+    to_wire {
+        Request::Hello(p) => WireRequest::Hello(p),
+        Request::Authenticate(p) => WireRequest::Authenticate(p),
+        Request::Describe => WireRequest::Describe(Empty {}),
+        Request::Unsubscribe(p) => WireRequest::EventsUnsubscribe(p),
+    }
+    command_to_wire {
+        C::StudioGet => WireRequest::StudioGet(Empty {}),
+        C::SourceList => WireRequest::SourceList(Empty {}),
+        C::SceneList => WireRequest::SceneList(Empty {}),
+        C::SourceAttributesClipboard => WireRequest::SourceAttributesClipboard(Empty {}),
+        C::TextFonts => WireRequest::TextFonts(Empty {}),
+        C::SyncDevices => WireRequest::SyncDevices(Empty {}),
+        C::LookList => WireRequest::LookList(Empty {}),
+        C::GlobalList => WireRequest::GlobalList(Empty {}),
+        C::EditUndo => WireRequest::EditUndo(Empty {}),
+        C::EditRedo => WireRequest::EditRedo(Empty {}),
+        C::OutputProfiles => WireRequest::OutputProfiles(Empty {}),
+        C::OutputBreakToggle => WireRequest::OutputBreakToggle(Empty {}),
+        C::ReplayStatus => WireRequest::ReplayStatus(Empty {}),
+        C::ProtectionStatus => WireRequest::ProtectionStatus(Empty {}),
+        C::CalibrationCancel => WireRequest::CalibrationCancel(Empty {}),
+        C::CalibrationStatus => WireRequest::CalibrationStatus(Empty {}),
+        C::MonitorStatus => WireRequest::MonitorStatus(Empty {}),
+        C::MonitorDevices => WireRequest::MonitorDevices(Empty {}),
+        C::LoudnessStatus => WireRequest::LoudnessStatus(Empty {}),
+        C::LoudnessReset => WireRequest::LoudnessReset(Empty {}),
+        C::ReplayArm => WireRequest::ReplayArm(Empty {}),
+        C::ReplayDisarm => WireRequest::ReplayDisarm(Empty {}),
+        C::VcamStatus => WireRequest::VcamStatus(Empty {}),
+        C::VcamStart => WireRequest::VcamStart(Empty {}),
+        C::VcamStop => WireRequest::VcamStop(Empty {}),
+        C::SettingsGet => WireRequest::SettingsGet(Empty {}),
+        C::ProfileList => WireRequest::ProfileList(Empty {}),
+        C::CollectionList => WireRequest::CollectionList(Empty {}),
+        C::TokensList => WireRequest::TokensList(Empty {}),
+        C::ImportObsScan => WireRequest::ImportObsScan(Empty {}),
+        C::AddonList => WireRequest::AddonList(Empty {}),
+    }
+    same [
     SourceTargets, SourceAdd, SourceDelete, ItemSetStyle, ItemSetCrop, ItemFlip, ItemRotate,
     ItemFit, ItemAlign, ItemResetTransform, ItemFitTextBox, ItemSetFilled, ItemSetShownRegion,
     SceneAdd, SceneRemove, SceneRename, SceneSetTransition, SceneDuplicate, SourceDuplicate,
@@ -3422,196 +3472,11 @@ from_wire! {
     SourceFitChrome, SourceResetChrome, SceneAudioGet, SceneAudioSet, SceneAudioOwn,
     SceneAudioShared, SceneAudioResetSource, EventsSubscribe, TokensCreate, TokensRevoke,
     ImportObsCheck, ImportObsRun, TextTimer, AddonInstall, AddonCancel, AddonClean,
-    AddonRemove,
+    AddonRemove, FilterAddVoiceChain, CollectionSetStingerFile, SyncApplyToDeviceSources,
+    SourceSetCompanionAudio, SettingsClearRecentTargets, CanvasTransitionProgress,
+    StreamDestinationStart, StreamDestinationSetEnabled, CollectionSetTransition,
+    SourceSetRecordSeparately,
     ]
-}
-
-impl From<Request> for WireRequest {
-    fn from(r: Request) -> Self {
-        use Command as C;
-        match r {
-            Request::Hello(p) => WireRequest::Hello(p),
-            Request::Authenticate(p) => WireRequest::Authenticate(p),
-            Request::Describe => WireRequest::Describe(Empty {}),
-            Request::Unsubscribe(p) => WireRequest::EventsUnsubscribe(p),
-            Request::Command(c) => match c {
-                C::StudioGet => WireRequest::StudioGet(Empty {}),
-                C::SourceList => WireRequest::SourceList(Empty {}),
-                C::SourceTargets(p) => WireRequest::SourceTargets(p),
-                C::SourceAdd(p) => WireRequest::SourceAdd(p),
-                C::SourceDelete(p) => WireRequest::SourceDelete(p),
-                C::ItemSetStyle(p) => WireRequest::ItemSetStyle(p),
-                C::ItemSetCrop(p) => WireRequest::ItemSetCrop(p),
-                C::ItemFlip(p) => WireRequest::ItemFlip(p),
-                C::ItemRotate(p) => WireRequest::ItemRotate(p),
-                C::ItemFit(p) => WireRequest::ItemFit(p),
-                C::ItemAlign(p) => WireRequest::ItemAlign(p),
-                C::ItemResetTransform(p) => WireRequest::ItemResetTransform(p),
-                C::ItemFitTextBox(p) => WireRequest::ItemFitTextBox(p),
-                C::ItemSetFilled(p) => WireRequest::ItemSetFilled(p),
-                C::ItemSetShownRegion(p) => WireRequest::ItemSetShownRegion(p),
-                C::SceneList => WireRequest::SceneList(Empty {}),
-                C::SceneAdd(p) => WireRequest::SceneAdd(p),
-                C::SceneRemove(p) => WireRequest::SceneRemove(p),
-                C::SceneRename(p) => WireRequest::SceneRename(p),
-                C::SceneSetTransition(p) => WireRequest::SceneSetTransition(p),
-                C::SceneDuplicate(p) => WireRequest::SceneDuplicate(p),
-                C::SourceDuplicate(p) => WireRequest::SourceDuplicate(p),
-                C::SourceReset(p) => WireRequest::SourceReset(p),
-                C::SourceCopyAttributes(p) => WireRequest::SourceCopyAttributes(p),
-                C::SourceAttributesClipboard => WireRequest::SourceAttributesClipboard(Empty {}),
-                C::SourceSetText(p) => WireRequest::SourceSetText(p),
-                C::TextFonts => WireRequest::TextFonts(Empty {}),
-                C::SourcePasteAttributes(p) => WireRequest::SourcePasteAttributes(p),
-                C::SceneSwitch(p) => WireRequest::SceneSwitch(p),
-                C::SourceRename(p) => WireRequest::SourceRename(p),
-                C::SourceSetVolume(p) => WireRequest::SourceSetVolume(p),
-                C::SourceSetMuted(p) => WireRequest::SourceSetMuted(p),
-                C::SourceSetMixerHidden(p) => WireRequest::SourceSetMixerHidden(p),
-                C::CanvasSetMasterVolume(p) => WireRequest::CanvasSetMasterVolume(p),
-                C::CanvasSetMasterMuted(p) => WireRequest::CanvasSetMasterMuted(p),
-                C::ItemAdd(p) => WireRequest::ItemAdd(p),
-                C::FilterTypes(p) => WireRequest::FilterTypes(p),
-                C::FilterAdd(p) => WireRequest::FilterAdd(p),
-                C::FilterRemove(p) => WireRequest::FilterRemove(p),
-                C::FilterMove(p) => WireRequest::FilterMove(p),
-                C::FilterSetEnabled(p) => WireRequest::FilterSetEnabled(p),
-                C::FilterSetSettings(p) => WireRequest::FilterSetSettings(p),
-                C::SourceSetSyncOffset(p) => WireRequest::SourceSetSyncOffset(p),
-                C::SyncMeasureStart(p) => WireRequest::SyncMeasureStart(p),
-                C::SyncMeasureCancel(p) => WireRequest::SyncMeasureCancel(p),
-                C::SyncDevices => WireRequest::SyncDevices(Empty {}),
-                C::SyncForgetDevice(p) => WireRequest::SyncForgetDevice(p),
-                C::SyncApplyToDeviceSources(p) => WireRequest::SyncApplyToDeviceSources(p),
-                C::SourceRetarget(p) => WireRequest::SourceRetarget(p),
-                C::SourceReload(p) => WireRequest::SourceReload(p),
-                C::BrowserReload(p) => WireRequest::BrowserReload(p),
-                C::BrowserRunScript(p) => WireRequest::BrowserRunScript(p),
-                C::BrowserForgetSignIn(p) => WireRequest::BrowserForgetSignIn(p),
-                C::BrowserInput(p) => WireRequest::BrowserInput(p),
-                C::SourceGetSettings(p) => WireRequest::SourceGetSettings(p),
-                C::MediaPlay(p) => WireRequest::MediaPlay(p),
-                C::MediaPause(p) => WireRequest::MediaPause(p),
-                C::MediaSeek(p) => WireRequest::MediaSeek(p),
-                C::MediaRestart(p) => WireRequest::MediaRestart(p),
-                C::MediaState(p) => WireRequest::MediaState(p),
-                C::SourceSetSettings(p) => WireRequest::SourceSetSettings(p),
-                C::SourceSetCompanionAudio(p) => WireRequest::SourceSetCompanionAudio(p),
-                C::CanvasAddVertical(p) => WireRequest::CanvasAddVertical(p),
-                C::CanvasRemoveVertical(p) => WireRequest::CanvasRemoveVertical(p),
-                C::CanvasAutoLayout(p) => WireRequest::CanvasAutoLayout(p),
-                C::CanvasSetVerticalSize(p) => WireRequest::CanvasSetVerticalSize(p),
-                C::SettingsRecentTargets(p) => WireRequest::SettingsRecentTargets(p),
-                C::SettingsClearRecentTargets(p) => WireRequest::SettingsClearRecentTargets(p),
-                C::SceneSources(p) => WireRequest::SceneSources(p),
-                C::CanvasSetPreview(p) => WireRequest::CanvasSetPreview(p),
-                C::CanvasTransition(p) => WireRequest::CanvasTransition(p),
-                C::CanvasTransitionProgress(p) => WireRequest::CanvasTransitionProgress(p),
-                C::ItemRemove(p) => WireRequest::ItemRemove(p),
-                C::ItemMove(p) => WireRequest::ItemMove(p),
-                C::SceneMove(p) => WireRequest::SceneMove(p),
-                C::SourceSetActive(p) => WireRequest::SourceSetActive(p),
-                C::LookList => WireRequest::LookList(Empty {}),
-                C::LookApply(p) => WireRequest::LookApply(p),
-                C::SourceAddSample(p) => WireRequest::SourceAddSample(p),
-                C::ItemSetBox(p) => WireRequest::ItemSetBox(p),
-                C::GlobalList => WireRequest::GlobalList(Empty {}),
-                C::GlobalAdd(p) => WireRequest::GlobalAdd(p),
-                C::GlobalRemove(p) => WireRequest::GlobalRemove(p),
-                C::ItemSetVisible(p) => WireRequest::ItemSetVisible(p),
-                C::ItemSetLocked(p) => WireRequest::ItemSetLocked(p),
-                C::ItemSetShowFor(p) => WireRequest::ItemSetShowFor(p),
-                C::ItemShow(p) => WireRequest::ItemShow(p),
-                C::ItemSetScroll(p) => WireRequest::ItemSetScroll(p),
-                C::ItemScrollPause(p) => WireRequest::ItemScrollPause(p),
-                C::ItemScrollResume(p) => WireRequest::ItemScrollResume(p),
-                C::ItemScrollRestart(p) => WireRequest::ItemScrollRestart(p),
-                C::ItemScrollSpeed(p) => WireRequest::ItemScrollSpeed(p),
-                C::EditUndo => WireRequest::EditUndo(Empty {}),
-                C::EditRedo => WireRequest::EditRedo(Empty {}),
-                C::OutputProfiles => WireRequest::OutputProfiles(Empty {}),
-                C::RecordStart(p) => WireRequest::RecordStart(p),
-                C::RecordEstimate(p) => WireRequest::RecordEstimate(p),
-                C::RecordStartToFile(p) => WireRequest::RecordStartToFile(p),
-                C::RecordStop(p) => WireRequest::RecordStop(p),
-                C::RecordPause(p) => WireRequest::RecordPause(p),
-                C::RecordResume(p) => WireRequest::RecordResume(p),
-                C::RecordPauseToggle(p) => WireRequest::RecordPauseToggle(p),
-                C::RecordStatus(p) => WireRequest::RecordStatus(p),
-                C::StreamStart(p) => WireRequest::StreamStart(p),
-                C::StreamStop(p) => WireRequest::StreamStop(p),
-                C::StreamHold(p) => WireRequest::StreamHold(p),
-                C::StreamResume(p) => WireRequest::StreamResume(p),
-                C::StreamHoldToggle(p) => WireRequest::StreamHoldToggle(p),
-                C::OutputBreakToggle => WireRequest::OutputBreakToggle(Empty {}),
-                C::StreamStatus(p) => WireRequest::StreamStatus(p),
-                C::StreamDestinations(p) => WireRequest::StreamDestinations(p),
-                C::StreamDestinationStart(p) => WireRequest::StreamDestinationStart(p),
-                C::StreamDestinationStop(p) => WireRequest::StreamDestinationStop(p),
-                C::StreamDestinationSetEnabled(p) => WireRequest::StreamDestinationSetEnabled(p),
-                C::OutputSetWithVertical(p) => WireRequest::OutputSetWithVertical(p),
-                C::ReplayStatus => WireRequest::ReplayStatus(Empty {}),
-                C::ProtectionStatus => WireRequest::ProtectionStatus(Empty {}),
-                C::CalibrationRun(p) => WireRequest::CalibrationRun(p),
-                C::CalibrationCancel => WireRequest::CalibrationCancel(Empty {}),
-                C::CalibrationStatus => WireRequest::CalibrationStatus(Empty {}),
-                C::SourceSetMonitor(p) => WireRequest::SourceSetMonitor(p),
-                C::MonitorStatus => WireRequest::MonitorStatus(Empty {}),
-                C::MonitorDevices => WireRequest::MonitorDevices(Empty {}),
-                C::MonitorSetDevice(p) => WireRequest::MonitorSetDevice(p),
-                C::MonitorSetVolume(p) => WireRequest::MonitorSetVolume(p),
-                C::MonitorSetSolo(p) => WireRequest::MonitorSetSolo(p),
-                C::LoudnessStatus => WireRequest::LoudnessStatus(Empty {}),
-                C::LoudnessSetEnabled(p) => WireRequest::LoudnessSetEnabled(p),
-                C::LoudnessReset => WireRequest::LoudnessReset(Empty {}),
-                C::ReplayArm => WireRequest::ReplayArm(Empty {}),
-                C::ReplayDisarm => WireRequest::ReplayDisarm(Empty {}),
-                C::ReplaySave(p) => WireRequest::ReplaySave(p),
-                C::VcamStatus => WireRequest::VcamStatus(Empty {}),
-                C::VcamStart => WireRequest::VcamStart(Empty {}),
-                C::VcamStop => WireRequest::VcamStop(Empty {}),
-                C::SettingsGet => WireRequest::SettingsGet(Empty {}),
-                C::SettingsSet(p) => WireRequest::SettingsSet(p),
-                C::ProfileList => WireRequest::ProfileList(Empty {}),
-                C::ProfileSwitch(p) => WireRequest::ProfileSwitch(p),
-                C::CollectionList => WireRequest::CollectionList(Empty {}),
-                C::CollectionSwitch(p) => WireRequest::CollectionSwitch(p),
-                C::CollectionSetGlide(p) => WireRequest::CollectionSetGlide(p),
-                C::CollectionSetTransition(p) => WireRequest::CollectionSetTransition(p),
-                C::SourceSetGlide(p) => WireRequest::SourceSetGlide(p),
-                C::SourceSetActivity(p) => WireRequest::SourceSetActivity(p),
-                C::SourceGetActivity(p) => WireRequest::SourceGetActivity(p),
-                C::SourceSetRegion(p) => WireRequest::SourceSetRegion(p),
-                C::SourceSetRecordSeparately(p) => WireRequest::SourceSetRecordSeparately(p),
-                C::MarkerAdd(p) => WireRequest::MarkerAdd(p),
-                C::MarkerRemove(p) => WireRequest::MarkerRemove(p),
-                C::ProjectExport(p) => WireRequest::ProjectExport(p),
-                C::SourceGetRegion(p) => WireRequest::SourceGetRegion(p),
-                C::SourceSetChrome(p) => WireRequest::SourceSetChrome(p),
-                C::SourceGetChrome(p) => WireRequest::SourceGetChrome(p),
-                C::SourceFitChrome(p) => WireRequest::SourceFitChrome(p),
-                C::SourceResetChrome(p) => WireRequest::SourceResetChrome(p),
-                C::SceneAudioGet(p) => WireRequest::SceneAudioGet(p),
-                C::SceneAudioSet(p) => WireRequest::SceneAudioSet(p),
-                C::SceneAudioOwn(p) => WireRequest::SceneAudioOwn(p),
-                C::SceneAudioShared(p) => WireRequest::SceneAudioShared(p),
-                C::SceneAudioResetSource(p) => WireRequest::SceneAudioResetSource(p),
-                C::EventsSubscribe(p) => WireRequest::EventsSubscribe(p),
-                C::TokensList => WireRequest::TokensList(Empty {}),
-                C::TokensCreate(p) => WireRequest::TokensCreate(p),
-                C::TokensRevoke(p) => WireRequest::TokensRevoke(p),
-                C::ImportObsScan => WireRequest::ImportObsScan(Empty {}),
-                C::ImportObsCheck(p) => WireRequest::ImportObsCheck(p),
-                C::ImportObsRun(p) => WireRequest::ImportObsRun(p),
-                C::TextTimer(p) => WireRequest::TextTimer(p),
-                C::AddonList => WireRequest::AddonList(Empty {}),
-                C::AddonInstall(p) => WireRequest::AddonInstall(p),
-                C::AddonCancel(p) => WireRequest::AddonCancel(p),
-                C::AddonClean(p) => WireRequest::AddonClean(p),
-                C::AddonRemove(p) => WireRequest::AddonRemove(p),
-            },
-        }
-    }
 }
 
 /// `session.hello`'s answer.

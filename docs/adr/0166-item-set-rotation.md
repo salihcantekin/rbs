@@ -1,6 +1,6 @@
 # ADR-0166: `item.set_rotation`, a free angle for an item
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-21
 - Deciders: Salih Cantekin (owner)
 
@@ -58,4 +58,4 @@ So a client cannot set an item's angle, and the window cannot send its angle edi
   6. The evidence for joining 1.100 is written down (decision 2).
   7. The gesture merge across the transform methods is stated (decision 1).
   8. The reset alternative is reworded.
-- Owner: pending.
+- Owner: Salih Cantekin accepted it on 2026-11-21 (21:31 UTC).

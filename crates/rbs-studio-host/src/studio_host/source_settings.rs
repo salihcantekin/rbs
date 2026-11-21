@@ -726,10 +726,6 @@ impl Host {
     /// The window commands of this concern, routed by `Host::command`.
     pub(super) fn source_edit_command(&mut self, c: Command, notify: &dyn Fn(Update)) {
         match c {
-            Command::AddVoiceChain(source) => {
-                let done = self.add_voice_chain(source);
-                self.answer(done, notify);
-            }
             Command::AddSample { sample } => {
                 self.run_ui_api(
                     rbs_api::Command::SourceAddSample(rbs_api::request::AddSample { sample }),
@@ -745,10 +741,6 @@ impl Host {
                 Err(e) => notify(Update::Error(e.text().to_owned())),
             },
             Command::AddMedia { path } => match self.add_media_file(&path) {
-                Ok(_) => self.apply(notify),
-                Err(e) => notify(Update::Error(e.text().to_owned())),
-            },
-            Command::SetStingerFile(path) => match self.set_stinger_file(&path) {
                 Ok(_) => self.apply(notify),
                 Err(e) => notify(Update::Error(e.text().to_owned())),
             },

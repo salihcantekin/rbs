@@ -82,13 +82,13 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `ListMonitorDevices` | Moved to `Command::Api` (step 5) | monitor.devices; the first ticketed question: `Update::ApiAnswer` replaces `Update::MonitorDevices` |
 | `SetSourceMixerHidden` | Translates | source.set_mixer_hidden |
 | `AddFilter` | Moved to `Command::Api` (step 4) | filter.add |
-| `AddVoiceChain` | Missing | no voice chain method |
+| `AddVoiceChain` | Moved to `Command::Api` (ADR-0164 step 3) | filter.add_voice_chain |
 | `ApplyLook` | Translates | look.apply |
 | `AddSample` | Translates | source.add_sample |
 | `AddStamp` | Missing | no shape source in source.add |
 | `AddImage` | Missing | source.add has no file path, and the box is sized from the image |
 | `AddMedia` | Missing | source.add has no file path |
-| `SetStingerFile` | Missing | no stinger file method |
+| `SetStingerFile` | Moved to `Command::Api` (ADR-0164 step 3) | collection.set_stinger_file |
 | `AddBrowser` | Missing | source.add has no URL |
 | `AddText` | Moved to `Command::Api` (step 6) | source.add (kind text) |
 | `FitTextBox` | Moved to `Command::Api` (ADR-0164 step 2) | item.fit_text_box |

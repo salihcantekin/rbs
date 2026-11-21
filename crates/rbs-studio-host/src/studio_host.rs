@@ -700,12 +700,10 @@ impl Host {
             | Command::SetMasterMuted { .. }
             | Command::SetLoudnessShown(..)
             | Command::SetLoudnessSettings { .. } => self.canvas_and_mix_command(c, notify),
-            Command::AddVoiceChain(..)
-            | Command::AddSample { .. }
+            Command::AddSample { .. }
             | Command::AddStamp { .. }
             | Command::AddImage { .. }
             | Command::AddMedia { .. }
-            | Command::SetStingerFile(..)
             | Command::AddBrowser { .. }
             | Command::ApplyLook { .. }
             | Command::SetFilterValues { .. }

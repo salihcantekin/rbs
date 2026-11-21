@@ -54,6 +54,13 @@ impl StudioUi {
         }));
     }
 
+    /// Makes `path` the stinger: a new media source no scene places (ADR-0140).
+    pub fn set_stinger_file(&mut self, path: &std::path::Path) {
+        self.call(C::CollectionSetStingerFile(rq::SetStingerFile {
+            path: path.display().to_string(),
+        }));
+    }
+
     /// Puts scene `id` where scene `to` is in the scene list (a row dragged onto
     /// another).
     pub fn move_scene_to(&mut self, id: i32, to: i32) {

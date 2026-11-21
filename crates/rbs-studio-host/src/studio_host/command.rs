@@ -108,8 +108,6 @@ pub enum Command {
         /// Hidden from the Mixer.
         hidden: bool,
     },
-    /// Add the voice chain to a sound source (ADR-0130 decision 10; one undo step).
-    AddVoiceChain(SourceId),
     /// Apply a built-in look to a source's item and filters (ADR-0075; one undo step).
     ApplyLook {
         /// The source.
@@ -140,9 +138,6 @@ pub enum Command {
         /// A local regular file. The demo decoder ignores contents.
         path: std::path::PathBuf,
     },
-    /// Make a media file the stinger (ADR-0140): a new media source that no scene
-    /// places, and the transition set to Stinger with it, one undo step.
-    SetStingerFile(std::path::PathBuf),
     /// Add a browser page (ADR-0109), fitted to the canvas, one undo step.
     AddBrowser {
         /// `http`, `https`, or `file` URL.

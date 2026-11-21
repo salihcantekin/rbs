@@ -2545,11 +2545,6 @@ impl StudioUi {
         }
     }
 
-    /// Makes `path` the stinger: a new media source no scene places (ADR-0140).
-    pub fn set_stinger_file(&mut self, path: &std::path::Path) {
-        self.send(Command::SetStingerFile(path.to_owned()));
-    }
-
     /// Fade's options: easing (`0` linear, `1` ease-in-out) and an opaque colour to
     /// fade through (`"#rrggbb"`; empty keeps the colour, black when there is none).
     pub fn set_fade_options(&mut self, easing: i32, via: bool, color: &str) {

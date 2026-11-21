@@ -101,8 +101,6 @@ paths! {
     SetLoudnessShown => Translates(&["loudness.set_enabled"]),
     SetLoudnessSettings => Translates(&["settings.set"]),
     SetSourceMixerHidden => Translates(&["source.set_mixer_hidden"]),
-    // no voice chain method
-    AddVoiceChain => Missing,
     ApplyLook => Translates(&["look.apply"]),
     AddSample => Translates(&["source.add_sample"]),
     // no shape source in source.add
@@ -111,8 +109,6 @@ paths! {
     AddImage => Missing,
     // source.add has no file path
     AddMedia => Missing,
-    // no stinger file method
-    SetStingerFile => Missing,
     // source.add has no URL
     AddBrowser => Missing,
     // window then restores stored values on an unchanged release
@@ -220,7 +216,7 @@ mod tests {
     const TRANSLATES: usize = 22;
     const PENDING: usize = 17;
     const CONTRACT: usize = 7;
-    const MISSING: usize = 15;
+    const MISSING: usize = 13;
     const VIEW: usize = 13;
     const LOCAL_ONLY: usize = 9;
     const PREVIEW: usize = 2;

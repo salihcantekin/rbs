@@ -69,5 +69,9 @@ pub(super) fn requests() -> Vec<Request> {
             region: ShownRegion::CanvasCentred,
             canvas: OutputCanvas::Main,
         })),
+        c(Command::FilterAddVoiceChain(SourceRef { source: 3 })),
+        c(Command::CollectionSetStingerFile(SetStingerFile {
+            path: "/media/sting.mov".to_owned(),
+        })),
     ]
 }
