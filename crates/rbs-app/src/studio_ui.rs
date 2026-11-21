@@ -2665,14 +2665,6 @@ impl StudioUi {
         self.send(Command::SetStudioMode(on));
     }
 
-    /// Rehearse on Preview (ADR-0135 decision 11): the transition on the Preview
-    /// picture only.
-    pub fn rehearse(&mut self) {
-        if self.studio_mode {
-            self.send(Command::Rehearse);
-        }
-    }
-
     /// The sources Add source can place again: those of the collection the scene on
     /// air does not have yet.
     fn refresh_existing(&mut self) {
@@ -3372,11 +3364,6 @@ impl StudioUi {
             self.marker_undo = note.placed;
             self.marker_serial = self.marker_serial.wrapping_add(1);
         }
-    }
-
-    pub fn undo_delete(&mut self) {
-        self.deleted.clear();
-        self.send(Command::UndoDelete);
     }
 
     /// The encoder settings of an [`output`].

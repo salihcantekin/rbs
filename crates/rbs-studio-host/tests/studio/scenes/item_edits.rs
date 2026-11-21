@@ -227,3 +227,27 @@ fn a_shape_a_file_or_a_page_is_added_by_its_kind() {
     drop(host);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `edit.undo_delete` undoes only a delete, and `canvas.rehearse` says why it cannot
+/// play (ADR-0164 decision 6).
+#[test]
+fn undo_delete_and_rehearse_refuse_with_a_reason() {
+    let Some((host, _updates, _api, mut c)) = start() else {
+        return;
+    };
+    let screen = add(&mut c, "screen", "Screen");
+    let not_delete = c.call("edit.undo_delete", json!({}));
+    assert_eq!(kind(&not_delete), "conflict", "{not_delete}");
+    ok(&c.call("source.delete", json!({"source": screen})));
+    ok(&c.call("edit.undo_delete", json!({})));
+    assert!(sources(&mut c).iter().any(|s| s["id"] == screen));
+
+    let off = c.call("canvas.rehearse", json!({}));
+    assert_eq!(kind(&off), "conflict", "{off}");
+    assert_eq!(off["error"]["data"]["reason"], "not_studio_mode", "{off}");
+    let vertical = c.call("canvas.rehearse", json!({"canvas": "vertical"}));
+    assert_eq!(kind(&vertical), "invalid_params", "{vertical}");
+    let unknown = c.call("addon.update", json!({"id": "org.example.none"}));
+    assert!(unknown.get("error").is_some(), "{unknown}");
+    drop(host);
+}

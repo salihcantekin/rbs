@@ -128,3 +128,13 @@ pub enum Stamp {
     /// An arrow pointing right.
     Arrow,
 }
+
+/// `canvas.rehearse` (protocol 1.100, ADR-0135 decision 11): the transition a
+/// `canvas.transition` would run now, played on the Preview picture only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Rehearse {
+    /// `"main"` (the default); the vertical canvas has no Preview picture.
+    #[serde(default, skip_serializing_if = "is_main")]
+    pub canvas: OutputCanvas,
+}

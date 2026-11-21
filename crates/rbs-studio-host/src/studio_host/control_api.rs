@@ -252,9 +252,11 @@ impl ApiTarget<'_> {
             | C::AddonRemove(..)
             | C::CollectionSetGlide(..)
             | C::SceneSetTransition(..) => self.answer_settings(command),
-            C::FilterAddVoiceChain(..) | C::CollectionSetStingerFile(..) => {
-                self.answer_add(command)
-            }
+            C::FilterAddVoiceChain(..)
+            | C::CollectionSetStingerFile(..)
+            | C::EditUndoDelete
+            | C::CanvasRehearse(..)
+            | C::AddonUpdate(..) => self.answer_add(command),
             C::CollectionSetTransition(..)
             | C::SourceSetGlide(..)
             | C::SourceSetRegion(..)

@@ -31,6 +31,34 @@ impl ApiTarget<'_> {
                 host.apply(notify);
                 Ok(Response::SourceAdded(SourceAdded { source: id.get() }))
             }
+            C::EditUndoDelete => {
+                let delete = host
+                    .edits
+                    .history
+                    .next_undo()
+                    .is_some_and(|s| matches!(s.kind, EditKind::Delete | EditKind::Remove));
+                if !delete {
+                    return Err(ApiError::new(
+                        ErrorKind::Conflict,
+                        "The newest step is not a delete or a remove from scene.",
+                    ));
+                }
+                host.step(true, notify);
+                Ok(Response::Done(Empty {}))
+            }
+            C::CanvasRehearse(p) => {
+                if p.canvas == OutputCanvas::Vertical {
+                    return Err(ApiError::new(
+                        ErrorKind::InvalidParams,
+                        "The vertical canvas has no Preview picture.",
+                    ));
+                }
+                host.rehearse()?;
+                Ok(Response::Done(Empty {}))
+            }
+            C::AddonUpdate(r) => host
+                .addon_update(&r.id, notify)
+                .map(|()| Response::Done(Empty {})),
             // Routed elsewhere by `ApiTarget::run`.
             _ => Err(rbs_api::control::unsupported(&command)),
         }
@@ -107,5 +135,50 @@ impl ApiTarget<'_> {
         })?;
         host.apply(notify);
         Ok(Response::SourceAdded(SourceAdded { source: id.get() }))
+    }
+}
+
+/// A `conflict` with `data.reason` (ADR-0164 decision 6).
+fn conflict(reason: &str, text: &str) -> ApiError {
+    let mut data = serde_json::Map::new();
+    data.insert("reason".into(), reason.into());
+    ApiError::with_data(ErrorKind::Conflict, text, data)
+}
+
+impl Host {
+    /// `canvas.rehearse` (ADR-0135 decision 11): plays the transition on the Preview
+    /// picture, or says why not.
+    fn rehearse(&mut self) -> Result<(), ApiError> {
+        if self.preview().is_none() {
+            return Err(conflict("not_studio_mode", "Studio mode is off."));
+        }
+        if self.studio.rehearsing() {
+            return Err(conflict("rehearsing", "A rehearsal is playing."));
+        }
+        if self.studio.transition_running(self.canvas) {
+            return Err(conflict(
+                "transition_running",
+                "A transition is running or holding.",
+            ));
+        }
+        if !self.studio.has_preview_picture() {
+            return Err(ApiError::new(
+                ErrorKind::Failed,
+                "There is no Preview picture to rehearse on.",
+            ));
+        }
+        if !self.studio.rehearsal_has_duration() {
+            return Err(conflict(
+                "no_duration",
+                "A Cut or a transition of 0 s has nothing to rehearse.",
+            ));
+        }
+        match self.studio.rehearse(&self.adapters.sources) {
+            Ok(_) => Ok(()),
+            Err(e) => Err(ApiError::new(
+                ErrorKind::Failed,
+                format!("The rehearsal could not start: {e}"),
+            )),
+        }
     }
 }

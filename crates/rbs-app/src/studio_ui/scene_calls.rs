@@ -61,6 +61,22 @@ impl StudioUi {
         }));
     }
 
+    /// Rehearse on Preview (ADR-0135 decision 11): the transition on the Preview
+    /// picture only.
+    pub fn rehearse(&mut self) {
+        if self.studio_mode {
+            let call = C::CanvasRehearse(Default::default());
+            self.call_as(call, ApiReply::QuietIf(rbs_api::ErrorKind::Conflict));
+        }
+    }
+
+    /// The undo toast's Undo: the newest step, if it is a delete.
+    pub fn undo_delete(&mut self) {
+        self.deleted.clear();
+        let quiet = ApiReply::QuietIf(rbs_api::ErrorKind::Conflict);
+        self.call_as(C::EditUndoDelete, quiet);
+    }
+
     /// Puts scene `id` where scene `to` is in the scene list (a row dragged onto
     /// another).
     pub fn move_scene_to(&mut self, id: i32, to: i32) {
