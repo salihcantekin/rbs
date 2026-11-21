@@ -367,7 +367,7 @@ pub fn spawn_helper_prepared(
     }
     if let Some(gpu) = prepare(child.id()) {
         // Before `configure`: the helper opens the section only after reading it.
-        ring.set_gpu_slots(gpu.count);
+        ring.set_gpu_slots(gpu.count());
         configure.gpu = Some(gpu);
     }
     let mut stdin = child

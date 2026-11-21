@@ -1047,7 +1047,7 @@ fn run_browser(args: &args::Args, app: &mut App, engine: &engine::Engine) -> i32
     // process sees another adapter and the tree falls back at once (ADR-0157
     // decision 8). A LUID of 0 is not an adapter, so it falls back too.
     #[cfg(windows)]
-    if let Some(share) = config.gpu {
+    if let Some(rbs_browser_ipc::GpuShare::D3d(share)) = config.gpu.clone() {
         match gpu::Copier::open(&share) {
             Some(copier) if share.adapter_luid != 0 => {
                 GPU_LUID.store(share.adapter_luid, Ordering::Relaxed);

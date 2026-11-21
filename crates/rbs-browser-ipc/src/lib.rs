@@ -182,11 +182,50 @@ pub const MAX_GPU_TEXTURES: usize = 8;
 /// version is ignored: the page paints in software.
 pub const GPU_BLOCK_VERSION: u8 = 2;
 
+/// Version of the macOS `Configure` GPU block (ADR-0167 decision 3). A block of
+/// another version is ignored: the page paints in software.
+pub const METAL_BLOCK_VERSION: u8 = 1;
+
+/// Bytes of the macOS handover token.
+pub const HANDOVER_TOKEN_LEN: usize = 16;
+
+/// Studio-owned surfaces the helper copies into, when the tree paints on the GPU.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GpuShare {
+    /// Windows: shared Direct3D textures and a fence (ADR-0157).
+    D3d(D3dShare),
+    /// macOS: IOSurfaces handed over on a Mach service (ADR-0167).
+    Metal(MetalShare),
+}
+
+impl GpuShare {
+    /// How many slots the studio made (the frame section's GPU slot count).
+    pub fn count(&self) -> u32 {
+        match self {
+            Self::D3d(share) => share.count,
+            Self::Metal(share) => share.count,
+        }
+    }
+}
+
+/// macOS: where the helper fetches the slot surfaces (ADR-0167 decision 3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MetalShare {
+    /// `registryID` of the studio's `MTLDevice`; the helper copies on that device.
+    pub registry_id: u64,
+    /// The Mach service name, fresh per spawn.
+    pub service: String,
+    /// The spawn's token, sent back with the request.
+    pub token: [u8; HANDOVER_TOKEN_LEN],
+    /// How many surfaces the studio made, at most [`MAX_GPU_TEXTURES`].
+    pub count: u32,
+}
+
 /// Studio-owned shared textures the helper copies into (ADR-0109 decision 8,
 /// ADR-0157). Handle values are valid in the helper process. Absent on the
 /// shared-memory path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct GpuShare {
+pub struct D3dShare {
     /// Render adapter the textures were created on; the helper runs CEF on it.
     pub adapter_luid: u64,
     /// Shared fence handle in the helper process.
@@ -197,7 +236,7 @@ pub struct GpuShare {
     pub count: u32,
 }
 
-impl GpuShare {
+impl D3dShare {
     /// The texture handles that hold.
     pub fn handles(&self) -> &[u64] {
         &self.textures[..(self.count as usize).min(MAX_GPU_TEXTURES)]
@@ -260,6 +299,47 @@ impl PageOptions {
     }
 
     fn encode_gpu(body: &mut Vec<u8>, gpu: &GpuShare) {
+        match gpu {
+            GpuShare::D3d(gpu) => Self::encode_d3d(body, gpu),
+            GpuShare::Metal(gpu) => Self::encode_metal(body, gpu),
+        }
+    }
+
+    fn encode_metal(body: &mut Vec<u8>, gpu: &MetalShare) {
+        body.extend_from_slice(b"RBSm");
+        body.push(METAL_BLOCK_VERSION);
+        body.extend_from_slice(&gpu.registry_id.to_le_bytes());
+        body.push(gpu.count.min(MAX_GPU_TEXTURES as u32) as u8);
+        body.extend_from_slice(&gpu.token);
+        put_text(body, &gpu.service);
+    }
+
+    fn decode_metal(tail: &[u8]) -> Option<Option<GpuShare>> {
+        let (&version, mut tail) = tail.split_first()?;
+        if version != METAL_BLOCK_VERSION {
+            return Some(None);
+        }
+        let registry_id = u64::from_le_bytes(tail.get(..8)?.try_into().ok()?);
+        tail = tail.get(8..)?;
+        let count = take_u8(&mut tail)?;
+        if count == 0 || usize::from(count) > MAX_GPU_TEXTURES {
+            return None;
+        }
+        let token: [u8; HANDOVER_TOKEN_LEN] = tail.get(..HANDOVER_TOKEN_LEN)?.try_into().ok()?;
+        tail = tail.get(HANDOVER_TOKEN_LEN..)?;
+        let service = take_text(&mut tail)?;
+        if service.is_empty() {
+            return None;
+        }
+        Some(Some(GpuShare::Metal(MetalShare {
+            registry_id,
+            service,
+            token,
+            count: u32::from(count),
+        })))
+    }
+
+    fn encode_d3d(body: &mut Vec<u8>, gpu: &D3dShare) {
         body.extend_from_slice(b"RBSg");
         body.push(GPU_BLOCK_VERSION);
         body.extend_from_slice(&gpu.adapter_luid.to_le_bytes());
@@ -274,6 +354,9 @@ impl PageOptions {
     /// `Some(None)` without a block or with a block of another version; `None` for
     /// a malformed block of this version.
     fn decode_gpu(rest: &[u8]) -> Option<Option<GpuShare>> {
+        if let Some(tail) = rest.strip_prefix(b"RBSm") {
+            return Self::decode_metal(tail);
+        }
         let Some(tail) = rest.strip_prefix(b"RBSg") else {
             return Some(None);
         };
@@ -296,12 +379,12 @@ impl PageOptions {
         for handle in textures.iter_mut().take(usize::from(count)) {
             *handle = take(&mut tail)?;
         }
-        Some(Some(GpuShare {
+        Some(Some(GpuShare::D3d(D3dShare {
             adapter_luid,
             fence,
             textures,
             count: u32::from(count),
-        }))
+        })))
     }
 
     pub(crate) fn decode(rest: &mut &[u8]) -> Option<Self> {
@@ -489,13 +572,13 @@ mod tests {
         let encoded = encode_configure(&page);
         assert_eq!(decode_configure(&encoded), Some(page.clone()));
         let gpu = Configure {
-            gpu: Some(GpuShare {
+            gpu: Some(GpuShare::D3d(D3dShare {
                 adapter_luid: 7,
                 fence: 11,
                 textures: [1, 2, 3, 4, 0, 0, 0, 0],
                 count: 4,
-            }),
-            ..page
+            })),
+            ..page.clone()
         };
         let encoded = encode_configure(&gpu);
         assert_eq!(decode_configure(&encoded), Some(gpu.clone()));
@@ -512,6 +595,36 @@ mod tests {
         let mut bad = encoded;
         bad[tag + 4 + 1 + 16] = 0;
         assert_eq!(decode_configure(&bad), None, "zero textures");
+    }
+
+    #[test]
+    fn the_macos_gpu_block_round_trips_and_an_unknown_version_gives_shared_memory() {
+        let config = Configure {
+            url: "https://example.com".into(),
+            width: 1920,
+            height: 1080,
+            fps: 30,
+            transparent: true,
+            frames: "/rbsb.1.0".into(),
+            sound: String::new(),
+            sample_rate: 0,
+            page: PageOptions::default(),
+            gpu: Some(GpuShare::Metal(MetalShare {
+                registry_id: 0x1_0000_0abc,
+                service: "org.rbs.browser-surfaces.0011223344556677".into(),
+                token: [9; HANDOVER_TOKEN_LEN],
+                count: 4,
+            })),
+        };
+        let encoded = encode_configure(&config);
+        assert_eq!(decode_configure(&encoded), Some(config.clone()));
+        let tag = encoded.windows(4).position(|w| w == b"RBSm").unwrap();
+        let mut other = encoded.clone();
+        other[tag + 4] = METAL_BLOCK_VERSION + 1;
+        assert_eq!(decode_configure(&other).map(|c| c.gpu), Some(None));
+        let mut bad = encoded;
+        bad[tag + 4 + 1 + 8] = 0;
+        assert_eq!(decode_configure(&bad), None, "zero surfaces");
     }
 
     #[test]

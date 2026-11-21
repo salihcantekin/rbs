@@ -273,7 +273,7 @@ impl RunnerBrowserTree {
                 {
                     textures.as_ref().and_then(|textures| {
                         let (handles, fence) = textures.duplicate_to(pid)?;
-                        let mut share = rbs_browser_ipc::GpuShare {
+                        let mut share = rbs_browser_ipc::D3dShare {
                             adapter_luid: textures.luid(),
                             fence,
                             textures: [0; rbs_browser_ipc::MAX_GPU_TEXTURES],
@@ -283,7 +283,7 @@ impl RunnerBrowserTree {
                             *to = *from;
                             share.count += 1;
                         }
-                        Some(share)
+                        Some(rbs_browser_ipc::GpuShare::D3d(share))
                     })
                 }
                 #[cfg(not(windows))]

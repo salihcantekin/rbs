@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use rbs_browser_ipc::exit::Cause;
-use rbs_browser_ipc::{Configure, GpuShare, HEARTBEAT_LIMIT, MAX_GPU_TEXTURES};
+use rbs_browser_ipc::{Configure, D3dShare, GpuShare, HEARTBEAT_LIMIT, MAX_GPU_TEXTURES};
 use rbs_browser_runner::{
     FENCE_JUMP, FenceView, HelperChild, PagePicture, Supervisor, spawn_helper,
     spawn_helper_prepared,
@@ -71,12 +71,12 @@ fn spawn_gpu(args: &[&str], fence: &Arc<AtomicU64>) -> HelperChild {
         &config(),
         SlotLayout::Bgra8Premultiplied,
         |_| {
-            Some(GpuShare {
+            Some(GpuShare::D3d(D3dShare {
                 adapter_luid: 1,
                 fence: 1,
                 textures: [1; MAX_GPU_TEXTURES],
                 count: SLOTS,
-            })
+            }))
         },
     )
     .unwrap();

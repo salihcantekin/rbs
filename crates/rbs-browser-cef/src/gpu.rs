@@ -7,7 +7,7 @@
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use rbs_browser_ipc::GpuShare;
+use rbs_browser_ipc::D3dShare;
 use rbs_browser_shm::FrameRing;
 use windows::Win32::Foundation::{HANDLE, HMODULE};
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_UNKNOWN;
@@ -61,7 +61,7 @@ unsafe impl Sync for Copier {}
 impl Copier {
     /// Opens the studio's textures and fence on the adapter the studio named.
     /// `None` when this process cannot see them: the tree falls back.
-    pub fn open(share: &GpuShare) -> Option<Self> {
+    pub fn open(share: &D3dShare) -> Option<Self> {
         let adapter = adapter(share.adapter_luid)?;
         let mut device = None;
         let mut immediate = None;
