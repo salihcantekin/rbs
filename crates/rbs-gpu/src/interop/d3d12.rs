@@ -204,7 +204,17 @@ fn open_planar(
     };
     // Two wrappers of one NV12 or P010 resource, one plane each. The state tracker
     // treats them as separate textures; both are only sampled, never written.
-    let wrap = |plane: u32, format, size| {
+    //
+    // wgpu-hal emits every whole-texture barrier with `ALL_SUBRESOURCES`, ignoring the
+    // plane slice, so a barrier on either wrapper moves both planes. Two wrappers that
+    // both transitioned would issue the same transition twice, the second with a stale
+    // "before" state (D3D12 error #527, RESOURCE_BARRIER_BEFORE_AFTER_MISMATCH). So only
+    // the Y' wrapper ever transitions: it starts in COMMON (wgpu `PRESENT`) and the
+    // importer's hand-back returns only it to COMMON. The CbCr wrapper is tracked as
+    // `RESOURCE` from the start and never changes state; the Y' wrapper's barrier before
+    // the pass that samples both puts the whole resource there (gpu-compositor spec,
+    // "Native import", rule 6).
+    let wrap = |plane: u32, format, size, initial| {
         // SAFETY: `resource` was opened on this device. Cloning adds a COM reference
         // the wrapper keeps. The format is the single-plane view of that DXGI plane.
         let hal = unsafe {
@@ -219,7 +229,10 @@ fn open_planar(
             .with_plane_slice(plane)
         };
         // SAFETY: the wrapper matches this device. A shared resource starts in COMMON
-        // (wgpu `PRESENT`). The plane slice is pinned by `with_plane_slice`.
+        // (wgpu `PRESENT`); the CbCr wrapper's `RESOURCE` is the state the Y' wrapper's
+        // whole-resource barrier sets before any pass that samples both, the only way
+        // the planes are used (comment above, pool `plane_texture`). The
+        // plane slice is pinned by `with_plane_slice`.
         unsafe {
             ctx.device().create_texture_from_hal::<Dx12>(
                 hal,
@@ -233,12 +246,12 @@ fn open_planar(
                     usage,
                     view_formats: &[],
                 },
-                wgpu::TextureUses::PRESENT,
+                initial,
             )
         }
     };
-    let luma = wrap(0, luma_format, luma_size);
-    let chroma = wrap(1, chroma_format, chroma_size);
+    let luma = wrap(0, luma_format, luma_size, wgpu::TextureUses::PRESENT);
+    let chroma = wrap(1, chroma_format, chroma_size, wgpu::TextureUses::RESOURCE);
     let plane = |format, width, height| TextureDesc {
         width,
         height,
