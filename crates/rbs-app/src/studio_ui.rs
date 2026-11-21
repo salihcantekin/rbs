@@ -46,6 +46,7 @@ use rbs_core::fault::SourceFault;
 use rbs_record::Link;
 use rbs_remote_settings::ai_tools::{self as ai_settings, AiToolsSettings};
 use rbs_remote_settings::{self as remote_profile, Access, RemoteProfile};
+use rbs_scene::activity::OnReturn;
 use rbs_scene::model::{
     Border, ChromeFill, DisplayChrome, ItemStyle, Layout, SceneId, Scroll, ScrollDirection,
     ScrollRepeat, ScrollStart, Shape, SourceId, SourceRegion, VideoAs,
@@ -151,6 +152,16 @@ const VERTICAL_SEQ: u64 = 1 << 62;
 const UI_GESTURE: u64 = 1 << 61;
 
 /// The undo gesture of a UI drag number: 0 (or less) is none and never joins a step.
+/// A film's play range for Properties: start and end in ms, the end -1 for the end
+/// of the file.
+fn media_range(media: Option<&crate::studio_host::MediaSettings>) -> (i32, i32) {
+    let ms = |v: i64| i32::try_from(v).unwrap_or(i32::MAX);
+    (
+        media.map_or(0, |m| ms(m.start_ms)),
+        media.and_then(|m| m.end_ms).map_or(-1, ms),
+    )
+}
+
 fn ui_gesture(gesture: i32) -> u64 {
     if gesture > 0 {
         UI_GESTURE | gesture as u64
@@ -2952,9 +2963,8 @@ impl StudioUi {
     ) {
         let now = self.rows_scroll(id);
         let scroll = if on {
-            let ramp = now
-                .or_else(|| self.scroll_kept.get(&id).copied())
-                .map_or(rbs_scene::model::DEFAULT_SCROLL_RAMP_MS, |s| s.ramp_ms);
+            let kept = now.or_else(|| self.scroll_kept.get(&id).copied());
+            let ramp = kept.map_or(rbs_scene::model::DEFAULT_SCROLL_RAMP_MS, |s| s.ramp_ms);
             let s = Scroll::new(
                 match direction {
                     1 => ScrollDirection::Right,
@@ -2976,7 +2986,8 @@ impl StudioUi {
                 ScrollStart::Inside
             })
             .with_fade(fade)
-            .with_ramp_ms(ramp);
+            .with_ramp_ms(ramp)
+            .with_on_return(kept.map_or(OnReturn::Restart, |s| s.on_return));
             Some(s.clamped())
         } else {
             if let Some(s) = now {
@@ -5240,6 +5251,7 @@ impl StudioUi {
             Some(crate::studio_host::SourceKind::Browser),
             row.and_then(|r| r.activity),
         );
+        data.linger = activity_choice::linger_index(row.and_then(|r| r.activity));
         if self.browser_web == Some(id) && data.file {
             data.file = false;
             data.url = Default::default();
@@ -5284,36 +5296,6 @@ impl StudioUi {
         if value.is_finite() {
             self.patch_browser(id, browser_props::number_patch(key, f64::from(value)));
         }
-    }
-
-    /// Properties' "Runs" picked position `index` for source `id` (ADR-0152).
-    pub fn set_source_run(&mut self, id: i32, index: i32) {
-        let Some(row) = self.rows.iter().find(|r| r.id.get() as i32 == id) else {
-            return;
-        };
-        if let Some(choice) = activity_choice::with_run(row.kind, row.activity, index) {
-            self.send_activity(row.id, choice);
-        }
-    }
-
-    /// Properties' "When it comes back" picked position `index` for source `id`
-    /// (ADR-0152).
-    pub fn set_source_on_return(&mut self, id: i32, index: i32) {
-        let Some(row) = self.rows.iter().find(|r| r.id.get() as i32 == id) else {
-            return;
-        };
-        if let Some(choice) = activity_choice::with_return(row.kind, row.activity, index) {
-            self.send_activity(row.id, choice);
-        }
-    }
-
-    fn send_activity(&mut self, id: SourceId, choice: crate::studio_host::ActivityChoice) {
-        self.deleted.clear();
-        self.send(Command::SetSourceActivity {
-            id,
-            run: choice.run,
-            on_return: choice.on_return,
-        });
     }
 
     /// A switch of the Page tab.
@@ -6871,6 +6853,7 @@ impl StudioUi {
                 let (media_state, media_pos_ms, media_len_ms) =
                     self.live.media_fields(r.id.get() as i32);
                 let (perm_kind, perm_action) = self.permission_fix(r);
+                let (media_start_ms, media_end_ms) = media_range(r.media.as_ref());
                 SourceData {
                     perm_kind,
                     perm_action,
@@ -6880,15 +6863,10 @@ impl StudioUi {
                     act_on: r.activity.is_some(),
                     act_run: activity_choice::run_index(r.kind, r.activity),
                     act_return: activity_choice::return_index(r.kind, r.activity),
-                    media_start_ms: r
-                        .media
-                        .as_ref()
-                        .map_or(0, |m| i32::try_from(m.start_ms).unwrap_or(i32::MAX)),
-                    media_end_ms: r
-                        .media
-                        .as_ref()
-                        .and_then(|m| m.end_ms)
-                        .map_or(-1, |ms| i32::try_from(ms).unwrap_or(i32::MAX)),
+                    act_linger: activity_choice::linger_index(r.activity),
+                    act_warm_up: activity_choice::warm_up_text(r.activity).into(),
+                    media_start_ms,
+                    media_end_ms,
                     media_state,
                     media_pos_ms,
                     media_len_ms,
@@ -6925,6 +6903,7 @@ impl StudioUi {
                     scroll_gap: scroll.gap,
                     scroll_repeat: i32::from(scroll.repeat == ScrollRepeat::Once),
                     scroll_start: i32::from(scroll.start == ScrollStart::Outside),
+                    scroll_return: i32::from(scroll.on_return == OnReturn::Continue),
                     scroll_fade: scroll.fade,
                     scroll_paused: scroll_on && scroll_paused,
                     border: style.border.is_some(),

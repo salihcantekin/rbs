@@ -77,7 +77,9 @@ fn main() {
     let path = std::env::temp_dir().join("rbs-warm-up.mkv");
     let mut out = OutputSettings::new(format!("file://{}", path.display()), ContainerId::Matroska);
     out.audio = None;
-    let output = studio.start_output(&adapters, &out).expect("an output starts");
+    let output = studio
+        .start_output(&adapters, &out)
+        .expect("an output starts");
 
     let mut warm_ups = Vec::new();
     for wake in 1..=wakes {
@@ -86,14 +88,18 @@ fn main() {
         studio.update(&col, &adapters.sources).expect("update");
         studio.end_transitions();
         studio.update(&col, &adapters.sources).expect("update");
-        run_for(&mut studio, Duration::from_secs(2), |s| s.picture_size(source).is_none());
+        run_for(&mut studio, Duration::from_secs(2), |s| {
+            s.picture_size(source).is_none()
+        });
         let closed = studio.picture_size(source).is_none();
 
         // The cut: the session opens on its own thread.
         let cut = Instant::now();
         col.set_program(canvas, Some(live)).expect("program");
         studio.update(&col, &adapters.sources).expect("update");
-        let opened = run_for(&mut studio, OPEN_LIMIT, |s| s.picture_size(source).is_some());
+        let opened = run_for(&mut studio, OPEN_LIMIT, |s| {
+            s.picture_size(source).is_some()
+        });
         let open_wall = cut.elapsed();
         // The first frame comes after the open; give it a moment, then read the warm-up.
         run_for(&mut studio, Duration::from_millis(1500), |_| false);

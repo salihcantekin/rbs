@@ -123,10 +123,15 @@ pub struct ActivityChoice {
     pub run: rbs_scene::activity::Run,
     /// What it does when it comes back; `None` for a type without one.
     pub on_return: Option<rbs_scene::activity::OnReturn>,
+    /// Seconds it keeps running after it leaves the screen (0: none).
+    pub linger_s: u16,
+    /// How long its last wake took to the first picture, for a capture source once
+    /// one came (`warm_up_ms`).
+    pub warm_up_ms: Option<u32>,
 }
 
 impl ActivityChoice {
-    pub(super) fn of(source: &Source) -> Option<Self> {
+    pub(super) fn of(source: &Source, warm_up: Option<std::time::Duration>) -> Option<Self> {
         let traits = rbs_sources::activity_traits(&source.type_id);
         if traits.runs.len() < 2 {
             return None;
@@ -135,6 +140,8 @@ impl ActivityChoice {
         Some(Self {
             run: effective.run,
             on_return: effective.on_return,
+            linger_s: effective.linger_s,
+            warm_up_ms: warm_up.map(|w| u32::try_from(w.as_millis()).unwrap_or(u32::MAX)),
         })
     }
 }

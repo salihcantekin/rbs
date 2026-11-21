@@ -125,6 +125,7 @@ pub fn browser_data(id: i32, settings: &Settings, run: &Run, canvas: (i64, i64))
         // Filled in from the source's activity policy by the caller (ADR-0152).
         run: -1,
         on_return: -1,
+        linger: -1,
         retry_on_error: flag_of(settings, keys::RETRY_ON_ERROR, true),
         running: run.running,
         state,

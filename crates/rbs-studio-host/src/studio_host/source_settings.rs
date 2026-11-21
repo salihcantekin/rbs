@@ -641,14 +641,15 @@ impl Host {
         )
     }
 
-    /// Properties' choice of `run` and `on_return` for a source (ADR-0152): the
-    /// type's default is stored as absent, so a document stays at the oldest format
-    /// that holds it, and the source's linger is kept.
+    /// Properties' choice of `run`, `on_return` and `linger_s` for a source
+    /// (ADR-0152): the type's default (a linger of 0) is stored as absent, so a
+    /// document stays at the oldest format that holds it.
     pub(super) fn set_source_choice(
         &mut self,
         id: SourceId,
         run: rbs_scene::activity::Run,
         on_return: Option<rbs_scene::activity::OnReturn>,
+        linger_s: u16,
     ) -> Result<bool, Refusal> {
         let source = self
             .collection
@@ -658,7 +659,7 @@ impl Host {
         let activity = rbs_scene::activity::SourceActivity::new(
             (run != traits.default_run).then_some(run),
             on_return.filter(|r| Some(*r) != traits.default_on_return),
-            source.activity.linger_s,
+            (linger_s > 0).then_some(linger_s),
         );
         self.set_source_activity(id, activity)
     }
