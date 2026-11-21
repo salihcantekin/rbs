@@ -659,7 +659,15 @@ impl Supervisor {
                         }
                     }
                     if !child.process_alive() || !child.check_heartbeat(Instant::now()) {
-                        cause_flag.store(encode_cause(child.exit_cause()), Ordering::Release);
+                        let cause = child.exit_cause();
+                        if cause == rbs_browser_ipc::exit::Cause::GpuFallback {
+                            // The helper's reason is in its own line just before.
+                            rbs_core::warn!(
+                                Area::Browser,
+                                "browser page falls back to shared memory: helper"
+                            );
+                        }
+                        cause_flag.store(encode_cause(cause), Ordering::Release);
                         exited_flag.store(true, Ordering::Release);
                         break;
                     }

@@ -148,6 +148,10 @@ static GPU_FAILS: AtomicU32 = AtomicU32::new(0);
 /// A callback published nothing: the loop asks CEF for one new view paint.
 #[cfg(windows)]
 static GPU_REPAINT: AtomicBool = AtomicBool::new(false);
+/// OS monotonic nanoseconds of the first paint that found no free GPU slot since the
+/// last one that did; 0 while slots are free (ADR-0157 decision 5).
+#[cfg(windows)]
+static NO_SLOT_SINCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// Counted failures after which the tree falls back to shared memory (`copy`).
 #[cfg(windows)]
 const GPU_FAIL_LIMIT: u32 = 60;
@@ -349,6 +353,16 @@ wrap_render_handler! {
             // ADR-0157 decision 6: a published picture clears the count, no free
             // slot leaves it, a busy mutex or a failed copy adds one; a failed open
             // of CEF's texture means another adapter (decision 8).
+            if copied == gpu::Copied::NoSlot {
+                let _ = NO_SLOT_SINCE.compare_exchange(
+                    0,
+                    os_monotonic_nanos().max(1),
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                );
+            } else {
+                NO_SLOT_SINCE.store(0, Ordering::Relaxed);
+            }
             let reason = match copied {
                 gpu::Copied::Published => {
                     GPU_FAILS.store(0, Ordering::Relaxed);
@@ -370,6 +384,41 @@ wrap_render_handler! {
                 page.quit.store(true, Ordering::Release);
             }
         }
+    }
+}
+
+/// Paints without a free GPU slot this long are logged (ADR-0157 decision 5): a lease
+/// the studio holds too long, or a leaked one, becomes visible.
+const SLOT_SHORTAGE_LOG: u64 = 1_000_000_000;
+
+/// The loop's view of a shortage of free GPU slots: one line when it has lasted
+/// [`SLOT_SHORTAGE_LOG`], one when a slot is free again. Short shortages, which a late
+/// GPU causes (decision 5), are not logged.
+#[derive(Debug, Default)]
+#[cfg_attr(not(windows), allow(dead_code))]
+struct SlotShortage {
+    warned: bool,
+    since: u64,
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+impl SlotShortage {
+    /// `since` is the shortage's start (0: none), `now` the same clock.
+    fn check(&mut self, since: u64, now: u64) -> Option<String> {
+        if since != 0 {
+            self.since = since;
+            if !self.warned && now.saturating_sub(since) >= SLOT_SHORTAGE_LOG {
+                self.warned = true;
+                return Some("no free GPU slot for 1 s: a studio lease is held long".into());
+            }
+            return None;
+        }
+        if !self.warned {
+            return None;
+        }
+        self.warned = false;
+        let ms = now.saturating_sub(self.since) / 1_000_000;
+        Some(format!("a GPU slot is free again after about {ms} ms"))
     }
 }
 
@@ -1206,6 +1255,8 @@ fn browse(
     page.ring.beat();
     #[cfg(windows)]
     let mut repaint_at: Option<Instant> = None;
+    #[cfg(windows)]
+    let mut shortage = SlotShortage::default();
     while !page.quit.load(Ordering::Acquire) && !stop.load(Ordering::Acquire) {
         do_message_loop_work();
         // A dropped GPU frame is asked for again once, one page frame later, and not
@@ -1213,6 +1264,13 @@ fn browse(
         #[cfg(windows)]
         if GPU_REPAINT.swap(false, Ordering::Relaxed) && repaint_at.is_none() {
             repaint_at = Some(Instant::now() + period);
+        }
+        // A long shortage of free slots is logged here, never in the callback.
+        #[cfg(windows)]
+        if let Some(line) =
+            shortage.check(NO_SLOT_SINCE.load(Ordering::Relaxed), os_monotonic_nanos())
+        {
+            eprintln!("rbs-browser-cef: {line}");
         }
         #[cfg(windows)]
         if repaint_at.is_some_and(|at| Instant::now() >= at) {
@@ -1337,6 +1395,33 @@ fn apply_options(page: &Page, browser: &Browser, options: &PageOptions) {
     if css_changed && let Some(frame) = browser.main_frame() {
         let script = css_script(&css);
         frame.execute_java_script(Some(&script.as_str().into()), None, 0);
+    }
+}
+
+#[cfg(test)]
+mod slot_shortage_tests {
+    use super::{SLOT_SHORTAGE_LOG, SlotShortage};
+
+    const MS: u64 = 1_000_000;
+
+    /// A shortage is logged once after a second and once when it ends; a short one
+    /// is not logged (ADR-0157 decision 5).
+    #[test]
+    fn only_a_long_shortage_is_logged_once_and_its_end() {
+        let mut s = SlotShortage::default();
+        assert_eq!(s.check(0, 10 * MS), None, "slots free");
+        assert_eq!(s.check(100 * MS, 150 * MS), None, "short");
+        assert_eq!(s.check(0, 160 * MS), None, "a short one ends quietly");
+        let start = 200 * MS;
+        assert_eq!(s.check(start, start + SLOT_SHORTAGE_LOG - 1), None);
+        assert!(
+            s.check(start, start + SLOT_SHORTAGE_LOG).is_some(),
+            "after 1 s"
+        );
+        assert_eq!(s.check(start, start + 3 * SLOT_SHORTAGE_LOG), None, "once");
+        let end = s.check(0, start + 1_500 * MS).unwrap();
+        assert!(end.contains("1500 ms"), "{end}");
+        assert_eq!(s.check(0, start + 2_000 * MS), None);
     }
 }
 
