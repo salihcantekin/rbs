@@ -298,7 +298,7 @@ pub fn write(
     data: &UserData,
     lock: &WriterLock,
     plan: &ImportPlan,
-    save_key: &dyn Fn(&str, Secret) -> Result<(), String>,
+    save_key: &dyn Fn(&str, Secret) -> Result<(), stream_key::KeyStoreError>,
     platform: Platform,
     folder_exists: &dyn Fn(&Path) -> bool,
 ) -> Result<Written, String> {
@@ -766,7 +766,7 @@ pub fn api_check(plan: &ImportPlan) -> rbs_api::types::ObsCheck {
 pub fn plan_api(
     source: &ApiSource,
     choose: Option<&rbs_api::request::ObsImportChoice>,
-) -> Result<ImportPlan, String> {
+) -> Result<ImportPlan, rbs_import_obs::ImportError> {
     rbs_import_obs::plan(
         &source.json,
         source.profile.as_ref(),
@@ -775,7 +775,6 @@ pub fn plan_api(
         &AppLookup,
         &api_options(choose, source.profile.is_some()),
     )
-    .map_err(|e| e.to_string())
 }
 
 /// One line of the Check page.

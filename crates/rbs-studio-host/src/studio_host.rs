@@ -1109,14 +1109,16 @@ impl StreamRequest {
     /// (`None`: the best one). Says why when they cannot be used: no server, a server
     /// that is not valid, or settings out of range. The key is not checked here: the
     /// host reads it from the key store when the stream starts.
-    pub fn from_profile(p: &StreamProfile, encoder: Option<String>) -> Result<Self, String> {
+    pub fn from_profile(p: &StreamProfile, encoder: Option<String>) -> Result<Self, Refusal> {
         if let Some(why) = p.problem() {
-            return Err(why);
+            return Err(Refusal::Invalid(why));
         }
         if p.server.is_empty() {
-            return Err("Enter the server in Settings, Stream.".into());
+            return Err(Refusal::Invalid(
+                "Enter the server in Settings, Stream.".to_owned(),
+            ));
         }
-        let server = parse_server(&p.server)?;
+        let server = parse_server(&p.server).map_err(|e| Refusal::Invalid(e.to_string()))?;
         Ok(Self {
             url: p.server.clone(),
             input: server.protocol.input(),
@@ -1130,9 +1132,9 @@ impl StreamRequest {
     /// The stream's shared settings (encoding, output size) without a server: the
     /// base each destination's request is built on when the canvas's first slot does
     /// not exist (ADR-0148 decision 6). Its own URL is empty and never used.
-    pub fn from_settings(p: &StreamProfile, encoder: Option<String>) -> Result<Self, String> {
+    pub fn from_settings(p: &StreamProfile, encoder: Option<String>) -> Result<Self, Refusal> {
         if let Some(why) = p.problem() {
-            return Err(why);
+            return Err(Refusal::Invalid(why));
         }
         let e = &p.encoding;
         Ok(Self {

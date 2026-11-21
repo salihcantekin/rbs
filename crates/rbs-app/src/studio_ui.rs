@@ -4666,9 +4666,10 @@ impl StudioUi {
                 return Err((why.to_owned(), true));
             }
             return StreamRequest::from_profile(p, self.encoder_id(&p.encoding))
-                .map_err(|why| (why, false));
+                .map_err(|why| (why.into_text(), false));
         }
-        StreamRequest::from_settings(p, self.encoder_id(&p.encoding)).map_err(|why| (why, false))
+        StreamRequest::from_settings(p, self.encoder_id(&p.encoding))
+            .map_err(|why| (why.into_text(), false))
     }
 
     /// "Record vertical": records the vertical canvas with its own recording settings
@@ -4748,7 +4749,7 @@ impl StudioUi {
         if !url.is_empty()
             && let Err(why) = stream_profile::parse_server(url)
         {
-            self.stream_note = why;
+            self.stream_note = why.to_string();
             // The field shows the server in use.
             self.server_serial += 1;
             return;
