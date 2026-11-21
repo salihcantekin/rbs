@@ -5,6 +5,7 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::SourceMapping;
 use rbs_audio::{AudioGraphConfig, InputNode, InputParams, InputStats};
 use rbs_audio_io::caps as audio_caps;
 use rbs_audio_io::{
@@ -252,6 +253,10 @@ pub struct InstanceContext {
     /// it; a camera without a size setting asks for this size (audit C-02, C-21).
     /// `None`: settings alone decide (the device's largest size and fastest rate).
     pub canvas: Option<(Size, FrameRate)>,
+    /// The source entry's picture mapping (ADR-0165 decision 5), for the source being
+    /// instantiated; a capture source passes it to its session and node. `None`: no
+    /// mapping is ever asked for.
+    pub mapping: Option<SourceMapping>,
 }
 
 impl InstanceContext {
@@ -264,7 +269,14 @@ impl InstanceContext {
             browser_budget: crate::browser::BrowserBudget::shared(),
             browser_tree: None,
             canvas: None,
+            mapping: None,
         }
+    }
+
+    /// Lends the source entry's picture mapping to the instance (see [`Self::mapping`]).
+    pub fn with_mapping(mut self, mapping: SourceMapping) -> Self {
+        self.mapping = Some(mapping);
+        self
     }
 
     /// Sets the main canvas's size and frame rate (see [`Self::canvas`]).
@@ -1264,13 +1276,19 @@ impl SourceTypes {
                 if let Some(fps) = fps {
                     request = request.with_frame_rate(fps);
                 }
+                if let Some(mapping) = &ctx.mapping {
+                    request = request.with_mapping(mapping.switch.clone());
+                }
                 let adapter = factory.id();
                 // Opened on the control thread only when the adapter says nothing
                 // waits (`capture.start.instant`); otherwise on the node's own thread.
                 let inline = self.capture.capabilities(&adapter).is_some_and(|c| {
                     c.get(&capture_caps::START_INSTANT) == Some(&CapabilityValue::Flag(true))
                 });
-                let node = CaptureSourceNode::new(factory, request).open_inline(inline);
+                let mut node = CaptureSourceNode::new(factory, request).open_inline(inline);
+                if let Some(mapping) = &ctx.mapping {
+                    node = node.with_mapping_cell(mapping.cell.clone());
+                }
                 let stats = node.stats();
                 Ok(SourceInstance::Video(VideoSource {
                     node,
