@@ -158,7 +158,6 @@ mod gpu;
 /// The `--use-adapter-luid` value for `luid`: Chromium parses decimal `<high>,<low>`
 /// with a signed high part and an unsigned low part (`ui/gl/gl_display.cc`); hex fails
 /// and makes the GPU process exit (seen on CEF 156, ADR-0157 decision 8).
-#[cfg_attr(not(windows), allow(dead_code))]
 fn adapter_luid_switch(luid: u64) -> String {
     let high = (luid >> 32) as u32 as i32;
     let low = luid as u32;
@@ -191,8 +190,19 @@ wrap_app! {
             // browser left CEF 156 with no paint at all, accelerated or not (SC-PC
             // 2026-11-20, ADR-0157 decision 8).
             let browser_process = process_type.is_none_or(|t| t.to_string().is_empty());
-            if browser_process {
-                gpu_switches(line);
+            #[cfg(windows)]
+            let luid = GPU_LUID.load(Ordering::Relaxed);
+            #[cfg(not(windows))]
+            let luid = 0;
+            let pin = std::env::var_os("RBS_BROWSER_NO_ADAPTER_SWITCH").is_none();
+            for (name, value) in gpu_switches(browser_process, luid, pin) {
+                match value {
+                    Some(value) => line.append_switch_with_value(
+                        Some(&name.into()),
+                        Some(&value.as_str().into()),
+                    ),
+                    None => line.append_switch(Some(&name.into())),
+                }
             }
             line.append_switch(Some(&"deny-permission-prompts".into()));
             // The helper never shows a window, so it needs no X11 or Wayland
@@ -215,30 +225,28 @@ wrap_app! {
     }
 }
 
-/// Software paint, unless this tree was given studio textures (ADR-0109 decision 8).
-/// The browser process only.
-fn gpu_switches(line: &mut CommandLine) {
-    #[cfg(windows)]
-    let luid = GPU_LUID.load(Ordering::Relaxed);
-    #[cfg(not(windows))]
-    let luid = 0_u64;
-    if luid != 0 {
-        // The GPU process is not pinned to an adapter by default: with
-        // `--use-adapter-luid` (and earlier with vendor switches) CEF 156 started but
-        // never painted on SC-PC. Another adapter shows as a failed open of CEF's
-        // texture instead (ADR-0157 decision 8). `RBS_BROWSER_ADAPTER_SWITCH` adds the
-        // switch for device checks only.
-        if std::env::var_os("RBS_BROWSER_ADAPTER_SWITCH").is_some() {
-            let value = adapter_luid_switch(luid);
-            line.append_switch_with_value(
-                Some(&"use-adapter-luid".into()),
-                Some(&value.as_str().into()),
-            );
-        }
-    } else {
-        line.append_switch(Some(&"disable-gpu".into()));
-        line.append_switch(Some(&"disable-gpu-compositing".into()));
+/// The GPU switches for one CEF process (ADR-0157 decision 8). Only the browser
+/// process gets any: software paint (`disable-gpu`, `disable-gpu-compositing`)
+/// unless the tree was given studio textures on adapter `luid`, and then CEF's GPU
+/// process pinned to that adapter when `pin` is set. A child process gets none:
+/// it cannot tell the GPU path from shared memory, and a renderer that turned GPU
+/// compositing off under a GPU-composited browser left CEF 156 painting nothing
+/// (SC-PC check 3). Chromium hands the children what they need.
+fn gpu_switches(
+    browser_process: bool,
+    luid: u64,
+    pin: bool,
+) -> Vec<(&'static str, Option<String>)> {
+    if !browser_process {
+        return Vec::new();
     }
+    if luid == 0 {
+        return vec![("disable-gpu", None), ("disable-gpu-compositing", None)];
+    }
+    if pin {
+        return vec![("use-adapter-luid", Some(adapter_luid_switch(luid)))];
+    }
+    Vec::new()
 }
 
 wrap_render_handler! {
@@ -974,7 +982,8 @@ fn run_browser(args: &args::Args, app: &mut App, engine: &engine::Engine) -> i32
                 let _ = COPIER.set(copier);
             }
             _ => {
-                eprintln!("rbs-browser-cef: GPU path falls back to shared memory (open)");
+                // The studio's textures and fence do not open on this adapter.
+                eprintln!("rbs-browser-cef: GPU path falls back to shared memory (adapter)");
                 return exit::GPU_FALLBACK;
             }
         }
@@ -1150,6 +1159,7 @@ fn browse(
 ) -> i32 {
     // The first navigation: the cycle starts in it already.
     page.ours.store(true, Ordering::Release);
+    #[cfg_attr(not(windows), allow(unused_mut))] // Set below on Windows only.
     let mut window = WindowInfo::default().set_as_windowless(Default::default());
     #[cfg(windows)]
     if COPIER.get().is_some() {
@@ -1332,7 +1342,32 @@ fn apply_options(page: &Page, browser: &Browser, options: &PageOptions) {
 
 #[cfg(test)]
 mod adapter_switch_tests {
-    use super::adapter_luid_switch;
+    use super::{adapter_luid_switch, gpu_switches};
+
+    #[test]
+    fn a_child_process_never_gets_a_gpu_switch() {
+        for (luid, pin) in [(0, true), (0, false), (105_241, true), (105_241, false)] {
+            assert!(gpu_switches(false, luid, pin).is_empty(), "{luid} {pin}");
+        }
+    }
+
+    #[test]
+    fn the_browser_process_paints_in_software_without_studio_textures() {
+        let names: Vec<_> = gpu_switches(true, 0, true)
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect();
+        assert_eq!(names, ["disable-gpu", "disable-gpu-compositing"]);
+    }
+
+    #[test]
+    fn the_gpu_path_pins_the_adapter_unless_told_not_to() {
+        assert_eq!(
+            gpu_switches(true, 105_241, true),
+            [("use-adapter-luid", Some("0,105241".to_owned()))]
+        );
+        assert!(gpu_switches(true, 105_241, false).is_empty());
+    }
 
     #[test]
     fn the_adapter_luid_is_decimal_high_comma_low() {

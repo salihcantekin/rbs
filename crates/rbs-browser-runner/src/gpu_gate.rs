@@ -2,9 +2,14 @@
 //!
 //! A picture the helper published is handed to the studio only once the shared
 //! fence's completed value has reached the picture's value. The studio never queues
-//! a GPU wait on a value an untrusted helper may never signal. A picture that waits
-//! holds its lease; a newer one replaces it without restarting the wait, so a helper
-//! whose GPU stopped while it keeps publishing still falls back.
+//! a GPU wait on a value an untrusted helper may never signal. Two pictures may
+//! wait, each holding its lease: the oldest, and the next one taken behind it. A
+//! waiting picture is never replaced, so a GPU that finishes copies a frame or two
+//! late (a game on the same card) still shows every taken picture in turn at the
+//! page rate. A picture that does not finish within [`FENCE_WAIT_FRAMES`] page
+//! frames of being taken, measured on the supervisor's clock, fails the gate.
+
+use std::time::{Duration, Instant};
 
 use rbs_browser_shm::{FrameRing, GpuPicture};
 
@@ -14,9 +19,8 @@ pub trait FenceView: Send {
     fn completed(&self) -> u64;
 }
 
-/// Supervisor passes a picture may wait for its fence: 30 page frames at two
-/// passes per frame (ADR-0157 decision 2).
-pub const FENCE_WAIT_PASSES: u32 = 60;
+/// Page frames a picture may wait for its fence (ADR-0157 decision 2).
+pub const FENCE_WAIT_FRAMES: u32 = 30;
 
 /// A completed value this far past the newest published one is implausible.
 pub const FENCE_JUMP: u64 = 1 << 20;
@@ -33,13 +37,16 @@ pub enum GatePass {
     Failed,
 }
 
-/// One page's gate. Holds at most one waiting picture.
+/// One page's gate. Holds at most two waiting pictures.
 pub struct GpuGate {
     fence: Box<dyn FenceView>,
     seen: u64,
-    waiting: Option<GpuPicture>,
-    /// Passes since the oldest picture still waiting was taken.
-    waited: u32,
+    /// The oldest picture waiting for its fence, and when it was taken.
+    waiting: Option<(GpuPicture, Instant)>,
+    /// The picture taken behind it, and when.
+    next: Option<(GpuPicture, Instant)>,
+    /// How long a picture may wait: [`FENCE_WAIT_FRAMES`] page frames.
+    limit: Duration,
     /// The highest fence value published so far.
     newest: u64,
 }
@@ -48,36 +55,39 @@ impl std::fmt::Debug for GpuGate {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("GpuGate")
             .field("seen", &self.seen)
-            .field("waiting", &self.waiting)
-            .field("waited", &self.waited)
+            .field("waiting", &self.waiting.map(|(p, _)| p))
+            .field("next", &self.next.map(|(p, _)| p))
+            .field("limit", &self.limit)
             .finish()
     }
 }
 
 impl GpuGate {
-    /// A gate reading `fence`.
-    pub fn new(fence: Box<dyn FenceView>) -> Self {
+    /// A gate reading `fence` for a page painting at `fps`.
+    pub fn new(fence: Box<dyn FenceView>, fps: u32) -> Self {
         Self {
             fence,
             seen: 0,
             waiting: None,
-            waited: 0,
+            next: None,
+            limit: Duration::from_secs(1) * FENCE_WAIT_FRAMES / fps.clamp(1, 60),
             newest: 0,
         }
     }
 
-    /// One supervisor pass over `ring`. Never waits.
-    pub fn pass(&mut self, ring: &FrameRing) -> GatePass {
-        if let Some(new) = ring.take_gpu(&mut self.seen) {
+    /// One supervisor pass over `ring` at `now`. Never waits.
+    pub fn pass(&mut self, ring: &FrameRing, now: Instant) -> GatePass {
+        if self.next.is_none()
+            && let Some(new) = ring.take_gpu(&mut self.seen)
+        {
             self.newest = self.newest.max(new.fence);
-            if let Some(old) = self.waiting.replace(new) {
-                // Replaced, not finished: the wait keeps counting.
-                ring.lease_sub(old.slot);
+            if self.waiting.is_none() {
+                self.waiting = Some((new, now));
             } else {
-                self.waited = 0;
+                self.next = Some((new, now));
             }
         }
-        let Some(picture) = self.waiting else {
+        let Some((picture, since)) = self.waiting else {
             return GatePass::Nothing;
         };
         let completed = self.fence.completed();
@@ -85,12 +95,10 @@ impl GpuGate {
             return self.fail(ring);
         }
         if completed >= picture.fence {
-            self.waiting = None;
-            self.waited = 0;
+            self.waiting = self.next.take();
             return GatePass::Ready(picture);
         }
-        self.waited += 1;
-        if self.waited >= FENCE_WAIT_PASSES {
+        if now.saturating_duration_since(since) >= self.limit {
             return self.fail(ring);
         }
         GatePass::Nothing
@@ -107,9 +115,12 @@ impl GpuGate {
         None
     }
 
-    /// Gives back the lease of a waiting picture (a stop or an exit).
+    /// Gives back the leases of the waiting pictures (a stop or an exit).
     pub fn release(&mut self, ring: &FrameRing) {
-        if let Some(old) = self.waiting.take() {
+        for (old, _) in [self.waiting.take(), self.next.take()]
+            .into_iter()
+            .flatten()
+        {
             ring.lease_sub(old.slot);
         }
     }
@@ -130,6 +141,10 @@ mod tests {
 
     use super::*;
 
+    const FPS: u32 = 30;
+    /// One page frame at [`FPS`].
+    const FRAME: Duration = Duration::from_nanos(1_000_000_000 / FPS as u64);
+
     struct Fence(Arc<AtomicU64>);
 
     impl FenceView for Fence {
@@ -138,87 +153,142 @@ mod tests {
         }
     }
 
-    fn setup() -> (FrameRing, Arc<AtomicU64>, GpuGate) {
+    fn setup() -> (FrameRing, Arc<AtomicU64>, GpuGate, Instant) {
         let ring = FrameRing::create_with_gpu(2, 2, SlotLayout::Bgra8Premultiplied, 4).unwrap();
         let value = Arc::new(AtomicU64::new(0));
-        let gate = GpuGate::new(Box::new(Fence(Arc::clone(&value))));
-        (ring, value, gate)
+        let gate = GpuGate::new(Box::new(Fence(Arc::clone(&value))), FPS);
+        (ring, value, gate, Instant::now())
     }
 
-    fn publish(ring: &FrameRing, fence: u64) -> u32 {
-        let slot = ring.claim_gpu().unwrap();
+    fn publish(ring: &FrameRing, fence: u64) -> Option<u32> {
+        let slot = ring.claim_gpu()?;
         ring.publish_gpu(slot, fence);
-        slot
+        Some(slot)
     }
 
     #[test]
     fn a_picture_waits_for_its_fence_then_goes_out_with_its_lease() {
-        let (ring, value, mut gate) = setup();
-        assert_eq!(gate.pass(&ring), GatePass::Nothing);
-        let slot = publish(&ring, 1);
-        assert_eq!(gate.pass(&ring), GatePass::Nothing, "copy not done");
+        let (ring, value, mut gate, t0) = setup();
+        assert_eq!(gate.pass(&ring, t0), GatePass::Nothing);
+        let slot = publish(&ring, 1).unwrap();
+        assert_eq!(gate.pass(&ring, t0), GatePass::Nothing, "copy not done");
         assert_eq!(ring.lease(slot), 1, "held while it waits");
         value.store(1, Ordering::Relaxed);
-        match gate.pass(&ring) {
+        match gate.pass(&ring, t0 + FRAME) {
             GatePass::Ready(p) => assert_eq!((p.slot, p.fence), (slot, 1)),
             other => panic!("{other:?}"),
         }
         assert_eq!(ring.lease(slot), 1, "the lease went to the caller");
-        assert_eq!(gate.pass(&ring), GatePass::Nothing);
+        assert_eq!(gate.pass(&ring, t0 + FRAME), GatePass::Nothing);
     }
 
     #[test]
-    fn a_newer_picture_replaces_a_waiting_one_and_gives_its_lease_back() {
-        let (ring, value, mut gate) = setup();
-        let first = publish(&ring, 1);
-        gate.pass(&ring);
-        let second = publish(&ring, 2);
-        gate.pass(&ring);
-        assert_eq!(ring.lease(first), 0);
+    fn a_waiting_picture_is_not_replaced_and_the_newer_one_follows() {
+        let (ring, value, mut gate, t0) = setup();
+        let first = publish(&ring, 1).unwrap();
+        gate.pass(&ring, t0);
+        let second = publish(&ring, 2).unwrap();
+        assert_eq!(gate.pass(&ring, t0), GatePass::Nothing);
+        let third = publish(&ring, 3).unwrap();
+        assert_eq!(gate.pass(&ring, t0), GatePass::Nothing);
+        assert_eq!(ring.lease(first), 1, "still waiting, still held");
+        assert_eq!(ring.lease(second), 1, "taken behind it, held");
+        assert_eq!(ring.lease(third), 0, "not taken while two wait");
         value.store(2, Ordering::Relaxed);
-        match gate.pass(&ring) {
+        match gate.pass(&ring, t0 + FRAME) {
+            GatePass::Ready(p) => assert_eq!(p.slot, first),
+            other => panic!("{other:?}"),
+        }
+        match gate.pass(&ring, t0 + FRAME) {
             GatePass::Ready(p) => assert_eq!(p.slot, second),
             other => panic!("{other:?}"),
         }
     }
 
-    /// A helper whose GPU hangs keeps publishing; replacing the waiting picture
-    /// does not restart the wait (round-3 review note).
+    /// A GPU shared with a game finishes each copy two publishes late. Pictures keep
+    /// going out and the gate never fails, at the 5 ms sound poll and at the plain
+    /// half-frame poll (round-4 review).
     #[test]
-    fn a_fence_that_never_moves_fails_even_while_the_helper_keeps_publishing() {
-        let (ring, _value, mut gate) = setup();
-        let mut fence = 0;
-        let mut failed_at = None;
-        for pass in 0..FENCE_WAIT_PASSES + 5 {
-            fence += 1;
-            publish(&ring, fence);
-            if gate.pass(&ring) == GatePass::Failed {
-                failed_at = Some(pass);
-                break;
+    fn a_fence_two_frames_behind_keeps_pictures_flowing_and_never_fails() {
+        for poll in [Duration::from_millis(5), FRAME / 2] {
+            let (ring, value, mut gate, t0) = setup();
+            let mut now = t0;
+            let mut published = 0_u64;
+            let mut next_publish = t0;
+            let mut ready = 0;
+            while now < t0 + FRAME * 300 {
+                if now >= next_publish {
+                    next_publish += FRAME;
+                    if publish(&ring, published + 1).is_some() {
+                        published += 1;
+                    }
+                    value.store(published.saturating_sub(2), Ordering::Relaxed);
+                }
+                match gate.pass(&ring, now) {
+                    GatePass::Ready(p) => {
+                        ready += 1;
+                        ring.lease_sub(p.slot);
+                    }
+                    GatePass::Failed => panic!("failed at poll {poll:?}"),
+                    GatePass::Nothing => {}
+                }
+                now += poll;
             }
+            assert!(ready > 280, "only {ready} of 300 pictures at poll {poll:?}");
         }
-        assert_eq!(failed_at, Some(FENCE_WAIT_PASSES - 1));
-        for slot in 0..4 {
-            assert_eq!(ring.lease(slot), 0, "slot {slot} leased after the failure");
+    }
+
+    /// A helper whose GPU hangs keeps publishing; the waiting picture's timer runs
+    /// on the clock, not on passes (round-3 and round-4 review notes).
+    #[test]
+    fn a_fence_that_never_moves_fails_after_thirty_frames_whatever_the_poll() {
+        for poll in [
+            Duration::from_millis(5),
+            FRAME / 2,
+            Duration::from_millis(500),
+        ] {
+            let (ring, _value, mut gate, t0) = setup();
+            let mut now = t0;
+            let mut fence = 0;
+            let failed_at = loop {
+                fence += 1;
+                publish(&ring, fence);
+                if gate.pass(&ring, now) == GatePass::Failed {
+                    break now - t0;
+                }
+                assert!(now - t0 < FRAME * 100, "never failed at poll {poll:?}");
+                now += poll;
+            };
+            assert!(
+                failed_at >= FRAME * FENCE_WAIT_FRAMES,
+                "{failed_at:?} at {poll:?}"
+            );
+            assert!(
+                failed_at < FRAME * FENCE_WAIT_FRAMES + poll + poll,
+                "{failed_at:?} at {poll:?}"
+            );
+            for slot in 0..4 {
+                assert_eq!(ring.lease(slot), 0, "slot {slot} leased after the failure");
+            }
         }
     }
 
     #[test]
     fn a_removed_device_or_an_implausible_value_fails_at_once() {
-        let (ring, value, mut gate) = setup();
+        let (ring, value, mut gate, t0) = setup();
         publish(&ring, 1);
         value.store(u64::MAX, Ordering::Relaxed);
-        assert_eq!(gate.pass(&ring), GatePass::Failed);
-        let (ring, value, mut gate) = setup();
+        assert_eq!(gate.pass(&ring, t0), GatePass::Failed);
+        let (ring, value, mut gate, t0) = setup();
         publish(&ring, 3);
         value.store(3 + FENCE_JUMP + 1, Ordering::Relaxed);
-        assert_eq!(gate.pass(&ring), GatePass::Failed);
+        assert_eq!(gate.pass(&ring, t0), GatePass::Failed);
     }
 
     #[test]
     fn a_page_shown_again_gets_its_finished_latest_picture() {
-        let (ring, value, mut gate) = setup();
-        let slot = publish(&ring, 1);
+        let (ring, value, mut gate, _t0) = setup();
+        let slot = publish(&ring, 1).unwrap();
         assert_eq!(gate.again(&ring), None, "copy not done");
         assert_eq!(ring.lease(slot), 0);
         value.store(1, Ordering::Relaxed);

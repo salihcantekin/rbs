@@ -49,8 +49,7 @@ impl<T> Grave<T> {
     }
 
     /// True when no page is kept.
-    #[cfg(test)]
-    fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.pages.is_empty()
     }
 }

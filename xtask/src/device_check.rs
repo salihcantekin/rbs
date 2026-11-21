@@ -172,18 +172,37 @@ fn adapter_crates(os: Os) -> &'static [&'static str] {
 }
 
 fn lint_steps() -> Vec<CargoStep> {
-    vec![step(
-        "clippy",
-        &[
+    vec![
+        step(
             "clippy",
-            "--workspace",
-            "--all-targets",
-            "--",
-            "-D",
-            "warnings",
-        ],
-        &[],
-    )]
+            &[
+                "clippy",
+                "--workspace",
+                "--all-targets",
+                "--",
+                "-D",
+                "warnings",
+            ],
+            &[],
+        ),
+        // The CEF runner is outside the workspace; its `clippy.toml` forbids waits in
+        // CEF's callbacks (ADR-0157 decision 1). `cef/dox` needs no CEF download.
+        step(
+            "clippy-browser-runner",
+            &[
+                "clippy",
+                "--manifest-path",
+                "crates/rbs-browser-cef/Cargo.toml",
+                "--all-targets",
+                "--features",
+                "cef/dox",
+                "--",
+                "-D",
+                "warnings",
+            ],
+            &[],
+        ),
+    ]
 }
 
 fn adapter_steps(os: Os) -> Vec<CargoStep> {

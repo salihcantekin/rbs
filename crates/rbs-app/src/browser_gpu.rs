@@ -1,11 +1,12 @@
 //! Studio side of a browser page's shared textures (ADR-0109 decision 8, ADR-0157).
 //!
 //! The textures live in [`PageSlots`]. A frame's lease holds that `Arc`, and so does
-//! a grave the control thread drains, so the last Direct3D release is not on the
-//! render thread.
+//! a grave that the control thread and a short-lived sweeper thread drain, so the
+//! last Direct3D release is not on the render thread.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use rbs_browser_shm::FrameRing;
 use rbs_core::media::{
@@ -108,10 +109,45 @@ pub fn sweep() {
     }
 }
 
+/// True while the sweeper thread runs.
+static SWEEPING: AtomicBool = AtomicBool::new(false);
+
+/// How often the sweeper looks at the grave.
+const SWEEP_EVERY: Duration = Duration::from_secs(1);
+
 /// Keeps `slots` until every frame has released it and the handle hold has passed;
-/// [`sweep`] drops it then, here and not on the render thread.
+/// [`sweep`] drops it then, here and not on the render thread. A sweeper thread runs
+/// only while the grave holds a page, so a page that falls back to shared memory, or
+/// the last page of a removed source, is still released on time (P13, capture-port
+/// invariant 8, round-4 review).
 pub fn bury(slots: Arc<PageSlots>) {
     if let Ok(mut grave) = grave().lock() {
         grave.bury(slots, Instant::now());
+    }
+    if !SWEEPING.swap(true, Ordering::AcqRel) {
+        let spawned = std::thread::Builder::new()
+            .name("rbs-browser-grave".into())
+            .spawn(sweep_until_empty);
+        if spawned.is_err() {
+            // The next start or bury sweeps instead.
+            SWEEPING.store(false, Ordering::Release);
+        }
+    }
+}
+
+fn sweep_until_empty() {
+    loop {
+        #[allow(clippy::disallowed_methods)] // Its own thread, between sweeps.
+        std::thread::sleep(SWEEP_EVERY);
+        let Ok(mut grave) = grave().lock() else {
+            SWEEPING.store(false, Ordering::Release);
+            return;
+        };
+        grave.sweep(Instant::now());
+        if grave.is_empty() {
+            // Under the lock: a page buried after this starts a new sweeper.
+            SWEEPING.store(false, Ordering::Release);
+            return;
+        }
     }
 }

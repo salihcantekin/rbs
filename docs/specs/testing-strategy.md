@@ -64,7 +64,7 @@ Some code builds or runs only on one OS: the `#[cfg(windows)]` and `#[cfg(target
 
 | Scenario | What it runs |
 | --- | --- |
-| `lint` | `cargo clippy --workspace --all-targets -- -D warnings` on this OS |
+| `lint` | `cargo clippy --workspace --all-targets -- -D warnings` on this OS, then the same for the CEF runner outside the workspace (`--manifest-path crates/rbs-browser-cef/Cargo.toml --features cef/dox`), whose `clippy.toml` forbids waits in CEF's callbacks (ADR-0157 decision 1) |
 | `adapters` | `cargo test` of this OS's adapter crates (Windows: WGC, Media Foundation, NVENC, AMF, QSV, WASAPI, the virtual camera; macOS: ScreenCaptureKit, AVFoundation, Core Audio, VideoToolbox, AudioToolbox; Linux: PipeWire, VAAPI); hardware tests skip themselves |
 | `hardware` | the hardware conformance suites with their `RBS_CAPTURE_HW`, `RBS_AUDIO_HW` and `RBS_REQUIRE_*` variables set ([Windows checks on SC-PC](../research/windows-checks-sc-pc.md)); needs a logged-in desktop, a camera and audio endpoints |
 | `app` | builds `rbs` (dev profile, `--release` for the release profile) and runs it in the UI measure mode (`RBS_MEASURE_UI`, ADR-0120 decision 13) for about `--seconds` (default 60), which ends with a normal quit |

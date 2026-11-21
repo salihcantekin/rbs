@@ -306,7 +306,7 @@ impl RunnerBrowserTree {
                 child.close(std::time::Duration::ZERO);
                 return self.start_on(config, sink, sound, None);
             };
-            child.set_gpu_gate(Box::new(Fence(slots.fence_read())));
+            child.set_gpu_gate(Box::new(Fence(slots.fence_read())), config.fps);
         }
         #[cfg(not(windows))]
         let slots = None::<()>;

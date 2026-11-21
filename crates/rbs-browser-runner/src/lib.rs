@@ -27,7 +27,7 @@ use rbs_core::log::Area;
 
 mod gpu_gate;
 
-pub use gpu_gate::{FENCE_JUMP, FENCE_WAIT_PASSES, FenceView, GatePass, GpuGate};
+pub use gpu_gate::{FENCE_JUMP, FENCE_WAIT_FRAMES, FenceView, GatePass, GpuGate};
 
 /// A running (or exited) helper as the studio sees it.
 #[derive(Debug)]
@@ -88,9 +88,10 @@ impl HelperChild {
         self.ring.name()
     }
 
-    /// Gates this page's GPU pictures on `fence` (ADR-0157 decision 2).
-    pub fn set_gpu_gate(&mut self, fence: Box<dyn FenceView>) {
-        self.gate = Some(GpuGate::new(fence));
+    /// Gates this page's GPU pictures, painted at `fps`, on `fence` (ADR-0157
+    /// decision 2).
+    pub fn set_gpu_gate(&mut self, fence: Box<dyn FenceView>, fps: u32) {
+        self.gate = Some(GpuGate::new(fence, fps));
     }
 
     /// True when `Configure` carried a GPU block (the helper copies into studio
@@ -111,9 +112,9 @@ impl HelperChild {
 
     /// A GPU picture whose copy has finished, with its lease held for the caller.
     /// Does not copy pixels. Supervisor thread only; never waits.
-    pub fn take_gpu(&mut self) -> Option<rbs_browser_shm::GpuPicture> {
+    pub fn take_gpu(&mut self, now: Instant) -> Option<rbs_browser_shm::GpuPicture> {
         let gate = self.gate.as_mut()?;
-        match gate.pass(&self.ring) {
+        match gate.pass(&self.ring, now) {
             GatePass::Ready(picture) => {
                 self.width = self.ring.width();
                 self.height = self.ring.height();
@@ -601,7 +602,7 @@ impl Supervisor {
                     // is due at once).
                     if child.is_gpu() {
                         let again = republish_flag.swap(false, Ordering::AcqRel);
-                        let picture = match child.take_gpu() {
+                        let picture = match child.take_gpu(Instant::now()) {
                             Some(p) => Some(p),
                             None if again => child.take_gpu_again(),
                             None => None,
