@@ -280,19 +280,19 @@ impl Document for Counted {
     const KIND: &'static str = "counted";
     const FORMAT: u32 = 1;
 
-    fn upgrade(from: u32, _: &mut toml::Table) -> Result<(), String> {
-        Err(format!("format {from} cannot be read"))
+    fn upgrade(from: u32, _: &mut toml::Table) -> Result<(), BodyError> {
+        Err(BodyError::NoUpgrade(from))
     }
 
-    fn from_body(mut body: toml::Table) -> Result<Self, String> {
+    fn from_body(mut body: toml::Table) -> Result<Self, BodyError> {
         COUNTED_READS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         match body.remove("text") {
             Some(toml::Value::String(t)) if body.is_empty() => Ok(Self(t)),
-            _ => Err("bad counted".to_owned()),
+            _ => Err(BodyError::Value("bad counted".to_owned())),
         }
     }
 
-    fn to_body(&self) -> Result<toml::Table, String> {
+    fn to_body(&self) -> Result<toml::Table, BodyError> {
         let mut t = toml::Table::new();
         t.insert("text".to_owned(), self.0.clone().into());
         Ok(t)
