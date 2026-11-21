@@ -84,6 +84,7 @@ pub(crate) mod browser_props;
 pub(crate) mod destinations;
 pub(crate) mod filters;
 mod library_ops;
+mod scene_calls;
 pub use library_ops::EntryWrite;
 mod live_ticks;
 pub(crate) mod loudness;
@@ -2093,13 +2094,6 @@ impl StudioUi {
         self.send(Command::DuplicateSource(SourceId::from_raw(id as u32)));
     }
 
-    /// Duplicate scene with new sources (ADR-0133 decision 4).
-    pub fn duplicate_scene_with_copies(&mut self, id: i32) {
-        self.send(Command::DuplicateSceneWithCopies(SceneId::from_raw(
-            id as u32,
-        )));
-    }
-
     /// Copy attributes of a source (ADR-0133 decision 6).
     pub fn copy_attributes(&mut self, id: i32) {
         self.send(Command::CopyAttributes(SourceId::from_raw(id as u32)));
@@ -2550,14 +2544,6 @@ impl StudioUi {
         });
     }
 
-    /// Collection glide defaults (ADR-0100).
-    pub fn set_glide(&mut self, duration_ms: i32, easing: i32) {
-        self.send(Command::SetGlide {
-            duration_ms: duration_ms.clamp(0, 5_000) as u32,
-            easing: if easing == 0 { 0 } else { 1 },
-        });
-    }
-
     /// The transition kind from the rail (ADR-0128): `0` Cut, `1` Fade, `2` Move,
     /// `3` Swipe, `4` Slide, `5` Stinger (ADR-0140).
     pub fn set_transition_kind(&mut self, index: i32) {
@@ -2603,10 +2589,7 @@ impl StudioUi {
                 self.send(Command::SetTransition(t));
             }
             rbs_scene::TransitionKind::Cut => {}
-            _ => self.send(Command::SetGlide {
-                duration_ms: ms,
-                easing: u8::from(self.glide.easing != rbs_scene::GlideEasing::Linear),
-            }),
+            _ => self.send_glide(ms, self.glide.easing != rbs_scene::GlideEasing::Linear),
         }
     }
 
@@ -2639,26 +2622,6 @@ impl StudioUi {
         if t != self.transition {
             self.send(Command::SetTransition(t));
         }
-    }
-
-    /// A scene's transition into it (ADR-0135): `kind` -1 the collection's, else the
-    /// rail's index; `duration_ms` -1 the kind's own duration.
-    pub fn set_scene_transition(&mut self, id: i32, kind: i32, duration_ms: i32) {
-        let kind = match kind {
-            0 => Some(rbs_scene::TransitionKind::Cut),
-            1 => Some(rbs_scene::TransitionKind::Fade),
-            2 => Some(rbs_scene::TransitionKind::Move),
-            3 => Some(rbs_scene::TransitionKind::Swipe),
-            4 => Some(rbs_scene::TransitionKind::Slide),
-            5 => Some(rbs_scene::TransitionKind::Stinger),
-            _ => None,
-        };
-        let duration_ms = u32::try_from(duration_ms).ok().map(|ms| ms.min(5_000));
-        let t = rbs_scene::SceneTransition { kind, duration_ms };
-        self.send(Command::SetSceneTransition {
-            id: SceneId::from_raw(id as u32),
-            transition: (!t.is_empty()).then_some(t),
-        });
     }
 
     /// Swipe's options, or Slide's when `slide`: easing (`0` linear, `1`
@@ -2806,50 +2769,12 @@ impl StudioUi {
         self.send(Command::SetStudioMode(on));
     }
 
-    /// The T-bar moved to `t` (ADR-0135 decision 1).
-    pub fn transition_progress(&mut self, t: f32) {
-        if self.studio_mode {
-            self.send(Command::TransitionProgress(t));
-        }
-    }
-
     /// Rehearse on Preview (ADR-0135 decision 11): the transition on the Preview
     /// picture only.
     pub fn rehearse(&mut self) {
         if self.studio_mode {
             self.send(Command::Rehearse);
         }
-    }
-
-    /// The transition: the preview scene goes on air (ADR-0061).
-    pub fn transition(&mut self) {
-        if self.studio_mode {
-            self.send(Command::Transition);
-        }
-    }
-
-    pub fn add_scene(&mut self) {
-        self.deleted.clear();
-        self.send(Command::AddScene(None));
-    }
-
-    /// Copies a scene; it does not go on air.
-    pub fn duplicate_scene(&mut self, id: i32) {
-        self.deleted.clear();
-        self.send(Command::DuplicateScene(SceneId::from_raw(id as u32)));
-    }
-
-    pub fn remove_scene(&mut self, id: i32) {
-        self.deleted.clear();
-        self.send(Command::RemoveScene(SceneId::from_raw(id as u32)));
-    }
-
-    pub fn rename_scene(&mut self, id: i32, name: &str) {
-        self.deleted.clear();
-        self.send(Command::RenameScene {
-            id: SceneId::from_raw(id as u32),
-            name: name.to_owned(),
-        });
     }
 
     /// The sources Add source can place again: those of the collection the scene on
@@ -2873,14 +2798,6 @@ impl StudioUi {
         self.send(Command::SetSourceVisible {
             id: SourceId::from_raw(id as u32),
             visible,
-        });
-    }
-
-    pub fn move_scene(&mut self, id: i32, direction: rbs_api::request::LayerDirection) {
-        self.deleted.clear();
-        self.send(Command::MoveScene {
-            id: SceneId::from_raw(id as u32),
-            direction,
         });
     }
 

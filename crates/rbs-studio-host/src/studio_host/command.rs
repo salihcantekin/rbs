@@ -63,13 +63,6 @@ pub enum Command {
         /// Which way (ADR-0084 Arrange).
         direction: rbs_api::request::LayerDirection,
     },
-    /// Move a scene one place or to an end in the canvas's scene list.
-    MoveScene {
-        /// The scene.
-        id: SceneId,
-        /// Which way.
-        direction: rbs_api::request::LayerDirection,
-    },
     /// Move a scene to where scene `to` is in the scene list (a row dragged onto
     /// another); one undo step.
     MoveSceneTo {
@@ -400,13 +393,6 @@ pub enum Command {
         /// The new name.
         name: String,
     },
-    /// Collection glide defaults (ADR-0100). One undo step.
-    SetGlide {
-        /// Duration in milliseconds (`0..=5000`).
-        duration_ms: u32,
-        /// `0` linear, `1` ease-in-out.
-        easing: u8,
-    },
     /// The collection's transition (ADR-0128): kind and each kind's settings. One undo
     /// step.
     SetTransition(rbs_scene::CollectionTransition),
@@ -435,14 +421,6 @@ pub enum Command {
     /// Place a source the collection already has into the program scene, on top (one
     /// undo step); it runs as one instance in every scene that places it.
     AddExistingSource(SourceId),
-    /// Add an empty scene the canvas may show (one undo step); `None` names it
-    /// "Scene", "Scene 2", ... It does not go on air.
-    AddScene(Option<String>),
-    /// Copy a scene with the same sources and layouts (one undo step). It does not go
-    /// on air.
-    DuplicateScene(SceneId),
-    /// Copy a scene with copies of its sources (ADR-0133 decision 4, one undo step).
-    DuplicateSceneWithCopies(SceneId),
     /// Duplicate source (ADR-0133 decision 3, one undo step).
     DuplicateSource(SourceId),
     /// Copy attributes of a source (ADR-0133 decision 6): the attribute clipboard.
@@ -473,35 +451,12 @@ pub enum Command {
         /// Add the filters after the target's own instead of replacing them.
         append: bool,
     },
-    /// Remove a scene (one undo step). Refused for the last scene the canvas may show;
-    /// the scene on air is first switched away from (not undone with the removal).
-    RemoveScene(SceneId),
-    /// Set or clear a scene's transition into it (ADR-0135; one undo step).
-    SetSceneTransition {
-        /// The scene.
-        id: SceneId,
-        /// The override; `None` uses the collection's.
-        transition: Option<rbs_scene::SceneTransition>,
-    },
-    /// Rename a scene (one undo step).
-    RenameScene {
-        /// The scene.
-        id: SceneId,
-        /// The new name.
-        name: String,
-    },
     /// Put a scene on air (a cut); in studio mode, make it the preview scene instead
     /// (ADR-0061). A live action: not on the undo stack (ADR-0021).
     SwitchScene(SceneId),
     /// Enter (`true`) or leave studio mode (ADR-0061): the preview scene starts as the
     /// program scene. A live action.
     SetStudioMode(bool),
-    /// Move the preview scene to air (a cut, ADR-0061); the preview keeps its scene, or
-    /// with [`Command::SetSwapAfterTransition`] gets the old program scene (ADR-0098).
-    /// Refused outside studio mode. A live action.
-    Transition,
-    /// The T-bar's value (ADR-0135): applied once per round, the latest only.
-    TransitionProgress(f32),
     /// Rehearse on Preview (ADR-0135 decision 11): the transition on the Preview
     /// picture only. Nothing happens outside studio mode, while a transition runs or
     /// holds, during a rehearsal, and for Cut or a duration of 0.

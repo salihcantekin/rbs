@@ -16,9 +16,14 @@ impl StudioUi {
     /// Runs a control API command on the control thread; a refusal shows as the error
     /// bar and state comes back through the usual updates (ADR-0163 decision 2).
     pub fn call(&self, call: rbs_api::Command) {
+        self.call_as(call, ApiReply::Shown);
+    }
+
+    /// As [`StudioUi::call`], answered as `reply` asks.
+    pub fn call_as(&self, call: rbs_api::Command, reply: ApiReply) {
         self.send(Command::Api {
             call: Box::new(call),
-            reply: ApiReply::Shown,
+            reply,
         });
     }
 }

@@ -1024,13 +1024,6 @@ impl Host {
                 let done = self.rename_source(id, &name);
                 self.answer(done, notify);
             }
-            Command::SetGlide {
-                duration_ms,
-                easing,
-            } => {
-                let done = self.set_glide(duration_ms, easing);
-                self.answer(done, notify);
-            }
             Command::SetTransition(t) => {
                 let done = self.put_transition(t);
                 self.answer(done, notify);
@@ -1051,22 +1044,6 @@ impl Host {
             Command::AddExistingSource(id) => {
                 let done = self.add_existing(id).map(|_| true);
                 self.answer(done, notify);
-            }
-            Command::AddScene(name) => {
-                let done = self.add_scene(name.as_deref()).map(|_| true);
-                self.answer(done, notify);
-            }
-            Command::DuplicateScene(id) => {
-                let done = self.duplicate_scene(id).map(|_| true);
-                self.answer(done, notify);
-            }
-            Command::DuplicateSceneWithCopies(id) => {
-                let p = rbs_api::request::DuplicateScene {
-                    scene: id.get(),
-                    sources: rbs_api::types::DuplicateSources::Copied,
-                };
-                let done = self.api_scene_duplicate(p, notify);
-                self.answer_api(done, notify);
             }
             Command::DuplicateSource(id) => {
                 let done = self.api_source_duplicate(in_scene(id), notify);
@@ -1110,37 +1087,27 @@ impl Host {
                 let done = self.api_paste_attributes(p, notify);
                 self.answer_api(done, notify);
             }
-            Command::RemoveScene(id) => {
-                let done = self.remove_scene(id).map(|()| true);
-                self.answer(done, notify);
-            }
-            Command::RenameScene { id, name } => {
-                let done = self.rename_scene(id, &name);
-                self.answer(done, notify);
-            }
-            Command::SetSceneTransition { id, transition } => {
-                let done = self.set_scene_transition(id, transition);
-                self.answer(done, notify);
-            }
+            // A click in the Scenes panel: on air, or in studio mode into preview.
             Command::SwitchScene(id) => {
-                let done = if self.preview().is_some() {
-                    self.set_preview_scene(id)
+                let call = if self.preview().is_some() {
+                    rbs_api::Command::CanvasSetPreview(rbs_api::request::SetPreview {
+                        scene: Some(id.get()),
+                    })
                 } else {
-                    self.switch_scene(id)
+                    rbs_api::Command::SceneSwitch(rbs_api::request::SwitchScene {
+                        scene: id.get(),
+                        kind: None,
+                        duration_ms: None,
+                    })
                 };
-                self.answer(done, notify);
+                self.run_ui_api(call, notify);
             }
+            // Studio mode on previews the program scene; nothing when already so.
             Command::SetStudioMode(on) => {
-                let done = self.set_studio_mode(on);
-                self.answer(done, notify);
-            }
-            Command::Transition => {
-                let done = self.transition();
-                self.answer(done, notify);
-            }
-            Command::TransitionProgress(t) => {
-                if self.preview().is_some() {
-                    self.program.pending_progress = Some(t.clamp(0.0, 1.0));
+                if self.preview().is_some() != on {
+                    let scene = on.then(|| self.scene.get());
+                    let call = rbs_api::request::SetPreview { scene };
+                    self.run_ui_api(rbs_api::Command::CanvasSetPreview(call), notify);
                 }
             }
             Command::Rehearse => {

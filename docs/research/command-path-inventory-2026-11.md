@@ -2,7 +2,7 @@
 
 First-pass classification of every `rbs_studio_host::Command` variant on main `c424931` for [ADR-0163](../adr/0163-one-command-path-for-the-window-and-the-api.md) (one command path, quality plan WP-20). Made by reading each variant's handler arm and the control API method names (`rbs_api::Command::method`), corrected after the ADR's first review. Each namespace step checks its rows again against the code and the control API spec; where a row is wrong, the step's `Command::path` arm is the record, not this table.
 
-Step 0 moved `ResetLoudness` to `Command::Api` (Translates 21 to 20); `command_path.rs` holds the current counts. First-pass counts: 21 Translates (already run through `run_ui_api` or `ApiTarget::run`), 83 Pending, 10 Contract, 20 Missing, 27 WindowOnly (13 View, 9 LocalOnly, 2 Preview, 3 Mirror). Total 161. Corrected after review rounds 1 to 3.
+Step 0 moved `ResetLoudness` to `Command::Api`; step 1 (scenes and transitions) moved ten scene variants and made Switch scene and Studio mode translations; `command_path.rs` holds the current counts. First-pass counts: 21 Translates (already run through `run_ui_api` or `ApiTarget::run`), 83 Pending, 10 Contract, 20 Missing, 27 WindowOnly (13 View, 9 LocalOnly, 2 Preview, 3 Mirror). Total 161. Corrected after review rounds 1 to 3.
 
 ## Known differences between the two paths
 
@@ -47,7 +47,7 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `Undo` | Pending | edit.undo; quiet when there is nothing to undo |
 | `Redo` | Pending | edit.redo; as Undo |
 | `MoveSource` | Pending | item.move |
-| `MoveScene` | Pending | scene.move |
+| `MoveScene` | Moved to `Command::Api` (step 1) | scene.move |
 | `MoveSceneTo` | Missing | scene.move has no target scene |
 | `MoveSourceTo` | Missing | item.move has no target item |
 | `SetSourceLocked` | Pending | item.set_locked |
@@ -110,26 +110,26 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `Media` | Pending | media.play, media.pause, media.seek, media.restart; window forces the next media-state publish |
 | `SetCompanionAudio` | Pending | source.set_companion_audio |
 | `RenameSource` | Pending | source.rename |
-| `SetGlide` | Pending | collection.set_glide |
+| `SetGlide` | Moved to `Command::Api` (step 1) | collection.set_glide |
 | `SetTransition` | Pending | collection.set_transition |
 | `SetSourceActivity` | Pending | source.set_activity |
 | `SetSourceGlide` | Pending | source.set_glide |
 | `AddExistingSource` | Pending | item.add |
-| `AddScene` | Pending | scene.add |
-| `DuplicateScene` | Pending | scene.duplicate |
-| `DuplicateSceneWithCopies` | Pending | scene.duplicate |
+| `AddScene` | Moved to `Command::Api` (step 1) | scene.add |
+| `DuplicateScene` | Moved to `Command::Api` (step 1) | scene.duplicate |
+| `DuplicateSceneWithCopies` | Moved to `Command::Api` (step 1) | scene.duplicate |
 | `DuplicateSource` | Pending | source.duplicate |
 | `CopyAttributes` | Pending | source.copy_attributes |
 | `OpenAttributes` | WindowOnly View |  |
 | `ResetSource` | Pending | source.reset |
 | `PasteAttributes` | Pending | source.paste_attributes |
-| `RemoveScene` | Pending | scene.remove |
-| `SetSceneTransition` | Pending | scene.set_transition |
-| `RenameScene` | Pending | scene.rename |
-| `SwitchScene` | Pending | scene.switch, canvas.set_preview; becomes Translates (branches on the preview) |
-| `SetStudioMode` | Pending | canvas.set_preview |
-| `Transition` | Pending | canvas.transition |
-| `TransitionProgress` | Pending | canvas.transition_progress; quiet answer (stale T-bar steps are ignored today) |
+| `RemoveScene` | Moved to `Command::Api` (step 1) | scene.remove |
+| `SetSceneTransition` | Moved to `Command::Api` (step 1) | scene.set_transition |
+| `RenameScene` | Moved to `Command::Api` (step 1) | scene.rename |
+| `SwitchScene` | Translates (step 1) | scene.switch, canvas.set_preview; becomes Translates (branches on the preview) |
+| `SetStudioMode` | Translates (step 1) | canvas.set_preview |
+| `Transition` | Moved to `Command::Api` (step 1) | canvas.transition |
+| `TransitionProgress` | Moved to `Command::Api` (step 1) | canvas.transition_progress; quiet answer (stale T-bar steps are ignored today) |
 | `Rehearse` | Missing | starts a rehearsal on the engine; no method (ui.transition.rehearse is the registry entry) |
 | `SetSwapAfterTransition` | Missing | no settings.set field |
 | `SetSourceActive` | Pending | source.set_active |

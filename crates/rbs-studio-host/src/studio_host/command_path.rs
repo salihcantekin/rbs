@@ -95,7 +95,6 @@ paths! {
     // as Undo
     Redo => Pending(&["edit.redo"]),
     MoveSource => Pending(&["item.move"]),
-    MoveScene => Pending(&["scene.move"]),
     // scene.move has no target scene
     MoveSceneTo => Missing,
     // item.move has no target item
@@ -173,28 +172,18 @@ paths! {
     Media => Pending(&["media.play", "media.pause", "media.seek", "media.restart"]),
     SetCompanionAudio => Pending(&["source.set_companion_audio"]),
     RenameSource => Pending(&["source.rename"]),
-    SetGlide => Pending(&["collection.set_glide"]),
     SetTransition => Pending(&["collection.set_transition"]),
     SetSourceActivity => Pending(&["source.set_activity"]),
     SetSourceGlide => Pending(&["source.set_glide"]),
     AddExistingSource => Pending(&["item.add"]),
-    AddScene => Pending(&["scene.add"]),
-    DuplicateScene => Pending(&["scene.duplicate"]),
-    DuplicateSceneWithCopies => Pending(&["scene.duplicate"]),
     DuplicateSource => Pending(&["source.duplicate"]),
     CopyAttributes => Pending(&["source.copy_attributes"]),
     OpenAttributes => WindowOnly(View),
     ResetSource => Pending(&["source.reset"]),
     PasteAttributes => Pending(&["source.paste_attributes"]),
-    RemoveScene => Pending(&["scene.remove"]),
-    SetSceneTransition => Pending(&["scene.set_transition"]),
-    RenameScene => Pending(&["scene.rename"]),
     // becomes Translates (branches on the preview)
-    SwitchScene => Pending(&["scene.switch", "canvas.set_preview"]),
-    SetStudioMode => Pending(&["canvas.set_preview"]),
-    Transition => Pending(&["canvas.transition"]),
-    // quiet answer (stale T-bar steps are ignored today)
-    TransitionProgress => Pending(&["canvas.transition_progress"]),
+    SwitchScene => Translates(&["scene.switch", "canvas.set_preview"]),
+    SetStudioMode => Translates(&["canvas.set_preview"]),
     // starts a rehearsal on the engine; no method (ui.transition.rehearse is the registry entry)
     Rehearse => Missing,
     // no settings.set field
@@ -295,8 +284,8 @@ mod tests {
     /// ADR-0163 decision 5: these counts may only fall. A step that moves a handler
     /// which must pick its method from host state may raise `TRANSLATES` by as many
     /// as `PENDING` falls; any other rise needs the owner's written approval.
-    const TRANSLATES: usize = 20;
-    const PENDING: usize = 83;
+    const TRANSLATES: usize = 22;
+    const PENDING: usize = 71;
     const CONTRACT: usize = 10;
     const MISSING: usize = 20;
     const VIEW: usize = 13;

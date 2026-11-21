@@ -684,7 +684,6 @@ impl Host {
             | Command::Redo
             | Command::MoveSource { .. }
             | Command::MoveSourceTo { .. }
-            | Command::MoveScene { .. }
             | Command::MoveSceneTo { .. }
             | Command::SetSourceActive { .. }
             | Command::SetSourceLocked { .. }
@@ -746,26 +745,17 @@ impl Host {
             | Command::BrowserControl { .. }
             | Command::SetCompanionAudio { .. } => self.source_edit_command(c, notify),
             Command::RenameSource { .. }
-            | Command::SetGlide { .. }
             | Command::SetTransition(..)
             | Command::SetSourceActivity { .. }
             | Command::SetSourceGlide { .. }
             | Command::AddExistingSource(..)
-            | Command::AddScene(..)
-            | Command::DuplicateScene(..)
-            | Command::DuplicateSceneWithCopies(..)
             | Command::DuplicateSource(..)
             | Command::CopyAttributes(..)
             | Command::OpenAttributes { .. }
             | Command::ResetSource { .. }
             | Command::PasteAttributes { .. }
-            | Command::RemoveScene(..)
-            | Command::RenameScene { .. }
-            | Command::SetSceneTransition { .. }
             | Command::SwitchScene(..)
             | Command::SetStudioMode(..)
-            | Command::Transition
-            | Command::TransitionProgress(..)
             | Command::Rehearse
             | Command::SetSwapAfterTransition(..) => self.scene_command(c, notify),
             Command::SetSourceVisible { .. }

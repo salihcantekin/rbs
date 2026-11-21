@@ -1445,11 +1445,6 @@ impl Host {
                 Ok(false) => {}
                 Err(e) => notify(Update::Error(e.into_text())),
             },
-            Command::MoveScene { id, direction } => match self.move_scene(id, direction) {
-                Ok(true) => self.apply(notify),
-                Ok(false) => {}
-                Err(e) => notify(Update::Error(e.into_text())),
-            },
             Command::MoveSceneTo { id, to } => match self.move_scene_to(id, to) {
                 Ok(true) => self.apply(notify),
                 Ok(false) => {}

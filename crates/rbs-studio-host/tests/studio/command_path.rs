@@ -407,6 +407,10 @@ fn translating_commands_run_only_their_declared_methods() {
         Command::PauseRecording,
         Command::HoldStream,
         Command::Break,
+        Command::SetStudioMode(true),
+        Command::SwitchScene(scene),
+        Command::SetStudioMode(false),
+        Command::SwitchScene(scene),
     ];
     let expected = named(|p| matches!(p, CommandPath::Translates(_)));
     assert_eq!(names_of(&samples), expected, "a sample for each, ADR-0163");
@@ -425,4 +429,59 @@ fn translating_commands_run_only_their_declared_methods() {
             assert!(declared.contains(&m), "{name} ran {m}, not in {declared:?}");
         }
     }
+}
+
+/// Step 1 (scenes and transitions): the window's scene edits are API calls, each one
+/// undo step as before.
+#[test]
+fn scene_edits_from_the_window_are_api_calls_and_undo_steps() {
+    let Some(gpu) = gpu() else { return };
+    let s = Studio::start(gpu);
+    let names = |s: &Studio| match s.ask(rbs_api::Command::SceneList).unwrap() {
+        Response::Scenes(l) => l
+            .data
+            .scenes
+            .into_iter()
+            .map(|i| i.name)
+            .collect::<Vec<_>>(),
+        r => panic!("{r:?}"),
+    };
+    let Response::SceneAdded(added) = s
+        .ask(rbs_api::Command::SceneAdd(rbs_api::request::AddScene {
+            name: None,
+        }))
+        .unwrap()
+    else {
+        panic!("scene.add answers SceneAdded")
+    };
+    s.ask(rbs_api::Command::SceneRename(
+        rbs_api::request::RenameScene {
+            scene: added.scene,
+            name: "Talk".into(),
+        },
+    ))
+    .unwrap();
+    s.ask(rbs_api::Command::SceneDuplicate(
+        rbs_api::request::DuplicateScene {
+            scene: added.scene,
+            sources: rbs_api::types::DuplicateSources::Shared,
+        },
+    ))
+    .unwrap();
+    let three = names(&s);
+    assert_eq!(three.len(), 3, "{three:?}");
+    assert!(three.contains(&"Talk".to_owned()), "{three:?}");
+
+    // Undo takes back the duplicate only.
+    s.host.send(Command::Undo);
+    s.ask(rbs_api::Command::SceneList).unwrap();
+    let two = names(&s);
+    assert_eq!(two.len(), 2, "{two:?}");
+    assert!(two.contains(&"Talk".to_owned()), "{two:?}");
+
+    s.ask(rbs_api::Command::SceneRemove(rbs_api::request::SceneRef {
+        scene: added.scene,
+    }))
+    .unwrap();
+    assert_eq!(names(&s).len(), 1);
 }
