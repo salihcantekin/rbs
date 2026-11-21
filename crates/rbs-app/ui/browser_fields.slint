@@ -209,35 +209,42 @@ export component BrowserFields inherits VerticalLayout {
         toggled(on) => { Studio.set-browser-flag(b.id, "reload_on_file_change", on); }
     }
     // Live actions on the running page: not undo steps (ADR-0132 decisions 5 and 6).
-    HorizontalLayout {
+    // One button a row, so a narrow panel or a longer translation never makes the
+    // tab wider than the panel.
+    VerticalLayout {
         spacing: Tokens.space-1;
-        alignment: start;
-        Button {
-            lead: IconName.refresh;
-            text: @tr("Reload");
-            accessible-name: @tr("Reload {}", root.name);
-            dense: true;
-            enabled: b.running;
-            clicked => { Studio.browser-reload(b.id, false); }
+        HorizontalLayout {
+            alignment: start;
+            Button {
+                lead: IconName.refresh;
+                text: @tr("Reload");
+                accessible-name: @tr("Reload {}", root.name);
+                dense: true;
+                enabled: b.running;
+                clicked => { Studio.browser-reload(b.id, false); }
+            }
         }
-        Button {
-            lead: IconName.refresh;
-            text: @tr("Reload without cache");
-            accessible-name: @tr("Reload {} without the cache", root.name);
-            dense: true;
-            enabled: b.running;
-            clicked => { Studio.browser-reload(b.id, true); }
+        HorizontalLayout {
+            alignment: start;
+            Button {
+                lead: IconName.refresh;
+                text: @tr("Reload without cache");
+                accessible-name: @tr("Reload {} without the cache", root.name);
+                dense: true;
+                enabled: b.running;
+                clicked => { Studio.browser-reload(b.id, true); }
+            }
         }
-    }
-    HorizontalLayout {
-        alignment: start;
-        Button {
-            lead: IconName.window;
-            text: @tr("Interact…");
-            accessible-name: @tr("Interact with {}", root.name);
-            dense: true;
-            enabled: b.state == 0 || b.state == 4 || b.state == 5;
-            clicked => { Studio.browser-interact(b.id); }
+        HorizontalLayout {
+            alignment: start;
+            Button {
+                lead: IconName.window;
+                text: @tr("Interact…");
+                accessible-name: @tr("Interact with {}", root.name);
+                dense: true;
+                enabled: b.state == 0 || b.state == 4 || b.state == 5;
+                clicked => { Studio.browser-interact(b.id); }
+            }
         }
     }
     HorizontalLayout {

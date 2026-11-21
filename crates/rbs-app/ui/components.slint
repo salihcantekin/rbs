@@ -2121,7 +2121,10 @@ component TabItem inherits Rectangle {
     in property <bool> focused;
     callback clicked();
     horizontal-stretch: 1;
-    min-width: label.preferred-width + 2 * Tokens.space-2;
+    // A narrow panel takes the side room first, so the titles stay whole and the
+    // row never grows wider than the panel.
+    min-width: label.preferred-width + 2 * Tokens.space-1;
+    preferred-width: label.preferred-width + 2 * Tokens.space-2;
     border-radius: Tokens.radius-sm;
     background: root.checked ? Theme.surface-overlay
         : touch.has-hover ? Theme.surface-raised : transparent;

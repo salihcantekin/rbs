@@ -74,7 +74,11 @@ fn shot(file: &TokenFile, base: Base, name: &str, data: BrowserData, dir: &std::
     g.set_properties_source(7);
     g.set_properties_tab(5);
     g.set_browser_props(data);
-    w.window().set_size(slint::LogicalSize::new(380.0, 1500.0));
+    let width = std::env::var("RBS_SHOTS_WIDTH")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(380.0);
+    w.window().set_size(slint::LogicalSize::new(width, 1500.0));
     w.show().expect("show");
     let px = w.window().take_snapshot().expect("a snapshot");
     let path = dir.join(format!("{name}-{}x{}.rgba", px.width(), px.height()));
