@@ -222,3 +222,78 @@ fn clicks_before_the_first_mapping_are_dropped_not_kept() {
     assert_eq!(ring.seen().clicks, 0, "not mapped with the later mapping");
     assert_eq!(format(&rig), Some(PixelFormat::Rgba8));
 }
+
+/// A rig of a built-in pointer type with these values, its input and its feed.
+fn built_in(ty: &'static dyn FilterType, values: &[(&str, rbs_filters::Value)]) -> Option<Setup2> {
+    let ctx = common::gpu()?;
+    let script = Scripted::default();
+    let monitor = InputMonitor::new(Box::new(script.clone()));
+    let cell = MappingCell::new();
+    cell.publish(Some(mapping(Cover::Clear)));
+    let values = Values::defaults(ty)
+        .with(ty, values.iter().copied())
+        .unwrap();
+    let feed = PointerFeed::new(monitor, cell);
+    let mut rig = Rig::with_pointer(ctx, Arc::new(ty), values, Some([8, 8]), feed).unwrap();
+    rig.set_input(Picture::solid(8, 8, [0.0, 0.5, 0.0, 1.0]).encoded());
+    rig.tick();
+    Some(Setup2 { rig, script })
+}
+
+struct Setup2 {
+    rig: Rig,
+    script: Scripted,
+}
+
+#[test]
+fn click_rings_draw_a_ring_in_the_button_colour() {
+    use rbs_filters::Value;
+    let Some(Setup2 { mut rig, script }) = built_in(
+        &rbs_filters::ClickRings,
+        &[
+            ("left_color", Value::Color([255, 0, 0, 255])),
+            ("radius", Value::Number(4.0)),
+            ("width", Value::Number(4.0)),
+        ],
+    ) else {
+        return;
+    };
+    rig.tick();
+    let at = rig.last_time().as_nanos() + 1;
+    script.click(at, 104.0, 54.0);
+    tick_past(&mut rig, at);
+    assert_eq!(
+        format(&rig),
+        Some(PixelFormat::Rgba8),
+        "no ring before a frame at or after the click"
+    );
+    // The ring starts with the first frame stamped at or after the click.
+    rig.set_input(Picture::solid(8, 8, [0.0, 0.5, 0.0, 1.0]).encoded());
+    rig.tick();
+    assert_eq!(format(&rig), Some(PixelFormat::Rgba16Float), "drawing");
+    let (picture, _, _) = rig.output().expect("a drawn frame");
+    let reddest = (0..8)
+        .flat_map(|y| (0..8).map(move |x| (x, y)))
+        .map(|(x, y)| picture.at(x, y)[0])
+        .fold(0.0_f32, f32::max);
+    assert!(reddest > 0.5, "a red ring: {reddest}");
+}
+
+#[test]
+fn the_pointer_halo_covers_the_pointer() {
+    use rbs_filters::Value;
+    let Some(Setup2 { mut rig, script }) = built_in(
+        &rbs_filters::PointerHalo,
+        &[("color", Value::Color([255, 0, 0, 255]))],
+    ) else {
+        return;
+    };
+    rig.tick();
+    assert_eq!(format(&rig), Some(PixelFormat::Rgba8), "no pointer yet");
+    let at = rig.last_time().as_nanos() + 1;
+    script.point(at, 104.0, 55.0);
+    tick_past(&mut rig, at);
+    let (picture, _, _) = rig.output().expect("a drawn frame");
+    let p = picture.at(4, 5);
+    assert!(p[0] > 0.99 && p[1] < 0.01, "red at the pointer: {p:?}");
+}
