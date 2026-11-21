@@ -215,7 +215,7 @@ fn style() -> ItemStyle {
 /// One of every request.
 fn every_request() -> Vec<Request> {
     let c = Request::Command;
-    vec![
+    let mut all = vec![
         Request::Hello(Hello {
             protocols: vec!["1.0".into()],
             client: ClientInfo::new("deck", "2.1"),
@@ -263,16 +263,19 @@ fn every_request() -> Vec<Request> {
         })),
         c(Command::SourceDelete(SourceRef { source: 4 })),
         c(Command::ItemSetStyle(SetItemStyle {
+            gesture: 0,
             item: 7,
             style: style(),
             canvas: OutputCanvas::Main,
         })),
         c(Command::ItemSetScroll(SetItemScroll {
+            gesture: 0,
             item: 7,
             scroll: Some(every_scroll_field()),
             canvas: OutputCanvas::Vertical,
         })),
         c(Command::ItemSetScroll(SetItemScroll {
+            gesture: 0,
             item: 7,
             scroll: None,
             canvas: OutputCanvas::Main,
@@ -295,33 +298,10 @@ fn every_request() -> Vec<Request> {
             canvas: OutputCanvas::Main,
         })),
         c(Command::ItemSetCrop(SetItemCrop {
+            gesture: 0,
             item: 7,
             crop: [760, 180, 760, 180],
             keep_scale: false,
-            canvas: OutputCanvas::Vertical,
-        })),
-        c(Command::ItemFlip(FlipItem {
-            item: 7,
-            axis: Axis::Vertical,
-            canvas: OutputCanvas::Main,
-        })),
-        c(Command::ItemRotate(RotateItem {
-            item: 7,
-            degrees: -90,
-            canvas: OutputCanvas::Vertical,
-        })),
-        c(Command::ItemFit(FitItem {
-            item: 7,
-            mode: FitKind::Fill,
-            canvas: OutputCanvas::Vertical,
-        })),
-        c(Command::ItemAlign(AlignItem {
-            item: 7,
-            axis: Some(AlignAxis::Horizontal),
-            canvas: OutputCanvas::Main,
-        })),
-        c(Command::ItemResetTransform(ResetItemTransform {
-            item: 7,
             canvas: OutputCanvas::Vertical,
         })),
         c(Command::CanvasAutoLayout(CanvasAutoLayout {
@@ -838,6 +818,7 @@ fn every_request() -> Vec<Request> {
         c(Command::MediaRestart(MediaSource { source: 3 })),
         c(Command::MediaState(MediaSource { source: 3 })),
         c(Command::SourceSetSettings(SetSourceSettings {
+            gesture: 0,
             source: 3,
             settings: [
                 ("fps".to_owned(), serde_json::json!(60)),
@@ -857,7 +838,9 @@ fn every_request() -> Vec<Request> {
         c(Command::AddonCancel(engine())),
         c(Command::AddonClean(engine())),
         c(Command::AddonRemove(engine())),
-    ]
+    ];
+    all.extend(transforms::requests());
+    all
 }
 
 fn engine() -> AddOnRef {
@@ -868,6 +851,8 @@ fn engine() -> AddOnRef {
 
 #[path = "json/scrolls.rs"]
 mod scrolls;
+#[path = "json/transforms.rs"]
+mod transforms;
 /// A scroll that sets every field away from its default.
 fn every_scroll_field() -> ItemScroll {
     ItemScroll {

@@ -119,7 +119,7 @@ impl ApiTarget<'_> {
                     Axis::Horizontal => TransformOp::FlipHorizontal,
                     Axis::Vertical => TransformOp::FlipVertical,
                 };
-                host.api_transform(p.item, op, p.canvas, notify)
+                host.api_transform(p.item, op, p.gesture, p.canvas, notify)
             }
             C::ItemRotate(p) => {
                 if p.degrees % 90 != 0 || p.degrees == 0 || p.degrees.abs() > 360 {
@@ -131,6 +131,7 @@ impl ApiTarget<'_> {
                 host.api_transform(
                     p.item,
                     TransformOp::Turn(p.degrees as f32),
+                    p.gesture,
                     p.canvas,
                     notify,
                 )
@@ -141,7 +142,7 @@ impl ApiTarget<'_> {
                     FitKind::Fill => FitMode::Fill,
                     FitKind::Stretch => FitMode::Stretch,
                 };
-                host.api_transform(p.item, TransformOp::Fit(mode), p.canvas, notify)
+                host.api_transform(p.item, TransformOp::Fit(mode), p.gesture, p.canvas, notify)
             }
             C::ItemAlign(p) => {
                 let axis = match p.axis {
@@ -150,15 +151,27 @@ impl ApiTarget<'_> {
                     Some(AlignAxis::Horizontal) => CenterAxis::Horizontal,
                     Some(AlignAxis::Vertical) => CenterAxis::Vertical,
                 };
-                host.api_transform(p.item, TransformOp::Center(axis), p.canvas, notify)
+                host.api_transform(
+                    p.item,
+                    TransformOp::Center(axis),
+                    p.gesture,
+                    p.canvas,
+                    notify,
+                )
             }
             C::ItemResetTransform(p) => {
-                host.api_transform(p.item, TransformOp::Reset, p.canvas, notify)
+                host.api_transform(p.item, TransformOp::Reset, p.gesture, p.canvas, notify)
             }
             C::ItemSetCrop(p) => {
                 let [l, t, r, b] = p.crop;
                 let item = ItemId::from_raw(p.item);
-                match host.set_item_crop(item, Crop::new(l, t, r, b), p.keep_scale, 0, p.canvas) {
+                match host.set_item_crop(
+                    item,
+                    Crop::new(l, t, r, b),
+                    p.keep_scale,
+                    p.gesture,
+                    p.canvas,
+                ) {
                     Ok(changed) => {
                         if changed {
                             host.apply(notify);

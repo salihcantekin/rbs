@@ -547,6 +547,24 @@ Source rows carry `kind` `image` and `color` for those picture sources. A client
 - **State.** `record.state` and `record.canvas_state` add `paused` (bool), `paused_ms` and `recorded_ms`; `state` stays `recording` while paused. `paused` is set from the call on, including the ticks before the pause begins. `paused_ms` (time left out so far) and `recorded_ms` (time since the start less `paused_ms`) are as of the change; they are published on each pause and resume, never per frame, so a client counts on from them while not paused.
 - **Older clients and servers.** A 1.60 client ignores the new fields; a 1.60 server answers the methods `method_not_found` and omits the fields, which read as not paused.
 
+### Protocol 1.100: the window's remaining commands (ADR-0164)
+
+Protocol 1.100 adds everything [ADR-0164](../adr/0164-protocol-minor-for-the-window-commands-left.md) lists. The parts land in steps, and each step's section below says what it added.
+
+- **Version.** The minor is an integer: 1.100 comes after 1.99. Compare it as a number, never as a string or a decimal.
+- **Gestures (step 1).** `item.set_crop`, `item.set_style`, `item.set_scroll`, `source.set_settings`, `item.flip`, `item.rotate`, `item.fit`, `item.align` and `item.reset_transform` take an optional `gesture`.
+  - It works as `item.set_box`'s does: calls with the same non-zero gesture and the same kind of edit that follow each other are one undo step (one drag). 0, the default, is a step of its own.
+  - A gesture never refuses a call.
+  - Bit 63 marks the desktop app's own drags. The server clears it from every client's gesture, including `item.set_box`'s, so a client's drag never joins one of the window's steps.
+  - Use values below 2^53. Larger values are accepted, but JSON clients lose precision.
+  - Two clients that reuse a number on the same kind of edit can join one step.
+- **Older servers.** A 1.99 server answers `invalid_params` for `gesture` on `item.set_crop`, `item.set_scroll`, `source.set_settings` and the transform methods, and ignores it on `item.set_style`. Check for 1.100 first.
+- **As built (step 1).**
+  - `rbs-api` `request.rs`: the `gesture` fields.
+  - `rbs-studio-host` `control_api.rs`: `clear_window_gesture`, and `WINDOW_GESTURE` in `command.rs`.
+  - `rbs-app`: `ui_gesture`, `preview_edit.rs`.
+  - Tests: `crates/rbs-studio-host/tests/studio/scenes/part_two.rs` (`a_client_gesture_never_joins_a_window_step`), `rbs-api/tests/session.rs` (`the_protocol_minor_compares_as_a_number`).
+
 ### Protocol 1.99: a film continues (ADR-0152 decision 6, phase 5)
 
 - **`on_return: "continue"` for media.** `source.set_activity` of a media source accepts `on_return: "continue"`, and `source.get_activity` lists it in `on_returns`. On air again, the film plays where it would be had it kept playing while away: the position where it left air plus the time since, wrapped into the play range with `loop`, ended past the end without it (scene sources spec, "Continue"). A film paused or ended before it left air resumes as with `resume`. Not kept across an app restart (then it is `resume`).

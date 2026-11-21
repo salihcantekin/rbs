@@ -150,8 +150,8 @@ pub const VERTICAL_PANEL: &str = rbs_ui::command::VERTICAL_PANEL;
 const VERTICAL_SEQ: u64 = 1 << 62;
 
 /// Marks the gestures the UI numbers (`Studio.gesture-serial`: a dragged field or the
-/// rotation slider), so they never meet the picture panels' own drag numbers.
-const UI_GESTURE: u64 = 1 << 61;
+/// rotation slider) and the window's (ADR-0164), so no other drag number meets them.
+const UI_GESTURE: u64 = rbs_app::studio_host::WINDOW_GESTURE | 1 << 61;
 
 /// The undo gesture of a UI drag number: 0 (or less) is none and never joins a step.
 /// A film's play range for Properties: start and end in ms, the end -1 for the end

@@ -43,7 +43,7 @@ impl ApiTarget<'_> {
                     ));
                 }
                 if host
-                    .set_item_style(item, style, 0, p.canvas)
+                    .set_item_style(item, style, p.gesture, p.canvas)
                     .map_err(|e| failed(e.into_text()))?
                 {
                     host.apply(notify);
@@ -82,7 +82,7 @@ impl ApiTarget<'_> {
                     ));
                 }
                 if host
-                    .set_item_scroll(item, scroll, 0, p.canvas)
+                    .set_item_scroll(item, scroll, p.gesture, p.canvas)
                     .map_err(|e| failed(e.into_text()))?
                 {
                     host.apply(notify);

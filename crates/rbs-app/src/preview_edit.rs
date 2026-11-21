@@ -209,7 +209,8 @@ impl PreviewEdit {
 
     fn new_gesture(&mut self) {
         self.next_gesture += 1;
-        self.gesture = self.next_gesture;
+        // Marked as the window's, so a client's drag never joins it (ADR-0164).
+        self.gesture = rbs_app::studio_host::WINDOW_GESTURE | self.next_gesture;
     }
 
     /// The button went up or the press was cancelled: the drag ends (its last box is

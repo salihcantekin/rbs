@@ -36,7 +36,7 @@ impl ApiTarget<'_> {
                     ));
                 }
                 if host
-                    .patch_source_settings(SourceId::from_raw(p.source), &p.settings)
+                    .patch_source_settings_in(SourceId::from_raw(p.source), &p.settings, p.gesture)
                     .map_err(|e| refused(&e))?
                 {
                     host.apply(notify);

@@ -71,6 +71,7 @@ fn scrolls_are_a_minor_addition_with_short_defaults() {
     assert_eq!(
         clear,
         Request::Command(Command::ItemSetScroll(SetItemScroll {
+            gesture: 0,
             item: 3,
             scroll: None,
             canvas: OutputCanvas::Main

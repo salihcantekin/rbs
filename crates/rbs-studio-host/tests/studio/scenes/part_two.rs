@@ -1205,3 +1205,49 @@ pub(super) fn a_page_keep_running_setting_is_written_to_its_activity_policy() {
     ));
     assert_eq!(kept(&mut c), json!(true));
 }
+
+/// ADR-0164 decision 2: a client's gesture never joins a window step, even with the
+/// window's own number: the server clears the window's bit from it.
+#[test]
+pub(super) fn a_client_gesture_never_joins_a_window_step() {
+    use rbs_scene::model::SourceId;
+    use rbs_studio_host::studio_host::{Command, OutputCanvas, WINDOW_GESTURE};
+    let Some((host, updates, _api, mut c)) = start() else {
+        return;
+    };
+    let raw = add(&mut c, "screen", "Screen");
+    let item = sources(&mut c)
+        .iter()
+        .find(|r| r["id"] == raw)
+        .map(|r| r["item"].as_u64().unwrap())
+        .unwrap();
+    let right = |want: u32| {
+        move |u: Update| match u {
+            Update::Sources(r) if r[0].layout.is_some_and(|l| l.crop.right == want) => Some(()),
+            Update::Error(e) => panic!("{e}"),
+            _ => None,
+        }
+    };
+    let gesture = WINDOW_GESTURE | 7;
+    host.send(Command::SetSourceCrop {
+        seq: 1,
+        gesture,
+        id: SourceId::from_raw(raw as u32),
+        crop: [0, 0, 10, 0],
+        keep_scale: false,
+        canvas: OutputCanvas::Main,
+    });
+    next(&updates, right(10));
+    ok(&c.call(
+        "item.set_crop",
+        json!({"item": item, "crop": [0, 0, 20, 0], "keep_scale": false, "gesture": gesture}),
+    ));
+    next(&updates, right(20));
+    ok(&c.call("edit.undo", json!({})));
+    let after = next(&updates, |u| match u {
+        Update::Sources(r) => r[0].layout.map(|l| l.crop.right).filter(|&x| x != 20),
+        _ => None,
+    });
+    assert_eq!(after, 10, "the client's crop was a step of its own");
+    drop(host);
+}

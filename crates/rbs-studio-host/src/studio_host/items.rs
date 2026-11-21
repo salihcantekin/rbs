@@ -627,11 +627,12 @@ impl Host {
         &mut self,
         item: u32,
         op: TransformOp,
+        gesture: u64,
         canvas: OutputCanvas,
         notify: &dyn Fn(Update),
     ) -> Result<Response, ApiError> {
         let changed = self
-            .transform_item(ItemId::from_raw(item), op, 0, canvas)
+            .transform_item(ItemId::from_raw(item), op, gesture, canvas)
             .map_err(|e| refused(&e))?;
         if changed {
             self.apply(notify);

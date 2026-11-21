@@ -696,6 +696,10 @@ pub struct RecordRequest {
     pub markers: crate::record_profile::MarkerSettings,
 }
 
+/// Marks every non-zero undo gesture the window sends (ADR-0164 decision 2); the
+/// host clears it from every other caller's gestures, so the two never join a step.
+pub const WINDOW_GESTURE: u64 = 1 << 63;
+
 /// A change to a source's separate-file marks (`source.set_record_separately`): an
 /// absent field keeps the source's value.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

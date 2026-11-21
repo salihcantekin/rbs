@@ -189,6 +189,7 @@ impl StudioUi {
             rbs_api::request::SetSourceSettings {
                 source: id as u32,
                 settings: std::iter::once((key, color)).collect(),
+                gesture: 0,
             },
         ));
     }

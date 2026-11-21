@@ -21,13 +21,35 @@ pub(super) struct ApiTarget<'a> {
     pub(super) notify: &'a dyn Fn(Update),
 }
 
+/// Clears [`WINDOW_GESTURE`] from a gesture any caller but the window sent, so a
+/// client's drag never joins a window step; the value is masked, never refused
+/// (ADR-0164 decision 2).
+fn clear_window_gesture(command: &mut rbs_api::Command) {
+    use rbs_api::Command as C;
+    let gesture = match command {
+        C::ItemSetBox(p) => &mut p.gesture,
+        C::ItemSetCrop(p) => &mut p.gesture,
+        C::ItemSetStyle(p) => &mut p.gesture,
+        C::ItemSetScroll(p) => &mut p.gesture,
+        C::ItemFlip(p) => &mut p.gesture,
+        C::ItemRotate(p) => &mut p.gesture,
+        C::ItemFit(p) => &mut p.gesture,
+        C::ItemAlign(p) => &mut p.gesture,
+        C::ItemResetTransform(p) => &mut p.gesture,
+        C::SourceSetSettings(p) => &mut p.gesture,
+        _ => return,
+    };
+    *gesture &= !WINDOW_GESTURE;
+}
+
 impl ControlTarget for ApiTarget<'_> {
     fn handle_as(
         &mut self,
         caller: &rbs_api::Caller,
-        command: rbs_api::Command,
+        mut command: rbs_api::Command,
         events: &mut EventPublisher,
     ) -> Result<Response, ApiError> {
+        clear_window_gesture(&mut command);
         self.host.check_on_air(caller.irreversible, &command)?;
         self.host.check_network(caller.irreversible, &command)?;
         self.host

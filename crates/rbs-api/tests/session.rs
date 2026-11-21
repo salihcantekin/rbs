@@ -894,3 +894,13 @@ fn a_slow_peer_closed_with_a_request_in_flight_keeps_its_slot_until_the_reply() 
     h.reply(&f, Ok(rbs_api::Response::Done(rbs_api::request::Empty {})));
     assert_eq!(h.server.session_count(), 0);
 }
+
+/// The minor is an integer (ADR-0164 decision 1): 1.100 comes after 1.99, which a
+/// string or decimal comparison would get wrong.
+#[test]
+fn the_protocol_minor_compares_as_a_number() {
+    let minor = |v: &str| -> u32 { v.strip_prefix("1.").unwrap().parse().unwrap() };
+    assert!(minor(rbs_api::PROTOCOL_VERSION) >= 100);
+    assert!(minor("1.100") > minor("1.99"));
+    assert!("1.100" < "1.99", "as strings the order is wrong");
+}

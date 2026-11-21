@@ -19,6 +19,9 @@ use crate::types::{
 use crate::types::{DeviceKey, DeviceSyncEntry};
 use crate::types::{ItemScroll, ItemStyle};
 
+mod transform;
+pub use transform::*;
+
 /// Parameters of a method that takes none. Unknown fields are ignored.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Empty {}
@@ -593,6 +596,11 @@ pub struct SetItemStyle {
     /// vertical canvas's own layout (protocol 1.44, ADR-0093 decision 4).
     #[serde(default, skip_serializing_if = "is_main")]
     pub canvas: OutputCanvas,
+    /// Calls with the same non-zero gesture and edit kind that follow each other are
+    /// one undo step (one drag, protocol 1.100, ADR-0164 decision 2); 0, the default,
+    /// is a step of its own. A gesture never refuses a call.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub gesture: u64,
 }
 
 /// `item.set_crop` (protocol 1.5, ADR-0058): the source pixels cut from each edge of
@@ -613,109 +621,11 @@ pub struct SetItemCrop {
     /// vertical canvas's own layout (protocol 1.44, ADR-0093 decision 4).
     #[serde(default, skip_serializing_if = "is_main")]
     pub canvas: OutputCanvas,
-}
-
-/// A direction on the canvas, as the user sees it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Axis {
-    /// Left to right.
-    Horizontal,
-    /// Top to bottom.
-    Vertical,
-}
-
-/// `item.flip` (protocol 1.18, ADR-0084): mirror the item on the canvas.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct FlipItem {
-    /// The item's id.
-    pub item: u32,
-    /// The mirror axis.
-    pub axis: Axis,
-    /// The canvas whose layout changes: `"main"` (the default) or `"vertical"`, the
-    /// vertical canvas's own layout (protocol 1.44, ADR-0093 decision 4).
-    #[serde(default, skip_serializing_if = "is_main")]
-    pub canvas: OutputCanvas,
-}
-
-/// `item.rotate` (protocol 1.18, ADR-0084): turn the item clockwise about its centre.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RotateItem {
-    /// The item's id.
-    pub item: u32,
-    /// Degrees clockwise: a non-zero multiple of 90 from -360 to 360.
-    pub degrees: i32,
-    /// The canvas whose layout changes: `"main"` (the default) or `"vertical"`, the
-    /// vertical canvas's own layout (protocol 1.44, ADR-0093 decision 4).
-    #[serde(default, skip_serializing_if = "is_main")]
-    pub canvas: OutputCanvas,
-}
-
-/// How `item.fit` places the picture.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FitKind {
-    /// The largest box that fits the canvas, aspect kept.
-    Fit,
-    /// The smallest box that covers the canvas, aspect kept.
-    Fill,
-    /// The canvas size, aspect not kept.
-    Stretch,
-}
-
-/// `item.fit` (protocol 1.18, ADR-0084).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct FitItem {
-    /// The item's id.
-    pub item: u32,
-    /// How to place it.
-    pub mode: FitKind,
-    /// The canvas whose layout changes: `"main"` (the default) or `"vertical"`, the
-    /// vertical canvas's own layout (protocol 1.44, ADR-0093 decision 4).
-    #[serde(default, skip_serializing_if = "is_main")]
-    pub canvas: OutputCanvas,
-}
-
-/// Which axes `item.align` centres on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AlignAxis {
-    /// Both.
-    Both,
-    /// Left to right only.
-    Horizontal,
-    /// Top to bottom only.
-    Vertical,
-}
-
-/// `item.align` (protocol 1.18, ADR-0084): centre the item on the canvas.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AlignItem {
-    /// The item's id.
-    pub item: u32,
-    /// Centre on this axis only; both when left out.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub axis: Option<AlignAxis>,
-    /// The canvas whose layout changes: `"main"` (the default) or `"vertical"`, the
-    /// vertical canvas's own layout (protocol 1.44, ADR-0093 decision 4).
-    #[serde(default, skip_serializing_if = "is_main")]
-    pub canvas: OutputCanvas,
-}
-
-/// `item.reset_transform` (protocol 1.18, ADR-0084).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ResetItemTransform {
-    /// The item's id.
-    pub item: u32,
-    /// The canvas whose layout changes: `"main"` (the default) or `"vertical"`, the
-    /// vertical canvas's own layout (protocol 1.44, ADR-0093 decision 4).
-    #[serde(default, skip_serializing_if = "is_main")]
-    pub canvas: OutputCanvas,
+    /// Calls with the same non-zero gesture and edit kind that follow each other are
+    /// one undo step (one drag, protocol 1.100, ADR-0164 decision 2); 0, the default,
+    /// is a step of its own. A gesture never refuses a call.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub gesture: u64,
 }
 
 fn yes() -> bool {
@@ -1329,6 +1239,11 @@ pub struct SetSourceSettings {
     pub source: u32,
     /// The keys to change.
     pub settings: BTreeMap<String, serde_json::Value>,
+    /// Calls with the same non-zero gesture and edit kind that follow each other are
+    /// one undo step (one drag, protocol 1.100, ADR-0164 decision 2); 0, the default,
+    /// is a step of its own. A gesture never refuses a call.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub gesture: u64,
 }
 
 /// `source.get_settings`' answer: every stored setting of the source.
@@ -1648,6 +1563,11 @@ pub struct SetItemScroll {
     /// `"main"` (the default) or `"vertical"`, as for the other item edits.
     #[serde(default, skip_serializing_if = "is_main")]
     pub canvas: OutputCanvas,
+    /// Calls with the same non-zero gesture and edit kind that follow each other are
+    /// one undo step (one drag, protocol 1.100, ADR-0164 decision 2); 0, the default,
+    /// is a step of its own. A gesture never refuses a call.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub gesture: u64,
 }
 
 /// `item.scroll_pause`, `item.scroll_resume` and `item.scroll_restart` (protocol 1.94,
