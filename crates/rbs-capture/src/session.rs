@@ -9,6 +9,7 @@ use rbs_core::time::Clock;
 use rbs_core::timing::FrameRate;
 
 use crate::error::CaptureError;
+use crate::mapping::{MappingSwitch, PictureMapping};
 use crate::target::{CaptureTarget, Permission, RegionGrab, TargetId, TargetKind, Thumbnail};
 
 /// A GPU device, identified the way OS interop APIs identify it. Defined in
@@ -86,6 +87,10 @@ pub struct CaptureRequest {
     pub cursor: bool,
     /// The master clock frames are stamped with (ADR-0004).
     pub clock: Arc<dyn Clock>,
+    /// The host's switch for the desktop to picture mapping (ADR-0165 decision 5).
+    /// `None`: the host never asks for a mapping. An adapter that declares
+    /// `capture.mapping` registers on it and does its mapping work only while it is on.
+    pub mapping: Option<MappingSwitch>,
 }
 
 impl CaptureRequest {
@@ -101,6 +106,7 @@ impl CaptureRequest {
             size: None,
             cursor: false,
             clock,
+            mapping: None,
         }
     }
 
@@ -139,6 +145,12 @@ impl CaptureRequest {
         self.cursor = cursor;
         self
     }
+
+    /// Gives the session the host's mapping switch (ADR-0165 decision 5).
+    pub fn with_mapping(mut self, switch: MappingSwitch) -> Self {
+        self.mapping = Some(switch);
+        self
+    }
 }
 
 impl fmt::Debug for CaptureRequest {
@@ -151,6 +163,7 @@ impl fmt::Debug for CaptureRequest {
             .field("frame_rate", &self.frame_rate)
             .field("size", &self.size)
             .field("cursor", &self.cursor)
+            .field("mapping", &self.mapping)
             .finish_non_exhaustive()
     }
 }
@@ -233,6 +246,15 @@ pub trait CaptureSession: Send {
     /// returned `TargetNotFound`, that no id restores the choice any more (the user
     /// picks again). Not real-time; call it on a control thread. Default: `None`.
     fn target_to_store(&self) -> Option<TargetId> {
+        None
+    }
+
+    /// The desktop to picture mapping of the newest frame `latest_frame` returned,
+    /// tagged with that frame's time (ADR-0165 decision 5). `None` while the request's
+    /// mapping switch is off or missing, before the first mapped frame, or when the
+    /// adapter cannot map (the default). REAL-TIME: the same rules as `latest_frame`
+    /// (no allocation, lock, wait, I/O or logging).
+    fn latest_mapping(&self) -> Option<PictureMapping> {
         None
     }
 }

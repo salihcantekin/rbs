@@ -16,6 +16,9 @@ pub const TARGET_PICKER: CapabilityKey = CapabilityKey::new_static("capture.targ
 pub const PIXEL_FORMATS: CapabilityKey = CapabilityKey::new_static("capture.pixel_formats");
 /// Set of memory kinds frames can be delivered in.
 pub const MEMORY: CapabilityKey = CapabilityKey::new_static("capture.memory");
+/// Set of target kinds for which the adapter can publish a desktop to picture mapping
+/// (`CaptureSession::latest_mapping`, ADR-0165 decision 5).
+pub const MAPPING: CapabilityKey = CapabilityKey::new_static("capture.mapping");
 /// Flag: the OS can composite the cursor into frames.
 pub const CURSOR: CapabilityKey = CapabilityKey::new_static("capture.cursor");
 /// Int: highest frame rate the adapter can deliver, in frames per second.
