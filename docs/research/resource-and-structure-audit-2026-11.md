@@ -162,6 +162,7 @@ Severity is the cost if the path is in use, not the difficulty of the change.
 - **Larger change:** Store undo as the inverse command and validate only the invariants that command can affect. Journal commands and rewrite the document on a timer or on close. Do not skip the old-file parse on the current `write` path. That parse is the guarantee that a broken body is kept.
 - **Benefit:** Fader drags and text edits stop allocating the rest of the document. Autosave stops building a second collection that is thrown away, once a journal replaces per-edit rewrite.
 - **Risk:** An invariant that only the full walk catches could commit. The volume path already rejects a bad factor before `apply`.
+- **Done (2026-11-21):** Field edits apply in place (`rbs-scene` `collection/field.rs`, F-09a). The studio host hands the collection to autosave when its epoch and `generation` changed, instead of comparing it with a kept copy each round (13.7 µs per round) and cloning twice per edit (78 µs each, 300 sources); one clone per edit for the writer remains. The writer thread keeps a `Written` record and does not parse a file it wrote itself (`document::write_known`), and leaves an unchanged file in place: a 77 KiB save drops from 5.7 ms to 2.0 ms p50 (`cargo bench -p rbs-user-data --bench save`, 4 vCPU cloud container). The journal is not built: what is left is one 78 µs copy per user-paced edit and one render per save.
 
 ### F-10: The control round builds every source row, then compares
 
@@ -173,6 +174,7 @@ Severity is the cost if the path is in use, not the difficulty of the change.
 - **Larger change:** One snapshot per real edit. Volume patches one row. Sources, Properties, and the Mixer should not share one row type that includes layout, filters, browser settings, and the cue clock.
 - **Benefit:** Idle control-thread allocations drop out. Fader drags and timed shows stop redrawing the window at the control rate.
 - **Risk:** A missed dirty bit shows a stale Sources list until the next edit.
+- **Status (2026-11-21):** local change done. The round already skipped the rebuild when a stamp of the collection's generation and the runtime state was unchanged, and `Heard` already kept the painted bars. What remained: the stamp itself cloned every source state (`Studio::sources`) and looked up device peers on each round, `publish_levels` rebuilt its list each round, and the Show cue clock was part of the stamp and of `SourceRow`. Now the stamp reads the borrowed `Studio::source_health`, device peers are left to the generation, the levels list is rebuilt only with the rows, and cue time travels in `Update::Cues`, which the window patches into the rows it changes. An unchanged `publish` makes 0 allocations, down from 25 at 10 sources and 112 at 50 (`studio_host/publish_cost.rs`, a test asserts 0), and a running cue no longer rebuilds the lists. Open: the larger change. A fader step still rebuilds every row, about 1,000 allocations at 50 sources (debug build, same file).
 
 ### F-11: A shared export readback locks on every repeated frame
 

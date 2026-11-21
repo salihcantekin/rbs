@@ -48,9 +48,9 @@ pub use recording::{
     AudioSettings, FinishReport, ISO_AUDIO_ENCODER, ISO_OUTPUT, ISO_VIDEO_ENCODERS, OUTPUT,
     OUTPUT_2, OUTPUT_3, OUTPUT_4, OUTPUT_POOL, OutputPartitions, PartitionPool, Partitions, Port,
     Progress, RENDER, REPLAY_AUDIO_ENCODER, REPLAY_RING, REPLAY_VIDEO_ENCODER, RecordAdapters,
-    RecordError, RecordSettings, Recording, SourceProgress, SourceState, StartFailure, StartReport,
-    VIDEO_ENCODER, VIDEO_ENCODER_2, VIDEO_ENCODER_3, VIDEO_ENCODER_4, VIDEO_ENCODER_POOL,
-    VideoSettings,
+    RecordError, RecordSettings, Recording, SourceHealth, SourceProgress, SourceState,
+    StartFailure, StartReport, VIDEO_ENCODER, VIDEO_ENCODER_2, VIDEO_ENCODER_3, VIDEO_ENCODER_4,
+    VIDEO_ENCODER_POOL, VideoSettings,
 };
 pub use select::{Chosen, scheme_of};
 pub use studio::{

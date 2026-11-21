@@ -3,6 +3,26 @@
 use super::*;
 
 impl Host {
+    /// Hands the collection to autosave when it changed since it was last handed, so
+    /// a round with no edit neither walks nor copies the collection (audit F-09).
+    /// Every edit bumps [`SceneCollection::generation`] and every replacement bumps
+    /// the epoch, so an equal stamp means the same value. An edit and its undo give a
+    /// new stamp and one more save, which the writer finds unchanged and does not write.
+    pub(super) fn publish_save(&mut self) {
+        let stamp = self.save_stamp();
+        if let Some(save) = &self.autosave
+            && self.saved != Some(stamp)
+        {
+            save.save(&self.collection);
+            self.saved = Some(stamp);
+        }
+    }
+
+    /// Which value of the collection runs: the epoch and the generation.
+    pub(super) fn save_stamp(&self) -> (u64, u64) {
+        (self.collection_epoch, self.collection.generation())
+    }
+
     /// Runs `next` instead of the collection that runs now (the studio restarts);
     /// on a failure the one before runs again. Always sends [`Update::Canvas`].
     pub(super) fn switch_collection(
@@ -27,7 +47,8 @@ impl Host {
         // The pages of the collection before go: their Interact windows close.
         self.close_all_interacts(notify);
         let before = self.api_canvas();
-        let loaded = next.clone();
+        // Fixing up a missing canvas or scene below is an edit: it is saved.
+        let loaded = next.generation();
         let mut next = next;
         let (size, fps) = self
             .collection
@@ -62,7 +83,7 @@ impl Host {
                 // The new collection's timers, not the old one's.
                 self.studio.set_text_timers(&[]);
                 self.text_timers_restored = false;
-                self.saved = Some(loaded);
+                self.saved = Some((self.collection_epoch, loaded));
                 self.history.clear();
                 // The attribute clipboard belongs to the old collection (ADR-0133).
                 if self.attribute_clipboard.take().is_some() {

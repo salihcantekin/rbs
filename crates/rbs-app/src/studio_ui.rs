@@ -82,6 +82,7 @@ pub(crate) mod attributes;
 pub(crate) mod browser_props;
 pub(crate) mod destinations;
 pub(crate) mod filters;
+mod live_ticks;
 pub(crate) mod loudness;
 mod meter_values;
 pub(crate) mod monitor;
@@ -312,8 +313,8 @@ pub struct StudioUi {
     inspected: Cell<i32>,
     /// The Filters tab's selection and the drag in progress (ADR-0062).
     filter_ui: filters::FilterUi,
-    /// The play state of each media source (ADR-0108), from [`Update::Media`].
-    media_ticks: Vec<rbs_app::studio_host::MediaTick>,
+    /// The play state of each media source and the time left on each Show cue.
+    live: live_ticks::LiveTicks,
     /// An Add source is on its way: the next new source is selected.
     adding: bool,
     /// The source just added is a plain frame: Properties opens on its border.
@@ -712,7 +713,7 @@ impl StudioUi {
             library_samples: Rc::new(VecModel::default()),
             library_thumb_height: 0,
             filter_ui: filters::FilterUi::default(),
-            media_ticks: Vec::new(),
+            live: live_ticks::LiveTicks::default(),
             selected: -1,
             attributes_clipboard: None,
             permissions: (Vec::new(), None),
@@ -2202,11 +2203,13 @@ impl StudioUi {
     /// Play or pause a media file, by its play state now (ADR-0108 decision 10).
     pub fn media_play_pause(&mut self, id: i32) {
         let playing = self
-            .media_ticks
+            .live
+            .media
             .iter()
             .any(|t| t.id.get() as i32 == id && t.state == 0);
         let ended = self
-            .media_ticks
+            .live
+            .media
             .iter()
             .any(|t| t.id.get() as i32 == id && t.state == 3);
         let op = if playing {
@@ -2269,26 +2272,6 @@ impl StudioUi {
             patch,
             gesture: 0,
         });
-    }
-
-    /// Writes the newest play states into the rows that changed.
-    fn apply_media_ticks(&mut self) {
-        for i in 0..self.sources.row_count() {
-            let Some(mut row) = self.sources.row_data(i) else {
-                continue;
-            };
-            if !row.media {
-                continue;
-            }
-            let before = (row.media_state, row.media_pos_ms, row.media_len_ms);
-            let (state, pos, len) = media_tick_fields(&self.media_ticks, row.id);
-            if before != (state, pos, len) {
-                row.media_state = state;
-                row.media_pos_ms = pos;
-                row.media_len_ms = len;
-                self.sources.set_row_data(i, row);
-            }
-        }
     }
 
     pub fn set_companion_audio(&mut self, id: i32, on: bool) {
@@ -6645,10 +6628,8 @@ impl StudioUi {
                 picture,
                 state,
             } => out.interacts.push((source, picture, state)),
-            Update::Media(ticks) => {
-                self.media_ticks = ticks;
-                self.apply_media_ticks();
-            }
+            Update::Media(ticks) => self.set_media_ticks(ticks),
+            Update::Cues(cues) => self.set_cues(cues),
             Update::Sources(rows) => {
                 self.set_rows(rows);
                 out.focus_shape = self.focus_shape.take();
@@ -7229,7 +7210,7 @@ impl StudioUi {
                     &scene_pictures
                 };
                 let (media_state, media_pos_ms, media_len_ms) =
-                    media_tick_fields(&self.media_ticks, r.id.get() as i32);
+                    self.live.media_fields(r.id.get() as i32);
                 let (perm_kind, perm_action) = self.permission_fix(r);
                 SourceData {
                     perm_kind,
@@ -7370,7 +7351,7 @@ impl StudioUi {
                     chrome_fill: r.chrome_fill as i32,
                     has_work_rect: r.has_work_rect,
                     show_for_ms: r.show_for_ms as i32,
-                    cue_remaining_ms: r.cue_remaining_ms as i32,
+                    cue_remaining_ms: self.live.cue_left(r.item),
                 }
             })
             .collect();
@@ -9028,19 +9009,6 @@ fn rgb_hex(s: &str) -> Option<[u8; 3]> {
 
 /// The play state (4 standby when the studio runs no instance), cursor and length of
 /// media source `id`, as the rows show them.
-fn media_tick_fields(ticks: &[rbs_app::studio_host::MediaTick], id: i32) -> (i32, i32, i32) {
-    ticks
-        .iter()
-        .find(|t| t.id.get() as i32 == id)
-        .map_or((4, 0, 0), |t| {
-            (
-                i32::from(t.state),
-                i32::try_from(t.cursor_ms).unwrap_or(i32::MAX),
-                i32::try_from(t.duration_ms).unwrap_or(i32::MAX),
-            )
-        })
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used)] // Tests fail by panicking.
 mod tests {

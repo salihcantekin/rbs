@@ -738,6 +738,21 @@ pub struct SourceState {
     pub reason: Option<&'static str>,
 }
 
+/// Why a scheduled source is not running, borrowed from the studio
+/// ([`crate::Studio::source_health`]): the fields of [`SourceState`] that change while
+/// the studio runs, without its name, adapter and target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceHealth<'a> {
+    /// The collection source.
+    pub source: SourceId,
+    /// Why it is not running, as [`SourceState::failed`].
+    pub failed: Option<std::borrow::Cow<'a, str>>,
+    /// The cause, as [`SourceState::fault`].
+    pub fault: Option<rbs_core::fault::SourceFault>,
+    /// The control-API reason, as [`SourceState::reason`].
+    pub reason: Option<&'static str>,
+}
+
 /// What [`Recording::start`] chose and started.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
