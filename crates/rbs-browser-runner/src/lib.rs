@@ -810,6 +810,25 @@ pub enum HelperMode {
     Still,
 }
 
+/// A fault the test-double helper injects in [`HelperMode::Run`] (WP-H fault
+/// injection, ADR-0109 decision 12). The studio must survive each one: a dead or
+/// hung helper is Unavailable, a bad value costs only that page's picture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HelperFault {
+    /// None: a well-behaved helper.
+    #[default]
+    None,
+    /// Abort after this many published pictures, without a clean exit. On the GPU
+    /// path the helper first claims the next slot, so it dies holding `WRITING`.
+    CrashAfter(u32),
+    /// Stop painting and beating after this many published pictures, and stay alive
+    /// (a page stuck in script, a hung engine) until stdin closes.
+    FreezeAfter(u32),
+    /// Publish every GPU picture with this fence value instead of the next one
+    /// (`u64::MAX`, 0, a value already published).
+    Fence(u64),
+}
+
 /// The test-double helper process: a moving bright checker, so a missing CEF page
 /// is obvious on Program. Opaque (the helper applies `transparent` = false itself;
 /// the studio does no per-frame pass).
@@ -820,6 +839,14 @@ pub fn helper_main(mode: HelperMode) -> Result<(), String> {
 /// As [`helper_main`]; with `tone` and a sound section, `Run` also writes a 440 Hz
 /// stereo tone at the asked rate (tests only: the app never passes it).
 pub fn helper_main_with(mode: HelperMode, tone: bool) -> Result<(), String> {
+    helper_main_faulty(mode, tone, HelperFault::None)
+}
+
+/// As [`helper_main_with`], injecting `fault` in [`HelperMode::Run`] (tests only).
+/// When `configure` names GPU slots, `Run` publishes GPU pictures (no texture
+/// exists: the slot protocol and the fence values are what the studio sees) with
+/// fence values 1, 2, 3, ... and the shared-memory frame as well.
+pub fn helper_main_faulty(mode: HelperMode, tone: bool, fault: HelperFault) -> Result<(), String> {
     let mut stdin = std::io::stdin();
     let raw = read_message(&mut stdin)?;
     let config = rbs_browser_ipc::decode_configure(&raw).ok_or_else(|| "configure".to_owned())?;
@@ -889,6 +916,9 @@ pub fn helper_main_with(mode: HelperMode, tone: bool) -> Result<(), String> {
                 .then(|| SoundRing::open(&config.sound).ok())
                 .flatten()
                 .map(|ring| Tone::new(ring, config.sample_rate.max(8_000)));
+            let gpu = config.gpu.is_some() && ring.gpu_slots() > 0;
+            let mut published = 1u32;
+            let mut fence = 0u64;
             loop {
                 match closed_rx.recv_timeout(period) {
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
@@ -898,11 +928,35 @@ pub fn helper_main_with(mode: HelperMode, tone: bool) -> Result<(), String> {
                     }
                     _ => return Ok(()),
                 }
+                match fault {
+                    HelperFault::CrashAfter(n) if published >= n => {
+                        if gpu {
+                            // Dies holding `WRITING` on the slot it claimed.
+                            let _ = ring.claim_gpu();
+                        }
+                        std::process::abort();
+                    }
+                    HelperFault::FreezeAfter(n) if published >= n => {
+                        // Alive, silent: no paint, no beat, until stdin closes.
+                        while let Ok(Some(_)) = closed_rx.recv() {}
+                        return Ok(());
+                    }
+                    _ => {}
+                }
                 if let Some(tone) = tone.as_mut() {
                     tone.write(rbs_browser_shm::os_monotonic_nanos());
                 }
                 shift = shift.wrapping_add(4);
                 paint(shift, mark);
+                if gpu && let Some(slot) = ring.claim_gpu() {
+                    fence += 1;
+                    let value = match fault {
+                        HelperFault::Fence(value) => value,
+                        _ => fence,
+                    };
+                    ring.publish_gpu(slot, value);
+                }
+                published = published.saturating_add(1);
                 since_beat += period;
                 if since_beat >= HEARTBEAT_PERIOD / 2 {
                     ring.beat();

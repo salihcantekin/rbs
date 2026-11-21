@@ -718,6 +718,7 @@ mod os {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
     use super::*;
+    use crate::gpu_slots::{GPU_COUNT, GPU_SEQ, GPU_SLOT};
 
     #[test]
     fn a_published_frame_reaches_the_reader_once() {
@@ -969,6 +970,154 @@ mod tests {
         helper.beat();
         helper.beat();
         assert_eq!(studio.heartbeat(), 2);
+    }
+
+    // ---- Fault injection: a helper that writes bad values (WP-H, ADR-0109
+    // decision 12). The helper maps the same header and can store anything in it.
+    // Whatever it writes, the studio stays inside its own mapping, never panics, and
+    // at worst shows a wrong or stale picture of that helper's own page.
+
+    /// The helper scribbles the GPU slot count and the latest slot index. The
+    /// studio never leases a slot outside the header's eight, and an index outside
+    /// the count gives nothing.
+    #[test]
+    fn a_scribbled_slot_count_or_index_never_leases_outside_the_header() {
+        let studio = gpu_ring(4);
+        let helper = FrameRing::open(studio.name(), 2, 2).unwrap();
+        let slot = helper.claim_gpu().unwrap();
+        helper.publish_gpu(slot, 1);
+        helper.word(GPU_COUNT).store(u32::MAX, Ordering::Relaxed);
+        assert_eq!(studio.gpu_slots(), MAX_GPU_SLOTS, "clamped to the header");
+        for index in [MAX_GPU_SLOTS, u32::MAX, 1 << 31] {
+            helper.word(GPU_SLOT).store(index, Ordering::Relaxed);
+            helper.dword(GPU_SEQ).fetch_add(1, Ordering::Release);
+            assert_eq!(studio.lease_latest_gpu(), None, "index {index}");
+            // Giving back a lease on such a slot touches no word.
+            studio.lease_sub(index);
+            studio.lease_add(index);
+        }
+        // An index inside the header but past the studio's four textures is leased
+        // like any other: the studio's own texture list refuses it (`PageSlots`).
+        helper
+            .word(GPU_SLOT)
+            .store(MAX_GPU_SLOTS - 1, Ordering::Relaxed);
+        helper.dword(GPU_SEQ).fetch_add(1, Ordering::Release);
+        let picture = studio.lease_latest_gpu().unwrap();
+        assert!(picture.slot < MAX_GPU_SLOTS);
+        studio.lease_sub(picture.slot);
+        assert_eq!(studio.lease(picture.slot), 0);
+    }
+
+    /// The helper overwrites the state word of a slot the studio leases. The
+    /// studio's own give-back then wraps the word instead of panicking; the slot
+    /// stays out of use (it reads as `WRITING`), and the other slots still work.
+    #[test]
+    fn a_scribbled_lease_word_costs_the_page_that_slot_only() {
+        let studio = gpu_ring(4);
+        let helper = FrameRing::open(studio.name(), 2, 2).unwrap();
+        let first = helper.claim_gpu().unwrap();
+        helper.publish_gpu(first, 1);
+        let mut seen = 0;
+        let picture = studio.take_gpu(&mut seen).unwrap();
+        assert_eq!(picture.slot, first);
+        // Erases the studio's lease, then the studio gives it back.
+        helper.state(first).store(0, Ordering::Relaxed);
+        studio.lease_sub(first);
+        assert_ne!(helper.state(first).load(Ordering::Relaxed) & WRITING, 0);
+        // The helper can no longer claim it, nor the studio lease it.
+        for fence in 2..6 {
+            let slot = helper.claim_gpu().unwrap();
+            assert_ne!(slot, first, "a wrapped word is never claimed");
+            helper.publish_gpu(slot, fence);
+            let p = studio.take_gpu(&mut seen).unwrap();
+            assert_eq!((p.slot, p.fence), (slot, fence));
+            studio.lease_sub(slot);
+        }
+        helper.word(GPU_SLOT).store(first, Ordering::Relaxed);
+        helper.dword(GPU_SEQ).fetch_add(1, Ordering::Release);
+        assert_eq!(
+            studio.take_gpu(&mut seen),
+            None,
+            "a wrapped word is not leased"
+        );
+        // Every state value: a lease attempt backs off or holds, and gives back
+        // exactly what it took.
+        for value in [WRITING, WRITING | 7, u32::MAX, 1, 0x7fff_ffff] {
+            helper.state(first).store(value, Ordering::Relaxed);
+            helper.dword(GPU_SEQ).fetch_add(1, Ordering::Release);
+            match studio.lease_latest_gpu() {
+                Some(p) => {
+                    assert_eq!(value & WRITING, 0, "leased a slot marked WRITING");
+                    studio.lease_sub(p.slot);
+                }
+                None => assert_ne!(value & WRITING, 0, "a free slot was refused"),
+            }
+            assert_eq!(helper.state(first).load(Ordering::Relaxed), value);
+        }
+    }
+
+    /// The helper moves the publish sequence back, to zero or to the top. The studio
+    /// takes nothing it has seen, nothing before the first publish, and does not
+    /// panic on the wrap.
+    #[test]
+    fn a_scribbled_publish_sequence_never_gives_a_picture_twice_or_panics() {
+        let studio = gpu_ring(4);
+        let helper = FrameRing::open(studio.name(), 2, 2).unwrap();
+        let slot = helper.claim_gpu().unwrap();
+        helper.publish_gpu(slot, 1);
+        let mut seen = 0;
+        let p = studio.take_gpu(&mut seen).unwrap();
+        studio.lease_sub(p.slot);
+        helper.dword(GPU_SEQ).store(seen, Ordering::Release);
+        assert_eq!(studio.take_gpu(&mut seen), None, "the same sequence again");
+        helper.dword(GPU_SEQ).store(0, Ordering::Release);
+        assert_eq!(studio.take_gpu(&mut seen), None, "no publish");
+        assert_eq!(studio.lease_latest_gpu(), None, "no publish");
+        helper.dword(GPU_SEQ).store(u64::MAX, Ordering::Release);
+        let p = studio.take_gpu(&mut seen).unwrap();
+        assert_eq!(seen, u64::MAX);
+        studio.lease_sub(p.slot);
+        // The helper's next publish wraps the sequence to 0 (`fetch_add`): no
+        // picture until it moves again, then pictures flow.
+        let next = helper.claim_gpu().unwrap();
+        helper.publish_gpu(next, 2);
+        assert_eq!(studio.take_gpu(&mut seen), None);
+        let again = helper.claim_gpu().unwrap();
+        helper.publish_gpu(again, 3);
+        let p = studio.take_gpu(&mut seen).unwrap();
+        assert_eq!((p.slot, p.fence), (again, 3));
+        studio.lease_sub(p.slot);
+    }
+
+    /// The helper writes any exchange word or paint time on the shared-memory path.
+    /// The studio copies exactly one slot from inside the section each time, and a
+    /// paint time is only a value (the edge clock places it, never after now).
+    #[test]
+    fn a_scribbled_exchange_word_or_paint_time_stays_inside_the_section() {
+        let studio = FrameRing::create(2, 2, SlotLayout::Rgba8Straight).unwrap();
+        let helper = FrameRing::open(studio.name(), 2, 2).unwrap();
+        let mut reader = studio.reader();
+        let mut buf = Vec::new();
+        for word in [u32::MAX, DIRTY | INDEX, DIRTY | 3, DIRTY, 0xdead_beef] {
+            helper.word(24).store(word, Ordering::Release);
+            for slot in 0..SLOTS as usize {
+                helper
+                    .dword(PAINTED + 8 * slot)
+                    .store(u64::MAX, Ordering::Relaxed);
+            }
+            let fresh = studio.take_latest(&mut reader, &mut buf);
+            assert_eq!(fresh, word & DIRTY != 0, "word {word:#x}");
+            if fresh {
+                assert_eq!(buf.len(), studio.slot, "one slot copied");
+                assert!(reader.front < SLOTS);
+                assert_eq!(studio.painted(&reader), u64::MAX);
+            }
+        }
+        // A helper that publishes again is read again, one slot at a time.
+        let mut writer = helper.writer();
+        helper.publish_with(&mut writer, |px| px.fill(9));
+        assert!(studio.take_latest(&mut reader, &mut buf));
+        assert_eq!(buf.len(), studio.slot);
     }
 
     #[test]
