@@ -59,6 +59,7 @@ use crate::error::GpuError;
 const COMPOSITIONOBJECT_ALL_ACCESS: u32 = 0x0003;
 
 use crate::share::DEFAULT_RETIRE_POLL;
+use crate::share::present_retry::{PresentRetry, Retry};
 
 /// A rectangle in the window's client area in physical pixels, origin at the top left.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -122,6 +123,13 @@ pub struct PreviewLayer {
     width: u32,
     height: u32,
     shown: Option<PreviewFrame>,
+    /// The newest frame whose present failed, presented again at the next `retire`
+    /// (ADR-0161): a still page's last picture is never lost to a busy compositor.
+    pending: PresentRetry<PreviewFrame>,
+    /// The slot whose buffer the last successful `SetBuffer` made the surface's current
+    /// one. A replaced frame on that slot may not report `IsAvailable` until another
+    /// buffer is set, so `next_retire` does not poll for it (ADR-0161 review).
+    current: Option<usize>,
     /// Replaced frames whose buffer the compositor may still read. Capacity: the ring size.
     retiring: Vec<PreviewFrame>,
     /// The frame shown when the layer was detached. Its buffer stays the surface's
@@ -313,6 +321,8 @@ impl PreviewLayer {
             width,
             height,
             shown: None,
+            pending: PresentRetry::new(),
+            current: None,
             checked: Timestamp::ZERO,
             poll: DEFAULT_RETIRE_POLL,
             placed: None,
@@ -378,10 +388,24 @@ impl PreviewLayer {
         self.leave_window();
         self.placed = None;
         self.awaiting_frame = false;
-        if let Some(old) = self.shown.take() {
-            self.detached = Some(old);
+        // The frame on the surface's current buffer is held as `detached` (it never
+        // reports available); every other frame retires and is polled. That is the
+        // shown frame, unless a kept frame's `SetBuffer` succeeded after it (ADR-0161).
+        let kept = self.pending.clear();
+        let shown = self.shown.take();
+        let (hold, retire) = match kept {
+            Some(k) if self.current == Some(k.slot()) => (Some(k), shown),
+            k => (shown, k),
+        };
+        if let Some(old) = retire {
+            self.retiring.push(old);
         }
-        self.retire(now);
+        if let Some(new) = hold
+            && let Some(old) = self.detached.replace(new)
+        {
+            self.retiring.push(old);
+        }
+        self.give_back(now);
     }
 
     /// Takes the visual out of the window and waits until the compositor has applied it
@@ -712,13 +736,28 @@ impl PreviewLayer {
     /// ([`PreviewLayer::retire`]). Never waits, never allocates. While the layer is not
     /// in a window (before `attach_to_hwnd` or after `detach`) the frame goes back at
     /// once and nothing is presented, so no frame waits on a surface the compositor does
-    /// not show.
+    /// not show. When the present fails (a busy compositor, not a lost device) the
+    /// frame is kept and presented again at the next [`PreviewLayer::retire`], until a
+    /// newer frame replaces it or one second has passed since its first failure
+    /// (ADR-0161).
     pub fn show(&mut self, frame: PreviewFrame, now: Timestamp) {
         if self.window.is_none() {
             drop(frame);
-            self.retire(now);
+            self.give_back(now);
             return;
         }
+        // A newer frame replaces one whose present failed. It was never shown, but its
+        // buffer may be the surface's current one, so it retires as usual.
+        if let Some(old) = self.pending.newer() {
+            self.retiring.push(old);
+        }
+        self.present(frame, now);
+        self.give_back(now);
+    }
+
+    /// Sets the frame's buffer and presents it; keeps the frame for a retry when that
+    /// fails. Never waits, never allocates.
+    fn present(&mut self, frame: PreviewFrame, now: Timestamp) {
         if !self.lost {
             // SAFETY: a zero-timeout check of the manager's own event.
             let signalled = unsafe { WaitForSingleObject(self.lost_event, 0) } == WAIT_OBJECT_0;
@@ -733,28 +772,30 @@ impl PreviewLayer {
                 // this one included, goes back at once.
                 debug_assert!(self.lost, "frame slot {} outside the ring", frame.slot());
                 drop(frame);
+                debug_assert!(!self.pending.waiting(), "callers take the kept frame first");
                 self.shown = None;
                 self.detached = None;
-                self.retire(now);
+                self.current = None;
                 return;
             }
         };
         // SAFETY: `buffer` belongs to this manager; the engine wrote it completely before
         // sending the frame (it waits for its GPU work), so it is ready to present.
-        let r = unsafe {
-            self.surface
-                .SetBuffer(buffer)
-                .and_then(|()| self.manager.Present())
-        };
-        if r.is_err() {
-            // A present the compositor has not finished is not a lost device. Marking
-            // it lost froze the Interact window after the first busy second. The lost
-            // event above is the real device loss. This frame goes back; the picture
-            // already showing stays.
-            drop(frame);
-            self.retire(now);
+        let set = unsafe { self.surface.SetBuffer(buffer) }.is_ok();
+        if set {
+            self.current = Some(frame.slot());
+        }
+        // SAFETY: presents the buffer just set on our own manager; never waits.
+        let presented = set && unsafe { self.manager.Present() }.is_ok();
+        if !presented {
+            // A present the compositor has not finished is not a lost device (marking
+            // it lost froze the Interact window after the first busy second); the lost
+            // event above is the real device loss. The picture already showing stays,
+            // and this newer one is kept and presented again (ADR-0161).
+            self.pending.hold(frame, now);
             return;
         }
+        self.pending.presented();
         if self.awaiting_frame {
             self.awaiting_frame = false;
             self.apply_root();
@@ -767,12 +808,24 @@ impl PreviewLayer {
         if let Some(old) = self.detached.take() {
             self.retiring.push(old);
         }
-        self.retire(now);
+    }
+
+    /// Presents again a frame whose present failed (ADR-0161), then gives back replaced
+    /// frames whose buffer the compositor no longer uses. Returns how many frames still
+    /// wait, the kept one included. Never waits.
+    pub fn retire(&mut self, now: Timestamp) -> usize {
+        match self.pending.take_due(now) {
+            Retry::Nothing => {}
+            Retry::Again(frame) if self.window.is_some() => self.present(frame, now),
+            // Not in a window, or tried for too long: it goes back unseen.
+            Retry::Again(frame) | Retry::GiveUp(frame) => self.retiring.push(frame),
+        }
+        self.give_back(now) + usize::from(self.pending.waiting())
     }
 
     /// Gives back replaced frames whose buffer the compositor no longer uses. Returns how
     /// many still wait. Never waits.
-    pub fn retire(&mut self, now: Timestamp) -> usize {
+    fn give_back(&mut self, now: Timestamp) -> usize {
         self.checked = now;
         let lost = self.lost;
         let buffers = &self.buffers;
@@ -787,9 +840,26 @@ impl PreviewLayer {
         self.retiring.len()
     }
 
-    /// When to call [`PreviewLayer::retire`] again, if a replaced frame waits.
+    /// Failed presents so far (ADR-0161).
+    pub fn present_failures(&self) -> u64 {
+        self.pending.failures()
+    }
+
+    /// Frames whose present failed and that were never shown: replaced by a newer
+    /// frame, given up after the retry window, or retired at `detach` (ADR-0161). A
+    /// loss is not counted; [`PreviewLayer::lost`] reports it.
+    pub fn frames_not_presented(&self) -> u64 {
+        self.pending.missed()
+    }
+
+    /// When to call [`PreviewLayer::retire`] again, if a replaced frame waits or a frame
+    /// waits for another present.
     pub fn next_retire(&self) -> Option<Timestamp> {
-        (!self.retiring.is_empty()).then(|| self.checked + self.poll)
+        // A replaced frame whose buffer is still the surface's current one (set, but its
+        // present failed and it was given up or detached) can stay unavailable until the
+        // next `SetBuffer`; it is checked again at the next `show`, not polled (P13).
+        let polled = self.retiring.iter().any(|f| self.current != Some(f.slot()));
+        (polled || self.pending.waiting()).then(|| self.checked + self.poll)
     }
 
     /// Replaced frames still waiting (not counting the frame held since `detach`).

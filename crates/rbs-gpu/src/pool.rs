@@ -132,6 +132,11 @@ impl PooledTexture {
     /// The texture holding `plane`: plane 0 is [`Self::texture`]; plane 1 is the CbCr
     /// texture of a plane pair, or the same texture for a multi-planar format. `None` for
     /// other planes and for single-plane formats' plane 1.
+    ///
+    /// The CbCr texture of an imported D3D12 plane pair never transitions state; only
+    /// the Y' texture's barriers move the shared resource. Use it only in a pass or
+    /// copy that also uses [`Self::texture`] the same way (gpu-compositor spec, native
+    /// import rule 6).
     pub fn plane_texture(&self, plane: u32) -> Option<&wgpu::Texture> {
         match plane {
             0 => Some(&self.texture),

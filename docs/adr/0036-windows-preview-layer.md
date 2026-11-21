@@ -1,6 +1,6 @@
 # ADR-0036: Cross-process preview on Windows: shared D3D12 textures, a named pipe and a composition swapchain layer
 
-- Status: Accepted
+- Status: Accepted; decision 7's clause "or a failed `Present`" (a failed present counted as a loss) is superseded by [ADR-0161](0161-preview-layer-keeps-a-frame-whose-present-failed.md)
 - Date: 2026-11-03
 - Deciders: Salih (owner)
 - Builds on: ADR-0028 (preview surfaces shared as native handles, decision 8), ADR-0034 (preview as a native compositor layer, decision 6), ADR-0013 (zero cost when unused)
