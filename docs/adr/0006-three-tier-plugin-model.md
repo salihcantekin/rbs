@@ -25,6 +25,7 @@ Details: [plugin SDK spec](../specs/plugin-sdk.md).
 - Plugins can be written in any language that compiles to WASM components.
 - Three hosts to maintain; the sandbox and process tiers can arrive after the native tier.
 - 2026-11-12: the tier choice above is unchanged. The browser source contract is [ADR-0109](0109-browser-source.md) (Proposed).
+- 2026-11-21: the order the tiers arrive in is [ADR-0162](0162-extension-ready-registries-and-plugin-order.md) (Proposed): sandbox, process, then native. It replaces the consequence that the sandbox and process tiers can arrive after the native tier.
 
 ## Alternatives considered
 
