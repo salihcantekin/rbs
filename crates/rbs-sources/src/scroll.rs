@@ -290,6 +290,40 @@ mod tests {
     }
 
     #[test]
+    fn a_continuing_run_goes_on_while_its_source_is_placed() {
+        // ADR-0152 decision 6, phase 5.
+        use rbs_scene::activity::OnReturn;
+        let going_on = |speed: f32| {
+            ScrollKey::new(
+                CanvasId::from_raw(0),
+                SourceId::from_raw(1),
+                &Scroll::new(ScrollDirection::Left, speed).with_on_return(OnReturn::Continue),
+                100.0,
+            )
+        };
+        let a = going_on(100.0);
+        assert!(a.continues() && !key(1, 100.0).continues());
+        let mut runs = ScrollRuns::new();
+        let none = BTreeSet::new();
+        runs.keep_placed(&BTreeSet::from([a]), |_| true, at(0));
+        let run = *runs.get(&a).unwrap();
+        // Off screen and placed: the run is kept, so drawn again it is where it would be.
+        assert!(!runs.keep_placed(&none, |_| true, at(5000)));
+        runs.keep_placed(&BTreeSet::from([a]), |_| true, at(9000));
+        assert_eq!(runs.get(&a), Some(&run));
+        // Another key of its source drawn (an edited scroll): the old run ends.
+        let b = going_on(50.0);
+        runs.keep_placed(&none, |_| true, at(9500));
+        runs.keep_placed(&BTreeSet::from([b]), |_| true, at(10_000));
+        assert!(runs.get(&a).is_none());
+        // Not placed any more: it ends; a `restart` key ends as before.
+        assert!(runs.keep_placed(&none, |_| false, at(11_000)));
+        assert!(runs.is_empty());
+        runs.keep_placed(&BTreeSet::from([key(1, 100.0)]), |_| true, at(12_000));
+        assert!(runs.keep_placed(&none, |_| true, at(13_000)));
+    }
+
+    #[test]
     fn a_pause_is_continuous_and_a_restart_starts_over() {
         let a = key(1, 100.0);
         let mut runs = ScrollRuns::new();

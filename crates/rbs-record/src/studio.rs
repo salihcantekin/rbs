@@ -2554,19 +2554,6 @@ impl Studio {
         keys
     }
 
-    /// Starts the runs of keys new to the lists and ends those no list draws any more,
-    /// at the engine's time now.
-    fn keep_scroll_runs(&mut self) {
-        let keys = self.scroll_keys();
-        if keys.is_empty() && self.scroll_runs.is_empty() {
-            return;
-        }
-        let now = self.engine.clock().now();
-        let binder = &self.binder;
-        let placed = |s| binder.level_of(s).0 != Level::Unplaced;
-        self.scroll_runs.keep_placed(&keys, placed, now);
-    }
-
     fn send_program_layers(&mut self, plan: &rbs_graph::description::SchedulePlan) {
         self.keep_scroll_runs();
         let now = self.engine.clock().now();

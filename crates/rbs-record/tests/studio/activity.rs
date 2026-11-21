@@ -262,3 +262,76 @@ fn a_camera_that_lingers_stays_open_off_screen_until_its_time_is_up() {
     let (_, errors) = studio.shutdown();
     assert!(errors.is_empty(), "{errors:?}");
 }
+
+#[test]
+fn a_continuing_scroll_keeps_its_run_while_its_source_waits_in_another_scene() {
+    // ADR-0152 decision 6, phase 5: `on_return: continue` keeps the run while no shown
+    // scene draws the item and its source is still placed; `restart` (the default)
+    // ends it.
+    use std::time::Duration;
+
+    use rbs_core::media::ContainerId;
+    use rbs_scene::activity::OnReturn;
+    use rbs_scene::model::{SceneScope, Scroll, ScrollDirection};
+
+    let Some(gpu) = gpu() else { return };
+    let r = rig();
+    let (mut col, canvas) = scene();
+    let live = col.canvas(canvas).unwrap().program.unwrap();
+    let (empty, _) = col.add_scene("Empty", SceneScope::Shared).unwrap();
+    let cam_item = col.scene(live).unwrap().items[1].id;
+    let cam = col.item(cam_item).unwrap().1.clone();
+    let ticker = Scroll::new(ScrollDirection::Left, 20.0).with_on_return(OnReturn::Continue);
+    col.set_item_layout(cam_item, None, cam.layout.with_scroll(Some(ticker)))
+        .unwrap();
+    let (engine, clock) = engine_at_start();
+    let mut studio = Studio::start(
+        engine,
+        std::sync::Arc::clone(&gpu),
+        &col,
+        &r.adapters.sources,
+        &StudioSettings::new(canvas),
+    )
+    .unwrap();
+    let output = studio
+        .start_output(
+            &r.adapters,
+            &OutputSettings::new("mem://scroll", ContainerId::Matroska),
+        )
+        .unwrap();
+    studio.update(&col, &r.adapters.sources).unwrap();
+    let key = *studio.scroll_runs().keys().next().unwrap();
+    let run = *studio.scroll_runs().get(&key).unwrap();
+
+    // Off air, still placed in "Live": the run is kept.
+    col.set_program(canvas, Some(empty)).unwrap();
+    clock.advance(Duration::from_millis(500));
+    studio.update(&col, &r.adapters.sources).unwrap();
+    studio.end_transitions();
+    studio.update(&col, &r.adapters.sources).unwrap();
+    assert_eq!(studio.scroll_runs().get(&key), Some(&run));
+    // On air again: the same run, so the ticker is where it would be.
+    col.set_program(canvas, Some(live)).unwrap();
+    clock.advance(Duration::from_millis(500));
+    studio.update(&col, &r.adapters.sources).unwrap();
+    assert_eq!(studio.scroll_runs().get(&key), Some(&run));
+
+    // With `restart` the run ends off air.
+    let restart = cam
+        .layout
+        .with_scroll(Some(Scroll::new(ScrollDirection::Left, 20.0)));
+    col.set_item_layout(cam_item, None, restart).unwrap();
+    studio.update(&col, &r.adapters.sources).unwrap();
+    col.set_program(canvas, Some(empty)).unwrap();
+    studio.update(&col, &r.adapters.sources).unwrap();
+    studio.end_transitions();
+    studio.update(&col, &r.adapters.sources).unwrap();
+    assert!(
+        studio.scroll_runs().is_empty(),
+        "{:?}",
+        studio.scroll_runs()
+    );
+    studio.stop_output(output).unwrap();
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+}

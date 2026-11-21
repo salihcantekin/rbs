@@ -846,6 +846,18 @@ pub enum ScrollStart {
     Outside,
 }
 
+/// What a scroll's run does when a shown scene draws its item again (protocol 1.99,
+/// ADR-0152 decision 6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ScrollReturn {
+    /// Starts over.
+    #[default]
+    Restart,
+    /// Where it would be had it kept moving, while the item's source stays placed.
+    Continue,
+}
+
 /// A picture moving through its item's box (protocol 1.94, ADR-0150). Lengths and
 /// speed in the item's box units (canvas pixels for an item on the canvas); defaults
 /// are left out.
@@ -875,6 +887,9 @@ pub struct ItemScroll {
         skip_serializing_if = "is_default_ramp_ms"
     )]
     pub ramp_ms: u32,
+    /// `restart` (the default) or `continue` (protocol 1.99).
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub on_return: ScrollReturn,
 }
 
 /// `item.scroll_finished` (protocol 1.94, ADR-0150 decision 11): a `Once` scroll's
