@@ -342,18 +342,15 @@ impl Importer {
                         label: Some("rbs-gpu import hand-back"),
                     })
             });
-            // A plane pair's CbCr texture is a second wgpu texture; a single-plane
-            // surface has none.
-            let chroma = texture.plane_texture(1).filter(|c| *c != texture.texture());
-            let transitions =
-                std::iter::once(texture.texture())
-                    .chain(chroma)
-                    .map(|t| wgpu::TextureTransition {
-                        texture: t,
-                        selector: None,
-                        state: wgpu::TextureUses::PRESENT,
-                    });
-            enc.transition_resources(std::iter::empty(), transitions);
+            // Only the Y' texture of a plane pair: on D3D12 its whole-resource barrier
+            // also returns the CbCr plane, whose wrapper never transitions (see
+            // `d3d12::open_planar`). Elsewhere the transition is a no-op.
+            let transition = wgpu::TextureTransition {
+                texture: texture.texture(),
+                selector: None,
+                state: wgpu::TextureUses::PRESENT,
+            };
+            enc.transition_resources(std::iter::empty(), std::iter::once(transition));
         }
         if let Some(enc) = encoder {
             let index = ctx.queue().submit(Some(enc.finish()));
