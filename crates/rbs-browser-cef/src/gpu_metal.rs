@@ -53,7 +53,13 @@ pub struct Copier {
     queue_state: RefCell<CopyQueue>,
     /// Nanoseconds a copy may stay in flight: 30 page frames (decision 5).
     limit: u64,
+    /// CEF's UI thread, which opened the copier; `copy` and `collect` do nothing on
+    /// any other, so the `RefCell` is never shared (the `Sync` claim below).
+    owner: std::thread::ThreadId,
 }
+
+/// `'BGRA'`, the only CEF surface layout the copy takes.
+const FOURCC_BGRA: u32 = u32::from_be_bytes(*b"BGRA");
 
 // SAFETY: CEF calls `copy` only on its UI thread, which is the thread that runs the
 // runner's message loop (`collect`), opens the copier and keeps it until exit; the
@@ -94,7 +100,9 @@ impl Copier {
         let surfaces: Vec<CFRetained<IOSurfaceRef>> =
             surfaces.into_iter().collect::<Option<_>>().ok_or("open")?;
         let (w, h) = (width as usize, height as usize);
-        if surfaces.is_empty() || surfaces.iter().any(|s| s.width() != w || s.height() != h) {
+        if surfaces.len() != share.count as usize
+            || surfaces.iter().any(|s| s.width() != w || s.height() != h)
+        {
             return Err("open");
         }
         let slots = surfaces
@@ -113,6 +121,7 @@ impl Copier {
             done: Arc::new(CopyDone::new()),
             queue_state: RefCell::new(CopyQueue::new()),
             limit: 30 * 1_000_000_000 / u64::from(fps.clamp(1, 60)),
+            owner: std::thread::current().id(),
         })
     }
 
@@ -125,7 +134,13 @@ impl Copier {
         // SAFETY: CEF passes an `IOSurfaceRef` that is valid for this callback; the
         // retain keeps it alive until the completed handler drops it.
         let source: CFRetained<IOSurfaceRef> = unsafe { CFRetained::retain(source) };
-        if source.width() != self.width || source.height() != self.height {
+        if std::thread::current().id() != self.owner {
+            return Copied::Failed;
+        }
+        if source.width() != self.width
+            || source.height() != self.height
+            || source.pixel_format() != FOURCC_BGRA
+        {
             return Copied::Failed;
         }
         let Ok(mut queue) = self.queue_state.try_borrow_mut() else {
@@ -135,7 +150,11 @@ impl Copier {
         let Some((slot, _)) = ring.claim_copy(&mut queue, &self.done, painted, now) else {
             return Copied::NoSlot;
         };
-        let recorded = self.record(&source, slot);
+        // A panic while recording gives the claim back instead of leaving it in
+        // flight until the 30-frame timeout.
+        let recorded =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.record(&source, slot)))
+                .unwrap_or(false);
         if !recorded {
             ring.cancel_copy(&mut queue, &self.done);
             return Copied::Failed;
@@ -167,7 +186,9 @@ impl Copier {
         let done = Arc::clone(&self.done);
         let held = source.clone();
         // The handler stores a word, gives the use count back and wakes the loop. It
-        // does not allocate, log or panic.
+        // does not allocate, log or panic. The wake takes the pump's mutex, held by the
+        // UI thread only for a few instructions, so Metal's completion thread may wait
+        // that long; nothing on Metal's thread waits on the UI thread's work.
         let handler = block2::RcBlock::new(
             move |buffer: NonNull<ProtocolObject<dyn MTLCommandBuffer>>| {
                 // SAFETY: Metal passes the completed command buffer, valid for the call.
@@ -187,6 +208,9 @@ impl Copier {
     /// Publishes the finished copies in claim order (CEF's UI thread). `now` is OS
     /// monotonic nanoseconds. Never waits.
     pub fn collect(&self, ring: &FrameRing, now: u64) -> Collected {
+        if std::thread::current().id() != self.owner {
+            return Collected::default();
+        }
         match self.queue_state.try_borrow_mut() {
             Ok(mut queue) => ring.collect_copies(&mut queue, &self.done, now, self.limit),
             Err(_) => Collected::default(),

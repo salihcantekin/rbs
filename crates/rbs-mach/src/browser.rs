@@ -213,8 +213,13 @@ impl Handover {
         // timeout `send` destroys the returned rights.
         let ret = unsafe { send(&mut msg, 0) };
         if !ok(ret) {
-            // A failed send that was not copied in leaves the send-once right with us.
-            deallocate(to);
+            // A timed-out or interrupted send had its rights destroyed by `send`;
+            // any other failure did not copy them in, so the send-once right is ours.
+            if ret != mach2::message::MACH_SEND_TIMED_OUT
+                && ret != mach2::message::MACH_SEND_INTERRUPTED
+            {
+                deallocate(to);
+            }
             return false;
         }
         true
@@ -275,6 +280,8 @@ pub fn fetch(
         version: VERSION,
         token,
     };
+    // One deadline for the send and the reply together.
+    let start = std::time::Instant::now();
     // SAFETY: a filled `Request` of its own size; the service send right is copied and
     // a send-once right to our reply port is made.
     let sent = unsafe { send(&mut request, timeout_ms) };
@@ -284,7 +291,8 @@ pub fn fetch(
         return Err(MachError("request not sent"));
     }
     let mut buf = Box::new(RecvBuf::<HELPER_BUF>::new());
-    let received = receive(reply, &mut buf, timeout_ms);
+    let spent = u32::try_from(start.elapsed().as_millis()).unwrap_or(u32::MAX);
+    let received = receive(reply, &mut buf, timeout_ms.saturating_sub(spent));
     destroy_receive(reply);
     if !ok(received) {
         return Err(MachError("no surfaces in time"));
@@ -303,19 +311,18 @@ pub fn fetch(
         buf.destroy();
         return Err(MachError("bad surfaces reply"));
     };
-    let mut ports = Vec::with_capacity(msg.count as usize);
-    for (i, d) in msg.ports.iter().enumerate() {
-        if i < msg.count as usize && d.type_ == MACH_MSG_PORT_DESCRIPTOR as u8 {
-            ports.push(d.name);
-        } else {
-            deallocate(d.name);
-        }
-    }
-    if ports.len() != msg.count as usize || ports.contains(&MACH_PORT_NULL) {
-        ports.into_iter().for_each(deallocate);
+    // Every descriptor must be a port descriptor, the first `count` holding a right
+    // and the rest null; anything else is refused and every right it carried is
+    // destroyed by the kernel's own walk, never by hand.
+    let count = msg.count as usize;
+    let well_formed = msg.ports.iter().enumerate().all(|(i, d)| {
+        d.type_ == MACH_MSG_PORT_DESCRIPTOR as u8 && ((i < count) == (d.name != MACH_PORT_NULL))
+    });
+    if !well_formed {
+        buf.destroy();
         return Err(MachError("missing surface right"));
     }
-    Ok(ports)
+    Ok(msg.ports[..count].iter().map(|d| d.name).collect())
 }
 
 #[cfg(test)]
