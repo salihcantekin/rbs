@@ -2178,13 +2178,6 @@ impl StudioUi {
         });
     }
 
-    /// Reload on the Source tab: a source that is not running is tried again.
-    pub fn reload_source(&mut self, id: i32) {
-        self.call(rbs_api::Command::SourceReload(
-            rbs_api::request::ReloadSource { source: id as u32 },
-        ));
-    }
-
     /// Play or pause a media file, by its play state now (ADR-0108 decision 10).
     pub fn media_play_pause(&mut self, id: i32) {
         let playing = self

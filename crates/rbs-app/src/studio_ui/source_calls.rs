@@ -70,6 +70,11 @@ impl StudioUi {
         self.call(C::SourceCopyAttributes(in_scene(id)));
     }
 
+    /// Reload on the Source tab: a source that is not running is tried again.
+    pub fn reload_source(&mut self, id: i32) {
+        self.call(C::SourceReload(rq::ReloadSource { source: id as u32 }));
+    }
+
     /// Delete source: from every scene, with the undo toast.
     pub fn delete_source(&mut self, id: i32) {
         self.deleted.clear();
