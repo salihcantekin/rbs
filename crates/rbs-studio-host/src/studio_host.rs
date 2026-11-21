@@ -674,7 +674,6 @@ impl Host {
             | Command::ListAddOns
             | Command::AddOn { .. }
             | Command::RequestPermission(..)
-            | Command::RemoveFromScene(..)
             | Command::AddGlobalSource { .. }
             | Command::UndoDelete
             | Command::Undo
@@ -741,8 +740,6 @@ impl Host {
             | Command::ScrollLive { .. } => self.item_display_command(c, notify),
             Command::StartRecording(..)
             | Command::StartVerticalRecording(..)
-            | Command::StopRecording
-            | Command::StopVerticalRecording
             | Command::SetVerticalProfile(..)
             | Command::SetVerticalStreamProfile(..)
             | Command::SetStreamDestinations(..)
@@ -758,8 +755,6 @@ impl Host {
             | Command::SetProfile(..)
             | Command::StartStream(..)
             | Command::StartVerticalStream(..)
-            | Command::EndStream
-            | Command::EndVerticalStream
             | Command::StartVirtualCamera { .. }
             | Command::StopVirtualCamera
             | Command::SetReplay(..)

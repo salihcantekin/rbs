@@ -363,7 +363,7 @@ impl ApiTarget<'_> {
             };
             let outcome = if running {
                 match kind {
-                    api::OutputKind::Record => host.stop_recording(c, None, notify),
+                    api::OutputKind::Record => host.end_recording(c, notify),
                     api::OutputKind::Stream => host.end_stream_asked(c, notify),
                 }
                 api::OutputOutcome::Stopped

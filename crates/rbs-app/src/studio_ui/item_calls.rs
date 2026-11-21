@@ -39,6 +39,14 @@ impl StudioUi {
         }
     }
 
+    /// Remove from scene (ADR-0065): the Sources row's remove button and Delete key.
+    pub fn remove_from_scene(&mut self, id: i32) {
+        self.deleted.clear();
+        if let Some(item) = self.row_item(id) {
+            self.call(C::ItemRemove(rq::ItemRef { item }));
+        }
+    }
+
     /// Places a source of another scene into the scene on air (Add source, Existing
     /// source); it is selected once it is there.
     pub fn add_existing_source(&mut self, id: i32) {

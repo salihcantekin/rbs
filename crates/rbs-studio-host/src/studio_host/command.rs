@@ -22,10 +22,6 @@ pub enum Command {
         /// What it captures.
         target: Target,
     },
-    /// Remove a source's item from the edited scene, or its global item (glossary:
-    /// "Remove from scene", ADR-0065); the source goes too when that was its last
-    /// placement.
-    RemoveFromScene(SourceId),
     /// Add a new source of `kind` capturing `target` as a global source (one undo
     /// step).
     AddGlobalSource {
@@ -437,19 +433,12 @@ pub enum Command {
     },
     /// Start recording the program ([`Update::Recording`] says how it went).
     StartRecording(RecordRequest),
-    /// Stop the running recording; the file is complete when
-    /// [`RecordingUpdate::Stopped`] arrives.
-    StopRecording,
     /// Start recording the vertical canvas ([`Update::VerticalRecording`] says how it
     /// went; ADR-0093 decision 6).
     StartVerticalRecording(RecordRequest),
-    /// Stop the vertical canvas's recording.
-    StopVerticalRecording,
     /// Go live with the vertical canvas ([`Update::VerticalStream`] says how it went);
     /// its key is read from the vertical account ([`stream_key::vertical_account`]).
     StartVerticalStream(StreamRequest),
-    /// End the vertical canvas's stream.
-    EndVerticalStream,
     /// The vertical canvas's recording settings as saved (`None`: it uses the main
     /// ones). Sent at start and after each change.
     SetVerticalProfile(Option<RecordProfile>),
@@ -512,8 +501,6 @@ pub enum Command {
     /// Go live: stream the program ([`Update::Stream`] says how it went). The stream key
     /// is read from the host's key store now, never earlier.
     StartStream(StreamRequest),
-    /// End the running stream ([`StreamUpdate::Ended`] when it has).
-    EndStream,
     /// Start sending the program to the virtual camera (ADR-0066 decision 12) at this
     /// size and rate; answered with [`Update::VirtualCamera`], and an
     /// [`Update::Error`] when it did not start.

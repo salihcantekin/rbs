@@ -709,14 +709,6 @@ impl Host {
             Command::StartVerticalRecording(r) => {
                 self.record_asked(OutputCanvas::Vertical, &r, notify);
             }
-            Command::StopRecording => {
-                self.end_recording(OutputCanvas::Main, notify);
-                self.publish(notify);
-            }
-            Command::StopVerticalRecording => {
-                self.end_recording(OutputCanvas::Vertical, notify);
-                self.publish(notify);
-            }
             Command::SetVerticalProfile(profile) => self.recording.vertical_profile = profile,
             Command::SetVerticalStreamProfile(profile) => {
                 self.streaming.vertical_stream_profile = profile;
@@ -776,14 +768,6 @@ impl Host {
             Command::StartStream(r) => self.stream_asked(OutputCanvas::Main, &r, notify),
             Command::StartVerticalStream(r) => {
                 self.stream_asked(OutputCanvas::Vertical, &r, notify);
-            }
-            Command::EndStream => {
-                self.end_stream_asked(OutputCanvas::Main, notify);
-                self.publish(notify);
-            }
-            Command::EndVerticalStream => {
-                self.end_stream_asked(OutputCanvas::Vertical, notify);
-                self.publish(notify);
             }
             Command::StartVirtualCamera { width, height, fps } => {
                 // An API client started it first: show the camera that runs, no error.

@@ -518,7 +518,12 @@ fn recordings_start_with_the_picked_encoder_and_stop_into_a_closed_file() {
     // Stop ends the video and waits for its tail (ADR-0045). Nothing renders on the
     // still clock, so the host stops once `END_TAIL_LIMIT` has passed on it: the test
     // moves the clock until the answer comes (it cannot know when the host ended).
-    host.send(Command::StopRecording);
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::RecordStop(rbs_api::request::OnCanvases {
+            canvas: Some(rbs_api::types::OutputTarget::Main),
+        })),
+        reply: rbs_studio_host::studio_host::ApiReply::Quiet,
+    });
     let stopped = next_while(
         &rx,
         || clock.advance(END_TAIL_LIMIT),
@@ -574,7 +579,12 @@ fn ready(gpu: Arc<GpuContext>, clock: &TestClock, fault: Fault) -> (StudioHost, 
 
 /// Stops the recording and returns how it ended, moving the clock so its tail ends.
 fn stop_recording(host: &StudioHost, rx: &Receiver<Update>, clock: &TestClock) -> RecordingUpdate {
-    host.send(Command::StopRecording);
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::RecordStop(rbs_api::request::OnCanvases {
+            canvas: Some(rbs_api::types::OutputTarget::Main),
+        })),
+        reply: rbs_studio_host::studio_host::ApiReply::Quiet,
+    });
     next_while(
         rx,
         || clock.advance(END_TAIL_LIMIT),
@@ -864,7 +874,12 @@ fn a_marked_microphone_records_its_own_file_next_to_the_master() {
         !manifest.contains(&dir.display().to_string()),
         "no path: {manifest}"
     );
-    host.send(Command::StopRecording);
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::RecordStop(rbs_api::request::OnCanvases {
+            canvas: Some(rbs_api::types::OutputTarget::Main),
+        })),
+        reply: rbs_studio_host::studio_host::ApiReply::Quiet,
+    });
     let stopped = next_while(
         &rx,
         || clock.advance(END_TAIL_LIMIT),

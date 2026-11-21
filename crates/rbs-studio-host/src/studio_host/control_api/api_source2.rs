@@ -119,10 +119,15 @@ impl ApiTarget<'_> {
                 Ok(Response::Done(Empty {}))
             }
             C::ItemRemove(p) => {
-                let (_, removed) = host
+                let (name, removed) = host
                     .remove_from_scene(ItemId::from_raw(p.item))
                     .map_err(|e| refused(&e))?;
                 host.apply(notify);
+                // The window's undo toast, whoever removed it (owner, 2026-11-21).
+                notify(Update::Deleted {
+                    name,
+                    from_scene: !removed.source_deleted,
+                });
                 Ok(Response::ItemRemoved(item_removed(&removed)))
             }
             C::SceneMove(p) => match host.move_scene(SceneId::from_raw(p.scene), p.direction) {

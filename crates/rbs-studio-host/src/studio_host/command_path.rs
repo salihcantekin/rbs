@@ -82,7 +82,6 @@ paths! {
     // split: the OS permission prompt and system picker stay in the window (LocalOnly)
     AddSource => Pending(&["source.add"]),
     // must still send Update::Deleted for the undo toast
-    RemoveFromScene => Pending(&["item.remove"]),
     // global: true
     AddGlobalSource => Pending(&["source.add"]),
     // edit.undo has no only-if-a-delete condition
@@ -177,13 +176,10 @@ paths! {
     ScrollLive => Pending(&["item.scroll_pause", "item.scroll_resume", "item.scroll_restart", "item.scroll_speed"]),
     // record.start builds its request from host state; the window sends its own RecordRequest
     StartRecording => Contract(&["record.start"]),
-    StopRecording => Pending(&["record.stop"]),
     // as StartRecording
     StartVerticalRecording => Contract(&["record.start"]),
-    StopVerticalRecording => Pending(&["record.stop"]),
     // as StartStream
     StartVerticalStream => Contract(&["stream.start"]),
-    EndVerticalStream => Pending(&["stream.stop"]),
     // no settings.set field
     SetVerticalProfile => Missing,
     // no settings.set field
@@ -205,7 +201,6 @@ paths! {
     SetProfile => WindowOnly(Mirror),
     // stream.start takes no request; the window sends its own StreamRequest
     StartStream => Contract(&["stream.start"]),
-    EndStream => Pending(&["stream.stop"]),
     // vcam.start takes no size or rate
     StartVirtualCamera => Contract(&["vcam.start"]),
     StopVirtualCamera => Pending(&["vcam.stop"]),
@@ -251,7 +246,7 @@ mod tests {
     /// which must pick its method from host state may raise `TRANSLATES` by as many
     /// as `PENDING` falls; any other rise needs the owner's written approval.
     const TRANSLATES: usize = 22;
-    const PENDING: usize = 37;
+    const PENDING: usize = 32;
     const CONTRACT: usize = 10;
     const MISSING: usize = 20;
     const VIEW: usize = 13;

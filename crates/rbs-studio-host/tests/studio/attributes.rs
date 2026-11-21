@@ -506,7 +506,7 @@ fn removing_sources_from_a_duplicated_scene_never_touches_the_original() {
 
     // The same through the UI: the copied scene is edited and each source is removed
     // from it by its row.
-    use rbs_scene::model::{SceneId, SourceId};
+    use rbs_scene::model::SceneId;
     use rbs_studio_host::studio_host::Command;
     let raw = |v: &Value| u32::try_from(v.as_u64().unwrap()).unwrap();
     let copied = ok(&c.call(
@@ -522,7 +522,12 @@ fn removing_sources_from_a_duplicated_scene_never_touches_the_original() {
     });
     let rows = scene_rows(&mut c, &copy_scene);
     for r in &rows {
-        host.send(Command::RemoveFromScene(SourceId::from_raw(raw(&r["id"]))));
+        host.send(Command::Api {
+            call: Box::new(rbs_api::Command::ItemRemove(rbs_api::request::ItemRef {
+                item: raw(&r["item"]),
+            })),
+            reply: rbs_studio_host::studio_host::ApiReply::Shown,
+        });
     }
     // Every row answered: a Deleted per source still there when asked, or an error
     // only for a companion that already went with its picture.

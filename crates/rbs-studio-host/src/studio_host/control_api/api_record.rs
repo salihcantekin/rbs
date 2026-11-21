@@ -16,10 +16,14 @@ impl ApiTarget<'_> {
                     return self.stop_all(api::OutputKind::Record);
                 };
                 let c = host.api_canvas_of(Some(one))?;
-                if host.outs[slot(c)].recording.is_none() {
+                let out = &host.outs[slot(c)];
+                if out.recording.is_none() || out.ending {
+                    // What runs is still news to a window that thought it recorded.
+                    host.publish(notify);
                     return Err(ApiError::new(ErrorKind::Conflict, "nothing records"));
                 }
-                host.stop_recording(c, None, notify);
+                // Ends the file gracefully, as the window's Stop does (owner, 2026-11-21).
+                host.end_recording(c, notify);
                 host.publish(notify);
                 Ok(Response::Done(Empty {}))
             }
@@ -77,6 +81,7 @@ impl ApiTarget<'_> {
                 };
                 let c = host.api_canvas_of(Some(one))?;
                 if host.outs[slot(c)].streaming.is_none() {
+                    host.publish(notify);
                     return Err(ApiError::new(ErrorKind::Conflict, "nothing streams"));
                 }
                 host.end_stream_asked(c, notify);

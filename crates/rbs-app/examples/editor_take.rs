@@ -199,7 +199,12 @@ fn take(
         }
         if !stop_sent && start.elapsed() >= length {
             rbs_crash::outln!("{:.1} s: stopping", start.elapsed().as_secs_f64());
-            host.send(Command::StopRecording);
+            host.send(Command::Api {
+                call: Box::new(rbs_api::Command::RecordStop(rbs_api::request::OnCanvases {
+                    canvas: Some(rbs_api::types::OutputTarget::Main),
+                })),
+                reply: rbs_app::studio_host::ApiReply::Quiet,
+            });
             stop_sent = true;
         }
         match rx.recv_timeout(Duration::from_millis(100)) {

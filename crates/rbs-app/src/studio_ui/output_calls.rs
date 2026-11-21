@@ -42,3 +42,19 @@ impl StudioUi {
         self.send(Command::SetVerticalFlags(flags));
     }
 }
+
+impl StudioUi {
+    /// Stop (`record`) or End stream on one canvas: `record.stop` / `stream.stop`.
+    /// Nothing running is not an error here (the button was already pressed).
+    pub(super) fn stop_output(&self, record: bool, canvas: rbs_api::types::OutputTarget) {
+        let on = rq::OnCanvases {
+            canvas: Some(canvas),
+        };
+        let call = if record {
+            C::RecordStop(on)
+        } else {
+            C::StreamStop(on)
+        };
+        self.call_as(call, rbs_app::studio_host::ApiReply::Quiet);
+    }
+}

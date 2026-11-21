@@ -2252,12 +2252,6 @@ impl StudioUi {
         });
     }
 
-    /// Remove from scene (ADR-0065): the Sources row's remove button and Delete key.
-    pub fn remove_from_scene(&mut self, id: i32) {
-        self.deleted.clear();
-        self.send(Command::RemoveFromScene(SourceId::from_raw(id as u32)));
-    }
-
     /// Settings › Global sources: a kind was picked; its devices are listed.
     pub fn pick_global_kind(&mut self, index: i32) {
         let Some((code, _)) = self.kind_codes().get(index as usize).copied() else {
@@ -3902,7 +3896,7 @@ impl StudioUi {
     pub fn stop_recording(&mut self) {
         if self.rec_state == rec_state::RECORDING {
             self.rec_state = rec_state::STOPPING;
-            self.send(Command::StopRecording);
+            self.stop_output(true, rbs_api::types::OutputTarget::Main);
         }
     }
 
@@ -4186,7 +4180,7 @@ impl StudioUi {
     pub fn end_stream(&mut self) {
         if self.st_state == st_state::LIVE || self.st_state == st_state::STARTING {
             self.st_state = st_state::ENDING;
-            self.send(Command::EndStream);
+            self.stop_output(false, rbs_api::types::OutputTarget::Main);
         }
     }
 
@@ -4396,7 +4390,7 @@ impl StudioUi {
     pub fn stop_vertical_recording(&mut self) {
         if self.vertical_rec == VerticalOut::On {
             self.vertical_rec = VerticalOut::Ending;
-            self.send(Command::StopVerticalRecording);
+            self.stop_output(true, rbs_api::types::OutputTarget::Vertical);
         }
     }
 
@@ -4423,7 +4417,7 @@ impl StudioUi {
     pub fn end_vertical_stream(&mut self) {
         if matches!(self.vertical_st, VerticalOut::On | VerticalOut::Starting) {
             self.vertical_st = VerticalOut::Ending;
-            self.send(Command::EndVerticalStream);
+            self.stop_output(false, rbs_api::types::OutputTarget::Vertical);
         }
     }
 

@@ -172,12 +172,12 @@ fn main() -> ExitCode {
                 "{:.1} s: stopping the recording",
                 start.elapsed().as_secs_f64()
             );
-            host.send(Command::StopRecording);
+            stop(&host, rbs_api::Command::RecordStop(Default::default()));
             record_state = Some(2);
         }
         if left.is_zero() && !sent_end {
             rbs_crash::outln!("{:.1} s: ending the stream", start.elapsed().as_secs_f64());
-            host.send(Command::EndStream);
+            stop(&host, rbs_api::Command::StreamStop(Default::default()));
             sent_end = true;
         }
         let timeout = if sent_end {
@@ -259,4 +259,12 @@ fn main() -> ExitCode {
     } else {
         ExitCode::FAILURE
     }
+}
+
+/// Stops an output on the main canvas the way the studio window does (ADR-0163).
+fn stop(host: &StudioHost, call: rbs_api::Command) {
+    host.send(Command::Api {
+        call: Box::new(call),
+        reply: rbs_app::studio_host::ApiReply::Quiet,
+    });
 }

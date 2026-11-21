@@ -458,7 +458,12 @@ pub(super) fn the_window_holds_and_resumes_the_stream() {
     assert_eq!(held(&rx), [Some(true), None]);
     host.send(Command::Break);
     assert_eq!(held(&rx), [Some(false), None]);
-    host.send(Command::EndStream);
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::StreamStop(rbs_api::request::OnCanvases {
+            canvas: Some(rbs_api::types::OutputTarget::Main),
+        })),
+        reply: rbs_studio_host::studio_host::ApiReply::Quiet,
+    });
     assert_eq!(ended(&rx), None);
     host.send(Command::HoldStream);
     let why = next(&rx, |u| match u {
@@ -687,10 +692,20 @@ pub(super) fn stream_markers_mark_a_running_recording_when_the_profile_asks() {
         host.send(Command::StartStream(request()));
         assert!(matches!(stream(&rx), StreamUpdate::Started { .. }));
         clock.advance(Duration::from_secs(3));
-        host.send(Command::EndStream);
+        host.send(Command::Api {
+            call: Box::new(rbs_api::Command::StreamStop(rbs_api::request::OnCanvases {
+                canvas: Some(rbs_api::types::OutputTarget::Main),
+            })),
+            reply: rbs_studio_host::studio_host::ApiReply::Quiet,
+        });
         // The connection change can arrive after the end was asked: skipped.
         assert_eq!(ended(&rx), None);
-        host.send(Command::StopRecording);
+        host.send(Command::Api {
+            call: Box::new(rbs_api::Command::RecordStop(rbs_api::request::OnCanvases {
+                canvas: Some(rbs_api::types::OutputTarget::Main),
+            })),
+            reply: rbs_studio_host::studio_host::ApiReply::Quiet,
+        });
         let stopped = next_while(
             &rx,
             || clock.advance(END_TAIL_LIMIT),
@@ -778,7 +793,12 @@ pub(super) fn markers_while_paused_sit_on_the_join_and_the_manifest_lists_the_pa
         after["result"]["markers"][0].get("while_paused").is_none(),
         "{after}"
     );
-    host.send(Command::StopRecording);
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::RecordStop(rbs_api::request::OnCanvases {
+            canvas: Some(rbs_api::types::OutputTarget::Main),
+        })),
+        reply: rbs_studio_host::studio_host::ApiReply::Quiet,
+    });
     let stopped = next_while(
         &rx,
         || clock.advance(END_TAIL_LIMIT),
@@ -933,7 +953,12 @@ pub(super) fn go_live_sends_to_every_enabled_destination_with_its_own_key() {
     );
     // Connected while one is; the connects of both are summed.
     link_where(&rx, |l| l.connected && l.connects == 2);
-    host.send(Command::EndStream);
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::StreamStop(rbs_api::request::OnCanvases {
+            canvas: Some(rbs_api::types::OutputTarget::Main),
+        })),
+        reply: rbs_studio_host::studio_host::ApiReply::Quiet,
+    });
     next(&rx, |u| match u {
         Update::Stream(StreamUpdate::Ended { failure, .. }) => {
             assert_eq!(failure, None);

@@ -476,7 +476,12 @@ fn streams_take_the_key_from_the_store_and_report_their_connection() {
     }
     // Stop waits for the video tail (ADR-0045); on the still clock that is
     // `END_TAIL_LIMIT`, so the test moves the clock until the answer comes.
-    host.send(Command::StopRecording);
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::RecordStop(rbs_api::request::OnCanvases {
+            canvas: Some(rbs_api::types::OutputTarget::Main),
+        })),
+        reply: rbs_studio_host::studio_host::ApiReply::Quiet,
+    });
     let stopped = next_while(
         &rx,
         || clock.advance(END_TAIL_LIMIT),
@@ -512,7 +517,12 @@ fn streams_take_the_key_from_the_store_and_report_their_connection() {
     let l = link_where(&rx, |l| l.connected);
     assert_eq!(l.connects, 2);
 
-    host.send(Command::EndStream);
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::StreamStop(rbs_api::request::OnCanvases {
+            canvas: Some(rbs_api::types::OutputTarget::Main),
+        })),
+        reply: rbs_studio_host::studio_host::ApiReply::Quiet,
+    });
     match stream(&rx) {
         StreamUpdate::Ended {
             failure, connects, ..
@@ -574,7 +584,12 @@ fn a_stream_the_server_refuses_ends_with_its_reason() {
     // The host is ready for the next one.
     host.send(Command::StartStream(request()));
     assert!(matches!(stream(&rx), StreamUpdate::Started { .. }));
-    host.send(Command::EndStream);
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::StreamStop(rbs_api::request::OnCanvases {
+            canvas: Some(rbs_api::types::OutputTarget::Main),
+        })),
+        reply: rbs_studio_host::studio_host::ApiReply::Quiet,
+    });
     // The new connection's `Link` may come before or after End stream is taken; only
     // the end counts here.
     next(&rx, |u| match u {
@@ -613,7 +628,12 @@ fn a_stream_start_that_panics_after_the_output_started_stops_that_output() {
     // The one panic is spent: the next start is tracked and ends.
     host.send(Command::StartStream(request()));
     assert!(matches!(stream(&rx), StreamUpdate::Started { .. }));
-    host.send(Command::EndStream);
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::StreamStop(rbs_api::request::OnCanvases {
+            canvas: Some(rbs_api::types::OutputTarget::Main),
+        })),
+        reply: rbs_studio_host::studio_host::ApiReply::Quiet,
+    });
     next(&rx, |u| match u {
         Update::Stream(StreamUpdate::Ended { .. }) => Some(()),
         Update::Stream(StreamUpdate::Link(_)) => None,
@@ -638,7 +658,12 @@ fn a_stream_end_that_panics_half_way_still_ends_the_stream() {
     );
     host.send(Command::StartStream(request()));
     assert!(matches!(stream(&rx), StreamUpdate::Started { .. }));
-    host.send(Command::EndStream);
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::StreamStop(rbs_api::request::OnCanvases {
+            canvas: Some(rbs_api::types::OutputTarget::Main),
+        })),
+        reply: rbs_studio_host::studio_host::ApiReply::Quiet,
+    });
     let ended = next(&rx, |u| match u {
         Update::Stream(s @ StreamUpdate::Ended { .. }) => Some(s),
         Update::Recovered { .. } | Update::Stream(StreamUpdate::Link(_)) => None,
@@ -655,7 +680,12 @@ fn a_stream_end_that_panics_half_way_still_ends_the_stream() {
     }
     host.send(Command::StartStream(request()));
     assert!(matches!(stream(&rx), StreamUpdate::Started { .. }));
-    host.send(Command::EndStream);
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::StreamStop(rbs_api::request::OnCanvases {
+            canvas: Some(rbs_api::types::OutputTarget::Main),
+        })),
+        reply: rbs_studio_host::studio_host::ApiReply::Quiet,
+    });
     next(&rx, |u| match u {
         Update::Stream(StreamUpdate::Ended { failure, .. }) => {
             assert_eq!(failure, None);
@@ -730,7 +760,12 @@ fn record_when_the_stream_starts_records_with_the_stream_and_stops_with_it() {
     host.send(Command::StartStream(request()));
     assert!(matches!(stream(&rx), StreamUpdate::Started { .. }));
     no_recording_stops(&host, &rx, &clock);
-    host.send(Command::EndStream);
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::StreamStop(rbs_api::request::OnCanvases {
+            canvas: Some(rbs_api::types::OutputTarget::Main),
+        })),
+        reply: rbs_studio_host::studio_host::ApiReply::Quiet,
+    });
     assert_eq!(ended(&rx), None);
 
     // On: the recording starts right after the stream, with the recording settings.
@@ -745,7 +780,12 @@ fn record_when_the_stream_starts_records_with_the_stream_and_stops_with_it() {
         other => panic!("{other:?}"),
     }
     // Ending the stream stops it, after its tail (ADR-0045).
-    host.send(Command::EndStream);
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::StreamStop(rbs_api::request::OnCanvases {
+            canvas: Some(rbs_api::types::OutputTarget::Main),
+        })),
+        reply: rbs_studio_host::studio_host::ApiReply::Quiet,
+    });
     assert_eq!(ended(&rx), None);
     let stopped = next_while(
         &rx,
@@ -779,10 +819,20 @@ fn record_when_the_stream_starts_records_with_the_stream_and_stops_with_it() {
     assert!(matches!(recording(&rx), RecordingUpdate::Started { .. }));
     host.send(Command::StartStream(request()));
     assert!(matches!(stream(&rx), StreamUpdate::Started { .. }));
-    host.send(Command::EndStream);
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::StreamStop(rbs_api::request::OnCanvases {
+            canvas: Some(rbs_api::types::OutputTarget::Main),
+        })),
+        reply: rbs_studio_host::studio_host::ApiReply::Quiet,
+    });
     assert_eq!(ended(&rx), None);
     no_recording_stops(&host, &rx, &clock);
-    host.send(Command::StopRecording);
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::RecordStop(rbs_api::request::OnCanvases {
+            canvas: Some(rbs_api::types::OutputTarget::Main),
+        })),
+        reply: rbs_studio_host::studio_host::ApiReply::Quiet,
+    });
     let stopped = next_while(
         &rx,
         || clock.advance(END_TAIL_LIMIT),
@@ -818,10 +868,20 @@ fn record_when_the_stream_starts_records_with_the_stream_and_stops_with_it() {
     // recording to the user.
     host.send(Command::StartStream(request()));
     assert!(matches!(stream(&rx), StreamUpdate::Started { .. }));
-    host.send(Command::EndStream);
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::StreamStop(rbs_api::request::OnCanvases {
+            canvas: Some(rbs_api::types::OutputTarget::Main),
+        })),
+        reply: rbs_studio_host::studio_host::ApiReply::Quiet,
+    });
     assert_eq!(ended(&rx), None);
     no_recording_stops(&host, &rx, &clock);
-    host.send(Command::StopRecording);
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::RecordStop(rbs_api::request::OnCanvases {
+            canvas: Some(rbs_api::types::OutputTarget::Main),
+        })),
+        reply: rbs_studio_host::studio_host::ApiReply::Quiet,
+    });
     next_while(
         &rx,
         || clock.advance(END_TAIL_LIMIT),

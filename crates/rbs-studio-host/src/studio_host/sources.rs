@@ -1370,22 +1370,6 @@ impl Host {
                 Ok(_) => self.apply(notify),
                 Err(e) => notify(Update::Error(e.into_text())),
             },
-            Command::RemoveFromScene(id) => {
-                let done = self
-                    .item_of(id)
-                    .map(|(_, i)| i.id)
-                    .and_then(|item| self.remove_from_scene(item));
-                match done {
-                    Ok((name, removed)) => {
-                        self.apply(notify);
-                        notify(Update::Deleted {
-                            name,
-                            from_scene: !removed.source_deleted,
-                        });
-                    }
-                    Err(e) => notify(Update::Error(e.text().to_owned())),
-                }
-            }
             Command::AddGlobalSource { kind, target } => {
                 let done = self.add_global(kind, &target).map(|_| true);
                 self.answer(done, notify);
