@@ -807,9 +807,15 @@ fn a_freeze_hold_changed_to_a_scene_keeps_its_times_and_drops_the_program() {
     let Some((mut rig, seen, export, end, switch)) = held_pipeline() else {
         return;
     };
-    rig.tick();
-    rig.tick_without_waiting();
-    rig.tick_without_waiting();
+    // The program's readbacks are waited for up to the hold, so the frame frozen is the
+    // newest one and none is still in flight when the freeze begins: a program
+    // readback in flight then is dropped (`hold_tick`), and whether one is depends on
+    // the GPU's speed. From the freeze on, ticks do not wait: the freeze sends the
+    // pinned frame whichever readback is late, and so does the scene until its first
+    // frame is read back.
+    for _ in 0..3 {
+        rig.tick();
+    }
     switch.hold(HoldPicture::Freeze);
     end.wake_at(Timestamp::ZERO);
     rig.tick_without_waiting();
