@@ -12,9 +12,9 @@
 
 #[cfg(all(loom, test))]
 use loom::sync::atomic::AtomicU32;
-use std::sync::atomic::Ordering;
 #[cfg(not(all(loom, test)))]
 use std::sync::atomic::AtomicU32;
+use std::sync::atomic::Ordering;
 
 use crate::MAX_GPU_SLOTS;
 use crate::gpu_slots::{self, Words};
@@ -355,8 +355,7 @@ mod loom_tests {
         builder.check(|| {
             let m = model_words(3);
             let done = Arc::new(CopyDone::new());
-            let marks: Arc<Vec<AtomicU64>> =
-                Arc::new((0..3).map(|_| AtomicU64::new(0)).collect());
+            let marks: Arc<Vec<AtomicU64>> = Arc::new((0..3).map(|_| AtomicU64::new(0)).collect());
             let mut q = CopyQueue::new();
             let (a, sa) = q.claim_in(&*m, &done, 1, 0).unwrap();
             let (b, sb) = q.claim_in(&*m, &done, 2, 0).unwrap();
@@ -382,7 +381,10 @@ mod loom_tests {
             ga.join().unwrap();
             gb.join().unwrap();
             take(&mut q);
-            assert!(seen.windows(2).all(|w| w[0] <= w[1]), "out of order: {seen:?}");
+            assert!(
+                seen.windows(2).all(|w| w[0] <= w[1]),
+                "out of order: {seen:?}"
+            );
             assert_eq!(seen.last(), Some(&sb));
             let next = q.claim_in(&*m, &done, 3, 0);
             assert_ne!(next.map(|(s, _)| s), Some(b), "claimed the latest slot");

@@ -319,7 +319,11 @@ fn io_surface_pictures_import_and_give_every_lease_back() {
     exec.run_tick(Tick::of(&cadence, 12));
     ctx.wait_idle().unwrap();
     exec.run_tick(Tick::of(&cadence, 13));
-    assert!(slots.0.load(Ordering::Relaxed) <= 1, "leases held: {}", slots.0.load(Ordering::Relaxed));
+    assert!(
+        slots.0.load(Ordering::Relaxed) <= 1,
+        "leases held: {}",
+        slots.0.load(Ordering::Relaxed)
+    );
 }
 
 /// Before/after numbers for the hot path (ADR-0167 decision 10, P15): render ticks

@@ -148,7 +148,9 @@ impl HelperChild {
             }
             HandoverPoll::Failed => {}
             HandoverPoll::Waiting => {
-                if self.handover_deadline.is_none() && (self.last_beat != 0 || self.ring.heartbeat() != 0) {
+                if self.handover_deadline.is_none()
+                    && (self.last_beat != 0 || self.ring.heartbeat() != 0)
+                {
                     self.handover_deadline = Some(now + HANDOVER_LIMIT);
                 }
                 if self.handover_deadline.is_none_or(|at| now < at) {

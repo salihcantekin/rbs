@@ -16,8 +16,8 @@ use mach2::port::{MACH_PORT_NULL, mach_port_t};
 use crate::{
     MACH_MSG_PORT_DESCRIPTOR, MACH_MSG_TYPE_COPY_SEND, MACH_MSG_TYPE_MOVE_SEND_ONCE,
     MACH_MSGH_BITS_COMPLEX, MAKE_SEND_ONCE, MachError, RecvBuf, TRAILER_ROOM, bits, check_in,
-    deallocate, destroy_receive, look_up, mach_msg_body_t, mach_msg_port_descriptor_t,
-    new_receive, ok, random_bytes, receive, receive_audited, send,
+    deallocate, destroy_receive, look_up, mach_msg_body_t, mach_msg_port_descriptor_t, new_receive,
+    ok, random_bytes, receive, receive_audited, send,
 };
 
 /// Protocol version carried by both messages.
@@ -341,7 +341,10 @@ mod tests {
         port
     }
 
-    fn run_fetch(name: String, token: [u8; TOKEN_LEN]) -> std::thread::JoinHandle<Result<usize, MachError>> {
+    fn run_fetch(
+        name: String,
+        token: [u8; TOKEN_LEN],
+    ) -> std::thread::JoinHandle<Result<usize, MachError>> {
         std::thread::spawn(move || {
             let ports = fetch(&name, token, 2_000)?;
             let n = ports.len();
@@ -368,7 +371,10 @@ mod tests {
     ) -> State {
         let start = std::time::Instant::now();
         while !fetched.is_finished() {
-            assert!(start.elapsed() < std::time::Duration::from_secs(5), "hang guard");
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(5),
+                "hang guard"
+            );
             handover.poll();
             std::thread::yield_now();
         }
@@ -399,7 +405,10 @@ mod tests {
         let fetched = run_fetch(handover.name().to_owned(), token);
         // The request is dropped, which destroys its reply right: the helper's wait
         // ends at once without surfaces, and the handover still waits.
-        assert_eq!(poll_until_fetch_ends(&mut handover, &fetched), State::Waiting);
+        assert_eq!(
+            poll_until_fetch_ends(&mut handover, &fetched),
+            State::Waiting
+        );
         assert!(fetched.join().unwrap().is_err());
         handover.close();
         assert_eq!(handover.state(), State::Failed);
@@ -411,7 +420,10 @@ mod tests {
         // The handover expects another process; this test's own request must fail.
         let mut handover = Handover::new(surfaces, std::process::id() + 1).unwrap();
         let fetched = run_fetch(handover.name().to_owned(), handover.token());
-        assert_eq!(poll_until_fetch_ends(&mut handover, &fetched), State::Waiting);
+        assert_eq!(
+            poll_until_fetch_ends(&mut handover, &fetched),
+            State::Waiting
+        );
         assert!(fetched.join().unwrap().is_err());
         handover.close();
     }

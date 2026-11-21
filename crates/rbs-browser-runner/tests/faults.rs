@@ -15,8 +15,8 @@ use std::time::{Duration, Instant};
 use rbs_browser_ipc::exit::Cause;
 use rbs_browser_ipc::{Configure, D3dShare, GpuShare, HEARTBEAT_LIMIT, MAX_GPU_TEXTURES};
 use rbs_browser_runner::{
-    FENCE_JUMP, FenceView, HANDOVER_LIMIT, HandoverPoll, HelperChild, PagePicture,
-    SurfaceHandover, Supervisor, spawn_helper, spawn_helper_prepared,
+    FENCE_JUMP, FenceView, HANDOVER_LIMIT, HandoverPoll, HelperChild, PagePicture, Supervisor,
+    SurfaceHandover, spawn_helper, spawn_helper_prepared,
 };
 use rbs_browser_shm::{FrameRing, SlotLayout};
 

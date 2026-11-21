@@ -211,7 +211,11 @@ mod device_tests {
         let mut last: Option<[u8; 4]> = None;
         while start.elapsed() < Duration::from_secs(secs) {
             assert!(child.check_heartbeat(Instant::now()), "heartbeat lost");
-            assert!(child.process_alive(), "helper exited {:?}", child.exit_cause());
+            assert!(
+                child.process_alive(),
+                "helper exited {:?}",
+                child.exit_cause()
+            );
             if let Some(p) = child.take_gpu(Instant::now()) {
                 pictures += 1;
                 let px = surfaces.sample(p.slot as usize, 64).unwrap();
@@ -231,6 +235,9 @@ mod device_tests {
         child.close(rbs_browser_runner::STOP_GRACE);
         assert!(pictures > 25 * secs as u32, "too few pictures: {pictures}");
         assert_eq!(torn, 0, "torn pictures");
-        assert!(changes * 10 >= pictures * 9, "pictures did not change: {changes}");
+        assert!(
+            changes * 10 >= pictures * 9,
+            "pictures did not change: {changes}"
+        );
     }
 }

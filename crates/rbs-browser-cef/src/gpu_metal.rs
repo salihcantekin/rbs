@@ -69,7 +69,12 @@ impl Copier {
     /// Waits for the studio's reply (at most 2 s), so it runs before CEF starts.
     /// `Err` names the fallback reason: `adapter` (not exactly one Metal device, or
     /// not the studio's) or `open` (the handover or the surfaces failed).
-    pub fn open(share: &MetalShare, width: u32, height: u32, fps: u32) -> Result<Self, &'static str> {
+    pub fn open(
+        share: &MetalShare,
+        width: u32,
+        height: u32,
+        fps: u32,
+    ) -> Result<Self, &'static str> {
         let devices = MTLCopyAllDevices();
         if devices.count() != 1 {
             return Err("adapter");
@@ -189,7 +194,11 @@ impl Copier {
     }
 }
 
-fn texture(device: &Device, surface: &IOSurfaceRef, usage: MTLTextureUsage) -> Option<Retained<Texture>> {
+fn texture(
+    device: &Device,
+    surface: &IOSurfaceRef,
+    usage: MTLTextureUsage,
+) -> Option<Retained<Texture>> {
     // SAFETY: plain descriptor constructor with the surface's own size.
     let desc = unsafe {
         MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(

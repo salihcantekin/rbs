@@ -375,6 +375,7 @@ pub const ID_DEAD_NAME: i32 = MACH_NOTIFY_DEAD_NAME;
 /// See [`ID_DEAD_NAME`].
 pub const ID_NO_SENDERS: i32 = MACH_NOTIFY_NO_SENDERS;
 
+pub use mach2::message::MACH_MSG_TYPE_MAKE_SEND_ONCE as MAKE_SEND_ONCE;
 /// The Mach types the protocols use, re-exported so users need no `mach2` of their own.
 pub use mach2::message::{
     MACH_MSG_PORT_DESCRIPTOR, MACH_MSG_TYPE_COPY_SEND, MACH_MSG_TYPE_MOVE_SEND,
@@ -382,5 +383,4 @@ pub use mach2::message::{
     mach_msg_port_descriptor_t,
 };
 pub use mach2::message::{MACH_MSG_TYPE_MAKE_SEND as MAKE_SEND, mach_msg_header_t as Header};
-pub use mach2::message::MACH_MSG_TYPE_MAKE_SEND_ONCE as MAKE_SEND_ONCE;
 pub use mach2::port::{MACH_PORT_NULL as PORT_NULL, mach_port_t as Port};
