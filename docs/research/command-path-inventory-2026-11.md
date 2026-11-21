@@ -2,7 +2,7 @@
 
 First-pass classification of every `rbs_studio_host::Command` variant on main `c424931` for [ADR-0163](../adr/0163-one-command-path-for-the-window-and-the-api.md) (one command path, quality plan WP-20). Made by reading each variant's handler arm and the control API method names (`rbs_api::Command::method`), corrected after the ADR's first review. Each namespace step checks its rows again against the code and the control API spec; where a row is wrong, the step's `Command::path` arm is the record, not this table.
 
-Step 0 moved `ResetLoudness` to `Command::Api`; step 1 (scenes and transitions) moved ten scene variants and made Switch scene and Studio mode translations; step 2 (items) moved the Sources row's lock, eye and layer buttons, Add existing source and the timed show; step 3 (sources, first part) moved rename, the per-source slide, keep open, the sync offset, Duplicate source, Copy, Paste and Reset attributes, Delete source and the companion audio; step 4 (filters) moved add, remove, move and on/off of a filter; step 5 (audio) moved the monitor mode, solo, device and volume; step 6 (outputs, first part) moved adding and removing the vertical canvas; `command_path.rs` holds the current counts. First-pass counts: 21 Translates (already run through `run_ui_api` or `ApiTarget::run`), 83 Pending, 10 Contract, 20 Missing, 27 WindowOnly (13 View, 9 LocalOnly, 2 Preview, 3 Mirror). Total 161. Corrected after review rounds 1 to 3.
+Step 0 moved `ResetLoudness` to `Command::Api`; step 1 (scenes and transitions) moved ten scene variants and made Switch scene and Studio mode translations; step 2 (items) moved the Sources row's lock, eye and layer buttons, Add existing source and the timed show; step 3 (sources, first part) moved rename, the per-source slide, keep open, the sync offset, Duplicate source, Copy, Paste and Reset attributes, Delete source, the companion audio, global sources, the capture region and display chrome; step 4 (filters) moved add, remove, move and on/off of a filter; step 5 (audio) moved the monitor mode, solo, device and volume; step 6 (outputs, first part) moved adding and removing the vertical canvas; `command_path.rs` holds the current counts. First-pass counts: 21 Translates (already run through `run_ui_api` or `ApiTarget::run`), 83 Pending, 10 Contract, 20 Missing, 27 WindowOnly (13 View, 9 LocalOnly, 2 Preview, 3 Mirror). Total 161. Corrected after review rounds 1 to 3.
 
 ## Known differences between the two paths
 
@@ -45,8 +45,8 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `AddSource` | Pending | source.add; split: the OS permission prompt and system picker stay in the window (LocalOnly) |
 | `DeleteSource` | Moved to `Command::Api` (step 3) | source.delete |
 | `RemoveFromScene` | Pending | item.remove; must still send Update::Deleted for the undo toast |
-| `SetGlobal` | Pending | global.add, global.remove |
-| `RemoveGlobal` | Pending | global.remove |
+| `SetGlobal` | Moved to `Command::Api` (step 3) | global.add, global.remove |
+| `RemoveGlobal` | Moved to `Command::Api` (step 3) | global.remove |
 | `AddGlobalSource` | Pending | source.add (global: true) |
 | `UndoDelete` | Missing | edit.undo has no only-if-a-delete condition |
 | `Undo` | Pending | edit.undo; quiet when there is nothing to undo, but a refused step (`undo_conflict`) is shown: neither `Shown` nor `Quiet` does both, so the window needs to tell the two apart (step 3 left it) |
@@ -144,10 +144,10 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `TransformSource` | Contract | item.flip/rotate/fit/align/reset_transform need gesture |
 | `SetSourceRegion` | Missing | no method for the shown region (ADR-0058 Show buttons); source.set_region is the capture region |
 | `SetRecordSeparately` | Pending | source.set_record_separately |
-| `SetSourceCaptureRegion` | Pending | source.set_region |
-| `SetDisplayChrome` | Pending | source.set_chrome |
-| `FitDisplayChrome` | Pending | source.fit_chrome |
-| `ResetDisplayChrome` | Pending | source.reset_chrome |
+| `SetSourceCaptureRegion` | Moved to `Command::Api` (step 3) | source.set_region |
+| `SetDisplayChrome` | Moved to `Command::Api` (step 3) | source.set_chrome |
+| `FitDisplayChrome` | Moved to `Command::Api` (step 3) | source.fit_chrome |
+| `ResetDisplayChrome` | Moved to `Command::Api` (step 3) | source.reset_chrome |
 | `SetItemShowFor` | Moved to `Command::Api` (step 2) | item.set_show_for |
 | `ShowItem` | Moved to `Command::Api` (step 2) | item.show |
 | `SetSourceStyle` | Contract | item.set_style needs gesture |

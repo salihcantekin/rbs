@@ -83,8 +83,6 @@ paths! {
     AddSource => Pending(&["source.add"]),
     // must still send Update::Deleted for the undo toast
     RemoveFromScene => Pending(&["item.remove"]),
-    SetGlobal => Pending(&["global.add", "global.remove"]),
-    RemoveGlobal => Pending(&["global.remove"]),
     // global: true
     AddGlobalSource => Pending(&["source.add"]),
     // edit.undo has no only-if-a-delete condition
@@ -174,10 +172,6 @@ paths! {
     // no method for the shown region (ADR-0058 Show buttons); source.set_region is the capture region
     SetSourceRegion => Missing,
     SetRecordSeparately => Pending(&["source.set_record_separately"]),
-    SetSourceCaptureRegion => Pending(&["source.set_region"]),
-    SetDisplayChrome => Pending(&["source.set_chrome"]),
-    FitDisplayChrome => Pending(&["source.fit_chrome"]),
-    ResetDisplayChrome => Pending(&["source.reset_chrome"]),
     // item.set_style needs gesture
     SetSourceStyle => Contract(&["item.set_style"]),
     // item.set_scroll needs gesture
@@ -259,7 +253,7 @@ mod tests {
     /// which must pick its method from host state may raise `TRANSLATES` by as many
     /// as `PENDING` falls; any other rise needs the owner's written approval.
     const TRANSLATES: usize = 22;
-    const PENDING: usize = 45;
+    const PENDING: usize = 39;
     const CONTRACT: usize = 10;
     const MISSING: usize = 20;
     const VIEW: usize = 13;

@@ -675,8 +675,6 @@ impl Host {
             | Command::AddOn { .. }
             | Command::RequestPermission(..)
             | Command::RemoveFromScene(..)
-            | Command::SetGlobal { .. }
-            | Command::RemoveGlobal(..)
             | Command::AddGlobalSource { .. }
             | Command::UndoDelete
             | Command::Undo
@@ -740,10 +738,6 @@ impl Host {
             | Command::TransformSource { .. } => self.item_command(c, notify),
             Command::SetSourceRegion { .. }
             | Command::SetRecordSeparately { .. }
-            | Command::SetSourceCaptureRegion { .. }
-            | Command::SetDisplayChrome { .. }
-            | Command::FitDisplayChrome(..)
-            | Command::ResetDisplayChrome(..)
             | Command::SetSourceStyle { .. }
             | Command::SetSourceScroll { .. }
             | Command::ScrollLive { .. } => self.item_display_command(c, notify),

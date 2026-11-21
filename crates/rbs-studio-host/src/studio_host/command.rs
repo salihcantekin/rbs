@@ -26,17 +26,6 @@ pub enum Command {
     /// "Remove from scene", ADR-0065); the source goes too when that was its last
     /// placement.
     RemoveFromScene(SourceId),
-    /// Make a source global on the studio's canvas (`true`: it leaves the canvas's
-    /// scenes, ADR-0065) or move its global item into the edited scene (`false`).
-    SetGlobal {
-        /// The source.
-        id: SourceId,
-        /// Global, else back in the edited scene.
-        global: bool,
-    },
-    /// Remove a source from the global sources (Settings › Global sources); the
-    /// source goes too when that was its last placement.
-    RemoveGlobal(SourceId),
     /// Add a new source of `kind` capturing `target` as a global source (one undo
     /// step).
     AddGlobalSource {
@@ -413,24 +402,6 @@ pub enum Command {
         /// What changes.
         patch: RecordPatch,
     },
-    /// Capture region on the source (ADR-0103). One undo step; does not restart capture.
-    SetSourceCaptureRegion {
-        /// The source.
-        id: SourceId,
-        /// The region, or `None` to clear.
-        region: Option<SourceRegion>,
-    },
-    /// Display chrome insets (ADR-0104). One undo step.
-    SetDisplayChrome {
-        /// The source.
-        id: SourceId,
-        /// The chrome, or `None` to turn it off.
-        chrome: Option<DisplayChrome>,
-    },
-    /// Places the item with the stored chrome fill (ADR-0104).
-    FitDisplayChrome(SourceId),
-    /// Copies chrome from the display work area (ADR-0104).
-    ResetDisplayChrome(SourceId),
     /// Shape and border of a video source's picture (ADR-0053), replacing the whole
     /// style of the layout the canvas shows. A style that is not valid is refused with
     /// [`Update::Error`].
