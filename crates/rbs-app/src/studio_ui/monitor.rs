@@ -1,13 +1,13 @@
 //! The monitor output in the UI (ADR-0097 F1): the headphones button of each Mixer
 //! strip, the Mixer's monitor row and Settings › Audio › Monitor. All three read one
-//! [`MonitorUi`], filled from the host's [`Update::Monitor`] and
-//! [`Update::MonitorDevices`], and send the host's monitor commands.
+//! [`MonitorUi`], filled from the host's [`Update::Monitor`] and the answer to
+//! `monitor.devices`, and send the monitor's control API calls.
 //!
 //! The device list is asked for only while something shows it: the Mixer's row (shown
 //! only while the monitor is wanted) or the Audio settings page (decision 7).
 
 use rbs_api::types as api;
-use rbs_app::studio_host::{Command, Update};
+use rbs_app::studio_host::Update;
 use rbs_scene::model::SourceMonitor;
 use rbs_ui::fader;
 use slint::Model;
@@ -41,7 +41,7 @@ pub struct MonitorUi {
     /// The playback devices, once listed.
     devices: Vec<api::MonitorDevice>,
     /// A list was asked for and has not come back.
-    listing: bool,
+    listing: Option<u64>,
     /// The Audio settings page is shown.
     page_shown: bool,
     /// The level in words while a fader drag has not yet been confirmed by the host.
@@ -181,9 +181,11 @@ impl StudioUi {
                 }
                 true
             }
-            Update::MonitorDevices(d) => {
-                self.monitor.devices = d.clone();
-                self.monitor.listing = false;
+            Update::ApiAnswer { ticket, result } if self.monitor.listing == Some(*ticket) => {
+                self.monitor.listing = None;
+                if let Ok(rbs_api::Response::MonitorDevices(list)) = result {
+                    self.monitor.devices = list.devices.clone();
+                }
                 true
             }
             _ => false,
@@ -299,9 +301,8 @@ impl StudioUi {
 
     /// Asks the host for the playback devices (a picker is shown).
     pub fn list_monitor_devices(&mut self) {
-        if !self.monitor.listing {
-            self.monitor.listing = true;
-            self.send(Command::ListMonitorDevices);
+        if self.monitor.listing.is_none() {
+            self.monitor.listing = Some(self.ask(rbs_api::Command::MonitorDevices));
         }
     }
 

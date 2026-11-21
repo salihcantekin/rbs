@@ -693,8 +693,7 @@ impl Host {
             | Command::SetMasterVolume { .. }
             | Command::SetMasterMuted { .. }
             | Command::SetLoudnessShown(..)
-            | Command::SetLoudnessSettings { .. }
-            | Command::ListMonitorDevices => self.canvas_and_mix_command(c, notify),
+            | Command::SetLoudnessSettings { .. } => self.canvas_and_mix_command(c, notify),
             Command::AddVoiceChain(..)
             | Command::AddSample { .. }
             | Command::AddStamp { .. }

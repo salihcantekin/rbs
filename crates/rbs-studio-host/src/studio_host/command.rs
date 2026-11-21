@@ -125,9 +125,6 @@ pub enum Command {
         /// dBTP.
         true_peak_limit: f32,
     },
-    /// Lists the playback devices ([`Update::MonitorDevices`] answers). Enumerates:
-    /// sent only while a device picker is shown (ADR-0097 decision 7).
-    ListMonitorDevices,
     /// Hide a source from the Mixer or show it again (ADR-0080). A live view choice like
     /// the mute: not on the undo stack; the sound is untouched.
     SetSourceMixerHidden {

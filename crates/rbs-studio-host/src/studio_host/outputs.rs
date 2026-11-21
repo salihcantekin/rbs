@@ -697,9 +697,6 @@ impl Host {
                     notify,
                 );
             }
-            Command::ListMonitorDevices => {
-                notify(Update::MonitorDevices(self.api_monitor_devices().devices));
-            }
             // Routed elsewhere by `Host::command`.
             _ => {}
         }

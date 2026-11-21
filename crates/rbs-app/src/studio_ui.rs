@@ -6036,8 +6036,8 @@ impl StudioUi {
             return out;
         }
         match u {
-            Update::Monitor(_) | Update::MonitorDevices(_) | Update::Loudness(_) => {} // taken above
-            Update::ApiAnswer { .. } => {} // no window call asks for one yet (ADR-0163)
+            Update::Monitor(_) | Update::Loudness(_) => {} // taken above
+            Update::ApiAnswer { .. } => {}                 // a question no longer asked (ADR-0163)
             Update::TBarReset => self.tbar_resets = self.tbar_resets.wrapping_add(1),
             Update::AddOns(list) => self.add_ons = list.add_ons,
             Update::OpenAddOn(id) => self.open_add_on = Some(id),

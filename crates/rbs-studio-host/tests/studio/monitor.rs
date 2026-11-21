@@ -368,7 +368,10 @@ fn the_ui_commands_drive_the_monitor_and_report_it() {
     };
     // The monitor's state is sent once at the start (nothing monitored), the Mixer's
     // rows give the microphone's id, and the devices answer the list request.
-    host.send(Command::ListMonitorDevices);
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::MonitorDevices),
+        reply: rbs_studio_host::studio_host::ApiReply::Ticket(7),
+    });
     let deadline = Instant::now() + LIMIT;
     let (mut status, mut mic, mut devices) = (None, None, None);
     while status.is_none() || mic.is_none() || devices.is_none() {
@@ -379,7 +382,10 @@ fn the_ui_commands_drive_the_monitor_and_report_it() {
         {
             Update::Monitor(s) => status = Some(s),
             Update::Heard(rows) if !rows.is_empty() => mic = Some(rows[0].id),
-            Update::MonitorDevices(d) => devices = Some(d),
+            Update::ApiAnswer {
+                ticket: 7,
+                result: Ok(rbs_api::Response::MonitorDevices(d)),
+            } => devices = Some(d.devices),
             _ => {}
         }
     }
