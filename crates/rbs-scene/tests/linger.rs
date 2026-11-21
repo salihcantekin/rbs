@@ -17,9 +17,7 @@ use rbs_graph::node::{LinkKind, NodeDescriptor, NodeKind, NodeTypeId, Pin};
 use rbs_scene::SceneCollection;
 use rbs_scene::activity::{ActivityTraits, OnReturn, Run, SourceActivity};
 use rbs_scene::binder::{NodeTypes, Role, SceneBinder};
-use rbs_scene::model::{
-    CanvasId, ItemContent, Layout, SceneId, SceneScope, Settings, SourceId,
-};
+use rbs_scene::model::{CanvasId, ItemContent, Layout, SceneId, SceneScope, Settings, SourceId};
 
 const CAMERA: &str = "org.rbs.source.camera";
 const PAGE: &str = "org.rbs.source.browser";
@@ -166,7 +164,10 @@ fn a_source_that_leaves_the_screen_lingers_warm_and_stops_when_its_time_is_up() 
     r.sync();
     assert!(r.active(r.cam));
     assert!(r.binder.is_lingering(r.cam));
-    assert!(r.linked(r.cam), "a lingering capture stays linked while warm");
+    assert!(
+        r.linked(r.cam),
+        "a lingering capture stays linked while warm"
+    );
     let end = Timestamp::ZERO + Duration::from_secs(35);
     assert_eq!(r.binder.linger_end(), Some(end));
     assert_eq!(

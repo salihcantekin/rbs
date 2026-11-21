@@ -217,13 +217,21 @@ fn a_camera_that_lingers_stays_open_off_screen_until_its_time_is_up() {
     let mut settings = StudioSettings::new(main);
     settings.audio = false;
     let mut studio = Studio::start(engine, gpu, &col, &r.adapters.sources, &settings).unwrap();
-    let running = |s: &Studio| s.sources().into_iter().any(|x| x.name == "Lingering camera");
+    let running = |s: &Studio| {
+        s.sources()
+            .into_iter()
+            .any(|x| x.name == "Lingering camera")
+    };
     let mut rec = OutputSettings::new("mem://main", ContainerId::Matroska);
     rec.audio = None;
     studio.start_output(&r.adapters, &rec).unwrap();
     let reached = run_until(&mut studio, &clock, |s| s.picture_size(cam).is_some());
     assert!(reached, "the camera opened on air");
-    assert_eq!(studio.linger_wait(clock.now()), None, "nothing lingers on air");
+    assert_eq!(
+        studio.linger_wait(clock.now()),
+        None,
+        "nothing lingers on air"
+    );
 
     // Off air: it lingers, still open.
     col.set_program(main, Some(live)).unwrap();
@@ -244,7 +252,11 @@ fn a_camera_that_lingers_stays_open_off_screen_until_its_time_is_up() {
     studio.update(&col, &r.adapters.sources).unwrap();
     assert!(!running(&studio));
     assert!(!studio.is_lingering(cam));
-    assert_eq!(studio.linger_wait(clock.now()), None, "no wake is left armed");
+    assert_eq!(
+        studio.linger_wait(clock.now()),
+        None,
+        "no wake is left armed"
+    );
     let reached = run_until(&mut studio, &clock, |s| s.picture_size(cam).is_none());
     assert!(reached, "the camera closed after its linger");
     let (_, errors) = studio.shutdown();
