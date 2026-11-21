@@ -45,7 +45,7 @@ Names are the OS thread names (`std::thread::Builder::name`), so they show in a 
 | `rbs-shutdown` | `shutdown::start` (Quit) | Drops remote control, the studio host and the user-data saver in order, each within a budget ([ADR-0156](../adr/0156-ask-before-quitting-while-recording-and-stop-off-the-ui-thread.md)) | Joins of the threads it stops | Waiting on the UI thread |
 | `rbs-user-data` | `Saver::start` | Writes profiles, scene collections and themes ([ADR-0051](../adr/0051-user-data-profiles-and-scene-collections.md)) | Its job queue (`Condvar`), the disk | |
 | `rbs-preview-connect`, `rbs-projector-connect`, `rbs-interact-connect` | `preview.rs`, `projector.rs`, `interact.rs` | Connect to the studio's frame endpoint off the UI thread, then hand the layer to the UI thread | The endpoint, with a timeout | |
-| `rbs-preview`, `rbs-projector`, `rbs-interact` | the same files | Receive frames and keep only the newest for the UI thread | The frame endpoint | Waiting on the UI thread |
+| `rbs-preview`, `rbs-projector`, `rbs-interact` | the same files | Receive frames and keep only the newest for the UI thread: a `rbs_app::latest::Latest` slot, with at most one posted `entry::invoke_latest` call, so a slow UI never queues frames and a replaced frame's slot returns to the studio at once (stability plan WP-J) | The frame endpoint | Waiting on the UI thread; one posted call per frame |
 | `rbs-text-measure` | `studio_host/text_measure.rs`, `studio_host.rs` | Measures a text block without blocking the control thread (a late answer is dropped with its thread) | The text renderer | |
 | `rbs-calibration`, `rbs-calibration-lane-<n>`, `rbs-calibration-reaper` | `studio_host/calibration.rs` | Encoder calibration runs and their encoder sessions | Lane answers; reaper joins | Running on the UI thread |
 | `rbs-replay-clip`, `rbs-stinger-look`, `rbs-add-on-install`, `rbs-region-grab`, `rbs-thumbnail-<n>`, `rbs-permission`, `rbs-picker`, `rbs-vcam-setup`, `rbs-profile-sweep`, `rbs-profile-remove` | the `studio_host` files, `vcam_page.rs`, `browser_profiles.rs` | One-off jobs that read files, ask the OS or write a clip, then report back | Their own work | Waiting on the UI thread |
@@ -72,8 +72,8 @@ Names are the OS thread names (`std::thread::Builder::name`), so they show in a 
 
 | Thread | Does | May wait on | Never |
 | --- | --- | --- | --- |
-| CEF UI thread | Page life cycle, input, `OnPaint`, `OnAcceleratedPaint` | Nothing (rule 2 above) | CPU waits on the GPU, a keyed mutex, a fence or the studio |
-| `rbs-browser-stdin` | Reads control messages from the studio and posts them to CEF | Standard input | Touching CEF objects directly |
+| CEF UI thread | Page life cycle, input, `OnPaint`, `OnAcceleratedPaint`; between CEF runs, the runner's loop | Inside a callback nothing (rule 2 above); between runs only `pump::PUMP`, until CEF's requested time (at most 100 ms), a control message, the stop or the loop's next timer (WP-J) | CPU waits on the GPU, a keyed mutex, a fence or the studio; a fixed sleep |
+| `rbs-browser-stdin` | Reads control messages from the studio, queues them for the CEF UI thread and wakes its pump | Standard input | Touching CEF objects directly |
 | CEF's own threads (IO, GPU process, renderer processes) | Chromium | Chromium's own rules | |
 
 ## Adding a thread

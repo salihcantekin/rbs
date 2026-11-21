@@ -388,6 +388,20 @@ impl Cycle {
         }
     }
 
+    /// The earliest time [`tick`](Self::tick) can return something: the retry, the
+    /// reload or the script run. `None` while nothing is timed. The runner waits no
+    /// longer than this between ticks (stability plan WP-J).
+    pub fn next_due(&self) -> Option<Duration> {
+        match self.phase {
+            Phase::Failed { due } => Some(due),
+            Phase::Loaded => match (self.reload_due, self.script_due) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            },
+            Phase::Loading => None,
+        }
+    }
+
     /// Seconds until the retry while a failed load waits (`page_error`).
     pub fn retry_in(&self, now: Duration) -> Option<Duration> {
         match self.phase {
@@ -547,6 +561,32 @@ mod tests {
         c.response(ms(61_100), 504, None);
         assert_eq!(c.tick(ms(62_000)), None, "paused while a retry waits");
         assert!(!c.finished(ms(62_000)), "a failed load does not finish");
+    }
+
+    #[test]
+    fn the_next_due_time_is_the_earliest_timer() {
+        let mut c = Cycle::new(CycleOptions {
+            reload_every_s: 60,
+            script_every_s: 10,
+            retry_on_error: true,
+            ..opts()
+        });
+        assert_eq!(c.next_due(), None, "nothing is timed before a load ends");
+        c.navigate(ms(0), Start::Load);
+        c.finished(ms(1_000));
+        assert_eq!(
+            c.next_due(),
+            Some(ms(11_000)),
+            "the script before the reload"
+        );
+        assert_eq!(c.tick(ms(11_000)), Some(Due::RunScript));
+        assert_eq!(c.next_due(), Some(ms(21_000)));
+        c.navigate(ms(30_000), Start::Reload);
+        assert_eq!(c.next_due(), None, "paused while loading");
+        c.response(ms(30_100), 504, None);
+        let retry = c.next_due();
+        assert!(retry.is_some_and(|at| at > ms(30_100)), "the retry");
+        assert_eq!(retry.and_then(|at| c.tick(at)), Some(Due::Retry));
     }
 
     #[test]

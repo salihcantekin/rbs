@@ -164,6 +164,7 @@ const GPU_FAIL_LIMIT: u32 = 60;
 
 #[cfg(windows)]
 mod gpu;
+mod pump;
 
 /// The `--use-adapter-luid` value for `luid`: Chromium parses decimal `<high>,<low>`
 /// with a signed high part and an unsigned low part (`ui/gl/gl_display.cc`); hex fails
@@ -178,9 +179,22 @@ fn page() -> Option<&'static Page> {
     PAGE.get()
 }
 
+// CEF's requests for message loop work go to the runner's loop (WP-J).
+wrap_browser_process_handler! {
+    struct Process;
+    impl BrowserProcessHandler {
+        fn on_schedule_message_pump_work(&self, delay_ms: i64) {
+            pump::PUMP.schedule(delay_ms);
+        }
+    }
+}
+
 wrap_app! {
     struct RunnerApp;
     impl App {
+        fn browser_process_handler(&self) -> Option<BrowserProcessHandler> {
+            Some(Process::new())
+        }
         fn on_before_command_line_processing(
             &self,
             process_type: Option<&CefString>,
@@ -1057,13 +1071,15 @@ fn run_browser(args: &args::Args, app: &mut App, engine: &engine::Engine) -> i32
         .spawn(move || {
             // An unknown kind is skipped; a closed pipe or a bad length stops.
             while let Ok(message) = rbs_browser_ipc::control::read(&mut stdin) {
-                if let Some(message) = message
-                    && control_tx.send(message).is_err()
-                {
-                    break;
+                if let Some(message) = message {
+                    if control_tx.send(message).is_err() {
+                        break;
+                    }
+                    pump::PUMP.wake();
                 }
             }
             stop_flag.store(true, Ordering::Release);
+            pump::PUMP.wake();
         });
 
     // A signed-in source keeps its profile (ADR-0132 decision 10); every other tree
@@ -1084,6 +1100,9 @@ fn run_browser(args: &args::Args, app: &mut App, engine: &engine::Engine) -> i32
     };
     let settings = Settings {
         windowless_rendering_enabled: 1,
+        // The loop runs CEF when CEF asks (`on_schedule_message_pump_work`), not on a
+        // fixed sleep (stability plan WP-J).
+        external_message_pump: 1,
         // The sandbox is a later step (ADR-0132); until then this runner is opt-in.
         no_sandbox: 1,
         root_cache_path: profile.to_string_lossy().as_ref().into(),
@@ -1259,17 +1278,22 @@ fn browse(
     let mut stamp = watched.as_deref().map(dir_stamp);
     let mut last_check = Instant::now();
 
-    // Pump CEF at least twice per page frame, and often enough for the heartbeat.
+    // CEF runs when it asks for work (`pump`); the loop's own timers below bound the
+    // wait (stability plan WP-J).
+    #[cfg(windows)]
     let period = Duration::from_secs(1) / config.fps.clamp(1, 60);
-    let pump = (period / 2).min(Duration::from_millis(10));
     let mut last_beat = Instant::now();
     page.ring.beat();
     #[cfg(windows)]
     let mut repaint_at: Option<Instant> = None;
     #[cfg(windows)]
     let mut shortage = SlotShortage::default();
+    let mut work = true;
     while !page.quit.load(Ordering::Acquire) && !stop.load(Ordering::Acquire) {
-        do_message_loop_work();
+        if work {
+            do_message_loop_work();
+            pump::PUMP.worked();
+        }
         // A dropped GPU frame is asked for again once, one page frame later, and not
         // again until a paint arrives (ADR-0157 decision 6).
         #[cfg(windows)]
@@ -1317,8 +1341,30 @@ fn browse(
                 reload(page, &browser, Start::Reload, true);
             }
         }
-        #[allow(clippy::disallowed_methods)] // The pump, between callbacks.
-        std::thread::sleep(pump);
+        if page.quit.load(Ordering::Acquire) {
+            break;
+        }
+        // Wait for CEF's next request, a control message, the stop, or the next timer.
+        // A beat held back by an unresponsive renderer is checked again later, not in
+        // a busy loop.
+        let now = Instant::now();
+        let beat = last_beat + HEARTBEAT_PERIOD / 2;
+        let mut until = if beat > now {
+            beat
+        } else {
+            now + HEARTBEAT_PERIOD / 2
+        };
+        if watched.is_some() {
+            until = until.min(last_check + FILE_CHECK);
+        }
+        #[cfg(windows)]
+        if let Some(at) = repaint_at {
+            until = until.min(at);
+        }
+        if let Some(due) = page.with_cycle(|c| c.next_due()).flatten() {
+            until = until.min(now + due.saturating_sub(page.now()));
+        }
+        work = pump::PUMP.wait(until).work;
     }
     #[cfg(windows)]
     match FALLBACK_REASON.load(Ordering::Relaxed) {
@@ -1335,8 +1381,7 @@ fn browse(
         let deadline = Instant::now() + Duration::from_secs(2);
         while !page.closed.load(Ordering::Acquire) && Instant::now() < deadline {
             do_message_loop_work();
-            #[allow(clippy::disallowed_methods)] // The closing pump, between callbacks.
-            std::thread::sleep(Duration::from_millis(5));
+            let _ = pump::PUMP.wait((Instant::now() + pump::MAX_DELAY).min(deadline));
         }
     }
     drop(browser);
