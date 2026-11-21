@@ -84,6 +84,7 @@ mod iso_audio;
 mod iso_video;
 mod latency;
 mod loudness;
+mod meters;
 mod monitor;
 mod pause;
 mod rehearse;
@@ -3527,16 +3528,6 @@ impl Studio {
             self.meters_on,
         ));
         true
-    }
-
-    /// Puts meters on the mixer, or takes them off. A repeat of the current state
-    /// sends nothing. Control thread only.
-    pub fn set_meters_on(&mut self, on: bool) {
-        if self.meters_on == on {
-            return;
-        }
-        self.meters_on = on;
-        self.send_mix();
     }
 
     /// The bound sources the running plan schedules, in binder order, each with its
