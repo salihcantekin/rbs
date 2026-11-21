@@ -13,7 +13,7 @@ use rbs_graph::runtime::param::{ParamReceiver, ParamSender, channel};
 use rbs_graph::runtime::{Node, NodeError, PrepareCtx, ProcessCtx, Runtime};
 
 use crate::config::AudioGraphConfig;
-use crate::input::{MAX_CORRECTION, STEER_GAIN, matrix};
+use crate::input::{MAX_CORRECTION, Route, STEER_GAIN, matrix, route};
 use crate::resample::{AFTER, BEFORE, Kernel, TAPS, apply};
 
 /// Node type id of [`OutputNode`].
@@ -144,6 +144,8 @@ struct State {
     /// Shared with every node of the same rate pair (read-only).
     kernel: std::sync::Arc<Kernel>,
     matrix: [[f32; MAX_CHANNELS]; MAX_CHANNELS],
+    /// `matrix` as a copy, when it is one (audit F-24).
+    route: Option<Route>,
     /// Interleaved device frames of one push.
     scratch: Box<[f32]>,
     /// Ring fill the node steers towards, device frames.
@@ -177,6 +179,7 @@ impl State {
         let two_blocks = ((2 * block) as f64 / nominal).ceil() as usize;
         let target = wanted.max(two_blocks).min(ring / 2).max(1);
         let ramp = (OUTPUT_VOLUME_RAMP.as_secs_f64() * rate).max(1.0);
+        let m = matrix(config.format.channels, device.channels);
         Self {
             channels,
             dev_channels,
@@ -188,7 +191,8 @@ impl State {
             nominal,
             rate,
             kernel: Kernel::shared(config.format.sample_rate, device.sample_rate),
-            matrix: matrix(config.format.channels, device.channels),
+            matrix: m,
+            route: route(&m),
             scratch: vec![0.0; scratch_frames * dev_channels].into_boxed_slice(),
             target,
             fill: target as f64,
@@ -431,14 +435,21 @@ impl<X: Runtime> Node<X> for OutputNode {
                 };
             }
             let frame = &mut st.scratch[n * n_dev..(n + 1) * n_dev];
-            for (o, out) in frame.iter_mut().enumerate() {
-                let mut acc = 0.0;
-                if let Some(row) = st.matrix.get(o) {
-                    for c in 0..n_in {
-                        acc += row[c] * v[c];
-                    }
+            if let Some(route) = &st.route {
+                for (o, out) in frame.iter_mut().enumerate() {
+                    let pick = route.get(o).copied().flatten();
+                    *out = pick.map_or(0.0, |c| v[usize::from(c)]) * st.gain;
                 }
-                *out = acc * st.gain;
+            } else {
+                for (o, out) in frame.iter_mut().enumerate() {
+                    let mut acc = 0.0;
+                    if let Some(row) = st.matrix.get(o) {
+                        for c in 0..n_in {
+                            acc += row[c] * v[c];
+                        }
+                    }
+                    *out = acc * st.gain;
+                }
             }
             n += 1;
             st.p += step;

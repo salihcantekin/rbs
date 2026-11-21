@@ -197,6 +197,32 @@ pub(crate) fn matrix(
     m
 }
 
+/// A channel matrix whose every row is one `1.0` or all zeros, as output channel
+/// to source channel (`None` is silence). Identity, mono to stereo and the dropped
+/// extra channels of the copy-through case are routes (audit F-24): a route copies
+/// the sample instead of dotting a row of mostly zeros. The result equals the dot for
+/// every finite sample (the dot only turns `-0.0` into `0.0`).
+pub(crate) type Route = [Option<u8>; MAX_CHANNELS];
+
+/// The route of `m`, or `None` when any row mixes channels or scales them.
+pub(crate) fn route(m: &[[f32; MAX_CHANNELS]; MAX_CHANNELS]) -> Option<Route> {
+    let mut r = [None; MAX_CHANNELS];
+    for (o, row) in m.iter().enumerate() {
+        let mut picked = None;
+        for (c, &w) in row.iter().enumerate() {
+            if w == 0.0 {
+                continue;
+            }
+            if w != 1.0 || picked.is_some() {
+                return None;
+            }
+            picked = u8::try_from(c).ok();
+        }
+        r[o] = picked;
+    }
+    Some(r)
+}
+
 /// Everything `prepare` allocates.
 struct State {
     src_channels: usize,
@@ -233,6 +259,8 @@ struct State {
     /// Shared with every node of the same rate pair (read-only).
     kernel: std::sync::Arc<Kernel>,
     matrix: [[f32; MAX_CHANNELS]; MAX_CHANNELS],
+    /// `matrix` as a copy, when it is one ([`route`]).
+    route: Option<Route>,
 }
 
 impl State {
@@ -241,6 +269,7 @@ impl State {
         let span = config.latency + max_offset + MAX_PACKET + config.period() * 2;
         let cap = (span.as_secs_f64() * rate).ceil() as usize + 2 * TAPS + 1024;
         let src_channels = src.channels.channels().clamp(1, MAX_CHANNELS);
+        let m = matrix(src.channels, config.format.channels);
         Self {
             src_channels,
             cap,
@@ -259,7 +288,8 @@ impl State {
             relock: false,
             nominal: rate / f64::from(config.format.sample_rate.hz()),
             kernel: Kernel::shared(src.sample_rate, config.format.sample_rate),
-            matrix: matrix(src.channels, config.format.channels),
+            matrix: m,
+            route: route(&m),
         }
     }
 
@@ -581,13 +611,19 @@ impl InputAligner {
                     let at = c * st.cap + st.origin + i - BEFORE;
                     *v = apply(&weights, &st.fifo[at..at + TAPS]);
                 }
-                for (o, ch) in chans.iter_mut().enumerate().take(n_out) {
-                    let row = &st.matrix[o];
-                    let mut acc = 0.0;
-                    for c in 0..st.src_channels {
-                        acc += row[c] * v[c];
+                if let Some(route) = &st.route {
+                    for (o, ch) in chans.iter_mut().enumerate().take(n_out) {
+                        ch[f] = route[o].map_or(0.0, |c| v[usize::from(c)]);
                     }
-                    ch[f] = acc;
+                } else {
+                    for (o, ch) in chans.iter_mut().enumerate().take(n_out) {
+                        let row = &st.matrix[o];
+                        let mut acc = 0.0;
+                        for c in 0..st.src_channels {
+                            acc += row[c] * v[c];
+                        }
+                        ch[f] = acc;
+                    }
                 }
             } else {
                 for ch in chans.iter_mut().take(n_out) {
@@ -720,5 +756,82 @@ mod tests {
         assert_eq!(effective_offset_ns(&config, max, 300 * ms), 200 * ms);
         assert_eq!(effective_offset_ns(&config, max, -20 * ms), -20 * ms);
         assert_eq!(effective_offset_ns(&config, max, -100 * ms), -35 * ms);
+    }
+
+    const LAYOUTS: [ChannelLayout; 7] = [
+        ChannelLayout::Mono,
+        ChannelLayout::Stereo,
+        ChannelLayout::Surround3_1,
+        ChannelLayout::Surround5_1,
+        ChannelLayout::Surround7_1,
+        ChannelLayout::Discrete(3),
+        ChannelLayout::Discrete(8),
+    ];
+
+    /// The dot that a route replaces, for one frame of `v`.
+    fn dot(
+        m: &[[f32; MAX_CHANNELS]; MAX_CHANNELS],
+        v: &[f32; MAX_CHANNELS],
+    ) -> [f32; MAX_CHANNELS] {
+        let mut out = [0.0; MAX_CHANNELS];
+        for (o, row) in m.iter().enumerate() {
+            let mut acc = 0.0;
+            for c in 0..MAX_CHANNELS {
+                acc += row[c] * v[c];
+            }
+            out[o] = acc;
+        }
+        out
+    }
+
+    #[test]
+    fn copies_mixes_and_scales_get_the_right_route() {
+        use ChannelLayout::*;
+        let r = |a, b| route(&matrix(a, b));
+        assert!(r(Stereo, Stereo).is_some());
+        assert!(r(Mono, Stereo).is_some());
+        assert!(r(Mono, Surround5_1).is_some());
+        assert!(r(Discrete(3), Stereo).is_some());
+        assert!(r(Stereo, Mono).is_none(), "a downmix scales by 1/2");
+        assert!(
+            r(Surround5_1, Stereo).is_none(),
+            "a fold-down mixes channels"
+        );
+        let mono = r(Mono, Stereo).unwrap_or_default();
+        assert_eq!(&mono[..3], &[Some(0), Some(0), None]);
+    }
+
+    #[test]
+    fn a_route_equals_the_dot_for_finite_samples() {
+        // A fixed pseudo-random walk over finite values, small and large, both signs.
+        let mut x: u32 = 0x9e37_79b9;
+        let mut next = || {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            let v = f32::from_bits((x & 0x807f_ffff) | 0x3f00_0000) * 4.0;
+            if v == 0.0 { 1.0 } else { v }
+        };
+        for from in LAYOUTS {
+            for to in LAYOUTS {
+                let m = matrix(from, to);
+                let Some(route) = route(&m) else { continue };
+                for _ in 0..64 {
+                    let mut v = [0.0f32; MAX_CHANNELS];
+                    for s in v.iter_mut().take(from.channels().min(MAX_CHANNELS)) {
+                        *s = next();
+                    }
+                    let want = dot(&m, &v);
+                    for o in 0..MAX_CHANNELS {
+                        let got = route[o].map_or(0.0, |c| v[usize::from(c)]);
+                        assert_eq!(
+                            got.to_bits(),
+                            want[o].to_bits(),
+                            "{from:?} -> {to:?} row {o}"
+                        );
+                    }
+                }
+            }
+        }
     }
 }

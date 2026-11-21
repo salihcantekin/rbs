@@ -29,8 +29,10 @@ use crate::stream_profile;
 mod entries;
 mod error;
 mod later;
+mod switch;
 pub use error::SessionError;
 pub use later::{ObsWritten, Pending};
+pub use switch::{LoadedCollection, LoadedProfile};
 
 /// Name of the entries made when there are none, and of the migrated ones.
 pub const DEFAULT_NAME: &str = "Default";
@@ -516,19 +518,12 @@ impl UserSession {
     }
 
     /// Uses the output profile `id` from now on (its sections replace
-    /// [`UserSession::profile`]) and saves the choice.
+    /// [`UserSession::profile`]) and saves the choice. Waits for saves of it still
+    /// queued; the window uses [`UserSession::load_profile_later`] instead.
     pub fn switch_profile(&mut self, id: &EntryId) -> Result<(), SessionError> {
-        // A save of that profile still waiting is written first; saves of others do not
-        // hold the switch.
         self.flush_entry(&Key::Profile(id.clone()));
-        let entry = self.data.profiles().load(id).map_err(SessionError::from)?;
-        if let Some(s) = &self.saver {
-            Names::set(&s.shared.names.profiles, id, &entry.name);
-        }
-        self.profile_id = id.clone();
-        self.profile_name = entry.name;
-        self.profile = entry.document;
-        self.save_current();
+        let loaded = switch::load_profile(id.clone())(&self.data)?;
+        self.use_profile(loaded);
         Ok(())
     }
 
@@ -557,10 +552,10 @@ impl UserSession {
         self.run(entries::delete_profile(id.clone()))?
     }
 
-    /// Loads the scene collection `id`, to run it.
+    /// Loads the scene collection `id`, to run it. Waits for saves of it still queued
+    /// (and of every collection when it keeps a sign-in); the window uses
+    /// [`UserSession::load_collection_later`] instead.
     pub fn load_collection(&self, id: &EntryId) -> Result<(String, SceneCollection), SessionError> {
-        // A save of it still waiting is written first; saves of others do not hold the
-        // switch.
         self.flush_entry(&Key::Collection(id.clone()));
         let mut entry = self
             .data
@@ -571,34 +566,15 @@ impl UserSession {
         Ok((entry.name, entry.document))
     }
 
-    /// A kept sign-in another collection already holds stays with it; the loaded
-    /// collection `id` starts signed out there (ADR-0132 decision 10), and is saved so.
-    /// Other collections are read only when it keeps a sign-in.
+    /// [`switch::sign_out_taken`] on this thread, at start and for
+    /// [`UserSession::load_collection`]: the saves still waiting are written first.
     fn own_loaded_profiles(&self, id: &EntryId, collection: &mut SceneCollection) {
         if !crate::browser_profiles::keeps_any(collection) {
             return;
         }
-        // Reads every other collection: their saves still waiting are written first.
         self.flush();
-        let taken = self.profile_ids_except(id);
-        if crate::browser_profiles::renew(collection, &taken, false).unwrap_or(0) > 0
-            && let Some(s) = &self.saver
-        {
-            s.shared
-                .push(Job::Collection(id.clone(), collection.clone()));
-        }
-    }
-
-    /// The kept-profile ids of every saved collection but `except`. A collection that
-    /// cannot be read adds none.
-    fn profile_ids_except(&self, except: &EntryId) -> std::collections::BTreeSet<String> {
-        let lib = self.data.scene_collections();
-        self.collections()
-            .into_iter()
-            .filter(|(id, _)| id != except)
-            .filter_map(|(id, _)| lib.load(&id).ok())
-            .flat_map(|e| crate::browser_profiles::ids(&e.document))
-            .collect()
+        let shared = self.saver.as_ref().map(|s| &*s.shared);
+        switch::sign_out_taken(&self.data, id, collection, shared);
     }
 
     /// Every kept-profile id a saved collection names, or `None` when any collection
