@@ -496,13 +496,6 @@ impl StudioUi {
         Some((f.key, v))
     }
 
-    pub fn set_source_sync_offset(&mut self, id: i32, ms: i32) {
-        self.send(Command::SetSourceSyncOffset {
-            id: SourceId::from_raw(id as u32),
-            offset_ms: ms.clamp(-200, 200),
-        });
-    }
-
     /// Add filter: the filter type `type_id` on `source`. The catalogue it comes from
     /// (picture filters, or audio filters on the Audio tab) is the caller's; an id that
     /// is in neither does nothing.

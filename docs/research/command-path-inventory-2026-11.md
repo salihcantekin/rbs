@@ -2,7 +2,7 @@
 
 First-pass classification of every `rbs_studio_host::Command` variant on main `c424931` for [ADR-0163](../adr/0163-one-command-path-for-the-window-and-the-api.md) (one command path, quality plan WP-20). Made by reading each variant's handler arm and the control API method names (`rbs_api::Command::method`), corrected after the ADR's first review. Each namespace step checks its rows again against the code and the control API spec; where a row is wrong, the step's `Command::path` arm is the record, not this table.
 
-Step 0 moved `ResetLoudness` to `Command::Api`; step 1 (scenes and transitions) moved ten scene variants and made Switch scene and Studio mode translations; step 2 (items) moved the Sources row's lock, eye and layer buttons, Add existing source and the timed show; `command_path.rs` holds the current counts. First-pass counts: 21 Translates (already run through `run_ui_api` or `ApiTarget::run`), 83 Pending, 10 Contract, 20 Missing, 27 WindowOnly (13 View, 9 LocalOnly, 2 Preview, 3 Mirror). Total 161. Corrected after review rounds 1 to 3.
+Step 0 moved `ResetLoudness` to `Command::Api`; step 1 (scenes and transitions) moved ten scene variants and made Switch scene and Studio mode translations; step 2 (items) moved the Sources row's lock, eye and layer buttons, Add existing source and the timed show; step 3 (sources, first part) moved rename, the per-source slide, keep open, the sync offset, Duplicate source, Copy, Paste and Reset attributes and the companion audio; `command_path.rs` holds the current counts. First-pass counts: 21 Translates (already run through `run_ui_api` or `ApiTarget::run`), 83 Pending, 10 Contract, 20 Missing, 27 WindowOnly (13 View, 9 LocalOnly, 2 Preview, 3 Mirror). Total 161. Corrected after review rounds 1 to 3.
 
 ## Known differences between the two paths
 
@@ -31,6 +31,8 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | Media play, pause, seek, restart | Forces the next media-state publish | Does not | `source_settings.rs`, `api_source2.rs` |
 | Pause, hold, break refusals | Own sentence ("The recording could not pause or resume: ...") | `ApiError` message | `stream.rs` |
 | Lock, eye and layer buttons on a row that is gone | Host refused "There is no source ..." | The window sends nothing (it names the row's item) | `studio_ui/item_calls.rs` |
+| A refused source edit (rename, slide, companion) | Error bar, then a publish | Error bar only; nothing changed, so nothing to publish | `studio_host.rs` `answer` |
+| Companion audio for a source that is gone | "There is no source ..." | "no source N" | `api_studio.rs` |
 
 ## Variants
 
@@ -98,32 +100,32 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `StartSyncMeasure` | Pending | sync.measure_start; refusals go to the Measure view, needs a ticketed answer |
 | `CloseSyncMeasure` | Pending | sync.measure_cancel; as StartSyncMeasure |
 | `ApplySyncToDeviceSources` | Pending | sync.apply_to_device_sources |
-| `SetSourceSyncOffset` | Pending | source.set_sync_offset |
-| `RetargetSource` | Pending | source.retarget |
+| `SetSourceSyncOffset` | Moved to `Command::Api` (step 3) | source.set_sync_offset |
+| `RetargetSource` | Pending | source.retarget; the API target keeps only adapter and target id, the window also sends the name, app and sound (step 3 left it) |
 | `GrabThumbnails` | WindowOnly View |  |
 | `StopThumbnails` | WindowOnly View |  |
 | `OpenSourceSettings` | WindowOnly View |  |
 | `CloseSourceSettings` | WindowOnly View |  |
 | `SetSourceSettings` | Contract | source.set_settings needs gesture; its text-file refusal moves to the caller checks |
-| `ReloadSource` | Pending | source.reload |
+| `ReloadSource` | Pending | source.reload; the window publishes after a restart, the API does not (step 3 left it) |
 | `BrowserControl` | Pending | browser.reload, browser.run_script |
 | `ForgetBrowserSignIn` | Pending | browser.forget_sign_in; window stops the page first, API does not |
 | `Media` | Pending | media.play, media.pause, media.seek, media.restart; window forces the next media-state publish |
-| `SetCompanionAudio` | Pending | source.set_companion_audio |
-| `RenameSource` | Pending | source.rename |
+| `SetCompanionAudio` | Moved to `Command::Api` (step 3) | source.set_companion_audio |
+| `RenameSource` | Moved to `Command::Api` (step 3) | source.rename |
 | `SetGlide` | Moved to `Command::Api` (step 1) | collection.set_glide |
 | `SetTransition` | Pending | collection.set_transition |
-| `SetSourceActivity` | Pending | source.set_activity |
-| `SetSourceGlide` | Pending | source.set_glide |
+| `SetSourceActivity` | Pending | source.set_activity; the window sends an `ActivityChoice`, which needs a mapping to the API values (step 3 left it) |
+| `SetSourceGlide` | Moved to `Command::Api` (step 3) | source.set_glide |
 | `AddExistingSource` | Moved to `Command::Api` (step 2) | item.add |
 | `AddScene` | Moved to `Command::Api` (step 1) | scene.add |
 | `DuplicateScene` | Moved to `Command::Api` (step 1) | scene.duplicate |
 | `DuplicateSceneWithCopies` | Moved to `Command::Api` (step 1) | scene.duplicate |
-| `DuplicateSource` | Pending | source.duplicate |
-| `CopyAttributes` | Pending | source.copy_attributes |
+| `DuplicateSource` | Moved to `Command::Api` (step 3) | source.duplicate |
+| `CopyAttributes` | Moved to `Command::Api` (step 3) | source.copy_attributes |
 | `OpenAttributes` | WindowOnly View |  |
-| `ResetSource` | Pending | source.reset |
-| `PasteAttributes` | Pending | source.paste_attributes |
+| `ResetSource` | Moved to `Command::Api` (step 3) | source.reset |
+| `PasteAttributes` | Moved to `Command::Api` (step 3) | source.paste_attributes |
 | `RemoveScene` | Moved to `Command::Api` (step 1) | scene.remove |
 | `SetSceneTransition` | Moved to `Command::Api` (step 1) | scene.set_transition |
 | `RenameScene` | Moved to `Command::Api` (step 1) | scene.rename |
@@ -133,7 +135,7 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `TransitionProgress` | Moved to `Command::Api` (step 1) | canvas.transition_progress; quiet answer (stale T-bar steps are ignored today) |
 | `Rehearse` | Missing | starts a rehearsal on the engine; no method (ui.transition.rehearse is the registry entry) |
 | `SetSwapAfterTransition` | Missing | no settings.set field |
-| `SetSourceActive` | Pending | source.set_active |
+| `SetSourceActive` | Moved to `Command::Api` (step 3) | source.set_active |
 | `SetSourceVisible` | Moved to `Command::Api` (step 2) | item.set_visible |
 | `SetSourceBox` | Pending | item.set_box |
 | `SetSourceCrop` | Contract | item.set_crop needs gesture |

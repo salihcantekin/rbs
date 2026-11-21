@@ -849,10 +849,6 @@ impl Host {
                 let done = self.apply_to_device_sources(id).map(|n| n > 0);
                 self.answer_live(done, notify);
             }
-            Command::SetSourceSyncOffset { id, offset_ms } => {
-                let done = self.set_source_sync_offset(id, offset_ms);
-                self.answer_live(done, notify);
-            }
             Command::RetargetSource { id, target } => {
                 let done = self.retarget_source(id, &target);
                 self.answer(done, notify);
@@ -915,18 +911,6 @@ impl Host {
                     // No page runs: nothing to run the script in.
                     self.answer_live(Ok(false), notify);
                 }
-            }
-            Command::SetCompanionAudio { source, on } => {
-                let has = self
-                    .collection
-                    .sources()
-                    .any(|s| s.companion_of() == Some(source));
-                let done = match (on, has) {
-                    (true, false) => self.add_companion(source, false).map(|_| true),
-                    (false, true) => self.remove_companion(source).map(|()| true),
-                    _ => Ok(false),
-                };
-                self.answer(done, notify);
             }
             // Routed elsewhere by `Host::command`.
             _ => {}

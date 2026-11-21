@@ -154,7 +154,6 @@ paths! {
     // as StartSyncMeasure
     CloseSyncMeasure => Pending(&["sync.measure_cancel"]),
     ApplySyncToDeviceSources => Pending(&["sync.apply_to_device_sources"]),
-    SetSourceSyncOffset => Pending(&["source.set_sync_offset"]),
     RetargetSource => Pending(&["source.retarget"]),
     GrabThumbnails => WindowOnly(View),
     StopThumbnails => WindowOnly(View),
@@ -168,16 +167,9 @@ paths! {
     ForgetBrowserSignIn => Pending(&["browser.forget_sign_in"]),
     // window forces the next media-state publish
     Media => Pending(&["media.play", "media.pause", "media.seek", "media.restart"]),
-    SetCompanionAudio => Pending(&["source.set_companion_audio"]),
-    RenameSource => Pending(&["source.rename"]),
     SetTransition => Pending(&["collection.set_transition"]),
     SetSourceActivity => Pending(&["source.set_activity"]),
-    SetSourceGlide => Pending(&["source.set_glide"]),
-    DuplicateSource => Pending(&["source.duplicate"]),
-    CopyAttributes => Pending(&["source.copy_attributes"]),
     OpenAttributes => WindowOnly(View),
-    ResetSource => Pending(&["source.reset"]),
-    PasteAttributes => Pending(&["source.paste_attributes"]),
     // becomes Translates (branches on the preview)
     SwitchScene => Translates(&["scene.switch", "canvas.set_preview"]),
     SetStudioMode => Translates(&["canvas.set_preview"]),
@@ -185,7 +177,6 @@ paths! {
     Rehearse => Missing,
     // no settings.set field
     SetSwapAfterTransition => Missing,
-    SetSourceActive => Pending(&["source.set_active"]),
     SetSourceBox => Pending(&["item.set_box"]),
     // item.set_crop needs gesture
     SetSourceCrop => Contract(&["item.set_crop"]),
@@ -279,7 +270,7 @@ mod tests {
     /// which must pick its method from host state may raise `TRANSLATES` by as many
     /// as `PENDING` falls; any other rise needs the owner's written approval.
     const TRANSLATES: usize = 22;
-    const PENDING: usize = 65;
+    const PENDING: usize = 56;
     const CONTRACT: usize = 10;
     const MISSING: usize = 20;
     const VIEW: usize = 13;

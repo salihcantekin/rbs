@@ -684,7 +684,6 @@ impl Host {
             | Command::Redo
             | Command::MoveSourceTo { .. }
             | Command::MoveSceneTo { .. }
-            | Command::SetSourceActive { .. }
             | Command::SetSourceVolume { .. }
             | Command::SetSourceMuted { .. }
             | Command::SetMetersUi(..)
@@ -730,7 +729,6 @@ impl Host {
             | Command::StartSyncMeasure(..)
             | Command::CloseSyncMeasure
             | Command::ApplySyncToDeviceSources(..)
-            | Command::SetSourceSyncOffset { .. }
             | Command::RetargetSource { .. }
             | Command::GrabThumbnails { .. }
             | Command::StopThumbnails
@@ -740,17 +738,10 @@ impl Host {
             | Command::Media { .. }
             | Command::ReloadSource(..)
             | Command::ForgetBrowserSignIn(..)
-            | Command::BrowserControl { .. }
-            | Command::SetCompanionAudio { .. } => self.source_edit_command(c, notify),
-            Command::RenameSource { .. }
-            | Command::SetTransition(..)
+            | Command::BrowserControl { .. } => self.source_edit_command(c, notify),
+            Command::SetTransition(..)
             | Command::SetSourceActivity { .. }
-            | Command::SetSourceGlide { .. }
-            | Command::DuplicateSource(..)
-            | Command::CopyAttributes(..)
             | Command::OpenAttributes { .. }
-            | Command::ResetSource { .. }
-            | Command::PasteAttributes { .. }
             | Command::SwitchScene(..)
             | Command::SetStudioMode(..)
             | Command::Rehearse
@@ -861,14 +852,6 @@ impl Host {
                 // A switch made before a refused removal is still news.
                 self.publish(notify);
             }
-        }
-    }
-
-    /// The window's answer to a command run through its control API composition: a
-    /// refusal shows as the error bar (the composition published what changed).
-    fn answer_api(&mut self, done: Result<rbs_api::Response, ApiError>, notify: &dyn Fn(Update)) {
-        if let Err(e) = done {
-            notify(Update::Error(e.message));
         }
     }
 

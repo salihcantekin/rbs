@@ -297,14 +297,6 @@ pub enum Command {
     /// Give the other sources of a source's audio device its offset (ADR-0126
     /// decision 9).
     ApplySyncToDeviceSources(SourceId),
-    /// The sync offset of a source's sound in milliseconds (ADR-0062 decision 10): a
-    /// live control, not on the undo stack.
-    SetSourceSyncOffset {
-        /// The source.
-        id: SourceId,
-        /// Milliseconds; positive delays the sound.
-        offset_ms: i32,
-    },
     /// Point a source at another target of its kind, keeping its name, layout, filters
     /// and place in every scene (one undo step, ADR-0077).
     RetargetSource {
@@ -363,21 +355,6 @@ pub enum Command {
         /// What to do.
         op: MediaOp,
     },
-    /// Adds (`on`) or removes the "Capture audio too" companion of a display or window
-    /// source, one undo step (ADR-0096).
-    SetCompanionAudio {
-        /// The display or window source.
-        source: SourceId,
-        /// Add (`true`) or remove the companion.
-        on: bool,
-    },
-    /// Rename a source (one undo step). Names are unique in the collection.
-    RenameSource {
-        /// The source.
-        id: SourceId,
-        /// The new name.
-        name: String,
-    },
     /// The collection's transition (ADR-0128): kind and each kind's settings. One undo
     /// step.
     SetTransition(rbs_scene::CollectionTransition),
@@ -392,21 +369,6 @@ pub enum Command {
         /// What it does when it comes back; `None` for a type without one.
         on_return: Option<rbs_scene::activity::OnReturn>,
     },
-    /// Per-source slide override (ADR-0100). `custom` false clears it. One undo step.
-    SetSourceGlide {
-        /// The source.
-        id: SourceId,
-        /// When false, clear the override.
-        custom: bool,
-        /// Duration in milliseconds when `custom`.
-        duration_ms: u32,
-        /// `0` linear, `1` ease-in-out when `custom`.
-        easing: u8,
-    },
-    /// Duplicate source (ADR-0133 decision 3, one undo step).
-    DuplicateSource(SourceId),
-    /// Copy attributes of a source (ADR-0133 decision 6): the attribute clipboard.
-    CopyAttributes(SourceId),
     /// Ask for what the Reset source (`paste` false) or Paste attributes dialog shows
     /// ([`Update::Attributes`]).
     OpenAttributes {
@@ -414,24 +376,6 @@ pub enum Command {
         source: SourceId,
         /// Paste attributes.
         paste: bool,
-    },
-    /// Reset source: the chosen groups back to their defaults (one undo step plus the
-    /// live groups).
-    ResetSource {
-        /// The source.
-        source: SourceId,
-        /// The groups.
-        groups: Vec<rbs_scene::AttributeGroup>,
-    },
-    /// Paste attributes: the chosen groups of the clipboard onto the items (one undo
-    /// step plus the live groups).
-    PasteAttributes {
-        /// The items pasted onto.
-        items: Vec<ItemId>,
-        /// The groups.
-        groups: Vec<rbs_scene::AttributeGroup>,
-        /// Add the filters after the target's own instead of replacing them.
-        append: bool,
     },
     /// Put a scene on air (a cut); in studio mode, make it the preview scene instead
     /// (ADR-0061). A live action: not on the undo stack (ADR-0021).
@@ -446,14 +390,6 @@ pub enum Command {
     /// Whether a transition also puts the old program scene in preview (ADR-0098; the
     /// app setting `swap_after_transition`, off by default).
     SetSwapAfterTransition(bool),
-    /// Keep a source's device open, or release it (one undo step). Hiding does not
-    /// do this.
-    SetSourceActive {
-        /// The source.
-        id: SourceId,
-        /// Open while a scene that places it is on air or in preview.
-        active: bool,
-    },
     /// Place a video source's picture: the box's top-left corner and size in canvas
     /// pixels. Rotation, crop and opacity stay. A size of zero or a value that is not
     /// finite is refused with [`Update::Error`]. Always answered with
