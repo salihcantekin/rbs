@@ -2718,7 +2718,7 @@ impl Host {
         size: Size,
         fps: FrameRate,
         notify: &dyn Fn(Update),
-    ) -> Result<(), String> {
+    ) -> Result<(), Refusal> {
         let before = self.api_canvas();
         let result = self.set_canvas(size, fps);
         self.canvas_changed(before, notify);
@@ -2863,17 +2863,21 @@ impl Host {
     /// in the canvas's layout space and are fitted when drawn (ADR-0110). When the new
     /// canvas does not start, the old one starts again and the error says why; when
     /// that fails too, `dead` says why.
-    fn set_canvas(&mut self, size: Size, fps: FrameRate) -> Result<(), String> {
+    fn set_canvas(&mut self, size: Size, fps: FrameRate) -> Result<(), Refusal> {
         if self.any_recording() {
-            return Err("Stop the recording before changing the canvas.".into());
+            return Err(Refusal::Conflict(
+                "Stop the recording before changing the canvas.".to_owned(),
+            ));
         }
         if self.any_streaming() {
-            return Err("End the stream before changing the canvas.".into());
+            return Err(Refusal::Conflict(
+                "End the stream before changing the canvas.".to_owned(),
+            ));
         }
         let canvas = self
             .collection
             .canvas(self.canvas)
-            .ok_or("the canvas is gone")?;
+            .ok_or_else(|| Refusal::Failed("the canvas is gone".to_owned()))?;
         let (old_size, old_fps) = (canvas.size, canvas.frame_rate);
         if (old_size, old_fps) == (size, fps) {
             return Ok(());
@@ -2881,7 +2885,7 @@ impl Host {
         let before = self.collection.clone();
         self.collection
             .set_canvas_format(self.canvas, size, fps)
-            .map_err(|e| format!("canvas: {e:?}"))?;
+            .map_err(|e| Refusal::Failed(format!("canvas: {e:?}")))?;
         // Layouts stay in the canvas's layout space (ADR-0110). Flattening fits them
         // into `size`; returning to the layout size shows the stored boxes again.
         self.restarting = true;
@@ -2905,12 +2909,12 @@ impl Host {
                 let again = self.restart();
                 self.restarting = false;
                 match again {
-                    Ok(()) => Err(format!(
+                    Ok(()) => Err(Refusal::Failed(format!(
                         "The canvas {} x {} cannot be used: {why}",
                         size.width, size.height
-                    )),
+                    ))),
                     Err(again) => {
-                        self.dead = Some(again);
+                        self.dead = Some(again.into_text());
                         Err(why)
                     }
                 }
@@ -3022,11 +3026,11 @@ impl Host {
     }
 
     /// Starts a new studio for the collection as it is.
-    fn restart(&mut self) -> Result<(), String> {
+    fn restart(&mut self) -> Result<(), Refusal> {
         let canvas = self
             .collection
             .canvas(self.canvas)
-            .ok_or("the canvas is gone")?;
+            .ok_or_else(|| Refusal::Failed("the canvas is gone".to_owned()))?;
         let mut settings = StudioSettings::new(self.canvas);
         let preview = self
             .preview_surfaces
@@ -3060,7 +3064,7 @@ impl Host {
             &settings,
             self.browser_tree.clone(),
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| Refusal::Failed(e.to_string()))?;
         self.studio = studio;
         self.clock = clock;
         self.studio.set_text_timers(&timers);
@@ -3959,14 +3963,14 @@ fn shown_scene(
     collection: &mut SceneCollection,
     size: Size,
     fps: FrameRate,
-) -> Result<(CanvasId, SceneId), String> {
+) -> Result<(CanvasId, SceneId), Refusal> {
     let first = collection.canvases().next().map(|c| c.id);
     let canvas = match first {
         Some(c) => c,
         None => {
             collection
                 .add_canvas("Main", size, fps)
-                .map_err(|e| format!("canvas: {e:?}"))?
+                .map_err(|e| Refusal::Failed(format!("canvas: {e:?}")))?
                 .0
         }
     };
@@ -3981,14 +3985,14 @@ fn shown_scene(
         None => {
             collection
                 .add_scene("Scene", SceneScope::Shared)
-                .map_err(|e| format!("scene: {e:?}"))?
+                .map_err(|e| Refusal::Failed(format!("scene: {e:?}")))?
                 .0
         }
     };
     if program != Some(scene) {
         collection
             .set_program(canvas, Some(scene))
-            .map_err(|e| format!("program: {e:?}"))?;
+            .map_err(|e| Refusal::Failed(format!("program: {e:?}")))?;
     }
     Ok((canvas, scene))
 }

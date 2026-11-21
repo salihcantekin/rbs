@@ -19,7 +19,8 @@ pub(super) fn start(
     notes.push(format!("gpu: {}", gpu.adapter_name()));
     let loaded = config.collection.clone();
     let mut collection = config.collection.unwrap_or_default();
-    let (canvas, scene) = shown_scene(&mut collection, config.size, config.fps)?;
+    let (canvas, scene) =
+        shown_scene(&mut collection, config.size, config.fps).map_err(Refusal::into_text)?;
     // The collection's canvas; `config.size` only chose the preview's aspect ratio.
     let (run_size, run_fps) = collection
         .canvas(canvas)

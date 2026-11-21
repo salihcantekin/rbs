@@ -105,7 +105,7 @@ impl ApiTarget<'_> {
                     if loudness.is_some() {
                         host.undo_loudness_save();
                     }
-                    return Err(failed(e));
+                    return Err(failed(e.into_text()));
                 }
                 if let Some(profile) = profile
                     && profile != host.profile

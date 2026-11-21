@@ -10,14 +10,17 @@ impl Host {
         next: SceneCollection,
         autosave: Option<CollectionSaver>,
         notify: &dyn Fn(Update),
-    ) -> Result<(), String> {
+    ) -> Result<(), Refusal> {
         if self.any_recording() {
-            let why = "Stop the recording before switching scene collections.".to_owned();
+            let why = Refusal::Conflict(
+                "Stop the recording before switching scene collections.".to_owned(),
+            );
             self.canvas_changed(self.api_canvas(), notify);
             return Err(why);
         }
         if self.any_streaming() {
-            let why = "End the stream before switching scene collections.".to_owned();
+            let why =
+                Refusal::Conflict("End the stream before switching scene collections.".to_owned());
             self.canvas_changed(self.api_canvas(), notify);
             return Err(why);
         }
@@ -36,7 +39,9 @@ impl Host {
             Ok(shown) => shown,
             Err(why) => {
                 self.canvas_changed(before, notify);
-                return Err(format!("The scene collection cannot be used: {why}"));
+                return Err(Refusal::Failed(format!(
+                    "The scene collection cannot be used: {why}"
+                )));
             }
         };
         // Whatever the old collection's last change was, it is saved before this one.
@@ -70,9 +75,11 @@ impl Host {
                 (self.collection, self.canvas, self.scene) = old;
                 self.held = old_held;
                 if let Err(again) = self.restart() {
-                    self.dead = Some(again);
+                    self.dead = Some(again.into_text());
                 }
-                Err(format!("The scene collection cannot run: {why}"))
+                Err(Refusal::Failed(format!(
+                    "The scene collection cannot run: {why}"
+                )))
             }
         };
         self.canvas_changed(before, notify);

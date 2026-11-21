@@ -9,8 +9,7 @@ impl ApiTarget<'_> {
         let host = &mut *self.host;
         match command {
             C::ItemSetStyle(p) => {
-                let style = scene_style(&p.style)
-                    .map_err(|why| ApiError::new(ErrorKind::InvalidParams, why))?;
+                let style = scene_style(&p.style).map_err(|why| refused(&why))?;
                 // The canvas comes first in the error order (protocol 1.44).
                 host.edit_canvas(p.canvas).map_err(|e| refused(&e))?;
                 let item = ItemId::from_raw(p.item);
@@ -53,10 +52,7 @@ impl ApiTarget<'_> {
             }
             C::ItemSetScroll(p) => {
                 let scroll = match &p.scroll {
-                    Some(s) => Some(
-                        scene_scroll(s)
-                            .map_err(|why| ApiError::new(ErrorKind::InvalidParams, why))?,
-                    ),
+                    Some(s) => Some(scene_scroll(s).map_err(|why| refused(&why))?),
                     None => None,
                 };
                 // The canvas comes first in the error order (protocol 1.44).

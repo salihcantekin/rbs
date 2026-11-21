@@ -789,7 +789,7 @@ impl Host {
             }
             Command::SetCanvas { size, fps } => {
                 if let Err(why) = self.change_canvas(size, fps, notify) {
-                    notify(Update::Error(why));
+                    notify(Update::Error(why.into_text()));
                 }
             }
             Command::SetProfile(profile) => {

@@ -1299,8 +1299,9 @@ impl Host {
                     rbs_crash::contain(|| self.switch_collection(*collection, autosave, notify))
                         .unwrap_or_else(|_| {
                             self.caught = true;
-                            Err(rbs_crash::CAUGHT_TEXT.to_owned())
-                        });
+                            Err(Refusal::Failed(rbs_crash::CAUGHT_TEXT.to_owned()))
+                        })
+                        .map_err(Refusal::into_text);
                 notify(Update::CollectionSwitched { seq, result });
             }
             Command::SetLibrary {
