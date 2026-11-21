@@ -40,22 +40,26 @@ The owner approved one short ADR for one minor (2026-11-21 19:09 UTC). The proto
      - A test checks that a client gesture equal to a window gesture does not join the window's step.
    - Clients should use values below 2^53 (the JSON safe range). Larger values are not refused.
    - Two clients that reuse a number on the same kind can join steps. The spec says so, and no `Caller` change is needed.
+   - The bit-63 mask also covers `item.set_box` (1.34), and its spec row says so.
+   - "Every non-zero gesture the window sends" includes window-only commands that still carry gestures, such as `SetSourceBox`.
    - A gesture never refuses a call on 1.100.
 3. **Output starts: no new fields.**
-   - The window sends `record.start {profile: "default", canvas, iso}` and `stream.start {canvas}`, as a client does.
+   - The window sends `record.start {profile: "default", canvas}` and `stream.start {canvas}`, as a client does.
    - The start gate is already the same: the window sends neither `acknowledge_heavy` nor `on_hardware_limit`.
    - The open difference is `iso`. The window always sends `true`, while `record.start` uses Separate files when `iso` is absent (`api_item2.rs`). The spec and the `RecordStart` doc comment wrongly say that absent means `true`.
-     - The window sends `iso` absent.
+     - The window sends `iso` absent. The outputs step also corrects the spec's sentence that `stream.start` "takes no parameters" (it takes `canvas` since 1.29).
      - The spec and the doc comment are corrected: absent means `separate_files.enabled`.
    - The window's own checks are refusals that stay `failed`, as today. 1.100 only adds `data.reason`, which older clients ignore:
      - `recording_blocked`
      - `profile_problem`
-     - `vertical_not_set_up`
+     - `vertical_not_set_up`, only when a vertical canvas exists. Without one, the answer stays `not_found`.
      - `streaming_off`
 
      The window offers its "set up" action from the reason.
    - A test compares the window's request builder with the host's for the same settings, on an injected clock (rule 14).
-4. **Virtual camera: no new fields.** The window sends plain `vcam.start` after its `SetVirtualCamera` mirror, and the host builds from `CameraSetup`, as it does for clients.
+4. **Virtual camera: no new fields.**
+   - The window sends plain `vcam.start` after its `SetVirtualCamera` (LocalOnly), and the host builds from `CameraSetup`, as it does for clients.
+   - The window's `vcam.start` is quiet on `conflict`, which is what it gets when a camera already runs or is being changed. The other differences from the window path go in the inventory.
 5. **Settings fields and mirrors.**
    - `settings.set` / `settings.get` add five fields:
 
@@ -63,7 +67,7 @@ The owner approved one short ADR for one minor (2026-11-21 19:09 UTC). The proto
      | --- | --- | --- |
      | `swap_after_transition` | bool | never |
      | `separate_files` | `{enabled, on_hardware_limit}`, as `SeparateFiles` | while a recording runs |
-     | `replay` | `{arm_on_start, length_secs, memory_mib, audio, folder}`, with the `ReplaySetup` bounds | never: a change applies at the next arm, and a running buffer keeps its settings |
+     | `replay` | `{arm_on_start, length_secs, memory_mib, audio, folder}`, with the `ReplaySetup` bounds. `folder: null` means the recording profile's folder. | never: a change applies at the next arm, and a running buffer keeps its settings |
      | `vertical_profile` | one `profiles` entry (same id and folder rules), or `null` | while a vertical recording uses it |
      | `vertical_stream` | the `stream` patch shape | while the vertical stream runs |
 
@@ -88,7 +92,7 @@ The owner approved one short ADR for one minor (2026-11-21 19:09 UTC). The proto
    | Addition | Scope / effect | For |
    | --- | --- | --- |
    | `scene.move` / `item.move`: `direction` becomes optional, with new `to_scene` / `to_item`. Exactly one is given, else `invalid_params`. The moved one takes the target's position, and the ones between shift by one toward its old place. `to_item` must be a picture layer in the same scene. | control / edit | `MoveSceneTo`, `MoveSourceTo` (the window sends item ids) |
-   | `edit.undo_delete`: undoes the newest step if it is a delete or a remove from scene, else `conflict`. The window answers quietly. On 1.99 it is `method_not_found`. | control / edit | `UndoDelete` (the undo toast) |
+   | `edit.undo_delete`: undoes the newest step if it is a delete or a remove from scene, else `conflict`. The window is quiet on `conflict`: other failures, such as "The rehearsal could not start", stay shown. On 1.99 it is `method_not_found`. | control / edit | `UndoDelete` (the undo toast) |
    | `source.add` kind `color` with an optional `stamp` (see below the table) | control / edit | `AddStamp` |
    | `source.add` kinds `image` and `media` with a `path` (exclusive with `target`), and `browser` with a `url`. An image box is sized from the picture. A file that does not decode is `invalid_params`, without the path in the text (ADR-0074 decision 9). `stamp`, `path` and `url` on any other kind are `invalid_params`, as `text` is today. | control / edit | `AddImage`, `AddMedia`, `AddBrowser` |
    | `filter.add_voice_chain {source}`: the four voice filters on a sound source, one undo step. Any other source is `invalid_params`. | control / edit | `AddVoiceChain` |
@@ -96,7 +100,7 @@ The owner approved one short ADR for one minor (2026-11-21 19:09 UTC). The proto
    | `item.fit_text_box {item, canvas}`: keeps the centre and the scale | control / edit | `FitTextBox` |
    | `item.set_filled {item, on, canvas}`: the fill is the source's setting, shared by every scene that places it. Turning it off adds a border to that item's style on `canvas`. One undo step. | control / edit | `SetSourceFilled` |
    | `item.set_shown_region {item, region: full / canvas_centred / left_half / right_half, canvas}` | control / edit | `SetSourceRegion` |
-   | `canvas.rehearse {canvas}`: refused with `conflict` and a `data.reason`. A Cut or a 0 s duration is `no_duration`, and a transition that runs or holds is `transition_running`. The other reasons are `not_studio_mode` and `rehearsing`. The window answers quietly. The `ui.transition.rehearse` registry entry resolves to it. | control / edit (preview only, not on air) | `Rehearse` |
+   | `canvas.rehearse {canvas}`: refused with `conflict` and a `data.reason`. A Cut or a 0 s duration is `no_duration`, and a transition that runs or holds is `transition_running`. The other reasons are `not_studio_mode` and `rehearsing`. The window is quiet on `conflict`: other failures, such as "The rehearsal could not start", stay shown. The `ui.transition.rehearse` registry entry resolves to it. | control / edit (preview only, not on air) | `Rehearse` |
    | `addon.update {id}`: installs the new version, then cleans the old one. It reaches the network as `addon.install` does. | plugins / destructive | `AddOn` Update |
 
    The `stamp` values for `source.add` kind `color` are `circle`, `square`, `rectangle`, `rounded_rectangle`, `ellipse`, `triangle` and `arrow`. The spec gives each one's box and radius as `add_stamp` has them.
@@ -236,3 +240,30 @@ Nits applied:
 - the retarget picker split adds no variant, and its `not_found`
 - round 1 items 1, 6, 8 and 15 marked as superseded
 - the ratchet commit cites this ADR's approval.
+
+### Round 4: independent AI session, 2026-11-21, approve with changes
+
+- Reviewer: independent AI session
+- Date: 2026-11-21
+- Verdict: approve with changes
+
+All round-3 resolutions were confirmed in the text and against the code:
+- 1: masking in `ApiTarget::handle_as`, which every non-window caller reaches. The window's existing marks are bits 61 and 62.
+- 2: the start refusals stay `failed`.
+- 3 and 8: `reaches_network` and `network.rs`.
+- 4 and 9: `Update::StreamProfile` keeps the server and key.
+- 5: `SeparateFiles` and `ReplaySetup`.
+- 6: ADR-0163 decision 4.
+- 7: `api_item2.rs`.
+
+The counts, the 1.99 unknown-field lists, the `UndoDelete` scope and the rehearse cases were also checked: all consistent.
+
+One blocking concern was raised: decision 3 listed `iso` in the window's `record.start` and also said the window sends it absent. Resolved: `iso` was dropped from the request. The reviewer said this edit needs no further round.
+
+Nits applied:
+- the bit-63 mask covers `item.set_box` and window-only gestures
+- `SetVirtualCamera` is LocalOnly, and the window's `vcam.start` is quiet on `conflict`
+- rehearse and undo-delete are quiet on `conflict` only
+- `replay.folder: null` is the profile's folder
+- `vertical_not_set_up` applies only with a vertical canvas
+- the spec's `stream.start` sentence is fixed in the outputs step.
