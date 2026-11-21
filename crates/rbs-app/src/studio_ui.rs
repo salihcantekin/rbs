@@ -2188,17 +2188,6 @@ impl StudioUi {
         self.send_settings(id, patch, 0);
     }
 
-    /// A target of the Source tab's list was chosen: the source points at it.
-    pub fn retarget_source(&mut self, id: i32, index: i32) {
-        let Some(target) = self.source_target_list.get(index as usize).cloned() else {
-            return;
-        };
-        self.send(Command::RetargetSource {
-            id: SourceId::from_raw(id as u32),
-            target,
-        });
-    }
-
     /// Play or pause a media file, by its play state now (ADR-0108 decision 10).
     pub fn media_play_pause(&mut self, id: i32) {
         let playing = self

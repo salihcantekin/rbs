@@ -717,7 +717,6 @@ impl Host {
             | Command::OpenSyncMeasure(..)
             | Command::StartSyncMeasure(..)
             | Command::CloseSyncMeasure
-            | Command::RetargetSource { .. }
             | Command::GrabThumbnails { .. }
             | Command::StopThumbnails
             | Command::OpenSourceSettings(..)

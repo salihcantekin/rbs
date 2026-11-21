@@ -143,14 +143,6 @@ pub enum Command {
     StartSyncMeasure(SourceId),
     /// The Measure window closed: a measurement it started is cancelled.
     CloseSyncMeasure,
-    /// Point a source at another target of its kind, keeping its name, layout, filters
-    /// and place in every scene (one undo step, ADR-0077).
-    RetargetSource {
-        /// The source.
-        id: SourceId,
-        /// What it should capture now.
-        target: Target,
-    },
     /// Grab small pictures of the listed targets of `kind`, two at a time off the control
     /// thread, one [`Update::Thumbnail`] each (ADR-0077). A newer request or
     /// [`Command::StopThumbnails`] makes older work stop at its next item.
