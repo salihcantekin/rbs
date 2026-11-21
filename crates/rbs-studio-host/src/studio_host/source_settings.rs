@@ -579,8 +579,8 @@ impl Host {
                 format!("{name} is running: its sign-in is forgotten once the page stops"),
             ));
         }
-        let new =
-            crate::browser_profiles::new_id().map_err(|e| ApiError::new(ErrorKind::Internal, e))?;
+        let new = crate::browser_profiles::new_id()
+            .map_err(|e| ApiError::new(ErrorKind::Internal, e.to_string()))?;
         settings.insert(keys::PROFILE_ID.to_owned(), SettingValue::Text(new));
         let undo = self
             .collection

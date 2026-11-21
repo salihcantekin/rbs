@@ -270,7 +270,7 @@ fn browser_input_event(
 }
 
 fn new_profile_id() -> Result<String, Refusal> {
-    crate::browser_profiles::new_id().map_err(Refusal::Invalid)
+    crate::browser_profiles::new_id().map_err(|e| Refusal::Invalid(e.to_string()))
 }
 
 /// A new browser page's size on a `w` x `h` canvas: the canvas, at most 1920x1080,

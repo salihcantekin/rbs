@@ -21,8 +21,8 @@ pub enum SessionError {
     CollectionInUse,
     /// The section was saved by a newer RBS and is kept as it is.
     NewerSection,
-    /// No new browser profile id could be made (the system's reason).
-    NoProfileId(String),
+    /// No new browser profile id could be made.
+    NoProfileId(crate::browser_profiles::RenewError),
 }
 
 impl fmt::Display for SessionError {
@@ -42,7 +42,7 @@ impl fmt::Display for SessionError {
             SessionError::NewerSection => {
                 f.write_str("they were saved by a newer RBS, so this version does not change them")
             }
-            SessionError::NoProfileId(why) => f.write_str(why),
+            SessionError::NoProfileId(e) => e.fmt(f),
         }
     }
 }

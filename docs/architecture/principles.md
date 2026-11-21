@@ -71,3 +71,7 @@ New or superseding ADRs, new ports or port trait changes, changes to the plugin 
 ## P15. Hot paths get extra scrutiny
 
 Code edited inside, or called directly from, the functions and modules listed in [hot paths](hot-paths.md) needs, in addition to normal review: before/after measurements, the `hot-path-review` checklist, and approval from a human maintainer. An AI review can be added but never replaces the human approval.
+
+## P16. Features are built extension-ready
+
+Every new source, filter, transition, output, adapter or automation trigger is built the way a plugin would provide it: registered in a runtime registry, named by a type id in saved documents and the API, with its settings declared as a schema, and using only what the plugin contract could give a plugin. Built-in types are registered and looked up the same way as plugin types; their trust and tier may differ, and the `org.rbs.*` prefix is reserved for them. Until a type's registry exists, a feature may extend the existing closed lists (`SourceClass`, `rbs_api::SourceKind`, `TransitionKind`) but adds no new one. A feature that cannot do this states why in its ADR. Plugins themselves see a contract of their own (plugin SDK spec), never our internal traits. See [ADR-0162](../adr/0162-extension-ready-registries-and-plugin-order.md).

@@ -62,10 +62,41 @@ fn spawn_sweep(
         .ok()
 }
 
+/// The system gave no random bytes for a new profile id (its reason).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoRandomId(String);
+
+impl std::fmt::Display for NoRandomId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "No random id for the profile: {}.", self.0)
+    }
+}
+
+impl std::error::Error for NoRandomId {}
+
+/// Why [`renew`] stopped: no random id, or the collection refused the new setting.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RenewError {
+    /// No random id could be made.
+    NoRandomId(NoRandomId),
+    /// The collection refused the source's new settings.
+    Scene(rbs_scene::SceneError),
+}
+
+impl std::fmt::Display for RenewError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RenewError::NoRandomId(e) => e.fmt(f),
+            RenewError::Scene(e) => e.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for RenewError {}
+
 /// A new random profile id: 32 lowercase hex digits (128 bits).
-pub fn new_id() -> Result<String, String> {
-    let token = rbs_api::token::Token::generate()
-        .map_err(|e| format!("No random id for the profile: {e}."))?;
+pub fn new_id() -> Result<String, NoRandomId> {
+    let token = rbs_api::token::Token::generate().map_err(|e| NoRandomId(e.to_string()))?;
     Ok(token.hash().to_hex().chars().take(32).collect())
 }
 
@@ -106,7 +137,7 @@ pub fn renew(
     collection: &mut SceneCollection,
     taken: &BTreeSet<String>,
     all: bool,
-) -> Result<usize, String> {
+) -> Result<usize, RenewError> {
     let mut seen = BTreeSet::new();
     let mut renew: Vec<SourceId> = Vec::new();
     for source in collection.sources() {
@@ -127,10 +158,13 @@ pub fn renew(
         let Some(mut settings) = collection.source(*id).map(|s| s.settings.clone()) else {
             continue;
         };
-        settings.insert(keys::PROFILE_ID.to_owned(), SettingValue::Text(new_id()?));
+        settings.insert(
+            keys::PROFILE_ID.to_owned(),
+            SettingValue::Text(new_id().map_err(RenewError::NoRandomId)?),
+        );
         collection
             .set_source_settings(*id, settings)
-            .map_err(|e| e.to_string())?;
+            .map_err(RenewError::Scene)?;
     }
     Ok(renew.len())
 }
