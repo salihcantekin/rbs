@@ -142,6 +142,10 @@ Never logged: text source contents, command and setting payloads, stream keys an
 
 `Lib` follows the `RBS_LOG` and per-area (Pro) settings only; the five Settings levels leave it at Warn, because a library may log per frame at Debug.
 
+## Where lines go
+
+Code reports through the macros only, in its area and at the level the table above gives: a failure the user caused or a stop is `error!`, a fallback `warn!`, a life-cycle step `info!`. Library code (every crate's `src/` outside tests and `src/bin/`) never writes to standard output or error and never calls the `log` or `tracing` macros, because a line written there is lost in an app started from Finder or the Start menu. The exceptions, listed as `OUTPUT_ALLOWED` in `xtask/src/check_logs.rs`: the CLI front ends answering their user (`rbs-cli`, `rbs-mcp`, with `rbs_crash::outln!`/`errln!`), `rbs-crash` (the macros), `rbs-log` (its echo), `rbs-app` `diag_log.rs` (the note when no log could start) and `measure_ui.rs` (the measure mode's results, read by scripts), the test helper `rbs-browser-runner/src/main.rs`, and the CEF helper, whose standard error the studio logs in `Area::Browser`. `cargo xtask check-layers` (and so `cargo xtask verify`) rejects anything else; code under `#[cfg(test)]` (an inline `mod ... {` or a declared `mod x;`), `tests/`, `benches/`, `examples/` and `build.rs` is not checked.
+
 ## Settings › Advanced
 
 Section 13 of the Settings window (`ui.settings.open {section: "advanced"}`), last in the App group, shown at every experience level (`rbs-app` `advanced_page`, `AdvancedSettings` in `ui/studio_settings.slint`). Owner approved the proposal on 2026-11-20 (CLAUDE.md rule 16).
@@ -180,7 +184,8 @@ No log macro in code listed in [hot-paths.md](../architecture/hot-paths.md). `ca
 - Browser helper: the studio pipes the helper tree's standard error (`rbs_browser_runner::spawn_helper_prepared`) and a `rbs-browser-log` thread logs each line in `Area::Browser`, the helper's own (`rbs-browser…:`) at Info and the engine's at Debug, cut at 1000 characters, so CEF's output is kept only at Detailed and repeats collapse. The CEF helper writes no file of its own (2026-11-21).
 - Crash reports end with the recent lines (`rbs_crash::set_recent_lines`, registered by `diag_log`; 2026-11-21).
 - Stats summary (`rbs-studio-host` `studio_host/log_summary.rs`): while `engine` lets Debug through and an output runs on the main canvas, the control thread writes one Debug line every 10 s (1 s at Trace) with the recording's and the stream's frames, drops and packets, the stream's link state, reconnects and transport drops, and the late render and audio ticks, all as differences since the last line and read from the counters the outputs already keep. With no output running the control loop may block, so it keeps no timer and no counters; while an output runs the loop already looks every round, so a level raised in Settings is seen within a round and needs no wake command (2026-11-21).
-- Not yet: new per-area lines in the studio host (stability WP-L).
+- Logging audit (2026-11-21): a recording or stream that did not start or stopped on a failure logs at Error (it was Info or missing), the GPU adapter chosen at Info (Warn for a software one, `rbs-gpu` `GpuContext::new`), and a browser helper that exited without being asked at Error with its exit code; `check-layers` rejects stray standard output and error in library code ("Where lines go").
+- Not yet: new per-area lines in the studio host (stability WP-L); capture and audio device open and close, encoder fallbacks, GPU device lost, `userdata` and `plugin` lines.
 
 ## Open questions
 
