@@ -2869,8 +2869,8 @@ impl Studio {
                 let Some(source) = collection.source(*source_id) else {
                     continue;
                 };
-                self.entries
-                    .push(Entry::new(*source_id, *node, source.name.clone()));
+                let entry = Entry::new(*source_id, *node, &source.name, &gone);
+                self.entries.push(entry);
             }
             // Break before make: a replaced source's old instance (an exclusive camera)
             // is released before its replacement opens.

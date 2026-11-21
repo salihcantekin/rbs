@@ -500,7 +500,13 @@ mod tests {
         };
         let mut seen = 0;
         let mut last = 0;
+        let guard = std::time::Instant::now();
         while seen < 2000 {
+            // A hang guard only (the writer died or never ran), not a timing wait.
+            assert!(
+                guard.elapsed() < std::time::Duration::from_secs(10),
+                "only {seen} reads in 10 s"
+            );
             if let Some(m) = cell.get() {
                 let t = m.frame_time.as_nanos();
                 #[allow(clippy::cast_precision_loss)]

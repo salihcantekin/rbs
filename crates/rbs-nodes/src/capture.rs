@@ -223,8 +223,9 @@ pub struct CaptureSourceNode {
     /// The request's mapping switch and the source entry's cell the newest frame's
     /// mapping goes to (ADR-0165 decision 5); `None` when the host lends no cell.
     mapping: Option<(MappingSwitch, MappingCell)>,
-    /// A mapping was published since the cell was last cleared.
-    mapped: bool,
+    /// The frame time of the last mapping this node published, until it cleared the
+    /// cell.
+    mapped: Option<Timestamp>,
 }
 
 impl CaptureSourceNode {
@@ -247,7 +248,7 @@ impl CaptureSourceNode {
             stats: Arc::default(),
             shown_size: 0,
             mapping: None,
-            mapped: false,
+            mapped: None,
         }
     }
 
@@ -453,11 +454,11 @@ impl Node<GpuRuntime> for CaptureSourceNode {
         if let Some((switch, cell)) = &self.mapping {
             // One atomic load per new frame while the switch is off.
             if switch.is_on() {
-                cell.publish(session.latest_mapping());
-                self.mapped = true;
-            } else if self.mapped {
+                let mapping = session.latest_mapping();
+                cell.publish(mapping);
+                self.mapped = mapping.map(|m| m.frame_time);
+            } else if self.mapped.take().is_some() {
                 cell.publish(None);
-                self.mapped = false;
             }
         }
         // A resized target: one comparison per new frame, one store per resize.
@@ -524,10 +525,12 @@ impl Node<GpuRuntime> for CaptureSourceNode {
         if let Some(mut session) = self.session.take() {
             session.stop();
         }
-        if let (Some((_, cell)), true) = (&self.mapping, self.mapped) {
+        // Clears only its own mapping: a replacement node may already have published.
+        if let (Some((_, cell)), Some(time)) = (&self.mapping, self.mapped.take())
+            && cell.get().is_some_and(|m| m.frame_time == time)
+        {
             cell.publish(None);
         }
-        self.mapped = false;
         // An open still running sees the ring abandoned and stops its own session.
         self.opening = None;
         self.failed = None;
