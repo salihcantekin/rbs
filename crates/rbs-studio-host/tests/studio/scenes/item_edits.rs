@@ -122,3 +122,69 @@ fn the_voice_chain_and_the_stinger_file_are_api_calls() {
     drop(host);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `item.set_rotation` (ADR-0166): wrapped into `0..360`, -360 to 360 only, an
+/// unchanged angle records nothing, and calls with one gesture are one undo step.
+#[test]
+fn a_free_angle_wraps_and_a_drag_is_one_undo_step() {
+    let Some((host, updates, _api, mut c)) = start() else {
+        return;
+    };
+    let screen = add(&mut c, "screen", "Screen");
+    let item = item_of(&mut c, screen);
+    let angle = |c: &mut Client| {
+        sources(c)
+            .iter()
+            .find(|s| s["id"] == screen)
+            .and_then(|s| s["layout"]["rotation"].as_f64())
+            .unwrap_or(0.0)
+    };
+    for bad in [361.0, -400.5] {
+        let r = c.call("item.set_rotation", json!({"item": item, "degrees": bad}));
+        assert_eq!(kind(&r), "invalid_params", "{r}");
+    }
+    ok(&c.call("item.set_rotation", json!({"item": item, "degrees": -90})));
+    assert_eq!(angle(&mut c), 270.0);
+    for d in [10, 20, 30] {
+        let p = json!({"item": item, "degrees": d, "gesture": 5});
+        ok(&c.call("item.set_rotation", p));
+    }
+    assert_eq!(angle(&mut c), 30.0);
+    // The drag is one step: one undo goes back to 270.
+    ok(&c.call("edit.undo", json!({})));
+    assert_eq!(angle(&mut c), 270.0);
+    // A window drag (bit 63) and a client call with the same number stay apart.
+    let window = rbs_studio_host::studio_host::WINDOW_GESTURE | 9;
+    host.send(rbs_studio_host::studio_host::Command::Api {
+        call: Box::new(rbs_api::Command::ItemSetRotation(
+            rbs_api::request::SetItemRotation {
+                item: item as u32,
+                degrees: 45.0,
+                canvas: rbs_api::types::OutputCanvas::Main,
+                gesture: window,
+            },
+        )),
+        reply: rbs_studio_host::studio_host::ApiReply::Shown,
+    });
+    next(&updates, |u| match u {
+        Update::Sources(r)
+            if r.iter()
+                .any(|r| r.layout.is_some_and(|l| l.rotation == 45.0)) =>
+        {
+            Some(())
+        }
+        _ => None,
+    });
+    let p = json!({"item": item, "degrees": 60, "gesture": window});
+    ok(&c.call("item.set_rotation", p));
+    assert_eq!(angle(&mut c), 60.0);
+    ok(&c.call("edit.undo", json!({})));
+    assert_eq!(
+        angle(&mut c),
+        45.0,
+        "the client's angle was a step of its own"
+    );
+    let gone = c.call("item.set_rotation", json!({"item": 999, "degrees": 0}));
+    assert_eq!(kind(&gone), "not_found", "{gone}");
+    drop(host);
+}

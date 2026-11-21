@@ -139,6 +139,17 @@ impl ApiTarget<'_> {
             C::ItemResetTransform(p) => {
                 host.api_transform(p.item, TransformOp::Reset, p.gesture, p.canvas, notify)
             }
+            C::ItemSetRotation(p) => {
+                if !p.degrees.is_finite() || p.degrees.abs() > 360.0 {
+                    return Err(ApiError::new(
+                        ErrorKind::InvalidParams,
+                        "degrees is a number from -360 to 360",
+                    ));
+                }
+                // -0 and 360 are stored as 0 (`Layout::angled` wraps).
+                let op = TransformOp::SetAngle(p.degrees as f32 + 0.0);
+                host.api_transform(p.item, op, p.gesture, p.canvas, notify)
+            }
             C::ItemSetCrop(p) => {
                 let [l, t, r, b] = p.crop;
                 let item = ItemId::from_raw(p.item);

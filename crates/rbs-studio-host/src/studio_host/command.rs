@@ -268,19 +268,6 @@ pub enum Command {
         /// it shows the scene being edited (ADR-0093 decision 4).
         canvas: OutputCanvas,
     },
-    /// Flip, turn, fit or centre a video source's picture on the layout the canvas
-    /// shows (ADR-0084). One undo step; a refusal is an [`Update::Error`].
-    TransformSource {
-        /// The source.
-        id: SourceId,
-        /// What to do.
-        op: TransformOp,
-        /// Moves that share a non-zero gesture are one undo step. 0 never joins.
-        gesture: u64,
-        /// The canvas whose layout changes: the vertical canvas's own layout only while
-        /// it shows the scene being edited (ADR-0093 decision 4).
-        canvas: OutputCanvas,
-    },
     /// Start recording the program ([`Update::Recording`] says how it went).
     StartRecording(RecordRequest),
     /// Start recording the vertical canvas ([`Update::VerticalRecording`] says how it

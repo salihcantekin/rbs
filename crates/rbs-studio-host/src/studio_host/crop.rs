@@ -43,8 +43,6 @@ pub enum TransformOp {
     Turn(f32),
     /// Set the rotation to this many degrees clockwise, wrapped into `0..360`.
     SetAngle(f32),
-    /// Not turned.
-    ResetRotation,
     /// Place on the canvas (needs the picture size).
     Fit(FitMode),
     /// Move to the canvas centre on these axes.

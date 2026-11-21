@@ -73,5 +73,11 @@ pub(super) fn requests() -> Vec<Request> {
         c(Command::CollectionSetStingerFile(SetStingerFile {
             path: "/media/sting.mov".to_owned(),
         })),
+        c(Command::ItemSetRotation(SetItemRotation {
+            item: 7,
+            degrees: 22.5,
+            canvas: OutputCanvas::Vertical,
+            gesture: 3,
+        })),
     ]
 }

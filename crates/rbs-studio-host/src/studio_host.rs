@@ -724,9 +724,9 @@ impl Host {
             | Command::SetStudioMode(..)
             | Command::Rehearse
             | Command::SetSwapAfterTransition(..) => self.scene_command(c, notify),
-            Command::SetSourceBox { .. }
-            | Command::SetSourceCrop { .. }
-            | Command::TransformSource { .. } => self.item_command(c, notify),
+            Command::SetSourceBox { .. } | Command::SetSourceCrop { .. } => {
+                self.item_command(c, notify)
+            }
             Command::StartRecording(..)
             | Command::StartVerticalRecording(..)
             | Command::SetVerticalProfile(..)

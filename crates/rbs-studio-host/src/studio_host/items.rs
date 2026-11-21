@@ -678,7 +678,6 @@ impl Host {
             TransformOp::FlipVertical => old.flipped_vertically(),
             TransformOp::Turn(degrees) => old.turned(degrees),
             TransformOp::SetAngle(degrees) => old.angled(degrees),
-            TransformOp::ResetRotation => old.unturned(),
             TransformOp::Center(axis) => old.centred(canvas, axis),
             TransformOp::Fit(mode) => old
                 .fitted(canvas, picture()?, mode)
@@ -832,22 +831,6 @@ impl Host {
                     }
                 };
                 notify(Update::CropPlaced { seq, ok });
-            }
-            Command::TransformSource {
-                id,
-                op,
-                gesture,
-                canvas,
-            } => {
-                let edit = self
-                    .item_of(id)
-                    .map(|(_, item)| item.id)
-                    .and_then(|item| self.transform_item(item, op, gesture, canvas));
-                match edit {
-                    Ok(true) => self.apply(notify),
-                    Ok(false) => {}
-                    Err(e) => notify(Update::Error(e.text().into())),
-                }
             }
             // Routed elsewhere by `Host::command`.
             _ => {}

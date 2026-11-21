@@ -145,7 +145,7 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `SetSourceVisible` | Moved to `Command::Api` (step 2) | item.set_visible |
 | `SetSourceBox` | Pending | item.set_box |
 | `SetSourceCrop` | Contract | item.set_crop has `gesture` (1.100); the window still waits for the ticketed `CropPlaced` answer, as `SetSourceBox` does |
-| `TransformSource` | Contract | the item transform methods have `gesture` (1.100); `SetAngle` and `ResetRotation` have no API method yet |
+| `TransformSource` | Moved to `Command::Api` (ADR-0166) | the item transform methods and item.set_rotation; the window maps each op |
 | `SetSourceRegion` | Moved to `Command::Api` (ADR-0164 step 2) | item.set_shown_region; the window names the main canvas, as before (the vertical canvas's Show buttons are a follow-up) |
 | `SetRecordSeparately` | Moved to `Command::Api` (step 6) | source.set_record_separately |
 | `SetSourceCaptureRegion` | Moved to `Command::Api` (step 3) | source.set_region |

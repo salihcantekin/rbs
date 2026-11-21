@@ -31,6 +31,7 @@ fn clear_window_gesture(command: &mut rbs_api::Command) {
     let gesture = match command {
         C::ItemSetBox(p) => &mut p.gesture,
         C::ItemSetCrop(p) => &mut p.gesture,
+        C::ItemSetRotation(p) => &mut p.gesture,
         C::ItemSetStyle(p) => &mut p.gesture,
         C::ItemSetScroll(p) => &mut p.gesture,
         C::ItemFlip(p) => &mut p.gesture,
@@ -190,6 +191,7 @@ impl ApiTarget<'_> {
             | C::ItemFit(..)
             | C::ItemAlign(..)
             | C::ItemResetTransform(..)
+            | C::ItemSetRotation(..)
             | C::ItemSetCrop(..) => self.answer_item(command),
             C::ItemSetStyle(..)
             | C::ItemSetScroll(..)

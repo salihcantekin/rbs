@@ -34,7 +34,7 @@ use rbs_app::studio_host::{
     Command, EncoderInfo, EncoderOptions, HoldNote, MainDisplay, OutputCanvas, RecordPatch,
     RecordPause, RecordRequest, RecordingUpdate, SEPARATE_VIDEO_LIMIT, SceneList, SourceKind,
     SourceRow, SourceSettingsView, SourceStatus, Stats, StreamHold, StreamRequest, StreamUpdate,
-    StudioHost, SyncMeasurePhase, SyncMeasureRefusal, SyncMeasureView, Target, TransformOp, Update,
+    StudioHost, SyncMeasurePhase, SyncMeasureRefusal, SyncMeasureView, Target, Update,
 };
 use rbs_app::user_session::{
     DEFAULT_NAME, RECORDING, RECORDING_VERTICAL, STREAM, STREAM_VERTICAL, UserSession,
@@ -2326,30 +2326,6 @@ impl StudioUi {
     }
 
     /// Lock or unlock a source on the picture panel (the Sources row's lock button).
-    /// Flip, turn, fit or centre a source's picture (ADR-0084), on `canvas`, or
-    /// without one on the canvas Properties edits.
-    pub fn transform_source(&mut self, id: i32, op: TransformOp, canvas: Option<OutputCanvas>) {
-        self.deleted.clear();
-        self.send(Command::TransformSource {
-            id: SourceId::from_raw(id as u32),
-            op,
-            gesture: 0,
-            canvas: canvas.unwrap_or_else(|| self.props_target(id)),
-        });
-    }
-
-    /// Sets the picture's rotation in degrees clockwise. Moves that share `gesture`
-    /// are one undo step.
-    pub fn set_source_rotation(&mut self, id: i32, degrees: f32, gesture: i32) {
-        self.deleted.clear();
-        self.send(Command::TransformSource {
-            id: SourceId::from_raw(id as u32),
-            op: TransformOp::SetAngle(degrees),
-            gesture: ui_gesture(gesture),
-            canvas: self.props_target(id),
-        });
-    }
-
     /// Mark a source to record as files of its own, or clear the marks (Properties'
     /// Record separately, ADR-0086): a sound source's sound, a picture source's
     /// picture, and both feeds of a media file.
