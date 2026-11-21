@@ -77,8 +77,8 @@ impl Host {
     /// main recording and stream have run. Restores the saved timers of the collection
     /// once.
     pub(super) fn feed_text_live(&mut self) {
-        if !self.text_timers_restored {
-            self.text_timers_restored = true;
+        if !self.texts.text_timers_restored {
+            self.texts.text_timers_restored = true;
             self.restore_text_timers();
         }
         let now = self.clock.now();
@@ -89,16 +89,16 @@ impl Host {
             api::RecordState::Recording { paused: true, .. }
         );
         let elapsed = TextElapsed {
-            recording: step(self.text_elapsed.recording, recording, paused, now),
+            recording: step(self.texts.text_elapsed.recording, recording, paused, now),
             stream: step(
-                self.text_elapsed.stream,
+                self.texts.text_elapsed.stream,
                 main.streaming.is_some(),
                 false,
                 now,
             ),
         };
-        self.text_elapsed = elapsed;
-        let scene = self.held_switch.unwrap_or(self.scene);
+        self.texts.text_elapsed = elapsed;
+        let scene = self.program.held_switch.unwrap_or(self.scene);
         let name = self.collection.scene(scene).map_or("", |s| s.name.as_str());
         self.studio
             .set_text_outputs(name, elapsed.recording, elapsed.stream);
@@ -109,7 +109,7 @@ impl Host {
         let Some(collection) = self.autosave.as_ref().map(|a| a.id().to_owned()) else {
             return;
         };
-        let timers = text_timers::restore(&self.text_timer_file, &collection, |s| {
+        let timers = text_timers::restore(&self.texts.text_timer_file, &collection, |s| {
             self.studio.text_timer_kind(s)
         });
         self.studio.set_text_timers(&timers);
@@ -126,8 +126,12 @@ impl Host {
         };
         let timers = self.studio.text_timers();
         let exists = |s: SourceId| self.collection.source(s).is_some();
-        if text_timers::merge(&mut self.text_timer_file, &collection, &timers, exists)
-            && let Err(e) = text_timers::save(&dir, &self.text_timer_file)
+        if text_timers::merge(
+            &mut self.texts.text_timer_file,
+            &collection,
+            &timers,
+            exists,
+        ) && let Err(e) = text_timers::save(&dir, &self.texts.text_timer_file)
         {
             rbs_core::error!(rbs_core::log::Area::App, "text timers were not saved: {e}");
         }
@@ -155,6 +159,34 @@ impl Host {
             })?;
         self.save_text_timers();
         Ok(Response::TextTimerState(timer_state(&timer)))
+    }
+}
+
+/// Live text: timers, elapsed clocks, crisp re-renders and fonts asked for.
+pub(super) struct TextState {
+    /// How long the main recording and stream have run, for live texts (ADR-0129
+    /// decision 11).
+    pub(super) text_elapsed: TextElapsed,
+    /// `text-timers.toml` as last read or written.
+    pub(super) text_timer_file: Vec<crate::text_timers::Entry>,
+    /// The collection's saved timers were handed to the studio.
+    pub(super) text_timers_restored: bool,
+    /// A text item's drag waiting to rest before it gets its new box (ADR-0129
+    /// decision 12).
+    pub(super) crisp_pending: Option<super::text_resize::CrispPending>,
+    /// The font picker waits for the families (read off the control thread).
+    pub(super) fonts_wanted: bool,
+}
+
+impl TextState {
+    pub(super) fn new(text_timer_file: Vec<crate::text_timers::Entry>) -> Self {
+        Self {
+            text_elapsed: TextElapsed::default(),
+            text_timer_file,
+            text_timers_restored: false,
+            crisp_pending: None,
+            fonts_wanted: false,
+        }
     }
 }
 

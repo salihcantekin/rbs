@@ -82,6 +82,22 @@ None of its own. The host sends commands to the engine and never runs on a [hot 
 | Audio and devices | `loudness`, `monitor`, `device_sync`, `sync_measure`, `calibration`, `attributes`, `network`, `protection` |
 | Other | `add_ons`, `obs_import_api`, `control_out`, `log_summary`, `support` (shared conversions), `tests` |
 
+State per concern (ADR-0159 decision 8): each is a field of `Host`, defined in its module and built in `start`.
+
+| Field | Struct | Holds |
+| --- | --- | --- |
+| `recording` | `recording::RecordingState` | Record profiles, separate files, the limit policy, encoders |
+| `streaming` | `stream::StreamState` | Stream profiles, destinations, the key store |
+| `vcam` | `outputs::CameraState` | The virtual camera |
+| `verticals` | `outputs::VerticalHost` | The vertical canvas and its picture |
+| `program` | `held::ProgramState` | The held program, transitions, the T-bar |
+| `edits` | `history::EditHistory` | Undo history |
+| `texts` | `text_live::TextState` | Live text timers and re-renders |
+| `loudness_state` | `loudness::LoudnessState` | The loudness meter |
+| `pickers` | `pickers::Pickers` | Thumbnail and region grabs, permission prompts |
+
+Modules that already had a state type keep it (`monitor`, `replay`, `protection`, `add_ons`, `calibration`, `sync_measure`, `scene_cache`).
+
 ## Open questions
 
-- State structs per concern (ADR-0159 decision 8) are not done yet: every module still works on `Host`'s fields.
+- The scene, source and canvas fields (collection, rows, sizes, canvas outputs) stay on `Host`: nearly every concern reads them.

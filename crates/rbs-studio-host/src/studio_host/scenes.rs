@@ -75,16 +75,16 @@ impl Host {
             std::mem::replace(&mut self.scene, scene),
         );
         // A copy of the old collection's program never goes on air in the new one.
-        let old_held = self.held.take();
+        let old_held = self.program.held.take();
         let _ = self.studio.shutdown();
         let result = match self.restart() {
             Ok(()) => {
                 self.autosave = autosave;
                 // The new collection's timers, not the old one's.
                 self.studio.set_text_timers(&[]);
-                self.text_timers_restored = false;
+                self.texts.text_timers_restored = false;
                 self.saved = Some((self.collection_epoch, loaded));
-                self.history.clear();
+                self.edits.history.clear();
                 // The attribute clipboard belongs to the old collection (ADR-0133).
                 if self.attribute_clipboard.take().is_some() {
                     self.clipboard_changed(notify);
@@ -94,7 +94,7 @@ impl Host {
             Err(why) => {
                 self.note_collection();
                 (self.collection, self.canvas, self.scene) = old;
-                self.held = old_held;
+                self.program.held = old_held;
                 if let Err(again) = self.restart() {
                     self.dead = Some(again.into_text());
                 }
@@ -129,7 +129,9 @@ impl Host {
             .scene(id)
             .map(|s| s.name.clone())
             .unwrap_or_default();
-        self.history.record(EditKind::Order, &name, 0, vec![undo]);
+        self.edits
+            .history
+            .record(EditKind::Order, &name, 0, vec![undo]);
         Ok(true)
     }
 
@@ -147,7 +149,9 @@ impl Host {
             .scene(id)
             .map(|s| s.name.clone())
             .unwrap_or_default();
-        self.history.record(EditKind::Order, &name, 0, vec![undo]);
+        self.edits
+            .history
+            .record(EditKind::Order, &name, 0, vec![undo]);
         Ok(true)
     }
 
@@ -166,7 +170,9 @@ impl Host {
             .collection
             .set_glide(glide)
             .map_err(|e| Refusal::of(&e))?;
-        self.history.record(EditKind::Glide, "", 0, vec![undo]);
+        self.edits
+            .history
+            .record(EditKind::Glide, "", 0, vec![undo]);
         Ok(true)
     }
 
@@ -267,7 +273,8 @@ impl Host {
             .collection
             .set_scene_transition(id, t)
             .map_err(|e| Refusal::of(&e))?;
-        self.history
+        self.edits
+            .history
             .record(EditKind::Transition, &name, 0, vec![undo]);
         Ok(true)
     }
@@ -285,7 +292,9 @@ impl Host {
             .collection
             .set_transition(t)
             .map_err(|e| Refusal::of(&e))?;
-        self.history.record(EditKind::Transition, "", 0, vec![undo]);
+        self.edits
+            .history
+            .record(EditKind::Transition, "", 0, vec![undo]);
         Ok(true)
     }
 
@@ -327,7 +336,9 @@ impl Host {
                 None,
             )
             .map_err(|e| Refusal::of(&e))?;
-        self.history.record(EditKind::Add, &name, 0, vec![undo]);
+        self.edits
+            .history
+            .record(EditKind::Add, &name, 0, vec![undo]);
         Ok(item)
     }
 
@@ -351,7 +362,8 @@ impl Host {
             .collection
             .add_scene(&name, SceneScope::Shared)
             .map_err(|e| Refusal::of(&e))?;
-        self.history
+        self.edits
+            .history
             .record(EditKind::AddScene, &name, 0, vec![undo]);
         Ok(id)
     }
@@ -370,7 +382,8 @@ impl Host {
             .collection
             .duplicate_scene(id, &name)
             .map_err(|e| Refusal::of(&e))?;
-        self.history
+        self.edits
+            .history
             .record(EditKind::AddScene, &name, 0, vec![undo]);
         Ok(new_id)
     }
@@ -410,7 +423,8 @@ impl Host {
             .collection
             .remove_scene(id)
             .map_err(|e| Refusal::of(&e))?;
-        self.history
+        self.edits
+            .history
             .record(EditKind::RemoveScene, &name, 0, vec![undo]);
         Ok(())
     }
@@ -431,7 +445,8 @@ impl Host {
             .collection
             .rename_scene(id, name)
             .map_err(|e| Refusal::of(&e))?;
-        self.history
+        self.edits
+            .history
             .record(EditKind::RenameScene, &old, 0, vec![undo]);
         Ok(true)
     }
@@ -447,13 +462,13 @@ impl Host {
             )));
         }
         // A newer switch replaces one still held back for its texts.
-        self.held_switch = None;
+        self.program.held_switch = None;
         if self.scene == id {
             return Ok(false);
         }
         if self.studio.text_prepare(self.canvas, id) {
             // Goes on air from the control loop once its texts are uploaded.
-            self.held_switch = Some(id);
+            self.program.held_switch = Some(id);
             return Ok(false);
         }
         self.put_on_air(id)
@@ -470,13 +485,13 @@ impl Host {
 
     /// Makes a held-back program switch once its texts are ready or late.
     pub(super) fn drive_held_switch(&mut self, notify: &dyn Fn(Update)) {
-        let Some(id) = self.held_switch else {
+        let Some(id) = self.program.held_switch else {
             return;
         };
         if self.studio.text_due() == TextDue::Wait {
             return;
         }
-        self.held_switch = None;
+        self.program.held_switch = None;
         // The scene may have been removed meanwhile; the refusal is then news.
         let done = if self.listed(id) && self.scene != id {
             self.put_on_air(id)
@@ -509,7 +524,8 @@ impl Host {
             .collection
             .set_scene_own_levels(id, levels)
             .map_err(|e| Refusal::of(&e))?;
-        self.history
+        self.edits
+            .history
             .record(EditKind::SceneLevels, &name, 0, vec![undo]);
         Ok(true)
     }
@@ -525,7 +541,8 @@ impl Host {
             .collection
             .set_scene_shared_levels(id)
             .map_err(|e| Refusal::of(&e))?;
-        self.history
+        self.edits
+            .history
             .record(EditKind::SceneLevels, &name, 0, vec![undo]);
         Ok(true)
     }
@@ -556,7 +573,8 @@ impl Host {
             .collection
             .set_scene_level(id, source, None)
             .map_err(|e| Refusal::of(&e))?;
-        self.history
+        self.edits
+            .history
             .record(EditKind::SceneLevels, &name, 0, vec![undo]);
         if self.on_air(id) {
             self.studio.set_mix(&self.collection);
@@ -639,7 +657,7 @@ impl Host {
     /// The scene source and item edits act on: the preview scene in studio mode, else
     /// the program scene (ADR-0061 decision 4).
     pub(super) fn edited(&self) -> SceneId {
-        self.into.or(self.preview()).unwrap_or(self.scene)
+        self.program.into.or(self.preview()).unwrap_or(self.scene)
     }
 
     /// Runs `f` with source and item additions going to `scene` (an API call's
@@ -663,9 +681,9 @@ impl Host {
                 id
             }
         };
-        let old = self.into.replace(scene);
+        let old = self.program.into.replace(scene);
         let done = f(self);
-        self.into = old;
+        self.program.into = old;
         done
     }
 
@@ -695,7 +713,7 @@ impl Host {
     /// without a transition. One undo step, so Undo brings the edits back; nothing
     /// when nothing is held or nothing was edited.
     pub(super) fn discard_preview_edits(&mut self) {
-        let Some(held) = self.held.take() else {
+        let Some(held) = self.program.held.take() else {
             return;
         };
         if held.from != self.scene {
@@ -724,7 +742,8 @@ impl Host {
         // A refusal (the copy no longer fits the collection, which the hold already
         // checks) leaves the scene as it is: the edits stay, as before ADR-0151.
         if let Ok(undo) = self.collection.set_scene_items(held.from, items) {
-            self.history
+            self.edits
+                .history
                 .record(EditKind::DiscardPreview, &name, 0, vec![undo]);
         }
     }
@@ -761,16 +780,16 @@ impl Host {
             return Err(Refusal::Conflict(STUDIO_MODE_OFF.to_owned()));
         };
         // A held T-bar is cancelled first (ADR-0135 decision 7).
-        if !self.taking {
+        if !self.program.taking {
             self.studio.cancel_manual(self.canvas);
         }
         let program = self.scene;
         if preview == program {
             // `apply` holds the scene as it is now.
-            let taken = self.held.take();
+            let taken = self.program.held.take();
             if let Some(h) = &taken {
-                self.held_was = Some(h.from);
-                self.held_id_was = Some(h.scene.id);
+                self.program.held_was = Some(h.from);
+                self.program.held_id_was = Some(h.scene.id);
             }
             return Ok(taken.is_some());
         }
@@ -795,15 +814,15 @@ impl Host {
         if self.preview().is_none() {
             return;
         }
-        self.tbar_zeroed = t <= 0.0;
+        self.program.tbar_zeroed = t <= 0.0;
         match self
             .studio
             .transition_progress(self.canvas, t, &self.adapters.sources)
         {
             Ok(rbs_record::ManualStep::Take) => {
-                self.taking = true;
+                self.program.taking = true;
                 let changed = self.transition();
-                self.taking = false;
+                self.program.taking = false;
                 match changed {
                     Ok(true) => self.apply(notify),
                     _ => {
@@ -820,11 +839,11 @@ impl Host {
     /// it go otherwise. A copy is taken only when the hold starts, so later edits to
     /// the scene reach the program only through a transition.
     pub(super) fn sync_held(&mut self) {
-        self.held = next_held(
-            self.held.take(),
+        self.program.held = next_held(
+            self.program.held.take(),
             &self.collection,
             self.canvas,
-            self.held_id_was,
+            self.program.held_id_was,
         );
     }
 
@@ -833,12 +852,12 @@ impl Host {
     /// (a duplicate name, say) is taken again from the scene as it is now; if even a
     /// fresh copy does not fit, nothing is held.
     pub(super) fn run_collection(&mut self) -> Option<SceneCollection> {
-        if let Some(h) = &self.held {
-            self.held_was = Some(h.from);
-            self.held_id_was = Some(h.scene.id);
+        if let Some(h) = &self.program.held {
+            self.program.held_was = Some(h.from);
+            self.program.held_id_was = Some(h.scene.id);
         }
         self.sync_held();
-        let held = self.held.as_ref()?;
+        let held = self.program.held.as_ref()?;
         if let Some(run) = run_copy(&self.collection, self.canvas, held) {
             return Some(run);
         }
@@ -846,10 +865,10 @@ impl Host {
         // goes on (ADR-0098).
         // The same id as the copy it replaces: the hold goes on, no transition.
         let after = (held.scene.id.get() == HELD_IDS_NEXT).then(|| SceneId::from_raw(HELD_IDS));
-        self.held = copy_of(&self.collection, held.from, after);
-        let run = run_copy(&self.collection, self.canvas, self.held.as_ref()?);
+        self.program.held = copy_of(&self.collection, held.from, after);
+        let run = run_copy(&self.collection, self.canvas, self.program.held.as_ref()?);
         if run.is_none() {
-            self.held = None;
+            self.program.held = None;
         }
         run
     }
@@ -922,7 +941,10 @@ impl Host {
                 .unwrap_or_default()
         };
         let scenes = rows(Some(self.canvas));
-        let hold_scenes = [scenes.clone(), rows(self.vertical.map(|v| v.canvas))];
+        let hold_scenes = [
+            scenes.clone(),
+            rows(self.verticals.vertical.map(|v| v.canvas)),
+        ];
         SceneList {
             scenes,
             hold_scenes,
@@ -956,7 +978,7 @@ impl Host {
         for e in self.studio.take_transition_events() {
             let canvas = if e.canvas == self.canvas {
                 OutputCanvas::Main
-            } else if self.vertical.map(|v| v.canvas) == Some(e.canvas) {
+            } else if self.verticals.vertical.map(|v| v.canvas) == Some(e.canvas) {
                 OutputCanvas::Vertical
             } else {
                 continue;
@@ -965,10 +987,11 @@ impl Host {
             let real = |id: SceneId, held: Option<SceneId>| {
                 if id.get() >= HELD_IDS { held } else { Some(id) }
             };
-            let now_held = self.held.as_ref().map(|h| h.from);
+            let now_held = self.program.held.as_ref().map(|h| h.from);
             let (Some(from), Some(to)) = (
-                e.from.and_then(|id| real(id, self.held_was.or(now_held))),
-                e.to.and_then(|id| real(id, now_held.or(self.held_was))),
+                e.from
+                    .and_then(|id| real(id, self.program.held_was.or(now_held))),
+                e.to.and_then(|id| real(id, now_held.or(self.program.held_was))),
             ) else {
                 continue;
             };
@@ -1001,13 +1024,6 @@ impl Host {
                 let done = self.rename_source(id, &name);
                 self.answer(done, notify);
             }
-            Command::SetGlide {
-                duration_ms,
-                easing,
-            } => {
-                let done = self.set_glide(duration_ms, easing);
-                self.answer(done, notify);
-            }
             Command::SetTransition(t) => {
                 let done = self.put_transition(t);
                 self.answer(done, notify);
@@ -1028,22 +1044,6 @@ impl Host {
             Command::AddExistingSource(id) => {
                 let done = self.add_existing(id).map(|_| true);
                 self.answer(done, notify);
-            }
-            Command::AddScene(name) => {
-                let done = self.add_scene(name.as_deref()).map(|_| true);
-                self.answer(done, notify);
-            }
-            Command::DuplicateScene(id) => {
-                let done = self.duplicate_scene(id).map(|_| true);
-                self.answer(done, notify);
-            }
-            Command::DuplicateSceneWithCopies(id) => {
-                let p = rbs_api::request::DuplicateScene {
-                    scene: id.get(),
-                    sources: rbs_api::types::DuplicateSources::Copied,
-                };
-                let done = self.api_scene_duplicate(p, notify);
-                self.answer_api(done, notify);
             }
             Command::DuplicateSource(id) => {
                 let done = self.api_source_duplicate(in_scene(id), notify);
@@ -1087,37 +1087,27 @@ impl Host {
                 let done = self.api_paste_attributes(p, notify);
                 self.answer_api(done, notify);
             }
-            Command::RemoveScene(id) => {
-                let done = self.remove_scene(id).map(|()| true);
-                self.answer(done, notify);
-            }
-            Command::RenameScene { id, name } => {
-                let done = self.rename_scene(id, &name);
-                self.answer(done, notify);
-            }
-            Command::SetSceneTransition { id, transition } => {
-                let done = self.set_scene_transition(id, transition);
-                self.answer(done, notify);
-            }
+            // A click in the Scenes panel: on air, or in studio mode into preview.
             Command::SwitchScene(id) => {
-                let done = if self.preview().is_some() {
-                    self.set_preview_scene(id)
+                let call = if self.preview().is_some() {
+                    rbs_api::Command::CanvasSetPreview(rbs_api::request::SetPreview {
+                        scene: Some(id.get()),
+                    })
                 } else {
-                    self.switch_scene(id)
+                    rbs_api::Command::SceneSwitch(rbs_api::request::SwitchScene {
+                        scene: id.get(),
+                        kind: None,
+                        duration_ms: None,
+                    })
                 };
-                self.answer(done, notify);
+                self.run_ui_api(call, notify);
             }
+            // Studio mode on previews the program scene; nothing when already so.
             Command::SetStudioMode(on) => {
-                let done = self.set_studio_mode(on);
-                self.answer(done, notify);
-            }
-            Command::Transition => {
-                let done = self.transition();
-                self.answer(done, notify);
-            }
-            Command::TransitionProgress(t) => {
-                if self.preview().is_some() {
-                    self.pending_progress = Some(t.clamp(0.0, 1.0));
+                if self.preview().is_some() != on {
+                    let scene = on.then(|| self.scene.get());
+                    let call = rbs_api::request::SetPreview { scene };
+                    self.run_ui_api(rbs_api::Command::CanvasSetPreview(call), notify);
                 }
             }
             Command::Rehearse => {

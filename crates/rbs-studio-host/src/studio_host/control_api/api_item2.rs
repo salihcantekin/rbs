@@ -121,29 +121,29 @@ impl ApiTarget<'_> {
                 Ok(Response::Done(Empty {}))
             }
             C::OutputSetWithVertical(p) => {
-                let flags = host.vertical_flags.set(p.kind, p.on);
-                if flags != host.vertical_flags {
-                    host.vertical_flags = flags;
+                let flags = host.verticals.vertical_flags.set(p.kind, p.on);
+                if flags != host.verticals.vertical_flags {
+                    host.verticals.vertical_flags = flags;
                     notify(Update::VerticalFlags(flags));
                     host.settings_changed();
                 }
                 Ok(Response::Done(Empty {}))
             }
             C::OutputProfiles => Ok(Response::Profiles(ProfileList {
-                profiles: vec![host.profile.to_api_listing()],
+                profiles: vec![host.recording.profile.to_api_listing()],
             })),
             C::RecordStart(p) => {
                 check_profile(&p.profile)?;
-                let gate = start_gate(&p, host.limit_policy)?;
+                let gate = start_gate(&p, host.recording.limit_policy)?;
                 match p.canvas.unwrap_or_default().single() {
                     Some(one) => {
                         let c = host.api_canvas_of(Some(one))?;
                         let path = host.recording_file(c);
-                        let iso = p.iso.unwrap_or(host.separate_files);
+                        let iso = p.iso.unwrap_or(host.recording.separate_files);
                         self.record(c, path, false, iso, gate)
                     }
                     None => {
-                        let iso = p.iso.unwrap_or(host.separate_files);
+                        let iso = p.iso.unwrap_or(host.recording.separate_files);
                         self.start_all(api::OutputKind::Record, iso, gate)
                     }
                 }

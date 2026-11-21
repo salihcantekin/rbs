@@ -1510,6 +1510,10 @@ export global Studio {
     // 0 starting, 1 running, 2 failed (`failure` says why).
     in property <int> state;
     in property <string> failure;
+    // A restart of the studio runs: Restart the studio is not offered (crash-resilience spec).
+    in property <bool> restart-busy;
+    // Stops what is left of the stopped studio and starts it again with the scenes as last saved.
+    callback restart-studio();
     in property <[SourceData]> sources;
     in property <[KindData]> kinds;
     // The Source tab's list of what the selected source's kind can capture.

@@ -474,7 +474,29 @@ impl<T: Document> Library<T> {
                 "export to a file outside the library folder".to_owned(),
             )));
         }
-        document::write(to, &entry.document, Some(&entry.name))
+        let written = document::write(to, &entry.document, Some(&entry.name));
+        self.log("export", to, written.as_ref().err());
+        written
+    }
+
+    /// The `userdata` line of an import or export (ADR-0158): Info, Error when it
+    /// failed; the file's path only at Debug.
+    fn log(&self, what: &str, file: &Path, failed: Option<&DataError>) {
+        let kind = self.dir.file_name().unwrap_or_default().to_string_lossy();
+        match failed {
+            None => rbs_core::info!(rbs_core::log::Area::UserData, "{what} of a {kind} entry"),
+            Some(e) => {
+                rbs_core::error!(
+                    rbs_core::log::Area::UserData,
+                    "{what} of a {kind} entry failed: {e}"
+                );
+            }
+        }
+        rbs_core::debug!(
+            rbs_core::log::Area::UserData,
+            "{what} file {}",
+            file.display()
+        );
     }
 
     /// Adds the entry in a file made by [`Library::export`] (or by hand). Older formats
@@ -482,6 +504,12 @@ impl<T: Document> Library<T> {
     /// named after the file; a name already used gets a number (`Name 2`). Returns the
     /// new id and the name it got.
     pub fn import(&self, lock: &WriterLock, from: &Path) -> Result<(EntryId, String), DataError> {
+        let imported = self.import_entry(lock, from);
+        self.log("import", from, imported.as_ref().err());
+        imported
+    }
+
+    fn import_entry(&self, lock: &WriterLock, from: &Path) -> Result<(EntryId, String), DataError> {
         let read = document::read::<T>(from)?
             .ok_or_else(|| DataError::NotFound(from.display().to_string()))?;
         let wanted = read

@@ -46,7 +46,9 @@ impl Host {
             .collection
             .set_item_locked(item, locked)
             .map_err(|e| Refusal::of(&e))?;
-        self.history.record(EditKind::Lock, &name, 0, vec![undo]);
+        self.edits
+            .history
+            .record(EditKind::Lock, &name, 0, vec![undo]);
         Ok(true)
     }
 
@@ -68,7 +70,8 @@ impl Host {
             .collection
             .set_item_visible(item, visible)
             .map_err(|e| Refusal::of(&e))?;
-        self.history
+        self.edits
+            .history
             .record(EditKind::Visibility, &name, 0, vec![undo]);
         // Opening the eye drops a running cue so the deadline cannot hide it later
         // (ADR-0105). Hiding does not start one.
@@ -97,7 +100,9 @@ impl Host {
             .collection
             .set_item_show_for(item, show_for_ms)
             .map_err(|e| Refusal::of(&e))?;
-        self.history.record(EditKind::ShowFor, &name, 0, vec![undo]);
+        self.edits
+            .history
+            .record(EditKind::ShowFor, &name, 0, vec![undo]);
         Ok(true)
     }
 
@@ -201,7 +206,9 @@ impl Host {
             .collection
             .set_display_chrome(id, chrome)
             .map_err(|e| Refusal::of(&e))?;
-        self.history.record(EditKind::Region, &name, 0, vec![undo]);
+        self.edits
+            .history
+            .record(EditKind::Region, &name, 0, vec![undo]);
         Ok(true)
     }
 
@@ -239,7 +246,8 @@ impl Host {
         let undo = self
             .save_live_layout(item, own, layout)
             .map_err(|e| Refusal::of(&e))?;
-        self.history
+        self.edits
+            .history
             .record(EditKind::Transform, &name, 0, vec![undo]);
         Ok(true)
     }
@@ -275,7 +283,9 @@ impl Host {
             .collection
             .set_display_chrome(id, Some(chrome))
             .map_err(|e| Refusal::of(&e))?;
-        self.history.record(EditKind::Region, &name, 0, vec![undo]);
+        self.edits
+            .history
+            .record(EditKind::Region, &name, 0, vec![undo]);
         Ok(true)
     }
 
@@ -336,7 +346,8 @@ impl Host {
             .save_live_layout(item, own, layout)
             .map_err(|e| Refusal::of(&e))?;
         let name = self.name_of(id);
-        self.history
+        self.edits
+            .history
             .record(EditKind::Place, &name, gesture, vec![undo]);
         self.crisp_after_box(item, gesture, &name);
         Ok(true)
@@ -384,7 +395,8 @@ impl Host {
             ItemContent::Source(id) => self.name_of(id),
             _ => String::new(),
         };
-        self.history
+        self.edits
+            .history
             .record(EditKind::Style, &name, gesture, vec![undo]);
         Ok(true)
     }
@@ -428,7 +440,8 @@ impl Host {
             ItemContent::Source(id) => self.name_of(id),
             _ => String::new(),
         };
-        self.history
+        self.edits
+            .history
             .record(EditKind::Scroll, &name, gesture, vec![undo]);
         Ok(true)
     }
@@ -482,7 +495,7 @@ impl Host {
         match on {
             OutputCanvas::Main => Ok(self.canvas),
             OutputCanvas::Vertical => {
-                if self.vertical.is_none() {
+                if self.verticals.vertical.is_none() {
                     return Err(Refusal::NotFound("There is no vertical canvas.".into()));
                 }
                 self.vertical_edits().ok_or_else(|| {
@@ -568,7 +581,8 @@ impl Host {
             .save_live_layout(item, own, layout)
             .map_err(|e| CropRefusal::Failed(edit_error(&e)))?;
         let name = self.name_of(source);
-        self.history
+        self.edits
+            .history
             .record(EditKind::Crop, &name, gesture, vec![undo]);
         Ok(true)
     }
@@ -674,7 +688,8 @@ impl Host {
             .save_live_layout(item, own, layout)
             .map_err(|e| Refusal::of(&e))?;
         let name = self.name_of(source);
-        self.history
+        self.edits
+            .history
             .record(EditKind::Transform, &name, gesture, vec![undo]);
         Ok(true)
     }

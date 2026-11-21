@@ -648,7 +648,7 @@ fn by_default_the_transition_keeps_the_preview_scene() {
 #[test]
 fn in_studio_mode_the_ui_edits_the_preview_and_the_mixer_hears_the_program() {
     use rbs_scene::model::SceneId;
-    use rbs_studio_host::studio_host::Command;
+    use rbs_studio_host::studio_host::{ApiReply, Command};
     let Some((host, updates, _api, mut c)) = start() else {
         return;
     };
@@ -682,7 +682,10 @@ fn in_studio_mode_the_ui_edits_the_preview_and_the_mixer_hears_the_program() {
     // The transition button, with the swap setting on (ADR-0098): now the Sources list
     // shows the first scene (in preview) and the Mixer the empty program scene.
     host.send(Command::SetSwapAfterTransition(true));
-    host.send(Command::Transition);
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::CanvasTransition(Default::default())),
+        reply: ApiReply::Shown,
+    });
     next(&updates, |u| match u {
         Update::Scenes(l) if l.program == id(two) => {
             assert_eq!(l.preview, Some(id(one)));

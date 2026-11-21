@@ -78,11 +78,13 @@ const REPORT_EVERY: u32 = 30;
 pub(crate) mod activity_choice;
 pub(crate) mod add_picker;
 pub(crate) mod ai;
+mod api_call;
 pub(crate) mod attributes;
 pub(crate) mod browser_props;
 pub(crate) mod destinations;
 pub(crate) mod filters;
 mod library_ops;
+mod scene_calls;
 pub use library_ops::EntryWrite;
 mod live_ticks;
 pub(crate) mod loudness;
@@ -1909,12 +1911,6 @@ impl StudioUi {
         };
     }
 
-    pub fn send(&self, c: Command) {
-        if let Some(h) = &self.host {
-            h.send(c);
-        }
-    }
-
     /// The source kinds this system offers: `(code, label)`, code being the index in
     /// `kind_list` (the Add source menu's).
     pub fn kind_codes(&self) -> Vec<(i32, &'static str)> {
@@ -2096,13 +2092,6 @@ impl StudioUi {
     /// Duplicate source (ADR-0133 decision 3).
     pub fn duplicate_source(&mut self, id: i32) {
         self.send(Command::DuplicateSource(SourceId::from_raw(id as u32)));
-    }
-
-    /// Duplicate scene with new sources (ADR-0133 decision 4).
-    pub fn duplicate_scene_with_copies(&mut self, id: i32) {
-        self.send(Command::DuplicateSceneWithCopies(SceneId::from_raw(
-            id as u32,
-        )));
     }
 
     /// Copy attributes of a source (ADR-0133 decision 6).
@@ -2555,14 +2544,6 @@ impl StudioUi {
         });
     }
 
-    /// Collection glide defaults (ADR-0100).
-    pub fn set_glide(&mut self, duration_ms: i32, easing: i32) {
-        self.send(Command::SetGlide {
-            duration_ms: duration_ms.clamp(0, 5_000) as u32,
-            easing: if easing == 0 { 0 } else { 1 },
-        });
-    }
-
     /// The transition kind from the rail (ADR-0128): `0` Cut, `1` Fade, `2` Move,
     /// `3` Swipe, `4` Slide, `5` Stinger (ADR-0140).
     pub fn set_transition_kind(&mut self, index: i32) {
@@ -2608,10 +2589,7 @@ impl StudioUi {
                 self.send(Command::SetTransition(t));
             }
             rbs_scene::TransitionKind::Cut => {}
-            _ => self.send(Command::SetGlide {
-                duration_ms: ms,
-                easing: u8::from(self.glide.easing != rbs_scene::GlideEasing::Linear),
-            }),
+            _ => self.send_glide(ms, self.glide.easing != rbs_scene::GlideEasing::Linear),
         }
     }
 
@@ -2644,26 +2622,6 @@ impl StudioUi {
         if t != self.transition {
             self.send(Command::SetTransition(t));
         }
-    }
-
-    /// A scene's transition into it (ADR-0135): `kind` -1 the collection's, else the
-    /// rail's index; `duration_ms` -1 the kind's own duration.
-    pub fn set_scene_transition(&mut self, id: i32, kind: i32, duration_ms: i32) {
-        let kind = match kind {
-            0 => Some(rbs_scene::TransitionKind::Cut),
-            1 => Some(rbs_scene::TransitionKind::Fade),
-            2 => Some(rbs_scene::TransitionKind::Move),
-            3 => Some(rbs_scene::TransitionKind::Swipe),
-            4 => Some(rbs_scene::TransitionKind::Slide),
-            5 => Some(rbs_scene::TransitionKind::Stinger),
-            _ => None,
-        };
-        let duration_ms = u32::try_from(duration_ms).ok().map(|ms| ms.min(5_000));
-        let t = rbs_scene::SceneTransition { kind, duration_ms };
-        self.send(Command::SetSceneTransition {
-            id: SceneId::from_raw(id as u32),
-            transition: (!t.is_empty()).then_some(t),
-        });
     }
 
     /// Swipe's options, or Slide's when `slide`: easing (`0` linear, `1`
@@ -2811,50 +2769,12 @@ impl StudioUi {
         self.send(Command::SetStudioMode(on));
     }
 
-    /// The T-bar moved to `t` (ADR-0135 decision 1).
-    pub fn transition_progress(&mut self, t: f32) {
-        if self.studio_mode {
-            self.send(Command::TransitionProgress(t));
-        }
-    }
-
     /// Rehearse on Preview (ADR-0135 decision 11): the transition on the Preview
     /// picture only.
     pub fn rehearse(&mut self) {
         if self.studio_mode {
             self.send(Command::Rehearse);
         }
-    }
-
-    /// The transition: the preview scene goes on air (ADR-0061).
-    pub fn transition(&mut self) {
-        if self.studio_mode {
-            self.send(Command::Transition);
-        }
-    }
-
-    pub fn add_scene(&mut self) {
-        self.deleted.clear();
-        self.send(Command::AddScene(None));
-    }
-
-    /// Copies a scene; it does not go on air.
-    pub fn duplicate_scene(&mut self, id: i32) {
-        self.deleted.clear();
-        self.send(Command::DuplicateScene(SceneId::from_raw(id as u32)));
-    }
-
-    pub fn remove_scene(&mut self, id: i32) {
-        self.deleted.clear();
-        self.send(Command::RemoveScene(SceneId::from_raw(id as u32)));
-    }
-
-    pub fn rename_scene(&mut self, id: i32, name: &str) {
-        self.deleted.clear();
-        self.send(Command::RenameScene {
-            id: SceneId::from_raw(id as u32),
-            name: name.to_owned(),
-        });
     }
 
     /// The sources Add source can place again: those of the collection the scene on
@@ -2878,14 +2798,6 @@ impl StudioUi {
         self.send(Command::SetSourceVisible {
             id: SourceId::from_raw(id as u32),
             visible,
-        });
-    }
-
-    pub fn move_scene(&mut self, id: i32, direction: rbs_api::request::LayerDirection) {
-        self.deleted.clear();
-        self.send(Command::MoveScene {
-            id: SceneId::from_raw(id as u32),
-            direction,
         });
     }
 
@@ -5110,6 +5022,7 @@ impl StudioUi {
                 rbs_core::warn!(Area::Stream, "go live refused: {why}");
             }
             StreamUpdate::NotStarted(why) => {
+                rbs_core::error!(Area::Stream, "the stream did not start: {why}");
                 self.silence_checked = [false; 2];
                 self.st_state = st_state::OFF;
                 self.st_live = None;
@@ -5117,6 +5030,7 @@ impl StudioUi {
                 self.st_bad = true;
             }
             StreamUpdate::NoKey => {
+                rbs_core::error!(Area::Stream, "the stream did not start: no stream key");
                 self.silence_checked = [false; 2];
                 self.st_state = st_state::OFF;
                 self.st_live = None;
@@ -5162,10 +5076,7 @@ impl StudioUi {
                 let asked = self.st_state == st_state::ENDING || failure.is_none();
                 self.st_state = st_state::OFF;
                 self.st_link = Link::default();
-                rbs_core::info!(
-                    Area::Stream,
-                    "stream ended: {frames} frames, {dropped} dropped, {connects} connections, failure: {failure:?}"
-                );
+                destinations::log_stream_ended(frames, dropped, connects, failure.as_deref());
                 let secs = duration.as_secs();
                 let time = if secs >= 3600 {
                     format!("{}:{:02}:{:02}", secs / 3600, secs / 60 % 60, secs % 60)
@@ -6343,8 +6254,8 @@ impl StudioUi {
             return out;
         }
         match u {
-            // Taken above.
-            Update::Monitor(_) | Update::MonitorDevices(_) | Update::Loudness(_) => {}
+            Update::Monitor(_) | Update::MonitorDevices(_) | Update::Loudness(_) => {} // taken above
+            Update::ApiAnswer { .. } => {} // no window call asks for one yet (ADR-0163)
             Update::TBarReset => self.tbar_resets = self.tbar_resets.wrapping_add(1),
             Update::AddOns(list) => self.add_ons = list.add_ons,
             Update::OpenAddOn(id) => self.open_add_on = Some(id),
@@ -6907,6 +6818,7 @@ impl StudioUi {
                 rbs_core::warn!(Area::Record, "record refused: {why}");
             }
             RecordingUpdate::NotStarted(why) => {
+                rbs_core::error!(Area::Record, "the recording did not start: {why}");
                 self.silence_checked[0] = false;
                 self.rec_state = rec_state::OFF;
                 self.rec_file = None;
@@ -6926,10 +6838,7 @@ impl StudioUi {
                 self.rec_file = None;
                 self.rec_file_audio = false;
                 self.rec_separate.clear();
-                rbs_core::info!(
-                    Area::Record,
-                    "recording stopped: {frames} frames, {dropped} dropped, {flush_lost} packets lost in the encoder, failure: {failure:?}"
-                );
+                destinations::log_rec_stopped(frames, dropped, flush_lost, failure.as_deref());
                 match failure {
                     None => {
                         let mut note = format!("Saved {}", path.display());

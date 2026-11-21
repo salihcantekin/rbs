@@ -159,11 +159,31 @@ pub fn complete_request(ctx: &GpuContext, mut request: CaptureRequest) -> Captur
 /// What the opening thread hands to the node: a started session, or why it failed.
 type Opened = Result<Box<dyn CaptureSession>, CaptureError>;
 
-/// Opens and starts a session (may block: never on the render thread).
+/// Opens and starts a session (may block: never on the render thread), with its
+/// `capture` line (ADR-0158): Info, Error when it failed; the target only at Debug,
+/// since it can name a window.
 fn open_and_start(factory: &dyn CaptureFactory, request: &CaptureRequest) -> Opened {
-    let mut session = factory.open(request)?;
-    session.start()?;
-    Ok(session)
+    use rbs_core::log::Area;
+    let opened = factory.open(request).and_then(|mut session| {
+        session.start()?;
+        Ok(session)
+    });
+    let adapter = factory.id();
+    match &opened {
+        Ok(session) => {
+            let f = session.format();
+            rbs_core::info!(
+                Area::Capture,
+                "capture opened ({adapter}, {}x{} {:?})",
+                f.size.width,
+                f.size.height,
+                f.pixel_format
+            );
+        }
+        Err(e) => rbs_core::error!(Area::Capture, "capture did not open ({adapter}): {e}"),
+    }
+    rbs_core::debug!(Area::Capture, "capture target {}", request.target.as_str());
+    opened
 }
 
 /// Puts a capture session's newest frame on the "video" output each render tick:

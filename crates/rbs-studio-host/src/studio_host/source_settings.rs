@@ -339,7 +339,8 @@ impl Host {
             );
         }
         if !settings_changed {
-            self.history
+            self.edits
+                .history
                 .record(EditKind::SourceSettings, &name, gesture, undos);
             return Ok(true);
         }
@@ -359,7 +360,8 @@ impl Host {
                     .map_err(|e| Refusal::of(&e))?,
             );
         }
-        self.history
+        self.edits
+            .history
             .record(EditKind::SourceSettings, &name, gesture, undos);
         self.fill_device_offset(id, old_device.as_ref(), &name, EditKind::SourceSettings);
         Ok(true)
@@ -586,7 +588,8 @@ impl Host {
             .collection
             .set_source_settings(id, settings)
             .map_err(|e| ApiError::new(ErrorKind::Internal, e.to_string()))?;
-        self.history
+        self.edits
+            .history
             .record(EditKind::SourceSettings, &name, 0, vec![undo]);
         if let Some(dir) = &self.profiles_dir {
             crate::browser_profiles::remove_soon(dir, &old);
@@ -687,7 +690,8 @@ impl Host {
             .collection
             .set_source_activity(id, activity)
             .map_err(|e| Refusal::of(&e))?;
-        self.history
+        self.edits
+            .history
             .record(EditKind::SourceSettings, &name, 0, vec![undo]);
         Ok(true)
     }
@@ -728,7 +732,7 @@ impl Host {
         {
             steps.push(fit);
         }
-        self.history.record(EditKind::Region, &name, 0, steps);
+        self.edits.history.record(EditKind::Region, &name, 0, steps);
         Ok(true)
     }
 
@@ -855,7 +859,7 @@ impl Host {
             }
             Command::GrabThumbnails { kind, rows, max } => self.grab_thumbnails(kind, rows, max),
             Command::StopThumbnails => {
-                self.thumbs.fetch_add(1, AtomicOrdering::AcqRel);
+                self.pickers.thumbs.fetch_add(1, AtomicOrdering::AcqRel);
             }
             Command::OpenSourceSettings(id) => match self.source_settings_view(id) {
                 Ok(view) => {
@@ -865,7 +869,9 @@ impl Host {
                 Err(e) => notify(Update::Error(e.text().to_owned())),
             },
             Command::CloseSourceSettings => {
-                self.region_grabs.fetch_add(1, AtomicOrdering::AcqRel);
+                self.pickers
+                    .region_grabs
+                    .fetch_add(1, AtomicOrdering::AcqRel);
             }
             Command::SetSourceSettings { id, patch, gesture } => {
                 let done = self.patch_source_settings_in(id, &patch, gesture);

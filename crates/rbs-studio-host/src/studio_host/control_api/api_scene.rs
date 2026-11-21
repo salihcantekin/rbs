@@ -149,7 +149,7 @@ impl ApiTarget<'_> {
                 if host.preview().is_none() {
                     return Err(refused(&Refusal::Conflict(STUDIO_MODE_OFF.to_owned())));
                 }
-                host.pending_progress = Some(p.t);
+                host.program.pending_progress = Some(p.t);
                 Ok(Response::Done(Empty {}))
             }
             C::CanvasTransition(p) => {

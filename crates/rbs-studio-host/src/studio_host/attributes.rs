@@ -310,7 +310,8 @@ impl Host {
             .collection
             .duplicate_source(item, &copies, &source_fields)
             .map_err(|e| Refusal::of(&e))?;
-        self.history
+        self.edits
+            .history
             .record(EditKind::Duplicate, &source.name, 0, vec![undo]);
         let mut items = made.items.into_iter();
         let (copy, copy_item) = items
@@ -378,7 +379,8 @@ impl Host {
             .collection
             .duplicate_scene_with_copies(id, &name, &copies, &source_fields)
             .map_err(|e| Refusal::of(&e))?;
-        self.history
+        self.edits
+            .history
             .record(EditKind::AddScene, &name, 0, vec![undo]);
         Ok((new_id, made.sources))
     }
@@ -710,7 +712,7 @@ impl Host {
             return Err(e);
         }
         if !records.is_empty() {
-            self.history.record(kind, name, 0, records);
+            self.edits.history.record(kind, name, 0, records);
         }
         for w in live {
             let group = w.group();

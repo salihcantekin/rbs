@@ -9,18 +9,18 @@ impl ApiTarget<'_> {
         let host = &mut *self.host;
         match command {
             C::VcamStart => {
-                if host.camera.is_some() {
+                if host.vcam.camera.is_some() {
                     return Err(ApiError::new(
                         ErrorKind::Conflict,
                         "the virtual camera already sends",
                     ));
                 }
-                if host.camera_factory.is_none() {
+                if host.vcam.camera_factory.is_none() {
                     return Err(failed(
                         "the virtual camera is not available on this computer",
                     ));
                 }
-                let Some(setup) = &host.camera_setup else {
+                let Some(setup) = &host.vcam.camera_setup else {
                     return Err(failed("the studio is still starting; try again"));
                 };
                 if setup.busy {
@@ -55,7 +55,7 @@ impl ApiTarget<'_> {
                 Ok(Response::Done(Empty {}))
             }
             C::VcamStop => {
-                if host.camera.is_none() {
+                if host.vcam.camera.is_none() {
                     return Err(ApiError::new(
                         ErrorKind::Conflict,
                         "the virtual camera does not send",

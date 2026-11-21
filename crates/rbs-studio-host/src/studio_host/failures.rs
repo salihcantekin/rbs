@@ -117,10 +117,10 @@ mod tests {
         let msg = Msg::Ui(Command::SetStudioMode(true));
         let kind = Kind::of(Some(&msg)).map(|k| k.to_string());
         assert_eq!(kind.as_deref(), Some("SetStudioMode"));
-        let unit = Msg::Ui(Command::Transition);
+        let unit = Msg::Ui(Command::Rehearse);
         assert_eq!(
             Kind::of(Some(&unit)).map(|k| k.to_string()).as_deref(),
-            Some("Transition")
+            Some("Rehearse")
         );
         assert!(Kind::of(None).is_none());
     }

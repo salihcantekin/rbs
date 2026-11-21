@@ -269,16 +269,16 @@ impl Host {
     /// canvas's: until they are saved).
     pub(super) fn stream_profile_of(&self, c: OutputCanvas) -> Option<&StreamProfile> {
         match c {
-            OutputCanvas::Main => self.stream_profile.as_ref(),
-            OutputCanvas::Vertical => self.vertical_stream_profile.as_ref(),
+            OutputCanvas::Main => self.streaming.stream_profile.as_ref(),
+            OutputCanvas::Vertical => self.streaming.vertical_stream_profile.as_ref(),
         }
     }
 
     /// The key store account of `c`'s stream key.
     pub(super) fn key_account_of(&self, c: OutputCanvas) -> String {
         match c {
-            OutputCanvas::Main => self.key_account.clone(),
-            OutputCanvas::Vertical => stream_key::vertical_account(&self.key_account),
+            OutputCanvas::Main => self.streaming.key_account.clone(),
+            OutputCanvas::Vertical => stream_key::vertical_account(&self.streaming.key_account),
         }
     }
 
@@ -291,7 +291,7 @@ impl Host {
         notify: &dyn Fn(Update),
     ) {
         self.note_encoders(notify);
-        if let Some(why) = &self.cannot_record {
+        if let Some(why) = &self.recording.cannot_record {
             notify(stream_update(c, StreamUpdate::NotStarted(why.clone())));
             return;
         }
@@ -317,11 +317,14 @@ impl Host {
     pub(super) fn save_key(&self, c: OutputCanvas, key: Option<&Secret>) -> Result<bool, Refusal> {
         let account = self.key_account_of(c);
         let result = match key {
-            Some(k) => self.keys.write(&account, k).map(|()| true),
-            None => self.keys.remove(&account).map(|()| false),
+            Some(k) => self.streaming.keys.write(&account, k).map(|()| true),
+            None => self.streaming.keys.remove(&account).map(|()| false),
         };
         result.map_err(|e| {
-            Refusal::Failed(format!("{} refused the stream key: {e}", self.keys.place()))
+            Refusal::Failed(format!(
+                "{} refused the stream key: {e}",
+                self.streaming.keys.place()
+            ))
         })
     }
 
@@ -375,7 +378,7 @@ impl Host {
             return Err(Refusal::Conflict("A stream is already running.".to_owned()));
         }
         let canvas = self.output_canvas(c)?;
-        if self.cannot_record.is_some() {
+        if self.recording.cannot_record.is_some() {
             return Err(Refusal::Failed(format!(
                 "Streaming is not available on {} yet: this system has no video encoder RBS can use.",
                 os_name()
@@ -395,7 +398,7 @@ impl Host {
         let alone = plans.len() == 1 && failed.is_empty();
         let mut ready: Vec<(Planned, OutputSettings)> = Vec::new();
         for p in plans {
-            let key = match self.keys.read(&p.account) {
+            let key = match self.streaming.keys.read(&p.account) {
                 Ok(key) => key,
                 Err(e) => {
                     let which = match (p.live.id, c) {
@@ -405,7 +408,7 @@ impl Host {
                     };
                     let why = format!(
                         "The stream key{which} could not be read from {}: {e}",
-                        self.keys.place()
+                        self.streaming.keys.place()
                     );
                     if alone {
                         return Err(Refusal::Failed(why));
@@ -536,7 +539,11 @@ impl Host {
         }
         let mut plans = Vec::new();
         let mut skipped = Vec::new();
-        for d in self.destinations.of(role, &profile, &self.key_account) {
+        for d in self
+            .streaming
+            .destinations
+            .of(role, &profile, &self.streaming.key_account)
+        {
             if !d.destination.enabled || only.is_some_and(|id| id != d.destination.id) {
                 continue;
             }
@@ -592,7 +599,7 @@ impl Host {
             OutputCanvas::Main => "",
             OutputCanvas::Vertical => " for the vertical stream",
         };
-        if self.stream_profile.is_none() {
+        if self.streaming.stream_profile.is_none() {
             return Err(failed("the studio is still starting; try again"));
         }
         let no_server = || {
@@ -603,7 +610,7 @@ impl Host {
         let other = only.filter(|id| *id != MAIN_FIRST && *id != VERTICAL_FIRST);
         let mut profile = match (self.stream_profile_of(c), other) {
             (Some(p), _) => p.clone(),
-            (None, Some(_)) => self.stream_profile.clone().unwrap_or_default(),
+            (None, Some(_)) => self.streaming.stream_profile.clone().unwrap_or_default(),
             (None, None) => return Err(no_server()),
         };
         // Every destination off: refused before any key is read (ADR-0148 decision 10).
@@ -620,7 +627,7 @@ impl Host {
                 .encoding
                 .encoder
                 .clone()
-                .filter(|id| self.encoders.iter().any(|e| e.id == *id));
+                .filter(|id| self.recording.encoders.iter().any(|e| e.id == *id));
             let request = StreamRequest::from_settings(&profile, encoder).map_err(|_| {
                 failed(format!(
                     "the saved stream settings{which} cannot be used: see Settings, Stream"
@@ -657,7 +664,7 @@ impl Host {
             .encoding
             .encoder
             .clone()
-            .filter(|id| self.encoders.iter().any(|e| e.id == *id));
+            .filter(|id| self.recording.encoders.iter().any(|e| e.id == *id));
         let request = StreamRequest::from_profile(&profile, encoder).map_err(|_| {
             failed(format!(
                 "the saved stream settings{which} cannot be used: see Settings, Stream"
@@ -672,7 +679,7 @@ impl Host {
         let canvas = match id {
             MAIN_FIRST => DestinationCanvas::Main,
             VERTICAL_FIRST => DestinationCanvas::Vertical,
-            _ => self.destinations.get(id)?.canvas,
+            _ => self.streaming.destinations.get(id)?.canvas,
         };
         let c = match canvas {
             DestinationCanvas::Main => OutputCanvas::Main,
@@ -702,7 +709,7 @@ impl Host {
     /// Streaming is available on `c` (ADR-0148 decision 1): one of its existing
     /// destinations is on, or the destinations section did not load.
     pub(super) fn stream_available(&self, c: OutputCanvas) -> bool {
-        if self.destinations_unloaded {
+        if self.streaming.destinations_unloaded {
             return true;
         }
         let role = match c {
@@ -710,7 +717,7 @@ impl Host {
             OutputCanvas::Vertical => DestinationCanvas::Vertical,
         };
         let profile = self.stream_profile_of(c).cloned().unwrap_or_default();
-        self.destinations.available(role, &profile)
+        self.streaming.destinations.available(role, &profile)
     }
 
     /// The destinations of `c` with their first one's settings filled in.
@@ -720,7 +727,9 @@ impl Host {
             OutputCanvas::Vertical => DestinationCanvas::Vertical,
         };
         let profile = self.stream_profile_of(c).cloned().unwrap_or_default();
-        self.destinations.of(role, &profile, &self.key_account)
+        self.streaming
+            .destinations
+            .of(role, &profile, &self.streaming.key_account)
     }
 
     /// `stream.destinations` rows of `c` (control API 1.77): never a server or a key.
@@ -761,11 +770,11 @@ impl Host {
             .into_iter()
             .next()
             .ok_or_else(|| Refusal::NotFound(format!("there is no destination {id}")))?;
-        let key = self.keys.read(&p.account).map_err(|e| {
+        let key = self.streaming.keys.read(&p.account).map_err(|e| {
             Refusal::Failed(format!(
                 "The stream key of {} could not be read from {}: {e}",
                 p.live.label(),
-                self.keys.place()
+                self.streaming.keys.place()
             ))
         })?;
         if p.request.needs_key && key.is_none() {
@@ -834,21 +843,21 @@ impl Host {
     /// encoders' names.
     /// Probes video and audio encoders once. Returns whether this call did the probe.
     pub(super) fn ensure_encoders(&mut self) -> bool {
-        if self.encoders_probed {
+        if self.recording.encoders_probed {
             return false;
         }
         self.adapters.probe_encoders();
         let (encoders, cannot_record) = encoder_catalog(&self.adapters);
-        self.encoders = encoders;
-        self.cannot_record = cannot_record;
-        self.encoders_probed = true;
+        self.recording.encoders = encoders;
+        self.recording.cannot_record = cannot_record;
+        self.recording.encoders_probed = true;
         true
     }
 
     pub(super) fn publish_encoders(&self, notify: &dyn Fn(Update)) {
         notify(Update::Encoders {
-            encoders: self.encoders.clone(),
-            cannot_record: self.cannot_record.clone(),
+            encoders: self.recording.encoders.clone(),
+            cannot_record: self.recording.cannot_record.clone(),
         });
     }
 
@@ -1177,6 +1186,23 @@ impl Host {
         failure
     }
 
+    /// A pause, hold or break toggle's refusal in a sentence of its own (`what`); a
+    /// caught panic as it is.
+    fn answer_toggle(
+        &mut self,
+        done: Result<Response, ApiError>,
+        what: &str,
+        notify: &dyn Fn(Update),
+    ) {
+        match done {
+            Ok(_) => {}
+            Err(e) if e.kind == ErrorKind::Internal && e.message == rbs_crash::CAUGHT_TEXT => {
+                notify(Update::Error(e.message));
+            }
+            Err(e) => notify(Update::Error(format!("{what}: {}.", e.message))),
+        }
+    }
+
     /// The window commands of this concern, routed by `Host::command`.
     pub(super) fn stream_command(&mut self, c: Command, notify: &dyn Fn(Update)) {
         match c {
@@ -1184,18 +1210,9 @@ impl Host {
                 let command = rbs_api::Command::RecordPauseToggle(rbs_api::request::OnCanvases {
                     canvas: Some(api::OutputTarget::All),
                 });
-                match rbs_crash::contain(|| ApiTarget { host: self, notify }.run(command)) {
-                    Ok(Ok(_)) => {}
-                    // The window's toast says it in a sentence of its own.
-                    Ok(Err(e)) => notify(Update::Error(format!(
-                        "The recording could not pause or resume: {}.",
-                        e.message
-                    ))),
-                    Err(_) => {
-                        self.caught = true;
-                        notify(Update::Error(rbs_crash::CAUGHT_TEXT.to_owned()));
-                    }
-                }
+                // The window's toast says it in a sentence of its own.
+                let done = self.run_api(command, notify);
+                self.answer_toggle(done, "The recording could not pause or resume", notify);
             }
             Command::HoldStream | Command::Break => {
                 let (command, what) = match c {
@@ -1211,14 +1228,8 @@ impl Host {
                         "The break could not start or end",
                     ),
                 };
-                match rbs_crash::contain(|| ApiTarget { host: self, notify }.run(command)) {
-                    Ok(Ok(_)) => {}
-                    Ok(Err(e)) => notify(Update::Error(format!("{what}: {}.", e.message))),
-                    Err(_) => {
-                        self.caught = true;
-                        notify(Update::Error(rbs_crash::CAUGHT_TEXT.to_owned()));
-                    }
-                }
+                let done = self.run_api(command, notify);
+                self.answer_toggle(done, what, notify);
             }
             Command::SaveReplay { seconds } => {
                 if let Err(why) = self.save_replay(seconds) {
@@ -1226,12 +1237,12 @@ impl Host {
                 }
             }
             Command::SetVirtualCamera(setup) => {
-                self.camera_setup = Some(setup);
+                self.vcam.camera_setup = Some(setup);
                 self.camera_changed();
             }
             Command::SetStreamProfile(profile) => {
-                if self.stream_profile.as_ref() != Some(&profile) {
-                    self.stream_profile = Some(profile);
+                if self.streaming.stream_profile.as_ref() != Some(&profile) {
+                    self.streaming.stream_profile = Some(profile);
                     self.settings_changed();
                     self.availability_changed();
                 }
@@ -1263,28 +1274,34 @@ impl Host {
                 );
             }
             Command::SaveDestinationKey(id, key) => {
-                let account = crate::stream_destinations::key_account(&self.key_account, id);
+                let account =
+                    crate::stream_destinations::key_account(&self.streaming.key_account, id);
                 let result = match &key {
-                    Some(k) => self.keys.write(&account, k).map(|()| true),
-                    None => self.keys.remove(&account).map(|()| false),
+                    Some(k) => self.streaming.keys.write(&account, k).map(|()| true),
+                    None => self.streaming.keys.remove(&account).map(|()| false),
                 }
-                .map_err(|e| format!("{} refused the stream key: {e}", self.keys.place()));
+                .map_err(|e| {
+                    format!(
+                        "{} refused the stream key: {e}",
+                        self.streaming.keys.place()
+                    )
+                });
                 notify(Update::DestinationKey(id, result));
             }
-            Command::SetKeyAccount(account) => self.key_account = account,
+            Command::SetKeyAccount(account) => self.streaming.key_account = account,
             Command::SaveImportedKey(account, key) => {
-                if let Err(e) = self.keys.write(&account, &key) {
+                if let Err(e) = self.streaming.keys.write(&account, &key) {
                     notify(Update::Error(format!(
                         "The imported stream key could not be saved in {}: {e}. Enter it in Settings, Stream.",
-                        self.keys.place()
+                        self.streaming.keys.place()
                     )));
                 }
             }
             Command::RemoveStreamKey(account) => {
-                if let Err(e) = self.keys.remove(&account) {
+                if let Err(e) = self.streaming.keys.remove(&account) {
                     notify(Update::Error(format!(
                         "The deleted output profile's stream key could not be removed from {}: {e}",
-                        self.keys.place()
+                        self.streaming.keys.place()
                     )));
                 }
             }
@@ -1316,6 +1333,37 @@ impl Host {
             }
             // Routed elsewhere by `Host::command`.
             _ => {}
+        }
+    }
+}
+
+/// The stream's settings: the profiles, the destinations and the key store.
+pub(super) struct StreamState {
+    /// The stream settings as the UI uses them; `None` until the UI sent them.
+    pub(super) stream_profile: Option<StreamProfile>,
+    /// The vertical canvas's stream settings as saved; `None`: none saved, so the
+    /// vertical stream has no server.
+    pub(super) vertical_stream_profile: Option<StreamProfile>,
+    /// The output profile's stream destinations as the UI sent them (ADR-0127).
+    pub(super) destinations: Destinations,
+    /// The destinations section did not load (ADR-0148 decision 1): streaming counts
+    /// as available on both canvases.
+    pub(super) destinations_unloaded: bool,
+    /// Where the stream key is kept.
+    pub(super) keys: Arc<dyn KeyStore>,
+    /// The account of the output profile in use.
+    pub(super) key_account: String,
+}
+
+impl StreamState {
+    pub(super) fn new(keys: Arc<dyn KeyStore>, key_account: String) -> Self {
+        Self {
+            keys,
+            key_account,
+            stream_profile: None,
+            vertical_stream_profile: None,
+            destinations: Destinations::default(),
+            destinations_unloaded: false,
         }
     }
 }

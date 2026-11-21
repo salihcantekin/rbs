@@ -161,7 +161,7 @@ impl ApiTarget<'_> {
                 Ok(Response::Done(Empty {}))
             }
             C::CanvasRemoveVertical(_) => {
-                if host.vertical.is_none() {
+                if host.verticals.vertical.is_none() {
                     return Err(ApiError::new(
                         ErrorKind::NotFound,
                         "there is no vertical canvas",

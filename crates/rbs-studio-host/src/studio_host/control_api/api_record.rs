@@ -86,7 +86,7 @@ impl ApiTarget<'_> {
             C::StreamDestinations(p) => {
                 let canvases = match p.canvas {
                     Some(c) => vec![host.api_canvas_of(Some(c))?],
-                    None if host.vertical.is_some() => {
+                    None if host.verticals.vertical.is_some() => {
                         vec![OutputCanvas::Main, OutputCanvas::Vertical]
                     }
                     None => vec![OutputCanvas::Main],
@@ -107,8 +107,10 @@ impl ApiTarget<'_> {
                         format!("there is no destination {}", p.id),
                     ));
                 }
-                if host.destinations.set_enabled(p.id, p.enabled) {
-                    notify(Update::StreamDestinations(host.destinations.clone()));
+                if host.streaming.destinations.set_enabled(p.id, p.enabled) {
+                    notify(Update::StreamDestinations(
+                        host.streaming.destinations.clone(),
+                    ));
                 }
                 Ok(Response::Done(Empty {}))
             }

@@ -76,7 +76,17 @@ pub struct HostConfig {
     #[cfg(feature = "fault-injection")]
     #[doc(hidden)]
     pub fault: Option<Fault>,
+    /// Collects the control API methods the window's commands run, in order (tests
+    /// only, ADR-0163 decision 5).
+    #[cfg(feature = "fault-injection")]
+    #[doc(hidden)]
+    pub api_trace: Option<ApiTrace>,
 }
+
+/// The control API methods the window's commands ran (tests only, ADR-0163).
+#[cfg(feature = "fault-injection")]
+#[doc(hidden)]
+pub type ApiTrace = Arc<std::sync::Mutex<Vec<&'static str>>>;
 
 impl HostConfig {
     /// 1920 x 1080 at 30 frames per second with a 1280 x 720 preview where the platform
@@ -114,6 +124,8 @@ impl HostConfig {
             browser: None,
             #[cfg(feature = "fault-injection")]
             fault: None,
+            #[cfg(feature = "fault-injection")]
+            api_trace: None,
         }
     }
 }

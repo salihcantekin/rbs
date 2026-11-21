@@ -77,11 +77,13 @@ impl Host {
         }
         if gesture == 0 {
             if let Ok(Some(undo)) = self.crisp_resize(item) {
-                self.history.extend_last(EditKind::Place, name, vec![undo]);
+                self.edits
+                    .history
+                    .extend_last(EditKind::Place, name, vec![undo]);
             }
             return;
         }
-        self.crisp_pending = Some(CrispPending {
+        self.texts.crisp_pending = Some(CrispPending {
             item,
             gesture,
             due: self.clock.now() + CRISP_SETTLE,
@@ -91,12 +93,12 @@ impl Host {
     /// Gives a rested drag's text its new box. How long until the next check, while
     /// one waits.
     pub(super) fn drive_crisp(&mut self, notify: &dyn Fn(Update)) -> Option<Duration> {
-        let pending = self.crisp_pending?;
+        let pending = self.texts.crisp_pending?;
         let now = self.clock.now();
         if now < pending.due {
             return Some(pending.due.saturating_since(now));
         }
-        self.crisp_pending = None;
+        self.texts.crisp_pending = None;
         let name = self
             .collection
             .item(pending.item)
@@ -106,7 +108,8 @@ impl Host {
             })
             .unwrap_or_default();
         if let Ok(Some(undo)) = self.crisp_resize(pending.item) {
-            self.history
+            self.edits
+                .history
                 .record(EditKind::Place, &name, pending.gesture, vec![undo]);
             self.apply(notify);
         }
@@ -195,7 +198,7 @@ impl Host {
                 .map_err(|e| Refusal::of(&e))?;
             undo.push(step);
         }
-        self.history.record(EditKind::Place, &name, 0, undo);
+        self.edits.history.record(EditKind::Place, &name, 0, undo);
         Ok(true)
     }
 
@@ -204,12 +207,12 @@ impl Host {
     pub(super) fn list_text_fonts(&mut self, notify: &dyn Fn(Update)) {
         match self.studio.text_fonts(&self.adapters.sources) {
             rbs_record::TextFonts::Ready(families) => {
-                self.fonts_wanted = false;
+                self.texts.fonts_wanted = false;
                 notify(Update::TextFonts(families.as_ref().clone()));
             }
-            rbs_record::TextFonts::NotReady => self.fonts_wanted = true,
+            rbs_record::TextFonts::NotReady => self.texts.fonts_wanted = true,
             _ => {
-                self.fonts_wanted = false;
+                self.texts.fonts_wanted = false;
                 notify(Update::TextFonts(Vec::new()));
             }
         }

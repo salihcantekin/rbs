@@ -316,7 +316,7 @@ impl StudioUi {
 
     /// Restarts the measurement.
     pub fn reset_loudness(&mut self) {
-        self.send(Command::ResetLoudness);
+        self.call(rbs_api::Command::LoudnessReset);
     }
 
     fn send_loudness(&mut self, target: f32, limit: f32) {

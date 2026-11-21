@@ -1,7 +1,7 @@
 # Spec: Crash resilience
 
 - Status: Draft
-- Owner crate(s): `rbs-crash` (boundary, reports, running marker); `rbs-app` (`src/entry.rs`, `clippy.toml`, `studio_host`)
+- Owner crate(s): `rbs-crash` (boundary, reports, running marker); `rbs-app` (`src/entry.rs`, `clippy.toml`, `studio_host`, `src/studio_start.rs`)
 - Related ADRs: [ADR-0055](../adr/0055-crash-resilience.md), [ADR-0024](../adr/0024-node-restart-with-back-off.md), [ADR-0041](../adr/0041-studio-recording-on-a-running-engine.md), [ADR-0051](../adr/0051-user-data-profiles-and-scene-collections.md)
 
 ## Purpose
@@ -10,9 +10,9 @@ How the desktop app keeps running when its own code panics, how it records what 
 
 ## Scope
 
-In scope: panic boundaries on the UI thread and the studio's control thread, crash reports, unclean-exit detection, the ban on nested event loops and blocking on the UI thread, and the UI thread's stall watch.
+In scope: panic boundaries on the UI thread and the studio's control thread, restarting a stopped studio without closing the window, crash reports, unclean-exit detection, the ban on nested event loops and blocking on the UI thread, and the UI thread's stall watch.
 
-Out of scope (ADR-0055 follow-up work): the studio in its own process, heartbeats, native crash dumps, GPU device loss, isolated adapters and plugins.
+Out of scope (ADR-0055 follow-up work): the studio in its own process (ADR-0099, Proposed), heartbeats, native crash dumps, GPU device loss, isolated adapters and plugins.
 
 ## Contract
 
@@ -55,6 +55,18 @@ pub const CAUGHT_TEXT: &str;
   6. snapshots are published.
 - With the `fault-injection` feature (tests only), `HostConfig::fault` makes the host panic once at a chosen step (`Fault::AfterOutputStart`, `Fault::InRecordingStop`, `Fault::AfterStreamStart`, `Fault::InStreamEnd`, `Fault::DuringCanvasRestart`), and `recover` sends `Update::Recovered { stopped }`. A panic while the canvas restart is still in progress fails the studio in that same recovery, with `Update::Failed`.
 - Starting the studio runs under `contain`; a panic there is reported as `Update::Failed(CAUGHT_TEXT)`.
+
+### Restart the studio (`rbs-app` `src/studio_start.rs`)
+
+Owner request 2026-11-21 (the window must survive a studio that stopped). It needs nothing from ADR-0099 and covers only a studio that stopped inside the process (`Update::Failed`, or a start that failed); a native fault still ends the whole app.
+
+- While `Studio.state` is 2 (stopped) and no restart runs, every picture panel that shows "The studio is not running: …" (preview state `STOPPED`) shows a secondary **Restart the studio** button under that text. It is the only way in; there is no automatic restart, so a fault that repeats cannot loop.
+- Pressing it, on the UI thread: every update a studio started before now is dropped from then on (a generation number checked when the update reaches the UI thread); the preview layers, projectors and Interact windows close; remote control and AI tools stop (`sync_remote` without a host); the panels show "The program is starting." (state 0), and the button hides (`Studio.restart-busy`).
+- The old `StudioHost` is dropped on a thread `rbs-studio-stop`, which joins its control thread; the UI thread never waits for it (ADR-0156). Its outputs had already ended when it stopped.
+- When it has stopped: the collection in use is read as last saved (`UserSession::load_collection`, which first writes a save of it still waiting), and a new studio starts on the same canvas with the same stream-key store, the same per-computer files read again (monitor, loudness, calibration) and a new collection saver. Once it runs, remote control, AI tools (when "Start when RBS opens" is on), the virtual camera check and the replay buffer set-up run as at launch. Its `Update::Started` brings the preview back.
+- When it has not stopped within 8 s (the studio budget of ADR-0156 decision 5): the panels say "The studio is not running: the studio did not stop. Quit RBS and open it again." and the button stays hidden. If the old studio stops later, the text becomes "… the studio stopped." and the button shows again.
+- A collection that cannot be read, or a studio that cannot start, leaves state 2 with the reason; the button shows again.
+- Zero cost (P13): nothing runs while the studio runs; the stop thread and the budget timer exist only during a restart.
 
 ### Crash reports (`rbs-crash`)
 
@@ -217,6 +229,7 @@ None on hot paths: `contain` is used on the UI and control threads only, and the
 `rbs-app`:
 
 - `tests/entry_points.rs`: every generated callback is guarded.
+- `src/studio_start.rs` unit tests: the action is offered only while the studio is stopped and no restart runs.
 
 ## Open questions
 

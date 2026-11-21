@@ -160,3 +160,51 @@ pub(super) fn run_copy_or(
 ) -> Option<SceneCollection> {
     run_copy(collection, canvas, held?)
 }
+
+/// The program and its changes: the held copy, the transition and the T-bar.
+pub(super) struct ProgramState {
+    /// In studio mode with the program scene also in preview: the copy of the program
+    /// scene the program shows until the next transition, so edits stay off air
+    /// (ADR-0063). Never saved, never listed.
+    pub(super) held: Option<Held>,
+    /// The scene the last held copy was taken from, so a transition away from the
+    /// copy names the real scene on `transition.state`.
+    pub(super) held_was: Option<SceneId>,
+    /// The id of the last held copy, so the next copy taken after it gets the other
+    /// id and a transition from one copy to the next is seen as one.
+    pub(super) held_id_was: Option<SceneId>,
+    /// A program switch held back until its entering texts are uploaded, at most
+    /// `TEXT_WAIT_TICKS` render ticks (ADR-0129 decision 7).
+    pub(super) held_switch: Option<SceneId>,
+    /// The program scene the studio ran at the last update, as (its id in the run
+    /// collection, the user's scene it shows): a held copy (ADR-0063) is the scene it
+    /// was taken from. `None` before the first update.
+    pub(super) ran_program: Option<(SceneId, SceneId)>,
+    /// Scene sources an API call places into, instead of the edited scene.
+    pub(super) into: Option<SceneId>,
+    /// A T-bar's end is making the program change: it does not cancel itself.
+    pub(super) taking: bool,
+    /// A manual transition held on the main canvas at the end of the last round.
+    pub(super) tbar_manual: bool,
+    /// The T-bar went to 0 this round: the rail is there already.
+    pub(super) tbar_zeroed: bool,
+    /// The latest T-bar value not yet applied (ADR-0135 decision 1).
+    pub(super) pending_progress: Option<f32>,
+}
+
+impl ProgramState {
+    pub(super) fn new(held: Option<Held>) -> Self {
+        Self {
+            into: None,
+            held,
+            held_was: None,
+            held_id_was: None,
+            held_switch: None,
+            ran_program: None,
+            pending_progress: None,
+            tbar_manual: false,
+            tbar_zeroed: false,
+            taking: false,
+        }
+    }
+}

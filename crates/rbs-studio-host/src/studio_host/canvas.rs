@@ -38,7 +38,7 @@ impl Host {
         // The rows were cleared: build them again even if nothing else changed.
         self.list_stamp = None;
         self.scene_preview_sent = None;
-        self.vertical_preview_sent = None;
+        self.verticals.vertical_preview_sent = None;
         self.publish(notify);
         let now = self.api_canvas();
         if now != before {
@@ -76,13 +76,17 @@ impl Host {
     /// The settings the control thread owns, as the control API shows them.
     pub(super) fn api_settings(&self) -> api::Settings {
         api::Settings {
-            profiles: vec![self.profile.to_api()],
+            profiles: vec![self.recording.profile.to_api()],
             canvas: self.api_canvas(),
-            stream: self.stream_profile.as_ref().map(StreamProfile::to_api),
-            vertical: Some(self.vertical_flags.to_api()),
+            stream: self
+                .streaming
+                .stream_profile
+                .as_ref()
+                .map(StreamProfile::to_api),
+            vertical: Some(self.verticals.vertical_flags.to_api()),
             loudness: Some(api::LoudnessSettings {
-                target: self.loudness_settings.target,
-                true_peak_limit: self.loudness_settings.true_peak_limit,
+                target: self.loudness_state.loudness_settings.target,
+                true_peak_limit: self.loudness_state.loudness_settings.true_peak_limit,
             }),
         }
     }
@@ -185,7 +189,7 @@ impl Host {
                 // A canvas change is not an undo step (control API). The layout space is
                 // unchanged, so earlier box edits stay valid; they are dropped with the
                 // restart so undo cannot cross it.
-                self.history.clear();
+                self.edits.history.clear();
                 Ok(())
             }
             Err(why) => {
@@ -268,12 +272,12 @@ impl Host {
         // Separate files without their master: a start that panicked half-way, or a
         // master that is no longer tracked.
         if self.outs[slot(OutputCanvas::Main)].recording.is_none() {
-            self.iso = None;
+            self.recording.iso = None;
         }
-        if self.iso.is_none() && self.studio.iso_video_running() {
+        if self.recording.iso.is_none() && self.studio.iso_video_running() {
             let _ = rbs_crash::contain(|| self.studio.stop_iso_video());
         }
-        if self.iso.is_none() && self.studio.iso_audio_running() {
+        if self.recording.iso.is_none() && self.studio.iso_audio_running() {
             let _ = rbs_crash::contain(|| self.studio.stop_iso_audio());
         }
         #[cfg(feature = "fault-injection")]
@@ -288,9 +292,9 @@ impl Host {
                 let _ = rbs_crash::contain(|| self.end_stream(c, Some(WHY.into()), notify));
             }
         }
-        if self.camera.is_some() != self.studio.virtual_camera().is_some() {
+        if self.vcam.camera.is_some() != self.studio.virtual_camera().is_some() {
             self.studio.stop_virtual_camera();
-            self.camera = None;
+            self.vcam.camera = None;
             notify(Update::VirtualCamera(None));
             self.camera_changed();
         }
@@ -332,11 +336,12 @@ impl Host {
         settings.audio_offsets = filters::audio_offsets(&self.collection);
         settings.media_pause_release = self.media_pause_release;
         if let Some(v) = self
+            .verticals
             .vertical
             .filter(|v| self.collection.canvas(v.canvas).is_some())
         {
             settings.extra_canvases = vec![self.vertical_extra(v.canvas)];
-        } else if self.vertical.take().is_some() {
+        } else if self.verticals.vertical.take().is_some() {
             self.forget_vertical_outputs();
         }
         let run = self.run_collection();
@@ -359,7 +364,7 @@ impl Host {
         self.studio = studio;
         self.clock = clock;
         self.studio.set_text_timers(&timers);
-        self.text_elapsed = self.text_elapsed.moved(old_now, self.clock.now());
+        self.texts.text_elapsed = self.texts.text_elapsed.moved(old_now, self.clock.now());
         self.waiting = self.studio.waiting();
         // Pictures belonged to the old studio; the next publish adds them again with
         // the canvas's size now (ADR-0125 decision 3).
@@ -368,10 +373,10 @@ impl Host {
         }
         // The camera keeps sending across a canvas change; when it cannot, the next
         // round says so.
-        if let Some(settings) = self.camera.take()
+        if let Some(settings) = self.vcam.camera.take()
             && self.start_camera(settings).is_err()
         {
-            self.camera_due = Some(self.clock.now());
+            self.vcam.camera_due = Some(self.clock.now());
         }
         self.camera_changed();
         // A collection opened with a saved vertical canvas runs it again (ADR-0093

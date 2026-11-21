@@ -579,7 +579,7 @@ impl Host {
         OutputCanvas::ALL.iter().any(|c| {
             let o = &self.outs[slot(*c)];
             o.recording.is_some() || o.streaming.is_some()
-        }) || self.camera.is_some()
+        }) || self.vcam.camera.is_some()
             || self.studio.replay_armed()
             || self.restarting
     }
@@ -605,10 +605,11 @@ impl Host {
             .map_err(|e| RunRefusal::NotFound(e.into_text()))?;
         let out = self.master_settings(canvas, &r, &path);
         let folder = path.parent().map(Path::to_path_buf).unwrap_or_default();
-        let separate = (c == OutputCanvas::Main && self.separate_files && self.marks_separate())
-            .then(|| r.video.clone())
-            .flatten()
-            .map(|video| rbs_record::IsoVideoStart::new(String::new(), r.container, video));
+        let separate =
+            (c == OutputCanvas::Main && self.recording.separate_files && self.marks_separate())
+                .then(|| r.video.clone())
+                .flatten()
+                .map(|video| rbs_record::IsoVideoStart::new(String::new(), r.container, video));
         let mut request = rbs_record::StartPlanRequest::default();
         request.outputs = vec![rbs_record::PlannedOutput::new(&out, r.encoder.as_deref())];
         request.separate = separate.as_ref();

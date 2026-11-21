@@ -198,7 +198,7 @@ pub(super) fn round(
     }
     host.feed_text_live();
     host.studio.service();
-    let busy = host.waiting || host.held_switch.is_some();
+    let busy = host.waiting || host.program.held_switch.is_some();
     let cap = round_cap(&host.outs, busy);
     // An output or a switch is checked every round and has no deadline of its own.
     // The engine's wait is taken again after the last settle, not from this service.
@@ -234,21 +234,21 @@ pub(super) fn round(
     if let Some(left) = host.drive_crisp(notify) {
         arm(&mut wait, &mut armed, left);
     }
-    if host.fonts_wanted {
+    if host.texts.fonts_wanted {
         host.list_text_fonts(notify);
-        if host.fonts_wanted {
+        if host.texts.fonts_wanted {
             arm(&mut wait, &mut armed, text_resize::FONTS_POLL);
         }
     }
-    if host.held_switch.is_some() {
+    if host.program.held_switch.is_some() {
         host.drive_held_switch(notify);
-        if host.held_switch.is_some() {
+        if host.program.held_switch.is_some() {
             // Look again within a render tick.
             arm(&mut wait, &mut armed, HELD_SWITCH_POLL);
         }
     }
     // The latest T-bar value (ADR-0135 decision 1), once per round.
-    if let Some(t) = host.pending_progress.take() {
+    if let Some(t) = host.program.pending_progress.take() {
         host.drive_progress(t, notify);
     }
     // A transition ended (ADR-0128 decision 8): one update without the outgoing scene
@@ -267,11 +267,11 @@ pub(super) fn round(
     // A held T-bar that ended other than by going to 0 (its take, a transition, a
     // switch or a preview change): the rail's T-bar goes back to 0.
     let manual = host.studio.manual_transition(host.canvas);
-    if host.tbar_manual && !manual && !host.tbar_zeroed {
+    if host.program.tbar_manual && !manual && !host.program.tbar_zeroed {
         notify(Update::TBarReset);
     }
-    host.tbar_manual = manual;
-    host.tbar_zeroed = false;
+    host.program.tbar_manual = manual;
+    host.program.tbar_zeroed = false;
     // A hold scene, or its sound, fell back (ADR-0124 phase 2b): its parts leave and
     // the stream states say so.
     if host.studio.take_hold_fallback() {
@@ -322,7 +322,7 @@ pub(super) fn take_msg(
             picture,
         }) => {
             // A picture of a list that was closed or replaced meanwhile is dropped.
-            if generation == host.thumbs.load(AtomicOrdering::Acquire) {
+            if generation == host.pickers.thumbs.load(AtomicOrdering::Acquire) {
                 notify(Update::Thumbnail {
                     adapter,
                     target,
@@ -335,7 +335,7 @@ pub(super) fn take_msg(
             id,
             picture,
         }) => {
-            if generation == host.region_grabs.load(AtomicOrdering::Acquire) {
+            if generation == host.pickers.region_grabs.load(AtomicOrdering::Acquire) {
                 notify(Update::RegionPreview {
                     id,
                     generation,
