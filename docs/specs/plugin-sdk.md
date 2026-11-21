@@ -74,7 +74,7 @@ Owner: ADR-0162. Every type a plugin can add is looked up in a runtime registry,
 | Source types (`rbs_sources::SourceClass`, `rbs_api::SourceKind`) | Closed enums; ADR-0162 step 2 |
 | Transitions (`rbs_scene::TransitionKind`) | Closed enum; an unknown kind refuses the document until ADR-0162 step 2; registry in step 5 |
 
-A plugin type is registered from its manifest's declarations (name, fields, pins; the manifest gains these in ADR-0162 step 3); its code is not loaded, compiled or started until an instance becomes Active. A saved document that names a type nobody registered loads, keeps the item and its settings, shows it as missing and saves it back unchanged.
+A plugin type is registered from its manifest's declarations (name, fields, pins and, for data-only filters, a value-to-uniform mapping; the manifest gains these in ADR-0162 step 3); its code is not loaded, compiled or started until an instance becomes Active. A saved document that names a type nobody registered loads, keeps the item and its settings, shows it as missing and saves it back unchanged.
 
 ## Order
 
