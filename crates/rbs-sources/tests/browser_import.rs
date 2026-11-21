@@ -156,6 +156,19 @@ fn running_page(
     rbs_graph::runtime::Controller<GpuRuntime>,
     Arc<BrowserFrameSink>,
 ) {
+    running_page_sized(ctx, W, H)
+}
+
+/// As [`running_page`], for a page of `width` x `height`.
+fn running_page_sized(
+    ctx: &Arc<GpuContext>,
+    width: u32,
+    height: u32,
+) -> (
+    rbs_graph::runtime::Executor<GpuRuntime>,
+    rbs_graph::runtime::Controller<GpuRuntime>,
+    Arc<BrowserFrameSink>,
+) {
     let budget = BrowserBudget::shared();
     let source = SourceId::from_raw(1);
     budget.grant(&[BrowserClaim {
@@ -165,8 +178,8 @@ fn running_page(
     let tree = Arc::new(Tree(Mutex::new(None)));
     let node = BrowserSourceNode::new(
         BrowserSettings {
-            width: W,
-            height: H,
+            width,
+            height,
             ..BrowserSettings::page("https://example.com/")
         },
         budget,
@@ -264,4 +277,96 @@ fn a_native_picture_adds_no_allocation_to_the_tick() {
         "a native picture allocated: {with_picture:?} vs idle {idle:?}"
     );
     assert_eq!(sink.failed_imports(), 14);
+}
+
+/// A picture on a studio-owned IOSurface (macOS, ADR-0167) with one lease on `slots`.
+#[cfg(target_os = "macos")]
+fn io_surface(
+    slots: &Arc<Slots>,
+    surfaces: &rbs_gpu::browser_surfaces::PageSurfaces,
+    slot: usize,
+    w: u32,
+    h: u32,
+) -> VideoFrame {
+    slots.0.fetch_add(1, Ordering::Relaxed);
+    // SAFETY: the lease releases the one reference counted just above.
+    let lease = unsafe { Lease::adopt(Arc::clone(slots) as Arc<dyn LeaseOwner>, slot as u64) };
+    let format = VideoFormat::new(Size::new(w, h), PixelFormat::Bgra8, ColorSpace::SRGB);
+    let surface = NativeSurface::io_surface(surfaces.surface(slot).unwrap());
+    // SAFETY: the surface lives in `surfaces`, which outlives every tick of the test.
+    unsafe { VideoFrame::native(format, Timestamp::ZERO, surface, SurfaceSync::Ready, lease) }
+}
+
+/// macOS GPU pages (ADR-0167 decision 10): page pictures on the studio's IOSurfaces
+/// import on the render runtime with no failure, and every lease goes back once the
+/// GPU no longer reads the surface.
+#[cfg(target_os = "macos")]
+#[test]
+fn io_surface_pictures_import_and_give_every_lease_back() {
+    let Some(ctx) = gpu() else { return };
+    let (mut exec, mut ctl, sink) = running_page(&ctx);
+    let slots = Arc::new(Slots::default());
+    let surfaces = rbs_gpu::browser_surfaces::PageSurfaces::create(W, H, 4).unwrap();
+    let cadence = Cadence::frames(Timestamp::ZERO, FrameRate::FPS_30);
+    for i in 0..12u64 {
+        sink.publish_native(io_surface(&slots, &surfaces, (i % 4) as usize, W, H), None);
+        exec.run_tick(Tick::of(&cadence, i));
+        let _ = ctl.collect();
+    }
+    assert_eq!(sink.failed_imports(), 0);
+    // Only the picture on air still holds its lease; the others went back.
+    ctx.wait_idle().unwrap();
+    exec.run_tick(Tick::of(&cadence, 12));
+    ctx.wait_idle().unwrap();
+    exec.run_tick(Tick::of(&cadence, 13));
+    assert!(slots.0.load(Ordering::Relaxed) <= 1, "leases held: {}", slots.0.load(Ordering::Relaxed));
+}
+
+/// Before/after numbers for the hot path (ADR-0167 decision 10, P15): render ticks
+/// that take a 1920x1080 page picture as bytes (the macOS path before, an upload per
+/// picture) against one on a cached IOSurface (after). Ignored: it prints times.
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore = "slow: prints tick times for the hot-path record"]
+fn slow_tick_times_bytes_against_io_surface() {
+    let Some(ctx) = gpu() else { return };
+    let (w, h) = (1920u32, 1080u32);
+    let run = |native: bool| -> (Vec<u128>, u64) {
+        let (mut exec, mut ctl, sink) = running_page_sized(&ctx, w, h);
+        let slots = Arc::new(Slots::default());
+        let surfaces = rbs_gpu::browser_surfaces::PageSurfaces::create(w, h, 4).unwrap();
+        let bytes = vec![128u8; (w * h * 4) as usize];
+        let cadence = Cadence::frames(Timestamp::ZERO, FrameRate::FPS_30);
+        let mut times = Vec::new();
+        let mut allocs = 0;
+        for i in 0..340u64 {
+            if native {
+                sink.publish_native(io_surface(&slots, &surfaces, (i % 4) as usize, w, h), None);
+            } else {
+                sink.publish(&bytes, w, h);
+            }
+            let before = ALLOCS.load(Ordering::Relaxed);
+            let t = std::time::Instant::now();
+            exec.run_tick(Tick::of(&cadence, i));
+            let took = ALLOCS.load(Ordering::Relaxed) - before;
+            ctx.wait_idle().unwrap();
+            if i >= 40 {
+                times.push(t.elapsed().as_micros());
+                allocs = allocs.max(took);
+            }
+            let _ = ctl.collect();
+        }
+        times.sort_unstable();
+        (times, allocs)
+    };
+    for (name, native) in [("bytes (before)", false), ("IOSurface (after)", true)] {
+        let (t, allocs) = run(native);
+        let at = |q: f64| t[((t.len() - 1) as f64 * q) as usize];
+        eprintln!(
+            "{name}: tick incl. GPU wait p50 {} us, p99 {} us, max {} us; most allocations in a tick {allocs}",
+            at(0.5),
+            at(0.99),
+            t[t.len() - 1]
+        );
+    }
 }
