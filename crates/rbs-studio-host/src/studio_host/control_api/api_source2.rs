@@ -8,6 +8,7 @@ impl ApiTarget<'_> {
         command: rbs_api::Command,
     ) -> Result<Response, ApiError> {
         use rbs_api::Command as C;
+        use rbs_api::request as rq;
         let notify = self.notify;
         let host = &mut *self.host;
         match command {
@@ -72,22 +73,21 @@ impl ApiTarget<'_> {
                     "no text renderer is installed",
                 )),
             },
-            C::MediaPlay(p) => host
-                .media_command(p.source, MediaOp::Play)
-                .map(Response::MediaState)
-                .map_err(|e| refused(&e)),
-            C::MediaPause(p) => host
-                .media_command(p.source, MediaOp::Pause)
-                .map(Response::MediaState)
-                .map_err(|e| refused(&e)),
-            C::MediaSeek(p) => host
-                .media_command(p.source, MediaOp::Seek(p.position_ms))
-                .map(Response::MediaState)
-                .map_err(|e| refused(&e)),
-            C::MediaRestart(p) => host
-                .media_command(p.source, MediaOp::Restart)
-                .map(Response::MediaState)
-                .map_err(|e| refused(&e)),
+            C::MediaPlay(rq::MediaSource { source })
+            | C::MediaPause(rq::MediaSource { source })
+            | C::MediaRestart(rq::MediaSource { source })
+            | C::MediaSeek(rq::MediaSeek { source, .. }) => {
+                let op = match command {
+                    C::MediaPlay(_) => MediaOp::Play,
+                    C::MediaPause(_) => MediaOp::Pause,
+                    C::MediaSeek(p) => MediaOp::Seek(p.position_ms),
+                    _ => MediaOp::Restart,
+                };
+                let done = host.media_command(source, op);
+                // The next tick sends the media state, also when it looks unchanged.
+                host.media_sent = None;
+                done.map(Response::MediaState).map_err(|e| refused(&e))
+            }
             C::MediaState(p) => host
                 .media_command(p.source, MediaOp::State)
                 .map(Response::MediaState)

@@ -92,8 +92,8 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `AddText` | Pending | source.add |
 | `FitTextBox` | Missing | no fit-box method |
 | `ListTextFonts` | Moved to `Command::Api` (step 3) | text.fonts with `ApiReply::QuietTicket`; on `not_ready` the host still sends `Update::TextFonts` once the list is read, as the window path did |
-| `TextTimer` | Pending | text.timer |
-| `SetSourceFill` | Pending | source.set_settings |
+| `TextTimer` | Moved to `Command::Api` (step 6) | text.timer (a source gone meanwhile stays quiet; the API now answers "not a timer" with the window's sentence) |
+| `SetSourceFill` | Moved to `Command::Api` (step 6) | source.set_settings (`color`) |
 | `SetSourceFilled` | Missing | also adds a border to the item style in one undo step; no method |
 | `RemoveFilter` | Moved to `Command::Api` (step 4) | filter.remove |
 | `MoveFilter` | Moved to `Command::Api` (step 4) | filter.move |
@@ -115,7 +115,7 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `ReloadSource` | Moved to `Command::Api` (step 3) | source.reload; the API now publishes after a restart, as the window did |
 | `BrowserControl` | Pending | browser.reload, browser.run_script |
 | `ForgetBrowserSignIn` | Pending | browser.forget_sign_in; window stops the page first, API does not |
-| `Media` | Pending | media.play, media.pause, media.seek, media.restart; window forces the next media-state publish |
+| `Media` | Moved to `Command::Api` (step 6) | media.play, media.pause, media.seek, media.restart (the API now also forces the next media-state publish) |
 | `SetCompanionAudio` | Moved to `Command::Api` (step 3) | source.set_companion_audio |
 | `RenameSource` | Moved to `Command::Api` (step 3) | source.rename |
 | `SetGlide` | Moved to `Command::Api` (step 1) | collection.set_glide |

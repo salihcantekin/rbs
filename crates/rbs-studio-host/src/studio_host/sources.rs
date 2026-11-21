@@ -942,16 +942,6 @@ impl Host {
         }
     }
 
-    /// Sets a colour source's fill. One undo step; the picture is built again.
-    pub(super) fn set_source_fill(&mut self, id: SourceId, color: &str) -> Result<bool, Refusal> {
-        let mut patch = std::collections::BTreeMap::new();
-        patch.insert(
-            keys::COLOR.to_owned(),
-            serde_json::Value::String(color.to_owned()),
-        );
-        self.patch_source_settings(id, &patch)
-    }
-
     /// Turns a colour source's fill on or off. Off clears the inside and, when the
     /// shape has no border, adds one in the fill colour so the shape stays visible.
     /// Both changes are one undo step. The stored colour is kept.

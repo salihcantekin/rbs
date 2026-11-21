@@ -31,7 +31,7 @@ use rbs_app::stream_profile::{
     self, HoldPicture, HoldSound, SRT_DEFAULT_LATENCY_MS, SRT_LATENCIES_MS, StreamProfile,
 };
 use rbs_app::studio_host::{
-    Command, CropRegion, EncoderInfo, EncoderOptions, HoldNote, MainDisplay, MediaOp, OutputCanvas,
+    Command, CropRegion, EncoderInfo, EncoderOptions, HoldNote, MainDisplay, OutputCanvas,
     RecordPatch, RecordPause, RecordRequest, RecordingUpdate, SEPARATE_VIDEO_LIMIT, SceneList,
     SourceKind, SourceRow, SourceSettingsView, SourceStatus, Stats, StreamHold, StreamRequest,
     StreamUpdate, StudioHost, SyncMeasurePhase, SyncMeasureRefusal, SyncMeasureView, Target,
@@ -2213,33 +2213,28 @@ impl StudioUi {
             .media
             .iter()
             .any(|t| t.id.get() as i32 == id && t.state == 3);
-        let op = if playing {
-            MediaOp::Pause
+        let on = rbs_api::request::MediaSource { source: id as u32 };
+        self.call(if playing {
+            rbs_api::Command::MediaPause(on)
         } else if ended {
-            MediaOp::Restart
+            rbs_api::Command::MediaRestart(on)
         } else {
-            MediaOp::Play
-        };
-        self.send(Command::Media {
-            id: SourceId::from_raw(id as u32),
-            op,
+            rbs_api::Command::MediaPlay(on)
         });
     }
 
     /// Play a media file from its start.
     pub fn media_restart(&mut self, id: i32) {
-        self.send(Command::Media {
-            id: SourceId::from_raw(id as u32),
-            op: MediaOp::Restart,
-        });
+        let on = rbs_api::request::MediaSource { source: id as u32 };
+        self.call(rbs_api::Command::MediaRestart(on));
     }
 
     /// Move a media file's cursor (the scrubber was let go).
     pub fn media_seek(&mut self, id: i32, ms: i32) {
-        self.send(Command::Media {
-            id: SourceId::from_raw(id as u32),
-            op: MediaOp::Seek(ms.max(0) as u64),
-        });
+        self.call(rbs_api::Command::MediaSeek(rbs_api::request::MediaSeek {
+            source: id as u32,
+            position_ms: ms.max(0) as u64,
+        }));
     }
 
     /// One stored setting of a media file (`loop`, `restart_when_shown`, `path`): one
@@ -5387,33 +5382,6 @@ impl StudioUi {
             self.deleted.clear();
             self.send(Command::FitTextBox(SourceId::from_raw(id as u32)));
         }
-    }
-
-    /// Start (0), Pause (1) or Reset (2) of a countdown's or stopwatch's timer.
-    pub fn text_timer(&mut self, id: i32, action: i32) {
-        let action = match action {
-            0 => rbs_record::TimerAction::Start,
-            1 => rbs_record::TimerAction::Pause,
-            2 => rbs_record::TimerAction::Reset,
-            _ => return,
-        };
-        self.send(Command::TextTimer {
-            source: SourceId::from_raw(id as u32),
-            action,
-        });
-    }
-
-    /// The fill of a colour source. A colour that is not `#rrggbb` or `#rrggbbaa`
-    /// changes nothing.
-    pub fn set_source_fill(&mut self, id: i32, color: &str) {
-        let Some(color) = rbs_api::types::parse_color(color.trim()) else {
-            return;
-        };
-        self.deleted.clear();
-        self.send(Command::SetSourceFill {
-            id: SourceId::from_raw(id as u32),
-            color: rbs_api::types::format_color(color),
-        });
     }
 
     /// Turns a colour source's fill on or off. Off leaves the inside empty.

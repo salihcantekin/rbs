@@ -122,8 +122,6 @@ paths! {
     AddText => Pending(&["source.add"]),
     // no fit-box method
     FitTextBox => Missing,
-    TextTimer => Pending(&["text.timer"]),
-    SetSourceFill => Pending(&["source.set_settings"]),
     // also adds a border to the item style in one undo step; no method
     SetSourceFilled => Missing,
     // window then restores stored values on an unchanged release
@@ -147,7 +145,6 @@ paths! {
     // window stops the page first, API does not
     ForgetBrowserSignIn => Pending(&["browser.forget_sign_in"]),
     // window forces the next media-state publish
-    Media => Pending(&["media.play", "media.pause", "media.seek", "media.restart"]),
     OpenAttributes => WindowOnly(View),
     // becomes Translates (branches on the preview)
     SwitchScene => Translates(&["scene.switch", "canvas.set_preview"]),
@@ -236,7 +233,7 @@ mod tests {
     /// which must pick its method from host state may raise `TRANSLATES` by as many
     /// as `PENDING` falls; any other rise needs the owner's written approval.
     const TRANSLATES: usize = 22;
-    const PENDING: usize = 22;
+    const PENDING: usize = 19;
     const CONTRACT: usize = 10;
     const MISSING: usize = 20;
     const VIEW: usize = 13;

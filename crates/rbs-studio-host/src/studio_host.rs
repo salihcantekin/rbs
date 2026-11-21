@@ -703,10 +703,8 @@ impl Host {
             | Command::AddMedia { .. }
             | Command::SetStingerFile(..)
             | Command::FitTextBox(..)
-            | Command::TextTimer { .. }
             | Command::AddText { .. }
             | Command::AddBrowser { .. }
-            | Command::SetSourceFill { .. }
             | Command::SetSourceFilled { .. }
             | Command::ApplyLook { .. }
             | Command::SetFilterValues { .. }
@@ -722,7 +720,6 @@ impl Host {
             | Command::OpenSourceSettings(..)
             | Command::CloseSourceSettings
             | Command::SetSourceSettings { .. }
-            | Command::Media { .. }
             | Command::ForgetBrowserSignIn(..)
             | Command::BrowserControl { .. } => self.source_edit_command(c, notify),
             Command::OpenAttributes { .. }

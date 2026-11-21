@@ -173,20 +173,6 @@ pub enum Command {
     /// Fit a text source's box to its text (ADR-0129 decision 13, Fit box to text):
     /// the item keeps its centre and its scale. One undo step.
     FitTextBox(SourceId),
-    /// Start, pause or reset a text source's timer (`text.timer`).
-    TextTimer {
-        /// The countdown or stopwatch.
-        source: SourceId,
-        /// What to do.
-        action: rbs_record::TimerAction,
-    },
-    /// The fill colour of a colour source (`#rrggbb` or `#rrggbbaa`), one undo step.
-    SetSourceFill {
-        /// The source.
-        id: SourceId,
-        /// The colour.
-        color: String,
-    },
     /// Whether a colour source draws its fill. Off leaves the inside empty and, when
     /// the shape has no border, turns a border on so the shape stays visible. One
     /// undo step.
@@ -272,14 +258,6 @@ pub enum Command {
     /// Forget sign-in on the Page tab (ADR-0132 decision 10): the page restarts with a
     /// fresh profile and the kept one is deleted.
     ForgetBrowserSignIn(SourceId),
-    /// Play, pause, seek or restart a media file (ADR-0108 decision 10): a live action,
-    /// not an undo step.
-    Media {
-        /// The media source.
-        id: SourceId,
-        /// What to do.
-        op: MediaOp,
-    },
     /// Ask for what the Reset source (`paste` false) or Paste attributes dialog shows
     /// ([`Update::Attributes`]).
     OpenAttributes {

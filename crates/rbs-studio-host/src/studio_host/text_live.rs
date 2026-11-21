@@ -154,7 +154,7 @@ impl Host {
                 ),
                 TimerRefused::NotATimer => ApiError::new(
                     ErrorKind::InvalidParams,
-                    "the source is not a countdown by duration or a stopwatch",
+                    "Only a countdown for a length or a stopwatch has a timer.",
                 ),
             })?;
         self.save_text_timers();

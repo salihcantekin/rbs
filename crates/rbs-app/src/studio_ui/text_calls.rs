@@ -46,3 +46,25 @@ impl StudioUi {
         }
     }
 }
+
+impl StudioUi {
+    /// Start (0), Pause (1) or Reset (2) of a countdown's or stopwatch's timer.
+    pub fn text_timer(&mut self, id: i32, action: i32) {
+        use rbs_api::request::TimerAction;
+        let action = match action {
+            0 => TimerAction::Start,
+            1 => TimerAction::Pause,
+            2 => TimerAction::Reset,
+            _ => return,
+        };
+        let call = rbs_api::Command::TextTimer(rbs_api::request::TextTimer {
+            source: id as u32,
+            action,
+        });
+        // A source removed meanwhile is not worth an error, as before (ADR-0163).
+        self.call_as(
+            call,
+            rbs_app::studio_host::ApiReply::QuietIf(rbs_api::ErrorKind::NotFound),
+        );
+    }
+}

@@ -174,3 +174,22 @@ impl StudioUi {
         }
     }
 }
+
+impl StudioUi {
+    /// The fill of a colour source. A colour that is not `#rrggbb` or `#rrggbbaa`
+    /// changes nothing.
+    pub fn set_source_fill(&mut self, id: i32, color: &str) {
+        let Some(color) = rbs_api::types::parse_color(color.trim()) else {
+            return;
+        };
+        self.deleted.clear();
+        let color = serde_json::Value::String(rbs_api::types::format_color(color));
+        let key = rbs_sources::types::keys::COLOR.to_owned();
+        self.call(rbs_api::Command::SourceSetSettings(
+            rbs_api::request::SetSourceSettings {
+                source: id as u32,
+                settings: std::iter::once((key, color)).collect(),
+            },
+        ));
+    }
+}

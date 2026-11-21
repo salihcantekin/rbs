@@ -756,13 +756,6 @@ impl Host {
                 let done = self.fit_text_box(id);
                 self.answer(done, notify);
             }
-            Command::TextTimer { source, action } => match self.studio.text_timer(source, action) {
-                Ok(_) => self.save_text_timers(),
-                Err(rbs_record::TimerRefused::NotATimer) => notify(Update::Error(
-                    "Only a countdown for a length or a stopwatch has a timer.".into(),
-                )),
-                Err(_) => {}
-            },
             Command::AddText { text } => match self.add_text(None, &text, false) {
                 Ok(_) => self.apply(notify),
                 Err(e) => notify(Update::Error(e.text().to_owned())),
@@ -773,10 +766,6 @@ impl Host {
                 notify(Update::OpenAddOn(crate::add_ons::BROWSER_ENGINE.to_owned()));
             }
             Command::AddBrowser { url } => match self.add_browser_page(&url) {
-                Ok(_) => self.apply(notify),
-                Err(e) => notify(Update::Error(e.text().to_owned())),
-            },
-            Command::SetSourceFill { id, color } => match self.set_source_fill(id, &color) {
                 Ok(_) => self.apply(notify),
                 Err(e) => notify(Update::Error(e.text().to_owned())),
             },
@@ -840,12 +829,6 @@ impl Host {
             Command::SetSourceSettings { id, patch, gesture } => {
                 let done = self.patch_source_settings_in(id, &patch, gesture);
                 self.answer(done, notify);
-            }
-            Command::Media { id, op } => {
-                if let Err(e) = self.media_command(id.get(), op) {
-                    notify(Update::Error(e.text().to_owned()));
-                }
-                self.media_sent = None;
             }
             Command::ForgetBrowserSignIn(id) => {
                 let done = self
