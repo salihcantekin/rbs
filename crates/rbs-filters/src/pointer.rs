@@ -37,6 +37,9 @@ pub const MAX_EFFECTS: usize = 16;
 pub const MAX_CLICKS: usize = 16;
 /// `vec4<f32>` entries of the effect buffer: a header and two per effect.
 pub(crate) const EFFECT_VECS: usize = 1 + 2 * MAX_EFFECTS;
+/// A frame older than this at the tick is from a still screen: the view then takes the
+/// newest pointer sample instead of the one at the frame's time (spec rule 2).
+pub const STILL: std::time::Duration = std::time::Duration::from_millis(50);
 /// The pointer prelude, appended to the shader prelude for pointer types.
 pub const POINTER_PRELUDE: &str = include_str!("shaders/pointer_prelude.wgsl");
 
@@ -282,7 +285,12 @@ impl PointerState {
         if let Some(m) = feed.cell.get() {
             self.mapping = Some(m);
         }
-        let mapping = self.mapping?;
+        let Some(mapping) = self.mapping else {
+            // No picture to map to yet: drop what arrived, so it is not mapped later
+            // with a newer mapping.
+            while reader.next_event().is_some() {}
+            return None;
+        };
         let covered = mapping.cover == Cover::Covered;
         let to_picture = |x: f64, y: f64| -> Option<[f32; 2]> {
             let at = [x, y];
@@ -305,8 +313,14 @@ impl PointerState {
                 self.next = (self.next + 1) % MAX_CLICKS;
             }
         }
-        let pointer = reader
-            .pointer_at(frame_time)
+        // The sample at the frame's time, so the pointer moves with the picture; the
+        // newest when the frame is older than `STILL` (a still screen sends no frames,
+        // and the old sample would freeze the pointer) or the history no longer holds
+        // it (rule 2).
+        let still = now.saturating_since(frame_time) > STILL;
+        let pointer = (!still)
+            .then(|| reader.pointer_at(frame_time))
+            .flatten()
             .or_else(|| reader.latest_pointer())
             .and_then(|s| to_picture(s.at.x, s.at.y));
         let mut count = 0;

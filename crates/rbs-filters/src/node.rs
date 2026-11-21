@@ -446,14 +446,16 @@ impl Node<GpuRuntime> for FilterNode {
                     }
                     true
                 } else {
-                    let again =
-                        std::mem::take(&mut p.drew) || self.published != Some((input_id, time));
+                    // `drew` clears only once the input is out, so a failed share
+                    // retries next tick instead of leaving the last effect frame up.
+                    let again = p.drew || self.published != Some((input_id, time));
                     let src = inputs.video(IN_PIN, 0);
                     let rgb = &mut self.rgb;
                     let shared =
                         again.then(|| share_input(gpu, &mut local.pool, rgb, src, decoded));
                     touch_all(&mut local.pool, passes, size);
                     if let Some(frame) = shared.flatten() {
+                        p.drew = false;
                         self.stats.frames.fetch_add(1, Ordering::Relaxed);
                         self.published = Some((input_id, time));
                         drop(outputs.set_video(OUT_PIN, Some(frame))?);

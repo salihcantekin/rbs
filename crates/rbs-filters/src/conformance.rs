@@ -24,7 +24,7 @@ use rbs_graph::runtime::{
 };
 
 use crate::node::{FilterNode, FilterStats, PRELUDE};
-use crate::pointer::PointerFeed;
+use crate::pointer::{Needs, POINTER_PRELUDE, PointerFeed};
 use crate::types::{
     FieldKind, FilterType, MAX_FIELDS, MAX_PASSES, ParamError, PassSource, Scale, Uniforms, Value,
     Values,
@@ -92,7 +92,7 @@ pub fn check_type(ty: &dyn FilterType) -> Vec<String> {
     }
 
     for (i, pass) in passes.iter().enumerate() {
-        if let Err(e) = compile(pass.shader) {
+        if let Err(e) = compile_for(pass.shader, ty.needs()) {
             problems.push(format!("pass {i} does not compile: {e}"));
         }
     }
@@ -148,8 +148,19 @@ pub fn check_type(ty: &dyn FilterType) -> Vec<String> {
 
 /// Parses and validates a pass with the prelude, as the device would, without a GPU.
 pub fn compile(shader: &str) -> Result<(), String> {
+    compile_for(shader, Needs::NONE)
+}
+
+/// [`compile`] for a type with `needs`: a pointer type's pass also gets the pointer
+/// prelude, as the node builds it.
+pub fn compile_for(shader: &str, needs: Needs) -> Result<(), String> {
     use wgpu::naga;
-    let source = format!("{PRELUDE}\n{shader}");
+    let extra = if needs.contains(Needs::POINTER) {
+        POINTER_PRELUDE
+    } else {
+        ""
+    };
+    let source = format!("{PRELUDE}\n{extra}\n{shader}");
     let module = naga::front::wgsl::parse_str(&source).map_err(|e| e.emit_to_string(&source))?;
     naga::valid::Validator::new(
         naga::valid::ValidationFlags::all(),

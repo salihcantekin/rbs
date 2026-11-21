@@ -159,8 +159,8 @@ impl FilterNode { pub fn with_pointer(self, feed: PointerFeed) -> Self; }
 Prelude, for pointer types only, after the bindings above:
 
 ```wgsl
-// fx[0].x: the number of live effects; effect i is fx[1 + 2i] and fx[2 + 2i].
-@group(2) @binding(0) var<uniform> fx: array<vec4<f32>, 33>;
+// rbs_fx[0].x: the number of live effects; effect i is rbs_fx[1 + 2i] and rbs_fx[2 + 2i].
+@group(2) @binding(0) var<uniform> rbs_fx: array<vec4<f32>, 33>;
 fn effect_count() -> u32;
 fn effect(i: u32, half: u32) -> vec4<f32>;
 ```
@@ -168,10 +168,10 @@ fn effect(i: u32, half: u32) -> vec4<f32>;
 Rules:
 
 1. **Lifecycle (P13, ADR-0165 decision 2).** `prepare` (control thread) subscribes to the feed's monitor for `EventMask::POINTER | BUTTONS` (never keys: the mask comes from `needs()`, not from the type) and creates the effect buffer (528 bytes) and its bind group; `release` drops the subscription and the buffer. A node without a feed, or whose subscription fails (`Unsupported`, `Busy`, a backend error), has no input and shows no effects; the failure is counted in `FilterStats::pointer_faults` and the node runs on (pass-through). Installed and Standby nodes hold nothing. The host turns the source's mapping switch on while any pointer filter of the source is scheduled (studio, a later PR).
-2. **Per tick (hot path).** The node reads the mapping cell (a `None` read keeps the last mapping, capture-port rule 6), drains the subscription's events (button-downs only; at most `EVENT_RING` a tick), keeps the newest `MAX_CLICKS` that fall inside the picture in a fixed ring, converted to picture pixels with the mapping (`Cover::Covered` drops them: the window rule of ADR-0165 decision 6), looks up the pointer at the frame's time (`InputReader::pointer_at`), and calls `effects`. No allocation, lock or wait.
-3. **Idle: pass-through.** With no live effect the node publishes its input itself (`VideoFrame::share`, a new generation as its sequence), with no pass and no buffer write, and `touch`es its target descriptions so `trim_idle` keeps them. The published format is then the input's (for a capture frame `Bgra8` sRGB). This is the named exception to items 4 and 6 below (conformance checks 4 and 6) for types that declare `Needs::POINTER`. An unchanged input while idle is not published again (as step 2a).
+2. **Per tick (hot path).** The node reads the mapping cell (a `None` read keeps the last mapping, capture-port rule 6), drains the subscription's events (button-downs only; at most `EVENT_RING` a tick), keeps the newest `MAX_CLICKS` that fall inside the picture in a fixed ring, converted to picture pixels with the mapping (`Cover::Covered` drops them: the window rule of ADR-0165 decision 6), looks up the pointer at the frame's time (`InputReader::pointer_at`; the newest sample, `latest_pointer`, when the frame is more than `STILL` = 50 ms older than the tick, since a still screen sends no frames, or when the history no longer holds that time), and calls `effects`. Events that arrive before the first mapping are dropped, not kept for a later one. No allocation, lock or wait.
+3. **Idle: pass-through.** With no live effect the node publishes its input itself (`VideoFrame::share`, a new generation as its sequence), with no pass and no buffer write, and `touch`es its target descriptions so `trim_idle` keeps them. The published format is then the input's (for a capture frame `Bgra8` sRGB); a 4:2:0 input goes out as its decoded RGB frame (`YuvToRgb`, cached by frame, so no second decode). This is the named exception to items 4 and 6 below (conformance checks 4 and 6) for types that declare `Needs::POINTER`. An unchanged input while idle is not published again (as step 2a).
 4. **Drawing.** With at least one live effect the node writes the effect buffer (one `write_buffer` per drawn frame, the second exception, still bounded by check 7) and draws its passes as any filter does, even when the input frame and values are unchanged, so a ring animates on a still screen. The output is linear `Rgba16Float`. Downstream nodes follow the format switch (the compositor reads the frame's transfer every frame).
-5. **The last frame.** After the last effect dies the node publishes the input once more (rule 3), so the final ring never stays on a still screen.
+5. **The last frame.** After the last effect dies the node publishes the input once more (rule 3), so the final ring never stays on a still screen; if that publish fails it is tried again next tick.
 6. **Order.** Pointer types come before any filter that moves pixels; the chain editor keeps every type with `Needs::POINTER` first, from that property (ADR-0165 decision 3).
 7. **Privacy.** The view holds positions and buttons only; the node never logs them (ADR-0158) and nothing of it leaves the render thread.
 

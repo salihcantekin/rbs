@@ -191,3 +191,34 @@ fn without_a_feed_a_pointer_type_passes_through() {
     assert_eq!(format(&rig), Some(PixelFormat::Rgba8));
     assert_eq!(rig.stats.pointer_faults(), 0);
 }
+
+#[test]
+fn a_pointer_type_passes_the_type_checks_with_the_pointer_prelude() {
+    let problems = rbs_filters::conformance::check_type(&RingType::default());
+    assert!(problems.is_empty(), "{problems:?}");
+}
+
+#[test]
+fn clicks_before_the_first_mapping_are_dropped_not_kept() {
+    let Some(ctx) = common::gpu() else {
+        return;
+    };
+    let script = Scripted::default();
+    let monitor = InputMonitor::new(Box::new(script.clone()));
+    let cell = MappingCell::new();
+    let ring = RingType::default();
+    let ty: Arc<dyn FilterType> = Arc::new(ring.clone());
+    let values = Values::defaults(ty.as_ref());
+    let feed = PointerFeed::new(monitor, cell.clone());
+    let mut rig = Rig::with_pointer(ctx, ty, values, Some([8, 8]), feed).unwrap();
+    rig.set_input(Picture::solid(8, 8, [0.0, 0.5, 0.0, 1.0]).encoded());
+    rig.tick();
+    rig.tick();
+    let at = rig.last_time().as_nanos() + 1;
+    script.click(at, 102.0, 53.0);
+    tick_past(&mut rig, at);
+    cell.publish(Some(mapping(Cover::Clear)));
+    rig.tick();
+    assert_eq!(ring.seen().clicks, 0, "not mapped with the later mapping");
+    assert_eq!(format(&rig), Some(PixelFormat::Rgba8));
+}
