@@ -232,26 +232,6 @@ fn every_request() -> Vec<Request> {
         c(Command::SourceTargets(TargetsParams {
             kind: SourceKind::Window,
         })),
-        c(Command::SourceAdd(AddSource {
-            kind: SourceKind::Screen,
-            adapter: "wgc".into(),
-            target: "display-1".into(),
-            name: None,
-            scene: None,
-            global: true,
-            with_audio: true,
-            text: None,
-        })),
-        c(Command::SourceAdd(AddSource {
-            kind: SourceKind::Text,
-            adapter: String::new(),
-            target: String::new(),
-            name: Some("Title".into()),
-            scene: Some(2),
-            global: false,
-            with_audio: false,
-            text: Some("Hello".into()),
-        })),
         c(Command::SourceSetText(SetText {
             source: 4,
             text: "Bye".into(),

@@ -61,6 +61,9 @@ impl ApiTarget<'_> {
                         .collect(),
                 }))
             }
+            C::SourceAdd(p) if p.stamp.is_some() || p.path.is_some() || p.url.is_some() => {
+                self.add_made(p)
+            }
             C::SourceAdd(p) if p.kind == api::SourceKind::Text => {
                 // A text has no target (ADR-0129 decision 8).
                 let text = p.text.as_deref().unwrap_or("Text");

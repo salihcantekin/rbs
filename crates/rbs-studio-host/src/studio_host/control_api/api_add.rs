@@ -1,5 +1,6 @@
-//! Control API answers for the additions of protocol 1.100: the voice chain and the
-//! stinger file (ADR-0164 decision 6; routed by `ApiTarget::run`).
+//! Control API answers for the additions of protocol 1.100: the voice chain, the
+//! stinger file and `source.add` with a shape, a file or an address (ADR-0164
+//! decision 6; routed by `ApiTarget::run`).
 
 use super::*;
 
@@ -33,5 +34,78 @@ impl ApiTarget<'_> {
             // Routed elsewhere by `ApiTarget::run`.
             _ => Err(rbs_api::control::unsupported(&command)),
         }
+    }
+
+    /// `source.add` with `stamp`, `path` or `url`: a shape, an image or media file, or
+    /// a browser page, placed as the window's Add source places it.
+    pub(super) fn add_made(
+        &mut self,
+        p: rbs_api::request::AddSource,
+    ) -> Result<Response, ApiError> {
+        use api::SourceKind as K;
+        use rbs_api::request::Stamp;
+        let invalid = |text: &str| ApiError::new(ErrorKind::InvalidParams, text);
+        let fits = match p.kind {
+            K::Color => p.stamp.is_some() && p.path.is_none() && p.url.is_none(),
+            K::Image | K::Media => p.path.is_some() && p.stamp.is_none() && p.url.is_none(),
+            K::Browser => p.url.is_some() && p.stamp.is_none() && p.path.is_none(),
+            _ => false,
+        };
+        if !fits || p.text.is_some() {
+            return Err(invalid(
+                "stamp is for a color source, path for an image or media file, url for a browser page",
+            ));
+        }
+        if p.global || p.with_audio {
+            return Err(invalid("a shape, a file or a page is added to one scene"));
+        }
+        if p.path.is_some() && !(p.adapter.is_empty() && p.target.is_empty()) {
+            return Err(invalid("give either a path or a target"));
+        }
+        if p.path
+            .as_deref()
+            .is_some_and(|f| std::path::Path::new(f).is_relative())
+        {
+            return Err(invalid("the file needs an absolute path"));
+        }
+        let notify = self.notify;
+        let host = &mut *self.host;
+        if p.kind == K::Browser && host.browser_needs_engine() {
+            let mut data = serde_json::Map::new();
+            data.insert("reason".into(), "needs_addon".into());
+            data.insert("addon".into(), crate::add_ons::BROWSER_ENGINE.into());
+            return Err(ApiError::with_data(
+                ErrorKind::Failed,
+                "The browser engine add-on is not installed.",
+                data,
+            ));
+        }
+        let name = p.name.as_deref().filter(|n| !n.trim().is_empty());
+        let id = host.placing_into(p.scene, |h| match (p.stamp, p.path.as_deref()) {
+            (Some(stamp), _) => {
+                let kind = match stamp {
+                    Stamp::Circle => 0,
+                    Stamp::Square => 1,
+                    Stamp::Rectangle => 2,
+                    Stamp::RoundedRectangle => 3,
+                    Stamp::Ellipse => 4,
+                    Stamp::Triangle => 5,
+                    Stamp::Arrow => 6,
+                };
+                h.add_stamp(kind, name).map_err(|e| refused(&e))
+            }
+            (None, Some(file)) if p.kind == K::Image => h
+                .add_image_file(std::path::Path::new(file), name)
+                // The decoder's words never name the path (ADR-0074 decision 9).
+                .map_err(|e| refused(&e)),
+            (None, Some(file)) => h
+                .add_media_file(std::path::Path::new(file), name)
+                .map_err(|e| refused(&e)),
+            (None, None) => h
+                .add_browser_page(p.url.as_deref().unwrap_or_default(), name)
+                .map_err(|e| refused(&e)),
+        })?;
+        host.apply(notify);
+        Ok(Response::SourceAdded(SourceAdded { source: id.get() }))
     }
 }

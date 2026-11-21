@@ -76,6 +76,7 @@ const REPORT_EVERY: u32 = 30;
 
 /// Codes of `Studio.rec-state`.
 pub(crate) mod activity_choice;
+mod add_calls;
 pub(crate) mod add_picker;
 pub(crate) mod ai;
 mod api_call;
@@ -4977,38 +4978,6 @@ impl StudioUi {
         self.apply_look(look.id);
     }
 
-    /// Adds a colour shape (0 circle … 6 arrow) and opens Shape and border.
-    pub fn add_stamp(&mut self, kind: i32) {
-        let Ok(kind) = u8::try_from(kind) else {
-            return;
-        };
-        self.deleted.clear();
-        self.adding = true;
-        self.reveal_shape = true;
-        self.send(Command::AddStamp { kind });
-    }
-
-    /// Adds a PNG the user picked. The new source is selected.
-    pub fn add_image_file(&mut self, path: &std::path::Path) {
-        self.deleted.clear();
-        self.adding = true;
-        self.reveal_shape = false;
-        self.send(Command::AddImage {
-            path: path.to_owned(),
-        });
-    }
-
-    /// Adds a media file the user picked (ADR-0108). The scripted demo decoder
-    /// ignores file bytes; any regular file path is enough for a Program test.
-    pub fn add_media_file(&mut self, path: &std::path::Path) {
-        self.deleted.clear();
-        self.adding = true;
-        self.reveal_shape = false;
-        self.send(Command::AddMedia {
-            path: path.to_owned(),
-        });
-    }
-
     /// The Page tab's data for the browser source `id`; off for any other source.
     fn browser_data(&self, id: i32) -> crate::ui::BrowserData {
         let Some((settings, run)) = self.browser_rows.get(&id) else {
@@ -5180,17 +5149,6 @@ impl StudioUi {
         if self.browser_rows.contains_key(&id) {
             self.send(Command::ForgetBrowserSignIn(SourceId::from_raw(id as u32)));
         }
-    }
-
-    /// Adds a browser page (ADR-0109); an empty `url` adds one that waits for its
-    /// address, and Properties opens on its Page tab.
-    pub fn add_browser_page(&mut self, url: &str) {
-        self.deleted.clear();
-        self.adding = true;
-        self.reveal_shape = false;
-        self.send(Command::AddBrowser {
-            url: url.to_owned(),
-        });
     }
 
     /// Adds a text source showing `text` (Add source › Text, ADR-0129 decision 13);
@@ -5799,7 +5757,7 @@ impl StudioUi {
         }
         match u {
             Update::Monitor(_) | Update::Loudness(_) => {} // taken above
-            Update::ApiAnswer { ticket, result } => self.api_answer(ticket, result),
+            Update::ApiAnswer { ticket, result } => self.api_answer(ticket, result, &mut out),
             Update::TBarReset => self.tbar_resets = self.tbar_resets.wrapping_add(1),
             Update::AddOns(list) => self.add_ons = list.add_ons,
             Update::OpenAddOn(id) => self.open_add_on = Some(id),

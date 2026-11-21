@@ -732,27 +732,8 @@ impl Host {
                     notify,
                 );
             }
-            Command::AddStamp { kind } => match self.add_stamp(kind) {
-                Ok(_) => self.apply(notify),
-                Err(e) => notify(Update::Error(e.text().to_owned())),
-            },
-            Command::AddImage { path } => match self.add_image_file(&path) {
-                Ok(_) => self.apply(notify),
-                Err(e) => notify(Update::Error(e.text().to_owned())),
-            },
-            Command::AddMedia { path } => match self.add_media_file(&path) {
-                Ok(_) => self.apply(notify),
-                Err(e) => notify(Update::Error(e.text().to_owned())),
-            },
             // Without its engine Browser leads to Settings › Add-ons and adds nothing
             // (ADR-0145 decision 8).
-            Command::AddBrowser { .. } if self.browser_needs_engine() => {
-                notify(Update::OpenAddOn(crate::add_ons::BROWSER_ENGINE.to_owned()));
-            }
-            Command::AddBrowser { url } => match self.add_browser_page(&url) {
-                Ok(_) => self.apply(notify),
-                Err(e) => notify(Update::Error(e.text().to_owned())),
-            },
             Command::ApplyLook { source, look } => {
                 self.run_ui_api(
                     rbs_api::Command::LookApply(rbs_api::request::ApplyLook {

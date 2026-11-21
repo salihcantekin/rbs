@@ -19,9 +19,11 @@ use crate::types::{
 use crate::types::{DeviceKey, DeviceSyncEntry};
 use crate::types::{ItemScroll, ItemStyle};
 
+mod add_source;
 mod item_edits;
 mod methods;
 mod transform;
+pub use add_source::AddSource;
 pub use item_edits::*;
 pub use methods::METHODS;
 pub use transform::*;
@@ -76,40 +78,6 @@ impl std::fmt::Debug for Authenticate {
 pub struct TargetsParams {
     /// The kind whose capture targets to list.
     pub kind: SourceKind,
-}
-
-/// `source.add`: a source of `kind` capturing one target, on top of the program scene.
-/// A `text` source (protocol 1.75, ADR-0129 decision 8) has no target: `adapter` and
-/// `target` may be left out and are ignored, and `text` is what it shows.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AddSource {
-    /// Its kind.
-    pub kind: SourceKind,
-    /// The adapter that listed the target (empty for `text`).
-    #[serde(default)]
-    pub adapter: String,
-    /// The target's id for that adapter (empty for `text`).
-    #[serde(default)]
-    pub target: String,
-    /// Its name; `null` lets the server pick one.
-    #[serde(default)]
-    pub name: Option<String>,
-    /// The scene it is placed in (protocol 1.9); absent: the program scene.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scene: Option<u32>,
-    /// Add it as a global source of the studio's canvas instead (protocol 1.10,
-    /// ADR-0065): shown and heard in every scene; `scene` is then not allowed.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub global: bool,
-    /// Also add the sound that belongs to the picture (protocol 1.26, ADR-0096): a
-    /// display's system sound without RBS's own sound, a window's application sound.
-    /// Default false; the picture and its sound are one undo step.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub with_audio: bool,
-    /// The text a `text` source shows (protocol 1.75); absent: "Text". Not allowed for
-    /// other kinds.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub text: Option<String>,
 }
 
 /// `source.set_text` (protocol 1.75, ADR-0129 decision 8): replaces a text source's
@@ -2341,7 +2309,10 @@ impl Command {
     pub fn reaches_network(&self) -> bool {
         use crate::location::is_local_path;
         match self {
-            Command::SourceAdd(p) => p.kind == SourceKind::Browser,
+            Command::SourceAdd(p) => {
+                p.kind == SourceKind::Browser
+                    || p.path.as_deref().is_some_and(|f| !is_local_path(f))
+            }
             // Downloads from the catalog's hosts (ADR-0145 decision 9).
             Command::AddonInstall(_) => true,
             Command::RecordStartToFile(p) => !is_local_path(&p.path),

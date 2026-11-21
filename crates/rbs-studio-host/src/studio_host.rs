@@ -701,10 +701,6 @@ impl Host {
             | Command::SetLoudnessShown(..)
             | Command::SetLoudnessSettings { .. } => self.canvas_and_mix_command(c, notify),
             Command::AddSample { .. }
-            | Command::AddStamp { .. }
-            | Command::AddImage { .. }
-            | Command::AddMedia { .. }
-            | Command::AddBrowser { .. }
             | Command::ApplyLook { .. }
             | Command::SetFilterValues { .. }
             | Command::PreviewFilter { .. }

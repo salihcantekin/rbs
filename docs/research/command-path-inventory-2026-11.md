@@ -85,11 +85,11 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `AddVoiceChain` | Moved to `Command::Api` (ADR-0164 step 3) | filter.add_voice_chain |
 | `ApplyLook` | Translates | look.apply |
 | `AddSample` | Translates | source.add_sample |
-| `AddStamp` | Missing | no shape source in source.add |
-| `AddImage` | Missing | source.add has no file path, and the box is sized from the image |
-| `AddMedia` | Missing | source.add has no file path |
+| `AddStamp` | Moved to `Command::Api` (ADR-0164 step 3) | source.add kind `color` with `stamp` |
+| `AddImage` | Moved to `Command::Api` (ADR-0164 step 3) | source.add kind `image` with `path` |
+| `AddMedia` | Moved to `Command::Api` (ADR-0164 step 3) | source.add kind `media` with `path` |
 | `SetStingerFile` | Moved to `Command::Api` (ADR-0164 step 3) | collection.set_stinger_file |
-| `AddBrowser` | Missing | source.add has no URL |
+| `AddBrowser` | Moved to `Command::Api` (ADR-0164 step 3) | source.add kind `browser` with `url`; without the engine add-on the window opens it on the `failed` answer's `data.reason: needs_addon` |
 | `AddText` | Moved to `Command::Api` (step 6) | source.add (kind text) |
 | `FitTextBox` | Moved to `Command::Api` (ADR-0164 step 2) | item.fit_text_box |
 | `ListTextFonts` | Moved to `Command::Api` (step 3) | text.fonts with `ApiReply::QuietTicket`; on `not_ready` the host still sends `Update::TextFonts` once the list is read, as the window path did |

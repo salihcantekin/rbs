@@ -188,3 +188,42 @@ fn a_free_angle_wraps_and_a_drag_is_one_undo_step() {
     assert_eq!(kind(&gone), "not_found", "{gone}");
     drop(host);
 }
+
+/// `source.add` with `stamp`, `path` or `url` (ADR-0164 decision 6): each belongs to
+/// its kind, a path is absolute and never beside a target, and the source is placed.
+#[test]
+fn a_shape_a_file_or_a_page_is_added_by_its_kind() {
+    let Some((host, _updates, _api, mut c)) = start() else {
+        return;
+    };
+    let shape = c.call(
+        "source.add",
+        json!({"kind": "color", "stamp": "rounded_rectangle", "name": "Badge"}),
+    );
+    let id = ok(&shape)["source"].as_u64().unwrap();
+    let row = sources(&mut c).into_iter().find(|s| s["id"] == id).unwrap();
+    assert_eq!(row["name"], "Badge", "{row}");
+    for params in [
+        json!({"kind": "screen", "stamp": "circle"}),
+        json!({"kind": "color", "stamp": "circle", "global": true}),
+        json!({"kind": "image", "path": "picture.png"}),
+        json!({"kind": "media", "path": "/a.mov", "adapter": "x", "target": "y"}),
+        json!({"kind": "media", "url": "https://example.com/"}),
+    ] {
+        let r = c.call("source.add", params.clone());
+        assert_eq!(kind(&r), "invalid_params", "{params} {r}");
+    }
+    let dir = std::env::temp_dir().join(format!("rbs-add-file-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("clip.mov");
+    std::fs::write(&file, b"demo").unwrap();
+    let path = file.display().to_string();
+    let not_png = c.call("source.add", json!({"kind": "image", "path": path}));
+    assert_eq!(kind(&not_png), "invalid_params", "{not_png}");
+    assert!(!not_png.to_string().contains("clip.mov"), "{not_png}");
+    let media = c.call("source.add", json!({"kind": "media", "path": path}));
+    let media = ok(&media)["source"].as_u64().unwrap();
+    assert!(sources(&mut c).iter().any(|s| s["id"] == media));
+    drop(host);
+    let _ = std::fs::remove_dir_all(&dir);
+}

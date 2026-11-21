@@ -121,28 +121,6 @@ pub enum Command {
         /// The sample's id (`rbs_sources::still::SAMPLES`).
         sample: String,
     },
-    /// Add a colour shape on the scene being edited, centred, one undo step.
-    /// 0 circle, 1 square, 2 rectangle, 3 rounded rectangle, 4 ellipse, 5 triangle,
-    /// 6 arrow.
-    AddStamp {
-        /// Which shape.
-        kind: u8,
-    },
-    /// Add an image source from a PNG file, fitted into the canvas, one undo step.
-    AddImage {
-        /// The file.
-        path: std::path::PathBuf,
-    },
-    /// Add a media file source (ADR-0108), centred at half the canvas, one undo step.
-    AddMedia {
-        /// A local regular file. The demo decoder ignores contents.
-        path: std::path::PathBuf,
-    },
-    /// Add a browser page (ADR-0109), fitted to the canvas, one undo step.
-    AddBrowser {
-        /// `http`, `https`, or `file` URL.
-        url: String,
-    },
     /// Write a filter's full values (a released slider, a colour, Reset to defaults;
     /// one undo step).
     SetFilterValues {

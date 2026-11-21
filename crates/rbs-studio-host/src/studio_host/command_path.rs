@@ -103,14 +103,6 @@ paths! {
     SetSourceMixerHidden => Translates(&["source.set_mixer_hidden"]),
     ApplyLook => Translates(&["look.apply"]),
     AddSample => Translates(&["source.add_sample"]),
-    // no shape source in source.add
-    AddStamp => Missing,
-    // source.add has no file path, and the box is sized from the image
-    AddImage => Missing,
-    // source.add has no file path
-    AddMedia => Missing,
-    // source.add has no URL
-    AddBrowser => Missing,
     // window then restores stored values on an unchanged release
     SetFilterValues => Pending(&["filter.set_settings"]),
     PreviewFilter => WindowOnly(Preview),
@@ -214,7 +206,7 @@ mod tests {
     const TRANSLATES: usize = 22;
     const PENDING: usize = 17;
     const CONTRACT: usize = 6;
-    const MISSING: usize = 13;
+    const MISSING: usize = 9;
     const VIEW: usize = 13;
     const LOCAL_ONLY: usize = 9;
     const PREVIEW: usize = 2;
