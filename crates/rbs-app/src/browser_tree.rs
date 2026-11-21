@@ -306,7 +306,13 @@ impl RunnerBrowserTree {
                 child.close(std::time::Duration::ZERO);
                 return self.start_on(config, sink, sound, None);
             };
-            child.set_gpu_gate(Box::new(Fence(slots.fence_read())), config.fps);
+            // A picture of the previous tree still being imported can add one stale
+            // failure, never ten.
+            sink.clear_failed_imports();
+            child.set_gpu_gate(
+                Box::new(Fence(slots.fence_read(), Arc::clone(&sink))),
+                config.fps,
+            );
         }
         #[cfg(not(windows))]
         let slots = None::<()>;
@@ -362,14 +368,19 @@ impl RunnerBrowserTree {
     }
 }
 
-/// The supervisor's view of a page's shared fence (ADR-0157 decision 2).
+/// The supervisor's view of a page's shared fence (ADR-0157 decision 2) and of the
+/// render thread's failed imports of its pictures (decision 9).
 #[cfg(windows)]
-struct Fence(rbs_gpu::browser_pages::FenceRead);
+struct Fence(rbs_gpu::browser_pages::FenceRead, Arc<BrowserFrameSink>);
 
 #[cfg(windows)]
 impl rbs_browser_runner::FenceView for Fence {
     fn completed(&self) -> u64 {
         self.0.completed()
+    }
+
+    fn failed_imports(&self) -> u32 {
+        self.1.failed_imports()
     }
 }
 

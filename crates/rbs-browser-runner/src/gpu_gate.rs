@@ -13,11 +13,21 @@ use std::time::{Duration, Instant};
 
 use rbs_browser_shm::{FrameRing, GpuPicture};
 
-/// The completed value of a page's shared fence. Reading it never waits.
+/// The completed value of a page's shared fence, and the studio's failed imports of
+/// the page's pictures. Reading them never waits.
 pub trait FenceView: Send {
     /// The fence's completed value (`u64::MAX` when the device was removed).
     fn completed(&self) -> u64;
+
+    /// Imports of this page's pictures that failed in a row on the render thread
+    /// (ADR-0157 decision 9).
+    fn failed_imports(&self) -> u32 {
+        0
+    }
 }
+
+/// Failed imports in a row that fall the tree back with reason `import`.
+pub const IMPORT_FAILURES: u32 = 10;
 
 /// Page frames a picture may wait for its fence (ADR-0157 decision 2).
 pub const FENCE_WAIT_FRAMES: u32 = 30;
@@ -49,6 +59,8 @@ pub struct GpuGate {
     limit: Duration,
     /// The highest fence value published so far.
     newest: u64,
+    /// Why the gate failed: `fence` or `import` (ADR-0157 decision 9).
+    reason: Option<&'static str>,
 }
 
 impl std::fmt::Debug for GpuGate {
@@ -72,11 +84,15 @@ impl GpuGate {
             next: None,
             limit: Duration::from_secs(1) * FENCE_WAIT_FRAMES / fps.clamp(1, 60),
             newest: 0,
+            reason: None,
         }
     }
 
     /// One supervisor pass over `ring` at `now`. Never waits.
     pub fn pass(&mut self, ring: &FrameRing, now: Instant) -> GatePass {
+        if self.fence.failed_imports() >= IMPORT_FAILURES {
+            return self.fail(ring, "import");
+        }
         if self.next.is_none()
             && let Some(new) = ring.take_gpu(&mut self.seen)
         {
@@ -92,14 +108,14 @@ impl GpuGate {
         };
         let completed = self.fence.completed();
         if completed == u64::MAX || completed > self.newest.saturating_add(FENCE_JUMP) {
-            return self.fail(ring);
+            return self.fail(ring, "fence");
         }
         if completed >= picture.fence {
             self.waiting = self.next.take();
             return GatePass::Ready(picture);
         }
         if now.saturating_duration_since(since) >= self.limit {
-            return self.fail(ring);
+            return self.fail(ring, "fence");
         }
         GatePass::Nothing
     }
@@ -130,7 +146,13 @@ impl GpuGate {
         }
     }
 
-    fn fail(&mut self, ring: &FrameRing) -> GatePass {
+    /// Why the gate failed, once it has: `fence` or `import`.
+    pub fn reason(&self) -> Option<&'static str> {
+        self.reason
+    }
+
+    fn fail(&mut self, ring: &FrameRing, reason: &'static str) -> GatePass {
+        self.reason = Some(reason);
         self.release(ring);
         GatePass::Failed
     }
@@ -140,7 +162,7 @@ impl GpuGate {
 mod tests {
     #![allow(clippy::unwrap_used)] // Tests fail by panicking.
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
     use rbs_browser_shm::SlotLayout;
 
@@ -156,6 +178,44 @@ mod tests {
         fn completed(&self) -> u64 {
             self.0.load(Ordering::Relaxed)
         }
+    }
+
+    struct Imports(Arc<AtomicU64>, Arc<AtomicU32>);
+
+    impl FenceView for Imports {
+        fn completed(&self) -> u64 {
+            self.0.load(Ordering::Relaxed)
+        }
+
+        fn failed_imports(&self) -> u32 {
+            self.1.load(Ordering::Relaxed)
+        }
+    }
+
+    /// Ten failed imports in a row fail the gate and give its leases back; nine do
+    /// not (ADR-0157 decisions 9 and 11).
+    #[test]
+    fn ten_failed_imports_in_a_row_fail_the_gate() {
+        let ring = FrameRing::create_with_gpu(2, 2, SlotLayout::Bgra8Premultiplied, 4).unwrap();
+        let value = Arc::new(AtomicU64::new(0));
+        let failed = Arc::new(AtomicU32::new(0));
+        let mut gate = GpuGate::new(
+            Box::new(Imports(Arc::clone(&value), Arc::clone(&failed))),
+            FPS,
+        );
+        let t0 = Instant::now();
+        let slot = publish(&ring, 1).unwrap();
+        failed.store(IMPORT_FAILURES - 1, Ordering::Relaxed);
+        assert_eq!(
+            gate.pass(&ring, t0),
+            GatePass::Nothing,
+            "nine are not enough"
+        );
+        assert_eq!(ring.lease(slot), 1);
+        failed.store(IMPORT_FAILURES, Ordering::Relaxed);
+        assert_eq!(gate.pass(&ring, t0), GatePass::Failed);
+        assert_eq!(gate.reason(), Some("import"));
+        assert_eq!(ring.lease(slot), 0, "the waiting lease is given back");
     }
 
     fn setup() -> (FrameRing, Arc<AtomicU64>, GpuGate, Instant) {

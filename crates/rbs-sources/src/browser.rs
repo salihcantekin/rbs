@@ -594,6 +594,9 @@ pub struct BrowserFrameSink {
     width: AtomicU32,
     height: AtomicU32,
     generation: AtomicU32,
+    /// Imports of shared-texture pictures that failed in a row (ADR-0157 decision 9).
+    /// The render thread writes it, the supervisor's fence gate reads it.
+    failed_imports: AtomicU32,
 }
 
 #[derive(Default)]
@@ -616,7 +619,33 @@ impl BrowserFrameSink {
             width: AtomicU32::new(0),
             height: AtomicU32::new(0),
             generation: AtomicU32::new(0),
+            failed_imports: AtomicU32::new(0),
         }
+    }
+
+    /// Render thread only (`BrowserSourceNode::process`): notes whether a
+    /// shared-texture picture imported. Any import error counts. A success
+    /// ends a run of failures; it writes only when a run was counted, so a working
+    /// page adds one load per picture (ADR-0157 decision 9).
+    pub fn note_import(&self, imported: bool) {
+        if imported {
+            if self.failed_imports.load(Ordering::Relaxed) != 0 {
+                self.failed_imports.store(0, Ordering::Relaxed);
+            }
+        } else {
+            self.failed_imports.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Supervisor's fence gate: shared-texture imports that failed in a row since
+    /// the last success.
+    pub fn failed_imports(&self) -> u32 {
+        self.failed_imports.load(Ordering::Relaxed)
+    }
+
+    /// Control thread: starts the count again, for a new GPU tree on this sink.
+    pub fn clear_failed_imports(&self) {
+        self.failed_imports.store(0, Ordering::Relaxed);
     }
 
     /// Publishes straight-alpha `Rgba8` bytes, due at once. Supervisor or control thread.
@@ -1528,7 +1557,12 @@ impl Node<GpuRuntime> for BrowserSourceNode {
         let gpu = ctx.shared();
         let (_, outputs, local) = ctx.parts();
         let texture = match frame.payload() {
-            FramePayload::Native { .. } => local.importer.import(gpu, &mut local.pool, frame),
+            FramePayload::Native { .. } => {
+                let imported = local.importer.import(gpu, &mut local.pool, frame);
+                // Ten failures in a row fall the tree back (ADR-0157 decision 9).
+                self.control.frames().note_import(imported.is_ok());
+                imported
+            }
             FramePayload::System(_) => self.upload.upload(gpu, &mut local.pool, frame),
             _ => return Ok(()),
         };
@@ -1566,6 +1600,22 @@ mod tests {
     use super::*;
 
     const RGBA: [u8; 16] = [7; 16];
+
+    /// Failed imports count up in a row, a success ends the run, and a new tree
+    /// starts at zero (ADR-0157 decision 9).
+    #[test]
+    fn failed_imports_count_in_a_row() {
+        let sink = BrowserFrameSink::new();
+        for _ in 0..3 {
+            sink.note_import(false);
+        }
+        assert_eq!(sink.failed_imports(), 3);
+        sink.note_import(true);
+        assert_eq!(sink.failed_imports(), 0);
+        sink.note_import(false);
+        sink.clear_failed_imports();
+        assert_eq!(sink.failed_imports(), 0);
+    }
 
     #[test]
     fn the_render_thread_takes_the_newest_due_picture_once() {
