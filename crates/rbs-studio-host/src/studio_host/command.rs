@@ -164,12 +164,6 @@ pub enum Command {
         /// `http`, `https`, or `file` URL.
         url: String,
     },
-    /// Add a text source showing `text` (ADR-0129), its box fitted to the text, one
-    /// undo step (Add source › Text).
-    AddText {
-        /// What it shows.
-        text: String,
-    },
     /// Fit a text source's box to its text (ADR-0129 decision 13, Fit box to text):
     /// the item keeps its centre and its scale. One undo step.
     FitTextBox(SourceId),

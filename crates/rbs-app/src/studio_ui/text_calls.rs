@@ -68,3 +68,17 @@ impl StudioUi {
         );
     }
 }
+
+/// `source.add` for a text source showing `text` in the scene the window edits.
+pub(super) fn add_text_call(text: &str) -> rbs_api::request::AddSource {
+    rbs_api::request::AddSource {
+        kind: rbs_api::types::SourceKind::Text,
+        adapter: String::new(),
+        target: String::new(),
+        name: None,
+        scene: None,
+        global: false,
+        with_audio: false,
+        text: Some(text.to_owned()),
+    }
+}

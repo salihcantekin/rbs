@@ -5295,9 +5295,7 @@ impl StudioUi {
         self.deleted.clear();
         self.adding = true;
         self.reveal_shape = false;
-        self.send(Command::AddText {
-            text: text.to_owned(),
-        });
+        self.call(rbs_api::Command::SourceAdd(text_calls::add_text_call(text)));
     }
 
     fn patch_text(&mut self, id: i32, patch: text_props::Patch) {

@@ -655,7 +655,11 @@ impl Host {
 
     /// [`Command::Api`]: the call, answered as the window asked (ADR-0163 decision 2).
     fn api_command(&mut self, call: rbs_api::Command, reply: ApiReply, notify: &dyn Fn(Update)) {
+        // A window call adds where the window edits: the preview scene in studio mode
+        // (ADR-0061 decision 4), as its own commands did; a client's goes on air.
+        let into = self.program.into.replace(self.edited());
         let result = self.run_api(call, notify);
+        self.program.into = into;
         let shown = match (&result, reply) {
             (Ok(_), _) | (_, ApiReply::Quiet | ApiReply::QuietTicket(_)) => false,
             (Err(e), ApiReply::QuietIf(kind)) => e.kind != kind,
@@ -703,7 +707,6 @@ impl Host {
             | Command::AddMedia { .. }
             | Command::SetStingerFile(..)
             | Command::FitTextBox(..)
-            | Command::AddText { .. }
             | Command::AddBrowser { .. }
             | Command::SetSourceFilled { .. }
             | Command::ApplyLook { .. }

@@ -380,8 +380,18 @@ fn rows_where(rx: &Receiver<Update>, mut ok: impl FnMut(&[SourceRow]) -> bool) -
 /// Adds a text "Title" and returns its row once the measure off the control thread has
 /// replaced the default box: a test that reads or edits the box waits for that.
 fn add_text(host: &StudioHost, rx: &Receiver<Update>) -> SourceRow {
-    host.send(Command::AddText {
-        text: "Title".into(),
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::SourceAdd(rbs_api::request::AddSource {
+            kind: rbs_api::types::SourceKind::Text,
+            adapter: String::new(),
+            target: String::new(),
+            name: None,
+            scene: None,
+            global: false,
+            with_audio: false,
+            text: Some("Title".into()),
+        })),
+        reply: rbs_studio_host::studio_host::ApiReply::Shown,
     });
     let default = rbs_scene::model::SettingValue::Int(i64::from(rbs_sources::text::DEFAULT_BOX[0]));
     let measured = |r: &SourceRow| {

@@ -30,6 +30,7 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | Filter values on an unchanged release | Restores the stored values | Does not | `source_settings.rs`, `api_canvas.rs` |
 | Collection transition | Sends the whole transition it last saw | A patch of the parts given; the stinger cut point is checked against the file's length | `scenes.rs` `set_transition`; the window now sends only the parts that changed |
 | Scroll controls | Published the views after a control | Did not; now publishes too (step 6) | `items.rs` `api_scroll` |
+| Where an addition goes when no scene is named (`item.add`, `source.add`) | The scene the window edits: the preview scene in studio mode | The program scene (protocol 1.6); a window call now uses the edited scene (step 6 fix: `item.add` from the window went on air in studio mode since step 2) | `scenes.rs` `placing_into`, `studio_host.rs` `api_command` |
 | Canvas change | Always sends `Update::Canvas`, also for a refusal or an unchanged canvas | Nothing for those | `canvas.rs`, `api_settings.rs` (why `SetCanvas` stays) |
 | Media play, pause, seek, restart | Forces the next media-state publish | Does not | `source_settings.rs`, `api_source2.rs` |
 | Pause, hold, break refusals | Own sentence ("The recording could not pause or resume: ...") | `ApiError` message | `stream.rs` |
@@ -89,7 +90,7 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `AddMedia` | Missing | source.add has no file path |
 | `SetStingerFile` | Missing | no stinger file method |
 | `AddBrowser` | Missing | source.add has no URL |
-| `AddText` | Pending | source.add |
+| `AddText` | Moved to `Command::Api` (step 6) | source.add (kind text) |
 | `FitTextBox` | Missing | no fit-box method |
 | `ListTextFonts` | Moved to `Command::Api` (step 3) | text.fonts with `ApiReply::QuietTicket`; on `not_ready` the host still sends `Update::TextFonts` once the list is read, as the window path did |
 | `TextTimer` | Moved to `Command::Api` (step 6) | text.timer (a source gone meanwhile stays quiet; the API now answers "not a timer" with the window's sentence) |

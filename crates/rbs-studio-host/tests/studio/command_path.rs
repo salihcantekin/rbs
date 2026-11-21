@@ -492,3 +492,46 @@ fn scene_edits_from_the_window_are_api_calls_and_undo_steps() {
     .unwrap();
     assert_eq!(names(&s).len(), 1);
 }
+
+/// A window call that names no scene adds where the window edits: the preview scene
+/// in studio mode (ADR-0061 decision 4), as the window's own commands did.
+#[test]
+fn a_window_addition_goes_to_the_preview_scene_in_studio_mode() {
+    let Some(gpu) = gpu() else { return };
+    let s = Studio::start(gpu);
+    let screen = s.add_screen();
+    let Response::SceneAdded(added) = s
+        .ask(rbs_api::Command::SceneAdd(rbs_api::request::AddScene {
+            name: None,
+        }))
+        .unwrap()
+    else {
+        panic!("scene.add answers SceneAdded")
+    };
+    s.ask(rbs_api::Command::CanvasSetPreview(
+        rbs_api::request::SetPreview {
+            scene: Some(added.scene),
+        },
+    ))
+    .unwrap();
+    assert_ne!(
+        s.program().get(),
+        added.scene,
+        "the new scene is in preview only"
+    );
+    // Add source › Existing source: the Sources panel (the preview scene) shows it.
+    let mut rows = None;
+    s.ask_seeing(
+        rbs_api::Command::ItemAdd(rbs_api::request::AddItem {
+            source: screen.get(),
+            scene: None,
+        }),
+        |u| {
+            if let Update::Sources(r) = u {
+                rows = Some(r.iter().map(|r| r.id).collect::<Vec<_>>());
+            }
+        },
+    )
+    .unwrap();
+    assert_eq!(rows, Some(vec![screen]), "added to the preview scene");
+}

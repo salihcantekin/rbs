@@ -756,10 +756,6 @@ impl Host {
                 let done = self.fit_text_box(id);
                 self.answer(done, notify);
             }
-            Command::AddText { text } => match self.add_text(None, &text, false) {
-                Ok(_) => self.apply(notify),
-                Err(e) => notify(Update::Error(e.text().to_owned())),
-            },
             // Without its engine Browser leads to Settings › Add-ons and adds nothing
             // (ADR-0145 decision 8).
             Command::AddBrowser { .. } if self.browser_needs_engine() => {

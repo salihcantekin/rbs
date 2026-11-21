@@ -119,7 +119,6 @@ paths! {
     SetStingerFile => Missing,
     // source.add has no URL
     AddBrowser => Missing,
-    AddText => Pending(&["source.add"]),
     // no fit-box method
     FitTextBox => Missing,
     // also adds a border to the item style in one undo step; no method
@@ -233,7 +232,7 @@ mod tests {
     /// which must pick its method from host state may raise `TRANSLATES` by as many
     /// as `PENDING` falls; any other rise needs the owner's written approval.
     const TRANSLATES: usize = 22;
-    const PENDING: usize = 19;
+    const PENDING: usize = 18;
     const CONTRACT: usize = 10;
     const MISSING: usize = 20;
     const VIEW: usize = 13;

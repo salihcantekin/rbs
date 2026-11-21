@@ -662,14 +662,15 @@ impl Host {
 
     /// Runs `f` with source and item additions going to `scene` (an API call's
     /// `scene`, ADR-0061 decision 8); `None` keeps them in the program scene, as in
-    /// protocol 1.6.
+    /// protocol 1.6, or in the scene the window edits for a window call
+    /// (`Host::api_command`).
     pub(super) fn placing_into<T>(
         &mut self,
         scene: Option<u32>,
         f: impl FnOnce(&mut Self) -> Result<T, ApiError>,
     ) -> Result<T, ApiError> {
         let scene = match scene {
-            None => self.scene,
+            None => self.program.into.unwrap_or(self.scene),
             Some(raw) => {
                 let id = SceneId::from_raw(raw);
                 if !self.listed(id) {
