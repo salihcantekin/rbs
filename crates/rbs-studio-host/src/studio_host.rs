@@ -690,9 +690,7 @@ impl Host {
             | Command::SetSceneOwnLevels { .. }
             | Command::ResetSceneLevel { .. }
             | Command::SetSourceMixerHidden { .. } => self.source_command(c, notify),
-            Command::AddVerticalCanvas(..)
-            | Command::RemoveVerticalCanvas
-            | Command::AutoLayoutVertical(..)
+            Command::AutoLayoutVertical(..)
             | Command::SetVerticalSize(..)
             | Command::SetMasterVolume { .. }
             | Command::SetMasterMuted { .. }

@@ -639,14 +639,6 @@ impl Host {
     /// The window commands of this concern, routed by `Host::command`.
     pub(super) fn canvas_and_mix_command(&mut self, c: Command, notify: &dyn Fn(Update)) {
         match c {
-            Command::AddVerticalCanvas(spec) => {
-                let done = self.add_vertical(spec);
-                self.answer_live(done, notify);
-            }
-            Command::RemoveVerticalCanvas => {
-                let done = self.remove_vertical();
-                self.answer_live(done, notify);
-            }
             Command::AutoLayoutVertical(mode) => {
                 self.run_ui_api(
                     rbs_api::Command::CanvasAutoLayout(rbs_api::request::CanvasAutoLayout {

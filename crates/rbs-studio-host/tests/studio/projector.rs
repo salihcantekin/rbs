@@ -180,13 +180,22 @@ mod with_pictures {
         // No vertical canvas: suspended, no picture (ADR-0125 decision 3).
         let (_, picture) = projector(&rx, 2, |s, _| *s == ProjectorState::Suspended);
         assert!(picture.is_none());
-        host.send(Command::AddVerticalCanvas(VerticalCanvas {
-            size: Size::new(1080, 1920),
-            follow: true,
-            layout: None,
-        }));
+        host.send(Command::Api {
+            call: Box::new(rbs_api::Command::CanvasAddVertical(
+                rbs_api::request::AddVerticalCanvas {
+                    width: None,
+                    height: None,
+                    follow: None,
+                    layout: None,
+                },
+            )),
+            reply: rbs_studio_host::studio_host::ApiReply::Shown,
+        });
         projector(&rx, 2, open_with_picture);
-        host.send(Command::RemoveVerticalCanvas);
+        host.send(Command::Api {
+            call: Box::new(rbs_api::Command::CanvasRemoveVertical(Default::default())),
+            reply: rbs_studio_host::studio_host::ApiReply::Shown,
+        });
         let (_, picture) = projector(&rx, 2, |s, _| *s == ProjectorState::Suspended);
         assert!(picture.is_none());
     }

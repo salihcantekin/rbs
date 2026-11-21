@@ -109,14 +109,6 @@ pub enum Command {
         /// The source.
         source: SourceId,
     },
-    /// Adds a vertical second canvas and runs it beside the main one (ADR-0093 decision
-    /// 8): the canvas is made, follows the main canvas's program scene when asked, gets
-    /// an Auto layout of the program scene when asked, and starts running (one output
-    /// can take it, one picture can show it). [`Update::Vertical`] answers. Not on the undo stack.
-    AddVerticalCanvas(VerticalCanvas),
-    /// Stops the second canvas and removes it from the collection (its outputs must be
-    /// stopped first). [`Update::Vertical`] answers.
-    RemoveVerticalCanvas,
     /// Arranges the scene the vertical canvas shows (`canvas.auto_layout`, protocol
     /// 1.44). One undo step; a refusal comes back as [`Update::Error`].
     AutoLayoutVertical(rbs_api::request::VerticalLayout),

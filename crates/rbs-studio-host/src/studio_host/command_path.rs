@@ -103,8 +103,6 @@ paths! {
     EnsureEncoders => WindowOnly(View),
     SetSceneOwnLevels => Translates(&["scene.audio.own", "scene.audio.shared"]),
     ResetSceneLevel => Translates(&["scene.audio.reset_source"]),
-    AddVerticalCanvas => Pending(&["canvas.add_vertical"]),
-    RemoveVerticalCanvas => Pending(&["canvas.remove_vertical"]),
     AutoLayoutVertical => Translates(&["canvas.auto_layout"]),
     SetVerticalSize => Translates(&["canvas.set_vertical_size"]),
     SetMasterVolume => Translates(&["canvas.set_master_volume"]),
@@ -261,7 +259,7 @@ mod tests {
     /// which must pick its method from host state may raise `TRANSLATES` by as many
     /// as `PENDING` falls; any other rise needs the owner's written approval.
     const TRANSLATES: usize = 22;
-    const PENDING: usize = 47;
+    const PENDING: usize = 45;
     const CONTRACT: usize = 10;
     const MISSING: usize = 20;
     const VIEW: usize = 13;

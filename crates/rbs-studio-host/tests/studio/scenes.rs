@@ -1006,16 +1006,22 @@ fn leaving_studio_mode_with_move_outside_it_plays_no_transition() {
 #[test]
 fn a_vertical_canvas_is_added_follows_the_main_program_and_is_removed() {
     use rbs_core::media::Size;
-    use rbs_studio_host::studio_host::{Command, VerticalCanvas};
+    use rbs_studio_host::studio_host::Command;
     let Some((host, updates, _api, mut c)) = start() else {
         return;
     };
     let _ = scenes(&mut c);
-    host.send(Command::AddVerticalCanvas(VerticalCanvas {
-        size: Size::new(1080, 1920),
-        follow: true,
-        layout: None,
-    }));
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::CanvasAddVertical(
+            rbs_api::request::AddVerticalCanvas {
+                width: None,
+                height: None,
+                follow: None,
+                layout: None,
+            },
+        )),
+        reply: rbs_studio_host::studio_host::ApiReply::Shown,
+    });
     let state = next(&updates, |u| match u {
         Update::Vertical(Some(v)) => Some(v),
         Update::Error(e) => panic!("{e}"),
@@ -1023,7 +1029,10 @@ fn a_vertical_canvas_is_added_follows_the_main_program_and_is_removed() {
     });
     assert_eq!(state.size, Size::new(1080, 1920));
     assert!(state.follow);
-    host.send(Command::RemoveVerticalCanvas);
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::CanvasRemoveVertical(Default::default())),
+        reply: rbs_studio_host::studio_host::ApiReply::Shown,
+    });
     next(&updates, |u| match u {
         Update::Vertical(None) => Some(()),
         Update::Error(e) => panic!("{e}"),
@@ -1034,18 +1043,23 @@ fn a_vertical_canvas_is_added_follows_the_main_program_and_is_removed() {
 
 #[test]
 fn a_box_on_the_vertical_canvas_is_that_canvas_s_own_layout() {
-    use rbs_core::media::Size;
     use rbs_scene::model::SourceId;
-    use rbs_studio_host::studio_host::{Command, OutputCanvas, VerticalCanvas};
+    use rbs_studio_host::studio_host::{Command, OutputCanvas};
     let Some((host, updates, _api, mut c)) = start() else {
         return;
     };
     let id = add(&mut c, "screen", "Screen");
-    host.send(Command::AddVerticalCanvas(VerticalCanvas {
-        size: Size::new(1080, 1920),
-        follow: true,
-        layout: None,
-    }));
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::CanvasAddVertical(
+            rbs_api::request::AddVerticalCanvas {
+                width: None,
+                height: None,
+                follow: None,
+                layout: None,
+            },
+        )),
+        reply: rbs_studio_host::studio_host::ApiReply::Shown,
+    });
     next(&updates, |u| match u {
         Update::Vertical(Some(_)) => Some(()),
         Update::Error(e) => panic!("{e}"),
@@ -1140,7 +1154,10 @@ fn a_box_on_the_vertical_canvas_is_that_canvas_s_own_layout() {
     }));
     ok(&c.call("canvas.set_preview", json!({"scene": null})));
     // Without a vertical canvas a vertical box is refused.
-    host.send(Command::RemoveVerticalCanvas);
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::CanvasRemoveVertical(Default::default())),
+        reply: rbs_studio_host::studio_host::ApiReply::Shown,
+    });
     next(&updates, |u| match u {
         Update::Vertical(None) => Some(()),
         _ => None,
