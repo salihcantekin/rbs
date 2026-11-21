@@ -82,6 +82,8 @@ pub(crate) mod attributes;
 pub(crate) mod browser_props;
 pub(crate) mod destinations;
 pub(crate) mod filters;
+mod library_ops;
+pub use library_ops::EntryWrite;
 mod live_ticks;
 pub(crate) mod loudness;
 mod meter_values;
@@ -6186,53 +6188,6 @@ impl StudioUi {
         ));
     }
 
-    /// Output profile menu: makes a profile named `name`, with default settings or a
-    /// copy of the one in use (`copy`), and uses it.
-    pub fn new_profile(&mut self, name: &str, copy: bool) -> Result<(), String> {
-        self.idle_for("switching output profiles")?;
-        let id = self.user.new_profile(name, copy)?;
-        let result = self.user.switch_profile(&id);
-        if result.is_ok() {
-            self.profile_loaded();
-        }
-        self.refresh_library();
-        result.map_err(String::from)
-    }
-
-    /// Output profile menu: renames the profile in use.
-    pub fn rename_profile(&mut self, name: &str) -> Result<(), String> {
-        let result = self.user.rename_profile(name);
-        self.refresh_library();
-        result.map_err(String::from)
-    }
-
-    /// Output profile menu: deletes the profile `id` and its stream key. Deleting the
-    /// one in use first switches to another (refused while live, and for the only one).
-    pub fn delete_profile(&mut self, id: &str) -> Result<(), String> {
-        let id = EntryId::parse(id).ok_or("that output profile is gone")?;
-        if id == self.user.profile_id {
-            let other = self
-                .user
-                .profiles()
-                .into_iter()
-                .find(|(other, _)| *other != id)
-                .ok_or("The only output profile cannot be deleted. Make another first.")?;
-            self.idle_for("deleting the output profile in use")?;
-            self.user.switch_profile(&other.0)?;
-            self.profile_loaded();
-        }
-        let result = self.user.delete_profile(&id);
-        self.refresh_library();
-        result?;
-        // ADR-0051 decision 5: the keys go with the profile.
-        let account = stream_key::account(id.as_str());
-        self.send(Command::RemoveStreamKey(stream_key::vertical_account(
-            &account,
-        )));
-        self.send(Command::RemoveStreamKey(account));
-        Ok(())
-    }
-
     /// Scene collection menu: runs the collection `id` (refused while live; the studio
     /// restarts, so the preview connects again).
     pub fn switch_collection(
@@ -6326,36 +6281,6 @@ impl StudioUi {
         });
     }
 
-    /// The studio answered a collection switch; returns what to tell the user.
-    fn collection_switched(&mut self, seq: u64, result: Result<(), String>) -> Option<String> {
-        let s = self.switching.take_if(|s| s.seq == seq)?;
-        let told = match result {
-            Ok(()) => {
-                self.user.collection_switched(&s.id, &s.name);
-                self.selected = -1;
-                let mut told = s
-                    .delete_after
-                    .and_then(|old| self.user.delete_collection(&old).err())
-                    .map(|e| format!("The scene collection was not deleted: {e}"));
-                // The last collection was replaced: once it is gone, prefer the name
-                // "Default" for the empty starter that took its place.
-                if told.is_none()
-                    && s.prefer_default_name
-                    && !self.user.collection_name.eq_ignore_ascii_case(DEFAULT_NAME)
-                    && let Err(e) = self.user.rename_collection(DEFAULT_NAME)
-                {
-                    told = Some(format!(
-                        "The new scene collection could not be named {DEFAULT_NAME}: {e}"
-                    ));
-                }
-                told
-            }
-            Err(why) => Some(why),
-        };
-        self.refresh_library();
-        told
-    }
-
     /// Why an Output profile or Scene collection command cannot run now (the menus
     /// disable it with this reason): live, restarting, or (for output profiles) the
     /// only entry. `op` is `new`, `duplicate`, `rename`, `delete`, `import` or `export`.
@@ -6379,72 +6304,6 @@ impl StudioUi {
             (true, _) => self.can_switch_collection(),
             (false, _) => self.idle_for("switching output profiles"),
         }
-    }
-
-    /// Scene collection menu: makes a collection named `name`, new (one canvas the
-    /// size of the one in use, one scene) or a copy of the one in use (`copy`), and
-    /// runs it.
-    pub fn new_collection(
-        &mut self,
-        name: &str,
-        copy: bool,
-        close_preview: impl FnOnce(),
-    ) -> Result<(), String> {
-        self.can_switch_collection()?;
-        let id = self.user.new_collection(name, &self.canvas, copy)?;
-        self.refresh_library();
-        let (name, collection) = self.user.load_collection(&id)?;
-        self.ask_switch(id, name, collection, None, false, close_preview);
-        Ok(())
-    }
-
-    /// Scene collection menu: renames the collection in use.
-    pub fn rename_collection(&mut self, name: &str) -> Result<(), String> {
-        let result = self.user.rename_collection(name);
-        self.refresh_library();
-        result.map_err(String::from)
-    }
-
-    /// Scene collection menu: deletes the collection `id`. Deleting the one in use
-    /// first runs another (refused while live). The only scene collection is replaced
-    /// by a new [`DEFAULT_NAME`] collection with one empty scene.
-    pub fn delete_collection(
-        &mut self,
-        id: &str,
-        close_preview: impl FnOnce(),
-    ) -> Result<(), String> {
-        let id = EntryId::parse(id).ok_or("that scene collection is gone")?;
-        if id != self.user.collection_id {
-            let result = self.user.delete_collection(&id);
-            self.refresh_library();
-            return result.map_err(String::from);
-        }
-        self.can_switch_collection()?;
-        let (other, prefer_default_name) = match self
-            .user
-            .collections()
-            .into_iter()
-            .find(|(other, _)| *other != id)
-        {
-            Some((other, _)) => (other, false),
-            None => {
-                let name = free_collection_name(&self.user, DEFAULT_NAME);
-                let prefer_default_name = !name.eq_ignore_ascii_case(DEFAULT_NAME);
-                let other = self.user.new_collection(&name, &self.canvas, false)?;
-                self.refresh_library();
-                (other, prefer_default_name)
-            }
-        };
-        let (name, collection) = self.user.load_collection(&other)?;
-        self.ask_switch(
-            other,
-            name,
-            collection,
-            Some(id),
-            prefer_default_name,
-            close_preview,
-        );
-        Ok(())
     }
 
     /// The recording's duration so far, while one runs.
@@ -6920,9 +6779,7 @@ impl StudioUi {
                 }
             }
             Update::CollectionSwitched { seq, result } => {
-                if let Some(e) = self.collection_switched(seq, result) {
-                    out.error = Some(e);
-                }
+                self.collection_switched(seq, result, &mut out)
             }
             Update::VerticalStreamKey(r) => match r {
                 Ok(saved) => {
@@ -7876,6 +7733,9 @@ pub struct PickerView {
 #[derive(Default)]
 pub struct Applied {
     pub error: Option<String>,
+    /// Writer-thread work the answer started (the collection a switch left is deleted):
+    /// await it and show its error.
+    pub written: Option<library_ops::EntryWrite>,
     /// A notice for the error bar that is not a failure (a start without a heard
     /// microphone).
     pub notice: Option<String>,
