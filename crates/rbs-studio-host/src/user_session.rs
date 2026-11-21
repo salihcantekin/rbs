@@ -27,7 +27,7 @@ use crate::record_profile;
 use crate::stream_profile;
 
 mod later;
-pub use later::Pending;
+pub use later::{ObsWritten, Pending};
 
 /// Name of the entries made when there are none, and of the migrated ones.
 pub const DEFAULT_NAME: &str = "Default";
@@ -928,30 +928,13 @@ impl CollectionSaver {
 
 /// Runs [`crate::obs_import::write`] on the writer thread and waits for it; the stream
 /// key comes back for the caller to hand to the key store's owner.
-type ImportResult = Result<
-    (
-        crate::obs_import::Written,
-        Option<(String, rbs_transport::Secret)>,
-    ),
-    String,
->;
+type ImportResult = Result<ObsWritten, String>;
 
 fn import_on(shared: &Shared, plan: rbs_import_obs::ImportPlan) -> ImportResult {
     let (tx, rx) = mpsc::channel();
-    shared.push(Job::Run(Box::new(move |data, lock, _| {
-        let key = std::cell::RefCell::new(None);
-        let written = crate::obs_import::write(
-            data,
-            lock,
-            &plan,
-            &|account, secret| {
-                *key.borrow_mut() = Some((account.to_owned(), secret));
-                Ok(())
-            },
-            rbs_ui::shortcut::Platform::current(),
-            &|p| p.is_dir(),
-        );
-        let _ = tx.send(written.map(|w| (w, key.into_inner())));
+    let task = later::import_obs(plan);
+    shared.push(Job::Run(Box::new(move |data, lock, names| {
+        let _ = tx.send(task(data, lock, names));
     })));
     rx.recv()
         .map_err(|_| "the user data writer stopped".to_owned())?

@@ -372,35 +372,54 @@ fn transfer(ctx: &Ctx, import: bool) {
         };
         let ctx = c.clone();
         c.update(move |app| {
-            let file = ctx.look.borrow().as_ref().map(|l| l.file.clone());
-            let Some(file) = file else { return };
-            {
-                let mut page = ctx.page.borrow_mut();
-                let mut imported = String::new();
-                let result = match picked {
-                    Ok(None) => Ok(()),
-                    Err(why) => Err(why),
-                    Ok(Some(path)) if import => app.studio.user.import_theme(&path).map(|id| {
-                        page.ui.refresh(app.studio.user.data(), &file);
-                        page.ui.selected = page.ui.index_of(&ThemeId::User(id.clone()));
-                        imported = page.ui.import_note(&ThemeId::User(id));
-                    }),
-                    Ok(Some(path)) => match selected_id(&page) {
-                        Some(ThemeId::User(id)) => app.studio.user.export_theme(&id, &path),
-                        _ => Ok(()),
-                    },
-                };
-                match result {
-                    Ok(()) => page.note = imported,
-                    Err(why) => page.note = why,
-                }
+            let path = match picked {
+                Ok(Some(path)) => path,
+                Ok(None) => return noted(&ctx, app, String::new()),
+                Err(why) => return noted(&ctx, app, why),
+            };
+            // The writer thread does the work; the note follows when it ran.
+            let then = ctx.clone();
+            if import {
+                let done =
+                    move |r: Result<_, _>| then.clone().update(move |app| imported(&then, app, r));
+                return entry::when_done(app.studio.user.import_theme_later(&path), done);
             }
-            after(&ctx, app, Change::Page);
+            let selected = selected_id(&ctx.page.borrow());
+            let Some(ThemeId::User(id)) = selected else {
+                return noted(&ctx, app, String::new());
+            };
+            let done = move |r: Result<(), String>| {
+                then.clone()
+                    .update(move |app| noted(&then, app, r.err().unwrap_or_default()))
+            };
+            entry::when_done(app.studio.user.export_theme_later(&id, &path), done);
         });
     });
     if let Err(e) = task {
         ctx.page.borrow_mut().note = e.to_string();
     }
+}
+
+/// The page's note after an import or export; the views follow.
+fn noted(ctx: &Ctx, app: &mut App, note: String) {
+    ctx.page.borrow_mut().note = note;
+    after(ctx, app, Change::Page);
+}
+
+/// A theme import ran: select the new theme, or show why it failed.
+fn imported(ctx: &Ctx, app: &mut App, result: Result<rbs_user_data::EntryId, String>) {
+    let file = ctx.look.borrow().as_ref().map(|l| l.file.clone());
+    let note = match (result, file) {
+        (Err(why), _) => why,
+        (Ok(_), None) => String::new(),
+        (Ok(id), Some(file)) => {
+            let mut page = ctx.page.borrow_mut();
+            page.ui.refresh(app.studio.user.data(), &file);
+            page.ui.selected = page.ui.index_of(&ThemeId::User(id.clone()));
+            page.ui.import_note(&ThemeId::User(id))
+        }
+    };
+    noted(ctx, app, note);
 }
 
 /// The Appearance page is shown: read the choice and the theme list again.

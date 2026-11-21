@@ -10,6 +10,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 
+use rbs_import_obs::ImportPlan;
 use rbs_user_data::{EntryId, UserData, WriterLock};
 
 use super::{Job, Names, UserSession, own_profiles, read_only_note, scrub_profile};
@@ -164,6 +165,39 @@ impl UserSession {
     pub fn export_theme_later(&self, id: &EntryId, to: &Path) -> Pending<()> {
         let (id, to) = (id.clone(), to.to_owned());
         self.later(move |data, _, _| data.themes().export(&id, &to).map_err(|e| e.to_string()))
+    }
+
+    /// [`UserSession::import_obs`] without waiting.
+    pub fn import_obs_later(&self, plan: ImportPlan) -> Pending<ObsWritten> {
+        self.later(import_obs(plan))
+    }
+}
+
+/// What an OBS import wrote, and the stream key to save under the new profile's
+/// account, if any.
+pub type ObsWritten = (
+    crate::obs_import::Written,
+    Option<(String, rbs_transport::Secret)>,
+);
+
+/// Writes an OBS import plan (ADR-0131 decision 9).
+pub(super) fn import_obs(
+    plan: ImportPlan,
+) -> impl FnOnce(&UserData, &WriterLock, &Names) -> Result<ObsWritten, String> + Send + 'static {
+    move |data, lock, _| {
+        let key = std::cell::RefCell::new(None);
+        let written = crate::obs_import::write(
+            data,
+            lock,
+            &plan,
+            &|account, secret| {
+                *key.borrow_mut() = Some((account.to_owned(), secret));
+                Ok(())
+            },
+            rbs_ui::shortcut::Platform::current(),
+            &|p| p.is_dir(),
+        );
+        written.map(|w| (w, key.into_inner()))
     }
 }
 
