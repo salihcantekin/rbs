@@ -4768,6 +4768,7 @@ version = "0.0.1"
 dependencies = [
  "rbs-browser-ipc",
  "rbs-browser-shm",
+ "rbs-core",
  "rbs-crash",
 ]
 

@@ -12,6 +12,9 @@ publish.workspace = true
 rbs-browser-ipc = { path = "../rbs-browser-ipc" }
 rbs-browser-shm = { path = "../rbs-browser-shm" }
 rbs-crash = { path = "../rbs-crash" }
+# The diagnostics log facade: the helper's standard error goes to the studio log
+# (ADR-0158).
+rbs-core = { path = "../rbs-core" }
 
 [lints]
 workspace = true

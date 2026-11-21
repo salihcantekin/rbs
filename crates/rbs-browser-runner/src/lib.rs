@@ -23,6 +23,7 @@ use rbs_browser_ipc::{
     restart_delay, startup_lost,
 };
 use rbs_browser_shm::{FrameRing, OwnedSoundPacket, RingReader, SlotLayout, SoundRing};
+use rbs_core::log::Area;
 
 mod gpu_gate;
 
@@ -344,9 +345,12 @@ pub fn spawn_helper_prepared(
         .envs(env.iter().map(|(k, v)| (k, v)))
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| error.to_string())?;
+    if let Some(stderr) = child.stderr.take() {
+        forward_stderr(stderr);
+    }
     if let Some(gpu) = prepare(child.id()) {
         // Before `configure`: the helper opens the section only after reading it.
         ring.set_gpu_slots(gpu.count);
@@ -380,6 +384,51 @@ pub fn spawn_helper_prepared(
         attempts: 0,
         retry_after: Duration::ZERO,
     })
+}
+
+/// The longest helper line the studio log takes; the rest is cut.
+const MAX_LINE: usize = 1000;
+
+/// Hands the helper tree's standard error to the studio's diagnostics log (ADR-0158,
+/// spec `diagnostics-log.md`): the helper's own lines (`rbs-browser-…:`) at Info, the
+/// engine's at Debug, both in `Area::Browser`. A thread named `rbs-browser-log` reads
+/// them while the helper runs and ends when every process of the tree has closed the
+/// pipe; without it the pipe would fill and stop the helper.
+fn forward_stderr(stderr: impl Read + Send + 'static) {
+    let spawned = std::thread::Builder::new()
+        .name("rbs-browser-log".to_owned())
+        .spawn(move || {
+            use std::io::BufRead;
+            let mut reader = std::io::BufReader::new(stderr);
+            let mut line = Vec::new();
+            loop {
+                line.clear();
+                match reader.read_until(b'\n', &mut line) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => log_line(&line),
+                }
+            }
+        });
+    if let Err(e) = spawned {
+        rbs_core::warn!(Area::Browser, "helper output is not logged: {e}");
+    }
+}
+
+fn log_line(raw: &[u8]) {
+    let text = String::from_utf8_lossy(raw);
+    let text = text.trim_end();
+    if text.is_empty() {
+        return;
+    }
+    let text = match text.char_indices().nth(MAX_LINE) {
+        Some((cut, _)) => &text[..cut],
+        None => text,
+    };
+    if text.starts_with("rbs-browser") {
+        rbs_core::info!(Area::Browser, "{text}");
+    } else {
+        rbs_core::debug!(Area::Browser, "helper: {text}");
+    }
 }
 
 /// How long a stopped helper may take to exit on its own before it is killed.

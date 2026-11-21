@@ -35,6 +35,11 @@ fn main() {
     } else {
         HelperMode::Once
     };
+    if std::env::args().any(|arg| arg == "--say") {
+        // Lines the studio forwards to its log (ADR-0158).
+        rbs_crash::errln!("rbs-browser-helper: started");
+        rbs_crash::errln!("engine noise");
+    }
     let tone = std::env::args().any(|arg| arg == "--tone");
     if rbs_browser_runner::helper_main_with(mode, tone).is_err() {
         std::process::exit(1);
