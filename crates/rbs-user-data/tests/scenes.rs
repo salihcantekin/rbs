@@ -1427,3 +1427,42 @@ fn format_25_keep_running_becomes_the_page_run_placed() {
     assert!(out.contains("format = 26"), "{out}");
     assert!(!out.contains("keep_running"), "{out}");
 }
+
+#[test]
+fn a_continuing_scroll_round_trips_in_format_28() {
+    // ADR-0152 decision 6, phase 5: `on_return = "continue"`; `restart` is left out.
+    use rbs_scene::activity::OnReturn;
+    use rbs_scene::model::{Scroll, ScrollDirection};
+    let mut col = show();
+    let (ticker, _) = col
+        .add_source("Ticker", ty("text"), Settings::new())
+        .unwrap();
+    let (scene, _) = col.add_scene("News", SceneScope::Shared).unwrap();
+    let scroll = Scroll::new(ScrollDirection::Left, 80.0);
+    let (item, _) = col
+        .add_item(
+            scene,
+            ItemContent::Source(ticker),
+            Layout::new([0.0, 980.0], [1920.0, 100.0]).with_scroll(Some(scroll)),
+            None,
+        )
+        .unwrap();
+    let text = document::render(&col, Some("Show")).unwrap();
+    assert!(!text.contains("on_return"), "{text}");
+    assert!(!text.contains("format = 28"), "{text}");
+    col.set_item_layout(
+        item,
+        None,
+        Layout::new([0.0, 980.0], [1920.0, 100.0])
+            .with_scroll(Some(scroll.with_on_return(OnReturn::Continue))),
+    )
+    .unwrap();
+    let text = document::render(&col, Some("Show")).unwrap();
+    assert!(text.contains("format = 28"), "{text}");
+    assert!(text.contains("on_return = \"continue\""), "{text}");
+    let back = document::parse::<SceneCollection>(&text).unwrap().document;
+    assert_eq!(back, col);
+    // `resume` is not a scroll's.
+    let bad = text.replace("on_return = \"continue\"", "on_return = \"resume\"");
+    assert!(document::parse::<SceneCollection>(&bad).is_err());
+}

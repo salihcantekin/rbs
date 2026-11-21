@@ -2562,7 +2562,9 @@ impl Studio {
             return;
         }
         let now = self.engine.clock().now();
-        self.scroll_runs.keep(&keys, now);
+        let binder = &self.binder;
+        let placed = |s| binder.level_of(s).0 != Level::Unplaced;
+        self.scroll_runs.keep_placed(&keys, placed, now);
     }
 
     fn send_program_layers(&mut self, plan: &rbs_graph::description::SchedulePlan) {

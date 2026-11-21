@@ -84,8 +84,29 @@ impl ScrollRuns {
     /// its own speed, from its start; a run whose key is not listed ends (a key seen
     /// again later starts over). True when a run started or ended.
     pub fn keep(&mut self, keys: &BTreeSet<ScrollKey>, now: Timestamp) -> bool {
+        self.keep_placed(keys, |_| false, now)
+    }
+
+    /// [`Self::keep`], except that a run with `on_return: continue` whose key is not
+    /// listed goes on while `placed` says its source is still in a scene and no other
+    /// key of its canvas and source is listed (ADR-0152 decision 6): drawn again, it
+    /// is where it would be. A run of an edited scroll (a new key) thus ends once the
+    /// new key is drawn.
+    pub fn keep_placed(
+        &mut self,
+        keys: &BTreeSet<ScrollKey>,
+        placed: impl Fn(model::SourceId) -> bool,
+        now: Timestamp,
+    ) -> bool {
         let before = self.runs.len();
-        self.runs.retain(|k, _| keys.contains(k));
+        self.runs.retain(|k, _| {
+            keys.contains(k)
+                || (k.continues()
+                    && placed(k.source)
+                    && !keys
+                        .iter()
+                        .any(|o| o.canvas == k.canvas && o.source == k.source))
+        });
         let mut changed = self.runs.len() != before;
         for key in keys {
             if !self.runs.contains_key(key) {

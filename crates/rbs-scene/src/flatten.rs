@@ -125,8 +125,8 @@ pub struct ScrollKey {
     pub canvas: CanvasId,
     /// The source scrolled.
     pub source: SourceId,
-    /// Direction, repeat and start.
-    kind: [u8; 3],
+    /// Direction, repeat, start and `on_return`.
+    kind: [u8; 4],
     /// Ramp in milliseconds.
     ramp_ms: u32,
     /// Speed, gap, fade and the cross-axis length, as bits.
@@ -145,6 +145,7 @@ impl ScrollKey {
                 scroll.direction as u8,
                 scroll.repeat as u8,
                 scroll.start as u8,
+                scroll.on_return as u8,
             ],
             ramp_ms: scroll.ramp_ms,
             bits: [
@@ -164,6 +165,12 @@ impl ScrollKey {
     /// How long a pause, resume or speed change eases.
     pub fn ramp_ms(&self) -> u32 {
         self.ramp_ms
+    }
+
+    /// True when the run continues while its source stays placed and no shown scene
+    /// draws the item (`on_return: continue`, ADR-0152 decision 6).
+    pub fn continues(&self) -> bool {
+        self.kind[3] == crate::activity::OnReturn::Continue as u8
     }
 }
 
