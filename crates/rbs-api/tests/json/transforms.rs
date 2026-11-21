@@ -131,5 +131,10 @@ pub(super) fn requests() -> Vec<Request> {
             with_audio: false,
             text: Some("Hello".into()),
         })),
+        c(Command::EditUndoDelete),
+        c(Command::CanvasRehearse(Rehearse::default())),
+        c(Command::AddonUpdate(AddOnRef {
+            id: "org.rbs.browser-engine".into(),
+        })),
     ]
 }

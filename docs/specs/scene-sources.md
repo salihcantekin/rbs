@@ -61,7 +61,8 @@ impl SourcePicker {
     pub fn adapter_name(&self) -> &str;
     pub fn pick(&self) -> Result<SourceTarget, SourceError>; // blocks while the OS dialog is up
 }
-pub struct InstanceContext { clock, audio: AudioGraphConfig, max_audio_offset, browser_budget, browser_tree, canvas: Option<(Size, FrameRate)> }  // new(), with_max_audio_offset(), with_browser(), with_canvas()
+pub struct InstanceContext { clock, audio: AudioGraphConfig, max_audio_offset, browser_budget, browser_tree, canvas: Option<(Size, FrameRate)>, mapping: Option<SourceMapping> }  // new(), with_max_audio_offset(), with_browser(), with_canvas(), with_mapping()
+pub struct SourceMapping { pub switch: MappingSwitch, pub cell: MappingCell }  // ADR-0165 decision 5; new(); one per source entry, kept across instances
 pub enum SourceInstance {
     Video(VideoSource { node: CaptureSourceNode, stats, adapter, target }),
     Audio(AudioSource { node: InputNode, offset: ParamSender<InputParams>, stats, adapter, endpoint }),
@@ -80,6 +81,8 @@ pub fn node_layers(
     runs: &ScrollRuns,
 ) -> Vec<NodeLayer>;
 ```
+
+A capture source instantiated with a `mapping` passes its switch to `CaptureRequest::with_mapping` and its cell to `CaptureSourceNode::with_mapping_cell` ([capture port](capture-port.md#picture-mapping) rule 6). The studio creates one `SourceMapping` per source entry and lends it to every instance of that entry; the switch stays off until the pointer filters (ADR-0165 decision 3) turn it on.
 
 ### Settings
 

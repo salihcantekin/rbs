@@ -30,9 +30,6 @@ pub enum Command {
         /// What it captures.
         target: Target,
     },
-    /// The toast's Undo after a delete: undoes the newest edit if it is a delete, else
-    /// nothing (another edit came after it).
-    UndoDelete,
     /// A source's volume, a linear factor from 0 to 1 (ADR-0059). A live control: not
     /// on the undo stack, and it reaches the mixer without rebinding the scene. The
     /// window's fader: while the program scene keeps its own levels and places the
@@ -197,10 +194,6 @@ pub enum Command {
     /// Enter (`true`) or leave studio mode (ADR-0061): the preview scene starts as the
     /// program scene. A live action.
     SetStudioMode(bool),
-    /// Rehearse on Preview (ADR-0135 decision 11): the transition on the Preview
-    /// picture only. Nothing happens outside studio mode, while a transition runs or
-    /// holds, during a rehearsal, and for Cut or a duration of 0.
-    Rehearse,
     /// Whether a transition also puts the old program scene in preview (ADR-0098; the
     /// app setting `swap_after_transition`, off by default).
     SetSwapAfterTransition(bool),
@@ -421,15 +414,6 @@ pub enum Command {
     /// Read every add-on's status for Settings › Add-ons ([`Update::AddOns`],
     /// ADR-0145). Reads each add-on's folder; starts nothing.
     ListAddOns,
-    /// Download, cancel, update or remove an add-on of the catalog (ADR-0145 decision
-    /// 9); progress and the end arrive as [`Update::AddOnChanged`], a refusal as
-    /// [`Update::Error`].
-    AddOn {
-        /// The add-on's id.
-        id: String,
-        /// What to do.
-        action: AddOnAction,
-    },
     /// A control API command from the window (ADR-0163 decision 1): run as a remote
     /// call is, with the same checks, handler, events and logging, but without the
     /// caller checks, because the window is the person at this computer (decision 3).
@@ -459,19 +443,6 @@ pub enum ApiReply {
     /// As [`ApiReply::Ticket`], but a refusal is not shown: the window handles the
     /// answer itself (the font list while it is being read).
     QuietTicket(u64),
-}
-
-/// What [`Command::AddOn`] does: the commands of an add-on's row.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AddOnAction {
-    /// Download (also Retry): `addon.install`.
-    Install,
-    /// Update: install the catalog's version, then clean older ones.
-    Update,
-    /// Cancel a running install.
-    Cancel,
-    /// Remove every version.
-    Remove,
 }
 
 /// A video encoder the user can pick.

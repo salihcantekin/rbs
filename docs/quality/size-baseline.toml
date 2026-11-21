@@ -4,13 +4,13 @@
 # increase the owner approved goes to size-exceptions.toml with `--except`.
 
 [files]
-"crates/rbs-api/src/request.rs" = 3345
-"crates/rbs-api/src/types.rs" = 3084
-"crates/rbs-api/tests/json.rs" = 3393
-"crates/rbs-app/src/main.rs" = 6542
+"crates/rbs-api/src/request.rs" = 2829
+"crates/rbs-api/src/types.rs" = 3066
+"crates/rbs-api/tests/json.rs" = 3377
+"crates/rbs-app/src/main.rs" = 6536
 "crates/rbs-app/src/menu_bar.rs" = 2518
-"crates/rbs-app/src/studio_ui.rs" = 10169
-"crates/rbs-record/src/studio.rs" = 5980
+"crates/rbs-app/src/studio_ui.rs" = 10151
+"crates/rbs-record/src/studio.rs" = 5971
 "crates/rbs-record/tests/studio.rs" = 3241
 "crates/rbs-scene/src/collection.rs" = 2990
 "crates/rbs-scene/tests/binder.rs" = 2882
@@ -20,20 +20,20 @@
 
 [functions]
 "crates/rbs-api/src/session.rs::message" = 249
-"crates/rbs-api/tests/json.rs::every_request" = 601
-"crates/rbs-api/tests/json.rs::every_result_and_event_type_round_trips" = 368
+"crates/rbs-api/tests/json.rs::every_request" = 598
+"crates/rbs-api/tests/json.rs::every_result_and_event_type_round_trips" = 360
 "crates/rbs-app/examples/audio_graph.rs::main" = 248
 "crates/rbs-app/examples/go_live.rs::main" = 225
 "crates/rbs-app/examples/remote_preview.rs::run" = 313
 "crates/rbs-app/examples/transition_cost.rs::main" = 203
-"crates/rbs-app/src/main.rs::install_studio" = 1045
+"crates/rbs-app/src/main.rs::install_studio" = 1038
 "crates/rbs-app/src/main.rs::run" = 373
 "crates/rbs-app/src/main.rs::sync" = 327
 "crates/rbs-app/src/main.rs::sync_studio" = 206
 "crates/rbs-app/src/menu_bar.rs::enabled" = 504
 "crates/rbs-app/src/menu_bar.rs::run" = 286
 "crates/rbs-app/src/shortcuts_page.rs::install" = 203
-"crates/rbs-app/src/studio_ui.rs::apply" = 545
+"crates/rbs-app/src/studio_ui.rs::apply" = 538
 "crates/rbs-app/src/studio_ui.rs::new" = 231
 "crates/rbs-app/src/studio_ui.rs::push" = 274
 "crates/rbs-app/src/studio_ui.rs::set_rows" = 251
@@ -57,7 +57,7 @@
 "crates/rbs-record/src/estimate.rs::rows_of" = 281
 "crates/rbs-record/src/studio.rs::add_output" = 312
 "crates/rbs-record/src/studio.rs::choose" = 254
-"crates/rbs-record/src/studio.rs::reconcile" = 682
+"crates/rbs-record/src/studio.rs::reconcile" = 670
 "crates/rbs-record/src/studio.rs::start_with" = 323
 "crates/rbs-record/src/studio/iso_video.rs::start_iso_video" = 292
 "crates/rbs-record/src/studio/transition.rs::note_transitions" = 224

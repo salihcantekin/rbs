@@ -24,6 +24,7 @@ use rbs_graph::runtime::{
 };
 
 use crate::node::{FilterNode, FilterStats, PRELUDE};
+use crate::pointer::{Needs, POINTER_PRELUDE, PointerFeed};
 use crate::types::{
     FieldKind, FilterType, MAX_FIELDS, MAX_PASSES, ParamError, PassSource, Scale, Uniforms, Value,
     Values,
@@ -91,7 +92,7 @@ pub fn check_type(ty: &dyn FilterType) -> Vec<String> {
     }
 
     for (i, pass) in passes.iter().enumerate() {
-        if let Err(e) = compile(pass.shader) {
+        if let Err(e) = compile_for(pass.shader, ty.needs()) {
             problems.push(format!("pass {i} does not compile: {e}"));
         }
     }
@@ -147,8 +148,19 @@ pub fn check_type(ty: &dyn FilterType) -> Vec<String> {
 
 /// Parses and validates a pass with the prelude, as the device would, without a GPU.
 pub fn compile(shader: &str) -> Result<(), String> {
+    compile_for(shader, Needs::NONE)
+}
+
+/// [`compile`] for a type with `needs`: a pointer type's pass also gets the pointer
+/// prelude, as the node builds it.
+pub fn compile_for(shader: &str, needs: Needs) -> Result<(), String> {
     use wgpu::naga;
-    let source = format!("{PRELUDE}\n{shader}");
+    let extra = if needs.contains(Needs::POINTER) {
+        POINTER_PRELUDE
+    } else {
+        ""
+    };
+    let source = format!("{PRELUDE}\n{extra}\n{shader}");
     let module = naga::front::wgsl::parse_str(&source).map_err(|e| e.emit_to_string(&source))?;
     naga::valid::Validator::new(
         naga::valid::ValidationFlags::all(),
@@ -417,7 +429,7 @@ impl Rig {
         filters: Vec<(Arc<dyn FilterType>, Values)>,
         size: Option<[u32; 2]>,
     ) -> Result<Self, String> {
-        Self::build(ctx, filters, size, None)
+        Self::build(ctx, filters, size, None, None)
     }
 
     /// Like [`Rig::chain`], with a node that acquires and releases a canvas texture
@@ -429,7 +441,19 @@ impl Rig {
         size: Option<[u32; 2]>,
         canvas: [u32; 2],
     ) -> Result<Self, String> {
-        Self::build(ctx, filters, size, Some(canvas))
+        Self::build(ctx, filters, size, Some(canvas), None)
+    }
+
+    /// A rig running a pointer type with `feed` lent to it (spec "Host service:
+    /// pointer").
+    pub fn with_pointer(
+        ctx: Arc<GpuContext>,
+        ty: Arc<dyn FilterType>,
+        values: Values,
+        size: Option<[u32; 2]>,
+        feed: PointerFeed,
+    ) -> Result<Self, String> {
+        Self::build(ctx, vec![(ty, values)], size, None, Some(feed))
     }
 
     fn build(
@@ -437,6 +461,7 @@ impl Rig {
         filters: Vec<(Arc<dyn FilterType>, Values)>,
         size: Option<[u32; 2]>,
         canvas: Option<[u32; 2]>,
+        mut pointer: Option<PointerFeed>,
     ) -> Result<Self, String> {
         let (mut ctl, exec) = channel::<GpuRuntime>(Arc::clone(&ctx), RenderLocal::default());
         let mut graph = GraphDescription::new();
@@ -491,7 +516,10 @@ impl Rig {
         let mut chain = Vec::new();
         let mut senders = Vec::new();
         for (ty, values) in filters {
-            let (node, sender, stats) = FilterNode::new(ty, values, size);
+            let (mut node, sender, stats) = FilterNode::new(ty, values, size);
+            if let Some(feed) = pointer.take() {
+                node = node.with_pointer(feed);
+            }
             let id = add(Box::new(node))?;
             links.push((prev, id));
             chain.push((id, stats));
@@ -601,6 +629,11 @@ impl Rig {
     /// The last error summary of the filter node.
     pub fn filter_error(&self) -> Option<&'static str> {
         self.exec.health(self.filter).and_then(|h| h.last_error)
+    }
+
+    /// The format of the frame the probe saw on the last tick.
+    pub fn output_format(&self) -> Option<VideoFormat> {
+        lock(&self.last).as_ref().map(|f| *f.format())
     }
 
     /// The `(timestamp, sequence)` key of the frame the probe saw on the last tick.

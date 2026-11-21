@@ -75,7 +75,7 @@ impl Host {
 
     /// The settings the control thread owns, as the control API shows them.
     pub(super) fn api_settings(&self) -> api::Settings {
-        api::Settings {
+        let mut s = api::Settings {
             profiles: vec![self.recording.profile.to_api()],
             canvas: self.api_canvas(),
             stream: self
@@ -88,7 +88,14 @@ impl Host {
                 target: self.loudness_state.loudness_settings.target,
                 true_peak_limit: self.loudness_state.loudness_settings.true_peak_limit,
             }),
-        }
+            swap_after_transition: None,
+            separate_files: None,
+            replay: None,
+            vertical_profile: None,
+            vertical_stream: None,
+        };
+        self.api_output_settings(&mut s);
+        s
     }
 
     pub(super) fn settings_changed(&mut self) {

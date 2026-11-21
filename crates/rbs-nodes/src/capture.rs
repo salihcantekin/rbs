@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use rbs_capture::{
     CaptureError, CaptureFactory, CaptureRequest, CaptureSession, GpuDeviceId, GpuImportTarget,
-    SyncKind,
+    MappingCell, MappingSwitch, SyncKind,
 };
 use rbs_core::capability::CapabilityValue;
 use rbs_core::fault::SourceFault;
@@ -220,6 +220,12 @@ pub struct CaptureSourceNode {
     stats: Arc<CaptureNodeStats>,
     /// The size last stored in `stats.picture_size`, packed.
     shown_size: u64,
+    /// The request's mapping switch and the source entry's cell the newest frame's
+    /// mapping goes to (ADR-0165 decision 5); `None` when the host lends no cell.
+    mapping: Option<(MappingSwitch, MappingCell)>,
+    /// The frame time of the last mapping this node published, until it cleared the
+    /// cell.
+    mapped: Option<Timestamp>,
 }
 
 impl CaptureSourceNode {
@@ -241,7 +247,19 @@ impl CaptureSourceNode {
             upload: SourceUpload::new(),
             stats: Arc::default(),
             shown_size: 0,
+            mapping: None,
+            mapped: None,
         }
+    }
+
+    /// Publishes the newest frame's mapping into `cell` while the request's mapping
+    /// switch is on, and clears the cell when it goes off or the node is released
+    /// (ADR-0165 decision 5). Without a switch in the request the cell is never
+    /// written.
+    #[must_use]
+    pub fn with_mapping_cell(mut self, cell: MappingCell) -> Self {
+        self.mapping = self.request.mapping.clone().map(|switch| (switch, cell));
+        self
     }
 
     /// Opens and starts the session in `prepare` on the calling thread, as for an
@@ -433,6 +451,16 @@ impl Node<GpuRuntime> for CaptureSourceNode {
                 return Err(capture_error(&e));
             }
         };
+        if let Some((switch, cell)) = &self.mapping {
+            // One atomic load per new frame while the switch is off.
+            if switch.is_on() {
+                let mapping = session.latest_mapping();
+                cell.publish(mapping);
+                self.mapped = mapping.map(|m| m.frame_time);
+            } else if self.mapped.take().is_some() {
+                cell.publish(None);
+            }
+        }
         // A resized target: one comparison per new frame, one store per resize.
         let size = pack(frame.format().size);
         if self.first_frame {
@@ -496,6 +524,12 @@ impl Node<GpuRuntime> for CaptureSourceNode {
     fn release(&mut self, _ctx: &mut PrepareCtx<'_, GpuRuntime>) {
         if let Some(mut session) = self.session.take() {
             session.stop();
+        }
+        // Clears only its own mapping: a replacement node may already have published.
+        if let (Some((_, cell)), Some(time)) = (&self.mapping, self.mapped.take())
+            && cell.get().is_some_and(|m| m.frame_time == time)
+        {
+            cell.publish(None);
         }
         // An open still running sees the ring abandoned and stops its own session.
         self.opening = None;

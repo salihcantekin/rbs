@@ -5,6 +5,9 @@
 //! - `capture/new_frame_720p`: one render tick that takes a new 1280 x 720 BGRA
 //!   system frame and uploads it (CPU side; the GPU work is waited for outside the
 //!   timed part).
+//! - `capture/new_frame_720p_mapping_off` and `_mapping_on`: the same with the source
+//!   entry's mapping switch and cell lent (ADR-0165 decision 5), the switch off (one
+//!   atomic load per frame) and on (the session's mapping published into the cell).
 //!
 //! Uses the synthetic capture adapter on a `TestClock`, so a frame is due exactly when
 //! the bench moves the clock. Needs a GPU adapter (software is fine).
@@ -17,7 +20,7 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use rbs_capture::{CaptureRequest, TargetId};
+use rbs_capture::{CaptureRequest, MappingCell, MappingSwitch, TargetId};
 use rbs_capture_test::TestCaptureFactory;
 use rbs_core::lifecycle::Lifecycle;
 use rbs_core::media::{PixelFormat, Size};
@@ -62,7 +65,8 @@ struct Rig {
 const FRAME: Duration = Duration::from_nanos(1_000_000_000 / 30);
 
 impl Rig {
-    fn new(ctx: Arc<GpuContext>) -> Self {
+    /// `mapping`: `None` lends no switch; `Some(on)` lends a switch set to `on`.
+    fn new(ctx: Arc<GpuContext>, mapping: Option<bool>) -> Self {
         let (mut ctl, mut exec) = channel::<GpuRuntime>(Arc::clone(&ctx), RenderLocal::default());
         let clock = TestClock::new();
         let factory = Arc::new(TestCaptureFactory::new());
@@ -70,7 +74,19 @@ impl Rig {
             .with_frame_rate(FrameRate::FPS_30)
             .with_size(Size::new(1280, 720))
             .with_pixel_formats(&[PixelFormat::Bgra8]);
-        let node = CaptureSourceNode::new(factory, request);
+        let node = match mapping {
+            None => CaptureSourceNode::new(factory, request),
+            Some(on) => {
+                let switch = MappingSwitch::new();
+                switch.set(on);
+                CaptureSourceNode::new(factory, request.with_mapping(switch))
+                    .with_mapping_cell(MappingCell::new())
+            }
+        };
+        // Opened in `prepare`: the reference adapter starts at once, and an open on the
+        // node's thread can miss the start limit while the bench moves the test clock
+        // faster than real time ("no first frame").
+        let node = node.open_inline(true);
         let stats = node.stats();
         let mut graph = GraphDescription::new();
         let id = graph.add_node(Arc::new(node.descriptor().clone())).unwrap();
@@ -138,7 +154,7 @@ fn bench(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("capture");
     {
-        let mut r = Rig::new(Arc::clone(&ctx));
+        let mut r = Rig::new(Arc::clone(&ctx), None);
         group.bench_function("no_frame", |b| {
             b.iter(|| {
                 r.exec.run_tick(Tick::of(&r.cadence, r.tick));
@@ -148,7 +164,7 @@ fn bench(c: &mut Criterion) {
     }
     group.sample_size(20);
     {
-        let mut r = Rig::new(Arc::clone(&ctx));
+        let mut r = Rig::new(Arc::clone(&ctx), None);
         group.bench_function("new_frame_720p", |b| {
             b.iter_custom(|iters| {
                 let mut total = Duration::ZERO;
@@ -160,6 +176,22 @@ fn bench(c: &mut Criterion) {
             })
         });
         assert!(r.stats.uploaded.load(Ordering::Relaxed) > 0);
+    }
+    for (name, on) in [
+        ("new_frame_720p_mapping_off", false),
+        ("new_frame_720p_mapping_on", true),
+    ] {
+        let mut r = Rig::new(Arc::clone(&ctx), Some(on));
+        group.bench_function(name, |b| {
+            b.iter_custom(|iters| {
+                let mut total = Duration::ZERO;
+                for _ in 0..iters {
+                    r.clock.advance(FRAME);
+                    total += r.tick();
+                }
+                total
+            })
+        });
     }
     group.finish();
 }

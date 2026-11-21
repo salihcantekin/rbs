@@ -52,7 +52,7 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `SetGlobal` | Moved to `Command::Api` (step 3) | global.add, global.remove |
 | `RemoveGlobal` | Moved to `Command::Api` (step 3) | global.remove |
 | `AddGlobalSource` | Pending | source.add (global: true) |
-| `UndoDelete` | Missing | edit.undo has no only-if-a-delete condition |
+| `UndoDelete` | Moved to `Command::Api` | edit.undo_delete; the window is quiet on `conflict` (ADR-0164 step 4) |
 | `Undo` | Moved to `Command::Api` (step 3) | edit.undo, sent with `ApiReply::QuietIf(conflict)`: nothing to undo says nothing, a refused step (`undo_conflict`) is shown |
 | `Redo` | Moved to `Command::Api` (step 3) | edit.redo, sent with `ApiReply::QuietIf(conflict)`: nothing to undo says nothing, a refused step (`undo_conflict`) is shown |
 | `MoveSource` | Moved to `Command::Api` (step 2) | item.move |
@@ -139,8 +139,8 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `SetStudioMode` | Translates (step 1) | canvas.set_preview |
 | `Transition` | Moved to `Command::Api` (step 1) | canvas.transition |
 | `TransitionProgress` | Moved to `Command::Api` (step 1) | canvas.transition_progress; quiet answer (stale T-bar steps are ignored today) |
-| `Rehearse` | Missing | starts a rehearsal on the engine; no method (ui.transition.rehearse is the registry entry) |
-| `SetSwapAfterTransition` | Missing | no settings.set field |
+| `Rehearse` | Moved to `Command::Api` | canvas.rehearse; the window is quiet on `conflict` (ADR-0164 step 4) |
+| `SetSwapAfterTransition` | WindowOnly(Mirror) | settings.set `swap_after_transition` (ADR-0164 step 5); the window saves the file it owns |
 | `SetSourceActive` | Moved to `Command::Api` (step 3) | source.set_active |
 | `SetSourceVisible` | Moved to `Command::Api` (step 2) | item.set_visible |
 | `SetSourceBox` | Pending | item.set_box |
@@ -163,11 +163,11 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `StopVerticalRecording` | Moved to `Command::Api` (step 6) | record.stop |
 | `StartVerticalStream` | Contract | as StartStream |
 | `EndVerticalStream` | Moved to `Command::Api` (step 6) | stream.stop |
-| `SetVerticalProfile` | Missing | no settings.set field |
-| `SetVerticalStreamProfile` | Missing | no settings.set field |
-| `SetStreamDestinations` | Missing | no settings.set field |
+| `SetVerticalProfile` | WindowOnly(Mirror) | settings.set `vertical_profile` (ADR-0164 step 5); the window saves the file it owns |
+| `SetVerticalStreamProfile` | WindowOnly(Mirror) | settings.set `vertical_stream` (ADR-0164 step 5); the window saves the file it owns |
+| `SetStreamDestinations` | WindowOnly(LocalOnly) | servers and key flags are the local user's; Use on Go live sends `stream.destination.set_enabled` (ADR-0164 step 5) |
 | `SetVerticalFlags` | Moved to `Command::Api` (step 6) | output.set_with_vertical, one call per choice that changed (and both at the start) |
-| `SetSeparateFiles` | Missing | no settings.set field |
+| `SetSeparateFiles` | WindowOnly(Mirror) | settings.set `separate_files` (ADR-0164 step 5); the window saves the file it owns |
 | `SetVerticalPicture` | WindowOnly View |  |
 | `OpenProjector` | WindowOnly View |  |
 | `CloseProjector` | WindowOnly View |  |
@@ -181,7 +181,7 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `StartVirtualCamera` | Contract | vcam.start takes no size or rate |
 | `StopVirtualCamera` | Pending | vcam.stop; stays: the window path sends `VirtualCamera(None)` even when nothing sends, the API refuses |
 | `SetVirtualCamera` | WindowOnly LocalOnly |  |
-| `SetReplay` | Missing | no settings.set field |
+| `SetReplay` | WindowOnly(Mirror) | settings.set `replay` (ADR-0164 step 5); the window saves the file it owns |
 | `ArmReplay` | Moved to `Command::Api` (step 6) | replay.arm (a refusal because it is already armed stays quiet) |
 | `DisarmReplay` | Moved to `Command::Api` (step 6) | replay.disarm (a refusal because it is not armed stays quiet) |
 | `SaveReplay` | Pending | replay.save; stays: the window shows a refused save in its `ReplaySaved` notice, the API answers an error |
@@ -204,4 +204,4 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `ReadPermissions` | WindowOnly LocalOnly |  |
 | `RequestPermission` | WindowOnly LocalOnly |  |
 | `ListAddOns` | Pending | addon.list |
-| `AddOn` | Pending | addon.install, addon.cancel, addon.clean, addon.remove; Update (install, then clean the old version when done) has no single API call |
+| `AddOn` | Moved to `Command::Api` | addon.install, addon.update, addon.cancel and addon.remove (ADR-0164 step 4) |

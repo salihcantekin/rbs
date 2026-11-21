@@ -45,6 +45,7 @@ mod reveal;
 mod shortcuts_page;
 mod studio_start;
 mod studio_ui;
+mod swap_setting;
 mod title_bar;
 mod vcam_page;
 mod view;
@@ -1875,7 +1876,7 @@ impl Ctx {
             if let Some(camera) = applied.camera {
                 app.vcam.sending(camera);
             }
-            for u in applied.replay {
+            for u in applied.shell {
                 replay_page::update(app, &u);
             }
             for (id, picture, state) in applied.projectors {
@@ -5607,14 +5608,7 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
         }
     });
     on!(on_set_swap_after_transition, |app, on: bool| {
-        if app.bg.swap_after_transition != on {
-            app.bg.swap_after_transition = on;
-            app.studio
-                .send(studio_host::Command::SetSwapAfterTransition(on));
-            if let Err(e) = background::save(&app.config, &app.bg) {
-                app.show_error(UiError::Other(format!("The setting was not saved: {e}")));
-            }
-        }
+        swap_setting::set(app, on);
     });
     on!(on_set_show_tbar, |app, on: bool| {
         if app.bg.show_tbar != on {

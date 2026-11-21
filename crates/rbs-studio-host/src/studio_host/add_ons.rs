@@ -13,7 +13,7 @@ use rbs_api::types as api;
 use rbs_api::{ApiError, ErrorKind};
 
 use super::EngineRuntime;
-use super::{AddOnAction, Host, Msg, Update};
+use super::{Host, Msg, Update};
 use crate::add_ons::{AddOnsSetup, BROWSER_ENGINE};
 
 /// What an install thread reports.
@@ -346,23 +346,21 @@ impl Host {
         self.publish_addon(index, notify);
     }
 
-    /// A row command of Settings › Add-ons. A refusal is shown as an error notice.
-    pub(super) fn addon_command(&mut self, id: &str, action: AddOnAction, notify: &dyn Fn(Update)) {
-        let result = match action {
-            AddOnAction::Install => self.addon_install(id, notify),
-            AddOnAction::Update => self.addon_install(id, notify).map(|()| {
-                if let Ok(index) = self.add_ons.index(id)
-                    && let Some(run) = self.add_ons.runs[index].as_mut()
-                {
-                    run.clean_after = true;
-                }
-            }),
-            AddOnAction::Cancel => self.addon_cancel(id),
-            AddOnAction::Remove => self.addon_remove(id, notify),
-        };
-        if let Err(e) = result {
-            notify(Update::Error(e.message));
+    /// `addon.update`: installs the newest version, then cleans the older ones from the
+    /// install's done event (add-ons spec, ADR-0164 decision 6). A failed or cancelled
+    /// install keeps the old version.
+    pub(super) fn addon_update(
+        &mut self,
+        id: &str,
+        notify: &dyn Fn(Update),
+    ) -> Result<(), ApiError> {
+        self.addon_install(id, notify)?;
+        if let Ok(index) = self.add_ons.index(id)
+            && let Some(run) = self.add_ons.runs[index].as_mut()
+        {
+            run.clean_after = true;
         }
+        Ok(())
     }
 
     /// An add-on was installed or removed: its consumers look again (add-ons spec,

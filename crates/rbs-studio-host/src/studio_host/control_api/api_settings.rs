@@ -64,6 +64,7 @@ impl ApiTarget<'_> {
                 {
                     return Err(ApiError::new(ErrorKind::InvalidParams, why));
                 }
+                let outputs = host.check_output_settings(&patch)?;
                 // A canvas change is checked here; applying it is the part that can
                 // still fail, and then nothing of the patch has been applied.
                 let canvas = match &patch.canvas {
@@ -119,6 +120,9 @@ impl ApiTarget<'_> {
                 {
                     host.streaming.stream_profile = Some(stream.clone());
                     notify(Update::StreamProfile(stream));
+                    host.settings_changed();
+                }
+                if host.apply_output_settings(outputs, notify) {
                     host.settings_changed();
                 }
                 if let Some(saved) = loudness {

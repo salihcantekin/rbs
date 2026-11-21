@@ -683,10 +683,8 @@ impl Host {
             | Command::AddSource { .. }
             | Command::ReadPermissions
             | Command::ListAddOns
-            | Command::AddOn { .. }
             | Command::RequestPermission(..)
             | Command::AddGlobalSource { .. }
-            | Command::UndoDelete
             | Command::SetSourceVolume { .. }
             | Command::SetSourceMuted { .. }
             | Command::SetMetersUi(..)
@@ -718,7 +716,6 @@ impl Host {
             Command::OpenAttributes { .. }
             | Command::SwitchScene(..)
             | Command::SetStudioMode(..)
-            | Command::Rehearse
             | Command::SetSwapAfterTransition(..) => self.scene_command(c, notify),
             Command::SetSourceBox { .. } | Command::SetSourceCrop { .. } => {
                 self.item_command(c, notify)

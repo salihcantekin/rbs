@@ -709,10 +709,14 @@ impl Host {
             Command::StartVerticalRecording(r) => {
                 self.record_asked(OutputCanvas::Vertical, &r, notify);
             }
-            Command::SetVerticalProfile(profile) => self.recording.vertical_profile = profile,
+            Command::SetVerticalProfile(profile) => {
+                self.recording.vertical_profile = profile;
+                self.settings_changed();
+            }
             Command::SetVerticalStreamProfile(profile) => {
                 self.streaming.vertical_stream_profile = profile;
                 self.availability_changed();
+                self.settings_changed();
             }
             Command::SetStreamDestinations(destinations, unloaded) => {
                 self.streaming.destinations = destinations;
@@ -722,6 +726,7 @@ impl Host {
             Command::SetSeparateFiles(files) => {
                 self.recording.separate_files = files.enabled;
                 self.recording.limit_policy = files.limit_policy();
+                self.settings_changed();
             }
             Command::SetVerticalPicture(on) => {
                 // Turning the picture off cannot leave anything to report: the node
@@ -776,6 +781,7 @@ impl Host {
             Command::SetReplay(setup) => {
                 self.replay.setup = setup;
                 self.replay_changed(notify);
+                self.settings_changed();
             }
             Command::AddMarker => {
                 self.run_ui_api(

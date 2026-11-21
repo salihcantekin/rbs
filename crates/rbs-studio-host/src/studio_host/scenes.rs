@@ -1050,14 +1050,10 @@ impl Host {
                     self.run_ui_api(rbs_api::Command::CanvasSetPreview(call), notify);
                 }
             }
-            Command::Rehearse => {
-                if self.preview().is_some()
-                    && let Err(e) = self.studio.rehearse(&self.adapters.sources)
-                {
-                    notify(Update::Error(format!("The rehearsal could not start: {e}")));
-                }
+            Command::SetSwapAfterTransition(on) => {
+                self.swap_after_transition = on;
+                self.settings_changed();
             }
-            Command::SetSwapAfterTransition(on) => self.swap_after_transition = on,
             // Routed elsewhere by `Host::command`.
             _ => {}
         }

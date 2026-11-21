@@ -6,7 +6,7 @@
 //! the page is not used (P13).
 
 use rbs_app::add_on_text::{self, Action};
-use rbs_app::studio_host::{AddOnAction, Command};
+use rbs_app::studio_host::{ApiReply, Command};
 use slint::{ComponentHandle, ModelRc, VecModel};
 
 use super::{App, Ctx, entry};
@@ -23,16 +23,18 @@ pub fn install(g: &Studio<'_>, ctx: &Ctx) {
     g.on_add_on_action(move |id, action| {
         entry::guard(|| {
             c.update(move |app| {
-                let action = match Action::from_code(action) {
-                    Action::Download | Action::Retry => AddOnAction::Install,
-                    Action::Update => AddOnAction::Update,
-                    Action::Cancel => AddOnAction::Cancel,
-                    Action::Remove => AddOnAction::Remove,
+                use rbs_api::Command as C;
+                let id = rbs_api::request::AddOnRef { id: id.to_string() };
+                let call = match Action::from_code(action) {
+                    Action::Download | Action::Retry => C::AddonInstall(id),
+                    Action::Update => C::AddonUpdate(id),
+                    Action::Cancel => C::AddonCancel(id),
+                    Action::Remove => C::AddonRemove(id),
                     Action::None => return,
                 };
-                app.studio.send(Command::AddOn {
-                    id: id.to_string(),
-                    action,
+                app.studio.send(Command::Api {
+                    call: Box::new(call),
+                    reply: ApiReply::Shown,
                 });
             });
         });

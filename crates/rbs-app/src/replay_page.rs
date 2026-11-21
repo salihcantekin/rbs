@@ -133,6 +133,15 @@ pub fn started(app: &mut App) {
 pub fn update(app: &mut App, u: &Update) {
     match u {
         Update::Replay(state) => app.replay.state(state.clone()),
+        // `settings.set` (ADR-0164 decision 5): shown and saved; the studio has it.
+        Update::ReplaySetup(setup) => {
+            app.replay.setup = setup.clone();
+            app.replay.folder_serial += 1;
+            app.replay.note = replay_settings::save(&app.config, &app.replay.setup)
+                .err()
+                .map(|e| format!("The settings were not saved: {e}"));
+        }
+        Update::SwapAfterTransition(on) => crate::swap_setting::changed(app, *on),
         Update::ReplaySaved(result) => {
             app.replay.saved(result.clone());
             // A notice for the moment, the Live controls keep the file.

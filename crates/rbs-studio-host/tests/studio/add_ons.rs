@@ -376,7 +376,7 @@ fn browser_collection() -> rbs_scene::SceneCollection {
 /// `a_browser_source_waits_for_its_engine_and_starts_after_the_install`.
 #[test]
 fn add_source_browser_leads_to_the_engine_until_it_is_installed() {
-    use rbs_studio_host::studio_host::{AddOnAction, Command};
+    use rbs_studio_host::studio_host::Command;
     let Some(gpu) = gpu() else { return };
     let root = temp_root("engine");
     let engine = rbs_studio_host::add_ons::BROWSER_ENGINE;
@@ -435,9 +435,11 @@ fn add_source_browser_leads_to_the_engine_until_it_is_installed() {
     assert_eq!(data["addon"], engine);
 
     // Installed: Browser adds a page.
-    host.send(Command::AddOn {
-        id: engine.into(),
-        action: AddOnAction::Install,
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::AddonInstall(rbs_api::request::AddOnRef {
+            id: engine.into(),
+        })),
+        reply: rbs_studio_host::studio_host::ApiReply::Shown,
     });
     next(&updates, |u| match u {
         Update::AddOnChanged(c) if c.id == engine => {

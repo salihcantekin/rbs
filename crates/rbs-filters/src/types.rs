@@ -2,6 +2,8 @@
 //! `video-filters.md`, "Filter types" and "Values").
 
 use rbs_graph::node::NodeTypeId;
+
+use crate::pointer::{Effects, Needs, PointerView};
 pub use rbs_params::{
     Field, FieldKind, ParamError, Schema, Value, Values, color_text, parse_color,
 };
@@ -34,6 +36,16 @@ pub trait FilterType: Send + Sync + 'static {
     /// node writes entry 15. Pure: no I/O, no allocation; called on the render thread
     /// when the values or the size change.
     fn uniforms(&self, values: &Values, input: [u32; 2], out: &mut [Uniforms]);
+    /// Host services the type uses (spec "Host service: pointer"). Default: none.
+    fn needs(&self) -> Needs {
+        Needs::NONE
+    }
+    /// Pointer types: the live effects of this tick into `out` (at most
+    /// [`crate::pointer::MAX_EFFECTS`]). Pure: no I/O, no allocation; called on the
+    /// render thread every tick while Active. Default: none.
+    fn effects(&self, values: &Values, view: &PointerView<'_>, out: &mut Effects) {
+        let _ = (values, view, out);
+    }
 }
 
 /// A catalogue entry used where an owned type is wanted: `Arc::new(entry)`.
@@ -52,6 +64,12 @@ impl FilterType for &'static dyn FilterType {
     }
     fn uniforms(&self, values: &Values, input: [u32; 2], out: &mut [Uniforms]) {
         (**self).uniforms(values, input, out);
+    }
+    fn needs(&self) -> Needs {
+        (**self).needs()
+    }
+    fn effects(&self, values: &Values, view: &PointerView<'_>, out: &mut Effects) {
+        (**self).effects(values, view, out);
     }
 }
 

@@ -1378,7 +1378,6 @@ impl Host {
             }
             Command::ReadPermissions => self.send_permissions(notify),
             Command::ListAddOns => notify(Update::AddOns(self.addon_list())),
-            Command::AddOn { id, action } => self.addon_command(&id, action, notify),
             Command::RequestPermission(kind) => self.ask_permission(kind, None, notify),
             Command::AddSourceWithAudio { kind, target } => {
                 let done = self.add(kind, &target).and_then(|id| {
@@ -1399,16 +1398,6 @@ impl Host {
             Command::AddGlobalSource { kind, target } => {
                 let done = self.add_global(kind, &target).map(|_| true);
                 self.answer(done, notify);
-            }
-            Command::UndoDelete => {
-                if self
-                    .edits
-                    .history
-                    .next_undo()
-                    .is_some_and(|s| matches!(s.kind, EditKind::Delete | EditKind::Remove))
-                {
-                    self.step(true, notify);
-                }
             }
             Command::SetSourceVolume { id, volume } => {
                 let call = if self.levels_take(id) {

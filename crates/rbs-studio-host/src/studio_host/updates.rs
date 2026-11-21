@@ -287,6 +287,21 @@ pub enum Update {
     /// A control API client changed the stream settings (not the server or the key);
     /// the UI shows and saves them.
     StreamProfile(StreamProfile),
+    /// A control API client changed Swap after transition (`settings.set`, ADR-0164
+    /// decision 5); the UI shows and saves it.
+    SwapAfterTransition(bool),
+    /// A control API client changed Separate files; the UI saves the section and
+    /// keeps a hardware-limit value this build does not know when the policy is the
+    /// same.
+    SeparateFiles(crate::record_profile::SeparateFiles),
+    /// A control API client changed the replay buffer's settings; the UI saves them.
+    ReplaySetup(crate::replay_settings::ReplaySetup),
+    /// A control API client changed the vertical recording's own settings (`None`:
+    /// removed); the UI saves or removes the section.
+    VerticalProfile(Option<RecordProfile>),
+    /// A control API client changed the vertical stream's settings (not the server
+    /// or the key); the UI shows and saves them.
+    VerticalStreamProfile(StreamProfile),
     /// A control API client turned a stream destination on or off
     /// (`stream.destination.set_enabled`, protocol 1.77); the UI saves the section.
     StreamDestinations(Destinations),
