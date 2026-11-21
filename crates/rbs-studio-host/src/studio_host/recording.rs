@@ -283,57 +283,17 @@ impl Host {
                 judged: decision.estimate,
             });
         }
-        if let Some(parent) = folder.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("Cannot make the folder {}: {e}", parent.display()))?;
-        }
-        // `create_dir`, not `create_dir_all`: it fails when the folder exists, so a
-        // folder RBS did not make is never written into or cleaned up.
-        std::fs::create_dir(&folder).map_err(|e| match e.kind() {
-            std::io::ErrorKind::AlreadyExists => format!("{} already exists.", folder.display()),
-            _ => format!("Cannot make the folder {}: {e}", folder.display()),
-        })?;
+        make_recording_folder(&folder)?;
         let master_name = format!("{}.{}", rbs_record::MASTER_STEM, container_ext(r.container));
-        // Every name this start may write, for the cleanup of a refused start.
-        let mut planned: Vec<String> = iso_plan
-            .as_ref()
-            .map(|p| {
-                p.tracks
-                    .iter()
-                    .map(|t| match t.role {
-                        rbs_record::IsoRole::Audio => {
-                            format!("{}.{}", t.file_name, container_ext(ContainerId::Wav))
-                        }
-                        rbs_record::IsoRole::Image => {
-                            rbs_record::PngWriterNode::file_name(&t.file_name, 1)
-                        }
-                        _ => format!("{}.{}", t.file_name, container_ext(r.container)),
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        planned.push(master_name.clone());
+        let planned = planned_names(iso_plan.as_ref(), r.container, &master_name);
         let t0_ns = self.clock.now().as_nanos();
         let t0_utc = chrono::Utc::now()
             .format("%Y-%m-%dT%H:%M:%S%.3fZ")
             .to_string();
-        let mut start = IsoAudioStart::new(
-            rbs_transport::file_url(&folder),
-            ContainerId::Wav,
-            master_name.clone(),
-            t0_utc.clone(),
-            t0_ns,
-        );
-        // WAV, 24-bit PCM: an editor's format with no generation loss. A profile
-        // section for it comes with the Separate files card (ADR-0086 decision 4).
-        start.audio.codec = CodecId::Pcm;
-        start.audio.bitrate_bps = 0;
-        start.audio.bit_depth = Some(24);
-        start.skip_unheard = true;
         // The sound files open before the master, so they follow a window made now
         // that the master is then started with (ADR-0124).
         let pause = rbs_record::SharedPause::new();
-        start.pause = Some(pause.clone());
+        let start = iso_audio_start(&folder, &master_name, &t0_utc, t0_ns, &pause);
         let (mut manifest, mut skipped) = match self.studio.start_iso_audio(&self.adapters, &start)
         {
             Ok(started) => {
@@ -386,20 +346,8 @@ impl Host {
             remove_recording_folder(&folder, &planned);
             return Err(format!("{e}.").into());
         }
-        let tracks = manifest
-            .files
-            .iter()
-            .filter(|f| f.role == "audio")
-            .filter_map(|f| {
-                f.source.map(|source| api::RecordTrack {
-                    file: f.file_name.clone(),
-                    role: api::TrackRole::Audio,
-                    source: source.get(),
-                })
-            })
-            .collect();
         let iso = IsoFiles {
-            tracks,
+            tracks: audio_tracks(&manifest),
             skipped,
             manifest: manifest.clone(),
             folder: folder.clone(),
@@ -1543,4 +1491,85 @@ impl Host {
             .record(EditKind::RecordSeparately, &name, 0, vec![undo]);
         Ok(true)
     }
+}
+
+/// Makes a separate-files recording's folder and its parents. `create_dir`, not
+/// `create_dir_all`, for the folder itself: it fails when the folder exists, so a
+/// folder RBS did not make is never written into or cleaned up.
+fn make_recording_folder(folder: &Path) -> Result<(), String> {
+    if let Some(parent) = folder.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Cannot make the folder {}: {e}", parent.display()))?;
+    }
+    std::fs::create_dir(folder).map_err(|e| match e.kind() {
+        std::io::ErrorKind::AlreadyExists => format!("{} already exists.", folder.display()),
+        _ => format!("Cannot make the folder {}: {e}", folder.display()),
+    })
+}
+
+/// Every name a separate-files start may write, for the cleanup of a refused start.
+fn planned_names(
+    iso_plan: Option<&rbs_record::IsoPlan>,
+    container: ContainerId,
+    master_name: &str,
+) -> Vec<String> {
+    let mut planned: Vec<String> = iso_plan
+        .map(|p| {
+            p.tracks
+                .iter()
+                .map(|t| match t.role {
+                    rbs_record::IsoRole::Audio => {
+                        format!("{}.{}", t.file_name, container_ext(ContainerId::Wav))
+                    }
+                    rbs_record::IsoRole::Image => {
+                        rbs_record::PngWriterNode::file_name(&t.file_name, 1)
+                    }
+                    _ => format!("{}.{}", t.file_name, container_ext(container)),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    planned.push(master_name.to_owned());
+    planned
+}
+
+/// The sound files' start: WAV, 24-bit PCM, an editor's format with no generation
+/// loss. A profile section for it comes with the Separate files card (ADR-0086
+/// decision 4).
+fn iso_audio_start(
+    folder: &Path,
+    master_name: &str,
+    t0_utc: &str,
+    t0_ns: u64,
+    pause: &rbs_record::SharedPause,
+) -> IsoAudioStart {
+    let mut start = IsoAudioStart::new(
+        rbs_transport::file_url(folder),
+        ContainerId::Wav,
+        master_name.to_owned(),
+        t0_utc.to_owned(),
+        t0_ns,
+    );
+    start.audio.codec = CodecId::Pcm;
+    start.audio.bitrate_bps = 0;
+    start.audio.bit_depth = Some(24);
+    start.skip_unheard = true;
+    start.pause = Some(pause.clone());
+    start
+}
+
+/// The sound files of a manifest as the control API's tracks.
+fn audio_tracks(manifest: &rbs_manifest::RecordingManifest) -> Vec<api::RecordTrack> {
+    manifest
+        .files
+        .iter()
+        .filter(|f| f.role == "audio")
+        .filter_map(|f| {
+            f.source.map(|source| api::RecordTrack {
+                file: f.file_name.clone(),
+                role: api::TrackRole::Audio,
+                source: source.get(),
+            })
+        })
+        .collect()
 }

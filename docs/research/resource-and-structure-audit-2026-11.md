@@ -225,6 +225,7 @@ Severity is the cost if the path is in use, not the difficulty of the change.
 - **Local change:** When no reader is subscribed, call a vectorised add-only loop and skip `record_block`. Loudness already leaves the graph when it is off. Meters can follow that: no `LevelMeter` unless the Mixer is shown or a control client subscribed.
 - **Benefit:** A fraction of the 13 µs, plus the atomic traffic. Unsplit until a bench runs with meters detached.
 - **Risk:** A clip between two reads must still be kept while any reader is active. The two banks exist so the UI and the API do not clear each other.
+- **Status (2026-11-21):** done. F-15a (add-only loops without a meter, `rbs-audio`) on main c10a429. The reader gate landed an hour after this pass (9c75965, 2026-11-19): the studio host puts meters on the mixer only while the Mixer is shown or a client subscribes to `audio.levels`. F-15b then turned them off while every window is hidden and cleared peaks kept from before they came off. The saving when unread is F-15a's measured no-meter figure (16 inputs 9.00 to 4.27 µs per block, cloud; `hot-paths.md`).
 
 ### F-16: Sample rings are atomic per sample, and input FIFOs slide every block
 
