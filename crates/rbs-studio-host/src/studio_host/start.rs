@@ -12,6 +12,8 @@ pub(super) fn start(
     let keys = Arc::clone(&config.keys);
     #[cfg(feature = "fault-injection")]
     let config_fault = config.fault;
+    #[cfg(feature = "fault-injection")]
+    let config_trace = config.api_trace.clone();
     let (mut adapters, mut notes) = adapters();
     adapters.probe_io();
     let can_monitor = adapters.sources.can_monitor();
@@ -123,6 +125,8 @@ pub(super) fn start(
         unanswered: None,
         #[cfg(feature = "fault-injection")]
         fault: config_fault,
+        #[cfg(feature = "fault-injection")]
+        api_trace: config_trace,
         autosave: config.autosave,
         recent: saved.recent,
         device_sync: saved.device_sync,

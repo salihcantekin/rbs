@@ -5,6 +5,7 @@ mod add_ons;
 mod api;
 mod attributes;
 mod chapters;
+mod command_path;
 mod faults;
 mod filters;
 mod host;

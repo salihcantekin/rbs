@@ -104,6 +104,7 @@ mod control_api;
 use api_answers::*;
 use api_convert::*;
 pub use command::*;
+pub use command_path::{CommandPath, WindowReason};
 use control_api::*;
 use recording_markers::*;
 pub use refusal::Refusal;
@@ -111,6 +112,7 @@ pub use rows::*;
 pub use updates::*;
 mod canvas;
 mod command;
+mod command_path;
 mod control_loop;
 mod cues;
 mod history;
@@ -557,6 +559,8 @@ struct Host {
     unanswered: Option<Update>,
     #[cfg(feature = "fault-injection")]
     fault: Option<Fault>,
+    #[cfg(feature = "fault-injection")]
+    api_trace: Option<ApiTrace>,
     /// Counts `seq` per state key and publishes events to control API clients.
     events: EventPublisher,
     /// The Mixer panel is shown. Combined with an `audio.levels` subscription.
@@ -612,21 +616,51 @@ type RowExtra = (
 );
 
 impl Host {
-    /// Runs a control API command for a window action that already has a method.
-    /// The window and a remote client then share one implementation.
-    fn run_ui_api(&mut self, command: rbs_api::Command, notify: &dyn Fn(Update)) -> bool {
+    /// Runs a control API command for the window (ADR-0163 decision 1): `ApiTarget::run`
+    /// with panic containment and refusal logging, as a remote call is, without the
+    /// caller checks of `handle_as` (decision 3).
+    fn run_api(
+        &mut self,
+        command: rbs_api::Command,
+        notify: &dyn Fn(Update),
+    ) -> Result<Response, ApiError> {
+        let method = command.method();
+        #[cfg(feature = "fault-injection")]
+        if let Some(trace) = &self.api_trace {
+            trace.lock().unwrap_or_else(|e| e.into_inner()).push(method);
+        }
         let result = rbs_crash::contain(|| ApiTarget { host: self, notify }.run(command));
-        match result {
-            Ok(Ok(_)) => true,
-            Ok(Err(e)) => {
+        let result = result.unwrap_or_else(|_| {
+            self.caught = true;
+            Err(ApiError::new(ErrorKind::Internal, rbs_crash::CAUGHT_TEXT))
+        });
+        if let Err(e) = &result {
+            failures::log_api_refusal(method, e);
+        }
+        result
+    }
+
+    /// Runs a control API command for a window action that already has a method; a
+    /// refusal shows as the error bar. The window and a remote client then share one
+    /// implementation.
+    fn run_ui_api(&mut self, command: rbs_api::Command, notify: &dyn Fn(Update)) -> bool {
+        match self.run_api(command, notify) {
+            Ok(_) => true,
+            Err(e) => {
                 notify(Update::Error(e.message));
                 false
             }
-            Err(_) => {
-                self.caught = true;
-                notify(Update::Error(rbs_crash::CAUGHT_TEXT.to_owned()));
-                false
-            }
+        }
+    }
+
+    /// [`Command::Api`]: the call, answered as the window asked (ADR-0163 decision 2).
+    fn api_command(&mut self, call: rbs_api::Command, reply: ApiReply, notify: &dyn Fn(Update)) {
+        let result = self.run_api(call, notify);
+        if let (Err(e), ApiReply::Shown | ApiReply::Ticket(_)) = (&result, reply) {
+            notify(Update::Error(e.message.clone()));
+        }
+        if let ApiReply::Ticket(ticket) = reply {
+            notify(Update::ApiAnswer { ticket, result });
         }
     }
 
@@ -668,7 +702,6 @@ impl Host {
             | Command::SetMasterVolume { .. }
             | Command::SetMasterMuted { .. }
             | Command::SetLoudnessShown(..)
-            | Command::ResetLoudness
             | Command::SetLoudnessSettings { .. }
             | Command::SetSourceMonitor { .. }
             | Command::SetMonitorSolo(..)
@@ -794,6 +827,7 @@ impl Host {
             | Command::RemoveStreamKey(..)
             | Command::SwitchCollection { .. }
             | Command::SetLibrary { .. } => self.stream_command(c, notify),
+            Command::Api { call, reply } => self.api_command(*call, reply, notify),
         }
     }
 

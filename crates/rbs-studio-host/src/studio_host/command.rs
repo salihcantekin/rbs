@@ -160,8 +160,6 @@ pub enum Command {
     },
     /// Show loudness on or off (`loudness.set_enabled`, ADR-0092), saved.
     SetLoudnessShown(bool),
-    /// Restart the loudness measurement (`loudness.reset`).
-    ResetLoudness,
     /// The loudness target (LUFS) and true-peak limit (dBTP), saved (`settings.set`
     /// `loudness`, protocol 1.59).
     SetLoudnessSettings {
@@ -863,6 +861,29 @@ pub enum Command {
         /// What to do.
         action: AddOnAction,
     },
+    /// A control API command from the window (ADR-0163 decision 1): run as a remote
+    /// call is, with the same checks, handler, events and logging, but without the
+    /// caller checks, because the window is the person at this computer (decision 3).
+    Api {
+        /// The command.
+        call: Box<rbs_api::Command>,
+        /// How the window wants the answer.
+        reply: ApiReply,
+    },
+}
+
+/// How [`Command::Api`] answers the window (ADR-0163 decision 2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApiReply {
+    /// A refusal shows as [`Update::Error`]; state comes back through the usual
+    /// updates.
+    Shown,
+    /// A refusal is logged and not shown: high-rate live input, and refusals the
+    /// window ignores (Undo with nothing to undo).
+    Quiet,
+    /// As [`ApiReply::Shown`], and [`Update::ApiAnswer`] with this ticket carries the
+    /// result, a refusal or a caught panic included.
+    Ticket(u64),
 }
 
 /// What [`Command::AddOn`] does: the commands of an add-on's row.

@@ -78,6 +78,7 @@ const REPORT_EVERY: u32 = 30;
 pub(crate) mod activity_choice;
 pub(crate) mod add_picker;
 pub(crate) mod ai;
+mod api_call;
 pub(crate) mod attributes;
 pub(crate) mod browser_props;
 pub(crate) mod destinations;
@@ -1907,12 +1908,6 @@ impl StudioUi {
             Ok(()) => String::new(),
             Err(e) => format!("The remote control settings could not be saved: {e}"),
         };
-    }
-
-    pub fn send(&self, c: Command) {
-        if let Some(h) = &self.host {
-            h.send(c);
-        }
     }
 
     /// The source kinds this system offers: `(code, label)`, code being the index in
@@ -6343,8 +6338,8 @@ impl StudioUi {
             return out;
         }
         match u {
-            // Taken above.
-            Update::Monitor(_) | Update::MonitorDevices(_) | Update::Loudness(_) => {}
+            Update::Monitor(_) | Update::MonitorDevices(_) | Update::Loudness(_) => {} // taken above
+            Update::ApiAnswer { .. } => {} // no window call asks for one yet (ADR-0163)
             Update::TBarReset => self.tbar_resets = self.tbar_resets.wrapping_add(1),
             Update::AddOns(list) => self.add_ons = list.add_ons,
             Update::OpenAddOn(id) => self.open_add_on = Some(id),

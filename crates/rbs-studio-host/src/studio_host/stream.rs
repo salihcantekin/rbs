@@ -1186,6 +1186,23 @@ impl Host {
         failure
     }
 
+    /// A pause, hold or break toggle's refusal in a sentence of its own (`what`); a
+    /// caught panic as it is.
+    fn answer_toggle(
+        &mut self,
+        done: Result<Response, ApiError>,
+        what: &str,
+        notify: &dyn Fn(Update),
+    ) {
+        match done {
+            Ok(_) => {}
+            Err(e) if e.kind == ErrorKind::Internal && e.message == rbs_crash::CAUGHT_TEXT => {
+                notify(Update::Error(e.message));
+            }
+            Err(e) => notify(Update::Error(format!("{what}: {}.", e.message))),
+        }
+    }
+
     /// The window commands of this concern, routed by `Host::command`.
     pub(super) fn stream_command(&mut self, c: Command, notify: &dyn Fn(Update)) {
         match c {
@@ -1193,18 +1210,9 @@ impl Host {
                 let command = rbs_api::Command::RecordPauseToggle(rbs_api::request::OnCanvases {
                     canvas: Some(api::OutputTarget::All),
                 });
-                match rbs_crash::contain(|| ApiTarget { host: self, notify }.run(command)) {
-                    Ok(Ok(_)) => {}
-                    // The window's toast says it in a sentence of its own.
-                    Ok(Err(e)) => notify(Update::Error(format!(
-                        "The recording could not pause or resume: {}.",
-                        e.message
-                    ))),
-                    Err(_) => {
-                        self.caught = true;
-                        notify(Update::Error(rbs_crash::CAUGHT_TEXT.to_owned()));
-                    }
-                }
+                // The window's toast says it in a sentence of its own.
+                let done = self.run_api(command, notify);
+                self.answer_toggle(done, "The recording could not pause or resume", notify);
             }
             Command::HoldStream | Command::Break => {
                 let (command, what) = match c {
@@ -1220,14 +1228,8 @@ impl Host {
                         "The break could not start or end",
                     ),
                 };
-                match rbs_crash::contain(|| ApiTarget { host: self, notify }.run(command)) {
-                    Ok(Ok(_)) => {}
-                    Ok(Err(e)) => notify(Update::Error(format!("{what}: {}.", e.message))),
-                    Err(_) => {
-                        self.caught = true;
-                        notify(Update::Error(rbs_crash::CAUGHT_TEXT.to_owned()));
-                    }
-                }
+                let done = self.run_api(command, notify);
+                self.answer_toggle(done, what, notify);
             }
             Command::SaveReplay { seconds } => {
                 if let Err(why) = self.save_replay(seconds) {

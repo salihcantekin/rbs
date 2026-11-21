@@ -69,6 +69,14 @@ pub enum StreamUpdate {
 /// What the studio tells the UI.
 #[derive(Debug, Clone)]
 pub enum Update {
+    /// The answer to a [`Command::Api`] sent with [`ApiReply::Ticket`] (ADR-0163
+    /// decision 2).
+    ApiAnswer {
+        /// The window's ticket.
+        ticket: u64,
+        /// What the call answered, or why it was refused.
+        result: Result<rbs_api::Response, ApiError>,
+    },
     /// An add-on's status changed (ADR-0145): an install's progress or end, a clean
     /// or a removal. Settings › Add-ons asks for the whole list when it opens.
     AddOnChanged(api::AddOnChanged),

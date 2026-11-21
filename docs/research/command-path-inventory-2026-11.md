@@ -2,7 +2,7 @@
 
 First-pass classification of every `rbs_studio_host::Command` variant on main `c424931` for [ADR-0163](../adr/0163-one-command-path-for-the-window-and-the-api.md) (one command path, quality plan WP-20). Made by reading each variant's handler arm and the control API method names (`rbs_api::Command::method`), corrected after the ADR's first review. Each namespace step checks its rows again against the code and the control API spec; where a row is wrong, the step's `Command::path` arm is the record, not this table.
 
-Counts: 21 Translates (already run through `run_ui_api` or `ApiTarget::run`), 83 Pending, 10 Contract, 20 Missing, 27 WindowOnly (13 View, 9 LocalOnly, 2 Preview, 3 Mirror). Total 161. Corrected after review rounds 1 to 3.
+Step 0 moved `ResetLoudness` to `Command::Api` (Translates 21 to 20); `command_path.rs` holds the current counts. First-pass counts: 21 Translates (already run through `run_ui_api` or `ApiTarget::run`), 83 Pending, 10 Contract, 20 Missing, 27 WindowOnly (13 View, 9 LocalOnly, 2 Preview, 3 Mirror). Total 161. Corrected after review rounds 1 to 3.
 
 ## Known differences between the two paths
 
@@ -64,7 +64,7 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `SetMasterVolume` | Translates | canvas.set_master_volume |
 | `SetMasterMuted` | Translates | canvas.set_master_muted |
 | `SetLoudnessShown` | Translates | loudness.set_enabled |
-| `ResetLoudness` | Translates | loudness.reset |
+| `ResetLoudness` | Moved to `Command::Api` (step 0) | loudness.reset |
 | `SetLoudnessSettings` | Translates | settings.set |
 | `SetSourceMonitor` | Pending | source.set_monitor |
 | `SetMonitorSolo` | Pending | monitor.set_solo |

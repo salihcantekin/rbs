@@ -690,9 +690,6 @@ impl Host {
                     notify,
                 );
             }
-            Command::ResetLoudness => {
-                self.run_ui_api(rbs_api::Command::LoudnessReset, notify);
-            }
             Command::SetLoudnessSettings {
                 target,
                 true_peak_limit,
