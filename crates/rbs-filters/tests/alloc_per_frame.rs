@@ -138,3 +138,48 @@ fn allocations_per_frame_are_bounded_and_do_not_grow() {
         );
     }
 }
+
+/// A pointer type (spec "Host service: pointer"): idle on an unchanged input it does
+/// what the skip path does; drawing a live ring every tick it costs what a render
+/// costs, and neither grows.
+#[test]
+fn a_pointer_type_allocates_like_any_filter_idle_and_drawing() {
+    use common::pointer::{RingType, Scripted, mapping};
+    use rbs_capture::{Cover, MappingCell};
+    use rbs_filters::PointerFeed;
+    use rbs_input::InputMonitor;
+
+    let Some(ctx) = common::gpu() else { return };
+    let script = Scripted::default();
+    let monitor = InputMonitor::new(Box::new(script.clone()));
+    let cell = MappingCell::new();
+    cell.publish(Some(mapping(Cover::Clear)));
+    // Rings that never die, so every drawing tick draws.
+    let ty: Arc<dyn FilterType> = Arc::new(RingType::living(u64::MAX / 2));
+    let values = Values::defaults(ty.as_ref());
+    let feed = PointerFeed::new(monitor, cell);
+    let mut rig = Rig::with_pointer(Arc::clone(&ctx), ty, values, Some([W, H]), feed).unwrap();
+    rig.set_input(Picture::solid(W, H, [0.2, 0.6, 0.3, 1.0]));
+    let window = |rig: &mut Rig| {
+        for _ in 0..WARM_UP {
+            rig.tick();
+        }
+        let mut avg = || {
+            let before = ALLOCS.load(Ordering::Relaxed);
+            for _ in 0..FRAMES {
+                rig.tick();
+            }
+            (ALLOCS.load(Ordering::Relaxed) - before) as f64 / FRAMES as f64
+        };
+        (avg(), avg())
+    };
+    let (idle_a, idle_b) = window(&mut rig);
+    script.click(1, 102.0, 53.0);
+    let (draw_a, draw_b) = window(&mut rig);
+    ctx.wait_idle().unwrap();
+    eprintln!("pointer: idle {idle_a:.1} / {idle_b:.1}, drawing {draw_a:.1} / {draw_b:.1}");
+    assert!(idle_b <= idle_a * 1.1 + 1.0, "{idle_a} then {idle_b}");
+    assert!(draw_b <= draw_a * 1.1 + 1.0, "{draw_a} then {draw_b}");
+    assert!(idle_b <= 8.0, "{idle_b} idle");
+    assert!(draw_b - idle_b <= 128.0, "{draw_b} drawing");
+}

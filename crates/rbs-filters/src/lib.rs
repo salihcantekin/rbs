@@ -11,11 +11,15 @@ pub mod catalogue;
 pub mod conformance;
 pub mod node;
 pub mod normalise;
+pub mod pointer;
 pub mod types;
 
 pub use catalogue::{catalogue, find};
 pub use node::{FilterNode, FilterStats, PRELUDE, descriptor};
 pub use normalise::{NORMALISE, Normalise};
+pub use pointer::{
+    Click, Effect, Effects, MAX_CLICKS, MAX_EFFECTS, Needs, PointerFeed, PointerView,
+};
 pub use types::{
     Field, FieldKind, FilterType, MAX_FIELDS, MAX_PASSES, ParamError, Pass, PassSource, Scale,
     Schema, Uniforms, Value, Values, color_text, parse_color,

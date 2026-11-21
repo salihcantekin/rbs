@@ -24,6 +24,7 @@ use rbs_graph::runtime::{
 };
 
 use crate::node::{FilterNode, FilterStats, PRELUDE};
+use crate::pointer::PointerFeed;
 use crate::types::{
     FieldKind, FilterType, MAX_FIELDS, MAX_PASSES, ParamError, PassSource, Scale, Uniforms, Value,
     Values,
@@ -417,7 +418,7 @@ impl Rig {
         filters: Vec<(Arc<dyn FilterType>, Values)>,
         size: Option<[u32; 2]>,
     ) -> Result<Self, String> {
-        Self::build(ctx, filters, size, None)
+        Self::build(ctx, filters, size, None, None)
     }
 
     /// Like [`Rig::chain`], with a node that acquires and releases a canvas texture
@@ -429,7 +430,19 @@ impl Rig {
         size: Option<[u32; 2]>,
         canvas: [u32; 2],
     ) -> Result<Self, String> {
-        Self::build(ctx, filters, size, Some(canvas))
+        Self::build(ctx, filters, size, Some(canvas), None)
+    }
+
+    /// A rig running a pointer type with `feed` lent to it (spec "Host service:
+    /// pointer").
+    pub fn with_pointer(
+        ctx: Arc<GpuContext>,
+        ty: Arc<dyn FilterType>,
+        values: Values,
+        size: Option<[u32; 2]>,
+        feed: PointerFeed,
+    ) -> Result<Self, String> {
+        Self::build(ctx, vec![(ty, values)], size, None, Some(feed))
     }
 
     fn build(
@@ -437,6 +450,7 @@ impl Rig {
         filters: Vec<(Arc<dyn FilterType>, Values)>,
         size: Option<[u32; 2]>,
         canvas: Option<[u32; 2]>,
+        mut pointer: Option<PointerFeed>,
     ) -> Result<Self, String> {
         let (mut ctl, exec) = channel::<GpuRuntime>(Arc::clone(&ctx), RenderLocal::default());
         let mut graph = GraphDescription::new();
@@ -491,7 +505,10 @@ impl Rig {
         let mut chain = Vec::new();
         let mut senders = Vec::new();
         for (ty, values) in filters {
-            let (node, sender, stats) = FilterNode::new(ty, values, size);
+            let (mut node, sender, stats) = FilterNode::new(ty, values, size);
+            if let Some(feed) = pointer.take() {
+                node = node.with_pointer(feed);
+            }
             let id = add(Box::new(node))?;
             links.push((prev, id));
             chain.push((id, stats));
@@ -601,6 +618,11 @@ impl Rig {
     /// The last error summary of the filter node.
     pub fn filter_error(&self) -> Option<&'static str> {
         self.exec.health(self.filter).and_then(|h| h.last_error)
+    }
+
+    /// The format of the frame the probe saw on the last tick.
+    pub fn output_format(&self) -> Option<VideoFormat> {
+        lock(&self.last).as_ref().map(|f| *f.format())
     }
 
     /// The `(timestamp, sequence)` key of the frame the probe saw on the last tick.

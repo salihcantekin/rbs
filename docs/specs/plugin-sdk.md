@@ -61,6 +61,17 @@ Plugin panels are declarative and rendered natively by the host (ADR-0016, UI ru
 - **Lifecycle:** a hidden panel moves to Standby (ADR-0013): no events, patches are queued and coalesced, and the plugin is told so it can stop work. A crashed or unresponsive panel is replaced by an error card with a reload button.
 - **Accessibility and i18n:** every node with text carries a Fluent message id or plugin-provided localised string; interactive nodes require an accessible label.
 
+## Host services
+
+What the host lends a plugin node beyond its frames and settings. A node asks through its type's declared needs; the host grants a service only when the plugin's manifest permission was approved (rule 5), and fixes the scope itself.
+
+| Service | Permission | What the node gets |
+| --- | --- | --- |
+| Pointer (`Needs::POINTER`, video filters; [video-filters.md](video-filters.md#host-service-pointer-adr-0165-decision-3)) | `input.pointer` | Per tick: the pointer's position on the input picture and the recent clicks over it, in picture pixels; a 16-effect buffer at bind group 2. Never key events, whatever the plugin asks for. |
+| Keys | `input.keys` (reserved, ADR-0165 phase 2) | Not offered yet. A separate permission, never implied by `input.pointer`. |
+
+Sandbox filters are data-only (ADR-0162 decision 2a): for them the host would evaluate a manifest-declared mapping from the pointer view to uniforms, which is not built yet.
+
 ## Registries
 
 Owner: ADR-0162. Every type a plugin can add will be looked up in a runtime registry, never in a compiled list, and built-in types register through the same call (the `org.rbs.*` prefix is reserved for them).

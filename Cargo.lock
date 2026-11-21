@@ -5138,9 +5138,11 @@ dependencies = [
  "bytemuck",
  "criterion 0.7.0",
  "pollster",
+ "rbs-capture",
  "rbs-core",
  "rbs-gpu",
  "rbs-graph",
+ "rbs-input",
  "rbs-params",
  "wgpu",
 ]

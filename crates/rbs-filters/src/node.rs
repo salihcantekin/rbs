@@ -17,6 +17,7 @@ use rbs_graph::runtime::param::{self, ParamReceiver, ParamSender};
 use rbs_graph::runtime::{Node, NodeError, PrepareCtx, ProcessCtx, WarmCtx};
 
 use crate::catalogue::{COLOR_CORRECTION, colour_correction_is_identity};
+use crate::pointer::{EFFECT_VECS, Needs, POINTER_PRELUDE, PointerFeed, PointerState};
 use crate::types::{FilterType, MAX_PASSES, PassSource, UNIFORM_VECS, Uniforms, Values};
 
 /// Index of the "in" pin.
@@ -45,6 +46,7 @@ pub struct FilterStats {
     size: AtomicU64,
     resizes: AtomicU64,
     frames: AtomicU64,
+    pointer_faults: AtomicU64,
 }
 
 fn pack(size: [u32; 2]) -> u64 {
@@ -68,6 +70,12 @@ impl FilterStats {
     pub fn frames(&self) -> u64 {
         self.frames.load(Ordering::Relaxed)
     }
+
+    /// Pointer types: subscriptions that failed in `prepare` (the node then shows no
+    /// effects; spec "Host service: pointer" rule 1).
+    pub fn pointer_faults(&self) -> u64 {
+        self.pointer_faults.load(Ordering::Relaxed)
+    }
 }
 
 /// GPU objects made in `prepare`.
@@ -75,6 +83,8 @@ struct Prepared {
     pipelines: Vec<wgpu::RenderPipeline>,
     buffers: Vec<wgpu::Buffer>,
     groups: Vec<wgpu::BindGroup>,
+    /// Pointer types: the effect buffer and its bind group (group 2).
+    effects: Option<(wgpu::Buffer, wgpu::BindGroup)>,
 }
 
 /// Runs one filter type between its "in" and "out" pins.
@@ -98,6 +108,8 @@ pub struct FilterNode {
     /// Decodes a 4:2:0 input (a camera sampled directly by the compositor, perf audit
     /// R-11) once per picture; holds nothing until the first such frame.
     rgb: YuvToRgb,
+    /// Pointer types only (`Needs::POINTER`): the host service's state.
+    pointer: Option<Box<PointerState>>,
 }
 
 /// The description of each pass's target for an input of `size`.
@@ -157,7 +169,7 @@ impl FilterNode {
             stats.size.store(pack(s), Ordering::Release);
         }
         let identity_skip = ty.type_id().as_str() == COLOR_CORRECTION;
-        let node = Self {
+        let mut node = Self {
             descriptor: descriptor(ty.as_ref()),
             ty,
             values: receiver,
@@ -170,13 +182,29 @@ impl FilterNode {
             uniforms: [Uniforms::default(); MAX_PASSES],
             identity_skip,
             rgb: YuvToRgb::new(),
+            pointer: None,
         };
+        // Made once here, so a pointer type never allocates its state per tick.
+        if node.ty.needs().contains(Needs::POINTER) {
+            node.pointer = Some(Box::default());
+        }
         (node, sender, stats)
     }
 
     /// The filter type.
     pub fn filter_type(&self) -> &Arc<dyn FilterType> {
         &self.ty
+    }
+
+    /// Lends a pointer type the input monitor and its source's mapping cell (spec
+    /// "Host service: pointer"); ignored for other types. Without a feed a pointer
+    /// type shows no effects.
+    #[must_use]
+    pub fn with_pointer(mut self, feed: PointerFeed) -> Self {
+        if self.pointer.is_some() {
+            self.pointer = Some(Box::new(PointerState::with_feed(feed)));
+        }
+        self
     }
 }
 
@@ -192,13 +220,15 @@ fn pipeline(
     ctx: &GpuContext,
     layout: &wgpu::PipelineLayout,
     source: &str,
+    pointer: bool,
 ) -> Result<wgpu::RenderPipeline, NodeError> {
+    let extra = if pointer { POINTER_PRELUDE } else { "" };
     let device = ctx.device();
     // Shader errors are reported through the device's error scope rather than a panic.
     let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("rbs-filters pass"),
-        source: wgpu::ShaderSource::Wgsl(format!("{PRELUDE}\n{source}").into()),
+        source: wgpu::ShaderSource::Wgsl(format!("{PRELUDE}\n{extra}\n{source}").into()),
     });
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("rbs-filters pass"),
@@ -243,33 +273,29 @@ impl Node<GpuRuntime> for FilterNode {
         if passes.is_empty() || passes.len() > MAX_PASSES {
             return Err(NodeError::Permanent("filter type has no usable passes"));
         }
-        let uniform_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("rbs-filters uniforms"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new(size_of::<Uniforms>() as u64),
-                },
-                count: None,
-            }],
-        });
+        let uniform_layout = uniform_layout(device, "rbs-filters uniforms", size_of::<Uniforms>());
+        let pointer = self.pointer.is_some();
+        let effects = pointer.then(|| effect_buffer(device));
+        let layouts = [
+            Some(&uniform_layout),
+            Some(gpu.sampled_layout()),
+            effects.as_ref().map(|(layout, _, _)| layout),
+        ];
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("rbs-filters"),
-            bind_group_layouts: &[Some(&uniform_layout), Some(gpu.sampled_layout())],
+            bind_group_layouts: &layouts[..if pointer { 3 } else { 2 }],
             immediate_size: 0,
         });
         let mut prepared = Prepared {
             pipelines: Vec::with_capacity(passes.len()),
             buffers: Vec::with_capacity(passes.len()),
             groups: Vec::with_capacity(passes.len()),
+            effects: effects.map(|(_, buffer, group)| (buffer, group)),
         };
         for pass in passes {
             prepared
                 .pipelines
-                .push(pipeline(gpu, &layout, pass.shader)?);
+                .push(pipeline(gpu, &layout, pass.shader, pointer)?);
             let buffer = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("rbs-filters uniforms"),
                 size: size_of::<Uniforms>() as u64,
@@ -291,6 +317,12 @@ impl Node<GpuRuntime> for FilterNode {
         self.gpu = Some(prepared);
         self.written = None;
         self.published = None;
+        // Control thread: the subscription may start the monitor's thread (P13).
+        if let Some(p) = self.pointer.as_deref_mut()
+            && p.open().is_err()
+        {
+            self.stats.pointer_faults.fetch_add(1, Ordering::Relaxed);
+        }
         Ok(())
     }
 
@@ -341,6 +373,7 @@ impl Node<GpuRuntime> for FilterNode {
 
     fn process(&mut self, ctx: &mut ProcessCtx<'_, GpuRuntime>) -> Result<(), NodeError> {
         let gpu = ctx.shared();
+        let now = ctx.tick().time;
         let changed = self.values.update();
         let prepared = self.gpu.as_ref().ok_or(NodeError::NotReady)?;
         let (inputs, outputs, local) = ctx.parts();
@@ -401,10 +434,40 @@ impl Node<GpuRuntime> for FilterNode {
         // The same input frame and settings: the output slot still holds the frame
         // published for them (video slots keep their frame), so skip the passes and
         // keep this size's textures from turning idle.
-        if !changed && self.written == Some(state) && self.published == Some((input_id, time)) {
-            for desc in targets_of(passes, size).iter().flatten() {
-                local.pool.touch(desc);
+        // Pointer types (spec "Host service: pointer"): a live effect draws even an
+        // unchanged input; none passes the input through once and then idles.
+        let drawing = match self.pointer.as_deref_mut() {
+            None => false,
+            Some(p) => {
+                if p.step(&*self.ty, &values, now, time, size) {
+                    if let Some((buffer, _)) = &prepared.effects {
+                        let packed = bytemuck::bytes_of(p.packed());
+                        gpu.queue().write_buffer(buffer, 0, packed);
+                    }
+                    true
+                } else {
+                    let again =
+                        std::mem::take(&mut p.drew) || self.published != Some((input_id, time));
+                    let src = inputs.video(IN_PIN, 0);
+                    let rgb = &mut self.rgb;
+                    let shared =
+                        again.then(|| share_input(gpu, &mut local.pool, rgb, src, decoded));
+                    touch_all(&mut local.pool, passes, size);
+                    if let Some(frame) = shared.flatten() {
+                        self.stats.frames.fetch_add(1, Ordering::Relaxed);
+                        self.published = Some((input_id, time));
+                        drop(outputs.set_video(OUT_PIN, Some(frame))?);
+                    }
+                    return Ok(());
+                }
             }
+        };
+        if !drawing
+            && !changed
+            && self.written == Some(state)
+            && self.published == Some((input_id, time))
+        {
+            touch_all(&mut local.pool, passes, size);
             return Ok(());
         }
         if changed || self.written != Some(state) {
@@ -434,24 +497,14 @@ impl Node<GpuRuntime> for FilterNode {
                 && !decode
                 && colour_correction_is_identity(&self.uniforms[0])
             {
-                let shared = if decoded {
-                    inputs.video(IN_PIN, 0).and_then(|src| {
-                        self.rgb
-                            .rgb(gpu, &mut local.pool, src)
-                            .ok()
-                            .and_then(VideoFrame::share)
-                    })
-                } else {
-                    inputs.video(IN_PIN, 0).and_then(VideoFrame::share)
-                };
-                if let Some(frame) = shared {
+                let src = inputs.video(IN_PIN, 0);
+                if let Some(frame) = share_input(gpu, &mut local.pool, &mut self.rgb, src, decoded)
+                {
                     self.written = Some(state);
                     self.stats.frames.fetch_add(1, Ordering::Relaxed);
                     self.published = Some((input_id, time));
-                    for desc in targets_of(passes, size).iter().flatten() {
-                        local.pool.touch(desc);
-                    }
-                    drop(outputs.set_video(OUT_PIN, Some(frame.with_sequence(next_generation())))?);
+                    touch_all(&mut local.pool, passes, size);
+                    drop(outputs.set_video(OUT_PIN, Some(frame))?);
                     return Ok(());
                 }
             }
@@ -515,6 +568,9 @@ impl Node<GpuRuntime> for FilterNode {
     }
 
     fn release(&mut self, _ctx: &mut PrepareCtx<'_, GpuRuntime>) {
+        if let Some(p) = self.pointer.as_deref_mut() {
+            p.close();
+        }
         self.gpu = None;
         self.warmed = None;
         self.written = None;
@@ -579,8 +635,74 @@ fn render(
         rp.set_pipeline(&prepared.pipelines[i]);
         rp.set_bind_group(0, &prepared.groups[i], &[]);
         rp.set_bind_group(1, source, &[]);
+        if let Some((_, group)) = &prepared.effects {
+            rp.set_bind_group(2, group, &[]);
+        }
         rp.draw(0..3, 0..1);
     }
     gpu.queue().submit(Some(encoder.finish()));
     Ok(())
+}
+
+/// A fragment-stage uniform layout of one buffer of `size` bytes at binding 0.
+fn uniform_layout(device: &wgpu::Device, label: &str, size: usize) -> wgpu::BindGroupLayout {
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some(label),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: wgpu::BufferSize::new(size as u64),
+            },
+            count: None,
+        }],
+    })
+}
+
+/// The pointer service's effect buffer (group 2), made in `prepare`.
+fn effect_buffer(device: &wgpu::Device) -> (wgpu::BindGroupLayout, wgpu::Buffer, wgpu::BindGroup) {
+    let size = size_of::<[[f32; 4]; EFFECT_VECS]>();
+    let layout = uniform_layout(device, "rbs-filters effects", size);
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("rbs-filters effects"),
+        size: size as u64,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("rbs-filters effects"),
+        layout: &layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: buffer.as_entire_binding(),
+        }],
+    });
+    (layout, buffer, group)
+}
+
+/// Keeps each pass target's description from turning idle (`TexturePool::trim_idle`).
+fn touch_all(pool: &mut TexturePool, passes: &[crate::types::Pass], size: [u32; 2]) {
+    for desc in targets_of(passes, size).iter().flatten() {
+        pool.touch(desc);
+    }
+}
+
+/// The input itself to publish, decoded to RGB first when it is 4:2:0, with a new
+/// generation as its sequence (ADR-0117 decision 4); `None` when it cannot be shared.
+fn share_input(
+    gpu: &GpuContext,
+    pool: &mut TexturePool,
+    rgb: &mut YuvToRgb,
+    src: Option<&VideoFrame>,
+    decoded: bool,
+) -> Option<VideoFrame> {
+    let src = src?;
+    let shared = if decoded {
+        rgb.rgb(gpu, pool, src).ok().and_then(VideoFrame::share)
+    } else {
+        src.share()
+    };
+    shared.map(|f| f.with_sequence(next_generation()))
 }
