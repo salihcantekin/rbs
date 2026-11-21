@@ -516,4 +516,24 @@ mod tests {
         stop.store(true, Ordering::Release);
         writer.join().expect("writer thread panicked");
     }
+    #[test]
+    fn the_per_frame_calls_do_not_allocate() {
+        let switch = MappingSwitch::new();
+        let cell = MappingCell::new();
+        let m = PictureMapping::new(
+            Timestamp::from_nanos(1),
+            [0.0; 2],
+            [1.0; 2],
+            Size::new(8, 8),
+        );
+        let info = allocation_counter::measure(|| {
+            for _ in 0..100 {
+                std::hint::black_box(switch.is_on());
+                cell.publish(Some(m));
+                std::hint::black_box(cell.get());
+            }
+            cell.publish(None);
+        });
+        assert_eq!(info.count_total, 0);
+    }
 }
