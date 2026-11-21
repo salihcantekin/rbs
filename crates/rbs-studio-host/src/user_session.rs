@@ -758,78 +758,60 @@ impl UserSession {
         listed(&self.data.themes())
     }
 
-    /// Adds a theme; returns its id.
-    pub fn create_theme(&self, name: &str, theme: ThemeBody) -> Result<EntryId, String> {
+    /// Adds a theme; its id once written.
+    pub fn create_theme(&self, name: &str, theme: ThemeBody) -> Pending<EntryId> {
         let name = name.to_owned();
-        self.run(move |data, lock, _| {
+        self.later(move |data, lock, _| {
             data.themes()
                 .create(lock, &name, &theme)
                 .map_err(|e| e.to_string())
-        })?
+        })
     }
 
     /// Saves a theme under `name` (a rename when it differs).
-    pub fn save_theme(&self, id: &EntryId, name: &str, theme: ThemeBody) -> Result<(), String> {
+    pub fn save_theme(&self, id: &EntryId, name: &str, theme: ThemeBody) -> Pending<()> {
         let (id, name) = (id.clone(), name.to_owned());
-        self.run(move |data, lock, _| {
+        self.later(move |data, lock, _| {
             data.themes()
                 .save(lock, &id, &Entry::new(name, theme))
                 .map_err(|e| e.to_string())
-        })?
+        })
     }
 
     /// Renames a theme.
-    pub fn rename_theme(&self, id: &EntryId, name: &str) -> Result<(), String> {
+    pub fn rename_theme(&self, id: &EntryId, name: &str) -> Pending<()> {
         let (id, name) = (id.clone(), name.to_owned());
-        self.run(move |data, lock, _| {
+        self.later(move |data, lock, _| {
             data.themes()
                 .rename(lock, &id, &name)
                 .map_err(|e| e.to_string())
-        })?
+        })
     }
 
     /// Moves a theme to `deleted/`.
-    pub fn delete_theme(&self, id: &EntryId) -> Result<(), String> {
+    pub fn delete_theme(&self, id: &EntryId) -> Pending<()> {
         let id = id.clone();
-        self.run(move |data, lock, _| {
+        self.later(move |data, lock, _| {
             data.themes()
                 .delete(lock, &id)
                 .map(|_| ())
                 .map_err(|e| e.to_string())
-        })?
-    }
-
-    /// Adds the theme in the file `from` (a clashing name gets a number); returns its
-    /// id.
-    pub fn import_theme(&self, from: &Path) -> Result<EntryId, String> {
-        let from = from.to_owned();
-        self.run(move |data, lock, _| {
-            data.themes()
-                .import(lock, &from)
-                .map(|(id, _)| id)
-                .map_err(|e| e.to_string())
-        })?
-    }
-
-    /// Writes a theme to `to` (one file; nothing to scrub).
-    pub fn export_theme(&self, id: &EntryId, to: &Path) -> Result<(), String> {
-        self.flush();
-        self.data.themes().export(id, to).map_err(|e| e.to_string())
+        })
     }
 
     /// Records the user's shortcut changes (ADR-0060).
-    pub fn set_shortcuts(&self, doc: &rbs_ui::shortcut::ShortcutsDoc) -> Result<(), String> {
+    pub fn set_shortcuts(&self, doc: &rbs_ui::shortcut::ShortcutsDoc) -> Pending<()> {
         let doc = doc.clone();
-        self.run(move |data, lock, _| data.set_shortcuts(lock, &doc).map_err(|e| e.to_string()))?
+        self.later(move |data, lock, _| data.set_shortcuts(lock, &doc).map_err(|e| e.to_string()))
     }
 
     /// Records the appearance choice.
-    pub fn set_appearance(&self, appearance: &Appearance) -> Result<(), String> {
+    pub fn set_appearance(&self, appearance: &Appearance) -> Pending<()> {
         let appearance = appearance.clone();
-        self.run(move |data, lock, _| {
+        self.later(move |data, lock, _| {
             data.set_appearance(lock, &appearance)
                 .map_err(|e| e.to_string())
-        })?
+        })
     }
 }
 

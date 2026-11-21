@@ -12,6 +12,7 @@ use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use super::{App, Ctx, Theme, Tokens, entry, look};
 use crate::appearance::{AppearanceUi, GROUPS, KEEP_LOOK_TIMEOUT, RowValue};
 use crate::ui::{Appearance, Overlays, PickerRow, ThemeOption, ThemeTokenRow};
+use rbs_app::user_session::Pending;
 
 /// The page's state, kept while the app runs (it is small and idle when unused).
 #[derive(Default)]
@@ -118,27 +119,33 @@ pub fn install(g: &Appearance<'_>, ctx: &Ctx) {
             .selected
             .and_then(|i| page.ui.entries.get(i))
             .is_some_and(|e| matches!(e.id, ThemeId::BuiltIn(_)));
-        if built_in && !duplicate(app, page, &file) {
+        if built_in {
+            // The copy is edited once it is written.
+            duplicate(app, page, true);
             return;
         }
         page.ui.edit(&file);
         Change::Look
     });
-    on!(on_duplicate, |app, page, file| {
-        duplicate(app, page, &file);
+    on!(on_duplicate, |app, page, _file| {
+        duplicate(app, page, false);
         Change::Page
     });
-    on!(on_rename, |app, page, file, name: SharedString| {
+    on!(on_rename, |app, page, _file, name: SharedString| {
         let Some(ThemeId::User(id)) = selected_id(page) else {
             return;
         };
-        if let Err(why) = app.studio.user.rename_theme(&id, name.trim()) {
-            page.note = why;
-        }
-        page.ui.refresh(app.studio.user.data(), &file);
+        let renamed = app.studio.user.rename_theme(&id, name.trim());
+        when_written(renamed, |app, page, file, result| {
+            if let Err(why) = result {
+                page.note = why;
+            }
+            page.ui.refresh(app.studio.user.data(), file);
+            Change::Page
+        });
         Change::Page
     });
-    on!(on_delete, |app, page, file| {
+    on!(on_delete, |app, page, _file| {
         let Some(ThemeId::User(id)) = selected_id(page) else {
             return;
         };
@@ -147,22 +154,24 @@ pub fn install(g: &Appearance<'_>, ctx: &Ctx) {
             .index_of(&ThemeId::User(id.clone()))
             .and_then(|i| page.ui.entries[i].body.as_ref())
             .map_or(Base::Dark, |b| b.base);
-        match app.studio.user.delete_theme(&id) {
-            // A deleted theme in use: its slots take the built-in theme of its base
-            // and the choice is saved (themes spec, "Deleting").
-            Ok(()) => {
-                if let Some(next) = page.ui.forget(&id, base)
-                    && let Err(why) = app.studio.user.set_appearance(&next)
-                {
-                    page.note = why;
+        let deleted = app.studio.user.delete_theme(&id);
+        when_written(deleted, move |app, page, file, result| {
+            match result {
+                // A deleted theme in use: its slots take the built-in theme of its base
+                // and the choice is saved (themes spec, "Deleting").
+                Ok(()) => {
+                    if let Some(next) = page.ui.forget(&id, base) {
+                        save_choice(app, &next);
+                    }
                 }
+                Err(why) => page.note = why,
             }
-            Err(why) => page.note = why,
-        }
-        page.ui.selected = None;
-        page.ui.refresh(app.studio.user.data(), &file);
-        // A deleted theme in use falls back to its base (themes spec).
-        Change::Look
+            page.ui.selected = None;
+            page.ui.refresh(app.studio.user.data(), file);
+            // A deleted theme in use falls back to its base (themes spec).
+            Change::Look
+        });
+        Change::Page
     });
     {
         let ctx = ctx.clone();
@@ -250,19 +259,23 @@ pub fn install(g: &Appearance<'_>, ctx: &Ctx) {
     on!(on_reset, |_app, page, file, name: SharedString| {
         edited(page.ui.reset(&file, &name, Instant::now()))
     });
-    on!(on_save, |app, page, file| {
+    on!(on_save, |app, page, _file| {
         let Some((id, name, body)) = page.ui.to_save() else {
             return;
         };
-        match app.studio.user.save_theme(&id, &name, body) {
-            Ok(()) => {
-                page.ui.saved();
-                page.ui.refresh(app.studio.user.data(), &file);
-                page.note.clear();
+        let saved = app.studio.user.save_theme(&id, &name, body);
+        when_written(saved, |app, page, file, result| {
+            match result {
+                Ok(()) => {
+                    page.ui.saved();
+                    page.ui.refresh(app.studio.user.data(), file);
+                    page.note.clear();
+                }
+                Err(why) => page.note = why,
             }
-            Err(why) => page.note = why,
-        }
-        Change::Look
+            Change::Look
+        });
+        Change::Page
     });
     on!(on_cancel, |_app, page, _file| {
         page.ui.cancel();
@@ -273,10 +286,8 @@ pub fn install(g: &Appearance<'_>, ctx: &Ctx) {
         Change::Page
     });
     on!(on_undo, |app, page, file| {
-        if let Some(a) = page.ui.undo(&file)
-            && let Err(why) = app.studio.user.set_appearance(&a)
-        {
-            page.note = why;
+        if let Some(a) = page.ui.undo(&file) {
+            save_choice(app, &a);
         }
         Change::Look
     });
@@ -320,11 +331,43 @@ fn choose(
     let Some(a) = f(&mut page.ui, Instant::now()) else {
         return Change::Page;
     };
-    match app.studio.user.set_appearance(&a) {
-        Ok(()) => page.note.clear(),
-        Err(why) => page.note = why,
-    }
+    page.note.clear();
+    save_choice(app, &a);
     Change::Look
+}
+
+/// Records the appearance choice on the writer thread; a failure shows as the page's
+/// note once it is known.
+fn save_choice(app: &App, choice: &rbs_user_data::Appearance) {
+    when_written(
+        app.studio.user.set_appearance(choice),
+        |_, page, _, result| {
+            if let Err(why) = result {
+                page.note = why;
+            }
+            Change::Page
+        },
+    );
+}
+
+/// Runs `then` with the page once the writer thread did `work` (the UI thread does not
+/// wait for it, docs/architecture/threads.md); the views follow.
+fn when_written<R: 'static>(
+    work: Pending<R>,
+    then: impl FnOnce(&mut App, &mut Page, &TokenFile, Result<R, String>) -> Change + 'static,
+) {
+    entry::when_done(work, move |result| {
+        let Some(ctx) = super::CTX.with(|c| c.borrow().clone()) else {
+            return;
+        };
+        let c = ctx.clone();
+        ctx.update(move |app| {
+            let file = c.look.borrow().as_ref().map(|l| l.file.clone());
+            let Some(file) = file else { return };
+            let changed = then(app, &mut c.page.borrow_mut(), &file, result);
+            after(&c, app, changed);
+        });
+    });
 }
 
 fn selected_id(page: &Page) -> Option<ThemeId> {
@@ -334,22 +377,31 @@ fn selected_id(page: &Page) -> Option<ThemeId> {
         .map(|e| e.id.clone())
 }
 
-/// Adds a copy of the selected theme and selects it; false when it failed.
-fn duplicate(app: &mut App, page: &mut Page, file: &TokenFile) -> bool {
+/// Adds a copy of the selected theme and selects it once it is written; `edit` opens
+/// the editor on it then.
+fn duplicate(app: &mut App, page: &mut Page, edit: bool) {
     let Some((name, body)) = page.ui.duplicate_of_selected() else {
-        return false;
+        return;
     };
-    match app.studio.user.create_theme(&name, body) {
-        Ok(id) => {
+    when_written(
+        app.studio.user.create_theme(&name, body),
+        move |app, page, file, made| {
+            let id = match made {
+                Ok(id) => id,
+                Err(why) => {
+                    page.note = why;
+                    return Change::Page;
+                }
+            };
             page.ui.refresh(app.studio.user.data(), file);
             page.ui.selected = page.ui.index_of(&ThemeId::User(id));
-            true
-        }
-        Err(why) => {
-            page.note = why;
-            false
-        }
-    }
+            if !edit {
+                return Change::Page;
+            }
+            page.ui.edit(file);
+            Change::Look
+        },
+    );
 }
 
 /// Import (`import`) a theme file, or export the selected theme, through the system
@@ -382,7 +434,7 @@ fn transfer(ctx: &Ctx, import: bool) {
             if import {
                 let done =
                     move |r: Result<_, _>| then.clone().update(move |app| imported(&then, app, r));
-                return entry::when_done(app.studio.user.import_theme_later(&path), done);
+                return entry::when_done(app.studio.user.import_theme(&path), done);
             }
             let selected = selected_id(&ctx.page.borrow());
             let Some(ThemeId::User(id)) = selected else {
@@ -392,7 +444,7 @@ fn transfer(ctx: &Ctx, import: bool) {
                 then.clone()
                     .update(move |app| noted(&then, app, r.err().unwrap_or_default()))
             };
-            entry::when_done(app.studio.user.export_theme_later(&id, &path), done);
+            entry::when_done(app.studio.user.export_theme(&id, &path), done);
         });
     });
     if let Err(e) = task {
@@ -500,10 +552,8 @@ pub fn select_theme(ctx: &Ctx, app: &mut App, id: &str) {
             return;
         };
         page.ui.selected = Some(index);
-        match app.studio.user.set_appearance(&next) {
-            Ok(()) => page.note.clear(),
-            Err(why) => page.note = why,
-        }
+        page.note.clear();
+        save_choice(app, &next);
     }
     relook(ctx, app);
     show(ctx, app);
@@ -708,10 +758,8 @@ fn keep_timer(ctx: &Ctx) {
                         .as_ref()
                         .is_none_or(|k| k.expired(Instant::now()));
                     if expired {
-                        if let Some(a) = page.ui.undo(&file)
-                            && let Err(why) = app.studio.user.set_appearance(&a)
-                        {
-                            page.note = why;
+                        if let Some(a) = page.ui.undo(&file) {
+                            save_choice(app, &a);
                         }
                         Change::Look
                     } else {

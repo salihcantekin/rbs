@@ -101,7 +101,7 @@ impl<R> Future for Pending<R> {
 impl UserSession {
     /// Queues `task` on the writer thread after every save asked for so far, as
     /// [`UserSession::run`] does, without waiting for it.
-    fn later<R: Send + 'static>(
+    pub(super) fn later<R: Send + 'static>(
         &self,
         task: impl FnOnce(&UserData, &WriterLock, &Names) -> Result<R, String> + Send + 'static,
     ) -> Pending<R> {
@@ -150,8 +150,9 @@ impl UserSession {
         self.later(import_collection(from.to_owned()))
     }
 
-    /// [`UserSession::import_theme`] without waiting.
-    pub fn import_theme_later(&self, from: &Path) -> Pending<EntryId> {
+    /// Adds the theme in the file `from` (a clashing name gets a number); its id once
+    /// written.
+    pub fn import_theme(&self, from: &Path) -> Pending<EntryId> {
         let from = from.to_owned();
         self.later(move |data, lock, _| {
             data.themes()
@@ -161,8 +162,9 @@ impl UserSession {
         })
     }
 
-    /// [`UserSession::export_theme`] without waiting.
-    pub fn export_theme_later(&self, id: &EntryId, to: &Path) -> Pending<()> {
+    /// Writes a theme to `to` (one file; nothing to scrub) after the saves asked for
+    /// before.
+    pub fn export_theme(&self, id: &EntryId, to: &Path) -> Pending<()> {
         let (id, to) = (id.clone(), to.to_owned());
         self.later(move |data, _, _| data.themes().export(&id, &to).map_err(|e| e.to_string()))
     }

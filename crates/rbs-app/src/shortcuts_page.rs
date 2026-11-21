@@ -624,10 +624,18 @@ fn changed(ctx: &Ctx, app: &mut App, doc: ShortcutsDoc) {
     {
         let mut keys = ctx.keys.borrow_mut();
         keys.note.clear();
-        if let Err(why) = app.studio.user.set_shortcuts(&doc) {
-            keys.note =
-                format!("The shortcuts could not be saved ({why}); they apply until RBS quits.");
-        }
+        // Written on the writer thread; a failure shows once it is known.
+        let c = ctx.clone();
+        entry::when_done(app.studio.user.set_shortcuts(&doc), move |saved| {
+            let Err(why) = saved else { return };
+            let ctx = c.clone();
+            c.update(move |app| {
+                ctx.keys.borrow_mut().note = format!(
+                    "The shortcuts could not be saved ({why}); they apply until RBS quits."
+                );
+                refresh(&ctx, app);
+            });
+        });
         keys.set_doc(doc);
     }
     refresh(ctx, app);
