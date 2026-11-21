@@ -81,7 +81,6 @@ paths! {
     AddSourceWithAudio => Pending(&["source.add"]),
     // split: the OS permission prompt and system picker stay in the window (LocalOnly)
     AddSource => Pending(&["source.add"]),
-    DeleteSource => Pending(&["source.delete"]),
     // must still send Update::Deleted for the undo toast
     RemoveFromScene => Pending(&["item.remove"]),
     SetGlobal => Pending(&["global.add", "global.remove"]),
@@ -270,7 +269,7 @@ mod tests {
     /// which must pick its method from host state may raise `TRANSLATES` by as many
     /// as `PENDING` falls; any other rise needs the owner's written approval.
     const TRANSLATES: usize = 22;
-    const PENDING: usize = 56;
+    const PENDING: usize = 55;
     const CONTRACT: usize = 10;
     const MISSING: usize = 20;
     const VIEW: usize = 13;

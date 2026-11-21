@@ -1,6 +1,6 @@
 //! Source operations of the window, sent as control API commands (ADR-0163 step 3):
 //! rename, the per-source slide, keep the device open, the sync offset, Duplicate
-//! source, Copy attributes and the "Capture audio too" companion.
+//! source, Copy attributes, Delete source and the "Capture audio too" companion.
 
 use rbs_api::Command as C;
 use rbs_api::request as rq;
@@ -67,6 +67,12 @@ impl StudioUi {
     /// Copy attributes of a source (ADR-0133 decision 6).
     pub fn copy_attributes(&mut self, id: i32) {
         self.call(C::SourceCopyAttributes(in_scene(id)));
+    }
+
+    /// Delete source: from every scene, with the undo toast.
+    pub fn delete_source(&mut self, id: i32) {
+        self.deleted.clear();
+        self.call(C::SourceDelete(rq::SourceRef { source: id as u32 }));
     }
 
     /// Adds or removes the "Capture audio too" companion of a display or window.

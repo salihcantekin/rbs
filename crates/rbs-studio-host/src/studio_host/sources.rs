@@ -1370,16 +1370,6 @@ impl Host {
                 Ok(_) => self.apply(notify),
                 Err(e) => notify(Update::Error(e.into_text())),
             },
-            Command::DeleteSource(id) => match self.delete(id) {
-                Ok(name) => {
-                    self.apply(notify);
-                    notify(Update::Deleted {
-                        name,
-                        from_scene: false,
-                    });
-                }
-                Err(e) => notify(Update::Error(e.into_text())),
-            },
             Command::RemoveFromScene(id) => {
                 let done = self
                     .item_of(id)

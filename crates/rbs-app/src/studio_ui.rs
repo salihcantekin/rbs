@@ -2256,11 +2256,6 @@ impl StudioUi {
         });
     }
 
-    pub fn delete_source(&mut self, id: i32) {
-        self.deleted.clear();
-        self.send(Command::DeleteSource(SourceId::from_raw(id as u32)));
-    }
-
     /// Remove from scene (ADR-0065): the Sources row's remove button and Delete key.
     pub fn remove_from_scene(&mut self, id: i32) {
         self.deleted.clear();

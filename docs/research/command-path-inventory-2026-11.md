@@ -2,7 +2,7 @@
 
 First-pass classification of every `rbs_studio_host::Command` variant on main `c424931` for [ADR-0163](../adr/0163-one-command-path-for-the-window-and-the-api.md) (one command path, quality plan WP-20). Made by reading each variant's handler arm and the control API method names (`rbs_api::Command::method`), corrected after the ADR's first review. Each namespace step checks its rows again against the code and the control API spec; where a row is wrong, the step's `Command::path` arm is the record, not this table.
 
-Step 0 moved `ResetLoudness` to `Command::Api`; step 1 (scenes and transitions) moved ten scene variants and made Switch scene and Studio mode translations; step 2 (items) moved the Sources row's lock, eye and layer buttons, Add existing source and the timed show; step 3 (sources, first part) moved rename, the per-source slide, keep open, the sync offset, Duplicate source, Copy, Paste and Reset attributes and the companion audio; `command_path.rs` holds the current counts. First-pass counts: 21 Translates (already run through `run_ui_api` or `ApiTarget::run`), 83 Pending, 10 Contract, 20 Missing, 27 WindowOnly (13 View, 9 LocalOnly, 2 Preview, 3 Mirror). Total 161. Corrected after review rounds 1 to 3.
+Step 0 moved `ResetLoudness` to `Command::Api`; step 1 (scenes and transitions) moved ten scene variants and made Switch scene and Studio mode translations; step 2 (items) moved the Sources row's lock, eye and layer buttons, Add existing source and the timed show; step 3 (sources, first part) moved rename, the per-source slide, keep open, the sync offset, Duplicate source, Copy, Paste and Reset attributes, Delete source and the companion audio; `command_path.rs` holds the current counts. First-pass counts: 21 Translates (already run through `run_ui_api` or `ApiTarget::run`), 83 Pending, 10 Contract, 20 Missing, 27 WindowOnly (13 View, 9 LocalOnly, 2 Preview, 3 Mirror). Total 161. Corrected after review rounds 1 to 3.
 
 ## Known differences between the two paths
 
@@ -41,13 +41,13 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `ListTargets` | Pending | source.targets |
 | `AddSourceWithAudio` | Pending | source.add (with_audio: true); split as AddSource |
 | `AddSource` | Pending | source.add; split: the OS permission prompt and system picker stay in the window (LocalOnly) |
-| `DeleteSource` | Pending | source.delete |
+| `DeleteSource` | Moved to `Command::Api` (step 3) | source.delete |
 | `RemoveFromScene` | Pending | item.remove; must still send Update::Deleted for the undo toast |
 | `SetGlobal` | Pending | global.add, global.remove |
 | `RemoveGlobal` | Pending | global.remove |
 | `AddGlobalSource` | Pending | source.add (global: true) |
 | `UndoDelete` | Missing | edit.undo has no only-if-a-delete condition |
-| `Undo` | Pending | edit.undo; quiet when there is nothing to undo |
+| `Undo` | Pending | edit.undo; quiet when there is nothing to undo, but a refused step (`undo_conflict`) is shown: neither `Shown` nor `Quiet` does both, so the window needs to tell the two apart (step 3 left it) |
 | `Redo` | Pending | edit.redo; as Undo |
 | `MoveSource` | Moved to `Command::Api` (step 2) | item.move |
 | `MoveScene` | Moved to `Command::Api` (step 1) | scene.move |

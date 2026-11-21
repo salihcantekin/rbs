@@ -674,7 +674,6 @@ impl Host {
             | Command::ListAddOns
             | Command::AddOn { .. }
             | Command::RequestPermission(..)
-            | Command::DeleteSource(..)
             | Command::RemoveFromScene(..)
             | Command::SetGlobal { .. }
             | Command::RemoveGlobal(..)

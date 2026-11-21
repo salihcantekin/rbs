@@ -22,8 +22,6 @@ pub enum Command {
         /// What it captures.
         target: Target,
     },
-    /// Delete a source from every scene and the global sources (glossary: "Delete source").
-    DeleteSource(SourceId),
     /// Remove a source's item from the edited scene, or its global item (glossary:
     /// "Remove from scene", ADR-0065); the source goes too when that was its last
     /// placement.
