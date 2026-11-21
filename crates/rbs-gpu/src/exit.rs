@@ -94,10 +94,13 @@ mod tests {
             .any(|(listed, _)| *listed == id)
     }
 
-    /// The only test in this binary that opens a device (software drivers crash with
-    /// several devices created at once).
+    /// Takes the binary's device turn (software drivers crash with several devices
+    /// created at once).
     #[test]
     fn a_context_is_listed_for_the_exit_wait_until_it_drops() {
+        let _turn = crate::TEST_DEVICE_TURN
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         let ctx = match GpuContext::new(&GpuRequest {
             allow_software: true,
             ..GpuRequest::default()
