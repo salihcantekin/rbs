@@ -26,7 +26,7 @@ mod target;
 
 pub use error::{CaptureError, ErrorDomain};
 pub use framebuffer::{DisplayReading, DisplayScale, FramebufferChoice, choose_framebuffer};
-pub use mapping::{Cover, MappingRegistration, MappingSwitch, PictureMapping};
+pub use mapping::{Cover, MappingCell, MappingRegistration, MappingSwitch, PictureMapping};
 pub use session::{
     CaptureChange, CaptureFactory, CaptureRequest, CaptureSession, CaptureStats, GpuDeviceId,
     GpuImportTarget, SyncKind,

@@ -228,6 +228,8 @@ pub struct PictureMapping {
 
 #[derive(Clone)] pub struct MappingSwitch;   // new, is_on, set(bool), register(callback) -> MappingRegistration
 pub struct MappingRegistration;               // Drop unregisters
+
+#[derive(Clone, Default)] pub struct MappingCell;   // new, publish(Option<PictureMapping>), get() -> Option<PictureMapping>
 ```
 
 Desktop units are the input port's (Windows physical pixels of the virtual screen, macOS global points); `picture = (desktop - origin) * scale`. ADR-0165 names the window frame and the buffer placement (offset and fit scaling inside the output buffer) as parts of the mapping; both are affine, so the adapter folds them into `origin` and `scale` and the type needs no field for them.
@@ -239,8 +241,9 @@ Rules:
 3. **Real-time read.** `latest_mapping` follows the `latest_frame` rules below (no allocation, lock, wait, I/O or logging). It returns the mapping of the newest frame `latest_frame` returned, with that frame's `timestamp` as `frame_time`, so a reader can tell when the two do not match; `None` while the switch is off, before the first mapped frame (an adapter that starts its mapping work when the switch turns on maps within 10 frames; the conformance check allows that), after `stop`, and for kinds outside `capture.mapping` (the default method).
 4. **Covered test.** `cover` answers for the pointer position at the adapter's last check, not for each click (macOS: the existing 50 ms window-list poll; Windows: a 50 ms `GetCursorPos` poll that skips while the pointer stands still, plus `EVENT_OBJECT_LOCATIONCHANGE` and `EVENT_SYSTEM_FOREGROUND` for the target). Displays report `Unknown`.
 5. **DPI (Windows).** Monitor rectangles and window frames are read per-monitor DPI aware v2, the same as the input adapter's thread, so the two coordinate sets match.
+6. **Lending.** The host's source entry also owns one `MappingCell`, kept across rebuilt capture nodes. The capture source node publishes `latest_mapping` into it after each new frame while the switch is on, publishes `None` once when the switch goes off and on `release`, and never writes it without a switch ([io-nodes spec](io-nodes.md#capture-source-node)). The source's pointer filters read it with `get`. Both are lock-free and real-time: a sequence number written before and after each publish; a read that sees a publish in progress tries again at most 4 times and then reports `None` for that read; a publish that finds another publish in progress is skipped, so two writers (an old node and its replacement) never tear it. Measured (cloud container, `cargo bench -p rbs-capture --bench mapping`, 2026-11-21): the switch check 0.6 ns, `publish` 10 ns, `get` 8 ns.
 
-Implementation status: the types, the trait method, the conformance check and the reference adapter (display at `DISPLAY_ORIGIN` left of the primary, window at `WINDOW_ORIGIN`, scale 1, the window `Clear`). Windows Graphics Capture and ScreenCaptureKit do not declare `capture.mapping` yet (a later PR, built and checked on a device).
+Implementation status: the types, the trait method, the cell, the conformance check and the reference adapter (display at `DISPLAY_ORIGIN` left of the primary, window at `WINDOW_ORIGIN`, scale 1, the window `Clear`). Windows Graphics Capture and ScreenCaptureKit do not declare `capture.mapping` yet (a later PR, built and checked on a device).
 
 `latest_frame` rules (real-time, called by the render thread on every tick):
 

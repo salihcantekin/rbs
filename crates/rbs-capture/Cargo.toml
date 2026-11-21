@@ -19,5 +19,9 @@ criterion = { version = "0.8", default-features = false, features = ["cargo_benc
 name = "handoff"
 harness = false
 
+[[bench]]
+name = "mapping"
+harness = false
+
 [lints]
 workspace = true

@@ -92,6 +92,7 @@ mod pause;
 mod rehearse;
 mod replay;
 mod scroll;
+mod source_entry;
 mod stinger;
 mod studio_mode;
 mod sync_measure;
@@ -427,6 +428,8 @@ struct Entry {
     instance: Option<Instance>,
     /// In the running plan.
     scheduled: bool,
+    /// Lent to every instance; off until a pointer filter is scheduled (ADR-0165).
+    mapping: rbs_sources::SourceMapping,
 }
 
 /// One bound filter (ADR-0062 decision 8).
@@ -2866,21 +2869,8 @@ impl Studio {
                 let Some(source) = collection.source(*source_id) else {
                     continue;
                 };
-                self.entries.push(Entry {
-                    source: *source_id,
-                    state: SourceState {
-                        source: *source_id,
-                        node: *node,
-                        name: source.name.clone(),
-                        adapter: rbs_core::registry::AdapterId::new(""),
-                        target: String::new(),
-                        failed: None,
-                        fault: None,
-                        reason: None,
-                    },
-                    instance: None,
-                    scheduled: false,
-                });
+                self.entries
+                    .push(Entry::new(*source_id, *node, source.name.clone()));
             }
             // Break before make: a replaced source's old instance (an exclusive camera)
             // is released before its replacement opens.
@@ -2959,7 +2949,8 @@ impl Studio {
             let Some(source) = collection.source(entry.source) else {
                 continue;
             };
-            let instance = match sources.instantiate(source, &ctx) {
+            let entry_ctx = ctx.clone().with_mapping(entry.mapping.clone());
+            let instance = match sources.instantiate(source, &entry_ctx) {
                 Ok(i) => {
                     entry.state.failed = None;
                     entry.state.fault = None;
