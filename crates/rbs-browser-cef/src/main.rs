@@ -174,7 +174,7 @@ wrap_app! {
     impl App {
         fn on_before_command_line_processing(
             &self,
-            _process_type: Option<&CefString>,
+            process_type: Option<&CefString>,
             command_line: Option<&mut CommandLine>,
         ) {
             let Some(line) = command_line else { return };
@@ -184,34 +184,15 @@ wrap_app! {
                 Some(&"autoplay-policy".into()),
                 Some(&"no-user-gesture-required".into()),
             );
-            // Software paint, unless this tree was given studio textures (ADR-0109
-            // decision 8). A child process sees the switch the browser process added.
-            #[cfg(windows)]
-            let luid = GPU_LUID.load(Ordering::Relaxed);
-            #[cfg(windows)]
-            let shared = luid != 0 || line.has_switch(Some(&"rbs-shared-textures".into())) != 0;
-            #[cfg(not(windows))]
-            let shared = false;
-            if shared {
-                // Marks the child processes. The GPU process is not pinned to an
-                // adapter by default: with `--use-adapter-luid` (and earlier with vendor
-                // switches) CEF 156 started but never painted on SC-PC. Another adapter
-                // shows as a failed open of CEF's texture instead (ADR-0157 decision 8).
-                // `RBS_BROWSER_ADAPTER_SWITCH` adds the switch for device checks only.
-                #[cfg(windows)]
-                if luid != 0 {
-                    line.append_switch(Some(&"rbs-shared-textures".into()));
-                    if std::env::var_os("RBS_BROWSER_ADAPTER_SWITCH").is_some() {
-                        let value = adapter_luid_switch(luid);
-                        line.append_switch_with_value(
-                            Some(&"use-adapter-luid".into()),
-                            Some(&value.as_str().into()),
-                        );
-                    }
-                }
-            } else {
-                line.append_switch(Some(&"disable-gpu".into()));
-                line.append_switch(Some(&"disable-gpu-compositing".into()));
+            // The GPU switches are the browser process's choice alone; Chromium hands
+            // the GPU and renderer processes what they need. This callback runs in
+            // every process, and a child cannot tell the GPU path from shared memory:
+            // a renderer that added `disable-gpu-compositing` under a GPU-composited
+            // browser left CEF 156 with no paint at all, accelerated or not (SC-PC
+            // 2026-11-20, ADR-0157 decision 8).
+            let browser_process = process_type.is_none_or(|t| t.to_string().is_empty());
+            if browser_process {
+                gpu_switches(line);
             }
             line.append_switch(Some(&"deny-permission-prompts".into()));
             // The helper never shows a window, so it needs no X11 or Wayland
@@ -231,6 +212,32 @@ wrap_app! {
                 Some(&"basic".into()),
             );
         }
+    }
+}
+
+/// Software paint, unless this tree was given studio textures (ADR-0109 decision 8).
+/// The browser process only.
+fn gpu_switches(line: &mut CommandLine) {
+    #[cfg(windows)]
+    let luid = GPU_LUID.load(Ordering::Relaxed);
+    #[cfg(not(windows))]
+    let luid = 0_u64;
+    if luid != 0 {
+        // The GPU process is not pinned to an adapter by default: with
+        // `--use-adapter-luid` (and earlier with vendor switches) CEF 156 started but
+        // never painted on SC-PC. Another adapter shows as a failed open of CEF's
+        // texture instead (ADR-0157 decision 8). `RBS_BROWSER_ADAPTER_SWITCH` adds the
+        // switch for device checks only.
+        if std::env::var_os("RBS_BROWSER_ADAPTER_SWITCH").is_some() {
+            let value = adapter_luid_switch(luid);
+            line.append_switch_with_value(
+                Some(&"use-adapter-luid".into()),
+                Some(&value.as_str().into()),
+            );
+        }
+    } else {
+        line.append_switch(Some(&"disable-gpu".into()));
+        line.append_switch(Some(&"disable-gpu-compositing".into()));
     }
 }
 

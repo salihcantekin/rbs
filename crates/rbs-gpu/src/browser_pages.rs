@@ -5,7 +5,7 @@
 //! Marked low-level module (P11). Every `unsafe` block states its invariant.
 
 use windows::Win32::Foundation::{
-    CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, HANDLE, HMODULE, LUID,
+    CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, GENERIC_ALL, HANDLE, HMODULE, LUID,
 };
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_UNKNOWN;
 use windows::Win32::Graphics::Direct3D11::{
@@ -247,14 +247,11 @@ fn share_texture(
 }
 
 fn share_fence(fence: &ID3D11Fence) -> Result<(ID3D11Fence, Held), GpuError> {
+    // A fence handle takes only `GENERIC_ALL` (`ID3D11Fence::CreateSharedHandle`). With
+    // the DXGI read and write rights the helper opens the fence, but every `Signal` on
+    // it returns `D3DERR_NOTAVAILABLE` (SC-PC 2026-11-21, ADR-0157 decision 2).
     // SAFETY: creates one NT handle we close on drop.
-    let handle = unsafe {
-        fence.CreateSharedHandle(
-            None,
-            DXGI_SHARED_RESOURCE_READ.0 | DXGI_SHARED_RESOURCE_WRITE.0,
-            PCWSTR::null(),
-        )
-    }
-    .map_err(|_| GpuError::Unsupported("shared fence"))?;
+    let handle = unsafe { fence.CreateSharedHandle(None, GENERIC_ALL.0, PCWSTR::null()) }
+        .map_err(|_| GpuError::Unsupported("shared fence"))?;
     Ok((fence.clone(), Held { handle }))
 }
