@@ -40,6 +40,8 @@ pub(crate) enum Restart {
     Stopping,
     /// The old studio did not stop within [`STOP_BUDGET`].
     Stuck,
+    /// The old studio stopped; the writer thread reads the collection for the new one.
+    Reading,
 }
 
 thread_local! {
@@ -198,7 +200,7 @@ fn past_budget() {
 /// the restart again.
 fn stopped() {
     with_app(|app| match restart_state() {
-        Restart::Idle => {}
+        Restart::Idle | Restart::Reading => {}
         Restart::Stopping => {
             set_restart(app, Restart::Idle);
             start_again(app);
@@ -211,11 +213,25 @@ fn stopped() {
     });
 }
 
-/// A new studio on the same canvas, with the collection in use as last saved.
+/// A new studio on the same canvas, with the collection in use as last saved. The
+/// writer thread reads it behind the saves asked for so far, so the UI thread never
+/// waits on the disk (docs/architecture/threads.md); [`read`] starts the studio.
 fn start_again(app: &mut App) {
+    set_restart(app, Restart::Reading);
     let id = app.studio.user.collection_id.clone();
-    let collection = match app.studio.user.load_collection(&id) {
-        Ok((_, collection)) => collection,
+    entry::when_done(app.studio.user.load_collection_later(&id), |loaded| {
+        with_app(move |app| read(app, loaded.map(|l| l.collection)));
+    });
+}
+
+/// The collection for the new studio was read (UI thread).
+fn read(app: &mut App, collection: Result<SceneCollection, String>) {
+    if restart_state() != Restart::Reading {
+        return;
+    }
+    set_restart(app, Restart::Idle);
+    let collection = match collection {
+        Ok(collection) => collection,
         Err(e) => {
             app.studio.state = 2;
             app.studio.failure = format!("the scenes could not be read: {e}");
@@ -344,6 +360,8 @@ mod tests {
         assert!(!can_restart(2));
         at(Restart::Stuck);
         assert!(!can_restart(2));
+        at(Restart::Reading);
+        assert!(!can_restart(2), "reading the collection");
         at(Restart::Idle);
     }
 }

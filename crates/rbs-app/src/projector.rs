@@ -766,11 +766,14 @@ fn on_event(
 /// which must not start inside the window's event handler. Nor inside a timer: on
 /// macOS that loop runs the toolkit's timers again, and timers started while timers
 /// run abort the app ("Recursion in timer code"). So it is posted to the event loop.
+/// The menu's loop runs inside that entry until the user is done, so it runs under
+/// `os_loop`: the stall watch does not count the time in the menu, and still times
+/// what that loop runs.
 fn open_menu(pw: &ProjectorWindow, x: f32, y: f32) {
     let weak = pw.as_weak();
     let posted = entry::invoke(move || {
         if let Some(pw) = weak.upgrade() {
-            pw.invoke_open_menu(x, y);
+            rbs_app::ui_thread::os_loop(|| pw.invoke_open_menu(x, y));
         }
     });
     if let Err(e) = posted {

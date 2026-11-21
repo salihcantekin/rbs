@@ -23,9 +23,10 @@ A thread may only wait on something that is sure to answer within its own budget
 
 These are waits the rule does not allow yet. Each one is bounded, and each is a follow-up to move off the UI thread; the stall watch shows how long they take on a real machine.
 
+Nothing in the window waits on user data. Switches of profiles and collections, and the collection read when the studio is restarted in-process after a failure (`studio_start.rs`), read the entry on the writer thread (`user_session/switch.rs`, behind every save asked for before); import and export, the OBS import, new, rename and delete of profiles, collections and themes, and the shortcuts and appearance saves queue their task. The window awaits its `user_session::Pending` (`entry::when_done`).
+
 | Wait | Where | Bound | Follow-up |
 | --- | --- | --- | --- |
-| `UserSession::load_collection` when the studio is restarted in-process after a failure: waits for saves of the collection it reads (and for every save when it keeps a browser sign-in). Nothing else in the window waits on user data: switches of profiles and collections read the entry on the writer thread (`user_session/switch.rs`, behind every save asked for before), and import and export, the OBS import, new, rename and delete of profiles, collections and themes, and the shortcuts and appearance saves queue their task; the window awaits its `user_session::Pending` (`entry::when_done`; the name prompt keeps its refusal line and drops a second Enter while one runs; a second switch while one reads is refused) | `studio_start.rs` `start_again` | One disk write of the entry's queued saves (milliseconds on a local disk, longer on a slow or network folder; `cargo bench -p rbs-user-data --bench write` times one save on a machine's disk) | Read the collection on the writer thread before the restart too |
 | Short locks on state shared with another thread (the stream key store, the AI tools' recent-actions ring, the browser runtime slot) | `stream_key.rs`, `ai_tools.rs`, `browser_tree.rs` | The other side holds each lock only for a copy | None while that stays true |
 | Small file reads and writes (settings files, themes, the appearance file) | `look.rs`, the `*_settings.rs` files | One small file | Moved with the WP-21 and settings work where a read is on a slow folder |
 
