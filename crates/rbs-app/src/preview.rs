@@ -140,15 +140,17 @@ fn setup(which: Picture, mut sub: PreviewSubscriber, done: impl Fn(bool), genera
             timer: slint::Timer::default(),
         });
     });
-    // Frames arrive on their own thread; only the newest is shown.
+    // Frames arrive on their own thread; only the newest is shown: a frame waiting for
+    // a slow UI is replaced, never queued (stability plan WP-J).
     let spawned = std::thread::Builder::new()
         .name("rbs-preview".into())
         .spawn(move || {
+            let slot = std::sync::Arc::new(rbs_app::latest::Latest::new());
             while current() {
                 match sub.recv(Duration::from_millis(250)) {
                     Ok(Some(frame)) => {
                         // A frame of an earlier connection never reaches a newer layer.
-                        let shown = crate::entry::invoke(move || {
+                        let shown = crate::entry::invoke_latest(&slot, frame, move |frame| {
                             if current() {
                                 show(which, frame);
                             }

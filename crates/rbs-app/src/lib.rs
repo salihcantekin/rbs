@@ -23,6 +23,7 @@
 //!   watch (docs/architecture/threads.md).
 //! - [`user_session`]: the output profile and scene collection in use, and their one
 //!   writer thread (ADR-0051).
+//! - [`latest`]: the latest-only frame hand-off to the UI thread (stability plan WP-J).
 //! - [`recent_targets`]: the last targets picked per source type (`recent-targets.toml`, ADR-0077).
 //! - [`replay_settings`]: Settings › Recording › Replay buffer and `replay.toml` (ADR-0088).
 //! - [`vcam_settings`]: Settings › Virtual camera and `vcam.toml` (ADR-0066).
@@ -46,6 +47,7 @@ pub mod diag_log;
 pub use rbs_studio_host::edit_history;
 pub mod encoder_form;
 pub mod hotkeys;
+pub mod latest;
 pub use rbs_studio_host::levels;
 pub use rbs_studio_host::loudness_settings;
 pub mod menu_layout;

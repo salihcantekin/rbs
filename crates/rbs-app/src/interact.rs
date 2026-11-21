@@ -695,11 +695,13 @@ fn setup(source: SourceId, mut sub: PreviewSubscriber, generation: Arc<AtomicU64
     let spawned = std::thread::Builder::new()
         .name("rbs-interact".into())
         .spawn(move || {
+            // Latest-only: a slow UI shows the newest frame, never a queue (WP-J).
+            let slot = Arc::new(rbs_app::latest::Latest::new());
             while current() {
                 match sub.recv(Duration::from_millis(250)) {
                     Ok(Some(frame)) => {
                         let current = current.clone();
-                        let shown = entry::invoke(move || {
+                        let shown = entry::invoke_latest(&slot, frame, move |frame| {
                             if current() {
                                 show(source, frame);
                             }

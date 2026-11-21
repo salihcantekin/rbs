@@ -76,6 +76,37 @@ pub fn invoke(f: impl FnOnce() + Send + 'static) -> Result<(), slint::EventLoopE
     slint::invoke_from_event_loop(move || guard_from(at, f))
 }
 
+/// Hands `value` to the UI thread through `slot`: it replaces a value still waiting
+/// there, and a call is posted only when none is pending (stability plan WP-J). The
+/// posted call runs `show` with the newest value; a replaced value is dropped here, on
+/// the calling thread. Err when the event loop is gone.
+#[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))] // Frame threads.
+#[track_caller]
+pub fn invoke_latest<T: Send + 'static>(
+    slot: &std::sync::Arc<rbs_app::latest::Latest<T>>,
+    value: T,
+    show: impl FnOnce(T) + Send + 'static,
+) -> Result<(), slint::EventLoopError> {
+    let (post, replaced) = slot.put(value);
+    drop(replaced);
+    if !post {
+        return Ok(());
+    }
+    let at = Location::caller();
+    let taken = std::sync::Arc::clone(slot);
+    let posted = slint::invoke_from_event_loop(move || {
+        guard_from(at, move || {
+            if let Some(value) = taken.take() {
+                show(value);
+            }
+        })
+    });
+    if posted.is_err() {
+        slot.unpost();
+    }
+    posted
+}
+
 /// Ends the UI event loop. Slint posts the quit as an event that the loop takes on a
 /// clean stack, also when this runs inside a platform close message (ADR-0156
 /// decision 2). Called once the shutdown's last step has finished.
