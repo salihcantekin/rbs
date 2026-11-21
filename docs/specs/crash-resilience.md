@@ -209,10 +209,13 @@ None on hot paths: `contain` is used on the UI and control threads only, and the
 
 `rbs-cli` (`tests/closed_output.rs`) and `rbs-mcp` (`tests/closed_output.rs`): with stdout and stderr writing into a pipe whose reader was dropped before the child started, `rbs-cli help` exits 0, a `rbs-cli` usage error exits 2 and a `rbs-mcp` usage error exits 2 (a panic would be 101).
 
+`rbs-studio-host` (ADR-0159):
+
+- `tests/studio/faults.rs`: with a capture adapter whose `enumerate` panics, `ListTargets` answers `Update::Error(CAUGHT_TEXT)`, the studio does not fail, and the next commands (list, add a source) work.
+- `tests/studio/record.rs`: a panic after a recording's output started answers `NotStarted(CAUGHT_TEXT)`, stops that one untracked output, and the next recording starts and stops normally; a panic in the middle of a recording stop still ends it with an error, the file is complete, and a new recording starts.
+
 `rbs-app`:
 
-- `tests/studio_faults.rs`: with a capture adapter whose `enumerate` panics, `ListTargets` answers `Update::Error(CAUGHT_TEXT)`, the studio does not fail, and the next commands (list, add a source) work.
-- `tests/studio_record.rs`: a panic after a recording's output started answers `NotStarted(CAUGHT_TEXT)`, stops that one untracked output, and the next recording starts and stops normally; a panic in the middle of a recording stop still ends it with an error, the file is complete, and a new recording starts.
 - `tests/entry_points.rs`: every generated callback is guarded.
 
 ## Open questions

@@ -19,13 +19,6 @@ use rbs_api::session::ServerConfig;
 use rbs_api::thread::ApiOptions;
 use rbs_api::transport::{CloseReason, ConnectionHandle, ConnectionSender, PeerInfo, SendError};
 use rbs_api::{ApiServer, TokenStore};
-use rbs_app::record_profile::RecordProfile;
-use rbs_app::stream_key::{ACCOUNT, KeyStore, MemoryKeyStore};
-use rbs_app::stream_profile::StreamProfile;
-use rbs_app::studio_host::{
-    Command, Fault, HostConfig, RecordRequest, RecordingUpdate, SourceKind, Stats, StreamRequest,
-    StreamUpdate, StudioHost, Update,
-};
 use rbs_audio_io_test::TestAudioBackend;
 use rbs_capture_test::TestCaptureFactory;
 use rbs_codec::{
@@ -43,6 +36,13 @@ use rbs_core::time::TestClock;
 use rbs_engine::{Engine, EngineConfig};
 use rbs_gpu::{GpuContext, GpuError, GpuRequest};
 use rbs_record::{END_TAIL_LIMIT, RecordAdapters, VideoSettings};
+use rbs_studio_host::record_profile::RecordProfile;
+use rbs_studio_host::stream_key::{ACCOUNT, KeyStore, MemoryKeyStore};
+use rbs_studio_host::stream_profile::StreamProfile;
+use rbs_studio_host::studio_host::{
+    Command, Fault, HostConfig, RecordRequest, RecordingUpdate, SourceKind, Stats, StreamRequest,
+    StreamUpdate, StudioHost, Update,
+};
 use rbs_transport::{
     ReconnectPolicy, SendOutcome, Transport, TransportConfig, TransportError, TransportEvent,
     TransportFactory, TransportInput, TransportItem, TransportStats, caps as transport_caps,
@@ -1361,7 +1361,7 @@ fn each_output_profile_has_its_own_stream_key() {
     assert_eq!(key_saved(&rx), Ok(true));
 
     // Another profile: the default profile's key is not its key.
-    let b = rbs_app::stream_key::account("studio-b");
+    let b = rbs_studio_host::stream_key::account("studio-b");
     host.send(Command::SetKeyAccount(b.clone()));
     host.send(Command::StartStream(request()));
     assert_eq!(stream(&rx), StreamUpdate::NoKey);
@@ -1450,7 +1450,7 @@ fn the_vertical_canvas_records_and_streams_beside_the_main_one() {
     // Its key is its own: the main key is not used for it.
     let no_key = c.call("stream.start", vertical.clone());
     assert!(no_key.to_string().contains("vertical stream"), "{no_key}");
-    let account = rbs_app::stream_key::vertical_account(ACCOUNT);
+    let account = rbs_studio_host::stream_key::vertical_account(ACCOUNT);
     assert_eq!(account, "stream key/vertical");
     keys.write(&account, &rbs_transport::Secret::new("shorts_key"))
         .unwrap();
@@ -1968,9 +1968,9 @@ fn a_control_api_client_holds_a_stream_with_a_scene() {
     let mut profile = StreamProfile::new();
     profile.server = URL.into();
     profile.key_saved = true;
-    profile.hold_picture = rbs_app::stream_profile::HoldPicture::Scene;
+    profile.hold_picture = rbs_studio_host::stream_profile::HoldPicture::Scene;
     profile.hold_scene = Some(brk as u32);
-    profile.hold_sound = rbs_app::stream_profile::HoldSound::Scene;
+    profile.hold_sound = rbs_studio_host::stream_profile::HoldSound::Scene;
     host.send(Command::SetStreamProfile(profile));
     // The profile comes through the command channel, the call through the API: wait
     // until the host has taken it, or the call can be served first.
@@ -2011,7 +2011,7 @@ fn stream_markers_mark_a_running_recording_when_the_profile_asks() {
     std::fs::create_dir_all(&dir).unwrap();
 
     for (name, on) in [("on.mkv", true), ("off.mkv", false)] {
-        let markers = rbs_app::record_profile::MarkerSettings {
+        let markers = rbs_studio_host::record_profile::MarkerSettings {
             stream_events: on,
             ..Default::default()
         };
@@ -2103,7 +2103,7 @@ fn markers_while_paused_sit_on_the_join_and_the_manifest_lists_the_pause() {
         size: None,
         iso: false,
         editor_project: None,
-        markers: rbs_app::record_profile::MarkerSettings::default(),
+        markers: rbs_studio_host::record_profile::MarkerSettings::default(),
     }));
     assert!(matches!(recording(&rx), RecordingUpdate::Started { .. }));
     let s = 1_000_000_000u64;
@@ -2165,8 +2165,8 @@ const SECOND: &str = "rtmp://second.example.com/app";
 
 /// The main canvas's stream with a second destination (its own key), a disabled third
 /// and a fourth whose server refuses at once.
-fn destinations(keys: &MemoryKeyStore) -> rbs_app::stream_destinations::Destinations {
-    use rbs_app::stream_destinations::{Canvas, Destinations};
+fn destinations(keys: &MemoryKeyStore) -> rbs_studio_host::stream_destinations::Destinations {
+    use rbs_studio_host::stream_destinations::{Canvas, Destinations};
     let mut d = Destinations::default();
     let second = d.add(Canvas::Main, "Second", "custom").unwrap();
     let e = d.entry_mut(second).unwrap();
@@ -2220,7 +2220,7 @@ fn stream_available_follows_the_destinations() {
     c.event("stream.state", |d| d["available"] == true);
     // Turned off in the list: off again, and stream.start is refused before a key is
     // read.
-    let mut d = rbs_app::stream_destinations::Destinations::default();
+    let mut d = rbs_studio_host::stream_destinations::Destinations::default();
     assert!(d.set_enabled(0, false));
     host.send(Command::SetStreamDestinations(d.clone(), false));
     c.event("stream.state", |d| d["available"] == false);

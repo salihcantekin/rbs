@@ -16,15 +16,15 @@ use rbs_api::session::ServerConfig;
 use rbs_api::thread::ApiOptions;
 use rbs_api::transport::{CloseReason, ConnectionHandle, ConnectionSender, PeerInfo, SendError};
 use rbs_api::{ApiServer, TokenStore};
-use rbs_app::studio_host::{
-    CameraFactory, CameraSetup, CameraStatus, Command, HostConfig, StudioHost, Update,
-};
 use rbs_core::media::Size;
 use rbs_core::time::TestClock;
 use rbs_core::timing::FrameRate;
 use rbs_engine::{Engine, EngineConfig};
 use rbs_gpu::{GpuContext, GpuError, GpuRequest};
 use rbs_record::RecordAdapters;
+use rbs_studio_host::studio_host::{
+    CameraFactory, CameraSetup, CameraStatus, Command, HostConfig, StudioHost, Update,
+};
 use rbs_vcam::{InstallState, VirtualCameraFactory};
 use rbs_vcam_test::TestVcamFactory;
 

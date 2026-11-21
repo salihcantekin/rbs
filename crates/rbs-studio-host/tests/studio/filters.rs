@@ -16,7 +16,6 @@ use rbs_api::session::ServerConfig;
 use rbs_api::thread::ApiOptions;
 use rbs_api::transport::{CloseReason, ConnectionHandle, ConnectionSender, PeerInfo, SendError};
 use rbs_api::{ApiServer, TokenStore};
-use rbs_app::studio_host::{Command, HostConfig, SourceRow, StudioHost, Update};
 use rbs_audio_io_test::TestAudioBackend;
 use rbs_capture_test::TestCaptureFactory;
 use rbs_core::time::TestClock;
@@ -25,6 +24,7 @@ use rbs_filters::{Value as FilterValue, Values};
 use rbs_gpu::{GpuContext, GpuError, GpuRequest};
 use rbs_record::RecordAdapters;
 use rbs_scene::model::SourceId;
+use rbs_studio_host::studio_host::{Command, HostConfig, SourceRow, StudioHost, Update};
 use serde_json::{Value, json};
 
 /// Hang guard only.
@@ -639,7 +639,7 @@ fn looks_and_sample_pictures_from_the_library_are_one_undo_step_each() {
     assert_eq!(got.last().unwrap().name, "Aurora");
     assert_eq!(
         got.last().unwrap().kind,
-        Some(rbs_app::studio_host::SourceKind::Image)
+        Some(rbs_studio_host::studio_host::SourceKind::Image)
     );
     host.send(Command::AddSample {
         sample: "frame-thin".into(),
@@ -652,7 +652,7 @@ fn looks_and_sample_pictures_from_the_library_are_one_undo_step_each() {
     );
     assert_eq!(
         got.first().unwrap().kind,
-        Some(rbs_app::studio_host::SourceKind::Color),
+        Some(rbs_studio_host::studio_host::SourceKind::Color),
         "a plain frame is a colour with a border, so its thickness stays editable"
     );
     assert_eq!(

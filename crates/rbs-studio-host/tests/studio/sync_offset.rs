@@ -19,13 +19,13 @@ use rbs_api::session::ServerConfig;
 use rbs_api::thread::ApiOptions;
 use rbs_api::transport::{CloseReason, ConnectionHandle, ConnectionSender, PeerInfo, SendError};
 use rbs_api::{ApiServer, TokenStore};
-use rbs_app::studio_host::{HostConfig, StudioHost, Update};
 use rbs_audio_io_test::TestAudioBackend;
 use rbs_capture_test::TestCaptureFactory;
 use rbs_core::time::TestClock;
 use rbs_engine::{Engine, EngineConfig};
 use rbs_gpu::{GpuContext, GpuError, GpuRequest};
 use rbs_record::RecordAdapters;
+use rbs_studio_host::studio_host::{HostConfig, StudioHost, Update};
 use serde_json::{Value, json};
 
 /// Hang guard only.
@@ -354,8 +354,8 @@ fn a_measurement_is_refused_with_a_reason() {
 
 #[test]
 fn the_measure_window_lists_cameras_and_closes() {
-    use rbs_app::studio_host::{Command, SyncMeasurePhase, SyncMeasureRefusal};
     use rbs_scene::model::SourceId;
+    use rbs_studio_host::studio_host::{Command, SyncMeasurePhase, SyncMeasureRefusal};
     let Some((host, updates, _api, mut c)) = start() else {
         return;
     };

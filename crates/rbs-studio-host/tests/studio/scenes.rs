@@ -17,13 +17,13 @@ use rbs_api::session::ServerConfig;
 use rbs_api::thread::ApiOptions;
 use rbs_api::transport::{CloseReason, ConnectionHandle, ConnectionSender, PeerInfo, SendError};
 use rbs_api::{ApiServer, TokenStore};
-use rbs_app::studio_host::{HostConfig, StudioHost, Update};
 use rbs_audio_io_test::TestAudioBackend;
 use rbs_capture_test::TestCaptureFactory;
 use rbs_core::time::TestClock;
 use rbs_engine::{Engine, EngineConfig};
 use rbs_gpu::{GpuContext, GpuError, GpuRequest};
 use rbs_record::RecordAdapters;
+use rbs_studio_host::studio_host::{HostConfig, StudioHost, Update};
 use serde_json::{Value, json};
 
 /// Hang guard only.
@@ -496,7 +496,7 @@ fn items_lock_and_hide_and_sources_mute_rename_and_change_volume() {
 /// different queues, so an API call sent next could otherwise be served first. A
 /// target list asked after it on the same queue answers only once it was applied.
 fn set_swap(host: &StudioHost, updates: &Receiver<Update>) {
-    use rbs_app::studio_host::{Command, SourceKind};
+    use rbs_studio_host::studio_host::{Command, SourceKind};
     host.send(Command::SetSwapAfterTransition(true));
     host.send(Command::ListTargets(SourceKind::AudioInput));
     next(updates, |u| match u {
@@ -646,8 +646,8 @@ fn by_default_the_transition_keeps_the_preview_scene() {
 
 #[test]
 fn in_studio_mode_the_ui_edits_the_preview_and_the_mixer_hears_the_program() {
-    use rbs_app::studio_host::Command;
     use rbs_scene::model::SceneId;
+    use rbs_studio_host::studio_host::Command;
     let Some((host, updates, _api, mut c)) = start() else {
         return;
     };
@@ -1001,8 +1001,8 @@ fn leaving_studio_mode_with_move_outside_it_plays_no_transition() {
 
 #[test]
 fn a_vertical_canvas_is_added_follows_the_main_program_and_is_removed() {
-    use rbs_app::studio_host::{Command, VerticalCanvas};
     use rbs_core::media::Size;
+    use rbs_studio_host::studio_host::{Command, VerticalCanvas};
     let Some((host, updates, _api, mut c)) = start() else {
         return;
     };
@@ -1030,9 +1030,9 @@ fn a_vertical_canvas_is_added_follows_the_main_program_and_is_removed() {
 
 #[test]
 fn a_box_on_the_vertical_canvas_is_that_canvas_s_own_layout() {
-    use rbs_app::studio_host::{Command, OutputCanvas, VerticalCanvas};
     use rbs_core::media::Size;
     use rbs_scene::model::SourceId;
+    use rbs_studio_host::studio_host::{Command, OutputCanvas, VerticalCanvas};
     let Some((host, updates, _api, mut c)) = start() else {
         return;
     };
@@ -1151,10 +1151,10 @@ fn a_box_on_the_vertical_canvas_is_that_canvas_s_own_layout() {
 
 #[test]
 fn a_saved_vertical_canvas_runs_again_when_the_collection_opens() {
-    use rbs_app::studio_host::Command;
     use rbs_core::media::Size;
     use rbs_core::timing::FrameRate;
     use rbs_scene::model::SceneScope;
+    use rbs_studio_host::studio_host::Command;
     // What `canvas.add_vertical` leaves in the document: a second canvas that follows
     // the main one and shows a shared scene.
     let mut doc = rbs_scene::SceneCollection::default();
@@ -1226,9 +1226,9 @@ fn the_control_api_adds_and_removes_the_vertical_canvas() {
 
 #[test]
 fn style_crop_and_transform_on_the_vertical_canvas_leave_the_main_layout() {
-    use rbs_app::studio_host::{Command, OutputCanvas, TransformOp, VerticalCanvas};
     use rbs_core::media::Size;
     use rbs_scene::model::{ItemStyle, Shape, SourceId};
+    use rbs_studio_host::studio_host::{Command, OutputCanvas, TransformOp, VerticalCanvas};
     let Some((host, updates, _api, mut c)) = start() else {
         return;
     };
@@ -1320,9 +1320,9 @@ fn style_crop_and_transform_on_the_vertical_canvas_leave_the_main_layout() {
 /// range scroll and a live call without a scroll are refused in words.
 #[test]
 fn properties_scroll_sets_the_layout_and_pauses_the_run() {
-    use rbs_app::studio_host::{Command, OutputCanvas};
     use rbs_record::ScrollControl;
     use rbs_scene::model::{Scroll, ScrollDirection, SourceId};
+    use rbs_studio_host::studio_host::{Command, OutputCanvas};
     let Some((host, updates, _api, mut c)) = start() else {
         return;
     };
@@ -1383,8 +1383,8 @@ fn properties_scroll_sets_the_layout_and_pauses_the_run() {
 /// Protocol 1.44: the vertical canvas's layouts and size through the control API.
 #[test]
 fn the_control_api_arranges_and_resizes_the_vertical_canvas() {
-    use rbs_app::studio_host::{Command, VerticalCanvas};
     use rbs_core::media::Size;
+    use rbs_studio_host::studio_host::{Command, VerticalCanvas};
     let Some((host, updates, _api, mut c)) = start() else {
         return;
     };
@@ -1513,8 +1513,8 @@ fn row(c: &mut Client, id: u64) -> Value {
 /// its own levels they edit that scene's level, else the source's own, as before.
 #[test]
 fn the_window_fader_edits_the_scene_level_in_own_levels() {
-    use rbs_app::studio_host::Command;
     use rbs_scene::model::SourceId;
+    use rbs_studio_host::studio_host::Command;
     let Some((host, updates, _api, mut c)) = start() else {
         return;
     };
@@ -2140,12 +2140,12 @@ fn a_film_restart_when_shown_setting_is_written_to_its_activity_policy() {
 fn properties_activity_choice_is_stored_without_type_defaults_and_shown_in_the_rows() {
     // ADR-0152 phase 2: Properties' "Runs" and "When it comes back" send the policy
     // in force; the type's defaults are stored as absent and the UI rows follow.
-    use rbs_app::studio_host::{ActivityChoice, Command};
     use rbs_core::media::Size;
     use rbs_core::timing::FrameRate;
     use rbs_graph::node::NodeTypeId;
     use rbs_scene::activity::{OnReturn, Run};
     use rbs_scene::model::{ItemContent, Layout, SceneScope, SettingValue, Settings};
+    use rbs_studio_host::studio_host::{ActivityChoice, Command};
     let dir = std::env::temp_dir().join(format!("rbs-film-choice-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let file = dir.join("film.mov");

@@ -1,7 +1,7 @@
 # Spec: Studio host
 
 - Status: Draft
-- Owner crate(s): `rbs-studio-host` (today still `crates/rbs-app/src/studio_host.rs` and `studio_host/`; the move of ADR-0159 decision 6 is next)
+- Owner crate(s): `rbs-studio-host` (today still `crates/rbs-studio-host/src/studio_host.rs` and `studio_host/`; the move of ADR-0159 decision 6 is next)
 - Related ADRs: ADR-0041 (control thread), ADR-0044 (control API), ADR-0055 (caught panics), ADR-0156 (shutdown, `ControlOut`), ADR-0158 (diagnostics log), ADR-0159 (this crate)
 
 ## Purpose
@@ -59,7 +59,7 @@ None of its own. The host sends commands to the engine and never runs on a [hot 
 
 ## Conformance tests
 
-- `rbs-app` `tests/studio_*.rs` today. After the move, they become one test binary, `crates/rbs-studio-host/tests/studio/main.rs` (ADR-0159 decision 7).
+- One test binary, `crates/rbs-studio-host/tests/studio/main.rs` (ADR-0159 decision 7): a module per former `rbs-app` `tests/studio_*.rs` file. Tests that need a real browser runner or a window stay in `rbs-app`.
 - `the_main_display_comes_from_the_roots_probe` (seam `main_display`).
 - `slow_a_matroska_master_gets_its_markers_as_chapters` (seam `chapters`).
 - `studio_host::failures::tests::a_kind_is_the_variant_name_without_its_payload`.

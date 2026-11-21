@@ -77,7 +77,7 @@ Per running output, from `Progress` counted from the output's start:
 - `rbs-record` `protection::guard::tests`: every rule above on synthetic samples and explicit timestamps (no clock, disk or sleep).
 - `rbs-record` `protection::probe::tests`: cadence, timeout reported once, skipped requests, a late answer, a drop over a hung fake probe that returns at once.
 - `rbs-system-probe`: the temporary folder has a volume and free space; a missing folder fails; memory is read or unsupported; `/proc/meminfo` parsing.
-- `rbs-app` `tests/studio_record.rs` (`a_recording_stops_cleanly_with_the_reason_when_its_disk_reaches_the_reserve`): a fake disk below the reserve; the user is told, `protection.status` shows `critical` with the main recording, the recording stops with the sentence as its summary, the file stays, and the guard is gone afterwards. The engine runs on a `TestClock`; real time bounds only as a hang guard.
+- `rbs-studio-host` `tests/studio/record.rs` (`a_recording_stops_cleanly_with_the_reason_when_its_disk_reaches_the_reserve`): a fake disk below the reserve; the user is told, `protection.status` shows `critical` with the main recording, the recording stops with the sentence as its summary, the file stays, and the guard is gone afterwards. The engine runs on a `TestClock`; real time bounds only as a hang guard.
 
 ## Later phases (not in this tree)
 

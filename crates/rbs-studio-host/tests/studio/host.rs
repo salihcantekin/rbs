@@ -10,11 +10,6 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use rbs_app::edit_history::{EditKind, StepInfo};
-use rbs_app::studio_host::{
-    Command, Fault, HostConfig, MainDisplayProbe, SourceKind, SourceRow, SourceStatus, StudioHost,
-    Target, Update, display_from_default_screen,
-};
 use rbs_audio_io_test::TestAudioBackend;
 use rbs_capture_test::TestCaptureFactory;
 use rbs_core::media::Size;
@@ -23,6 +18,11 @@ use rbs_core::timing::FrameRate;
 use rbs_engine::{Engine, EngineConfig};
 use rbs_gpu::{GpuContext, GpuError, GpuRequest};
 use rbs_record::RecordAdapters;
+use rbs_studio_host::edit_history::{EditKind, StepInfo};
+use rbs_studio_host::studio_host::{
+    Command, Fault, HostConfig, MainDisplayProbe, SourceKind, SourceRow, SourceStatus, StudioHost,
+    Target, Update, display_from_default_screen,
+};
 
 /// Hang guard only: every wait ends as soon as its update arrives.
 const LIMIT: Duration = Duration::from_secs(20);
@@ -240,7 +240,7 @@ fn sources_change_layer_order_and_box_through_the_host() {
         id: camera,
         position: [10.0, 20.0],
         size: [640.0, 360.0],
-        canvas: rbs_app::studio_host::OutputCanvas::Main,
+        canvas: rbs_studio_host::studio_host::OutputCanvas::Main,
     });
     let rows = rows_where(&rx, |r| {
         r[0].layout.is_some_and(|l| l.position == [10.0, 20.0])
@@ -260,7 +260,7 @@ fn sources_change_layer_order_and_box_through_the_host() {
         id: camera,
         position: [10.0, 20.0],
         size: [640.0, 360.0],
-        canvas: rbs_app::studio_host::OutputCanvas::Main,
+        canvas: rbs_studio_host::studio_host::OutputCanvas::Main,
     });
     assert!(placed_answer(&rx, 2));
     let placed = rows[0].layout.unwrap();
@@ -291,7 +291,7 @@ fn sources_change_layer_order_and_box_through_the_host() {
         id: camera,
         position: [0.0, 0.0],
         size: [0.0, 360.0],
-        canvas: rbs_app::studio_host::OutputCanvas::Main,
+        canvas: rbs_studio_host::studio_host::OutputCanvas::Main,
     });
     next(&rx, |u| match u {
         Update::Error(_) => Some(()),
@@ -344,7 +344,7 @@ fn edits_are_undone_and_redone_and_a_drag_is_one_step() {
             id: camera,
             position: [x, 0.0],
             size: start.size,
-            canvas: rbs_app::studio_host::OutputCanvas::Main,
+            canvas: rbs_studio_host::studio_host::OutputCanvas::Main,
         });
     }
     host.send(Command::SetSourceBox {
@@ -353,7 +353,7 @@ fn edits_are_undone_and_redone_and_a_drag_is_one_step() {
         id: camera,
         position: [30.0, 0.0],
         size: [320.0, 180.0],
-        canvas: rbs_app::studio_host::OutputCanvas::Main,
+        canvas: rbs_studio_host::studio_host::OutputCanvas::Main,
     });
     rows_where(&rx, |r| {
         r[0].layout.is_some_and(|l| l.size == [320.0, 180.0])
@@ -654,8 +654,8 @@ fn the_scene_collection_is_saved_after_edits_and_runs_again_after_a_restart() {
     let Some(gpu) = gpu() else { return };
     let d = std::env::temp_dir().join(format!("rbs-app-host-collection-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
-    let (user, collection) = rbs_app::user_session::open(&d, Arc::new(|_| {}));
-    let start = |user: &rbs_app::user_session::UserSession, collection| {
+    let (user, collection) = rbs_studio_host::user_session::open(&d, Arc::new(|_| {}));
+    let start = |user: &rbs_studio_host::user_session::UserSession, collection| {
         let mut config = HostConfig::canvas(Size::new(1280, 720), FrameRate::FPS_30);
         config.preview = None;
         config.collection = Some(collection);
@@ -681,7 +681,7 @@ fn the_scene_collection_is_saved_after_edits_and_runs_again_after_a_restart() {
     drop(user);
 
     // A new app: the same collection, with its source, runs again.
-    let (user, collection) = rbs_app::user_session::open(&d, Arc::new(|_| {}));
+    let (user, collection) = rbs_studio_host::user_session::open(&d, Arc::new(|_| {}));
     assert_eq!(collection.sources().count(), 1);
     let (host, rx) = start(&user, collection);
     let again = rows_where(&rx, |r| r.len() == 1);
@@ -696,7 +696,7 @@ fn another_scene_collection_runs_and_keeps_its_own_edits() {
     let Some(gpu) = gpu() else { return };
     let d = std::env::temp_dir().join(format!("rbs-app-host-switch-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
-    let (user, collection) = rbs_app::user_session::open(&d, Arc::new(|_| {}));
+    let (user, collection) = rbs_studio_host::user_session::open(&d, Arc::new(|_| {}));
     let first = user.collection_id.clone();
     let mut config = HostConfig::canvas(Size::new(1920, 1080), FrameRate::FPS_30);
     config.preview = None;
@@ -709,10 +709,10 @@ fn another_scene_collection_runs_and_keeps_its_own_edits() {
         _ => None,
     });
 
-    let small = rbs_app::canvas_profile::CanvasProfile {
+    let small = rbs_studio_host::canvas_profile::CanvasProfile {
         width: 1280,
         height: 720,
-        ..rbs_app::canvas_profile::CanvasProfile::new()
+        ..rbs_studio_host::canvas_profile::CanvasProfile::new()
     };
     let second = user.new_collection("Second", &small, false).unwrap();
     let (name, loaded) = user.load_collection(&second).unwrap();

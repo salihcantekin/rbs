@@ -86,7 +86,7 @@ fn shipped_runner(dir: &Path) -> Option<PathBuf> {
     (cfg!(target_os = "macos") && bundled.is_file()).then_some(bundled)
 }
 
-pub use crate::studio_host::{EngineRuntime, EngineSlot};
+pub use crate::studio_host::{EngineRuntime, EngineSlot, GPU_FALLBACK, page_reason};
 
 /// Starts the runner for each browser source.
 #[derive(Debug)]
@@ -372,21 +372,6 @@ impl rbs_browser_runner::FenceView for Fence {
         self.0.completed()
     }
 }
-
-/// Why the Properties Page tab shows a browser source's state: its control-API reason,
-/// or [`GPU_FALLBACK`] while it draws on shared memory after its GPU path failed
-/// (ADR-0157 decision 9). UI only; the control API never sees [`GPU_FALLBACK`].
-pub fn page_reason(
-    studio: &rbs_record::Studio,
-    source: rbs_scene::model::SourceId,
-    state: Option<&rbs_record::SourceState>,
-) -> Option<&'static str> {
-    let fell_back = studio.browser_gpu_fell_back(source).then_some(GPU_FALLBACK);
-    state.and_then(|st| st.reason).or(fell_back)
-}
-
-/// The Page tab's word for a page whose GPU path fell back (see [`page_reason`]).
-pub const GPU_FALLBACK: &str = "gpu_fallback";
 
 /// Counts one live session; the count drops when the session does.
 #[derive(Debug)]

@@ -15,8 +15,6 @@ use rbs_api::session::ServerConfig;
 use rbs_api::thread::ApiOptions;
 use rbs_api::transport::{CloseReason, ConnectionHandle, ConnectionSender, PeerInfo, SendError};
 use rbs_api::{ApiServer, TokenStore};
-use rbs_app::replay_settings::ReplaySetup;
-use rbs_app::studio_host::{Command, Fault, HostConfig, SourceKind, SourceRow, StudioHost, Update};
 use rbs_audio_io_test::TestAudioBackend;
 use rbs_capture_test::TestCaptureFactory;
 use rbs_codec::{
@@ -35,6 +33,10 @@ use rbs_engine::{Engine, EngineConfig};
 use rbs_gpu::{GpuContext, GpuError, GpuRequest};
 use rbs_mux::{Muxer, MuxerConfig, MuxerFactory, caps as mux_caps};
 use rbs_record::RecordAdapters;
+use rbs_studio_host::replay_settings::ReplaySetup;
+use rbs_studio_host::studio_host::{
+    Command, Fault, HostConfig, SourceKind, SourceRow, StudioHost, Update,
+};
 
 /// Hang guard only: every wait ends as soon as its update arrives.
 const LIMIT: Duration = Duration::from_secs(20);

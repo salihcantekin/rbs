@@ -17,8 +17,6 @@ use rbs_api::session::ServerConfig;
 use rbs_api::thread::ApiOptions;
 use rbs_api::transport::{CloseReason, ConnectionHandle, ConnectionSender, PeerInfo, SendError};
 use rbs_api::{ApiServer, TokenStore};
-use rbs_app::loudness_settings::{self, LoudnessSettings};
-use rbs_app::studio_host::{HostConfig, StudioHost, Update};
 use rbs_audio_io_test::TestAudioBackend;
 use rbs_capture_test::TestCaptureFactory;
 use rbs_core::media::Size;
@@ -31,6 +29,8 @@ use rbs_record::RecordAdapters;
 use rbs_scene::SceneCollection;
 use rbs_scene::model::{ItemContent, Layout, SceneScope, Settings, SourceMonitor};
 use rbs_sources::types;
+use rbs_studio_host::loudness_settings::{self, LoudnessSettings};
+use rbs_studio_host::studio_host::{HostConfig, StudioHost, Update};
 use serde_json::{Value, json};
 
 /// Hang guard only.
@@ -91,7 +91,7 @@ fn start(clock: &TestClock) -> Option<(StudioHost, Receiver<Update>)> {
 type Started = (
     StudioHost,
     Receiver<Update>,
-    Option<rbs_app::studio_host::LoudnessView>,
+    Option<rbs_studio_host::studio_host::LoudnessView>,
 );
 
 fn start_with(
@@ -272,7 +272,7 @@ fn the_control_api_starts_reads_resets_and_stops_the_loudness_meter() {
 }
 
 /// The last [`Update::Loudness`] among the updates so far.
-fn last_view(updates: &Receiver<Update>) -> Option<rbs_app::studio_host::LoudnessView> {
+fn last_view(updates: &Receiver<Update>) -> Option<rbs_studio_host::studio_host::LoudnessView> {
     updates
         .try_iter()
         .filter_map(|u| match u {

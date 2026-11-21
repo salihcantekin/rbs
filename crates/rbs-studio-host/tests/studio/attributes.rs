@@ -16,13 +16,13 @@ use rbs_api::session::ServerConfig;
 use rbs_api::thread::ApiOptions;
 use rbs_api::transport::{CloseReason, ConnectionHandle, ConnectionSender, PeerInfo, SendError};
 use rbs_api::{ApiServer, TokenStore};
-use rbs_app::studio_host::{HostConfig, StudioHost, Update};
 use rbs_audio_io_test::TestAudioBackend;
 use rbs_capture_test::TestCaptureFactory;
 use rbs_core::time::TestClock;
 use rbs_engine::{Engine, EngineConfig};
 use rbs_gpu::{GpuContext, GpuError, GpuRequest};
 use rbs_record::RecordAdapters;
+use rbs_studio_host::studio_host::{HostConfig, StudioHost, Update};
 use serde_json::{Value, json};
 
 /// Hang guard only.
@@ -506,8 +506,8 @@ fn removing_sources_from_a_duplicated_scene_never_touches_the_original() {
 
     // The same through the UI: the copied scene is edited and each source is removed
     // from it by its row.
-    use rbs_app::studio_host::Command;
     use rbs_scene::model::{SceneId, SourceId};
+    use rbs_studio_host::studio_host::Command;
     let raw = |v: &Value| u32::try_from(v.as_u64().unwrap()).unwrap();
     let copied = ok(&c.call(
         "scene.duplicate",
@@ -557,8 +557,8 @@ fn removing_sources_from_a_duplicated_scene_never_touches_the_original() {
 }
 
 /// The kind of the next undo step the host announces that removes or deletes `name`.
-fn next_removal(updates: &Receiver<Update>, name: &str) -> rbs_app::edit_history::EditKind {
-    use rbs_app::edit_history::EditKind;
+fn next_removal(updates: &Receiver<Update>, name: &str) -> rbs_studio_host::edit_history::EditKind {
+    use rbs_studio_host::edit_history::EditKind;
     next(updates, |u| match u {
         Update::History { undo: Some(s), .. }
             if s.name == name && matches!(s.kind, EditKind::Remove | EditKind::Delete) =>
@@ -572,7 +572,7 @@ fn next_removal(updates: &Receiver<Update>, name: &str) -> rbs_app::edit_history
 #[test]
 fn the_companion_sound_leaves_the_scene_with_its_picture() {
     // ADR-0142, protocol 1.88.
-    use rbs_app::edit_history::EditKind;
+    use rbs_studio_host::edit_history::EditKind;
     let Some((host, updates, _api, mut c)) = start() else {
         return;
     };

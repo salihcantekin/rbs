@@ -15,8 +15,8 @@ path = "src/main.rs"
 
 [features]
 # Test-only panics at chosen steps of the studio host (ADR-0055 crash-resilience
-# tests). Never enabled in builds that ship.
-fault-injection = []
+# tests). Never enabled in builds that ship. The host is rbs-studio-host (ADR-0159).
+fault-injection = ["rbs-studio-host/fault-injection"]
 # `RBS_DEMO_SOURCES=1` adds the deterministic reference adapters (synthetic displays,
 # cameras and audio), for screenshots and UI checks on machines without devices. Off
 # in normal builds. Media uses `rbs-media-decode-test` always until FFmpeg ships. The
@@ -57,6 +57,8 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # list rbs-cli uses too (ADR-0160, P1, src/platform.rs); the adapters below are the
 # ones its other code names directly.
 rbs-core = { path = "../rbs-core" }
+# The studio's control thread (ADR-0159); its old module paths are re-exported in lib.rs.
+rbs-studio-host = { path = "../rbs-studio-host" }
 rbs-engine = { path = "../rbs-engine" }
 rbs-graph = { path = "../rbs-graph" }
 rbs-gpu = { path = "../rbs-gpu", features = ["preview-layer"] }
@@ -81,8 +83,8 @@ rbs-add-ons-sys = { path = "../rbs-add-ons-sys" }
 rbs-browser-ipc = { path = "../rbs-browser-ipc" }
 rbs-browser-shm = { path = "../rbs-browser-shm" }
 rbs-thread-os = { path = "../rbs-thread-os" }
-# Markers into a finished MKV, and file URLs (studio host; ADR-0159 decision 4 moves
-# both behind HostConfig).
+# Markers into a finished MKV: the studio host's ChapterWriter (src/chapters.rs), and
+# file URLs.
 rbs-mux-matroska = { path = "../rbs-mux-matroska" }
 rbs-transport-file = { path = "../rbs-transport-file" }
 # Go live (src/stream_profile.rs): the stream's URL, secret and reconnect policy.
@@ -139,8 +141,8 @@ objc2 = "0.6.3"
 objc2-quartz-core = { version = "0.3.2", default-features = false, features = ["std", "CALayer", "CATransaction", "objc2-core-foundation", "objc2-core-graphics"] }
 objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFCGTypes"] }
 objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGColor"] }
-# The main display's size at start (studio host; ADR-0159 decision 4 moves it behind
-# HostConfig).
+# The main display's size at start: the studio host's main display probe
+# (src/platform.rs, ADR-0159 decision 4).
 rbs-capture-sck = { path = "../rbs-capture-sck" }
 
 [target.'cfg(windows)'.build-dependencies]

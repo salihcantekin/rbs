@@ -7,10 +7,10 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
 
-use rbs_app::studio_host::{
+use rbs_core::media::Size;
+use rbs_studio_host::studio_host::{
     MAX_PROJECTOR_SURFACE_BYTES, MAX_PROJECTORS, projector_refusal, projector_surface_bytes,
 };
-use rbs_core::media::Size;
 
 #[test]
 fn projector_limits_count_eight_surfaces_per_projector_on_every_platform() {
@@ -41,9 +41,6 @@ mod with_pictures {
     use std::time::Duration;
 
     use rbs_api::types::OutputCanvas;
-    use rbs_app::studio_host::{
-        Command, HostConfig, ProjectorState, StudioHost, Update, VerticalCanvas,
-    };
     use rbs_audio_io_test::TestAudioBackend;
     use rbs_capture_test::TestCaptureFactory;
     use rbs_core::media::Size;
@@ -53,6 +50,9 @@ mod with_pictures {
     use rbs_gpu::share::PreviewEndpoint;
     use rbs_gpu::{GpuContext, GpuError, GpuRequest};
     use rbs_record::RecordAdapters;
+    use rbs_studio_host::studio_host::{
+        Command, HostConfig, ProjectorState, StudioHost, Update, VerticalCanvas,
+    };
 
     /// Hang guard only: every wait ends as soon as its update arrives.
     const LIMIT: Duration = Duration::from_secs(20);

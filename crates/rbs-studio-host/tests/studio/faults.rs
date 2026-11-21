@@ -11,7 +11,6 @@ use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use rbs_app::studio_host::{Command, HostConfig, SourceKind, StudioHost, Target, Update};
 use rbs_audio_io_test::TestAudioBackend;
 use rbs_capture::{CaptureError, CaptureFactory, CaptureRequest, CaptureSession, CaptureTarget};
 use rbs_capture_test::TestCaptureFactory;
@@ -21,6 +20,7 @@ use rbs_core::time::TestClock;
 use rbs_engine::{Engine, EngineConfig};
 use rbs_gpu::{GpuContext, GpuError, GpuRequest};
 use rbs_record::RecordAdapters;
+use rbs_studio_host::studio_host::{Command, HostConfig, SourceKind, StudioHost, Target, Update};
 
 /// Hang guard only: every wait ends as soon as its update arrives.
 const LIMIT: Duration = Duration::from_secs(20);

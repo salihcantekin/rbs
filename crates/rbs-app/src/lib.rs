@@ -1,7 +1,8 @@
 //! Library part of the RBS desktop app: the pieces the shell, its tests and its examples
 //! share.
 //!
-//! - [`studio_host`]: the studio's control thread (ADR-0041 decision 7).
+//! - [`studio_host`]: the studio's control thread (ADR-0041 decision 7), from
+//!   `rbs-studio-host` (ADR-0159) like the settings modules re-exported below.
 //! - [`background`]: keeping RBS running after the main window closes (ADR-0056);
 //!   `win` (Windows): its tray icon and second-launch event.
 //! - [`edit_history`]: the undo history of scene edits (U4).
@@ -34,48 +35,48 @@ pub mod ai_tools;
 pub mod background;
 #[cfg(windows)]
 mod browser_gpu;
-pub mod browser_profiles;
+pub use rbs_studio_host::browser_profiles;
 pub mod browser_tree;
-pub mod calibration_file;
-pub mod canvas_profile;
+pub use rbs_studio_host::calibration_file;
+pub use rbs_studio_host::canvas_profile;
 pub mod caption;
 pub mod chapters;
-pub mod device_sync_file;
+pub use rbs_studio_host::device_sync_file;
 pub mod diag_log;
-pub mod edit_history;
+pub use rbs_studio_host::edit_history;
 pub mod encoder_form;
 pub mod hotkeys;
-pub mod levels;
-pub mod loudness_settings;
+pub use rbs_studio_host::levels;
+pub use rbs_studio_host::loudness_settings;
 pub mod menu_layout;
-pub mod monitor_settings;
+pub use rbs_studio_host::monitor_settings;
 #[cfg(target_os = "macos")]
 pub mod native;
 pub mod network_access;
-pub mod obs_import;
+pub use rbs_studio_host::obs_import;
 #[cfg_attr(not(windows), allow(dead_code))] // Used by the Windows GPU page path.
 mod page_grave;
 pub mod permission_text;
 pub mod platform;
 pub mod popups;
-pub mod recent_targets;
-pub mod record_profile;
+pub use rbs_studio_host::recent_targets;
+pub use rbs_studio_host::record_profile;
 pub mod remote_control;
-pub mod replay_settings;
+pub use rbs_studio_host::replay_settings;
 pub mod shutdown;
-pub mod stream_destinations;
+pub use rbs_studio_host::stream_destinations;
 pub mod stream_key;
-pub mod stream_profile;
+pub use rbs_studio_host::stream_profile;
 pub mod stream_services;
-pub mod studio_host;
+pub use rbs_studio_host::studio_host;
 pub mod system_probe;
-pub mod text_timers;
+pub use rbs_studio_host::text_timers;
 pub mod theme_hints;
 pub mod thumbnail;
-pub mod ui_thread;
-pub mod user_session;
+pub use rbs_studio_host::ui_thread;
+pub use rbs_studio_host::user_session;
 pub mod vcam_settings;
-pub mod vertical_outputs;
+pub use rbs_studio_host::vertical_outputs;
 #[cfg(windows)]
 pub mod win;
 pub mod window_events;

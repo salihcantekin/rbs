@@ -1,0 +1,74 @@
+[package]
+name = "rbs-studio-host"
+description = "The RBS studio host: the control thread that owns the studio and answers the window's commands and the control API, free of toolkits and adapters (ADR-0159)."
+version.workspace = true
+edition.workspace = true
+# rbs-app's rust-version at the move (ADR-0159 decision 6); a lower one is a later change.
+rust-version = "1.92"
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+# Test-only panics at chosen steps of the studio host (ADR-0055 crash-resilience
+# tests). Never enabled in builds that ship.
+fault-injection = []
+
+# Layer class StudioHost (ADR-0159 decision 3, `cargo xtask check-layers`): ports,
+# helpers, engine crates, the control API, the UI model, settings, user data, add-ons,
+# importers, the recording model, editor projects and four data crates. Adapters reach
+# the host through HostConfig.
+[dependencies]
+rbs-core = { path = "../rbs-core" }
+rbs-engine = { path = "../rbs-engine" }
+rbs-graph = { path = "../rbs-graph" }
+# Without `preview-layer`: no window code below the composition roots (P8).
+rbs-gpu = { path = "../rbs-gpu" }
+rbs-audio = { path = "../rbs-audio" }
+rbs-scene = { path = "../rbs-scene" }
+rbs-sources = { path = "../rbs-sources" }
+rbs-text = { path = "../rbs-text" }
+rbs-filters = { path = "../rbs-filters" }
+rbs-audio-filters = { path = "../rbs-audio-filters" }
+rbs-params = { path = "../rbs-params" }
+rbs-capture = { path = "../rbs-capture" }
+rbs-codec = { path = "../rbs-codec" }
+rbs-transport = { path = "../rbs-transport" }
+rbs-vcam = { path = "../rbs-vcam" }
+rbs-record = { path = "../rbs-record" }
+rbs-manifest = { path = "../rbs-manifest" }
+rbs-project = { path = "../rbs-project" }
+rbs-browser-ipc = { path = "../rbs-browser-ipc" }
+rbs-crash = { path = "../rbs-crash" }
+rbs-api = { path = "../rbs-api" }
+rbs-remote-settings = { path = "../rbs-remote-settings" }
+rbs-ui = { path = "../rbs-ui" }
+rbs-user-data = { path = "../rbs-user-data" }
+rbs-add-ons = { path = "../rbs-add-ons" }
+rbs-import-obs = { path = "../rbs-import-obs" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.9"
+# Local time for recording file names.
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+[dev-dependencies]
+# The crash-resilience tests inject panics into the studio host (tests/studio/faults.rs).
+rbs-studio-host = { path = ".", features = ["fault-injection"] }
+# Reference adapters for the host tests (deterministic, no devices).
+rbs-capture-test = { path = "../rbs-capture-test" }
+rbs-audio-io-test = { path = "../rbs-audio-io-test" }
+rbs-vcam-test = { path = "../rbs-vcam-test" }
+rbs-text-test = { path = "../rbs-text-test" }
+rbs-media-decode-test = { path = "../rbs-media-decode-test" }
+# Recording and scene tests name these adapters directly.
+rbs-mux-wav = { path = "../rbs-mux-wav" }
+rbs-mux-matroska = { path = "../rbs-mux-matroska" }
+rbs-codec-pcm = { path = "../rbs-codec-pcm" }
+rbs-codec-mf = { path = "../rbs-codec-mf", features = ["testing"] }
+rbs-transport-file = { path = "../rbs-transport-file" }
+rbs-add-ons-sys = { path = "../rbs-add-ons-sys" }
+rbs-mux = { path = "../rbs-mux" }
+
+[lints]
+workspace = true

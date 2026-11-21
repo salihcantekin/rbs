@@ -78,7 +78,7 @@ mod seams;
 use failures::{answer_on_panic, refused};
 pub use seams::{
     Applied, BrowserTrees, Chapter, ChapterWriter, EngineRuntime, EngineSlot, FreeSpaceReader,
-    HostBrowserTree, MainDisplayProbe, display_from_default_screen,
+    GPU_FALLBACK, HostBrowserTree, MainDisplayProbe, display_from_default_screen, page_reason,
 };
 pub mod filters;
 mod interact;
@@ -99,6 +99,7 @@ mod text_measure;
 use control_out::ControlOut;
 mod text_resize;
 
+use crate::api_tokens::ApiTokens;
 use crate::canvas_profile::CanvasProfile;
 use crate::edit_history::{EditKind, History, HistoryError, StepInfo};
 use crate::monitor_settings::MonitorSettings;
@@ -106,7 +107,6 @@ use crate::recent_targets::{Recent, RecentTargets};
 use crate::record_profile::{
     API_PROFILE_ID, LimitPolicy, RecordProfile, SeparateFiles, output_size_matches,
 };
-use crate::remote_control::ApiTokens;
 use crate::stream_destinations::{
     Canvas as DestinationCanvas, DestinationEncoding, Destinations, MAIN_FIRST, Resolved,
     VERTICAL_FIRST,
@@ -14159,7 +14159,7 @@ impl Host {
                 .and_then(|st| st.fault)
                 .map(|f| f as u8)
                 .hash(&mut hasher);
-            crate::browser_tree::page_reason(&self.studio, source.id, state).hash(&mut hasher);
+            seams::page_reason(&self.studio, source.id, state).hash(&mut hasher);
             let latency = self.studio.audio_latency(source.id);
             latency.map(|l| l.filter_latency_ns).hash(&mut hasher);
             latency.map(|l| l.heard_offset_ns).hash(&mut hasher);
@@ -14354,7 +14354,7 @@ impl Host {
                     text: (SourceKind::of(&s.type_id) == Some(SourceKind::Text))
                         .then(|| s.settings.clone()),
                     browser: (kind == Some(SourceKind::Browser)).then(|| browser_page_settings(s)),
-                    browser_reason: crate::browser_tree::page_reason(&self.studio, s.id, state),
+                    browser_reason: seams::page_reason(&self.studio, s.id, state),
                     cap_has,
                     cap_l,
                     cap_t,

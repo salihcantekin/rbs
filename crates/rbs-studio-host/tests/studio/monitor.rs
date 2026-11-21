@@ -15,7 +15,6 @@ use rbs_api::session::ServerConfig;
 use rbs_api::thread::ApiOptions;
 use rbs_api::transport::{CloseReason, ConnectionHandle, ConnectionSender, PeerInfo, SendError};
 use rbs_api::{ApiServer, TokenStore};
-use rbs_app::studio_host::{HostConfig, StudioHost, Update};
 use rbs_audio_io_test::TestAudioBackend;
 use rbs_capture_test::TestCaptureFactory;
 use rbs_core::media::Size;
@@ -28,6 +27,7 @@ use rbs_record::RecordAdapters;
 use rbs_scene::SceneCollection;
 use rbs_scene::model::{ItemContent, Layout, SceneScope, Settings, SourceMonitor};
 use rbs_sources::types;
+use rbs_studio_host::studio_host::{HostConfig, StudioHost, Update};
 use serde_json::{Value, json};
 
 /// Hang guard only.
@@ -361,8 +361,8 @@ fn monitor_until(
 
 #[test]
 fn the_ui_commands_drive_the_monitor_and_report_it() {
-    use rbs_app::studio_host::Command;
     use rbs_scene::model::SourceId;
+    use rbs_studio_host::studio_host::Command;
     let Some((host, updates, audio)) = start(SourceMonitor::Off) else {
         return;
     };

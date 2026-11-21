@@ -16,12 +16,6 @@ use rbs_api::session::ServerConfig;
 use rbs_api::thread::ApiOptions;
 use rbs_api::transport::{CloseReason, ConnectionHandle, ConnectionSender, PeerInfo, SendError};
 use rbs_api::{ApiServer, TokenStore, request::ClientInfo};
-use rbs_app::edit_history::EditKind;
-use rbs_app::studio_host::protection::SystemProbeFactory;
-use rbs_app::studio_host::{
-    Command, CropRegion, Fault, HostConfig, RecordPatch, RecordRequest, RecordingUpdate,
-    SourceKind, SourceRow, SourceStatus, StudioHost, Update,
-};
 use rbs_audio_io_test::TestAudioBackend;
 use rbs_capture_test::TestCaptureFactory;
 use rbs_codec::{
@@ -42,6 +36,12 @@ use rbs_mux::{Muxer, MuxerConfig, MuxerFactory, caps as mux_caps};
 use rbs_record::protection::{Probed, SystemProbe, VolumeKey, VolumeSpace};
 use rbs_record::{END_TAIL_LIMIT, RecordAdapters, VideoSettings};
 use rbs_scene::model::VideoAs;
+use rbs_studio_host::edit_history::EditKind;
+use rbs_studio_host::studio_host::protection::SystemProbeFactory;
+use rbs_studio_host::studio_host::{
+    Command, CropRegion, Fault, HostConfig, RecordPatch, RecordRequest, RecordingUpdate,
+    SourceKind, SourceRow, SourceStatus, StudioHost, Update,
+};
 
 /// Hang guard only: every wait ends as soon as its update arrives.
 const LIMIT: Duration = Duration::from_secs(20);
@@ -270,7 +270,7 @@ fn spawn_host_hw(
     let (tx, rx) = mpsc::channel();
     let clock = clock.clone();
     config.preview = None;
-    config.chapters = matroska.then(|| Arc::new(rbs_app::chapters::MatroskaChapters) as _);
+    config.chapters = matroska.then(|| Arc::new(crate::chapters::MatroskaChapters) as _);
     let host = StudioHost::spawn(
         config,
         move || {
@@ -699,7 +699,7 @@ fn a_crop_keeps_the_scale_is_one_undo_step_and_regions_fit_the_canvas() {
         id,
         crop: [0, 0, right, 0],
         keep_scale: true,
-        canvas: rbs_app::studio_host::OutputCanvas::Main,
+        canvas: rbs_studio_host::studio_host::OutputCanvas::Main,
     });
     let rows = rows_where(&rx, |r| r[0].layout.is_some_and(|l| l.crop.right == right));
     let cut = rows[0].layout.unwrap();
@@ -727,7 +727,7 @@ fn a_crop_keeps_the_scale_is_one_undo_step_and_regions_fit_the_canvas() {
         id,
         crop: [w / 2, 0, w - w / 2, 0],
         keep_scale: true,
-        canvas: rbs_app::studio_host::OutputCanvas::Main,
+        canvas: rbs_studio_host::studio_host::OutputCanvas::Main,
     });
     next(&rx, |u| match u {
         Update::Error(_) => Some(()),
@@ -1100,11 +1100,10 @@ fn the_patches_of_one_field_drag_undo_as_one_step() {
         _ => None,
     });
     let text = add_text(&host, &rx);
-    let int =
-        |r: &rbs_app::studio_host::SourceRow, key: &str| match r.text.as_ref().unwrap().get(key) {
-            Some(rbs_scene::model::SettingValue::Int(i)) => *i,
-            other => panic!("{key}: {other:?}"),
-        };
+    let int = |r: &SourceRow, key: &str| match r.text.as_ref().unwrap().get(key) {
+        Some(rbs_scene::model::SettingValue::Int(i)) => *i,
+        other => panic!("{key}: {other:?}"),
+    };
     let start = int(&text, "width");
     let width = |w: i64, gesture: u64| {
         let mut patch = std::collections::BTreeMap::new();
@@ -1150,11 +1149,10 @@ fn fit_box_to_text_and_the_font_list_answer_the_text_tab() {
         _ => None,
     });
     let text = add_text(&host, &rx);
-    let int =
-        |r: &rbs_app::studio_host::SourceRow, key: &str| match r.text.as_ref().unwrap().get(key) {
-            Some(rbs_scene::model::SettingValue::Int(i)) => *i,
-            other => panic!("{key}: {other:?}"),
-        };
+    let int = |r: &SourceRow, key: &str| match r.text.as_ref().unwrap().get(key) {
+        Some(rbs_scene::model::SettingValue::Int(i)) => *i,
+        other => panic!("{key}: {other:?}"),
+    };
     let fitted = int(&text, "width");
     let item = text.layout.unwrap();
     host.send(Command::ListTextFonts);
@@ -1674,7 +1672,7 @@ fn markers_go_into_the_manifest_when_the_recording_stops() {
     let clock = TestClock::new();
     let (host, rx, _display, mic) = marked(gpu, &clock, None);
     // `project.export` looks in the profile's recordings folder.
-    let mut profile = rbs_app::record_profile::RecordProfile::new();
+    let mut profile = rbs_studio_host::record_profile::RecordProfile::new();
     profile.folder = dir.clone();
     host.send(Command::SetProfile(profile));
     let mut api = ApiClient::attach(&host);
@@ -1849,7 +1847,7 @@ fn markers_go_into_the_manifest_when_the_recording_stops() {
     // The editor project setting: a plain take keeps its timing and writes its
     // project when it stops, with no marker.
     let mut with_project = request(dir.join("edit.mkv"), None);
-    with_project.editor_project = Some(rbs_app::record_profile::EditorProject::Fcpxml);
+    with_project.editor_project = Some(rbs_studio_host::record_profile::EditorProject::Fcpxml);
     host.send(Command::StartRecording(with_project));
     assert!(matches!(recording(&rx), RecordingUpdate::Started { .. }));
     written_some(&rx, &clock);
@@ -1961,7 +1959,7 @@ fn the_estimate_lists_a_start_and_its_separate_files_without_opening_anything() 
 
 /// Points the API's `default` profile at `folder`, and waits until the host has it.
 fn profile_in(host: &StudioHost, rx: &Receiver<Update>, folder: PathBuf) {
-    let mut p = rbs_app::record_profile::RecordProfile::new();
+    let mut p = rbs_studio_host::record_profile::RecordProfile::new();
     p.folder = folder;
     host.send(Command::SetProfile(p));
     // The host takes commands in order: once this answer comes, the profile is set.
@@ -2164,7 +2162,7 @@ fn a_heavy_plan_is_refused_without_acknowledgement_and_an_older_start_trims_to_o
     config
         .calibration
         .folders
-        .push(rbs_app::calibration_file::FolderEntry {
+        .push(rbs_studio_host::calibration_file::FolderEntry {
             path: folder.clone(),
             write_speed,
             measured_at: 0,
@@ -2344,10 +2342,10 @@ impl rbs_record::calibration::WriteSink for CalSink {
 fn calibration_setup(
     clock: &TestClock,
     gate: Option<Receiver<()>>,
-) -> rbs_app::studio_host::CalibrationSetup {
+) -> rbs_studio_host::studio_host::CalibrationSetup {
     let gate = gate.map(|g| Arc::new(std::sync::Mutex::new(g)));
     let sink_clock = clock.clone();
-    rbs_app::studio_host::CalibrationSetup {
+    rbs_studio_host::studio_host::CalibrationSetup {
         clock: Arc::new(clock.clone()),
         pacer: Arc::new(CalPacer(clock.clone())),
         sink: Arc::new(move || {
@@ -2364,7 +2362,7 @@ fn calibration_setup(
 
 /// A scripted export rig on the run's clock (step D2): each tick costs 400 µs of the
 /// render thread and each conversion 300 µs of the GPU; `works: false` has no device.
-fn fake_export_rig(clock: &TestClock, works: bool) -> rbs_app::studio_host::ExportRigMaker {
+fn fake_export_rig(clock: &TestClock, works: bool) -> rbs_studio_host::studio_host::ExportRigMaker {
     use rbs_record::calibration::{ExportClass, ExportCounters, ExportRig, RigError};
     struct Rig {
         clock: TestClock,
@@ -2909,7 +2907,7 @@ fn slow_a_matroska_master_gets_its_markers_as_chapters() {
     let path = dir.join("chapters.mkv");
     let mut r = request(path.clone(), None);
     // The editor project setting keeps the master's timing.
-    r.editor_project = Some(rbs_app::record_profile::EditorProject::Xmeml);
+    r.editor_project = Some(rbs_studio_host::record_profile::EditorProject::Xmeml);
     host.send(Command::StartRecording(r));
     assert!(matches!(recording(&rx), RecordingUpdate::Started { .. }));
     // The real muxer refuses a stream more than its interleaving bound (1 s) behind

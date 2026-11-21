@@ -22,12 +22,17 @@ use rbs_api::session::ServerConfig;
 use rbs_api::thread::ApiOptions;
 use rbs_api::transport::{CloseReason, ConnectionHandle, ConnectionSender, PeerInfo, SendError};
 use rbs_api::{ApiServer, TokenStore};
-use rbs_app::add_ons::AddOnsSetup;
-use rbs_app::studio_host::{HostConfig, StudioHost, Update};
 use rbs_core::time::TestClock;
 use rbs_engine::{Engine, EngineConfig};
 use rbs_gpu::{GpuContext, GpuError, GpuRequest};
 use rbs_record::RecordAdapters;
+use rbs_sources::{
+    BROWSER_RUNTIME_MISSING, BrowserFrameSink, BrowserSession, BrowserSound, BrowserTree,
+};
+use rbs_studio_host::add_ons::AddOnsSetup;
+use rbs_studio_host::studio_host::{
+    BrowserTrees, EngineSlot, HostBrowserTree, HostConfig, StudioHost, Update,
+};
 use serde_json::{Value, json};
 
 /// Hang guard only.
@@ -371,11 +376,10 @@ fn browser_collection() -> rbs_scene::SceneCollection {
 /// `a_browser_source_waits_for_its_engine_and_starts_after_the_install`.
 #[test]
 fn add_source_browser_leads_to_the_engine_until_it_is_installed() {
-    use rbs_app::browser_tree::Runner;
-    use rbs_app::studio_host::{AddOnAction, Command};
+    use rbs_studio_host::studio_host::{AddOnAction, Command};
     let Some(gpu) = gpu() else { return };
     let root = temp_root("engine");
-    let engine = rbs_app::add_ons::BROWSER_ENGINE;
+    let engine = rbs_studio_host::add_ons::BROWSER_ENGINE;
     let (tx, updates) = mpsc::channel();
     let mut config = HostConfig::desktop();
     config.preview = None;
@@ -388,13 +392,9 @@ fn add_source_browser_leads_to_the_engine_until_it_is_installed() {
         unpack: Arc::new(FakeUnpack),
         clock: Arc::new(TestClock::new()),
     });
-    // Never started: nothing in this test draws the program.
-    let runner = Some(Runner {
-        program: root.join("rbs-browser-cef"),
-        args: Vec::new(),
-        needs_engine: true,
-    });
-    config.browser = Some(Arc::new(rbs_app::browser_tree::RunnerTrees { runner }));
+    // A runner that needs the engine; never started: nothing in this test draws the
+    // program.
+    config.browser = Some(Arc::new(EngineTrees));
     let host = StudioHost::spawn(
         config,
         || (RecordAdapters::new(), Vec::new()),
@@ -451,4 +451,54 @@ fn add_source_browser_leads_to_the_engine_until_it_is_installed() {
     });
     drop(host);
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Browser trees whose runner needs the engine add-on, as the shipped runner does
+/// (ADR-0159 decision 4). A start is refused: no test here draws a page.
+#[derive(Debug)]
+struct EngineTrees;
+
+impl BrowserTrees for EngineTrees {
+    fn create(
+        &self,
+        engine: Arc<EngineSlot>,
+        _profiles: Option<PathBuf>,
+        _gpu: &Arc<GpuContext>,
+    ) -> Arc<dyn HostBrowserTree> {
+        Arc::new(EngineTree { engine })
+    }
+}
+
+#[derive(Debug)]
+struct EngineTree {
+    engine: Arc<EngineSlot>,
+}
+
+impl BrowserTree for EngineTree {
+    fn start(
+        &self,
+        _config: &rbs_browser_ipc::Configure,
+        _sink: Arc<BrowserFrameSink>,
+        _sound: Option<Arc<BrowserSound>>,
+    ) -> Result<Box<dyn BrowserSession>, String> {
+        Err("helper_exit".to_owned())
+    }
+
+    fn unavailable(&self) -> Option<&'static str> {
+        self.needs_engine().then_some(BROWSER_RUNTIME_MISSING)
+    }
+
+    fn profile_dir(&self, _profile_id: &str) -> Option<String> {
+        None
+    }
+}
+
+impl HostBrowserTree for EngineTree {
+    fn in_use(&self) -> bool {
+        false
+    }
+
+    fn needs_engine(&self) -> bool {
+        self.engine.get().is_none()
+    }
 }
