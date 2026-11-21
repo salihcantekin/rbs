@@ -566,26 +566,91 @@ pub fn aside_path(path: &Path, why: &str) -> PathBuf {
 ///   even when this build cannot parse it ([`scan_format`]);
 /// - a file of an older format is copied to [`backup_path`] once;
 /// - a file that does not load as a document of this kind (broken by hand, also only
-///   in its body, or another kind) is moved to [`unreadable_path`] first.
+///   in its body, or another kind) is moved to [`unreadable_path`] first;
+/// - a file that already holds exactly the rendered bytes is left as it is.
 pub fn write<T: Document>(path: &Path, document: &T, name: Option<&str>) -> Result<(), DataError> {
+    write_known(path, document, name, &mut Written::default())
+}
+
+/// [`write`] for the one writer that keeps a [`Written`]: a file that still holds the
+/// bytes this writer last wrote there is not parsed again (audit F-09). Rendering is
+/// deterministic and only a valid document of this build is rendered, so such a file
+/// loads; a file changed since, by hand or by another program, is checked as
+/// [`write`] checks it.
+pub fn write_known<T: Document>(
+    path: &Path,
+    document: &T,
+    name: Option<&str>,
+    written: &mut Written,
+) -> Result<(), DataError> {
     let text = render(document, name)?;
-    let writing = document.write_format();
     if let Some(old) = read_text_unbounded(path)? {
-        // The whole document, not only its envelope: a hand edit that breaks the body
-        // (a typo'd key, a broken invariant) must be kept too.
-        match peek_text::<T>(&old).and_then(|f| parse::<T>(&old).map(|_| f)) {
-            Ok(found) if found < writing => {
-                let backup = backup_path(path, found);
-                if !backup.exists() {
-                    write_atomic(&backup, old.as_bytes())?;
-                }
-            }
-            Ok(_) => {}
-            Err(e @ DataError::Newer { .. }) => return Err(e),
-            Err(_) => fs::rename(path, unreadable_path(path))?,
+        if old == text {
+            written.note(path, &text);
+            return Ok(());
+        }
+        if !written.holds(path, &old) {
+            check_previous::<T>(path, &old, document.write_format())?;
         }
     }
-    write_atomic(path, text.as_bytes())
+    // A failed write may leave either file: check it again next time.
+    written.forget(path);
+    write_atomic(path, text.as_bytes())?;
+    written.note(path, &text);
+    Ok(())
+}
+
+/// The [`write`] rules for the file about to be replaced, whose text is `old`.
+fn check_previous<T: Document>(path: &Path, old: &str, writing: u32) -> Result<(), DataError> {
+    // The whole document, not only its envelope: a hand edit that breaks the body
+    // (a typo'd key, a broken invariant) must be kept too.
+    match peek_text::<T>(old).and_then(|f| parse::<T>(old).map(|_| f)) {
+        Ok(found) if found < writing => {
+            let backup = backup_path(path, found);
+            if !backup.exists() {
+                write_atomic(&backup, old.as_bytes())?;
+            }
+            Ok(())
+        }
+        Ok(_) => Ok(()),
+        Err(e @ DataError::Newer { .. }) => Err(e),
+        Err(_) => Ok(fs::rename(path, unreadable_path(path))?),
+    }
+}
+
+/// What one writer last wrote to each file ([`write_known`]): the length and a hash of
+/// the bytes, never the text, so it stays small. A file whose bytes give the same
+/// length and hash is taken as unchanged; a 64-bit hash makes a hand edit that keeps
+/// both vanishingly unlikely.
+#[derive(Debug, Default)]
+pub struct Written {
+    files: std::collections::HashMap<PathBuf, (usize, u64)>,
+}
+
+impl Written {
+    fn print(text: &str) -> (usize, u64) {
+        use std::hash::{Hash, Hasher};
+        // Fixed keys: the same bytes give the same hash in every run.
+        let mut h = std::hash::DefaultHasher::new();
+        text.hash(&mut h);
+        (text.len(), h.finish())
+    }
+
+    fn note(&mut self, path: &Path, text: &str) {
+        self.files.insert(path.to_path_buf(), Self::print(text));
+    }
+
+    fn forget(&mut self, path: &Path) {
+        self.files.remove(path);
+    }
+
+    /// Whether `path`, whose text is now `text`, still holds what was last written.
+    fn holds(&self, path: &Path, text: &str) -> bool {
+        self.files
+            .get(path)
+            .is_some_and(|&(len, _)| len == text.len())
+            && self.files.get(path) == Some(&Self::print(text))
+    }
 }
 
 /// The format of a document text of kind `T`, or why it is not one.

@@ -12,6 +12,7 @@ use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use super::{App, Ctx, Theme, Tokens, entry, look};
 use crate::appearance::{AppearanceUi, GROUPS, KEEP_LOOK_TIMEOUT, RowValue};
 use crate::ui::{Appearance, Overlays, PickerRow, ThemeOption, ThemeTokenRow};
+use rbs_app::user_session::Pending;
 
 /// The page's state, kept while the app runs (it is small and idle when unused).
 #[derive(Default)]
@@ -118,52 +119,33 @@ pub fn install(g: &Appearance<'_>, ctx: &Ctx) {
             .selected
             .and_then(|i| page.ui.entries.get(i))
             .is_some_and(|e| matches!(e.id, ThemeId::BuiltIn(_)));
-        if built_in && !duplicate(app, page, &file) {
+        if built_in {
+            // The copy is edited once it is written.
+            duplicate(app, page, true);
             return;
         }
         page.ui.edit(&file);
         Change::Look
     });
-    on!(on_duplicate, |app, page, file| {
-        duplicate(app, page, &file);
+    on!(on_duplicate, |app, page, _file| {
+        duplicate(app, page, false);
         Change::Page
     });
-    on!(on_rename, |app, page, file, name: SharedString| {
+    on!(on_rename, |app, page, _file, name: SharedString| {
         let Some(ThemeId::User(id)) = selected_id(page) else {
             return;
         };
-        if let Err(why) = app.studio.user.rename_theme(&id, name.trim()) {
-            page.note = why;
-        }
-        page.ui.refresh(app.studio.user.data(), &file);
-        Change::Page
-    });
-    on!(on_delete, |app, page, file| {
-        let Some(ThemeId::User(id)) = selected_id(page) else {
-            return;
-        };
-        let base = page
-            .ui
-            .index_of(&ThemeId::User(id.clone()))
-            .and_then(|i| page.ui.entries[i].body.as_ref())
-            .map_or(Base::Dark, |b| b.base);
-        match app.studio.user.delete_theme(&id) {
-            // A deleted theme in use: its slots take the built-in theme of its base
-            // and the choice is saved (themes spec, "Deleting").
-            Ok(()) => {
-                if let Some(next) = page.ui.forget(&id, base)
-                    && let Err(why) = app.studio.user.set_appearance(&next)
-                {
-                    page.note = why;
-                }
+        let renamed = app.studio.user.rename_theme(&id, name.trim());
+        when_written(renamed, |app, page, file, result| {
+            if let Err(why) = result {
+                page.note = why;
             }
-            Err(why) => page.note = why,
-        }
-        page.ui.selected = None;
-        page.ui.refresh(app.studio.user.data(), &file);
-        // A deleted theme in use falls back to its base (themes spec).
-        Change::Look
+            page.ui.refresh(app.studio.user.data(), file);
+            Change::Page
+        });
+        Change::Page
     });
+    on!(on_delete, |app, page, _file| { delete_selected(app, page) });
     {
         let ctx = ctx.clone();
         g.on_import(move || entry::guard(|| transfer(&ctx, true)));
@@ -250,20 +232,7 @@ pub fn install(g: &Appearance<'_>, ctx: &Ctx) {
     on!(on_reset, |_app, page, file, name: SharedString| {
         edited(page.ui.reset(&file, &name, Instant::now()))
     });
-    on!(on_save, |app, page, file| {
-        let Some((id, name, body)) = page.ui.to_save() else {
-            return;
-        };
-        match app.studio.user.save_theme(&id, &name, body) {
-            Ok(()) => {
-                page.ui.saved();
-                page.ui.refresh(app.studio.user.data(), &file);
-                page.note.clear();
-            }
-            Err(why) => page.note = why,
-        }
-        Change::Look
-    });
+    on!(on_save, |app, page, _file| { save_draft(app, page) });
     on!(on_cancel, |_app, page, _file| {
         page.ui.cancel();
         Change::Look
@@ -273,13 +242,61 @@ pub fn install(g: &Appearance<'_>, ctx: &Ctx) {
         Change::Page
     });
     on!(on_undo, |app, page, file| {
-        if let Some(a) = page.ui.undo(&file)
-            && let Err(why) = app.studio.user.set_appearance(&a)
-        {
-            page.note = why;
+        if let Some(a) = page.ui.undo(&file) {
+            save_choice(app, &a);
         }
         Change::Look
     });
+}
+
+/// Deletes the selected user theme once the writer thread did it.
+fn delete_selected(app: &mut App, page: &mut Page) -> Change {
+    let Some(ThemeId::User(id)) = selected_id(page) else {
+        return Change::Page;
+    };
+    let base = page
+        .ui
+        .index_of(&ThemeId::User(id.clone()))
+        .and_then(|i| page.ui.entries[i].body.as_ref())
+        .map_or(Base::Dark, |b| b.base);
+    let deleted = app.studio.user.delete_theme(&id);
+    when_written(deleted, move |app, page, file, result| {
+        match result {
+            // A deleted theme in use: its slots take the built-in theme of its base
+            // and the choice is saved (themes spec, "Deleting").
+            Ok(()) => {
+                if let Some(next) = page.ui.forget(&id, base) {
+                    save_choice(app, &next);
+                }
+            }
+            Err(why) => page.note = why,
+        }
+        page.ui.selected = None;
+        page.ui.refresh(app.studio.user.data(), file);
+        // A deleted theme in use falls back to its base (themes spec).
+        Change::Look
+    });
+    Change::Page
+}
+
+/// Saves the theme draft once the writer thread did it.
+fn save_draft(app: &mut App, page: &mut Page) -> Change {
+    let Some((id, name, body)) = page.ui.to_save() else {
+        return Change::Page;
+    };
+    let saved = app.studio.user.save_theme(&id, &name, body);
+    when_written(saved, |app, page, file, result| {
+        match result {
+            Ok(()) => {
+                page.ui.saved();
+                page.ui.refresh(app.studio.user.data(), file);
+                page.note.clear();
+            }
+            Err(why) => page.note = why,
+        }
+        Change::Look
+    });
+    Change::Page
 }
 
 /// What a callback changed.
@@ -320,11 +337,43 @@ fn choose(
     let Some(a) = f(&mut page.ui, Instant::now()) else {
         return Change::Page;
     };
-    match app.studio.user.set_appearance(&a) {
-        Ok(()) => page.note.clear(),
-        Err(why) => page.note = why,
-    }
+    page.note.clear();
+    save_choice(app, &a);
     Change::Look
+}
+
+/// Records the appearance choice on the writer thread; a failure shows as the page's
+/// note once it is known.
+fn save_choice(app: &App, choice: &rbs_user_data::Appearance) {
+    when_written(
+        app.studio.user.set_appearance(choice),
+        |_, page, _, result| {
+            if let Err(why) = result {
+                page.note = why;
+            }
+            Change::Page
+        },
+    );
+}
+
+/// Runs `then` with the page once the writer thread did `work` (the UI thread does not
+/// wait for it, docs/architecture/threads.md); the views follow.
+fn when_written<R: 'static>(
+    work: Pending<R>,
+    then: impl FnOnce(&mut App, &mut Page, &TokenFile, Result<R, String>) -> Change + 'static,
+) {
+    entry::when_done(work, move |result| {
+        let Some(ctx) = super::CTX.with(|c| c.borrow().clone()) else {
+            return;
+        };
+        let c = ctx.clone();
+        ctx.update(move |app| {
+            let file = c.look.borrow().as_ref().map(|l| l.file.clone());
+            let Some(file) = file else { return };
+            let changed = then(app, &mut c.page.borrow_mut(), &file, result);
+            after(&c, app, changed);
+        });
+    });
 }
 
 fn selected_id(page: &Page) -> Option<ThemeId> {
@@ -334,22 +383,31 @@ fn selected_id(page: &Page) -> Option<ThemeId> {
         .map(|e| e.id.clone())
 }
 
-/// Adds a copy of the selected theme and selects it; false when it failed.
-fn duplicate(app: &mut App, page: &mut Page, file: &TokenFile) -> bool {
+/// Adds a copy of the selected theme and selects it once it is written; `edit` opens
+/// the editor on it then.
+fn duplicate(app: &mut App, page: &mut Page, edit: bool) {
     let Some((name, body)) = page.ui.duplicate_of_selected() else {
-        return false;
+        return;
     };
-    match app.studio.user.create_theme(&name, body) {
-        Ok(id) => {
+    when_written(
+        app.studio.user.create_theme(&name, body),
+        move |app, page, file, made| {
+            let id = match made {
+                Ok(id) => id,
+                Err(why) => {
+                    page.note = why;
+                    return Change::Page;
+                }
+            };
             page.ui.refresh(app.studio.user.data(), file);
             page.ui.selected = page.ui.index_of(&ThemeId::User(id));
-            true
-        }
-        Err(why) => {
-            page.note = why;
-            false
-        }
-    }
+            if !edit {
+                return Change::Page;
+            }
+            page.ui.edit(file);
+            Change::Look
+        },
+    );
 }
 
 /// Import (`import`) a theme file, or export the selected theme, through the system
@@ -372,35 +430,54 @@ fn transfer(ctx: &Ctx, import: bool) {
         };
         let ctx = c.clone();
         c.update(move |app| {
-            let file = ctx.look.borrow().as_ref().map(|l| l.file.clone());
-            let Some(file) = file else { return };
-            {
-                let mut page = ctx.page.borrow_mut();
-                let mut imported = String::new();
-                let result = match picked {
-                    Ok(None) => Ok(()),
-                    Err(why) => Err(why),
-                    Ok(Some(path)) if import => app.studio.user.import_theme(&path).map(|id| {
-                        page.ui.refresh(app.studio.user.data(), &file);
-                        page.ui.selected = page.ui.index_of(&ThemeId::User(id.clone()));
-                        imported = page.ui.import_note(&ThemeId::User(id));
-                    }),
-                    Ok(Some(path)) => match selected_id(&page) {
-                        Some(ThemeId::User(id)) => app.studio.user.export_theme(&id, &path),
-                        _ => Ok(()),
-                    },
-                };
-                match result {
-                    Ok(()) => page.note = imported,
-                    Err(why) => page.note = why,
-                }
+            let path = match picked {
+                Ok(Some(path)) => path,
+                Ok(None) => return noted(&ctx, app, String::new()),
+                Err(why) => return noted(&ctx, app, why),
+            };
+            // The writer thread does the work; the note follows when it ran.
+            let then = ctx.clone();
+            if import {
+                let done =
+                    move |r: Result<_, _>| then.clone().update(move |app| imported(&then, app, r));
+                return entry::when_done(app.studio.user.import_theme(&path), done);
             }
-            after(&ctx, app, Change::Page);
+            let selected = selected_id(&ctx.page.borrow());
+            let Some(ThemeId::User(id)) = selected else {
+                return noted(&ctx, app, String::new());
+            };
+            let done = move |r: Result<(), String>| {
+                then.clone()
+                    .update(move |app| noted(&then, app, r.err().unwrap_or_default()))
+            };
+            entry::when_done(app.studio.user.export_theme(&id, &path), done);
         });
     });
     if let Err(e) = task {
         ctx.page.borrow_mut().note = e.to_string();
     }
+}
+
+/// The page's note after an import or export; the views follow.
+fn noted(ctx: &Ctx, app: &mut App, note: String) {
+    ctx.page.borrow_mut().note = note;
+    after(ctx, app, Change::Page);
+}
+
+/// A theme import ran: select the new theme, or show why it failed.
+fn imported(ctx: &Ctx, app: &mut App, result: Result<rbs_user_data::EntryId, String>) {
+    let file = ctx.look.borrow().as_ref().map(|l| l.file.clone());
+    let note = match (result, file) {
+        (Err(why), _) => why,
+        (Ok(_), None) => String::new(),
+        (Ok(id), Some(file)) => {
+            let mut page = ctx.page.borrow_mut();
+            page.ui.refresh(app.studio.user.data(), &file);
+            page.ui.selected = page.ui.index_of(&ThemeId::User(id.clone()));
+            page.ui.import_note(&ThemeId::User(id))
+        }
+    };
+    noted(ctx, app, note);
 }
 
 /// The Appearance page is shown: read the choice and the theme list again.
@@ -481,10 +558,8 @@ pub fn select_theme(ctx: &Ctx, app: &mut App, id: &str) {
             return;
         };
         page.ui.selected = Some(index);
-        match app.studio.user.set_appearance(&next) {
-            Ok(()) => page.note.clear(),
-            Err(why) => page.note = why,
-        }
+        page.note.clear();
+        save_choice(app, &next);
     }
     relook(ctx, app);
     show(ctx, app);
@@ -689,10 +764,8 @@ fn keep_timer(ctx: &Ctx) {
                         .as_ref()
                         .is_none_or(|k| k.expired(Instant::now()));
                     if expired {
-                        if let Some(a) = page.ui.undo(&file)
-                            && let Err(why) = app.studio.user.set_appearance(&a)
-                        {
-                            page.note = why;
+                        if let Some(a) = page.ui.undo(&file) {
+                            save_choice(app, &a);
                         }
                         Change::Look
                     } else {

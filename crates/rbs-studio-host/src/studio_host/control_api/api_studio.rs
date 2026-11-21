@@ -113,7 +113,7 @@ impl ApiTarget<'_> {
                     host.add_global(kind, &target).map_err(|e| refused(&e))?
                 } else {
                     host.placing_into(p.scene, |h| {
-                        let id = h.add(kind, &target).map_err(failed)?;
+                        let id = h.add(kind, &target).map_err(|e| failed(e.into_text()))?;
                         if p.with_audio {
                             // One undo step for the picture and its sound; a refused
                             // companion takes the picture back out.
@@ -159,7 +159,7 @@ impl ApiTarget<'_> {
                         format!("no source {}", p.source),
                     ));
                 };
-                host.delete(id).map_err(failed)?;
+                host.delete(id).map_err(|e| failed(e.into_text()))?;
                 host.apply(notify);
                 notify(Update::Deleted {
                     name,

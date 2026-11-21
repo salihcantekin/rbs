@@ -201,7 +201,7 @@ pub(super) fn api_scroll(s: &Scroll) -> api::ItemScroll {
 }
 
 /// The scene's form of an API scroll; the error says what is out of range.
-pub(super) fn scene_scroll(s: &api::ItemScroll) -> Result<Scroll, String> {
+pub(super) fn scene_scroll(s: &api::ItemScroll) -> Result<Scroll, Refusal> {
     let direction = match s.direction {
         api::ScrollDirection::Left => ScrollDirection::Left,
         api::ScrollDirection::Right => ScrollDirection::Right,
@@ -223,7 +223,7 @@ pub(super) fn scene_scroll(s: &api::ItemScroll) -> Result<Scroll, String> {
     if scroll.is_valid() {
         Ok(scroll)
     } else {
-        Err(SCROLL_ERROR.into())
+        Err(Refusal::Invalid(SCROLL_ERROR.into()))
     }
 }
 
@@ -232,17 +232,22 @@ pub(super) const SCROLL_ERROR: &str =
     "Scroll speed must be 1 to 4000, gap 0 to 16384, edge fade 0 to 2048 and ramp 0 to 5000 ms.";
 
 /// The scene's form of an API style; the error says what is wrong.
-pub(super) fn scene_style(s: &api::ItemStyle) -> Result<ItemStyle, String> {
+pub(super) fn scene_style(s: &api::ItemStyle) -> Result<ItemStyle, Refusal> {
     let shape = match s.shape {
         api::ShapeKind::Rectangle => Shape::Rectangle { radius: s.radius },
-        _ if s.radius != 0.0 => return Err("radius is only for shape \"rectangle\"".into()),
+        _ if s.radius != 0.0 => {
+            return Err(Refusal::Invalid(
+                "radius is only for shape \"rectangle\"".to_owned(),
+            ));
+        }
         api::ShapeKind::Circle => Shape::Circle,
         api::ShapeKind::Ellipse => Shape::Ellipse,
         api::ShapeKind::Triangle => Shape::Triangle,
         api::ShapeKind::Arrow => Shape::Arrow,
     };
     let color = |c: &str| {
-        api::parse_color(c).ok_or_else(|| format!("colour {c:?} is not #rrggbb or #rrggbbaa"))
+        api::parse_color(c)
+            .ok_or_else(|| Refusal::Invalid(format!("colour {c:?} is not #rrggbb or #rrggbbaa")))
     };
     let border = match &s.border {
         Some(b) => Some(Border::new(b.width, color(&b.color)?)),
@@ -258,7 +263,7 @@ pub(super) fn scene_style(s: &api::ItemStyle) -> Result<ItemStyle, String> {
     if style.is_valid() {
         Ok(style)
     } else {
-        Err(STYLE_ERROR.into())
+        Err(Refusal::Invalid(STYLE_ERROR.into()))
     }
 }
 

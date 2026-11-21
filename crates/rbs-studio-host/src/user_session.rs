@@ -26,6 +26,9 @@ use crate::canvas_profile::{self, CanvasProfile};
 use crate::record_profile;
 use crate::stream_profile;
 
+mod later;
+pub use later::{ObsWritten, Pending};
+
 /// Name of the entries made when there are none, and of the migrated ones.
 pub const DEFAULT_NAME: &str = "Default";
 
@@ -285,6 +288,10 @@ impl Drop for Saver {
 }
 
 fn write_jobs(shared: &Shared, data: &UserData, lock: &WriterLock, on_error: &dyn Fn(String)) {
+    // What the saves below wrote, so an autosave over its own last write does not
+    // parse that file again (audit F-09). A task's writes are not noted: the next save
+    // of a file a task changed checks it in full.
+    let mut written = rbs_user_data::document::Written::default();
     loop {
         let job = {
             let Ok(mut q) = shared.queue.lock() else {
@@ -322,14 +329,14 @@ fn write_jobs(shared: &Shared, data: &UserData, lock: &WriterLock, on_error: &dy
             Job::Collection(id, col) => {
                 let name = Names::of(&names.collections, &id);
                 data.scene_collections()
-                    .save(lock, &id, &Entry::new(name.clone(), col))
+                    .save_known(lock, &id, &Entry::new(name.clone(), col), &mut written)
                     .err()
                     .map(|e| format!("The scene collection {name:?} could not be saved: {e}"))
             }
             Job::Profile(id, p) => {
                 let name = Names::of(&names.profiles, &id);
                 data.profiles()
-                    .save(lock, &id, &Entry::new(name.clone(), p))
+                    .save_known(lock, &id, &Entry::new(name.clone(), p), &mut written)
                     .err()
                     .map(|e| format!("The output profile {name:?} could not be saved: {e}"))
             }
@@ -687,27 +694,13 @@ impl UserSession {
     /// Adds the output profile in the file `from` (a clashing name gets a number);
     /// returns its name.
     pub fn import_profile(&self, from: &Path) -> Result<String, String> {
-        let from = from.to_owned();
-        self.run(move |data, lock, _| {
-            data.profiles()
-                .import(lock, &from)
-                .map(|(_, name)| name)
-                .map_err(|e| e.to_string())
-        })?
+        self.run(later::import_profile(from.to_owned()))?
     }
 
     /// Adds the scene collection in the file `from` (a clashing name gets a number);
     /// returns its name.
     pub fn import_collection(&self, from: &Path) -> Result<String, String> {
-        let from = from.to_owned();
-        self.run(move |data, lock, _| {
-            let (id, name) = data
-                .scene_collections()
-                .import(lock, &from)
-                .map_err(|e| e.to_string())?;
-            own_profiles(data, lock, &id)?;
-            Ok(name)
-        })?
+        self.run(later::import_collection(from.to_owned()))?
     }
 
     /// Writes an OBS import plan (ADR-0131 decision 9) on the writer thread: a new
@@ -765,78 +758,60 @@ impl UserSession {
         listed(&self.data.themes())
     }
 
-    /// Adds a theme; returns its id.
-    pub fn create_theme(&self, name: &str, theme: ThemeBody) -> Result<EntryId, String> {
+    /// Adds a theme; its id once written.
+    pub fn create_theme(&self, name: &str, theme: ThemeBody) -> Pending<EntryId> {
         let name = name.to_owned();
-        self.run(move |data, lock, _| {
+        self.later(move |data, lock, _| {
             data.themes()
                 .create(lock, &name, &theme)
                 .map_err(|e| e.to_string())
-        })?
+        })
     }
 
     /// Saves a theme under `name` (a rename when it differs).
-    pub fn save_theme(&self, id: &EntryId, name: &str, theme: ThemeBody) -> Result<(), String> {
+    pub fn save_theme(&self, id: &EntryId, name: &str, theme: ThemeBody) -> Pending<()> {
         let (id, name) = (id.clone(), name.to_owned());
-        self.run(move |data, lock, _| {
+        self.later(move |data, lock, _| {
             data.themes()
                 .save(lock, &id, &Entry::new(name, theme))
                 .map_err(|e| e.to_string())
-        })?
+        })
     }
 
     /// Renames a theme.
-    pub fn rename_theme(&self, id: &EntryId, name: &str) -> Result<(), String> {
+    pub fn rename_theme(&self, id: &EntryId, name: &str) -> Pending<()> {
         let (id, name) = (id.clone(), name.to_owned());
-        self.run(move |data, lock, _| {
+        self.later(move |data, lock, _| {
             data.themes()
                 .rename(lock, &id, &name)
                 .map_err(|e| e.to_string())
-        })?
+        })
     }
 
     /// Moves a theme to `deleted/`.
-    pub fn delete_theme(&self, id: &EntryId) -> Result<(), String> {
+    pub fn delete_theme(&self, id: &EntryId) -> Pending<()> {
         let id = id.clone();
-        self.run(move |data, lock, _| {
+        self.later(move |data, lock, _| {
             data.themes()
                 .delete(lock, &id)
                 .map(|_| ())
                 .map_err(|e| e.to_string())
-        })?
-    }
-
-    /// Adds the theme in the file `from` (a clashing name gets a number); returns its
-    /// id.
-    pub fn import_theme(&self, from: &Path) -> Result<EntryId, String> {
-        let from = from.to_owned();
-        self.run(move |data, lock, _| {
-            data.themes()
-                .import(lock, &from)
-                .map(|(id, _)| id)
-                .map_err(|e| e.to_string())
-        })?
-    }
-
-    /// Writes a theme to `to` (one file; nothing to scrub).
-    pub fn export_theme(&self, id: &EntryId, to: &Path) -> Result<(), String> {
-        self.flush();
-        self.data.themes().export(id, to).map_err(|e| e.to_string())
+        })
     }
 
     /// Records the user's shortcut changes (ADR-0060).
-    pub fn set_shortcuts(&self, doc: &rbs_ui::shortcut::ShortcutsDoc) -> Result<(), String> {
+    pub fn set_shortcuts(&self, doc: &rbs_ui::shortcut::ShortcutsDoc) -> Pending<()> {
         let doc = doc.clone();
-        self.run(move |data, lock, _| data.set_shortcuts(lock, &doc).map_err(|e| e.to_string()))?
+        self.later(move |data, lock, _| data.set_shortcuts(lock, &doc).map_err(|e| e.to_string()))
     }
 
     /// Records the appearance choice.
-    pub fn set_appearance(&self, appearance: &Appearance) -> Result<(), String> {
+    pub fn set_appearance(&self, appearance: &Appearance) -> Pending<()> {
         let appearance = appearance.clone();
-        self.run(move |data, lock, _| {
+        self.later(move |data, lock, _| {
             data.set_appearance(lock, &appearance)
                 .map_err(|e| e.to_string())
-        })?
+        })
     }
 }
 
@@ -935,30 +910,13 @@ impl CollectionSaver {
 
 /// Runs [`crate::obs_import::write`] on the writer thread and waits for it; the stream
 /// key comes back for the caller to hand to the key store's owner.
-type ImportResult = Result<
-    (
-        crate::obs_import::Written,
-        Option<(String, rbs_transport::Secret)>,
-    ),
-    String,
->;
+type ImportResult = Result<ObsWritten, String>;
 
 fn import_on(shared: &Shared, plan: rbs_import_obs::ImportPlan) -> ImportResult {
     let (tx, rx) = mpsc::channel();
-    shared.push(Job::Run(Box::new(move |data, lock, _| {
-        let key = std::cell::RefCell::new(None);
-        let written = crate::obs_import::write(
-            data,
-            lock,
-            &plan,
-            &|account, secret| {
-                *key.borrow_mut() = Some((account.to_owned(), secret));
-                Ok(())
-            },
-            rbs_ui::shortcut::Platform::current(),
-            &|p| p.is_dir(),
-        );
-        let _ = tx.send(written.map(|w| (w, key.into_inner())));
+    let task = later::import_obs(plan);
+    shared.push(Job::Run(Box::new(move |data, lock, names| {
+        let _ = tx.send(task(data, lock, names));
     })));
     rx.recv()
         .map_err(|_| "the user data writer stopped".to_owned())?

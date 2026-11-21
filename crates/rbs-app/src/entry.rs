@@ -115,12 +115,32 @@ pub fn quit_loop() {
 }
 
 /// `slint::spawn_local` with every poll of the task guarded: a panic ends the task.
-#[allow(dead_code)] // Used on macOS and Windows (the file dialogs) only.
 #[track_caller]
 pub fn spawn_local(
     task: impl Future<Output = ()> + 'static,
 ) -> Result<slint::JoinHandle<()>, slint::EventLoopError> {
     slint::spawn_local(Guarded(Some(Box::pin(task)), Location::caller()))
+}
+
+/// Awaits `work` (writer-thread work, `user_session::Pending`) under [`spawn_local`]
+/// and hands its result to `done`; when no task can start, `done` gets that error at
+/// once. The UI thread never waits on the writer (docs/architecture/threads.md).
+#[track_caller]
+pub fn when_done<R: 'static>(
+    work: impl Future<Output = Result<R, String>> + 'static,
+    done: impl FnOnce(Result<R, String>) + 'static,
+) {
+    let done = std::rc::Rc::new(std::cell::Cell::new(Some(done)));
+    let then = std::rc::Rc::clone(&done);
+    let task = spawn_local(async move {
+        let result = work.await;
+        if let Some(f) = then.take() {
+            f(result);
+        }
+    });
+    if let (Err(e), Some(f)) = (task, done.take()) {
+        f(Err(e.to_string()));
+    }
 }
 
 /// `Window::on_close_requested` with the handler guarded; a panic keeps the window.

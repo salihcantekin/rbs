@@ -27,3 +27,7 @@ workspace = true
 [[bench]]
 name = "write"
 harness = false
+
+[[bench]]
+name = "save"
+harness = false

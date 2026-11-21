@@ -5,7 +5,8 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-use rbs_app::obs_import::{AppCatalogue, AppLookup, CheckRow, Found};
+use rbs_app::obs_import::{AppCatalogue, AppLookup, CheckRow, Found, Written};
+use rbs_app::user_session::ObsWritten;
 use rbs_import_obs::{ImportPlan, Mappers, Options, ProfileFiles, SceneChoice};
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
@@ -366,26 +367,27 @@ impl ObsImport {
     }
 
     /// Writes the plan: a new scene collection and output profile, the stream key and
-    /// the hotkeys. Nothing the user has now changes.
+    /// the hotkeys. Nothing the user has now changes. The writer thread does it; the
+    /// window stays busy until it ran.
     fn import(&mut self, ctx: &Ctx, app: &mut App) {
         let Some(plan) = self.plan.clone() else {
             return;
         };
+        self.window.set_busy(true);
+        let c = ctx.clone();
+        entry::when_done(app.studio.user.import_obs_later(plan), move |result| {
+            let ctx = c.clone();
+            c.update(move |app| imported(&ctx, app, result));
+        });
+    }
+
+    /// Shows what an import wrote, or why it failed.
+    fn show_written(&mut self, result: Result<Written, String>) {
         let w = &self.window;
-        w.set_busy(true);
-        let result = app.studio.user.import_obs(plan);
         w.set_busy(false);
         match result {
             Err(e) => w.set_problem(format!("Nothing was imported: {e}").into()),
-            Ok((written, key)) => {
-                if let Some((account, key)) = key {
-                    app.studio
-                        .send(studio_host::Command::SaveImportedKey(account, key));
-                }
-                app.studio.refresh_library();
-                if written.shortcuts_added > 0 {
-                    crate::shortcuts_page::load(ctx, app);
-                }
+            Ok(written) => {
                 let mut done = format!("Done. {} is a new scene collection", written.collection.1);
                 if let Some((_, name)) = &written.profile {
                     done.push_str(&format!(" and {name} a new output profile"));
@@ -403,5 +405,25 @@ impl ObsImport {
                 w.set_page(2);
             }
         }
+    }
+}
+
+/// An import ran: the key goes to the studio and the lists are read again, even when
+/// the window was closed meanwhile; an open window shows the result.
+fn imported(ctx: &Ctx, app: &mut App, result: Result<ObsWritten, String>) {
+    let result = result.map(|(written, key)| {
+        if let Some((account, key)) = key {
+            app.studio
+                .send(studio_host::Command::SaveImportedKey(account, key));
+        }
+        app.studio.refresh_library();
+        if written.shortcuts_added > 0 {
+            crate::shortcuts_page::load(ctx, app);
+        }
+        written
+    });
+    if let Some(mut imp) = app.obs_import.take() {
+        imp.show_written(result);
+        app.obs_import = Some(imp);
     }
 }

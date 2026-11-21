@@ -164,6 +164,7 @@ impl Studio {
     pub fn service(&mut self) -> Serviced;
     pub fn failure(&self) -> Option<String>;          // a studio node failed for good
     pub fn sources(&self) -> Vec<SourceState>;        // scheduled sources, binder order
+    pub fn source_health(&self) -> impl Iterator<Item = SourceHealth<'_>>; // why each is not running, borrowed: no allocation (F-10)
     pub fn problems(&self) -> &[BindProblem];
     pub fn waiting(&self) -> bool;                  // a replacement waits for its predecessor to close
     pub fn progress(&self) -> Progress;               // sources and workers only
