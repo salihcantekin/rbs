@@ -39,8 +39,8 @@ use rbs_scene::model::VideoAs;
 use rbs_studio_host::edit_history::EditKind;
 use rbs_studio_host::studio_host::protection::SystemProbeFactory;
 use rbs_studio_host::studio_host::{
-    Command, CropRegion, Fault, HostConfig, RecordPatch, RecordRequest, RecordingUpdate,
-    SourceKind, SourceRow, SourceStatus, StudioHost, Update,
+    Command, Fault, HostConfig, RecordPatch, RecordRequest, RecordingUpdate, SourceKind, SourceRow,
+    SourceStatus, StudioHost, Update,
 };
 
 /// Hang guard only: every wait ends as soon as its update arrives.
@@ -776,9 +776,15 @@ fn a_crop_keeps_the_scale_is_one_undo_step_and_regions_fit_the_canvas() {
     assert_eq!(rows[0].layout.unwrap(), before);
 
     // The right half, fitted to the canvas.
-    host.send(Command::SetSourceRegion {
-        id,
-        region: CropRegion::RightHalf,
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::ItemSetShownRegion(
+            rbs_api::request::SetItemShownRegion {
+                item: rows[0].item.get(),
+                region: rbs_api::request::ShownRegion::RightHalf,
+                canvas: rbs_api::types::OutputCanvas::Main,
+            },
+        )),
+        reply: rbs_studio_host::studio_host::ApiReply::Shown,
     });
     let rows = rows_where(&rx, |r| r[0].layout.is_some_and(|l| l.crop.left == w / 2));
     let half = rows[0].layout.unwrap();
@@ -1210,7 +1216,15 @@ fn fit_box_to_text_and_the_font_list_answer_the_text_tab() {
         r.iter()
             .any(|r| r.id == text.id && int(r, "width") == fitted + 200)
     });
-    host.send(Command::FitTextBox(text.id));
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::ItemFitTextBox(
+            rbs_api::request::FitTextBox {
+                item: text.item.get(),
+                canvas: rbs_api::types::OutputCanvas::Main,
+            },
+        )),
+        reply: rbs_studio_host::studio_host::ApiReply::Shown,
+    });
     let rows = rows_where(&rx, |r| {
         r.iter()
             .any(|r| r.id == text.id && int(r, "width") == fitted)

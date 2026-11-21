@@ -57,8 +57,8 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `Redo` | Moved to `Command::Api` (step 3) | edit.redo, sent with `ApiReply::QuietIf(conflict)`: nothing to undo says nothing, a refused step (`undo_conflict`) is shown |
 | `MoveSource` | Moved to `Command::Api` (step 2) | item.move |
 | `MoveScene` | Moved to `Command::Api` (step 1) | scene.move |
-| `MoveSceneTo` | Missing | scene.move has no target scene |
-| `MoveSourceTo` | Missing | item.move has no target item |
+| `MoveSceneTo` | Moved to `Command::Api` (ADR-0164 step 2) | scene.move with `to_scene` |
+| `MoveSourceTo` | Moved to `Command::Api` (ADR-0164 step 2) | item.move with `to_item`; the window is quiet on `invalid_params` (a place in another scene changed nothing before) |
 | `SetSourceLocked` | Moved to `Command::Api` (step 2) | item.set_locked |
 | `SetSourceVolume` | Translates | source.set_volume, scene.audio.set |
 | `SetSourceMuted` | Translates | source.set_muted, scene.audio.set |
@@ -82,20 +82,20 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `ListMonitorDevices` | Moved to `Command::Api` (step 5) | monitor.devices; the first ticketed question: `Update::ApiAnswer` replaces `Update::MonitorDevices` |
 | `SetSourceMixerHidden` | Translates | source.set_mixer_hidden |
 | `AddFilter` | Moved to `Command::Api` (step 4) | filter.add |
-| `AddVoiceChain` | Missing | no voice chain method |
+| `AddVoiceChain` | Moved to `Command::Api` (ADR-0164 step 3) | filter.add_voice_chain |
 | `ApplyLook` | Translates | look.apply |
 | `AddSample` | Translates | source.add_sample |
 | `AddStamp` | Missing | no shape source in source.add |
 | `AddImage` | Missing | source.add has no file path, and the box is sized from the image |
 | `AddMedia` | Missing | source.add has no file path |
-| `SetStingerFile` | Missing | no stinger file method |
+| `SetStingerFile` | Moved to `Command::Api` (ADR-0164 step 3) | collection.set_stinger_file |
 | `AddBrowser` | Missing | source.add has no URL |
 | `AddText` | Moved to `Command::Api` (step 6) | source.add (kind text) |
-| `FitTextBox` | Missing | no fit-box method |
+| `FitTextBox` | Moved to `Command::Api` (ADR-0164 step 2) | item.fit_text_box |
 | `ListTextFonts` | Moved to `Command::Api` (step 3) | text.fonts with `ApiReply::QuietTicket`; on `not_ready` the host still sends `Update::TextFonts` once the list is read, as the window path did |
 | `TextTimer` | Moved to `Command::Api` (step 6) | text.timer (a source gone meanwhile stays quiet; the API now answers "not a timer" with the window's sentence) |
 | `SetSourceFill` | Moved to `Command::Api` (step 6) | source.set_settings (`color`) |
-| `SetSourceFilled` | Missing | also adds a border to the item style in one undo step; no method |
+| `SetSourceFilled` | Moved to `Command::Api` (ADR-0164 step 2) | item.set_filled; the window names the main canvas, as before |
 | `RemoveFilter` | Moved to `Command::Api` (step 4) | filter.remove |
 | `MoveFilter` | Moved to `Command::Api` (step 4) | filter.move |
 | `SetFilterEnabled` | Moved to `Command::Api` (step 4) | filter.set_enabled |
@@ -146,7 +146,7 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `SetSourceBox` | Pending | item.set_box |
 | `SetSourceCrop` | Contract | item.set_crop has `gesture` (1.100); the window still waits for the ticketed `CropPlaced` answer, as `SetSourceBox` does |
 | `TransformSource` | Contract | the item transform methods have `gesture` (1.100); `SetAngle` and `ResetRotation` have no API method yet |
-| `SetSourceRegion` | Missing | no method for the shown region (ADR-0058 Show buttons); source.set_region is the capture region |
+| `SetSourceRegion` | Moved to `Command::Api` (ADR-0164 step 2) | item.set_shown_region; the window names the main canvas, as before (the vertical canvas's Show buttons are a follow-up) |
 | `SetRecordSeparately` | Moved to `Command::Api` (step 6) | source.set_record_separately |
 | `SetSourceCaptureRegion` | Moved to `Command::Api` (step 3) | source.set_region |
 | `SetDisplayChrome` | Moved to `Command::Api` (step 3) | source.set_chrome |

@@ -110,7 +110,8 @@ fn move_item(host: &StudioHost, item: u32, direction: rbs_api::request::LayerDir
     host.send(Command::Api {
         call: Box::new(rbs_api::Command::ItemMove(rbs_api::request::MoveItem {
             item,
-            direction,
+            direction: Some(direction),
+            to_item: None,
         })),
         reply: ApiReply::Shown,
     });

@@ -726,10 +726,6 @@ impl Host {
     /// The window commands of this concern, routed by `Host::command`.
     pub(super) fn source_edit_command(&mut self, c: Command, notify: &dyn Fn(Update)) {
         match c {
-            Command::AddVoiceChain(source) => {
-                let done = self.add_voice_chain(source);
-                self.answer(done, notify);
-            }
             Command::AddSample { sample } => {
                 self.run_ui_api(
                     rbs_api::Command::SourceAddSample(rbs_api::request::AddSample { sample }),
@@ -748,14 +744,6 @@ impl Host {
                 Ok(_) => self.apply(notify),
                 Err(e) => notify(Update::Error(e.text().to_owned())),
             },
-            Command::SetStingerFile(path) => match self.set_stinger_file(&path) {
-                Ok(_) => self.apply(notify),
-                Err(e) => notify(Update::Error(e.text().to_owned())),
-            },
-            Command::FitTextBox(id) => {
-                let done = self.fit_text_box(id);
-                self.answer(done, notify);
-            }
             // Without its engine Browser leads to Settings › Add-ons and adds nothing
             // (ADR-0145 decision 8).
             Command::AddBrowser { .. } if self.browser_needs_engine() => {
@@ -763,11 +751,6 @@ impl Host {
             }
             Command::AddBrowser { url } => match self.add_browser_page(&url) {
                 Ok(_) => self.apply(notify),
-                Err(e) => notify(Update::Error(e.text().to_owned())),
-            },
-            Command::SetSourceFilled { id, on } => match self.set_source_filled(id, on) {
-                Ok(true) => self.apply(notify),
-                Ok(false) => {}
                 Err(e) => notify(Update::Error(e.text().to_owned())),
             },
             Command::ApplyLook { source, look } => {

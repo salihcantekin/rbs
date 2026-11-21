@@ -1,4 +1,5 @@
-//! The item transform requests of `every_request`, with a gesture (protocol 1.100).
+//! The item transform requests of `every_request`, with a gesture, and the item edits
+//! of protocol 1.100.
 
 use super::*;
 
@@ -33,6 +34,44 @@ pub(super) fn requests() -> Vec<Request> {
             gesture: 0,
             item: 7,
             canvas: OutputCanvas::Vertical,
+        })),
+        c(Command::ItemMove(MoveItem {
+            item: 7,
+            direction: Some(LayerDirection::Up),
+            to_item: None,
+        })),
+        c(Command::ItemMove(MoveItem {
+            item: 7,
+            direction: None,
+            to_item: Some(9),
+        })),
+        c(Command::SceneMove(MoveScene {
+            scene: 2,
+            direction: Some(LayerDirection::Down),
+            to_scene: None,
+        })),
+        c(Command::SceneMove(MoveScene {
+            scene: 2,
+            direction: None,
+            to_scene: Some(3),
+        })),
+        c(Command::ItemFitTextBox(FitTextBox {
+            item: 7,
+            canvas: OutputCanvas::Main,
+        })),
+        c(Command::ItemSetFilled(SetItemFilled {
+            item: 7,
+            on: false,
+            canvas: OutputCanvas::Vertical,
+        })),
+        c(Command::ItemSetShownRegion(SetItemShownRegion {
+            item: 7,
+            region: ShownRegion::CanvasCentred,
+            canvas: OutputCanvas::Main,
+        })),
+        c(Command::FilterAddVoiceChain(SourceRef { source: 3 })),
+        c(Command::CollectionSetStingerFile(SetStingerFile {
+            path: "/media/sting.mov".to_owned(),
         })),
     ]
 }

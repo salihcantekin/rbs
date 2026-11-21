@@ -502,7 +502,11 @@ impl StudioUi {
     pub fn add_filter_type(&mut self, source: i32, type_id: &str) {
         if type_id == VOICE_CHAIN {
             self.deleted.clear();
-            self.send(Command::AddVoiceChain(SourceId::from_raw(source as u32)));
+            self.call(rbs_api::Command::FilterAddVoiceChain(
+                rbs_api::request::SourceRef {
+                    source: source as u32,
+                },
+            ));
             return;
         }
         if filter_types(true)

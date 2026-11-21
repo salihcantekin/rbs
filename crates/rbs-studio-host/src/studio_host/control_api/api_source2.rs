@@ -122,14 +122,6 @@ impl ApiTarget<'_> {
                 });
                 Ok(Response::ItemRemoved(item_removed(&removed)))
             }
-            C::SceneMove(p) => match host.move_scene(SceneId::from_raw(p.scene), p.direction) {
-                Ok(true) => {
-                    host.apply(notify);
-                    Ok(Response::Done(Empty {}))
-                }
-                Ok(false) => Ok(Response::Done(Empty {})),
-                Err(e) => Err(ApiError::new(ErrorKind::Conflict, e.into_text())),
-            },
             C::SourceSetActive(p) => {
                 match host.set_source_active(SourceId::from_raw(p.source), p.active) {
                     Ok(true) => {

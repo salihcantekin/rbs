@@ -944,8 +944,15 @@ impl Host {
 
     /// Turns a colour source's fill on or off. Off clears the inside and, when the
     /// shape has no border, adds one in the fill colour so the shape stays visible.
-    /// Both changes are one undo step. The stored colour is kept.
-    pub(super) fn set_source_filled(&mut self, id: SourceId, on: bool) -> Result<bool, Refusal> {
+    /// Both changes are one undo step. The stored colour is kept. `item` names the
+    /// source and, on canvas `on`, the style that gets the border.
+    pub(super) fn set_item_filled(
+        &mut self,
+        item: ItemId,
+        on: bool,
+        canvas: OutputCanvas,
+    ) -> Result<bool, Refusal> {
+        let (id, shown, own) = self.crop_target_on(item, canvas)?;
         let source = self
             .collection
             .source(id)
@@ -979,18 +986,7 @@ impl Host {
         }
         rbs_sources::validate_settings(&type_id, &settings)
             .map_err(|e| Refusal::Invalid(e.to_string()))?;
-        let placed = if on {
-            None
-        } else {
-            self.item_of(id).ok().map(|(_, item)| {
-                let layout = self.shown_layout(item);
-                let own = item
-                    .overrides
-                    .contains_key(&self.canvas)
-                    .then_some(self.canvas);
-                (item.id, layout, own)
-            })
-        };
+        let placed = (!on).then_some((item, shown, own));
         let undo_settings = self
             .collection
             .set_source_settings(id, settings)
@@ -1041,19 +1037,28 @@ impl Host {
         Ok(name)
     }
 
-    /// Over (`up`) or under the next source with a picture; sound-only items do not
-    /// count, because they draw nothing. `Ok(false)` when there is none that way.
-    pub(super) fn move_source_to(&mut self, id: SourceId, to: SourceId) -> Result<bool, Refusal> {
-        if id == to {
+    /// Puts `item` where picture layer `to` of the same scene is (a row dragged onto
+    /// another). One undo step.
+    pub(super) fn move_item_to(&mut self, item: ItemId, to: ItemId) -> Result<bool, Refusal> {
+        let gone = |i: ItemId| Refusal::NotFound(format!("There is no item {}.", i.get()));
+        let (scene, moved) = self.collection.item(item).ok_or_else(|| gone(item))?;
+        let ItemContent::Source(id) = moved.content else {
+            return Err(Refusal::Invalid("Only a source is moved this way.".into()));
+        };
+        let (other_scene, other) = self.collection.item(to).ok_or_else(|| gone(to))?;
+        if other_scene != scene || !self.has_picture(other) {
+            return Err(Refusal::Invalid(
+                "The place is a picture layer of the same scene.".into(),
+            ));
+        }
+        if item == to {
             return Ok(false);
         }
-        let (_, item) = self.item_of(id)?;
-        let item = item.id;
-        let (index, other) = self.item_of(to)?;
-        // Layers move within one scene: global sources among themselves.
-        if self.scene_of(item) != self.scene_of(other.id) {
-            return Ok(false);
-        }
+        let index = self
+            .collection
+            .scene(scene)
+            .and_then(|s| s.items.iter().position(|i| i.id == to))
+            .ok_or_else(|| gone(to))?;
         let undo = self
             .collection
             .move_item(item, index)
@@ -1374,16 +1379,6 @@ impl Host {
                     self.step(true, notify);
                 }
             }
-            Command::MoveSourceTo { id, to } => match self.move_source_to(id, to) {
-                Ok(true) => self.apply(notify),
-                Ok(false) => {}
-                Err(e) => notify(Update::Error(e.into_text())),
-            },
-            Command::MoveSceneTo { id, to } => match self.move_scene_to(id, to) {
-                Ok(true) => self.apply(notify),
-                Ok(false) => {}
-                Err(e) => notify(Update::Error(e.into_text())),
-            },
             Command::SetSourceVolume { id, volume } => {
                 let call = if self.levels_take(id) {
                     rbs_api::Command::SceneAudioSet(rbs_api::request::SetSceneLevel {
