@@ -226,17 +226,6 @@ pub enum Command {
     OpenSourceSettings(SourceId),
     /// The Source settings window closed: drop a late region preview.
     CloseSourceSettings,
-    /// Change a source's stored settings by a patch (a `null` removes a key; one undo
-    /// step, ADR-0077): what Apply and OK of the Source settings window send.
-    SetSourceSettings {
-        /// The source.
-        id: SourceId,
-        /// The keys to change.
-        patch: BTreeMap<String, serde_json::Value>,
-        /// Patches that share a non-zero gesture (one drag of a field) are one undo
-        /// step; 0 never joins.
-        gesture: u64,
-    },
     /// A message to a browser source's running page: reload it, or run a script
     /// (ADR-0132 decision 5, ADR-0149 decision 3). A reload of a page that does not
     /// run is the `source.reload` call.

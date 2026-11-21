@@ -2183,11 +2183,7 @@ impl StudioUi {
         if patch.is_empty() {
             return;
         }
-        self.send(Command::SetSourceSettings {
-            id: SourceId::from_raw(id as u32),
-            patch,
-            gesture: 0,
-        });
+        self.send_settings(id, patch, 0);
     }
 
     /// A target of the Source tab's list was chosen: the source points at it.
@@ -2241,11 +2237,7 @@ impl StudioUi {
     /// undo step.
     pub fn set_media_setting(&mut self, id: i32, key: &str, value: serde_json::Value) {
         self.deleted.clear();
-        self.send(Command::SetSourceSettings {
-            id: SourceId::from_raw(id as u32),
-            patch: std::iter::once((key.to_owned(), value)).collect(),
-            gesture: 0,
-        });
+        self.send_settings(id, std::iter::once((key.to_owned(), value)).collect(), 0);
     }
 
     /// Sets one end of a media file's play range at `at_ms` of media time, or clears
@@ -2263,11 +2255,7 @@ impl StudioUi {
             return;
         };
         self.deleted.clear();
-        self.send(Command::SetSourceSettings {
-            id: SourceId::from_raw(id as u32),
-            patch,
-            gesture: 0,
-        });
+        self.send_settings(id, patch, 0);
     }
 
     /// Settings › Global sources: a kind was picked; its devices are listed.
@@ -5143,11 +5131,7 @@ impl StudioUi {
             return;
         }
         self.deleted.clear();
-        self.send(Command::SetSourceSettings {
-            id: SourceId::from_raw(id as u32),
-            patch,
-            gesture: ui_gesture(0),
-        });
+        self.send_settings(id, patch, ui_gesture(0));
     }
 
     /// A text setting of the Page tab (`url`, `css`, `script`).
@@ -5309,11 +5293,7 @@ impl StudioUi {
             return;
         }
         self.deleted.clear();
-        self.send(Command::SetSourceSettings {
-            id: SourceId::from_raw(id as u32),
-            patch,
-            gesture: ui_gesture(gesture),
-        });
+        self.send_settings(id, patch, ui_gesture(gesture));
     }
 
     /// The Text tab's Kind (an index of [`text_props::KINDS`]).

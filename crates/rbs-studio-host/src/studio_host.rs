@@ -721,7 +721,6 @@ impl Host {
             | Command::StopThumbnails
             | Command::OpenSourceSettings(..)
             | Command::CloseSourceSettings
-            | Command::SetSourceSettings { .. }
             | Command::ForgetBrowserSignIn(..)
             | Command::BrowserControl { .. } => self.source_edit_command(c, notify),
             Command::OpenAttributes { .. }

@@ -1059,11 +1059,7 @@ fn a_text_box_is_locked_while_a_take_records_its_picture_separately() {
     let width = |w: i64| {
         let mut patch = std::collections::BTreeMap::new();
         patch.insert("width".to_owned(), serde_json::json!(w));
-        Command::SetSourceSettings {
-            id: text.id,
-            patch,
-            gesture: 0,
-        }
+        crate::set_settings(text.id, patch, 0)
     };
     // A box change before the take, to undo during it.
     host.send(width(300));
@@ -1144,11 +1140,7 @@ fn the_patches_of_one_field_drag_undo_as_one_step() {
     let width = |w: i64, gesture: u64| {
         let mut patch = std::collections::BTreeMap::new();
         patch.insert("width".to_owned(), serde_json::json!(w));
-        Command::SetSourceSettings {
-            id: text.id,
-            patch,
-            gesture,
-        }
+        crate::set_settings(text.id, patch, gesture)
     };
     // A step before the drag, which must survive its undo.
     host.send(width(start + 5, 0));
@@ -1213,11 +1205,7 @@ fn fit_box_to_text_and_the_font_list_answer_the_text_tab() {
     // A wider box, then fitted again: back to the text's width, same centre.
     let mut patch = std::collections::BTreeMap::new();
     patch.insert("width".to_owned(), serde_json::json!(fitted + 200));
-    host.send(Command::SetSourceSettings {
-        id: text.id,
-        patch,
-        gesture: 0,
-    });
+    host.send(crate::set_settings(text.id, patch, 0));
     rows_where(&rx, |r| {
         r.iter()
             .any(|r| r.id == text.id && int(r, "width") == fitted + 200)

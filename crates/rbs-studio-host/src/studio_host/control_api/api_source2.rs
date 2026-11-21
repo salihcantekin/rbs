@@ -22,19 +22,6 @@ impl ApiTarget<'_> {
                 }))
             }
             C::SourceSetSettings(p) => {
-                // A text path would put any readable file on air: the API cannot write
-                // it until token scopes exist (ADR-0129 decision 8).
-                if p.settings.contains_key(keys::FILE)
-                    && host
-                        .collection
-                        .source(SourceId::from_raw(p.source))
-                        .is_some_and(|s| SourceKind::of(&s.type_id) == Some(SourceKind::Text))
-                {
-                    return Err(ApiError::new(
-                        ErrorKind::Forbidden,
-                        "the control API cannot set a text source's file",
-                    ));
-                }
                 if host
                     .patch_source_settings_in(SourceId::from_raw(p.source), &p.settings, p.gesture)
                     .map_err(|e| refused(&e))?

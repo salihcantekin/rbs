@@ -112,7 +112,7 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `StopThumbnails` | WindowOnly View |  |
 | `OpenSourceSettings` | WindowOnly View |  |
 | `CloseSourceSettings` | WindowOnly View |  |
-| `SetSourceSettings` | Contract | source.set_settings needs gesture; its text-file refusal moves to the caller checks |
+| `SetSourceSettings` | Moved to `Command::Api` (ADR-0164 step 1) | source.set_settings with `gesture`; the text-file refusal is a caller check, so the window passes |
 | `ReloadSource` | Moved to `Command::Api` (step 3) | source.reload; the API now publishes after a restart, as the window did |
 | `BrowserControl` | Pending | browser.reload, browser.run_script; stays: the window's Reload restarts a page that is not running, `browser.reload` refuses it (`browser_not_running`) |
 | `ForgetBrowserSignIn` | Pending | browser.forget_sign_in; stays: the window stops the page first so its profile can be removed, the API does not (an API change for Group B) |
