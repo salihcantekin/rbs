@@ -179,7 +179,8 @@ No log macro in code listed in [hot-paths.md](../architecture/hot-paths.md). `ca
 - Studio host (`studio_host/failures.rs`, `studio_host.rs`): start failure, a stopped studio, a caught panic and the recovery after it (Error and Info), refused window commands by kind and refused control API requests by method and error kind (Warn), scene on air, transition and studio restart (Info), each window command by kind (Trace); the kind is read from the command's `Debug` text up to its first bracket, so no payload is formatted (2026-11-20).
 - Browser helper: the studio pipes the helper tree's standard error (`rbs_browser_runner::spawn_helper_prepared`) and a `rbs-browser-log` thread logs each line in `Area::Browser`, the helper's own (`rbs-browser…:`) at Info and the engine's at Debug, cut at 1000 characters, so CEF's output is kept only at Detailed and repeats collapse. The CEF helper writes no file of its own (2026-11-21).
 - Crash reports end with the recent lines (`rbs_crash::set_recent_lines`, registered by `diag_log`; 2026-11-21).
-- Not yet: new per-area lines and the stats summary timer (both in the studio host, after stability WP-L moves it to `rbs-studio-host`).
+- Stats summary (`rbs-studio-host` `studio_host/log_summary.rs`): while `engine` lets Debug through and an output runs on the main canvas, the control thread writes one Debug line every 10 s (1 s at Trace) with the recording's and the stream's frames, drops and packets, the stream's link state, reconnects and transport drops, and the late render and audio ticks, all as differences since the last line and read from the counters the outputs already keep. With no output running the control loop may block, so it keeps no timer and no counters; while an output runs the loop already looks every round, so a level raised in Settings is seen within a round and needs no wake command (2026-11-21).
+- Not yet: new per-area lines in the studio host (stability WP-L).
 
 ## Open questions
 

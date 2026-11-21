@@ -84,6 +84,7 @@ pub mod filters;
 mod interact;
 pub use interact::{InteractState, MAX_INTERACT};
 mod control_out;
+mod log_summary;
 mod loudness;
 mod monitor;
 mod network;
@@ -121,8 +122,7 @@ use crate::vertical_outputs::VerticalFlags;
 const MAX_WAIT: Duration = Duration::from_millis(50);
 /// The longest the control thread sleeps while no output runs, ends or waits (perf
 /// audit G-05). Idle with no deadline blocks on the next message instead (F-08).
-/// This cap remains for a round that still has to look, and the unit test of
-/// [`round_cap`].
+/// This cap remains for a round that still has to look, and the unit test of [`round_cap`].
 const IDLE_WAIT: Duration = Duration::from_millis(250);
 /// How often the Stats panel gets new counters while an output runs (its redraw rate,
 /// design system: `rbs.stats` 1 Hz).
@@ -550,8 +550,7 @@ pub struct SourceRow {
     /// A live pause holds the item's scroll run on the main canvas, then on the
     /// vertical one (ADR-0150 decision 12: Properties shows Resume).
     pub scroll_paused: [bool; 2],
-    /// Which feeds are marked to record separately, and the picture's form
-    /// (ADR-0086, ADR-0117).
+    /// Which feeds are marked to record separately, and the picture's form (ADR-0086, ADR-0117).
     pub record_separately: RecordSeparately,
     /// The other sources of its audio device whose sync offset differs, by name
     /// (ADR-0126 decision 9); empty for every other source.
@@ -808,8 +807,7 @@ pub enum Command {
         /// What it captures.
         target: Target,
     },
-    /// Delete a source from every scene and the global sources (glossary: "Delete
-    /// source").
+    /// Delete a source from every scene and the global sources (glossary: "Delete source").
     DeleteSource(SourceId),
     /// Remove a source's item from the edited scene, or its global item (glossary:
     /// "Remove from scene", ADR-0065); the source goes too when that was its last
@@ -923,8 +921,7 @@ pub enum Command {
     /// Adds a vertical second canvas and runs it beside the main one (ADR-0093 decision
     /// 8): the canvas is made, follows the main canvas's program scene when asked, gets
     /// an Auto layout of the program scene when asked, and starts running (one output
-    /// can take it, one picture can show it). [`Update::Vertical`] answers. Not on the
-    /// undo stack.
+    /// can take it, one picture can show it). [`Update::Vertical`] answers. Not on the undo stack.
     AddVerticalCanvas(VerticalCanvas),
     /// Stops the second canvas and removes it from the collection (its outputs must be
     /// stopped first). [`Update::Vertical`] answers.
@@ -2408,6 +2405,8 @@ struct CanvasOutputs {
     markers: Option<RecordingMarkers>,
     /// The stream's hold as the host keeps it (ADR-0124 decision 14).
     hold: HoldPlan,
+    /// The stats summary in the log (ADR-0158), on the main canvas only.
+    log_summary: log_summary::LogSummary,
 }
 
 /// A destination Go live is about to start: its request and key account.
@@ -2604,6 +2603,7 @@ impl Default for CanvasOutputs {
             stream_state: api::StreamState::idle(),
             markers: None,
             hold: HoldPlan::default(),
+            log_summary: Default::default(),
         }
     }
 }
@@ -4505,6 +4505,7 @@ fn round(
     if let Some(left) = host.report_stats(now, notify) {
         arm(&mut wait, &mut armed, left);
     }
+    host.drive_log_summary(now, &mut wait, &mut armed);
     if let Some(left) = host.drive_protection(now, notify) {
         arm(&mut wait, &mut armed, left);
     }
@@ -4530,8 +4531,7 @@ fn round(
     if let Some(left) = host.report_replay(now, notify) {
         arm(&mut wait, &mut armed, left);
     }
-    // One wake for the soonest timed-show deadline. An empty cue map adds nothing
-    // (ADR-0105, P13).
+    // One wake for the soonest timed-show deadline. An empty cue map adds nothing (ADR-0105, P13).
     if host.studio.expire_cues(now) {
         host.apply(notify);
     }
