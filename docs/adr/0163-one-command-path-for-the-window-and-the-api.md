@@ -1,6 +1,6 @@
 # ADR-0163: One command path for the window and the control API
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-21
 - Deciders: Salih (owner)
 - Builds on: ADR-0008 (control API), ADR-0050 (command registry), ADR-0144 (code quality rules, "one command path"), ADR-0159 (studio host crate), ADR-0162 (extension-ready registries)
@@ -100,4 +100,4 @@ Round 1 items 1, 2, 4, 5, 8 and 10 confirmed resolved; 3, 6, 7 and 9 partly, com
 
 All round-2 items confirmed resolved; counts consistent. Row-level findings, fixed in the inventory: `SetSourceRegion` and `SetSourceCaptureRegion` were swapped (`source.set_region` is the capture region); `AddSourceWithAudio` is `source.add` with `with_audio: true` (one step with rollback); `SetCanvas` is `settings.set {canvas}`, so `Pending`, not `Mirror`; `PauseRecording`, `HoldStream` and `Break` already run `ApiTarget::run` (now `Translates`, their own error sentence a known difference). Known differences added: Undo/Redo with nothing to undo (decision 2 quiet answers), `RemoveFromScene`'s `Update::Deleted` for the undo toast, `ForgetBrowserSignIn` stopping the page first, `SetFilterValues` restoring stored values on an unchanged release, `Media` forcing the next media-state publish, the Test this computer refusal of `output_refusal`. Nits fixed: `Contract` methods checked against `METHODS`, the Context table's `Translates` note, the broken differences table. Final counts 21 / 83 / 10 / 20 / 27.
 
-Owner's approval: pending.
+Owner's approval: Salih accepted on 2026-11-21 (decision card in the WP-M thread).
