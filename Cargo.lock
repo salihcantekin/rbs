@@ -5165,6 +5165,7 @@ dependencies = [
  "pollster",
  "rbs-core",
  "rbs-graph",
+ "rbs-mach",
  "wgpu",
  "windows",
  "windows-numerics",
@@ -5206,6 +5207,13 @@ dependencies = [
  "log",
  "rbs-core",
  "rbs-crash",
+]
+
+[[package]]
+name = "rbs-mach"
+version = "0.0.1"
+dependencies = [
+ "mach2",
 ]
 
 [[package]]

@@ -118,6 +118,7 @@ objc2-quartz-core = { version = "0.3.2", default-features = false, features = ["
 objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGColor"], optional = true }
 # Mach messages and bootstrap lookups for the cross-process preview (ADR-0028).
 mach2 = "0.7"
+rbs-mach = { path = "../rbs-mach" }
 
 [target.'cfg(target_vendor = "apple")'.dev-dependencies]
 # Test-only: reads a PreviewLayer's contents back as an IOSurface.
