@@ -432,9 +432,11 @@ impl CaptureFactory for TestCaptureFactory {
             TargetKind::Camera => size,
             _ => Size::new(target.max.0, target.max.1),
         };
-        let desktop = match target.info.kind {
-            TargetKind::Display => Some((DISPLAY_ORIGIN, Cover::Unknown)),
-            TargetKind::Window => Some((WINDOW_ORIGIN, Cover::Clear)),
+        // Only a session given a switch knows its desktop place, so a session without
+        // one does no mapping work per frame (P13).
+        let desktop = match (&request.mapping, target.info.kind) {
+            (Some(_), TargetKind::Display) => Some((DISPLAY_ORIGIN, Cover::Unknown)),
+            (Some(_), TargetKind::Window) => Some((WINDOW_ORIGIN, Cover::Clear)),
             _ => None,
         };
         Ok(Box::new(TestSession {
@@ -718,6 +720,7 @@ impl CaptureSession for TestSession {
 
     fn stop(&mut self) {
         self.registration = None;
+        self.mapping_on.store(false, Ordering::Release);
         self.mapping = None;
         if let Some(active) = self.active.take() {
             // The session's two references are `ring` and `owner`; any more are leases

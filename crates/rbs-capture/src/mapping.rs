@@ -179,7 +179,8 @@ impl MappingSwitch {
     pub fn register(&self, callback: impl Fn(bool) + Send + 'static) -> MappingRegistration {
         let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
         let mut registered = self.inner.lock();
-        if let Some(old) = registered.take() {
+        let old = registered.take();
+        if let Some(old) = old.as_ref() {
             (old.callback)(false);
         }
         callback(self.is_on());
@@ -187,6 +188,10 @@ impl MappingSwitch {
             id,
             callback: Box::new(callback),
         });
+        drop(registered);
+        // Dropped after the lock is released, so whatever the old callback owns never
+        // drops under it.
+        drop(old);
         MappingRegistration {
             inner: Arc::clone(&self.inner),
             id,
@@ -212,9 +217,14 @@ impl fmt::Debug for MappingRegistration {
 impl Drop for MappingRegistration {
     fn drop(&mut self) {
         let mut registered = self.inner.lock();
-        if registered.as_ref().is_some_and(|r| r.id == self.id) {
-            *registered = None;
-        }
+        let removed = if registered.as_ref().is_some_and(|r| r.id == self.id) {
+            registered.take()
+        } else {
+            None
+        };
+        drop(registered);
+        // The callback is dropped after the lock is released.
+        drop(removed);
     }
 }
 

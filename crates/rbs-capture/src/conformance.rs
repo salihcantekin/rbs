@@ -22,7 +22,7 @@ use rbs_core::time::{Clock, MonotonicClock, TestClock, Timestamp};
 use crate::caps;
 use crate::{
     CaptureError, CaptureFactory, CaptureRequest, CaptureSession, GpuDeviceId, GpuImportTarget,
-    MappingSwitch, Permission, SyncKind, THUMBNAIL_MAX, TargetId, TargetKind,
+    MappingSwitch, Permission, PictureMapping, SyncKind, THUMBNAIL_MAX, TargetId, TargetKind,
 };
 
 /// Lets time pass between polls.
@@ -511,15 +511,15 @@ impl Suite<'_> {
         // An adapter may start its mapping work when the switch turns on, so the first
         // frames can come without a mapping ("before the first mapped frame").
         const FRAMES_TO_FIRST_MAPPING: usize = 10;
-        let mut frame = self.next_frame(CHECK, id, session.as_mut())?;
-        let mut mapping = session.latest_mapping();
-        for _ in 1..FRAMES_TO_FIRST_MAPPING {
-            if mapping.is_some() || !declared {
-                break;
-            }
-            frame = self.next_frame(CHECK, id, session.as_mut())?;
-            mapping = session.latest_mapping();
-        }
+        // Keep only the newest frame's time and size, so the check never holds two
+        // frames at once (an adapter with one frame in flight would drop the next).
+        let (frame_time, frame_size, mapping) = self.first_mapping(
+            CHECK,
+            id,
+            session.as_mut(),
+            declared,
+            FRAMES_TO_FIRST_MAPPING,
+        )?;
         if declared {
             let Some(mapping) = mapping else {
                 return fail(
@@ -529,18 +529,16 @@ impl Suite<'_> {
                     ),
                 );
             };
-            ensure(CHECK, mapping.frame_time == frame.timestamp(), || {
+            ensure(CHECK, mapping.frame_time == frame_time, || {
                 format!(
                     "{id}: mapping for {:?}, newest frame {:?}",
-                    mapping.frame_time,
-                    frame.timestamp()
+                    mapping.frame_time, frame_time
                 )
             })?;
-            ensure(CHECK, mapping.picture == frame.format().size, || {
+            ensure(CHECK, mapping.picture == frame_size, || {
                 format!(
                     "{id}: mapping picture {:?}, frame {:?}",
-                    mapping.picture,
-                    frame.format().size
+                    mapping.picture, frame_size
                 )
             })?;
         } else {
@@ -551,7 +549,6 @@ impl Suite<'_> {
                 )
             })?;
         }
-        drop(frame);
         switch.set(false);
         let frame = self.next_frame(CHECK, id, session.as_mut())?;
         drop(frame);
@@ -562,8 +559,59 @@ impl Suite<'_> {
         ensure(CHECK, session.latest_mapping().is_none(), || {
             format!("{id}: a mapping after stop")
         })?;
+        drop(session);
+
+        // A session opened while the switch is already on maps without a further flip.
+        switch.set(true);
+        let mut session = self.factory.open(&request).map_err(|e| Failure {
+            check: CHECK,
+            detail: format!("{kind} {id}: reopen with the switch on: {e}"),
+        })?;
+        session.start().map_err(|e| Failure {
+            check: CHECK,
+            detail: format!("{id}: start with the switch on: {e}"),
+        })?;
+        let (_, _, mapping) = self.first_mapping(
+            CHECK,
+            id,
+            session.as_mut(),
+            declared,
+            FRAMES_TO_FIRST_MAPPING,
+        )?;
+        ensure(CHECK, mapping.is_some() == declared, || {
+            format!("{id}: opened with the switch on, mapping {mapping:?}")
+        })?;
+        session.stop();
         self.pass(CHECK);
         Ok(())
+    }
+
+    /// Fetches up to `frames` frames until the session has a mapping (only the first one
+    /// when `wanted` is false), dropping each frame before the next fetch. Returns the
+    /// newest frame's time and size and the mapping then.
+    fn first_mapping(
+        &mut self,
+        check: &'static str,
+        id: &TargetId,
+        session: &mut dyn CaptureSession,
+        wanted: bool,
+        frames: usize,
+    ) -> Result<(Timestamp, Size, Option<PictureMapping>), Failure> {
+        let mut newest = None;
+        for _ in 0..frames {
+            let frame = self.next_frame(check, id, session)?;
+            let (time, size) = (frame.timestamp(), frame.format().size);
+            drop(frame);
+            let mapping = session.latest_mapping();
+            newest = Some((time, size, mapping));
+            if mapping.is_some() || !wanted {
+                break;
+            }
+        }
+        match newest {
+            Some(found) => Ok(found),
+            None => fail(check, format!("{id}: no frame asked for")),
+        }
     }
 
     /// Polls until a frame arrives or the timeout passes.
