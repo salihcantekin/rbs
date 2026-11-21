@@ -25,6 +25,7 @@ mod context_menu;
 mod entry;
 mod icons;
 mod interact;
+mod library_transfer;
 mod look;
 mod measure_ui;
 mod menu_bar;
@@ -52,6 +53,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use library_transfer::{Library, transfer};
 use quit::quitting;
 use rbs_api::types::OutputKind;
 use rbs_app::background::{self, OnClose, Request};
@@ -3965,59 +3967,6 @@ enum Ask {
     /// The name for an Output profile or Scene collection command, or its delete
     /// confirmation.
     Entry(menu_bar::EntryKind, menu_bar::EntryOp),
-}
-
-/// Which library a menu imports into or exports from.
-#[derive(Clone, Copy)]
-enum Library {
-    Profiles,
-    Collections,
-}
-
-/// Import (`import`) a file into a library, or export the entry in use, named `name`,
-/// to a file. The system file dialog runs asynchronously on the UI's event loop: a
-/// modal dialog would run a nested event loop inside a window event, which winit does
-/// not allow on macOS (the app aborted on Export).
-fn transfer(library: Library, import: bool, name: String) {
-    let task = entry::spawn_local(async move {
-        let Some(ctx) = CTX.with(|c| c.borrow().clone()) else {
-            return;
-        };
-        let what = match library {
-            Library::Profiles => "output profile",
-            Library::Collections => "scene collection",
-        };
-        let picked = if import {
-            file_dialog::open(&format!("Import {what}")).await
-        } else {
-            file_dialog::save(&format!("Export {name}"), &format!("{name}.toml")).await
-        };
-        ctx.update(move |app| {
-            let done = match picked {
-                Ok(None) => Ok(()),
-                Err(why) => Err(why),
-                Ok(Some(path)) => {
-                    let user = &app.studio.user;
-                    let result = match (library, import) {
-                        (Library::Profiles, true) => user.import_profile(&path).map(|_| ()),
-                        (Library::Profiles, false) => user.export_profile(&path),
-                        (Library::Collections, true) => user.import_collection(&path).map(|_| ()),
-                        (Library::Collections, false) => user.export_collection(&path),
-                    };
-                    app.studio.refresh_library();
-                    result
-                }
-            };
-            app.library_done(done);
-        });
-    });
-    if let Err(e) = task {
-        CTX.with(|c| {
-            if let Some(ctx) = c.borrow().clone() {
-                ctx.update(move |app| app.library_done(Err(e.to_string())));
-            }
-        });
-    }
 }
 
 /// The Library's "Choose a PNG file". The dialog is asynchronous (ADR-0055).

@@ -7,7 +7,7 @@
 "crates/rbs-api/src/request.rs" = 4140
 "crates/rbs-api/src/types.rs" = 3208
 "crates/rbs-api/tests/json.rs" = 3540
-"crates/rbs-app/src/main.rs" = 6749
+"crates/rbs-app/src/main.rs" = 6698
 "crates/rbs-app/src/menu_bar.rs" = 2518
 "crates/rbs-app/src/studio_ui.rs" = 10891
 "crates/rbs-record/src/studio.rs" = 6014
@@ -27,7 +27,6 @@
 "crates/rbs-app/examples/go_live.rs::main" = 225
 "crates/rbs-app/examples/remote_preview.rs::run" = 313
 "crates/rbs-app/examples/transition_cost.rs::main" = 203
-"crates/rbs-app/src/appearance_page.rs::install" = 228
 "crates/rbs-app/src/main.rs::install_studio" = 1050
 "crates/rbs-app/src/main.rs::run" = 466
 "crates/rbs-app/src/main.rs::sync" = 327
