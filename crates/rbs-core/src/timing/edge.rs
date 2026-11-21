@@ -1,13 +1,15 @@
-//! The clock edge of a video adapter: OS capture time to master time (ADR-0004).
+//! The clock edge of an instant from an OS clock: OS time to master time (ADR-0004).
 //!
-//! Adapter-support module, like [`handoff`](crate::handoff). Contract: invariant 2, "Master time, at
-//! capture", in `docs/specs/capture-port.md`. A frame is an instant, so this does not
-//! subtract a packet duration the way the audio edge does.
+//! Used by video capture adapters (contract: invariant 2, "Master time, at capture", in
+//! `docs/specs/capture-port.md`) and by input adapters (ADR-0165, `docs/specs/input-port.md`).
+//! Moved here from `rbs-capture` by ADR-0165 so that one port crate does not depend on
+//! another; `rbs_capture::edge::EdgeClock` re-exports it. A frame or an input event is an
+//! instant, so this does not subtract a packet duration the way the audio edge does.
 
 use std::time::Duration;
 
-use rbs_core::time::{ClockMapping, Timestamp};
-use rbs_core::timing::{DriftEstimator, Observation};
+use super::{DriftEstimator, Observation};
+use crate::time::{ClockMapping, Timestamp};
 
 /// Converts the OS capture time of a frame to master time.
 ///
@@ -151,7 +153,7 @@ impl EdgeClock {
 mod tests {
     use std::time::Duration;
 
-    use rbs_core::time::{Clock, TestClock, Timestamp};
+    use crate::time::{Clock, TestClock, Timestamp};
 
     use super::*;
 

@@ -17,6 +17,9 @@ use std::time::Duration;
 
 use crate::time::{ClockMapping, Timestamp};
 
+mod edge;
+pub use edge::EdgeClock;
+
 const NANOS_PER_SEC: u128 = 1_000_000_000;
 
 /// Saturating conversion from a nanosecond count to `u64`.

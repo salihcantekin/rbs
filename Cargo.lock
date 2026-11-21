@@ -5192,6 +5192,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rbs-input"
+version = "0.0.1"
+dependencies = [
+ "allocation-counter",
+ "rbs-core",
+]
+
+[[package]]
 name = "rbs-log"
 version = "0.0.1"
 dependencies = [
