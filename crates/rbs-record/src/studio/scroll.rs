@@ -7,6 +7,7 @@ use std::time::Duration;
 use rbs_gpu::node::{CompositorNode, LayerSender, NodeLayer};
 use rbs_gpu::{GpuContext, ScrollBinding, ScrollSender};
 use rbs_scene::ScrollKey;
+use rbs_scene::activity::Level;
 use rbs_scene::binder::BoundLayer;
 use rbs_scene::model::{CanvasId, ItemId, ScrollDirection, ScrollRepeat};
 use rbs_sources::scroll::once_distance;
@@ -101,6 +102,20 @@ pub(crate) fn keys_of<'a>(
 }
 
 impl Studio {
+    /// Starts the runs of keys new to the lists and ends those no list draws any more
+    /// (keeping a continuing one while its source is placed, ADR-0152 decision 6), at
+    /// the engine's time now.
+    pub(super) fn keep_scroll_runs(&mut self) {
+        let keys = self.scroll_keys();
+        if keys.is_empty() && self.scroll_runs.is_empty() {
+            return;
+        }
+        let now = self.engine.clock().now();
+        let binder = &self.binder;
+        let placed = |s| binder.level_of(s).0 != Level::Unplaced;
+        self.scroll_runs.keep_placed(&keys, placed, now);
+    }
+
     /// Every layer of every list the studio sends (program and further canvases,
     /// preview, hold scenes, transitions).
     fn all_layers(&self) -> Vec<&BoundLayer> {

@@ -221,6 +221,7 @@ mod tests {
                 start,     // Scroll
                 fade,      // Scroll
                 ramp_ms,   // Scroll
+                on_return, // Scroll
             } = s;
         }
         #[allow(unused_variables, dead_code)]

@@ -1,6 +1,6 @@
 //! The value types of a scene collection.
 
-use crate::activity::SourceActivity;
+use crate::activity::{OnReturn, SourceActivity};
 use std::collections::BTreeMap;
 use std::fmt;
 
@@ -1389,6 +1389,11 @@ pub struct Scroll {
     /// How long a pause, resume or speed change eases (`EaseInOut`), milliseconds,
     /// `0..=MAX_SCROLL_RAMP_MS`.
     pub ramp_ms: u32,
+    /// What the run does when a shown scene draws the item again after none did
+    /// (ADR-0152 decision 6): `Restart` (the default) starts it over; `Continue` keeps
+    /// the run while the item's source stays placed, so it picks up where it would be.
+    /// `Resume` is not offered.
+    pub on_return: OnReturn,
 }
 
 impl Scroll {
@@ -1403,6 +1408,7 @@ impl Scroll {
             start: ScrollStart::Inside,
             fade: 0.0,
             ramp_ms: DEFAULT_SCROLL_RAMP_MS,
+            on_return: OnReturn::Restart,
         }
     }
 
@@ -1436,12 +1442,19 @@ impl Scroll {
         self
     }
 
+    /// The same scroll with `on_return`.
+    pub const fn with_on_return(mut self, on_return: OnReturn) -> Self {
+        self.on_return = on_return;
+        self
+    }
+
     /// True if every value is within its range (NaN is not).
     pub fn is_valid(&self) -> bool {
         (MIN_SCROLL_SPEED..=MAX_SCROLL_SPEED).contains(&self.speed)
             && (0.0..=MAX_SCROLL_GAP).contains(&self.gap)
             && (0.0..=MAX_SCROLL_FADE).contains(&self.fade)
             && self.ramp_ms <= MAX_SCROLL_RAMP_MS
+            && matches!(self.on_return, OnReturn::Restart | OnReturn::Continue)
     }
 
     /// Speed, gap and fade multiplied by `factor`, as the box is scaled (ADR-0150

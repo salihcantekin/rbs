@@ -876,6 +876,15 @@ enum StartName {
     Outside,
 }
 
+/// A scroll's `on_return` (format 28, ADR-0152 decision 6).
+#[derive(Serialize, Deserialize, Default, Clone, Copy, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum ScrollReturnName {
+    #[default]
+    Restart,
+    Continue,
+}
+
 fn is_default<T: Default + PartialEq>(v: &T) -> bool {
     *v == T::default()
 }
@@ -908,6 +917,8 @@ struct ScrollDoc {
         skip_serializing_if = "is_default_ramp_ms"
     )]
     ramp_ms: u32,
+    #[serde(default, skip_serializing_if = "is_default")]
+    on_return: ScrollReturnName,
 }
 
 impl ScrollDoc {
@@ -932,6 +943,10 @@ impl ScrollDoc {
             },
             fade: wide(s.fade),
             ramp_ms: s.ramp_ms,
+            on_return: match s.on_return {
+                OnReturn::Continue => ScrollReturnName::Continue,
+                _ => ScrollReturnName::Restart,
+            },
         }
     }
 
@@ -954,6 +969,10 @@ impl ScrollDoc {
             })
             .with_fade(self.fade as f32)
             .with_ramp_ms(self.ramp_ms)
+            .with_on_return(match self.on_return {
+                ScrollReturnName::Restart => OnReturn::Restart,
+                ScrollReturnName::Continue => OnReturn::Continue,
+            })
     }
 }
 
@@ -1288,9 +1307,18 @@ fn later(found: u32, keys: &'static str, since: u32) -> BodyError {
 
 impl Document for SceneCollection {
     const KIND: &'static str = "scene-collection";
-    const FORMAT: u32 = 27;
+    const FORMAT: u32 = 28;
 
     fn write_format(&self) -> u32 {
+        // An older build would start a continuing scroll over (ADR-0152 decision 6).
+        let continues = |l: &Layout| l.scroll.is_some_and(|s| s.on_return == OnReturn::Continue);
+        if self.scenes().any(|s| {
+            s.items
+                .iter()
+                .any(|i| continues(&i.layout) || i.overrides.values().any(continues))
+        }) {
+            return 28;
+        }
         // An older build would run every change with the rail's kind (ADR-0153).
         if self.transition().direct != CollectionTransition::default().direct {
             return 27;
@@ -1402,7 +1430,9 @@ impl Document for SceneCollection {
     /// a file is written as 26 only when a browser source has `run = "placed"`. Format
     /// 27 adds the optional `transition.direct` (ADR-0153); a format 26 or older body is
     /// a format 27 body without it (Move outside studio mode), and a file is written as
-    /// 27 only when it is not Move.
+    /// 27 only when it is not Move. Format 28 adds the optional scroll `on_return`
+    /// (`continue`, ADR-0152 decision 6); a format 27 or older body is a format 28 body
+    /// without it, and a file is written as 28 only when a scroll continues.
     fn upgrade(from: u32, body: &mut toml::Table) -> Result<(), BodyError> {
         let direct = body
             .get("transition")
@@ -1411,7 +1441,7 @@ impl Document for SceneCollection {
         if (1..=26).contains(&from) && direct {
             return Err(later(from, "`transition.direct`", 27));
         }
-        if from == 26 {
+        if (26..=27).contains(&from) {
             return Ok(());
         }
         let has_activity = body

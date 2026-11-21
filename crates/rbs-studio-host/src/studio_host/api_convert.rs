@@ -1,6 +1,7 @@
 //! The control API's types from the host's and the scene model's, and back (ADR-0159 decision 8).
 
 use super::*;
+use rbs_scene::activity::OnReturn;
 
 /// Frames per second, rounded to the nearest whole number.
 pub(super) fn rounded_rate(fps: FrameRate) -> u32 {
@@ -197,6 +198,10 @@ pub(super) fn api_scroll(s: &Scroll) -> api::ItemScroll {
         },
         fade: s.fade,
         ramp_ms: s.ramp_ms,
+        on_return: match s.on_return {
+            OnReturn::Continue => api::ScrollReturn::Continue,
+            _ => api::ScrollReturn::Restart,
+        },
     }
 }
 
@@ -219,7 +224,11 @@ pub(super) fn scene_scroll(s: &api::ItemScroll) -> Result<Scroll, Refusal> {
             api::ScrollStart::Outside => ScrollStart::Outside,
         })
         .with_fade(s.fade)
-        .with_ramp_ms(s.ramp_ms);
+        .with_ramp_ms(s.ramp_ms)
+        .with_on_return(match s.on_return {
+            api::ScrollReturn::Restart => OnReturn::Restart,
+            api::ScrollReturn::Continue => OnReturn::Continue,
+        });
     if scroll.is_valid() {
         Ok(scroll)
     } else {
