@@ -85,6 +85,7 @@ pub(crate) mod destinations;
 pub(crate) mod filters;
 mod item_calls;
 mod library_ops;
+mod output_calls;
 mod scene_calls;
 mod source_calls;
 pub use library_ops::EntryWrite;
@@ -5968,16 +5969,6 @@ impl StudioUi {
             self.profile_note = format!("The Separate files choice was not saved: {why}");
         }
         self.send(Command::SetSeparateFiles(self.separate_files.clone()));
-    }
-
-    /// Keeps and saves whether Record and Go live also act on the vertical outputs
-    /// (ADR-0111), and tells the host.
-    pub fn set_vertical_flags(&mut self, flags: VerticalFlags) {
-        self.vertical_flags = flags;
-        if let Err(why) = self.user.set_section(vertical_outputs::SECTION, &flags) {
-            self.profile_note = format!("The output choice was not saved: {why}");
-        }
-        self.send(Command::SetVerticalFlags(flags));
     }
 
     fn send_vertical_profiles(&self) {
