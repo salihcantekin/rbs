@@ -117,7 +117,6 @@ paths! {
     SetMonitorVolume => Pending(&["monitor.set_volume"]),
     ListMonitorDevices => Pending(&["monitor.devices"]),
     SetSourceMixerHidden => Translates(&["source.set_mixer_hidden"]),
-    AddFilter => Pending(&["filter.add"]),
     // no voice chain method
     AddVoiceChain => Missing,
     ApplyLook => Translates(&["look.apply"]),
@@ -140,9 +139,6 @@ paths! {
     SetSourceFill => Pending(&["source.set_settings"]),
     // also adds a border to the item style in one undo step; no method
     SetSourceFilled => Missing,
-    RemoveFilter => Pending(&["filter.remove"]),
-    MoveFilter => Pending(&["filter.move"]),
-    SetFilterEnabled => Pending(&["filter.set_enabled"]),
     // window then restores stored values on an unchanged release
     SetFilterValues => Pending(&["filter.set_settings"]),
     PreviewFilter => WindowOnly(Preview),
@@ -269,7 +265,7 @@ mod tests {
     /// which must pick its method from host state may raise `TRANSLATES` by as many
     /// as `PENDING` falls; any other rise needs the owner's written approval.
     const TRANSLATES: usize = 22;
-    const PENDING: usize = 55;
+    const PENDING: usize = 51;
     const CONTRACT: usize = 10;
     const MISSING: usize = 20;
     const VIEW: usize = 13;

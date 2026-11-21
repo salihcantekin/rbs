@@ -260,9 +260,13 @@ fn window_only_views_and_previews_change_no_studio_state() {
     let Some(gpu) = gpu() else { return };
     let s = Studio::start(gpu);
     let screen = s.add_screen();
-    s.host.send(Command::AddFilter {
-        source: screen,
-        type_id: "org.rbs.filter.sharpen".into(),
+    s.host.send(Command::Api {
+        call: Box::new(rbs_api::Command::FilterAdd(rbs_api::request::AddFilter {
+            source: screen.get(),
+            type_id: "org.rbs.filter.sharpen".into(),
+            settings: None,
+        })),
+        reply: ApiReply::Shown,
     });
     let filter: FilterId = s.next(|u| match u {
         Update::Sources(rows) => rows

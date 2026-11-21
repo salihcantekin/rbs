@@ -169,14 +169,6 @@ pub enum Command {
         /// Hidden from the Mixer.
         hidden: bool,
     },
-    /// Add a filter of a built-in type with its defaults at the end of a source's chain
-    /// (ADR-0062; one undo step).
-    AddFilter {
-        /// The source.
-        source: SourceId,
-        /// The filter type's id.
-        type_id: String,
-    },
     /// Add the voice chain to a sound source (ADR-0130 decision 10; one undo step).
     AddVoiceChain(SourceId),
     /// Apply a built-in look to a source's item and filters (ADR-0075; one undo step).
@@ -250,22 +242,6 @@ pub enum Command {
         id: SourceId,
         /// Draw the fill.
         on: bool,
-    },
-    /// Remove a filter (one undo step).
-    RemoveFilter(FilterId),
-    /// Move a filter to `index` in its chain (one undo step).
-    MoveFilter {
-        /// The filter.
-        filter: FilterId,
-        /// Its new place, 0 first.
-        index: usize,
-    },
-    /// Turn a filter on or off (one undo step).
-    SetFilterEnabled {
-        /// The filter.
-        filter: FilterId,
-        /// On.
-        enabled: bool,
     },
     /// Write a filter's full values (a released slider, a colour, Reset to defaults;
     /// one undo step).

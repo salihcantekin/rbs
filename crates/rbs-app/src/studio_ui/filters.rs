@@ -513,10 +513,11 @@ impl StudioUi {
             return;
         }
         self.deleted.clear();
-        self.send(Command::AddFilter {
-            source: SourceId::from_raw(source as u32),
+        self.call(rbs_api::Command::FilterAdd(rbs_api::request::AddFilter {
+            source: source as u32,
             type_id: type_id.to_owned(),
-        });
+            settings: None,
+        }));
     }
 
     pub fn select_filter(&mut self, source: i32, filter: i32) {
@@ -528,7 +529,11 @@ impl StudioUi {
 
     pub fn remove_filter(&mut self, filter: i32) {
         self.deleted.clear();
-        self.send(Command::RemoveFilter(FilterId::from_raw(filter as u32)));
+        self.call(rbs_api::Command::FilterRemove(
+            rbs_api::request::FilterRef {
+                filter: filter as u32,
+            },
+        ));
     }
 
     pub fn move_filter(&mut self, filter: i32, index: i32) {
@@ -536,18 +541,20 @@ impl StudioUi {
             return;
         }
         self.deleted.clear();
-        self.send(Command::MoveFilter {
-            filter: FilterId::from_raw(filter as u32),
-            index: index as usize,
-        });
+        self.call(rbs_api::Command::FilterMove(rbs_api::request::MoveFilter {
+            filter: filter as u32,
+            index: index as u32,
+        }));
     }
 
     pub fn set_filter_enabled(&mut self, filter: i32, enabled: bool) {
         self.deleted.clear();
-        self.send(Command::SetFilterEnabled {
-            filter: FilterId::from_raw(filter as u32),
-            enabled,
-        });
+        self.call(rbs_api::Command::FilterSetEnabled(
+            rbs_api::request::SetFilterEnabled {
+                filter: filter as u32,
+                enabled,
+            },
+        ));
     }
 
     /// A slider moved: the picture shows the new value; nothing is stored yet.

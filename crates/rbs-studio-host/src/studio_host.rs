@@ -703,8 +703,7 @@ impl Host {
             | Command::SetMonitorDevice(..)
             | Command::SetMonitorVolume(..)
             | Command::ListMonitorDevices => self.canvas_and_mix_command(c, notify),
-            Command::AddFilter { .. }
-            | Command::AddVoiceChain(..)
+            Command::AddVoiceChain(..)
             | Command::AddSample { .. }
             | Command::AddStamp { .. }
             | Command::AddImage { .. }
@@ -718,9 +717,6 @@ impl Host {
             | Command::SetSourceFill { .. }
             | Command::SetSourceFilled { .. }
             | Command::ApplyLook { .. }
-            | Command::RemoveFilter(..)
-            | Command::MoveFilter { .. }
-            | Command::SetFilterEnabled { .. }
             | Command::SetFilterValues { .. }
             | Command::PreviewFilter { .. }
             | Command::RestoreFilter(..)
