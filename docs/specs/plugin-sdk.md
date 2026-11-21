@@ -2,7 +2,7 @@
 
 - Status: Draft
 - Owner crate(s): `rbs-plugin-sdk`, `rbs-plugin-host` (planned)
-- Related ADRs: [0006](../adr/0006-three-tier-plugin-model.md), [0003](../adr/0003-ports-and-adapters.md), [0162](../adr/0162-extension-ready-registries-and-plugin-order.md) (Proposed)
+- Related ADRs: [0006](../adr/0006-three-tier-plugin-model.md), [0003](../adr/0003-ports-and-adapters.md), [0162](../adr/0162-extension-ready-registries-and-plugin-order.md)
 
 ## Purpose
 
@@ -63,7 +63,7 @@ Plugin panels are declarative and rendered natively by the host (ADR-0016, UI ru
 
 ## Registries
 
-Owner: ADR-0162 (Proposed). Every type a plugin can add will be looked up in a runtime registry, never in a compiled list, and built-in types register through the same call (the `org.rbs.*` prefix is reserved for them).
+Owner: ADR-0162. Every type a plugin can add will be looked up in a runtime registry, never in a compiled list, and built-in types register through the same call (the `org.rbs.*` prefix is reserved for them).
 
 | Registry | State |
 | --- | --- |
