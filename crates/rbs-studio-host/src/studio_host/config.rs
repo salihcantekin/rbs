@@ -27,7 +27,7 @@ pub struct HostConfig {
     /// `None`: changes are not saved.
     pub autosave: Option<CollectionSaver>,
     /// The platform's virtual camera, `None` where there is none: the studio sends
-    /// to it on [`Command::StartVirtualCamera`].
+    /// to it on the window's `vcam.start` (ADR-0164 decision 4).
     pub virtual_camera: Option<CameraFactory>,
     /// The config folder where the recent targets ([`crate::recent_targets`]) and
     /// `calibration.toml` are kept; `None`: they are kept in memory only.

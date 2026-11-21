@@ -1182,32 +1182,6 @@ impl Host {
         }
     }
 
-    /// The UI's Record for `c`: starts the recording and says how it went.
-    pub(super) fn record_asked(
-        &mut self,
-        c: OutputCanvas,
-        r: &RecordRequest,
-        notify: &dyn Fn(Update),
-    ) {
-        self.note_encoders(notify);
-        if !self.record_profile(c).format.is_audio_only()
-            && let Some(why) = &self.recording.cannot_record
-        {
-            notify(recording_update(
-                c,
-                RecordingUpdate::NotStarted(why.clone()),
-            ));
-            return;
-        }
-        let update = match self.start_recording(c, r, Some(API_PROFILE_ID.into()), StartGate::Older)
-        {
-            Ok(update) => update,
-            Err(why) => RecordingUpdate::NotStarted(why.into_message()),
-        };
-        notify(recording_update(c, update));
-        self.publish(notify);
-    }
-
     /// Stops `c`'s recording, if one runs, and says so.
     pub(super) fn stop_recording(
         &mut self,

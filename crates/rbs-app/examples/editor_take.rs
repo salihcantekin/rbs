@@ -21,12 +21,8 @@ use std::process::ExitCode;
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
-use rbs_app::record_profile::{EditorProject, RecordProfile};
-use rbs_app::studio_host::{
-    Command, HostConfig, RecordRequest, RecordingUpdate, SourceKind, StudioHost, Update,
-};
-use rbs_core::media::ContainerId;
-use rbs_record::VideoSettings;
+use rbs_app::record_profile::{API_PROFILE_ID, EditorProject, Format, RecordProfile};
+use rbs_app::studio_host::{Command, HostConfig, RecordingUpdate, SourceKind, StudioHost, Update};
 
 const WAIT: Duration = Duration::from_secs(60);
 
@@ -122,10 +118,10 @@ fn main() -> ExitCode {
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
-        let (container, ext) = match name {
-            "mp4" => (ContainerId::Mp4Fragmented, "mp4"),
-            "mov" => (ContainerId::Mov, "mov"),
-            "mkv" => (ContainerId::Matroska, "mkv"),
+        let (format, ext) = match name {
+            "mp4" => (Format::Mp4, "mp4"),
+            "mov" => (Format::Mov, "mov"),
+            "mkv" => (Format::Mkv, "mkv"),
             other => {
                 rbs_crash::errln!("unknown container {other}: mp4, mov or mkv");
                 ok = false;
@@ -138,7 +134,7 @@ fn main() -> ExitCode {
             ok = false;
             continue;
         }
-        ok &= take(&host, &rx, &mut api, &path, container, seconds);
+        ok &= take(&host, &rx, &mut api, &path, format, seconds);
     }
     drop(api);
     drop(host);
@@ -155,22 +151,30 @@ fn take(
     rx: &mpsc::Receiver<Update>,
     api: &mut Api,
     path: &Path,
-    container: ContainerId,
+    format: Format,
     seconds: u64,
 ) -> bool {
     rbs_crash::outln!("recording {}", path.display());
-    host.send(Command::StartRecording(RecordRequest {
-        path: path.to_path_buf(),
-        container,
-        encoder: None,
-        video: Some(VideoSettings::default()),
-        audio_bitrate_bps: 192_000,
-        bit_depth: None,
-        size: None,
-        iso: false,
-        editor_project: Some(EditorProject::Xmeml),
-        markers: Default::default(),
-    }));
+    // As the window records (ADR-0164 step 6): the saved settings, then the control
+    // API's `record.start_to_file`.
+    let mut profile = RecordProfile::new();
+    if let Some(folder) = path.parent() {
+        profile.folder = folder.to_owned();
+    }
+    profile.use_format(format);
+    profile.audio_kbps = 192;
+    profile.editor_project = Some(EditorProject::Xmeml);
+    host.send(Command::SetProfile(profile));
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::RecordStartToFile(
+            rbs_api::request::RecordStartToFile {
+                profile: API_PROFILE_ID.into(),
+                path: path.display().to_string(),
+                canvas: None,
+            },
+        )),
+        reply: rbs_app::studio_host::ApiReply::Quiet,
+    });
     let start = Instant::now();
     let length = Duration::from_secs(seconds.max(4));
     let marks = [

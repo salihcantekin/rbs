@@ -9,50 +9,13 @@ impl ApiTarget<'_> {
         let host = &mut *self.host;
         match command {
             C::VcamStart => {
-                if host.vcam.camera.is_some() {
-                    return Err(ApiError::new(
-                        ErrorKind::Conflict,
-                        "the virtual camera already sends",
-                    ));
+                let started = vcam_start(host, notify);
+                // The window's Sending card waits for the camera's state (ADR-0164
+                // decision 4), as after its own start.
+                if self.window && started.is_err() {
+                    notify(Update::VirtualCamera(host.camera_status()));
                 }
-                if host.vcam.camera_factory.is_none() {
-                    return Err(failed(
-                        "the virtual camera is not available on this computer",
-                    ));
-                }
-                let Some(setup) = &host.vcam.camera_setup else {
-                    return Err(failed("the studio is still starting; try again"));
-                };
-                if setup.busy {
-                    return Err(ApiError::new(
-                        ErrorKind::Conflict,
-                        "the virtual camera is being changed in Settings; try again",
-                    ));
-                }
-                match &setup.state {
-                    Some(InstallState::NotInstalled) => {
-                        return Err(failed(
-                            "the virtual camera is not added: add it in Settings, Virtual camera",
-                        ));
-                    }
-                    Some(InstallState::NeedsUpdate { .. }) => {
-                        return Err(failed(
-                            "the virtual camera needs an update: add it again in Settings, Virtual camera",
-                        ));
-                    }
-                    Some(InstallState::Unsupported { reason }) => {
-                        return Err(failed(format!(
-                            "the virtual camera is not available on this computer: {reason}"
-                        )));
-                    }
-                    // Not read yet: starting says whether it is added.
-                    _ => {}
-                }
-                let settings = VirtualCameraSettings::new(setup.width, setup.height, setup.fps);
-                host.start_camera_asked(settings, notify, false)
-                    .map_err(|e| failed(e.into_text()))?;
-                host.publish(notify);
-                Ok(Response::Done(Empty {}))
+                started
             }
             C::VcamStop => {
                 if host.vcam.camera.is_none() {
@@ -167,4 +130,52 @@ impl ApiTarget<'_> {
             _ => Err(rbs_api::control::unsupported(&command)),
         }
     }
+}
+
+/// `vcam.start`: sends with the settings the window last gave (`CameraSetup`).
+fn vcam_start(host: &mut Host, notify: &dyn Fn(Update)) -> Result<Response, ApiError> {
+    if host.vcam.camera.is_some() {
+        return Err(ApiError::new(
+            ErrorKind::Conflict,
+            "the virtual camera already sends",
+        ));
+    }
+    if host.vcam.camera_factory.is_none() {
+        return Err(failed(
+            "the virtual camera is not available on this computer",
+        ));
+    }
+    let Some(setup) = &host.vcam.camera_setup else {
+        return Err(failed("the studio is still starting; try again"));
+    };
+    if setup.busy {
+        return Err(ApiError::new(
+            ErrorKind::Conflict,
+            "the virtual camera is being changed in Settings; try again",
+        ));
+    }
+    match &setup.state {
+        Some(InstallState::NotInstalled) => {
+            return Err(failed(
+                "the virtual camera is not added: add it in Settings, Virtual camera",
+            ));
+        }
+        Some(InstallState::NeedsUpdate { .. }) => {
+            return Err(failed(
+                "the virtual camera needs an update: add it again in Settings, Virtual camera",
+            ));
+        }
+        Some(InstallState::Unsupported { reason }) => {
+            return Err(failed(format!(
+                "the virtual camera is not available on this computer: {reason}"
+            )));
+        }
+        // Not read yet: starting says whether it is added.
+        _ => {}
+    }
+    let settings = VirtualCameraSettings::new(setup.width, setup.height, setup.fps);
+    host.start_camera_asked(settings, notify, false)
+        .map_err(|e| failed(e.into_text()))?;
+    host.publish(notify);
+    Ok(Response::Done(Empty {}))
 }

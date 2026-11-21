@@ -22,6 +22,9 @@ mod api_vcam;
 pub(super) struct ApiTarget<'a> {
     pub(super) host: &'a mut Host,
     pub(super) notify: &'a dyn Fn(Update),
+    /// The window's own call ([`Command::Api`]): a refused output start is also told
+    /// as the window's start update, as its button's start was (ADR-0164 decision 3).
+    pub(super) window: bool,
 }
 
 /// Clears [`WINDOW_GESTURE`] from a gesture any caller but the window sent, so a
@@ -90,6 +93,14 @@ impl ApiTarget<'_> {
     pub(super) fn run(&mut self, command: rbs_api::Command) -> Result<Response, ApiError> {
         use rbs_api::Command as C;
         if let Some(e) = output_refusal(self.host, &command) {
+            // The window's start waits for its output's state (ADR-0164 decision 3).
+            if self.window {
+                let waited = match &command {
+                    C::VcamStart => Some(Update::VirtualCamera(self.host.camera_status())),
+                    call => failures::start_refused(call, &e.message),
+                };
+                waited.into_iter().for_each(self.notify);
+            }
             return Err(e);
         }
         match command {
@@ -285,6 +296,24 @@ impl ApiTarget<'_> {
         iso: bool,
         gate: StartGate,
     ) -> Result<Response, ApiError> {
+        let result = self.record_or_refuse(c, path, explicit, iso, gate);
+        if self.window
+            && let Err(e) = &result
+        {
+            let why = RecordingUpdate::NotStarted(e.message.clone());
+            (self.notify)(recording_update(c, why));
+        }
+        result
+    }
+
+    fn record_or_refuse(
+        &mut self,
+        c: OutputCanvas,
+        path: PathBuf,
+        explicit: bool,
+        iso: bool,
+        gate: StartGate,
+    ) -> Result<Response, ApiError> {
         let notify = self.notify;
         let host = &mut *self.host;
         if explicit && !path.is_absolute() {
@@ -303,7 +332,7 @@ impl ApiTarget<'_> {
         if !host.record_profile(c).format.is_audio_only()
             && let Some(why) = &host.recording.cannot_record
         {
-            return Err(failed(why.clone()));
+            return Err(failed_because("recording_blocked", why.clone()));
         }
         if host.outs[slot(c)].recording.is_some() {
             return Err(ApiError::new(
@@ -312,14 +341,16 @@ impl ApiTarget<'_> {
             ));
         }
         let mut request = host.profile_request(c, path).map_err(|why| match c {
-            OutputCanvas::Main => failed(why.into_text()),
-            OutputCanvas::Vertical => failed(format!("the vertical recording: {why}")),
+            OutputCanvas::Main => failed_because("profile_problem", why.into_text()),
+            OutputCanvas::Vertical => {
+                failed_because("profile_problem", format!("the vertical recording: {why}"))
+            }
         })?;
         request.iso = iso;
         let profile = (!explicit).then(|| API_PROFILE_ID.to_owned());
         let result = host.start_recording(c, &request, profile, gate);
-        host.publish(notify);
-        match result {
+        // The rows follow the start, as the window shows them.
+        let answer = match result {
             Ok(update) => {
                 let started = match &update {
                     RecordingUpdate::Started {
@@ -337,14 +368,19 @@ impl ApiTarget<'_> {
                             _ => Vec::new(),
                         },
                     },
-                    _ => return Err(failed("the recording did not start")),
+                    _ => {
+                        host.publish(notify);
+                        return Err(failed("the recording did not start"));
+                    }
                 };
                 // The UI shows the recording as if its own button started it.
                 notify(recording_update(c, update));
                 Ok(Response::RecordStarted(started))
             }
             Err(why) => Err(why.into_api()),
-        }
+        };
+        host.publish(notify);
+        answer
     }
 }
 

@@ -89,3 +89,22 @@ impl StudioUi {
         }
     }
 }
+
+impl StudioUi {
+    /// Record or Go live on one canvas: `record.start` with the saved settings, or
+    /// `stream.start` (ADR-0164 decision 3). Quiet: the control thread tells a refusal
+    /// as the start's own update (`NotStarted`, `NoKey`), as before.
+    pub(super) fn start_output(&self, record: bool, canvas: rbs_api::types::OutputTarget) {
+        let call = if record {
+            C::RecordStart(rq::RecordStart {
+                canvas: Some(canvas),
+                ..rq::RecordStart::new(rbs_app::record_profile::API_PROFILE_ID)
+            })
+        } else {
+            C::StreamStart(rq::OnCanvases {
+                canvas: Some(canvas),
+            })
+        };
+        self.call_as(call, rbs_app::studio_host::ApiReply::Quiet);
+    }
+}

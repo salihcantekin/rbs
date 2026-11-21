@@ -13,7 +13,7 @@ use super::StudioUi;
 
 impl StudioUi {
     /// The item of source `id` in the scene being edited: the Sources row's.
-    fn row_item(&self, id: i32) -> Option<u32> {
+    pub(super) fn row_item(&self, id: i32) -> Option<u32> {
         self.rows
             .iter()
             .find(|r| r.id.get() == id as u32)

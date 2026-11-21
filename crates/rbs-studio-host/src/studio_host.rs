@@ -631,8 +631,19 @@ impl Host {
         if let Some(trace) = &self.api_trace {
             trace.lock().unwrap_or_else(|e| e.into_inner()).push(method);
         }
-        let result = rbs_crash::contain(|| ApiTarget { host: self, notify }.run(command));
+        let unanswered = failures::api_answer_on_panic(&command);
+        let result = rbs_crash::contain(|| {
+            ApiTarget {
+                host: self,
+                notify,
+                window: true,
+            }
+            .run(command)
+        });
         let result = result.unwrap_or_else(|_| {
+            if let Some(u) = unanswered {
+                notify(u);
+            }
             self.caught = true;
             Err(ApiError::new(ErrorKind::Internal, rbs_crash::CAUGHT_TEXT))
         });
@@ -717,12 +728,8 @@ impl Host {
             | Command::SwitchScene(..)
             | Command::SetStudioMode(..)
             | Command::SetSwapAfterTransition(..) => self.scene_command(c, notify),
-            Command::SetSourceBox { .. } | Command::SetSourceCrop { .. } => {
-                self.item_command(c, notify)
-            }
-            Command::StartRecording(..)
-            | Command::StartVerticalRecording(..)
-            | Command::SetVerticalProfile(..)
+            Command::SetSourceBox { .. } => self.item_command(c, notify),
+            Command::SetVerticalProfile(..)
             | Command::SetVerticalStreamProfile(..)
             | Command::SetStreamDestinations(..)
             | Command::SetSeparateFiles(..)
@@ -734,9 +741,6 @@ impl Host {
             | Command::CloseProjector(..)
             | Command::SetCanvas { .. }
             | Command::SetProfile(..)
-            | Command::StartStream(..)
-            | Command::StartVerticalStream(..)
-            | Command::StartVirtualCamera { .. }
             | Command::StopVirtualCamera
             | Command::SetReplay(..)
             | Command::AddMarker

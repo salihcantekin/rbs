@@ -5,7 +5,8 @@
 //! Adding and removing the camera may wait for an administrator prompt, so each runs on
 //! a thread of its own that ends with the work (nothing runs while the section is not
 //! used, P13); the result comes back to the UI thread through `CTX`. Sending runs on
-//! the studio's control thread ([`studio_host::Command::StartVirtualCamera`]).
+//! the studio's control thread (`vcam.start`, with [`studio_host::Command::SetVirtualCamera`]'s
+//! settings).
 
 use std::path::Path;
 
@@ -174,19 +175,22 @@ pub fn install(g: &VirtualCamera<'_>, ctx: &Ctx) {
 
 /// Start (`on`) or stop sending: the Sending card, Live controls and `vcam.toggle`.
 pub fn send(app: &mut App, on: bool) {
+    if on {
+        sync_host(app);
+    }
     let page = &mut app.vcam.page;
     page.note = None;
     if on {
         if page.sending.is_some() || page.starting {
             return;
         }
-        let s = page.settings;
         page.starting = true;
-        app.studio.send(Command::StartVirtualCamera {
-            width: s.width,
-            height: s.height,
-            fps: s.frame_rate(),
-        });
+        // `vcam.start` sends with the settings `SetVirtualCamera` gave; one that
+        // already sends is no error, as before (ADR-0164 decision 4).
+        app.studio.call_as(
+            rbs_api::Command::VcamStart,
+            rbs_app::studio_host::ApiReply::QuietIf(rbs_api::ErrorKind::Conflict),
+        );
     } else if page.sending.is_some() {
         app.studio.send(Command::StopVirtualCamera);
     }
