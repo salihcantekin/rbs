@@ -1018,7 +1018,12 @@ pub(super) fn properties_activity_choice_is_stored_without_type_defaults_and_sho
     use rbs_graph::node::NodeTypeId;
     use rbs_scene::activity::{OnReturn, Run};
     use rbs_scene::model::{ItemContent, Layout, SceneScope, SettingValue, Settings};
-    use rbs_studio_host::studio_host::{ActivityChoice, Command};
+    use rbs_studio_host::studio_host::Command;
+    struct Want {
+        run: Run,
+        on_return: Option<OnReturn>,
+        linger_s: u16,
+    }
     let dir = std::env::temp_dir().join(format!("rbs-film-choice-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let file = dir.join("film.mov");
@@ -1050,9 +1055,17 @@ pub(super) fn properties_activity_choice_is_stored_without_type_defaults_and_sho
     let activity = |c: &mut Client| {
         c.call("source.get_activity", json!({"source": film.get()}))["result"].clone()
     };
-    let row_shows = |want: ActivityChoice| {
+    let row_shows = |want: Want| {
         next(&updates, |u| match u {
-            Update::Sources(r) if r.iter().any(|r| r.id == film && r.activity == Some(want)) => {
+            Update::Sources(r)
+                if r.iter().any(|r| {
+                    r.id == film
+                        && r.activity.is_some_and(|a| {
+                            (a.run, a.on_return, a.linger_s)
+                                == (want.run, want.on_return, want.linger_s)
+                        })
+                }) =>
+            {
                 Some(())
             }
             _ => None,
@@ -1063,10 +1076,12 @@ pub(super) fn properties_activity_choice_is_stored_without_type_defaults_and_sho
         id: film,
         run: Run::Shown,
         on_return: Some(OnReturn::Resume),
+        linger_s: 0,
     });
-    row_shows(ActivityChoice {
+    row_shows(Want {
         run: Run::Shown,
         on_return: Some(OnReturn::Resume),
+        linger_s: 0,
     });
     let a = activity(&mut c);
     assert_eq!(a.get("run"), None);
@@ -1075,25 +1090,32 @@ pub(super) fn properties_activity_choice_is_stored_without_type_defaults_and_sho
         id: film,
         run: Run::OnAir,
         on_return: Some(OnReturn::Resume),
+        linger_s: 30,
     });
-    row_shows(ActivityChoice {
+    row_shows(Want {
         run: Run::OnAir,
         on_return: Some(OnReturn::Resume),
+        linger_s: 30,
     });
-    assert_eq!(activity(&mut c)["run"], json!("on_air"));
+    let a = activity(&mut c);
+    assert_eq!(a["run"], json!("on_air"));
+    assert_eq!(a["linger_s"], json!(30));
     // Back to the type's defaults: nothing is stored.
     host.send(Command::SetSourceActivity {
         id: film,
         run: Run::Shown,
         on_return: Some(OnReturn::Restart),
+        linger_s: 0,
     });
-    row_shows(ActivityChoice {
+    row_shows(Want {
         run: Run::Shown,
         on_return: Some(OnReturn::Restart),
+        linger_s: 0,
     });
     let a = activity(&mut c);
     assert_eq!(a.get("run"), None);
     assert_eq!(a.get("on_return"), None);
+    assert_eq!(a.get("linger_s"), None);
     // One undo step brings the last choice back.
     ok(&c.call("edit.undo", json!({})));
     assert_eq!(activity(&mut c)["run"], json!("on_air"));

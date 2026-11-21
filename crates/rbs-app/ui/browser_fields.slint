@@ -56,8 +56,9 @@ export component Section inherits VerticalLayout {
     }
 }
 
-// "Runs" and "When it comes back" of a media file or a web page (ADR-0152, owner
-// approval 2026-11-18): the source's activity policy, each a list with an info hint.
+// "Runs", "When it comes back" and "Keep running for" of a media file, a web page or
+// a capture source (ADR-0152, owner approvals 2026-11-18 and 2026-11-21): the
+// source's activity policy, each a list with an info hint.
 // "Runs" shows -1 (no choice) for a saved value the kind's list leaves out.
 // The lists' order is `studio_ui::activity_choice`'s. Each pick is one undo step.
 export component ActivityFields inherits VerticalLayout {
@@ -67,6 +68,9 @@ export component ActivityFields inherits VerticalLayout {
     // Positions in the lists; -1 shows none.
     in property <int> run;
     in property <int> on-return;
+    in property <int> linger;
+    // False for a kind without "When it comes back" (a live capture).
+    in property <bool> has-return: true;
     // The "Runs" and "When it comes back" words of this kind (the order of
     // `studio_ui::activity_choice`), and what they do.
     in property <[string]> run-options;
@@ -74,6 +78,8 @@ export component ActivityFields inherits VerticalLayout {
     in property <string> return-hint;
     // What "While in a scene" costs for this kind.
     in property <string> run-hint;
+    // What "Keep running for" keeps of this kind.
+    in property <string> linger-hint;
     spacing: Tokens.size-section-gap;
     Field {
         label: @tr("Runs");
@@ -95,7 +101,7 @@ export component ActivityFields inherits VerticalLayout {
             }
         }
     }
-    Field {
+    if root.has-return: Field {
         label: @tr("When it comes back");
         HorizontalLayout {
             spacing: Tokens.space-1;
@@ -111,6 +117,26 @@ export component ActivityFields inherits VerticalLayout {
                 InfoHint {
                     label: @tr("When it comes back");
                     text: root.return-hint;
+                }
+            }
+        }
+    }
+    Field {
+        label: @tr("Keep running for");
+        HorizontalLayout {
+            spacing: Tokens.space-1;
+            Select {
+                horizontal-stretch: 1;
+                label: @tr("How long {} keeps running after it leaves the screen", root.name);
+                options: [@tr("Off"), @tr("5 s"), @tr("10 s"), @tr("30 s"), @tr("1 min"), @tr("5 min")];
+                index: root.linger;
+                selected(i) => { if i != root.linger { Studio.set-source-linger(root.id, i); } }
+            }
+            VerticalLayout {
+                alignment: center;
+                InfoHint {
+                    label: @tr("Keep running for");
+                    text: root.linger-hint;
                 }
             }
         }
@@ -395,6 +421,8 @@ export component BrowserFields inherits VerticalLayout {
             return-options: [@tr("Continue"), @tr("Reload")];
             run-hint: @tr("While shown: the page sleeps when no scene on Program or Preview shows it. While in a scene: chat and timers keep their state across scene changes; this costs one browser process and one of the two page slots while the source is in any scene, and a shown page takes that slot first. Only on air: the page starts when it goes on air.");
             return-hint: @tr("Reload loads the page again when it goes on air; the last picture stays until the new one is drawn. A page that slept always loads fresh.");
+            linger: b.linger;
+            linger-hint: @tr("Keeps the page running for this long after it leaves the screen. Like While in a scene, a running page can connect to the internet while nothing shows it, so a remote control that may not reach the network cannot set this.");
         }
         HorizontalLayout {
             spacing: Tokens.space-1;

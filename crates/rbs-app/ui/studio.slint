@@ -2855,6 +2855,29 @@ component ScrollFields inherits FeatureSection {
             }
         }
     }
+    // ADR-0152 phase 5: a scroll that continues goes on where it would be had it kept
+    // moving while its source waited in another scene. One undo step.
+    Field {
+        label: @tr("When it comes back");
+        HorizontalLayout {
+            spacing: Tokens.space-1;
+            SegmentedControl {
+                horizontal-stretch: 1;
+                label: @tr("What the scroll of {} does when it comes back", data.name);
+                options: [@tr("Start over"), @tr("Continue")];
+                index: data.scroll-return;
+                enabled: data.scroll-on && !data.locked;
+                selected(i) => { if i != data.scroll-return { Studio.set-source-scroll-return(data.id, i); } }
+            }
+            VerticalLayout {
+                alignment: center;
+                InfoHint {
+                    label: @tr("When it comes back");
+                    text: @tr("Start over begins the scroll again each time a scene shows it. Continue goes on where it would be had it kept moving, while the source waits in another scene.");
+                }
+            }
+        }
+    }
     HorizontalLayout {
         spacing: Tokens.space-1;
         alignment: start;
@@ -3588,10 +3611,12 @@ component SourceFields inherits VerticalLayout {
         id: data.id;
         run: data.act-run;
         on-return: data.act-return;
+        linger: data.act-linger;
         run-options: [@tr("While shown"), @tr("Only on air")];
-        return-options: [@tr("Start over"), @tr("Resume where it stopped")];
+        return-options: [@tr("Start over"), @tr("Resume where it stopped"), @tr("Continue as if it kept playing")];
         run-hint: @tr("While shown: the file plays when a scene on Program or Preview shows it, and sleeps otherwise. Only on air: it plays only on Program; Preview does not show it.");
-        return-hint: @tr("Start over plays from the start of the play range each time it goes on air; Resume plays on from where it left the air.");
+        return-hint: @tr("Start over plays from the start of the play range each time it goes on air; Resume plays on from where it left the air; Continue plays from where it would be had it kept playing.");
+        linger-hint: @tr("Keeps the file playing for this long after it leaves the screen, so a quick cut back finds it still running.");
     }
     // The play range (ADR-0108 decision 11): set from the playback position, as an
     // editor's in and out points (I and O on the position slider do the same). Each
@@ -3635,6 +3660,20 @@ component SourceFields inherits VerticalLayout {
                 }
             }
         }
+    }
+    // Runs and Keep running for of a display, window or camera (ADR-0152 phase 4); a
+    // live picture has no When it comes back.
+    if data.kind-code >= 0 && data.kind-code <= 2 && data.act-on: ActivityFields {
+        name: data.name;
+        id: data.id;
+        run: data.act-run;
+        linger: data.act-linger;
+        has-return: false;
+        run-options: [@tr("While in a scene"), @tr("While shown"), @tr("Only on air")];
+        run-hint: data.act-warm-up != ""
+            ? @tr("While in a scene: the source stays open, so a cut to it shows a picture at once. While shown: it opens when a scene on Program or Preview shows it. Only on air: it opens only on Program. Opened in {} s last time.", data.act-warm-up)
+            : @tr("While in a scene: the source stays open, so a cut to it shows a picture at once. While shown: it opens when a scene on Program or Preview shows it; the first picture can take a moment. Only on air: it opens only on Program.");
+        linger-hint: @tr("Keeps the source open for this long after it leaves the screen, so a quick cut back shows a picture at once.");
     }
     // Screens, windows and cameras have more settings (ADR-0077).
     if data.kind-code >= 0 && data.kind-code <= 2: HorizontalLayout {

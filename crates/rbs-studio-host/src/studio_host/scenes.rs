@@ -1024,8 +1024,13 @@ impl Host {
                 let done = self.put_transition(t);
                 self.answer(done, notify);
             }
-            Command::SetSourceActivity { id, run, on_return } => {
-                let done = self.set_source_choice(id, run, on_return);
+            Command::SetSourceActivity {
+                id,
+                run,
+                on_return,
+                linger_s,
+            } => {
+                let done = self.set_source_choice(id, run, on_return, linger_s);
                 self.answer(done, notify);
             }
             Command::OpenAttributes { source, paste } => {

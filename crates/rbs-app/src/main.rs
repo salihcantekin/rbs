@@ -15,6 +15,7 @@
 //! (development aid, see `look`). `RBS_CONFIG_DIR` overrides the config directory.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod activity_calls;
 mod add_ons_page;
 mod advanced_page;
 mod app_menu;
@@ -4789,12 +4790,6 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
         app.studio
             .set_media_setting(id, "loop", serde_json::Value::Bool(on));
     });
-    on!(on_set_source_run, |app, id: i32, index: i32| {
-        app.studio.set_source_run(id, index);
-    });
-    on!(on_set_source_on_return, |app, id: i32, index: i32| {
-        app.studio.set_source_on_return(id, index);
-    });
     on!(
         on_set_media_range_mark,
         |app, id: i32, mark: i32, at: i32| {
@@ -5705,6 +5700,7 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     });
     // Settings pages: Permissions (ADR-0141), Add-ons (ADR-0145), Advanced (ADR-0158).
     permissions_page::install(g, ctx);
+    activity_calls::install(g, ctx);
     add_ons_page::install(g, ctx);
     advanced_page::install(g, ctx);
     // Before every redraw of the main window: popups open, move and close with a redraw,

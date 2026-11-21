@@ -1111,7 +1111,7 @@ impl Host {
                 ) = self.source_row_extra(s, item.id);
                 SourceRow {
                     media: MediaSettings::of(s),
-                    activity: ActivityChoice::of(s),
+                    activity: ActivityChoice::of(s, self.studio.warm_up(s.id)),
                     latency: self.studio.audio_latency(s.id),
                     device_peers: self
                         .device_peers(s.id)

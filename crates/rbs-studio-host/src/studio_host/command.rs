@@ -290,9 +290,10 @@ pub enum Command {
     /// The collection's transition (ADR-0128): kind and each kind's settings. One undo
     /// step.
     SetTransition(rbs_scene::CollectionTransition),
-    /// Properties' "Runs" and "When it comes back" (ADR-0152): the source's `run`
-    /// and `on_return`, its linger kept. A value equal to the type's default is
-    /// stored as absent. One undo step; a value the type does not allow is refused.
+    /// Properties' "Runs", "When it comes back" and "Keep running for" (ADR-0152):
+    /// the source's `run`, `on_return` and `linger_s`. A value equal to the type's
+    /// default (a linger of 0) is stored as absent. One undo step; a value the type
+    /// does not allow is refused.
     SetSourceActivity {
         /// The source.
         id: SourceId,
@@ -300,6 +301,8 @@ pub enum Command {
         run: rbs_scene::activity::Run,
         /// What it does when it comes back; `None` for a type without one.
         on_return: Option<rbs_scene::activity::OnReturn>,
+        /// Seconds it keeps running after it leaves the screen; 0 for none.
+        linger_s: u16,
     },
     /// Ask for what the Reset source (`paste` false) or Paste attributes dialog shows
     /// ([`Update::Attributes`]).
