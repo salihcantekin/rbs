@@ -1160,4 +1160,143 @@ impl Host {
         ));
         failure
     }
+
+    /// The window commands of this concern, routed by `Host::command`.
+    pub(super) fn stream_command(&mut self, c: Command, notify: &dyn Fn(Update)) {
+        match c {
+            Command::PauseRecording => {
+                let command = rbs_api::Command::RecordPauseToggle(rbs_api::request::OnCanvases {
+                    canvas: Some(api::OutputTarget::All),
+                });
+                match rbs_crash::contain(|| ApiTarget { host: self, notify }.run(command)) {
+                    Ok(Ok(_)) => {}
+                    // The window's toast says it in a sentence of its own.
+                    Ok(Err(e)) => notify(Update::Error(format!(
+                        "The recording could not pause or resume: {}.",
+                        e.message
+                    ))),
+                    Err(_) => {
+                        self.caught = true;
+                        notify(Update::Error(rbs_crash::CAUGHT_TEXT.to_owned()));
+                    }
+                }
+            }
+            Command::HoldStream | Command::Break => {
+                let (command, what) = match c {
+                    Command::HoldStream => (
+                        rbs_api::Command::StreamHoldToggle(rbs_api::request::StreamHold {
+                            canvas: Some(api::OutputTarget::All),
+                            ..rbs_api::request::StreamHold::default()
+                        }),
+                        "The stream could not hold or resume",
+                    ),
+                    _ => (
+                        rbs_api::Command::OutputBreakToggle,
+                        "The break could not start or end",
+                    ),
+                };
+                match rbs_crash::contain(|| ApiTarget { host: self, notify }.run(command)) {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(e)) => notify(Update::Error(format!("{what}: {}.", e.message))),
+                    Err(_) => {
+                        self.caught = true;
+                        notify(Update::Error(rbs_crash::CAUGHT_TEXT.to_owned()));
+                    }
+                }
+            }
+            Command::SaveReplay { seconds } => {
+                if let Err(why) = self.save_replay(seconds) {
+                    notify(Update::ReplaySaved(Err(why)));
+                }
+            }
+            Command::SetVirtualCamera(setup) => {
+                self.camera_setup = Some(setup);
+                self.camera_changed();
+            }
+            Command::SetStreamProfile(profile) => {
+                if self.stream_profile.as_ref() != Some(&profile) {
+                    self.stream_profile = Some(profile);
+                    self.settings_changed();
+                    self.availability_changed();
+                }
+            }
+            Command::SaveStreamKey(key) => {
+                let result = self.save_key(OutputCanvas::Main, key.as_ref());
+                notify(Update::StreamKey(result));
+            }
+            Command::SaveVerticalStreamKey(key) => {
+                let result = self.save_key(OutputCanvas::Vertical, key.as_ref());
+                notify(Update::VerticalStreamKey(result));
+            }
+            Command::StartDestination(id) => {
+                self.run_ui_api(
+                    rbs_api::Command::StreamDestinationStart(rbs_api::request::DestinationRef {
+                        id,
+                    }),
+                    notify,
+                );
+            }
+            Command::StopDestination(id) => {
+                self.run_ui_api(
+                    rbs_api::Command::StreamDestinationStop(rbs_api::request::DestinationRef {
+                        id,
+                    }),
+                    notify,
+                );
+            }
+            Command::SaveDestinationKey(id, key) => {
+                let account = crate::stream_destinations::key_account(&self.key_account, id);
+                let result = match &key {
+                    Some(k) => self.keys.write(&account, k).map(|()| true),
+                    None => self.keys.remove(&account).map(|()| false),
+                }
+                .map_err(|e| format!("{} refused the stream key: {e}", self.keys.place()));
+                notify(Update::DestinationKey(id, result));
+            }
+            Command::SetKeyAccount(account) => self.key_account = account,
+            Command::SaveImportedKey(account, key) => {
+                if let Err(e) = self.keys.write(&account, &key) {
+                    notify(Update::Error(format!(
+                        "The imported stream key could not be saved in {}: {e}. Enter it in Settings, Stream.",
+                        self.keys.place()
+                    )));
+                }
+            }
+            Command::RemoveStreamKey(account) => {
+                if let Err(e) = self.keys.remove(&account) {
+                    notify(Update::Error(format!(
+                        "The deleted output profile's stream key could not be removed from {}: {e}",
+                        self.keys.place()
+                    )));
+                }
+            }
+            Command::SwitchCollection {
+                seq,
+                collection,
+                autosave,
+            } => {
+                // Answered also after a caught panic, so the UI's switch, and a control
+                // API switch waiting on it, end; the round then recovers the host.
+                let result =
+                    rbs_crash::contain(|| self.switch_collection(*collection, autosave, notify))
+                        .unwrap_or_else(|_| {
+                            self.caught = true;
+                            Err(rbs_crash::CAUGHT_TEXT.to_owned())
+                        });
+                notify(Update::CollectionSwitched { seq, result });
+            }
+            Command::SetLibrary {
+                profiles,
+                collections,
+                answered,
+            } => {
+                self.library = Some((profiles, collections));
+                if answered.is_some() && answered == self.switch_pending {
+                    self.switch_pending = None;
+                }
+            }
+            // Routed elsewhere by `Host::command`.
+            _ => {}
+        }
+    }
 }

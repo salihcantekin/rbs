@@ -2857,1059 +2857,169 @@ impl Host {
     }
 
     fn command(&mut self, c: Command, notify: &dyn Fn(Update)) {
+        // Every command by concern; each handler matches only its own variants.
         match c {
-            Command::ListTargets(kind) => {
-                let targets = self.targets(kind);
-                notify(Update::Targets(kind, targets));
-            }
-            Command::AddSourceWithAudio { ref kind, .. } | Command::AddSource { ref kind, .. }
-                if self.prompt_first(*kind).is_some() =>
-            {
-                if let Some(p) = self.prompt_first(*kind) {
-                    self.ask_permission(p, Some(c), notify);
-                }
-            }
-            Command::ReadPermissions => self.send_permissions(notify),
-            Command::ListAddOns => notify(Update::AddOns(self.addon_list())),
-            Command::AddOn { id, action } => self.addon_command(&id, action, notify),
-            Command::RequestPermission(kind) => self.ask_permission(kind, None, notify),
-            Command::AddSourceWithAudio { kind, target } => {
-                let done = self
-                    .add(kind, &target)
-                    .map_err(Refusal::Failed)
-                    .and_then(|id| {
-                        self.add_companion(id, true).inspect_err(|_| {
-                            let _ = self.delete(id);
-                        })
-                    });
-                match done {
-                    Ok(_) => self.apply(notify),
-                    Err(e) => notify(Update::Error(e.text().to_owned())),
-                }
-            }
-            Command::AddSource { kind, target } if target.picker => self.pick(kind, &target),
-            Command::AddSource { kind, target } => match self.add(kind, &target) {
-                Ok(_) => self.apply(notify),
-                Err(e) => notify(Update::Error(e)),
-            },
-            Command::DeleteSource(id) => match self.delete(id) {
-                Ok(name) => {
-                    self.apply(notify);
-                    notify(Update::Deleted {
-                        name,
-                        from_scene: false,
-                    });
-                }
-                Err(e) => notify(Update::Error(e)),
-            },
-            Command::RemoveFromScene(id) => {
-                let done = self
-                    .item_of(id)
-                    .map_err(Refusal::NotFound)
-                    .map(|(_, i)| i.id)
-                    .and_then(|item| self.remove_from_scene(item));
-                match done {
-                    Ok((name, removed)) => {
-                        self.apply(notify);
-                        notify(Update::Deleted {
-                            name,
-                            from_scene: !removed.source_deleted,
-                        });
-                    }
-                    Err(e) => notify(Update::Error(e.text().to_owned())),
-                }
-            }
-            Command::SetGlobal { id, global } => {
-                let done = if global {
-                    self.make_global(id).map(|_| true)
-                } else {
-                    self.unmake_global(id, true).map(|_| true)
-                };
-                self.answer(done, notify);
-            }
-            Command::RemoveGlobal(id) => {
-                let done = self.unmake_global(id, false).map(|_| true);
-                self.answer(done, notify);
-            }
-            Command::AddGlobalSource { kind, target } => {
-                let done = self.add_global(kind, &target).map(|_| true);
-                self.answer(done, notify);
-            }
-            Command::UndoDelete => {
-                if self
-                    .history
-                    .next_undo()
-                    .is_some_and(|s| matches!(s.kind, EditKind::Delete | EditKind::Remove))
-                {
-                    self.step(true, notify);
-                }
-            }
-            Command::Undo => self.step(true, notify),
-            Command::Redo => self.step(false, notify),
-            Command::MoveSource { id, direction } => match self.move_source(id, direction) {
-                Ok(true) => self.apply(notify),
-                Ok(false) => {}
-                Err(e) => notify(Update::Error(e)),
-            },
-            Command::MoveSourceTo { id, to } => match self.move_source_to(id, to) {
-                Ok(true) => self.apply(notify),
-                Ok(false) => {}
-                Err(e) => notify(Update::Error(e)),
-            },
-            Command::MoveScene { id, direction } => match self.move_scene(id, direction) {
-                Ok(true) => self.apply(notify),
-                Ok(false) => {}
-                Err(e) => notify(Update::Error(e)),
-            },
-            Command::MoveSceneTo { id, to } => match self.move_scene_to(id, to) {
-                Ok(true) => self.apply(notify),
-                Ok(false) => {}
-                Err(e) => notify(Update::Error(e)),
-            },
-            Command::SetSourceActive { id, active } => match self.set_source_active(id, active) {
-                Ok(true) => self.apply(notify),
-                Ok(false) => {}
-                Err(e) => notify(Update::Error(e)),
-            },
-            Command::SetSourceLocked { id, locked } => {
-                let done = self
-                    .item_of(id)
-                    .map_err(Refusal::NotFound)
-                    .map(|(_, i)| i.id)
-                    .and_then(|item| self.set_item_locked(item, locked));
-                self.answer(done, notify);
-            }
-            Command::SetSourceVolume { id, volume } => {
-                let call = if self.levels_take(id) {
-                    rbs_api::Command::SceneAudioSet(rbs_api::request::SetSceneLevel {
-                        scene: self.scene.get(),
-                        source: id.get(),
-                        volume: Some(volume),
-                        muted: None,
-                    })
-                } else {
-                    rbs_api::Command::SourceSetVolume(rbs_api::request::SetSourceVolume {
-                        source: id.get(),
-                        volume,
-                    })
-                };
-                self.run_ui_api(call, notify);
-            }
-            Command::SetSourceMuted { id, muted } => {
-                let call = if self.levels_take(id) {
-                    rbs_api::Command::SceneAudioSet(rbs_api::request::SetSceneLevel {
-                        scene: self.scene.get(),
-                        source: id.get(),
-                        volume: None,
-                        muted: Some(muted),
-                    })
-                } else {
-                    rbs_api::Command::SourceSetMuted(rbs_api::request::SetSourceMuted {
-                        source: id.get(),
-                        muted,
-                    })
-                };
-                self.run_ui_api(call, notify);
-            }
-            Command::SetMetersUi(on) => {
-                self.meters_ui = on;
-                self.sync_meters();
-            }
-            Command::EnsureEncoders => {
-                self.ensure_encoders();
-                self.publish_encoders(notify);
-            }
-            Command::SetSceneOwnLevels { scene, own } => {
-                let scene = rbs_api::request::SceneRef { scene: scene.get() };
-                self.run_ui_api(
-                    if own {
-                        rbs_api::Command::SceneAudioOwn(scene)
-                    } else {
-                        rbs_api::Command::SceneAudioShared(scene)
-                    },
-                    notify,
-                );
-            }
-            Command::ResetSceneLevel { scene, source } => {
-                self.run_ui_api(
-                    rbs_api::Command::SceneAudioResetSource(rbs_api::request::SceneSourceRef {
-                        scene: scene.get(),
-                        source: source.get(),
-                    }),
-                    notify,
-                );
-            }
-            Command::SetSourceMixerHidden { id, hidden } => {
-                self.run_ui_api(
-                    rbs_api::Command::SourceSetMixerHidden(
-                        rbs_api::request::SetSourceMixerHidden {
-                            source: id.get(),
-                            hidden,
-                        },
-                    ),
-                    notify,
-                );
-            }
-            Command::AddVerticalCanvas(spec) => {
-                let done = self.add_vertical(spec);
-                self.answer_live(done, notify);
-            }
-            Command::RemoveVerticalCanvas => {
-                let done = self.remove_vertical();
-                self.answer_live(done, notify);
-            }
-            Command::AutoLayoutVertical(mode) => {
-                self.run_ui_api(
-                    rbs_api::Command::CanvasAutoLayout(rbs_api::request::CanvasAutoLayout {
-                        canvas: OutputCanvas::Vertical,
-                        mode,
-                        scene: None,
-                    }),
-                    notify,
-                );
-            }
-            Command::SetVerticalSize(size) => {
-                self.run_ui_api(
-                    rbs_api::Command::CanvasSetVerticalSize(rbs_api::request::SetVerticalSize {
-                        width: size.width,
-                        height: size.height,
-                    }),
-                    notify,
-                );
-            }
-            Command::SetMasterVolume { volume } => {
-                self.run_ui_api(
-                    rbs_api::Command::CanvasSetMasterVolume(rbs_api::request::SetMasterVolume {
-                        volume,
-                    }),
-                    notify,
-                );
-            }
-            Command::SetMasterMuted { muted } => {
-                self.run_ui_api(
-                    rbs_api::Command::CanvasSetMasterMuted(rbs_api::request::SetMasterMuted {
-                        muted,
-                    }),
-                    notify,
-                );
-            }
-            Command::SetLoudnessShown(on) => {
-                self.run_ui_api(
-                    rbs_api::Command::LoudnessSetEnabled(rbs_api::request::SetLoudnessEnabled {
-                        on,
-                    }),
-                    notify,
-                );
-            }
-            Command::ResetLoudness => {
-                self.run_ui_api(rbs_api::Command::LoudnessReset, notify);
-            }
-            Command::SetLoudnessSettings {
-                target,
-                true_peak_limit,
-            } => {
-                self.run_ui_api(
-                    rbs_api::Command::SettingsSet(rbs_api::request::SettingsPatch {
-                        loudness: Some(api::LoudnessSettings {
-                            target,
-                            true_peak_limit,
-                        }),
-                        ..Default::default()
-                    }),
-                    notify,
-                );
-            }
-            Command::SetSourceMonitor { id, monitor } => {
-                let done = self.set_source_monitor(id, monitor);
-                self.answer_live(done, notify);
-            }
-            Command::SetMonitorSolo(sources) => {
-                let raw: Vec<u32> = sources.iter().map(|s| s.get()).collect();
-                if let Err(e) = self.set_monitor_solo(&raw) {
-                    notify(Update::Error(e.text().to_owned()));
-                }
-            }
-            Command::SetMonitorDevice(device) => {
-                if let Err(e) = self.set_monitor_device(device) {
-                    notify(Update::Error(e.text().to_owned()));
-                }
-            }
-            Command::SetMonitorVolume(volume) => {
-                if let Err(e) = self.set_monitor_volume(volume) {
-                    notify(Update::Error(e.text().to_owned()));
-                }
-            }
-            Command::ListMonitorDevices => {
-                notify(Update::MonitorDevices(self.api_monitor_devices().devices));
-            }
-            Command::AddFilter { source, type_id } => {
-                let done = self
-                    .add_filter(source, &type_id, &std::collections::BTreeMap::new())
-                    .map(|_| true);
-                self.answer(done, notify);
-            }
-            Command::AddVoiceChain(source) => {
-                let done = self.add_voice_chain(source);
-                self.answer(done, notify);
-            }
-            Command::AddSample { sample } => {
-                self.run_ui_api(
-                    rbs_api::Command::SourceAddSample(rbs_api::request::AddSample { sample }),
-                    notify,
-                );
-            }
-            Command::AddStamp { kind } => match self.add_stamp(kind) {
-                Ok(_) => self.apply(notify),
-                Err(e) => notify(Update::Error(e.text().to_owned())),
-            },
-            Command::AddImage { path } => match self.add_image_file(&path) {
-                Ok(_) => self.apply(notify),
-                Err(e) => notify(Update::Error(e.text().to_owned())),
-            },
-            Command::AddMedia { path } => match self.add_media_file(&path) {
-                Ok(_) => self.apply(notify),
-                Err(e) => notify(Update::Error(e.text().to_owned())),
-            },
-            Command::SetStingerFile(path) => match self.set_stinger_file(&path) {
-                Ok(_) => self.apply(notify),
-                Err(e) => notify(Update::Error(e.text().to_owned())),
-            },
-            Command::FitTextBox(id) => {
-                let done = self.fit_text_box(id);
-                self.answer(done, notify);
-            }
-            Command::ListTextFonts => self.list_text_fonts(notify),
-            Command::TextTimer { source, action } => match self.studio.text_timer(source, action) {
-                Ok(_) => self.save_text_timers(),
-                Err(rbs_record::TimerRefused::NotATimer) => notify(Update::Error(
-                    "Only a countdown for a length or a stopwatch has a timer.".into(),
-                )),
-                Err(_) => {}
-            },
-            Command::AddText { text } => match self.add_text(None, &text, false) {
-                Ok(_) => self.apply(notify),
-                Err(e) => notify(Update::Error(e.text().to_owned())),
-            },
-            // Without its engine Browser leads to Settings › Add-ons and adds nothing
-            // (ADR-0145 decision 8).
-            Command::AddBrowser { .. } if self.browser_needs_engine() => {
-                notify(Update::OpenAddOn(crate::add_ons::BROWSER_ENGINE.to_owned()));
-            }
-            Command::AddBrowser { url } => match self.add_browser_page(&url) {
-                Ok(_) => self.apply(notify),
-                Err(e) => notify(Update::Error(e.text().to_owned())),
-            },
-            Command::SetSourceFill { id, color } => match self.set_source_fill(id, &color) {
-                Ok(_) => self.apply(notify),
-                Err(e) => notify(Update::Error(e.text().to_owned())),
-            },
-            Command::SetSourceFilled { id, on } => match self.set_source_filled(id, on) {
-                Ok(true) => self.apply(notify),
-                Ok(false) => {}
-                Err(e) => notify(Update::Error(e.text().to_owned())),
-            },
-            Command::ApplyLook { source, look } => {
-                self.run_ui_api(
-                    rbs_api::Command::LookApply(rbs_api::request::ApplyLook {
-                        source: source.get(),
-                        look,
-                    }),
-                    notify,
-                );
-            }
-            Command::RemoveFilter(filter) => {
-                let done = self.remove_filter(filter).map(|()| true);
-                self.answer(done, notify);
-            }
-            Command::MoveFilter { filter, index } => {
-                let done = self.move_filter(filter, index);
-                self.answer(done, notify);
-            }
-            Command::SetFilterEnabled { filter, enabled } => {
-                let done = self.set_filter_enabled(filter, enabled);
-                self.answer(done, notify);
-            }
-            Command::SetFilterValues { filter, values } => {
-                let done = self.set_filter_values(filter, values);
-                // An unchanged release still puts the collection's values back on air.
-                if matches!(done, Ok(false)) {
-                    self.studio.restore_filter(filter);
-                }
-                self.answer(done, notify);
-            }
-            Command::PreviewFilter { filter, values } => {
-                self.studio.preview_filter(filter, values);
-            }
-            Command::RestoreFilter(filter) => {
-                self.studio.restore_filter(filter);
-            }
-            Command::OpenSyncMeasure(id) => self.open_sync_measure_window(id, notify),
-            Command::StartSyncMeasure(reference) => {
-                self.start_sync_measure_window(reference, notify);
-            }
-            Command::CloseSyncMeasure => self.close_sync_measure_window(notify),
-            Command::ApplySyncToDeviceSources(id) => {
-                let done = self.apply_to_device_sources(id).map(|n| n > 0);
-                self.answer_live(done, notify);
-            }
-            Command::SetSourceSyncOffset { id, offset_ms } => {
-                let done = self.set_source_sync_offset(id, offset_ms);
-                self.answer_live(done, notify);
-            }
-            Command::RetargetSource { id, target } => {
-                let done = self.retarget_source(id, &target);
-                self.answer(done, notify);
-            }
-            Command::GrabThumbnails { kind, rows, max } => self.grab_thumbnails(kind, rows, max),
-            Command::StopThumbnails => {
-                self.thumbs.fetch_add(1, AtomicOrdering::AcqRel);
-            }
-            Command::OpenSourceSettings(id) => match self.source_settings_view(id) {
-                Ok(view) => {
-                    notify(Update::SourceSettings(view));
-                    self.grab_region_preview(id);
-                }
-                Err(e) => notify(Update::Error(e.text().to_owned())),
-            },
-            Command::CloseSourceSettings => {
-                self.region_grabs.fetch_add(1, AtomicOrdering::AcqRel);
-            }
-            Command::SetSourceSettings { id, patch, gesture } => {
-                let done = self.patch_source_settings_in(id, &patch, gesture);
-                self.answer(done, notify);
-            }
-            Command::Media { id, op } => {
-                if let Err(e) = self.media_command(id.get(), op) {
-                    notify(Update::Error(e.text().to_owned()));
-                }
-                self.media_sent = None;
-            }
-            Command::ReloadSource(id) => match self.reload_source(id) {
-                Ok(Reload::Retargeted) => self.answer(Ok(true), notify),
-                Ok(Reload::Restarted(done)) => self.answer_live(Ok(done), notify),
-                Err(e) => self.answer_live(Err(e), notify),
-            },
-            Command::ForgetBrowserSignIn(id) => {
-                let done = self
-                    .forget_sign_in(id, true)
-                    .map(|()| true)
-                    .map_err(|e| Refusal::Conflict(e.message));
-                self.answer(done, notify);
-            }
-            Command::BrowserControl { id, message } => {
-                let browser = self
-                    .collection
-                    .source(id)
-                    .is_some_and(|s| s.type_id.as_str() == types::BROWSER_SOURCE);
-                if !browser {
-                    let e = Refusal::NotFound(format!("There is no browser source {}.", id.get()));
-                    self.answer_live(Err(e), notify);
-                } else if self.studio.browser_control(id, &message) {
-                    self.answer_live(Ok(true), notify);
-                } else if matches!(message, rbs_browser_ipc::control::Control::Reload { .. }) {
-                    match self.reload_source(id) {
-                        Ok(Reload::Retargeted) => self.answer(Ok(true), notify),
-                        Ok(Reload::Restarted(done)) => self.answer_live(Ok(done), notify),
-                        Err(e) => self.answer_live(Err(e), notify),
-                    }
-                } else {
-                    // No page runs: nothing to run the script in.
-                    self.answer_live(Ok(false), notify);
-                }
-            }
-            Command::SetCompanionAudio { source, on } => {
-                let has = self
-                    .collection
-                    .sources()
-                    .any(|s| s.companion_of() == Some(source));
-                let done = match (on, has) {
-                    (true, false) => self.add_companion(source, false).map(|_| true),
-                    (false, true) => self.remove_companion(source).map(|()| true),
-                    _ => Ok(false),
-                };
-                self.answer(done, notify);
-            }
-            Command::RenameSource { id, name } => {
-                let done = self.rename_source(id, &name);
-                self.answer(done, notify);
-            }
-            Command::SetGlide {
-                duration_ms,
-                easing,
-            } => {
-                let done = self.set_glide(duration_ms, easing);
-                self.answer(done, notify);
-            }
-            Command::SetTransition(t) => {
-                let done = self.put_transition(t);
-                self.answer(done, notify);
-            }
-            Command::SetSourceActivity { id, run, on_return } => {
-                let done = self.set_source_choice(id, run, on_return);
-                self.answer(done, notify);
-            }
-            Command::SetSourceGlide {
-                id,
-                custom,
-                duration_ms,
-                easing,
-            } => {
-                let done = self.set_source_glide(id, custom, duration_ms, easing);
-                self.answer(done, notify);
-            }
-            Command::AddExistingSource(id) => {
-                let done = self.add_existing(id).map(|_| true);
-                self.answer(done, notify);
-            }
-            Command::AddScene(name) => {
-                let done = self.add_scene(name.as_deref()).map(|_| true);
-                self.answer(done, notify);
-            }
-            Command::DuplicateScene(id) => {
-                let done = self.duplicate_scene(id).map(|_| true);
-                self.answer(done, notify);
-            }
-            Command::DuplicateSceneWithCopies(id) => {
-                let p = rbs_api::request::DuplicateScene {
-                    scene: id.get(),
-                    sources: rbs_api::types::DuplicateSources::Copied,
-                };
-                let done = self.api_scene_duplicate(p, notify);
-                self.answer_api(done, notify);
-            }
-            Command::DuplicateSource(id) => {
-                let done = self.api_source_duplicate(in_scene(id), notify);
-                self.answer_api(done, notify);
-            }
-            Command::CopyAttributes(id) => {
-                let done = self.api_copy_attributes(in_scene(id), notify);
-                self.answer_api(done, notify);
-            }
-            Command::OpenAttributes { source, paste } => {
-                match self.attributes_view(source, paste) {
-                    Ok(view) => notify(Update::Attributes(view)),
-                    Err(e) => notify(Update::Error(e.text().to_owned())),
-                }
-            }
-            Command::ResetSource { source, groups } => {
-                let p = rbs_api::request::ResetSource {
-                    source: source.get(),
-                    scene: None,
-                    canvas: OutputCanvas::default(),
-                    groups: Some(groups.iter().map(|g| g.id().to_owned()).collect()),
-                };
-                let done = self.api_source_reset(p, notify);
-                self.answer_api(done, notify);
-            }
-            Command::PasteAttributes {
-                items,
-                groups,
-                append,
-            } => {
-                let p = rbs_api::request::PasteAttributes {
-                    items: items.iter().map(|i| i.get()).collect(),
-                    groups: groups.iter().map(|g| g.id().to_owned()).collect(),
-                    filters: if append {
-                        rbs_api::types::FilterPasteMode::Append
-                    } else {
-                        rbs_api::types::FilterPasteMode::Replace
-                    },
-                    canvas: OutputCanvas::default(),
-                };
-                let done = self.api_paste_attributes(p, notify);
-                self.answer_api(done, notify);
-            }
-            Command::RemoveScene(id) => {
-                let done = self.remove_scene(id).map(|()| true);
-                self.answer(done, notify);
-            }
-            Command::RenameScene { id, name } => {
-                let done = self.rename_scene(id, &name);
-                self.answer(done, notify);
-            }
-            Command::SetSceneTransition { id, transition } => {
-                let done = self.set_scene_transition(id, transition);
-                self.answer(done, notify);
-            }
-            Command::SwitchScene(id) => {
-                let done = if self.preview().is_some() {
-                    self.set_preview_scene(id)
-                } else {
-                    self.switch_scene(id)
-                };
-                self.answer(done, notify);
-            }
-            Command::SetStudioMode(on) => {
-                let done = self.set_studio_mode(on);
-                self.answer(done, notify);
-            }
-            Command::Transition => {
-                let done = self.transition();
-                self.answer(done, notify);
-            }
-            Command::TransitionProgress(t) => {
-                if self.preview().is_some() {
-                    self.pending_progress = Some(t.clamp(0.0, 1.0));
-                }
-            }
-            Command::Rehearse => {
-                if self.preview().is_some()
-                    && let Err(e) = self.studio.rehearse(&self.adapters.sources)
-                {
-                    notify(Update::Error(format!("The rehearsal could not start: {e}")));
-                }
-            }
-            Command::SetSwapAfterTransition(on) => self.swap_after_transition = on,
-            Command::SetSourceVisible { id, visible } => {
-                match self.set_source_visible(id, visible) {
-                    Ok(true) => self.apply(notify),
-                    Ok(false) => {}
-                    Err(e) => notify(Update::Error(e)),
-                }
-            }
-            Command::SetSourceBox {
-                seq,
-                gesture,
-                id,
-                position,
-                size,
-                canvas: OutputCanvas::Vertical,
-            } => {
-                let ok = match self.set_vertical_box(id, position, size, gesture) {
-                    Ok(changed) => {
-                        if changed {
-                            self.apply(notify);
-                        }
-                        true
-                    }
-                    Err(e) => {
-                        notify(Update::Error(e.text().to_owned()));
-                        false
-                    }
-                };
-                notify(Update::BoxPlaced { seq, ok });
-            }
-            Command::SetSourceBox {
-                seq,
-                gesture,
-                id,
-                position,
-                size,
-                canvas: OutputCanvas::Main,
-            } => {
-                // The same handler a remote `item.set_box` runs. The window still
-                // matches the answer by `seq`, including a refusal.
-                let ok = self.run_ui_api(
-                    rbs_api::Command::ItemSetBox(rbs_api::request::SetItemBox {
-                        source: id.get(),
-                        position,
-                        size,
-                        gesture,
-                        seq,
-                        canvas: OutputCanvas::Main,
-                    }),
-                    notify,
-                );
-                notify(Update::BoxPlaced { seq, ok });
-            }
-            Command::SetSourceCrop {
-                seq,
-                gesture,
-                id,
-                crop,
-                keep_scale,
-                canvas,
-            } => {
-                let [l, t, r, b] = crop;
-                let edit = self
-                    .item_of(id)
-                    .map_err(CropRefusal::NotFound)
-                    .map(|(_, item)| item.id)
-                    .and_then(|item| {
-                        self.set_item_crop(item, Crop::new(l, t, r, b), keep_scale, gesture, canvas)
-                    });
-                let ok = match edit {
-                    Ok(true) => {
-                        self.apply(notify);
-                        true
-                    }
-                    Ok(false) => true,
-                    Err(e) => {
-                        notify(Update::Error(e.text()));
-                        false
-                    }
-                };
-                notify(Update::CropPlaced { seq, ok });
-            }
-            Command::TransformSource {
-                id,
-                op,
-                gesture,
-                canvas,
-            } => {
-                let edit = match self.item_of(id).map(|(_, item)| item.id) {
-                    Ok(item) => self.transform_item(item, op, gesture, canvas),
-                    Err(t) => Err(Refusal::NotFound(t)),
-                };
-                match edit {
-                    Ok(true) => self.apply(notify),
-                    Ok(false) => {}
-                    Err(e) => notify(Update::Error(e.text().into())),
-                }
-            }
-            Command::SetSourceRegion { id, region } => match self.set_source_region(id, region) {
-                Ok(true) => self.apply(notify),
-                Ok(false) => {}
-                Err(e) => notify(Update::Error(e.text())),
-            },
-            Command::SetRecordSeparately { id, patch } => {
-                match self.set_record_separately(id, patch) {
-                    Ok(true) => self.apply(notify),
-                    Ok(false) => {}
-                    Err(e) => notify(Update::Error(e.text().into())),
-                }
-            }
-            Command::SetSourceCaptureRegion { id, region } => {
-                match self.set_capture_region(id, region) {
-                    Ok(true) => self.apply(notify),
-                    Ok(false) => {}
-                    Err(e) => notify(Update::Error(e.text().into())),
-                }
-            }
-            Command::SetDisplayChrome { id, chrome } => match self.set_display_chrome(id, chrome) {
-                Ok(true) => self.apply(notify),
-                Ok(false) => {}
-                Err(e) => notify(Update::Error(e.text().into())),
-            },
-            Command::FitDisplayChrome(id) => match self.fit_display_chrome(id) {
-                Ok(true) => self.apply(notify),
-                Ok(false) => {}
-                Err(e) => notify(Update::Error(e.text().into())),
-            },
-            Command::ResetDisplayChrome(id) => match self.reset_display_chrome(id) {
-                Ok(true) => self.apply(notify),
-                Ok(false) => {}
-                Err(e) => notify(Update::Error(e.text().into())),
-            },
-            Command::SetItemShowFor { item, show_for_ms } => {
-                match self.set_item_show_for(item, show_for_ms) {
-                    Ok(true) => self.apply(notify),
-                    Ok(false) => {}
-                    Err(e) => notify(Update::Error(e.text().into())),
-                }
-            }
-            Command::ShowItem(item) => match self.show_item(item) {
-                Ok(true) => self.apply(notify),
-                Ok(false) => {}
-                Err(e) => notify(Update::Error(e.text().into())),
-            },
-            Command::SetSourceStyle {
-                gesture,
-                id,
-                style,
-                canvas,
-            } => {
-                let edit = self
-                    .item_of(id)
-                    .map(|(_, item)| item.id)
-                    .and_then(|item| self.set_item_style(item, style, gesture, canvas));
-                match edit {
-                    Ok(true) => self.apply(notify),
-                    Ok(false) => {}
-                    Err(e) => notify(Update::Error(e)),
-                }
-            }
-            Command::SetSourceScroll {
-                gesture,
-                id,
-                scroll,
-                canvas,
-            } => {
-                let edit = if scroll.is_some_and(|s| !s.is_valid()) {
-                    Err(SCROLL_ERROR.to_owned())
-                } else {
-                    self.item_of(id)
-                        .map(|(_, item)| item.id)
-                        .and_then(|item| self.set_item_scroll(item, scroll, gesture, canvas))
-                };
-                match edit {
-                    Ok(true) => self.apply(notify),
-                    Ok(false) => {}
-                    Err(e) => notify(Update::Error(e)),
-                }
-            }
-            Command::ScrollLive {
-                id,
-                canvas,
-                control,
-            } => {
-                let target = self.item_of(id).map(|(_, item)| item.id).and_then(|item| {
-                    self.edit_canvas(canvas)
-                        .map(|c| (item, c))
-                        .map_err(|e| e.text().to_owned())
-                });
-                match target {
-                    Ok((item, c)) => match self.studio.scroll_control(item, c, control) {
-                        Ok(_) => self.publish(notify),
-                        Err(ScrollRefused::NoScroll) => notify(Update::Error(
-                            "This source does not scroll on that canvas.".into(),
-                        )),
-                        Err(_) => notify(Update::Error(
-                            "This source is not on a scene a canvas shows, so its scroll is not running."
-                                .into(),
-                        )),
-                    },
-                    Err(e) => notify(Update::Error(e)),
-                }
-            }
-            Command::StartRecording(r) => self.record_asked(OutputCanvas::Main, &r, notify),
-            Command::StartVerticalRecording(r) => {
-                self.record_asked(OutputCanvas::Vertical, &r, notify);
-            }
-            Command::StopRecording => {
-                self.end_recording(OutputCanvas::Main, notify);
-                self.publish(notify);
-            }
-            Command::StopVerticalRecording => {
-                self.end_recording(OutputCanvas::Vertical, notify);
-                self.publish(notify);
-            }
-            Command::SetVerticalProfile(profile) => self.vertical_profile = profile,
-            Command::SetVerticalStreamProfile(profile) => {
-                self.vertical_stream_profile = profile;
-                self.availability_changed();
-            }
-            Command::SetStreamDestinations(destinations, unloaded) => {
-                self.destinations = destinations;
-                self.destinations_unloaded = unloaded;
-                self.availability_changed();
-            }
-            Command::SetVerticalFlags(flags) => {
-                if flags != self.vertical_flags {
-                    self.vertical_flags = flags;
-                    self.settings_changed();
-                }
-            }
-            Command::SetSeparateFiles(files) => {
-                self.separate_files = files.enabled;
-                self.limit_policy = files.limit_policy();
-            }
-            Command::SetVerticalPicture(on) => {
-                // Turning the picture off cannot leave anything to report: the node
-                // goes with the next update at the latest.
-                if let Err(why) = self.set_vertical_picture(on)
-                    && on
-                {
-                    notify(Update::VerticalPictureFailed);
-                    notify(Update::Error(why));
-                }
-                self.publish(notify);
-            }
-            Command::OpenProjector { id, canvas } => {
-                self.open_projector(id, canvas, notify);
-                self.publish(notify);
-            }
-            Command::OpenInteract(source) => self.open_interact(source, notify),
-            Command::CloseInteract(source) => {
-                self.close_interact(source);
-                self.publish(notify);
-            }
-            Command::InteractInput { source, event } => self.interact_input(source, event),
-            Command::CloseProjector(id) => {
-                self.close_projector(id);
-                self.publish(notify);
-            }
-            Command::SetCanvas { size, fps } => {
-                if let Err(why) = self.change_canvas(size, fps, notify) {
-                    notify(Update::Error(why));
-                }
-            }
-            Command::SetProfile(profile) => {
-                if profile != self.profile {
-                    self.profile = profile;
-                    self.settings_changed();
-                }
-            }
-            Command::StartStream(r) => self.stream_asked(OutputCanvas::Main, &r, notify),
-            Command::StartVerticalStream(r) => {
-                self.stream_asked(OutputCanvas::Vertical, &r, notify);
-            }
-            Command::EndStream => {
-                self.end_stream_asked(OutputCanvas::Main, notify);
-                self.publish(notify);
-            }
-            Command::EndVerticalStream => {
-                self.end_stream_asked(OutputCanvas::Vertical, notify);
-                self.publish(notify);
-            }
-            Command::StartVirtualCamera { width, height, fps } => {
-                // An API client started it first: show the camera that runs, no error.
-                if self.camera.is_some() {
-                    notify(Update::VirtualCamera(self.camera_status()));
-                } else {
-                    let settings = VirtualCameraSettings::new(width, height, fps);
-                    let _ = self.start_camera_asked(settings, notify, true);
-                }
-            }
-            Command::StopVirtualCamera => self.stop_camera(notify),
-            Command::SetReplay(setup) => {
-                self.replay.setup = setup;
-                self.replay_changed(notify);
-            }
-            Command::ArmReplay => {
-                if let Err(why) = self.arm_replay(notify) {
-                    notify(Update::Error(why));
-                }
-            }
-            Command::DisarmReplay => self.disarm_replay(notify),
-            Command::AddMarker => {
-                self.run_ui_api(
-                    rbs_api::Command::MarkerAdd(rbs_api::request::MarkerAdd::default()),
-                    notify,
-                );
-            }
-            Command::RemoveMarkers(placed) => {
-                for (canvas, index) in placed {
-                    self.run_ui_api(
-                        rbs_api::Command::MarkerRemove(rbs_api::request::MarkerRemove {
-                            canvas,
-                            index,
-                        }),
-                        notify,
-                    );
-                }
-            }
-            Command::PauseRecording => {
-                let command = rbs_api::Command::RecordPauseToggle(rbs_api::request::OnCanvases {
-                    canvas: Some(api::OutputTarget::All),
-                });
-                match rbs_crash::contain(|| ApiTarget { host: self, notify }.run(command)) {
-                    Ok(Ok(_)) => {}
-                    // The window's toast says it in a sentence of its own.
-                    Ok(Err(e)) => notify(Update::Error(format!(
-                        "The recording could not pause or resume: {}.",
-                        e.message
-                    ))),
-                    Err(_) => {
-                        self.caught = true;
-                        notify(Update::Error(rbs_crash::CAUGHT_TEXT.to_owned()));
-                    }
-                }
-            }
-            Command::HoldStream | Command::Break => {
-                let (command, what) = match c {
-                    Command::HoldStream => (
-                        rbs_api::Command::StreamHoldToggle(rbs_api::request::StreamHold {
-                            canvas: Some(api::OutputTarget::All),
-                            ..rbs_api::request::StreamHold::default()
-                        }),
-                        "The stream could not hold or resume",
-                    ),
-                    _ => (
-                        rbs_api::Command::OutputBreakToggle,
-                        "The break could not start or end",
-                    ),
-                };
-                match rbs_crash::contain(|| ApiTarget { host: self, notify }.run(command)) {
-                    Ok(Ok(_)) => {}
-                    Ok(Err(e)) => notify(Update::Error(format!("{what}: {}.", e.message))),
-                    Err(_) => {
-                        self.caught = true;
-                        notify(Update::Error(rbs_crash::CAUGHT_TEXT.to_owned()));
-                    }
-                }
-            }
-            Command::SaveReplay { seconds } => {
-                if let Err(why) = self.save_replay(seconds) {
-                    notify(Update::ReplaySaved(Err(why)));
-                }
-            }
-            Command::SetVirtualCamera(setup) => {
-                self.camera_setup = Some(setup);
-                self.camera_changed();
-            }
-            Command::SetStreamProfile(profile) => {
-                if self.stream_profile.as_ref() != Some(&profile) {
-                    self.stream_profile = Some(profile);
-                    self.settings_changed();
-                    self.availability_changed();
-                }
-            }
-            Command::SaveStreamKey(key) => {
-                let result = self.save_key(OutputCanvas::Main, key.as_ref());
-                notify(Update::StreamKey(result));
-            }
-            Command::SaveVerticalStreamKey(key) => {
-                let result = self.save_key(OutputCanvas::Vertical, key.as_ref());
-                notify(Update::VerticalStreamKey(result));
-            }
-            Command::StartDestination(id) => {
-                self.run_ui_api(
-                    rbs_api::Command::StreamDestinationStart(rbs_api::request::DestinationRef {
-                        id,
-                    }),
-                    notify,
-                );
-            }
-            Command::StopDestination(id) => {
-                self.run_ui_api(
-                    rbs_api::Command::StreamDestinationStop(rbs_api::request::DestinationRef {
-                        id,
-                    }),
-                    notify,
-                );
-            }
-            Command::SaveDestinationKey(id, key) => {
-                let account = crate::stream_destinations::key_account(&self.key_account, id);
-                let result = match &key {
-                    Some(k) => self.keys.write(&account, k).map(|()| true),
-                    None => self.keys.remove(&account).map(|()| false),
-                }
-                .map_err(|e| format!("{} refused the stream key: {e}", self.keys.place()));
-                notify(Update::DestinationKey(id, result));
-            }
-            Command::SetKeyAccount(account) => self.key_account = account,
-            Command::SaveImportedKey(account, key) => {
-                if let Err(e) = self.keys.write(&account, &key) {
-                    notify(Update::Error(format!(
-                        "The imported stream key could not be saved in {}: {e}. Enter it in Settings, Stream.",
-                        self.keys.place()
-                    )));
-                }
-            }
-            Command::RemoveStreamKey(account) => {
-                if let Err(e) = self.keys.remove(&account) {
-                    notify(Update::Error(format!(
-                        "The deleted output profile's stream key could not be removed from {}: {e}",
-                        self.keys.place()
-                    )));
-                }
-            }
-            Command::SwitchCollection {
-                seq,
-                collection,
-                autosave,
-            } => {
-                // Answered also after a caught panic, so the UI's switch, and a control
-                // API switch waiting on it, end; the round then recovers the host.
-                let result =
-                    rbs_crash::contain(|| self.switch_collection(*collection, autosave, notify))
-                        .unwrap_or_else(|_| {
-                            self.caught = true;
-                            Err(rbs_crash::CAUGHT_TEXT.to_owned())
-                        });
-                notify(Update::CollectionSwitched { seq, result });
-            }
-            Command::SetLibrary {
-                profiles,
-                collections,
-                answered,
-            } => {
-                self.library = Some((profiles, collections));
-                if answered.is_some() && answered == self.switch_pending {
-                    self.switch_pending = None;
-                }
-            }
+            Command::ListTargets(..)
+            | Command::AddSourceWithAudio { .. }
+            | Command::AddSource { .. }
+            | Command::ReadPermissions
+            | Command::ListAddOns
+            | Command::AddOn { .. }
+            | Command::RequestPermission(..)
+            | Command::DeleteSource(..)
+            | Command::RemoveFromScene(..)
+            | Command::SetGlobal { .. }
+            | Command::RemoveGlobal(..)
+            | Command::AddGlobalSource { .. }
+            | Command::UndoDelete
+            | Command::Undo
+            | Command::Redo
+            | Command::MoveSource { .. }
+            | Command::MoveSourceTo { .. }
+            | Command::MoveScene { .. }
+            | Command::MoveSceneTo { .. }
+            | Command::SetSourceActive { .. }
+            | Command::SetSourceLocked { .. }
+            | Command::SetSourceVolume { .. }
+            | Command::SetSourceMuted { .. }
+            | Command::SetMetersUi(..)
+            | Command::EnsureEncoders
+            | Command::SetSceneOwnLevels { .. }
+            | Command::ResetSceneLevel { .. }
+            | Command::SetSourceMixerHidden { .. } => self.source_command(c, notify),
+            Command::AddVerticalCanvas(..)
+            | Command::RemoveVerticalCanvas
+            | Command::AutoLayoutVertical(..)
+            | Command::SetVerticalSize(..)
+            | Command::SetMasterVolume { .. }
+            | Command::SetMasterMuted { .. }
+            | Command::SetLoudnessShown(..)
+            | Command::ResetLoudness
+            | Command::SetLoudnessSettings { .. }
+            | Command::SetSourceMonitor { .. }
+            | Command::SetMonitorSolo(..)
+            | Command::SetMonitorDevice(..)
+            | Command::SetMonitorVolume(..)
+            | Command::ListMonitorDevices => self.canvas_and_mix_command(c, notify),
+            Command::AddFilter { .. }
+            | Command::AddVoiceChain(..)
+            | Command::AddSample { .. }
+            | Command::AddStamp { .. }
+            | Command::AddImage { .. }
+            | Command::AddMedia { .. }
+            | Command::SetStingerFile(..)
+            | Command::FitTextBox(..)
+            | Command::ListTextFonts
+            | Command::TextTimer { .. }
+            | Command::AddText { .. }
+            | Command::AddBrowser { .. }
+            | Command::SetSourceFill { .. }
+            | Command::SetSourceFilled { .. }
+            | Command::ApplyLook { .. }
+            | Command::RemoveFilter(..)
+            | Command::MoveFilter { .. }
+            | Command::SetFilterEnabled { .. }
+            | Command::SetFilterValues { .. }
+            | Command::PreviewFilter { .. }
+            | Command::RestoreFilter(..)
+            | Command::OpenSyncMeasure(..)
+            | Command::StartSyncMeasure(..)
+            | Command::CloseSyncMeasure
+            | Command::ApplySyncToDeviceSources(..)
+            | Command::SetSourceSyncOffset { .. }
+            | Command::RetargetSource { .. }
+            | Command::GrabThumbnails { .. }
+            | Command::StopThumbnails
+            | Command::OpenSourceSettings(..)
+            | Command::CloseSourceSettings
+            | Command::SetSourceSettings { .. }
+            | Command::Media { .. }
+            | Command::ReloadSource(..)
+            | Command::ForgetBrowserSignIn(..)
+            | Command::BrowserControl { .. }
+            | Command::SetCompanionAudio { .. } => self.source_edit_command(c, notify),
+            Command::RenameSource { .. }
+            | Command::SetGlide { .. }
+            | Command::SetTransition(..)
+            | Command::SetSourceActivity { .. }
+            | Command::SetSourceGlide { .. }
+            | Command::AddExistingSource(..)
+            | Command::AddScene(..)
+            | Command::DuplicateScene(..)
+            | Command::DuplicateSceneWithCopies(..)
+            | Command::DuplicateSource(..)
+            | Command::CopyAttributes(..)
+            | Command::OpenAttributes { .. }
+            | Command::ResetSource { .. }
+            | Command::PasteAttributes { .. }
+            | Command::RemoveScene(..)
+            | Command::RenameScene { .. }
+            | Command::SetSceneTransition { .. }
+            | Command::SwitchScene(..)
+            | Command::SetStudioMode(..)
+            | Command::Transition
+            | Command::TransitionProgress(..)
+            | Command::Rehearse
+            | Command::SetSwapAfterTransition(..) => self.scene_command(c, notify),
+            Command::SetSourceVisible { .. }
+            | Command::SetSourceBox { .. }
+            | Command::SetSourceCrop { .. }
+            | Command::TransformSource { .. } => self.item_command(c, notify),
+            Command::SetSourceRegion { .. }
+            | Command::SetRecordSeparately { .. }
+            | Command::SetSourceCaptureRegion { .. }
+            | Command::SetDisplayChrome { .. }
+            | Command::FitDisplayChrome(..)
+            | Command::ResetDisplayChrome(..)
+            | Command::SetItemShowFor { .. }
+            | Command::ShowItem(..)
+            | Command::SetSourceStyle { .. }
+            | Command::SetSourceScroll { .. }
+            | Command::ScrollLive { .. } => self.item_display_command(c, notify),
+            Command::StartRecording(..)
+            | Command::StartVerticalRecording(..)
+            | Command::StopRecording
+            | Command::StopVerticalRecording
+            | Command::SetVerticalProfile(..)
+            | Command::SetVerticalStreamProfile(..)
+            | Command::SetStreamDestinations(..)
+            | Command::SetVerticalFlags(..)
+            | Command::SetSeparateFiles(..)
+            | Command::SetVerticalPicture(..)
+            | Command::OpenProjector { .. }
+            | Command::OpenInteract(..)
+            | Command::CloseInteract(..)
+            | Command::InteractInput { .. }
+            | Command::CloseProjector(..)
+            | Command::SetCanvas { .. }
+            | Command::SetProfile(..)
+            | Command::StartStream(..)
+            | Command::StartVerticalStream(..)
+            | Command::EndStream
+            | Command::EndVerticalStream
+            | Command::StartVirtualCamera { .. }
+            | Command::StopVirtualCamera
+            | Command::SetReplay(..)
+            | Command::ArmReplay
+            | Command::DisarmReplay
+            | Command::AddMarker
+            | Command::RemoveMarkers(..) => self.output_command(c, notify),
+            Command::PauseRecording
+            | Command::HoldStream
+            | Command::Break
+            | Command::SaveReplay { .. }
+            | Command::SetVirtualCamera(..)
+            | Command::SetStreamProfile(..)
+            | Command::SaveStreamKey(..)
+            | Command::SaveVerticalStreamKey(..)
+            | Command::StartDestination(..)
+            | Command::StopDestination(..)
+            | Command::SaveDestinationKey(..)
+            | Command::SetKeyAccount(..)
+            | Command::SaveImportedKey(..)
+            | Command::RemoveStreamKey(..)
+            | Command::SwitchCollection { .. }
+            | Command::SetLibrary { .. } => self.stream_command(c, notify),
         }
     }
 

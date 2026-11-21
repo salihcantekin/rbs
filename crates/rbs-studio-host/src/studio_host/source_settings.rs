@@ -736,4 +736,199 @@ impl Host {
         self.history.record(EditKind::Region, &name, 0, steps);
         Ok(true)
     }
+
+    /// The window commands of this concern, routed by `Host::command`.
+    pub(super) fn source_edit_command(&mut self, c: Command, notify: &dyn Fn(Update)) {
+        match c {
+            Command::AddFilter { source, type_id } => {
+                let done = self
+                    .add_filter(source, &type_id, &std::collections::BTreeMap::new())
+                    .map(|_| true);
+                self.answer(done, notify);
+            }
+            Command::AddVoiceChain(source) => {
+                let done = self.add_voice_chain(source);
+                self.answer(done, notify);
+            }
+            Command::AddSample { sample } => {
+                self.run_ui_api(
+                    rbs_api::Command::SourceAddSample(rbs_api::request::AddSample { sample }),
+                    notify,
+                );
+            }
+            Command::AddStamp { kind } => match self.add_stamp(kind) {
+                Ok(_) => self.apply(notify),
+                Err(e) => notify(Update::Error(e.text().to_owned())),
+            },
+            Command::AddImage { path } => match self.add_image_file(&path) {
+                Ok(_) => self.apply(notify),
+                Err(e) => notify(Update::Error(e.text().to_owned())),
+            },
+            Command::AddMedia { path } => match self.add_media_file(&path) {
+                Ok(_) => self.apply(notify),
+                Err(e) => notify(Update::Error(e.text().to_owned())),
+            },
+            Command::SetStingerFile(path) => match self.set_stinger_file(&path) {
+                Ok(_) => self.apply(notify),
+                Err(e) => notify(Update::Error(e.text().to_owned())),
+            },
+            Command::FitTextBox(id) => {
+                let done = self.fit_text_box(id);
+                self.answer(done, notify);
+            }
+            Command::ListTextFonts => self.list_text_fonts(notify),
+            Command::TextTimer { source, action } => match self.studio.text_timer(source, action) {
+                Ok(_) => self.save_text_timers(),
+                Err(rbs_record::TimerRefused::NotATimer) => notify(Update::Error(
+                    "Only a countdown for a length or a stopwatch has a timer.".into(),
+                )),
+                Err(_) => {}
+            },
+            Command::AddText { text } => match self.add_text(None, &text, false) {
+                Ok(_) => self.apply(notify),
+                Err(e) => notify(Update::Error(e.text().to_owned())),
+            },
+            // Without its engine Browser leads to Settings › Add-ons and adds nothing
+            // (ADR-0145 decision 8).
+            Command::AddBrowser { .. } if self.browser_needs_engine() => {
+                notify(Update::OpenAddOn(crate::add_ons::BROWSER_ENGINE.to_owned()));
+            }
+            Command::AddBrowser { url } => match self.add_browser_page(&url) {
+                Ok(_) => self.apply(notify),
+                Err(e) => notify(Update::Error(e.text().to_owned())),
+            },
+            Command::SetSourceFill { id, color } => match self.set_source_fill(id, &color) {
+                Ok(_) => self.apply(notify),
+                Err(e) => notify(Update::Error(e.text().to_owned())),
+            },
+            Command::SetSourceFilled { id, on } => match self.set_source_filled(id, on) {
+                Ok(true) => self.apply(notify),
+                Ok(false) => {}
+                Err(e) => notify(Update::Error(e.text().to_owned())),
+            },
+            Command::ApplyLook { source, look } => {
+                self.run_ui_api(
+                    rbs_api::Command::LookApply(rbs_api::request::ApplyLook {
+                        source: source.get(),
+                        look,
+                    }),
+                    notify,
+                );
+            }
+            Command::RemoveFilter(filter) => {
+                let done = self.remove_filter(filter).map(|()| true);
+                self.answer(done, notify);
+            }
+            Command::MoveFilter { filter, index } => {
+                let done = self.move_filter(filter, index);
+                self.answer(done, notify);
+            }
+            Command::SetFilterEnabled { filter, enabled } => {
+                let done = self.set_filter_enabled(filter, enabled);
+                self.answer(done, notify);
+            }
+            Command::SetFilterValues { filter, values } => {
+                let done = self.set_filter_values(filter, values);
+                // An unchanged release still puts the collection's values back on air.
+                if matches!(done, Ok(false)) {
+                    self.studio.restore_filter(filter);
+                }
+                self.answer(done, notify);
+            }
+            Command::PreviewFilter { filter, values } => {
+                self.studio.preview_filter(filter, values);
+            }
+            Command::RestoreFilter(filter) => {
+                self.studio.restore_filter(filter);
+            }
+            Command::OpenSyncMeasure(id) => self.open_sync_measure_window(id, notify),
+            Command::StartSyncMeasure(reference) => {
+                self.start_sync_measure_window(reference, notify);
+            }
+            Command::CloseSyncMeasure => self.close_sync_measure_window(notify),
+            Command::ApplySyncToDeviceSources(id) => {
+                let done = self.apply_to_device_sources(id).map(|n| n > 0);
+                self.answer_live(done, notify);
+            }
+            Command::SetSourceSyncOffset { id, offset_ms } => {
+                let done = self.set_source_sync_offset(id, offset_ms);
+                self.answer_live(done, notify);
+            }
+            Command::RetargetSource { id, target } => {
+                let done = self.retarget_source(id, &target);
+                self.answer(done, notify);
+            }
+            Command::GrabThumbnails { kind, rows, max } => self.grab_thumbnails(kind, rows, max),
+            Command::StopThumbnails => {
+                self.thumbs.fetch_add(1, AtomicOrdering::AcqRel);
+            }
+            Command::OpenSourceSettings(id) => match self.source_settings_view(id) {
+                Ok(view) => {
+                    notify(Update::SourceSettings(view));
+                    self.grab_region_preview(id);
+                }
+                Err(e) => notify(Update::Error(e.text().to_owned())),
+            },
+            Command::CloseSourceSettings => {
+                self.region_grabs.fetch_add(1, AtomicOrdering::AcqRel);
+            }
+            Command::SetSourceSettings { id, patch, gesture } => {
+                let done = self.patch_source_settings_in(id, &patch, gesture);
+                self.answer(done, notify);
+            }
+            Command::Media { id, op } => {
+                if let Err(e) = self.media_command(id.get(), op) {
+                    notify(Update::Error(e.text().to_owned()));
+                }
+                self.media_sent = None;
+            }
+            Command::ReloadSource(id) => match self.reload_source(id) {
+                Ok(Reload::Retargeted) => self.answer(Ok(true), notify),
+                Ok(Reload::Restarted(done)) => self.answer_live(Ok(done), notify),
+                Err(e) => self.answer_live(Err(e), notify),
+            },
+            Command::ForgetBrowserSignIn(id) => {
+                let done = self
+                    .forget_sign_in(id, true)
+                    .map(|()| true)
+                    .map_err(|e| Refusal::Conflict(e.message));
+                self.answer(done, notify);
+            }
+            Command::BrowserControl { id, message } => {
+                let browser = self
+                    .collection
+                    .source(id)
+                    .is_some_and(|s| s.type_id.as_str() == types::BROWSER_SOURCE);
+                if !browser {
+                    let e = Refusal::NotFound(format!("There is no browser source {}.", id.get()));
+                    self.answer_live(Err(e), notify);
+                } else if self.studio.browser_control(id, &message) {
+                    self.answer_live(Ok(true), notify);
+                } else if matches!(message, rbs_browser_ipc::control::Control::Reload { .. }) {
+                    match self.reload_source(id) {
+                        Ok(Reload::Retargeted) => self.answer(Ok(true), notify),
+                        Ok(Reload::Restarted(done)) => self.answer_live(Ok(done), notify),
+                        Err(e) => self.answer_live(Err(e), notify),
+                    }
+                } else {
+                    // No page runs: nothing to run the script in.
+                    self.answer_live(Ok(false), notify);
+                }
+            }
+            Command::SetCompanionAudio { source, on } => {
+                let has = self
+                    .collection
+                    .sources()
+                    .any(|s| s.companion_of() == Some(source));
+                let done = match (on, has) {
+                    (true, false) => self.add_companion(source, false).map(|_| true),
+                    (false, true) => self.remove_companion(source).map(|()| true),
+                    _ => Ok(false),
+                };
+                self.answer(done, notify);
+            }
+            // Routed elsewhere by `Host::command`.
+            _ => {}
+        }
+    }
 }

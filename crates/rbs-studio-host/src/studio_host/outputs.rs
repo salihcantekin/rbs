@@ -627,4 +627,229 @@ impl Host {
             .record(EditKind::Place, &name, gesture, vec![undo]);
         Ok(true)
     }
+
+    /// The window commands of this concern, routed by `Host::command`.
+    pub(super) fn canvas_and_mix_command(&mut self, c: Command, notify: &dyn Fn(Update)) {
+        match c {
+            Command::AddVerticalCanvas(spec) => {
+                let done = self.add_vertical(spec);
+                self.answer_live(done, notify);
+            }
+            Command::RemoveVerticalCanvas => {
+                let done = self.remove_vertical();
+                self.answer_live(done, notify);
+            }
+            Command::AutoLayoutVertical(mode) => {
+                self.run_ui_api(
+                    rbs_api::Command::CanvasAutoLayout(rbs_api::request::CanvasAutoLayout {
+                        canvas: OutputCanvas::Vertical,
+                        mode,
+                        scene: None,
+                    }),
+                    notify,
+                );
+            }
+            Command::SetVerticalSize(size) => {
+                self.run_ui_api(
+                    rbs_api::Command::CanvasSetVerticalSize(rbs_api::request::SetVerticalSize {
+                        width: size.width,
+                        height: size.height,
+                    }),
+                    notify,
+                );
+            }
+            Command::SetMasterVolume { volume } => {
+                self.run_ui_api(
+                    rbs_api::Command::CanvasSetMasterVolume(rbs_api::request::SetMasterVolume {
+                        volume,
+                    }),
+                    notify,
+                );
+            }
+            Command::SetMasterMuted { muted } => {
+                self.run_ui_api(
+                    rbs_api::Command::CanvasSetMasterMuted(rbs_api::request::SetMasterMuted {
+                        muted,
+                    }),
+                    notify,
+                );
+            }
+            Command::SetLoudnessShown(on) => {
+                self.run_ui_api(
+                    rbs_api::Command::LoudnessSetEnabled(rbs_api::request::SetLoudnessEnabled {
+                        on,
+                    }),
+                    notify,
+                );
+            }
+            Command::ResetLoudness => {
+                self.run_ui_api(rbs_api::Command::LoudnessReset, notify);
+            }
+            Command::SetLoudnessSettings {
+                target,
+                true_peak_limit,
+            } => {
+                self.run_ui_api(
+                    rbs_api::Command::SettingsSet(rbs_api::request::SettingsPatch {
+                        loudness: Some(api::LoudnessSettings {
+                            target,
+                            true_peak_limit,
+                        }),
+                        ..Default::default()
+                    }),
+                    notify,
+                );
+            }
+            Command::SetSourceMonitor { id, monitor } => {
+                let done = self.set_source_monitor(id, monitor);
+                self.answer_live(done, notify);
+            }
+            Command::SetMonitorSolo(sources) => {
+                let raw: Vec<u32> = sources.iter().map(|s| s.get()).collect();
+                if let Err(e) = self.set_monitor_solo(&raw) {
+                    notify(Update::Error(e.text().to_owned()));
+                }
+            }
+            Command::SetMonitorDevice(device) => {
+                if let Err(e) = self.set_monitor_device(device) {
+                    notify(Update::Error(e.text().to_owned()));
+                }
+            }
+            Command::SetMonitorVolume(volume) => {
+                if let Err(e) = self.set_monitor_volume(volume) {
+                    notify(Update::Error(e.text().to_owned()));
+                }
+            }
+            Command::ListMonitorDevices => {
+                notify(Update::MonitorDevices(self.api_monitor_devices().devices));
+            }
+            // Routed elsewhere by `Host::command`.
+            _ => {}
+        }
+    }
+
+    /// The window commands of this concern, routed by `Host::command`.
+    pub(super) fn output_command(&mut self, c: Command, notify: &dyn Fn(Update)) {
+        match c {
+            Command::StartRecording(r) => self.record_asked(OutputCanvas::Main, &r, notify),
+            Command::StartVerticalRecording(r) => {
+                self.record_asked(OutputCanvas::Vertical, &r, notify);
+            }
+            Command::StopRecording => {
+                self.end_recording(OutputCanvas::Main, notify);
+                self.publish(notify);
+            }
+            Command::StopVerticalRecording => {
+                self.end_recording(OutputCanvas::Vertical, notify);
+                self.publish(notify);
+            }
+            Command::SetVerticalProfile(profile) => self.vertical_profile = profile,
+            Command::SetVerticalStreamProfile(profile) => {
+                self.vertical_stream_profile = profile;
+                self.availability_changed();
+            }
+            Command::SetStreamDestinations(destinations, unloaded) => {
+                self.destinations = destinations;
+                self.destinations_unloaded = unloaded;
+                self.availability_changed();
+            }
+            Command::SetVerticalFlags(flags) => {
+                if flags != self.vertical_flags {
+                    self.vertical_flags = flags;
+                    self.settings_changed();
+                }
+            }
+            Command::SetSeparateFiles(files) => {
+                self.separate_files = files.enabled;
+                self.limit_policy = files.limit_policy();
+            }
+            Command::SetVerticalPicture(on) => {
+                // Turning the picture off cannot leave anything to report: the node
+                // goes with the next update at the latest.
+                if let Err(why) = self.set_vertical_picture(on)
+                    && on
+                {
+                    notify(Update::VerticalPictureFailed);
+                    notify(Update::Error(why));
+                }
+                self.publish(notify);
+            }
+            Command::OpenProjector { id, canvas } => {
+                self.open_projector(id, canvas, notify);
+                self.publish(notify);
+            }
+            Command::OpenInteract(source) => self.open_interact(source, notify),
+            Command::CloseInteract(source) => {
+                self.close_interact(source);
+                self.publish(notify);
+            }
+            Command::InteractInput { source, event } => self.interact_input(source, event),
+            Command::CloseProjector(id) => {
+                self.close_projector(id);
+                self.publish(notify);
+            }
+            Command::SetCanvas { size, fps } => {
+                if let Err(why) = self.change_canvas(size, fps, notify) {
+                    notify(Update::Error(why));
+                }
+            }
+            Command::SetProfile(profile) => {
+                if profile != self.profile {
+                    self.profile = profile;
+                    self.settings_changed();
+                }
+            }
+            Command::StartStream(r) => self.stream_asked(OutputCanvas::Main, &r, notify),
+            Command::StartVerticalStream(r) => {
+                self.stream_asked(OutputCanvas::Vertical, &r, notify);
+            }
+            Command::EndStream => {
+                self.end_stream_asked(OutputCanvas::Main, notify);
+                self.publish(notify);
+            }
+            Command::EndVerticalStream => {
+                self.end_stream_asked(OutputCanvas::Vertical, notify);
+                self.publish(notify);
+            }
+            Command::StartVirtualCamera { width, height, fps } => {
+                // An API client started it first: show the camera that runs, no error.
+                if self.camera.is_some() {
+                    notify(Update::VirtualCamera(self.camera_status()));
+                } else {
+                    let settings = VirtualCameraSettings::new(width, height, fps);
+                    let _ = self.start_camera_asked(settings, notify, true);
+                }
+            }
+            Command::StopVirtualCamera => self.stop_camera(notify),
+            Command::SetReplay(setup) => {
+                self.replay.setup = setup;
+                self.replay_changed(notify);
+            }
+            Command::ArmReplay => {
+                if let Err(why) = self.arm_replay(notify) {
+                    notify(Update::Error(why));
+                }
+            }
+            Command::DisarmReplay => self.disarm_replay(notify),
+            Command::AddMarker => {
+                self.run_ui_api(
+                    rbs_api::Command::MarkerAdd(rbs_api::request::MarkerAdd::default()),
+                    notify,
+                );
+            }
+            Command::RemoveMarkers(placed) => {
+                for (canvas, index) in placed {
+                    self.run_ui_api(
+                        rbs_api::Command::MarkerRemove(rbs_api::request::MarkerRemove {
+                            canvas,
+                            index,
+                        }),
+                        notify,
+                    );
+                }
+            }
+            // Routed elsewhere by `Host::command`.
+            _ => {}
+        }
+    }
 }

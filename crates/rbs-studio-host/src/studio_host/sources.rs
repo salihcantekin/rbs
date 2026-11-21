@@ -1320,4 +1320,204 @@ impl Host {
         self.history.record(EditKind::Glide, &name, 0, vec![undo]);
         Ok(true)
     }
+
+    /// The window commands of this concern, routed by `Host::command`.
+    pub(super) fn source_command(&mut self, c: Command, notify: &dyn Fn(Update)) {
+        match c {
+            Command::ListTargets(kind) => {
+                let targets = self.targets(kind);
+                notify(Update::Targets(kind, targets));
+            }
+            Command::AddSourceWithAudio { ref kind, .. } | Command::AddSource { ref kind, .. }
+                if self.prompt_first(*kind).is_some() =>
+            {
+                if let Some(p) = self.prompt_first(*kind) {
+                    self.ask_permission(p, Some(c), notify);
+                }
+            }
+            Command::ReadPermissions => self.send_permissions(notify),
+            Command::ListAddOns => notify(Update::AddOns(self.addon_list())),
+            Command::AddOn { id, action } => self.addon_command(&id, action, notify),
+            Command::RequestPermission(kind) => self.ask_permission(kind, None, notify),
+            Command::AddSourceWithAudio { kind, target } => {
+                let done = self
+                    .add(kind, &target)
+                    .map_err(Refusal::Failed)
+                    .and_then(|id| {
+                        self.add_companion(id, true).inspect_err(|_| {
+                            let _ = self.delete(id);
+                        })
+                    });
+                match done {
+                    Ok(_) => self.apply(notify),
+                    Err(e) => notify(Update::Error(e.text().to_owned())),
+                }
+            }
+            Command::AddSource { kind, target } if target.picker => self.pick(kind, &target),
+            Command::AddSource { kind, target } => match self.add(kind, &target) {
+                Ok(_) => self.apply(notify),
+                Err(e) => notify(Update::Error(e)),
+            },
+            Command::DeleteSource(id) => match self.delete(id) {
+                Ok(name) => {
+                    self.apply(notify);
+                    notify(Update::Deleted {
+                        name,
+                        from_scene: false,
+                    });
+                }
+                Err(e) => notify(Update::Error(e)),
+            },
+            Command::RemoveFromScene(id) => {
+                let done = self
+                    .item_of(id)
+                    .map_err(Refusal::NotFound)
+                    .map(|(_, i)| i.id)
+                    .and_then(|item| self.remove_from_scene(item));
+                match done {
+                    Ok((name, removed)) => {
+                        self.apply(notify);
+                        notify(Update::Deleted {
+                            name,
+                            from_scene: !removed.source_deleted,
+                        });
+                    }
+                    Err(e) => notify(Update::Error(e.text().to_owned())),
+                }
+            }
+            Command::SetGlobal { id, global } => {
+                let done = if global {
+                    self.make_global(id).map(|_| true)
+                } else {
+                    self.unmake_global(id, true).map(|_| true)
+                };
+                self.answer(done, notify);
+            }
+            Command::RemoveGlobal(id) => {
+                let done = self.unmake_global(id, false).map(|_| true);
+                self.answer(done, notify);
+            }
+            Command::AddGlobalSource { kind, target } => {
+                let done = self.add_global(kind, &target).map(|_| true);
+                self.answer(done, notify);
+            }
+            Command::UndoDelete => {
+                if self
+                    .history
+                    .next_undo()
+                    .is_some_and(|s| matches!(s.kind, EditKind::Delete | EditKind::Remove))
+                {
+                    self.step(true, notify);
+                }
+            }
+            Command::Undo => self.step(true, notify),
+            Command::Redo => self.step(false, notify),
+            Command::MoveSource { id, direction } => match self.move_source(id, direction) {
+                Ok(true) => self.apply(notify),
+                Ok(false) => {}
+                Err(e) => notify(Update::Error(e)),
+            },
+            Command::MoveSourceTo { id, to } => match self.move_source_to(id, to) {
+                Ok(true) => self.apply(notify),
+                Ok(false) => {}
+                Err(e) => notify(Update::Error(e)),
+            },
+            Command::MoveScene { id, direction } => match self.move_scene(id, direction) {
+                Ok(true) => self.apply(notify),
+                Ok(false) => {}
+                Err(e) => notify(Update::Error(e)),
+            },
+            Command::MoveSceneTo { id, to } => match self.move_scene_to(id, to) {
+                Ok(true) => self.apply(notify),
+                Ok(false) => {}
+                Err(e) => notify(Update::Error(e)),
+            },
+            Command::SetSourceActive { id, active } => match self.set_source_active(id, active) {
+                Ok(true) => self.apply(notify),
+                Ok(false) => {}
+                Err(e) => notify(Update::Error(e)),
+            },
+            Command::SetSourceLocked { id, locked } => {
+                let done = self
+                    .item_of(id)
+                    .map_err(Refusal::NotFound)
+                    .map(|(_, i)| i.id)
+                    .and_then(|item| self.set_item_locked(item, locked));
+                self.answer(done, notify);
+            }
+            Command::SetSourceVolume { id, volume } => {
+                let call = if self.levels_take(id) {
+                    rbs_api::Command::SceneAudioSet(rbs_api::request::SetSceneLevel {
+                        scene: self.scene.get(),
+                        source: id.get(),
+                        volume: Some(volume),
+                        muted: None,
+                    })
+                } else {
+                    rbs_api::Command::SourceSetVolume(rbs_api::request::SetSourceVolume {
+                        source: id.get(),
+                        volume,
+                    })
+                };
+                self.run_ui_api(call, notify);
+            }
+            Command::SetSourceMuted { id, muted } => {
+                let call = if self.levels_take(id) {
+                    rbs_api::Command::SceneAudioSet(rbs_api::request::SetSceneLevel {
+                        scene: self.scene.get(),
+                        source: id.get(),
+                        volume: None,
+                        muted: Some(muted),
+                    })
+                } else {
+                    rbs_api::Command::SourceSetMuted(rbs_api::request::SetSourceMuted {
+                        source: id.get(),
+                        muted,
+                    })
+                };
+                self.run_ui_api(call, notify);
+            }
+            Command::SetMetersUi(on) => {
+                self.meters_ui = on;
+                self.sync_meters();
+            }
+            Command::EnsureEncoders => {
+                self.ensure_encoders();
+                self.publish_encoders(notify);
+            }
+            Command::SetSceneOwnLevels { scene, own } => {
+                let scene = rbs_api::request::SceneRef { scene: scene.get() };
+                self.run_ui_api(
+                    if own {
+                        rbs_api::Command::SceneAudioOwn(scene)
+                    } else {
+                        rbs_api::Command::SceneAudioShared(scene)
+                    },
+                    notify,
+                );
+            }
+            Command::ResetSceneLevel { scene, source } => {
+                self.run_ui_api(
+                    rbs_api::Command::SceneAudioResetSource(rbs_api::request::SceneSourceRef {
+                        scene: scene.get(),
+                        source: source.get(),
+                    }),
+                    notify,
+                );
+            }
+            Command::SetSourceMixerHidden { id, hidden } => {
+                self.run_ui_api(
+                    rbs_api::Command::SourceSetMixerHidden(
+                        rbs_api::request::SetSourceMixerHidden {
+                            source: id.get(),
+                            hidden,
+                        },
+                    ),
+                    notify,
+                );
+            }
+            // Routed elsewhere by `Host::command`.
+            _ => {}
+        }
+    }
 }

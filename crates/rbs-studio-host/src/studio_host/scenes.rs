@@ -965,4 +965,143 @@ impl Host {
                 });
         }
     }
+
+    /// The window commands of this concern, routed by `Host::command`.
+    pub(super) fn scene_command(&mut self, c: Command, notify: &dyn Fn(Update)) {
+        match c {
+            Command::RenameSource { id, name } => {
+                let done = self.rename_source(id, &name);
+                self.answer(done, notify);
+            }
+            Command::SetGlide {
+                duration_ms,
+                easing,
+            } => {
+                let done = self.set_glide(duration_ms, easing);
+                self.answer(done, notify);
+            }
+            Command::SetTransition(t) => {
+                let done = self.put_transition(t);
+                self.answer(done, notify);
+            }
+            Command::SetSourceActivity { id, run, on_return } => {
+                let done = self.set_source_choice(id, run, on_return);
+                self.answer(done, notify);
+            }
+            Command::SetSourceGlide {
+                id,
+                custom,
+                duration_ms,
+                easing,
+            } => {
+                let done = self.set_source_glide(id, custom, duration_ms, easing);
+                self.answer(done, notify);
+            }
+            Command::AddExistingSource(id) => {
+                let done = self.add_existing(id).map(|_| true);
+                self.answer(done, notify);
+            }
+            Command::AddScene(name) => {
+                let done = self.add_scene(name.as_deref()).map(|_| true);
+                self.answer(done, notify);
+            }
+            Command::DuplicateScene(id) => {
+                let done = self.duplicate_scene(id).map(|_| true);
+                self.answer(done, notify);
+            }
+            Command::DuplicateSceneWithCopies(id) => {
+                let p = rbs_api::request::DuplicateScene {
+                    scene: id.get(),
+                    sources: rbs_api::types::DuplicateSources::Copied,
+                };
+                let done = self.api_scene_duplicate(p, notify);
+                self.answer_api(done, notify);
+            }
+            Command::DuplicateSource(id) => {
+                let done = self.api_source_duplicate(in_scene(id), notify);
+                self.answer_api(done, notify);
+            }
+            Command::CopyAttributes(id) => {
+                let done = self.api_copy_attributes(in_scene(id), notify);
+                self.answer_api(done, notify);
+            }
+            Command::OpenAttributes { source, paste } => {
+                match self.attributes_view(source, paste) {
+                    Ok(view) => notify(Update::Attributes(view)),
+                    Err(e) => notify(Update::Error(e.text().to_owned())),
+                }
+            }
+            Command::ResetSource { source, groups } => {
+                let p = rbs_api::request::ResetSource {
+                    source: source.get(),
+                    scene: None,
+                    canvas: OutputCanvas::default(),
+                    groups: Some(groups.iter().map(|g| g.id().to_owned()).collect()),
+                };
+                let done = self.api_source_reset(p, notify);
+                self.answer_api(done, notify);
+            }
+            Command::PasteAttributes {
+                items,
+                groups,
+                append,
+            } => {
+                let p = rbs_api::request::PasteAttributes {
+                    items: items.iter().map(|i| i.get()).collect(),
+                    groups: groups.iter().map(|g| g.id().to_owned()).collect(),
+                    filters: if append {
+                        rbs_api::types::FilterPasteMode::Append
+                    } else {
+                        rbs_api::types::FilterPasteMode::Replace
+                    },
+                    canvas: OutputCanvas::default(),
+                };
+                let done = self.api_paste_attributes(p, notify);
+                self.answer_api(done, notify);
+            }
+            Command::RemoveScene(id) => {
+                let done = self.remove_scene(id).map(|()| true);
+                self.answer(done, notify);
+            }
+            Command::RenameScene { id, name } => {
+                let done = self.rename_scene(id, &name);
+                self.answer(done, notify);
+            }
+            Command::SetSceneTransition { id, transition } => {
+                let done = self.set_scene_transition(id, transition);
+                self.answer(done, notify);
+            }
+            Command::SwitchScene(id) => {
+                let done = if self.preview().is_some() {
+                    self.set_preview_scene(id)
+                } else {
+                    self.switch_scene(id)
+                };
+                self.answer(done, notify);
+            }
+            Command::SetStudioMode(on) => {
+                let done = self.set_studio_mode(on);
+                self.answer(done, notify);
+            }
+            Command::Transition => {
+                let done = self.transition();
+                self.answer(done, notify);
+            }
+            Command::TransitionProgress(t) => {
+                if self.preview().is_some() {
+                    self.pending_progress = Some(t.clamp(0.0, 1.0));
+                }
+            }
+            Command::Rehearse => {
+                if self.preview().is_some()
+                    && let Err(e) = self.studio.rehearse(&self.adapters.sources)
+                {
+                    notify(Update::Error(format!("The rehearsal could not start: {e}")));
+                }
+            }
+            Command::SetSwapAfterTransition(on) => self.swap_after_transition = on,
+            // Routed elsewhere by `Host::command`.
+            _ => {}
+        }
+    }
 }

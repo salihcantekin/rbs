@@ -730,4 +730,222 @@ impl Host {
             }
         }
     }
+
+    /// The window commands of this concern, routed by `Host::command`.
+    pub(super) fn item_command(&mut self, c: Command, notify: &dyn Fn(Update)) {
+        match c {
+            Command::SetSourceVisible { id, visible } => {
+                match self.set_source_visible(id, visible) {
+                    Ok(true) => self.apply(notify),
+                    Ok(false) => {}
+                    Err(e) => notify(Update::Error(e)),
+                }
+            }
+            Command::SetSourceBox {
+                seq,
+                gesture,
+                id,
+                position,
+                size,
+                canvas: OutputCanvas::Vertical,
+            } => {
+                let ok = match self.set_vertical_box(id, position, size, gesture) {
+                    Ok(changed) => {
+                        if changed {
+                            self.apply(notify);
+                        }
+                        true
+                    }
+                    Err(e) => {
+                        notify(Update::Error(e.text().to_owned()));
+                        false
+                    }
+                };
+                notify(Update::BoxPlaced { seq, ok });
+            }
+            Command::SetSourceBox {
+                seq,
+                gesture,
+                id,
+                position,
+                size,
+                canvas: OutputCanvas::Main,
+            } => {
+                // The same handler a remote `item.set_box` runs. The window still
+                // matches the answer by `seq`, including a refusal.
+                let ok = self.run_ui_api(
+                    rbs_api::Command::ItemSetBox(rbs_api::request::SetItemBox {
+                        source: id.get(),
+                        position,
+                        size,
+                        gesture,
+                        seq,
+                        canvas: OutputCanvas::Main,
+                    }),
+                    notify,
+                );
+                notify(Update::BoxPlaced { seq, ok });
+            }
+            Command::SetSourceCrop {
+                seq,
+                gesture,
+                id,
+                crop,
+                keep_scale,
+                canvas,
+            } => {
+                let [l, t, r, b] = crop;
+                let edit = self
+                    .item_of(id)
+                    .map_err(CropRefusal::NotFound)
+                    .map(|(_, item)| item.id)
+                    .and_then(|item| {
+                        self.set_item_crop(item, Crop::new(l, t, r, b), keep_scale, gesture, canvas)
+                    });
+                let ok = match edit {
+                    Ok(true) => {
+                        self.apply(notify);
+                        true
+                    }
+                    Ok(false) => true,
+                    Err(e) => {
+                        notify(Update::Error(e.text()));
+                        false
+                    }
+                };
+                notify(Update::CropPlaced { seq, ok });
+            }
+            Command::TransformSource {
+                id,
+                op,
+                gesture,
+                canvas,
+            } => {
+                let edit = match self.item_of(id).map(|(_, item)| item.id) {
+                    Ok(item) => self.transform_item(item, op, gesture, canvas),
+                    Err(t) => Err(Refusal::NotFound(t)),
+                };
+                match edit {
+                    Ok(true) => self.apply(notify),
+                    Ok(false) => {}
+                    Err(e) => notify(Update::Error(e.text().into())),
+                }
+            }
+            // Routed elsewhere by `Host::command`.
+            _ => {}
+        }
+    }
+
+    /// The window commands of this concern, routed by `Host::command`.
+    pub(super) fn item_display_command(&mut self, c: Command, notify: &dyn Fn(Update)) {
+        match c {
+            Command::SetSourceRegion { id, region } => match self.set_source_region(id, region) {
+                Ok(true) => self.apply(notify),
+                Ok(false) => {}
+                Err(e) => notify(Update::Error(e.text())),
+            },
+            Command::SetRecordSeparately { id, patch } => {
+                match self.set_record_separately(id, patch) {
+                    Ok(true) => self.apply(notify),
+                    Ok(false) => {}
+                    Err(e) => notify(Update::Error(e.text().into())),
+                }
+            }
+            Command::SetSourceCaptureRegion { id, region } => {
+                match self.set_capture_region(id, region) {
+                    Ok(true) => self.apply(notify),
+                    Ok(false) => {}
+                    Err(e) => notify(Update::Error(e.text().into())),
+                }
+            }
+            Command::SetDisplayChrome { id, chrome } => match self.set_display_chrome(id, chrome) {
+                Ok(true) => self.apply(notify),
+                Ok(false) => {}
+                Err(e) => notify(Update::Error(e.text().into())),
+            },
+            Command::FitDisplayChrome(id) => match self.fit_display_chrome(id) {
+                Ok(true) => self.apply(notify),
+                Ok(false) => {}
+                Err(e) => notify(Update::Error(e.text().into())),
+            },
+            Command::ResetDisplayChrome(id) => match self.reset_display_chrome(id) {
+                Ok(true) => self.apply(notify),
+                Ok(false) => {}
+                Err(e) => notify(Update::Error(e.text().into())),
+            },
+            Command::SetItemShowFor { item, show_for_ms } => {
+                match self.set_item_show_for(item, show_for_ms) {
+                    Ok(true) => self.apply(notify),
+                    Ok(false) => {}
+                    Err(e) => notify(Update::Error(e.text().into())),
+                }
+            }
+            Command::ShowItem(item) => match self.show_item(item) {
+                Ok(true) => self.apply(notify),
+                Ok(false) => {}
+                Err(e) => notify(Update::Error(e.text().into())),
+            },
+            Command::SetSourceStyle {
+                gesture,
+                id,
+                style,
+                canvas,
+            } => {
+                let edit = self
+                    .item_of(id)
+                    .map(|(_, item)| item.id)
+                    .and_then(|item| self.set_item_style(item, style, gesture, canvas));
+                match edit {
+                    Ok(true) => self.apply(notify),
+                    Ok(false) => {}
+                    Err(e) => notify(Update::Error(e)),
+                }
+            }
+            Command::SetSourceScroll {
+                gesture,
+                id,
+                scroll,
+                canvas,
+            } => {
+                let edit = if scroll.is_some_and(|s| !s.is_valid()) {
+                    Err(SCROLL_ERROR.to_owned())
+                } else {
+                    self.item_of(id)
+                        .map(|(_, item)| item.id)
+                        .and_then(|item| self.set_item_scroll(item, scroll, gesture, canvas))
+                };
+                match edit {
+                    Ok(true) => self.apply(notify),
+                    Ok(false) => {}
+                    Err(e) => notify(Update::Error(e)),
+                }
+            }
+            Command::ScrollLive {
+                id,
+                canvas,
+                control,
+            } => {
+                let target = self.item_of(id).map(|(_, item)| item.id).and_then(|item| {
+                    self.edit_canvas(canvas)
+                        .map(|c| (item, c))
+                        .map_err(|e| e.text().to_owned())
+                });
+                match target {
+                    Ok((item, c)) => match self.studio.scroll_control(item, c, control) {
+                        Ok(_) => self.publish(notify),
+                        Err(ScrollRefused::NoScroll) => notify(Update::Error(
+                            "This source does not scroll on that canvas.".into(),
+                        )),
+                        Err(_) => notify(Update::Error(
+                            "This source is not on a scene a canvas shows, so its scroll is not running."
+                                .into(),
+                        )),
+                    },
+                    Err(e) => notify(Update::Error(e)),
+                }
+            }
+            // Routed elsewhere by `Host::command`.
+            _ => {}
+        }
+    }
 }
