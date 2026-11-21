@@ -23,6 +23,7 @@ mod activity;
 mod browser;
 mod browser_sound;
 mod filters;
+mod input;
 mod layers;
 mod mapping;
 pub mod permissions;

@@ -15,7 +15,7 @@ pub mod pointer;
 pub mod pointer_types;
 pub mod types;
 
-pub use catalogue::{catalogue, find};
+pub use catalogue::{catalogue, find, offered};
 pub use node::{FilterNode, FilterStats, PRELUDE, descriptor};
 pub use normalise::{NORMALISE, Normalise};
 pub use pointer::{

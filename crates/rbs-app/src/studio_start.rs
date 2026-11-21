@@ -309,7 +309,12 @@ fn spawn(config: HostConfig) -> std::io::Result<StudioHost> {
     let generation = GENERATION.load(Ordering::Relaxed);
     StudioHost::spawn(
         config,
-        rbs_app::platform::adapters,
+        || {
+            let (adapters, errors) = rbs_app::platform::adapters();
+            // Add filter offers only the picture types this platform can run.
+            crate::studio_ui::filters::set_served(adapters.sources.serves());
+            (adapters, errors)
+        },
         || {
             // A hardware adapter, else a software one (a virtual machine, for example):
             // slow, but the app still works.

@@ -18,6 +18,8 @@ rbs-graph = { path = "../rbs-graph" }
 rbs-scene = { path = "../rbs-scene" }
 rbs-gpu = { path = "../rbs-gpu" }
 rbs-capture = { path = "../rbs-capture" }
+# The input monitor lent to pointer filters (ADR-0165): a port crate.
+rbs-input = { path = "../rbs-input" }
 rbs-audio-io = { path = "../rbs-audio-io" }
 rbs-audio = { path = "../rbs-audio" }
 rbs-nodes = { path = "../rbs-nodes" }
