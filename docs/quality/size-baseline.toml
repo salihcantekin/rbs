@@ -7,15 +7,15 @@
 "crates/rbs-api/src/request.rs" = 4140
 "crates/rbs-api/src/types.rs" = 3208
 "crates/rbs-api/tests/json.rs" = 3540
-"crates/rbs-app/src/main.rs" = 6749
+"crates/rbs-app/src/main.rs" = 6698
 "crates/rbs-app/src/menu_bar.rs" = 2518
-"crates/rbs-app/src/studio_ui.rs" = 10896
+"crates/rbs-app/src/studio_ui.rs" = 10891
 "crates/rbs-record/src/studio.rs" = 6014
 "crates/rbs-record/tests/studio.rs" = 3241
-"crates/rbs-scene/src/collection.rs" = 2992
+"crates/rbs-scene/src/collection.rs" = 2990
 "crates/rbs-scene/tests/binder.rs" = 2882
 "crates/rbs-scene/tests/collection.rs" = 2759
-"crates/rbs-studio-host/src/studio_host.rs" = 4607
+"crates/rbs-studio-host/src/studio_host.rs" = 4562
 "crates/rbs-ui/src/command.rs" = 4398
 "crates/rbs-ui/src/workspace.rs" = 2798
 
@@ -27,7 +27,6 @@
 "crates/rbs-app/examples/go_live.rs::main" = 225
 "crates/rbs-app/examples/remote_preview.rs::run" = 313
 "crates/rbs-app/examples/transition_cost.rs::main" = 203
-"crates/rbs-app/src/appearance_page.rs::install" = 228
 "crates/rbs-app/src/main.rs::install_studio" = 1050
 "crates/rbs-app/src/main.rs::run" = 466
 "crates/rbs-app/src/main.rs::sync" = 327
@@ -35,7 +34,7 @@
 "crates/rbs-app/src/menu_bar.rs::enabled" = 504
 "crates/rbs-app/src/menu_bar.rs::run" = 286
 "crates/rbs-app/src/shortcuts_page.rs::install" = 203
-"crates/rbs-app/src/studio_ui.rs::apply" = 552
+"crates/rbs-app/src/studio_ui.rs::apply" = 547
 "crates/rbs-app/src/studio_ui.rs::new" = 231
 "crates/rbs-app/src/studio_ui.rs::push" = 274
 "crates/rbs-app/src/studio_ui.rs::set_rows" = 254

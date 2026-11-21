@@ -374,13 +374,19 @@ pub(super) fn the_window_fader_edits_the_scene_level_in_own_levels() {
     let one = scenes(&mut c)["program"].as_u64().unwrap();
     let mic = add(&mut c, "audio_input", "Mic");
     let id = SourceId::from_raw(mic as u32);
-    // What the Mixer is told it hears for the mic, after the next change to it.
+    // What the Mixer is told it hears for the mic, after the next change to it: new
+    // rows, or new audio for the rows it has (a fader step, F-10).
     let heard_after = |want: f32| {
         next(&updates, |u| match u {
             Update::Heard(rows) => rows
                 .iter()
                 .find(|r| r.id == id)
                 .map(|r| r.heard.unwrap_or(r.audio))
+                .filter(|a| (a.volume - want).abs() < 1e-6),
+            Update::SourceAudio(patches) => patches
+                .iter()
+                .find(|p| p.id == id)
+                .map(|p| p.heard.unwrap_or(p.audio))
                 .filter(|a| (a.volume - want).abs() < 1e-6),
             _ => None,
         })
