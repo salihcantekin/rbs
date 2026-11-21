@@ -555,6 +555,11 @@ fn deny_support(from: &str, to: &str, to_class: Option<Class>) -> Option<String>
     if from == "rbs-browser-shm" && matches!(to, "libc" | "windows") {
         return None;
     }
+    // Mach ports and messages for cross-process surfaces: the preview export and the
+    // browser surface handover (ADR-0028, ADR-0167 decision 3). macOS only.
+    if from == "rbs-mach" && to == "mach2" {
+        return None;
+    }
     // Read-only OS information shared by adapters and composition roots: free space,
     // memory and the app identity that holds the OS privacy grants (ADR-0090, ADR-0141).
     // It never changes OS state; anything that does belongs in an adapter.
@@ -754,9 +759,8 @@ fn class(name: &str) -> Option<Class> {
         "rbs-params" | "rbs-media-format" | "rbs-crash" | "rbs-vcam-ring" | "rbs-browser-ipc" => {
             Class::Helper
         }
-        "rbs-codec-hw" | "rbs-vcam-mf-source" | "rbs-browser-shm" | "rbs-system-probe" => {
-            Class::Support
-        }
+        "rbs-codec-hw" | "rbs-vcam-mf-source" | "rbs-browser-shm" | "rbs-system-probe"
+        | "rbs-mach" => Class::Support,
         "rbs-gpu" | "rbs-audio" | "rbs-audio-filters" | "rbs-engine" | "rbs-nodes"
         | "rbs-sources" | "rbs-record" | "rbs-filters" => Class::Engine,
         "rbs-log" => Class::Diagnostics,
