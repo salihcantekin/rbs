@@ -6,6 +6,9 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+mod serde_defaults;
+use serde_defaults::*;
+
 /// A change counter per state key (`"record.state"`, later `"source.changed:7"`).
 pub type SeqMap = BTreeMap<String, u64>;
 
@@ -233,6 +236,11 @@ pub struct SourceInfo {
     /// `input_late_frames`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_resyncs: Option<u64>,
+    /// Milliseconds from the last time the source became Active to its first picture
+    /// (protocol 1.98, ADR-0152 decision 10), for capture sources once one picture
+    /// came; kept while the source sleeps. Only in `source.list` answers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warm_up_ms: Option<u32>,
 }
 
 /// The volume and mute a source is heard at (protocol 1.48, ADR-0091).
@@ -343,29 +351,6 @@ pub struct MonitorDeviceList {
     pub devices: Vec<MonitorDevice>,
 }
 
-#[allow(clippy::trivially_copy_pass_by_ref)] // serde passes a reference.
-fn is_false(v: &bool) -> bool {
-    !*v
-}
-
-fn default_pcm_bits() -> u16 {
-    16
-}
-
-#[allow(clippy::trivially_copy_pass_by_ref)] // serde passes a reference.
-fn is_pcm_16(bits: &u16) -> bool {
-    *bits == 16
-}
-
-#[allow(clippy::trivially_copy_pass_by_ref)] // serde passes a reference.
-fn is_zero_ms(v: &i32) -> bool {
-    *v == 0
-}
-
-fn is_zero_f64(v: &f64) -> bool {
-    *v == 0.0
-}
-
 /// One filter of a source (protocol 1.8, ADR-0062).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FilterInfo {
@@ -456,24 +441,6 @@ pub struct FilterField {
     /// The default: a number, a `"#rrggbb"` / `"#rrggbbaa"` string, a boolean for a
     /// toggle, or an option key for a choice.
     pub default: serde_json::Value,
-}
-
-fn shown() -> bool {
-    true
-}
-
-#[allow(clippy::trivially_copy_pass_by_ref)] // serde passes a reference.
-fn is_shown(v: &bool) -> bool {
-    *v
-}
-
-#[allow(clippy::trivially_copy_pass_by_ref)] // serde passes a reference.
-fn is_unlocked(v: &bool) -> bool {
-    !*v
-}
-
-fn full_volume() -> f32 {
-    1.0
 }
 
 /// A scene as `scene.list` lists it (protocol 1.6, ADR-0059).
@@ -879,18 +846,6 @@ pub enum ScrollStart {
     Outside,
 }
 
-fn default_ramp_ms() -> u32 {
-    300
-}
-
-fn is_default_ramp_ms(v: &u32) -> bool {
-    *v == 300
-}
-
-fn is_zero_f32(v: &f32) -> bool {
-    *v == 0.0
-}
-
 /// A picture moving through its item's box (protocol 1.94, ADR-0150). Lengths and
 /// speed in the item's box units (canvas pixels for an item on the canvas); defaults
 /// are left out.
@@ -920,10 +875,6 @@ pub struct ItemScroll {
         skip_serializing_if = "is_default_ramp_ms"
     )]
     pub ramp_ms: u32,
-}
-
-fn is_default<T: Default + PartialEq>(v: &T) -> bool {
-    *v == T::default()
 }
 
 /// `item.scroll_finished` (protocol 1.94, ADR-0150 decision 11): a `Once` scroll's

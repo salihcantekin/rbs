@@ -26,6 +26,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use rbs_core::lifecycle::Lifecycle;
+use rbs_core::time::{Clock, Timestamp};
 
 use crate::activity::{ActivityTraits, Level, OnReturn};
 use rbs_graph::description::{
@@ -39,6 +40,8 @@ use crate::flatten::ScrollKey;
 use crate::model::{
     CanvasId, Crop, FilterId, ItemId, ItemStyle, SceneId, Scroll, Settings, SourceId,
 };
+
+mod linger;
 
 /// Node type id of the canvas compositor.
 pub const COMPOSITOR_TYPE: &str = "org.rbs.compositor";
@@ -573,6 +576,8 @@ struct BoundMix {
 /// "Graph binding").
 pub struct SceneBinder {
     types: Box<dyn NodeTypes + Send>,
+    /// The clock linger is counted on (ADR-0152 decision 8); none: no linger.
+    clock: Option<Arc<dyn Clock>>,
     /// The partition of the mixer and of audio-only sources; `None`: audio is not
     /// bound.
     audio: Option<PartitionId>,
@@ -588,6 +593,8 @@ struct State {
     /// Each source's last delivered level and effective `on_return` (ADR-0152
     /// decision 7); a source absent here is Unplaced or Off.
     levels: BTreeMap<SourceId, (Level, Option<OnReturn>)>,
+    /// Lingering sources (ADR-0152 decision 3).
+    linger: linger::Linger,
 }
 
 impl fmt::Debug for SceneBinder {
@@ -644,9 +651,33 @@ impl SceneBinder {
     pub fn new(types: impl NodeTypes + Send + 'static) -> Self {
         Self {
             types: Box::new(types),
+            clock: None,
             audio: None,
             state: State::default(),
         }
+    }
+
+    /// Counts linger (ADR-0152 `linger_s`) on `clock`, read once per sync. Without a
+    /// clock no source lingers.
+    pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
+        self.clock = Some(clock);
+        self
+    }
+
+    /// When the soonest linger ends; `None` while no source lingers, so the host arms
+    /// no wake (P13). The host syncs again at or after that time to end it.
+    pub fn linger_end(&self) -> Option<Timestamp> {
+        self.state.linger.next_end()
+    }
+
+    /// How long until the soonest linger ends, from `now`; zero when it is due.
+    pub fn linger_wait(&self, now: Timestamp) -> Option<std::time::Duration> {
+        self.linger_end().map(|end| end.saturating_since(now))
+    }
+
+    /// Whether `source` is Active only because it lingers.
+    pub fn is_lingering(&self, source: SourceId) -> bool {
+        self.state.linger.contains(source)
     }
 
     /// Also binds audio (ADR-0039): one mixer node per canvas and the audio-only
@@ -802,6 +833,7 @@ impl SceneBinder {
     ) -> Result<BindReport, BindError> {
         let mut draft_graph = graph.clone();
         let mut draft = self.state.clone();
+        draft.linger.now = self.clock.as_ref().map(|c| c.now());
         let report = draft.sync(
             &*self.types,
             self.audio,
@@ -1011,11 +1043,11 @@ impl State {
         // Which sources are Active and which temporal ones are on air (ADR-0152
         // decisions 1 to 3). Computed first so the preview leaves out a source that
         // is Standby there (`run: on_air`).
-        let (running, on_air, levels) = activity_states(
+        let (running, on_air, levels, lingering) = activity_states(
             types,
             collection,
             (cued_items, cued_sources),
-            (&hold, &outgoing),
+            (&hold, &outgoing, &mut self.linger),
             &mut report,
         )?;
         report.level_changes = level_changes(&self.levels, &levels, collection);
@@ -1428,7 +1460,7 @@ impl State {
             // in neither set unless a timed-show cue draws it (ADR-0105).
             let warm = match role {
                 Role::Program => {
-                    let mut warm = collection.warm_sources(canvas, types);
+                    let mut warm = collection.warm_sources_with(canvas, types, &lingering);
                     warm.extend(
                         collection
                             .visible_sources_cued(canvas, scene, cued_items)
@@ -1672,9 +1704,10 @@ fn activity_states(
     types: &dyn NodeTypes,
     collection: &SceneCollection,
     (cued_items, cued_sources): (&BTreeSet<ItemId>, &BTreeSet<SourceId>),
-    (hold, outgoing): (
+    (hold, outgoing, linger): (
         &BTreeMap<CanvasId, HoldScene>,
         &BTreeMap<CanvasId, &OutgoingScene>,
+        &mut linger::Linger,
     ),
     report: &mut BindReport,
 ) -> Result<ActivityStates, BindError> {
@@ -1719,15 +1752,20 @@ fn activity_states(
             }
         }
     }
-    Ok((running, on_air, delivered))
+    // A source that dropped below its `run` stays Active for its linger, as a warm
+    // source of its type (decision 4); an unplaced one is Active but linked nowhere.
+    let lingering = linger.apply(types, collection, &mut running);
+    Ok((running, on_air, delivered, lingering))
 }
 
-/// The running set, the on-air set and each placed source's level with its
-/// effective `on_return`, from [`activity_states`].
+/// The running set (lingering sources included), the on-air set, each placed
+/// source's level with its effective `on_return`, and the lingering sources, from
+/// [`activity_states`].
 type ActivityStates = (
     BTreeSet<SourceId>,
     BTreeSet<SourceId>,
     BTreeMap<SourceId, (Level, Option<OnReturn>)>,
+    BTreeSet<SourceId>,
 );
 
 /// The sources whose level or effective `on_return` differs from the last sync

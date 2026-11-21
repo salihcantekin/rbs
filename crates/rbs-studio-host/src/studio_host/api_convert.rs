@@ -284,12 +284,16 @@ pub(super) fn ns_to_ms(ns: i64) -> f64 {
 }
 
 /// `info` with the counters of its source's audio input, when one runs (`source.list`,
-/// protocol 1.77, ADR-0130 decision 9).
+/// protocol 1.77, ADR-0130 decision 9), and its last warm-up (protocol 1.98).
 pub(super) fn with_input_counters(studio: &Studio, mut info: api::SourceInfo) -> api::SourceInfo {
     if let Some(c) = studio.input_counters(SourceId::from_raw(info.id)) {
         info.input_late_frames = Some(c.late_frames);
         info.input_resyncs = Some(c.resyncs);
     }
+    // Live state like the counters (ADR-0152 decision 10): only `source.list` asks.
+    info.warm_up_ms = studio
+        .warm_up(SourceId::from_raw(info.id))
+        .map(|d| u32::try_from(d.as_millis()).unwrap_or(u32::MAX));
     info
 }
 
@@ -342,6 +346,7 @@ pub(super) fn api_source(row: &SourceRow) -> api::SourceInfo {
         // a row's change event is not sent on every block.
         input_late_frames: None,
         input_resyncs: None,
+        warm_up_ms: None,
         id: row.id.get(),
         name: row.name.clone(),
         kind: row.kind.and_then(api_kind),

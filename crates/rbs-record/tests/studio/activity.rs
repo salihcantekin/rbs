@@ -65,6 +65,9 @@ fn a_camera_that_runs_only_when_shown_closes_off_screen_and_opens_on_the_cut() {
     let reached = run_until(&mut studio, &clock, |s| s.picture_size(shy).is_some());
     assert!(reached, "the shy camera opened when shown");
     assert!(r.capture.live_buffers() > buffers);
+    // Its warm-up is known once a picture came (ADR-0152 `warm_up_ms`).
+    let reached = run_until(&mut studio, &clock, |s| s.warm_up(shy).is_some());
+    assert!(reached, "no warm-up after the first picture");
 
     // Off air again, once the outgoing scene's transition ended: it closes; the warm
     // one stays.
@@ -78,6 +81,10 @@ fn a_camera_that_runs_only_when_shown_closes_off_screen_and_opens_on_the_cut() {
     let reached = run_until(&mut studio, &clock, |_| r.capture.live_buffers() <= buffers);
     assert!(reached, "the shy camera is still open");
     assert_eq!(studio.picture_size(shy), None);
+    assert!(
+        studio.warm_up(shy).is_some(),
+        "the last warm-up is kept while asleep"
+    );
     let (_, errors) = studio.shutdown();
     assert!(errors.is_empty(), "{errors:?}");
 }
