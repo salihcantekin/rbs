@@ -49,7 +49,7 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `RemoveGlobal` | Moved to `Command::Api` (step 3) | global.remove |
 | `AddGlobalSource` | Pending | source.add (global: true) |
 | `UndoDelete` | Missing | edit.undo has no only-if-a-delete condition |
-| `Undo` | Pending | edit.undo; quiet when there is nothing to undo, but a refused step (`undo_conflict`) is shown: neither `Shown` nor `Quiet` does both, so the window needs to tell the two apart (step 3 left it) |
+| `Undo` | Pending | edit.undo; quiet when there is nothing to undo, but a refused step (`undo_conflict`) is shown: neither `Shown` nor `Quiet` does both, so the window needs to tell the two apart; the window cannot skip the call itself, since an undo pressed right after an edit arrives before the history update (step 3 left it) |
 | `Redo` | Pending | edit.redo; as Undo |
 | `MoveSource` | Moved to `Command::Api` (step 2) | item.move |
 | `MoveScene` | Moved to `Command::Api` (step 1) | scene.move |
@@ -117,7 +117,7 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `RenameSource` | Moved to `Command::Api` (step 3) | source.rename |
 | `SetGlide` | Moved to `Command::Api` (step 1) | collection.set_glide |
 | `SetTransition` | Pending | collection.set_transition |
-| `SetSourceActivity` | Pending | source.set_activity; the window sends an `ActivityChoice`, which needs a mapping to the API values (step 3 left it) |
+| `SetSourceActivity` | Pending | source.set_activity; the window sends an `ActivityChoice` and keeps the stored linger, while the API call sets `linger_s` (absent is 0): the window must send the linger it shows (step 3 left it) |
 | `SetSourceGlide` | Moved to `Command::Api` (step 3) | source.set_glide |
 | `AddExistingSource` | Moved to `Command::Api` (step 2) | item.add |
 | `AddScene` | Moved to `Command::Api` (step 1) | scene.add |
