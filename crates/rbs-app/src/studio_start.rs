@@ -112,6 +112,33 @@ fn running(app: &mut App) {
     replay_page::started(app);
 }
 
+/// Hands an update from the studio's control thread to the UI thread.
+pub(crate) fn deliver(u: Update) {
+    let _ = entry::invoke(move || {
+        let ctx = CTX.with(|c| c.borrow().clone());
+        if let Some(ctx) = ctx {
+            ctx.studio_update(u);
+        }
+    });
+}
+
+/// After an update: when the studio has just stopped, its picture layers close. A
+/// native layer draws above the panel, so it would keep the last frame over "The
+/// studio is not running" and Restart the studio (found on a Mac, 2026-11-21).
+pub(crate) fn after_apply(app: &mut App, was: i32) {
+    if was == 2 || app.studio.state != 2 {
+        return;
+    }
+    #[cfg(any(target_os = "macos", windows))]
+    crate::preview::close();
+    app.preview_endpoint = None;
+    app.scene_preview_endpoint = None;
+    app.vertical_preview_endpoint = None;
+    app.studio.preview_ready = false;
+    app.studio.scene_preview_ready = false;
+    app.studio.vertical_preview_ready = false;
+}
+
 /// Restart the studio: only while it is stopped and no restart runs.
 pub(crate) fn restart(app: &mut App) {
     if !can_restart(app.studio.state) {

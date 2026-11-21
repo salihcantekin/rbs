@@ -682,11 +682,9 @@ impl Host {
             | Command::UndoDelete
             | Command::Undo
             | Command::Redo
-            | Command::MoveSource { .. }
             | Command::MoveSourceTo { .. }
             | Command::MoveSceneTo { .. }
             | Command::SetSourceActive { .. }
-            | Command::SetSourceLocked { .. }
             | Command::SetSourceVolume { .. }
             | Command::SetSourceMuted { .. }
             | Command::SetMetersUi(..)
@@ -748,7 +746,6 @@ impl Host {
             | Command::SetTransition(..)
             | Command::SetSourceActivity { .. }
             | Command::SetSourceGlide { .. }
-            | Command::AddExistingSource(..)
             | Command::DuplicateSource(..)
             | Command::CopyAttributes(..)
             | Command::OpenAttributes { .. }
@@ -758,8 +755,7 @@ impl Host {
             | Command::SetStudioMode(..)
             | Command::Rehearse
             | Command::SetSwapAfterTransition(..) => self.scene_command(c, notify),
-            Command::SetSourceVisible { .. }
-            | Command::SetSourceBox { .. }
+            Command::SetSourceBox { .. }
             | Command::SetSourceCrop { .. }
             | Command::TransformSource { .. } => self.item_command(c, notify),
             Command::SetSourceRegion { .. }
@@ -768,8 +764,6 @@ impl Host {
             | Command::SetDisplayChrome { .. }
             | Command::FitDisplayChrome(..)
             | Command::ResetDisplayChrome(..)
-            | Command::SetItemShowFor { .. }
-            | Command::ShowItem(..)
             | Command::SetSourceStyle { .. }
             | Command::SetSourceScroll { .. }
             | Command::ScrollLive { .. } => self.item_display_command(c, notify),
