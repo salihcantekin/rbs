@@ -86,9 +86,9 @@ impl Host {
         let collection = &mut self.collection;
         let apply = |r: Undo| collection.undo(r);
         let done = if back {
-            self.history.undo(apply)
+            self.edits.history.undo(apply)
         } else {
-            self.history.redo(apply)
+            self.edits.history.redo(apply)
         };
         match done {
             Ok(_) => Ok(()),
@@ -117,5 +117,22 @@ impl Host {
     /// The scene that holds an item.
     pub(super) fn scene_of(&self, item: ItemId) -> Option<SceneId> {
         self.collection.item(item).map(|(s, _)| s)
+    }
+}
+
+/// The undo history and the steps the window shows.
+pub(super) struct EditHistory {
+    /// The user's undo history of scene edits, shared with control API clients.
+    pub(super) history: History<Undo>,
+    /// The next undo and redo as last sent.
+    pub(super) history_shown: (Option<StepInfo>, Option<StepInfo>),
+}
+
+impl EditHistory {
+    pub(super) fn new() -> Self {
+        Self {
+            history: History::new(),
+            history_shown: (None, None),
+        }
     }
 }

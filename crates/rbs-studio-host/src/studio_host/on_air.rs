@@ -184,7 +184,9 @@ impl Host {
     /// A recording, a stream, the virtual camera or the replay buffer runs. Then
     /// every canvas counts as on air (stricter than per canvas, and simple).
     pub(super) fn output_running(&self) -> bool {
-        self.outs.iter().any(|o| o.busy()) || self.camera.is_some() || self.replay_state().armed
+        self.outs.iter().any(|o| o.busy())
+            || self.vcam.camera.is_some()
+            || self.replay_state().armed
     }
 
     /// Refuses `command` from a caller without the irreversible-actions permission

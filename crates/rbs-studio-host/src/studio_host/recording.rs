@@ -629,7 +629,7 @@ impl Host {
             if one == OutputCanvas::Main {
                 folder = path.parent().map(Path::to_path_buf);
                 replacing_separate = self.outs[slot(one)].recording.is_some();
-                if iso.unwrap_or(self.separate_files) && self.marks_separate() {
+                if iso.unwrap_or(self.recording.separate_files) && self.marks_separate() {
                     sound_files = true;
                     separate = r.video.clone().map(|video| {
                         rbs_record::IsoVideoStart::new(String::new(), r.container, video)
@@ -666,7 +666,7 @@ impl Host {
         let folder = self.outs[slot(c)].recording.as_ref().and_then(|(p, _)| {
             // A take with separate files is a folder inside the profile's folder.
             let parent = p.parent()?;
-            Some(if self.iso.is_some() && c == OutputCanvas::Main {
+            Some(if self.recording.iso.is_some() && c == OutputCanvas::Main {
                 parent.parent().unwrap_or(parent).to_path_buf()
             } else {
                 parent.to_path_buf()
@@ -680,7 +680,7 @@ impl Host {
         let e = rbs_record::estimate::estimate(&plan, &limits);
         let mut a = api_estimate(&e, None);
         if c == OutputCanvas::Main
-            && let Some(files) = &self.iso
+            && let Some(files) = &self.recording.iso
         {
             add_software_fallback(&mut a.reasons, &files.software_stopped);
         }
@@ -804,7 +804,7 @@ impl Host {
                 .map(|f| (f.tracks.clone(), f.skipped.clone()))
                 .unwrap_or_default();
             if c == OutputCanvas::Main {
-                self.iso = iso;
+                self.recording.iso = iso;
             }
             self.set_record_state(
                 c,
@@ -1077,7 +1077,7 @@ impl Host {
                 "recording is one name inside the recordings folder",
             ));
         }
-        let folder = &self.profile.folder;
+        let folder = &self.recording.profile.folder;
         let named = folder.join(recording);
         let (dir, manifest) = if named.is_dir() {
             (named, rbs_manifest::FOLDER_MANIFEST.to_owned())
@@ -1121,8 +1121,12 @@ impl Host {
     /// its own are saved.
     pub(super) fn record_profile(&self, c: OutputCanvas) -> &RecordProfile {
         match c {
-            OutputCanvas::Main => &self.profile,
-            OutputCanvas::Vertical => self.vertical_profile.as_ref().unwrap_or(&self.profile),
+            OutputCanvas::Main => &self.recording.profile,
+            OutputCanvas::Vertical => self
+                .recording
+                .vertical_profile
+                .as_ref()
+                .unwrap_or(&self.recording.profile),
         }
     }
 
@@ -1187,7 +1191,7 @@ impl Host {
     ) {
         self.note_encoders(notify);
         if !self.record_profile(c).format.is_audio_only()
-            && let Some(why) = &self.cannot_record
+            && let Some(why) = &self.recording.cannot_record
         {
             notify(recording_update(
                 c,
@@ -1225,7 +1229,7 @@ impl Host {
         // The separate files end with their master (ADR-0086 decision 5).
         let mut separate = Vec::new();
         if c == OutputCanvas::Main
-            && let Some(files) = self.iso.take()
+            && let Some(files) = self.recording.iso.take()
         {
             self.studio.stop_iso_video();
             self.studio.stop_iso_audio();
@@ -1321,12 +1325,13 @@ impl Host {
         let encoder = p
             .encoder
             .clone()
-            .filter(|id| self.encoders.iter().any(|e| e.id == *id));
+            .filter(|id| self.recording.encoders.iter().any(|e| e.id == *id));
         // A vertical recording with no section of its own keeps the main encoding
         // and encodes at the vertical canvas: the main size is not copied.
         let size = match c {
             OutputCanvas::Main => p.output_size.map(|s| s.pair()),
             OutputCanvas::Vertical => self
+                .recording
                 .vertical_profile
                 .as_ref()
                 .and_then(|v| v.output_size)
@@ -1341,7 +1346,7 @@ impl Host {
             audio_bitrate_bps: start.audio_bitrate_bps,
             bit_depth: start.bit_depth,
             size: start.size,
-            iso: self.separate_files,
+            iso: self.recording.separate_files,
             editor_project: p.editor_project,
             markers: p.markers,
         })
@@ -1370,7 +1375,7 @@ impl Host {
             return;
         }
         let started = if !self.record_profile(c).format.is_audio_only()
-            && let Some(why) = &self.cannot_record
+            && let Some(why) = &self.recording.cannot_record
         {
             Err(why.clone())
         } else {
@@ -1488,7 +1493,8 @@ impl Host {
             let _ = self.collection.undo(undo);
             return Err(Refusal::Invalid(format!("{e}.")));
         }
-        self.history
+        self.edits
+            .history
             .record(EditKind::RecordSeparately, &name, 0, vec![undo]);
         Ok(true)
     }
@@ -1576,4 +1582,40 @@ fn audio_tracks(manifest: &rbs_manifest::RecordingManifest) -> Vec<api::RecordTr
             })
         })
         .collect()
+}
+
+/// The recording's settings: the profiles, separate files, the limit policy and the encoders.
+pub(super) struct RecordingState {
+    /// The recording settings as the UI saved them.
+    pub(super) profile: RecordProfile,
+    /// The vertical canvas's recording settings as saved; `None`: it uses `profile`.
+    pub(super) vertical_profile: Option<RecordProfile>,
+    /// The main recording's separate files while it runs (ADR-0086).
+    pub(super) iso: Option<IsoFiles>,
+    /// The output profile's Separate files switch (ADR-0086 decision 4).
+    pub(super) separate_files: bool,
+    /// The profile's `recording.iso.on_hardware_limit` (ADR-0087 decision 5), and
+    /// whether this build knows the saved value.
+    pub(super) limit_policy: (LimitPolicy, bool),
+    /// Video encoders, best first. Empty until [`Host::ensure_encoders`].
+    pub(super) encoders: Vec<EncoderInfo>,
+    /// Video and audio encoders have been probed once.
+    pub(super) encoders_probed: bool,
+    /// Why this system cannot record.
+    pub(super) cannot_record: Option<String>,
+}
+
+impl RecordingState {
+    pub(super) fn new(encoders: Vec<EncoderInfo>, cannot_record: Option<String>) -> Self {
+        Self {
+            separate_files: true,
+            limit_policy: (LimitPolicy::Ask, true),
+            iso: None,
+            profile: RecordProfile::new(),
+            encoders,
+            encoders_probed: false,
+            cannot_record,
+            vertical_profile: None,
+        }
+    }
 }

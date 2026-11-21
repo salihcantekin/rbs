@@ -7,7 +7,7 @@ impl Host {
     /// (ADR-0111 decision 3).
     pub(super) fn output_canvases(&self) -> Vec<OutputCanvas> {
         let mut all = vec![OutputCanvas::Main];
-        if self.vertical.is_some() {
+        if self.verticals.vertical.is_some() {
             all.push(OutputCanvas::Vertical);
         }
         all
@@ -19,6 +19,7 @@ impl Host {
         match c {
             OutputCanvas::Main => Ok(None),
             OutputCanvas::Vertical => self
+                .verticals
                 .vertical
                 .map(|v| Some(v.canvas))
                 .ok_or_else(|| Refusal::NotFound("There is no vertical canvas.".to_owned())),
@@ -39,7 +40,7 @@ impl Host {
         asked: Option<OutputCanvas>,
     ) -> Result<OutputCanvas, ApiError> {
         let c = asked.unwrap_or_default();
-        if c == OutputCanvas::Vertical && self.vertical.is_none() {
+        if c == OutputCanvas::Vertical && self.verticals.vertical.is_none() {
             return Err(ApiError::new(
                 ErrorKind::NotFound,
                 "there is no vertical canvas",
@@ -59,7 +60,7 @@ impl Host {
     ) -> Result<(), Refusal> {
         let started = self.start_camera(settings);
         match &started {
-            Ok(()) => self.camera_due = None,
+            Ok(()) => self.vcam.camera_due = None,
             Err(why) if show_error => notify(Update::Error(why.text().to_owned())),
             Err(_) => {}
         }
@@ -71,8 +72,8 @@ impl Host {
     /// Stops sending to the virtual camera, and tells the UI and `vcam.changed`.
     pub(super) fn stop_camera(&mut self, notify: &dyn Fn(Update)) {
         self.studio.stop_virtual_camera();
-        self.camera = None;
-        self.camera_due = None;
+        self.vcam.camera = None;
+        self.vcam.camera_due = None;
         notify(Update::VirtualCamera(None));
         self.camera_changed();
     }
@@ -80,8 +81,8 @@ impl Host {
     /// The camera for `vcam.status` (with its counters) and `vcam.changed` (without).
     pub(super) fn api_camera(&self, frames: bool) -> api::VcamStatus {
         let sending = self.camera_status();
-        let (state, reason) = match self.camera_setup.as_ref().map(|s| &s.state) {
-            _ if self.camera_factory.is_none() => (
+        let (state, reason) = match self.vcam.camera_setup.as_ref().map(|s| &s.state) {
+            _ if self.vcam.camera_factory.is_none() => (
                 Some(api::VcamInstall::Unavailable),
                 Some("The virtual camera is not available on this computer".to_owned()),
             ),
@@ -97,7 +98,7 @@ impl Host {
             // A state a later port version adds: not known to this version.
             Some(Some(_)) => (None, None),
         };
-        let (width, height, rate) = match (&sending, &self.camera_setup) {
+        let (width, height, rate) = match (&sending, &self.vcam.camera_setup) {
             (Some(s), _) => (s.width, s.height, s.rate),
             (None, Some(setup)) => (setup.width, setup.height, rounded_rate(setup.fps)),
             (None, None) => (0, 0, 0),
@@ -129,10 +130,10 @@ impl Host {
     /// Publishes `vcam.changed` when the camera's state differs from the last one.
     pub(super) fn camera_changed(&mut self) {
         let now = self.api_camera(false);
-        if self.camera_published.as_ref() == Some(&now) {
+        if self.vcam.camera_published.as_ref() == Some(&now) {
             return;
         }
-        self.camera_published = Some(now.clone());
+        self.vcam.camera_published = Some(now.clone());
         self.events
             .changed(StateKey::topic(Topic::VcamChanged), || {
                 EventPayload::VcamChanged(now)
@@ -144,13 +145,13 @@ impl Host {
         if let Some(why) = self.calibration_blocks() {
             return Err(Refusal::Conflict(format!("{why}.")));
         }
-        let factory = self.camera_factory.clone().ok_or_else(|| {
+        let factory = self.vcam.camera_factory.clone().ok_or_else(|| {
             Refusal::Failed("The virtual camera is not available on this computer.".to_owned())
         })?;
         self.studio
             .start_virtual_camera(&*factory, settings)
             .map_err(|e| Refusal::Failed(format!("The virtual camera did not start: {e}")))?;
-        self.camera = Some(settings);
+        self.vcam.camera = Some(settings);
         Ok(())
     }
 
@@ -175,8 +176,8 @@ impl Host {
         now: Timestamp,
         notify: &dyn Fn(Update),
     ) -> Option<Duration> {
-        if self.camera.is_none() {
-            if self.camera_due.take().is_some() {
+        if self.vcam.camera.is_none() {
+            if self.vcam.camera_due.take().is_some() {
                 notify(Update::Error(
                     "The virtual camera stopped: it could not start again with the new canvas."
                         .into(),
@@ -186,11 +187,11 @@ impl Host {
             }
             return None;
         }
-        let due = *self.camera_due.get_or_insert(now);
+        let due = *self.vcam.camera_due.get_or_insert(now);
         if now < due {
             return Some(due.saturating_since(now));
         }
-        self.camera_due = Some(now + STATS_INTERVAL);
+        self.vcam.camera_due = Some(now + STATS_INTERVAL);
         notify(Update::VirtualCamera(self.camera_status()));
         // A failure of the camera's node, or its end, is a change of state.
         self.camera_changed();
@@ -201,7 +202,7 @@ impl Host {
     /// on a copy of the collection; the collection and the studio stay as they were when
     /// any step is refused.
     pub(super) fn add_vertical(&mut self, spec: VerticalCanvas) -> Result<bool, Refusal> {
-        if self.vertical.is_some() {
+        if self.verticals.vertical.is_some() {
             return Err(Refusal::Conflict(
                 "There is a vertical canvas already.".to_owned(),
             ));
@@ -282,8 +283,8 @@ impl Host {
             self.vertical_extra(canvas),
         ) {
             Ok(_) => {
-                self.vertical_shared = shared;
-                self.vertical = Some(VerticalState {
+                self.verticals.vertical_shared = shared;
+                self.verticals.vertical = Some(VerticalState {
                     canvas,
                     size: spec.size,
                     follow: spec.follow,
@@ -309,7 +310,7 @@ impl Host {
     /// Add made a second one (ADR-0093 decision 9). A canvas that cannot start is told
     /// once and stays in the document.
     pub(super) fn restore_vertical(&mut self) {
-        if self.vertical.is_some() {
+        if self.verticals.vertical.is_some() {
             return;
         }
         let Some(state) = saved_vertical(&self.collection, self.canvas) else {
@@ -323,11 +324,11 @@ impl Host {
             .activate_canvas(running, &self.adapters.sources, extra)
         {
             Ok(_) => {
-                self.vertical = Some(state);
+                self.verticals.vertical = Some(state);
                 self.waiting = self.studio.waiting();
             }
             Err(e) => {
-                self.vertical_restore_error =
+                self.verticals.vertical_restore_error =
                     Some(format!("The vertical canvas did not start: {e}"));
             }
         }
@@ -336,7 +337,11 @@ impl Host {
     pub(super) fn vertical_extra(&self, canvas: CanvasId) -> ExtraCanvas {
         let extra = ExtraCanvas::new(canvas);
         let picture = self.collection.canvas(canvas);
-        match (self.vertical_picture, self.preview_surfaces, picture) {
+        match (
+            self.verticals.vertical_picture,
+            self.preview_surfaces,
+            picture,
+        ) {
             (true, Some(_), Some(info)) => {
                 extra.with_preview(preview_desc(info.size, info.frame_rate))
             }
@@ -347,8 +352,8 @@ impl Host {
     /// The vertical canvas's panel opened or closed: its picture starts or stops, also
     /// while its outputs run.
     pub(super) fn set_vertical_picture(&mut self, on: bool) -> Result<(), Refusal> {
-        self.vertical_picture = on;
-        let Some(v) = self.vertical else {
+        self.verticals.vertical_picture = on;
+        let Some(v) = self.verticals.vertical else {
             return Ok(());
         };
         let desc = self.vertical_extra(v.canvas).preview;
@@ -364,7 +369,7 @@ impl Host {
 
     /// Stops the second canvas and removes it from the collection.
     pub(super) fn remove_vertical(&mut self) -> Result<bool, Refusal> {
-        let Some(state) = self.vertical else {
+        let Some(state) = self.verticals.vertical else {
             return Ok(false);
         };
         if self.outs[slot(OutputCanvas::Vertical)].busy() {
@@ -377,7 +382,7 @@ impl Host {
             .remove_canvas(state.canvas)
             .map_err(|e| Refusal::of(&e))?;
         // The canvas leaves the engine while it is still in the collection.
-        let run = run_copy_or(&self.collection, self.canvas, self.held.as_ref());
+        let run = run_copy_or(&self.collection, self.canvas, self.program.held.as_ref());
         self.studio
             .deactivate_canvas(
                 run.as_ref().unwrap_or(&self.collection),
@@ -391,7 +396,7 @@ impl Host {
                 e => Refusal::Failed(e.to_string()),
             })?;
         // The scenes the add shared go back to the main canvas (the removal is one step).
-        for id in std::mem::take(&mut self.vertical_shared) {
+        for id in std::mem::take(&mut self.verticals.vertical_shared) {
             if draft
                 .scenes_for(self.canvas)
                 .any(|s| s.id == id && s.scope == SceneScope::Shared)
@@ -401,10 +406,10 @@ impl Host {
         }
         self.note_collection();
         self.collection = draft;
-        self.vertical = None;
+        self.verticals.vertical = None;
         // Steps that wrote vertical layouts would name a canvas that is gone (scene
         // model invariant 4), so the history ends here, as after a canvas change.
-        self.history.clear();
+        self.edits.history.clear();
         self.forget_vertical_outputs();
         self.waiting = self.studio.waiting();
         Ok(true)
@@ -414,7 +419,7 @@ impl Host {
     /// edited, which is the scene on air outside studio mode (it follows the main
     /// program and shows no fallback).
     pub(super) fn vertical_edits(&self) -> Option<CanvasId> {
-        let v = self.vertical?;
+        let v = self.verticals.vertical?;
         let shown = self.vertical_shown()?;
         (self.preview().is_none() && shown == self.edited()).then_some(v.canvas)
     }
@@ -423,7 +428,7 @@ impl Host {
     /// program scene (or its fallback), not its own `program`, which is only what it
     /// showed before it followed.
     pub(super) fn vertical_shown(&self) -> Option<SceneId> {
-        let v = self.vertical?;
+        let v = self.verticals.vertical?;
         let canvas = self.collection.canvas(v.canvas)?;
         if canvas.follow.is_some() {
             self.collection
@@ -444,6 +449,7 @@ impl Host {
         scene: Option<SceneId>,
     ) -> Result<u32, Refusal> {
         let v = self
+            .verticals
             .vertical
             .ok_or_else(|| Refusal::NotFound("There is no vertical canvas.".into()))?;
         let scene = match scene {
@@ -484,7 +490,8 @@ impl Host {
                 &BTreeMap::new(),
             )
             .map_err(|e| Refusal::of(&e))?;
-        self.history
+        self.edits
+            .history
             .record(EditKind::Transform, &name, 0, vec![undo]);
         Ok(count)
     }
@@ -494,6 +501,7 @@ impl Host {
     /// (ADR-0110), and the undo history stays. `Ok(false)` when it has that size.
     pub(super) fn set_vertical_size(&mut self, size: Size) -> Result<bool, Refusal> {
         let v = self
+            .verticals
             .vertical
             .ok_or_else(|| Refusal::NotFound("There is no vertical canvas.".into()))?;
         if v.size == size {
@@ -513,7 +521,7 @@ impl Host {
         draft
             .set_canvas_format(v.canvas, size, fps)
             .map_err(|e| Refusal::of(&e))?;
-        let run = run_copy_or(&self.collection, self.canvas, self.held.as_ref());
+        let run = run_copy_or(&self.collection, self.canvas, self.program.held.as_ref());
         self.studio
             .deactivate_canvas(
                 run.as_ref().unwrap_or(&self.collection),
@@ -537,7 +545,7 @@ impl Host {
         };
         match started {
             Ok(_) => {
-                self.vertical = Some(VerticalState { size, ..v });
+                self.verticals.vertical = Some(VerticalState { size, ..v });
                 self.waiting = self.studio.waiting();
                 Ok(true)
             }
@@ -553,7 +561,7 @@ impl Host {
                     .activate_canvas(running, &self.adapters.sources, extra)
                     .is_err()
                 {
-                    self.vertical = None;
+                    self.verticals.vertical = None;
                 }
                 self.waiting = self.studio.waiting();
                 Err(Refusal::Failed(format!(
@@ -581,7 +589,7 @@ impl Host {
                 "Position and size must be numbers, and the size cannot be 0.".into(),
             ));
         }
-        if self.vertical.is_none() {
+        if self.verticals.vertical.is_none() {
             return Err(Refusal::NotFound("There is no vertical canvas.".into()));
         }
         let canvas = self.vertical_edits().ok_or_else(|| {
@@ -622,7 +630,8 @@ impl Host {
             .set_item_layout(item, Some(canvas), stored)
             .map_err(|e| Refusal::of(&e))?;
         let name = self.name_of(id);
-        self.history
+        self.edits
+            .history
             .record(EditKind::Place, &name, gesture, vec![undo]);
         Ok(true)
     }
@@ -742,25 +751,25 @@ impl Host {
                 self.end_recording(OutputCanvas::Vertical, notify);
                 self.publish(notify);
             }
-            Command::SetVerticalProfile(profile) => self.vertical_profile = profile,
+            Command::SetVerticalProfile(profile) => self.recording.vertical_profile = profile,
             Command::SetVerticalStreamProfile(profile) => {
-                self.vertical_stream_profile = profile;
+                self.streaming.vertical_stream_profile = profile;
                 self.availability_changed();
             }
             Command::SetStreamDestinations(destinations, unloaded) => {
-                self.destinations = destinations;
-                self.destinations_unloaded = unloaded;
+                self.streaming.destinations = destinations;
+                self.streaming.destinations_unloaded = unloaded;
                 self.availability_changed();
             }
             Command::SetVerticalFlags(flags) => {
-                if flags != self.vertical_flags {
-                    self.vertical_flags = flags;
+                if flags != self.verticals.vertical_flags {
+                    self.verticals.vertical_flags = flags;
                     self.settings_changed();
                 }
             }
             Command::SetSeparateFiles(files) => {
-                self.separate_files = files.enabled;
-                self.limit_policy = files.limit_policy();
+                self.recording.separate_files = files.enabled;
+                self.recording.limit_policy = files.limit_policy();
             }
             Command::SetVerticalPicture(on) => {
                 // Turning the picture off cannot leave anything to report: the node
@@ -793,8 +802,8 @@ impl Host {
                 }
             }
             Command::SetProfile(profile) => {
-                if profile != self.profile {
-                    self.profile = profile;
+                if profile != self.recording.profile {
+                    self.recording.profile = profile;
                     self.settings_changed();
                 }
             }
@@ -812,7 +821,7 @@ impl Host {
             }
             Command::StartVirtualCamera { width, height, fps } => {
                 // An API client started it first: show the camera that runs, no error.
-                if self.camera.is_some() {
+                if self.vcam.camera.is_some() {
                     notify(Update::VirtualCamera(self.camera_status()));
                 } else {
                     let settings = VirtualCameraSettings::new(width, height, fps);
@@ -851,4 +860,48 @@ impl Host {
             _ => {}
         }
     }
+}
+
+/// The virtual camera: its factory, settings, setup and what was published.
+pub(super) struct CameraState {
+    /// The platform's virtual camera.
+    pub(super) camera_factory: Option<Arc<dyn VirtualCameraFactory>>,
+    /// What the virtual camera sends while it sends: started again after a restart.
+    pub(super) camera: Option<VirtualCameraSettings>,
+    /// When the camera's counters go out next; `None` while it does not send.
+    pub(super) camera_due: Option<Timestamp>,
+    /// The camera as the app's settings know it; `None` until the app sent it.
+    pub(super) camera_setup: Option<CameraSetup>,
+    /// The `vcam.changed` state last published.
+    pub(super) camera_published: Option<api::VcamStatus>,
+}
+
+impl CameraState {
+    pub(super) fn new(camera_factory: Option<Arc<dyn VirtualCameraFactory>>) -> Self {
+        Self {
+            camera_factory,
+            camera: None,
+            camera_due: None,
+            camera_setup: None,
+            camera_published: None,
+        }
+    }
+}
+
+/// The vertical canvas: its state, flags, shared scenes and picture.
+#[derive(Default)]
+pub(super) struct VerticalHost {
+    /// The second canvas that runs, and what was last sent about it (ADR-0093).
+    pub(super) vertical: Option<VerticalState>,
+    /// The saved vertical canvas could not start again; told once at the next publish.
+    pub(super) vertical_restore_error: Option<String>,
+    /// Whether Record and Go live also act on the vertical outputs (ADR-0111), as the
+    /// UI last sent them.
+    pub(super) vertical_flags: VerticalFlags,
+    /// Scenes `add_vertical` made shared, so removing the canvas can scope them back.
+    pub(super) vertical_shared: Vec<SceneId>,
+    pub(super) vertical_sent: Option<Option<VerticalState>>,
+    /// The vertical canvas's panel shows: its picture runs (ADR-0093 decision 7).
+    pub(super) vertical_picture: bool,
+    pub(super) vertical_preview_sent: Option<PreviewEndpoint>,
 }

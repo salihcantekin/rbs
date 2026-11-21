@@ -22,11 +22,11 @@ impl Host {
     /// meter keeps its measurement. The choice is saved first: a failed save changes
     /// nothing, and a meter that cannot start puts the old file back.
     pub(super) fn set_loudness_enabled(&mut self, on: bool) -> Result<(), Refusal> {
-        let changed = self.loudness_on != on;
+        let changed = self.loudness_state.loudness_on != on;
         if changed {
             self.save_loudness(&LoudnessSettings {
                 shown: on,
-                ..self.loudness_settings
+                ..self.loudness_state.loudness_settings
             })?;
         }
         if on {
@@ -39,7 +39,7 @@ impl Host {
         } else {
             self.studio.stop_loudness();
         }
-        self.loudness_on = on;
+        self.loudness_state.loudness_on = on;
         Ok(())
     }
 
@@ -54,11 +54,11 @@ impl Host {
         let new = LoudnessSettings {
             target: loudness_settings::tenth(target),
             true_peak_limit: loudness_settings::tenth(true_peak_limit),
-            shown: self.loudness_on,
-            ..self.loudness_settings
+            shown: self.loudness_state.loudness_on,
+            ..self.loudness_state.loudness_settings
         };
-        if new.target == self.loudness_settings.target
-            && new.true_peak_limit == self.loudness_settings.true_peak_limit
+        if new.target == self.loudness_state.loudness_settings.target
+            && new.true_peak_limit == self.loudness_state.loudness_settings.true_peak_limit
         {
             return Ok(None);
         }
@@ -68,8 +68,8 @@ impl Host {
 
     /// Applies settings that [`Self::save_loudness_settings`] saved.
     pub(super) fn apply_loudness_settings(&mut self, saved: LoudnessSettings) {
-        self.loudness_settings.target = saved.target;
-        self.loudness_settings.true_peak_limit = saved.true_peak_limit;
+        self.loudness_state.loudness_settings.target = saved.target;
+        self.loudness_state.loudness_settings.true_peak_limit = saved.true_peak_limit;
         self.settings_changed();
     }
 
@@ -77,8 +77,8 @@ impl Host {
     /// not be applied. Best effort: the earlier error is the one reported.
     pub(super) fn undo_loudness_save(&self) {
         let _ = self.save_loudness(&LoudnessSettings {
-            shown: self.loudness_on,
-            ..self.loudness_settings
+            shown: self.loudness_state.loudness_on,
+            ..self.loudness_state.loudness_settings
         });
     }
 
@@ -95,10 +95,10 @@ impl Host {
     /// What the Mixer and Settings show ([`super::Update::Loudness`]).
     pub(super) fn loudness_view(&self) -> LoudnessView {
         LoudnessView {
-            shown: self.loudness_on,
+            shown: self.loudness_state.loudness_on,
             readout: self.studio.loudness_readout().cloned(),
-            target: self.loudness_settings.target,
-            true_peak_limit: self.loudness_settings.true_peak_limit,
+            target: self.loudness_state.loudness_settings.target,
+            true_peak_limit: self.loudness_state.loudness_settings.true_peak_limit,
         }
     }
 
@@ -115,7 +115,7 @@ impl Host {
 
     /// Starts the meter in a new studio when it was on.
     pub(super) fn restore_loudness(&mut self) {
-        if self.loudness_on {
+        if self.loudness_state.loudness_on {
             // A studio without audio has nothing to measure: `loudness.status` stays
             // enabled with no values, and the next studio with a mixer measures again.
             let _ = self.studio.start_loudness();
@@ -126,7 +126,7 @@ impl Host {
     pub(super) fn api_loudness(&self) -> api::LoudnessStatus {
         match self.studio.loudness() {
             Some(l) => api::LoudnessStatus {
-                enabled: self.loudness_on,
+                enabled: self.loudness_state.loudness_on,
                 momentary: value(l.momentary),
                 short_term: value(l.short_term),
                 integrated: value(l.integrated),
@@ -134,15 +134,35 @@ impl Host {
                 true_peak_max: value(l.true_peak),
                 momentary_max: value(l.max_momentary),
                 short_term_max: value(l.max_short_term),
-                target: Some(self.loudness_settings.target),
-                true_peak_limit: Some(self.loudness_settings.true_peak_limit),
+                target: Some(self.loudness_state.loudness_settings.target),
+                true_peak_limit: Some(self.loudness_state.loudness_settings.true_peak_limit),
             },
             None => api::LoudnessStatus {
-                enabled: self.loudness_on,
-                target: Some(self.loudness_settings.target),
-                true_peak_limit: Some(self.loudness_settings.true_peak_limit),
+                enabled: self.loudness_state.loudness_on,
+                target: Some(self.loudness_state.loudness_settings.target),
+                true_peak_limit: Some(self.loudness_state.loudness_settings.true_peak_limit),
                 ..api::LoudnessStatus::default()
             },
+        }
+    }
+}
+
+/// The loudness meter: shown or not, its settings and what was sent.
+pub(super) struct LoudnessState {
+    /// The main canvas's loudness meter runs (`loudness.set_enabled`), with its saved
+    /// target and limit (ADR-0092; `loudness.toml`, where `shown` is `loudness_on`).
+    pub(super) loudness_on: bool,
+    pub(super) loudness_settings: crate::loudness_settings::LoudnessSettings,
+    /// What the UI was last told of the loudness meter ([`Update::Loudness`]).
+    pub(super) loudness_sent: Option<LoudnessView>,
+}
+
+impl LoudnessState {
+    pub(super) fn new(loudness_settings: crate::loudness_settings::LoudnessSettings) -> Self {
+        Self {
+            loudness_on: loudness_settings.shown,
+            loudness_settings,
+            loudness_sent: None,
         }
     }
 }

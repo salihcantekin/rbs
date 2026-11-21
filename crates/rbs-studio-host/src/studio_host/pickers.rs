@@ -132,8 +132,12 @@ impl Host {
         let Some(factory) = self.adapters.sources.capture_factory(&type_id, &adapter_id) else {
             return;
         };
-        let generation = self.region_grabs.fetch_add(1, AtomicOrdering::AcqRel) + 1;
-        let current = Arc::clone(&self.region_grabs);
+        let generation = self
+            .pickers
+            .region_grabs
+            .fetch_add(1, AtomicOrdering::AcqRel)
+            + 1;
+        let current = Arc::clone(&self.pickers.region_grabs);
         let inbox = Weak::clone(&self.inbox);
         let _ = std::thread::Builder::new()
             .name("rbs-region-grab".into())
@@ -164,7 +168,7 @@ impl Host {
         rows: Vec<(String, String)>,
         max: (u32, u32),
     ) {
-        let generation = self.thumbs.fetch_add(1, AtomicOrdering::AcqRel) + 1;
+        let generation = self.pickers.thumbs.fetch_add(1, AtomicOrdering::AcqRel) + 1;
         let type_id = kind.type_id();
         let size = rbs_core::media::Size {
             width: max.0,
@@ -182,7 +186,7 @@ impl Host {
         for n in 0..2 {
             let (queue, current, inbox) = (
                 Arc::clone(&queue),
-                Arc::clone(&self.thumbs),
+                Arc::clone(&self.pickers.thumbs),
                 Weak::clone(&self.inbox),
             );
             let spawned = std::thread::Builder::new()
@@ -215,7 +219,7 @@ impl Host {
     /// not asked yet and can show a prompt, at most once per run (ADR-0141 decision 4).
     pub(super) fn prompt_first(&self, kind: SourceKind) -> Option<PermissionKind> {
         let p = PermissionKind::of_type(&kind.type_id())?;
-        if self.permission_asked.contains(&p) {
+        if self.pickers.permission_asked.contains(&p) {
             return None;
         }
         let info = self.adapters.sources.permission(p);
@@ -234,7 +238,7 @@ impl Host {
     pub(super) fn send_permissions(&self, notify: &dyn Fn(Update)) {
         notify(Update::Permissions {
             rows: self.permission_rows(),
-            waiting: self.permission_asking.keys().next().copied(),
+            waiting: self.pickers.permission_asking.keys().next().copied(),
         });
     }
 
@@ -246,12 +250,12 @@ impl Host {
         then: Option<Command>,
         notify: &dyn Fn(Update),
     ) {
-        if let Some(waiting) = self.permission_asking.get_mut(&kind) {
+        if let Some(waiting) = self.pickers.permission_asking.get_mut(&kind) {
             waiting.extend(then);
             return;
         }
-        if !self.permission_asked.contains(&kind) {
-            self.permission_asked.push(kind);
+        if !self.pickers.permission_asked.contains(&kind) {
+            self.pickers.permission_asked.push(kind);
         }
         let request = self.adapters.sources.permission_request(kind);
         if request.is_empty() {
@@ -261,7 +265,8 @@ impl Host {
             self.send_permissions(notify);
             return;
         }
-        self.permission_asking
+        self.pickers
+            .permission_asking
             .insert(kind, then.into_iter().collect());
         self.send_permissions(notify);
         let inbox = Weak::clone(&self.inbox);
@@ -283,7 +288,11 @@ impl Host {
     /// were refused when it is allowed now (not for kinds that apply after a restart),
     /// and tell the UI.
     pub(super) fn permission_answered(&mut self, kind: PermissionKind, notify: &dyn Fn(Update)) {
-        let waiting = self.permission_asking.remove(&kind).unwrap_or_default();
+        let waiting = self
+            .pickers
+            .permission_asking
+            .remove(&kind)
+            .unwrap_or_default();
         let info = self.adapters.sources.permission(kind);
         if info.status == PermissionStatus::Allowed && !info.restart {
             let refused: Vec<SourceId> = self
@@ -353,4 +362,22 @@ impl Host {
             self.post(Msg::PickFailed(format!("The picker could not start: {e}")));
         }
     }
+}
+
+/// The source pickers' state: thumbnail and region grabs, and the permission prompts.
+#[derive(Default)]
+pub(super) struct Pickers {
+    /// The generation of the thumbnail request that may still deliver (ADR-0077).
+    pub(super) thumbs: Arc<AtomicU64>,
+    /// OS permission prompts showing now, each with the commands waiting for its
+    /// answer (ADR-0141 decision 4). One prompt per kind at a time.
+    pub(super) permission_asking: HashMap<PermissionKind, Vec<Command>>,
+    /// Kinds asked for in this run: adding a source prompts at most once per kind.
+    pub(super) permission_asked: Vec<PermissionKind>,
+    /// The kinds some shown source was refused, when the UI last got the statuses for
+    /// them: a newly refused kind sends the statuses, so Properties offers Allow or Fix
+    /// permission.
+    pub(super) permission_refused: Vec<PermissionKind>,
+    /// The generation of the region-preview grab that may still deliver (ADR-0103).
+    pub(super) region_grabs: Arc<AtomicU64>,
 }

@@ -309,11 +309,14 @@ impl Host {
                 .collect();
             refused.sort_by_key(|k| PermissionKind::ALL.iter().position(|a| a == k));
             refused.dedup();
-            if refused != self.permission_refused {
-                if refused.iter().any(|k| !self.permission_refused.contains(k)) {
+            if refused != self.pickers.permission_refused {
+                if refused
+                    .iter()
+                    .any(|k| !self.pickers.permission_refused.contains(k))
+                {
                     self.send_permissions(notify);
                 }
-                self.permission_refused = refused;
+                self.pickers.permission_refused = refused;
             }
             self.rows = rows.clone();
             notify(Update::Sources(rows));

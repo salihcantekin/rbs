@@ -61,7 +61,7 @@ impl Host {
         let mut notes: Vec<api::ObsReportEntry> =
             written.notes.iter().map(obs_import::api_entry).collect();
         if let Some((account, key)) = key
-            && let Err(e) = self.keys.write(&account, &key)
+            && let Err(e) = self.streaming.keys.write(&account, &key)
         {
             notes.push(api::ObsReportEntry {
                 outcome: "skipped".into(),
@@ -71,7 +71,7 @@ impl Host {
                 scenes: Vec::new(),
                 reason: format!(
                     "The stream key could not be saved in {}: {e}.",
-                    self.keys.place()
+                    self.streaming.keys.place()
                 ),
                 hint: Some("Enter it in Settings › Stream.".into()),
             });

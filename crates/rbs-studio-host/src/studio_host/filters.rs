@@ -454,7 +454,9 @@ impl Host {
             .collection
             .add_filter(source, ty.type_id(), filter_settings(&ty, &values))
             .map_err(|e| Refusal::of(&e))?;
-        self.history.record(EditKind::Filter, &name, 0, vec![undo]);
+        self.edits
+            .history
+            .record(EditKind::Filter, &name, 0, vec![undo]);
         Ok(id)
     }
 
@@ -491,7 +493,7 @@ impl Host {
         match result {
             Ok(()) if records.is_empty() => Ok(false),
             Ok(()) => {
-                self.history.record(EditKind::Look, &name, 0, records);
+                self.edits.history.record(EditKind::Look, &name, 0, records);
                 Ok(true)
             }
             Err(e) => {
@@ -638,7 +640,9 @@ impl Host {
         match result {
             Ok(()) if records.is_empty() => Ok(false),
             Ok(()) => {
-                self.history.record(EditKind::Filter, &name, 0, records);
+                self.edits
+                    .history
+                    .record(EditKind::Filter, &name, 0, records);
                 Ok(true)
             }
             Err(e) => {
@@ -656,7 +660,9 @@ impl Host {
             .collection
             .remove_filter(source, filter)
             .map_err(|e| Refusal::of(&e))?;
-        self.history.record(EditKind::Filter, &name, 0, vec![undo]);
+        self.edits
+            .history
+            .record(EditKind::Filter, &name, 0, vec![undo]);
         Ok(())
     }
 
@@ -682,7 +688,9 @@ impl Host {
             .collection
             .move_filter(source, filter, index)
             .map_err(|e| Refusal::of(&e))?;
-        self.history.record(EditKind::Filter, &name, 0, vec![undo]);
+        self.edits
+            .history
+            .record(EditKind::Filter, &name, 0, vec![undo]);
         Ok(true)
     }
 
@@ -701,7 +709,9 @@ impl Host {
             .collection
             .set_filter_enabled(source, filter, enabled)
             .map_err(|e| Refusal::of(&e))?;
-        self.history.record(EditKind::Filter, &name, 0, vec![undo]);
+        self.edits
+            .history
+            .record(EditKind::Filter, &name, 0, vec![undo]);
         Ok(true)
     }
 
@@ -750,7 +760,9 @@ impl Host {
             .collection
             .set_filter_settings(source, filter, settings)
             .map_err(|e| Refusal::of(&e))?;
-        self.history.record(EditKind::Filter, &name, 0, vec![undo]);
+        self.edits
+            .history
+            .record(EditKind::Filter, &name, 0, vec![undo]);
         Ok(true)
     }
 

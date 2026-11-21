@@ -27,9 +27,9 @@ impl ApiTarget<'_> {
                     output_size_for_canvas(profile.output_size, host.main_canvas_size())?;
                     // A vertical recording without settings of its own runs on these.
                     let uses = host.outs[0].recording.is_some()
-                        || (host.vertical_profile.is_none()
+                        || (host.recording.vertical_profile.is_none()
                             && host.outs[slot(OutputCanvas::Vertical)].recording.is_some());
-                    if uses && profile != host.profile {
+                    if uses && profile != host.recording.profile {
                         return Err(ApiError::new(
                             ErrorKind::Conflict,
                             "stop the recording before changing its settings",
@@ -41,7 +41,7 @@ impl ApiTarget<'_> {
                 };
                 let stream = match &patch.stream {
                     Some(patch) => {
-                        let Some(current) = &host.stream_profile else {
+                        let Some(current) = &host.streaming.stream_profile else {
                             return Err(failed("the studio is still starting; try again"));
                         };
                         let stream = current.with_api(patch).map_err(|why| {
@@ -108,16 +108,16 @@ impl ApiTarget<'_> {
                     return Err(failed(e.into_text()));
                 }
                 if let Some(profile) = profile
-                    && profile != host.profile
+                    && profile != host.recording.profile
                 {
-                    host.profile = profile.clone();
+                    host.recording.profile = profile.clone();
                     notify(Update::Profile(profile));
                     host.settings_changed();
                 }
                 if let Some(stream) = stream
-                    && host.stream_profile.as_ref() != Some(&stream)
+                    && host.streaming.stream_profile.as_ref() != Some(&stream)
                 {
-                    host.stream_profile = Some(stream.clone());
+                    host.streaming.stream_profile = Some(stream.clone());
                     notify(Update::StreamProfile(stream));
                     host.settings_changed();
                 }

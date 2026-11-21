@@ -77,7 +77,7 @@ impl Host {
         // The value comes from the file or is 0, both in range; a refusal leaves the
         // source as it was, which is the safe side.
         if let Ok(undo) = self.collection.set_source_sync_offset(id, want) {
-            self.history.extend_last(kind, name, vec![undo]);
+            self.edits.history.extend_last(kind, name, vec![undo]);
             self.studio
                 .set_audio_offset(id, i64::from(want) * 1_000_000);
         }

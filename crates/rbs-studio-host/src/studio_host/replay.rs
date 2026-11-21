@@ -98,13 +98,13 @@ impl Host {
             .then(|| {
                 self.adapters.audio_encoders.ids().next().map(|_| {
                     let mut a = AudioSettings::default();
-                    a.bitrate_bps = self.profile.encoding().audio_bps();
+                    a.bitrate_bps = self.recording.profile.encoding().audio_bps();
                     a
                 })
             })
             .flatten();
         Ok(ReplaySettings::new(
-            self.profile.video_settings(),
+            self.recording.profile.video_settings(),
             audio,
             self.replay.setup.length(),
             self.replay.setup.memory_limit(),
@@ -350,21 +350,21 @@ impl Host {
             .setup
             .folder
             .clone()
-            .unwrap_or_else(|| self.profile.folder.clone());
+            .unwrap_or_else(|| self.recording.profile.folder.clone());
         std::fs::create_dir_all(&folder).map_err(|e| {
             Refusal::Failed(format!("Cannot make the folder {}: {e}", folder.display()))
         })?;
         let stamp = chrono::Local::now()
             .naive_local()
             .format("%Y-%m-%d %H-%M-%S");
-        let ext = self.profile.format.extension();
+        let ext = self.recording.profile.format.extension();
         let mut path = folder.join(format!("RBS Replay {stamp}.{ext}"));
         let mut n = 2;
         while path.exists() {
             path = folder.join(format!("RBS Replay {stamp} ({n}).{ext}"));
             n += 1;
         }
-        let container = self.profile.format.container();
+        let container = self.recording.profile.format.container();
         let writer = ClipWriter::new(&self.adapters, &rbs_transport::file_url(&path), container)
             .map_err(|e| Refusal::Failed(e.to_string()))?;
         Ok(Box::new(move || {

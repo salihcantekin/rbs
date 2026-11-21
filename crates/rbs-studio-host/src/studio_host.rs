@@ -470,19 +470,8 @@ struct Host {
     media_sent: Option<Vec<MediaTick>>,
     /// The Show cues sent last ([`Update::Cues`]).
     cues_sent: Vec<(ItemId, u32)>,
-    /// The generation of the thumbnail request that may still deliver (ADR-0077).
-    thumbs: Arc<AtomicU64>,
-    /// OS permission prompts showing now, each with the commands waiting for its
-    /// answer (ADR-0141 decision 4). One prompt per kind at a time.
-    permission_asking: HashMap<PermissionKind, Vec<Command>>,
-    /// Kinds asked for in this run: adding a source prompts at most once per kind.
-    permission_asked: Vec<PermissionKind>,
-    /// The kinds some shown source was refused, when the UI last got the statuses for
-    /// them: a newly refused kind sends the statuses, so Properties offers Allow or Fix
-    /// permission.
-    permission_refused: Vec<PermissionKind>,
-    /// The generation of the region-preview grab that may still deliver (ADR-0103).
-    region_grabs: Arc<AtomicU64>,
+    /// The source pickers' state: thumbnail and region grabs, and the permission prompts.
+    pickers: pickers::Pickers,
     /// [`Host::save_stamp`] as last handed to `autosave` or loaded (epoch 0 at start).
     saved: Option<(u64, u64)>,
     studio: Studio,
@@ -503,23 +492,12 @@ struct Host {
     heard: Vec<SourceRow>,
     /// The global sources last published to the Mixer (ADR-0065).
     globals_shown: Vec<SourceRow>,
-    /// Scene sources an API call places into, instead of the edited scene.
-    into: Option<SceneId>,
-    /// In studio mode with the program scene also in preview: the copy of the program
-    /// scene the program shows until the next transition, so edits stay off air
-    /// (ADR-0063). Never saved, never listed.
-    held: Option<Held>,
-    /// The scene the last held copy was taken from, so a transition away from the
-    /// copy names the real scene on `transition.state`.
-    held_was: Option<SceneId>,
-    /// The id of the last held copy, so the next copy taken after it gets the other
-    /// id and a transition from one copy to the next is seen as one.
-    held_id_was: Option<SceneId>,
+    /// The program and its changes: the held copy, the transition and the T-bar.
+    program: held::ProgramState,
     /// The preview scene's picture endpoint last sent to the UI.
     scene_preview_sent: Option<PreviewEndpoint>,
-    /// The vertical canvas's panel shows: its picture runs (ADR-0093 decision 7).
-    vertical_picture: bool,
-    vertical_preview_sent: Option<PreviewEndpoint>,
+    /// The vertical canvas: its state, flags, shared scenes and picture.
+    verticals: outputs::VerticalHost,
     /// Open and suspended projectors (ADR-0125 decision 3). Empty: nothing of them.
     projectors: Vec<ProjectorRun>,
     /// Open Interact windows (ADR-0132 decision 6). Empty: nothing of them.
@@ -529,21 +507,8 @@ struct Host {
     /// `scene.list` for the snapshot last published or last polled. See
     /// [`scene_cache`].
     scene_answer: scene_cache::SceneAnswerCache,
-    /// The second canvas that runs, and what was last sent about it (ADR-0093).
-    vertical: Option<VerticalState>,
-    /// The saved vertical canvas could not start again; told once at the next publish.
-    vertical_restore_error: Option<String>,
-    /// Whether Record and Go live also act on the vertical outputs (ADR-0111), as the
-    /// UI last sent them.
-    vertical_flags: VerticalFlags,
-    /// The output profile's Separate files switch (ADR-0086 decision 4).
-    separate_files: bool,
-    /// The profile's `recording.iso.on_hardware_limit` (ADR-0087 decision 5), and
-    /// whether this build knows the saved value.
-    limit_policy: (LimitPolicy, bool),
-    /// Scenes `add_vertical` made shared, so removing the canvas can scope them back.
-    vertical_shared: Vec<SceneId>,
-    vertical_sent: Option<Option<VerticalState>>,
+    /// The recording's settings: the profiles, separate files, the limit policy and the encoders.
+    recording: recording::RecordingState,
     /// The master meter last sent to the UI.
     master_sent: Option<Arc<rbs_audio::LevelMeter>>,
     /// Meters published for `audio.levels`.
@@ -552,47 +517,16 @@ struct Host {
     sizes: BTreeMap<SourceId, (u32, u32)>,
     /// What Copy attributes took (ADR-0133 decision 6); `None` costs nothing.
     attribute_clipboard: Option<attributes::AttributeSnapshot>,
-    /// The user's undo history of scene edits, shared with control API clients.
-    history: History<Undo>,
-    /// The next undo and redo as last sent.
-    history_shown: (Option<StepInfo>, Option<StepInfo>),
+    /// The undo history and the steps the window shows.
+    edits: history::EditHistory,
     waiting: bool,
-    /// A program switch held back until its entering texts are uploaded, at most
-    /// `TEXT_WAIT_TICKS` render ticks (ADR-0129 decision 7).
-    held_switch: Option<SceneId>,
-    /// The program scene the studio ran at the last update, as (its id in the run
-    /// collection, the user's scene it shows): a held copy (ADR-0063) is the scene it
-    /// was taken from. `None` before the first update.
-    ran_program: Option<(SceneId, SceneId)>,
-    /// The latest T-bar value not yet applied (ADR-0135 decision 1).
-    pending_progress: Option<f32>,
-    /// A T-bar's end is making the program change: it does not cancel itself.
-    taking: bool,
-    /// A manual transition held on the main canvas at the end of the last round.
-    tbar_manual: bool,
-    /// The T-bar went to 0 this round: the rail is there already.
-    tbar_zeroed: bool,
-    /// How long the main recording and stream have run, for live texts (ADR-0129
-    /// decision 11).
-    text_elapsed: text_live::TextElapsed,
-    /// `text-timers.toml` as last read or written.
-    text_timer_file: Vec<crate::text_timers::Entry>,
-    /// The collection's saved timers were handed to the studio.
-    text_timers_restored: bool,
-    /// A text item's drag waiting to rest before it gets its new box (ADR-0129
-    /// decision 12).
-    crisp_pending: Option<text_resize::CrispPending>,
-    /// The font picker waits for the families (read off the control thread).
-    fonts_wanted: bool,
+    /// Live text: timers, elapsed clocks, crisp re-renders and fonts asked for.
+    texts: text_live::TextState,
     /// The recording and stream of each canvas, by [`slot`]
     /// (ADR-0093 decision 6).
     outs: [CanvasOutputs; 2],
-    /// The main recording's separate files while it runs (ADR-0086).
-    iso: Option<IsoFiles>,
-    /// Where the stream key is kept.
-    keys: Arc<dyn KeyStore>,
-    /// The account of the output profile in use.
-    key_account: String,
+    /// The stream's settings: the profiles, the destinations and the key store.
+    streaming: stream::StreamState,
     /// Makes an engine for a restart.
     engine: Box<dyn Fn() -> Engine>,
     gpu: Arc<GpuContext>,
@@ -631,28 +565,8 @@ struct Host {
     meters_applied: bool,
     /// The control API, while remote control is on.
     api: Option<Api>,
-    /// The recording settings as the UI saved them.
-    profile: RecordProfile,
     /// Kinds the adapters can add.
     kinds: Vec<SourceKind>,
-    /// Video encoders, best first. Empty until [`Host::ensure_encoders`].
-    encoders: Vec<EncoderInfo>,
-    /// Video and audio encoders have been probed once.
-    encoders_probed: bool,
-    /// Why this system cannot record.
-    cannot_record: Option<String>,
-    /// The stream settings as the UI uses them; `None` until the UI sent them.
-    stream_profile: Option<StreamProfile>,
-    /// The vertical canvas's recording settings as saved; `None`: it uses `profile`.
-    vertical_profile: Option<RecordProfile>,
-    /// The vertical canvas's stream settings as saved; `None`: none saved, so the
-    /// vertical stream has no server.
-    vertical_stream_profile: Option<StreamProfile>,
-    /// The output profile's stream destinations as the UI sent them (ADR-0127).
-    destinations: Destinations,
-    /// The destinations section did not load (ADR-0148 decision 1): streaming counts
-    /// as available on both canvases.
-    destinations_unloaded: bool,
     /// The output profiles and scene collections as the UI listed them last; `None`
     /// until the UI sent them.
     library: Option<(api::Library, api::Library)>,
@@ -666,25 +580,13 @@ struct Host {
     stats_due: Option<Timestamp>,
     /// The studio's master clock (the engine's), for the stats interval.
     clock: Arc<dyn Clock>,
-    /// The platform's virtual camera.
-    camera_factory: Option<Arc<dyn VirtualCameraFactory>>,
-    /// What the virtual camera sends while it sends: started again after a restart.
-    camera: Option<VirtualCameraSettings>,
-    /// When the camera's counters go out next; `None` while it does not send.
-    camera_due: Option<Timestamp>,
+    /// The virtual camera: its factory, settings, setup and what was published.
+    vcam: outputs::CameraState,
     /// The monitor output: its saved device and volume, when its device opens, what
     /// the API saw last (ADR-0097).
     monitor: monitor::MonitorHost,
-    /// The main canvas's loudness meter runs (`loudness.set_enabled`), with its saved
-    /// target and limit (ADR-0092; `loudness.toml`, where `shown` is `loudness_on`).
-    loudness_on: bool,
-    loudness_settings: crate::loudness_settings::LoudnessSettings,
-    /// What the UI was last told of the loudness meter ([`Update::Loudness`]).
-    loudness_sent: Option<LoudnessView>,
-    /// The camera as the app's settings know it; `None` until the app sent it.
-    camera_setup: Option<CameraSetup>,
-    /// The `vcam.changed` state last published.
-    camera_published: Option<api::VcamStatus>,
+    /// The loudness meter: shown or not, its settings and what was sent.
+    loudness_state: loudness::LoudnessState,
     /// The replay buffer's settings and state (ADR-0088).
     replay: replay::ReplayHost,
     /// Recording protection while an output runs (ADR-0090).
@@ -912,7 +814,7 @@ impl Host {
         match c {
             OutputCanvas::Main => Some(self.scene),
             OutputCanvas::Vertical => {
-                let v = self.vertical.as_ref()?;
+                let v = self.verticals.vertical.as_ref()?;
                 if v.follow {
                     Some(self.scene)
                 } else {
@@ -970,14 +872,14 @@ impl Host {
             .canvas(self.canvas)
             .and_then(|c| c.program)
             .map(|id| {
-                let real = match &self.held {
+                let real = match &self.program.held {
                     Some(h) if h.scene.id == id => h.from,
                     _ => id,
                 };
                 (id, real)
             });
-        let same = same_picture(self.ran_program, program);
-        self.ran_program = program;
+        let same = same_picture(self.program.ran_program, program);
+        self.program.ran_program = program;
         let updated = if same {
             self.studio
                 .update_same_picture(running, &self.adapters.sources)
@@ -1008,7 +910,7 @@ impl Host {
         for e in self.studio.take_scroll_finished() {
             let canvas = if e.canvas == self.canvas {
                 OutputCanvas::Main
-            } else if self.vertical.map(|v| v.canvas) == Some(e.canvas) {
+            } else if self.verticals.vertical.map(|v| v.canvas) == Some(e.canvas) {
                 OutputCanvas::Vertical
             } else {
                 continue;
@@ -1033,11 +935,11 @@ impl Host {
         self.sync_interacts(notify);
         self.publish_save();
         self.refresh_sizes();
-        if self.vertical_sent != Some(self.vertical) {
-            self.vertical_sent = Some(self.vertical);
-            notify(Update::Vertical(self.vertical));
+        if self.verticals.vertical_sent != Some(self.verticals.vertical) {
+            self.verticals.vertical_sent = Some(self.verticals.vertical);
+            notify(Update::Vertical(self.verticals.vertical));
         }
-        if let Some(why) = self.vertical_restore_error.take() {
+        if let Some(why) = self.verticals.vertical_restore_error.take() {
             notify(Update::Error(why));
         }
         let master = self.studio.master_meter().cloned();
@@ -1051,8 +953,8 @@ impl Host {
             notify(Update::MasterMeter(master));
         }
         let loudness = self.loudness_view();
-        if self.loudness_sent.as_ref() != Some(&loudness) {
-            self.loudness_sent = Some(loudness.clone());
+        if self.loudness_state.loudness_sent.as_ref() != Some(&loudness) {
+            self.loudness_state.loudness_sent = Some(loudness.clone());
             notify(Update::Loudness(loudness));
         }
         let stamp = self.compute_list_stamp();
@@ -1071,19 +973,20 @@ impl Host {
             notify(Update::ScenePreview(picture));
         }
         let vertical = self
+            .verticals
             .vertical
             .and_then(|v| self.studio.canvas_preview(v.canvas));
-        if vertical != self.vertical_preview_sent {
-            self.vertical_preview_sent = vertical.clone();
+        if vertical != self.verticals.vertical_preview_sent {
+            self.verticals.vertical_preview_sent = vertical.clone();
             notify(Update::VerticalPreview(vertical));
         }
         // After the rows, so the UI sees the edit before what undoes it.
         let shown = (
-            self.history.next_undo().cloned(),
-            self.history.next_redo().cloned(),
+            self.edits.history.next_undo().cloned(),
+            self.edits.history.next_redo().cloned(),
         );
-        if shown != self.history_shown {
-            self.history_shown = shown.clone();
+        if shown != self.edits.history_shown {
+            self.edits.history_shown = shown.clone();
             notify(Update::History {
                 undo: shown.0,
                 redo: shown.1,
@@ -1109,7 +1012,7 @@ impl Host {
         self.scene.hash(&mut hasher);
         self.preview().hash(&mut hasher);
         self.edited().hash(&mut hasher);
-        self.vertical.map(|v| v.canvas).hash(&mut hasher);
+        self.verticals.vertical.map(|v| v.canvas).hash(&mut hasher);
         self.stinger.cut_found_ms().hash(&mut hasher);
         self.stinger.looking().hash(&mut hasher);
         self.stinger.alpha_unsupported().hash(&mut hasher);

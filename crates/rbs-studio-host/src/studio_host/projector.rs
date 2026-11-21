@@ -10,7 +10,7 @@ impl Host {
     ) -> Option<(CanvasId, Size, FrameRate)> {
         let id = match canvas {
             OutputCanvas::Main => self.canvas,
-            OutputCanvas::Vertical => self.vertical?.canvas,
+            OutputCanvas::Vertical => self.verticals.vertical?.canvas,
         };
         let info = self.collection.canvas(id)?;
         Some((id, info.size, info.frame_rate))

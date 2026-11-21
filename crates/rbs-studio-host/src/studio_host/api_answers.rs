@@ -495,7 +495,7 @@ impl ApiTarget<'_> {
         let notify = self.notify;
         let host = &mut *self.host;
         host.note_encoders(notify);
-        if let Some(why) = &host.cannot_record {
+        if let Some(why) = &host.recording.cannot_record {
             return Err(failed(why.clone()));
         }
         if host.outs[slot(c)].streaming.is_some() {

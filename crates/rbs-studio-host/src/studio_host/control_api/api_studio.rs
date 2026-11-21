@@ -19,6 +19,7 @@ impl ApiTarget<'_> {
                         canvas: host.api_canvas(),
                         kinds: host.kinds.iter().filter_map(|k| api_kind(*k)).collect(),
                         encoders: host
+                            .recording
                             .encoders
                             .iter()
                             .map(|e| api::EncoderInfo {
@@ -29,7 +30,7 @@ impl ApiTarget<'_> {
                                 b_frames_max: e.options.b_frames_max,
                             })
                             .collect(),
-                        cannot_record: host.cannot_record.clone(),
+                        cannot_record: host.recording.cannot_record.clone(),
                     },
                 }))
             }

@@ -265,7 +265,7 @@ impl ApiTarget<'_> {
         }
         host.note_encoders(notify);
         if !host.record_profile(c).format.is_audio_only()
-            && let Some(why) = &host.cannot_record
+            && let Some(why) = &host.recording.cannot_record
         {
             return Err(failed(why.clone()));
         }

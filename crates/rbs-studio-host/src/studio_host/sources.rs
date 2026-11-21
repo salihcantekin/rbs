@@ -213,7 +213,7 @@ impl Host {
         } else {
             EditKind::Remove
         };
-        self.history.record(kind, &name, 0, vec![undo]);
+        self.edits.history.record(kind, &name, 0, vec![undo]);
         Ok((name, removed))
     }
 
@@ -289,7 +289,9 @@ impl Host {
         })();
         match done {
             Ok(item) => {
-                self.history.record(EditKind::Global, &name, 0, records);
+                self.edits
+                    .history
+                    .record(EditKind::Global, &name, 0, records);
                 Ok(item)
             }
             Err(e) => {
@@ -345,7 +347,9 @@ impl Host {
         })();
         match done {
             Ok(new) => {
-                self.history.record(EditKind::Global, &name, 0, records);
+                self.edits
+                    .history
+                    .record(EditKind::Global, &name, 0, records);
                 Ok(Ok(new))
             }
             Err(e) => {
@@ -397,7 +401,7 @@ impl Host {
         })();
         match done {
             Ok(id) => {
-                self.history.record(EditKind::Add, &name, 0, records);
+                self.edits.history.record(EditKind::Add, &name, 0, records);
                 self.fill_device_offset(id, None, &name, EditKind::Add);
                 Ok(id)
             }
@@ -434,7 +438,8 @@ impl Host {
             None,
         ) {
             Ok((_, item)) => {
-                self.history
+                self.edits
+                    .history
                     .record(EditKind::Add, name, 0, vec![source, item]);
                 self.fill_device_offset(id, None, name, EditKind::Add);
                 Ok(id)
@@ -561,9 +566,11 @@ impl Host {
             Ok((undo_hints, undo_item)) => {
                 let records = vec![undo_source, undo_hints, undo_item];
                 if join {
-                    self.history.extend_last(EditKind::Add, &name, records);
+                    self.edits
+                        .history
+                        .extend_last(EditKind::Add, &name, records);
                 } else {
-                    self.history.record(EditKind::Add, &name, 0, records);
+                    self.edits.history.record(EditKind::Add, &name, 0, records);
                 }
                 self.fill_device_offset(id, None, &name, EditKind::Add);
                 Ok(id)
@@ -638,7 +645,8 @@ impl Host {
             index,
         ) {
             Ok((_, undo_item)) => {
-                self.history
+                self.edits
+                    .history
                     .record(EditKind::Add, &name, 0, vec![undo_source, undo_item]);
                 Ok(source)
             }
@@ -782,7 +790,8 @@ impl Host {
             None,
         ) {
             Ok((_, undo_item)) => {
-                self.history
+                self.edits
+                    .history
                     .record(EditKind::Add, &name, 0, vec![undo_source, undo_item]);
                 Ok(source)
             }
@@ -821,7 +830,7 @@ impl Host {
         };
         match self.collection.set_transition(t) {
             Ok(undo_transition) => {
-                self.history.record(
+                self.edits.history.record(
                     EditKind::Transition,
                     &name,
                     0,
@@ -921,7 +930,8 @@ impl Host {
             index,
         ) {
             Ok((_, undo_item)) => {
-                self.history
+                self.edits
+                    .history
                     .record(EditKind::Add, &name, 0, vec![undo_source, undo_item]);
                 Ok(source)
             }
@@ -1018,7 +1028,7 @@ impl Host {
                 }
             }
         }
-        self.history.record(kind, &name, 0, records);
+        self.edits.history.record(kind, &name, 0, records);
         Ok(true)
     }
 
@@ -1035,7 +1045,9 @@ impl Host {
             .collection
             .delete_source(id)
             .map_err(|e| Refusal::Failed(format!("{e:?}")))?;
-        self.history.record(EditKind::Delete, &name, 0, vec![undo]);
+        self.edits
+            .history
+            .record(EditKind::Delete, &name, 0, vec![undo]);
         Ok(name)
     }
 
@@ -1057,7 +1069,9 @@ impl Host {
             .move_item(item, index)
             .map_err(|e| Refusal::of(&e))?;
         let name = self.name_of(id);
-        self.history.record(EditKind::Order, &name, 0, vec![undo]);
+        self.edits
+            .history
+            .record(EditKind::Order, &name, 0, vec![undo]);
         Ok(true)
     }
 
@@ -1087,7 +1101,8 @@ impl Host {
             .collection
             .set_source_settings_and_hints(id, settings, hints)
             .map_err(|e| Refusal::of(&e))?;
-        self.history
+        self.edits
+            .history
             .record(EditKind::SourceSettings, &name, 0, vec![undo]);
         Ok(true)
     }
@@ -1125,7 +1140,9 @@ impl Host {
             .move_item(item, to)
             .map_err(|e| Refusal::of(&e))?;
         let name = self.name_of(id);
-        self.history.record(EditKind::Order, &name, 0, vec![undo]);
+        self.edits
+            .history
+            .record(EditKind::Order, &name, 0, vec![undo]);
         Ok(true)
     }
 
@@ -1268,7 +1285,8 @@ impl Host {
             .collection
             .set_source_settings_and_hints(id, settings, hints)
             .map_err(|e| Refusal::of(&e))?;
-        self.history
+        self.edits
+            .history
             .record(EditKind::Retarget, &name, 0, vec![undo]);
         self.fill_device_offset(id, old_device.as_ref(), &name, EditKind::Retarget);
         if let Some(kind) = kind {
@@ -1291,7 +1309,8 @@ impl Host {
             .collection
             .rename_source(id, name)
             .map_err(|e| Refusal::of(&e))?;
-        self.history
+        self.edits
+            .history
             .record(EditKind::RenameSource, &old, 0, vec![undo]);
         Ok(true)
     }
@@ -1322,7 +1341,9 @@ impl Host {
             .collection
             .set_source_glide(id, glide)
             .map_err(|e| Refusal::of(&e))?;
-        self.history.record(EditKind::Glide, &name, 0, vec![undo]);
+        self.edits
+            .history
+            .record(EditKind::Glide, &name, 0, vec![undo]);
         Ok(true)
     }
 
@@ -1404,6 +1425,7 @@ impl Host {
             }
             Command::UndoDelete => {
                 if self
+                    .edits
                     .history
                     .next_undo()
                     .is_some_and(|s| matches!(s.kind, EditKind::Delete | EditKind::Remove))
