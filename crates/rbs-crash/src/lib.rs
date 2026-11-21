@@ -179,6 +179,17 @@ impl Session {
     }
 }
 
+/// Where a crash report gets the last diagnostics log lines (ADR-0158): set once by the
+/// app (`rbs-log` depends on this crate, not the other way). The function must never
+/// wait: it is called from the panic hook.
+static RECENT_LINES: OnceLock<fn() -> Vec<String>> = OnceLock::new();
+
+/// Crash reports from now on end with the lines `recent` returns (the newest last).
+/// Set once; later calls are ignored. `recent` must never wait.
+pub fn set_recent_lines(recent: fn() -> Vec<String>) {
+    let _ = RECENT_LINES.set(recent);
+}
+
 /// Installs the panic hook (once per process) and this process's running marker in
 /// `dir`, which is created when missing. Returns what earlier sessions left behind.
 /// The hook is installed also when the marker fails.
@@ -368,6 +379,12 @@ fn report_panic(dir: &Path, info: &PanicHookInfo<'_>) {
     }
     let backtrace = std::backtrace::Backtrace::force_capture().to_string();
     let home = home_dir();
+    // The log's lines are redacted for the log; `redact` also removes stream hosts.
+    let recent = RECENT_LINES
+        .get()
+        .map(|f| f())
+        .filter(|lines| !lines.is_empty())
+        .map(|lines| redact_secrets(&redact(&lines.join("\n"), home.as_deref())));
     let report = Report {
         secs: unix_now(),
         caught,
@@ -375,6 +392,7 @@ fn report_panic(dir: &Path, info: &PanicHookInfo<'_>) {
         message: &redact_secrets(&redact(&message, home.as_deref())),
         location: &location,
         backtrace: &redact_secrets(&redact(&backtrace, home.as_deref())),
+        recent: recent.as_deref(),
     };
     let _ = write_report(dir, std::process::id(), serial, &report);
 }
@@ -395,13 +413,20 @@ pub struct Report<'a> {
     pub location: &'a str,
     /// The captured backtrace.
     pub backtrace: &'a str,
+    /// The last diagnostics log lines, one per line, redacted (ADR-0158); `None` when
+    /// they were not available (no log, or its writer held them at that moment).
+    pub recent: Option<&'a str>,
 }
 
 impl Report<'_> {
     /// The report file's text (spec: crash-resilience.md, "Crash reports").
     pub fn text(&self) -> String {
+        let recent = match self.recent {
+            Some(lines) => format!("\nRecent log lines:\n{lines}\n"),
+            None => "\nRecent log lines: not available\n".to_owned(),
+        };
         format!(
-            "RBS {}\nOS: {} {}\nTime: {}\nKind: {}\nThread: {}\nMessage: {}\nLocation: {}\n\n{}\n",
+            "RBS {}\nOS: {} {}\nTime: {}\nKind: {}\nThread: {}\nMessage: {}\nLocation: {}\n\n{}\n{recent}",
             env!("CARGO_PKG_VERSION"),
             std::env::consts::OS,
             std::env::consts::ARCH,
@@ -703,6 +728,7 @@ mod tests {
             message: "boom",
             location: "src/main.rs:1:2",
             backtrace: "0: frame",
+            recent: Some("12:00 INFO app [main] started"),
         }
     }
 
@@ -742,6 +768,14 @@ mod tests {
         assert_eq!(lines[6], "Location: src/main.rs:1:2");
         assert_eq!(lines[7], "");
         assert_eq!(lines[8], "0: frame");
+        assert_eq!(lines[9], "");
+        assert_eq!(lines[10], "Recent log lines:");
+        assert_eq!(lines[11], "12:00 INFO app [main] started");
+        let none = Report {
+            recent: None,
+            ..report(0)
+        };
+        assert!(none.text().ends_with("\nRecent log lines: not available\n"));
     }
 
     #[test]

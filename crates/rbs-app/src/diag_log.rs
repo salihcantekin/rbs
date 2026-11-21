@@ -234,6 +234,8 @@ fn start_file() {
         }
     }
     rbs_log::bridge_log_crate();
+    // Crash reports end with the last lines (spec "Writer": `recent` never waits).
+    rbs_crash::set_recent_lines(recent);
     if let Some(path) = logger.path() {
         rbs_core::info!(Area::App, "log file {}", path.display());
     }

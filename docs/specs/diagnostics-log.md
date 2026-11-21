@@ -178,7 +178,8 @@ No log macro in code listed in [hot-paths.md](../architecture/hot-paths.md). `ca
 - Settings › Advanced: built as above, with `rbs_log::write_zip` (2026-11-20).
 - Studio host (`studio_host/failures.rs`, `studio_host.rs`): start failure, a stopped studio, a caught panic and the recovery after it (Error and Info), refused window commands by kind and refused control API requests by method and error kind (Warn), scene on air, transition and studio restart (Info), each window command by kind (Trace); the kind is read from the command's `Debug` text up to its first bracket, so no payload is formatted (2026-11-20).
 - Browser helper: the studio pipes the helper tree's standard error (`rbs_browser_runner::spawn_helper_prepared`) and a `rbs-browser-log` thread logs each line in `Area::Browser`, the helper's own (`rbs-browser…:`) at Info and the engine's at Debug, cut at 1000 characters, so CEF's output is kept only at Detailed and repeats collapse. The CEF helper writes no file of its own (2026-11-21).
-- Not yet: the recent lines in crash reports, new per-area lines (studio host: stability WP-L), the summary timer.
+- Crash reports end with the recent lines (`rbs_crash::set_recent_lines`, registered by `diag_log`; 2026-11-21).
+- Not yet: new per-area lines and the stats summary timer (both in the studio host, after stability WP-L moves it to `rbs-studio-host`).
 
 ## Open questions
 
