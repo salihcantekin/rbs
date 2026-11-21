@@ -762,10 +762,6 @@ impl Host {
                 self.start_sync_measure_window(reference, notify);
             }
             Command::CloseSyncMeasure => self.close_sync_measure_window(notify),
-            Command::RetargetSource { id, target } => {
-                let done = self.retarget_source(id, &target);
-                self.answer(done, notify);
-            }
             Command::GrabThumbnails { kind, rows, max } => self.grab_thumbnails(kind, rows, max),
             Command::StopThumbnails => {
                 self.pickers.thumbs.fetch_add(1, AtomicOrdering::AcqRel);

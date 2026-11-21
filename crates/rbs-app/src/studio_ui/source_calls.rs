@@ -28,6 +28,19 @@ impl StudioUi {
         }));
     }
 
+    /// A target of the Source tab's list was chosen: the source points at it
+    /// (`source.retarget`; the host fills the name from its own list, ADR-0164).
+    pub fn retarget_source(&mut self, id: i32, index: i32) {
+        let Some(target) = self.source_target_list.get(index as usize) else {
+            return;
+        };
+        self.call(C::SourceRetarget(rq::RetargetSource {
+            source: id as u32,
+            adapter: target.adapter.clone(),
+            target: target.target.clone(),
+        }));
+    }
+
     /// Per-source slide override (ADR-0100). `custom` false clears it.
     pub fn set_source_glide(&mut self, id: i32, custom: bool, duration_ms: i32, easing: i32) {
         let glide = custom.then(|| Glide {

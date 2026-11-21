@@ -961,8 +961,8 @@ pub struct SetFilterSettings {
     pub settings: BTreeMap<String, serde_json::Value>,
 }
 
-/// `source.retarget` (protocol 1.13, ADR-0077): point a source at another target of its
-/// kind. Name, layout, filters and its place in every scene stay; one undo step.
+/// `source.retarget` (protocol 1.13, ADR-0077): point a source at another listed target
+/// of its kind (listed from 1.100). Its name, layout, filters and places stay; one step.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RetargetSource {

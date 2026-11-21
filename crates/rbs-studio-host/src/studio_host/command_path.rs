@@ -110,7 +110,6 @@ paths! {
     StartSyncMeasure => Pending(&["sync.measure_start"]),
     // as StartSyncMeasure
     CloseSyncMeasure => Pending(&["sync.measure_cancel"]),
-    RetargetSource => Pending(&["source.retarget"]),
     GrabThumbnails => WindowOnly(View),
     StopThumbnails => WindowOnly(View),
     OpenSourceSettings => WindowOnly(View),
@@ -182,7 +181,7 @@ mod tests {
     /// `LOCAL_ONLY` 9 to 10 and `MIRROR` 3 to 8 are approved by ADR-0164 decision 9
     /// (owner, 2026-11-21).
     const TRANSLATES: usize = 22;
-    const PENDING: usize = 16;
+    const PENDING: usize = 15;
     const CONTRACT: usize = 0;
     const MISSING: usize = 1;
     const VIEW: usize = 13;

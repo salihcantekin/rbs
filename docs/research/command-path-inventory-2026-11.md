@@ -107,7 +107,7 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `CloseSyncMeasure` | Pending | sync.measure_cancel; as StartSyncMeasure |
 | `ApplySyncToDeviceSources` | Moved to `Command::Api` (step 6) | sync.apply_to_device_sources |
 | `SetSourceSyncOffset` | Moved to `Command::Api` (step 3) | source.set_sync_offset |
-| `RetargetSource` | Pending | source.retarget; the API target keeps only adapter and target id, the window also sends the name, app and sound (step 3 left it) |
+| `RetargetSource` | Moved to `Command::Api` | source.retarget; the host fills the name, the app and the sound from its own list for every caller, and an unlisted target is `not_found` (ADR-0164 decision 6) |
 | `GrabThumbnails` | WindowOnly View |  |
 | `StopThumbnails` | WindowOnly View |  |
 | `OpenSourceSettings` | WindowOnly View |  |
