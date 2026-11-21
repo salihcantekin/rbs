@@ -5110,6 +5110,7 @@ impl StudioUi {
                 rbs_core::warn!(Area::Stream, "go live refused: {why}");
             }
             StreamUpdate::NotStarted(why) => {
+                rbs_core::error!(Area::Stream, "the stream did not start: {why}");
                 self.silence_checked = [false; 2];
                 self.st_state = st_state::OFF;
                 self.st_live = None;
@@ -5117,6 +5118,7 @@ impl StudioUi {
                 self.st_bad = true;
             }
             StreamUpdate::NoKey => {
+                rbs_core::error!(Area::Stream, "the stream did not start: no stream key");
                 self.silence_checked = [false; 2];
                 self.st_state = st_state::OFF;
                 self.st_live = None;
@@ -5162,10 +5164,7 @@ impl StudioUi {
                 let asked = self.st_state == st_state::ENDING || failure.is_none();
                 self.st_state = st_state::OFF;
                 self.st_link = Link::default();
-                rbs_core::info!(
-                    Area::Stream,
-                    "stream ended: {frames} frames, {dropped} dropped, {connects} connections, failure: {failure:?}"
-                );
+                destinations::log_stream_ended(frames, dropped, connects, failure.as_deref());
                 let secs = duration.as_secs();
                 let time = if secs >= 3600 {
                     format!("{}:{:02}:{:02}", secs / 3600, secs / 60 % 60, secs % 60)
@@ -6907,6 +6906,7 @@ impl StudioUi {
                 rbs_core::warn!(Area::Record, "record refused: {why}");
             }
             RecordingUpdate::NotStarted(why) => {
+                rbs_core::error!(Area::Record, "the recording did not start: {why}");
                 self.silence_checked[0] = false;
                 self.rec_state = rec_state::OFF;
                 self.rec_file = None;
@@ -6926,10 +6926,7 @@ impl StudioUi {
                 self.rec_file = None;
                 self.rec_file_audio = false;
                 self.rec_separate.clear();
-                rbs_core::info!(
-                    Area::Record,
-                    "recording stopped: {frames} frames, {dropped} dropped, {flush_lost} packets lost in the encoder, failure: {failure:?}"
-                );
+                destinations::log_rec_stopped(frames, dropped, flush_lost, failure.as_deref());
                 match failure {
                     None => {
                         let mut note = format!("Saved {}", path.display());

@@ -666,6 +666,13 @@ impl Supervisor {
                                 Area::Browser,
                                 "browser page falls back to shared memory: helper"
                             );
+                        } else {
+                            // Not asked to stop: it crashed, hung or could not start.
+                            rbs_core::error!(
+                                Area::Browser,
+                                "the browser helper exited (code {:?}, {cause:?})",
+                                child.exit_code
+                            );
                         }
                         cause_flag.store(encode_cause(cause), Ordering::Release);
                         exited_flag.store(true, Ordering::Release);
