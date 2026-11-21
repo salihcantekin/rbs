@@ -26,6 +26,8 @@ pub mod state {
     pub const FAILED: i32 = 3;
     /// Hidden, so not running (ADR-0107).
     pub const HIDDEN: i32 = 4;
+    /// The page runs, drawn without the graphics card (ADR-0157 decision 9).
+    pub const GPU_FALLBACK: i32 = 5;
 }
 
 /// How the source runs, as the Page tab words it.
@@ -91,6 +93,7 @@ pub fn browser_data(id: i32, settings: &Settings, run: &Run, canvas: (i64, i64))
         Some(r) if r == BROWSER_RUNTIME_MISSING || r == BROWSER_RUNTIME_MISMATCH => state::ENGINE,
         Some(r) if r == BROWSER_CAP => state::CAP,
         Some(r) if r == BROWSER_NO_ADDRESS => state::OK,
+        Some(r) if r == rbs_app::browser_tree::GPU_FALLBACK && run.running => state::GPU_FALLBACK,
         _ if run.running => state::OK,
         _ if !run.failed.is_empty() => state::FAILED,
         _ => state::HIDDEN,
@@ -256,6 +259,13 @@ mod tests {
         };
         let d = browser_data(3, &page("https://a/"), &failed, (0, 0));
         assert_eq!((d.state, d.status.as_str()), (state::FAILED, "no answer"));
+        let fell_back = Run {
+            running: true,
+            reason: Some(rbs_app::browser_tree::GPU_FALLBACK),
+            ..Run::default()
+        };
+        let d = browser_data(3, &page("https://a/"), &fell_back, (0, 0));
+        assert_eq!(d.state, state::GPU_FALLBACK);
         let d = browser_data(
             3,
             &page("file:///C:/overlays/score.html"),

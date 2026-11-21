@@ -10,12 +10,12 @@
 "crates/rbs-app/src/main.rs" = 6750
 "crates/rbs-app/src/menu_bar.rs" = 2518
 "crates/rbs-app/src/record_profile.rs" = 2081
-"crates/rbs-app/src/studio_host.rs" = 18481
+"crates/rbs-app/src/studio_host.rs" = 18478
 "crates/rbs-app/src/studio_ui.rs" = 10928
 "crates/rbs-app/tests/studio_record.rs" = 3156
 "crates/rbs-app/tests/studio_scenes.rs" = 2288
 "crates/rbs-app/tests/studio_stream.rs" = 2464
-"crates/rbs-record/src/studio.rs" = 6096
+"crates/rbs-record/src/studio.rs" = 6090
 "crates/rbs-record/tests/studio.rs" = 3328
 "crates/rbs-scene/src/collection.rs" = 2992
 "crates/rbs-scene/tests/binder.rs" = 2882
@@ -42,7 +42,7 @@
 "crates/rbs-app/src/studio_host.rs::command" = 1056
 "crates/rbs-app/src/studio_host.rs::round" = 264
 "crates/rbs-app/src/studio_host.rs::run" = 1797
-"crates/rbs-app/src/studio_host.rs::start" = 247
+"crates/rbs-app/src/studio_host.rs::start" = 242
 "crates/rbs-app/src/studio_host.rs::start_recording_with_tracks" = 237
 "crates/rbs-app/src/studio_ui.rs::apply" = 554
 "crates/rbs-app/src/studio_ui.rs::new" = 231

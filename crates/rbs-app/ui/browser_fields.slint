@@ -151,11 +151,15 @@ export component BrowserFields inherits VerticalLayout {
             }
         }
     }
-    if b.state == 2 || b.state == 3: SettingsCallout {
-        label: b.state == 2 ? @tr("No page slot free") : @tr("The page did not load");
+    if b.state == 2 || b.state == 3 || b.state == 5: SettingsCallout {
+        label: b.state == 2 ? @tr("No page slot free")
+            : b.state == 5 ? @tr("Drawn without the graphics card")
+            : @tr("The page did not load");
         Text {
             text: b.state == 2
                 ? @tr("Two pages already run. This page starts when one of them is hidden.")
+                : b.state == 5
+                ? @tr("This page could not be drawn on the graphics card, so the processor draws it, which uses more CPU. The graphics card is tried again the next time the source starts.")
                 : b.status;
             color: Theme.text-primary;
             font-size: Tokens.type-body-size;
@@ -232,7 +236,7 @@ export component BrowserFields inherits VerticalLayout {
             text: @tr("Interact…");
             accessible-name: @tr("Interact with {}", root.name);
             dense: true;
-            enabled: b.state == 0 || b.state == 4;
+            enabled: b.state == 0 || b.state == 4 || b.state == 5;
             clicked => { Studio.browser-interact(b.id); }
         }
     }

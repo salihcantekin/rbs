@@ -389,11 +389,12 @@ fn add_source_browser_leads_to_the_engine_until_it_is_installed() {
         clock: Arc::new(TestClock::new()),
     });
     // Never started: nothing in this test draws the program.
-    config.browser_runner = Some(Runner {
+    let runner = Some(Runner {
         program: root.join("rbs-browser-cef"),
         args: Vec::new(),
         needs_engine: true,
     });
+    config.browser = Some(Arc::new(rbs_app::browser_tree::RunnerTrees { runner }));
     let host = StudioHost::spawn(
         config,
         || (RecordAdapters::new(), Vec::new()),
