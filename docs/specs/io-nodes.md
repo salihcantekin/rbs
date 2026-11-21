@@ -25,9 +25,12 @@ pub fn import_preferences(ctx: &GpuContext) -> (Vec<MemoryKind>, Option<GpuImpor
 pub fn complete_request(ctx: &GpuContext, request: CaptureRequest) -> CaptureRequest;
 impl CaptureSourceNode {                                      // Node<GpuRuntime>
     pub fn new(factory: Arc<dyn CaptureFactory>, request: CaptureRequest) -> Self;
+    pub fn open_inline(self, inline: bool) -> Self;           // open in prepare (capture.start.instant)
     pub fn stats(&self) -> Arc<CaptureNodeStats>;             // frames, imported, uploaded, gpu_errors,
-                                                              // picture_size() (ADR-0058)
+                                                              // picture_size() (ADR-0058), fault,
+                                                              // warm_up() (ADR-0152 warm_up_ms)
 }
+pub const START_LIMIT: Duration;                              // 15 s (ADR-0152 decision 5)
 
 // rbs_nodes::export
 pub const VIDEO_EXPORT_NODE_TYPE: &str = "org.rbs.video-export"; // VideoFilter; "canvas" -> "video"
@@ -108,18 +111,20 @@ Counters are atomics in an `Arc`, read on any thread; nodes update them with rel
 
 | Call | Does |
 | --- | --- |
-| `prepare` | Fills the request with [`complete_request`] (keeps what it already has), `CaptureFactory::open`, `CaptureSession::start` (may block up to 500 ms; control thread) |
-| `process` | `latest_frame`: `None` keeps the last frame on the link. A `Native` frame goes through `RenderLocal::importer` (zero copy), a `System` frame through the node's `SourceUpload`; the `Texture` frame is set on "video" |
+| `prepare` | Fills the request with [`complete_request`] (keeps what it already has), notes the master time, and starts a thread (`rbs-capture-open`) that runs `CaptureFactory::open` and `CaptureSession::start` and pushes the result into a one-slot `rtrb` ring. Returns without waiting (ADR-0152 decision 5). A node built with `open_inline(true)` (the registry does this for an adapter declaring `capture.start.instant`) opens and starts on the calling thread instead, as before |
+| `process` | While no session runs: pops the ring (wait-free); a session is taken and used on the same tick, an error is mapped as below and returned on every tick until the executor bypasses the node (ADR-0024 restarts it), nothing yet leaves the output empty. Past `START_LIMIT` (15 s on the master clock) without a result: `Backend("capture start timed out")` and fault `Other` (ADR-0152's `start_timeout`). Then `latest_frame`: `None` keeps the last frame on the link. A `Native` frame goes through `RenderLocal::importer` (zero copy), a `System` frame through the node's `SourceUpload`; the `Texture` frame is set on "video". The first frame after `prepare` stores `warm_up_us` (its capture time minus the `prepare` time) |
 | `cool` | Returns the upload's plane textures to the pool |
-| `release` | `stop`, then drops the session and the upload's decoder |
+| `release` | `stop`, then drops the session, the ring and the upload's decoder. An open still running sees the ring abandoned and stops the session it made on its own thread |
 
 `import_preferences` decides by the device's graphics API: D3D12 offers `[D3d11, D3d12, System]` with `GpuImportTarget { Luid(adapter_luid), [TimelineFence, Ready] }`; Metal offers `[Metal, System]` (IOSurfaces need no device check); Vulkan and others `[System]` until DMA-BUF import is verified on hardware. Default pixel formats are `rbs_gpu::upload::UPLOAD_FORMATS` (`Nv12, P010, Bgra8, Rgba8`), without P010 when the device lacks `gpu.p010`.
 
 Invariants:
 
-1. Nothing is opened before `prepare`; after `release` the session is stopped and dropped.
+1. Nothing is opened before `prepare`; after `release` the session is stopped and dropped (by the opening thread when its open returns after `release`).
 2. Every frame on "video" is a pool texture of the render runtime with the capture frame's timestamp, sequence and source time.
 3. A frame that fails to import or upload is dropped (the producer gets its surface back) and counted; the last good frame stays on the link. `GpuError::Unsupported` and `InvalidSize` fail permanently (the source keeps sending what the device cannot take); other errors are `Backend`.
+4. One device is never opened twice at once: a `prepare` while the last open still runs starts a thread that first joins the previous one. If that open is older than `START_LIMIT`, `prepare` fails instead (`Failed`, fault `Other`) and is retried with back-off, so a hung device costs one thread.
+5. `process` never waits on the opening thread, never allocates and never frees the ring (it is dropped in `release`). Tests: `crates/rbs-nodes/tests/capture_open.rs` (a gated `start`: `prepare` returns at once, the first frame follows the open with its warm-up, a never-ending open fails after the start limit and a restart starts no second thread, a release while opening stops the session, a source shown again opens after the last open).
 
 ### Still source node (ADR-0074)
 

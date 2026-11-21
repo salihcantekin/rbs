@@ -21,7 +21,7 @@ use rbs_graph::node::{NodeDescriptor, NodeTypeId};
 use rbs_graph::runtime::param::ParamSender;
 use rbs_nodes::capture::CaptureNodeStats;
 use rbs_nodes::{CaptureSourceNode, StillSourceNode};
-use rbs_scene::activity::{ActivityTraits, OnReturn, Run};
+use rbs_scene::activity::ActivityTraits;
 use rbs_scene::binder::{COMPOSITOR_TYPE, MIXER_TYPE, NodeTypes};
 use rbs_scene::model::{SettingValue, Settings, Source};
 
@@ -488,45 +488,15 @@ impl NodeTypes for NodeTypeTable {
     }
 
     /// Media and browser sources run while a shown scene draws them; every other
-    /// built-in type, and any type this table does not know, runs while placed
-    /// (ADR-0152 decisions 4 and 5).
+    /// built-in type, and any type this table does not know, runs while placed by
+    /// default (ADR-0152 decisions 4 and 5). Captures may also run only while shown
+    /// or on air (phase 4).
     fn activity(&self, type_id: &NodeTypeId) -> ActivityTraits {
         activity_traits(type_id)
     }
 }
 
-/// What a built-in source type supports for its activity policy (ADR-0152); any
-/// other type, plugins included, is [`ActivityTraits::PLACED`]. The same answer as
-/// [`NodeTypeTable`]'s `NodeTypes::activity`, for the host's checks.
-pub fn activity_traits(type_id: &NodeTypeId) -> ActivityTraits {
-    match class_of(type_id) {
-        Some(SourceClass::Media) => MEDIA_ACTIVITY,
-        Some(SourceClass::Browser) => BROWSER_ACTIVITY,
-        _ => ActivityTraits::PLACED,
-    }
-}
-
-/// A media file (ADR-0152 decision 4, ADR-0108): Active while a shown scene draws
-/// it, starting over when it goes on air again. `continue` comes with phase 5.
-pub const MEDIA_ACTIVITY: ActivityTraits = ActivityTraits::new(
-    &[Run::Placed, Run::Shown, Run::OnAir],
-    &[OnReturn::Resume, OnReturn::Restart],
-    Run::Shown,
-    Some(OnReturn::Restart),
-    false,
-);
-
-/// A browser page (ADR-0152 decision 4, ADR-0109): Active while a shown scene draws
-/// it; `run: placed` is ADR-0149's background page (process running, picture node
-/// unscheduled, one picture per second, sound dropped). `on_return: restart`
-/// reloads a running page when it goes on air (decision 6).
-pub const BROWSER_ACTIVITY: ActivityTraits = ActivityTraits::new(
-    &[Run::Placed, Run::Shown, Run::OnAir],
-    &[OnReturn::Continue, OnReturn::Restart],
-    Run::Shown,
-    Some(OnReturn::Continue),
-    false,
-);
+pub use crate::activity::activity_traits;
 
 /// The capture and audio input adapters, and the source types they provide.
 ///
@@ -1291,7 +1261,12 @@ impl SourceTypes {
                     request = request.with_frame_rate(fps);
                 }
                 let adapter = factory.id();
-                let node = CaptureSourceNode::new(factory, request);
+                // Opened on the control thread only when the adapter says nothing
+                // waits (`capture.start.instant`); otherwise on the node's own thread.
+                let inline = self.capture.capabilities(&adapter).is_some_and(|c| {
+                    c.get(&capture_caps::START_INSTANT) == Some(&CapabilityValue::Flag(true))
+                });
+                let node = CaptureSourceNode::new(factory, request).open_inline(inline);
                 let stats = node.stats();
                 Ok(SourceInstance::Video(VideoSource {
                     node,
@@ -1906,40 +1881,6 @@ mod option_key_tests {
         }
         assert!(option_keys(&NodeTypeId::new("org.example.plugin")).is_empty());
         assert!(option_keys(&NodeTypeId::new(types::IMAGE_SOURCE)).is_empty());
-    }
-}
-
-#[cfg(test)]
-mod activity_tests {
-    use super::*;
-
-    /// Every built-in type declares a default it allows, and only media and browser
-    /// leave the placed rule (ADR-0152 decisions 4 and 5).
-    #[test]
-    fn built_in_activity_defaults_are_allowed_and_only_media_and_browser_are_temporal() {
-        let table = NodeTypeTable::default();
-        for name in types::ALL {
-            let traits = table.activity(&NodeTypeId::new(name));
-            assert!(traits.runs.contains(&traits.default_run), "{name}");
-            assert_eq!(
-                traits.default_on_return.is_some(),
-                !traits.on_returns.is_empty(),
-                "{name}"
-            );
-            assert!(
-                traits
-                    .default_on_return
-                    .is_none_or(|o| traits.on_returns.contains(&o)),
-                "{name}"
-            );
-            let temporal = traits.default_run != Run::Placed;
-            let expected = matches!(name, types::MEDIA_SOURCE | types::BROWSER_SOURCE);
-            assert_eq!(temporal, expected, "{name}");
-        }
-        assert_eq!(
-            table.activity(&NodeTypeId::new("org.example.plugin")),
-            ActivityTraits::PLACED
-        );
     }
 }
 

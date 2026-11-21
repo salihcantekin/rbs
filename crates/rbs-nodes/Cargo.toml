@@ -68,6 +68,10 @@ harness = false
 name = "render_on_change"
 harness = false
 
+[[bench]]
+name = "capture"
+harness = false
+
 [lints]
 workspace = true
 
