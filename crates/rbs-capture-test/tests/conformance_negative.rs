@@ -44,6 +44,8 @@ mod broken {
         StaleFormat,
         /// Keeps the last mapping after the mapping switch went off (ADR-0165).
         MapsWhileOff,
+        /// Tags the mapping with a time other than the newest frame's.
+        StaleMappingTime,
     }
 
     pub struct Factory<'a> {
@@ -133,6 +135,14 @@ mod broken {
                 }
                 return self.last_mapping.get();
             }
+            if matches!(self.fault, Fault::StaleMappingTime) {
+                return now.map(|mut m| {
+                    m.frame_time = rbs_core::time::Timestamp::from_nanos(
+                        m.frame_time.as_nanos().saturating_sub(1),
+                    );
+                    m
+                });
+            }
             now
         }
         fn stop(&mut self) {
@@ -216,6 +226,7 @@ fn suite_catches_broken_adapters() {
         (Fault::IgnoresTargetLoss, "target lost"),
         (Fault::StaleFormat, "format"),
         (Fault::MapsWhileOff, "mapping"),
+        (Fault::StaleMappingTime, "mapping"),
     ] {
         let inner: &'static TestCaptureFactory = Box::leak(Box::new(TestCaptureFactory::new()));
         let factory = broken::Factory { inner, fault };

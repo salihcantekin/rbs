@@ -508,11 +508,26 @@ impl Suite<'_> {
             format!("{id}: a mapping while the switch is off")
         })?;
         switch.set(true);
-        let frame = self.next_frame(CHECK, id, session.as_mut())?;
-        let mapping = session.latest_mapping();
+        // An adapter may start its mapping work when the switch turns on, so the first
+        // frames can come without a mapping ("before the first mapped frame").
+        const FRAMES_TO_FIRST_MAPPING: usize = 10;
+        let mut frame = self.next_frame(CHECK, id, session.as_mut())?;
+        let mut mapping = session.latest_mapping();
+        for _ in 1..FRAMES_TO_FIRST_MAPPING {
+            if mapping.is_some() || !declared {
+                break;
+            }
+            frame = self.next_frame(CHECK, id, session.as_mut())?;
+            mapping = session.latest_mapping();
+        }
         if declared {
             let Some(mapping) = mapping else {
-                return fail(CHECK, format!("{id}: no mapping while the switch is on"));
+                return fail(
+                    CHECK,
+                    format!(
+                        "{id}: no mapping within {FRAMES_TO_FIRST_MAPPING} frames of the switch turning on"
+                    ),
+                );
             };
             ensure(CHECK, mapping.frame_time == frame.timestamp(), || {
                 format!(

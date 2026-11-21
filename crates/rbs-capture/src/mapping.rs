@@ -164,13 +164,24 @@ impl MappingSwitch {
 
     /// Registers the adapter's callback (control path, for example in `open` or
     /// `start`) and calls it once with the current state, under the switch's lock, so
-    /// no change between reading the state and registering is lost. A later
-    /// registration replaces this one. The callback must not call back into the switch
-    /// and should hold only weak references to adapter state. Dropping the returned
-    /// guard (the session does, on `stop` or drop) unregisters it.
+    /// no change between reading the state and registering is lost.
+    ///
+    /// The callback runs under the switch's lock, so it only signals: it stores an
+    /// atomic, unparks or posts to the adapter's mapping thread. It never joins a
+    /// thread, never waits on a lock the adapter holds while it drops a registration,
+    /// never calls back into the switch and never panics; the adapter joins its mapping
+    /// thread itself, after dropping the registration. It holds only weak references to
+    /// adapter state.
+    ///
+    /// A later registration replaces this one and first calls this callback with
+    /// `false`, so a replaced session stops its mapping work. Dropping the returned guard
+    /// (the session does, on `stop` or drop) unregisters it.
     pub fn register(&self, callback: impl Fn(bool) + Send + 'static) -> MappingRegistration {
         let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
         let mut registered = self.inner.lock();
+        if let Some(old) = registered.take() {
+            (old.callback)(false);
+        }
         callback(self.is_on());
         *registered = Some(Registration {
             id,
@@ -250,6 +261,21 @@ mod tests {
     }
 
     #[test]
+    fn a_replaced_registration_is_told_to_stop() {
+        let switch = MappingSwitch::new();
+        switch.set(true);
+        let (tx, rx) = mpsc::channel();
+        let _old = switch.register(move |on| {
+            let _ = tx.send(on);
+        });
+        assert_eq!(rx.try_recv(), Ok(true));
+        let _new = switch.register(|_| {});
+        assert_eq!(rx.try_recv(), Ok(false));
+        switch.set(false);
+        assert!(rx.try_recv().is_err(), "the replaced callback is gone");
+    }
+
+    #[test]
     fn an_old_registration_does_not_remove_a_newer_one() {
         let switch = MappingSwitch::new();
         let old = switch.register(|_| {});
@@ -279,15 +305,17 @@ mod tests {
                     })
                 })
             };
-            for i in 0..10 {
+            for i in 0..11 {
                 switch.set(i % 2 == 0);
             }
             let reg = opener.join().expect("opener thread panicked");
-            switch.set(true);
+            // No further `set`: the callback's last call must already match the state,
+            // whichever came first, the registration or any of the flips.
             assert_eq!(
                 *state.lock().unwrap_or_else(PoisonError::into_inner),
-                Some(true)
+                Some(switch.is_on())
             );
+            assert!(switch.is_on());
             drop(reg);
         }
     }
