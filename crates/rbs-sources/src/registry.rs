@@ -1031,10 +1031,14 @@ impl SourceTypes {
             None => default_endpoint(&candidates, EndpointKind::Output)
                 .ok_or(SourceError::NoTarget(type_id))?,
         };
-        let output = backend
-            .open_output(&OutputRequest::new(endpoint.clone()))
-            .map_err(SourceError::Audio)?;
-        Ok((output, backend.id(), endpoint))
+        let output = backend.open_output(&OutputRequest::new(endpoint.clone()));
+        log_audio_open(
+            "monitor output",
+            &backend.id(),
+            &endpoint,
+            output.as_ref().err(),
+        );
+        Ok((output.map_err(SourceError::Audio)?, backend.id(), endpoint))
     }
 
     /// True when some audio adapter can leave RBS's own sound out of a system loopback
@@ -1320,7 +1324,14 @@ impl SourceTypes {
                 let request = InputRequest::new(endpoint.clone(), Arc::clone(&ctx.clock))
                     .with_sample_rates(&[ctx.audio.format.sample_rate])
                     .with_exclude_own_process(exclude);
-                let stream = backend.open_input(&request).map_err(SourceError::Audio)?;
+                let stream = backend.open_input(&request);
+                log_audio_open(
+                    "audio input",
+                    &backend.id(),
+                    &endpoint,
+                    stream.as_ref().err(),
+                );
+                let stream = stream.map_err(SourceError::Audio)?;
                 let (node, offset, stats) = InputNode::new(stream, ctx.audio, ctx.max_audio_offset);
                 Ok(SourceInstance::Audio(Box::new(AudioSource {
                     node,
@@ -1819,6 +1830,22 @@ fn probe_media(
         ));
     }
     Ok(())
+}
+
+/// The `audio` line of a device open (ADR-0158 spec, "What is logged"): Info, Error
+/// when it failed; the endpoint id only at Debug.
+fn log_audio_open(
+    what: &str,
+    adapter: &AdapterId,
+    endpoint: &EndpointId,
+    failed: Option<&AudioIoError>,
+) {
+    use rbs_core::log::Area;
+    match failed {
+        None => rbs_core::info!(Area::Audio, "{what} opened ({adapter})"),
+        Some(e) => rbs_core::error!(Area::Audio, "{what} did not open ({adapter}): {e}"),
+    }
+    rbs_core::debug!(Area::Audio, "{what} endpoint {}", endpoint.as_str());
 }
 
 #[cfg(test)]

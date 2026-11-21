@@ -147,7 +147,24 @@ impl GpuContext {
                 (rank(&info, request.power), backend_rank(info.backend))
             })
             .ok_or(GpuError::NoAdapter)?;
-        Self::on_adapter(instance, adapter)
+        let info = adapter.get_info();
+        let context = Self::on_adapter(instance, adapter)?;
+        // The adapter chosen, once per context (ADR-0158 spec, "What is logged").
+        let level = if is_software(&info) {
+            rbs_core::log::Level::Warn
+        } else {
+            rbs_core::log::Level::Info
+        };
+        rbs_core::log_at!(
+            level,
+            rbs_core::log::Area::Gpu,
+            "adapter {} ({:?}, {:?}, driver {})",
+            info.name,
+            info.backend,
+            info.device_type,
+            info.driver
+        );
+        Ok(context)
     }
 
     /// A second, independent device and queue on this context's adapter, with the same
@@ -193,6 +210,14 @@ impl GpuContext {
             ..Default::default()
         };
         let (device, queue, sync_file) = request_device(&adapter, &device_desc)?;
+        // Called once, by wgpu, when the device goes: lost (a driver reset, a removed
+        // GPU) or destroyed when the context is dropped.
+        device.set_device_lost_callback(|reason, message| match reason {
+            wgpu::DeviceLostReason::Destroyed => {
+                rbs_core::debug!(rbs_core::log::Area::Gpu, "device released");
+            }
+            _ => rbs_core::error!(rbs_core::log::Area::Gpu, "device lost: {message}"),
+        });
         let capabilities = CapabilitySet::new()
             .with(CAP_SOFTWARE, CapabilityValue::Flag(is_software(&info)))
             .with(

@@ -11,6 +11,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use rbs_core::log::Area;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
@@ -609,12 +610,22 @@ fn check_previous<T: Document>(path: &Path, old: &str, writing: u32) -> Result<(
             let backup = backup_path(path, found);
             if !backup.exists() {
                 write_atomic(&backup, old.as_bytes())?;
+                rbs_core::info!(Area::UserData, "kept a copy of a format {found} file");
+                rbs_core::debug!(Area::UserData, "copy at {}", backup.display());
             }
             Ok(())
         }
         Ok(_) => Ok(()),
-        Err(e @ DataError::Newer { .. }) => Err(e),
-        Err(_) => Ok(fs::rename(path, unreadable_path(path))?),
+        Err(e @ DataError::Newer { .. }) => {
+            rbs_core::warn!(Area::UserData, "a newer file is kept read only: {e}");
+            rbs_core::debug!(Area::UserData, "newer file {}", path.display());
+            Err(e)
+        }
+        Err(e) => {
+            rbs_core::warn!(Area::UserData, "an unreadable file was set aside: {e}");
+            rbs_core::debug!(Area::UserData, "set aside {}", path.display());
+            Ok(fs::rename(path, unreadable_path(path))?)
+        }
     }
 }
 

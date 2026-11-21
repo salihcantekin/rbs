@@ -209,6 +209,7 @@ pub(crate) fn video_encoder(
 ) -> Result<(VideoEncoderNode, Chosen), RecordError> {
     let selection = registry.select(&video_requirement(config));
     let mut tried = rejected(&selection);
+    let mut failed = 0;
     for factory in &selection.candidates {
         if let Some(why) = picture_outside(registry.capabilities(&factory.id()), config.format.size)
         {
@@ -216,14 +217,35 @@ pub(crate) fn video_encoder(
             continue;
         }
         match VideoEncoderNode::open(Arc::clone(factory), config.clone()) {
-            Ok(node) => return Ok((node, Chosen::of(factory.as_ref()))),
-            Err(e) => tried.push((factory.id(), e.to_string())),
+            Ok(node) => {
+                log_chosen("video", &factory.id(), &tried, failed);
+                return Ok((node, Chosen::of(factory.as_ref())));
+            }
+            Err(e) => {
+                failed += 1;
+                tried.push((factory.id(), e.to_string()));
+            }
         }
     }
     Err(RecordError::NoAdapter {
         port: Port::VideoEncoder,
         tried,
     })
+}
+
+/// The `encode` lines of a choice (ADR-0158 spec, "What is logged"): Warn when a
+/// better candidate failed to open (a fallback), every candidate passed over at Debug.
+fn log_chosen(what: &str, chosen: &AdapterId, tried: &[(AdapterId, String)], failed: usize) {
+    use rbs_core::log::Area;
+    if failed > 0 {
+        rbs_core::warn!(
+            Area::Encode,
+            "{what} encoder falls back to {chosen}: {failed} better candidates did not open"
+        );
+    }
+    for (id, why) in tried {
+        rbs_core::debug!(Area::Encode, "{what} encoder {id} passed over: {why}");
+    }
 }
 
 /// A separate video file's encoder (ADR-0087 decision 5): as [`video_encoder`], but
@@ -250,6 +272,7 @@ pub(crate) fn iso_video_encoder(
             .first()
             .is_some_and(|f| hardware(&f.id()));
     let mut stopped = false;
+    let mut failed = 0;
     for factory in &selection.candidates {
         if wants_hardware && !hardware(&factory.id()) {
             stopped = true;
@@ -261,8 +284,14 @@ pub(crate) fn iso_video_encoder(
             continue;
         }
         match VideoEncoderNode::open(Arc::clone(factory), config.clone()) {
-            Ok(node) => return Ok((node, Chosen::of(factory.as_ref()))),
-            Err(e) => tried.push((factory.id(), e.to_string())),
+            Ok(node) => {
+                log_chosen("separate video", &factory.id(), &tried, failed);
+                return Ok((node, Chosen::of(factory.as_ref())));
+            }
+            Err(e) => {
+                failed += 1;
+                tried.push((factory.id(), e.to_string()));
+            }
         }
     }
     Err((
@@ -283,10 +312,17 @@ pub(crate) fn audio_encoder(
     let requirement = includes(codec_caps::AUDIO_ENCODE, config.codec.as_str());
     let selection = registry.select(&requirement);
     let mut tried = rejected(&selection);
+    let mut failed = 0;
     for factory in &selection.candidates {
         match factory.create(config) {
-            Ok(session) => return Ok((session, Chosen::of(factory.as_ref()))),
-            Err(e) => tried.push((factory.id(), e.to_string())),
+            Ok(session) => {
+                log_chosen("audio", &factory.id(), &tried, failed);
+                return Ok((session, Chosen::of(factory.as_ref())));
+            }
+            Err(e) => {
+                failed += 1;
+                tried.push((factory.id(), e.to_string()));
+            }
         }
     }
     Err(RecordError::NoAdapter {

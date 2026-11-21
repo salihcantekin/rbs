@@ -13,6 +13,7 @@ use rbs_app::stream_destinations::{
 };
 use rbs_app::stream_profile::{StreamProfile, parse_server};
 use rbs_app::stream_services::{self, Service};
+use rbs_core::log::{Area, Level};
 
 /// The canvas a Settings canvas picks.
 pub(crate) fn role(c: OutputCanvas) -> Canvas {
@@ -958,7 +959,7 @@ impl super::StudioUi {
             return;
         }
         for line in destination_log_lines(self.live_dests.iter().map(|(d, _)| d), &rows) {
-            rbs_core::info!(rbs_core::log::Area::Stream, "{}", line);
+            rbs_core::info!(Area::Stream, "{}", line);
         }
         let now = Instant::now();
         self.live_dests = rows.into_iter().map(|d| (d, now)).collect();
@@ -983,6 +984,29 @@ impl super::StudioUi {
     pub(crate) fn live_dest_retry(&mut self, id: u32) {
         self.send(rbs_app::studio_host::Command::StartDestination(id));
     }
+}
+
+/// The log line of an ended stream (ADR-0158 decision 2): Info when it was asked to
+/// end, Error when it stopped on a failure.
+pub(crate) fn log_stream_ended(frames: u64, dropped: u64, connects: u64, failure: Option<&str>) {
+    let level = failure.map_or(Level::Info, |_| Level::Error);
+    rbs_core::log_at!(
+        level,
+        Area::Stream,
+        "stream ended: {frames} frames, {dropped} dropped, {connects} connections, failure: {}",
+        failure.unwrap_or("none")
+    );
+}
+
+/// The log line of a stopped recording: Info, or Error when it stopped on a failure.
+pub(crate) fn log_rec_stopped(frames: u64, dropped: u64, flush_lost: u64, failure: Option<&str>) {
+    let level = failure.map_or(Level::Info, |_| Level::Error);
+    rbs_core::log_at!(
+        level,
+        Area::Record,
+        "recording stopped: {frames} frames, {dropped} dropped, {flush_lost} packets lost in the encoder, failure: {}",
+        failure.unwrap_or("none")
+    );
 }
 
 #[cfg(test)]

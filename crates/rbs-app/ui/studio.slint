@@ -98,6 +98,15 @@ export component ProgramPanel inherits Rectangle {
         vertical-alignment: center;
         wrap: word-wrap;
     }
+    // The studio stopped: start it again with the scenes as last saved, without
+    // closing the window (crash-resilience spec, "Restart the studio").
+    if shown == 5 && Studio.state == 2 && !Studio.restart-busy: Button {
+        width: self.min-width;
+        x: (parent.width - self.width) / 2;
+        y: note.y + (note.height + note.preferred-height) / 2 + Tokens.space-3;
+        text: @tr("Restart the studio");
+        clicked => { Studio.restart-studio(); }
+    }
     // Selecting, moving and resizing sources on the picture (ADR-0048). Arrow keys move
     // the selected source by 1 canvas pixel, with Shift by 10; Escape clears the
     // selection. Delete or Backspace asks with the source row's confirmation: a bar
