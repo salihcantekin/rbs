@@ -184,6 +184,16 @@ Rules:
 | `org.rbs.filter.blur` | Blur | `radius` 0..64 px, 8 | 2: horizontal at half size, vertical at full size |
 | `org.rbs.filter.sharpen` | Sharpen | `amount` 0..2, 0.3 | 1 |
 
+Pointer types (`rbs_filters::pointer_types`, "Host service: pointer"; ADR-0165 decision 3). They join the catalogue in the change that lends them a `PointerFeed` in the studio; until then they are built and tested here only, so the filter list never offers a filter that cannot draw.
+
+| Type id | Name | Fields (key: range, default) | Passes |
+| --- | --- | --- | --- |
+| `org.rbs.filter.click-rings` | Click rings | `left_color` color, `#ffc400`; `right_color` color, `#00a0ff`; `middle_color` color (middle, back and forward buttons), `#be5aff`; `width` 1..16 px, 4 (ring size: line width); `radius` 4..200 px, 36 (how far it grows); `duration` 0.1..3 s, 0.6; `buttons` choice `all` / `left_right` / `left`, `all` | 1 |
+| `org.rbs.filter.pointer-halo` | Pointer halo | `size` 8..200 px, 40 (radius); `color` color, `#ffdc0060`; `spotlight` toggle, off; `dim` 0..1, 0.5; `spot_radius` 20..600 px, 160 | 1 |
+
+- **Click rings**: one effect per live click, newest 16. A click starts when its time is at or before the input frame's, or when the frame is more than `STILL` (50 ms) older than the tick (ADR-0165, "Time"); clicks with a time after the tick wait. At age `t` (0..1 of `duration`) the ring's radius is `radius * (1 - (1 - t)^2)`, at least half the line width, and its alpha is the colour's alpha times `1 - t`; at `t >= 1` it is gone. The ring is an antialiased line `width` px wide, composited over the input (premultiplied "over").
+- **Pointer halo**: one effect while the view has a pointer, none otherwise (the node then passes the input through). A disc of radius `size` in `color` (alpha included), antialiased over 2 px, composited over the input. With `spotlight` on, the picture outside `spot_radius` is multiplied by `1 - dim`, with a 4 px soft edge.
+
 Maths, on un-premultiplied colour `c` (alpha `a`), premultiplied again at the end:
 
 - **Colour correction**, in sRGB-encoded values `e = linear_to_srgb(c)`: `e = (e - 0.5) * (1 + contrast) + 0.5 + brightness` (contrast below 0 flattens, at −1 grey), saturation mixes with the Rec. 709 luma (`luma + (e - luma) * saturation`), hue rotates around the grey axis by `hue` degrees, gamma: `e = pow(max(e, 0), 1 / gamma)`; clamped to 0..1 and decoded. The defaults give the input back (within 1/1000 per channel).
