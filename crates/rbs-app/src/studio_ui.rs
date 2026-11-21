@@ -86,6 +86,7 @@ pub(crate) mod filters;
 mod item_calls;
 mod library_ops;
 mod scene_calls;
+mod source_calls;
 pub use library_ops::EntryWrite;
 mod live_ticks;
 pub(crate) mod loudness;
@@ -2090,16 +2091,6 @@ impl StudioUi {
         )));
     }
 
-    /// Duplicate source (ADR-0133 decision 3).
-    pub fn duplicate_source(&mut self, id: i32) {
-        self.send(Command::DuplicateSource(SourceId::from_raw(id as u32)));
-    }
-
-    /// Copy attributes of a source (ADR-0133 decision 6).
-    pub fn copy_attributes(&mut self, id: i32) {
-        self.send(Command::CopyAttributes(SourceId::from_raw(id as u32)));
-    }
-
     /// Ask what the Paste attributes (`paste`) or Reset source window shows.
     pub fn open_attributes(&mut self, id: i32, paste: bool) {
         self.attributes_dialog = None;
@@ -2127,7 +2118,7 @@ impl StudioUi {
             self.attributes_remembered = Some(d.remembered());
         }
         if let Some(c) = d.command() {
-            self.send(c);
+            self.call(c);
         }
         self.attributes.set_vec(Vec::new());
     }
@@ -2191,7 +2182,6 @@ impl StudioUi {
         self.send(Command::ReloadSource(SourceId::from_raw(id as u32)));
     }
 
-    /// Adds or removes the "Capture audio too" companion of a display or window.
     /// Play or pause a media file, by its play state now (ADR-0108 decision 10).
     pub fn media_play_pause(&mut self, id: i32) {
         let playing = self
@@ -2263,13 +2253,6 @@ impl StudioUi {
             id: SourceId::from_raw(id as u32),
             patch,
             gesture: 0,
-        });
-    }
-
-    pub fn set_companion_audio(&mut self, id: i32, on: bool) {
-        self.send(Command::SetCompanionAudio {
-            source: SourceId::from_raw(id as u32),
-            on,
         });
     }
 
@@ -2529,14 +2512,6 @@ impl StudioUi {
         });
     }
 
-    pub fn rename_source(&mut self, id: i32, name: &str) {
-        self.deleted.clear();
-        self.send(Command::RenameSource {
-            id: SourceId::from_raw(id as u32),
-            name: name.to_owned(),
-        });
-    }
-
     /// The transition kind from the rail (ADR-0128): `0` Cut, `1` Fade, `2` Move,
     /// `3` Swipe, `4` Slide, `5` Stinger (ADR-0140).
     pub fn set_transition_kind(&mut self, index: i32) {
@@ -2636,16 +2611,6 @@ impl StudioUi {
         if t != self.transition {
             self.send(Command::SetTransition(t));
         }
-    }
-
-    /// Per-source slide override (ADR-0100). `custom` false clears it.
-    pub fn set_source_glide(&mut self, id: i32, custom: bool, duration_ms: i32, easing: i32) {
-        self.send(Command::SetSourceGlide {
-            id: SourceId::from_raw(id as u32),
-            custom,
-            duration_ms: duration_ms.clamp(0, 5_000) as u32,
-            easing: if easing == 0 { 0 } else { 1 },
-        });
     }
 
     /// Opens the Add source picker for a source type (its devices are listed by the
@@ -2783,15 +2748,6 @@ impl StudioUi {
         self.send(Command::MoveSceneTo {
             id: SceneId::from_raw(id as u32),
             to: SceneId::from_raw(to as u32),
-        });
-    }
-
-    /// Keeps a source's device open, or releases it. Hiding does not call this.
-    pub fn set_source_active(&mut self, id: i32, active: bool) {
-        self.deleted.clear();
-        self.send(Command::SetSourceActive {
-            id: SourceId::from_raw(id as u32),
-            active,
         });
     }
 

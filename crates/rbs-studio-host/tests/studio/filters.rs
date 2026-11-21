@@ -602,9 +602,14 @@ fn the_properties_tabs_commands_edit_filters_and_the_sync_offset() {
     host.send(Command::RemoveFilter(filter));
     rows(&|r| chain(r).is_empty());
 
-    host.send(Command::SetSourceSyncOffset {
-        id: SourceId::from_raw(mic),
-        offset_ms: 80,
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::SourceSetSyncOffset(
+            rbs_api::request::SetSourceSyncOffset {
+                source: mic,
+                offset_ms: 80,
+            },
+        )),
+        reply: rbs_studio_host::studio_host::ApiReply::Shown,
     });
     rows(&|r| {
         r.iter()

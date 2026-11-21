@@ -1434,11 +1434,6 @@ impl Host {
                 Ok(false) => {}
                 Err(e) => notify(Update::Error(e.into_text())),
             },
-            Command::SetSourceActive { id, active } => match self.set_source_active(id, active) {
-                Ok(true) => self.apply(notify),
-                Ok(false) => {}
-                Err(e) => notify(Update::Error(e.into_text())),
-            },
             Command::SetSourceVolume { id, volume } => {
                 let call = if self.levels_take(id) {
                     rbs_api::Command::SceneAudioSet(rbs_api::request::SetSceneLevel {

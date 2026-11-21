@@ -346,16 +346,6 @@ pub(super) fn add_software_fallback(reasons: &mut Vec<api::EstimateReason>, soft
     }
 }
 
-/// The control API parameters naming a source in the scene being edited, on the main
-/// canvas: what the window's commands mean.
-pub(super) fn in_scene(id: SourceId) -> rbs_api::request::SourceInScene {
-    rbs_api::request::SourceInScene {
-        source: id.get(),
-        scene: None,
-        canvas: OutputCanvas::default(),
-    }
-}
-
 /// The control API's spelling of a `run` value (ADR-0152).
 /// A page's deprecated `keep_running`, computed from its activity policy (ADR-0152
 /// decision 10): true when its effective `run` is `placed`.

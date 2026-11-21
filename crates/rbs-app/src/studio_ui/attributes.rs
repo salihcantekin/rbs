@@ -3,7 +3,10 @@
 //! sends. The host answers what the window shows ([`AttributesView`]); the checks live
 //! here until the window closes.
 
-use rbs_app::studio_host::{AttributesView, Command};
+use rbs_api::Command as C;
+use rbs_api::request as rq;
+use rbs_api::types::{FilterPasteMode, OutputCanvas};
+use rbs_app::studio_host::AttributesView;
 use rbs_scene::AttributeGroup;
 use slint::{ModelRc, SharedString, VecModel};
 
@@ -120,30 +123,39 @@ impl Dialog {
         self.view.paste
     }
 
-    /// What the confirm button sends, if anything is chosen.
-    pub(crate) fn command(&self) -> Option<Command> {
+    /// What the confirm button sends, if anything is chosen: `source.reset` or
+    /// `source.paste_attributes` (ADR-0163).
+    pub(crate) fn command(&self) -> Option<C> {
         let groups = self.chosen_groups();
         if groups.is_empty() {
             return None;
         }
+        let groups = groups.iter().map(|g| g.id().to_owned()).collect();
         if !self.view.paste {
-            return Some(Command::ResetSource {
-                source: self.view.source,
-                groups,
-            });
+            return Some(C::SourceReset(rq::ResetSource {
+                source: self.view.source.get(),
+                scene: None,
+                canvas: OutputCanvas::default(),
+                groups: Some(groups),
+            }));
         }
         let items: Vec<_> = self
             .chosen_targets()
-            .map(|i| self.view.targets[i].item)
+            .map(|i| self.view.targets[i].item.get())
             .collect();
         if items.is_empty() {
             return None;
         }
-        Some(Command::PasteAttributes {
+        Some(C::SourcePasteAttributes(rq::PasteAttributes {
             items,
             groups,
-            append: self.append,
-        })
+            filters: if self.append {
+                FilterPasteMode::Append
+            } else {
+                FilterPasteMode::Replace
+            },
+            canvas: OutputCanvas::default(),
+        }))
     }
 
     fn help(&self, i: usize) -> &'static str {
@@ -306,9 +318,10 @@ mod tests {
             [AttributeGroup::Crop, AttributeGroup::Options]
         );
         match d.command() {
-            Some(Command::ResetSource { source, groups }) => {
-                assert_eq!(source, SourceId::from_raw(2));
-                assert!(!groups.contains(&AttributeGroup::Sound));
+            Some(C::SourceReset(p)) => {
+                assert_eq!(p.source, 2);
+                let groups = p.groups.expect("the chosen groups");
+                assert!(!groups.iter().any(|g| g == AttributeGroup::Sound.id()));
             }
             other => panic!("{other:?}"),
         }
@@ -337,9 +350,9 @@ mod tests {
         let data = d.data();
         assert_eq!(data.count, 1);
         match d.command() {
-            Some(Command::PasteAttributes { items, append, .. }) => {
-                assert_eq!(items, [ItemId::from_raw(11)]);
-                assert!(!append);
+            Some(C::SourcePasteAttributes(p)) => {
+                assert_eq!(p.items, [11]);
+                assert_eq!(p.filters, FilterPasteMode::Replace);
             }
             other => panic!("{other:?}"),
         }

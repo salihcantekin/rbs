@@ -1020,10 +1020,6 @@ impl Host {
     /// The window commands of this concern, routed by `Host::command`.
     pub(super) fn scene_command(&mut self, c: Command, notify: &dyn Fn(Update)) {
         match c {
-            Command::RenameSource { id, name } => {
-                let done = self.rename_source(id, &name);
-                self.answer(done, notify);
-            }
             Command::SetTransition(t) => {
                 let done = self.put_transition(t);
                 self.answer(done, notify);
@@ -1032,56 +1028,11 @@ impl Host {
                 let done = self.set_source_choice(id, run, on_return);
                 self.answer(done, notify);
             }
-            Command::SetSourceGlide {
-                id,
-                custom,
-                duration_ms,
-                easing,
-            } => {
-                let done = self.set_source_glide(id, custom, duration_ms, easing);
-                self.answer(done, notify);
-            }
-            Command::DuplicateSource(id) => {
-                let done = self.api_source_duplicate(in_scene(id), notify);
-                self.answer_api(done, notify);
-            }
-            Command::CopyAttributes(id) => {
-                let done = self.api_copy_attributes(in_scene(id), notify);
-                self.answer_api(done, notify);
-            }
             Command::OpenAttributes { source, paste } => {
                 match self.attributes_view(source, paste) {
                     Ok(view) => notify(Update::Attributes(view)),
                     Err(e) => notify(Update::Error(e.text().to_owned())),
                 }
-            }
-            Command::ResetSource { source, groups } => {
-                let p = rbs_api::request::ResetSource {
-                    source: source.get(),
-                    scene: None,
-                    canvas: OutputCanvas::default(),
-                    groups: Some(groups.iter().map(|g| g.id().to_owned()).collect()),
-                };
-                let done = self.api_source_reset(p, notify);
-                self.answer_api(done, notify);
-            }
-            Command::PasteAttributes {
-                items,
-                groups,
-                append,
-            } => {
-                let p = rbs_api::request::PasteAttributes {
-                    items: items.iter().map(|i| i.get()).collect(),
-                    groups: groups.iter().map(|g| g.id().to_owned()).collect(),
-                    filters: if append {
-                        rbs_api::types::FilterPasteMode::Append
-                    } else {
-                        rbs_api::types::FilterPasteMode::Replace
-                    },
-                    canvas: OutputCanvas::default(),
-                };
-                let done = self.api_paste_attributes(p, notify);
-                self.answer_api(done, notify);
             }
             // A click in the Scenes panel: on air, or in studio mode into preview.
             Command::SwitchScene(id) => {
