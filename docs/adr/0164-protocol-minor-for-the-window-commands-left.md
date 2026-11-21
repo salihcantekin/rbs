@@ -27,77 +27,118 @@ The owner approved one short ADR for one minor (2026-11-21 19:09 UTC). The proto
 1. **One minor, 1.100.**
    - Every addition below lands in protocol 1.100. No existing field, method or error kind changes meaning.
    - The minor is an integer, and versions compare numerically (1.100 > 1.99), never as a string or a float. A test checks this.
-   - Some 1.99 params ignore unknown fields: `Empty`, `SettingsPatch`, `AddSource`. For each new field there, the spec says that a 1.99 server ignores it and that a client checks for 1.100 first. A new behaviour that would be harmful if it were ignored gets a new method instead of a field.
+   - The window always talks to its own server. A client checks for 1.100 before it uses an addition, and the spec states the 1.99 behaviour for each changed request:
+     - ignored: `SetItemStyle`, `SettingsPatch` and `AddSource` drop unknown fields.
+     - refused with `invalid_params`: `SetItemCrop`, `SetItemScroll`, `SetSourceSettings`, the transform requests, `MoveItem` and `MoveScene` deny unknown fields.
+   - A behaviour that would be harmful if it were ignored is a new method, not a field.
 2. **Gestures.**
-   - `item.set_crop`, `item.set_style`, `item.set_scroll`, `source.set_settings` and the item transform methods take an optional `gesture: u64`. A client keeps it below 2^53.
-   - A call joins the newest undo step when it has the same caller session, the same non-zero gesture and the same edit kind. The window counts as a session of its own. Today's `History::record` is extended with the session.
-   - A gesture never refuses a call.
+   - `item.set_crop`, `item.set_style`, `item.set_scroll`, `source.set_settings` and the item transform methods take an optional `gesture: u64`, as `item.set_box` does since 1.34.
+   - The merge rule stays the one `History::record` has: same non-zero gesture and same edit kind as the newest step.
+   - Gestures are split into two ranges:
+     - The window numbers its gestures from 2^63, so a client's gesture never joins a window step.
+     - Clients use values below 2^53 (the JSON safe range).
+   - Two clients that reuse a number on the same kind can join steps. The spec says so, and no `Caller` change is needed.
+   - A gesture never refuses a call on 1.100.
 3. **Output starts: no new fields.**
    - The window sends `record.start {profile: "default", canvas, iso}` and `stream.start {canvas}`, as a client does.
-   - Three differences must be closed or listed in the inventory before each start moves:
-     - the start gate (`StartGate::Older` against `start_gate`)
-     - the `iso` default
-     - the window's own checks (`recording_blocked`, `problem()`, vertical setup, streaming off), whose "set up" action needs the reason in the error data. 1.100 adds `data.reason` for these refusals.
+   - The start gate is already the same: the window sends neither `acknowledge_heavy` nor `on_hardware_limit`.
+   - The open difference is `iso`: the window always sends `true`, while `record.start` reads Separate files. That step makes the window send what the setting says, or lists it in the inventory.
+   - The window's own checks become refusals with `data.reason`. Older clients ignore `data`. Each reason comes with an error kind:
+
+     | `data.reason` | Kind |
+     | --- | --- |
+     | `recording_blocked` | `conflict` |
+     | `profile_problem` | `invalid_params` |
+     | `vertical_not_set_up` | `conflict` |
+     | `streaming_off` | `conflict` |
+
+     The window offers its "set up" action from the reason.
    - A test compares the window's request builder with the host's for the same settings, on an injected clock (rule 14).
 4. **Virtual camera: no new fields.** The window sends plain `vcam.start` after its `SetVirtualCamera` mirror, and the host builds from `CameraSetup`, as it does for clients.
-5. **Settings fields.** `settings.set` / `settings.get` add:
-   - `swap_after_transition`
-   - `separate_files`
-   - `replay`. A change applies at the next arm: a running buffer keeps its settings, as today.
-   - `vertical_profile`, where `null` removes the saved vertical section and the main one applies.
-   - `vertical_stream`, under the `stream` rule: no server and no key.
-   - `stream_destinations`, as names, on/off, `protocol` and `key_saved` only.
+5. **Settings fields and mirrors.**
+   - `settings.set` / `settings.get` add five fields:
 
-   Entering a destination's URL or key stays LocalOnly: `SetStreamDestinations` splits as `AddSource` does. Folder settings follow the existing `profiles.folder` rule.
+     | Field | Refused with `conflict` |
+     | --- | --- |
+     | `swap_after_transition` | never |
+     | `separate_files` | while a recording runs |
+     | `replay` | never: a change applies at the next arm, and a running buffer keeps its settings |
+     | `vertical_profile` | while a vertical recording uses it |
+     | `vertical_stream` | while the vertical stream runs |
 
-   Some values are stored by the host. For those, the window sends `settings.set` through `Command::Api`. Where `rbs-app` owns the file, the variant becomes WindowOnly Mirror.
-6. **Methods and fields.** "Edited item" below means an item id: a client has no edited scene.
+   - `vertical_stream` follows the `stream` rule: no server and no key.
+   - For `vertical_profile` and `vertical_stream`, `null` removes the saved section, and the main one applies.
+   - A patch is checked whole before anything is applied, as today.
+   - `rbs-app` owns all five files, so these variants become WindowOnly Mirror:
+     - `SetSwapAfterTransition`
+     - `SetSeparateFiles`
+     - `SetReplay`
+     - `SetVerticalProfile`
+     - `SetVerticalStreamProfile`
+   - A client's change comes back to the window, which saves it without overwriting a form being edited, as the `Update::StreamProfile` arm does. Each field has its own update: `Update::SwapAfterTransition`, `Update::SeparateFiles`, `Update::ReplaySetup`, `Update::VerticalProfile` and `Update::VerticalStreamProfile`.
+   - **Stream destinations get no settings field.**
+     - `SetStreamDestinations` splits. Switching a destination on or off goes through `stream.destination.set_enabled` (1.74) via `Command::Api`.
+     - Everything else stays LocalOnly: adding, removing, renaming, server, key, encoding, order, reconnect and SRT latency. The spec's local-user list gains rename, encoding, order, reconnect and SRT latency.
+6. **New methods and fields.** A client has no edited scene, so the methods that change an item take an item id.
 
-   | Addition | For |
-   | --- | --- |
-   | `scene.move` / `item.move`: `direction` becomes optional, with a new `to_scene` / `to_item`. Exactly one of the two is given, else `invalid_params`. The moved one takes the target's position, and the ones between shift by one toward its old place. `to_item` must be a picture layer in the same scene. | `MoveSceneTo`, `MoveSourceTo` (the window sends item ids) |
-   | New `edit.undo_delete`: undoes the newest step if it is a delete or a remove from scene, else refused with `conflict`. The window answers quietly. On 1.99 it is `method_not_found`. | `UndoDelete` (the undo toast) |
-   | `source.add` kind `color` with an optional `shape` (the `ItemStyle` shape values). Kinds `image` and `media` take a `path`, and `browser` takes a `url`. Boxes are sized as the window does today (an image from its picture size). | `AddStamp`, `AddImage`, `AddMedia`, `AddBrowser` |
-   | `look.apply` with a new built-in look, `builtin:voice_chain` | `AddVoiceChain` |
-   | `collection.set_stinger_file {path}` | `SetStingerFile` |
-   | `item.fit_text_box {item}`: keeps the centre and the scale | `FitTextBox` |
-   | `item.set_filled {item, on}`: the fill and the border are one undo step | `SetSourceFilled` |
-   | `item.set_shown_region {item, region: full / canvas_centred / left_half / right_half}` | `SetSourceRegion` |
-   | `canvas.rehearse`. Refused with `conflict` and a `data.reason` outside studio mode, while a transition runs or holds, during a rehearsal, and for Cut or a duration of 0. The window answers quietly. | `Rehearse` |
-   | `addon.update {id}`: install the new version, then clean the old one. Its effect is `destructive`, so the irreversible-actions permission applies. If the install fails, is cancelled or the app quits first, the old version stays. The clean is started by the install's done event, with no polling (P13). | `AddOn` Update |
+   | Addition | Scope / effect | For |
+   | --- | --- | --- |
+   | `scene.move` / `item.move`: `direction` becomes optional, with new `to_scene` / `to_item`. Exactly one is given, else `invalid_params`. The moved one takes the target's position, and the ones between shift by one toward its old place. `to_item` must be a picture layer in the same scene. | control / edit | `MoveSceneTo`, `MoveSourceTo` (the window sends item ids) |
+   | `edit.undo_delete`: undoes the newest step if it is a delete or a remove from scene, else `conflict`. The window answers quietly. On 1.99 it is `method_not_found`. | control / edit | `UndoDelete` (the undo toast) |
+   | `source.add` kind `color` with an optional `stamp` (see below the table) | control / edit | `AddStamp` |
+   | `source.add` kinds `image` and `media` with a `path` (exclusive with `target`), and `browser` with a `url`. An image box is sized from the picture. A file that does not decode is `invalid_params`, without the path in the text (ADR-0074 decision 9). `stamp`, `path` and `url` on any other kind are `invalid_params`, as `text` is today. | control / edit | `AddImage`, `AddMedia`, `AddBrowser` |
+   | `filter.add_voice_chain {source}`: the four voice filters on a sound source, one undo step. Any other source is `invalid_params`. | control / edit | `AddVoiceChain` |
+   | `collection.set_stinger_file {path}` | control / edit | `SetStingerFile` |
+   | `item.fit_text_box {item, canvas}`: keeps the centre and the scale | control / edit | `FitTextBox` |
+   | `item.set_filled {item, on, canvas}`: the fill is the source's setting, shared by every scene that places it. Turning it off adds a border to that item's style on `canvas`. One undo step. | control / edit | `SetSourceFilled` |
+   | `item.set_shown_region {item, region: full / canvas_centred / left_half / right_half, canvas}` | control / edit | `SetSourceRegion` |
+   | `canvas.rehearse`: refused with `conflict` and a `data.reason` (`not_studio_mode`, `transition_running`, `rehearsing`, `no_duration`). The window answers quietly. The `ui.transition.rehearse` registry entry resolves to it. | control / edit (preview only, not on air) | `Rehearse` |
+   | `addon.update {id}`: installs the new version, then cleans the old one. It reaches the network as `addon.install` does. | plugins / destructive | `AddOn` Update |
+
+   The `stamp` values for `source.add` kind `color` are `circle`, `square`, `rectangle`, `rounded_rectangle`, `ellipse`, `triangle` and `arrow`. The spec gives each one's box and radius as `add_stamp` has them.
+
+   `addon.update` keeps the old version whenever the update does not finish:
+   - If the install fails or is cancelled, the old version stays.
+   - The clean starts from the install's done event, with no polling (P13).
+   - If the app quits between the install and the clean, the next start uses the newest complete version and cleans the older one once, at start.
 
    `source.retarget` gets no new fields. For every caller, the host fills the name, the app and the sound from its own target list. A picker target stays in the window, split as `AddSource`.
-7. **Local files: today's rules, one place.**
-   - New path and URL fields follow the rules the same values have in `source.set_settings` today:
-     - an image, media or stinger `path` must be a local absolute path (ADR-0074 decision 9)
-     - a browser `file:` URL needs the irreversible-actions permission.
+7. **Local files and the network: today's rules, one place.**
+   - A `path` (image, media, stinger) must be a local absolute path, as ADR-0052 decision 4 and `network.rs` `is_local_path` require today.
+   - `source.add` with kind `browser` needs the irreversible-actions permission whatever the URL. So does writing any key in `BROWSER_NETWORK_KEYS`.
+   - The new `path` fields join `Command::reaches_network` on the API thread.
    - A text source's `file` stays refused for every API caller except the window. "API caller" means every caller but the window, with or without a token, `rbs-cli` and MCP over IPC included.
    - That check moves from the `source.set_settings` handler to `handle_as` on the control thread, next to `check_network`, because it needs the source's kind.
-8. **Extension-ready.** `item.fit_text_box` and `item.set_filled` extend the existing closed lists (`SourceKind`), as rule 19 allows until the type registry (ADR-0162) exists. They then become actions of their type's registry entry. No new closed list is added.
+8. **Extension-ready.** `item.fit_text_box`, `item.set_filled` and `filter.add_voice_chain` are type-specific methods. They test an existing `SourceKind`, which rule 19 allows, and add no closed list. When the type registry exists (ADR-0162), they become actions of their type's entry.
 9. **Steps and ratchet.**
    - The code follows one namespace per step, as in ADR-0163. Each step adds its fields with a conformance case (including the 1.99 behaviour), a window test per move and the spec rows, then lowers the counts.
-   - `MIRROR` may rise by exactly the number of `Missing` rows that become Mirror under decision 5. The owner's approval of this ADR is that approval.
+   - `MIRROR` may rise from 3 to 8 (decision 5) and `LOCAL_ONLY` from 9 to 10 (the destination split). The owner's approval of this ADR is that approval.
    - No step may change what the user sees without the owner's OK.
-   - Target after the steps: `CONTRACT` 0, `MISSING` 1 (`SetLibrary`, decision 10). `PENDING` keeps only these rows:
-     - rows that stay for a visible reason: `SetCanvas`, `SaveReplay`, `StopVirtualCamera`, `SetFilterValues`, `BrowserControl`, `InteractInput` (see the inventory)
+   - Target after the steps: `CONTRACT` 0, `MISSING` 1 (`SetLibrary`, decision 10), `PENDING` 15. Those 15 are:
+     - rows that stay for a visible reason: `SetCanvas`, `SaveReplay`, `StopVirtualCamera`, `SetFilterValues`, `BrowserControl` and `InteractInput` (see the inventory)
      - `ForgetBrowserSignIn`, until `browser.forget_sign_in` also stops the page first
-     - rows ADR-0163 moves later without a contract change (ticketed answers): `ListTargets`, `AddSource`, `AddSourceWithAudio`, `AddGlobalSource`, `SetSourceBox`, `ListAddOns`, `StartSyncMeasure`, `CloseSyncMeasure`.
-10. **Out of scope.** Library management (create, rename, duplicate, delete profiles and collections) stays a parity gap. `SetLibrary` stays Missing.
+     - eight rows ADR-0163 moves later without a contract change (ticketed answers): `ListTargets`, `AddSource`, `AddSourceWithAudio`, `AddGlobalSource`, `SetSourceBox`, `ListAddOns`, `StartSyncMeasure` and `CloseSyncMeasure`.
+10. **`SetLibrary` stays Missing.**
+    - The methods exist: `ui.profile.*` and `ui.collection.*` (1.23), routed through the window.
+    - `SetLibrary` is the window reporting its own library list for `profile.list` / `collection.list`. The row goes when the library files move to the host, which is not part of this ADR.
+    - The inventory reason is corrected to say so.
 
 ## Consequences
 
-- Clients get the window's editing surface: shapes, images, media, browser pages, reordering, a fitted text box, rehearsal and add-on updates. No file, server or key rule becomes looser.
-- The additions are the ten rows of decision 6, the five settings fields, the `gesture` field, the start reasons and `data.reason`.
-- Gesture merging also serves clients, and the session keeps one client's drag from joining another's step.
-- Follow-up: the `control-api.md` rows and a 1.100 changelog entry, the numeric-version test, the conformance cases, the inventory rows per step, and the `docs/status.md` WP-M row.
+- Clients get the window's editing surface: shapes, images, media, browser pages, reordering, a fitted text box, the voice chain, rehearsal and add-on updates. No file, network, server or key rule becomes looser.
+- The additions are the 11 rows of decision 6, the five settings fields, the `gesture` field, the start reasons and their updates.
+- Window drags and client drags never join one undo step.
+- Follow-up: the `control-api.md` rows and a 1.100 changelog entry, the numeric-version test, the conformance cases, the inventory rows per step (`SetLibrary`'s reason first), and the `docs/status.md` WP-M row.
 
 ## Alternatives considered
 
 - **One minor per namespace:** many small version bumps for one piece of work. The owner chose one minor.
 - **Send the window's own `RecordRequest` or camera size through the API:** it puts encoder, path and local-user details in the contract. One host builder already serves clients.
-- **Forbid all local paths for API callers:** it would remove what ADR-0074 decision 9 allows today, and that needs a versioning exception the owner has not given.
+- **A session id in `Caller` for gestures:** it is a semver change to `rbs-api` and changes `item.set_box`. Separate number ranges give the window the same protection.
+- **A `stream_destinations` settings field:** it repeats `stream.destinations` (1.74), and the spec keeps destinations with the local user.
+- **The voice chain as a look:** looks are picture-only (`look.apply`, `look.list`), so it would change an existing method.
+- **Forbid all local paths for API callers:** it removes what ADR-0052 and ADR-0074 allow today, and that needs a versioning exception the owner has not given.
 - **`edit.undo` with a field:** a 1.99 server would ignore the field and undo any step.
-- **A `shape` source kind:** a shape is a colour source with a shaped style, not a type.
 
 ## Review
 
@@ -127,3 +168,28 @@ Eighteen concerns were raised. Each is resolved in this revision, as follows:
 16. **"The ratchet can reach its floor" could not be checked.** The rows left, the target constants, the exact additions and the rehearse refusal reasons are now listed (decisions 6 and 9).
 17. **Replay and vertical settings details.** Replay applies at the next arm; vertical `null` removes the saved section (decision 5).
 18. **Old-server tests.** A conformance case covers the 1.99 behaviour of each field (decision 9).
+
+### Round 2: independent AI session, 2026-11-21, changes requested
+
+- Reviewer: independent AI session
+- Date: 2026-11-21
+- Verdict: changes requested
+
+Round 1 items 3, 4, 5, 7, 9, 13, 17 and 18 were confirmed resolved. Sixteen new or remaining concerns were raised, and each is resolved in this revision:
+
+1. **`builtin:voice_chain` would change `look.apply`.** Now a separate method, `filter.add_voice_chain` (decision 6).
+2. **`stream_destinations` repeated 1.74 and broke the local-user rule.** The field is dropped. The variant splits into `stream.destination.set_enabled` and LocalOnly, and the local-user list grows (decision 5).
+3. **The gesture session needed a `Caller` change.** The window and clients now use separate gesture ranges, so there is no `Caller` change and `item.set_box` is unchanged (decision 2).
+4. **The Mirror rows were unspecified.** The five rows, the updates back and `MIRROR` 3 to 8 are now named (decisions 5 and 9).
+5. **`shape` could not express the stamps.** Now a `stamp` preset with seven values, boxes from `add_stamp`, and other kinds refused (decision 6).
+6. **Decision 10 was wrong.** Corrected: the methods exist, and `SetLibrary` is the window's report of its own library list.
+7. **The browser rule was misstated.** Restated; the new paths join `reaches_network`, and ADR-0052 is cited (decision 7).
+8. **The 1.99 behaviour list was incomplete.** It is now given per request (decision 1).
+9. **Scope and effect were missing.** Added per method, with the rehearse registry entry (decision 6).
+10. **Start reasons were not named.** Now named with their kinds. The gate difference is closed, and `iso` is the open one (decision 3).
+11. **Refusal rules per settings field.** Added: atomic patch, `null` semantics (decision 5).
+12. **`addon.update` when the app quits before the clean.** Covered (decision 6).
+13. **`item.set_filled` changes every scene.** Stated, with the canvas (decision 6).
+14. **Decision 8 wording.** Reworded.
+15. **Counts.** Corrected, and the constants are stated (decision 9).
+16. **Image decode errors.** No path in the text, `invalid_params` (decision 6).
