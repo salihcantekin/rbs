@@ -193,7 +193,10 @@ fn sources_are_added_deleted_and_restored_through_the_host() {
         _ => None,
     });
     assert_eq!(name, rows[1].name);
-    host.send(Command::UndoDelete);
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::EditUndoDelete),
+        reply: ApiReply::QuietIf(rbs_api::ErrorKind::Conflict),
+    });
     let rows = rows_where(&rx, |r| r.iter().any(|s| s.id == mic_id));
     assert_eq!(rows.len(), 3);
 
@@ -416,7 +419,10 @@ fn edits_are_undone_and_redone_and_a_drag_is_one_step() {
     assert_eq!(undo.map(|s| s.kind), Some(EditKind::Delete));
     assert!(redo.is_none());
     // The toast's Undo brings the screen back; after another edit it does nothing.
-    host.send(Command::UndoDelete);
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::EditUndoDelete),
+        reply: ApiReply::QuietIf(rbs_api::ErrorKind::Conflict),
+    });
     rows_where(&rx, |r| r.len() == 2);
     host.send(Command::Api {
         call: Box::new(rbs_api::Command::EditUndo),
@@ -425,7 +431,10 @@ fn edits_are_undone_and_redone_and_a_drag_is_one_step() {
     rows_where(&rx, |r| {
         r.len() == 2 && r[0].layout.is_some_and(|l| l.position == start.position)
     });
-    host.send(Command::UndoDelete);
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::EditUndoDelete),
+        reply: ApiReply::QuietIf(rbs_api::ErrorKind::Conflict),
+    });
     // Undo everything: the adds go too.
     host.send(Command::Api {
         call: Box::new(rbs_api::Command::EditUndo),

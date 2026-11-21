@@ -84,8 +84,6 @@ paths! {
     // must still send Update::Deleted for the undo toast
     // global: true
     AddGlobalSource => Pending(&["source.add"]),
-    // edit.undo has no only-if-a-delete condition
-    UndoDelete => Missing,
     // quiet when there is nothing to undo
     // as Undo
     SetSourceVolume => Translates(&["source.set_volume", "scene.audio.set"]),
@@ -126,8 +124,6 @@ paths! {
     // becomes Translates (branches on the preview)
     SwitchScene => Translates(&["scene.switch", "canvas.set_preview"]),
     SetStudioMode => Translates(&["canvas.set_preview"]),
-    // starts a rehearsal on the engine; no method (ui.transition.rehearse is the registry entry)
-    Rehearse => Missing,
     // no settings.set field
     SetSwapAfterTransition => Missing,
     SetSourceBox => Pending(&["item.set_box"]),
@@ -191,7 +187,6 @@ paths! {
     ReadPermissions => WindowOnly(LocalOnly),
     RequestPermission => WindowOnly(LocalOnly),
     ListAddOns => Pending(&["addon.list"]),
-    AddOn => Pending(&["addon.install", "addon.cancel", "addon.clean", "addon.remove"]),
     Api => Api,
 }
 
@@ -204,9 +199,9 @@ mod tests {
     /// which must pick its method from host state may raise `TRANSLATES` by as many
     /// as `PENDING` falls; any other rise needs the owner's written approval.
     const TRANSLATES: usize = 22;
-    const PENDING: usize = 17;
+    const PENDING: usize = 16;
     const CONTRACT: usize = 6;
-    const MISSING: usize = 9;
+    const MISSING: usize = 7;
     const VIEW: usize = 13;
     const LOCAL_ONLY: usize = 9;
     const PREVIEW: usize = 2;
@@ -295,7 +290,10 @@ mod tests {
         unique.sort_unstable();
         unique.dedup();
         assert_eq!(unique.len(), names.len());
-        assert_eq!(Command::UndoDelete.name(), "UndoDelete");
-        assert_eq!(Command::UndoDelete.path(), CommandPath::Missing);
+        assert_eq!(Command::Break.name(), "Break");
+        assert_eq!(
+            Command::Break.path(),
+            CommandPath::Translates(&["output.break_toggle"])
+        );
     }
 }

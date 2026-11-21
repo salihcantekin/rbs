@@ -28,6 +28,7 @@ const OFF_AIR: &[&str] = &[
     "project.export",
     "marker.add",
     "canvas.set_preview",
+    "canvas.rehearse",
     "scene.add",
     "source.copy_attributes",
 ];

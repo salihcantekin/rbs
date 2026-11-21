@@ -52,7 +52,7 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `SetGlobal` | Moved to `Command::Api` (step 3) | global.add, global.remove |
 | `RemoveGlobal` | Moved to `Command::Api` (step 3) | global.remove |
 | `AddGlobalSource` | Pending | source.add (global: true) |
-| `UndoDelete` | Missing | edit.undo has no only-if-a-delete condition |
+| `UndoDelete` | Moved to `Command::Api` | edit.undo_delete; the window is quiet on `conflict` (ADR-0164 step 4) |
 | `Undo` | Moved to `Command::Api` (step 3) | edit.undo, sent with `ApiReply::QuietIf(conflict)`: nothing to undo says nothing, a refused step (`undo_conflict`) is shown |
 | `Redo` | Moved to `Command::Api` (step 3) | edit.redo, sent with `ApiReply::QuietIf(conflict)`: nothing to undo says nothing, a refused step (`undo_conflict`) is shown |
 | `MoveSource` | Moved to `Command::Api` (step 2) | item.move |
@@ -139,7 +139,7 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `SetStudioMode` | Translates (step 1) | canvas.set_preview |
 | `Transition` | Moved to `Command::Api` (step 1) | canvas.transition |
 | `TransitionProgress` | Moved to `Command::Api` (step 1) | canvas.transition_progress; quiet answer (stale T-bar steps are ignored today) |
-| `Rehearse` | Missing | starts a rehearsal on the engine; no method (ui.transition.rehearse is the registry entry) |
+| `Rehearse` | Moved to `Command::Api` | canvas.rehearse; the window is quiet on `conflict` (ADR-0164 step 4) |
 | `SetSwapAfterTransition` | Missing | no settings.set field |
 | `SetSourceActive` | Moved to `Command::Api` (step 3) | source.set_active |
 | `SetSourceVisible` | Moved to `Command::Api` (step 2) | item.set_visible |
@@ -204,4 +204,4 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `ReadPermissions` | WindowOnly LocalOnly |  |
 | `RequestPermission` | WindowOnly LocalOnly |  |
 | `ListAddOns` | Pending | addon.list |
-| `AddOn` | Pending | addon.install, addon.cancel, addon.clean, addon.remove; Update (install, then clean the old version when done) has no single API call |
+| `AddOn` | Moved to `Command::Api` | addon.install, addon.update, addon.cancel and addon.remove (ADR-0164 step 4) |

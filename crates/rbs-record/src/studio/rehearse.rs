@@ -97,6 +97,21 @@ impl Studio {
         Ok(true)
     }
 
+    /// True when the studio has a Preview picture to rehearse on (a studio with a UI).
+    pub fn has_preview_picture(&self) -> bool {
+        self.scene_preview.is_some() && self.settings.preview.is_some()
+    }
+
+    /// True when the transition a `canvas.transition` would run now into the preview
+    /// scene takes time: not a Cut and not 0 s (ADR-0135 decision 11).
+    pub fn rehearsal_has_duration(&self) -> bool {
+        let canvas = self.settings.canvas;
+        self.collection
+            .canvas(canvas)
+            .and_then(|c| c.preview)
+            .is_some_and(|preview| rehearsal_plan(&self.collection, preview).is_some())
+    }
+
     /// True while a rehearsal plays on the Preview picture.
     pub fn rehearsing(&self) -> bool {
         self.rehearsal.is_some()
