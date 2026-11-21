@@ -124,16 +124,17 @@ pub fn spawn_local(
 
 /// Awaits `work` (writer-thread work, `user_session::Pending`) under [`spawn_local`]
 /// and hands its result to `done`; when no task can start, `done` gets that error at
-/// once. The UI thread never waits on the writer (docs/architecture/threads.md).
+/// once. The UI thread never waits on the writer (docs/architecture/threads.md). The
+/// error arrives as the words the window shows.
 #[track_caller]
-pub fn when_done<R: 'static>(
-    work: impl Future<Output = Result<R, String>> + 'static,
+pub fn when_done<R: 'static, E: std::fmt::Display + 'static>(
+    work: impl Future<Output = Result<R, E>> + 'static,
     done: impl FnOnce(Result<R, String>) + 'static,
 ) {
     let done = std::rc::Rc::new(std::cell::Cell::new(Some(done)));
     let then = std::rc::Rc::clone(&done);
     let task = spawn_local(async move {
-        let result = work.await;
+        let result = work.await.map_err(|e| e.to_string());
         if let Some(f) = then.take() {
             f(result);
         }
