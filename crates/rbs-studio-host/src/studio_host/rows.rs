@@ -97,8 +97,6 @@ pub struct SourceRow {
     pub has_work_rect: bool,
     /// Stored timed-show duration (ADR-0105); 0 when unset.
     pub show_for_ms: u32,
-    /// Milliseconds left on a running Show cue; 0 when none.
-    pub cue_remaining_ms: u32,
     /// A live pause holds the item's scroll run on the main canvas, then on the
     /// vertical one (ADR-0150 decision 12: Properties shows Resume).
     pub scroll_paused: [bool; 2],
@@ -240,12 +238,28 @@ impl PartialEq for SourceRow {
             && self.chrome_fill == other.chrome_fill
             && self.has_work_rect == other.has_work_rect
             && self.show_for_ms == other.show_for_ms
-            && self.cue_remaining_ms == other.cue_remaining_ms
             && self.scroll_paused == other.scroll_paused
             && match (&self.meter, &other.meter) {
                 (Some(a), Some(b)) => Arc::ptr_eq(a, b),
                 (None, None) => true,
                 _ => false,
             }
+    }
+}
+
+impl Host {
+    /// The running audio sources' meters, for `audio.levels`. A source that is both
+    /// global and in the program scene is listed once.
+    pub(super) fn publish_levels(&self) {
+        let mut next = Vec::new();
+        let mut seen = std::collections::BTreeSet::new();
+        for row in self.globals_shown.iter().chain(self.heard.iter()) {
+            if let Some(meter) = &row.meter
+                && seen.insert(row.id)
+            {
+                next.push((row.id.get(), Arc::clone(meter)));
+            }
+        }
+        self.levels.replace_if_changed(next);
     }
 }

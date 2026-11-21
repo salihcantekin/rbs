@@ -75,6 +75,7 @@ use crate::select::{self, Chosen};
 
 mod browser_page;
 mod estimate_plan;
+mod health;
 mod vcam;
 pub use estimate_plan::{PlannedOutput, StartPlanRequest};
 use vcam::{CameraDownload, CameraRun, download_share};
@@ -3528,74 +3529,6 @@ impl Studio {
             self.meters_on,
         ));
         true
-    }
-
-    /// The bound sources the running plan schedules, in binder order, each with its
-    /// adapter, target and why it is not running (if it is not).
-    pub fn sources(&self) -> Vec<SourceState> {
-        self.entries
-            .iter()
-            .filter(|e| e.scheduled)
-            .map(|e| {
-                let mut state = e.state.clone();
-                // The node's own counters say why a running instance failed.
-                state.fault = match (&state.failed, e.instance.as_ref().map(|i| &i.watch)) {
-                    (None, _) => None,
-                    (Some(_), Some(Watch::Video(stats))) => stats.fault().or(state.fault),
-                    (Some(_), _) => state.fault,
-                };
-                // A browser source without its engine says so, also after a runner
-                // that could not load it exited (add-ons spec "Browser engine
-                // consumer").
-                if let Some(reason) = self
-                    .browser_controls
-                    .get(&e.source)
-                    .filter(|c| !c.helper_running())
-                    .and_then(|c| {
-                        // The tree's own answer first: a failed node's instance is
-                        // made again without being prepared, so its control is new.
-                        (state.failed.is_some())
-                            .then(|| self.browser_tree.as_ref()?.unavailable())
-                            .flatten()
-                            .or_else(|| c.engine_reason())
-                    })
-                {
-                    state.failed = Some(browser_engine_message(reason).to_owned());
-                    state.fault = None;
-                    state.reason = Some(reason);
-                } else if self
-                    .browser_controls
-                    .get(&e.source)
-                    .is_some_and(|c| c.capped())
-                {
-                    // A shown page took the background page's slot (ADR-0149
-                    // decision 5).
-                    state.reason = Some(rbs_sources::BROWSER_CAP);
-                } else if self.browser_controls.contains_key(&e.source) {
-                    // Both page slots are taken (ADR-0109 decision 7), or the page
-                    // has no address yet.
-                    let failed = state.failed.as_deref().unwrap_or_default();
-                    state.reason = [rbs_sources::BROWSER_CAP, rbs_sources::BROWSER_NO_ADDRESS]
-                        .into_iter()
-                        .find(|r| failed.contains(r));
-                }
-                // A text source shows its worker's problem (ADR-0129 decision 7).
-                if state.failed.is_none()
-                    && let Some(p) = self.text_problem(e.source).filter(|p| p.fault().is_some())
-                {
-                    state.failed = Some(p.message());
-                    state.fault = p.fault();
-                }
-                if state.failed.is_none()
-                    && let Some(Watch::Text(stats)) = e.instance.as_ref().map(|i| &i.watch)
-                    && let Some(fault) = stats.fault()
-                {
-                    state.failed = Some("The text picture could not be kept on the GPU".into());
-                    state.fault = Some(fault);
-                }
-                state
-            })
-            .collect()
     }
 
     /// Sets the text worker's file access and wall clock (tests, hosts). Takes effect

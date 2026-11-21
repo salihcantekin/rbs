@@ -258,7 +258,10 @@ impl Editor {
         let url = text.trim();
         self.problem = match url {
             "" => String::new(),
-            u => parse_server(u).err().unwrap_or_default(),
+            u => parse_server(u)
+                .err()
+                .map(|e| e.to_string())
+                .unwrap_or_default(),
         };
         self.draft.server = url.to_owned();
     }
@@ -316,7 +319,9 @@ impl Editor {
                 let _ = next.remove(self.canvas.first());
                 self.canvas.first()
             }
-            None => next.add(self.canvas, &self.draft.name, &self.draft.service)?,
+            None => next
+                .add(self.canvas, &self.draft.name, &self.draft.service)
+                .map_err(|e| e.to_string())?,
         };
         let entry = next
             .entry_mut(id)

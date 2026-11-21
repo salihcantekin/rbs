@@ -15,13 +15,13 @@ impl Host {
 
     /// The studio canvas `c`'s outputs use (`None`: the main one); refused in words
     /// when there is no vertical canvas.
-    pub(super) fn output_canvas(&self, c: OutputCanvas) -> Result<Option<CanvasId>, String> {
+    pub(super) fn output_canvas(&self, c: OutputCanvas) -> Result<Option<CanvasId>, Refusal> {
         match c {
             OutputCanvas::Main => Ok(None),
             OutputCanvas::Vertical => self
                 .vertical
                 .map(|v| Some(v.canvas))
-                .ok_or_else(|| "There is no vertical canvas.".to_owned()),
+                .ok_or_else(|| Refusal::NotFound("There is no vertical canvas.".to_owned())),
         }
     }
 
@@ -56,11 +56,11 @@ impl Host {
         settings: VirtualCameraSettings,
         notify: &dyn Fn(Update),
         show_error: bool,
-    ) -> Result<(), String> {
+    ) -> Result<(), Refusal> {
         let started = self.start_camera(settings);
         match &started {
             Ok(()) => self.camera_due = None,
-            Err(why) if show_error => notify(Update::Error(why.clone())),
+            Err(why) if show_error => notify(Update::Error(why.text().to_owned())),
             Err(_) => {}
         }
         notify(Update::VirtualCamera(self.camera_status()));
@@ -140,17 +140,16 @@ impl Host {
     }
 
     /// Starts sending to the virtual camera with `settings`.
-    pub(super) fn start_camera(&mut self, settings: VirtualCameraSettings) -> Result<(), String> {
+    pub(super) fn start_camera(&mut self, settings: VirtualCameraSettings) -> Result<(), Refusal> {
         if let Some(why) = self.calibration_blocks() {
-            return Err(format!("{why}."));
+            return Err(Refusal::Conflict(format!("{why}.")));
         }
-        let factory = self
-            .camera_factory
-            .clone()
-            .ok_or("The virtual camera is not available on this computer.")?;
+        let factory = self.camera_factory.clone().ok_or_else(|| {
+            Refusal::Failed("The virtual camera is not available on this computer.".to_owned())
+        })?;
         self.studio
             .start_virtual_camera(&*factory, settings)
-            .map_err(|e| format!("The virtual camera did not start: {e}"))?;
+            .map_err(|e| Refusal::Failed(format!("The virtual camera did not start: {e}")))?;
         self.camera = Some(settings);
         Ok(())
     }
@@ -347,7 +346,7 @@ impl Host {
 
     /// The vertical canvas's panel opened or closed: its picture starts or stops, also
     /// while its outputs run.
-    pub(super) fn set_vertical_picture(&mut self, on: bool) -> Result<(), String> {
+    pub(super) fn set_vertical_picture(&mut self, on: bool) -> Result<(), Refusal> {
         self.vertical_picture = on;
         let Some(v) = self.vertical else {
             return Ok(());
@@ -358,7 +357,7 @@ impl Host {
         self.studio
             .set_canvas_picture(running, &self.adapters.sources, v.canvas, desc)
             .map(|_| ())
-            .map_err(|e| format!("The vertical preview did not start: {e}"))?;
+            .map_err(|e| Refusal::Failed(format!("The vertical preview did not start: {e}")))?;
         self.waiting = self.studio.waiting();
         Ok(())
     }
@@ -591,7 +590,7 @@ impl Host {
                     .into(),
             )
         })?;
-        let (_, item) = self.item_of(id).map_err(Refusal::NotFound)?;
+        let (_, item) = self.item_of(id)?;
         if self
             .globals()
             .is_some_and(|g| self.scene_of(item.id) == Some(g))
@@ -770,7 +769,7 @@ impl Host {
                     && on
                 {
                     notify(Update::VerticalPictureFailed);
-                    notify(Update::Error(why));
+                    notify(Update::Error(why.into_text()));
                 }
                 self.publish(notify);
             }
@@ -790,7 +789,7 @@ impl Host {
             }
             Command::SetCanvas { size, fps } => {
                 if let Err(why) = self.change_canvas(size, fps, notify) {
-                    notify(Update::Error(why));
+                    notify(Update::Error(why.into_text()));
                 }
             }
             Command::SetProfile(profile) => {
@@ -827,7 +826,7 @@ impl Host {
             }
             Command::ArmReplay => {
                 if let Err(why) = self.arm_replay(notify) {
-                    notify(Update::Error(why));
+                    notify(Update::Error(why.into_text()));
                 }
             }
             Command::DisarmReplay => self.disarm_replay(notify),

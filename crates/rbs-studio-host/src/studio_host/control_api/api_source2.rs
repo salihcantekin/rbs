@@ -129,7 +129,7 @@ impl ApiTarget<'_> {
                     Ok(Response::Done(Empty {}))
                 }
                 Ok(false) => Ok(Response::Done(Empty {})),
-                Err(e) => Err(ApiError::new(ErrorKind::Conflict, e)),
+                Err(e) => Err(ApiError::new(ErrorKind::Conflict, e.into_text())),
             },
             C::SourceSetActive(p) => {
                 match host.set_source_active(SourceId::from_raw(p.source), p.active) {
@@ -138,7 +138,7 @@ impl ApiTarget<'_> {
                         Ok(Response::Done(Empty {}))
                     }
                     Ok(false) => Ok(Response::Done(Empty {})),
-                    Err(e) => Err(ApiError::new(ErrorKind::NotFound, e)),
+                    Err(e) => Err(ApiError::new(ErrorKind::NotFound, e.into_text())),
                 }
             }
             C::LookList => Ok(Response::Looks(LookList {

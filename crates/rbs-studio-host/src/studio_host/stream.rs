@@ -297,7 +297,7 @@ impl Host {
         }
         let update = match self.start_stream(c, r) {
             Ok(update) => update,
-            Err(why) => StreamUpdate::NotStarted(why),
+            Err(why) => StreamUpdate::NotStarted(why.into_text()),
         };
         let started = matches!(update, StreamUpdate::Started { .. });
         notify(stream_update(c, update));
@@ -314,13 +314,15 @@ impl Host {
     }
 
     /// Saves (`Some`) or removes `c`'s stream key; `Ok(true)` when one is saved now.
-    pub(super) fn save_key(&self, c: OutputCanvas, key: Option<&Secret>) -> Result<bool, String> {
+    pub(super) fn save_key(&self, c: OutputCanvas, key: Option<&Secret>) -> Result<bool, Refusal> {
         let account = self.key_account_of(c);
         let result = match key {
             Some(k) => self.keys.write(&account, k).map(|()| true),
             None => self.keys.remove(&account).map(|()| false),
         };
-        result.map_err(|e| format!("{} refused the stream key: {e}", self.keys.place()))
+        result.map_err(|e| {
+            Refusal::Failed(format!("{} refused the stream key: {e}", self.keys.place()))
+        })
     }
 
     /// Ends every output of both canvases because of `why` (the studio failed).
@@ -354,7 +356,7 @@ impl Host {
         &mut self,
         c: OutputCanvas,
         r: &StreamRequest,
-    ) -> Result<StreamUpdate, String> {
+    ) -> Result<StreamUpdate, Refusal> {
         self.start_stream_to(c, r, None)
     }
 
@@ -365,28 +367,30 @@ impl Host {
         c: OutputCanvas,
         r: &StreamRequest,
         only: Option<u32>,
-    ) -> Result<StreamUpdate, String> {
+    ) -> Result<StreamUpdate, Refusal> {
         if let Some(why) = self.calibration_blocks() {
-            return Err(format!("{why}."));
+            return Err(Refusal::Conflict(format!("{why}.")));
         }
         if self.outs[slot(c)].streaming.is_some() {
-            return Err("A stream is already running.".into());
+            return Err(Refusal::Conflict("A stream is already running.".to_owned()));
         }
         let canvas = self.output_canvas(c)?;
         if self.cannot_record.is_some() {
-            return Err(format!(
+            return Err(Refusal::Failed(format!(
                 "Streaming is not available on {} yet: this system has no video encoder RBS can use.",
                 os_name()
-            ));
+            )));
         }
         let (plans, mut failed) = self.destination_plans(c, r, only);
         if plans.is_empty() {
-            return Err(failed
-                .first()
-                .and_then(|d| d.error.clone())
-                .unwrap_or_else(|| {
-                    "No destination is turned on: turn one on in Settings, Stream.".into()
-                }));
+            return Err(Refusal::Failed(
+                failed
+                    .first()
+                    .and_then(|d| d.error.clone())
+                    .unwrap_or_else(|| {
+                        "No destination is turned on: turn one on in Settings, Stream.".into()
+                    }),
+            ));
         }
         let alone = plans.len() == 1 && failed.is_empty();
         let mut ready: Vec<(Planned, OutputSettings)> = Vec::new();
@@ -404,7 +408,7 @@ impl Host {
                         self.keys.place()
                     );
                     if alone {
-                        return Err(why);
+                        return Err(Refusal::Failed(why));
                     }
                     failed.push(p.failed(why));
                     continue;
@@ -431,7 +435,7 @@ impl Host {
                 match result {
                     Ok(id) => started.push(p.started(id)),
                     Err(why) if alone => return Err(why),
-                    Err(why) => failed.push(p.failed(why)),
+                    Err(why) => failed.push(p.failed(why.into_text())),
                 }
             }
         }
@@ -439,16 +443,20 @@ impl Host {
             match self.start_output(&out, p.request.encoder.as_deref()) {
                 Ok((id, _, _)) => started.push(p.started(id)),
                 Err(why) if alone => return Err(why),
-                Err(why) => failed.push(p.failed(why)),
+                Err(why) => failed.push(p.failed(why.into_text())),
             }
         }
         let Some(anchor) = started.first().cloned() else {
-            return Err(failed
-                .first()
-                .and_then(|d| d.error.clone())
-                .unwrap_or_else(|| "No destination started.".into()));
+            return Err(Refusal::Failed(
+                failed
+                    .first()
+                    .and_then(|d| d.error.clone())
+                    .unwrap_or_else(|| "No destination started.".into()),
+            ));
         };
-        let id = anchor.output.ok_or("the stream did not start")?;
+        let id = anchor
+            .output
+            .ok_or_else(|| Refusal::Failed("the stream did not start".to_owned()))?;
         let (video_encoder, audio_encoder) = match self.studio.output(id) {
             Some(report) => (
                 report
@@ -744,24 +752,27 @@ impl Host {
         c: OutputCanvas,
         r: &StreamRequest,
         id: u32,
-    ) -> Result<(), String> {
+    ) -> Result<(), Refusal> {
         let (plans, failed) = self.destination_plans(c, r, Some(id));
         if let Some(why) = failed.into_iter().find_map(|d| d.error) {
-            return Err(why);
+            return Err(Refusal::Failed(why));
         }
         let p = plans
             .into_iter()
             .next()
-            .ok_or_else(|| format!("there is no destination {id}"))?;
+            .ok_or_else(|| Refusal::NotFound(format!("there is no destination {id}")))?;
         let key = self.keys.read(&p.account).map_err(|e| {
-            format!(
+            Refusal::Failed(format!(
                 "The stream key of {} could not be read from {}: {e}",
                 p.live.label(),
                 self.keys.place()
-            )
+            ))
         })?;
         if p.request.needs_key && key.is_none() {
-            return Err(format!("No stream key is saved for {}.", p.live.label()));
+            return Err(Refusal::Failed(format!(
+                "No stream key is saved for {}.",
+                p.live.label()
+            )));
         }
         let canvas = self.output_canvas(c)?;
         let out = stream_output(&p.request, key, canvas, &self.adapters);
@@ -770,7 +781,9 @@ impl Host {
         } else {
             self.start_outputs(std::slice::from_ref(&out), r.encoder.as_deref())
                 .pop()
-                .unwrap_or_else(|| Err("the destination did not start".into()))?
+                .unwrap_or_else(|| {
+                    Err(Refusal::Failed("the destination did not start".to_owned()))
+                })?
         };
         let live = p.started(output);
         let dests = &mut self.outs[slot(c)].destinations;
@@ -850,7 +863,7 @@ impl Host {
         &mut self,
         out: &OutputSettings,
         encoder: Option<&str>,
-    ) -> Result<(OutputId, String, Option<String>), String> {
+    ) -> Result<(OutputId, String, Option<String>), Refusal> {
         // A path that did not publish still probes before an encoder is chosen.
         self.ensure_encoders();
         // A picked encoder is the only one tried: if it cannot open, the output fails
@@ -865,9 +878,12 @@ impl Host {
         let started = self
             .studio
             .start_output(&self.adapters, out)
-            .map_err(|e| e.to_string())
+            .map_err(|e| Refusal::Failed(e.to_string()))
             .and_then(|id| {
-                let report = self.studio.output(id).ok_or("the output did not start")?;
+                let report = self
+                    .studio
+                    .output(id)
+                    .ok_or_else(|| Refusal::Failed("the output did not start".to_owned()))?;
                 Ok((
                     id,
                     report
@@ -890,7 +906,7 @@ impl Host {
         &mut self,
         outs: &[OutputSettings],
         encoder: Option<&str>,
-    ) -> Vec<Result<OutputId, String>> {
+    ) -> Vec<Result<OutputId, Refusal>> {
         let all = match encoder {
             None => None,
             Some(id) => match only_encoder(&self.adapters.video_encoders, id) {
@@ -902,7 +918,7 @@ impl Host {
             .studio
             .start_outputs(&self.adapters, outs)
             .into_iter()
-            .map(|r| r.map_err(|e| e.to_string()))
+            .map(|r| r.map_err(|e| Refusal::Failed(e.to_string())))
             .collect();
         if let Some(all) = all {
             self.adapters.video_encoders = all;
@@ -1206,7 +1222,7 @@ impl Host {
             }
             Command::SaveReplay { seconds } => {
                 if let Err(why) = self.save_replay(seconds) {
-                    notify(Update::ReplaySaved(Err(why)));
+                    notify(Update::ReplaySaved(Err(why.into_text())));
                 }
             }
             Command::SetVirtualCamera(setup) => {
@@ -1222,11 +1238,13 @@ impl Host {
             }
             Command::SaveStreamKey(key) => {
                 let result = self.save_key(OutputCanvas::Main, key.as_ref());
-                notify(Update::StreamKey(result));
+                notify(Update::StreamKey(result.map_err(Refusal::into_text)));
             }
             Command::SaveVerticalStreamKey(key) => {
                 let result = self.save_key(OutputCanvas::Vertical, key.as_ref());
-                notify(Update::VerticalStreamKey(result));
+                notify(Update::VerticalStreamKey(
+                    result.map_err(Refusal::into_text),
+                ));
             }
             Command::StartDestination(id) => {
                 self.run_ui_api(
@@ -1281,8 +1299,9 @@ impl Host {
                     rbs_crash::contain(|| self.switch_collection(*collection, autosave, notify))
                         .unwrap_or_else(|_| {
                             self.caught = true;
-                            Err(rbs_crash::CAUGHT_TEXT.to_owned())
-                        });
+                            Err(Refusal::Failed(rbs_crash::CAUGHT_TEXT.to_owned()))
+                        })
+                        .map_err(Refusal::into_text);
                 notify(Update::CollectionSwitched { seq, result });
             }
             Command::SetLibrary {

@@ -39,6 +39,28 @@ pub fn vertical_account(account: &str) -> String {
     format!("{account}/vertical")
 }
 
+/// Why the key store did not read, save or remove a key. The text is shown to the user
+/// after "could not be read from <place>: ".
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeyStoreError {
+    /// The store cannot be used any more (a lock broke).
+    Broken,
+    /// The operating system's store refused or failed (its reason).
+    Os(String),
+}
+
+impl fmt::Display for KeyStoreError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            KeyStoreError::Broken => f.write_str("the key store broke"),
+            KeyStoreError::Os(why) => f.write_str(why),
+        }
+    }
+}
+
+impl std::error::Error for KeyStoreError {}
+
 /// Keeps stream keys, one per account ([`account`]).
 pub trait KeyStore: Send + Sync + fmt::Debug {
     /// Where keys are kept, for the Stream section's hint ("the macOS Keychain").
@@ -47,11 +69,11 @@ pub trait KeyStore: Send + Sync + fmt::Debug {
     fn persistent(&self) -> bool;
     /// The key saved for `account`, `None` when there is none. May block (an OS
     /// prompt).
-    fn read(&self, account: &str) -> Result<Option<Secret>, String>;
+    fn read(&self, account: &str) -> Result<Option<Secret>, KeyStoreError>;
     /// Saves `key` for `account`, replacing any saved one.
-    fn write(&self, account: &str, key: &Secret) -> Result<(), String>;
+    fn write(&self, account: &str, key: &Secret) -> Result<(), KeyStoreError>;
     /// Removes the key saved for `account`; removing none is not an error.
-    fn remove(&self, account: &str) -> Result<(), String>;
+    fn remove(&self, account: &str) -> Result<(), KeyStoreError>;
 }
 
 /// Keys kept in memory until the app closes: where there is no credential store, and
@@ -81,17 +103,17 @@ impl KeyStore for MemoryKeyStore {
     fn persistent(&self) -> bool {
         false
     }
-    fn read(&self, account: &str) -> Result<Option<Secret>, String> {
-        let keys = self.keys.lock().map_err(|_| "the key store broke")?;
+    fn read(&self, account: &str) -> Result<Option<Secret>, KeyStoreError> {
+        let keys = self.keys.lock().map_err(|_| KeyStoreError::Broken)?;
         Ok(keys.get(account).cloned())
     }
-    fn write(&self, account: &str, key: &Secret) -> Result<(), String> {
-        let mut keys = self.keys.lock().map_err(|_| "the key store broke")?;
+    fn write(&self, account: &str, key: &Secret) -> Result<(), KeyStoreError> {
+        let mut keys = self.keys.lock().map_err(|_| KeyStoreError::Broken)?;
         keys.insert(account.to_owned(), key.clone());
         Ok(())
     }
-    fn remove(&self, account: &str) -> Result<(), String> {
-        let mut keys = self.keys.lock().map_err(|_| "the key store broke")?;
+    fn remove(&self, account: &str) -> Result<(), KeyStoreError> {
+        let mut keys = self.keys.lock().map_err(|_| KeyStoreError::Broken)?;
         keys.remove(account);
         Ok(())
     }

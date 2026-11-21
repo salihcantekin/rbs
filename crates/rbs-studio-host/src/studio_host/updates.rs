@@ -79,6 +79,10 @@ pub enum Update {
     OpenAddOn(String),
     /// The play state of every media source the studio runs (ADR-0108 decision 10).
     Media(Vec<MediaTick>),
+    /// The milliseconds left on each running Show cue (ADR-0105), by item, in the
+    /// scenes the rows show; empty when none runs. Sent when it changes, apart from
+    /// the rows, so a running cue does not rebuild the source list (F-10).
+    Cues(Vec<(ItemId, u32)>),
     /// The monitor output (ADR-0097): device, volume, whether it is wanted and plays,
     /// its latency, solo and problem. Sent once at the start and when it changes.
     Monitor(api::MonitorStatus),
