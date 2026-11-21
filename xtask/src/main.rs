@@ -1022,10 +1022,19 @@ mod tests {
             // "Browser engine consumer"); `windows` copies the page into the studio's
             // shared textures with Direct3D 11 (ADR-0109 decision 8). `libc` checks on
             // Unix whether the owner of a stale temporary profile still runs (scene
-            // sources spec, browser runner; `windows` does it on Windows).
+            // sources spec, browser runner; `windows` does it on Windows). On macOS
+            // `rbs-mach` fetches the studio's IOSurfaces and `block2` carries Metal's
+            // completed handler (ADR-0167 decisions 3 and 4).
             let allowed = matches!(
                 to.as_str(),
-                "cef" | "rbs-browser-ipc" | "rbs-browser-shm" | "windows-sys" | "windows" | "libc"
+                "cef"
+                    | "rbs-browser-ipc"
+                    | "rbs-browser-shm"
+                    | "rbs-mach"
+                    | "block2"
+                    | "windows-sys"
+                    | "windows"
+                    | "libc"
             ) || to.starts_with("objc2");
             assert!(allowed, "rbs-browser-cef must not depend on {to}");
         }
