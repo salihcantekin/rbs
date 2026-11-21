@@ -152,7 +152,6 @@ paths! {
     // window forces the next media-state publish
     Media => Pending(&["media.play", "media.pause", "media.seek", "media.restart"]),
     SetTransition => Pending(&["collection.set_transition"]),
-    SetSourceActivity => Pending(&["source.set_activity"]),
     OpenAttributes => WindowOnly(View),
     // becomes Translates (branches on the preview)
     SwitchScene => Translates(&["scene.switch", "canvas.set_preview"]),
@@ -246,7 +245,7 @@ mod tests {
     /// which must pick its method from host state may raise `TRANSLATES` by as many
     /// as `PENDING` falls; any other rise needs the owner's written approval.
     const TRANSLATES: usize = 22;
-    const PENDING: usize = 32;
+    const PENDING: usize = 31;
     const CONTRACT: usize = 10;
     const MISSING: usize = 20;
     const VIEW: usize = 13;

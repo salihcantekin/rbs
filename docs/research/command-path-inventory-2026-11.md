@@ -117,7 +117,7 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `RenameSource` | Moved to `Command::Api` (step 3) | source.rename |
 | `SetGlide` | Moved to `Command::Api` (step 1) | collection.set_glide |
 | `SetTransition` | Pending | collection.set_transition |
-| `SetSourceActivity` | Pending | source.set_activity; the window sends an `ActivityChoice` and keeps the stored linger, while the API call sets `linger_s` (absent is 0): the window must send the linger it shows (step 3 left it) |
+| `SetSourceActivity` | Moved to `Command::Api` (step 3) | source.set_activity with the linger the row shows; `set_source_activity` now stores a value equal to the type default as absent for both paths |
 | `SetSourceGlide` | Moved to `Command::Api` (step 3) | source.set_glide |
 | `AddExistingSource` | Moved to `Command::Api` (step 2) | item.add |
 | `AddScene` | Moved to `Command::Api` (step 1) | scene.add |

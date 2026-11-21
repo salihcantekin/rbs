@@ -724,7 +724,6 @@ impl Host {
             | Command::ForgetBrowserSignIn(..)
             | Command::BrowserControl { .. } => self.source_edit_command(c, notify),
             Command::SetTransition(..)
-            | Command::SetSourceActivity { .. }
             | Command::OpenAttributes { .. }
             | Command::SwitchScene(..)
             | Command::SetStudioMode(..)

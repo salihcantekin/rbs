@@ -6,7 +6,7 @@ use rbs_scene::activity::{OnReturn, Run};
 use rbs_scene::model::SourceId;
 
 use super::StudioUi;
-use crate::studio_host::{ActivityChoice, Command, SourceKind};
+use crate::studio_host::{ActivityChoice, Command, SourceKind, api_return, api_run};
 
 /// A web page or a display, window or camera: "While in a scene", "While shown",
 /// "Only on air".
@@ -166,14 +166,16 @@ impl StudioUi {
         let Some(choice) = pick(row.kind, row.activity) else {
             return;
         };
-        let id: SourceId = row.id;
+        let source = row.id.get();
         self.deleted.clear();
-        self.send(Command::SetSourceActivity {
-            id,
-            run: choice.run,
-            on_return: choice.on_return,
-            linger_s: choice.linger_s,
-        });
+        self.call(rbs_api::Command::SourceSetActivity(
+            rbs_api::request::SetSourceActivity {
+                source,
+                run: Some(api_run(choice.run)),
+                on_return: choice.on_return.map(api_return),
+                linger_s: Some(choice.linger_s),
+            },
+        ));
     }
 }
 

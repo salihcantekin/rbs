@@ -641,29 +641,6 @@ impl Host {
         )
     }
 
-    /// Properties' choice of `run`, `on_return` and `linger_s` for a source
-    /// (ADR-0152): the type's default (a linger of 0) is stored as absent, so a
-    /// document stays at the oldest format that holds it.
-    pub(super) fn set_source_choice(
-        &mut self,
-        id: SourceId,
-        run: rbs_scene::activity::Run,
-        on_return: Option<rbs_scene::activity::OnReturn>,
-        linger_s: u16,
-    ) -> Result<bool, Refusal> {
-        let source = self
-            .collection
-            .source(id)
-            .ok_or_else(|| Refusal::NotFound(format!("There is no source {}.", id.get())))?;
-        let traits = rbs_sources::activity_traits(&source.type_id);
-        let activity = rbs_scene::activity::SourceActivity::new(
-            (run != traits.default_run).then_some(run),
-            on_return.filter(|r| Some(*r) != traits.default_on_return),
-            (linger_s > 0).then_some(linger_s),
-        );
-        self.set_source_activity(id, activity)
-    }
-
     /// Replaces a source's activity policy (ADR-0152). One undo step (recorded as a
     /// settings change). A value the source's type does not allow is refused as
     /// invalid; the same policy again changes nothing.
@@ -677,6 +654,15 @@ impl Host {
             .source(id)
             .ok_or_else(|| Refusal::NotFound(format!("There is no source {}.", id.get())))?;
         let traits = rbs_sources::activity_traits(&source.type_id);
+        // A value equal to the type's default is stored as no value, so the same
+        // policy said either way changes nothing (window and API alike, ADR-0163).
+        let activity = rbs_scene::activity::SourceActivity::new(
+            activity.run.filter(|r| *r != traits.default_run),
+            activity
+                .on_return
+                .filter(|r| Some(*r) != traits.default_on_return),
+            activity.linger_s.filter(|l| *l > 0),
+        );
         if !traits.allows(&activity) {
             return Err(Refusal::Invalid(format!(
                 "Source {} does not allow that activity.",

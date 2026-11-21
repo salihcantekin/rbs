@@ -1072,11 +1072,16 @@ pub(super) fn properties_activity_choice_is_stored_without_type_defaults_and_sho
         })
     };
     // Only `on_return`: nothing else in the row changes, so the row must say it.
-    host.send(Command::SetSourceActivity {
-        id: film,
-        run: Run::Shown,
-        on_return: Some(OnReturn::Resume),
-        linger_s: 0,
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::SourceSetActivity(
+            rbs_api::request::SetSourceActivity {
+                source: film.get(),
+                run: Some(rbs_api::types::ActivityRun::Shown),
+                on_return: Some(rbs_api::types::ActivityReturn::Resume),
+                linger_s: Some(0),
+            },
+        )),
+        reply: rbs_studio_host::studio_host::ApiReply::Shown,
     });
     row_shows(Want {
         run: Run::Shown,
@@ -1086,11 +1091,16 @@ pub(super) fn properties_activity_choice_is_stored_without_type_defaults_and_sho
     let a = activity(&mut c);
     assert_eq!(a.get("run"), None);
     assert_eq!(a["on_return"], json!("resume"));
-    host.send(Command::SetSourceActivity {
-        id: film,
-        run: Run::OnAir,
-        on_return: Some(OnReturn::Resume),
-        linger_s: 30,
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::SourceSetActivity(
+            rbs_api::request::SetSourceActivity {
+                source: film.get(),
+                run: Some(rbs_api::types::ActivityRun::OnAir),
+                on_return: Some(rbs_api::types::ActivityReturn::Resume),
+                linger_s: Some(30),
+            },
+        )),
+        reply: rbs_studio_host::studio_host::ApiReply::Shown,
     });
     row_shows(Want {
         run: Run::OnAir,
@@ -1101,11 +1111,16 @@ pub(super) fn properties_activity_choice_is_stored_without_type_defaults_and_sho
     assert_eq!(a["run"], json!("on_air"));
     assert_eq!(a["linger_s"], json!(30));
     // Back to the type's defaults: nothing is stored.
-    host.send(Command::SetSourceActivity {
-        id: film,
-        run: Run::Shown,
-        on_return: Some(OnReturn::Restart),
-        linger_s: 0,
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::SourceSetActivity(
+            rbs_api::request::SetSourceActivity {
+                source: film.get(),
+                run: Some(rbs_api::types::ActivityRun::Shown),
+                on_return: Some(rbs_api::types::ActivityReturn::Restart),
+                linger_s: Some(0),
+            },
+        )),
+        reply: rbs_studio_host::studio_host::ApiReply::Shown,
     });
     row_shows(Want {
         run: Run::Shown,

@@ -375,7 +375,8 @@ pub(super) fn restarts_when_shown(source: &Source) -> bool {
         .is_none_or(|r| r == rbs_scene::activity::OnReturn::Restart)
 }
 
-pub(super) fn api_run(r: rbs_scene::activity::Run) -> api::ActivityRun {
+/// The control API's spelling of a `run` value (ADR-0152; the window sends it too).
+pub fn api_run(r: rbs_scene::activity::Run) -> api::ActivityRun {
     use rbs_scene::activity::Run;
     match r {
         Run::Placed => api::ActivityRun::Placed,
@@ -395,7 +396,7 @@ pub(super) fn activity_run(r: api::ActivityRun) -> rbs_scene::activity::Run {
 }
 
 /// The control API's spelling of an `on_return` value (ADR-0152).
-pub(super) fn api_return(o: rbs_scene::activity::OnReturn) -> api::ActivityReturn {
+pub fn api_return(o: rbs_scene::activity::OnReturn) -> api::ActivityReturn {
     use rbs_scene::activity::OnReturn;
     match o {
         OnReturn::Continue => api::ActivityReturn::Continue,
