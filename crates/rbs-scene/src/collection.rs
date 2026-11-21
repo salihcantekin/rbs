@@ -10,6 +10,7 @@ use rbs_graph::node::NodeTypeId;
 
 mod copies;
 mod field;
+pub use field::LevelEdits;
 mod removal;
 
 pub use copies::{Duplicated, SourceCopy, SourceFields};
@@ -423,6 +424,8 @@ pub struct SceneCollection {
     /// Bumped on every committed edit. Not saved. Compared by the control thread so
     /// an unchanged collection does not rebuild source rows.
     generation: u64,
+    /// Level-only field edits ([`SceneCollection::level_edits`]). Not saved.
+    level_edits: LevelEdits,
 }
 
 impl PartialEq for SceneCollection {
@@ -1866,11 +1869,6 @@ impl SceneCollection {
         let mut item = self.get_item(id)?.clone();
         item.overrides.remove(&canvas);
         self.replace_item(item)
-    }
-
-    /// Edits committed since this collection was created. Not part of the file.
-    pub fn generation(&self) -> u64 {
-        self.generation
     }
 
     /// Applies an undo (or redo) record and returns the record that reverses it.

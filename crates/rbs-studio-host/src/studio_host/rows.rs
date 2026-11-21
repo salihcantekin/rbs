@@ -262,4 +262,178 @@ impl Host {
         }
         self.levels.replace_if_changed(next);
     }
+
+    /// Sends the scene list when it changed.
+    pub(super) fn publish_scene_list(&mut self, notify: &dyn Fn(Update)) {
+        let scenes = self.scene_list();
+        if self.scenes_shown.as_ref() != Some(&scenes) {
+            self.scenes_shown = Some(scenes.clone());
+            let listed = api_scenes(&scenes);
+            self.scene_answer
+                .store(scene_cache::SceneAnswerKey::of(self), listed.clone());
+            self.events
+                .changed(StateKey::topic(Topic::SceneChanged), move || {
+                    EventPayload::SceneChanged(listed)
+                });
+            notify(Update::Scenes(scenes));
+        }
+    }
+
+    /// Builds the Mixer's and the Sources list's rows and sends those that changed.
+    pub(super) fn publish_rows(&mut self, notify: &dyn Fn(Update)) {
+        // `source.changed` and the Mixer: the program scene (ADR-0061 decision 8).
+        let heard = self.rows_of(self.scene);
+        let globals = self.global_rows();
+        if heard != self.heard || globals != self.globals_shown {
+            if heard != self.heard {
+                self.source_changed(&heard);
+            }
+            self.heard = heard.clone();
+            self.globals_shown = globals.clone();
+            // The Mixer hears the global sources with the program (ADR-0065).
+            let mut mixed = globals;
+            mixed.extend(heard);
+            notify(Update::Heard(mixed));
+        }
+        let rows = self.rows();
+        if rows != self.rows {
+            let mut refused: Vec<PermissionKind> = rows
+                .iter()
+                .filter_map(|r| match r.status {
+                    SourceStatus::Unavailable {
+                        fault: SourceFault::PermissionDenied,
+                        ..
+                    } => PermissionKind::of_type(&r.kind?.type_id()),
+                    _ => None,
+                })
+                .collect();
+            refused.sort_by_key(|k| PermissionKind::ALL.iter().position(|a| a == k));
+            refused.dedup();
+            if refused != self.permission_refused {
+                if refused.iter().any(|k| !self.permission_refused.contains(k)) {
+                    self.send_permissions(notify);
+                }
+                self.permission_refused = refused;
+            }
+            self.rows = rows.clone();
+            notify(Update::Sources(rows));
+        }
+        // The meters are on the rows above, and every meter is in the stamp.
+        self.publish_levels();
+    }
+
+    /// `source.changed` for the program scene's rows; built only for a subscriber.
+    fn source_changed(&mut self, heard: &[SourceRow]) {
+        self.events
+            .changed(StateKey::topic(Topic::SourceChanged), || {
+                EventPayload::SourceChanged(heard.iter().map(api_source).collect())
+            });
+    }
+
+    /// After edits that only set canvas masters: writes the studio canvas's master
+    /// into the scene list already sent and sends [`Update::Master`] (F-10).
+    pub(super) fn patch_master(&mut self, notify: &dyn Fn(Update)) {
+        let master = self
+            .collection
+            .canvas(self.canvas)
+            .map(|c| c.master)
+            .unwrap_or_default();
+        let Some(list) = self.scenes_shown.as_mut() else {
+            self.publish_scene_list(notify);
+            return;
+        };
+        if list.master == master {
+            return;
+        }
+        list.master = master;
+        // The `scene.list` answer cache is keyed by the generation: it builds again.
+        let list = &*list;
+        self.events
+            .changed(StateKey::topic(Topic::SceneChanged), || {
+                EventPayload::SceneChanged(api_scenes(list))
+            });
+        notify(Update::Master(master));
+    }
+
+    /// Only live levels moved since `seen` (F-10): a fader step patches the rows it
+    /// moves.
+    pub(super) fn patch_levels(
+        &mut self,
+        seen: rbs_scene::LevelEdits,
+        levels: rbs_scene::LevelEdits,
+        notify: &dyn Fn(Update),
+    ) {
+        if seen.master != levels.master {
+            self.patch_master(notify);
+        }
+        if seen.source_audio != levels.source_audio && !self.patch_source_audio(notify) {
+            self.publish_rows(notify);
+        }
+    }
+
+    /// After edits that only set sources' audio: writes the new audio into the rows
+    /// already sent and sends [`Update::SourceAudio`] instead of every row (F-10).
+    /// False when the change moves more than those fields (a sync offset changes the
+    /// device peers, a Mixer visibility the Mixer's strips): build the rows then.
+    pub(super) fn patch_source_audio(&mut self, notify: &dyn Fn(Update)) -> bool {
+        let levels = self.collection.program_levels(self.canvas);
+        let mut patches: Vec<AudioPatch> = Vec::new();
+        let shown = self
+            .globals_shown
+            .iter()
+            .chain(self.heard.iter())
+            .chain(self.rows.iter());
+        for row in shown {
+            let Some(source) = self.collection.source(row.id) else {
+                return false;
+            };
+            let (old, new) = (row.audio, source.audio);
+            if old == new || patches.iter().any(|p| p.id == row.id) {
+                continue;
+            }
+            if old.sync_offset_ms != new.sync_offset_ms || old.mixer_hidden != new.mixer_hidden {
+                return false;
+            }
+            patches.push(AudioPatch {
+                id: row.id,
+                audio: new,
+                heard: levels.and_then(|l| l.level(row.id)).map(|l| l.over(new)),
+            });
+        }
+        if patches.is_empty() {
+            return true;
+        }
+        let apply = |rows: &mut [SourceRow]| {
+            let mut moved = false;
+            for row in rows {
+                if let Some(p) = patches.iter().find(|p| p.id == row.id) {
+                    row.audio = p.audio;
+                    row.heard = p.heard;
+                    moved = true;
+                }
+            }
+            moved
+        };
+        apply(&mut self.globals_shown);
+        apply(&mut self.rows);
+        if apply(&mut self.heard) {
+            let heard = std::mem::take(&mut self.heard);
+            self.source_changed(&heard);
+            self.heard = heard;
+        }
+        notify(Update::SourceAudio(patches));
+        true
+    }
+}
+
+/// New audio for one source's rows ([`Update::SourceAudio`]): its own audio, and
+/// what the mix hears while the program scene keeps its own level for it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AudioPatch {
+    /// The source.
+    pub id: SourceId,
+    /// Its audio, as [`SourceRow::audio`].
+    pub audio: SourceAudio,
+    /// As [`SourceRow::heard`].
+    pub heard: Option<SourceAudio>,
 }
