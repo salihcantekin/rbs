@@ -118,6 +118,63 @@ impl FilterStats {
   It does not block, lock or read back. At a steady size it makes no allocation of its own; the wgpu calls it shares with the compositor are checked as `alloc_per_frame` does (the count per frame is bounded and does not grow). A failing `acquire` (pool full, size above the device limit) publishes nothing and returns `NodeError::Backend`, an ordinary failure with restart and back-off (ADR-0024). `release` drops the pipelines and buffers.
 - **Freeing memory.** `TexturePool::trim_idle(idle_ticks)` (rbs-gpu), called by `GpuRuntime::end_tick` once per tick with `POOL_IDLE_TICKS` (120), advances the pool's own clock and drops the free textures of each description nobody acquired or touched in the last `idle_ticks` calls; descriptions acquired every tick, or touched by a filter whose input is unchanged, are never dropped. A full pool evicts the least recently used free textures before refusing (`gpu-compositor.md`, invariant 9). Dropping textures on the render thread is the P6 exception of ADR-0062 decision 5. A source whose first frame comes more than `POOL_IDLE_TICKS` after `warm` allocates once on that frame (accepted). So the textures of a removed or disabled filter, or of a size no input has any more, are freed within about two seconds at 60 fps, on the render thread (P13).
 
+### Host service: pointer (ADR-0165 decision 3)
+
+A filter type may declare that it needs the pointer. It then gets, every render tick while it is Active, a read-only view of where the pointer is on its input picture and of the recent clicks, and it draws live effects (click rings, a halo) from a small per-frame effect buffer. The service is the same for built-in and plugin types (rule 19): the node decides from `needs()`, never from a type id.
+
+```rust
+pub struct Needs(u8);   // Needs::NONE, Needs::POINTER; contains(other)
+pub const MAX_EFFECTS: usize = 16;
+pub const MAX_CLICKS: usize = 16;
+
+pub trait FilterType {
+    // ...the methods above...
+    /// Host services the type uses. Default `Needs::NONE`.
+    fn needs(&self) -> Needs { Needs::NONE }
+    /// Pointer types: the live effects of this tick into `out` (at most MAX_EFFECTS;
+    /// pushes past that are refused). Pure: no I/O, no allocation; render thread, every
+    /// tick while Active. Default: none.
+    fn effects(&self, values: &Values, view: &PointerView<'_>, out: &mut Effects) {}
+}
+
+pub struct PointerView<'a> {
+    pub now: Timestamp,              // the tick's time (animations age on it)
+    pub frame_time: Timestamp,       // the input frame's timestamp
+    pub size: [u32; 2],              // the input picture's size in pixels
+    pub pointer: Option<[f32; 2]>,   // picture pixels at frame_time; None when unknown,
+                                     // outside the picture or over a covering window
+    pub clicks: &'a [Click],         // button-downs over the picture, oldest first
+}
+pub struct Click { pub time: Timestamp, pub at: [f32; 2], pub button: Button }   // rbs_input::Button
+/// Two `vec4<f32>` per effect; the type decides what they mean.
+pub struct Effect(pub [[f32; 4]; 2]);
+pub struct Effects;   // push(Effect) -> bool, len, is_empty, clear
+
+/// What the host lends a pointer type's node: the shared input monitor and the source's
+/// mapping cell (capture-port "Picture mapping" rule 6).
+pub struct PointerFeed { pub monitor: InputMonitor, pub cell: MappingCell }
+impl FilterNode { pub fn with_pointer(self, feed: PointerFeed) -> Self; }
+```
+
+Prelude, for pointer types only, after the bindings above:
+
+```wgsl
+// rbs_fx[0].x: the number of live effects; effect i is rbs_fx[1 + 2i] and rbs_fx[2 + 2i].
+@group(2) @binding(0) var<uniform> rbs_fx: array<vec4<f32>, 33>;
+fn effect_count() -> u32;
+fn effect(i: u32, half: u32) -> vec4<f32>;
+```
+
+Rules:
+
+1. **Lifecycle (P13, ADR-0165 decision 2).** `prepare` (control thread) subscribes to the feed's monitor for `EventMask::POINTER | BUTTONS` (never keys: the mask comes from `needs()`, not from the type) and creates the effect buffer (528 bytes) and its bind group; `release` drops the subscription and the buffer. A node without a feed, or whose subscription fails (`Unsupported`, `Busy`, a backend error), has no input and shows no effects; the failure is counted in `FilterStats::pointer_faults` and the node runs on (pass-through). Installed and Standby nodes hold nothing. The host turns the source's mapping switch on while any pointer filter of the source is scheduled (studio, a later PR).
+2. **Per tick (hot path).** The node reads the mapping cell (a `None` read keeps the last mapping, capture-port rule 6), drains the subscription's events (button-downs only; at most `EVENT_RING` a tick), keeps the newest `MAX_CLICKS` that fall inside the picture in a fixed ring, converted to picture pixels with the mapping (`Cover::Covered` drops them: the window rule of ADR-0165 decision 6), looks up the pointer at the frame's time (`InputReader::pointer_at`; the newest sample, `latest_pointer`, when the frame is more than `STILL` = 50 ms older than the tick, since a still screen sends no frames, or when the history no longer holds that time), and calls `effects`. Events that arrive before the first mapping are dropped, not kept for a later one. No allocation, lock or wait.
+3. **Idle: pass-through.** With no live effect the node publishes its input itself (`VideoFrame::share`, a new generation as its sequence), with no pass and no buffer write, and `touch`es its target descriptions so `trim_idle` keeps them. The published format is then the input's (for a capture frame `Bgra8` sRGB); a 4:2:0 input goes out as its decoded RGB frame (`YuvToRgb`, cached by frame, so no second decode). This is the named exception to items 4 and 6 below (conformance checks 4 and 6) for types that declare `Needs::POINTER`. An unchanged input while idle is not published again (as step 2a).
+4. **Drawing.** With at least one live effect the node writes the effect buffer (one `write_buffer` per drawn frame, the second exception, still bounded by check 7) and draws its passes as any filter does, even when the input frame and values are unchanged, so a ring animates on a still screen. The output is linear `Rgba16Float`. Downstream nodes follow the format switch (the compositor reads the frame's transfer every frame).
+5. **The last frame.** After the last effect dies the node publishes the input once more (rule 3), so the final ring never stays on a still screen; if that publish fails it is tried again next tick.
+6. **Order.** Pointer types come before any filter that moves pixels; the chain editor keeps every type with `Needs::POINTER` first, from that property (ADR-0165 decision 3).
+7. **Privacy.** The view holds positions and buttons only; the node never logs them (ADR-0158) and nothing of it leaves the render thread.
+
 ### Catalogue (`rbs_filters::catalogue() -> &'static [&'static dyn FilterType]`)
 
 | Type id | Name | Fields (key: range, default) | Passes |
@@ -163,14 +220,17 @@ The Filters tab of the Properties panel (ADR-0062 decision 9; `ui-design-system.
 
 ## Conformance tests
 
+Pointer types (`Needs::POINTER`) also pass `tests/pointer.rs` in `rbs-filters`, with a scripted input backend and a mapping cell: idle pass-through and its format, a click drawing a ring in `Rgba16Float`, animation on a still input, the one pass-through frame after the last effect, a covered or outside click dropped, the subscription opened in `prepare` and closed in `release`, and no allocation per tick while idle or drawing.
+
+
 `rbs_filters::conformance::check_type(&dyn FilterType)` (pure, no GPU) and `check_on_gpu(&dyn FilterType, &GpuContext)` (needs an adapter; software Vulkan in CI):
 
 1. Schema invariants of "Filter types" above, and every pass compiled with the prelude through naga (`wgpu::naga`), without a GPU.
 2. `Values::from_pairs` refuses unknown keys, wrong kinds, out-of-range and non-finite numbers, and fills defaults; `to_pairs` round-trips.
 3. `uniforms` gives finite numbers for the defaults, every field at its `min` and at its `max`.
-4. Output size equals input size; output is `Rgba16Float`, linear, timestamped like the input, with a new generation as its sequence (item 12).
+4. Output size equals input size; output is `Rgba16Float`, linear, timestamped like the input, with a new generation as its sequence (item 12). A type with `Needs::POINTER` and no live effect publishes its input instead ("Host service: pointer" rule 3).
 5. A fully transparent input stays fully transparent (no colour where alpha is 0).
-6. The input is never published, except colour correction at the identity uniforms, which publishes its linear `Rgba16Float` input: on a size change the node publishes a frame of the new size at once and counts the resize.
+6. The input is never published, except by a pointer type with no live effect (rule 3 of the host service) and colour correction at the identity uniforms, which publishes its linear `Rgba16Float` input: on a size change the node publishes a frame of the new size at once and counts the resize.
 7. Allocations per frame at a steady size are bounded and do not grow (counting allocator, own test binary).
 8. An sRGB-encoded input (`Rgba8UnormSrgb` content in an `Rgba8Unorm` texture tagged sRGB) is decoded; a partly transparent input keeps its alpha where the type does not change it.
 9. Odd input sizes (7x3) give an output of that size (half-size intermediates round up).

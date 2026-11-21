@@ -1,6 +1,8 @@
 //! Shared helpers for the filter tests.
 #![allow(dead_code, clippy::expect_used)]
 
+pub mod pointer;
+
 use std::sync::{Arc, OnceLock};
 
 use rbs_filters::FilterType;
