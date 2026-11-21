@@ -16,7 +16,7 @@
 "crates/rbs-scene/tests/binder.rs" = 2882
 "crates/rbs-scene/tests/collection.rs" = 2759
 "crates/rbs-studio-host/src/record_profile.rs" = 2081
-"crates/rbs-studio-host/src/studio_host.rs" = 15056
+"crates/rbs-studio-host/src/studio_host.rs" = 14101
 "crates/rbs-studio-host/tests/studio/record.rs" = 3154
 "crates/rbs-studio-host/tests/studio/scenes.rs" = 2288
 "crates/rbs-studio-host/tests/studio/stream.rs" = 2464
