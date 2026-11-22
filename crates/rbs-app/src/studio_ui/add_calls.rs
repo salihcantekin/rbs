@@ -69,6 +69,12 @@ impl StudioUi {
         self.add_file(K::Media, path);
     }
 
+    /// Adds a slide show of the folder the user picked (ADR-0171). The new source is
+    /// selected.
+    pub fn add_slideshow_folder(&mut self, folder: &std::path::Path) {
+        self.add_file(K::Slideshow, folder);
+    }
+
     fn add_file(&mut self, kind: K, path: &std::path::Path) {
         self.adding_source(false);
         self.call(C::SourceAdd(rq::AddSource {

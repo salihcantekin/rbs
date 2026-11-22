@@ -76,6 +76,11 @@ impl Studio {
         self.slideshows.set_paused(source, paused)
     }
 
+    /// The slide shows that have an instance.
+    pub fn slideshow_sources(&self) -> Vec<SourceId> {
+        self.slideshows.sources()
+    }
+
     /// What `media.state` reports for a running slide show.
     pub fn slideshow_state(&self, source: SourceId) -> Option<SlideState> {
         self.slideshows.state(source, self.engine.clock().now())

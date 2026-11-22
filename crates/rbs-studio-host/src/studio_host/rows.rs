@@ -67,6 +67,9 @@ pub struct SourceRow {
     /// A browser source's stored settings (the Page tab shows them, ADR-0109,
     /// ADR-0132, ADR-0149); `None` for every other kind.
     pub browser: Option<Settings>,
+    /// A slide show's stored settings (the Source tab shows them, ADR-0171); `None`
+    /// for every other kind.
+    pub slideshow: Option<Settings>,
     /// Why a browser source is not running, as the control API says it
     /// (`browser_runtime_missing`, `browser_runtime_mismatch`, `browser_cap`).
     pub browser_reason: Option<&'static str>,
@@ -195,6 +198,11 @@ pub struct MediaTick {
     pub cursor_ms: u32,
     /// The file's length; 0 while unknown.
     pub duration_ms: u32,
+    /// A slide show's shown picture, 0-based; -1 for a media file and before the
+    /// first picture (ADR-0171).
+    pub index: i32,
+    /// A slide show's picture count; 0 for a media file.
+    pub count: u32,
 }
 
 /// How often the play state is sent while a media file plays.
@@ -231,6 +239,7 @@ impl PartialEq for SourceRow {
             && self.filled == other.filled
             && self.text == other.text
             && self.browser == other.browser
+            && self.slideshow == other.slideshow
             && self.browser_reason == other.browser_reason
             && self.cap_has == other.cap_has
             && self.cap_l == other.cap_l

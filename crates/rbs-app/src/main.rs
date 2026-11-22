@@ -24,6 +24,7 @@ mod appearance_page;
 mod config;
 mod context_menu;
 mod entry;
+mod file_calls;
 mod icons;
 mod interact;
 mod library_transfer;
@@ -1295,7 +1296,11 @@ impl App {
                     return;
                 }
                 Some(SourceKind::Media) => {
-                    pick_media();
+                    file_calls::pick_media();
+                    return;
+                }
+                Some(SourceKind::Slideshow) => {
+                    file_calls::pick_folder_to_add();
                     return;
                 }
                 Some(SourceKind::Color) => {
@@ -3956,28 +3961,6 @@ fn pick_stinger() {
     }
 }
 
-/// Add source → Media file. The dialog is asynchronous (ADR-0055 / ADR-0108).
-fn pick_media() {
-    let task = entry::spawn_local(async move {
-        let Some(ctx) = CTX.with(|c| c.borrow().clone()) else {
-            return;
-        };
-        let picked = file_dialog::open_media("Choose a media file").await;
-        ctx.update(move |app| match picked {
-            Ok(None) => {}
-            Err(why) => app.show_error(UiError::Other(why)),
-            Ok(Some(path)) => app.studio.add_media_file(&path),
-        });
-    });
-    if let Err(e) = task {
-        CTX.with(|c| {
-            if let Some(ctx) = c.borrow().clone() {
-                ctx.update(move |app| app.show_error(UiError::Other(e.to_string())));
-            }
-        });
-    }
-}
-
 /// Asks for the page file of a browser source (ADR-0109 decision 4).
 fn pick_page_file(id: i32) {
     let task = entry::spawn_local(async move {
@@ -4013,33 +3996,6 @@ fn pick_text_file(id: i32) {
             Ok(Some(path)) => app
                 .studio
                 .set_text_value(id, "file", &path.to_string_lossy()),
-        });
-    });
-    if let Err(e) = task {
-        CTX.with(|c| {
-            if let Some(ctx) = c.borrow().clone() {
-                ctx.update(move |app| app.show_error(UiError::Other(e.to_string())));
-            }
-        });
-    }
-}
-
-/// Properties › Source › Change… of a media file: the same dialog as Add source, and
-/// the new path is one undo step.
-fn change_media_file(id: i32) {
-    let task = entry::spawn_local(async move {
-        let Some(ctx) = CTX.with(|c| c.borrow().clone()) else {
-            return;
-        };
-        let picked = file_dialog::open_media("Choose a media file").await;
-        ctx.update(move |app| match picked {
-            Ok(None) => {}
-            Err(why) => app.show_error(UiError::Other(why)),
-            Ok(Some(path)) => app.studio.set_media_setting(
-                id,
-                "path",
-                serde_json::Value::String(path.to_string_lossy().into_owned()),
-            ),
         });
     });
     if let Err(e) = task {
@@ -4107,6 +4063,16 @@ mod file_dialog {
             .map(|f| f.path().to_owned()))
     }
 
+    /// A folder of pictures for a slide show (ADR-0171); `Ok(None)` when cancelled.
+    #[cfg(any(target_os = "macos", windows))]
+    pub async fn open_folder(title: &str) -> Result<Option<PathBuf>, String> {
+        Ok(rfd::AsyncFileDialog::new()
+            .set_title(title)
+            .pick_folder()
+            .await
+            .map(|f| f.path().to_owned()))
+    }
+
     /// A text file a text source reads (ADR-0129); `Ok(None)` when cancelled.
     #[cfg(any(target_os = "macos", windows))]
     pub async fn open_text(title: &str) -> Result<Option<PathBuf>, String> {
@@ -4164,6 +4130,11 @@ mod file_dialog {
 
     #[cfg(not(any(target_os = "macos", windows)))]
     pub async fn open_media(_title: &str) -> Result<Option<PathBuf>, String> {
+        Err(NONE.into())
+    }
+
+    #[cfg(not(any(target_os = "macos", windows)))]
+    pub async fn open_folder(_title: &str) -> Result<Option<PathBuf>, String> {
         Err(NONE.into())
     }
 
@@ -4798,9 +4769,6 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
                 .set_media_range_mark(id, studio_ui::RangeMark::from_code(mark), at);
         }
     );
-    on!(on_change_media_file, |_app, id: i32| {
-        change_media_file(id);
-    });
     on!(on_set_companion_audio, |app, id: i32, on: bool| {
         app.studio.set_companion_audio(id, on);
     });
@@ -5695,6 +5663,7 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     // Settings pages: Permissions (ADR-0141), Add-ons (ADR-0145), Advanced (ADR-0158).
     permissions_page::install(g, ctx);
     activity_calls::install(g, ctx);
+    file_calls::install(g, ctx);
     add_ons_page::install(g, ctx);
     advanced_page::install(g, ctx);
     // Before every redraw of the main window: popups open, move and close with a redraw,

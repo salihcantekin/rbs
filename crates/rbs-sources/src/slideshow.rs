@@ -47,7 +47,7 @@ const FIT: &[(&str, &str)] = &[
 pub const FIELDS: &[Field] = &[
     Field::choice("advance", "Advance", ADVANCE, "auto")
         .with_help("Automatic changes the picture on a timer; Manual waits for Next or Previous."),
-    Field::number("interval_s", "Show each", 1.0, 3600.0, 5.0, 0.5, "s"),
+    Field::number("interval_s", "Show each", 1.0, 3600.0, 5.0, 0.5, "s").log(),
     Field::choice("order", "Order", ORDER, "sequential"),
     Field::toggle("loop", "Loop", true).with_help("Start again after the last picture."),
     Field::choice("transition", "Transition", TRANSITION, "fade"),
@@ -228,6 +228,11 @@ fn schema_part(settings: &Settings) -> Settings {
 /// refused (the folder is checked by the host).
 pub fn check_settings(settings: &Settings) -> Result<(), rbs_params::ParamError> {
     crate::filters::filter_values(&FIELDS, &schema_part(settings)).map(|_| ())
+}
+
+/// The schema values of the settings, read leniently (the Source tab's rows).
+pub fn values(settings: &Settings) -> Values {
+    crate::filters::filter_values_lenient(&FIELDS, &schema_part(settings)).0
 }
 
 /// Reads the settings leniently (a document value out of range is clamped).
@@ -480,6 +485,11 @@ impl SlideshowHub {
     /// Keeps only `live` (sources still bound).
     pub fn retain(&mut self, live: impl Fn(SourceId) -> bool) {
         lock(&self.state).slots.retain(|id, _| live(*id));
+    }
+
+    /// The slide shows served.
+    pub fn sources(&self) -> Vec<SourceId> {
+        lock(&self.state).slots.keys().copied().collect()
     }
 
     /// True when `source` is served.

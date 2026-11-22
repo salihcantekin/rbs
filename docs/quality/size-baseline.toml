@@ -7,9 +7,9 @@
 "crates/rbs-api/src/request.rs" = 2779
 "crates/rbs-api/src/types.rs" = 3054
 "crates/rbs-api/tests/json.rs" = 3353
-"crates/rbs-app/src/main.rs" = 6536
+"crates/rbs-app/src/main.rs" = 6505
 "crates/rbs-app/src/menu_bar.rs" = 2518
-"crates/rbs-app/src/studio_ui.rs" = 10084
+"crates/rbs-app/src/studio_ui.rs" = 10048
 "crates/rbs-record/src/studio.rs" = 5947
 "crates/rbs-record/tests/studio.rs" = 3241
 "crates/rbs-scene/src/collection.rs" = 2830
@@ -26,7 +26,7 @@
 "crates/rbs-app/examples/go_live.rs::main" = 215
 "crates/rbs-app/examples/remote_preview.rs::run" = 313
 "crates/rbs-app/examples/transition_cost.rs::main" = 203
-"crates/rbs-app/src/main.rs::install_studio" = 1038
+"crates/rbs-app/src/main.rs::install_studio" = 1036
 "crates/rbs-app/src/main.rs::run" = 373
 "crates/rbs-app/src/main.rs::sync" = 327
 "crates/rbs-app/src/main.rs::sync_studio" = 206
@@ -36,7 +36,7 @@
 "crates/rbs-app/src/studio_ui.rs::apply" = 528
 "crates/rbs-app/src/studio_ui.rs::new" = 231
 "crates/rbs-app/src/studio_ui.rs::push" = 274
-"crates/rbs-app/src/studio_ui.rs::set_rows" = 251
+"crates/rbs-app/src/studio_ui.rs::set_rows" = 250
 "crates/rbs-app/src/studio_ui.rs::the_vertical_output_commands_follow_the_vertical_canvas_and_its_outputs" = 218
 "crates/rbs-audio-io-pipewire/src/linux.rs::run_stream" = 212
 "crates/rbs-audio-io/src/conformance.rs::endpoint" = 298

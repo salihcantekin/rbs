@@ -32,6 +32,10 @@ pub struct FilterUi {
     /// changed and rewrite them all (audit U-08).
     chains: Models<FilterData>,
     fields: Models<FilterFieldData>,
+    /// A slide show's settings rows by source id (ADR-0171), kept the same way.
+    slides: Models<FilterFieldData>,
+    /// A slide show's slider drag: source, field and position, until it is released.
+    pub(super) slides_drag: Option<(i32, i32, f32)>,
 }
 
 /// List models kept by id (`VecModel` has no `Debug`, so this shows only the ids).
@@ -213,13 +217,15 @@ pub fn sound_sources(rows: &[SourceRow]) -> Vec<(u32, String)> {
         .collect()
 }
 
-fn field_data(
-    ty: AnyFilter,
+/// The rows of a schema's fields (a filter's, or a source type's such as the slide
+/// show's, ADR-0171); `own` and `sounds` fill a source picker.
+pub(super) fn field_data(
+    fields: &[rbs_params::Field],
     values: &Values,
     own: SourceId,
     sounds: &[(u32, String)],
 ) -> Vec<FilterFieldData> {
-    ty.fields()
+    fields
         .iter()
         .zip(values.as_slice())
         .map(|(f, v)| match (f.kind, *v) {
@@ -384,7 +390,7 @@ impl FilterUi {
             .enumerate()
             .map(|(i, f)| {
                 let fields = match (f.any(), &f.values) {
-                    (Some(ty), Some(values)) => field_data(ty, values, row.id, sounds),
+                    (Some(ty), Some(values)) => field_data(ty.fields(), values, row.id, sounds),
                     _ => Vec::new(),
                 };
                 let id = f.id.get() as i32;
@@ -454,6 +460,17 @@ impl FilterUi {
         (ModelRc::from(Rc::clone(chain)), selected)
     }
 
+    /// The kept model of slide show `source`'s settings rows, set to `rows`.
+    pub(super) fn slides_rows(
+        &mut self,
+        source: i32,
+        rows: Vec<FilterFieldData>,
+    ) -> ModelRc<FilterFieldData> {
+        let model = self.slides.0.entry(source).or_default();
+        super::set_rows(model, rows);
+        ModelRc::from(Rc::clone(model))
+    }
+
     /// The live levels of a filter's meter as bar positions (input peak, gain
     /// reduction); zeros when it has none. Read by the editor's timer, only while shown.
     pub fn levels(&self, filter: i32) -> (f32, f32) {
@@ -471,6 +488,7 @@ impl FilterUi {
         self.selected.retain(|s, _| ids.contains(s));
         self.known.retain(|s, _| ids.contains(s));
         self.chains.0.retain(|s, _| ids.contains(s));
+        self.slides.0.retain(|s, _| ids.contains(s));
         let filters: Vec<i32> = rows
             .iter()
             .flat_map(|r| r.filters.iter().map(|f| f.id.get() as i32))
@@ -501,31 +519,37 @@ impl StudioUi {
 
     /// The number of field `field` at slider position `position`, on its step.
     fn number_at(ty: AnyFilter, field: usize, position: f32) -> Option<(&'static str, f32)> {
-        let f = ty.fields().get(field)?;
-        let FieldKind::Number {
-            min,
-            max,
-            step,
-            curve,
-            ..
-        } = f.kind
-        else {
-            return None;
-        };
-        let p = position.clamp(0.0, 1.0);
-        let raw = if log_scaled(min, curve) {
-            min * (max / min).powf(p)
-        } else {
-            min + p * (max - min)
-        };
-        let v = if step > 0.0 {
-            (min + ((raw - min) / step).round() * step).clamp(min, max)
-        } else {
-            raw
-        };
-        Some((f.key, v))
+        number_at(ty.fields().get(field)?, position)
     }
+}
 
+/// The number field `f` stores at slider position `position`, on its step.
+pub(super) fn number_at(f: &rbs_params::Field, position: f32) -> Option<(&'static str, f32)> {
+    let FieldKind::Number {
+        min,
+        max,
+        step,
+        curve,
+        ..
+    } = f.kind
+    else {
+        return None;
+    };
+    let p = position.clamp(0.0, 1.0);
+    let raw = if log_scaled(min, curve) {
+        min * (max / min).powf(p)
+    } else {
+        min + p * (max - min)
+    };
+    let v = if step > 0.0 {
+        (min + ((raw - min) / step).round() * step).clamp(min, max)
+    } else {
+        raw
+    };
+    Some((f.key, v))
+}
+
+impl StudioUi {
     /// Add filter: the filter type `type_id` on `source`. The catalogue it comes from
     /// (picture filters, or audio filters on the Audio tab) is the caller's; an id that
     /// is in neither does nothing.

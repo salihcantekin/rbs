@@ -1178,6 +1178,7 @@ impl Host {
                     text: (SourceKind::of(&s.type_id) == Some(SourceKind::Text))
                         .then(|| s.settings.clone()),
                     browser: (kind == Some(SourceKind::Browser)).then(|| browser_page_settings(s)),
+                    slideshow: (kind == Some(SourceKind::Slideshow)).then(|| s.settings.clone()),
                     browser_reason: seams::page_reason(&self.studio, s.id, state),
                     cap_has,
                     cap_l,

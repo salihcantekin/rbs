@@ -449,6 +449,8 @@ impl Host {
     pub(super) fn report_media(&mut self, notify: &dyn Fn(Update)) -> Option<Duration> {
         use rbs_record::MediaPlayState as State;
         let mut playing = false;
+        let mut slides_playing = false;
+        let slides = self.slideshow_ticks(&mut slides_playing);
         let ticks: Vec<MediaTick> = self
             .studio
             .media_controls()
@@ -471,9 +473,13 @@ impl Host {
                     duration_ms: control
                         .duration()
                         .map_or(0, |d| u32::try_from(d.as_millis()).unwrap_or(u32::MAX)),
+                    index: -1,
+                    count: 0,
                 }
             })
+            .chain(slides)
             .collect();
+        playing |= slides_playing;
         if self.media_sent.as_ref() != Some(&ticks) {
             self.media_sent = Some(ticks.clone());
             notify(Update::Media(ticks));

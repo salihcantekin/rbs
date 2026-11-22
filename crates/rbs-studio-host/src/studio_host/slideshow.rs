@@ -98,4 +98,42 @@ impl Host {
             count: Some(count(s.count)),
         })
     }
+
+    /// The play state of every slide show the studio runs, for the UI (ADR-0171): a
+    /// running one sets `playing`, so the state is sent again when its picture moves.
+    pub(super) fn slideshow_ticks(&self, playing: &mut bool) -> Vec<MediaTick> {
+        self.studio
+            .slideshow_sources()
+            .into_iter()
+            .filter_map(|id| Some((id, self.studio.slideshow_state(id)?)))
+            .map(|(id, s)| {
+                let state = slide_state(&s);
+                *playing |= state == 0;
+                MediaTick {
+                    id,
+                    state,
+                    cursor_ms: 0,
+                    duration_ms: 0,
+                    index: s.index.map_or(-1, |i| i32::try_from(i).unwrap_or(i32::MAX)),
+                    count: u32::try_from(s.count).unwrap_or(u32::MAX),
+                }
+            })
+            .collect()
+    }
+}
+
+/// A slide show's state as [`MediaTick::state`] numbers it: 0 playing, 1 paused,
+/// 3 ended, 4 standby, 5 unavailable (the folder cannot be read).
+fn slide_state(s: &rbs_sources::slideshow::SlideState) -> u8 {
+    if s.folder_error {
+        5
+    } else if !s.warm {
+        4
+    } else if s.paused {
+        1
+    } else if s.ended {
+        3
+    } else {
+        0
+    }
 }
