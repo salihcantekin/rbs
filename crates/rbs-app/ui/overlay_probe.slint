@@ -4,7 +4,7 @@ import { Theme, Tokens } from "tokens.slint";
 import { Button, SplitButton, InfoHint, IconButton, OverlayHost, FeatureSection, ColorPicker, Select, Tabs, ScrollArea, SettingRow, Toggle, NumberField, SegmentedControl, SettingValue, ListRow } from "components.slint";
 import { CommandMenu } from "context_menu.slint";
 import { SettingsCard } from "settings.slint";
-import { PropertiesPanel } from "studio.slint";
+import { PropertiesPanel, SourcesPanel } from "studio.slint";
 import { ReplayControls } from "replay.slint";
 import { IconName, Experience } from "base/types.slint";
 
@@ -381,6 +381,17 @@ export component PropertiesProbe inherits Window {
         live-state: 0;
     }
     // Its Selects and Add filter menu open as layers (ADR-0137 decision 10).
+    OverlayHost { width: parent.width; height: parent.height; }
+}
+
+// A window for screenshots of the Sources panel (tests/sound_nest_shots.rs, ADR-0173):
+// the panel as the app draws it, with the rows a test sets. Not shown by the app.
+export component SourcesProbe inherits Window {
+    background: Theme.surface-raised;
+    SourcesPanel {
+        width: parent.width;
+        height: parent.height;
+    }
     OverlayHost { width: parent.width; height: parent.height; }
 }
 

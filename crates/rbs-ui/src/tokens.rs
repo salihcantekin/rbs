@@ -131,6 +131,7 @@ pub const LENGTHS: &[&str] = &[
     "size.scrollbar.hit",
     "size.scrollbar.thumb-min",
     "size.list.cell-min-w",
+    "size.list.indent",
     "size.select.list-h",
     "size.app-menu.w",
     "size.app-menu.categories",

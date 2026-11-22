@@ -148,6 +148,13 @@ pub struct StreamDescriptor {
     pub extradata: Bytes,
     /// Video or audio parameters.
     pub params: StreamParams,
+    /// The track's name in the file, `None` for none (ADR-0170 decision 6: an audio
+    /// track is named after its bus). Containers without track names drop it.
+    pub name: Option<String>,
+    /// A player plays this track unless the user picks another (ADR-0170 decision 6).
+    /// True from [`StreamDescriptor::new`]; a recording's tracks after track 1 are
+    /// false, so players do not play them all at once.
+    pub default: bool,
 }
 
 impl StreamDescriptor {
@@ -163,7 +170,21 @@ impl StreamDescriptor {
             bitstream,
             extradata,
             params,
+            name: None,
+            default: true,
         }
+    }
+
+    /// The descriptor with `name` as its track name.
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+
+    /// The descriptor with `default` as its default flag.
+    pub fn with_default(mut self, default: bool) -> Self {
+        self.default = default;
+        self
     }
 }
 

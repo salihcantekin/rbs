@@ -257,3 +257,110 @@ fn held_packets_are_bounded_and_written_when_no_video_ever_comes() {
     assert_eq!(got[0], (1, aac(10)));
     assert_eq!(stats.start_drops.load(Ordering::Relaxed), 10);
 }
+
+/// Three audio tracks (ADR-0170 decision 5): one hold each, drained merged by time
+/// (ties by stream index), and the same packets dropped on every track.
+#[test]
+fn every_track_drops_the_same_packets_when_video_comes_late() {
+    let mut script: Vec<_> = (0..10)
+        .flat_map(|n| (1..=3).map(move |pin| (n / 3, pin, audio(aac(n)))))
+        .collect();
+    script.push((3, 0, video(1143)));
+    let streams = vec![h264_stream(), aac_stream(), aac_stream(), aac_stream()];
+    let (got, stats) = run(streams, script, 5);
+    let got = packets(&got);
+    let mut expected: Vec<(u16, u64)> = (6..=8)
+        .flat_map(|n| (1..=3).map(move |s| (s, aac(n))))
+        .collect();
+    expected.push((0, 1_143_000_000));
+    expected.extend((1..=3).map(|s| (s, aac(9))));
+    assert_eq!(got, expected);
+    assert_eq!(
+        (1..=3).map(|s| stats.start_drops_of(s)).collect::<Vec<_>>(),
+        [6, 6, 6]
+    );
+    assert_eq!(stats.start_drops.load(Ordering::Relaxed), 6, "track 1 only");
+    assert_eq!(stats.start_drops_of(0), 0, "never the video");
+}
+
+/// A full hold makes every hold drop up to the same time, so a track that ran ahead
+/// does not start later than the others; with no video, the tracks go out merged.
+#[test]
+fn a_full_hold_drops_up_to_the_same_time_on_every_track() {
+    let n = START_HOLD as u64 + 10;
+    let mut script: Vec<_> = (0..n).map(|i| (i / 16, 1, audio(aac(i)))).collect();
+    // Track 2 runs five packets ahead.
+    script.extend((0..n + 5).map(|i| (i / 16, 2, audio(aac(i)))));
+    let streams = vec![h264_stream(), aac_stream(), aac_stream()];
+    let (got, stats) = run(streams, script, n / 16 + 3);
+    let got = packets(&got);
+    let first = |s: u16| got.iter().find(|g| g.0 == s).map(|g| g.1);
+    assert_eq!(first(1), first(2), "both tracks start at the same packet");
+    assert_eq!(stats.start_drops_of(1), stats.start_drops_of(2));
+    let dropped = stats.start_drops_of(1);
+    assert!(dropped >= 15, "{dropped}");
+    assert_eq!(first(1), Some(aac(dropped)));
+    let mut merged = got.clone();
+    merged.sort_by_key(|&(s, t)| (t, s));
+    assert_eq!(got, merged, "merged by time, ties by stream");
+}
+
+/// Overflow, a track that arrives late, then video (ADR-0170 decision 5): the late
+/// track's packets at or before the dropped time are dropped too, so both tracks
+/// start on the same sample and drop the same count; waiting allocates nothing.
+#[test]
+fn after_an_overflow_a_late_track_and_late_video_still_start_together() {
+    let n = START_HOLD as u64 + 20;
+    // Track 1 fills its hold and overflows; track 2 starts only after that, at
+    // most 16 packets a tick (the pin's queue).
+    let mut script: Vec<_> = (0..n).map(|i| (i / 16, 1, audio(aac(i)))).collect();
+    let late = n / 16 + 1;
+    script.extend((0..n).map(|i| (late + i / 16, 2, audio(aac(i)))));
+    // Video at aac(0)'s time: only the overflow drops anything, aac(0..20) on both.
+    let video_at = late + n / 16 + 1;
+    script.push((video_at, 0, video(1000)));
+    let streams = vec![h264_stream(), aac_stream(), aac_stream()];
+    let (got, stats) = run(streams, script, video_at + 3);
+    let got = packets(&got);
+    let first = |s: u16| got.iter().find(|g| g.0 == s).map(|g| g.1);
+    assert_eq!(first(1), Some(aac(20)));
+    assert_eq!(first(1), first(2), "same first sample");
+    assert_eq!(stats.start_drops_of(1), 20);
+    assert_eq!(stats.start_drops_of(2), 20);
+}
+
+#[test]
+fn waiting_and_overflowing_holds_do_not_allocate() {
+    let n = START_HOLD as u64 + 40;
+    let script: Vec<_> = (0..n)
+        .flat_map(|i| (1..=2).map(move |pin| (i / 16, pin, audio(aac(i)))))
+        .collect();
+    let tx = std::sync::Arc::new(support::TransportState::default());
+    let mut rig = Rig::new();
+    let script = rig.add(Box::new(Script {
+        desc: NodeDescriptor::new(
+            NodeTypeId::new_static("org.rbs.test.script"),
+            NodeKind::Source,
+            Vec::new(),
+            (0..3)
+                .map(|i| Pin::named(format!("p{i}"), LinkKind::Packets, false))
+                .collect(),
+        ),
+        packets: script,
+    }));
+    let output = rig.add(Box::new(OutputNode::new(
+        vec![h264_stream(), aac_stream(), aac_stream()],
+        Arc::new(FakeTransportFactory(tx)),
+        TransportConfig::new("rtmp://never.invalid/x", TransportInput::Packets),
+    )));
+    for i in 0..3 {
+        rig.graph
+            .connect(script, &format!("p{i}"), output, &format!("s{i}"))
+            .unwrap();
+    }
+    assert!(rig.apply().failed.is_empty());
+    rig.ticks(2);
+    let waiting = allocation_counter::measure(|| rig.ticks(n / 16 + 2));
+    assert_eq!(waiting.count_total, 0, "waiting ticks allocated");
+    rig.drain();
+}

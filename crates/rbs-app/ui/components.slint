@@ -3543,6 +3543,13 @@ export component ListRow inherits Rectangle {
     callback took(data-transfer);
     // Keys the owner handles (F2 and the confirm keys are the row's own).
     callback key(KeyEvent) -> EventResult;
+    // A disclosure arrow before the icon (ADR-0173): `disclosure-room` keeps its width
+    // (every row of a group that has one, so the icons stay in a column), `expandable`
+    // draws it on this row. A click on it, Right or Left report the wanted state.
+    in property <bool> disclosure-room;
+    in property <bool> expandable;
+    in property <bool> expanded;
+    callback expand-toggled(bool);
     public function focus-row() { focus.focus(); }
     public function focus-pointer() { focus.focus-pointer(); }
     property <bool> drop-here: drop.has-drag && root.drop-enabled && root.taking;
@@ -3562,6 +3569,9 @@ export component ListRow inherits Rectangle {
     accessible-item-selectable: root.selectable;
     accessible-item-selected: root.selected;
     accessible-enabled: root.enabled;
+    accessible-expandable: root.expandable;
+    accessible-expanded: root.expandable && root.expanded;
+    accessible-action-expand => { if root.expandable { root.expand-toggled(!root.expanded); } }
     accessible-action-default => { if root.enabled { root.activated(); } }
     forward-focus: focus;
     // An elided name shows whole as a tooltip under the pointer or keyboard focus
@@ -3597,6 +3607,8 @@ export component ListRow inherits Rectangle {
             }
             if e.text == Key.F2 && root.edit-label != "" { root.editing = true; return accept; }
             if e.text == Key.Delete || e.text == Key.Backspace { root.delete-asked(); return accept; }
+            if root.expandable && e.text == Key.RightArrow && !root.expanded { root.expand-toggled(true); return accept; }
+            if root.expandable && e.text == Key.LeftArrow && root.expanded { root.expand-toggled(false); return accept; }
             root.key(e)
         }
     }
@@ -3631,6 +3643,17 @@ export component ListRow inherits Rectangle {
                 padding-left: Tokens.space-2;
                 padding-right: Tokens.space-1;
                 spacing: Tokens.space-2;
+                if root.disclosure-room: Rectangle {
+                    width: Tokens.size-icon-box;
+                    if root.expandable: VerticalLayout {
+                        alignment: center;
+                        Icon { name: root.expanded ? IconName.chevron-down : IconName.chevron-right; ink: Theme.text-secondary; }
+                    }
+                    if root.expandable: TouchArea {
+                        enabled: !root.confirm && root.enabled;
+                        clicked => { focus.focus-pointer(); root.expand-toggled(!root.expanded); }
+                    }
+                }
                 if root.lead-space > 0: Rectangle { width: root.lead-space; }
                 if root.picture-height > 0: VerticalLayout {
                     alignment: center;

@@ -88,6 +88,17 @@ fn write(model: &VecModel<SharedString>, index: usize, text: &str) {
     }
 }
 
+/// The dB scale under the Mixer meters, as the window draws it.
+pub(super) fn scale_marks() -> Vec<crate::ui::ScaleMark> {
+    rbs_ui::meter::SCALE_MARKS_DB
+        .iter()
+        .map(|db| crate::ui::ScaleMark {
+            label: format!("{db:.0}").into(),
+            at: rbs_ui::meter::position(*db),
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

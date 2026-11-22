@@ -1004,8 +1004,7 @@ fn tracks_problem(tracks: &[String]) -> Option<String> {
     {
         return Some(format!("Audio track {} repeats the bus \"{t}\".", i + 1));
     }
-    (tracks.len() > 1)
-        .then(|| "Recording several audio tracks is not available yet; keep one track.".to_owned())
+    None
 }
 
 /// The `[markers]` section of a recording profile (ADR-0089 decisions 3 and 4).

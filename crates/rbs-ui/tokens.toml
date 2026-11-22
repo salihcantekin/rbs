@@ -152,6 +152,9 @@ format = 4
 "size.scrollbar.thumb-min" = 24
 # ListBox in automatic columns: the narrowest a cell may be.
 "size.list.cell-min-w" = 120
+# A row nested under another (a picture's sound, ADR-0173): its start moves in by the
+# icon and its gap, so its icon sits under the parent's name.
+"size.list.indent" = 24
 "size.select.list-h" = 320
 "size.app-menu.w" = 600
 "size.app-menu.categories" = 165

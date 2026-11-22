@@ -510,7 +510,7 @@ impl Host {
                 let target = self
                     .targets(SourceKind::ApplicationAudio)
                     .into_iter()
-                    .find(|t| t.name == app)
+                    .find(|t| t.name.eq_ignore_ascii_case(&app))
                     .ok_or_else(|| {
                         Refusal::Failed(format!("{app} is not playing sound that can be captured."))
                     })?;
