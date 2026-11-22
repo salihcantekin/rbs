@@ -70,6 +70,9 @@ rbs-media-avf = { path = "../rbs-media-avf" }
 rbs-audio-io-coreaudio = { path = "../rbs-audio-io-coreaudio" }
 rbs-codec-videotoolbox = { path = "../rbs-codec-videotoolbox" }
 rbs-codec-audiotoolbox = { path = "../rbs-codec-audiotoolbox" }
+# Mouse input for pointer filters (ADR-0165 phase 1).
+rbs-input = { path = "../rbs-input" }
+rbs-input-mac = { path = "../rbs-input-mac" }
 
 [lints]
 workspace = true

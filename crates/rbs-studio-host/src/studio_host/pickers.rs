@@ -374,9 +374,10 @@ pub(super) struct Pickers {
     pub(super) permission_asking: HashMap<PermissionKind, Vec<Command>>,
     /// Kinds asked for in this run: adding a source prompts at most once per kind.
     pub(super) permission_asked: Vec<PermissionKind>,
-    /// The kinds some shown source was refused, when the UI last got the statuses for
-    /// them: a newly refused kind sends the statuses, so Properties offers Allow or Fix
-    /// permission.
+    /// The kinds the window needs a status for, when it last got the statuses: kinds
+    /// some shown source was refused, and Input monitoring while a chain has a pointer
+    /// filter (ADR-0165 decision 7). A new kind sends the statuses, so Properties
+    /// offers Allow or Fix permission.
     pub(super) permission_refused: Vec<PermissionKind>,
     /// The generation of the region-preview grab that may still deliver (ADR-0103).
     pub(super) region_grabs: Arc<AtomicU64>,

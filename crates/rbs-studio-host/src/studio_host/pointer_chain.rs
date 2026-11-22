@@ -13,10 +13,30 @@ use super::{Host, Refusal};
 
 /// Whether filters of `type_id` need the pointer.
 pub(super) fn is_pointer(type_id: &NodeTypeId) -> bool {
-    rbs_filters::find(type_id.as_str()).is_some_and(|t| t.needs().contains(Needs::POINTER))
+    is_pointer_str(type_id.as_str())
+}
+
+/// [`is_pointer`] for a type id as text.
+pub(super) fn is_pointer_str(type_id: &str) -> bool {
+    rbs_filters::find(type_id).is_some_and(|t| t.needs().contains(Needs::POINTER))
 }
 
 impl Host {
+    /// Whether the window's `call` adds a pointer filter while Input monitoring was
+    /// not asked yet in this run and can show the system's prompt.
+    pub(super) fn pointer_prompt_first(&self, call: &rbs_api::Command) -> bool {
+        use rbs_sources::permissions::{PermissionKind, PermissionStatus};
+        let rbs_api::Command::FilterAdd(add) = call else {
+            return false;
+        };
+        let kind = PermissionKind::InputMonitoring;
+        if !is_pointer_str(&add.type_id) || self.pickers.permission_asked.contains(&kind) {
+            return false;
+        }
+        let info = self.adapters.sources.permission(kind);
+        info.status == PermissionStatus::NotAsked && info.can_prompt
+    }
+
     /// Refuses a pointer filter on a source that publishes no picture mapping: it
     /// could never draw there.
     pub(super) fn check_pointer_source(

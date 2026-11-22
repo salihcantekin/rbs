@@ -50,9 +50,7 @@ mod with_pictures {
     use rbs_gpu::share::PreviewEndpoint;
     use rbs_gpu::{GpuContext, GpuError, GpuRequest};
     use rbs_record::RecordAdapters;
-    use rbs_studio_host::studio_host::{
-        Command, HostConfig, ProjectorState, StudioHost, Update, VerticalCanvas,
-    };
+    use rbs_studio_host::studio_host::{Command, HostConfig, ProjectorState, StudioHost, Update};
 
     /// Hang guard only: every wait ends as soon as its update arrives.
     const LIMIT: Duration = Duration::from_secs(20);

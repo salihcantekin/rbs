@@ -1326,10 +1326,13 @@ export global Shortcuts {
 export struct FilterFieldData { label: string, help: string, log: bool, options: [string], choice: int, kind: int, position: float, step: float, value-text: string, min: float, max: float, snap: float, decimals: int, suffix: string, colour: string, swatch: color, changed: bool, default-text: string }
 
 // One filter of a source's chain: `known` false for a type this version lacks (it can
-// only be removed); `can-up` / `can-down` false at the ends of the chain.
+// only be removed); `can-up` / `can-down` false at the ends of the chain and at the
+// line after the pointer filters (ADR-0165 decision 3). `perm-text`: why a pointer
+// filter cannot see clicks, with `perm-action` 1 Allow, 2 Fix permission (ADR-0165
+// decision 7).
 export struct FilterLevels { input: float, reduction: float }
 
-export struct FilterData { id: int, name: string, enabled: bool, known: bool, gate: bool, latency-text: string, latency-warn: bool, curve: string, curve-text: string, bar-label: string, open-pos: float, close-pos: float, can-up: bool, can-down: bool, fields: [FilterFieldData] }
+export struct FilterData { id: int, name: string, enabled: bool, known: bool, gate: bool, latency-text: string, latency-warn: bool, curve: string, curve-text: string, bar-label: string, open-pos: float, close-pos: float, can-up: bool, can-down: bool, perm-text: string, perm-action: int, fields: [FilterFieldData] }
 
 export struct SourceData { id: int, name: string, kind: string, browser: bool, icon: string, status: string, ok: bool, picture: bool, visible: bool, x: float, y: float, w: float, h: float, can-up: bool, can-down: bool, shape: int, radius: float, scroll-on: bool, scroll-dir: int, scroll-speed: float, scroll-gap: float, scroll-repeat: int, scroll-start: int, scroll-return: int, scroll-fade: float, scroll-paused: bool, border: bool, border-width: float, border-color: string, border-swatch: color, crop-l: int, crop-t: int, crop-r: int, crop-b: int, pic-w: int, pic-h: int, locked: bool, flip-h: bool, flip-v: bool, rotation: float, audio: bool, muted: bool, volume: float, volume-text: string, filters: [FilterData], selected-filter: int, sync-offset: int, global: bool, also-in: string, in-globals: bool, places: int, kind-code: int, companion: bool, custom-glide: bool, glide-duration: int, glide-easing: int, solid: bool, fill: string, fill-swatch: color, filled: bool, item-id: int, cap-has: bool, cap-l: int, cap-t: int, cap-r: int, cap-b: int, chrome-on: bool, chrome-t: int, chrome-r: int, chrome-b: int, chrome-l: int, chrome-fill: int, has-work-rect: bool, show-for-ms: int, cue-remaining-ms: int, record-separately: bool, record-choice: int, record-form: int, media: bool, media-path: string, media-loop: bool, act-on: bool, act-run: int, act-return: int, act-linger: int, act-warm-up: string, media-start-ms: int, media-end-ms: int, media-state: int, media-pos-ms: int, media-len-ms: int, scene-level: bool, scene-entry: bool, own-volume-text: string, device-peers: string, peer-count: int, perm-kind: int, perm-action: int }
 

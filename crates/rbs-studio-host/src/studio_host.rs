@@ -764,6 +764,16 @@ impl Host {
             | Command::RemoveStreamKey(..)
             | Command::SwitchCollection { .. }
             | Command::SetLibrary { .. } => self.stream_command(c, notify),
+            // Adding the first pointer filter asks for Input monitoring first, as
+            // adding a camera asks for the camera (ADR-0165 decision 7, ADR-0141
+            // decision 4); the filter is added whatever the answer.
+            Command::Api { ref call, .. } if self.pointer_prompt_first(call) => {
+                self.ask_permission(
+                    rbs_sources::permissions::PermissionKind::InputMonitoring,
+                    Some(c),
+                    notify,
+                );
+            }
             Command::Api { call, reply } => self.api_command(*call, reply, notify),
         }
     }

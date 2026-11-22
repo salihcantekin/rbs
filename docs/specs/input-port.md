@@ -1,7 +1,7 @@
 # Spec: Input port
 
 - Status: Draft
-- Owner crate(s): `rbs-input` (port); adapters `rbs-input-win`, `rbs-input-mac` (later PRs)
+- Owner crate(s): `rbs-input` (port); adapters `rbs-input-mac` (macOS), `rbs-input-win` (later PR)
 - Related ADRs: [0003](../adr/0003-ports-and-adapters.md), [0004](../adr/0004-single-master-clock.md), [0013](../adr/0013-zero-cost-when-unused.md), [0162](../adr/0162-extension-ready-registries-and-plugin-order.md), [0165](../adr/0165-show-mouse-and-keyboard-input.md)
 - Related specs: [capture-port.md](capture-port.md), [video-filters.md](video-filters.md), [plugin-sdk.md](plugin-sdk.md)
 
@@ -22,7 +22,7 @@ Out of scope:
 
 - Mapping desktop points to captured pictures: the capture port (ADR-0165 decision 5).
 - Drawing: the pointer filters (ADR-0165 decision 3).
-- Keys, secure input and the Input Monitoring permission: phase 2.
+- Keys and secure input: phase 2. Input Monitoring, which macOS 26 requires even for mouse events ("macOS adapter"), is read and asked through the port (`permission`, `request_permission`) and shown by the host as a fifth permission kind (ADR-0141, ADR-0165 decision 7, moved into phase 1 by the owner on 2026-11-22).
 - Linux adapters: a later phase (ADR-0165 decision 0).
 
 ## Contract
@@ -64,7 +64,17 @@ pub trait InputBackend: Send + Sync + 'static {
     /// capabilities lack). Called on the control thread; may start a thread and wait
     /// for it to be ready, at most 500 ms. Events go to `sink` from the adapter's thread.
     fn start(&self, mask: EventMask, sink: InputSink) -> Result<Box<dyn RunningInput>, InputError>;
+    /// Whether the OS lets this process read input. Fast, never prompts, any thread.
+    /// Default `Granted` (no OS permission).
+    fn permission(&self) -> Permission { Permission::Granted }
+    /// Shows the OS prompt when the user was not asked yet; returns the answer known
+    /// after it. Blocks while the prompt shows (a worker thread, never the UI or a
+    /// real-time thread). Default: `permission()`.
+    fn request_permission(&self) -> Permission { self.permission() }
 }
+
+#[non_exhaustive] pub enum Permission { Granted, Denied, NotDetermined, Restricted, Unknown }
+// The same meanings as the capture port's `Permission` (ADR-0141).
 
 pub trait RunningInput: Send {
     /// The union of the subscribers' masks changed (control thread). The adapter
@@ -91,6 +101,8 @@ pub struct InputMonitor;   // InputMonitor::new(Box<dyn InputBackend>)
 impl InputMonitor {   // Clone: clones share the listener
     pub fn capabilities(&self) -> CapabilitySet;
     pub fn backend_name(&self) -> &'static str;
+    pub fn permission(&self) -> Permission;          // the backend's, never takes the lock
+    pub fn request_permission(&self) -> Permission;  // blocks while a prompt shows
     pub fn is_running(&self) -> bool;
     /// Control thread. The first subscription starts the backend; later ones only widen
     /// its mask. Fails with Unsupported for a class the backend lacks (KEYS in phase 1),
@@ -151,14 +163,33 @@ No variant carries heap data.
 | `input.buttons` | Flag | Button down and up |
 | `input.wheel` | Flag | Wheel |
 | `input.keys` | Flag | Keys (phase 2) |
+| `input.permission` | Flag | The OS has a user permission for input (macOS Input Monitoring) |
+| `input.permission.prompt` | Flag | `request_permission` can show the OS prompt in this process |
+| `input.permission.restart` | Flag | A grant takes effect only after the app restarts |
 
-The keys are the constants `rbs_input::caps::{POINTER, BUTTONS, WHEEL, KEYS}`.
+The keys are the constants `rbs_input::caps::{POINTER, BUTTONS, WHEEL, KEYS, PERMISSION, PERMISSION_PROMPT, PERMISSION_RESTART}`. The permission keys mirror the capture port's `capture.permission.<kind>` keys, so `rbs_sources::permissions` folds the monitor's answer like any adapter's.
 
 ## Tests
 
 Unit tests in `rbs-input` with a scripted test backend: start on first subscribe and stop on last drop; mask union and `set_mask`; mask filtering per reader; ring full drops the newest and counts; pointer history lookup at, before and after the kept window; a writer thread and a reader thread racing on the history never yield a torn sample, and a producer and a consumer racing on an event ring keep order and account for every event (progress-bounded runs with a hang guard, ADR-0032); events of an earlier generation or another class are skipped; `KEYS` refused; `Busy` at `MAX_SUBSCRIPTIONS`; no allocation on `next_event` and `pointer_at` (allocation counter).
 
+## macOS adapter
+
+`rbs-input-mac`, `MacInput::new(clock)`, name `cg-event-tap`, capabilities `input.pointer`, `input.buttons`, `input.wheel`. `rbs-platform` sets it as the sources' input monitor when the root passes the engine's master clock (`Options::with_master_clock`; `rbs-app` `platform::adapters_on`, `rbs-cli record`), so pointer times and capture frame times (stamped on the engine's clock through `InstanceContext`) share one clock.
+
+- **Tap.** `CGEventTapCreate` at `kCGSessionEventTap`, head insert, `kCGEventTapOptionListenOnly`, asking only for the types the mask needs: `POINTER` mouse moved and left, right and other dragged; `BUTTONS` left, right and other down and up; `WHEEL` scroll wheel. With `POINTER` in the mask, button and wheel events also write a pointer sample (at most one per OS event). A NULL tap is `PermissionDenied`.
+- **Permission (observed on macOS 26.7.1, Apple M4 Pro, 2026-11-22).** A listen-only tap for mouse events only needs **Input Monitoring**. In a process without the grant (spawned with its responsibility disclaimed, `CGPreflightListenEventAccess` false) the tap was created but received no event in 10 s, while a granted process saw 10,477 (posted and real). So `start` first calls `CGPreflightListenEventAccess`, which never shows a prompt, and returns `PermissionDenied` when it is false instead of running a silent tap. `permission` reads the preflight: granted is `Granted`; otherwise `NotDetermined` until a request ran in this process and `Denied` after it, because the preflight cannot tell "not asked" from "refused" and the system prompts only once (the ScreenCaptureKit rule of ADR-0141 decision 5). `request_permission` calls `CGRequestListenEventAccess`, which shows the system's alert and returns at once, so the answer right after it is still `Denied` until the user allows RBS and restarts it. The adapter declares `input.permission`, `.restart` (a grant applies after RBS restarts) and `.prompt` only when RBS is its own responsible app (`rbs_system_probe::app_identity::is_own_app`, ADR-0141 decision 10): Input Monitoring has no `Info.plist` usage key, so the prompt cannot end the process, but from a terminal it would ask for, and grant, the terminal's access; without `.prompt` `request_permission` returns the current status. To check on the Mac: whether the preflight turns true before a restart once the user allows RBS (the row would then read Allowed while the running tap still hears nothing). When and where RBS asks is the host's job (ADR-0141; ADR-0165 decision 1 moved the Permissions row into phase 1, owner's decision 2026-11-22). Accessibility is not needed. A terminal-started build inherits the terminal's (or the Claude app's) grant.
+- **Thread.** `start` spawns `rbs-input-mac`, which creates the tap, adds its run-loop source to its own run loop in the common modes, enables the tap and reports ready or the error; `start` waits at most 500 ms (`Backend { code: 2 }` on a timeout, the thread then removes its tap without running it: it checks the stop flag `start` set right after it reports, so a report that lands just after the timeout does not leave a tap running). `stop` sets the flag, wakes the loop and joins the thread; it returns as soon as a mask rebuild in progress (`CGEventTapCreate`, a window-server call) returns, which is not bounded by RBS. The thread runs `CFRunLoopRunInMode(default, 2 s)` in a loop.
+- **Stop and mask changes.** `set_mask` and `stop` store an atomic (wanted mask, stop flag) and post a block that calls `CFRunLoopStop` on the loop it runs on (`CFRunLoopPerformBlock` + `CFRunLoopWakeUp`); a block posted before the loop runs is run by its first run, so neither is lost. After each return the thread checks the stop flag (remove the source, invalidate the tap, exit) and the mask: a changed mask builds a new tap with the new types and then removes the old one; if the new tap is refused the old one stays. The callback also filters by the wanted mask, so a narrower mask applies at once. `stop` joins the thread. A run that returns `Finished` (the system invalidated the tap) ends the thread with a Warn line.
+- **Callback.** On `kCGEventTapDisabledByTimeout` or `ByUserInput` it enables the tap again and counts it. Location from `CGEventGetLocation` (global display points, top-left of the main display, the `DesktopPoint` space). Other buttons by `kCGMouseEventButtonNumber`: 2 `Middle`, 3 `Back`, 4 `Forward`, others ignored. Wheel `dy` from `kCGScrollWheelEventFixedPtDeltaAxis1`, `dx` from axis 2, in lines. No allocation, lock or log; a panic is caught and never unwinds into Core Graphics.
+- **Wheel signs.** A posted `CGEventCreateScrollWheelEvent2(Line, 2, +3, -2)` reads `dy` +3, `dx` -2: the field keeps the sign of the event (positive axis 1 is up, away from the user, for a wheel without natural scrolling). Whether a physical wheel's sign follows the user's natural-scrolling setting is not checked yet.
+- **Time.** `CGEventGetTimestamp` is documented in nanoseconds but is mach ticks on some hardware. A pure function picks the reading nearer the host time at arrival: raw as nanoseconds, or `raw * numer / denom` (`mach_timebase_info`); when both are more than 1 s away it uses the arrival time. On the M4 Pro (timebase 125/3) posted events carry **nanoseconds** of `CLOCK_UPTIME_RAW`. Each event then observes the adapter's `EdgeClock` with (`CLOCK_UPTIME_RAW` now, master now) and is stamped with `to_master`, so its time is at most `clock.now()` (one nanosecond past it only when the previous stamp is already `now`, the `EdgeClock` floor). A button event with the pointer class writes its sample and its event with one stamp.
+- **Counts.** `MacInput::stats()` gives events handled, re-enables and the ended tap threads' CPU time; each stop logs one `capture` line at Info (events, re-enables, mask changes, CPU), never event contents.
+- **Cost (decision 8, M4 Pro, release, 10 s, `examples/tap_cost.rs`).** Idle: 0 events, tap thread CPU 1.3 ms (thread start included). 1,000 posted moves a second (swallowed after the tap): 999 events/s, tap thread CPU 607 ms, 6.1 % of one core; with an empty callback 6.4 %, so the cost is the OS delivery to the tap thread, not the callback. Delivery: the callback runs about 0.2-0.3 ms after the post.
+
 ## Implementation status
 
 - Port crate `rbs-input`: types, shared monitor, rings, history, tests (ADR-0165 PR 1).
-- Adapters `rbs-input-win`, `rbs-input-mac`: not built yet.
+- `rbs-input-mac`: built and registered on macOS (section above); unit tests for the pure helpers (`src/model.rs`, every OS), device tests on the Mac (`tests/device.rs`: start and stop through the monitor, mask change by a second subscription; `slow_` (ignored by default, the first post takes 0.7 s): posted move, left and middle click and wheel reaching the reader, swallowed so no app sees them; a manual real-click test).
+- Permission (`permission`, `request_permission`, the `input.permission*` keys): port, macOS adapter, `rbs_sources::permissions::PermissionKind::InputMonitoring` and the host's ask when the window adds the first pointer filter (ADR-0141 decision 4); the macOS prompt and the restart are to be checked on the Mac with a bundled RBS.app.
+- `rbs-input-win`: not built yet.

@@ -55,14 +55,18 @@ pub fn plist_has_key(plist: &str, key: &str) -> bool {
     plist.contains(&format!("<key>{key}</key>"))
 }
 
+/// Whether this process is its own responsible app: its executable is inside a
+/// bundle and no ancestor is inside another bundle. A prompt asked here is about RBS,
+/// not about the terminal or app that started it.
+pub fn is_own_app(exe: &Path, ancestors: &[PathBuf]) -> bool {
+    enclosing_app(exe).is_some_and(|own| foreign_app(Some(&own), ancestors).is_none())
+}
+
 /// Whether asking for a permission may show the OS prompt without ending the
 /// process: this executable is inside a bundle, no ancestor is inside another bundle,
 /// and the bundle's `Info.plist` declares `key`.
 pub fn prompt_is_safe(exe: &Path, ancestors: &[PathBuf], plist: Option<&str>, key: &str) -> bool {
-    let Some(own) = enclosing_app(exe) else {
-        return false;
-    };
-    foreign_app(Some(&own), ancestors).is_none() && plist.is_some_and(|p| plist_has_key(p, key))
+    is_own_app(exe, ancestors) && plist.is_some_and(|p| plist_has_key(p, key))
 }
 
 /// This process as the OS sees it, read once by the caller.
@@ -82,6 +86,12 @@ impl AppIdentity {
     /// Whether a prompt for the permission whose usage key is `key` is safe here.
     pub fn prompt_is_safe(&self, key: &str) -> bool {
         prompt_is_safe(&self.exe, &self.ancestors, self.plist.as_deref(), key)
+    }
+
+    /// Whether this process is its own responsible app (see [`is_own_app`]): a
+    /// permission without a usage key (Input Monitoring) may prompt only then.
+    pub fn is_own_app(&self) -> bool {
+        is_own_app(&self.exe, &self.ancestors)
     }
 
     /// The app that most likely holds the grants when it is not this one.
@@ -201,6 +211,17 @@ mod tests {
         ));
         let app = foreign_app(enclosing_app(&exe).as_deref(), &chain).unwrap();
         assert_eq!(app_name(&app).as_deref(), Some("iTerm"));
+        assert!(!is_own_app(&exe, &chain));
+    }
+
+    #[test]
+    fn a_bundle_started_by_launchd_is_its_own_app() {
+        let exe = p("/Applications/RBS.app/Contents/MacOS/rbs");
+        assert!(is_own_app(&exe, &[p("/sbin/launchd")]));
+        let from_terminal = [p(
+            "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+        )];
+        assert!(!is_own_app(&exe, &from_terminal));
     }
 
     #[test]

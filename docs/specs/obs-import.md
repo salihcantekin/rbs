@@ -133,6 +133,7 @@ ADR-0131 decision 7 is the first mapping table. Each mapper keeps its own row in
 | `InvalidGlide`, `InvalidTransition`, `InvalidShowFor`, `InvalidActivity` | cannot arise: default glide and transition (ADR-0128), no timed show imported, no activity policy imported yet (ADR-0152) |
 | `ChromeNotDisplay` | cannot arise: chrome is never imported |
 | `StingerPlaced` | cannot arise: no stinger is imported, so the transition never names a source (ADR-0140 decision 1) |
+| `UnknownBus`, `TooManyBuses` | cannot arise: the import adds no bus (ADR-0170); OBS track flags are mapped later |
 
 A test (`crates/rbs-import-obs/tests/scene_errors.rs`) reads the variants of `SceneError` from its source and fails when one has no row here, so a new variant fails until it has an action. `SceneError` is `#[non_exhaustive]`, so an exhaustive `match` outside `rbs-scene` is not possible.
 

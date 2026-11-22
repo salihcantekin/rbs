@@ -17,7 +17,9 @@ mod monitor;
 mod ring;
 
 pub use error::InputError;
-pub use event::{Button, DesktopPoint, EventMask, InputEvent, PointerSample, TimedEvent};
+pub use event::{
+    Button, DesktopPoint, EventMask, InputEvent, Permission, PointerSample, TimedEvent,
+};
 pub use monitor::{
     InputBackend, InputMonitor, InputReader, InputSink, MAX_SUBSCRIPTIONS, RunningInput,
     Subscription,

@@ -128,7 +128,7 @@ Unknown keys are ignored. A wrong value type or value is `InvalidSetting`.
 
 ### OS permissions (ADR-0141)
 
-`rbs_sources::permissions` maps the four kinds a user gives permission for (Camera, Microphone, Screen and windows, System and app sound) to port kinds and folds every serving adapter's `permission` answer and permission capabilities into one `PermissionInfo` (status, whether **Allow** can prompt, whether a grant applies after a restart). The fold is pure; its precedence is Managed, Blocked, Not asked, Unknown, Asked each time, Allowed, No permission needed, and no serving adapter is Unavailable.
+`rbs_sources::permissions` maps the five kinds a user gives permission for (Camera, Microphone, Screen and windows, System and app sound, and Input monitoring, which is the input monitor's own answer, ADR-0165 decision 7) to port kinds and folds every serving adapter's `permission` answer and permission capabilities into one `PermissionInfo` (status, whether **Allow** can prompt, whether a grant applies after a restart). The fold is pure; its precedence is Managed, Blocked, Not asked, Unknown, Asked each time, Allowed, No permission needed, and no serving adapter is Unavailable.
 
 - `SourceTypes::permission(kind)`: calls `permission` only; fast, never prompts.
 - `SourceTypes::request_permission(kind)`: calls `request_permission` on each serving adapter that says `NotDetermined` and declares the kind's `.prompt` capability, then reads again. It blocks while a prompt is shown, so the composition root calls it from a worker thread, one request per kind at a time.
