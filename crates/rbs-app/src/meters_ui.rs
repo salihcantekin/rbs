@@ -63,13 +63,17 @@ pub(crate) fn gate_levels(ctx: &Ctx, app: &App, filter: i32) -> (f32, f32) {
         r.gate.set(true);
         r.send(&app.studio);
         let ctx = ctx.clone();
-        r.quiet
-            .start(slint::TimerMode::SingleShot, GATE_QUIET, move || {
+        crate::entry::start(
+            &r.quiet,
+            slint::TimerMode::SingleShot,
+            GATE_QUIET,
+            move || {
                 if let Ok(app) = ctx.app.try_borrow() {
                     app.meters_ui.gate.set(false);
                     app.meters_ui.send(&app.studio);
                 }
-            });
+            },
+        );
     }
     app.studio.filter_levels(filter)
 }
