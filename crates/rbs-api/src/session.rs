@@ -28,6 +28,9 @@ use crate::types::SourceLevels;
 
 /// The protocol version this server speaks.
 ///
+/// 1.102 adds the slide show source (ADR-0171 decision 9): the kind `slideshow`,
+/// `media.next` and `media.previous`, and `index` and `count` on a media state
+/// (1.101 is ADR-0168's).
 /// 1.99 lets a media source take `on_return: "continue"` (ADR-0152 decision 6,
 /// phase 5): on air again, it plays where it would be had it kept playing.
 /// 1.98 adds `warm_up_ms` on a source in `source.list` (ADR-0152 decision 10): the

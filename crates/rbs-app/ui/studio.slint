@@ -3072,12 +3072,24 @@ component FilterRowView inherits Rectangle {
     }
 }
 
-// One field of the selected filter, generated from its type's schema.
-component FilterFieldView inherits VerticalLayout {
-    in property <SourceData> source;
-    in property <FilterData> filter;
+// One field of a settings schema (rbs-params): a filter's, or a source type's such as
+// the slide show's (ADR-0171). `owner` names what it belongs to in accessible labels;
+// `editable` false shows the value without letting it change. The callbacks store
+// the change; `index` is the field's position in the schema.
+component SchemaFieldView inherits VerticalLayout {
+    in property <string> owner;
+    in property <bool> editable: true;
     in property <FilterFieldData> data;
     in property <int> index;
+    // A choice picked or a switch flipped (0 or 1).
+    callback set-option(int /* field */, int /* option */);
+    // A slider moved (its position 0..1), was let go, or the drag was cancelled.
+    callback preview-number(int /* field */, float /* position */);
+    callback commit-number(int /* field */);
+    callback cancel-number(int /* field */);
+    callback reset-field(int /* field */);
+    callback set-colour(int /* field */, string /* text */);
+    callback set-source(int /* field */, int /* option */);
     // The position the slider shows instead of the stored one: during a drag, and after
     // it until the host stores the value (`waiting`), so the value beside the slider
     // follows the pointer and does not flick back on release.
@@ -3117,18 +3129,18 @@ component FilterFieldView inherits VerticalLayout {
         }
         // A switch is the label line itself (a setting is a Toggle, ui-review item 18).
         if data.kind == 5: Toggle {
-            label: @tr("{} of {}", data.label, filter.name);
+            label: @tr("{} of {}", data.label, root.owner);
             text: data.label;
             checked: data.choice == 1;
-            enabled: filter.known;
-            toggled(on) => { Studio.set-filter-option(filter.id, index, on ? 1 : 0); }
+            enabled: root.editable;
+            toggled(on) => { root.set-option(index, on ? 1 : 0); }
         }
         if data.help != "": InfoHint { label: data.label; text: data.help; }
         Rectangle { horizontal-stretch: 1; }
-        if data.changed && filter.known: IconButton {
+        if data.changed && root.editable: IconButton {
             icon: IconName.reset;
             name: @tr("Reset {} to {}", data.label, data.default-text);
-            clicked => { root.held = -1; root.waiting = false; Studio.reset-filter-field(filter.id, index); }
+            clicked => { root.held = -1; root.waiting = false; root.reset-field(index); }
         }
     }
     // The standard slider row (the Mixer's volume, Settings > Audio): the track takes
@@ -3137,32 +3149,32 @@ component FilterFieldView inherits VerticalLayout {
         spacing: Tokens.size-field-gap;
         Slider {
             horizontal-stretch: 1;
-            label: @tr("{} of {}", data.label, filter.name);
+            label: @tr("{} of {}", data.label, root.owner);
             value: shown ? held : data.position;
             value-text: shown ? root.text-at(held) : data.value-text;
             step: data.step;
-            enabled: filter.known;
+            enabled: root.editable;
             moved(v) => {
                 root.held = v;
                 root.waiting = false;
-                Studio.preview-filter(filter.id, index, v);
+                root.preview-number(index, v);
             }
             // Keep showing the released position until the stored value comes back,
             // so the knob does not jump to the old value and then to the new one.
             released => {
                 root.waiting = root.held >= 0;
-                Studio.commit-filter(filter.id);
+                root.commit-number(index);
             }
             cancelled => {
                 root.held = -1;
                 root.waiting = false;
-                Studio.cancel-filter(filter.id);
+                root.cancel-number(index);
             }
             reset => {
                 if data.changed {
                     root.held = -1;
                     root.waiting = false;
-                    Studio.reset-filter-field(filter.id, index);
+                    root.reset-field(index);
                 }
             }
         }
@@ -3173,18 +3185,18 @@ component FilterFieldView inherits VerticalLayout {
         HorizontalLayout {
             spacing: Tokens.space-2;
             ColorPicker {
-                label: @tr("Choose the {} of {}", data.label, filter.name);
+                label: @tr("Choose the {} of {}", data.label, root.owner);
                 value: data.swatch;
                 picked(c) => {
-                    if c != data.colour { Studio.set-filter-colour(filter.id, index, c); }
+                    if c != data.colour { root.set-colour(index, c); }
                 }
             }
             colour := TextField {
                 horizontal-stretch: 1;
-                label: @tr("{} of {}", data.label, filter.name);
+                label: @tr("{} of {}", data.label, root.owner);
                 text: data.colour;
                 accepted(t) => {
-                    if t != data.colour { Studio.set-filter-colour(filter.id, index, t); }
+                    if t != data.colour { root.set-colour(index, t); }
                     self.text = data.colour;
                 }
             }
@@ -3194,28 +3206,52 @@ component FilterFieldView inherits VerticalLayout {
     Shown {
         shown: data.kind == 3;
         Select {
-            label: @tr("{} of {}", data.label, filter.name);
+            label: @tr("{} of {}", data.label, root.owner);
             options: data.options;
             index: data.choice;
             placeholder: @tr("Not in this scene");
-            selected(i) => { Studio.set-filter-source(filter.id, index, i); }
+            selected(i) => { root.set-source(index, i); }
         }
     }
     // One of a fixed list: side by side up to three options, else a dropdown.
     if data.kind == 4 && data.options.length <= 3: SegmentedControl {
-        label: @tr("{} of {}", data.label, filter.name);
+        label: @tr("{} of {}", data.label, root.owner);
         options: data.options;
         index: data.choice;
-        enabled: filter.known;
-        selected(i) => { if i != data.choice { Studio.set-filter-option(filter.id, index, i); } }
+        enabled: root.editable;
+        selected(i) => { if i != data.choice { root.set-option(index, i); } }
     }
     if data.kind == 4 && data.options.length > 3: Select {
-        label: @tr("{} of {}", data.label, filter.name);
+        label: @tr("{} of {}", data.label, root.owner);
         options: data.options;
         index: data.choice;
-        enabled: filter.known;
-        selected(i) => { if i != data.choice { Studio.set-filter-option(filter.id, index, i); } }
+        enabled: root.editable;
+        selected(i) => { if i != data.choice { root.set-option(index, i); } }
     }
+}
+
+// One field of the selected filter, generated from its type's schema.
+component FilterFieldView inherits SchemaFieldView {
+    in property <FilterData> filter;
+    owner: filter.name;
+    editable: filter.known;
+    set-option(i, v) => { Studio.set-filter-option(filter.id, i, v); }
+    preview-number(i, v) => { Studio.preview-filter(filter.id, i, v); }
+    commit-number(i) => { Studio.commit-filter(filter.id); }
+    cancel-number(i) => { Studio.cancel-filter(filter.id); }
+    reset-field(i) => { Studio.reset-filter-field(filter.id, i); }
+    set-colour(i, t) => { Studio.set-filter-colour(filter.id, i, t); }
+    set-source(i, v) => { Studio.set-filter-source(filter.id, i, v); }
+}
+
+// One setting of a slide show (ADR-0171), generated from its type's schema.
+component SlidesFieldView inherits SchemaFieldView {
+    in property <int> source;
+    set-option(i, v) => { Studio.set-slides-option(source, i, v); }
+    preview-number(i, v) => { Studio.preview-slides-number(source, i, v); }
+    commit-number(i) => { Studio.commit-slides-number(source, i); }
+    cancel-number(i) => { Studio.cancel-slides-number(source); }
+    reset-field(i) => { Studio.reset-slides-field(source, i); }
 }
 
 // Add filter: a button that opens the filter types by name as a CommandMenu (ADR-0094
@@ -3428,7 +3464,6 @@ component FiltersFields inherits VerticalLayout {
                 if f.gate: GateBar { filter: f; }
                 if f.curve != "": EqCurve { filter: f; }
                 for field[j] in f.fields: FilterFieldView {
-                    source: data;
                     filter: f;
                     data: field;
                     index: j;
@@ -3587,6 +3622,65 @@ component AudioFields inherits VerticalLayout {
 
 // The Source tab: what the source captures now, and a list to point it at another target
 // (ADR-0077). Reload tries a source that is not running again.
+// A slide show's playback row (ADR-0171): "Playback" and, at the right of the same
+// line, the picture shown ("3 / 24") with Previous, Pause or Resume and Next at the
+// full control size, so they are easy to hit. When the panel is too narrow for both on
+// one line, the buttons go under the name. Live actions, not undo steps.
+component SlidesPlayback inherits Rectangle {
+    in property <SourceData> data;
+    property <bool> stacked: root.width < name.preferred-width + Tokens.space-4 + bar.preferred-width;
+    min-width: max(name.min-width, bar.min-width);
+    min-height: self.preferred-height;
+    preferred-height: root.stacked ? name.preferred-height + Tokens.space-1 + bar.preferred-height
+        : max(name.preferred-height, bar.preferred-height);
+    name := Text {
+        x: 0;
+        y: root.stacked ? 0 : (root.height - self.height) / 2;
+        height: self.preferred-height;
+        text: @tr("Playback");
+        color: Theme.text-secondary;
+        font-size: Tokens.type-caption-size;
+        accessible-role: none;
+    }
+    bar := HorizontalLayout {
+        x: root.stacked ? 0 : root.width - self.width;
+        y: root.stacked ? name.preferred-height + Tokens.space-1 : (root.height - self.height) / 2;
+        width: self.preferred-width;
+        height: self.preferred-height;
+        spacing: Tokens.space-2;
+        Text {
+            text: data.slides-position;
+            color: Theme.text-secondary;
+            font-size: Tokens.type-body-size;
+            vertical-alignment: center;
+        }
+        IconButton {
+            icon: IconName.chevron-left;
+            name: @tr("Previous picture of {}", data.name);
+            dense: false;
+            framed: true;
+            width: Tokens.size-control-md;
+            clicked => { Studio.slides-step(data.id, -1); }
+        }
+        IconButton {
+            icon: data.slides-paused ? IconName.play : IconName.pause;
+            name: data.slides-paused ? @tr("Resume {}", data.name) : @tr("Pause {}", data.name);
+            dense: false;
+            framed: true;
+            width: Tokens.size-control-md;
+            clicked => { Studio.media-play-pause(data.id); }
+        }
+        IconButton {
+            icon: IconName.chevron-right;
+            name: @tr("Next picture of {}", data.name);
+            dense: false;
+            framed: true;
+            width: Tokens.size-control-md;
+            clicked => { Studio.slides-step(data.id, 1); }
+        }
+    }
+}
+
 component SourceFields inherits VerticalLayout {
     in property <SourceData> data;
     property <int> source-id: data.id;
@@ -3635,7 +3729,7 @@ component SourceFields inherits VerticalLayout {
             dense: true;
             clicked => { Studio.reload-source(data.id); }
         }
-        if !data.media: Button {
+        if !data.media && !data.slides: Button {
             lead: IconName.refresh;
             text: @tr("Refresh list");
             dense: true;
@@ -3727,6 +3821,49 @@ component SourceFields inherits VerticalLayout {
             }
         }
     }
+    // A slide show (ADR-0171): its folder and how many pictures it holds, the
+    // playback buttons (live actions, not undo steps), then its settings from the
+    // type's schema, each change one undo step.
+    if data.slides: Field {
+        label: @tr("Folder");
+        VerticalLayout {
+            spacing: Tokens.space-1;
+            HorizontalLayout {
+                spacing: Tokens.size-field-gap;
+                Text {
+                    horizontal-stretch: 1;
+                    text: data.slides-folder;
+                    color: Theme.text-primary;
+                    font-size: Tokens.type-body-size;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+                Button {
+                    lead: IconName.folder;
+                    text: @tr("Choose…");
+                    accessible-name: @tr("Choose another folder for {}", data.name);
+                    dense: true;
+                    clicked => { Studio.choose-slides-folder(data.id); }
+                }
+            }
+            Text {
+                text: data.slides-note;
+                color: Theme.text-secondary;
+                font-size: Tokens.type-caption-size;
+                wrap: word-wrap;
+            }
+        }
+    }
+    if data.slides: SlidesPlayback { data: data; }
+    if data.slides: VerticalLayout {
+        spacing: Tokens.size-field-gap;
+        for field[j] in root.data.slides-fields: SlidesFieldView {
+            source: root.data.id;
+            owner: root.data.name;
+            data: field;
+            index: j;
+        }
+    }
     // Runs and Keep running for of a display, window or camera (ADR-0152 phase 4); a
     // live picture has no When it comes back.
     if data.kind-code >= 0 && data.kind-code <= 2 && data.act-on: ActivityFields {
@@ -3768,18 +3905,18 @@ component SourceFields inherits VerticalLayout {
                 : @tr("Adds this window's application sound as its own audio source. Capturing it and the system sound can play the same audio twice.");
         }
     }
-    if !data.media: TextField {
+    if !data.media && !data.slides: TextField {
         label: @tr("Search the list");
         placeholder: @tr("Search");
         edited(t) => { Studio.filter-source-targets(t); }
     }
-    if !data.media && Studio.source-targets.length == 0: Text {
+    if !data.media && !data.slides && Studio.source-targets.length == 0: Text {
         text: @tr("Nothing of this type was found.");
         color: Theme.text-secondary;
         font-size: Tokens.type-body-size;
         wrap: word-wrap;
     }
-    if !data.media: VerticalLayout {
+    if !data.media && !data.slides: VerticalLayout {
         spacing: Tokens.space-1;
         for t in Studio.source-targets: VerticalLayout {
             spacing: Tokens.space-1;
@@ -4377,7 +4514,7 @@ component SourceProperties inherits VerticalLayout {
     // opens by itself (ADR-0077).
     // A media file has a Source tab too: its file, Loop, Runs, When it comes back and play
     // range (ADR-0108), though it is no capture kind.
-    property <bool> has-source: data.kind-code >= 0 || data.media;
+    property <bool> has-source: data.kind-code >= 0 || data.media || data.slides;
     // The tabs before Source: Transform, Filters and Audio for a source with a picture
     // and sound, without Audio when it has none, only Audio for sound alone.
     property <int> before-source: data.picture ? (data.audio ? 3 : 2) : 1;

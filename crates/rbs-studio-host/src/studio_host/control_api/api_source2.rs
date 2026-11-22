@@ -63,11 +63,15 @@ impl ApiTarget<'_> {
             C::MediaPlay(rq::MediaSource { source })
             | C::MediaPause(rq::MediaSource { source })
             | C::MediaRestart(rq::MediaSource { source })
+            | C::MediaNext(rq::MediaSource { source })
+            | C::MediaPrevious(rq::MediaSource { source })
             | C::MediaSeek(rq::MediaSeek { source, .. }) => {
                 let op = match command {
                     C::MediaPlay(_) => MediaOp::Play,
                     C::MediaPause(_) => MediaOp::Pause,
                     C::MediaSeek(p) => MediaOp::Seek(p.position_ms),
+                    C::MediaNext(_) => MediaOp::Next,
+                    C::MediaPrevious(_) => MediaOp::Previous,
                     _ => MediaOp::Restart,
                 };
                 let done = host.media_command(source, op);

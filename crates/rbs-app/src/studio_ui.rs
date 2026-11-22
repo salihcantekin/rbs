@@ -90,6 +90,9 @@ mod library_ops;
 mod output_calls;
 mod scene_calls;
 mod settings_mirror;
+mod slides;
+mod source_look;
+use source_look::{source_icon, unavailable_text};
 mod source_calls;
 mod text_calls;
 pub use library_ops::EntryWrite;
@@ -6384,12 +6387,9 @@ impl StudioUi {
                     self.live.media_fields(r.id.get() as i32);
                 let (perm_kind, perm_action) = self.permission_fix(r);
                 let (media_start_ms, media_end_ms) = media_range(r.media.as_ref());
-                SourceData {
+                let d = SourceData {
                     perm_kind,
                     perm_action,
-                    media: r.media.is_some(),
-                    media_path: r.media.as_ref().map_or("", |m| m.path.as_str()).into(),
-                    media_loop: r.media.as_ref().is_some_and(|m| m.looped),
                     act_on: r.activity.is_some(),
                     act_run: activity_choice::run_index(r.kind, r.activity),
                     act_return: activity_choice::return_index(r.kind, r.activity),
@@ -6520,7 +6520,9 @@ impl StudioUi {
                     has_work_rect: r.has_work_rect,
                     show_for_ms: r.show_for_ms as i32,
                     cue_remaining_ms: self.live.cue_left(r.item),
-                }
+                    ..SourceData::default()
+                };
+                slides::fill(d, r, &self.live.media, &mut self.filter_ui)
             })
             .collect();
         // A source just added is selected, as the add-source flow ends (ui-design-system
@@ -7682,44 +7684,6 @@ fn refused(r: &SourceRow) -> Option<PermissionKind> {
             ..
         } => PermissionKind::of_type(&r.kind?.type_id()),
         _ => None,
-    }
-}
-
-/// The reason a source is unavailable, in plain words for its kind (ADR-0077).
-fn unavailable_text(fault: SourceFault, kind: Option<SourceKind>) -> &'static str {
-    use SourceKind as K;
-    match (fault, kind) {
-        (SourceFault::TargetGone, Some(K::Window)) => "Window closed",
-        (SourceFault::TargetGone, Some(K::Screen)) => "Display disconnected",
-        (SourceFault::TargetGone, Some(K::Camera)) => "Camera unplugged",
-        (SourceFault::TargetGone, Some(K::AudioInput)) => "Microphone not found",
-        (SourceFault::TargetGone, Some(K::SystemAudio)) => "Audio output not found",
-        (SourceFault::TargetGone, Some(K::ApplicationAudio)) => "Application not running",
-        (SourceFault::TargetGone, _) => "Source not found",
-        (SourceFault::PermissionDenied, Some(K::Camera)) => "Camera access denied",
-        (SourceFault::PermissionDenied, Some(K::AudioInput)) => "Microphone access denied",
-        (SourceFault::PermissionDenied, _) => "Access denied",
-        (SourceFault::Busy, Some(K::Camera)) => "Camera in use by another app",
-        (SourceFault::Busy, _) => "In use by another app",
-        _ => "Not available",
-    }
-}
-
-/// The icon a source's row shows for its kind (design system icon set).
-fn source_icon(kind: Option<SourceKind>) -> &'static str {
-    match kind {
-        Some(SourceKind::Screen) => "monitor",
-        Some(SourceKind::Window) => "window",
-        Some(SourceKind::Camera) => "camera",
-        Some(SourceKind::AudioInput) => "mic",
-        Some(SourceKind::SystemAudio | SourceKind::ApplicationAudio) => "speaker",
-        Some(SourceKind::Image) => "image",
-        Some(SourceKind::Color) => "palette",
-        Some(SourceKind::Media) => "film",
-        Some(SourceKind::Browser) => "globe",
-        // Until the text UI (ADR-0129 phase (f)) brings its own icon.
-        Some(SourceKind::Text) => "text",
-        None => "window",
     }
 }
 

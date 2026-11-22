@@ -28,7 +28,7 @@ pub(super) fn video_filter(
         .and_then(|e| match &e.instance.as_ref()?.watch {
             Watch::Video(stats) => stats.picture_size(),
             Watch::Text(stats) => stats.picture_size(),
-            Watch::Browser { size } => Some(*size),
+            Watch::Sized { size } => Some(*size),
             Watch::Media(_) | Watch::Audio(_, _) => None,
         })
         .map(|(w, h)| [w, h]);

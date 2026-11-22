@@ -200,6 +200,8 @@ impl ApiTarget<'_> {
             | C::MediaSeek(..)
             | C::MediaRestart(..)
             | C::MediaState(..)
+            | C::MediaNext(..)
+            | C::MediaPrevious(..)
             | C::BrowserReload(..)
             | C::BrowserRunScript(..)
             | C::BrowserForgetSignIn(..)

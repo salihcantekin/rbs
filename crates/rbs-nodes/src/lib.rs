@@ -4,6 +4,7 @@
 //! | --- | --- | --- | --- | --- |
 //! | [`capture::CaptureSourceNode`] | `org.rbs.capture` | Source | render | `GpuRuntime` |
 //! | [`still::StillSourceNode`] | `org.rbs.still` | Source | render | `GpuRuntime` |
+//! | [`slideshow::SlideshowNode`] | `org.rbs.slideshow` | Source | render | `GpuRuntime` |
 //! | [`media::MediaPictureNode`] | `org.rbs.media` | Source | render | `GpuRuntime` |
 //! | [`media::MediaSoundNode`] | `org.rbs.media.sound` | Source | audio | any |
 //! | [`export::VideoExportNode`] | `org.rbs.video-export` | VideoFilter | render | `GpuRuntime` |
@@ -33,6 +34,7 @@ pub mod output_cut;
 pub mod preview;
 pub mod replay;
 pub mod replay_node;
+pub mod slideshow;
 pub mod still;
 pub mod sync_probe;
 pub mod text;
@@ -57,6 +59,10 @@ pub use media::{
 };
 pub use output::{OUTPUT_NODE_TYPE, OutputNode, output_descriptor};
 pub use preview::{PREVIEW_NODE_TYPE, PreviewNode, PreviewNodeStats, preview_descriptor};
+pub use slideshow::{
+    SLIDESHOW_NODE_TYPE, SlideFrame, SlideshowNode, SlideshowShared, SlideshowStats,
+    slideshow_descriptor,
+};
 pub use still::{STILL_NODE_TYPE, StillError, StillSourceNode, still_descriptor};
 pub use sync_probe::{
     SYNC_PICTURE_MAX_FPS, SYNC_PICTURE_PROBE_NODE_TYPE, SyncPictureLog, SyncPictureProbeNode,

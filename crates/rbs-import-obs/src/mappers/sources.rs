@@ -25,7 +25,7 @@ pub mod rbs {
     pub const AUDIO_OUTPUT: &str = "org.rbs.source.audio-output";
     /// Application audio.
     pub const APP_AUDIO: &str = "org.rbs.source.application-audio";
-    /// PNG picture.
+    /// PNG or JPEG picture.
     pub const IMAGE: &str = "org.rbs.source.image";
     /// Colour or gradient.
     pub const COLOR: &str = "org.rbs.source.color";
@@ -34,8 +34,11 @@ pub mod rbs {
     /// Browser page.
     pub const BROWSER: &str = "org.rbs.source.browser";
 
+    /// A slide show of one folder (ADR-0171).
+    pub const SLIDESHOW: &str = "org.rbs.source.slideshow";
+
     /// Every type a source mapper may produce.
-    pub const ALL: [&str; 10] = [
+    pub const ALL: [&str; 11] = [
         DISPLAY,
         WINDOW,
         CAMERA,
@@ -46,6 +49,7 @@ pub mod rbs {
         COLOR,
         MEDIA,
         BROWSER,
+        SLIDESHOW,
     ];
 
     /// Settings keys (`rbs_sources::types::keys`).
@@ -149,6 +153,9 @@ pub fn builtin() -> Vec<Box<dyn SourceMapper>> {
     }
     v.push(Box::new(Media));
     v.push(Box::new(Browser));
+    for id in ["slideshow", "slideshow_v2"] {
+        v.push(Box::new(super::slideshow::Slideshow(id)));
+    }
     v
 }
 
@@ -574,13 +581,17 @@ impl SourceMapper for Image {
         if file.is_empty() {
             return SourceOutcome::skip("The image source has no file.");
         }
-        let is_png = Path::new(file)
+        let shown = Path::new(file)
             .extension()
             .and_then(|e| e.to_str())
-            .is_some_and(|e| e.eq_ignore_ascii_case("png"));
-        if !is_png {
+            .is_some_and(|e| {
+                ["png", "jpg", "jpeg"]
+                    .iter()
+                    .any(|p| e.eq_ignore_ascii_case(p))
+            });
+        if !shown {
             return SourceOutcome::Skipped {
-                reason: "Only PNG pictures can be shown for now.".to_owned(),
+                reason: "Only PNG and JPEG pictures can be shown for now.".to_owned(),
                 hint: Some("Save the picture as PNG and add it as an image source.".to_owned()),
             };
         }

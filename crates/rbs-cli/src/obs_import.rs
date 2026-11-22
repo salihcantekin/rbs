@@ -121,7 +121,7 @@ pub fn png_size(path: &Path) -> Option<(u32, u32)> {
 
 impl Lookup for FileLookup {
     fn picture_size(&self, path: &Path) -> Option<(u32, u32)> {
-        png_size(path)
+        png_size(path).or_else(|| rbs_sources::jpeg::jpeg_size(path))
     }
     fn file_exists(&self, path: &Path) -> bool {
         path.is_file()
@@ -283,6 +283,9 @@ mod tests {
         ];
         for k in source_types::keys::ALL {
             assert!(real.contains(&k), "{k}");
+        }
+        for k in rbs_import_obs::mappers::slideshow::slide_keys::ALL {
+            assert!(rbs_sources::slideshow::KEYS.contains(&k), "{k}");
         }
         for m in mappers.filters() {
             for t in m.rbs_types() {

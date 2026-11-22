@@ -143,6 +143,10 @@ pub(super) enum WireRequest {
     MediaRestart(MediaSource),
     #[serde(rename = "media.state")]
     MediaState(MediaSource),
+    #[serde(rename = "media.next")]
+    MediaNext(MediaSource),
+    #[serde(rename = "media.previous")]
+    MediaPrevious(MediaSource),
     #[serde(rename = "source.set_settings")]
     SourceSetSettings(SetSourceSettings),
     #[serde(rename = "source.set_companion_audio")]
@@ -504,7 +508,7 @@ wire_conversions! {
     FilterSetEnabled, FilterSetSettings, SourceSetSyncOffset, SyncMeasureStart,
     SyncMeasureCancel, SyncForgetDevice, SourceRetarget, SourceReload, BrowserReload,
     BrowserRunScript, BrowserForgetSignIn, BrowserInput, SourceGetSettings, MediaPlay,
-    MediaPause, MediaSeek, MediaRestart, MediaState, SourceSetSettings, CanvasAddVertical,
+    MediaPause, MediaSeek, MediaRestart, MediaState, MediaNext, MediaPrevious, SourceSetSettings, CanvasAddVertical,
     CanvasRemoveVertical, CanvasAutoLayout, CanvasSetVerticalSize, SettingsRecentTargets,
     SceneSources, CanvasSetPreview, CanvasTransition, ItemRemove, ItemMove, SceneMove,
     SourceSetActive, LookApply, SourceAddSample, ItemSetBox, GlobalAdd, GlobalRemove,

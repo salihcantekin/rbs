@@ -48,6 +48,7 @@
        {"name": "Background", "visible": true, "pos": {"x": 0, "y": 0}, "scale": {"x": 1, "y": 1}, "align": 5, "rot": 0},
        {"name": "Logo", "visible": true, "pos": {"x": 960, "y": 540}, "scale": {"x": -1, "y": 1}, "align": 0, "rot": 15},
        {"name": "Old photo", "visible": true, "pos": {"x": 0, "y": 0}, "scale": {"x": 1, "y": 1}, "align": 5},
+       {"name": "Sponsors", "visible": true, "pos": {"x": 0, "y": 0}, "scale": {"x": 1, "y": 1}, "align": 5},
        {"name": "Music", "visible": true, "pos": {"x": 0, "y": 0}, "scale": {"x": 1, "y": 1}, "align": 5},
        {"name": "Ghost", "visible": true, "pos_rel": {"x": 0.1, "y": 0.1}, "scale_ref": {"x": 1920, "y": 1080}, "align": 5}
      ]}},
@@ -81,6 +82,7 @@
     {"id": "color_source_v3", "versioned_id": "color_source_v3", "name": "Background", "settings": {"color": 4280295456}},
     {"id": "image_source", "versioned_id": "image_source", "name": "Logo", "settings": {"file": "/Users/someone/logo.png"}},
     {"id": "image_source", "versioned_id": "image_source", "name": "Old photo", "settings": {"file": "/Users/someone/photo.jpg"}},
+    {"id": "slideshow", "versioned_id": "slideshow_v2", "name": "Sponsors", "settings": {"files": [{"value": "/Users/someone/sponsors/a.png"}, {"value": "/Users/someone/sponsors/b.jpg"}, {"value": "/Users/someone/sponsors/c.gif"}], "slide_time": 4200, "transition": "swipe", "transition_speed": 1230, "randomize": true, "slide_mode": "mode_manual", "use_custom_size": "1280x720", "playback_behavior": "stop_restart"}},
     {"id": "ffmpeg_source", "versioned_id": "ffmpeg_source", "name": "Music",
      "settings": {"local_file": "/Users/someone/music.mp3", "looping": true}, "volume": 2.0, "balance": 0.2,
      "filters": [{"id": "compressor_filter", "name": "Duck", "enabled": true,
