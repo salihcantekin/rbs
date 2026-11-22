@@ -7,6 +7,12 @@ fn kind(answer: &serde_json::Value) -> &serde_json::Value {
     &answer["error"]["data"]["kind"]
 }
 
+/// An absolute folder on this platform (`/clips` is not absolute on Windows). Only
+/// checked and stored, never created.
+fn abs(name: &str) -> String {
+    std::env::temp_dir().join(name).display().to_string()
+}
+
 #[test]
 fn output_settings_are_read_and_changed_through_settings() {
     let Some(gpu) = gpu() else { return };
@@ -72,10 +78,14 @@ fn output_settings_are_read_and_changed_through_settings() {
     // The replay buffer, with its bounds and an absolute folder.
     let replay = serde_json::json!({
         "arm_on_start": true, "length_secs": 60, "memory_mib": 512, "audio": false,
-        "folder": "/clips"
+        "folder": abs("clips")
     });
     let set = c.call("settings.set", serde_json::json!({"replay": replay}));
-    assert_eq!(set["result"]["data"]["replay"]["folder"], "/clips", "{set}");
+    assert_eq!(
+        set["result"]["data"]["replay"]["folder"],
+        abs("clips").as_str(),
+        "{set}"
+    );
     let setup = next(&rx, |u| match u {
         Update::ReplaySetup(s) => Some(s),
         _ => None,
@@ -83,7 +93,7 @@ fn output_settings_are_read_and_changed_through_settings() {
     assert_eq!(setup.length_secs, 60);
     assert_eq!(
         setup.folder.as_deref(),
-        Some(std::path::Path::new("/clips"))
+        Some(std::path::Path::new(&abs("clips")))
     );
     for (field, value) in [("length_secs", 5.into()), ("folder", "clips".into())] {
         let mut bad = replay.clone();
@@ -108,13 +118,14 @@ fn output_settings_are_read_and_changed_through_settings() {
 
     // The vertical recording's own settings: set, then removed with `null`.
     let mut vertical = main_profile.clone();
-    vertical["folder"] = "/vertical".into();
+    vertical["folder"] = abs("vertical").into();
     let set = c.call(
         "settings.set",
         serde_json::json!({"vertical_profile": vertical}),
     );
     assert_eq!(
-        set["result"]["data"]["vertical_profile"]["folder"], "/vertical",
+        set["result"]["data"]["vertical_profile"]["folder"],
+        abs("vertical").as_str(),
         "{set}"
     );
     let saved = next(&rx, |u| match u {
@@ -123,7 +134,7 @@ fn output_settings_are_read_and_changed_through_settings() {
     });
     assert_eq!(
         saved.map(|p| p.folder),
-        Some(std::path::PathBuf::from("/vertical"))
+        Some(std::path::PathBuf::from(abs("vertical")))
     );
     let set = c.call(
         "settings.set",
