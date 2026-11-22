@@ -1,4 +1,4 @@
-//! NV12 and P010 conversion: BT.709 limited-range values for known colours (NV12 within ±1
+//! NV12 and P010 conversion: BT.709 limited-range values (sRGB curve, ADR-0174) for known colours (NV12 within ±1
 //! of 8-bit codes, P010 within ±2 of 10-bit codes), single surfaces equal to the plane
 //! output. Spec: docs/specs/gpu-compositor.md, "Encoder conversion (NV12, P010)".
 
@@ -18,13 +18,9 @@ use rbs_gpu::{
 const W: u32 = 16;
 const H: u32 = 8;
 
+/// The "Video" curve: the sRGB OETF (SDR video is display-referred, ADR-0174).
 fn oetf(l: f64) -> f64 {
-    let l = l.clamp(0.0, 1.0);
-    if l < 0.018 {
-        4.5 * l
-    } else {
-        1.099 * l.powf(0.45) - 0.099
-    }
+    oetf_srgb(l)
 }
 
 fn bits(format: YuvFormat) -> u32 {

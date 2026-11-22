@@ -54,7 +54,7 @@ component EncoderFields inherits VerticalLayout {
         label: @tr("Colour");
         help: root.data.delivery == 0
             ? @tr("Rec. 709 limited range, for YouTube, TV and streams.")
-            : @tr("sRGB full range. Matches the app on screen; a poor choice for YouTube.");
+            : @tr("sRGB full range, the same colours as Video. A poor choice for YouTube.");
         enabled: root.idle;
         colour := Select {
             label: @tr("Colour");

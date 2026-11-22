@@ -99,9 +99,7 @@ fn wrap_yuv_colour(ii: u32, l: LayerGpu, uv: vec2<f32>, along: f32) -> vec4<f32>
         vec3<f32>(1.0),
     );
     var lin = prime;
-    if (p.transfer.x == 1u) {
-        lin = inverse_oetf_709(prime);
-    } else if (p.transfer.x == 2u) {
+    if (p.transfer.x == 2u) {
         lin = srgb_to_linear(prime);
     }
     return vec4<f32>(lin, 1.0);

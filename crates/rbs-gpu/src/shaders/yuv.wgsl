@@ -1,5 +1,6 @@
 // Canvas (linear Rgba16Float, premultiplied, composited over black) to NV12 or P010 planes.
-// BT.709 OETF and matrix, limited range, chroma averaged over each 2x2 block.
+// sRGB curve (SDR video is display-referred, ADR-0174), BT.709 matrix, limited range,
+// chroma averaged over each 2x2 block.
 // Spec: docs/specs/gpu-compositor.md, "Encoder conversion (NV12, P010)".
 //
 // `yuv.rs` compiles one pair of fragment entry points (plus `vs_fullscreen`) and
@@ -30,11 +31,13 @@ fn vs_fullscreen(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32>
 // END header
 
 // BEGIN oetf
-fn oetf_709(l: vec3<f32>) -> vec3<f32> {
+// SDR video is display-referred (ADR-0174): linear light is encoded with the sRGB
+// curve, the inverse of the decode, so camera and screen codes pass through unchanged.
+fn oetf_video(l: vec3<f32>) -> vec3<f32> {
     let c = clamp(l, vec3<f32>(0.0), vec3<f32>(1.0));
-    let lo = 4.5 * c;
-    let hi = 1.099 * pow(c, vec3<f32>(0.45)) - vec3<f32>(0.099);
-    return select(hi, lo, c < vec3<f32>(0.018));
+    let lo = 12.92 * c;
+    let hi = 1.055 * pow(c, vec3<f32>(1.0 / 2.4)) - vec3<f32>(0.055);
+    return select(hi, lo, c <= vec3<f32>(0.0031308));
 }
 // END oetf
 
@@ -46,7 +49,7 @@ fn luma(p: vec3<f32>) -> f32 {
 
 // BEGIN prime
 fn load_prime(x: i32, y: i32) -> vec3<f32> {
-    return oetf_709(textureLoad(canvas, vec2<i32>(x, y), 0).rgb);
+    return oetf_video(textureLoad(canvas, vec2<i32>(x, y), 0).rgb);
 }
 
 @fragment
@@ -169,7 +172,7 @@ fn sample_prime(p: vec2<f32>) -> vec3<f32> {
     if (any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0))) {
         return vec3<f32>(0.0);
     }
-    return oetf_709(textureSampleLevel(canvas, unused_sampler, uv, 0.0).rgb);
+    return oetf_video(textureSampleLevel(canvas, unused_sampler, uv, 0.0).rgb);
 }
 
 @fragment
@@ -221,7 +224,7 @@ fn box_linear(ix: i32, iy: i32) -> vec3<f32> {
 // BEGIN box_fs
 @fragment
 fn fs_luma_box(@builtin(position) pos: vec4<f32>) -> @location(0) f32 {
-    let p = oetf_709(box_linear(i32(pos.x), i32(pos.y)));
+    let p = oetf_video(box_linear(i32(pos.x), i32(pos.y)));
     return round(y_black + y_range * luma(p)) * code_scale;
 }
 
@@ -230,8 +233,8 @@ fn fs_chroma_box(@builtin(position) pos: vec4<f32>) -> @location(0) vec2<f32> {
     // The four luma pixels of this chroma sample, each already box-filtered.
     let x = i32(pos.x) * 2;
     let y = i32(pos.y) * 2;
-    let p = (oetf_709(box_linear(x, y)) + oetf_709(box_linear(x + 1, y))
-        + oetf_709(box_linear(x, y + 1)) + oetf_709(box_linear(x + 1, y + 1))) * 0.25;
+    let p = (oetf_video(box_linear(x, y)) + oetf_video(box_linear(x + 1, y))
+        + oetf_video(box_linear(x, y + 1)) + oetf_video(box_linear(x + 1, y + 1))) * 0.25;
     let yp = luma(p);
     let cb = (p.b - yp) / 1.8556;
     let cr = (p.r - yp) / 1.5748;
@@ -365,14 +368,14 @@ fn catmull_quad(c: vec2<f32>) -> array<vec3<f32>, 4> {
 // BEGIN catmull_fs
 @fragment
 fn fs_luma_catmull(@builtin(position) pos: vec4<f32>) -> @location(0) f32 {
-    let p = oetf_709(catmull_linear(pos.xy));
+    let p = oetf_video(catmull_linear(pos.xy));
     return round(y_black + y_range * luma(p)) * code_scale;
 }
 
 @fragment
 fn fs_chroma_catmull(@builtin(position) pos: vec4<f32>) -> @location(0) vec2<f32> {
     let q = catmull_quad(floor(pos.xy) * 2.0);
-    let p = (oetf_709(q[0]) + oetf_709(q[1]) + oetf_709(q[2]) + oetf_709(q[3])) * 0.25;
+    let p = (oetf_video(q[0]) + oetf_video(q[1]) + oetf_video(q[2]) + oetf_video(q[3])) * 0.25;
     let yp = luma(p);
     let cb = (p.b - yp) / 1.8556;
     let cr = (p.r - yp) / 1.5748;
@@ -383,7 +386,7 @@ fn fs_chroma_catmull(@builtin(position) pos: vec4<f32>) -> @location(0) vec2<f32
 // BEGIN open_fn
 // Open shadows, a grade on the Video path only. Linear light below middle grey
 // (0.18) is raised by a power of 0.7 about that knee; black, middle grey and
-// everything above are unchanged. The BT.709 OETF and limited-range codes then
+// everything above are unchanged. The Video curve and limited-range codes then
 // run as on the default path, so the file stays Rec. 709. These entry points are
 // built only when the grade is on. The entries above do not call this.
 const SHADOW_KNEE: f32 = 0.18;
@@ -399,7 +402,7 @@ fn open_shadows(l: vec3<f32>) -> vec3<f32> {
 
 // BEGIN open_prime
 fn load_open(x: i32, y: i32) -> vec3<f32> {
-    return oetf_709(open_shadows(textureLoad(canvas, vec2<i32>(x, y), 0).rgb));
+    return oetf_video(open_shadows(textureLoad(canvas, vec2<i32>(x, y), 0).rgb));
 }
 
 @fragment
@@ -448,7 +451,7 @@ fn sample_open(p: vec2<f32>) -> vec3<f32> {
     if (any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0))) {
         return vec3<f32>(0.0);
     }
-    return oetf_709(open_shadows(textureSampleLevel(canvas, unused_sampler, uv, 0.0).rgb));
+    return oetf_video(open_shadows(textureSampleLevel(canvas, unused_sampler, uv, 0.0).rgb));
 }
 
 @fragment
@@ -473,7 +476,7 @@ fn fs_chroma_open_scaled(@builtin(position) pos: vec4<f32>) -> @location(0) vec2
 // BEGIN open_box
 @fragment
 fn fs_luma_open_box(@builtin(position) pos: vec4<f32>) -> @location(0) f32 {
-    let p = oetf_709(open_shadows(box_linear(i32(pos.x), i32(pos.y))));
+    let p = oetf_video(open_shadows(box_linear(i32(pos.x), i32(pos.y))));
     return round(y_black + y_range * luma(p)) * code_scale;
 }
 
@@ -481,10 +484,10 @@ fn fs_luma_open_box(@builtin(position) pos: vec4<f32>) -> @location(0) f32 {
 fn fs_chroma_open_box(@builtin(position) pos: vec4<f32>) -> @location(0) vec2<f32> {
     let x = i32(pos.x) * 2;
     let y = i32(pos.y) * 2;
-    let p = (oetf_709(open_shadows(box_linear(x, y)))
-        + oetf_709(open_shadows(box_linear(x + 1, y)))
-        + oetf_709(open_shadows(box_linear(x, y + 1)))
-        + oetf_709(open_shadows(box_linear(x + 1, y + 1)))) * 0.25;
+    let p = (oetf_video(open_shadows(box_linear(x, y)))
+        + oetf_video(open_shadows(box_linear(x + 1, y)))
+        + oetf_video(open_shadows(box_linear(x, y + 1)))
+        + oetf_video(open_shadows(box_linear(x + 1, y + 1)))) * 0.25;
     let yp = luma(p);
     let cb = (p.b - yp) / 1.8556;
     let cr = (p.r - yp) / 1.5748;
@@ -495,15 +498,15 @@ fn fs_chroma_open_box(@builtin(position) pos: vec4<f32>) -> @location(0) vec2<f3
 // BEGIN open_catmull
 @fragment
 fn fs_luma_open_catmull(@builtin(position) pos: vec4<f32>) -> @location(0) f32 {
-    let p = oetf_709(open_shadows(catmull_linear(pos.xy)));
+    let p = oetf_video(open_shadows(catmull_linear(pos.xy)));
     return round(y_black + y_range * luma(p)) * code_scale;
 }
 
 @fragment
 fn fs_chroma_open_catmull(@builtin(position) pos: vec4<f32>) -> @location(0) vec2<f32> {
     let q = catmull_quad(floor(pos.xy) * 2.0);
-    let p = (oetf_709(open_shadows(q[0])) + oetf_709(open_shadows(q[1]))
-        + oetf_709(open_shadows(q[2])) + oetf_709(open_shadows(q[3]))) * 0.25;
+    let p = (oetf_video(open_shadows(q[0])) + oetf_video(open_shadows(q[1]))
+        + oetf_video(open_shadows(q[2])) + oetf_video(open_shadows(q[3]))) * 0.25;
     let yp = luma(p);
     let cb = (p.b - yp) / 1.8556;
     let cr = (p.r - yp) / 1.5748;

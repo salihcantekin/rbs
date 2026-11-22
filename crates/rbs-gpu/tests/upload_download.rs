@@ -54,7 +54,7 @@ fn download_delivers_nv12_codes_and_counts_the_cpu_copy() {
     let (luma, ls) = sys.plane(0).unwrap();
     let (chroma, cs) = sys.plane(1).unwrap();
     assert_eq!(ls, down.stride());
-    let want_y = (16.0 + 219.0 * (1.099 * 0.5f64.powf(0.45) - 0.099)).round() as u8;
+    let want_y = (16.0 + 219.0 * (1.055 * 0.5f64.powf(1.0 / 2.4) - 0.055)).round() as u8;
     for y in 0..H as usize {
         for x in 0..W as usize {
             assert!(luma[y * ls + x].abs_diff(want_y) <= 1, "luma at {x},{y}");
@@ -116,7 +116,7 @@ fn download_writes_every_column_of_a_width_that_ends_in_a_half_block() {
     for y in 0..H as usize {
         for x in 0..W {
             let v = f64::from(level(x));
-            let want = (16.0 + 219.0 * (1.099 * v.powf(0.45) - 0.099)).round() as u8;
+            let want = (16.0 + 219.0 * (1.055 * v.powf(1.0 / 2.4) - 0.055)).round() as u8;
             let got = luma[y * ls + x as usize];
             assert!(
                 got.abs_diff(want) <= 1,
@@ -519,7 +519,7 @@ fn upload_writes_bgra_with_padded_rows() {
 fn upload_keeps_nv12_and_decodes_on_demand() {
     let Some(ctx) = common::gpu() else { return };
     let mut pool = TexturePool::new();
-    // Limited-range grey: Y = 126 (about 0.5 after the inverse OETF... checked loosely),
+    // Limited-range grey: Y = 126 (code 128 on screen, ADR-0174; checked loosely),
     // Cb = Cr = 128.
     let (w, h) = (W as usize, H as usize);
     let mut data = vec![126u8; w * h];
@@ -557,7 +557,11 @@ fn upload_keeps_nv12_and_decodes_on_demand() {
     let px = readback::read_linear(ctx, &pool, id).unwrap();
     let g = px[0][0];
     assert_close(px[0], [g, g, g, 1.0], 0.01);
-    assert!(g > 0.1 && g < 0.4, "grey {g}");
+    // Display-referred (ADR-0174): Y' = 110 / 219 through the sRGB EOTF, about 0.216; the
+    // old scene-referred decode gave about 0.262.
+    let prime = 110.0f32 / 219.0;
+    let want = ((prime + 0.055) / 1.055).powf(2.4);
+    assert!((g - want).abs() < 0.01, "grey {g}, want {want}");
     rgb.release();
     // The second frame reuses the freed 4:2:0 slot.
     let allocated = pool.allocated();
@@ -607,7 +611,7 @@ fn a_scaled_download_fits_the_canvas_with_black_bars() {
     };
     let (luma, ls) = sys.plane(0).unwrap();
     let (chroma, cs) = sys.plane(1).unwrap();
-    let grey = (16.0 + 219.0 * (1.099 * 0.5f64.powf(0.45) - 0.099)).round() as u8;
+    let grey = (16.0 + 219.0 * (1.055 * 0.5f64.powf(1.0 / 2.4) - 0.055)).round() as u8;
     for y in 0..oh as usize {
         let inside = (4..12).contains(&y);
         for x in 0..ow as usize {

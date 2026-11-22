@@ -550,8 +550,10 @@ pub(crate) fn params(color: ColorSpace, bits: u32) -> Result<Params, GpuError> {
     };
     let transfer = match color.transfer {
         TransferFunction::Linear => 0,
-        TransferFunction::Bt709 => 1,
-        TransferFunction::Srgb => 2,
+        // SDR video is display-referred: its codes are shown as they are, so BT.709
+        // (and BT.601, SDR BT.2020) decode with the sRGB EOTF like sRGB sources
+        // (ADR-0174).
+        TransferFunction::Bt709 | TransferFunction::Srgb => 2,
         _ => {
             return Err(GpuError::Unsupported(
                 "YUV source transfer (HDR is a follow-up)",
@@ -648,6 +650,13 @@ mod tests {
         for g in white {
             assert!((g - 1.0).abs() < 0.01, "{white:?}");
         }
+    }
+
+    #[test]
+    fn bt709_video_decodes_with_the_srgb_curve() {
+        // SDR video is display-referred (ADR-0174): the same transfer code as sRGB.
+        let video = params(ColorSpace::BT709_LIMITED, 8).unwrap();
+        assert_eq!(video.transfer[0], 2);
     }
 
     #[test]

@@ -250,20 +250,10 @@ fn centre(frame: &VideoFrame) -> (u8, u8, u8) {
     (luma[y * ls + x], chroma[c], chroma[c + 1])
 }
 
-/// Limited-range BT.709 luma of an sRGB grey level: sRGB decode to linear light, then
-/// the BT.709 OETF (what the converter writes, gpu-compositor spec).
+/// Limited-range BT.709 luma of an sRGB grey level: the "Video" conversion encodes with
+/// the sRGB curve (ADR-0174), so the grey's own code maps straight to limited range.
 fn expected_luma(grey: u8) -> u8 {
-    let c = f64::from(grey) / 255.0;
-    let linear = if c <= 0.04045 {
-        c / 12.92
-    } else {
-        ((c + 0.055) / 1.055).powf(2.4)
-    };
-    let v = if linear < 0.018 {
-        4.5 * linear
-    } else {
-        1.099 * linear.powf(0.45) - 0.099
-    };
+    let v = f64::from(grey) / 255.0;
     (16.0 + 219.0 * v).round() as u8
 }
 

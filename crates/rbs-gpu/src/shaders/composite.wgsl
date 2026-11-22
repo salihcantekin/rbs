@@ -78,18 +78,12 @@ struct YuvGpu {
     // R', G', B' = dot(row, vec4(luma, cb, cr, 1)) on the stored normalized values: code
     // scale, range and matrix folded together (the decode's parameters).
     rows: array<vec4<f32>, 3>,
-    // x: 0 = linear, 1 = BT.709 inverse OETF, 2 = sRGB EOTF.
+    // x: 0 = linear, 2 = sRGB EOTF (SDR video is display-referred, ADR-0174).
     transfer: vec4<u32>,
 };
 
 @group(0) @binding(2) var<storage, read> yuvs: array<YuvGpu>;
 @group(1) @binding(2) var chroma: texture_2d<f32>;
-
-fn inverse_oetf_709(v: vec3<f32>) -> vec3<f32> {
-    let lo = v / 4.5;
-    let hi = pow((v + vec3<f32>(0.099)) / 1.099, vec3<f32>(1.0 / 0.45));
-    return select(hi, lo, v < vec3<f32>(0.081));
-}
 
 // The colour of 4:2:0 layer `ii` at `uv`: linear, opaque. Y' and CbCr are filtered
 // bilinearly at the same point (centre siting, as the encoder writes it), then
@@ -105,9 +99,7 @@ fn yuv_colour(ii: u32, uv: vec2<f32>) -> vec4<f32> {
         vec3<f32>(1.0),
     );
     var lin = prime;
-    if (p.transfer.x == 1u) {
-        lin = inverse_oetf_709(prime);
-    } else if (p.transfer.x == 2u) {
+    if (p.transfer.x == 2u) {
         lin = srgb_to_linear(prime);
     }
     return vec4<f32>(lin, 1.0);
