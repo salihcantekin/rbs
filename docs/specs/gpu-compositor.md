@@ -347,6 +347,37 @@ The textures stay `InUse` from `reserve` to `give_back`, so `trim_idle` cannot d
 
 `RenderLocal::upload_budget` (`rbs_gpu::budget::UploadBudget`) limits what such sources upload per render partition per tick: `try_take(tick, bytes, waiting_since)` allows the first upload of a tick whatever its size and further ones up to `UPLOAD_BUDGET_BYTES` (16 MiB). The state is stamped with the tick index and rolled over by the first caller of a new tick; `end_tick` does not touch it, so a partition with no such source does no work for it. Fairness: a refused caller reports the tick it first waited on; at the roll-over the earliest such tick becomes the gate, and while a gate is set only callers that first waited on that tick may upload (the first upload of the tick included). A gate whose callers left the schedule lasts one tick. Tests: `crates/rbs-gpu/src/budget.rs` (first upload always allowed, budget, twenty 1080p pictures within 12 ticks, a late node is not starved, a stale gate clears).
 
+### Slide show change (ADR-0171)
+
+A slide show source changes its picture with a fade, a slide or a swipe. Both pictures sit in the node's `ReservedUpload` textures at the output size, `Rgba8Unorm` holding sRGB codes with straight alpha. The change is drawn into one of two reserved render targets of the same size and format:
+
+```rust
+impl ReservedTargets {
+    /// Two `InUse` render targets (render attachment, sampled, copy source). Not real time.
+    pub fn reserve(ctx: &GpuContext, pool: &mut TexturePool, width: u32, height: u32)
+        -> Result<ReservedTargets, GpuError>;
+    pub fn size(&self) -> (u32, u32);
+    /// The target whose `lease_count` is 0, or `None`.
+    pub fn free_target(&self, pool: &TexturePool) -> Option<TextureId>;
+    pub fn give_back(self, pool: &mut TexturePool);
+}
+impl SlidePass {
+    /// Pipeline and a 16-byte uniform buffer. Not real time.
+    pub fn new(ctx: &GpuContext) -> SlidePass;
+    /// Draws `from` to `to` at progress `t` into a free target; `Ok(None)` when both
+    /// targets are read. Hot path: one uniform write, one pass, one submit.
+    pub fn draw(&self, ctx: &GpuContext, pool: &TexturePool, targets: &ReservedTargets,
+        from: TextureId, to: TextureId, kind: SlideKind, t: f32, time: Timestamp)
+        -> Result<Option<VideoFrame>, GpuError>;
+}
+```
+
+`shaders/slide.wgsl` loads pixel for pixel, with no sampler. It decodes sRGB and premultiplies, then mixes (`Fade`) or offsets. `Slide` moves the incoming picture in from the right and pushes the outgoing one out; `Swipe` moves the incoming picture in over the outgoing one. It composites premultiplied and writes straight-alpha sRGB codes. A picture of another size or format is `TargetMismatch`. Tests: `crates/rbs-gpu/tests/slide.rs` cover:
+- fade mixes in linear light (half is sRGB 188);
+- slide and swipe at a quarter cover the right quarter;
+- a held target is never drawn into, and a draw with both held is skipped;
+- size mismatches are refused.
+
 ### System-memory download
 
 `rbs_gpu::download::YuvDownload` is the CPU fallback of the encoder conversion, for encoders that take only system memory (NVENC and AMF on Windows today; ADR-0038). It is used by the video export node ([io-nodes.md](io-nodes.md)).
