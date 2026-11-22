@@ -423,6 +423,8 @@ pub struct RecordRequest {
     pub markers: crate::record_profile::MarkerSettings,
     /// The bus of track 1, by name (ADR-0170 decision 3).
     pub audio_bus: String,
+    /// The buses of tracks 2 and later, in order; empty for one track.
+    pub more_tracks: Vec<String>,
 }
 
 /// Marks every non-zero undo gesture the window sends (ADR-0164 decision 2); the

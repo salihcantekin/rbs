@@ -578,12 +578,11 @@ fn audio_tracks_default_round_trip_and_survive_an_older_api_set() {
         (vec![], "1 to 6"),
         (vec![" ".to_owned()], "empty"),
         (vec!["a".to_owned(), "a".to_owned()], "repeats"),
-        (
-            vec!["main".to_owned(), "vod".to_owned()],
-            "not available yet",
-        ),
     ] {
         p.audio_tracks = tracks;
         assert!(p.problem().is_some_and(|w| w.contains(why)), "{why}");
     }
+    // Several tracks (ADR-0170 decision 3); the destination's limit is the start's.
+    p.audio_tracks = vec!["main".to_owned(), "vod".to_owned()];
+    assert_eq!(p.problem(), None);
 }

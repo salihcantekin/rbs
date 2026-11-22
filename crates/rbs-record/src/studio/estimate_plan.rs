@@ -395,9 +395,16 @@ impl super::Studio {
         }
         if let Some(a) = &s.audio {
             let config = a.encoder_config(self.settings.audio_graph.format);
+            // A multi-track recording opens one encoder per track, never shared
+            // (ADR-0170 decision 11).
+            let tracks = 1 + s.more_tracks.len();
+            let bus = self.buses.slot_of(s.audio_bus.as_deref()).ok();
             let shared = self.chains.audio.iter().enumerate().any(|(slot, c)| {
                 c.as_ref().is_some_and(|c| {
                     self.slot_kept(slot, false, &request.replacing)
+                        && tracks == 1
+                        && c.more.is_empty()
+                        && bus == Some(c.bus)
                         && c.settings == *a
                         && select::is_audio_candidate(
                             &adapters.audio_encoders,
@@ -407,10 +414,11 @@ impl super::Studio {
                 })
             });
             if !shared {
-                audio.push(AudioEncode {
+                let bytes_per_second = audio_bytes_per_second(a, self.settings.audio_graph.format);
+                audio.extend((0..tracks).map(|_| AudioEncode {
                     used_by: Use::Recording,
-                    bytes_per_second: audio_bytes_per_second(a, self.settings.audio_graph.format),
-                });
+                    bytes_per_second,
+                }));
             }
         }
     }

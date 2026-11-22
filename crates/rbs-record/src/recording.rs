@@ -530,6 +530,7 @@ impl RecordSettings {
             shared_pause: None,
             holdable: false,
             audio_bus: None,
+            more_tracks: Vec::new(),
         }
     }
 }
@@ -620,6 +621,15 @@ pub enum RecordError {
     /// The output's `audio_bus` names no bus of the main canvas (ADR-0170 decision 9).
     /// Nothing was started; the output never falls back to `main`.
     UnknownBus(String),
+    /// The output names the same bus for two of its tracks (ADR-0170 decision 3).
+    RepeatedTrack(String),
+    /// The output has more audio tracks than its destination carries (its muxer's
+    /// `mux.audio_streams`, 1 for a transport that takes packets; ADR-0170 decision
+    /// 7). Nothing was started.
+    TracksUnsupported {
+        /// Audio streams the destination carries.
+        allowed: usize,
+    },
     /// The output asked for neither video nor audio. Nothing was chosen.
     EmptyOutput,
     /// Separate audio files are already open ([`crate::Studio::start_iso_audio`]).
@@ -675,6 +685,13 @@ impl fmt::Display for RecordError {
                 )
             }
             RecordError::UnknownBus(name) => write!(f, "no audio bus named {name:?}"),
+            RecordError::RepeatedTrack(name) => {
+                write!(f, "the audio bus {name:?} is named for two tracks")
+            }
+            RecordError::TracksUnsupported { allowed } => {
+                let tracks = if *allowed == 1 { "track" } else { "tracks" };
+                write!(f, "this format takes at most {allowed} audio {tracks}")
+            }
             RecordError::EmptyOutput => f.write_str("the output has neither video nor audio"),
             RecordError::IsoRunning => f.write_str("separate audio files are already open"),
             RecordError::Iso(e) => write!(f, "separate files: {e}"),
@@ -780,6 +797,43 @@ pub struct StartReport {
     pub video_shared: bool,
     /// The audio encoder was already running for another output and is shared.
     pub audio_shared: bool,
+    /// Every audio track of a multi-track recording, track 1 first (ADR-0170 decision
+    /// 11); empty for one track, which `audio_encoder` describes.
+    pub tracks: Vec<TrackReport>,
+}
+
+/// One audio track of a multi-track recording, as started.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrackReport {
+    /// The bus it records, which is also its stream's name.
+    pub bus: String,
+    /// Its audio encoder.
+    pub encoder: Chosen,
+}
+
+impl TrackReport {
+    pub(crate) fn new(bus: String, encoder: Chosen) -> Self {
+        Self { bus, encoder }
+    }
+}
+
+/// Counters of one audio track of a multi-track recording (ADR-0170 decision 11).
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TrackProgress {
+    /// The bus it records.
+    pub bus: String,
+    /// Packets its encoder node lost (as [`Progress::audio_packet_drops`]).
+    pub packet_drops: u64,
+    /// Blocks lost at the queue into its encoder.
+    pub queue_drops: u64,
+    /// End-of-stream flushes of its encoder.
+    pub flushes: u64,
+    /// Packets or blocks lost at the end of the stream.
+    pub tail_lost: u64,
+    /// Its packets the output dropped for the aligned start; equal on every track.
+    pub start_drops: u64,
 }
 
 /// Counters of one source.
@@ -867,6 +921,10 @@ pub struct Progress {
     pub held: bool,
     /// Time it has been on hold so far, an open hold counted up to now.
     pub held_ns: u64,
+    /// Each audio track of a multi-track recording, track 1 first (ADR-0170 decision
+    /// 11); empty for one track, which the `audio_*` fields count. The single fields
+    /// keep counting track 1.
+    pub tracks: Vec<TrackProgress>,
 }
 
 impl Progress {
@@ -1019,7 +1077,7 @@ impl Recording {
             (canvas.size.width, canvas.size.height),
             canvas.frame_rate,
             settings.audio_graph,
-            None,
+            &[None],
             &Chains::default(),
             crate::studio::native_encode_of(&gpu),
             None,

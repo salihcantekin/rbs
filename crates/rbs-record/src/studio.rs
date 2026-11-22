@@ -72,9 +72,11 @@ use crate::recording::{
     peak_db, sum,
 };
 use crate::select::{self, Chosen};
+use audio_chain::{AudioChain, AudioPlan};
 use buses::{MixBuses, master_of, mixer_params};
 
 mod adopt;
+mod audio_chain;
 mod browser_page;
 mod buses;
 mod estimate_plan;
@@ -292,6 +294,12 @@ pub struct OutputSettings {
     /// with [`RecordError::UnknownBus`]. Two outputs share an audio encoder only when
     /// they take the same bus.
     pub audio_bus: Option<String>,
+    /// Tracks 2 and later of a multi-track recording (ADR-0170 decisions 3 to 8), by
+    /// bus name; `audio_bus` is track 1. Empty: one track, today's chain. Every name
+    /// is a different bus of the main canvas; one chain then holds an encoder per
+    /// track, never shared, and a destination that carries fewer audio streams
+    /// refuses the start with [`RecordError::TracksUnsupported`].
+    pub more_tracks: Vec<String>,
 }
 
 /// Smallest side of an explicit output size (ADR-0102 decision 7).
@@ -350,6 +358,7 @@ impl OutputSettings {
             shared_pause: None,
             holdable: false,
             audio_bus: None,
+            more_tracks: Vec::new(),
         }
     }
 
@@ -617,105 +626,6 @@ enum VideoPlan {
     Shared(usize),
 }
 
-/// The audio half of a prepared output.
-enum AudioPlan {
-    None,
-    New {
-        node: Box<dyn Node<()>>,
-        /// The node's packet losses, end-of-stream flushes and tail losses.
-        counters: AudioCounters,
-        /// The chain's own pause window, for a pausable recording's new chain.
-        chain_pause: Option<Arc<PauseWindow>>,
-        /// The chain's hold switch, as for the video chain.
-        chain_hold: Option<Arc<HoldSwitch>>,
-        chosen: Chosen,
-        settings: AudioSettings,
-        stream: StreamDescriptor,
-        /// The mixer bus slot it reads, `None` for `main`.
-        bus: Option<usize>,
-    },
-    Shared(usize),
-}
-
-impl AudioPlan {
-    /// A new chain's node, and its chain with `encoder` as the added node.
-    fn into_chain(self, encoder: Added) -> Option<(Box<dyn Node<()>>, AudioChain)> {
-        let AudioPlan::New {
-            node,
-            counters,
-            chain_pause,
-            chain_hold,
-            chosen,
-            settings,
-            stream,
-            bus,
-        } = self
-        else {
-            return None;
-        };
-        let chain = AudioChain {
-            settings,
-            chosen,
-            stream,
-            encoder,
-            dropped: counters.dropped,
-            flushes: counters.flushes,
-            tail_lost: counters.tail_lost,
-            queue: None,
-            pause: chain_pause,
-            hold: chain_hold,
-            bus,
-        };
-        Some((node, chain))
-    }
-}
-
-/// An audio encoder node that follows `pause` and `hold` (ADR-0124), boxed, and its
-/// counters.
-fn gated(
-    node: EncoderNode,
-    pause: Option<&Arc<PauseWindow>>,
-    hold: Option<&Arc<HoldSwitch>>,
-    frames: usize,
-) -> (Box<dyn Node<()>>, AudioCounters) {
-    match (pause, hold) {
-        (Some(p), hold) => {
-            let mut node = node.with_pause(Arc::clone(p), frames);
-            if let Some(h) = hold {
-                node = node.and_hold(Arc::clone(h));
-            }
-            let counters = AudioCounters::of(&node);
-            (Box::new(node), counters)
-        }
-        (None, Some(h)) => {
-            let node = node.with_hold(Arc::clone(h), frames);
-            let counters = AudioCounters::of(&node);
-            (Box::new(node), counters)
-        }
-        (None, None) => {
-            let counters = AudioCounters::of(&node);
-            (Box::new(node), counters)
-        }
-    }
-}
-
-/// An audio encoder node's counters, kept when the node is boxed.
-struct AudioCounters {
-    dropped: Arc<AtomicU64>,
-    flushes: Arc<AtomicU64>,
-    tail_lost: Arc<AtomicU64>,
-}
-
-impl AudioCounters {
-    fn of<G: rbs_audio::AudioGate>(node: &EncoderNode<G>) -> Self {
-        Self {
-            dropped: node.dropped(),
-            flushes: node.flushes(),
-            tail_lost: node.tail_lost(),
-        }
-    }
-}
-
 /// The encoder configuration of `video` for frames of `format` at `fps`.
 fn video_encoder_config(
     video: &VideoSettings,
@@ -817,7 +727,7 @@ impl Prepared {
         canvas_size: (u32, u32),
         fps: FrameRate,
         audio_graph: AudioGraphConfig,
-        bus: Option<usize>,
+        tracks: &[Option<usize>],
         running: &Chains,
         native: Option<(MemoryKind, GpuDeviceId)>,
         camera: Option<&CameraDownload>,
@@ -962,55 +872,16 @@ impl Prepared {
                 }
             }
         };
-        let audio = match &out.audio {
-            Some(a) => {
-                let config = a.encoder_config(audio_graph.format);
-                let shared = running.audio.iter().enumerate().find_map(|(i, c)| {
-                    let c = c.as_ref()?;
-                    (c.settings == *a
-                        && c.bus == bus
-                        && never_paused(c.pause.as_ref())
-                        && select::is_audio_candidate(
-                            &adapters.audio_encoders,
-                            &config,
-                            &c.chosen.adapter,
-                        ))
-                    .then_some((i, c))
-                });
-                match shared {
-                    Some((i, chain)) => {
-                        streams.push(chain.stream.clone());
-                        AudioPlan::Shared(i)
-                    }
-                    None => {
-                        if running.audio.iter().all(Option::is_some) {
-                            return Err(RecordError::NoEncoderSlot);
-                        }
-                        let (session, chosen) =
-                            select::audio_encoder(&adapters.audio_encoders, &config)?;
-                        let stream = session.stream().clone();
-                        streams.push(stream.clone());
-                        let node = EncoderNode::new(session, AUDIO_ENCODER_PACKETS);
-                        let chain_pause = pause.as_ref().map(|_| Arc::new(PauseWindow::default()));
-                        let chain_hold = holds.then(|| Arc::new(HoldSwitch::default()));
-                        let frames = audio_graph.block_frames as usize;
-                        let (node, counters) =
-                            gated(node, chain_pause.as_ref(), chain_hold.as_ref(), frames);
-                        AudioPlan::New {
-                            node,
-                            counters,
-                            chain_pause,
-                            chain_hold,
-                            chosen,
-                            settings: a.clone(),
-                            stream,
-                            bus,
-                        }
-                    }
-                }
-            }
-            None => AudioPlan::None,
-        };
+        let audio = AudioPlan::choose(
+            adapters,
+            out,
+            audio_graph,
+            tracks,
+            running,
+            pause.is_some(),
+            holds,
+            &mut streams,
+        )?;
         let muxer = match out.container() {
             Some(container) => Some((select::muxer(&adapters.muxers, container)?, container)),
             None => None,
@@ -1096,26 +967,6 @@ struct VideoChain {
     owners: Option<Arc<LeaseOwners>>,
 }
 
-/// A running audio encoder, used by one or more outputs.
-struct AudioChain {
-    settings: AudioSettings,
-    chosen: Chosen,
-    stream: StreamDescriptor,
-    encoder: Added,
-    dropped: Arc<AtomicU64>,
-    /// End-of-stream flushes and tail losses (ADR-0045).
-    flushes: Arc<AtomicU64>,
-    tail_lost: Arc<AtomicU64>,
-    queue: Option<Arc<QueueStats>>,
-    /// The pause window its encoder node follows, for a pausable recording's new
-    /// chain (ADR-0124); written only while that recording is its only user.
-    pause: Option<Arc<PauseWindow>>,
-    /// Its hold switch, as for the video chain.
-    hold: Option<Arc<HoldSwitch>>,
-    /// The mixer bus slot it reads (ADR-0170), `None` for `main`.
-    bus: Option<usize>,
-}
-
 /// The encoder chains running, by slot (the slot picks their partitions).
 #[derive(Default)]
 pub(crate) struct Chains {
@@ -1188,6 +1039,8 @@ struct Attached {
     /// The queues into the video and audio encoders' partitions, kept so the final
     /// counters survive the draining apply that removes them.
     queues: Queues,
+    /// Each track's counters of a multi-track recording; empty for one track.
+    tracks: Vec<audio_chain::TrackCounters>,
     base: Base,
     /// When it started, on the master clock.
     started: Timestamp,
@@ -4468,9 +4321,9 @@ impl Studio {
             return Err(RecordError::TooManyOutputs);
         }
         let size = self.canvas_size(canvas)?;
-        let bus = match out.audio {
-            Some(_) => self.buses.slot_of(out.audio_bus.as_deref())?,
-            None => None,
+        let tracks = match out.audio {
+            Some(_) => self.track_slots(out)?,
+            None => Vec::new(),
         };
         Prepared::choose(
             adapters,
@@ -4479,7 +4332,7 @@ impl Studio {
             size,
             self.fps,
             self.settings.audio_graph,
-            bus,
+            &tracks,
             &self.chains,
             self.native_encode(),
             self.camera.as_ref().map(|c| &c.download),
@@ -4691,41 +4544,20 @@ impl Studio {
                 Some(i)
             }
         };
-        let audio_pin = if video_slot.is_none() { "s0" } else { "s1" };
 
-        let mut new_audio = None;
-        let audio_slot = match &p.audio {
-            AudioPlan::None => None,
-            AudioPlan::Shared(i) => {
-                let c = self.chains.audio[*i]
-                    .as_ref()
-                    .ok_or(RecordError::NotBound("shared audio encoder"))?;
-                graph.connect(c.encoder.node, "packets", output_id, audio_pin)?;
-                Some(*i)
-            }
-            AudioPlan::New { node, bus, .. } => {
-                let mixer = self
-                    .mixer
-                    .as_ref()
-                    .map(|m| m.node)
-                    .ok_or(RecordError::NotBound("mixer"))?;
-                let i = free_chain(&self.chains.audio, |i| {
-                    pending.contains(&parts.audio_encoder_of(i))
-                })?;
-                let part = parts.audio_encoder_of(i);
-                let id = add_active(&mut graph, Node::<()>::descriptor(&**node), part)?;
-                graph.connect(mixer, buses::pin(*bus), id, "in")?;
-                graph.connect(id, "packets", output_id, audio_pin)?;
-                let a = Added {
-                    node: id,
-                    partition: part,
-                    gpu: false,
-                };
-                nodes.push(a);
-                new_audio = Some(a);
-                Some(i)
-            }
-        };
+        let mixer = self.mixer.as_ref().map(|m| m.node);
+        let first_pin = usize::from(video_slot.is_some());
+        let pending_audio = |i| pending.contains(&parts.audio_encoder_of(i));
+        let (audio_slot, new_audio) = p.audio.add_to(
+            &mut graph,
+            mixer,
+            &self.chains,
+            &parts,
+            pending_audio,
+            output_id,
+            first_pin,
+        )?;
+        nodes.extend(new_audio.iter().flat_map(audio_chain::NewAudio::all));
         nodes.push(output);
 
         // Instances last; one that is refused takes the adopted ones back.
@@ -4796,11 +4628,12 @@ impl Studio {
         }
         let mut audio_chain = None;
         let mut audio_shared = audio_slot.is_some();
-        if let Some((node, chain)) = new_audio.and_then(|a| p.audio.into_chain(a)) {
+        if let Some((new, chain)) = new_audio.and_then(|a| p.audio.into_chain(a)) {
             audio_shared = false;
-            let a = chain.encoder;
-            let r = self.engine.adopt::<()>(a.partition, a.node, node);
-            adopt(&mut self.engine, a, r)?;
+            for (a, node) in new {
+                let r = self.engine.adopt::<()>(a.partition, a.node, node);
+                adopt(&mut self.engine, a, r)?;
+            }
             audio_chain = Some(chain);
         }
         let r = self
@@ -4871,6 +4704,7 @@ impl Studio {
                 problems: self.problems.clone(),
                 video_shared,
                 audio_shared,
+                tracks: audio.map_or_else(Vec::new, AudioChain::track_reports),
             },
             output,
             output_stats,
@@ -4888,6 +4722,7 @@ impl Studio {
                 video: video_queue,
                 audio: audio_queue,
             },
+            tracks: Vec::new(),
             base,
             started: self.engine.clock().now(),
             pause: p.pause,
@@ -4960,6 +4795,9 @@ impl Studio {
             if c.queue.is_none() {
                 c.queue = queue_to(&self.engine, c.encoder.node);
             }
+            for t in c.more.iter_mut().filter(|t| t.queue.is_none()) {
+                t.queue = queue_to(&self.engine, t.encoder.node);
+            }
         }
         let video = self
             .outputs
@@ -4972,11 +4810,12 @@ impl Studio {
         let video_queue = v
             .and_then(|i| self.chains.video[i].as_ref())
             .and_then(|c| c.queue.clone());
-        let audio_queue = a
-            .and_then(|i| self.chains.audio[i].as_ref())
-            .and_then(|c| c.queue.clone());
+        let audio_chain = a.and_then(|i| self.chains.audio[i].as_ref());
+        let audio_queue = audio_chain.and_then(|c| c.queue.clone());
+        let tracks = audio_chain.map_or_else(Vec::new, AudioChain::track_counters);
         if let Some(r) = self.outputs.iter_mut().find(|r| r.id == id) {
             r.report.sources = sources;
+            r.tracks = tracks;
             r.queues = Queues {
                 video: video_queue,
                 audio: audio_queue,
@@ -5041,7 +4880,7 @@ impl Studio {
                 && !self.outputs.iter().any(|o| o.audio == Some(a))
                 && let Some(c) = self.chains.audio[a].take()
             {
-                nodes.push(c.encoder);
+                nodes.extend(c.encoders());
             }
             removed.push((r, video_alone));
         }
@@ -5378,6 +5217,10 @@ impl Studio {
         p.packets_taken = o.packets.load(Ordering::Relaxed);
         p.mux_drops = o.mux_drops.load(Ordering::Relaxed);
         p.start_drops = o.start_drops.load(Ordering::Relaxed);
+        let first = usize::from(r.video.is_some());
+        p.tracks = (r.tracks.iter().enumerate())
+            .map(|(k, t)| t.progress(o.start_drops_of(first + k)))
+            .collect();
         p.backlog_peak = o.backlog_peak.load(Ordering::Relaxed);
         p.transport_drops = o.transport_drops.load(Ordering::Relaxed);
         p.connects = o.connects.load(Ordering::Relaxed);

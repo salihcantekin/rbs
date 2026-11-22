@@ -49,8 +49,8 @@ pub use recording::{
     OUTPUT_2, OUTPUT_3, OUTPUT_4, OUTPUT_POOL, OutputPartitions, PartitionPool, Partitions, Port,
     Progress, RENDER, REPLAY_AUDIO_ENCODER, REPLAY_RING, REPLAY_VIDEO_ENCODER, RecordAdapters,
     RecordError, RecordSettings, Recording, SourceHealth, SourceProgress, SourceState,
-    StartFailure, StartReport, VIDEO_ENCODER, VIDEO_ENCODER_2, VIDEO_ENCODER_3, VIDEO_ENCODER_4,
-    VIDEO_ENCODER_POOL, VideoSettings,
+    StartFailure, StartReport, TrackProgress, TrackReport, VIDEO_ENCODER, VIDEO_ENCODER_2,
+    VIDEO_ENCODER_3, VIDEO_ENCODER_4, VIDEO_ENCODER_POOL, VideoSettings,
 };
 pub use select::{Chosen, scheme_of};
 pub use studio::{
