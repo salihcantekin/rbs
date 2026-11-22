@@ -1,6 +1,6 @@
 # ADR-0041: A studio keeps a canvas running for preview and meters; recordings start and stop on the running engine
 
-- Status: Accepted (independent review and owner's P15 sign-off 2026-11-03, see Review)
+- Status: Accepted (independent review and owner's P15 sign-off 2026-11-03, see Review); decision 2 superseded in part by [ADR-0169](0169-audio-branch-rests-while-nothing-reads-it.md): the meter sink is left out of the engine's graph while nothing reads the mixer
 - Date: 2026-11-03
 - Deciders: Salih (owner)
 - Supersedes: [ADR-0040](0040-recording-composition.md) decision 6 (who owns the graph when `rbs-app` records)

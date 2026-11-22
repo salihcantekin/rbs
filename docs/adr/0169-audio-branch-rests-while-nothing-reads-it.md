@@ -1,6 +1,6 @@
 # ADR-0169: The audio branch rests while nothing reads it
 
-- Status: Proposed
+- Status: Accepted (independent review 2026-11-22, owner approval 2026-11-22, see Review)
 - Date: 2026-11-22
 - Deciders: Salih (owner)
 - Supersedes: [ADR-0041](0041-studio-recording-on-a-running-engine.md) decision 2 in part (the meter sink is no longer in the graph for the studio's whole life)
@@ -68,3 +68,4 @@ Engine facts this builds on:
   B. A device fails in `prepare`, not at instantiation: decision 5 now says a resting source shows its last known health and a start failure appears at the next wake, recorded by `send_graph` on every path; permission prompt moves to the first wake (Consequences).
   C. `scheduled` means the model plan: stated in decision 1.
   The reviewer said they would approve with A and B fixed.
+- 2026-11-22: Salih (owner) accepted it after the review rounds above. The P15 sign-off for the measurement stays with the owner before merge.
