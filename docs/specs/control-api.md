@@ -553,6 +553,12 @@ Source rows carry `kind` `image` and `color` for those picture sources. A client
 - **State.** `record.state` and `record.canvas_state` add `paused` (bool), `paused_ms` and `recorded_ms`; `state` stays `recording` while paused. `paused` is set from the call on, including the ticks before the pause begins. `paused_ms` (time left out so far) and `recorded_ms` (time since the start less `paused_ms`) are as of the change; they are published on each pause and resume, never per frame, so a client counts on from them while not paused.
 - **Older clients and servers.** A 1.60 client ignores the new fields; a 1.60 server answers the methods `method_not_found` and omits the fields, which read as not paused.
 
+### Protocol 1.103: the bus an output takes (ADR-0170 decisions 3, 9 and 11)
+
+- **Settings.** `stream` in `settings.get`, `settings.set` and `settings.changed` adds `audio_bus`, the name of the bus of the main canvas the stream sends (every destination sends it); omitted when `main`. In a `settings.set` patch, absent leaves it. A recording profile adds `audio_tracks`, the bus names it writes as audio tracks, track 1 first; omitted when `["main"]`, and in `settings.set` absent keeps the stored tracks. An empty name, a repeated name or more than six tracks are `invalid_params`; so are several tracks until multi-track recording is built (one track for now). Saved in the output profile's stream and recording sections, omitted at the default.
+- **Starting.** A name the main canvas has no bus for is checked when the output starts: `record.start` and `stream.start` answer `failed` with the reason (`no audio bus named "..."`); the output never falls back to `main`. A vertical canvas's outputs take the main canvas's buses.
+- **Not in 1.103.** Bus edits (`bus.*`), send levels, `tracks` in `record.status` and `tracks_unsupported`; they come with the Mixer's buses and multi-track recording.
+
 ### Protocol 1.100: the window's remaining commands (ADR-0164)
 
 Protocol 1.100 adds everything [ADR-0164](../adr/0164-protocol-minor-for-the-window-commands-left.md) lists. The parts land in steps, and each step's section below says what it added.

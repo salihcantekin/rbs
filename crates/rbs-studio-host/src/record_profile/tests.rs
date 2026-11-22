@@ -554,3 +554,36 @@ fn the_first_vertical_recording_omits_the_main_output_size() {
     assert_eq!(vertical.folder, main.folder);
     assert_eq!(vertical.format, main.format);
 }
+
+/// ADR-0170 decisions 3 and 11: `audio_tracks` is omitted at `["main"]`, round-trips,
+/// is checked, and an API set without it keeps the stored tracks.
+#[test]
+fn audio_tracks_default_round_trip_and_survive_an_older_api_set() {
+    let mut p = RecordProfile::new();
+    p.folder = std::env::temp_dir();
+    let text = toml::to_string(&p).unwrap();
+    assert!(!text.contains("audio_tracks"), "{text}");
+    assert_eq!(p.to_api().audio_tracks, None);
+    p.audio_tracks = vec!["vod".into()];
+    let back: RecordProfile = toml::from_str(&toml::to_string(&p).unwrap()).unwrap();
+    assert_eq!(back.audio_tracks, ["vod"]);
+    assert_eq!(p.problem(), None);
+    let mut api = p.to_api();
+    assert_eq!(api.audio_tracks.as_deref(), Some(&["vod".to_owned()][..]));
+    assert_eq!(RecordProfile::from_api(&api).audio_tracks, ["vod"]);
+    api.audio_tracks = None;
+    assert_eq!(RecordProfile::from_api(&api).audio_tracks, ["main"]);
+    assert_eq!(RecordProfile::from_api_over(&api, &p).audio_tracks, ["vod"]);
+    for (tracks, why) in [
+        (vec![], "1 to 6"),
+        (vec![" ".to_owned()], "empty"),
+        (vec!["a".to_owned(), "a".to_owned()], "repeats"),
+        (
+            vec!["main".to_owned(), "vod".to_owned()],
+            "not available yet",
+        ),
+    ] {
+        p.audio_tracks = tracks;
+        assert!(p.problem().is_some_and(|w| w.contains(why)), "{why}");
+    }
+}

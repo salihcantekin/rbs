@@ -446,6 +446,8 @@ pub struct RecordRequest {
     pub editor_project: Option<crate::record_profile::EditorProject>,
     /// The reaction-time offset and the automatic markers (ADR-0089 decision 3).
     pub markers: crate::record_profile::MarkerSettings,
+    /// The bus of track 1, by name (ADR-0170 decision 3).
+    pub audio_bus: String,
 }
 
 /// Marks every non-zero undo gesture the window sends (ADR-0164 decision 2); the

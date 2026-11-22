@@ -88,7 +88,7 @@ impl Host {
                 .streaming
                 .stream_profile
                 .as_ref()
-                .map(StreamProfile::to_api),
+                .map(|p| Box::new(p.to_api())),
             vertical: Some(self.verticals.vertical_flags.to_api()),
             loudness: Some(api::LoudnessSettings {
                 target: self.loudness_state.loudness_settings.target,

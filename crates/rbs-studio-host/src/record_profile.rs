@@ -12,6 +12,7 @@ use std::time::Duration;
 use rbs_codec::{EncoderPreset, KeyframeInterval, RateControl};
 use rbs_core::media::{CodecId, ColorSpace, ContainerId};
 use rbs_record::VideoSettings;
+use rbs_scene::model::{MAIN_BUS_NAME, MAX_BUSES};
 use serde::{Deserialize, Serialize};
 
 /// The file format version this build writes and reads.
@@ -963,6 +964,48 @@ pub struct RecordProfile {
     /// automatic markers. A file without the section takes the defaults.
     #[serde(default)]
     pub markers: MarkerSettings,
+    /// The buses the recording writes as audio tracks, by name, track 1 first
+    /// (ADR-0170 decision 3). Omitted when `["main"]`, the default. One track for now:
+    /// several are refused until multi-track recording is built (stage c).
+    #[serde(default = "main_tracks", skip_serializing_if = "is_main_tracks")]
+    pub audio_tracks: Vec<String>,
+}
+
+fn main_tracks() -> Vec<String> {
+    vec![MAIN_BUS_NAME.to_owned()]
+}
+
+fn is_main_tracks(tracks: &[String]) -> bool {
+    tracks.len() == 1 && tracks[0] == MAIN_BUS_NAME
+}
+
+/// Why an output's bus name cannot be used, in words, or `None` (ADR-0170).
+pub fn bus_name_problem(name: &str) -> Option<String> {
+    name.trim()
+        .is_empty()
+        .then(|| "An audio bus name cannot be empty.".to_owned())
+}
+
+/// Why a recording's audio tracks cannot be used, in words, or `None`.
+fn tracks_problem(tracks: &[String]) -> Option<String> {
+    if tracks.is_empty() || tracks.len() > MAX_BUSES {
+        return Some(format!(
+            "A recording writes 1 to {MAX_BUSES} audio tracks, not {}.",
+            tracks.len()
+        ));
+    }
+    if let Some(why) = tracks.iter().find_map(|t| bus_name_problem(t)) {
+        return Some(why);
+    }
+    if let Some((i, t)) = tracks
+        .iter()
+        .enumerate()
+        .find(|(i, t)| tracks[..*i].contains(t))
+    {
+        return Some(format!("Audio track {} repeats the bus \"{t}\".", i + 1));
+    }
+    (tracks.len() > 1)
+        .then(|| "Recording several audio tracks is not available yet; keep one track.".to_owned())
 }
 
 /// The `[markers]` section of a recording profile (ADR-0089 decisions 3 and 4).
@@ -1053,6 +1096,7 @@ impl RecordProfile {
             output_size: None,
             editor_project: None,
             markers: MarkerSettings::default(),
+            audio_tracks: main_tracks(),
         };
         p.set_encoding(Encoding::new(12_000));
         p
@@ -1178,6 +1222,9 @@ impl RecordProfile {
                 self.markers.lead_ms
             ));
         }
+        if let Some(why) = tracks_problem(&self.audio_tracks) {
+            return Some(why);
+        }
         if self.format == Format::Flac {
             return (!FLAC_BITS.contains(&self.bit_depth))
                 .then(|| format!("FLAC width {} is not 16-bit or 24-bit.", self.bit_depth));
@@ -1300,6 +1347,7 @@ impl RecordProfile {
             }),
             editor_project: self.editor_project.map(EditorProject::to_api),
             markers: self.markers.to_api(),
+            audio_tracks: (!is_main_tracks(&self.audio_tracks)).then(|| self.audio_tracks.clone()),
         }
     }
 
@@ -1317,8 +1365,19 @@ impl RecordProfile {
         }
     }
 
-    /// Settings from the control API's recording profile. The caller checks
-    /// [`RecordProfile::problem`].
+    /// Settings from the control API's recording profile over `current`: what the
+    /// API leaves out (`audio_tracks` from a client before protocol 1.103) stays as
+    /// `current` has it. The caller checks [`RecordProfile::problem`].
+    pub fn from_api_over(p: &rbs_api::types::RecordingProfile, current: &Self) -> Self {
+        let mut profile = Self::from_api(p);
+        if p.audio_tracks.is_none() {
+            profile.audio_tracks.clone_from(&current.audio_tracks);
+        }
+        profile
+    }
+
+    /// Settings from the control API's recording profile (`audio_tracks` absent is
+    /// `["main"]`). The caller checks [`RecordProfile::problem`].
     pub fn from_api(p: &rbs_api::types::RecordingProfile) -> Self {
         use rbs_api::types as api;
         let mut profile = Self {
@@ -1369,6 +1428,7 @@ impl RecordProfile {
             }),
             editor_project: p.editor_project.map(EditorProject::from_api),
             markers: MarkerSettings::from_api(p.markers),
+            audio_tracks: p.audio_tracks.clone().unwrap_or_else(main_tracks),
         };
         profile.remember_active();
         profile
