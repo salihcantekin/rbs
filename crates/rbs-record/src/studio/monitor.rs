@@ -173,7 +173,7 @@ impl Studio {
         let _ = mixer.params.send(mixer_params(
             &self.strips,
             &mixer.master,
-            self.master,
+            &self.buses,
             &self.solo,
             self.meters_on,
         ));
