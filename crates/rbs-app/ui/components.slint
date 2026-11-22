@@ -1236,6 +1236,8 @@ export component CopyText inherits Rectangle {
         triggered => { root.confirming = false; }
     }
     focus := RingFocus {
+        // The TouchArea takes the click and focuses it (focus-pointer).
+        focus-on-click: false;
         enabled: root.active;
         key-pressed(e) => {
             if e.text == Key.Escape && Overlays.tip-dismiss(root.tip-owner) { return accept; }
