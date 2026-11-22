@@ -53,6 +53,9 @@ rbs-codec-nvenc = { path = "../rbs-codec-nvenc" }
 rbs-codec-amf = { path = "../rbs-codec-amf" }
 rbs-codec-mf = { path = "../rbs-codec-mf" }
 rbs-vcam-mf = { path = "../rbs-vcam-mf" }
+# Mouse input for pointer filters (ADR-0165).
+rbs-input = { path = "../rbs-input" }
+rbs-input-win = { path = "../rbs-input-win" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 rbs-capture-pipewire = { path = "../rbs-capture-pipewire" }
@@ -73,7 +76,6 @@ rbs-codec-audiotoolbox = { path = "../rbs-codec-audiotoolbox" }
 # Mouse input for pointer filters (ADR-0165 phase 1).
 rbs-input = { path = "../rbs-input" }
 rbs-input-mac = { path = "../rbs-input-mac" }
-rbs-input-win = { path = "../rbs-input-win" }
 
 [lints]
 workspace = true
