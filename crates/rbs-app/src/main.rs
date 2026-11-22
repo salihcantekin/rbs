@@ -33,6 +33,7 @@ mod menu_bar;
 mod meter_bridge;
 mod meters_ui;
 mod obs_import_page;
+mod panels_menu;
 mod permissions_page;
 #[cfg(any(target_os = "macos", windows))]
 mod preview;
@@ -791,21 +792,7 @@ impl App {
         match run {
             Run::UndoEdit(back) => self.studio.undo_edit(back),
             Run::Workspace(name) => self.switch_workspace(&name),
-            Run::Panel(id) => {
-                if let Some(id) = panel(&id) {
-                    self.command(LayoutCommand::OpenPanel(id.clone()), Origin::Command);
-                    if self
-                        .session
-                        .workspace()
-                        .main_layout()
-                        .is_some_and(|m| m.group_of(&id).is_some())
-                    {
-                        self.reveal = Some(id.clone());
-                        self.dismiss_flyout = false;
-                    }
-                    self.raise_host_of(&id);
-                }
-            }
+            Run::Panel(id) => self.toggle_from_panels_menu(&id),
             Run::Profile(id) => {
                 let done = self.studio.switch_profile(&id);
                 library_transfer::when_answered(self, done, App::library_done);

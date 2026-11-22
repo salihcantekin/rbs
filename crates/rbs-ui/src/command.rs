@@ -1017,7 +1017,7 @@ pub const ENTRIES: &[Entry] = &[
     Entry {
         id: "ui.panel.select",
         title: "Panels",
-        tooltip: "Open a panel, or show it if it is open",
+        tooltip: "Open a panel, or close it if it is open",
         icon: Some("window"),
         shortcut: None,
         menu: Menu::Window,

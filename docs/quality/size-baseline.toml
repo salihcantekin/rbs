@@ -7,7 +7,7 @@
 "crates/rbs-api/src/request.rs" = 2829
 "crates/rbs-api/src/types.rs" = 3002
 "crates/rbs-api/tests/json.rs" = 3305
-"crates/rbs-app/src/main.rs" = 6536
+"crates/rbs-app/src/main.rs" = 6523
 "crates/rbs-app/src/menu_bar.rs" = 2518
 "crates/rbs-app/src/studio_ui.rs" = 10066
 "crates/rbs-record/src/studio.rs" = 5925
@@ -16,7 +16,6 @@
 "crates/rbs-scene/tests/binder.rs" = 2882
 "crates/rbs-scene/tests/collection.rs" = 2759
 "crates/rbs-ui/src/command.rs" = 4398
-"crates/rbs-ui/src/workspace.rs" = 2798
 
 [functions]
 "crates/rbs-api/src/session.rs::message" = 249

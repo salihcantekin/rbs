@@ -899,16 +899,35 @@ impl Node {
     /// axis, else in a new split in its place. Returns false (and leaves the tree
     /// alone) when there is no such stack or `stack` has no tabs.
     pub fn insert_beside(&mut self, index: usize, stack: Tabs, edge: Edge) -> bool {
-        fn go(n: &mut Node, index: &mut usize, new: &mut Option<Tabs>, edge: Edge) -> bool {
+        self.insert_beside_share(index, stack, edge, 0.5)
+    }
+
+    /// [`Node::insert_beside`], with the new stack taking `share` (0 to 1, exclusive)
+    /// of the old stack's place instead of half (ADR-0172: a reopened panel gets its
+    /// old share back).
+    pub fn insert_beside_share(
+        &mut self,
+        index: usize,
+        stack: Tabs,
+        edge: Edge,
+        share: f32,
+    ) -> bool {
+        fn go(
+            n: &mut Node,
+            index: &mut usize,
+            new: &mut Option<Tabs>,
+            edge: Edge,
+            share: f32,
+        ) -> bool {
             let (axis, first) = edge_axis(edge);
             match n {
                 Node::Tabs(_) if *index == 0 => {
                     let Some(t) = new.take() else { return false };
                     let old = std::mem::replace(n, Node::empty());
                     let parts = if first {
-                        vec![(0.5, Node::Tabs(t)), (0.5, old)]
+                        vec![(share, Node::Tabs(t)), (1.0 - share, old)]
                     } else {
-                        vec![(0.5, old), (0.5, Node::Tabs(t))]
+                        vec![(1.0 - share, old), (share, Node::Tabs(t))]
                     };
                     *n = Node::split(axis, parts);
                     true
@@ -922,14 +941,14 @@ impl Node {
                     for i in 0..s.children.len() {
                         if *index == 0 && s.axis == axis && matches!(s.children[i], Node::Tabs(_)) {
                             let Some(t) = new.take() else { return false };
-                            let half = s.ratios[i] / 2.0;
-                            s.ratios[i] = half;
+                            let part = s.ratios[i] * share;
+                            s.ratios[i] -= part;
                             let at = if first { i } else { i + 1 };
-                            s.ratios.insert(at, half);
+                            s.ratios.insert(at, part);
                             s.children.insert(at, Node::Tabs(t));
                             return true;
                         }
-                        if go(&mut s.children[i], index, new, edge) {
+                        if go(&mut s.children[i], index, new, edge, share) {
                             return true;
                         }
                     }
@@ -937,10 +956,10 @@ impl Node {
                 }
             }
         }
-        if stack.tabs.is_empty() {
+        if stack.tabs.is_empty() || !(share > 0.0 && share < 1.0) {
             return false;
         }
-        go(self, &mut { index }, &mut Some(stack), edge)
+        go(self, &mut { index }, &mut Some(stack), edge, share)
     }
 
     /// Make tab `tab` of stack `stack` visible. Returns false when out of range.
