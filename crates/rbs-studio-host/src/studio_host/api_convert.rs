@@ -105,6 +105,14 @@ pub(super) fn api_estimate(
     }
 }
 
+/// `failed` with `data.reason` (protocol 1.100, ADR-0164 decision 3): the kind
+/// stays, so an older client reads it as before.
+pub(super) fn failed_because(reason: &str, message: impl Into<String>) -> ApiError {
+    let mut data = serde_json::Map::new();
+    data.insert("reason".into(), reason.into());
+    ApiError::with_data(ErrorKind::Failed, message, data)
+}
+
 pub(super) fn failed(message: impl Into<String>) -> ApiError {
     ApiError::new(ErrorKind::Failed, message)
 }

@@ -9,6 +9,10 @@
 //! `pointer/idle` and `pointer/drawing`: a type with `Needs::POINTER` (spec "Host
 //! service: pointer") on an unchanged input, with no live effect (pass-through) and
 //! with one live effect every tick (effect buffer write and one pass).
+//!
+//! `click-rings/drawing_16` and `pointer-halo/drawing`: the built-in pointer types
+//! (spec "Pointer types") with 16 live rings (a click every other tick) and with the
+//! pointer on the picture.
 #![allow(missing_docs, clippy::unwrap_used, clippy::expect_used)]
 
 use std::hint::black_box;
@@ -144,6 +148,81 @@ fn pointer(c: &mut Criterion, ctx: &Arc<GpuContext>, (w, h): (u32, u32)) {
     });
 }
 
+/// A rig of a built-in pointer type on an unchanged 1920x1080 input, and its sink.
+fn built_in(
+    ctx: &Arc<GpuContext>,
+    ty: &'static dyn FilterType,
+    (w, h): (u32, u32),
+) -> (Rig, InputSink) {
+    let script = Scripted::default();
+    let monitor = InputMonitor::new(Box::new(script.clone()));
+    let cell = MappingCell::new();
+    cell.publish(Some(PictureMapping::new(
+        Timestamp::ZERO,
+        [0.0, 0.0],
+        [1.0, 1.0],
+        Size::new(w, h),
+    )));
+    let ty: Arc<dyn FilterType> = Arc::new(ty);
+    let values = Values::defaults(ty.as_ref());
+    let feed = PointerFeed::new(monitor, cell);
+    let mut rig = Rig::with_pointer(Arc::clone(ctx), ty, values, Some([w, h]), feed).unwrap();
+    rig.set_input(Picture::solid(w, h, [0.2, 0.6, 0.3, 1.0]));
+    for _ in 0..3 {
+        rig.tick();
+    }
+    ctx.wait_idle().unwrap();
+    let sink = script.0.lock().unwrap().take().unwrap();
+    (rig, sink)
+}
+
+fn built_in_pointer_types(c: &mut Criterion, ctx: &Arc<GpuContext>, (w, h): (u32, u32)) {
+    let (mut rig, sink) = built_in(ctx, &rbs_filters::ClickRings, (w, h));
+    let mut n = 0u32;
+    let mut click = |rig: &Rig| {
+        n += 1;
+        let x = f64::from(n % 16) * f64::from(w) / 16.0 + 40.0;
+        sink.event(TimedEvent {
+            time: Timestamp::from_nanos(rig.last_time().as_nanos() + 1),
+            event: InputEvent::ButtonDown {
+                button: Button::Left,
+                at: DesktopPoint::new(x, f64::from(h) / 2.0),
+            },
+        });
+    };
+    // Fill the ring: 0.6 s rings, a click every other tick, so 16 stay live.
+    for i in 0..64u32 {
+        if i.is_multiple_of(2) {
+            click(&rig);
+        }
+        rig.tick();
+    }
+    let mut i = 0u32;
+    c.bench_function("click-rings/drawing_16", |b| {
+        b.iter(|| {
+            i += 1;
+            if i.is_multiple_of(2) {
+                click(&rig);
+            }
+            rig.tick();
+        });
+        ctx.wait_idle().unwrap();
+    });
+    drop(rig);
+    let (mut rig, sink) = built_in(ctx, &rbs_filters::PointerHalo, (w, h));
+    sink.pointer(rbs_input::PointerSample {
+        time: Timestamp::from_nanos(1),
+        at: DesktopPoint::new(f64::from(w) / 2.0, f64::from(h) / 2.0),
+    });
+    c.bench_function("pointer-halo/drawing", |b| {
+        b.iter(|| {
+            rig.tick();
+            black_box(());
+        });
+        ctx.wait_idle().unwrap();
+    });
+}
+
 fn bench(c: &mut Criterion) {
     let ctx = match GpuContext::new(&GpuRequest {
         allow_software: true,
@@ -158,6 +237,7 @@ fn bench(c: &mut Criterion) {
     };
     let (w, h) = (1920, 1080);
     pointer(c, &ctx, (w, h));
+    built_in_pointer_types(c, &ctx, (w, h));
     for ty in catalogue() {
         let name = ty
             .type_id()

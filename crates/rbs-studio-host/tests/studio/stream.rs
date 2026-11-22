@@ -22,30 +22,29 @@ use rbs_api::{ApiServer, TokenStore};
 use rbs_audio_io_test::TestAudioBackend;
 use rbs_capture_test::TestCaptureFactory;
 use rbs_codec::{
-    CreateError, EncodeError, EncoderChange, RateControl, VideoEncoder, VideoEncoderConfig,
-    VideoEncoderFactory, caps as codec_caps,
+    CreateError, EncodeError, EncoderChange, VideoEncoder, VideoEncoderConfig, VideoEncoderFactory,
+    caps as codec_caps,
 };
 use rbs_codec_mf::testing::FakeAacFactory;
 use rbs_core::capability::{CapabilitySet, CapabilityValue};
 use rbs_core::media::{
-    BitstreamFormat, Bytes, CodecId, ContainerId, EncodedPacket, StreamDescriptor, StreamParams,
-    VideoFrame,
+    BitstreamFormat, Bytes, CodecId, EncodedPacket, StreamDescriptor, StreamParams, VideoFrame,
 };
 use rbs_core::registry::{AdapterFactory, AdapterId, ProbeError};
 use rbs_core::time::TestClock;
 use rbs_engine::{Engine, EngineConfig};
 use rbs_gpu::{GpuContext, GpuError, GpuRequest};
-use rbs_record::{END_TAIL_LIMIT, RecordAdapters, VideoSettings};
+use rbs_record::{END_TAIL_LIMIT, RecordAdapters};
 use rbs_studio_host::record_profile::RecordProfile;
 use rbs_studio_host::stream_key::{ACCOUNT, KeyStore, MemoryKeyStore};
 use rbs_studio_host::stream_profile::StreamProfile;
 use rbs_studio_host::studio_host::{
-    Command, Fault, HostConfig, RecordRequest, RecordingUpdate, SourceKind, Stats, StreamRequest,
-    StreamUpdate, StudioHost, Update,
+    Command, Fault, HostConfig, RecordingUpdate, SourceKind, Stats, StreamUpdate, StudioHost,
+    Update,
 };
 use rbs_transport::{
-    ReconnectPolicy, SendOutcome, Transport, TransportConfig, TransportError, TransportEvent,
-    TransportFactory, TransportInput, TransportItem, TransportStats, caps as transport_caps,
+    SendOutcome, Transport, TransportConfig, TransportError, TransportEvent, TransportFactory,
+    TransportItem, TransportStats, caps as transport_caps,
 };
 
 /// Hang guard only: every wait ends as soon as its update arrives.
@@ -253,6 +252,34 @@ fn host_fault(
     clock: &TestClock,
     fault: Option<Fault>,
 ) -> (StudioHost, Receiver<Update>) {
+    let (host, rx) = host_early(gpu, keys, server, clock, fault);
+    // The window's stream settings, as it sends them at start: Go live
+    // (`stream.start`) reads them (ADR-0164 decision 3).
+    host.send(Command::SetStreamProfile(stream_settings()));
+    (host, rx)
+}
+
+/// The stream settings every test starts with: [`URL`], a saved key, no reconnect,
+/// 6 Mbit/s constant and 160 kbit/s sound.
+fn stream_settings() -> StreamProfile {
+    let mut p = StreamProfile::new();
+    p.server = URL.into();
+    p.key_saved = true;
+    p.reconnect = false;
+    p.encoding.rate_control = rbs_studio_host::record_profile::RateMode::Cbr;
+    p.encoding.video_kbps = 6000;
+    p.encoding.audio_kbps = 160;
+    p
+}
+
+/// A host whose window has not sent its stream settings yet.
+fn host_early(
+    gpu: Arc<GpuContext>,
+    keys: Arc<dyn KeyStore>,
+    server: Arc<Server>,
+    clock: &TestClock,
+    fault: Option<Fault>,
+) -> (StudioHost, Receiver<Update>) {
     let clock = clock.clone();
     let (tx, rx) = mpsc::channel();
     let mut config = HostConfig::desktop();
@@ -367,24 +394,6 @@ fn key_saved(rx: &Receiver<Update>) -> Result<bool, String> {
     })
 }
 
-fn request() -> StreamRequest {
-    let mut video = VideoSettings::default();
-    video.rate_control = RateControl::Cbr {
-        bitrate_bps: 6_000_000,
-    };
-    StreamRequest {
-        url: URL.into(),
-        input: TransportInput::Packets,
-        needs_key: true,
-        reconnect: ReconnectPolicy::Off,
-        transport_options: Vec::new(),
-        encoder: None,
-        video,
-        audio_bitrate_bps: 160_000,
-        size: None,
-    }
-}
-
 fn add_display(host: &StudioHost, rx: &Receiver<Update>) {
     host.send(Command::ListTargets(SourceKind::Screen));
     let display = next(rx, |u| match u {
@@ -407,7 +416,7 @@ fn streams_take_the_key_from_the_store_and_report_their_connection() {
     add_display(&host, &rx);
 
     // RTMP without a saved key: nothing opens.
-    host.send(Command::StartStream(request()));
+    host.send(crate::go_live(rbs_api::types::OutputTarget::Main));
     assert_eq!(stream(&rx), StreamUpdate::NoKey);
     assert!(server.sessions.lock().unwrap().is_empty());
 
@@ -417,7 +426,7 @@ fn streams_take_the_key_from_the_store_and_report_their_connection() {
     assert_eq!(key_saved(&rx), Ok(true));
     assert_eq!(keys.read(ACCOUNT).unwrap().unwrap().expose(), "live_abc");
 
-    host.send(Command::StartStream(request()));
+    host.send(crate::go_live(rbs_api::types::OutputTarget::Main));
     match stream(&rx) {
         StreamUpdate::Started {
             url,
@@ -452,18 +461,7 @@ fn streams_take_the_key_from_the_store_and_report_their_connection() {
     // stream at a time.
     let file = std::env::temp_dir().join(format!("rbs-app-stream-{}.mkv", std::process::id()));
     let _ = std::fs::remove_file(&file);
-    host.send(Command::StartRecording(RecordRequest {
-        path: file.clone(),
-        container: ContainerId::Matroska,
-        encoder: None,
-        video: Some(VideoSettings::default()),
-        audio_bitrate_bps: 128_000,
-        bit_depth: None,
-        size: None,
-        iso: false,
-        editor_project: None,
-        markers: Default::default(),
-    }));
+    host.send(crate::record_file(&file));
     let recording = |rx: &_| {
         next(rx, |u| match u {
             Update::Recording(r) => Some(r),
@@ -495,7 +493,7 @@ fn streams_take_the_key_from_the_store_and_report_their_connection() {
         other => panic!("{other:?}"),
     }
     let _ = std::fs::remove_file(&file);
-    host.send(Command::StartStream(request()));
+    host.send(crate::go_live(rbs_api::types::OutputTarget::Main));
     match stream(&rx) {
         StreamUpdate::NotStarted(why) => assert!(why.contains("already"), "{why}"),
         other => panic!("{other:?}"),
@@ -557,7 +555,7 @@ fn a_stream_the_server_refuses_ends_with_its_reason() {
         .unwrap();
     let server = Arc::new(Server::default());
     let (host, rx) = host(gpu, keys, Arc::clone(&server), &TestClock::new());
-    host.send(Command::StartStream(request()));
+    host.send(crate::go_live(rbs_api::types::OutputTarget::Main));
     assert!(matches!(stream(&rx), StreamUpdate::Started { .. }));
     link_where(&rx, |l| l.connected);
     server
@@ -582,7 +580,7 @@ fn a_stream_the_server_refuses_ends_with_its_reason() {
         other => panic!("{other:?}"),
     }
     // The host is ready for the next one.
-    host.send(Command::StartStream(request()));
+    host.send(crate::go_live(rbs_api::types::OutputTarget::Main));
     assert!(matches!(stream(&rx), StreamUpdate::Started { .. }));
     host.send(Command::Api {
         call: Box::new(rbs_api::Command::StreamStop(rbs_api::request::OnCanvases {
@@ -615,7 +613,7 @@ fn a_stream_start_that_panics_after_the_output_started_stops_that_output() {
         &TestClock::new(),
         Some(Fault::AfterStreamStart),
     );
-    host.send(Command::StartStream(request()));
+    host.send(crate::go_live(rbs_api::types::OutputTarget::Main));
     match stream(&rx) {
         StreamUpdate::NotStarted(why) => assert_eq!(why, rbs_crash::CAUGHT_TEXT),
         other => panic!("{other:?}"),
@@ -626,7 +624,7 @@ fn a_stream_start_that_panics_after_the_output_started_stops_that_output() {
     });
     assert_eq!(stopped, 1);
     // The one panic is spent: the next start is tracked and ends.
-    host.send(Command::StartStream(request()));
+    host.send(crate::go_live(rbs_api::types::OutputTarget::Main));
     assert!(matches!(stream(&rx), StreamUpdate::Started { .. }));
     host.send(Command::Api {
         call: Box::new(rbs_api::Command::StreamStop(rbs_api::request::OnCanvases {
@@ -656,7 +654,7 @@ fn a_stream_end_that_panics_half_way_still_ends_the_stream() {
         &TestClock::new(),
         Some(Fault::InStreamEnd),
     );
-    host.send(Command::StartStream(request()));
+    host.send(crate::go_live(rbs_api::types::OutputTarget::Main));
     assert!(matches!(stream(&rx), StreamUpdate::Started { .. }));
     host.send(Command::Api {
         call: Box::new(rbs_api::Command::StreamStop(rbs_api::request::OnCanvases {
@@ -678,7 +676,7 @@ fn a_stream_end_that_panics_half_way_still_ends_the_stream() {
         }
         other => panic!("{other:?}"),
     }
-    host.send(Command::StartStream(request()));
+    host.send(crate::go_live(rbs_api::types::OutputTarget::Main));
     assert!(matches!(stream(&rx), StreamUpdate::Started { .. }));
     host.send(Command::Api {
         call: Box::new(rbs_api::Command::StreamStop(rbs_api::request::OnCanvases {
@@ -757,7 +755,7 @@ fn record_when_the_stream_starts_records_with_the_stream_and_stops_with_it() {
 
     // Off (the default): going live records nothing.
     host.send(Command::SetStreamProfile(stream_profile.clone()));
-    host.send(Command::StartStream(request()));
+    host.send(crate::go_live(rbs_api::types::OutputTarget::Main));
     assert!(matches!(stream(&rx), StreamUpdate::Started { .. }));
     no_recording_stops(&host, &rx, &clock);
     host.send(Command::Api {
@@ -773,7 +771,7 @@ fn record_when_the_stream_starts_records_with_the_stream_and_stops_with_it() {
     host.send(Command::SetProfile(first.clone()));
     stream_profile.auto_record = true;
     host.send(Command::SetStreamProfile(stream_profile.clone()));
-    host.send(Command::StartStream(request()));
+    host.send(crate::go_live(rbs_api::types::OutputTarget::Main));
     assert!(matches!(stream(&rx), StreamUpdate::Started { .. }));
     match recording(&rx) {
         RecordingUpdate::Started { path, .. } => assert!(path.starts_with(&first.folder)),
@@ -804,20 +802,9 @@ fn record_when_the_stream_starts_records_with_the_stream_and_stops_with_it() {
     // one starts.
     let manual = std::env::temp_dir().join(format!("rbs-auto-manual-{}.mkv", std::process::id()));
     let _ = std::fs::remove_file(&manual);
-    host.send(Command::StartRecording(RecordRequest {
-        path: manual.clone(),
-        container: ContainerId::Matroska,
-        encoder: None,
-        video: Some(VideoSettings::default()),
-        audio_bitrate_bps: 128_000,
-        bit_depth: None,
-        size: None,
-        iso: false,
-        editor_project: None,
-        markers: Default::default(),
-    }));
+    host.send(crate::record_file(&manual));
     assert!(matches!(recording(&rx), RecordingUpdate::Started { .. }));
-    host.send(Command::StartStream(request()));
+    host.send(crate::go_live(rbs_api::types::OutputTarget::Main));
     assert!(matches!(stream(&rx), StreamUpdate::Started { .. }));
     host.send(Command::Api {
         call: Box::new(rbs_api::Command::StreamStop(rbs_api::request::OnCanvases {
@@ -851,7 +838,7 @@ fn record_when_the_stream_starts_records_with_the_stream_and_stops_with_it() {
     // viewers missed.
     let second = record_profile("second");
     host.send(Command::SetProfile(second.clone()));
-    host.send(Command::StartStream(request()));
+    host.send(crate::go_live(rbs_api::types::OutputTarget::Main));
     assert!(matches!(stream(&rx), StreamUpdate::Started { .. }));
     assert!(matches!(recording(&rx), RecordingUpdate::Started { .. }));
     link_where(&rx, |l| l.connected);
@@ -866,7 +853,7 @@ fn record_when_the_stream_starts_records_with_the_stream_and_stops_with_it() {
     no_recording_stops(&host, &rx, &clock);
     // Going live again does not start another one, and ending that stream leaves the
     // recording to the user.
-    host.send(Command::StartStream(request()));
+    host.send(crate::go_live(rbs_api::types::OutputTarget::Main));
     assert!(matches!(stream(&rx), StreamUpdate::Started { .. }));
     host.send(Command::Api {
         call: Box::new(rbs_api::Command::StreamStop(rbs_api::request::OnCanvases {
@@ -1060,7 +1047,7 @@ fn a_control_api_client_goes_live_and_ends_the_stream() {
     let Some(gpu) = gpu() else { return };
     let keys = Arc::new(MemoryKeyStore::new());
     let server = Arc::new(Server::default());
-    let (host, rx) = host(gpu, keys, Arc::clone(&server), &TestClock::new());
+    let (host, rx) = host_early(gpu, keys, Arc::clone(&server), &TestClock::new(), None);
     let (api, mut c) = api_client(&host);
     let sub = c.call(
         "events.subscribe",
@@ -1169,7 +1156,7 @@ fn a_control_api_client_goes_live_and_ends_the_stream() {
     assert_eq!(stop["error"]["data"]["kind"], "conflict", "{stop}");
 
     // A stream the UI starts reaches API clients too, and so does its failure.
-    host.send(Command::StartStream(request()));
+    host.send(crate::go_live(rbs_api::types::OutputTarget::Main));
     assert!(matches!(stream(&rx), StreamUpdate::Started { .. }));
     c.stream_state(|d| d["state"] == "live" && d["connected"] == true);
     server
@@ -1195,7 +1182,7 @@ fn stream_settings_are_read_and_changed_through_settings_but_never_the_server() 
     let Some(gpu) = gpu() else { return };
     let keys = Arc::new(MemoryKeyStore::new());
     let server = Arc::new(Server::default());
-    let (host, rx) = host(gpu, keys, Arc::clone(&server), &TestClock::new());
+    let (host, rx) = host_early(gpu, keys, Arc::clone(&server), &TestClock::new(), None);
     let (api, mut c) = api_client(&host);
     let none = serde_json::json!({});
     c.call(

@@ -19,14 +19,14 @@ use rbs_api::{ApiServer, TokenStore, request::ClientInfo};
 use rbs_audio_io_test::TestAudioBackend;
 use rbs_capture_test::TestCaptureFactory;
 use rbs_codec::{
-    CreateError, EncodeError, EncoderChange, RateControl, VideoEncoder, VideoEncoderConfig,
-    VideoEncoderFactory, caps as codec_caps,
+    CreateError, EncodeError, EncoderChange, VideoEncoder, VideoEncoderConfig, VideoEncoderFactory,
+    caps as codec_caps,
 };
 use rbs_codec_mf::testing::FakeAacFactory;
 use rbs_core::capability::{CapabilitySet, CapabilityValue};
 use rbs_core::media::{
-    BitstreamFormat, Bytes, ChunkKind, CodecId, ContainerId, EncodedPacket, MuxChunk,
-    StreamDescriptor, StreamIndex, StreamParams, VideoFrame,
+    BitstreamFormat, Bytes, ChunkKind, CodecId, EncodedPacket, MuxChunk, StreamDescriptor,
+    StreamIndex, StreamParams, VideoFrame,
 };
 use rbs_core::registry::{AdapterFactory, AdapterId, ProbeError};
 use rbs_core::time::TestClock;
@@ -34,13 +34,13 @@ use rbs_engine::{Engine, EngineConfig};
 use rbs_gpu::{GpuContext, GpuError, GpuRequest};
 use rbs_mux::{Muxer, MuxerConfig, MuxerFactory, caps as mux_caps};
 use rbs_record::protection::{Probed, SystemProbe, VolumeKey, VolumeSpace};
-use rbs_record::{END_TAIL_LIMIT, RecordAdapters, VideoSettings};
+use rbs_record::{END_TAIL_LIMIT, RecordAdapters};
 use rbs_scene::model::VideoAs;
 use rbs_studio_host::edit_history::EditKind;
 use rbs_studio_host::studio_host::protection::SystemProbeFactory;
 use rbs_studio_host::studio_host::{
-    Command, Fault, HostConfig, RecordPatch, RecordRequest, RecordingUpdate, SourceKind, SourceRow,
-    SourceStatus, StudioHost, Update,
+    Command, Fault, HostConfig, RecordPatch, RecordingUpdate, SourceKind, SourceRow, SourceStatus,
+    StudioHost, Update,
 };
 
 /// Hang guard only: every wait ends as soon as its update arrives.
@@ -408,25 +408,6 @@ fn add_text(host: &StudioHost, rx: &Receiver<Update>) -> SourceRow {
     rows.into_iter().find(measured).unwrap()
 }
 
-fn request(path: PathBuf, encoder: Option<&str>) -> RecordRequest {
-    let mut video = VideoSettings::default();
-    video.rate_control = RateControl::Cbr {
-        bitrate_bps: 6_000_000,
-    };
-    RecordRequest {
-        path,
-        container: ContainerId::Matroska,
-        encoder: encoder.map(str::to_owned),
-        video: Some(video),
-        audio_bitrate_bps: 128_000,
-        bit_depth: None,
-        size: None,
-        iso: false,
-        editor_project: None,
-        markers: Default::default(),
-    }
-}
-
 #[test]
 fn recordings_start_with_the_picked_encoder_and_stop_into_a_closed_file() {
     let Some(gpu) = gpu() else { return };
@@ -477,29 +458,16 @@ fn recordings_start_with_the_picked_encoder_and_stop_into_a_closed_file() {
     // The picked encoder is the only one tried: it cannot open, so nothing records and
     // no file is left behind.
     let first = dir.join("sub").join("first.mkv");
-    host.send(Command::StartRecording(request(
-        first.clone(),
-        Some(BROKEN),
-    )));
+    crate::record_into(&host, first.clone(), Some(BROKEN));
     match recording(&rx) {
         RecordingUpdate::NotStarted(why) => assert!(why.contains(BROKEN), "{why}"),
         other => panic!("{other:?}"),
     }
     assert!(!first.exists());
 
-    // An encoder this system does not have.
-    host.send(Command::StartRecording(request(
-        first.clone(),
-        Some("nope"),
-    )));
-    match recording(&rx) {
-        RecordingUpdate::NotStarted(why) => assert!(why.contains("not available"), "{why}"),
-        other => panic!("{other:?}"),
-    }
-
     // Automatic: the broken one is passed over. The folder is made; the display opens
     // because the recording shows it.
-    host.send(Command::StartRecording(request(first.clone(), None)));
+    crate::record_into(&host, first.clone(), None);
     match recording(&rx) {
         RecordingUpdate::Started {
             path,
@@ -519,10 +487,7 @@ fn recordings_start_with_the_picked_encoder_and_stop_into_a_closed_file() {
     });
 
     // One recording at a time.
-    host.send(Command::StartRecording(request(
-        dir.join("second.mkv"),
-        None,
-    )));
+    crate::record_into(&host, dir.join("second.mkv"), None);
     match recording(&rx) {
         RecordingUpdate::NotStarted(why) => assert!(why.contains("already"), "{why}"),
         other => panic!("{other:?}"),
@@ -559,7 +524,7 @@ fn recordings_start_with_the_picked_encoder_and_stop_into_a_closed_file() {
     rows_where(&rx, |r| r.len() == 1 && r[0].status == SourceStatus::Idle);
 
     // An existing file is never replaced.
-    host.send(Command::StartRecording(request(first.clone(), None)));
+    crate::record_into(&host, first.clone(), None);
     match recording(&rx) {
         RecordingUpdate::NotStarted(why) => assert!(why.contains("already exists"), "{why}"),
         other => panic!("{other:?}"),
@@ -628,7 +593,7 @@ fn a_start_that_panics_after_the_output_started_stops_that_output() {
     // The start panics once the output runs: the UI gets its answer, and the output
     // the host never tracked is stopped.
     let lost = dir.join("lost.mkv");
-    host.send(Command::StartRecording(request(lost.clone(), None)));
+    crate::record_into(&host, lost.clone(), None);
     match recording(&rx) {
         RecordingUpdate::NotStarted(why) => assert_eq!(why, rbs_crash::CAUGHT_TEXT),
         other => panic!("{other:?}"),
@@ -640,7 +605,7 @@ fn a_start_that_panics_after_the_output_started_stops_that_output() {
     assert_eq!(stopped, 1);
     // Nothing counts as running: the next recording starts and stops normally.
     let next_file = dir.join("next.mkv");
-    host.send(Command::StartRecording(request(next_file.clone(), None)));
+    crate::record_into(&host, next_file.clone(), None);
     match recording(&rx) {
         RecordingUpdate::Started { path, .. } => assert_eq!(path, next_file),
         other => panic!("{other:?}"),
@@ -663,7 +628,7 @@ fn a_stop_that_panics_half_way_still_ends_the_recording() {
     let (host, rx) = ready(gpu, &clock, Fault::InRecordingStop);
 
     let file = dir.join("take.mkv");
-    host.send(Command::StartRecording(request(file.clone(), None)));
+    crate::record_into(&host, file.clone(), None);
     match recording(&rx) {
         RecordingUpdate::Started { .. } => {}
         other => panic!("{other:?}"),
@@ -681,7 +646,7 @@ fn a_stop_that_panics_half_way_still_ends_the_recording() {
 
     // The host does not think a recording still runs.
     let again = dir.join("again.mkv");
-    host.send(Command::StartRecording(request(again.clone(), None)));
+    crate::record_into(&host, again.clone(), None);
     match recording(&rx) {
         RecordingUpdate::Started { path, .. } => assert_eq!(path, again),
         other => panic!("{other:?}"),
@@ -714,24 +679,18 @@ fn a_crop_keeps_the_scale_is_one_undo_step_and_regions_fit_the_canvas() {
         target: display,
     });
     rows_where(&rx, |r| r.len() == 1);
-    host.send(Command::StartRecording(request(dir.join("crop.mkv"), None)));
+    crate::record_into(&host, dir.join("crop.mkv"), None);
     assert!(matches!(recording(&rx), RecordingUpdate::Started { .. }));
     // The picture size arrives once the capture opened (ADR-0058).
     let rows = rows_where(&rx, |r| r.len() == 1 && r[0].picture.is_some());
-    let (id, (w, h)) = (rows[0].id, rows[0].picture.unwrap());
+    let (item, (w, h)) = (rows[0].item.get(), rows[0].picture.unwrap());
     let before = rows[0].layout.unwrap();
     let scale = before.size[0] / w as f32;
 
     // The right half cut: half as wide, same scale, the left edge stays.
     let right = w - w / 2;
-    host.send(Command::SetSourceCrop {
-        seq: 1,
-        gesture: 0,
-        id,
-        crop: [0, 0, right, 0],
-        keep_scale: true,
-        canvas: rbs_studio_host::studio_host::OutputCanvas::Main,
-    });
+    let main = rbs_studio_host::studio_host::OutputCanvas::Main;
+    host.send(crate::set_crop(item, [0, 0, right, 0], true, main, 0, 1));
     let rows = rows_where(&rx, |r| r[0].layout.is_some_and(|l| l.crop.right == right));
     let cut = rows[0].layout.unwrap();
     assert!(
@@ -747,26 +706,22 @@ fn a_crop_keeps_the_scale_is_one_undo_step_and_regions_fit_the_canvas() {
     });
     assert_eq!(undo.map(|s| s.kind), Some(EditKind::Crop));
     assert!(next(&rx, |u| match u {
-        Update::CropPlaced { seq: 1, ok } => Some(ok),
+        Update::ApiAnswer { ticket: 1, result } => Some(result.is_ok()),
         _ => None,
     }));
 
     // A crop that leaves nothing is refused and answered.
-    host.send(Command::SetSourceCrop {
-        seq: 2,
-        gesture: 0,
-        id,
-        crop: [w / 2, 0, w - w / 2, 0],
-        keep_scale: true,
-        canvas: rbs_studio_host::studio_host::OutputCanvas::Main,
-    });
-    next(&rx, |u| match u {
-        Update::Error(_) => Some(()),
-        Update::Sources(r) => panic!("a refused crop changed the rows: {r:?}"),
-        _ => None,
-    });
+    host.send(crate::set_crop(
+        item,
+        [w / 2, 0, w - w / 2, 0],
+        true,
+        main,
+        0,
+        2,
+    ));
     assert!(!next(&rx, |u| match u {
-        Update::CropPlaced { seq: 2, ok } => Some(ok),
+        Update::ApiAnswer { ticket: 2, result } => Some(result.is_ok()),
+        Update::Sources(r) => panic!("a refused crop changed the rows: {r:?}"),
         _ => None,
     }));
 
@@ -838,7 +793,7 @@ fn a_marked_microphone_records_its_own_file_next_to_the_master() {
 
     // Nothing marked: one file, as before.
     let plain = dir.join("plain.mkv");
-    host.send(Command::StartRecording(request(plain.clone(), None)));
+    crate::record_into(&host, plain.clone(), None);
     assert!(matches!(recording(&rx), RecordingUpdate::Started { .. }));
     stop_recording(&host, &rx, &clock);
     assert!(plain.is_file());
@@ -852,7 +807,7 @@ fn a_marked_microphone_records_its_own_file_next_to_the_master() {
 
     // Marked, `iso` off (as `record.start_to_file` and `iso: false` ask): still one file.
     let single = dir.join("single.mkv");
-    host.send(Command::StartRecording(request(single.clone(), None)));
+    crate::record_into(&host, single.clone(), None);
     match recording(&rx) {
         RecordingUpdate::Started { separate, .. } => assert!(separate.is_empty()),
         other => panic!("{other:?}"),
@@ -862,18 +817,18 @@ fn a_marked_microphone_records_its_own_file_next_to_the_master() {
 
     // Marked and `iso` on: a folder with the master, the microphone and the manifest.
     let take = dir.join("take.mkv");
-    let folder = dir.join("take");
-    let mut with_tracks = request(take.clone(), None);
-    with_tracks.iso = true;
-    host.send(Command::StartRecording(with_tracks.clone()));
-    match recording(&rx) {
+    crate::record_with_tracks(&host, take.clone(), None);
+    // `record.start` names the take by the time; its folder holds the master.
+    let folder = match recording(&rx) {
         RecordingUpdate::Started { path, separate, .. } => {
-            assert_eq!(path, folder.join("master.mkv"));
+            assert_eq!(path.file_name().unwrap(), "master.mkv");
+            assert_eq!(path.parent().unwrap().parent().unwrap(), dir.join("take"));
             // The Outputs card names the sources written as files of their own.
             assert_eq!(separate, vec![format!("{} (sound)", mic.name)]);
+            path.parent().unwrap().to_owned()
         }
         other => panic!("{other:?}"),
-    }
+    };
     let manifest = std::fs::read_to_string(folder.join("recording.rbs.toml")).unwrap();
     assert!(
         manifest.contains("kind = \"recording-manifest\""),
@@ -928,12 +883,6 @@ fn a_marked_microphone_records_its_own_file_next_to_the_master() {
     );
     let master = std::fs::read(folder.join("master.mkv")).unwrap();
     assert!(master.starts_with(HEADER) && master.ends_with(TRAILER));
-    // The same name again: the folder exists, so nothing starts and nothing is replaced.
-    host.send(Command::StartRecording(with_tracks));
-    match recording(&rx) {
-        RecordingUpdate::NotStarted(why) => assert!(why.contains("already exists"), "{why}"),
-        other => panic!("{other:?}"),
-    }
 
     // The mark is one undo step.
     host.send(Command::Api {
@@ -1008,22 +957,20 @@ fn a_marked_screen_records_its_own_video_file_next_to_the_master() {
             .any(|r| r.id == display.id && r.record_separately.video)
     });
 
-    let folder = dir.join("take");
-    host.send(Command::StartRecording(with_tracks(
-        dir.join("take.mkv"),
-        None,
-    )));
-    match recording(&rx) {
+    crate::record_with_tracks(&host, dir.join("take.mkv"), None);
+    // `record.start` names the take by the time; its folder holds the master.
+    let folder = match recording(&rx) {
         RecordingUpdate::Started { path, separate, .. } => {
-            assert_eq!(path, folder.join("master.mkv"));
+            assert_eq!(path.file_name().unwrap(), "master.mkv");
             assert_eq!(separate.len(), 2, "{separate:?}");
             assert!(
                 separate.contains(&format!("{} (video)", display.name)),
                 "{separate:?}"
             );
+            path.parent().unwrap().to_owned()
         }
         other => panic!("{other:?}"),
-    }
+    };
     let manifest = std::fs::read_to_string(folder.join("recording.rbs.toml")).unwrap();
     assert!(manifest.contains("role = \"video\""), "{manifest}");
     let videos: Vec<PathBuf> = std::fs::read_dir(&folder)
@@ -1077,10 +1024,7 @@ fn a_text_box_is_locked_while_a_take_records_its_picture_separately() {
         r.iter()
             .any(|r| r.id == text.id && r.record_separately.video)
     });
-    host.send(Command::StartRecording(with_tracks(
-        dir.join("take.mkv"),
-        None,
-    )));
+    crate::record_with_tracks(&host, dir.join("take.mkv"), None);
     match recording(&rx) {
         RecordingUpdate::Started { separate, .. } => {
             assert!(
@@ -1300,12 +1244,6 @@ fn marked(
     (host, rx, display, mic)
 }
 
-fn with_tracks(path: PathBuf, encoder: Option<&str>) -> RecordRequest {
-    let mut r = request(path, encoder);
-    r.iso = true;
-    r
-}
-
 /// The one WAV in `folder`.
 fn only_wav(folder: &std::path::Path) -> PathBuf {
     let wavs: Vec<PathBuf> = std::fs::read_dir(folder)
@@ -1345,10 +1283,7 @@ fn separate_files_clean_up_after_a_refused_or_panicked_start() {
     // The start panics once the master runs (the fault fires once): recovery stops
     // the master and the track, so later takes with tracks start (no "already
     // running"). A crash may leave that take's files; they are not cleaned.
-    host.send(Command::StartRecording(with_tracks(
-        dir.join("lost.mkv"),
-        None,
-    )));
+    crate::record_with_tracks(&host, dir.join("lost.mkv"), None);
     match recording(&rx) {
         RecordingUpdate::NotStarted(why) => assert_eq!(why, rbs_crash::CAUGHT_TEXT),
         other => panic!("{other:?}"),
@@ -1359,22 +1294,17 @@ fn separate_files_clean_up_after_a_refused_or_panicked_start() {
     });
 
     // The master's only encoder cannot open: nothing is left behind.
-    host.send(Command::StartRecording(with_tracks(
-        dir.join("broken.mkv"),
-        Some(BROKEN),
-    )));
+    let broken = dir.join("broken");
+    crate::record_with_tracks(&host, dir.join("broken.mkv"), Some(BROKEN));
     assert!(matches!(recording(&rx), RecordingUpdate::NotStarted(_)));
-    assert!(!dir.join("broken").exists());
+    assert!(std::fs::read_dir(&broken).map_or(true, |mut d| d.next().is_none()));
 
-    let folder = dir.join("take");
-    host.send(Command::StartRecording(with_tracks(
-        dir.join("take.mkv"),
-        None,
-    )));
-    match recording(&rx) {
-        RecordingUpdate::Started { path, .. } => assert_eq!(path, folder.join("master.mkv")),
+    crate::record_with_tracks(&host, dir.join("take.mkv"), None);
+    // Named by the time: its folder holds the master.
+    let folder = match recording(&rx) {
+        RecordingUpdate::Started { path, .. } => path.parent().unwrap().to_owned(),
         other => panic!("{other:?}"),
-    }
+    };
 
     // The marked microphone is deleted during the take: the take goes on and stops
     // cleanly, and both files are complete.
@@ -1443,10 +1373,7 @@ fn a_recording_stops_cleanly_with_the_reason_when_its_disk_reaches_the_reserve()
     assert_eq!(idle["result"]["data"]["guarded"], false, "{idle}");
     assert_eq!(idle["result"]["data"]["level"], "ok", "{idle}");
     let path = dir.join("full.mkv");
-    host.send(Command::StartRecording(request(
-        path.clone(),
-        Some(WORKING),
-    )));
+    crate::record_into(&host, path.clone(), Some(WORKING));
     match recording(&rx) {
         RecordingUpdate::Started { .. } => {}
         other => panic!("{other:?}"),

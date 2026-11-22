@@ -15,8 +15,8 @@
 //! Record and stream at once (ADR-0047): with `RBS_ALSO_RECORD=/abs/path.mkv` a
 //! recording starts once the stream runs and stops a quarter of the time before the
 //! stream ends, while the stream goes on. It uses the recording defaults (12 Mbit/s,
-//! its own encoder) or, with `RBS_RECORD_SAME=1`, the stream's video settings (the
-//! encoders are shared).
+//! its own encoder) or, with `RBS_RECORD_SAME=1`, the stream's rates. Both start
+//! through the control API as the window's Go live and Record do (ADR-0164 step 6).
 
 #![allow(clippy::print_stdout, clippy::print_stderr, clippy::expect_used)] // A demo: setup errors end it.
 
@@ -25,14 +25,12 @@ use std::sync::Arc;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+use rbs_app::record_profile::{API_PROFILE_ID, RecordProfile};
 use rbs_app::stream_key;
 use rbs_app::stream_profile::{self, StreamProfile};
 use rbs_app::studio_host::{
-    Command, HostConfig, RecordRequest, RecordingUpdate, SourceKind, StreamRequest, StreamUpdate,
-    StudioHost, Update,
+    Command, HostConfig, RecordingUpdate, SourceKind, StreamUpdate, StudioHost, Update,
 };
-use rbs_core::media::ContainerId;
-use rbs_record::VideoSettings;
 use rbs_transport::Secret;
 
 fn main() -> ExitCode {
@@ -41,13 +39,10 @@ fn main() -> ExitCode {
         .next()
         .unwrap_or_else(|| "rtmp://127.0.0.1/live".into());
     let seconds: u64 = args.next().and_then(|s| s.parse().ok()).unwrap_or(20);
-    let server = match stream_profile::parse_server(&url) {
-        Ok(s) => s,
-        Err(e) => {
-            rbs_crash::errln!("{e}");
-            return ExitCode::FAILURE;
-        }
-    };
+    if let Err(e) = stream_profile::parse_server(&url) {
+        rbs_crash::errln!("{e}");
+        return ExitCode::FAILURE;
+    }
     let keys = stream_key::system();
     rbs_crash::outln!("key store: {}", keys.place());
     let new_key = std::env::var("RBS_STREAM_KEY")
@@ -138,27 +133,16 @@ fn main() -> ExitCode {
         }
     }
 
+    // Go live as the window sends it (ADR-0164 decision 3): the saved settings, then
+    // `stream.start`.
     let mut profile = StreamProfile::new();
     profile.server = url.clone();
-    let e = &profile.encoding;
-    host.send(Command::StartStream(StreamRequest {
-        url: url.clone(),
-        input: server.protocol.input(),
-        needs_key: server.protocol.needs_key(),
-        reconnect: profile.reconnect_policy(),
-        transport_options: profile.transport_options(),
-        encoder: None,
-        video: e.video_settings(),
-        audio_bitrate_bps: e.audio_bps(),
-        size: None,
-    }));
+    profile.key_saved = true;
+    let e = profile.encoding.clone();
+    host.send(Command::SetStreamProfile(profile));
+    call(&host, rbs_api::Command::StreamStart(Default::default()));
     let also_record = std::env::var_os("RBS_ALSO_RECORD").map(std::path::PathBuf::from);
     let same = std::env::var_os("RBS_RECORD_SAME").is_some_and(|v| v == "1");
-    let record_video = if same {
-        e.video_settings()
-    } else {
-        VideoSettings::default()
-    };
     let mut record_state = also_record.as_ref().map(|_| 0u8); // 0 not yet, 1 sent, 2 stop sent
     let mut record_ok = also_record.is_none();
     let start = Instant::now();
@@ -172,12 +156,12 @@ fn main() -> ExitCode {
                 "{:.1} s: stopping the recording",
                 start.elapsed().as_secs_f64()
             );
-            stop(&host, rbs_api::Command::RecordStop(Default::default()));
+            call(&host, rbs_api::Command::RecordStop(Default::default()));
             record_state = Some(2);
         }
         if left.is_zero() && !sent_end {
             rbs_crash::outln!("{:.1} s: ending the stream", start.elapsed().as_secs_f64());
-            stop(&host, rbs_api::Command::StreamStop(Default::default()));
+            call(&host, rbs_api::Command::StreamStop(Default::default()));
             sent_end = true;
         }
         let timeout = if sent_end {
@@ -202,18 +186,22 @@ fn main() -> ExitCode {
                     (&u, record_state, &also_record)
                 {
                     rbs_crash::outln!("recording to {} as well", path.display());
-                    host.send(Command::StartRecording(RecordRequest {
-                        path: path.clone(),
-                        container: ContainerId::Matroska,
-                        encoder: None,
-                        video: Some(record_video.clone()),
-                        audio_bitrate_bps: e.audio_bps(),
-                        bit_depth: None,
-                        size: None,
-                        iso: true,
-                        editor_project: None,
-                        markers: Default::default(),
-                    }));
+                    let mut p = RecordProfile::new();
+                    if same {
+                        p.rate_control = e.rate_control;
+                        p.video_kbps = e.video_kbps;
+                        p.max_video_kbps = e.max_video_kbps;
+                        p.audio_kbps = e.audio_kbps;
+                    }
+                    host.send(Command::SetProfile(p));
+                    call(
+                        &host,
+                        rbs_api::Command::RecordStartToFile(rbs_api::request::RecordStartToFile {
+                            profile: API_PROFILE_ID.into(),
+                            path: path.display().to_string(),
+                            canvas: None,
+                        }),
+                    );
                     record_state = Some(1);
                 }
                 match u {
@@ -261,8 +249,8 @@ fn main() -> ExitCode {
     }
 }
 
-/// Stops an output on the main canvas the way the studio window does (ADR-0163).
-fn stop(host: &StudioHost, call: rbs_api::Command) {
+/// Sends a control API call the way the studio window does (ADR-0163).
+fn call(host: &StudioHost, call: rbs_api::Command) {
     host.send(Command::Api {
         call: Box::new(call),
         reply: rbs_app::studio_host::ApiReply::Quiet,

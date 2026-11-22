@@ -36,6 +36,9 @@ impl StudioUi {
         if ticket == super::add_calls::BROWSER_TICKET {
             return self.browser_answer(result, out);
         }
+        if ticket & super::crop_calls::CROP_TICKET != 0 {
+            return self.crop_answer(ticket & !super::crop_calls::CROP_TICKET, result, out);
+        }
         if self.font.1 != Some(ticket) {
             return;
         }

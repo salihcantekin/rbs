@@ -125,7 +125,15 @@ impl Host {
         // the target publishes through `self.events`: the publisher moves out for the
         // call and `ApiTarget` swaps it back in while a command runs.
         let mut events = std::mem::take(&mut self.events);
-        let served = api.serve_one(&mut ApiTarget { host: self, notify }, &mut events, notify);
+        let served = api.serve_one(
+            &mut ApiTarget {
+                host: self,
+                notify,
+                window: false,
+            },
+            &mut events,
+            notify,
+        );
         self.events = events;
         self.api = Some(api);
         served

@@ -32,9 +32,9 @@ use rbs_app::stream_profile::{
 };
 use rbs_app::studio_host::{
     Command, EncoderInfo, EncoderOptions, HoldNote, MainDisplay, OutputCanvas, RecordPatch,
-    RecordPause, RecordRequest, RecordingUpdate, SEPARATE_VIDEO_LIMIT, SceneList, SourceKind,
-    SourceRow, SourceSettingsView, SourceStatus, Stats, StreamHold, StreamRequest, StreamUpdate,
-    StudioHost, SyncMeasurePhase, SyncMeasureRefusal, SyncMeasureView, Target, Update,
+    RecordPause, RecordingUpdate, SEPARATE_VIDEO_LIMIT, SceneList, SourceKind, SourceRow,
+    SourceSettingsView, SourceStatus, Stats, StreamHold, StreamRequest, StreamUpdate, StudioHost,
+    SyncMeasurePhase, SyncMeasureRefusal, SyncMeasureView, Target, Update,
 };
 use rbs_app::user_session::{
     DEFAULT_NAME, RECORDING, RECORDING_VERTICAL, STREAM, STREAM_VERTICAL, UserSession,
@@ -82,6 +82,7 @@ pub(crate) mod ai;
 mod api_call;
 pub(crate) mod attributes;
 pub(crate) mod browser_props;
+mod crop_calls;
 pub(crate) mod destinations;
 pub(crate) mod filters;
 mod item_calls;
@@ -2187,17 +2188,6 @@ impl StudioUi {
         self.send_settings(id, patch, 0);
     }
 
-    /// A target of the Source tab's list was chosen: the source points at it.
-    pub fn retarget_source(&mut self, id: i32, index: i32) {
-        let Some(target) = self.source_target_list.get(index as usize).cloned() else {
-            return;
-        };
-        self.send(Command::RetargetSource {
-            id: SourceId::from_raw(id as u32),
-            target,
-        });
-    }
-
     /// Play or pause a media file, by its play state now (ADR-0108 decision 10).
     pub fn media_play_pause(&mut self, id: i32) {
         let playing = self
@@ -2702,14 +2692,14 @@ impl StudioUi {
             return;
         }
         self.deleted.clear();
-        self.send(Command::SetSourceCrop {
-            seq: 0,
-            gesture: ui_gesture(gesture),
-            id: SourceId::from_raw(id as u32),
-            crop: crop.map(|v| v.max(0) as u32),
-            keep_scale: true,
-            canvas: self.props_target(id),
-        });
+        let canvas = self.props_target(id);
+        self.send_crop(
+            0,
+            id,
+            crop.map(|v| v.max(0) as u32),
+            ui_gesture(gesture),
+            canvas,
+        );
     }
 
     /// Shape and border of a video source's picture (the Properties fields). `shape`:
@@ -2971,14 +2961,7 @@ impl StudioUi {
                 if self.host.is_none() {
                     self.edit.reset();
                 } else {
-                    self.send(Command::SetSourceCrop {
-                        seq,
-                        gesture,
-                        id: SourceId::from_raw(id as u32),
-                        crop,
-                        keep_scale: true,
-                        canvas: OutputCanvas::Main,
-                    });
+                    self.send_crop(seq, id, crop, gesture, OutputCanvas::Main);
                 }
             }
         }
@@ -2999,18 +2982,18 @@ impl StudioUi {
                 if self.host.is_none() {
                     self.vedit.reset();
                 } else {
-                    self.send(Command::SetSourceCrop {
-                        seq: seq | VERTICAL_SEQ,
-                        gesture: if gesture == 0 {
-                            0
-                        } else {
-                            gesture | VERTICAL_SEQ
-                        },
-                        id: SourceId::from_raw(id as u32),
+                    let gesture = if gesture == 0 {
+                        0
+                    } else {
+                        gesture | VERTICAL_SEQ
+                    };
+                    self.send_crop(
+                        seq | VERTICAL_SEQ,
+                        id,
                         crop,
-                        keep_scale: true,
-                        canvas: OutputCanvas::Vertical,
-                    });
+                        gesture,
+                        OutputCanvas::Vertical,
+                    );
                 }
             }
         }
@@ -3773,16 +3756,10 @@ impl StudioUi {
             self.set_note(why, true);
             return;
         }
-        let request = request_of(
-            p,
-            p.file_for(chrono::Local::now().naive_local()),
-            self.encoder_id(&p.encoding()),
-            p.output_size.map(OutputSize::pair),
-        );
         self.rec_file_audio = p.format.is_audio_only();
         self.rec_state = rec_state::STARTING;
         self.set_note(String::new(), false);
-        self.send(Command::StartRecording(request));
+        self.start_output(true, rbs_api::types::OutputTarget::Main);
     }
 
     pub fn stop_recording(&mut self) {
@@ -4065,7 +4042,7 @@ impl StudioUi {
         self.st_link = Link::default();
         self.st_note.clear();
         self.st_bad = false;
-        self.send(Command::StartStream(request));
+        self.start_output(false, rbs_api::types::OutputTarget::Main);
     }
 
     /// Ends the stream (the panel asked first).
@@ -4260,21 +4237,8 @@ impl StudioUi {
         if let Some(why) = p.problem() {
             return Err(vertical_why(&why));
         }
-        // No vertical section yet: encode at the vertical canvas, not at the
-        // main recording's size (ADR-0102).
-        let size = self
-            .vertical_profile
-            .as_ref()
-            .and_then(|v| v.output_size)
-            .map(OutputSize::pair);
-        let request = request_of(
-            p,
-            p.vertical_file_for(chrono::Local::now().naive_local()),
-            self.encoder_id(&p.encoding()),
-            size,
-        );
         self.vertical_rec = VerticalOut::Starting;
-        self.send(Command::StartVerticalRecording(request));
+        self.start_output(true, rbs_api::types::OutputTarget::Vertical);
         Ok(())
     }
 
@@ -4295,13 +4259,13 @@ impl StudioUi {
         if let Some(why) = &self.cannot_record {
             return Err(vertical_why(why));
         }
-        let request = match self.stream_request(OutputCanvas::Vertical) {
-            Ok(r) => r,
+        match self.stream_request(OutputCanvas::Vertical) {
+            Ok(_) => {}
             Err((_, true)) => return Err(vertical_why(VERTICAL_SETUP)),
             Err((why, false)) => return Err(vertical_why(&why)),
-        };
+        }
         self.vertical_st = VerticalOut::Starting;
-        self.send(Command::StartVerticalStream(request));
+        self.start_output(false, rbs_api::types::OutputTarget::Vertical);
         Ok(())
     }
 
@@ -5773,16 +5737,6 @@ impl StudioUi {
                 self.run_vertical(next);
             }
             Update::BoxPlaced { seq, ok } => {
-                let next = self.edit.answered(seq, ok);
-                self.run(next);
-            }
-            Update::CropPlaced { seq, ok } if seq & VERTICAL_SEQ != 0 => {
-                let next = self.vedit.answered(seq & !VERTICAL_SEQ, ok);
-                self.run_vertical(next);
-            }
-            // Crops from the Properties fields are numbered 0, which the picture
-            // panel never uses.
-            Update::CropPlaced { seq, ok } => {
                 let next = self.edit.answered(seq, ok);
                 self.run(next);
             }
@@ -7480,27 +7434,6 @@ fn size_index(
     saved: Option<OutputSize>,
 ) -> i32 {
     options.iter().position(|o| o.size == saved).unwrap_or(0) as i32
-}
-
-fn request_of(
-    profile: &RecordProfile,
-    path: PathBuf,
-    encoder: Option<String>,
-    size: Option<(u32, u32)>,
-) -> RecordRequest {
-    let start = profile.recording_start(encoder, size);
-    RecordRequest {
-        path,
-        container: start.container,
-        encoder: start.encoder,
-        video: start.video,
-        audio_bitrate_bps: start.audio_bitrate_bps,
-        bit_depth: start.bit_depth,
-        size: start.size,
-        iso: true,
-        editor_project: profile.editor_project,
-        markers: profile.markers,
-    }
 }
 
 pub(crate) fn strings(items: impl IntoIterator<Item = String>) -> ModelRc<SharedString> {

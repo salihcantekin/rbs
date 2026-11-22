@@ -130,22 +130,11 @@ impl ApiTarget<'_> {
                 ))
             }
             C::SourceRetarget(p) => {
-                let target = Target {
-                    name: String::new(),
-                    adapter: p.adapter,
-                    target: p.target,
-                    is_default: false,
-                    size: None,
-                    app: None,
-                    recent: None,
-                    picker: false,
-                    mic: None,
-                    sound: false,
-                };
-                if host
-                    .retarget_source(SourceId::from_raw(p.source), &target)
-                    .map_err(|e| refused(&e))?
-                {
+                let id = SourceId::from_raw(p.source);
+                // For every caller the host's own list gives the name, the app and the
+                // sound (ADR-0164 decision 6); a target it does not list is refused.
+                let target = host.listed_target(id, &p.adapter, &p.target)?;
+                if host.retarget_source(id, &target).map_err(|e| refused(&e))? {
                     host.apply(notify);
                 }
                 Ok(Response::Done(Empty {}))

@@ -1286,16 +1286,7 @@ impl Host {
             keys::TARGET.into(),
             SettingValue::Text(target.target.clone()),
         );
-        // A target made from an API call has no name: the listed one gives the hints.
-        let hints = match (target.name.is_empty(), kind) {
-            (true, Some(kind)) => self
-                .targets(kind)
-                .iter()
-                .find(|t| t.adapter == target.adapter && t.target == target.target)
-                .map(hints_of)
-                .unwrap_or_default(),
-            _ => hints_of(target),
-        };
+        let hints = hints_of(target);
         let undo = self
             .collection
             .set_source_settings_and_hints(id, settings, hints)
@@ -1308,6 +1299,34 @@ impl Host {
             self.remember_target(kind, &target.adapter, &target.target, &target.name);
         }
         Ok(true)
+    }
+
+    /// The target `adapter` / `target` as this host lists it for `id`'s kind (no OS
+    /// picker entry): `not_found` for an unknown source or a target not listed.
+    pub(super) fn listed_target(
+        &self,
+        id: SourceId,
+        adapter: &str,
+        target: &str,
+    ) -> Result<Target, ApiError> {
+        let source = self.collection.source(id).ok_or_else(|| {
+            ApiError::new(
+                ErrorKind::NotFound,
+                format!("there is no source {}", id.get()),
+            )
+        })?;
+        SourceKind::of(&source.type_id)
+            .and_then(|kind| {
+                self.targets(kind)
+                    .into_iter()
+                    .find(|t| !t.picker && t.adapter == adapter && t.target == target)
+            })
+            .ok_or_else(|| {
+                ApiError::new(
+                    ErrorKind::NotFound,
+                    format!("{adapter} does not list the target {target} for this source"),
+                )
+            })
     }
 
     pub(super) fn rename_source(&mut self, id: SourceId, name: &str) -> Result<bool, Refusal> {

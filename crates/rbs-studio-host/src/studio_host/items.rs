@@ -803,35 +803,6 @@ impl Host {
                 );
                 notify(Update::BoxPlaced { seq, ok });
             }
-            Command::SetSourceCrop {
-                seq,
-                gesture,
-                id,
-                crop,
-                keep_scale,
-                canvas,
-            } => {
-                let [l, t, r, b] = crop;
-                let edit = self
-                    .item_of(id)
-                    .map_err(|e| CropRefusal::NotFound(e.into_text()))
-                    .map(|(_, item)| item.id)
-                    .and_then(|item| {
-                        self.set_item_crop(item, Crop::new(l, t, r, b), keep_scale, gesture, canvas)
-                    });
-                let ok = match edit {
-                    Ok(true) => {
-                        self.apply(notify);
-                        true
-                    }
-                    Ok(false) => true,
-                    Err(e) => {
-                        notify(Update::Error(e.text()));
-                        false
-                    }
-                };
-                notify(Update::CropPlaced { seq, ok });
-            }
             // Routed elsewhere by `Host::command`.
             _ => {}
         }

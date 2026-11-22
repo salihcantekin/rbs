@@ -493,18 +493,28 @@ impl ApiTarget<'_> {
         only: Option<u32>,
     ) -> Result<Response, ApiError> {
         let notify = self.notify;
+        // The window's Go live is told as its own start was: the texts name the
+        // server (the window is the local user's), and a missing key is `NoKey`.
+        let window = self.window && only.is_none();
+        let tell = |u: StreamUpdate| {
+            if window {
+                notify(stream_update(c, u));
+            }
+        };
         let host = &mut *self.host;
         host.note_encoders(notify);
         if let Some(why) = &host.recording.cannot_record {
-            return Err(failed(why.clone()));
+            tell(StreamUpdate::NotStarted(why.clone()));
+            return Err(failed_because("recording_blocked", why.clone()));
         }
         if host.outs[slot(c)].streaming.is_some() {
-            return Err(ApiError::new(
-                ErrorKind::Conflict,
-                "a stream is already running",
-            ));
+            let why = "a stream is already running";
+            tell(StreamUpdate::NotStarted(why.into()));
+            return Err(ApiError::new(ErrorKind::Conflict, why));
         }
-        let (request, hidden) = host.api_stream_request(c, only)?;
+        let (request, hidden) = host.api_stream_request(c, only).inspect_err(|e| {
+            tell(StreamUpdate::NotStarted(e.message.clone()));
+        })?;
         let hide = |why: String| {
             failed(
                 hidden
@@ -539,6 +549,15 @@ impl ApiTarget<'_> {
                         audio_encoder,
                     },
                 ));
+                if window {
+                    // Each destination that did not start, by name (ADR-0127
+                    // decision 7), as the window's own start said.
+                    for d in &host.outs[slot(c)].destinations {
+                        if let (DestinationState::Failed, Some(why)) = (d.state, &d.error) {
+                            notify(Update::Error(format!("{}: {why}", d.label())));
+                        }
+                    }
+                }
                 // The stream runs: a panic while its recording starts must not turn
                 // the answer into an error (the round recovers the host).
                 if rbs_crash::contain(|| host.record_with_stream(c, notify)).is_err() {
@@ -547,11 +566,18 @@ impl ApiTarget<'_> {
                 host.publish(notify);
                 Ok(Response::StreamStarted(started))
             }
-            Ok(StreamUpdate::NoKey) => Err(failed(format!(
-                "no stream key is saved{which}: enter it in Settings, Stream"
-            ))),
+            Ok(StreamUpdate::NoKey) => {
+                tell(StreamUpdate::NoKey);
+                Err(failed(format!(
+                    "no stream key is saved{which}: enter it in Settings, Stream"
+                )))
+            }
             Ok(_) => Err(failed("the stream did not start")),
-            Err(why) => Err(hide(why.into_text())),
+            Err(why) => {
+                let text = why.into_text();
+                tell(StreamUpdate::NotStarted(text.clone()));
+                Err(hide(text))
+            }
         }
     }
 }

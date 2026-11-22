@@ -110,7 +110,6 @@ paths! {
     StartSyncMeasure => Pending(&["sync.measure_start"]),
     // as StartSyncMeasure
     CloseSyncMeasure => Pending(&["sync.measure_cancel"]),
-    RetargetSource => Pending(&["source.retarget"]),
     GrabThumbnails => WindowOnly(View),
     StopThumbnails => WindowOnly(View),
     OpenSourceSettings => WindowOnly(View),
@@ -126,16 +125,6 @@ paths! {
     SetStudioMode => Translates(&["canvas.set_preview"]),
     SetSwapAfterTransition => WindowOnly(Mirror),
     SetSourceBox => Pending(&["item.set_box"]),
-    // item.set_crop needs gesture
-    SetSourceCrop => Contract(&["item.set_crop"]),
-    // item.set_style needs gesture
-    // item.set_scroll needs gesture
-    // record.start builds its request from host state; the window sends its own RecordRequest
-    StartRecording => Contract(&["record.start"]),
-    // as StartRecording
-    StartVerticalRecording => Contract(&["record.start"]),
-    // as StartStream
-    StartVerticalStream => Contract(&["stream.start"]),
     SetVerticalProfile => WindowOnly(Mirror),
     SetVerticalStreamProfile => WindowOnly(Mirror),
     // servers and key flags are the local user's; on/off is stream.destination.set_enabled
@@ -151,10 +140,6 @@ paths! {
     // canvas
     SetCanvas => Pending(&["settings.set"]),
     SetProfile => WindowOnly(Mirror),
-    // stream.start takes no request; the window sends its own StreamRequest
-    StartStream => Contract(&["stream.start"]),
-    // vcam.start takes no size or rate
-    StartVirtualCamera => Contract(&["vcam.start"]),
     StopVirtualCamera => Pending(&["vcam.stop"]),
     SetVirtualCamera => WindowOnly(LocalOnly),
     SetReplay => WindowOnly(Mirror),
@@ -196,8 +181,8 @@ mod tests {
     /// `LOCAL_ONLY` 9 to 10 and `MIRROR` 3 to 8 are approved by ADR-0164 decision 9
     /// (owner, 2026-11-21).
     const TRANSLATES: usize = 22;
-    const PENDING: usize = 16;
-    const CONTRACT: usize = 6;
+    const PENDING: usize = 15;
+    const CONTRACT: usize = 0;
     const MISSING: usize = 1;
     const VIEW: usize = 13;
     const LOCAL_ONLY: usize = 10;

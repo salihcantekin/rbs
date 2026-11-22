@@ -282,37 +282,6 @@ impl Host {
         }
     }
 
-    /// The UI's Go live for `c`: starts the stream, says how it went, and records
-    /// with it when that is on.
-    pub(super) fn stream_asked(
-        &mut self,
-        c: OutputCanvas,
-        r: &StreamRequest,
-        notify: &dyn Fn(Update),
-    ) {
-        self.note_encoders(notify);
-        if let Some(why) = &self.recording.cannot_record {
-            notify(stream_update(c, StreamUpdate::NotStarted(why.clone())));
-            return;
-        }
-        let update = match self.start_stream(c, r) {
-            Ok(update) => update,
-            Err(why) => StreamUpdate::NotStarted(why.into_text()),
-        };
-        let started = matches!(update, StreamUpdate::Started { .. });
-        notify(stream_update(c, update));
-        if started {
-            // Each destination that did not start, by name (ADR-0127 decision 7).
-            for d in &self.outs[slot(c)].destinations {
-                if let (DestinationState::Failed, Some(why)) = (d.state, &d.error) {
-                    notify(Update::Error(format!("{}: {why}", d.label())));
-                }
-            }
-            self.record_with_stream(c, notify);
-        }
-        self.publish(notify);
-    }
-
     /// Saves (`Some`) or removes `c`'s stream key; `Ok(true)` when one is saved now.
     pub(super) fn save_key(&self, c: OutputCanvas, key: Option<&Secret>) -> Result<bool, Refusal> {
         let account = self.key_account_of(c);
@@ -346,21 +315,6 @@ impl Host {
         if with_stream && failure.is_none() && self.outs[slot(c)].recording.is_some() {
             self.end_recording(c, notify);
         }
-    }
-
-    /// Goes live: reads each destination's key (RTMP: required) from the key store,
-    /// then attaches the stream's encoders and one output per enabled destination to
-    /// the running studio (ADR-0127): destinations sharing the stream's encoding in
-    /// one apply, so they start on the same keyframe, then each with its own
-    /// encoding. It goes live when at least one destination starts; the others are
-    /// kept as failed with their reason. The connections are made in the background;
-    /// [`Host::report_link`] tells the UI how they go.
-    pub(super) fn start_stream(
-        &mut self,
-        c: OutputCanvas,
-        r: &StreamRequest,
-    ) -> Result<StreamUpdate, Refusal> {
-        self.start_stream_to(c, r, None)
     }
 
     /// [`Host::start_stream`] to destination `only` alone when it is `Some`
@@ -603,9 +557,12 @@ impl Host {
             return Err(failed("the studio is still starting; try again"));
         }
         let no_server = || {
-            failed(format!(
-                "no server is saved{which}: enter it in Settings, Stream"
-            ))
+            let text = format!("no server is saved{which}: enter it in Settings, Stream");
+            match c {
+                // ADR-0164 decision 3; `api_canvas_of` already refused a missing canvas.
+                OutputCanvas::Vertical => failed_because("vertical_not_set_up", text),
+                OutputCanvas::Main => failed(text),
+            }
         };
         let other = only.filter(|id| *id != MAIN_FIRST && *id != VERTICAL_FIRST);
         let mut profile = match (self.stream_profile_of(c), other) {
@@ -615,13 +572,13 @@ impl Host {
         };
         // Every destination off: refused before any key is read (ADR-0148 decision 10).
         if only.is_none() && !self.stream_available(c) {
-            return Err(failed(STREAMING_OFF));
+            return Err(failed_because("streaming_off", STREAMING_OFF));
         }
         // The first slot removed: the other destinations go live on the stream's
         // shared settings (ADR-0148 decision 6), or streaming is off.
         if other.is_none() && !crate::stream_destinations::first_exists(&profile) {
             if !self.stream_available(c) {
-                return Err(failed(STREAMING_OFF));
+                return Err(failed_because("streaming_off", STREAMING_OFF));
             }
             let encoder = profile
                 .encoding

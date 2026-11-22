@@ -961,8 +961,8 @@ pub struct SetFilterSettings {
     pub settings: BTreeMap<String, serde_json::Value>,
 }
 
-/// `source.retarget` (protocol 1.13, ADR-0077): point a source at another target of its
-/// kind. Name, layout, filters and its place in every scene stay; one undo step.
+/// `source.retarget` (protocol 1.13, ADR-0077): point a source at another listed target
+/// of its kind (listed from 1.100). Its name, layout, filters and places stay; one step.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RetargetSource {
@@ -1579,9 +1579,9 @@ pub struct RecordStart {
     /// `all` records every canvas, main first (protocol 1.42).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub canvas: Option<OutputTarget>,
-    /// Write the separate files of the sources marked to record separately (protocol
-    /// 1.46, ADR-0086). Absent or `null` is `true`. Only the main canvas's recording
-    /// has them.
+    /// Write the separate files of the marked sources (protocol 1.46, ADR-0086); only
+    /// the main canvas's recording has them. Absent or `null` follows Settings,
+    /// Recording, Separate files (`separate_files.enabled`, ADR-0164 decision 3).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub iso: Option<bool>,
     /// The caller accepts a `heavy` plan (protocol 1.54, ADR-0087 decision 6). Absent

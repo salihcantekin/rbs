@@ -822,10 +822,7 @@ fn a_source_is_pointed_at_another_target_keeping_its_place_and_one_undo_step() {
         rows[0].layout,
     );
 
-    host.send(Command::RetargetSource {
-        id,
-        target: mics[1].clone(),
-    });
+    host.send(retarget(id, &mics[1]));
     // The rows and the history arrive in either order; wait for the history step.
     let mut last_rows = None;
     let (undo, _) = next(&rx, |u| match u {
@@ -851,10 +848,7 @@ fn a_source_is_pointed_at_another_target_keeping_its_place_and_one_undo_step() {
     }
 
     // The same target again records nothing.
-    host.send(Command::RetargetSource {
-        id,
-        target: mics[1].clone(),
-    });
+    host.send(retarget(id, &mics[1]));
     // A healthy source is left running: reload finds no failure record.
     host.send(Command::Api {
         call: Box::new(rbs_api::Command::SourceReload(
@@ -873,6 +867,18 @@ fn a_source_is_pointed_at_another_target_keeping_its_place_and_one_undo_step() {
         "one undo step undid the retarget"
     );
     assert_eq!(redo.map(|s| s.kind), Some(EditKind::Retarget));
+
+    // A target the host does not list is refused, and the window shows why.
+    let unlisted = Target {
+        target: "no-such-mic".into(),
+        ..mics[1].clone()
+    };
+    host.send(retarget(id, &unlisted));
+    let error = next(&rx, |u| match u {
+        Update::Error(e) => Some(e),
+        _ => None,
+    });
+    assert!(error.contains("does not list"), "{error}");
 }
 
 #[test]
@@ -894,10 +900,7 @@ fn targets_a_source_was_given_are_listed_as_recent_newest_first() {
         target: mics[0].clone(),
     });
     let rows = rows_where(&rx, |r| r.len() == 1);
-    host.send(Command::RetargetSource {
-        id: rows[0].id,
-        target: mics[1].clone(),
-    });
+    host.send(retarget(rows[0].id, &mics[1]));
     // Commands run in order, so the list below sees both picks.
     let after = targets(&host, &rx, SourceKind::AudioInput);
     let rank = |t: &Target| {
@@ -1014,5 +1017,20 @@ fn the_main_display_comes_from_the_roots_probe() {
         });
         assert_eq!(display.is_some(), known, "probe given: {known}");
         drop(host);
+    }
+}
+
+/// `source.retarget` as the window sends it (ADR-0164 decision 6): the target's ids
+/// only; the host fills the rest from its own list.
+fn retarget(id: rbs_scene::model::SourceId, t: &Target) -> Command {
+    Command::Api {
+        call: Box::new(rbs_api::Command::SourceRetarget(
+            rbs_api::request::RetargetSource {
+                source: id.get(),
+                adapter: t.adapter.clone(),
+                target: t.target.clone(),
+            },
+        )),
+        reply: ApiReply::Shown,
     }
 }

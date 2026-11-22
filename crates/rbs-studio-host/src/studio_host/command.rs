@@ -143,14 +143,6 @@ pub enum Command {
     StartSyncMeasure(SourceId),
     /// The Measure window closed: a measurement it started is cancelled.
     CloseSyncMeasure,
-    /// Point a source at another target of its kind, keeping its name, layout, filters
-    /// and place in every scene (one undo step, ADR-0077).
-    RetargetSource {
-        /// The source.
-        id: SourceId,
-        /// What it should capture now.
-        target: Target,
-    },
     /// Grab small pictures of the listed targets of `kind`, two at a time off the control
     /// thread, one [`Update::Thumbnail`] each (ADR-0077). A newer request or
     /// [`Command::StopThumbnails`] makes older work stop at its next item.
@@ -218,35 +210,6 @@ pub enum Command {
         /// the box becomes the item's own layout there (ADR-0093 decision 4, U15).
         canvas: OutputCanvas,
     },
-    /// Cut source pixels from the edges of a video source's picture (ADR-0058), on the
-    /// layout the canvas shows. With `keep_scale`, the box changes so a source pixel
-    /// keeps its size and what stays keeps its place. Always answered with
-    /// [`Update::CropPlaced`] carrying `seq`, also when nothing changed; a refusal is
-    /// also an [`Update::Error`].
-    SetSourceCrop {
-        /// The caller's number for this request.
-        seq: u64,
-        /// Crops with the same number other than 0 that follow each other are one undo
-        /// step (one drag on the picture panel); 0 is a step of its own.
-        gesture: u64,
-        /// The source.
-        id: SourceId,
-        /// Pixels cut from the left, top, right and bottom.
-        crop: [u32; 4],
-        /// Keep the scale (else the cropped picture fills the box).
-        keep_scale: bool,
-        /// The canvas whose layout changes: the vertical canvas's own layout only while
-        /// it shows the scene being edited (ADR-0093 decision 4).
-        canvas: OutputCanvas,
-    },
-    /// Start recording the program ([`Update::Recording`] says how it went).
-    StartRecording(RecordRequest),
-    /// Start recording the vertical canvas ([`Update::VerticalRecording`] says how it
-    /// went; ADR-0093 decision 6).
-    StartVerticalRecording(RecordRequest),
-    /// Go live with the vertical canvas ([`Update::VerticalStream`] says how it went);
-    /// its key is read from the vertical account ([`stream_key::vertical_account`]).
-    StartVerticalStream(StreamRequest),
     /// The vertical canvas's recording settings as saved (`None`: it uses the main
     /// ones). Sent at start and after each change.
     SetVerticalProfile(Option<RecordProfile>),
@@ -303,20 +266,6 @@ pub enum Command {
     /// The recording settings as saved: what `record.start` uses for control API
     /// clients and `settings.get` shows. Sent at start and after each change.
     SetProfile(RecordProfile),
-    /// Go live: stream the program ([`Update::Stream`] says how it went). The stream key
-    /// is read from the host's key store now, never earlier.
-    StartStream(StreamRequest),
-    /// Start sending the program to the virtual camera (ADR-0066 decision 12) at this
-    /// size and rate; answered with [`Update::VirtualCamera`], and an
-    /// [`Update::Error`] when it did not start.
-    StartVirtualCamera {
-        /// Width in pixels.
-        width: u32,
-        /// Height in pixels.
-        height: u32,
-        /// Frames per second.
-        fps: FrameRate,
-    },
     /// Stop sending to the virtual camera; answered with [`Update::VirtualCamera`].
     StopVirtualCamera,
     /// The virtual camera as Settings › Virtual camera knows it: what `vcam.start` and

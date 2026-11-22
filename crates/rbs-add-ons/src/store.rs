@@ -7,6 +7,7 @@
 //! <root>/<id>/.staging/          download and unpack area, emptied before each attempt
 //! <root>/<id>/<version>/         an installed version
 //! <root>/<id>/<version>/.complete  written last; without it the directory is never used
+//! <root>/<id>/.clean-pending     an update's clean still to run (written before the install)
 //! ```
 //!
 //! [add-ons spec]: https://github.com/salihcantekin/rbs/blob/main/docs/specs/add-ons.md
@@ -32,6 +33,7 @@ use crate::version::Version;
 /// Name of the marker written last into an installed version.
 pub const MARKER: &str = ".complete";
 const LOCK: &str = ".lock";
+const CLEAN_PENDING: &str = ".clean-pending";
 const STAGING: &str = ".staging";
 const DOWNLOAD: &str = "download";
 const OUT: &str = "out";
@@ -344,6 +346,51 @@ impl AddOns {
         self.delete_versions(&dir, doomed.iter().map(Version::as_str))
     }
 
+    /// Notes, before an update's install starts, that its clean is still to run: the
+    /// note outlives a quit between the install and the clean (add-ons spec, "Update").
+    pub fn mark_clean_pending(&self, entry: &Entry) -> Result<(), InstallError> {
+        let dir = self.dir(entry);
+        let root_rel = RelPath::single(entry.id.as_str()).map_err(InstallError::Io)?;
+        self.fs
+            .create_dir_beneath(&self.root, &root_rel)
+            .map_err(fs_err)?;
+        if self.fs.exists(&dir.join(CLEAN_PENDING)) {
+            return Ok(());
+        }
+        let rel = RelPath::single(CLEAN_PENDING).map_err(InstallError::Io)?;
+        let file = self
+            .fs
+            .create_file_beneath(&dir, &rel, 0o644)
+            .map_err(fs_err)?;
+        self.fs.sync_file(&file).map_err(fs_err)?;
+        self.fs.sync_dir(&dir).map_err(fs_err)
+    }
+
+    /// True while an update's clean is still to run (one check of the disk).
+    pub fn clean_pending(&self, entry: &Entry) -> bool {
+        self.fs.exists(&self.dir(entry).join(CLEAN_PENDING))
+    }
+
+    /// Ends an update: when the catalog's version is installed, cleans as [`clean`]
+    /// does; either way the note goes (an install that did not finish keeps the old
+    /// version, and nothing is left to do). True when it cleaned.
+    ///
+    /// [`clean`]: AddOns::clean
+    pub fn finish_update(&self, entry: &Entry) -> Result<bool, InstallError> {
+        let note = self.dir(entry).join(CLEAN_PENDING);
+        if !self.fs.exists(&note) {
+            return Ok(false);
+        }
+        let cleaned = self.installed(entry).is_some();
+        if cleaned {
+            self.clean(entry)?;
+        }
+        match self.fs.remove_file(&note) {
+            Ok(()) | Err(FsError::NotFound) => Ok(cleaned),
+            Err(e) => Err(fs_err(e)),
+        }
+    }
+
     /// Removes every version and the staging area of `entry`.
     pub fn remove(&self, entry: &Entry) -> Result<(), InstallError> {
         let dir = self.dir(entry);
@@ -356,8 +403,12 @@ impl AddOns {
             .list_dir(&dir)
             .map_err(fs_err)?
             .into_iter()
-            .filter(|n| n != LOCK)
+            .filter(|n| n != LOCK && n != CLEAN_PENDING)
             .collect();
+        match self.fs.remove_file(&dir.join(CLEAN_PENDING)) {
+            Ok(()) | Err(FsError::NotFound) => {}
+            Err(e) => return Err(fs_err(e)),
+        }
         self.delete_versions(&dir, names.iter().map(String::as_str))
     }
 

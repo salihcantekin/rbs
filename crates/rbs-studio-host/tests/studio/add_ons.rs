@@ -311,6 +311,14 @@ fn a_control_api_client_installs_and_removes_an_add_on() {
         json!({"state": "failed", "reason": "network"})
     );
 
+    // An update that fails keeps what was there and leaves no clean for the next
+    // start (ADR-0164 decision 6).
+    c.call("addon.update", json!({"id": "org.example.broken"}));
+    c.event("addon.changed", |d| {
+        d["id"] == "org.example.broken" && d["status"]["state"] == "failed"
+    });
+    assert!(!root.join("org.example.broken/.clean-pending").exists());
+
     // Refusals: no download for this computer, an unknown id.
     let r = c.call("addon.install", json!({"id": "org.example.elsewhere"}));
     assert_eq!(r["error"]["data"]["kind"], "invalid_params", "{r}");
