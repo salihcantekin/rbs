@@ -485,10 +485,7 @@ fn a_new_canvas_restarts_the_studio_with_the_sources() {
     });
     let id = rows[0].id;
 
-    host.send(Command::SetCanvas {
-        size: Size::new(1280, 720),
-        fps: FrameRate::FPS_60,
-    });
+    host.send(crate::set_canvas(Size::new(1280, 720), FrameRate::FPS_60));
     let (preview, size, fps) = next(&rx, |u| match u {
         Update::Canvas { preview, size, fps } => Some((preview, size, fps)),
         Update::Error(e) | Update::Failed(e) => panic!("{e}"),
@@ -503,10 +500,7 @@ fn a_new_canvas_restarts_the_studio_with_the_sources() {
     assert!(rows[0].meter.is_some());
 
     // The same canvas again changes nothing and still answers.
-    host.send(Command::SetCanvas {
-        size: Size::new(1280, 720),
-        fps: FrameRate::FPS_60,
-    });
+    host.send(crate::set_canvas(Size::new(1280, 720), FrameRate::FPS_60));
     let again = next(&rx, |u| match u {
         Update::Canvas { size, .. } => Some(size),
         Update::Error(e) | Update::Failed(e) => panic!("{e}"),
@@ -527,10 +521,7 @@ fn a_canvas_change_that_panics_while_restarting_fails_the_studio() {
         Update::Failed(e) => panic!("{e}"),
         _ => None,
     });
-    host.send(Command::SetCanvas {
-        size: Size::new(1280, 720),
-        fps: FrameRate::FPS_60,
-    });
+    host.send(crate::set_canvas(Size::new(1280, 720), FrameRate::FPS_60));
     let why = next(&rx, |u| match u {
         Update::Failed(why) => Some(why),
         _ => None,
@@ -995,6 +986,33 @@ fn a_browser_page_keeps_its_page_settings_through_the_host() {
         .unwrap();
     assert_eq!(s.get(keys::TRANSPARENT), Some(&SettingValue::Bool(true)));
     assert_eq!(s.get(keys::ZOOM_PERCENT), Some(&SettingValue::Int(150)));
+    // No page runs here: a script is quiet and a reload opens the page again through
+    // `source.reload` (ADR-0168 decision 1); neither tells the window an error.
+    use rbs_browser_ipc::control::Control;
+    host.send(Command::BrowserControl {
+        id,
+        message: Control::RunScript(Some("1".into())),
+    });
+    host.send(Command::BrowserControl {
+        id,
+        message: Control::Reload {
+            bypass_cache: false,
+        },
+    });
+    set(keys::ZOOM_PERCENT, serde_json::json!(120));
+    next(&rx, |u| match u {
+        Update::Error(e) => panic!("refused: {e}"),
+        Update::Sources(r)
+            if r.iter().any(|r| {
+                r.browser
+                    .as_ref()
+                    .is_some_and(|s| s.get(keys::ZOOM_PERCENT) == Some(&SettingValue::Int(120)))
+            }) =>
+        {
+            Some(())
+        }
+        _ => None,
+    });
     stop(host, &rx);
 }
 

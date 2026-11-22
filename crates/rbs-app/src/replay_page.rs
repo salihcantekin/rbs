@@ -174,7 +174,12 @@ pub fn toggle(app: &mut App, on: bool) {
 /// Save the whole past as a clip.
 pub fn save(app: &mut App) {
     if app.replay.can_save() {
-        app.studio.send(Command::SaveReplay { seconds: None });
+        // `replay.save`; the notice shows a refusal, so the error bar does not
+        // (ADR-0168 decision 2).
+        app.studio.call_as(
+            rbs_api::Command::ReplaySave(rbs_api::request::ReplaySave { seconds: None }),
+            rbs_app::studio_host::ApiReply::Quiet,
+        );
     }
 }
 

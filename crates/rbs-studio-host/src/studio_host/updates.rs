@@ -155,7 +155,7 @@ pub enum Update {
         /// `None` when this computer can record video.
         cannot_record: Option<String>,
     },
-    /// The canvas the studio runs now, after [`Command::SetCanvas`]: changed, or
+    /// The canvas the studio runs now, after the window's `settings.set` of it: changed, or
     /// unchanged when the change was refused (an [`Update::Error`] says why). Connect
     /// to `preview` again.
     Canvas {

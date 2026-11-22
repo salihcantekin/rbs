@@ -2110,13 +2110,6 @@ impl StudioUi {
         self.send(Command::OpenSyncMeasure(SourceId::from_raw(id as u32)));
     }
 
-    /// Start in the Measure window, against the picture source `reference`.
-    pub fn start_sync_measure(&mut self, reference: i32) {
-        self.send(Command::StartSyncMeasure(SourceId::from_raw(
-            reference as u32,
-        )));
-    }
-
     /// Ask what the Paste attributes (`paste`) or Reset source window shows.
     pub fn open_attributes(&mut self, id: i32, paste: bool) {
         self.attributes_dialog = None;
@@ -4891,10 +4884,7 @@ impl StudioUi {
         self.vertical_preview_ready = false;
         self.vertical_preview_failed = false;
         self.canvas_restarting = true;
-        self.send(Command::SetCanvas {
-            size: next.size(),
-            fps: next.frame_rate(),
-        });
+        self.send_canvas(next.size(), next.frame_rate());
     }
 
     /// Reads the output profiles and scene collections for the menus again.

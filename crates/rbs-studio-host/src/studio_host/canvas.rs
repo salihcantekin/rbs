@@ -19,20 +19,26 @@ impl Host {
         result
     }
 
-    /// After a restart: tells the UI the canvas (connect to the preview again), shows
-    /// the rows anew and publishes a canvas change to control API clients.
-    pub(super) fn canvas_changed(&mut self, before: api::Canvas, notify: &dyn Fn(Update)) {
+    /// Tells the window the canvas it runs and where its preview is.
+    pub(super) fn tell_canvas(&mut self, notify: &dyn Fn(Update)) {
         let (size, fps) = self
             .collection
             .canvas(self.canvas)
             .map_or((Size::new(0, 0), FrameRate::FPS_30), |c| {
                 (c.size, c.frame_rate)
             });
+        self.canvas_told += 1;
         notify(Update::Canvas {
             preview: self.studio.preview(),
             size,
             fps,
         });
+    }
+
+    /// After a restart: tells the UI the canvas (connect to the preview again), shows
+    /// the rows anew and publishes a canvas change to control API clients.
+    pub(super) fn canvas_changed(&mut self, before: api::Canvas, notify: &dyn Fn(Update)) {
+        self.tell_canvas(notify);
         self.rows.clear();
         self.heard.clear();
         // The rows were cleared: build them again even if nothing else changed.

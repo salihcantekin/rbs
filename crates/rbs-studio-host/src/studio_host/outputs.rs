@@ -749,18 +749,12 @@ impl Host {
                 self.close_projector(id);
                 self.publish(notify);
             }
-            Command::SetCanvas { size, fps } => {
-                if let Err(why) = self.change_canvas(size, fps, notify) {
-                    notify(Update::Error(why.into_text()));
-                }
-            }
             Command::SetProfile(profile) => {
                 if profile != self.recording.profile {
                     self.recording.profile = profile;
                     self.settings_changed();
                 }
             }
-            Command::StopVirtualCamera => self.stop_camera(notify),
             Command::SetReplay(setup) => {
                 self.replay.setup = setup;
                 self.replay_changed(notify);

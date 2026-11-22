@@ -91,7 +91,37 @@ pub(super) fn answer_on_panic(c: &Command) -> Option<Update> {
 /// Record and Go live (ADR-0164 decision 3), one canvas each, and a recording into
 /// a named file wait for their start.
 pub(super) fn api_answer_on_panic(call: &rbs_api::Command) -> Option<Update> {
-    start_refused(call, rbs_crash::CAUGHT_TEXT)
+    match call {
+        // The replay notice waits for its save (ADR-0168 decision 2).
+        rbs_api::Command::ReplaySave(_) => {
+            Some(Update::ReplaySaved(Err(rbs_crash::CAUGHT_TEXT.to_owned())))
+        }
+        call => start_refused(call, rbs_crash::CAUGHT_TEXT),
+    }
+}
+
+/// A window wait that needs the host's state to answer after a caught panic
+/// (ADR-0168 decision 2).
+#[derive(Debug, Clone, Copy)]
+pub(super) enum HostWait {
+    /// Settings, Video waits for the canvas.
+    Canvas,
+    /// The camera's card waits for its state.
+    Camera,
+    /// The Measure view of this source waits for its phase.
+    Measure(rbs_scene::model::SourceId),
+}
+
+/// What the window's `call` waits for from the host's state, if it panics.
+pub(super) fn host_wait(call: &rbs_api::Command) -> Option<HostWait> {
+    match call {
+        rbs_api::Command::SettingsSet(p) if p.canvas.is_some() => Some(HostWait::Canvas),
+        rbs_api::Command::VcamStop => Some(HostWait::Camera),
+        rbs_api::Command::SyncMeasureStart(p) => Some(HostWait::Measure(
+            rbs_scene::model::SourceId::from_raw(p.source),
+        )),
+        _ => None,
+    }
 }
 
 /// The update the window's start `call` waits for when it ends unstarted, `why`.

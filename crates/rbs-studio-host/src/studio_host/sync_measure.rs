@@ -358,18 +358,23 @@ impl Host {
         self.set_window(Some(view), notify);
     }
 
-    /// Start in the Measure window, against `reference`.
-    pub(super) fn start_sync_measure_window(
+    /// The window's `sync.measure_start` of its Measure view's source ended with
+    /// `result` (ADR-0168 decision 2): the view shows the reference and the phase.
+    pub(super) fn measure_view_started(
         &mut self,
-        reference: SourceId,
+        source: SourceId,
+        reference: Option<SourceId>,
+        result: Result<(), &ApiError>,
         notify: &dyn Fn(Update),
     ) {
-        let Some(mut view) = self.measure.window.clone() else {
+        let Some(mut view) = self.measure.window.clone().filter(|v| v.source == source) else {
             return;
         };
-        view.reference = Some(reference);
-        view.phase = match self.start_sync_measure(view.source, Some(reference)) {
-            Ok(_) => SyncMeasurePhase::Running {
+        if reference.is_some() {
+            view.reference = reference;
+        }
+        view.phase = match result {
+            Ok(()) => SyncMeasurePhase::Running {
                 pairs: 0,
                 sound: false,
                 picture: false,
@@ -400,11 +405,15 @@ impl Host {
         let Some(view) = self.measure.window.take() else {
             return;
         };
+        // `sync.measure_cancel`, built from the measurement that runs (ADR-0168
+        // decision 1): whoever started it, as before.
         if let Some(run) = &self.measure.run
             && run.source == view.source
         {
-            let id = run.id.to_string();
-            let _ = self.cancel_sync_measure(&id);
+            let call = rbs_api::Command::SyncMeasureCancel(rbs_api::request::SyncMeasureCancel {
+                measurement: run.id.to_string(),
+            });
+            let _ = self.run_api(call, notify);
         }
         notify(Update::SyncMeasure(None));
     }

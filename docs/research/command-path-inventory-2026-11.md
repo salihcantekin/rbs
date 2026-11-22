@@ -27,11 +27,11 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | Undo / Redo with nothing to undo | Silent | `conflict` | `history.rs`, `api_item2.rs` |
 | Remove from scene | Sends `Update::Deleted` (undo toast) | Sends nothing | `sources.rs`, `api_source2.rs` |
 | Forget sign-in | Stops the page first | Does not | `source_settings.rs`, `api_source2.rs` |
-| Filter values on an unchanged release | Restores the stored values | Does not | `source_settings.rs`, `api_canvas.rs` |
+| Filter values on an unchanged release | Restores the stored values | Does not for a client; a window call does (ADR-0168 step 1) | `api_canvas.rs` |
 | Collection transition | Sends the whole transition it last saw | A patch of the parts given; the stinger cut point is checked against the file's length | `scenes.rs` `set_transition`; the window now sends only the parts that changed |
 | Scroll controls | Published the views after a control | Did not; now publishes too (step 6) | `items.rs` `api_scroll` |
 | Where an addition goes when no scene is named (`item.add`, `source.add`) | The scene the window edits: the preview scene in studio mode | The program scene (protocol 1.6); a window call now uses the edited scene (step 6 fix: `item.add` from the window went on air in studio mode since step 2) | `scenes.rs` `placing_into`, `studio_host.rs` `api_command` |
-| Canvas change | Always sends `Update::Canvas`, also for a refusal or an unchanged canvas | Nothing for those | `canvas.rs`, `api_settings.rs` (why `SetCanvas` stays) |
+| Canvas change | Always sends `Update::Canvas`, also for a refusal or an unchanged canvas | Nothing for those | `canvas.rs`, `window_answers.rs` (a window call gets `Update::Canvas` in every case, ADR-0168) |
 | Media play, pause, seek, restart | Forces the next media-state publish | Does not | `source_settings.rs`, `api_source2.rs` |
 | Pause, hold, break refusals | Own sentence ("The recording could not pause or resume: ...") | `ApiError` message | `stream.rs` |
 | Lock, eye and layer buttons on a row that is gone | Host refused "There is no source ..." | The window sends nothing (it names the row's item) | `studio_ui/item_calls.rs` |
@@ -99,12 +99,12 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `RemoveFilter` | Moved to `Command::Api` (step 4) | filter.remove |
 | `MoveFilter` | Moved to `Command::Api` (step 4) | filter.move |
 | `SetFilterEnabled` | Moved to `Command::Api` (step 4) | filter.set_enabled |
-| `SetFilterValues` | Pending | filter.set_settings; window then restores stored values on an unchanged release; an unchanged release restores the stored values, the API does not (step 4 left it) |
+| `SetFilterValues` | Moved to `Command::Api` (ADR-0168 step 1) | filter.set_settings; for a window call an unchanged release puts the stored values back on air |
 | `PreviewFilter` | WindowOnly Preview |  |
 | `RestoreFilter` | WindowOnly Preview |  |
 | `OpenSyncMeasure` | WindowOnly View |  |
-| `StartSyncMeasure` | Pending | sync.measure_start; refusals go to the Measure view, needs a ticketed answer |
-| `CloseSyncMeasure` | Pending | sync.measure_cancel; as StartSyncMeasure |
+| `StartSyncMeasure` | Moved to `Command::Api` (ADR-0168 step 1) | sync.measure_start; for a window call the host shows the answer in the Measure view, a refusal with its reason |
+| `CloseSyncMeasure` | Translates (ADR-0168 step 1) | sync.measure_cancel with the id of the run the window started |
 | `ApplySyncToDeviceSources` | Moved to `Command::Api` (step 6) | sync.apply_to_device_sources |
 | `SetSourceSyncOffset` | Moved to `Command::Api` (step 3) | source.set_sync_offset |
 | `RetargetSource` | Moved to `Command::Api` | source.retarget; the host fills the name, the app and the sound from its own list for every caller, and an unlisted target is `not_found` (ADR-0164 decision 6) |
@@ -114,7 +114,7 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `CloseSourceSettings` | WindowOnly View |  |
 | `SetSourceSettings` | Moved to `Command::Api` (ADR-0164 step 1) | source.set_settings with `gesture`; the text-file refusal is a caller check, so the window passes |
 | `ReloadSource` | Moved to `Command::Api` (step 3) | source.reload; the API now publishes after a restart, as the window did |
-| `BrowserControl` | Pending | browser.reload, browser.run_script; stays: the window's Reload restarts a page that is not running, `browser.reload` refuses it (`browser_not_running`) |
+| `BrowserControl` | Translates (ADR-0168 step 1) | browser.reload or browser.run_script while the page runs; a reload of a page that does not run is source.reload, a script with no page is quiet |
 | `ForgetBrowserSignIn` | Pending | browser.forget_sign_in; stays: the window stops the page first so its profile can be removed, the API does not (an API change for Group B) |
 | `Media` | Moved to `Command::Api` (step 6) | media.play, media.pause, media.seek, media.restart (the API now also forces the next media-state publish) |
 | `SetCompanionAudio` | Moved to `Command::Api` (step 3) | source.set_companion_audio |
@@ -174,17 +174,17 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `OpenInteract` | WindowOnly View |  |
 | `CloseInteract` | WindowOnly View |  |
 | `InteractInput` | Pending | browser.input; stays: one wire event per mouse move, the API takes a checked list of its own event form; input to a page not in Interact is ignored, the API refuses it |
-| `SetCanvas` | Pending | settings.set (canvas); stays: the window closes its preview first and waits for `Update::Canvas`, which the API path does not send for an unchanged canvas or a refusal, so the preview would stay closed |
+| `SetCanvas` | Moved to `Command::Api` (ADR-0168 step 1) | settings.set (canvas); for a window call the host sends `Update::Canvas` when the call sent none (a refusal or an unchanged canvas), so the preview opens again; an unchanged canvas while recording is no longer refused |
 | `SetProfile` | WindowOnly Mirror |  |
 | `StartStream` | Moved to `Command::Api` | stream.start {canvas}; the host builds from the saved settings, refusals carry `data.reason` (ADR-0164 step 6) |
 | `EndStream` | Moved to `Command::Api` (step 6) | stream.stop |
 | `StartVirtualCamera` | Moved to `Command::Api` | vcam.start after `SetVirtualCamera`; the window is quiet on `conflict` (ADR-0164 step 6) |
-| `StopVirtualCamera` | Pending | vcam.stop; stays: the window path sends `VirtualCamera(None)` even when nothing sends, the API refuses |
+| `StopVirtualCamera` | Moved to `Command::Api` (ADR-0168 step 1) | vcam.stop, quiet on `conflict`; for a refused window call the host sends `VirtualCamera` with the camera's state |
 | `SetVirtualCamera` | WindowOnly LocalOnly |  |
 | `SetReplay` | WindowOnly(Mirror) | settings.set `replay` (ADR-0164 step 5); the window saves the file it owns |
 | `ArmReplay` | Moved to `Command::Api` (step 6) | replay.arm (a refusal because it is already armed stays quiet) |
 | `DisarmReplay` | Moved to `Command::Api` (step 6) | replay.disarm (a refusal because it is not armed stays quiet) |
-| `SaveReplay` | Pending | replay.save; stays: the window shows a refused save in its `ReplaySaved` notice, the API answers an error |
+| `SaveReplay` | Moved to `Command::Api` (ADR-0168 step 1) | replay.save, quiet; for a refused window call the host sends the refusal as `ReplaySaved` |
 | `AddMarker` | Translates | marker.add |
 | `RemoveMarkers` | Translates | marker.remove |
 | `PauseRecording` | Translates | record.pause_toggle (own error sentence around the refusal) |

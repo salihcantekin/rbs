@@ -101,21 +101,17 @@ paths! {
     SetSourceMixerHidden => Translates(&["source.set_mixer_hidden"]),
     ApplyLook => Translates(&["look.apply"]),
     AddSample => Translates(&["source.add_sample"]),
-    // window then restores stored values on an unchanged release
-    SetFilterValues => Pending(&["filter.set_settings"]),
     PreviewFilter => WindowOnly(Preview),
     RestoreFilter => WindowOnly(Preview),
     OpenSyncMeasure => WindowOnly(View),
-    // refusals go to the Measure view, needs a ticketed answer
-    StartSyncMeasure => Pending(&["sync.measure_start"]),
-    // as StartSyncMeasure
-    CloseSyncMeasure => Pending(&["sync.measure_cancel"]),
+    // cancels the measurement of the view's source, then drops the view (ADR-0168)
+    CloseSyncMeasure => Translates(&["sync.measure_cancel"]),
     GrabThumbnails => WindowOnly(View),
     StopThumbnails => WindowOnly(View),
     OpenSourceSettings => WindowOnly(View),
     CloseSourceSettings => WindowOnly(View),
-    // source.set_settings needs gesture; its text-file refusal moves to the caller checks
-    BrowserControl => Pending(&["browser.reload", "browser.run_script"]),
+    // the page's state picks the call (ADR-0168)
+    BrowserControl => Translates(&["browser.reload", "source.reload", "browser.run_script"]),
     // window stops the page first, API does not
     ForgetBrowserSignIn => Pending(&["browser.forget_sign_in"]),
     // window forces the next media-state publish
@@ -137,13 +133,9 @@ paths! {
     CloseInteract => WindowOnly(View),
     // quiet answer (input to a closed page is ignored today)
     InteractInput => Pending(&["browser.input"]),
-    // canvas
-    SetCanvas => Pending(&["settings.set"]),
     SetProfile => WindowOnly(Mirror),
-    StopVirtualCamera => Pending(&["vcam.stop"]),
     SetVirtualCamera => WindowOnly(LocalOnly),
     SetReplay => WindowOnly(Mirror),
-    SaveReplay => Pending(&["replay.save"]),
     AddMarker => Translates(&["marker.add"]),
     RemoveMarkers => Translates(&["marker.remove"]),
     // own error sentence around the refusal
@@ -179,9 +171,10 @@ mod tests {
     /// which must pick its method from host state may raise `TRANSLATES` by as many
     /// as `PENDING` falls; any other rise needs the owner's written approval.
     /// `LOCAL_ONLY` 9 to 10 and `MIRROR` 3 to 8 are approved by ADR-0164 decision 9
-    /// (owner, 2026-11-21).
-    const TRANSLATES: usize = 22;
-    const PENDING: usize = 15;
+    /// (owner, 2026-11-21). `TRANSLATES` 22 to 24 and `LOCAL_ONLY` 10 to 11 are
+    /// approved by ADR-0168 decision 4 (owner, 2026-11-22).
+    const TRANSLATES: usize = 24;
+    const PENDING: usize = 8;
     const CONTRACT: usize = 0;
     const MISSING: usize = 1;
     const VIEW: usize = 13;

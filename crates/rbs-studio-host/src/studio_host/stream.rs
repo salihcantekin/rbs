@@ -1188,11 +1188,6 @@ impl Host {
                 let done = self.run_api(command, notify);
                 self.answer_toggle(done, what, notify);
             }
-            Command::SaveReplay { seconds } => {
-                if let Err(why) = self.save_replay(seconds) {
-                    notify(Update::ReplaySaved(Err(why.into_text())));
-                }
-            }
             Command::SetVirtualCamera(setup) => {
                 self.vcam.camera_setup = Some(setup);
                 self.camera_changed();
