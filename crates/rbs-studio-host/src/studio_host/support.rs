@@ -80,6 +80,10 @@ pub enum MediaOp {
     Restart,
     /// Read the state only.
     State,
+    /// A slide show's next picture (ADR-0171 decision 9).
+    Next,
+    /// A slide show's previous picture.
+    Previous,
 }
 
 /// `item.remove`'s answer (protocol 1.88, ADR-0142).

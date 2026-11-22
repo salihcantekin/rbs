@@ -131,6 +131,7 @@ pub fn api_kind(k: SourceKind) -> Option<api::SourceKind> {
         SourceKind::Media => api::SourceKind::Media,
         SourceKind::Browser => api::SourceKind::Browser,
         SourceKind::Text => api::SourceKind::Text,
+        SourceKind::Slideshow => api::SourceKind::Slideshow,
     })
 }
 
@@ -148,6 +149,7 @@ pub fn app_kind(k: api::SourceKind) -> SourceKind {
         api::SourceKind::Media => SourceKind::Media,
         api::SourceKind::Browser => SourceKind::Browser,
         api::SourceKind::Text => SourceKind::Text,
+        api::SourceKind::Slideshow => SourceKind::Slideshow,
     }
 }
 

@@ -30,6 +30,9 @@ pub enum SourceKind {
     /// A text, drawn by the registered text renderer (ADR-0129). Not in
     /// [`SourceKind::ALL`]: it has no target; Add source adds "Text" at once.
     Text,
+    /// The pictures of one folder, one after another (ADR-0171). Not in
+    /// [`SourceKind::ALL`]: added with a folder path.
+    Slideshow,
 }
 
 impl SourceKind {
@@ -57,6 +60,7 @@ impl SourceKind {
             SourceKind::Media => types::MEDIA_SOURCE,
             SourceKind::Browser => types::BROWSER_SOURCE,
             SourceKind::Text => types::TEXT_SOURCE,
+            SourceKind::Slideshow => types::SLIDESHOW_SOURCE,
         })
     }
 
@@ -70,6 +74,7 @@ impl SourceKind {
                 SourceKind::Media,
                 SourceKind::Browser,
                 SourceKind::Text,
+                SourceKind::Slideshow,
             ])
             .find(|k| k.type_id() == *type_id)
     }
@@ -88,6 +93,7 @@ impl SourceKind {
             SourceKind::Media => "Media file",
             SourceKind::Browser => "Browser",
             SourceKind::Text => "Text",
+            SourceKind::Slideshow => "Slide show",
         }
     }
 
@@ -105,6 +111,7 @@ impl SourceKind {
             SourceKind::Media => "media",
             SourceKind::Browser => "browser",
             SourceKind::Text => "text",
+            SourceKind::Slideshow => "slideshow",
         }
     }
 

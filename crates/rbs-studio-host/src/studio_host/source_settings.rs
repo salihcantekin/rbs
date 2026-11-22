@@ -381,9 +381,17 @@ impl Host {
         let Some(source) = self.collection.source(id) else {
             return Err(Refusal::NotFound(format!("There is no source {raw}.")));
         };
+        if source.type_id.as_str() == types::SLIDESHOW_SOURCE {
+            return self.slideshow_command(raw, op);
+        }
         if source.type_id.as_str() != types::MEDIA_SOURCE {
             return Err(Refusal::Invalid(format!(
                 "Source {raw} is not a media file."
+            )));
+        }
+        if matches!(op, MediaOp::Next | MediaOp::Previous) {
+            return Err(Refusal::Invalid(format!(
+                "Source {raw} is not a slide show."
             )));
         }
         let millis = |d: Duration| u64::try_from(d.as_millis()).unwrap_or(u64::MAX);
@@ -395,6 +403,8 @@ impl Host {
                     state: Wire::Standby,
                     cursor_ms: 0,
                     duration_ms: None,
+                    index: None,
+                    count: None,
                 });
             }
             return Err(Refusal::Conflict(format!(
@@ -413,7 +423,7 @@ impl Host {
             MediaOp::Pause => control.pause().map_err(failed)?,
             MediaOp::Seek(ms) => control.seek(Duration::from_millis(ms)).map_err(failed)?,
             MediaOp::Restart => control.restart().map_err(failed)?,
-            MediaOp::State => {}
+            MediaOp::State | MediaOp::Next | MediaOp::Previous => {}
         }
         let state = match control.state() {
             State::Playing => Wire::Playing,
@@ -429,6 +439,8 @@ impl Host {
             state,
             cursor_ms: millis(control.cursor()),
             duration_ms: control.duration().map(millis),
+            index: None,
+            count: None,
         })
     }
 
@@ -437,6 +449,8 @@ impl Host {
     pub(super) fn report_media(&mut self, notify: &dyn Fn(Update)) -> Option<Duration> {
         use rbs_record::MediaPlayState as State;
         let mut playing = false;
+        let mut slides_playing = false;
+        let slides = self.slideshow_ticks(&mut slides_playing);
         let ticks: Vec<MediaTick> = self
             .studio
             .media_controls()
@@ -459,9 +473,13 @@ impl Host {
                     duration_ms: control
                         .duration()
                         .map_or(0, |d| u32::try_from(d.as_millis()).unwrap_or(u32::MAX)),
+                    index: -1,
+                    count: 0,
                 }
             })
+            .chain(slides)
             .collect();
+        playing |= slides_playing;
         if self.media_sent.as_ref() != Some(&ticks) {
             self.media_sent = Some(ticks.clone());
             notify(Update::Media(ticks));

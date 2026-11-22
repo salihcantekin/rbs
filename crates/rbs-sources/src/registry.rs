@@ -26,6 +26,8 @@ use rbs_scene::activity::ActivityTraits;
 use rbs_scene::binder::{COMPOSITOR_TYPE, MIXER_TYPE, NodeTypes};
 use rbs_scene::model::{SettingValue, Settings, Source};
 
+pub use crate::media_settings::apply_media_live;
+use crate::media_settings::{media_range, validate_media};
 use crate::permissions::{self, AdapterAnswer, PermissionInfo, PermissionKind};
 use crate::types::{self, SourceClass, class_of, keys};
 
@@ -402,6 +404,9 @@ pub enum SourceInstance {
     /// Adopt into the render partition; hand `frames` to the text worker. Boxed: it
     /// carries its settings.
     Text(Box<TextSource>),
+    /// Adopt into the render partition; attach `frames` to the slide show hub
+    /// (ADR-0171). Boxed like text.
+    Slideshow(Box<crate::slideshow::SlideshowSource>),
     /// Adopt into the audio partition. Boxed: larger than the picture variants.
     Audio(Box<AudioSource>),
 }
@@ -430,6 +435,10 @@ impl fmt::Debug for SourceInstance {
                 .debug_struct("Text")
                 .field("kind", &t.settings.kind)
                 .field("box", &t.settings.block.box_size)
+                .finish_non_exhaustive(),
+            SourceInstance::Slideshow(s) => f
+                .debug_struct("Slideshow")
+                .field("size", &s.size)
                 .finish_non_exhaustive(),
             SourceInstance::Audio(a) => f
                 .debug_struct("Audio")
@@ -495,6 +504,8 @@ impl NodeTypes for NodeTypeTable {
             // CSS, zoom, the script and the timers reach the running page over IPC
             // (ADR-0132 decision 4, ADR-0149 decision 1).
             Some(SourceClass::Browser) => &crate::browser::BROWSER_LIVE_KEYS,
+            // Every schema key but `transition` (ADR-0171 decision 4).
+            Some(SourceClass::Slideshow) => crate::slideshow::LIVE_KEYS,
             _ => &[],
         }
     }
@@ -636,6 +647,7 @@ fn known_keys(type_id: &NodeTypeId) -> Option<&'static [&'static str]> {
             keys::END_MS,
         ],
         SourceClass::Text => crate::text::TEXT_KEYS,
+        SourceClass::Slideshow => crate::slideshow::KEYS,
         SourceClass::Browser => &[
             keys::URL,
             keys::WIDTH,
@@ -664,6 +676,8 @@ pub fn option_keys(type_id: &NodeTypeId) -> &'static [&'static str] {
         // (the text, the file) is decided with the text UI (ADR-0129 phase (f)); until
         // then Reset source and Paste attributes leave a text's settings alone.
         Some(SourceClass::Text) => &[],
+        // The folder and the output size are identity; the schema keys are options.
+        Some(SourceClass::Slideshow) => crate::slideshow::OPTION_KEYS,
     }
 }
 
@@ -677,6 +691,10 @@ pub fn validate_settings(type_id: &NodeTypeId, settings: &Settings) -> Result<()
     }
     if class_of(type_id) == Some(SourceClass::Text) {
         return crate::text::validate_text(settings).map(|_| ());
+    }
+    if class_of(type_id) == Some(SourceClass::Slideshow) {
+        return crate::slideshow::validate(settings)
+            .map_err(|(key, expected)| SourceError::InvalidSetting { key, expected });
     }
     if class_of(type_id) == Some(SourceClass::Browser) {
         return crate::browser::validate_browser(settings)
@@ -735,7 +753,10 @@ pub fn validate_settings(type_id: &NodeTypeId, settings: &Settings) -> Result<()
     Ok(())
 }
 
-fn text<'a>(settings: &'a Settings, key: &'static str) -> Result<Option<&'a str>, SourceError> {
+pub(crate) fn text<'a>(
+    settings: &'a Settings,
+    key: &'static str,
+) -> Result<Option<&'a str>, SourceError> {
     match settings.get(key) {
         None => Ok(None),
         Some(SettingValue::Text(t)) => Ok(Some(t.as_str())),
@@ -746,7 +767,7 @@ fn text<'a>(settings: &'a Settings, key: &'static str) -> Result<Option<&'a str>
     }
 }
 
-fn flag(settings: &Settings, key: &'static str) -> Result<Option<bool>, SourceError> {
+pub(crate) fn flag(settings: &Settings, key: &'static str) -> Result<Option<bool>, SourceError> {
     match settings.get(key) {
         None => Ok(None),
         Some(SettingValue::Bool(b)) => Ok(Some(*b)),
@@ -1098,7 +1119,8 @@ impl SourceTypes {
             | SourceClass::Still
             | SourceClass::Media
             | SourceClass::Browser
-            | SourceClass::Text => Ok(Vec::new()),
+            | SourceClass::Text
+            | SourceClass::Slideshow => Ok(Vec::new()),
         }
     }
 
@@ -1107,7 +1129,7 @@ impl SourceTypes {
         match class_of(type_id) {
             Some(SourceClass::Capture(kind)) => !self.capture_candidates(kind).is_empty(),
             Some(SourceClass::Audio(kind)) => !self.audio_candidates(kind).is_empty(),
-            Some(SourceClass::Still) | Some(SourceClass::Browser) => true,
+            Some(SourceClass::Still | SourceClass::Browser | SourceClass::Slideshow) => true,
             Some(SourceClass::Media) => !self.media_candidates(None).is_empty(),
             Some(SourceClass::Text) => !self.text.is_empty(),
             _ => false,
@@ -1163,6 +1185,7 @@ impl SourceTypes {
                     crate::browser::browser_descriptor()
                 }
                 Some(SourceClass::Text) => rbs_nodes::text_descriptor(),
+                Some(SourceClass::Slideshow) => rbs_nodes::slideshow_descriptor(),
                 _ => rbs_audio::input_descriptor(),
             };
             table.insert(t, descriptor);
@@ -1214,7 +1237,11 @@ impl SourceTypes {
                     }
                 }
             }
-            SourceClass::Still | SourceClass::Media | SourceClass::Browser | SourceClass::Text => {}
+            SourceClass::Still
+            | SourceClass::Media
+            | SourceClass::Browser
+            | SourceClass::Text
+            | SourceClass::Slideshow => {}
         }
         Ok(out)
     }
@@ -1334,6 +1361,12 @@ impl SourceTypes {
                     settings,
                 })))
             }
+            SourceClass::Slideshow => Ok(SourceInstance::Slideshow(Box::new(
+                crate::slideshow::instantiate(
+                    settings,
+                    ctx.canvas.map(|(s, _)| (s.width, s.height)),
+                ),
+            ))),
             SourceClass::Audio(kind) => {
                 let candidates = choose(&self.audio_candidates(kind), named, type_id)?;
                 let (backend, endpoint) = match target {
@@ -1567,141 +1600,12 @@ fn pixel_rank(caps: &rbs_core::capability::CapabilitySet) -> u8 {
     }
 }
 
-fn validate_media(settings: &Settings) -> Result<(), SourceError> {
-    for key in settings.keys() {
-        if ![
-            keys::ADAPTER,
-            keys::PATH,
-            keys::LOOP,
-            keys::RESTART_WHEN_SHOWN,
-            keys::START_MS,
-            keys::END_MS,
-        ]
-        .contains(&key.as_str())
-        {
-            return Err(SourceError::InvalidSetting {
-                key: "settings",
-                expected: "only keys this source type uses",
-            });
-        }
-    }
-    match settings.get(keys::PATH) {
-        Some(SettingValue::Text(path)) => {
-            // Shape only here. `instantiate` canonicalizes before any decoder open.
-            if rbs_media_decode::accept_local_media_path(path).is_err() && raw_path_is_remote(path)
-            {
-                return Err(SourceError::InvalidSetting {
-                    key: keys::PATH,
-                    expected: "a local absolute path, not a URL, UNC path, or device path",
-                });
-            }
-        }
-        Some(_) => {
-            return Err(SourceError::InvalidSetting {
-                key: keys::PATH,
-                expected: "text",
-            });
-        }
-        None => {
-            return Err(SourceError::InvalidSetting {
-                key: keys::PATH,
-                expected: "a local absolute path",
-            });
-        }
-    }
-    flag(settings, keys::LOOP)?;
-    flag(settings, keys::RESTART_WHEN_SHOWN)?;
-    media_range(settings)?;
-    text(settings, keys::ADAPTER)?;
-    Ok(())
-}
-
-/// Sends the live keys `keys` of a media file's `settings` to its control handle
-/// (ADR-0108 decision 12), for [`rbs_scene::binder::BindReport::live_changed`]. A
-/// value the type refuses is skipped and reported; the others still apply.
-pub fn apply_media_live(
-    control: &rbs_nodes::MediaControl,
-    settings: &Settings,
-    keys: &[String],
-) -> Result<(), SourceError> {
-    let mut first_error = None;
-    let mut keep = |result: Result<(), SourceError>| {
-        if let Err(error) = result {
-            first_error.get_or_insert(error);
-        }
-    };
-    let changed = |key: &str| keys.iter().any(|k| k == key);
-    // `restart_when_shown` is the deprecated spelling of the activity policy's
-    // `on_return` (ADR-0152 decision 10): the host maps it and delivers the policy
-    // through the binder's level changes, so a stray value only has to be valid.
-    if changed(keys::RESTART_WHEN_SHOWN) {
-        keep(flag(settings, keys::RESTART_WHEN_SHOWN).map(|_| ()));
-    }
-    if changed(keys::START_MS) || changed(keys::END_MS) {
-        keep(media_range(settings).and_then(|(start, end)| {
-            control
-                .set_range(start, end)
-                .map_err(|_| SourceError::InvalidSetting {
-                    key: keys::END_MS,
-                    expected: "greater than start_ms",
-                })
-        }));
-    }
-    // Last, so an end hold that loops again starts from the new range.
-    if changed(keys::LOOP) {
-        keep(flag(settings, keys::LOOP).and_then(|on| {
-            control
-                .set_loop(on.unwrap_or(true))
-                .map_err(|error| SourceError::Media(error.to_string()))
-        }));
-    }
-    first_error.map_or(Ok(()), Err)
-}
-
-/// The play range of a media file (ADR-0108 decision 11): `start_ms` (default 0) and
-/// `end_ms` (absent for the end of the file), each a whole number of milliseconds of
-/// at least 0, and `end_ms` greater than `start_ms`. Values past the end of the file
-/// are clamped when it opens.
-fn media_range(settings: &Settings) -> Result<(Duration, Option<Duration>), SourceError> {
-    let ms = |key: &'static str| match settings.get(key) {
-        None => Ok(None),
-        Some(SettingValue::Int(value)) => u64::try_from(*value)
-            .map(|value| Some(Duration::from_millis(value)))
-            .map_err(|_| SourceError::InvalidSetting {
-                key,
-                expected: "milliseconds, 0 or more",
-            }),
-        Some(_) => Err(SourceError::InvalidSetting {
-            key,
-            expected: "an integer",
-        }),
-    };
-    let start = ms(keys::START_MS)?.unwrap_or(Duration::ZERO);
-    let end = ms(keys::END_MS)?;
-    if end.is_some_and(|end| end <= start) {
-        return Err(SourceError::InvalidSetting {
-            key: keys::END_MS,
-            expected: "greater than start_ms",
-        });
-    }
-    Ok((start, end))
-}
-
-fn raw_path_is_remote(path: &str) -> bool {
-    let lower = path.trim().to_ascii_lowercase();
-    lower.contains("://")
-        || path.trim().starts_with(r"\\")
-        || path.trim().starts_with("//")
-        || lower.starts_with("/dev/")
-        || lower.starts_with("/dev\\")
-}
-
 /// The pixels of an image or colour source from its settings (ADR-0074).
 fn still_pixels(type_id: &str, settings: &Settings) -> Result<crate::still::Picture, SourceError> {
     use crate::still;
     if type_id == types::IMAGE_SOURCE {
         if let Some(path) = text(settings, keys::PATH)? {
-            return still::decode_png(std::path::Path::new(path)).map_err(SourceError::Image);
+            return still::decode_picture(std::path::Path::new(path)).map_err(SourceError::Image);
         }
         let id = text(settings, keys::SAMPLE)?.ok_or(SourceError::InvalidSetting {
             key: keys::PATH,

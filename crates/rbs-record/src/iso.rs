@@ -301,7 +301,11 @@ fn check_class(
             name: name.to_owned(),
         }),
         Some(
-            SourceClass::Capture(_) | SourceClass::Still | SourceClass::Browser | SourceClass::Text,
+            SourceClass::Capture(_)
+            | SourceClass::Still
+            | SourceClass::Browser
+            | SourceClass::Text
+            | SourceClass::Slideshow,
         ) if flag.audio => Err(IsoError::AudioOnPictureOnly {
             source,
             name: name.to_owned(),

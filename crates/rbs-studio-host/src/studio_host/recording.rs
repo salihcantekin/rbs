@@ -1392,6 +1392,7 @@ impl Host {
                     | types::SourceClass::Still
                     | types::SourceClass::Browser
                     | types::SourceClass::Text
+                    | types::SourceClass::Slideshow
             )
         );
         let sound_only = matches!(class, Some(types::SourceClass::Audio(_)));

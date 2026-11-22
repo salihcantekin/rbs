@@ -6,6 +6,7 @@ UI text uses these terms and no synonyms (rule U13). Code may use different inte
 | --- | --- | --- | --- |
 | Scene | A layout of sources shown on a canvas | Layout, page | `Scene` |
 | Source | Something that produces video or audio (screen capture, window capture, camera, image, text, media, browser, audio device), as placed in a scene with its position, size and crop. The panel listing them is "Sources" | Input, layer, element, item | Source node; placement is a scene item |
+| Slide show | A source that shows the PNG and JPEG pictures of one folder one after another, on a timer or with Next and Previous, with a transition between them (ADR-0171). Its buttons say "Next picture" and "Previous picture" | Slideshow, image slideshow, carousel, gallery | `org.rbs.source.slideshow`, `SourceKind::Slideshow` |
 | Look | A preset of a source's shape, border and filters, copied onto the selected source in one undoable step. Later edits to the source do not change the look | Preset, style, theme | `Look` |
 | Duplicate source | Make an independent copy of a source, with its own settings, placed above it (ADR-0133). A camera copy starts in standby | Clone, copy source | `source.duplicate` |
 | Duplicate scene with new sources | Copy a scene whose sources are copies too, so changing one scene does not change the other ("Duplicate scene" shares the sources) | Deep copy, clone scene | `scene.duplicate {sources: copied}` |

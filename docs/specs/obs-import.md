@@ -114,6 +114,9 @@ ADR-0131 decision 8 is normative: absolute `pos`, `scale`, `bounds` are read; an
 
 ADR-0131 decision 7 is the first mapping table. Each mapper keeps its own row in this section when it is implemented.
 
+- `image_source` → `org.rbs.source.image` for a `.png`, `.jpg` or `.jpeg` file (JPEG since ADR-0171); other formats are skipped. The picture size comes from the PNG header or the JPEG headers (upright by EXIF orientation).
+- `slideshow`, `slideshow_v2` → `org.rbs.source.slideshow` (ADR-0171 decision 11). The folder is the first `files` entry's folder (an entry that is not a picture name is a folder); entries in other folders, listed files (RBS shows every PNG and JPEG of the folder), and other picture formats are reported. `slide_time` → `interval_s` (nearest half second, 1 to 3600), `slide_mode: mode_manual` → `advance: manual`, `randomize` → `order: shuffle`, `loop`, `transition` (`cut`, `fade`, `slide`, `swipe`), `transition_speed` → `transition_ms` (down to a 50 ms step, at most 5000), `fit: contain`. `use_custom_size` `WxH` → `width`/`height`, else the canvas (an aspect ratio is reported). `playback_behavior` `always_play` (the default) → run `placed`; `pause_unpause` keeps the type default; `stop_restart` is reported (a slide show continues on return). `hide` is reported.
+
 ### Degrading on scene validation (ADR-0131 decision 4)
 
 | `SceneError` | Action |

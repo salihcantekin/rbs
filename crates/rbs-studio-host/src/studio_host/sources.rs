@@ -707,13 +707,13 @@ impl Host {
         )
     }
 
-    /// Adds a PNG file as an image source, fitted inside half the canvas and centred.
+    /// Adds a PNG or JPEG file as an image source, fitted inside half the canvas and centred.
     pub(super) fn add_image_file(
         &mut self,
         path: &std::path::Path,
         name: Option<&str>,
     ) -> Result<SourceId, Refusal> {
-        let (pw, ph, _) = rbs_sources::still::decode_png(path).map_err(Refusal::Invalid)?;
+        let (pw, ph, _) = rbs_sources::still::decode_picture(path).map_err(Refusal::Invalid)?;
         let canvas = self
             .collection
             .canvas(self.canvas)
@@ -798,26 +798,39 @@ impl Host {
             ],
             [w, h],
         );
-        let path_text = path.display().to_string();
         let mut settings = Settings::new();
-        settings.insert(keys::PATH.into(), SettingValue::Text(path_text));
-        rbs_sources::validate_settings(&SourceKind::Media.type_id(), &settings)
-            .map_err(|error| Refusal::Invalid(error.to_string()))?;
+        settings.insert(
+            keys::PATH.into(),
+            SettingValue::Text(path.display().to_string()),
+        );
         let base = path
             .file_stem()
             .and_then(|s| s.to_str())
             .filter(|s| !s.is_empty())
             .unwrap_or("Media");
-        let base = name.unwrap_or(base);
+        self.add_placed(SourceKind::Media, settings, name.unwrap_or(base), &layout)
+    }
+
+    /// A new source of `kind` with `settings`, named after `base` (made unique) and
+    /// placed in the edited scene with `layout`: one undo step.
+    pub(super) fn add_placed(
+        &mut self,
+        kind: SourceKind,
+        settings: Settings,
+        base: &str,
+        layout: &Layout,
+    ) -> Result<SourceId, Refusal> {
+        rbs_sources::validate_settings(&kind.type_id(), &settings)
+            .map_err(|error| Refusal::Invalid(error.to_string()))?;
         let name = unique_name(&self.collection, base);
         let (source, undo_source) = self
             .collection
-            .add_source(&name, SourceKind::Media.type_id(), settings)
+            .add_source(&name, kind.type_id(), settings)
             .map_err(|e| Refusal::of(&e))?;
         match self.collection.add_item(
             self.edited(),
             ItemContent::Source(source),
-            self.stored_layout(&layout),
+            self.stored_layout(layout),
             None,
         ) {
             Ok((_, undo_item)) => {

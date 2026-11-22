@@ -107,7 +107,7 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0096](0096-capture-audio-companions-and-camera-microphone.md) | "Capture audio too" companions and the camera's own microphone | Accepted |
 | [0097](0097-audio-monitoring-and-buses.md) | Audio monitoring (output port, per-strip monitor modes) and buses with per-source send levels | Accepted |
 | [0098](0098-transition-keeps-the-preview-scene.md) | Transition keeps the preview scene; swapping is a setting, off by default | Accepted |
-| [0099](0099-studio-in-its-own-process.md) | Run the studio in its own process | Proposed |
+| [0099](0099-studio-in-its-own-process.md) | Run the studio in its own process | Accepted |
 | [0100](0100-configurable-glide-duration-and-easing.md) | Configurable glide duration and easing (collection defaults + multi-scene source override) | Accepted |
 | [0101](0101-mixer-columns-panes-and-pinned-master.md) | Mixer columns use fixed strips, side-by-side clusters and horizontal scroll | Accepted |
 | [0102](0102-output-size-distinct-from-canvas.md) | Output size distinct from the canvas | Accepted (macOS done; Windows remains) |
@@ -178,3 +178,5 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0168](0168-the-last-pending-window-commands.md) | The last 15 Pending window commands: window-only answers behind the window flag, the window picking the method, the OS picker and Interact input as `LocalOnly`, and protocol 1.101 (`source.targets` fields, `browser.forget_sign_in` `restart`) | Accepted |
 | [0169](0169-audio-branch-rests-while-nothing-reads-it.md) | The meter sink is in the graph only while meters are wanted, so the audio branch (worker, device streams, filters, mixer) rests while nothing reads it (supersedes ADR-0041 decision 2 in part) | Accepted |
 | [0170](0170-multi-track-recording-and-six-buses.md) | Multi-track recording: a recording writes 1 to 6 buses as audio tracks in one never-shared encoder chain; buses capped at 6 (amends ADR-0097) | Accepted |
+| [0171](0171-image-slide-show-source.md) | Image slide show source: one folder of PNG and JPEG pictures, at most three decoded at a time, a fixed output size, a transition pass only during a change, controlled through the media methods | Accepted |
+| [0172](0172-panels-menu-toggles-and-panels-reopen-where-they-were.md) | The Panels menu toggles its panel, and a panel closed in this session reopens where it was: its stack, beside its neighbour, its area, edge group or floating window (supersedes ADR-0073 decision 4 in part) | Accepted |

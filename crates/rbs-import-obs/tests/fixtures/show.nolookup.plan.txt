@@ -27,11 +27,25 @@ source "Background" org.rbs.source.color
   width = 1920
 source "Logo" org.rbs.source.image
   path = "/Users/someone/logo.png"
+source "Old photo" org.rbs.source.image
+  path = "/Users/someone/photo.jpg"
+source "Sponsors" org.rbs.source.slideshow
+  advance = "manual"
+  fit = "contain"
+  folder = "/Users/someone/sponsors"
+  height = 720
+  interval_s = 4
+  loop = true
+  order = "shuffle"
+  transition = "swipe"
+  transition_ms = 1200
+  width = 1280
+  activity on_return resume
 source "Music" org.rbs.source.media
   loop = true
   path = "/Users/someone/music.mp3"
   activity on_return restart
-  filter org.rbs.audio-filter.ducker enabled true attack=10 key_source=11 release=3000 threshold=-30
+  filter org.rbs.audio-filter.ducker enabled true attack=10 key_source=13 release=3000 threshold=-30
 source "Frame" org.rbs.source.image
   path = "/Users/someone/frame.png"
 source "Desktop Audio" org.rbs.source.audio-output
@@ -50,6 +64,8 @@ scene "Main"
 scene "Starting soon"
   source "Background" pos [0.00, 0.00] size [1920.00, 1080.00] rot 0.00 crop [0, 0, 0, 0] visible true locked false
   source "Logo" pos [1920.00, 0.00] size [-1920.00, 1080.00] rot 15.00 crop [0, 0, 0, 0] visible true locked false
+  source "Old photo" pos [0.00, 0.00] size [1920.00, 1080.00] rot 0.00 crop [0, 0, 0, 0] visible true locked false
+  source "Sponsors" pos [0.00, 0.00] size [1280.00, 720.00] rot 0.00 crop [0, 0, 0, 0] visible true locked false
   source "Music" pos [0.00, 0.00] size [1920.00, 1080.00] rot 0.00 crop [0, 0, 0, 0] visible true locked false
 scene "Camera only"
   source "Webcam" pos [0.00, 0.00] size [1920.00, 1080.00] rot 0.00 crop [40, 23, 40, 23] visible true locked false
@@ -59,14 +75,16 @@ scene "Global sources"
   source "Desktop Audio" pos [0.00, 0.00] size [1920.00, 1080.00] rot 0.00 crop [0, 0, 0, 0] visible true locked false
   source "Mic/Aux" pos [0.00, 0.00] size [1920.00, 1080.00] rot 0.00 crop [0, 0, 0, 0] visible true locked false
 report
-Imported exactly: 4 scenes, 3 sources, 4 items, 2 filters.
-Imported, not exactly as in OBS (19):
+Imported exactly: 4 scenes, 3 sources, 5 items, 2 filters.
+Imported, not exactly as in OBS (22):
 - approximated source "Screen" (monitor_capture) in Main: This computer's devices were not checked, so RBS uses the default one.
 - approximated filter "Webcam: Crop" (crop_filter): The crop now happens after the source's other filters.
 - approximated source "Webcam" (dshow_input) in Camera only, Main: This computer's devices were not checked, so RBS uses the default one.
 - approximated source "Alerts" (browser_source) in Main: The page size was rounded to even pixels. Custom CSS is not in RBS.
 - approximated source "Badge logo" (image_source) in Main: The picture file was not found on this computer; pick it again in the source's settings.
 - approximated source "Logo" (image_source) in Starting soon: The picture file was not found on this computer; pick it again in the source's settings.
+- approximated source "Old photo" (image_source) in Starting soon: The picture file was not found on this computer; pick it again in the source's settings.
+- approximated source "Sponsors" (slideshow_v2) in Starting soon: RBS shows every PNG and JPEG picture in the folder, not only the files OBS listed. Only PNG and JPEG pictures are shown; other formats are skipped. Each picture shows 4 s (RBS's nearest). RBS continues where it was when the slide show is shown again; it does not restart.
 - approximated filter "Music: Duck" (compressor_filter): The compressor with a sidechain became a Ducker; check how far it lowers the sound. Out of RBS's range, so limited: release.
 - approximated source "Music" (ffmpeg_source) in Starting soon: The media file was not found on this computer; pick it again in the source's settings. Its volume was above 0 dB; RBS limits a source to 0 dB (use a Gain filter to boost). Left-right balance is not in RBS.
 - approximated source "Frame" (image_source) in Overlay: The picture file was not found on this computer; pick it again in the source's settings.
@@ -78,11 +96,11 @@ Imported, not exactly as in OBS (19):
 - approximated scene "Badges" (group) in Main: The group became separate items in the scene.
 - approximated item "Badge logo" in Main: The source's picture size is not known here, so its size on the canvas may differ.
 - approximated item "Logo" in Starting soon: The source's picture size is not known here, so its size on the canvas may differ.
+- approximated item "Old photo" in Starting soon: The source's picture size is not known here, so its size on the canvas may differ.
 - approximated item "Music" in Starting soon: The source's picture size is not known here, so its size on the canvas may differ.
 - approximated item "Frame" in Overlay: The source's picture size is not known here, so its size on the canvas may differ.
-Not imported (5):
+Not imported (4):
 - skipped source "Lower third" (text_ft2_source_v2) in Main: Text sources are not in RBS yet. A later RBS can add it from the saved report.
-- skipped source "Old photo" (image_source) in Starting soon: Only PNG pictures can be shown for now. Save the picture as PNG and add it as an image source.
 - skipped filter "Mic/Aux: Noise suppression" (noise_suppress_filter_v2): This filter is not in RBS yet.
 - skipped filter "Main: Warm" (color_filter_v2): Filters on scenes are not in RBS.
 - skipped item "Ghost" in Starting soon: OBS 31 saved this item with relative positions only, which RBS does not read yet.

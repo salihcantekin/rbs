@@ -72,6 +72,8 @@ impl Command {
             Command::MediaSeek(_) => "media.seek",
             Command::MediaRestart(_) => "media.restart",
             Command::MediaState(_) => "media.state",
+            Command::MediaNext(_) => "media.next",
+            Command::MediaPrevious(_) => "media.previous",
             Command::SourceSetSettings(_) => "source.set_settings",
             Command::SourceSetCompanionAudio(_) => "source.set_companion_audio",
             Command::CanvasAddVertical(_) => "canvas.add_vertical",
@@ -299,6 +301,8 @@ pub const METHODS: &[MethodInfo] = &[
     m("media.seek", Some(Scope::Control), Effect::Edit),
     m("media.restart", Some(Scope::Control), Effect::Edit),
     m("media.state", Some(Scope::Read), Effect::Read),
+    m("media.next", Some(Scope::Control), Effect::Edit),
+    m("media.previous", Some(Scope::Control), Effect::Edit),
     m("source.set_settings", Some(Scope::Control), Effect::Edit),
     m(
         "source.set_companion_audio",

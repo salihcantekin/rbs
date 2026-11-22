@@ -25,7 +25,7 @@ pub const CAMERA_SOURCE: &str = "org.rbs.source.camera";             // capture,
 pub const AUDIO_INPUT_SOURCE: &str = "org.rbs.source.audio-input";   // audio, EndpointKind::Input
 pub const AUDIO_OUTPUT_SOURCE: &str = "org.rbs.source.audio-output"; // audio, EndpointKind::OutputLoopback
 pub const APPLICATION_AUDIO_SOURCE: &str = "org.rbs.source.application-audio"; // EndpointKind::Application
-pub const IMAGE_SOURCE: &str = "org.rbs.source.image";               // still, a PNG file or a built-in sample (ADR-0074)
+pub const IMAGE_SOURCE: &str = "org.rbs.source.image";               // still, a PNG or JPEG file or a built-in sample (ADR-0074, ADR-0171)
 pub const COLOR_SOURCE: &str = "org.rbs.source.color";               // still, a solid colour or a gradient (ADR-0074)
 pub const ALL: [&str; 8];
 pub mod keys { ADAPTER, TARGET, CURSOR, WIDTH, HEIGHT, FPS, PATH, SAMPLE, COLOR, COLOR2, ANGLE, FILLED }
@@ -93,7 +93,7 @@ A capture source instantiated with a `mapping` passes its switch to `CaptureRequ
 | `cursor` | Bool | display, window | Draw the cursor; default true |
 | `width`, `height` | Int > 0 | display, window, camera, color | Requested size; both or neither. For `color` it is the picture size, default 1920 x 1080, at most 8192. A camera without them asks for the context's canvas size (the nearest mode, not the largest; audit C-21); a display or window keeps its own size |
 | `fps` | Int > 0 | display, window, camera | Requested frame rate. With a canvas in the `InstanceContext` (the studio passes the main canvas), a capture never runs faster than the canvas rate, and without `fps` it runs at the canvas rate (audit C-02) |
-| `path` | Text | image | A PNG file (straight alpha, any colour type; a side over 8192 pixels or a decoder buffer over 128 MiB is refused; gamma and colour profiles are ignored, pixels are sRGB). Wins over `sample` |
+| `path` | Text | image | A PNG or JPEG file, told apart by its first bytes (ADR-0171 decision 3; straight alpha, any colour type; a JPEG is turned upright by its EXIF orientation; a side over 8192 pixels or a decoder buffer over 128 MiB is refused; gamma and colour profiles are ignored, pixels are sRGB). Wins over `sample` |
 | `sample` | Text | image | A built-in sample picture id (below) at 1920 x 1080 |
 | `color` | Text | color | `#rrggbb` or `#rrggbbaa`; default `#000000` |
 | `color2` | Text | color | Second colour; present makes a linear gradient from `color` |
@@ -146,7 +146,7 @@ Control thread only, user-paced; nothing here runs per frame or per block.
 
 ## Conformance tests
 
-`crates/rbs-sources/tests/sources.rs` (still types need no adapter, make a still node and refuse bad settings; the unit tests in `src/still.rs` cover colours, gradients, every sample and PNG decoding), with the reference adapters `rbs-capture-test` and `rbs-audio-io-test`: installed types follow probed kinds; an empty registry has the compositor and mixer; instance descriptors equal table descriptors for every installed type; default targets; windows need a target; stored targets are used as given; bad settings, adapters and types are refused; targets for pickers; pickers only for kinds an adapter declares, picking on another thread, a cancelled pick, a picked target instantiated by its adapter; a bound scene instantiates into the partitions the binder chose, and `node_layers` keeps the transform, crop, opacity and link order.
+`crates/rbs-sources/tests/sources.rs` (still types need no adapter, make a still node and refuse bad settings; the unit tests in `src/still.rs` cover colours, gradients, every sample and PNG decoding; `src/jpeg.rs` covers JPEG decoding and the EXIF orientation reader's limits; `src/slideshow_files.rs` covers slide show folder listing, natural order, shuffle and fitting), with the reference adapters `rbs-capture-test` and `rbs-audio-io-test`: installed types follow probed kinds; an empty registry has the compositor and mixer; instance descriptors equal table descriptors for every installed type; default targets; windows need a target; stored targets are used as given; bad settings, adapters and types are refused; targets for pickers; pickers only for kinds an adapter declares, picking on another thread, a cancelled pick, a picked target instantiated by its adapter; a bound scene instantiates into the partitions the binder chose, and `node_layers` keeps the transform, crop, opacity and link order.
 
 Hardware (manual): `cargo run -p rbs-sources --example scene_sources --release -- 15` on Windows (WGC, Media Foundation camera, WASAPI microphone and system audio through the binder, the compositor and the mixer on the engine workers).
 

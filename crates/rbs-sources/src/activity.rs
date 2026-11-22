@@ -14,6 +14,7 @@ pub fn activity_traits(type_id: &NodeTypeId) -> ActivityTraits {
         Some(SourceClass::Media) => MEDIA_ACTIVITY,
         Some(SourceClass::Browser) => BROWSER_ACTIVITY,
         Some(SourceClass::Capture(_)) => CAPTURE_ACTIVITY,
+        Some(SourceClass::Slideshow) => SLIDESHOW_ACTIVITY,
         _ => ActivityTraits::PLACED,
     }
 }
@@ -53,6 +54,16 @@ pub fn media_return_edge(on_return: OnReturn) -> rbs_nodes::MediaReturnEdge {
     }
 }
 
+/// A slide show (ADR-0171 decision 10): Active while a shown scene draws it; on return
+/// it continues with the picture it showed (the index survives Standby, no pixels do).
+pub const SLIDESHOW_ACTIVITY: ActivityTraits = ActivityTraits::new(
+    &[Run::Placed, Run::Shown, Run::OnAir],
+    &[OnReturn::Resume],
+    Run::Shown,
+    Some(OnReturn::Resume),
+    false,
+);
+
 /// A browser page (ADR-0152 decision 4, ADR-0109): Active while a shown scene draws
 /// it; `run: placed` is ADR-0149's background page (process running, picture node
 /// unscheduled, one picture per second, sound dropped). `on_return: restart`
@@ -73,10 +84,11 @@ mod activity_tests {
     use rbs_graph::node::NodeTypeId;
     use rbs_scene::binder::NodeTypes;
 
-    /// Every built-in type declares a default it allows, and only media and browser
-    /// leave the placed rule by default (ADR-0152 decisions 4 and 5); captures may.
+    /// Every built-in type declares a default it allows, and only media, browser and
+    /// slide show leave the placed rule by default (ADR-0152 decisions 4 and 5,
+    /// ADR-0171 decision 10); captures may.
     #[test]
-    fn built_in_activity_defaults_are_allowed_and_only_media_and_browser_are_temporal() {
+    fn built_in_activity_defaults_are_allowed_and_only_timed_types_are_temporal() {
         let table = NodeTypeTable::default();
         for name in types::ALL {
             let traits = table.activity(&NodeTypeId::new(name));
@@ -93,7 +105,10 @@ mod activity_tests {
                 "{name}"
             );
             let temporal = traits.default_run != Run::Placed;
-            let expected = matches!(name, types::MEDIA_SOURCE | types::BROWSER_SOURCE);
+            let expected = matches!(
+                name,
+                types::MEDIA_SOURCE | types::BROWSER_SOURCE | types::SLIDESHOW_SOURCE
+            );
             assert_eq!(temporal, expected, "{name}");
             let capture = matches!(
                 name,

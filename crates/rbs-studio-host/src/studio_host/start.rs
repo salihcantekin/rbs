@@ -223,6 +223,7 @@ pub(super) fn installed_kinds(sources: &rbs_sources::SourceTypes) -> Vec<SourceK
         .chain(
             [
                 SourceKind::Image,
+                SourceKind::Slideshow,
                 SourceKind::Color,
                 SourceKind::Media,
                 SourceKind::Browser,

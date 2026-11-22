@@ -1,6 +1,6 @@
 # ADR-0073: The Pictures area, a resizable rail and Studio mode as one switch
 
-- Status: Accepted
+- Status: Accepted (decision 4 superseded in part by [ADR-0172](0172-panels-menu-toggles-and-panels-reopen-where-they-were.md): a panel closed in the same session reopens where it was)
 - Date: 2026-11-08
 - Deciders: Salih (owner)
 - Builds on: ADR-0061 (studio mode), ADR-0064 (Transition rail), ADR-0049 (docking, areas), ADR-0054 (the picture never disappears), ADR-0050 (command registry)
