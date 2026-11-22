@@ -503,7 +503,7 @@ impl YuvConverter {
         }
         let kernel = scale_kernel(src_width, src_height, width, height);
         let device = ctx.device();
-        let shader = shared_shader(device, kernel, screen, open_shadows);
+        let shader = shared_shader(ctx, kernel, screen, open_shadows);
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("rbs-gpu yuv"),
             bind_group_layouts: &[Some(&ctx.sampled_layout)],
@@ -857,7 +857,9 @@ fn box_fit(src_width: u32, src_height: u32, width: u32, height: u32, n: u32) -> 
 /// handle: after the last converter of the pair drops, the module drops with it and
 /// does not keep the device.
 struct SharedShader {
-    device: wgpu::Device,
+    /// [`GpuContext::uid`] of the context that compiled it. Not the `wgpu::Device`:
+    /// devices of two contexts (two instances) can compare equal.
+    context: u64,
     module: wgpu::ShaderModule,
 }
 
@@ -989,10 +991,10 @@ fn shader_cache() -> &'static ShaderCache {
     CACHE.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-/// The module for this pair on `device`. The first converter compiles it; a later
-/// converter of the same pair on that device takes the same module.
+/// The module for this pair on `ctx`. The first converter compiles it; a later
+/// converter of the same pair on that context takes the same module.
 fn shared_shader(
-    device: &wgpu::Device,
+    ctx: &GpuContext,
     kernel: ScaleKernel,
     screen: bool,
     open_shadows: bool,
@@ -1007,16 +1009,18 @@ fn shared_shader(
             return None;
         }
         let shared = weak.upgrade()?;
-        (shared.device == *device).then_some(shared)
+        (shared.context == ctx.uid()).then_some(shared)
     }) {
         return found;
     }
-    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("rbs-gpu yuv"),
-        source: wgpu::ShaderSource::Wgsl(shader_source(kernel, screen, open_shadows).into()),
-    });
+    let module = ctx
+        .device()
+        .create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("rbs-gpu yuv"),
+            source: wgpu::ShaderSource::Wgsl(shader_source(kernel, screen, open_shadows).into()),
+        });
     let shared = Arc::new(SharedShader {
-        device: device.clone(),
+        context: ctx.uid(),
         module,
     });
     cache.push((key, Arc::downgrade(&shared)));

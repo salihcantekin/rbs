@@ -102,6 +102,10 @@ pub struct GpuContext {
     /// Keeps the device in the exit registry until the context drops (see `exit`).
     #[cfg(target_os = "linux")]
     pub(crate) _exit_drain: crate::exit::ExitDrain,
+    /// Unique in the process. Every context has its own `wgpu::Instance`, and wgpu
+    /// compares devices only by their id inside that instance, so devices of two
+    /// contexts can compare equal. A cache shared between contexts keys on this.
+    uid: u64,
     instance: wgpu::Instance,
     adapter: wgpu::Adapter,
     device: wgpu::Device,
@@ -330,6 +334,11 @@ impl GpuContext {
         Ok(Self {
             #[cfg(target_os = "linux")]
             _exit_drain: crate::exit::ExitDrain::register(&device),
+            uid: {
+                static NEXT_UID: AtomicU64 = AtomicU64::new(0);
+                // Relaxed: only uniqueness is needed, no ordering with other memory.
+                NEXT_UID.fetch_add(1, Ordering::Relaxed)
+            },
             instance,
             adapter,
             device,
@@ -384,6 +393,11 @@ impl GpuContext {
     /// render on one device (ADR-0028, decision 6).
     pub fn instance(&self) -> &wgpu::Instance {
         &self.instance
+    }
+
+    /// Process-unique id of this context (see the field).
+    pub(crate) fn uid(&self) -> u64 {
+        self.uid
     }
 
     /// The selected adapter.

@@ -5,7 +5,7 @@
 //! coordinates with the origin at the top left.
 
 #![cfg_attr(
-    not(any(windows, target_os = "macos")),
+    not(all(any(windows, target_os = "macos"), feature = "preview-layer")),
     allow(dead_code, reason = "used by the platform layers")
 )]
 
