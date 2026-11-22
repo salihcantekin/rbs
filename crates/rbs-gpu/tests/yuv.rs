@@ -987,3 +987,38 @@ fn wrong_surface_is_rejected() {
         Some(GpuError::TargetMismatch(luma))
     );
 }
+
+/// Two contexts have two wgpu instances, whose devices can compare equal (wgpu compares
+/// them by an id local to the instance). A converter on the second context must not take
+/// the first context's shader module: that panicked inside wgpu-core with "Cannot get
+/// non-existent resource ShaderModuleId" when studio tests ran in parallel on SC-PC.
+#[test]
+fn a_second_context_compiles_its_own_shader() {
+    let Some(first) = common::gpu() else { return };
+    if !supported(first, YuvFormat::Nv12, false) {
+        return;
+    }
+    let _kept = YuvConverter::new(first, YuvFormat::Nv12, W, H).unwrap();
+    let second = GpuContext::new(&rbs_gpu::GpuRequest {
+        allow_software: true,
+        ..rbs_gpu::GpuRequest::default()
+    })
+    .unwrap();
+    let mut pool = TexturePool::new();
+    let rgb = [1.0, 0.0, 0.0];
+    let canvas = canvas(&second, &mut pool, &[rgb]);
+    let luma = pool
+        .acquire(&second, &yuv::luma_desc(YuvFormat::Nv12, W, H))
+        .unwrap();
+    let chroma = pool
+        .acquire(&second, &yuv::chroma_desc(YuvFormat::Nv12, W, H))
+        .unwrap();
+    let mut conv = YuvConverter::new(&second, YuvFormat::Nv12, W, H).unwrap();
+    conv.convert(&second, &pool, canvas, luma, chroma).unwrap();
+    let y = codes(
+        YuvFormat::Nv12,
+        &readback::read_bytes(&second, &pool, luma).unwrap(),
+    );
+    let want = reference(YuvFormat::Nv12, [1.0, 0.0, 0.0]);
+    assert!((i32::from(y[0]) - i32::from(want[0])).abs() <= 1);
+}
