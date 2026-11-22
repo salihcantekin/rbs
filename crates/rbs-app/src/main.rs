@@ -266,8 +266,8 @@ struct App {
     exiting: bool,
     /// Every window is hidden by Close with Keep RBS running (ADR-0056).
     hidden: bool,
-    /// The last Mixer-shown flag sent to the control thread.
-    meters_ui: bool,
+    /// Who in the window reads levels (ADR-0169 decision 6).
+    meters_ui: meters_ui::Readers,
     /// What closing the main window does (`app.toml`, ADR-0056).
     bg: background::AppSettings,
     /// The capture-exclusion last applied, and how many windows existed then.
@@ -2421,7 +2421,7 @@ impl Ctx {
         } else {
             self.meter_timer.stop();
         }
-        meters_ui::send(s, &mut app.meters_ui, mixer_shown);
+        app.meters_ui.mixer(s, mixer_shown);
 
         #[cfg(any(target_os = "macos", windows))]
         {
@@ -2569,7 +2569,7 @@ impl Ctx {
         }
         app.vertical_preview_endpoint = None;
         self.meter_timer.stop();
-        meters_ui::send(&app.studio, &mut app.meters_ui, false);
+        app.meters_ui.hidden(&app.studio);
         app.hidden = true;
         #[cfg(target_os = "macos")]
         rbs_app::native::set_hidden(true);
@@ -5085,7 +5085,7 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
                 let (input, reduction) = ctx
                     .app
                     .try_borrow()
-                    .map_or((0.0, 0.0), |app| app.studio.filter_levels(filter));
+                    .map_or((0.0, 0.0), |app| meters_ui::gate_levels(&ctx, &app, filter));
                 FilterLevels { input, reduction }
             })
         });
@@ -6055,7 +6055,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             sections_windows: 0,
             exiting: false,
             hidden: false,
-            meters_ui: true,
+            meters_ui: meters_ui::Readers::default(),
             bg,
             capture_applied: (false, usize::MAX),
             capture_retry: None,

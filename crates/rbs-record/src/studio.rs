@@ -1740,10 +1740,7 @@ impl Studio {
                     .with_master_meter(Arc::clone(&master)),
             );
             engine.adopt::<()>(parts.audio, mixer_id, Box::new(node))?;
-            let sink = MeterSinkNode::new();
-            let sink_id = add_active(&mut graph, Node::<()>::descriptor(&sink), parts.audio)?;
-            graph.connect(mixer_id, "main", sink_id, "in")?;
-            engine.adopt::<()>(parts.audio, sink_id, Box::new(sink))?;
+            let sink_id = meters::add_sink(&mut engine, &mut graph, mixer_id, parts.audio)?;
             essential.insert(sink_id, "meter sink");
             mixer = Some(Mixer {
                 node: mixer_id,
@@ -3314,41 +3311,7 @@ impl Studio {
             let _ = mixer.params.send(params);
         }
         let applied = applied?;
-        failed.extend(engine_failures(&applied));
-        for report in applied.reports.values() {
-            for (node, why) in &report.failed {
-                let role = self
-                    .essential
-                    .get(node)
-                    .copied()
-                    .or_else(|| self.output_role(*node));
-                if let Some(role) = role {
-                    let failure = StartFailure {
-                        node: role.to_owned(),
-                        reason: why.to_string(),
-                    };
-                    self.failed_nodes.insert(*node, failure.clone());
-                    failed.push(failure);
-                } else if let Some(p) = self
-                    .pictures
-                    .iter_mut()
-                    .find(|p| p.node == *node || p.normalise == Some(*node))
-                {
-                    // Not essential (ADR-0125 decision 2): only that picture stops.
-                    p.failure = Some(why.to_string());
-                } else if let Some(e) = self.entries.iter_mut().find(|e| e.state.node == *node) {
-                    // The first reason stays: a source without an instance is reported
-                    // again on every apply as having none.
-                    if e.state.failed.is_none() {
-                        e.state.failed = Some(why.to_string());
-                        failed.push(StartFailure {
-                            node: "source".to_owned(),
-                            reason: format!("{}: {why}", e.state.name),
-                        });
-                    }
-                }
-            }
-        }
+        self.record_failures(&applied, &mut failed);
         for e in gone.iter_mut() {
             take_instance(&mut self.engine, e, &mut self.pending_takes);
         }

@@ -196,7 +196,7 @@ pub fn meter_sink_descriptor() -> NodeDescriptor;   // Output, input "in" (Audio
 impl MeterSinkNode { pub fn new() -> Self; }
 ```
 
-Generic over the runtime; runs in the mixer's partition (no queue). `process` does nothing: the node only gives the scheduler a path to an output, so a mixer whose meters a UI shows runs while nothing records or plays. `prepare` and `release` do nothing.
+Generic over the runtime; runs in the mixer's partition (no queue). `process` does nothing: the node only gives the scheduler a path to an output, so a mixer whose meters a UI shows runs while nothing records or plays. `prepare` and `release` do nothing. The studio keeps it in its own graph for its life but sends it to the engine only while the audio branch is awake (ADR-0169, recording spec "Audio branch rest"): while it is left out and nothing else reads the mixer, the plan leaves out the mixer, its inputs and their filters (`SkipReason::NoSink`) and the audio partition has no worker.
 
 ### Loudness meter (`rbs_audio::loudness`, ADR-0092 stage 1)
 

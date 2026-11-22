@@ -91,6 +91,46 @@ impl Studio {
         send_to(&mut self.engine, graph.unwrap_or(&self.graph), rest, drain)
     }
 
+    /// What `reconcile`'s apply failed: essential and output nodes as failures, a
+    /// picture or source on its entry (the first reason stays).
+    pub(super) fn record_failures(&mut self, applied: &Applied, failed: &mut Vec<StartFailure>) {
+        failed.extend(engine_failures(applied));
+        for report in applied.reports.values() {
+            for (node, why) in &report.failed {
+                let role = self
+                    .essential
+                    .get(node)
+                    .copied()
+                    .or_else(|| self.output_role(*node));
+                if let Some(role) = role {
+                    let failure = StartFailure {
+                        node: role.to_owned(),
+                        reason: why.to_string(),
+                    };
+                    self.failed_nodes.insert(*node, failure.clone());
+                    failed.push(failure);
+                } else if let Some(p) = self
+                    .pictures
+                    .iter_mut()
+                    .find(|p| p.node == *node || p.normalise == Some(*node))
+                {
+                    // Not essential (ADR-0125 decision 2): only that picture stops.
+                    p.failure = Some(why.to_string());
+                } else if let Some(e) = self.entries.iter_mut().find(|e| e.state.node == *node) {
+                    // The first reason stays: a source without an instance is reported
+                    // again on every apply as having none.
+                    if e.state.failed.is_none() {
+                        e.state.failed = Some(why.to_string());
+                        failed.push(StartFailure {
+                            node: "source".to_owned(),
+                            reason: format!("{}: {why}", e.state.name),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
     /// A source or picture whose node failed to join keeps the first reason, as
     /// `reconcile` records it.
     fn note_failed_sources(&mut self, applied: &Applied) {
@@ -136,4 +176,18 @@ pub(super) fn send_to(
     } else {
         engine.apply(graph)
     }
+}
+
+/// Adds the meter sink on the mixer's `main` (ADR-0041 decision 2) and adopts it.
+pub(super) fn add_sink(
+    engine: &mut Engine,
+    graph: &mut GraphDescription,
+    mixer: NodeId,
+    partition: PartitionId,
+) -> Result<NodeId, RecordError> {
+    let sink = MeterSinkNode::new();
+    let id = add_active(graph, Node::<()>::descriptor(&sink), partition)?;
+    graph.connect(mixer, "main", id, "in")?;
+    engine.adopt::<()>(partition, id, Box::new(sink))?;
+    Ok(id)
 }

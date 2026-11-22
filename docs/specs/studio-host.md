@@ -53,6 +53,10 @@ A refused command or step is a `Refusal` (`NotFound`, `Invalid`, `Conflict`, `Fa
 
 One control thread, `rbs-studio` (ADR-0041 decision 7, [threads](../architecture/threads.md)). Commands and control API requests are handled in order on it; a caught panic answers the waiting command and logs (`studio_host/failures.rs`, ADR-0055). Log lines name a command by its kind only, never its payload (ADR-0158).
 
+### Meters and the audio branch
+
+`studio_host/canvas.rs` `sync_meters`, each control-loop round (F-15, ADR-0169): meters are wanted while the window reads levels (`Command::SetMetersUi`: the Mixer is shown in a window that is not hidden, or a noise gate's bar in Properties reads its levels; the window folds both into one bool, `rbs-app` `meters_ui.rs`) or a control client subscribes to `audio.levels`. Wanted, the host puts meters on the mixer and wakes the audio branch (`Studio::set_audio_awake(true)`) at once. Not wanted, meters come off at once and the branch rests `AUDIO_REST_AFTER` (2 s) later, on the host's injected clock, armed as one control-loop wake (`drive_audio_rest`); a reader that returns before cancels it. The host starts with the branch resting (`StudioSettings::audio_awake = false`) and meters off until the window says otherwise; `restart` carries both states and a pending deadline (moved to the new engine clock) over to the new studio. Failures of waking or resting log one `warn` line in `Area::Audio` with their count.
+
 ## Errors and failure behaviour
 
 A refused command answers `Update::Error`; a refused control API request answers its `ApiError` and logs a warning with the method and the error kind. A start failure or a stop answers `Update::Failed` and logs an error.
