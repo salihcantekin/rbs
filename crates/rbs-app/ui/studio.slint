@@ -3622,6 +3622,65 @@ component AudioFields inherits VerticalLayout {
 
 // The Source tab: what the source captures now, and a list to point it at another target
 // (ADR-0077). Reload tries a source that is not running again.
+// A slide show's playback row (ADR-0171): "Playback" and, at the right of the same
+// line, the picture shown ("3 / 24") with Previous, Pause or Resume and Next at the
+// full control size, so they are easy to hit. When the panel is too narrow for both on
+// one line, the buttons go under the name. Live actions, not undo steps.
+component SlidesPlayback inherits Rectangle {
+    in property <SourceData> data;
+    property <bool> stacked: root.width < name.preferred-width + Tokens.space-4 + bar.preferred-width;
+    min-width: max(name.min-width, bar.min-width);
+    min-height: self.preferred-height;
+    preferred-height: root.stacked ? name.preferred-height + Tokens.space-1 + bar.preferred-height
+        : max(name.preferred-height, bar.preferred-height);
+    name := Text {
+        x: 0;
+        y: root.stacked ? 0 : (root.height - self.height) / 2;
+        height: self.preferred-height;
+        text: @tr("Playback");
+        color: Theme.text-secondary;
+        font-size: Tokens.type-caption-size;
+        accessible-role: none;
+    }
+    bar := HorizontalLayout {
+        x: root.stacked ? 0 : root.width - self.width;
+        y: root.stacked ? name.preferred-height + Tokens.space-1 : (root.height - self.height) / 2;
+        width: self.preferred-width;
+        height: self.preferred-height;
+        spacing: Tokens.space-2;
+        Text {
+            text: data.slides-position;
+            color: Theme.text-secondary;
+            font-size: Tokens.type-body-size;
+            vertical-alignment: center;
+        }
+        IconButton {
+            icon: IconName.chevron-left;
+            name: @tr("Previous picture of {}", data.name);
+            dense: false;
+            framed: true;
+            width: Tokens.size-control-md;
+            clicked => { Studio.slides-step(data.id, -1); }
+        }
+        IconButton {
+            icon: data.slides-paused ? IconName.play : IconName.pause;
+            name: data.slides-paused ? @tr("Resume {}", data.name) : @tr("Pause {}", data.name);
+            dense: false;
+            framed: true;
+            width: Tokens.size-control-md;
+            clicked => { Studio.media-play-pause(data.id); }
+        }
+        IconButton {
+            icon: IconName.chevron-right;
+            name: @tr("Next picture of {}", data.name);
+            dense: false;
+            framed: true;
+            width: Tokens.size-control-md;
+            clicked => { Studio.slides-step(data.id, 1); }
+        }
+    }
+}
+
 component SourceFields inherits VerticalLayout {
     in property <SourceData> data;
     property <int> source-id: data.id;
@@ -3795,34 +3854,7 @@ component SourceFields inherits VerticalLayout {
             }
         }
     }
-    if data.slides: Field {
-        label: @tr("Playback");
-        HorizontalLayout {
-            spacing: Tokens.space-1;
-            alignment: start;
-            IconButton {
-                icon: IconName.chevron-left;
-                name: @tr("Previous picture of {}", data.name);
-                clicked => { Studio.slides-step(data.id, -1); }
-            }
-            IconButton {
-                icon: data.slides-paused ? IconName.play : IconName.pause;
-                name: data.slides-paused ? @tr("Resume {}", data.name) : @tr("Pause {}", data.name);
-                clicked => { Studio.media-play-pause(data.id); }
-            }
-            IconButton {
-                icon: IconName.chevron-right;
-                name: @tr("Next picture of {}", data.name);
-                clicked => { Studio.slides-step(data.id, 1); }
-            }
-            Text {
-                text: data.slides-position;
-                color: Theme.text-secondary;
-                font-size: Tokens.type-body-size;
-                vertical-alignment: center;
-            }
-        }
-    }
+    if data.slides: SlidesPlayback { data: data; }
     if data.slides: VerticalLayout {
         spacing: Tokens.size-field-gap;
         for field[j] in root.data.slides-fields: SlidesFieldView {

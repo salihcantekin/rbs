@@ -68,6 +68,10 @@ harness = false
 name = "submit"
 harness = false
 
+[[bench]]
+name = "slide"
+harness = false
+
 [[test]]
 name = "share_layer_metal"
 required-features = ["preview-layer"]
