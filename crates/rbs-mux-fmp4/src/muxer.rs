@@ -509,6 +509,40 @@ fn trak(
     duration_at
 }
 
+/// More than one audio stream: their tracks share an alternate group.
+fn several_audio(streams: &[StreamDescriptor]) -> bool {
+    streams
+        .iter()
+        .filter(|s| matches!(s.params, StreamParams::Audio { .. }))
+        .count()
+        > 1
+}
+
+/// The `ftyp` box: QuickTime's brand for MOV, ISO brands (and `av01` with AV1)
+/// otherwise.
+fn ftyp(header: &mut Vec<u8>, qt: bool, streams: &[StreamDescriptor]) {
+    let ftyp = boxes::open(header, b"ftyp");
+    if qt {
+        // QuickTime: major and only compatible brand `qt  `, minor version as
+        // QuickTime writes it (a BCD date, 2005-03).
+        header.extend_from_slice(b"qt  ");
+        boxes::u32(header, 0x2005_0300);
+        header.extend_from_slice(b"qt  ");
+    } else {
+        header.extend_from_slice(b"iso6");
+        boxes::u32(header, 0);
+        // Not `cmfc`: a CMAF track file has one track, and these fragments carry all.
+        let av1 = streams.iter().any(|s| s.codec == CodecId::Av1);
+        for brand in [b"iso6", b"isom", b"mp41"] {
+            header.extend_from_slice(brand);
+        }
+        if av1 {
+            header.extend_from_slice(b"av01");
+        }
+    }
+    boxes::close(header, ftyp);
+}
+
 impl Fmp4Muxer {
     pub(crate) fn new(config: &MuxerConfig) -> Result<Self, CreateError> {
         if config.streams.is_empty() {
@@ -519,35 +553,11 @@ impl Fmp4Muxer {
         // Names this file in error text.
         let name = if qt { "MOV" } else { "fragmented MP4" };
         let mut header = Vec::new();
-        let ftyp = boxes::open(&mut header, b"ftyp");
-        if qt {
-            // QuickTime: major and only compatible brand `qt  `, minor version as
-            // QuickTime writes it (a BCD date, 2005-03).
-            header.extend_from_slice(b"qt  ");
-            boxes::u32(&mut header, 0x2005_0300);
-            header.extend_from_slice(b"qt  ");
-        } else {
-            header.extend_from_slice(b"iso6");
-            boxes::u32(&mut header, 0);
-            // Not `cmfc`: a CMAF track file has one track, and these fragments carry all.
-            let av1 = config.streams.iter().any(|s| s.codec == CodecId::Av1);
-            for brand in [b"iso6", b"isom", b"mp41"] {
-                header.extend_from_slice(brand);
-            }
-            if av1 {
-                header.extend_from_slice(b"av01");
-            }
-        }
-        boxes::close(&mut header, ftyp);
+        ftyp(&mut header, qt, &config.streams);
 
         let mut tracks = Vec::with_capacity(config.streams.len());
         let mut traks = Vec::new();
-        let several_audio = config
-            .streams
-            .iter()
-            .filter(|s| matches!(s.params, StreamParams::Audio { .. }))
-            .count()
-            > 1;
+        let several_audio = several_audio(&config.streams);
         for (i, stream) in config.streams.iter().enumerate() {
             let id = i as u32 + 1;
             match (stream.codec, stream.params) {

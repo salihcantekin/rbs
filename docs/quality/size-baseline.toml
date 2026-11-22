@@ -46,8 +46,8 @@
 "crates/rbs-gpu/src/compositor.rs::render_scrolled" = 211
 "crates/rbs-import-obs/src/build.rs::build" = 321
 "crates/rbs-import-obs/src/profile.rs::read" = 240
-"crates/rbs-mux-fmp4/src/muxer.rs::new" = 337
-"crates/rbs-mux-matroska/src/muxer.rs::new" = 245
+"crates/rbs-mux-fmp4/src/muxer.rs::new" = 323
+"crates/rbs-mux-matroska/src/muxer.rs::new" = 242
 "crates/rbs-mux-matroska/tests/ffmpeg_interop.rs::run" = 216
 "crates/rbs-nodes/examples/record.rs::run" = 243
 "crates/rbs-project/src/fcpxml.rs::write" = 241

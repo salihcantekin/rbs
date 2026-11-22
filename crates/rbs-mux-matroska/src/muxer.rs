@@ -258,6 +258,22 @@ fn hvcc_for(stream: &StreamDescriptor) -> Result<(Vec<u8>, Option<u8>), CreateEr
     }
 }
 
+/// A `TrackEntry`'s number, uid, lacing, default flag, name and language (ADR-0170
+/// decision 6: names and the default flag).
+fn entry_head(header: &mut Vec<u8>, number: u64, stream: &StreamDescriptor) {
+    ebml::uint(header, TRACK_NUMBER, number);
+    ebml::uint(header, TRACK_UID, number);
+    ebml::uint(header, FLAG_LACING, 0);
+    // FlagDefault is 1 when absent: written only for a track that is not.
+    if !stream.default {
+        ebml::uint(header, FLAG_DEFAULT, 0);
+    }
+    if let Some(name) = &stream.name {
+        ebml::bytes(header, NAME, name.as_bytes());
+    }
+    ebml::bytes(header, LANGUAGE, b"und");
+}
+
 impl MatroskaMuxer {
     pub(crate) fn new(config: &MuxerConfig) -> Result<Self, CreateError> {
         if config.streams.is_empty() {
@@ -303,17 +319,7 @@ impl MatroskaMuxer {
         for (i, stream) in config.streams.iter().enumerate() {
             let number = i as u64 + 1;
             let entry = ebml::open(&mut header, TRACK_ENTRY);
-            ebml::uint(&mut header, TRACK_NUMBER, number);
-            ebml::uint(&mut header, TRACK_UID, number);
-            ebml::uint(&mut header, FLAG_LACING, 0);
-            // FlagDefault is 1 when absent: written only for a track that is not.
-            if !stream.default {
-                ebml::uint(&mut header, FLAG_DEFAULT, 0);
-            }
-            if let Some(name) = &stream.name {
-                ebml::bytes(&mut header, NAME, name.as_bytes());
-            }
-            ebml::bytes(&mut header, LANGUAGE, b"und");
+            entry_head(&mut header, number, stream);
             match (stream.codec, stream.params) {
                 (
                     codec @ (CodecId::H264 | CodecId::Hevc),
