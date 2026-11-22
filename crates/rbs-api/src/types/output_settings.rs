@@ -126,7 +126,7 @@ pub struct StreamSettings {
     /// older servers.
     #[serde(default)]
     pub hold_sound: crate::request::HoldSound,
-    /// The bus the stream sends, by name (protocol 1.101, ADR-0170 decision 3); every
+    /// The bus the stream sends, by name (protocol 1.103, ADR-0170 decision 3); every
     /// destination sends it. Omitted when `main`, and `main` from older servers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio_bus: Option<String>,
@@ -165,7 +165,7 @@ pub struct StreamSettingsPatch {
     /// The hold sound (protocol 1.67); absent: unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hold_sound: Option<crate::request::HoldSound>,
-    /// The bus the stream sends (protocol 1.101); absent: unchanged.
+    /// The bus the stream sends (protocol 1.103); absent: unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio_bus: Option<String>,
 }

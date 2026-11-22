@@ -177,8 +177,8 @@ fn stream_settings_are_a_minor_addition() {
     assert_eq!(patch.auto_record, None);
     let text = serde_json::to_value(&patch).unwrap();
     assert!(text.get("auto_record").is_none(), "{text}");
-    // Protocol 1.101 added `audio_bus`: a 1.100 server's settings read as `main`
-    // (absent), and a 1.100 client's patch leaves it.
+    // Protocol 1.103 added `audio_bus`: an older server's settings read as `main`
+    // (absent), and an older client's patch leaves it.
     let mut older = serde_json::to_value(stream_settings()).unwrap();
     assert_eq!(older["audio_bus"], "vod");
     older.as_object_mut().unwrap().remove("audio_bus");
@@ -190,7 +190,7 @@ fn stream_settings_are_a_minor_addition() {
 
 #[test]
 fn a_recording_profile_names_its_audio_tracks() {
-    // Protocol 1.101: omitted when `["main"]`, so a 1.100 client reads the object.
+    // Protocol 1.103: omitted when `["main"]`, so an older client reads the object.
     let text = serde_json::to_value(profile()).unwrap();
     assert!(text.get("audio_tracks").is_none(), "{text}");
     let mut p = profile();

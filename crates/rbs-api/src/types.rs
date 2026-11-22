@@ -1058,7 +1058,7 @@ pub struct RecordingProfile {
     #[serde(default, skip_serializing_if = "RecordingMarkers::is_default")]
     pub markers: RecordingMarkers,
     /// The buses the recording writes as audio tracks, by name, track 1 first
-    /// (protocol 1.101, ADR-0170 decisions 3 and 11). Omitted when `["main"]`. In
+    /// (protocol 1.103, ADR-0170 decisions 3 and 11). Omitted when `["main"]`. In
     /// `settings.set`, absent keeps the stored tracks. One track for now; several
     /// are `invalid_params` until multi-track recording is built.
     #[serde(default, skip_serializing_if = "Option::is_none")]

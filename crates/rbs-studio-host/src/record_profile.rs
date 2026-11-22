@@ -1366,7 +1366,7 @@ impl RecordProfile {
     }
 
     /// Settings from the control API's recording profile over `current`: what the
-    /// API leaves out (`audio_tracks` from a client before protocol 1.101) stays as
+    /// API leaves out (`audio_tracks` from a client before protocol 1.103) stays as
     /// `current` has it. The caller checks [`RecordProfile::problem`].
     pub fn from_api_over(p: &rbs_api::types::RecordingProfile, current: &Self) -> Self {
         let mut profile = Self::from_api(p);
