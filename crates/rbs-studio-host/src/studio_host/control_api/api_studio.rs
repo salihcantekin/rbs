@@ -50,13 +50,12 @@ impl ApiTarget<'_> {
                         .targets(kind)
                         .into_iter()
                         .map(|t| api::CaptureTarget {
-                            name: t.name,
-                            adapter: t.adapter,
-                            target: t.target,
-                            is_default: t.is_default,
-                            size: t
-                                .size
-                                .map(|(width, height)| api::Dimensions { width, height }),
+                            app: t.app.clone(),
+                            recent: t.recent.and_then(|r| u32::try_from(r).ok()),
+                            mic: t.mic.clone(),
+                            sound: t.sound,
+                            picker: t.picker,
+                            ..api_target(t)
                         })
                         .collect(),
                 }))

@@ -31,6 +31,21 @@ pub(super) struct ApiTarget<'a> {
 /// Clears [`WINDOW_GESTURE`] from a gesture any caller but the window sent, so a
 /// client's drag never joins a window step; the value is masked, never refused
 /// (ADR-0164 decision 2).
+/// A listed target as `source.targets` and `settings.recent_targets` give it: the
+/// fields of protocol 1.0 (1.101's are added by `source.targets` only).
+fn api_target(t: Target) -> api::CaptureTarget {
+    api::CaptureTarget {
+        name: t.name,
+        adapter: t.adapter,
+        target: t.target,
+        is_default: t.is_default,
+        size: t
+            .size
+            .map(|(width, height)| api::Dimensions { width, height }),
+        ..api::CaptureTarget::default()
+    }
+}
+
 fn clear_window_gesture(command: &mut rbs_api::Command) {
     use rbs_api::Command as C;
     let gesture = match command {

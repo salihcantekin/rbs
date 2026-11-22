@@ -568,9 +568,10 @@ impl Host {
     /// Forget sign-in (ADR-0132 decision 10): the source gets a new kept-profile id,
     /// so its page starts again signed out at once, and the old profile's directory is
     /// deleted once the page that used it has closed. One undo step, which brings back
-    /// only the id: the profile itself is gone. `stop_first` is the desktop app's
-    /// button, which stops the running page itself; a client is refused with `busy`
-    /// while the page runs (decision 9). The caller applies the collection.
+    /// only the id: the profile itself is gone. `stop_first` is `restart`
+    /// (protocol 1.101, which the desktop app's button sends): a running page restarts
+    /// with the new profile; without it a running page is refused with `busy`
+    /// (decision 9). The caller applies the collection.
     pub(super) fn forget_sign_in(
         &mut self,
         id: SourceId,
@@ -784,13 +785,6 @@ impl Host {
                 self.pickers
                     .region_grabs
                     .fetch_add(1, AtomicOrdering::AcqRel);
-            }
-            Command::ForgetBrowserSignIn(id) => {
-                let done = self
-                    .forget_sign_in(id, true)
-                    .map(|()| true)
-                    .map_err(|e| Refusal::Conflict(e.message));
-                self.answer(done, notify);
             }
             // The page's state picks the call (ADR-0168 decision 1): a reload of a page
             // that does not run opens it again, and a script with no page is quiet.

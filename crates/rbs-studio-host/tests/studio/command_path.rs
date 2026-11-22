@@ -415,6 +415,13 @@ fn translating_commands_run_only_their_declared_methods() {
         Command::SwitchScene(scene),
         Command::SetStudioMode(false),
         Command::SwitchScene(scene),
+        Command::CloseSyncMeasure,
+        Command::BrowserControl {
+            id: screen,
+            message: rbs_browser_ipc::control::Control::Reload {
+                bypass_cache: false,
+            },
+        },
     ];
     let expected = named(|p| matches!(p, CommandPath::Translates(_)));
     assert_eq!(names_of(&samples), expected, "a sample for each, ADR-0163");
@@ -428,7 +435,11 @@ fn translating_commands_run_only_their_declared_methods() {
         s.ask(rbs_api::Command::SceneList).unwrap();
         let mut ran = std::mem::take(&mut *s.trace.lock().unwrap());
         assert_eq!(ran.pop(), Some("scene.list"), "{name}: the barrier last");
-        assert!(!ran.is_empty(), "{name} ran no API method");
+        // With no measurement running, closing the Measure window has nothing to
+        // cancel, so it runs no method (ADR-0168 decision 1).
+        if name != "CloseSyncMeasure" {
+            assert!(!ran.is_empty(), "{name} ran no API method");
+        }
         for m in ran {
             assert!(declared.contains(&m), "{name} ran {m}, not in {declared:?}");
         }

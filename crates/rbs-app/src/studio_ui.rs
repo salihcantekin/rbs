@@ -5089,14 +5089,6 @@ impl StudioUi {
         })
     }
 
-    /// Forget sign-in on the Page tab, after its question (ADR-0132 decision 10): the
-    /// page opens again with a fresh profile and the kept one is deleted.
-    pub fn browser_forget_sign_in(&mut self, id: i32) {
-        if self.browser_rows.contains_key(&id) {
-            self.send(Command::ForgetBrowserSignIn(SourceId::from_raw(id as u32)));
-        }
-    }
-
     /// Adds a text source showing `text` (Add source › Text, ADR-0129 decision 13);
     /// it is selected and Properties opens on its Text tab.
     pub fn add_text(&mut self, text: &str) {

@@ -211,13 +211,30 @@ fn browser_input_event(
         .filter(|(on, _)| *on)
         .fold(0, |acc, (_, bit)| acc | bit)
     };
+    let held_bits = |h: &rbs_api::request::BrowserHeld| {
+        [
+            (h.left, wire::LEFT_HELD),
+            (h.middle, wire::MIDDLE_HELD),
+            (h.right, wire::RIGHT_HELD),
+        ]
+        .into_iter()
+        .filter(|(on, _)| *on)
+        .fold(0, |acc, (_, bit)| acc | bit)
+    };
     Ok(match e {
-        E::Move { x, y, modifiers } => InputEvent::Move {
+        E::Move {
+            x,
+            y,
+            modifiers,
+            held,
+        } => InputEvent::Move {
             x: *x,
             y: *y,
-            modifiers: bits(modifiers),
+            modifiers: bits(modifiers) | held_bits(held),
         },
-        E::Leave => InputEvent::Leave { modifiers: 0 },
+        E::Leave { modifiers, held } => InputEvent::Leave {
+            modifiers: bits(modifiers) | held_bits(held),
+        },
         E::Button {
             x,
             y,
@@ -738,7 +755,6 @@ impl Host {
             | Command::StopThumbnails
             | Command::OpenSourceSettings(..)
             | Command::CloseSourceSettings
-            | Command::ForgetBrowserSignIn(..)
             | Command::BrowserControl { .. } => self.source_edit_command(c, notify),
             Command::OpenAttributes { .. }
             | Command::SwitchScene(..)

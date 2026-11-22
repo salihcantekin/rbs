@@ -118,6 +118,22 @@ fn next<T>(rx: &Receiver<Update>, mut pick: impl FnMut(Update) -> Option<T>) -> 
 /// requests reach the control thread on separate queues, so a request sent after a
 /// command may still be served first; a `ListTargets` sent behind the command is
 /// answered only after it.
+/// A target just picked is listed as the newest recent one (protocol 1.101); a field
+/// it did not have before is left out.
+fn listed_as_recent(c: &mut Client, t: &Value) {
+    assert!(
+        t.get("recent").is_none() && t.get("picker").is_none(),
+        "{t}"
+    );
+    let again = c.call("source.targets", json!({"kind": "screen"}));
+    let row = again["result"]["targets"]
+        .as_array()
+        .and_then(|rows| rows.iter().find(|r| r["target"] == t["target"]))
+        .cloned()
+        .unwrap();
+    assert_eq!(row["recent"], 0, "{row}");
+}
+
 fn send_and_wait(host: &StudioHost, updates: &Receiver<Update>, command: Command) {
     host.send(command);
     host.send(Command::ListTargets(SourceKind::Screen));
@@ -204,8 +220,7 @@ fn a_control_api_client_drives_the_studio() {
     );
     assert_eq!(sub["result"]["seq"]["source.changed"], 0);
 
-    let targets = c.call("source.targets", json!({"kind": "screen"}));
-    let t = &targets["result"]["targets"][0];
+    let t = &c.call("source.targets", json!({"kind": "screen"}))["result"]["targets"][0];
     let added = c.call(
         "source.add",
         json!({"kind": "screen", "adapter": t["adapter"], "target": t["target"], "name": "Main screen"}),
@@ -217,6 +232,7 @@ fn a_control_api_client_drives_the_studio() {
     assert_eq!(event["params"]["seq"], 1);
     assert_eq!(event["params"]["data"][0]["name"], "Main screen");
     assert_eq!(event["params"]["data"][0]["kind"], "screen");
+    listed_as_recent(&mut c, t);
     // The UI sees the same source.
     next(&updates, |u| match u {
         Update::Sources(rows) if rows.len() == 1 => Some(()),

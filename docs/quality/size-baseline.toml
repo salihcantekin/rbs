@@ -4,29 +4,29 @@
 # increase the owner approved goes to size-exceptions.toml with `--except`.
 
 [files]
-"crates/rbs-api/src/request.rs" = 2779
-"crates/rbs-api/src/types.rs" = 2990
-"crates/rbs-api/tests/json.rs" = 3281
-"crates/rbs-app/src/main.rs" = 6505
+"crates/rbs-api/src/request.rs" = 2675
+"crates/rbs-api/src/types.rs" = 2988
+"crates/rbs-api/tests/json.rs" = 3267
+"crates/rbs-app/src/main.rs" = 6536
 "crates/rbs-app/src/menu_bar.rs" = 2518
-"crates/rbs-app/src/studio_ui.rs" = 10030
-"crates/rbs-record/src/studio.rs" = 5907
+"crates/rbs-app/src/studio_ui.rs" = 10058
+"crates/rbs-record/src/studio.rs" = 5925
 "crates/rbs-record/tests/studio.rs" = 3241
 "crates/rbs-scene/src/collection.rs" = 2830
 "crates/rbs-scene/tests/binder.rs" = 2882
 "crates/rbs-scene/tests/collection.rs" = 2759
-"crates/rbs-ui/src/command.rs" = 3674
+"crates/rbs-ui/src/command.rs" = 4398
 "crates/rbs-ui/src/workspace.rs" = 2798
 
 [functions]
 "crates/rbs-api/src/session.rs::message" = 249
-"crates/rbs-api/tests/json.rs::every_request" = 581
-"crates/rbs-api/tests/json.rs::every_result_and_event_type_round_trips" = 360
+"crates/rbs-api/tests/json.rs::every_request" = 556
+"crates/rbs-api/tests/json.rs::every_result_and_event_type_round_trips" = 351
 "crates/rbs-app/examples/audio_graph.rs::main" = 248
 "crates/rbs-app/examples/go_live.rs::main" = 215
 "crates/rbs-app/examples/remote_preview.rs::run" = 313
 "crates/rbs-app/examples/transition_cost.rs::main" = 203
-"crates/rbs-app/src/main.rs::install_studio" = 1036
+"crates/rbs-app/src/main.rs::install_studio" = 1038
 "crates/rbs-app/src/main.rs::run" = 373
 "crates/rbs-app/src/main.rs::sync" = 327
 "crates/rbs-app/src/main.rs::sync_studio" = 206
@@ -36,7 +36,7 @@
 "crates/rbs-app/src/studio_ui.rs::apply" = 519
 "crates/rbs-app/src/studio_ui.rs::new" = 231
 "crates/rbs-app/src/studio_ui.rs::push" = 274
-"crates/rbs-app/src/studio_ui.rs::set_rows" = 250
+"crates/rbs-app/src/studio_ui.rs::set_rows" = 251
 "crates/rbs-app/src/studio_ui.rs::the_vertical_output_commands_follow_the_vertical_canvas_and_its_outputs" = 218
 "crates/rbs-audio-io-pipewire/src/linux.rs::run_stream" = 212
 "crates/rbs-audio-io/src/conformance.rs::endpoint" = 298
@@ -57,7 +57,7 @@
 "crates/rbs-record/src/estimate.rs::rows_of" = 281
 "crates/rbs-record/src/studio.rs::add_output" = 285
 "crates/rbs-record/src/studio.rs::choose" = 239
-"crates/rbs-record/src/studio.rs::reconcile" = 626
+"crates/rbs-record/src/studio.rs::reconcile" = 628
 "crates/rbs-record/src/studio.rs::start_with" = 322
 "crates/rbs-record/src/studio/iso_video.rs::start_iso_video" = 292
 "crates/rbs-record/src/studio/transition.rs::note_transitions" = 224

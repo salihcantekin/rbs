@@ -95,7 +95,7 @@ impl ApiTarget<'_> {
                 .browser_message(p.source, &rbs_sources::BrowserMessage::RunScript(p.script))
                 .map(|()| Response::Done(Empty {})),
             C::BrowserForgetSignIn(p) => {
-                host.forget_sign_in(SourceId::from_raw(p.source), false)?;
+                host.forget_sign_in(SourceId::from_raw(p.source), p.restart)?;
                 host.apply(notify);
                 Ok(Response::Done(Empty {}))
             }
