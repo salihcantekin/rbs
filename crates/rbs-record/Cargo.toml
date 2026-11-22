@@ -34,6 +34,8 @@ rbs-manifest = { path = "../rbs-manifest" }
 png = "0.18"
 
 [dev-dependencies]
+# The input port, for a scripted input backend (ADR-0165).
+rbs-input = { path = "../rbs-input" }
 # Reference adapters of the capture and audio input ports (deterministic, no devices).
 rbs-capture-test = { path = "../rbs-capture-test" }
 rbs-audio-io-test = { path = "../rbs-audio-io-test" }

@@ -2,6 +2,8 @@
 
 use rbs_graph::node::NodeTypeId;
 
+use crate::pointer::Needs;
+use crate::pointer_types::{ClickRings, PointerHalo};
 use crate::types::{Field, FilterType, Pass, PassSource, Scale, UNIFORM_VECS, Uniforms, Values};
 
 /// Type id of colour correction.
@@ -15,7 +17,23 @@ pub const SHARPEN: &str = "org.rbs.filter.sharpen";
 
 /// Every built-in filter type, in the order the UI lists them.
 pub fn catalogue() -> &'static [&'static dyn FilterType] {
-    &[&ColorCorrection, &ChromaKey, &Blur, &Sharpen]
+    &[
+        &ColorCorrection,
+        &ChromaKey,
+        &Blur,
+        &Sharpen,
+        &ClickRings,
+        &PointerHalo,
+    ]
+}
+
+/// The catalogue types a host that `serves` these services can run, in catalogue
+/// order: what a list offering filter types to a user shows (spec "Pointer types").
+pub fn offered(serves: Needs) -> impl Iterator<Item = &'static dyn FilterType> {
+    catalogue()
+        .iter()
+        .copied()
+        .filter(move |t| serves.contains(t.needs()))
 }
 
 /// The built-in filter type with this id.
@@ -293,5 +311,13 @@ mod tests {
             assert_eq!(find(t.type_id().as_str()).map(|f| f.name()), Some(t.name()));
         }
         assert!(find("org.rbs.filter.none").is_none());
+    }
+
+    #[test]
+    fn only_a_host_that_serves_the_pointer_offers_pointer_types() {
+        let without: Vec<_> = offered(Needs::NONE).map(|t| t.name()).collect();
+        assert_eq!(without.len(), 4);
+        assert!(!without.contains(&"Click rings"));
+        assert_eq!(offered(Needs::POINTER).count(), catalogue().len());
     }
 }

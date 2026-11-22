@@ -89,6 +89,7 @@ mod loudness;
 mod meters;
 mod monitor;
 mod pause;
+mod pointer;
 mod rehearse;
 mod replay;
 mod scroll;
@@ -441,6 +442,8 @@ struct FilterEntry {
     instance: Option<FilterInstance>,
     /// In the running plan (enabled and not Standby); only those count latency.
     scheduled: bool,
+    /// Its instance was lent the pointer (ADR-0165), so its source's mapping is wanted.
+    fed: bool,
 }
 
 /// A running filter: the value channel the studio keeps and what the node shares
@@ -2824,6 +2827,7 @@ impl Studio {
                     node: *node,
                     instance: None,
                     scheduled: false,
+                    fed: false,
                 });
             }
             for (filter, _) in &report.changed_filters {
@@ -3156,19 +3160,9 @@ impl Studio {
             }
             match kind {
                 FilterKind::Video(ty) => {
-                    let size = self
-                        .entries
-                        .iter()
-                        .find(|e| e.source == entry.source)
-                        .and_then(|e| match &e.instance.as_ref()?.watch {
-                            Watch::Video(stats) => stats.picture_size(),
-                            Watch::Text(stats) => stats.picture_size(),
-                            Watch::Browser { size } => Some(*size),
-                            Watch::Media(_) | Watch::Audio(_, _) => None,
-                        })
-                        .map(|(w, h)| [w, h]);
-                    let shared: Arc<dyn FilterType> = Arc::new(ty);
-                    let (node, sender, stats) = FilterNode::new(shared, values, size);
+                    let (node, sender, stats, fed) =
+                        pointer::video_filter(&self.entries, entry.source, ty, values, sources);
+                    entry.fed = fed;
                     self.engine
                         .adopt::<GpuRuntime>(RENDER, entry.node, Box::new(node))?;
                     entry.instance = Some(FilterInstance::Video(sender, stats));

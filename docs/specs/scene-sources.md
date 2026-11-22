@@ -355,6 +355,9 @@ pub fn expand_fields(text, &LiveInputs, &LiveClocks) -> Shown;
 pub trait TextClock { fn now(&self) -> SystemTime; fn local(&self) -> LocalTime /* UTC */; fn until_local(&self, seconds: u32) -> Duration /* UTC */; }
 // rbs_sources::SourceTypes
 pub fn set_text_clock(&mut self, Arc<dyn TextClock>); pub fn text_clock(&self) -> Option<Arc<dyn TextClock>>;
+// The process's input monitor (ADR-0165), set by the composition root; lent to pointer filters.
+pub fn set_input(&mut self, rbs_input::InputMonitor); pub fn input(&self) -> Option<&InputMonitor>;
+pub fn serves(&self) -> rbs_filters::Needs;   // POINTER when the monitor has input.pointer and input.buttons
 ```
 
 - **Patterns.** `HH` (two-digit hour), `H`, `mm`, `ss`, `dd`, `MM`, `yyyy`, `ddd` (weekday name) and text in single or double quotes (an unclosed quote runs to the end); any other character is itself. A clock uses `HH:mm:ss` without `format`. A timer uses `mm:ss`, with `H:` from one hour. In a timer pattern the largest unit present takes the whole (`mm:ss` shows 75:00 for 75 minutes), `dd` is days, and `MM`, `yyyy` and `ddd` show nothing. A countdown rounds up, so it shows `00:01` until it reaches zero; elapsed times round down.

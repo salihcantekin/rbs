@@ -737,6 +737,11 @@ pub fn check_on_gpu(ty: Arc<dyn FilterType>, ctx: Arc<GpuContext>) -> Vec<String
     if rig.output().is_none() {
         problems.push("the output went away while the input was unchanged".to_owned());
     }
+    // A pointer type without a feed is idle: new values publish nothing new (spec
+    // check 12, "Host service: pointer" rule 3).
+    if ty.needs().contains(Needs::POINTER) {
+        return problems;
+    }
     let key = rig.output_key();
     if rig.set_values(0, values).is_err() {
         problems.push("no value channel".to_owned());

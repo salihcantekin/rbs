@@ -366,6 +366,16 @@ fn audio_filters_are_listed_by_domain_and_edited_on_sound_sources_only() {
             .iter()
             .all(|t| t["domain"] == "video")
     );
+    // No input monitor in this host: the pointer types are not offered.
+    assert!(
+        ok(&video)["types"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(
+                |t| t["type"] != rbs_filters::CLICK_RINGS && t["type"] != rbs_filters::POINTER_HALO
+            )
+    );
     let audio = c.call("filter.types", json!({"domain": "audio"}));
     let types = ok(&audio)["types"].as_array().unwrap().clone();
     let ids: Vec<_> = types.iter().map(|t| t["type"].as_str().unwrap()).collect();

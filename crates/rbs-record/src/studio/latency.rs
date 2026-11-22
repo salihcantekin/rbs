@@ -144,6 +144,8 @@ impl Studio {
         for f in &mut self.filters {
             f.scheduled = scheduled.contains(&f.node);
         }
+        // Every change of what is scheduled passes here, so the mapping switches too.
+        self.set_mapping_switches();
         let wanted: Vec<(SourceId, i64)> = self
             .entries
             .iter()

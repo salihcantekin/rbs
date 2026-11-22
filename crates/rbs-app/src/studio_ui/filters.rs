@@ -711,8 +711,27 @@ impl StudioUi {
     }
 }
 
+/// Whether the platform's input serves the pointer to filters, set once from the
+/// adapters (spec `video-filters.md`, "Pointer types").
+static POINTER_SERVED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Sets what the platform serves to filters; Add filter then offers only the picture
+/// types it can run.
+pub fn set_served(serves: rbs_filters::Needs) {
+    let pointer = serves.contains(rbs_filters::Needs::POINTER);
+    POINTER_SERVED.store(pointer, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn served() -> rbs_filters::Needs {
+    if POINTER_SERVED.load(std::sync::atomic::Ordering::Relaxed) {
+        rbs_filters::Needs::POINTER
+    } else {
+        rbs_filters::Needs::NONE
+    }
+}
+
 /// The filter types Add filter offers, `(name, type id)`: the audio catalogue for the
-/// Audio tab (`audio`), else the picture one (ADR-0082).
+/// Audio tab (`audio`), else the picture types the platform can run (ADR-0082).
 pub fn filter_types(audio: bool) -> Vec<(String, String)> {
     if audio {
         // The voice chain first: four filters in one step (ADR-0130 decision 10).
@@ -724,8 +743,7 @@ pub fn filter_types(audio: bool) -> Vec<(String, String)> {
             )
             .collect()
     } else {
-        rbs_filters::catalogue()
-            .iter()
+        rbs_filters::offered(served())
             .map(|t| (t.name().to_owned(), t.type_id().as_str().to_owned()))
             .collect()
     }
@@ -767,6 +785,14 @@ mod tests {
                 .iter()
                 .all(|(_, a)| filter_types(false).iter().all(|(_, b)| a != b))
         );
+    }
+
+    #[test]
+    fn pointer_types_are_offered_only_where_the_platform_serves_the_pointer() {
+        // Nothing in this test binary sets what the platform serves.
+        let ids: Vec<String> = filter_types(false).into_iter().map(|(_, id)| id).collect();
+        assert!(!ids.iter().any(|id| id == rbs_filters::CLICK_RINGS));
+        assert!(!ids.iter().any(|id| id == rbs_filters::POINTER_HALO));
     }
 
     #[test]

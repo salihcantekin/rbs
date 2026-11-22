@@ -522,6 +522,8 @@ pub struct SourceTypes {
     text: Vec<Arc<dyn rbs_text::TextRenderer>>,
     /// Local wall time for live texts, from the composition root (ADR-0129 decision 11).
     text_clock: Option<Arc<dyn crate::text_worker::TextClock>>,
+    /// The process's input monitor, lent to pointer filters (ADR-0165; `input.rs`).
+    pub(crate) input: Option<rbs_input::InputMonitor>,
 }
 
 impl Default for SourceTypes {
@@ -794,6 +796,7 @@ impl SourceTypes {
             media: Registry::new(),
             text: Vec::new(),
             text_clock: None,
+            input: None,
         }
     }
 

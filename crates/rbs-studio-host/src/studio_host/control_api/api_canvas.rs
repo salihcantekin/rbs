@@ -32,7 +32,10 @@ impl ApiTarget<'_> {
             C::FilterTypes(p) => {
                 let graph = &host.studio.settings().audio_graph;
                 let setup = rbs_audio_filters::DspSetup::new(graph.format, graph.block_frames);
-                Ok(Response::FilterTypes(filters::api_types(p.domain, setup)))
+                let serves = host.adapters.sources.serves();
+                Ok(Response::FilterTypes(filters::api_types(
+                    p.domain, setup, serves,
+                )))
             }
             C::FilterAdd(p) => {
                 let settings = p.settings.unwrap_or_default();
