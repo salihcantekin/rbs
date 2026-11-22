@@ -2,8 +2,10 @@
 //!
 //! Threads: `open`, `start`, `stop` and `enumerate` run on a control thread;
 //! `latest_frame` on the render thread; `FrameArrived` and `Closed` handlers on OS
-//! threads owned by WGC. The render thread only touches the lock-free ring. The
-//! producer state is behind a mutex that only the OS callback thread and `stop` take.
+//! threads owned by WGC; the mapping thread (`rbs-wgc-watch`, `watch.rs`) only while
+//! the picture mapping switch is on. The render thread only touches the lock-free ring
+//! and the per-slot mapping cells. The producer state is behind a mutex that only the
+//! OS callback thread and `stop` take.
 
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -12,8 +14,9 @@ use std::time::Duration;
 use rbs_capture::edge::EdgeClock;
 use rbs_capture::{
     CaptureChange, CaptureError, CaptureFactory, CaptureRequest, CaptureSession, CaptureStats,
-    CaptureTarget, DisplayReading, DisplayScale, ErrorDomain, GpuDeviceId, SyncKind, TargetId,
-    TargetKind, caps, choose_framebuffer, work_rect_in_framebuffer,
+    CaptureTarget, DisplayReading, DisplayScale, ErrorDomain, GpuDeviceId, MappingCell,
+    MappingRegistration, MappingSwitch, PictureMapping, SyncKind, TargetId, TargetKind, caps,
+    choose_framebuffer, work_rect_in_framebuffer,
 };
 use rbs_core::capability::{CapabilitySet, CapabilityValue};
 use rbs_core::media::{ColorSpace, LeaseOwner, MemoryKind, PixelFormat, Size, VideoFormat};
@@ -96,6 +99,9 @@ const JANITOR_PERIOD: Duration = Duration::from_secs(1);
 
 /// `GENERIC_ALL`, the access requested for the shared fence handle.
 const GENERIC_ALL: u32 = 0x1000_0000;
+
+mod watch;
+use watch::{Geometry, Watch};
 
 const DISPLAY_PREFIX: &str = "display:";
 const WINDOW_PREFIX: &str = "window:";
@@ -510,6 +516,7 @@ impl AdapterFactory for WgcCaptureFactory {
             .with(caps::PIXEL_FORMATS, set(&[PixelFormat::Bgra8.as_str()]))
             .with(caps::MEMORY, set(&[MemoryKind::D3d11.as_str()]))
             .with(caps::CURSOR, CapabilityValue::Flag(true))
+            .with(caps::MAPPING, set(&kinds))
             .with(caps::FRAME_RATE_MAX, CapabilityValue::Int(MAX_RATE))
             .with(
                 caps::FRAMES_IN_FLIGHT,
@@ -587,11 +594,15 @@ impl CaptureFactory for WgcCaptureFactory {
     }
 
     fn open(&self, request: &CaptureRequest) -> Result<Box<dyn CaptureSession>, CaptureError> {
-        let (_, (w, h)) = resolve(&request.target).ok_or(CaptureError::TargetNotFound)?;
+        let (resolved, (w, h)) = resolve(&request.target).ok_or(CaptureError::TargetNotFound)?;
         let accepted = accept(request)?;
         Ok(Box::new(WgcSession {
             target: request.target.clone(),
             accepted,
+            switch: request.mapping.clone(),
+            registration: None,
+            watch: Arc::new(Watch::new(watch::Target::of(resolved))),
+            mapping: None,
             clock: Arc::clone(&request.clock),
             format: VideoFormat::new(Size::new(w, h), PixelFormat::Bgra8, ColorSpace::SRGB),
             active: None,
@@ -630,6 +641,9 @@ impl Drop for Surfaces {
 struct Shared {
     ring: Ring,
     surfaces: Mutex<Surfaces>,
+    /// The picture mapping of each slot's frame, written by the producer while it has
+    /// the slot claimed (ADR-0165 decision 5).
+    mappings: Box<[MappingCell]>,
 }
 
 impl AsRef<Ring> for Shared {
@@ -850,6 +864,10 @@ struct Producer {
     qpc_frequency: u64,
     failed: Arc<AtomicI64>,
     stopped: bool,
+    /// The mapping switch and the target's desktop rectangle, from the mapping thread.
+    watch: Arc<Watch>,
+    /// The last geometry read from `watch`, used when the thread holds its lock.
+    geometry: Option<Geometry>,
 }
 
 /// Nanoseconds on the QPC clock, the clock `SystemRelativeTime` is based on.
@@ -962,6 +980,14 @@ impl Producer {
             None => self.timestamp_of(arrived, qpc, source),
         };
         self.edge.deliver(timestamp);
+        if self.watch.mapping.load(Ordering::Acquire) {
+            let mapping = self.mapping(timestamp, (width, height));
+            if let Some(cell) = shared.mappings.get(slot) {
+                cell.publish(mapping);
+            }
+        } else {
+            self.geometry = None;
+        }
 
         ring.publish(
             slot,
@@ -976,6 +1002,28 @@ impl Producer {
         );
         self.sequence += 1;
         Ok(())
+    }
+
+    /// The picture mapping of a frame (switch on), once the mapping thread has read
+    /// the target's rectangle. Never waits for its lock.
+    fn mapping(
+        &mut self,
+        timestamp: Timestamp,
+        (width, height): (u32, u32),
+    ) -> Option<PictureMapping> {
+        match self.watch.geometry.try_lock() {
+            Ok(geometry) => self.geometry = *geometry,
+            Err(std::sync::TryLockError::Poisoned(geometry)) => {
+                self.geometry = *geometry.into_inner();
+            }
+            Err(std::sync::TryLockError::WouldBlock) => {}
+        }
+        let geometry = self.geometry?;
+        let (origin, scale) = crate::geometry::picture_mapping(geometry.target, (width, height))?;
+        Some(
+            PictureMapping::new(timestamp, origin, scale, Size::new(width, height))
+                .with_cover(geometry.cover),
+        )
     }
 
     /// The timestamp this frame would be published with.
@@ -1097,6 +1145,14 @@ struct Active {
 struct WgcSession {
     target: TargetId,
     accepted: Accepted,
+    /// The host's mapping switch (ADR-0165 decision 5).
+    switch: Option<MappingSwitch>,
+    /// Held while Active; dropped first at `stop`.
+    registration: Option<MappingRegistration>,
+    /// The mapping thread's state.
+    watch: Arc<Watch>,
+    /// The mapping of the frame `latest_frame` returned last.
+    mapping: Option<PictureMapping>,
     clock: Arc<dyn Clock>,
     format: VideoFormat,
     active: Option<Active>,
@@ -1198,6 +1254,7 @@ impl WgcSession {
             let shared = Arc::new(Shared {
                 ring: Ring::new(&surfaces.handles),
                 surfaces: Mutex::new(surfaces),
+                mappings: (0..RING_SLOTS).map(|_| MappingCell::new()).collect(),
             });
 
             let dxgi: IDXGIDevice = device.cast()?;
@@ -1247,6 +1304,8 @@ impl WgcSession {
             qpc_frequency: frequency.unsigned_abs(),
             failed: Arc::clone(&failed),
             stopped: false,
+            watch: Arc::clone(&self.watch),
+            geometry: None,
         }));
 
         let handler_producer = Arc::clone(&producer);
@@ -1321,10 +1380,29 @@ impl CaptureSession for WgcSession {
         }
         let active = self.activate()?;
         self.active = Some(active);
+        self.watch.active.store(true, Ordering::SeqCst);
+        if let Some(switch) = self.switch.as_ref() {
+            // The callback runs under the switch's lock: it stores the state and, when
+            // it turns on, spawns the mapping thread if none runs (no join, no wait);
+            // `stop` joins it (capture-port.md, picture mapping rule 2).
+            let weak = Arc::downgrade(&self.watch);
+            self.registration = Some(switch.register(move |on| {
+                if let Some(watch) = weak.upgrade() {
+                    watch.mapping.store(on, Ordering::SeqCst);
+                    watch.signal();
+                }
+            }));
+        }
+        self.watch.ensure();
         Ok(())
     }
 
     fn stop(&mut self) {
+        // The registration first, so no callback starts a thread after this.
+        self.registration = None;
+        self.mapping = None;
+        self.watch.mapping.store(false, Ordering::SeqCst);
+        self.watch.stop();
         let Some(active) = self.active.take() else {
             return;
         };
@@ -1385,7 +1463,27 @@ impl CaptureSession for WgcSession {
                     || code == i64::from(DXGI_ERROR_DEVICE_RESET.0),
             });
         }
-        Ok(active.consumer.next())
+        let frame = active.consumer.next();
+        if let Some(frame) = frame.as_ref() {
+            // The frame holds its slot, so the producer does not rewrite this cell. A
+            // mapping written before the switch last went off belongs to another frame.
+            self.mapping = if self.watch.mapping.load(Ordering::Acquire) {
+                active
+                    .consumer
+                    .last_slot()
+                    .and_then(|slot| active.shared.mappings.get(slot))
+                    .and_then(MappingCell::get)
+                    .filter(|m| m.frame_time == frame.timestamp())
+            } else {
+                None
+            };
+        }
+        Ok(frame)
+    }
+
+    fn latest_mapping(&self) -> Option<PictureMapping> {
+        self.mapping
+            .filter(|_| self.active.is_some() && self.watch.mapping.load(Ordering::Acquire))
     }
 
     fn stats(&self) -> CaptureStats {

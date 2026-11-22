@@ -1,0 +1,32 @@
+[package]
+name = "rbs-input-win"
+description = "Windows adapter for the RBS input port: mouse events from Raw Input on a message-only window on its own thread."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rbs-core = { path = "../rbs-core" }
+rbs-input = { path = "../rbs-input" }
+
+# Microsoft's official bindings (MIT OR Apache-2.0), the version rbs-capture-wgc uses.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Performance",
+    "Win32_System_Threading",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[dev-dependencies]
+allocation-counter = "0.8"
+
+[lints]
+workspace = true

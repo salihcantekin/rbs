@@ -154,6 +154,7 @@ fn adapter_crates(os: Os) -> &'static [&'static str] {
             "rbs-codec-amf",
             "rbs-codec-qsv",
             "rbs-audio-io-wasapi",
+            "rbs-input-win",
         ],
         Os::Mac => &[
             "rbs-capture-sck",

@@ -793,6 +793,7 @@ fn class(name: &str) -> Option<Class> {
         | "rbs-audio-io-wasapi"
         | "rbs-audio-io-test"
         | "rbs-input-mac"
+        | "rbs-input-win"
         | "rbs-codec-ffmpeg"
         | "rbs-codec-amf"
         | "rbs-codec-nvenc"

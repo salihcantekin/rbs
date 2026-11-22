@@ -35,6 +35,8 @@ use rbs_core::media::{
 };
 use rbs_core::time::Timestamp;
 
+#[cfg_attr(not(windows), allow(dead_code))]
+mod geometry;
 #[cfg(windows)]
 mod thumb;
 #[cfg(windows)]
@@ -155,6 +157,7 @@ pub(crate) struct Consumer<O: AsRef<Ring> + LeaseOwner + 'static> {
     luid: u64,
     fence: u64,
     delivered: u64,
+    last_slot: Option<usize>,
 }
 
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -177,6 +180,7 @@ impl<O: AsRef<Ring> + LeaseOwner + 'static> Consumer<O> {
             luid,
             fence,
             delivered: 0,
+            last_slot: None,
         }
     }
 
@@ -188,6 +192,13 @@ impl<O: AsRef<Ring> + LeaseOwner + 'static> Consumer<O> {
     /// Frames returned by [`Consumer::next`].
     pub(crate) fn delivered(&self) -> u64 {
         self.delivered
+    }
+
+    /// The ring slot of the frame [`Consumer::next`] returned last, so the adapter can
+    /// read the picture mapping it stored beside that slot (ADR-0165). The slot's
+    /// contents stay put while that frame is held.
+    pub(crate) fn last_slot(&self) -> Option<usize> {
+        self.last_slot
     }
 
     /// The newest published frame, if one arrived since the last call. Does not
@@ -224,6 +235,7 @@ impl<O: AsRef<Ring> + LeaseOwner + 'static> Consumer<O> {
             )
         };
         self.delivered += 1;
+        self.last_slot = Some(slot);
         Some(
             frame
                 .with_sequence(meta.sequence)

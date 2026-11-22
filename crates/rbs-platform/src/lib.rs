@@ -247,13 +247,20 @@ fn register_demo(
     let _ = (a, note, options);
 }
 
-/// The platform's input monitor on the engine's clock (ADR-0165 phase 1: macOS).
-/// Constructing it starts nothing; the first pointer filter's subscription does.
+/// The platform's input monitor on the engine's clock (ADR-0165 phase 1: macOS and
+/// Windows). Constructing it starts nothing; the first pointer filter's subscription
+/// does.
 fn register_input(a: &mut RecordAdapters, options: &Options) {
     #[cfg(target_os = "macos")]
     if let Some(clock) = &options.master_clock {
         a.sources.set_input(rbs_input::InputMonitor::new(Box::new(
             rbs_input_mac::MacInput::new(Arc::clone(clock)),
+        )));
+    }
+    #[cfg(windows)]
+    if let Some(clock) = &options.master_clock {
+        a.sources.set_input(rbs_input::InputMonitor::new(Box::new(
+            rbs_input_win::WinInput::new(Arc::clone(clock)),
         )));
     }
     let _ = (a, options);

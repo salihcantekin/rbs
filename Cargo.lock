@@ -5220,6 +5220,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rbs-input-win"
+version = "0.0.1"
+dependencies = [
+ "allocation-counter",
+ "rbs-core",
+ "rbs-input",
+ "windows",
+]
+
+[[package]]
 name = "rbs-log"
 version = "0.0.1"
 dependencies = [
@@ -5449,6 +5459,7 @@ dependencies = [
  "rbs-core",
  "rbs-input",
  "rbs-input-mac",
+ "rbs-input-win",
  "rbs-media-anim",
  "rbs-media-avf",
  "rbs-media-decode",
