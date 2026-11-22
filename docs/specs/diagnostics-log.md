@@ -129,7 +129,7 @@ Default filter: `Info` for every area except `Lib` (`Warn`).
 | `app` | settings or profile could not be saved | unreadable setting fell back to its default | start (header), quit and its step times, profile and collection loaded | which settings file was written, by name (Trace) |
 | `ui` | not answering for 4 s or longer | not answering for 1 s or 2 s; an entry that returned after 1 s or more | windows opened and closed | an entry that returned after more than 100 ms |
 | `studio` | the studio could not start or restart | a command refused | scene switch, transition, studio restart | each command by kind, never its payload (Trace) |
-| `engine` | a partition stopped after its restarts | a node restarted | graph built (node and partition counts) | rebuild details, stats summary every 10 s (Trace: 1 s) |
+| `engine` | a partition stopped after its restarts | a node restarted; a swap or drain timed out (named by partition, before its worker is joined) | graph built (node and partition counts) | rebuild details, stats summary every 10 s (Trace: 1 s) |
 | `gpu` | device lost | software adapter in use | adapter and backend chosen | surface and format details |
 | `capture`, `audio` | a device failed to open or vanished | a format fallback | device opened or closed, format chosen | formats offered, negotiation |
 | `encode`, `record`, `stream` | a recording or stream failed to start or stopped on an error | encoder fallback, reconnect attempt, frames dropped in the last 5 s | start and stop with encoder, size, rate and bitrate; reconnected | candidates tried, keyframe and pause events |

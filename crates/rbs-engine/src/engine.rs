@@ -614,6 +614,11 @@ impl Engine {
             }
             if handle.in_flight() {
                 errors.push(EngineError::SwapTimeout(p));
+                rbs_core::warn!(
+                    rbs_core::log::Area::Engine,
+                    "partition {}: a swap did not come back within {timeout:?}",
+                    p.0
+                );
                 return;
             }
         }
@@ -622,6 +627,11 @@ impl Engine {
             // As at shutdown: most likely a node hung in `process`. Join the worker; the
             // swap below then runs on this thread.
             errors.push(EngineError::DrainTimeout(p));
+            rbs_core::warn!(
+                rbs_core::log::Area::Engine,
+                "partition {} did not drain within {timeout:?}; waiting for its worker to stop",
+                p.0
+            );
             handle.stop_worker();
         }
         let part = self.current.get(&p).unwrap_or(&empty);
@@ -837,6 +847,11 @@ impl Engine {
                 // the node to return, as a timed-out swap does) and drain inline, so the
                 // control thread does not wait another timeout for the swap.
                 out.errors.push(EngineError::DrainTimeout(p));
+                rbs_core::warn!(
+                    rbs_core::log::Area::Engine,
+                    "shutdown: partition {} did not drain within {timeout:?}; waiting for its worker to stop",
+                    p.0
+                );
                 part.stop_worker();
             }
             if !part.in_flight() {
