@@ -55,6 +55,7 @@ The owner asked for this source on 2026-11-22. Rules that apply: zero cost when 
    - Live keys go through the control handle (decision 8); `transition` is not live (decision 4).
    - Cost: Installed and Standby nothing; Active between changes one compare per tick and 2 textures of the output size (4 when `transition` is not `cut`); during a transition one draw of two layers per tick.
    This pass is new hot-path code: it is measured and signed off before merge (P15).
+   Measured 2026-11-22 with `cargo bench -p rbs-gpu --bench slide` (one 1080p draw of two layers, waiting for the GPU each time), commit 146afea: Apple M4 Pro, macOS 26.7.1, Metal: fade 0.244 ms, slide 0.229 ms (about 1.4% of a 60 fps frame, only while a change runs); cloud llvmpipe (software): fade 18.0 ms, slide 13.0 ms.
 
 8. **A control handle connects the host, the node and the decode thread.** As for media (ADR-0108 decisions 10 and 12), `SourceInstance::Slideshow` carries a `SlideshowControl` handle; `BindReport::live_changed` and the `media.*` methods reach the source through it, never by re-warming the node.
    - The handle holds atomics only: `paused`, the live keys as numbers, a settings generation, and one pending command (`next`, `previous`, `restart`) with its own generation. The host writes them on the control side; the node reads them in `process` with no lock.
