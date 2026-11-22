@@ -9,7 +9,9 @@ use serde::{Deserialize, Serialize};
 mod output_settings;
 mod scroll;
 mod serde_defaults;
-pub use output_settings::{ReplaySettings, SeparateFilesSettings, Settings};
+pub use output_settings::{
+    ReplaySettings, SeparateFilesSettings, Settings, StreamSettings, StreamSettingsPatch,
+};
 pub use scroll::{
     ItemScroll, ScrollDirection, ScrollFinished, ScrollRepeat, ScrollReturn, ScrollStart,
 };
@@ -1055,6 +1057,12 @@ pub struct RecordingProfile {
     /// ADR-0089 decisions 3 and 4). Absent: the defaults.
     #[serde(default, skip_serializing_if = "RecordingMarkers::is_default")]
     pub markers: RecordingMarkers,
+    /// The buses the recording writes as audio tracks, by name, track 1 first
+    /// (protocol 1.101, ADR-0170 decisions 3 and 11). Omitted when `["main"]`. In
+    /// `settings.set`, absent keeps the stored tracks. One track for now; several
+    /// are `invalid_params` until multi-track recording is built.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_tracks: Option<Vec<String>>,
 }
 
 /// A recording profile's markers (protocol 1.62, ADR-0089 decisions 3 and 4).
@@ -1176,78 +1184,6 @@ pub struct Encoding {
     /// Lifts only the darkest tones on a Video encode. Omitted when off (protocol 1.38).
     #[serde(default, skip_serializing_if = "is_false")]
     pub open_shadows: bool,
-}
-
-/// The stream settings (`settings.get`; protocol 1.2). The server's address is not
-/// part of them: only the local user enters it, in the app, so an API client can neither
-/// read it nor send the program and the stream key elsewhere. The key is never shown.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StreamSettings {
-    /// The saved server's protocol, or `null` when no server is saved.
-    pub protocol: Option<StreamProtocol>,
-    /// A stream key is saved in the system's credential store.
-    pub key_saved: bool,
-    /// Reconnect when the connection drops.
-    pub reconnect: bool,
-    /// SRT latency in ms; `null`: the transport's default (120 ms).
-    pub srt_latency_ms: Option<u16>,
-    /// How the stream is encoded.
-    pub encoding: Encoding,
-    /// Record when the stream starts, with the recording settings; ending the stream
-    /// stops that recording (protocol 1.11; `false` from older servers).
-    #[serde(default)]
-    pub auto_record: bool,
-    /// Encoded picture size. Omitted or `null`: the same as this stream's canvas
-    /// (protocol 1.39, ADR-0102). Not inside `encoding`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub output_size: Option<Dimensions>,
-    /// What `stream.hold` and Break send when they name no picture (protocol 1.65,
-    /// ADR-0124); `freeze` from older servers.
-    #[serde(default)]
-    pub hold_picture: crate::request::HoldPicture,
-    /// The scene a hold with `picture: "scene"` shows when it names none (protocol
-    /// 1.67, ADR-0124 phase 2b); `null` when none is set.
-    #[serde(default)]
-    pub hold_scene: Option<u32>,
-    /// The sound such a hold sends when it names none (protocol 1.67); `silence` from
-    /// older servers.
-    #[serde(default)]
-    pub hold_sound: crate::request::HoldSound,
-}
-
-/// The stream settings an API client may change (`settings.set`; protocol 1.2): all of
-/// them but the server and the key. Unknown fields are ignored, so the
-/// [`StreamSettings`] that `settings.get` returned can be sent back changed.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StreamSettingsPatch {
-    /// Reconnect when the connection drops.
-    pub reconnect: bool,
-    /// SRT latency in ms (1 or more); `null`: the transport's default.
-    #[serde(default)]
-    pub srt_latency_ms: Option<u16>,
-    /// How the stream is encoded.
-    pub encoding: Encoding,
-    /// Record when the stream starts (protocol 1.11); absent: unchanged, so a 1.2
-    /// client's patch never turns it off.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub auto_record: Option<bool>,
-    /// Encoded picture size (protocol 1.39). Absent or `null` stores the same as this
-    /// stream's canvas, which clears a custom size. Not inside `encoding`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub output_size: Option<Dimensions>,
-    /// What a hold sends when it names no picture (protocol 1.65); absent: unchanged.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hold_picture: Option<crate::request::HoldPicture>,
-    /// The hold scene (protocol 1.67): absent leaves it unchanged, `null` clears it.
-    #[serde(
-        default,
-        deserialize_with = "present",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub hold_scene: Option<Option<u32>>,
-    /// The hold sound (protocol 1.67); absent: unchanged.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hold_sound: Option<crate::request::HoldSound>,
 }
 
 /// A field that is present, `null` included: `Some(value)`. An absent field takes the

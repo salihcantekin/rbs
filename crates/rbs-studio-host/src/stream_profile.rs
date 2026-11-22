@@ -9,6 +9,7 @@ use std::time::Duration;
 
 pub use rbs_api::request::{HoldPicture, HoldSound};
 use rbs_core::media::ContainerId;
+use rbs_scene::model::MAIN_BUS_NAME;
 use rbs_transport::{ReconnectPolicy, TransportInput};
 use serde::{Deserialize, Serialize};
 
@@ -245,6 +246,18 @@ pub struct StreamProfile {
     /// The sound such a hold sends. Omitted when `silence`, the default.
     #[serde(default, skip_serializing_if = "is_silence")]
     pub hold_sound: HoldSound,
+    /// The bus the stream sends, by name (ADR-0170 decision 3); destinations with
+    /// their own encoding send it too. Omitted when `main`, the default.
+    #[serde(default = "main_bus", skip_serializing_if = "is_main_bus")]
+    pub audio_bus: String,
+}
+
+fn main_bus() -> String {
+    MAIN_BUS_NAME.to_owned()
+}
+
+fn is_main_bus(bus: &str) -> bool {
+    bus == MAIN_BUS_NAME
 }
 
 fn is_silence(s: &HoldSound) -> bool {
@@ -271,6 +284,7 @@ impl StreamProfile {
             hold_picture: HoldPicture::Freeze,
             hold_scene: None,
             hold_sound: HoldSound::Silence,
+            audio_bus: main_bus(),
         }
     }
 
@@ -315,6 +329,9 @@ impl StreamProfile {
         {
             return Some("An SRT latency of 0 ms is not possible.".into());
         }
+        if let Some(why) = crate::record_profile::bus_name_problem(&self.audio_bus) {
+            return Some(why);
+        }
         self.encoding
             .problem()
             .or_else(|| output_size_problem(self.output_size))
@@ -356,6 +373,7 @@ impl StreamProfile {
             hold_picture: self.hold_picture,
             hold_scene: self.hold_scene,
             hold_sound: self.hold_sound,
+            audio_bus: (!is_main_bus(&self.audio_bus)).then(|| self.audio_bus.clone()),
         }
     }
 
@@ -378,6 +396,9 @@ impl StreamProfile {
         }
         if let Some(sound) = patch.hold_sound {
             p.hold_sound = sound;
+        }
+        if let Some(bus) = &patch.audio_bus {
+            p.audio_bus.clone_from(bus);
         }
         // Omitted or null stores the same as this stream's canvas (protocol 1.39).
         p.output_size = patch.output_size.map(|s| OutputSize {
@@ -516,6 +537,28 @@ mod tests {
         d
     }
 
+    /// ADR-0170 decision 3: `audio_bus` is omitted at `main`, round-trips, is checked,
+    /// and an API patch without it leaves it.
+    #[test]
+    fn the_audio_bus_defaults_to_main_and_a_patch_without_it_keeps_it() {
+        let mut p = StreamProfile::new();
+        let text = toml::to_string(&p).unwrap();
+        assert!(!text.contains("audio_bus"), "{text}");
+        assert_eq!(p.to_api().audio_bus, None);
+        p.audio_bus = "vod".into();
+        let back: StreamProfile = toml::from_str(&toml::to_string(&p).unwrap()).unwrap();
+        assert_eq!(back.audio_bus, "vod");
+        let mut patch: rbs_api::types::StreamSettingsPatch =
+            serde_json::from_value(serde_json::to_value(p.to_api()).unwrap()).unwrap();
+        assert_eq!(patch.audio_bus.as_deref(), Some("vod"));
+        patch.audio_bus = None;
+        assert_eq!(p.with_api(&patch).unwrap().audio_bus, "vod");
+        patch.audio_bus = Some("main".into());
+        assert_eq!(p.with_api(&patch).unwrap().audio_bus, "main");
+        patch.audio_bus = Some(String::new());
+        assert!(p.with_api(&patch).is_err());
+    }
+
     #[test]
     fn servers_are_checked() {
         let ok = [
@@ -617,6 +660,7 @@ mod tests {
             hold_picture: None,
             hold_scene: None,
             hold_sound: None,
+            audio_bus: None,
         };
         assert_eq!(p.with_api(&patch).unwrap().hold_picture, HoldPicture::Black);
         patch.hold_picture = Some(HoldPicture::Freeze);
@@ -755,6 +799,7 @@ mod tests {
             hold_picture: None,
             hold_scene: None,
             hold_sound: None,
+            audio_bus: None,
         };
         patch.encoding.video_kbps = 9_000;
         let changed = p.with_api(&patch).unwrap();
