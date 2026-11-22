@@ -73,3 +73,8 @@ pub use yuv_decode::{YuvDecoder, YuvSource};
 
 /// The canvas working format: linear light, 16-bit float per channel, premultiplied alpha.
 pub const CANVAS_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+
+/// Unit tests that open a device take this turn first: software drivers crash when several
+/// devices are created at once (see `exit`'s test).
+#[cfg(test)]
+pub(crate) static TEST_DEVICE_TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
