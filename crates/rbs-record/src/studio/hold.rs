@@ -358,7 +358,7 @@ impl Studio {
                 let (node, params, stats) = MixerNode::new(
                     self.settings.audio_graph,
                     MAX_LAYERS,
-                    MixerParams::new(Vec::new()).with_master(self.master.gain()),
+                    MixerParams::new(Vec::new()).with_master(self.buses.master.gain()),
                 );
                 self.engine
                     .adopt::<()>(partition, bound.node, Box::new(node))?;
@@ -400,7 +400,7 @@ impl Studio {
     /// picture-and-sound source's producer is its sound node (ADR-0106).
     pub(super) fn send_hold_strips(&mut self, report: &BindReport, applied: bool) {
         let collection = &self.collection;
-        let master = self.master;
+        let master = self.buses.master;
         for (canvas, run) in &mut self.hold_scenes {
             let (Some(mix), Some(bound)) = (run.mixer.as_mut(), report.hold_mixers.get(canvas))
             else {
@@ -443,7 +443,7 @@ impl Studio {
     /// Sends every hold mixer its sources' new volume and mute and the master's
     /// (from [`Studio::set_mix`]).
     pub(super) fn set_hold_mix(&mut self, collection: &SceneCollection) {
-        let master = self.master;
+        let master = self.buses.master;
         for run in self.hold_scenes.values_mut() {
             let Some(mix) = run.mixer.as_mut() else {
                 continue;

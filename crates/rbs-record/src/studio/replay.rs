@@ -338,7 +338,7 @@ impl Studio {
             let _ = self.graph.set_state(n.node, Lifecycle::Standby);
             let _ = self.graph.remove_node(n.node);
         }
-        let errors = match self.engine.apply(&self.graph) {
+        let errors = match self.send_graph(None, false) {
             Ok(a) => a.errors.iter().map(ToString::to_string).collect(),
             Err(e) => vec![e.to_string()],
         };

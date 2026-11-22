@@ -143,3 +143,20 @@ fn no_virtual_camera_outside_windows() {
         Err(VcamUnavailable::NotOnThisPlatform)
     ));
 }
+
+#[test]
+fn the_input_monitor_needs_the_master_clock() {
+    let without = adapters(&Options::default());
+    assert!(without.adapters.sources.input().is_none());
+
+    let clock: Arc<dyn Clock> = Arc::new(rbs_core::time::MonotonicClock::new());
+    let with = adapters(&Options::default().with_master_clock(clock));
+    let input = with.adapters.sources.input();
+    if cfg!(target_os = "macos") {
+        let monitor = input.expect("macOS sets an input monitor");
+        assert_eq!(monitor.backend_name(), "cg-event-tap");
+        assert!(!monitor.is_running(), "registering starts nothing (P13)");
+    } else {
+        assert!(input.is_none(), "no input adapter on this platform yet");
+    }
+}

@@ -258,7 +258,7 @@ impl super::Studio {
             let _ = self.graph.set_state(node.node, Lifecycle::Standby);
             let _ = self.graph.remove_node(node.node);
         }
-        let _ = self.engine.apply_draining(&self.graph);
+        let _ = self.send_graph(None, true);
         for node in run.nodes {
             if !super::take(&mut self.engine, node) {
                 self.pending_takes.push((node, None));
@@ -408,7 +408,7 @@ impl super::Studio {
             }
             adopted.push(out);
         }
-        match self.engine.apply(&graph) {
+        match self.send_graph(Some(&graph), false) {
             Err(e) => {
                 self.abandon(adopted);
                 Err(e.into())
@@ -451,7 +451,7 @@ impl super::Studio {
             let _ = self.graph.set_state(node.node, Lifecycle::Standby);
             let _ = self.graph.remove_node(node.node);
         }
-        let _ = self.engine.apply(&self.graph);
+        let _ = self.send_graph(None, false);
         for node in nodes {
             if !super::take(&mut self.engine, *node) {
                 self.pending_takes.push((*node, None));

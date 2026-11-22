@@ -32,6 +32,9 @@
 //! - Window captures draw the cursor only while no other window covers it: a watcher
 //!   thread, alive only while such a capture is Active, turns the stream's cursor off
 //!   while the pointer is over a window stacked above the target (`cursor` module).
+//! - While the host's mapping switch is on, the same watcher thread reads the target's
+//!   desktop frame and the covered test, and each frame carries the desktop to picture
+//!   mapping (`latest_mapping`, ADR-0165 decision 5, `geometry` module).
 //!
 //! ScreenCaptureKit is linked strongly by its bindings, so binaries using this crate
 //! need macOS 12.3 as their minimum deployment target; the probe's version check only
@@ -39,6 +42,8 @@
 //! and probes as unavailable, so the engine can register it unconditionally.
 
 mod cursor;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod geometry;
 #[cfg(target_os = "macos")]
 mod mac;
 

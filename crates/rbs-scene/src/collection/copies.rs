@@ -140,6 +140,7 @@ impl SceneCollection {
                 source,
                 placements: Vec::new(),
                 levels,
+                sends: Vec::new(),
             })?);
         }
         for (i, c) in copies.iter().enumerate() {
@@ -231,6 +232,7 @@ impl SceneCollection {
                 source,
                 placements: Vec::new(),
                 levels: Vec::new(),
+                sends: Vec::new(),
             })
             .collect();
         ops.push(Op::InsertScene {

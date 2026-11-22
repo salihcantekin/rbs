@@ -93,7 +93,7 @@ impl Studio {
             partition,
             gpu: false,
         };
-        let applied = match self.engine.apply(&graph) {
+        let applied = match self.send_graph(Some(&graph), false) {
             Ok(applied) => applied,
             Err(e) => {
                 if !take(&mut self.engine, added) {
@@ -133,7 +133,7 @@ impl Studio {
         let _ = self.graph.set_state(run.node.node, Lifecycle::Standby);
         let _ = self.graph.remove_node(run.node.node);
         // An apply error leaves the node to the pending takes like any other.
-        let _ = self.engine.apply(&self.graph);
+        let _ = self.send_graph(None, false);
         if !take(&mut self.engine, run.node) {
             self.pending_takes.push((run.node, None));
         }
@@ -173,7 +173,7 @@ impl Studio {
         let _ = mixer.params.send(mixer_params(
             &self.strips,
             &mixer.master,
-            self.master,
+            &self.buses,
             &self.solo,
             self.meters_on,
         ));

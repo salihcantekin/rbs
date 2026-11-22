@@ -139,12 +139,13 @@ impl FilterType for ClickRings {
     }
 }
 
-/// Pointer halo: a circle that follows the pointer, with optional dimming outside a
-/// spotlight.
+/// Pointer halo: a circle that follows the pointer, or a red laser dot (`style`), with
+/// optional dimming outside a spotlight.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PointerHalo;
 
-const HALO_FIELDS: [Field; 5] = [
+const STYLES: [(&str, &str); 2] = [("halo", "Halo"), ("laser", "Laser")];
+const HALO_FIELDS: [Field; 6] = [
     Field::number("size", "Size", 8.0, 200.0, 40.0, 1.0, "px").with_help("The circle's radius."),
     Field::color("color", "Colour", [255, 220, 0, 96]),
     Field::toggle("spotlight", "Spotlight", false)
@@ -159,6 +160,9 @@ const HALO_FIELDS: [Field; 5] = [
         1.0,
         "px",
     ),
+    // Last, so saved values keep their places; the editor shows it after them.
+    Field::choice("style", "Look", &STYLES, "halo")
+        .with_help("Laser: a red dot. Turn off the source's Show the cursor so only it shows."),
 ];
 const HALO_PASSES: [Pass; 1] = [Pass {
     shader: include_str!("shaders/pointer_halo.wgsl"),
@@ -186,7 +190,8 @@ impl FilterType for PointerHalo {
         } else {
             0.0
         };
-        u.0[0] = [values.number(0), dim, values.number(4), 0.0];
+        let laser = if values.choice(5) == 1 { 1.0 } else { 0.0 };
+        u.0[0] = [values.number(0), dim, values.number(4), laser];
         u.0[1] = linear_rgba(values.color(1));
     }
     fn needs(&self) -> Needs {
@@ -290,6 +295,20 @@ mod tests {
         none.pointer = None;
         PointerHalo.effects(&v, &none, &mut gone);
         assert!(gone.is_empty());
+    }
+
+    #[test]
+    fn the_laser_is_a_style_of_the_halo() {
+        let ty = &PointerHalo as &dyn FilterType;
+        let halo = Values::defaults(ty);
+        let mut u = [Uniforms::default()];
+        PointerHalo.uniforms(&halo, [64, 64], &mut u);
+        assert_eq!(u[0].0[0][3], 0.0, "a halo by default");
+        let laser = halo
+            .with(ty, [("style", rbs_params::Value::Choice(1))])
+            .unwrap_or(halo);
+        PointerHalo.uniforms(&laser, [64, 64], &mut u);
+        assert_eq!(u[0].0[0][3], 1.0);
     }
 
     #[test]

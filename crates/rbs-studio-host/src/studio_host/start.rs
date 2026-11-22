@@ -147,8 +147,9 @@ pub(super) fn start(
         // A collection that had to be completed is saved at the first publish.
         saved: loaded,
         events: EventPublisher::new(),
-        meters_ui: true,
+        meters_ui: false,
         meters_applied: true,
+        audio_rest_at: None,
         api: None,
         kinds,
         library: None,
@@ -207,6 +208,8 @@ pub(super) fn studio_settings(
     settings.scene_preview = SCENE_PICTURE;
     settings.audio_offsets = filters::audio_offsets(collection);
     settings.media_pause_release = media_pause_release;
+    // The branch rests until the window or a client reads levels (ADR-0169 decision 8).
+    settings.audio_awake = false;
     settings
 }
 

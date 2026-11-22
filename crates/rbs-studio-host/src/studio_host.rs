@@ -113,6 +113,7 @@ pub use refusal::Refusal;
 pub use rows::*;
 pub use updates::*;
 mod canvas;
+pub use canvas::AUDIO_REST_AFTER;
 mod command;
 mod command_path;
 mod control_loop;
@@ -573,6 +574,8 @@ struct Host {
     meters_ui: bool,
     /// What the mixer was last told.
     meters_applied: bool,
+    /// When the audio branch rests, while its grace runs (ADR-0169 decision 7).
+    audio_rest_at: Option<rbs_core::time::Timestamp>,
     /// The control API, while remote control is on.
     api: Option<Api>,
     /// Kinds the adapters can add.
@@ -771,6 +774,16 @@ impl Host {
             | Command::RemoveStreamKey(..)
             | Command::SwitchCollection { .. }
             | Command::SetLibrary { .. } => self.stream_command(c, notify),
+            // Adding the first pointer filter asks for Input monitoring first, as
+            // adding a camera asks for the camera (ADR-0165 decision 7, ADR-0141
+            // decision 4); the filter is added whatever the answer.
+            Command::Api { ref call, .. } if self.pointer_prompt_first(call) => {
+                self.ask_permission(
+                    rbs_sources::permissions::PermissionKind::InputMonitoring,
+                    Some(c),
+                    notify,
+                );
+            }
             Command::Api { call, reply } => self.api_command(*call, reply, notify),
         }
     }

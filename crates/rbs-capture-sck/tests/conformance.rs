@@ -60,7 +60,14 @@ fn hardware_session_passes_conformance() {
     };
     match conformance::run(&factory, &mut RealTimePacer::new(), &options) {
         Ok(report) => {
-            for check in ["formats", "standby", "timestamps", "latest wins", "stop"] {
+            for check in [
+                "formats",
+                "standby",
+                "timestamps",
+                "latest wins",
+                "stop",
+                "mapping",
+            ] {
                 assert!(
                     report.passed.iter().any(|c| c == check),
                     "{check} did not run: {report:?}"

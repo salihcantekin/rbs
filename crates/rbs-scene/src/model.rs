@@ -56,10 +56,19 @@ id_type!(
     "item"
 );
 id_type!(
-    /// Identifies a filter on a source. Never reused.
+    /// Identifies a filter on a source or a bus. Never reused.
     FilterId,
     "filter"
 );
+id_type!(
+    /// Identifies a bus of a canvas (ADR-0097 decision 9). Never reused inside the
+    /// collection; [`BusId::MAIN`] is the canvas's master.
+    BusId,
+    "bus"
+);
+
+mod bus;
+pub use bus::{Bus, MAIN_BUS_NAME, MAX_BUSES, Sends};
 
 /// One setting value. Settings schemas come with the plugin SDK; until then values are
 /// stored as given and validated by the node type.
@@ -116,6 +125,13 @@ pub struct Canvas {
     /// order, which is what a document from before format 11 has. Ids that are not
     /// showable on the canvas are ignored.
     pub order: Vec<SceneId>,
+    /// Buses other than `main` (ADR-0097 decision 9, ADR-0170), at most
+    /// [`MAX_BUSES`]` - 1`, in Mixer order. `main` is [`Self::master`]. Live controls:
+    /// edits of the canvas itself keep them, as they keep the master.
+    pub buses: Vec<Bus>,
+    /// Each source's send levels on this canvas; a source without an entry has the
+    /// default sends (`main` at 1.0, every other bus at 0).
+    pub sends: BTreeMap<SourceId, Sends>,
 }
 
 /// What a following canvas shows when the followed canvas's program scene is scoped to
@@ -197,6 +213,8 @@ impl Canvas {
             fallback: Fallback::default(),
             audio_from: AudioFrom::default(),
             order: Vec::new(),
+            buses: Vec::new(),
+            sends: BTreeMap::new(),
         }
     }
 }

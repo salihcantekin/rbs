@@ -42,7 +42,7 @@ impl Studio {
             partition,
             gpu: false,
         };
-        if let Err(e) = self.engine.apply(&graph) {
+        if let Err(e) = self.send_graph(Some(&graph), false) {
             if !take(&mut self.engine, added) {
                 self.pending_takes.push((added, None));
             }
@@ -65,7 +65,7 @@ impl Studio {
         };
         let _ = self.graph.set_state(run.node.node, Lifecycle::Standby);
         let _ = self.graph.remove_node(run.node.node);
-        let _ = self.engine.apply(&self.graph);
+        let _ = self.send_graph(None, false);
         if !take(&mut self.engine, run.node) {
             self.pending_takes.push((run.node, None));
         }

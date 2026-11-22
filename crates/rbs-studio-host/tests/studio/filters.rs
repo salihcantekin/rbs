@@ -116,6 +116,12 @@ fn next<T>(rx: &Receiver<Update>, mut pick: impl FnMut(Update) -> Option<T>) -> 
 }
 
 fn start() -> Option<(StudioHost, Receiver<Update>, ApiServer, Client)> {
+    start_with_input(None)
+}
+
+fn start_with_input(
+    input: Option<rbs_input::InputMonitor>,
+) -> Option<(StudioHost, Receiver<Update>, ApiServer, Client)> {
     let gpu = gpu()?;
     let (tx, updates) = mpsc::channel();
     let mut config = HostConfig::desktop();
@@ -130,6 +136,9 @@ fn start() -> Option<(StudioHost, Receiver<Update>, ApiServer, Client)> {
             a.sources
                 .register_audio(Arc::new(TestAudioBackend::new()))
                 .unwrap();
+            if let Some(m) = input {
+                a.sources.set_input(m);
+            }
             (a, Vec::new())
         },
         move || Ok(gpu),
@@ -1020,4 +1029,84 @@ fn pointer_filters_stay_first_and_go_only_on_sources_with_a_mapping() {
         json!({"source": cam, "type": rbs_filters::CLICK_RINGS}),
     );
     assert_eq!(kind(&refused), "invalid_params", "{refused}");
+}
+
+/// An input backend whose Input monitoring was not asked yet; asking counts and
+/// refuses (a grant on macOS applies only after a restart).
+struct Unasked(Arc<std::sync::atomic::AtomicU32>);
+
+impl rbs_input::InputBackend for Unasked {
+    fn name(&self) -> &'static str {
+        "unasked"
+    }
+    fn capabilities(&self) -> rbs_core::capability::CapabilitySet {
+        use rbs_core::capability::{CapabilitySet, CapabilityValue::Flag};
+        use rbs_input::caps;
+        CapabilitySet::new()
+            .with(caps::POINTER, Flag(true))
+            .with(caps::BUTTONS, Flag(true))
+            .with(caps::PERMISSION, Flag(true))
+            .with(caps::PERMISSION_PROMPT, Flag(true))
+            .with(caps::PERMISSION_RESTART, Flag(true))
+    }
+    fn start(
+        &self,
+        _: rbs_input::EventMask,
+        _: rbs_input::InputSink,
+    ) -> Result<Box<dyn rbs_input::RunningInput>, rbs_input::InputError> {
+        Err(rbs_input::InputError::PermissionDenied)
+    }
+    fn permission(&self) -> rbs_input::Permission {
+        if self.0.load(std::sync::atomic::Ordering::Acquire) == 0 {
+            rbs_input::Permission::NotDetermined
+        } else {
+            rbs_input::Permission::Denied
+        }
+    }
+    fn request_permission(&self) -> rbs_input::Permission {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        rbs_input::Permission::Denied
+    }
+}
+
+#[test]
+fn the_first_pointer_filter_from_the_window_asks_for_input_monitoring_once() {
+    use rbs_sources::permissions::{PermissionKind, PermissionStatus};
+    let asked = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let monitor = rbs_input::InputMonitor::new(Box::new(Unasked(Arc::clone(&asked))));
+    let Some((host, updates, _api, mut c)) = start_with_input(Some(monitor)) else {
+        return;
+    };
+    let screen = add(&mut c, "screen", "Screen");
+    let add_rings = || {
+        crate::window_call(rbs_api::Command::FilterAdd(rbs_api::request::AddFilter {
+            source: screen as u32,
+            type_id: rbs_filters::CLICK_RINGS.to_owned(),
+            settings: None,
+        }))
+    };
+    host.send(add_rings());
+    // The answer comes back as the statuses: refused, the grant needs a restart.
+    next(&updates, |u| match u {
+        Update::Permissions {
+            rows,
+            waiting: None,
+        } => rows
+            .iter()
+            .find(|(k, i)| {
+                *k == PermissionKind::InputMonitoring && i.status == PermissionStatus::Blocked
+            })
+            .map(|(_, i)| assert!(i.restart)),
+        _ => None,
+    });
+    // The filter is added whatever the answer, and a second one asks nothing.
+    let count = |c: &mut Client| filters_of(c, screen).len();
+    while count(&mut c) < 1 {
+        next(&updates, |u| matches!(u, Update::Sources(_)).then_some(()));
+    }
+    host.send(add_rings());
+    while count(&mut c) < 2 {
+        next(&updates, |u| matches!(u, Update::Sources(_)).then_some(()));
+    }
+    assert_eq!(asked.load(std::sync::atomic::Ordering::Acquire), 1);
 }

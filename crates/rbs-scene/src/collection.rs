@@ -2,13 +2,15 @@
 
 use crate::activity::{MAX_LINGER_S, SourceActivity};
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt;
 
 use rbs_core::media::Size;
 use rbs_core::timing::FrameRate;
 use rbs_graph::node::NodeTypeId;
 
 mod copies;
+mod error;
+pub use error::SceneError;
+mod buses;
 mod field;
 pub use field::LevelEdits;
 mod removal;
@@ -19,100 +21,11 @@ pub use removal::Removed;
 use crate::arrange::{AutoItem, AutoLayout, auto_layout};
 use crate::model::{
     AudioFrom, Canvas, CanvasId, CollectionGlide, CollectionTransition, DISPLAY_SOURCE_TYPE,
-    DisplayChrome, Fallback, Filter, FilterId, ItemContent, ItemId, Layout, MAX_GLIDE_MS,
-    MAX_SHOW_FOR_MS, MAX_SYNC_OFFSET_MS, MasterAudio, RecordSeparately, Scene, SceneAudio, SceneId,
-    SceneItem, SceneLevel, SceneScope, SceneTransition, SettingValue, Settings, Source,
-    SourceAudio, SourceGlide, SourceId, SourceMonitor, SourceRegion, show_for_is_valid,
+    DisplayChrome, Fallback, Filter, FilterId, ItemContent, ItemId, Layout, MasterAudio,
+    RecordSeparately, Scene, SceneAudio, SceneId, SceneItem, SceneLevel, SceneScope,
+    SceneTransition, Sends, SettingValue, Settings, Source, SourceAudio, SourceGlide, SourceId,
+    SourceMonitor, SourceRegion, show_for_is_valid,
 };
-
-/// Why an edit was refused. The collection is unchanged after any error.
-#[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SceneError {
-    /// No canvas with this id.
-    UnknownCanvas(CanvasId),
-    /// No source with this id.
-    UnknownSource(SourceId),
-    /// No scene with this id.
-    UnknownScene(SceneId),
-    /// No item with this id.
-    UnknownItem(ItemId),
-    /// No filter with this id on the source.
-    UnknownFilter(FilterId),
-    /// Another canvas, source or scene already has this name.
-    DuplicateName(String),
-    /// Names must not be empty or only whitespace.
-    EmptyName,
-    /// The node type id is not reverse-DNS style.
-    BadTypeId(NodeTypeId),
-    /// A canvas must be at least 1x1.
-    EmptyCanvas,
-    /// A layout has a non-finite number, an opacity outside 0..=1, or an invalid style
-    /// or scroll.
-    InvalidLayout,
-    /// A float setting is not finite.
-    InvalidSetting(String),
-    /// Crop applies to source items only.
-    CropOnScene(ItemId),
-    /// Shape and border apply to source items only (ADR-0053): a nested scene is not
-    /// drawn as one picture.
-    StyleOnScene(ItemId),
-    /// Scroll applies to source items only (ADR-0150).
-    ScrollOnScene(ItemId),
-    /// The scene would contain itself, directly or through other scenes.
-    NestingCycle(SceneId),
-    /// The scene's scope does not allow it here: a canvas scene shown on another
-    /// canvas, or nested into a scene that other canvases may show (U15).
-    ScopeViolation(SceneId),
-    /// An index is past the end of the list.
-    IndexOutOfRange(usize),
-    /// The canvas still owns scenes; remove them or make them shared first.
-    CanvasHasScenes(CanvasId),
-    /// A canvas's follow setting is not allowed (ADR-0093): it follows itself, an
-    /// unknown canvas or another follower, or its fallback scene is not one it may show.
-    InvalidFollow(CanvasId),
-    /// An undo record could not be applied because the collection changed in a way
-    /// that conflicts with it (undo records must be applied in reverse order).
-    UndoConflict,
-    /// All ids of this kind have been issued.
-    IdsExhausted,
-    /// Scenes nest more than [`MAX_NESTING_DEPTH`] levels deep.
-    NestingTooDeep(SceneId),
-    /// A scene would flatten to more than [`MAX_LAYERS`] layers.
-    TooManyLayers(SceneId),
-    /// Two filters share an id.
-    DuplicateFilter(FilterId),
-    /// A document lists two canvases, sources, scenes or items with the same id
-    /// ([`SceneCollection::from_parts`]): the id, as `canvas#3`, `item#7`, ...
-    DuplicateId(String),
-    /// A canvas side is larger than [`MAX_CANVAS_SIDE`].
-    CanvasTooLarge,
-    /// A canvas frame rate is above [`MAX_FRAME_RATE`] frames per second.
-    FrameRateTooHigh,
-    /// A source volume is not finite or outside `0.0..=1.0` (ADR-0059).
-    InvalidVolume,
-    /// A source sync offset is outside `-200..=200` ms (ADR-0062).
-    InvalidSyncOffset,
-    /// A glide duration is above [`MAX_GLIDE_MS`] (ADR-0100).
-    InvalidGlide,
-    /// A source's linger is above [`MAX_LINGER_S`] (ADR-0152).
-    InvalidActivity,
-    /// `show_for_ms` is set and is not in `1..=MAX_SHOW_FOR_MS` (ADR-0105).
-    InvalidShowFor,
-    /// A transition duration is above [`MAX_GLIDE_MS`] (ADR-0128).
-    InvalidTransition,
-    /// Chrome was set on a source that is not a display (ADR-0104).
-    ChromeNotDisplay,
-    /// A global scene (ADR-0065) would be shown as program or preview, nested, nest a
-    /// scene, or not be scoped to its own canvas.
-    GlobalScene(SceneId),
-    /// The scene is in Shared levels, so it has no entries of its own to edit
-    /// (ADR-0091).
-    SharedLevels(SceneId),
-    /// The edit would place the stinger source in a scene, or make a placed source the
-    /// stinger (ADR-0140 decision 1).
-    StingerPlaced(SourceId),
-}
 
 /// Most levels of scenes in a nesting chain, counting the shown scene. Bounds the
 /// recursion of [`SceneCollection::flatten`].
@@ -129,85 +42,6 @@ pub const MAX_FRAME_RATE: u32 = 1000;
 /// never fails). Diamond-shaped nesting multiplies layers, so this is checked on every
 /// edit rather than left to the compositor.
 pub const MAX_LAYERS: u64 = 4096;
-
-impl fmt::Display for SceneError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            SceneError::UnknownCanvas(id) => write!(f, "unknown {id}"),
-            SceneError::UnknownSource(id) => write!(f, "unknown {id}"),
-            SceneError::UnknownScene(id) => write!(f, "unknown {id}"),
-            SceneError::UnknownItem(id) => write!(f, "unknown {id}"),
-            SceneError::UnknownFilter(id) => write!(f, "unknown {id}"),
-            SceneError::DuplicateName(n) => write!(f, "name {n:?} is already used"),
-            SceneError::EmptyName => f.write_str("name is empty"),
-            SceneError::BadTypeId(t) => write!(f, "type id {t:?} is not reverse-DNS"),
-            SceneError::EmptyCanvas => f.write_str("canvas size must be at least 1x1"),
-            SceneError::InvalidLayout => f.write_str(
-                "layout is not finite, opacity is out of range, or the style or scroll is invalid",
-            ),
-            SceneError::InvalidSetting(k) => write!(f, "setting {k:?} is not finite"),
-            SceneError::CropOnScene(id) => write!(f, "{id} places a scene; crop is for sources"),
-            SceneError::StyleOnScene(id) => {
-                write!(f, "{id} places a scene; shape and border are for sources")
-            }
-            SceneError::ScrollOnScene(id) => {
-                write!(f, "{id} places a scene; scroll is for sources")
-            }
-            SceneError::NestingCycle(id) => write!(f, "{id} would contain itself"),
-            SceneError::ScopeViolation(id) => write!(f, "{id} is not allowed here by its scope"),
-            SceneError::IndexOutOfRange(i) => write!(f, "index {i} out of range"),
-            SceneError::CanvasHasScenes(id) => write!(f, "{id} still owns scenes"),
-            SceneError::InvalidFollow(id) => write!(f, "{id} cannot follow like that"),
-            SceneError::GlobalScene(id) => write!(
-                f,
-                "{id} is a global scene: it belongs to its canvas, is never shown or nested, and holds only sources"
-            ),
-            SceneError::UndoConflict => f.write_str("undo record conflicts with the collection"),
-            SceneError::IdsExhausted => f.write_str("ids exhausted"),
-            SceneError::NestingTooDeep(id) => {
-                write!(f, "{id} nests more than {MAX_NESTING_DEPTH} levels")
-            }
-            SceneError::TooManyLayers(id) => {
-                write!(f, "{id} would flatten to more than {MAX_LAYERS} layers")
-            }
-            SceneError::DuplicateFilter(id) => write!(f, "{id} is used twice"),
-            SceneError::DuplicateId(id) => write!(f, "{id} is listed twice"),
-            SceneError::CanvasTooLarge => {
-                write!(f, "canvas sides can be at most {MAX_CANVAS_SIDE} pixels")
-            }
-            SceneError::FrameRateTooHigh => {
-                write!(
-                    f,
-                    "canvas frame rates can be at most {MAX_FRAME_RATE} per second"
-                )
-            }
-            SceneError::InvalidVolume => f.write_str("volume must be a number from 0 to 1"),
-            SceneError::InvalidSyncOffset => write!(
-                f,
-                "sync offset must be from -{MAX_SYNC_OFFSET_MS} to {MAX_SYNC_OFFSET_MS} ms"
-            ),
-            SceneError::InvalidGlide => {
-                write!(f, "glide duration must be from 0 to {MAX_GLIDE_MS} ms")
-            }
-            SceneError::InvalidActivity => {
-                write!(f, "linger must be from 0 to {MAX_LINGER_S} s")
-            }
-            SceneError::InvalidTransition => {
-                write!(f, "transition duration must be from 0 to {MAX_GLIDE_MS} ms")
-            }
-            SceneError::InvalidShowFor => {
-                write!(f, "show duration must be from 1 to {MAX_SHOW_FOR_MS} ms")
-            }
-            SceneError::ChromeNotDisplay => f.write_str("only a display source can store chrome"),
-            SceneError::SharedLevels(id) => write!(f, "{id} uses the sources' own levels"),
-            SceneError::StingerPlaced(id) => {
-                write!(f, "{id} is the stinger and cannot be placed in a scene")
-            }
-        }
-    }
-}
-
-impl std::error::Error for SceneError {}
 
 /// An inverse edit. Applying it with [`SceneCollection::undo`] restores the state
 /// before the edit and returns the record that redoes it. Records must be applied in
@@ -246,8 +80,12 @@ enum Op {
         /// Its entries in scenes' own levels (ADR-0091), put back into the scenes
         /// still in Own levels.
         levels: Vec<(SceneId, SceneLevel)>,
+        /// Its send levels on each canvas (ADR-0097 decision 9).
+        sends: Vec<(CanvasId, Sends)>,
     },
     RemoveSource(SourceId),
+    /// A bus or send record (ADR-0097 decision 9, ADR-0170).
+    Bus(buses::BusOp),
     /// Several edits that undo and redo as one (a picture deleted with its companions,
     /// ADR-0096). The inverse runs them in reverse order.
     Batch(Vec<Op>),
@@ -373,6 +211,7 @@ struct NextIds {
     scene: u32,
     item: u32,
     filter: u32,
+    bus: u32,
 }
 
 /// The next id of each kind a collection will issue: what a document stores so ids are
@@ -394,6 +233,8 @@ pub struct IdCounters {
     pub item: u32,
     /// Next filter id.
     pub filter: u32,
+    /// Next bus id (scene format 29, ADR-0170). 0 and 1 both issue 1: 0 is `main`.
+    pub bus: u32,
 }
 
 fn issue(counter: &mut u32) -> Result<u32, SceneError> {
@@ -551,11 +392,13 @@ impl SceneCollection {
             scene: counters.scene,
             item: counters.item,
             filter: counters.filter,
+            bus: counters.bus,
         };
         let mut col = SceneCollection::new();
         for mut c in canvases {
             c.name = c.name.trim().to_owned();
             next.canvas = above(next.canvas, c.id.0)?;
+            (next.bus, next.filter) = buses::counters_above(&mut c, next.bus, next.filter)?;
             let id = c.id;
             if col.canvases.insert(id, c).is_some() {
                 return Err(SceneError::DuplicateId(id.to_string()));
@@ -605,6 +448,7 @@ impl SceneCollection {
             scene: n.scene,
             item: n.item,
             filter: n.filter,
+            bus: n.bus,
         }
     }
 
@@ -737,6 +581,8 @@ impl SceneCollection {
             fallback: Fallback::default(),
             audio_from: AudioFrom::default(),
             order: Vec::new(),
+            buses: Vec::new(),
+            sends: BTreeMap::new(),
         };
         let undo = self.apply_with(
             Op::InsertCanvas {
@@ -1058,6 +904,7 @@ impl SceneCollection {
                 source,
                 placements: Vec::new(),
                 levels: Vec::new(),
+                sends: Vec::new(),
             },
             next,
         )?;
@@ -2099,21 +1946,7 @@ impl SceneCollection {
                 canvas,
                 expected,
                 new,
-            } => {
-                let slot = self
-                    .canvases
-                    .get_mut(&canvas)
-                    .ok_or(SceneError::UnknownCanvas(canvas))?;
-                if slot.master != expected {
-                    return Err(SceneError::UndoConflict);
-                }
-                slot.master = new;
-                Ok(Op::SetCanvasMaster {
-                    canvas,
-                    expected: new,
-                    new: expected,
-                })
-            }
+            } => self.perform_master(canvas, expected, new),
             Op::ReplaceCanvas {
                 mut expected,
                 mut new,
@@ -2127,6 +1960,7 @@ impl SceneCollection {
                 // earlier rename conflict or come back.
                 expected.master = slot.master;
                 new.master = slot.master;
+                buses::keep_live(slot, &mut expected, &mut new);
                 if *slot != expected || expected.id != new.id {
                     return Err(SceneError::UndoConflict);
                 }
@@ -2140,6 +1974,7 @@ impl SceneCollection {
                 source,
                 placements,
                 levels,
+                sends,
             } => {
                 let id = source.id;
                 Self::restorable(self.next.source, id.0, self.sources.contains_key(&id))?;
@@ -2157,8 +1992,10 @@ impl SceneCollection {
                         audio.levels.insert(id, level);
                     }
                 }
+                self.restore_sends(id, sends);
                 Ok(Op::RemoveSource(id))
             }
+            Op::Bus(op) => self.perform_bus(op).map(Op::Bus),
             Op::Batch(ops) => {
                 let mut inverse = Vec::with_capacity(ops.len());
                 for op in ops {
@@ -2179,10 +2016,12 @@ impl SceneCollection {
                         levels.push((scene.id, level));
                     }
                 }
+                let sends = self.take_sends(id);
                 Ok(Op::InsertSource {
                     source,
                     placements,
                     levels,
+                    sends,
                 })
             }
             Op::SetSourceAudio {
@@ -2741,6 +2580,7 @@ impl SceneCollection {
                 check_settings(&f.settings)?;
             }
         }
+        self.validate_buses(&mut filters)?;
         let mut names = BTreeSet::new();
         let globals: BTreeSet<SceneId> = self.canvases.values().filter_map(|c| c.globals).collect();
         for s in self.scenes.values() {

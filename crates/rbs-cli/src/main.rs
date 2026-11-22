@@ -347,8 +347,20 @@ impl From<&str> for RecordCommandError {
     }
 }
 
+/// A new master clock and the platform's adapters with the input monitor of pointer
+/// filters on it; the engine runs on the same clock, so pointer and frame times share
+/// one time line (ADR-0165).
+fn clock_and_adapters() -> (
+    Arc<dyn rbs_core::time::Clock>,
+    rbs_platform::PlatformAdapters,
+) {
+    let clock: Arc<dyn rbs_core::time::Clock> = Arc::new(rbs_core::time::MonotonicClock::new());
+    let options = rbs_platform::Options::default().with_master_clock(Arc::clone(&clock));
+    (clock, rbs_platform::adapters(&options))
+}
+
 fn record(a: &RecordArgs) -> Result<(), RecordCommandError> {
-    let mut registered = rbs_platform::adapters(&rbs_platform::Options::default());
+    let (clock, mut registered) = clock_and_adapters();
     for e in registered.errors {
         rbs_crash::errln!("warning: {e}");
     }
@@ -446,7 +458,7 @@ fn record(a: &RecordArgs) -> Result<(), RecordCommandError> {
     };
     let gpu = Arc::new(GpuContext::new(&request).map_err(|e| format!("no usable GPU: {e}"))?);
     rbs_crash::outln!("gpu: {}", gpu.adapter_name());
-    let mut engine = Engine::new();
+    let mut engine = Engine::with_clock(clock, rbs_engine::EngineConfig::default());
     engine.set_thread_policy(Some(Arc::new(rbs_thread_os::OsThreadPolicy::new())));
     let mut recording = match Recording::start(engine, gpu, &built.collection, &adapters, &settings)
     {

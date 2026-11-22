@@ -69,6 +69,8 @@ rbs-codec-mf = { path = "../rbs-codec-mf", features = ["testing"] }
 rbs-transport-file = { path = "../rbs-transport-file" }
 rbs-add-ons-sys = { path = "../rbs-add-ons-sys" }
 rbs-mux = { path = "../rbs-mux" }
+# A scripted input monitor with a permission (tests/studio/filters.rs, ADR-0165).
+rbs-input = { path = "../rbs-input" }
 
 [lints]
 workspace = true

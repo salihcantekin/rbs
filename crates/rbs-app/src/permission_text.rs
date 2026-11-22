@@ -96,6 +96,7 @@ pub fn label(kind: PermissionKind) -> &'static str {
         PermissionKind::Microphone => "Microphone",
         PermissionKind::Screen => "Screen and windows",
         PermissionKind::SystemSound => "System and app sound",
+        PermissionKind::InputMonitoring => "Input monitoring",
     }
 }
 
@@ -106,6 +107,7 @@ pub fn kind_code(kind: PermissionKind) -> i32 {
         PermissionKind::Microphone => 1,
         PermissionKind::Screen => 2,
         PermissionKind::SystemSound => 3,
+        PermissionKind::InputMonitoring => 4,
     }
 }
 
@@ -225,6 +227,37 @@ pub fn source_action(info: Option<PermissionInfo>, waiting: bool) -> i32 {
         Some(i) if i.status == PermissionStatus::NotAsked && i.can_prompt => 1,
         _ => 2,
     }
+}
+
+/// The note of a pointer filter (Click rings, Pointer halo) while RBS may not see
+/// the mouse (ADR-0165 decision 7): the text under the filter's title and its action
+/// as in [`source_action`]. `None` when nothing stops the filter: Input monitoring is
+/// allowed or not needed, there is no input monitor, or the status was not read yet.
+pub fn pointer_note(info: Option<PermissionInfo>, waiting: bool) -> Option<(String, i32)> {
+    use PermissionStatus as S;
+    let i = info?;
+    let restart = if i.restart {
+        " If you just allowed it, quit RBS and open it again."
+    } else {
+        ""
+    };
+    let text = match i.status {
+        S::Allowed | S::NotNeeded | S::AskedEachTime | S::Unavailable => return None,
+        _ if waiting => "Waiting for your answer to the system's question.".to_owned(),
+        S::NotAsked => "RBS can't see clicks until Input monitoring is allowed.".to_owned(),
+        S::Managed => {
+            "RBS can't see clicks: your organization manages Input monitoring.".to_owned()
+        }
+        S::Blocked | S::Unknown => {
+            format!("RBS can't see clicks: Input monitoring is blocked.{restart}")
+        }
+    };
+    let action = if i.status == S::Managed {
+        0
+    } else {
+        source_action(info, waiting)
+    };
+    Some((text, action))
 }
 
 /// The "Who gets these permissions" card: the value, the path line and a note
@@ -404,6 +437,25 @@ mod tests {
         let blocked = info(PermissionStatus::Blocked, false, false);
         assert_eq!(source_action(Some(blocked), false), 2);
         assert_eq!(source_action(None, false), 2);
+    }
+
+    #[test]
+    fn a_pointer_filter_says_why_it_cannot_see_clicks() {
+        use PermissionStatus as S;
+        assert_eq!(pointer_note(None, false), None, "not read yet");
+        for quiet in [S::Allowed, S::NotNeeded, S::Unavailable] {
+            assert_eq!(pointer_note(Some(info(quiet, false, true)), false), None);
+        }
+        let (text, action) = pointer_note(Some(info(S::NotAsked, true, true)), false).unwrap();
+        assert_eq!(action, 1, "Allow");
+        assert!(text.starts_with("RBS can't see clicks until"), "{text}");
+        let (text, action) = pointer_note(Some(info(S::Blocked, false, true)), false).unwrap();
+        assert_eq!(action, 2, "Fix permission");
+        assert!(text.ends_with("quit RBS and open it again."), "{text}");
+        let (_, action) = pointer_note(Some(info(S::NotAsked, true, true)), true).unwrap();
+        assert_eq!(action, 0, "the prompt is showing");
+        let (_, action) = pointer_note(Some(info(S::Managed, false, false)), false).unwrap();
+        assert_eq!(action, 0, "nothing the user can do");
     }
 
     #[test]
