@@ -33,6 +33,10 @@ bytes = "1.9"
 rtrb = "0.4"
 # PNG files for image sources (ADR-0074): pure Rust, MIT or Apache-2.0, control thread only.
 png = "0.18"
+# JPEG files for image and slide show sources (ADR-0171): pure Rust, MIT, Apache-2.0 or
+# Zlib, already in Cargo.lock through Slint; control side and decode thread only.
+zune-jpeg = { version = "0.5", default-features = false, features = ["std", "x86", "neon"] }
+zune-core = { version = "0.5", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 # Reference adapters of the capture and audio input ports (deterministic, no devices).

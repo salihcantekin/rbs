@@ -178,4 +178,8 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0168](0168-the-last-pending-window-commands.md) | The last 15 Pending window commands: window-only answers behind the window flag, the window picking the method, the OS picker and Interact input as `LocalOnly`, and protocol 1.101 (`source.targets` fields, `browser.forget_sign_in` `restart`) | Accepted |
 | [0169](0169-audio-branch-rests-while-nothing-reads-it.md) | The meter sink is in the graph only while meters are wanted, so the audio branch (worker, device streams, filters, mixer) rests while nothing reads it (supersedes ADR-0041 decision 2 in part) | Accepted |
 | [0170](0170-multi-track-recording-and-six-buses.md) | Multi-track recording: a recording writes 1 to 6 buses as audio tracks in one never-shared encoder chain; buses capped at 6 (amends ADR-0097) | Accepted |
+<<<<<<< HEAD
 | [0172](0172-panels-menu-toggles-and-panels-reopen-where-they-were.md) | The Panels menu toggles its panel, and a panel closed in this session reopens where it was: its stack, beside its neighbour, its area, edge group or floating window (supersedes ADR-0073 decision 4 in part) | Proposed |
+=======
+| [0171](0171-image-slide-show-source.md) | Image slide show source: one folder of PNG and JPEG pictures, at most three decoded at a time, a fixed output size, a transition pass only during a change, controlled through the media methods | Accepted |
+>>>>>>> origin/main

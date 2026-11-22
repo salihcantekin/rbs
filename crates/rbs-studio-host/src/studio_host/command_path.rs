@@ -113,7 +113,6 @@ paths! {
     // the page's state picks the call (ADR-0168)
     BrowserControl => Translates(&["browser.reload", "source.reload", "browser.run_script"]),
     // window stops the page first, API does not
-    ForgetBrowserSignIn => Pending(&["browser.forget_sign_in"]),
     // window forces the next media-state publish
     OpenAttributes => WindowOnly(View),
     // becomes Translates (branches on the preview)
@@ -172,7 +171,7 @@ mod tests {
     /// (owner, 2026-11-21). `TRANSLATES` 22 to 24 and `LOCAL_ONLY` 10 to 11 are
     /// approved by ADR-0168 decision 4 (owner, 2026-11-22).
     const TRANSLATES: usize = 24;
-    const PENDING: usize = 6;
+    const PENDING: usize = 5;
     const CONTRACT: usize = 0;
     const MISSING: usize = 1;
     const VIEW: usize = 13;

@@ -154,6 +154,31 @@ Counters are those of the capture node: `picture_size` is known from constructio
 
 `TextNodeStats`: `frames`, `uploaded`, `uploaded_request` (what the host waits on before a switch, ADR-0129 decision 7), `upload_deferred`, `budget_deferred`, `over_cap`, `reserve_failures`, `gpu_errors`, `picture_size`, `fault`. Tests: `crates/rbs-nodes/tests/text_gpu.rs` (no picture publishes nothing; each new picture is uploaded once with a new generation, and a size change re-reserves; a picture over the caps is held; three 8 MiB pictures take two ticks under the budget; Standby gives the textures back and `warm` uploads again; a steady text node adds no allocation to a tick, measured against a still source).
 
+### Slide show source node (ADR-0171)
+
+`SlideshowNode` (`rbs-nodes` `slideshow.rs`, type `org.rbs.slideshow`, kind `Source`, one output `video`) shows the pictures of a slide show at a fixed output size.
+
+- **Inputs.** `SlideFrame`s arrive through a parameter channel (ADR-0023) whose sender the decode thread keeps. Each one is fitted pixels shared through an `Arc` (`Bytes::from_owner`), with a `serial` (never 0), `now` (show at once) and `cut` (show without a change). A displaced frame goes back to the sender and drops on the decode thread. `SlideshowShared` holds atomics only:
+  - `paused`, `interval_ms` (0 for manual) and `transition_ms`, written by the host;
+  - `shown` and `shown_at_ns`, written by the node;
+  - the counters `frames`, `uploaded`, `changes`, `budget_deferred`, `upload_deferred`, `draw_skipped` and `gpu_errors`.
+- **`warm` and `cool`.** `warm` reserves two `ReservedUpload` textures at the output size. When the transition is not a cut it also reserves `ReservedTargets` and a `SlidePass`. `cool` gives all of them back; the picture is uploaded again on the next `warm`, without a change.
+- **`process`.**
+  1. While a change runs, it draws the change each tick (`SlidePass::draw`; a tick whose targets are both read is skipped and counted). When `change_length()` has passed, it publishes the incoming picture. Nothing is uploaded while a change runs.
+  2. Otherwise a new frame is uploaded ahead of its change, under the partition's upload budget, into the picture texture no reader leases. The node keeps only texture ids; the output slot's lease protects the picture on screen.
+  3. An uploaded picture changes when it is the first, when it is marked `now`, or when the interval has passed and the node is not paused. A first picture or a `cut` one is published at once; otherwise a change starts.
+  4. A pause restarts the interval when the timer resumes.
+- **Other rules.** `change_length()` is `transition_ms`, at most half the interval. Every published frame gets a new `next_generation()` sequence (ADR-0117 decision 4). Between changes a tick is a few atomic loads and a compare, with no allocation.
+- **Tests.** `crates/rbs-nodes/tests/slideshow_gpu.rs` covers:
+  - nothing shows before the first picture, which shows without a change;
+  - the next picture is uploaded ahead and shown on time;
+  - a fade draws for its length;
+  - a picture sent during a change waits for it to end;
+  - paused and manual hold, and a command still shows at once;
+  - the cap at half the interval;
+  - Standby gives everything back;
+  - steady ticks allocate nothing (baseline: a still node).
+
 ### Image track node (ADR-0117)
 
 `rbs_nodes::ImageTrackNode` (`org.rbs.image-track`, kind `VideoFilter`, input "picture", output "video", render partition) writes a still source's picture as images, one readback per change. `new(width, height)` sizes its `RgbaDownload`; `give_way_after(budget)` and `yield_to(master_drops)` set the ADR-0086 decision 9 rules.

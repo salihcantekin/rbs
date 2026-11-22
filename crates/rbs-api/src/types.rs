@@ -6,9 +6,12 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+mod capture_target;
 mod output_settings;
 mod scroll;
 mod serde_defaults;
+mod source_fault;
+pub use capture_target::CaptureTarget;
 pub use output_settings::{
     ReplaySettings, SeparateFilesSettings, Settings, StreamSettings, StreamSettingsPatch,
 };
@@ -16,6 +19,7 @@ pub use scroll::{
     ItemScroll, ScrollDirection, ScrollFinished, ScrollRepeat, ScrollReturn, ScrollStart,
 };
 use serde_defaults::*;
+pub use source_fault::SourceFault;
 
 /// A change counter per state key (`"record.state"`, later `"source.changed:7"`).
 pub type SeqMap = BTreeMap<String, u64>;
@@ -78,22 +82,8 @@ pub enum SourceKind {
     Browser,
     /// A text drawn by the server's text renderer (protocol 1.75, ADR-0129).
     Text,
-}
-
-/// Why a source cannot deliver (protocol 1.20, ADR-0077). A client treats a value it does
-/// not know as `other`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SourceFault {
-    /// The target is gone: a window closed, a device removed.
-    TargetGone,
-    /// The system refused access, or the user has not decided yet.
-    PermissionDenied,
-    /// Another application holds the device.
-    Busy,
-    /// Any other cause.
-    #[serde(other)]
-    Other,
+    /// The pictures of one folder shown one after another (protocol 1.102, ADR-0171).
+    Slideshow,
 }
 
 /// How a source is doing.
@@ -891,22 +881,6 @@ pub fn parse_color(text: &str) -> Option<[u8; 4]> {
 /// `#rrggbbaa`.
 pub fn format_color(c: [u8; 4]) -> String {
     format!("#{:02x}{:02x}{:02x}{:02x}", c[0], c[1], c[2], c[3])
-}
-
-/// Something a source can capture: a display, window, camera or audio endpoint.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CaptureTarget {
-    /// Name from the OS (a window title can be private: `source.targets` needs
-    /// `control`).
-    pub name: String,
-    /// The adapter that listed it.
-    pub adapter: String,
-    /// Its id for that adapter.
-    pub target: String,
-    /// The OS default of its kind (audio endpoints).
-    pub is_default: bool,
-    /// Native size when known (displays and windows).
-    pub size: Option<Dimensions>,
 }
 
 /// A video encoder the user can pick, with what its quality settings can be.

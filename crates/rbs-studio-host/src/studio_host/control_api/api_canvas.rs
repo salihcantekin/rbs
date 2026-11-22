@@ -152,15 +152,7 @@ impl ApiTarget<'_> {
                 let targets = host
                     .recent_targets(kind)
                     .into_iter()
-                    .map(|t| api::CaptureTarget {
-                        name: t.name,
-                        adapter: t.adapter,
-                        target: t.target,
-                        is_default: t.is_default,
-                        size: t
-                            .size
-                            .map(|(width, height)| api::Dimensions { width, height }),
-                    })
+                    .map(api_target)
                     .collect();
                 Ok(Response::Targets(TargetList {
                     kind: p.kind,

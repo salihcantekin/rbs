@@ -731,53 +731,13 @@ fn every_request() -> Vec<Request> {
         })),
         c(Command::BrowserForgetSignIn(BrowserForgetSignIn {
             source: 3,
+            restart: true,
         })),
         c(Command::BrowserInput(BrowserInput {
             source: 3,
-            events: vec![
-                BrowserInputEvent::Move {
-                    x: 1,
-                    y: 2,
-                    modifiers: BrowserModifiers::default(),
-                },
-                BrowserInputEvent::Leave,
-                BrowserInputEvent::Button {
-                    x: 1,
-                    y: 2,
-                    button: BrowserMouseButton::Left,
-                    down: true,
-                    clicks: 2,
-                    modifiers: BrowserModifiers {
-                        shift: true,
-                        ..BrowserModifiers::default()
-                    },
-                },
-                BrowserInputEvent::Wheel {
-                    x: 1,
-                    y: 2,
-                    dx: 0,
-                    dy: -120,
-                    modifiers: BrowserModifiers::default(),
-                },
-                BrowserInputEvent::Key {
-                    key: "Enter".to_owned(),
-                    down: false,
-                    modifiers: BrowserModifiers::default(),
-                },
-                BrowserInputEvent::Text {
-                    text: "hi".to_owned(),
-                },
-            ],
+            events: browser_events(),
         })),
         c(Command::SourceGetSettings(GetSourceSettings { source: 3 })),
-        c(Command::MediaPlay(MediaSource { source: 3 })),
-        c(Command::MediaPause(MediaSource { source: 3 })),
-        c(Command::MediaSeek(MediaSeek {
-            source: 3,
-            position_ms: 1_500,
-        })),
-        c(Command::MediaRestart(MediaSource { source: 3 })),
-        c(Command::MediaState(MediaSource { source: 3 })),
         c(Command::SourceSetSettings(SetSourceSettings {
             gesture: 0,
             source: 3,
@@ -801,6 +761,7 @@ fn every_request() -> Vec<Request> {
         c(Command::AddonRemove(engine())),
     ];
     all.extend(transforms::requests());
+    all.extend(media::requests());
     all
 }
 
@@ -810,6 +771,11 @@ fn engine() -> AddOnRef {
     }
 }
 
+#[path = "json/media.rs"]
+mod media;
+#[path = "json/samples.rs"]
+mod samples;
+use samples::{browser_events, capture_target};
 #[path = "json/scrolls.rs"]
 mod scrolls;
 #[path = "json/settings.rs"]
@@ -1008,16 +974,7 @@ fn every_result_and_event_type_round_trips() {
     });
     round_trip(&TargetList {
         kind: SourceKind::Screen,
-        targets: vec![CaptureTarget {
-            name: "Display 1".into(),
-            adapter: "wgc".into(),
-            target: "1".into(),
-            is_default: true,
-            size: Some(Dimensions {
-                width: 2560,
-                height: 1440,
-            }),
-        }],
+        targets: vec![capture_target()],
     });
     round_trip(&SourceAdded { source: 9 });
     round_trip(&TokenList {
@@ -3116,25 +3073,6 @@ fn stream_destinations_have_a_stable_wire_form() {
             "connects": 1, "reconnect_attempts": 2, "dropped": 7, "on_air_ms": 60000,
         })
     );
-}
-
-#[test]
-fn a_media_state_round_trips_and_an_unknown_state_is_kept_as_unknown() {
-    let info = MediaStateInfo {
-        source: 3,
-        state: MediaPlayState::Cued,
-        cursor_ms: 1_500,
-        duration_ms: Some(10_000),
-    };
-    round_trip(&info);
-    assert_eq!(
-        serde_json::to_value(info).unwrap(),
-        json!({"source": 3, "state": "cued", "cursor_ms": 1500, "duration_ms": 10000})
-    );
-    let newer: MediaStateInfo =
-        serde_json::from_value(json!({"source": 3, "state": "buffering", "cursor_ms": 0})).unwrap();
-    assert_eq!(newer.state, MediaPlayState::Unknown);
-    assert_eq!(newer.duration_ms, None);
 }
 
 #[test]

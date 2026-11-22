@@ -381,9 +381,17 @@ impl Host {
         let Some(source) = self.collection.source(id) else {
             return Err(Refusal::NotFound(format!("There is no source {raw}.")));
         };
+        if source.type_id.as_str() == types::SLIDESHOW_SOURCE {
+            return self.slideshow_command(raw, op);
+        }
         if source.type_id.as_str() != types::MEDIA_SOURCE {
             return Err(Refusal::Invalid(format!(
                 "Source {raw} is not a media file."
+            )));
+        }
+        if matches!(op, MediaOp::Next | MediaOp::Previous) {
+            return Err(Refusal::Invalid(format!(
+                "Source {raw} is not a slide show."
             )));
         }
         let millis = |d: Duration| u64::try_from(d.as_millis()).unwrap_or(u64::MAX);
@@ -395,6 +403,8 @@ impl Host {
                     state: Wire::Standby,
                     cursor_ms: 0,
                     duration_ms: None,
+                    index: None,
+                    count: None,
                 });
             }
             return Err(Refusal::Conflict(format!(
@@ -413,7 +423,7 @@ impl Host {
             MediaOp::Pause => control.pause().map_err(failed)?,
             MediaOp::Seek(ms) => control.seek(Duration::from_millis(ms)).map_err(failed)?,
             MediaOp::Restart => control.restart().map_err(failed)?,
-            MediaOp::State => {}
+            MediaOp::State | MediaOp::Next | MediaOp::Previous => {}
         }
         let state = match control.state() {
             State::Playing => Wire::Playing,
@@ -429,6 +439,8 @@ impl Host {
             state,
             cursor_ms: millis(control.cursor()),
             duration_ms: control.duration().map(millis),
+            index: None,
+            count: None,
         })
     }
 
@@ -437,6 +449,8 @@ impl Host {
     pub(super) fn report_media(&mut self, notify: &dyn Fn(Update)) -> Option<Duration> {
         use rbs_record::MediaPlayState as State;
         let mut playing = false;
+        let mut slides_playing = false;
+        let slides = self.slideshow_ticks(&mut slides_playing);
         let ticks: Vec<MediaTick> = self
             .studio
             .media_controls()
@@ -459,9 +473,13 @@ impl Host {
                     duration_ms: control
                         .duration()
                         .map_or(0, |d| u32::try_from(d.as_millis()).unwrap_or(u32::MAX)),
+                    index: -1,
+                    count: 0,
                 }
             })
+            .chain(slides)
             .collect();
+        playing |= slides_playing;
         if self.media_sent.as_ref() != Some(&ticks) {
             self.media_sent = Some(ticks.clone());
             notify(Update::Media(ticks));
@@ -550,9 +568,10 @@ impl Host {
     /// Forget sign-in (ADR-0132 decision 10): the source gets a new kept-profile id,
     /// so its page starts again signed out at once, and the old profile's directory is
     /// deleted once the page that used it has closed. One undo step, which brings back
-    /// only the id: the profile itself is gone. `stop_first` is the desktop app's
-    /// button, which stops the running page itself; a client is refused with `busy`
-    /// while the page runs (decision 9). The caller applies the collection.
+    /// only the id: the profile itself is gone. `stop_first` is `restart`
+    /// (protocol 1.101, which the desktop app's button sends): a running page restarts
+    /// with the new profile; without it a running page is refused with `busy`
+    /// (decision 9). The caller applies the collection.
     pub(super) fn forget_sign_in(
         &mut self,
         id: SourceId,
@@ -766,13 +785,6 @@ impl Host {
                 self.pickers
                     .region_grabs
                     .fetch_add(1, AtomicOrdering::AcqRel);
-            }
-            Command::ForgetBrowserSignIn(id) => {
-                let done = self
-                    .forget_sign_in(id, true)
-                    .map(|()| true)
-                    .map_err(|e| Refusal::Conflict(e.message));
-                self.answer(done, notify);
             }
             // The page's state picks the call (ADR-0168 decision 1): a reload of a page
             // that does not run opens it again, and a script with no page is quiet.

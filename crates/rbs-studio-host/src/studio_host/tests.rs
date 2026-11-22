@@ -64,6 +64,35 @@ fn browser_input_from_the_api_is_checked_and_becomes_wire_events() {
         InputEvent::Text("hi".into())
     );
     assert!(browser_input_event(&text("x".repeat(257))).is_err());
+    // Held buttons ride on moves and leaves as the wire's held bits (protocol 1.101).
+    let held = rbs_api::request::BrowserHeld {
+        left: true,
+        ..Default::default()
+    };
+    assert_eq!(
+        browser_input_event(&E::Move {
+            x: 1,
+            y: 2,
+            modifiers: shift,
+            held,
+        })
+        .unwrap(),
+        InputEvent::Move {
+            x: 1,
+            y: 2,
+            modifiers: wire::SHIFT | wire::LEFT_HELD,
+        }
+    );
+    assert_eq!(
+        browser_input_event(&E::Leave {
+            modifiers: shift,
+            held,
+        })
+        .unwrap(),
+        InputEvent::Leave {
+            modifiers: wire::SHIFT | wire::LEFT_HELD,
+        }
+    );
 }
 
 /// While an output runs or a switch waits, the round keeps the short sleep. Idle

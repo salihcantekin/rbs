@@ -430,7 +430,15 @@ fn media_commands_refuse_an_unknown_source_and_another_type() {
         return;
     };
     let mic = add_mic(&mut c, rbs_audio_io_test::MONO_INPUT, "Mic");
-    for method in ["media.play", "media.pause", "media.restart", "media.state"] {
+    for method in [
+        "media.play",
+        "media.pause",
+        "media.restart",
+        "media.state",
+        // Slide shows only (protocol 1.102, ADR-0171 decision 9).
+        "media.next",
+        "media.previous",
+    ] {
         assert_eq!(kind(&c.call(method, json!({"source": 9_999}))), "not_found");
         assert_eq!(
             kind(&c.call(method, json!({"source": mic}))),
@@ -442,4 +450,44 @@ fn media_commands_refuse_an_unknown_source_and_another_type() {
         kind(&c.call("media.seek", json!({"source": mic, "position_ms": 10}))),
         "invalid_params"
     );
+}
+
+/// A slide show added for a folder answers the `media.*` methods (protocol 1.102,
+/// ADR-0171 decision 9): `media.seek` is refused, the state carries `count`, and Next
+/// on a slide show no scene runs is `conflict` or moves it.
+#[test]
+fn a_slide_show_takes_the_media_methods_but_not_seek() {
+    let Some((_host, _updates, _api, mut c)) = start() else {
+        return;
+    };
+    let dir = std::env::temp_dir().join(format!("rbs-host-slideshow-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    assert_eq!(
+        kind(&c.call(
+            "source.add",
+            json!({"kind": "slideshow", "path": "relative/folder"})
+        )),
+        "invalid_params"
+    );
+    let added = ok(&c.call(
+        "source.add",
+        json!({"kind": "slideshow", "path": dir.display().to_string()}),
+    ))["source"]
+        .as_u64()
+        .unwrap();
+    let settings = ok(&c.call("source.get_settings", json!({"source": added}))).clone();
+    assert!(settings["settings"]["width"].is_u64(), "{settings}");
+    assert_eq!(
+        kind(&c.call("media.seek", json!({"source": added, "position_ms": 10}))),
+        "invalid_params"
+    );
+    let state = ok(&c.call("media.state", json!({"source": added}))).clone();
+    assert!(state.get("state").is_some(), "{state}");
+    let next = c.call("media.next", json!({"source": added}));
+    if next.get("error").is_some() {
+        assert_eq!(kind(&next), "conflict");
+    } else {
+        assert!(ok(&next).get("count").is_some(), "{next}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -11,6 +11,7 @@ use crate::env::{Catalogue, Lookup, LookupTarget};
 use crate::obs::{ObsFilter, ObsSource};
 
 pub mod filters;
+pub mod slideshow;
 pub mod sources;
 
 /// What mappers may ask while they work.
