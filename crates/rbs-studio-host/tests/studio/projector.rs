@@ -156,10 +156,7 @@ mod with_pictures {
         });
         let (_, first) = projector(&rx, 1, open_with_picture);
         // A canvas change restarts the studio: the projector gets a new picture.
-        host.send(Command::SetCanvas {
-            size: Size::new(1280, 720),
-            fps: FrameRate::FPS_30,
-        });
+        host.send(crate::set_canvas(Size::new(1280, 720), FrameRate::FPS_30));
         let (_, again) = projector(&rx, 1, |s, p| open_with_picture(s, p) && *p != first);
         assert_ne!(again, first);
         host.send(Command::CloseProjector(1));

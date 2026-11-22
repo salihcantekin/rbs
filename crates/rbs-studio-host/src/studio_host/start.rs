@@ -122,6 +122,7 @@ pub(super) fn start(
         preview_surfaces: settings.preview.map(|p| p.surfaces),
         dead: None,
         restarting: false,
+        canvas_told: 0,
         caught: false,
         unanswered: None,
         #[cfg(feature = "fault-injection")]

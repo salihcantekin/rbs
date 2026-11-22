@@ -1396,7 +1396,6 @@ impl Host {
                 }
             }
             Command::ReadPermissions => self.send_permissions(notify),
-            Command::ListAddOns => notify(Update::AddOns(self.addon_list())),
             Command::RequestPermission(kind) => self.ask_permission(kind, None, notify),
             Command::AddSourceWithAudio { kind, target } => {
                 let done = self.add(kind, &target).and_then(|id| {

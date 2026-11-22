@@ -72,11 +72,16 @@ impl ApiTarget<'_> {
                 Ok(Response::Done(Empty {}))
             }
             C::FilterSetSettings(p) => {
+                let filter = FilterId::from_raw(p.filter);
                 if host
-                    .patch_filter(FilterId::from_raw(p.filter), &p.settings)
+                    .patch_filter(filter, &p.settings)
                     .map_err(|e| refused(&e))?
                 {
                     host.apply(notify);
+                } else if self.window {
+                    // The window's unchanged release still puts the stored values back
+                    // on the running filter (ADR-0168 decision 2).
+                    host.studio.restore_filter(filter);
                 }
                 Ok(Response::Done(Empty {}))
             }

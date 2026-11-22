@@ -358,6 +358,7 @@ fn json_profile() -> rbs_api::types::RecordingProfile {
         output_size: None,
         editor_project: None,
         markers: Default::default(),
+        audio_tracks: None,
     }
 }
 

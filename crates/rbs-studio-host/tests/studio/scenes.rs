@@ -1072,14 +1072,14 @@ fn a_box_on_the_vertical_canvas_is_that_canvas_s_own_layout() {
     });
     let main_before = rows[0].layout.unwrap();
     let box_on = |seq: u64, position: [f32; 2], size: [f32; 2], canvas: OutputCanvas| {
-        host.send(Command::SetSourceBox {
+        host.send(crate::set_box(crate::SetBox {
             seq,
             gesture: 7,
             id: SourceId::from_raw(id as u32),
             position,
             size,
             canvas,
-        });
+        }));
     };
     box_on(1, [100.0, 200.0], [540.0, 960.0], OutputCanvas::Vertical);
     let rows = next(&updates, |u| match u {
@@ -1096,18 +1096,18 @@ fn a_box_on_the_vertical_canvas_is_that_canvas_s_own_layout() {
     // The main canvas keeps its box.
     assert_eq!(rows[0].layout, Some(main_before));
     assert!(next(&updates, |u| match u {
-        Update::BoxPlaced { seq: 1, ok } => Some(ok),
+        Update::ApiAnswer { ticket: 1, result } => Some(result.is_ok()),
         _ => None,
     }));
     // The same box again changes nothing and is still answered; a zero size is refused.
     box_on(2, [100.0, 200.0], [540.0, 960.0], OutputCanvas::Vertical);
     assert!(next(&updates, |u| match u {
-        Update::BoxPlaced { seq: 2, ok } => Some(ok),
+        Update::ApiAnswer { ticket: 2, result } => Some(result.is_ok()),
         _ => None,
     }));
     box_on(3, [0.0, 0.0], [0.0, 960.0], OutputCanvas::Vertical);
     assert!(!next(&updates, |u| match u {
-        Update::BoxPlaced { seq: 3, ok } => Some(ok),
+        Update::ApiAnswer { ticket: 3, result } => Some(result.is_ok()),
         _ => None,
     }));
     // After the main program switches, the following canvas shows the new scene (not
@@ -1125,16 +1125,16 @@ fn a_box_on_the_vertical_canvas_is_that_canvas_s_own_layout() {
         }
         _ => None,
     });
-    host.send(Command::SetSourceBox {
+    host.send(crate::set_box(crate::SetBox {
         seq: 6,
         gesture: 8,
         id: SourceId::from_raw(other as u32),
         position: [0.0, 0.0],
         size: [1080.0, 960.0],
         canvas: OutputCanvas::Vertical,
-    });
+    }));
     assert!(next(&updates, |u| match u {
-        Update::BoxPlaced { seq: 6, ok } => Some(ok),
+        Update::ApiAnswer { ticket: 6, result } => Some(result.is_ok()),
         Update::Error(e) => panic!("{e}"),
         _ => None,
     }));
@@ -1149,7 +1149,7 @@ fn a_box_on_the_vertical_canvas_is_that_canvas_s_own_layout() {
     });
     box_on(5, [0.0, 0.0], [10.0, 10.0], OutputCanvas::Vertical);
     assert!(!next(&updates, |u| match u {
-        Update::BoxPlaced { seq: 5, ok } => Some(ok),
+        Update::ApiAnswer { ticket: 5, result } => Some(result.is_ok()),
         _ => None,
     }));
     ok(&c.call("canvas.set_preview", json!({"scene": null})));
@@ -1164,7 +1164,7 @@ fn a_box_on_the_vertical_canvas_is_that_canvas_s_own_layout() {
     });
     box_on(4, [0.0, 0.0], [10.0, 10.0], OutputCanvas::Vertical);
     assert!(!next(&updates, |u| match u {
-        Update::BoxPlaced { seq: 4, ok } => Some(ok),
+        Update::ApiAnswer { ticket: 4, result } => Some(result.is_ok()),
         _ => None,
     }));
     drop(host);

@@ -20,7 +20,7 @@ impl ApiTarget<'_> {
                         ));
                     };
                     check_profile(&p.id)?;
-                    let profile = RecordProfile::from_api(p);
+                    let profile = RecordProfile::from_api_over(p, &host.recording.profile);
                     if let Some(why) = profile.problem() {
                         return Err(ApiError::new(ErrorKind::InvalidParams, why));
                     }

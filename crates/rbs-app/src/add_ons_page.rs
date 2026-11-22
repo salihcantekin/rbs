@@ -2,7 +2,7 @@
 //! command.
 //!
 //! The studio's control thread reads the statuses when the page is shown
-//! ([`Command::ListAddOns`]) and reports changes as they happen; nothing runs while
+//! (`addon.list`, ADR-0168) and reports changes as they happen; nothing runs while
 //! the page is not used (P13).
 
 use rbs_app::add_on_text::{self, Action};
@@ -43,7 +43,7 @@ pub fn install(g: &Studio<'_>, ctx: &Ctx) {
 
 /// The page was shown: read the statuses.
 pub fn opened(app: &mut App) {
-    app.studio.send(Command::ListAddOns);
+    app.studio.list_add_ons();
 }
 
 /// Shows the rows in the Settings window while the page is open.

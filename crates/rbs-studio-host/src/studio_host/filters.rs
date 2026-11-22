@@ -192,16 +192,22 @@ fn json_of_stored(v: &rbs_scene::model::SettingValue) -> serde_json::Value {
     }
 }
 
+/// A filter's full values as `filter.set_settings` takes them (a choice by its
+/// option's key): what the window sends for a release or a picked value (ADR-0168).
+pub fn api_settings(ty: &AnyFilter, values: &Values) -> BTreeMap<String, serde_json::Value> {
+    values
+        .to_pairs(ty)
+        .into_iter()
+        .zip(ty.fields())
+        .map(|((k, v), field)| (k.to_owned(), json_of_field(field, v)))
+        .collect()
+}
+
 /// The API's row of a filter: the values on air, or the stored settings for an
 /// unknown type.
 pub fn api_row(row: &FilterRow) -> api::FilterInfo {
     let settings = match (row.any(), &row.values) {
-        (Some(ty), Some(values)) => values
-            .to_pairs(&ty)
-            .into_iter()
-            .zip(ty.fields())
-            .map(|((k, v), field)| (k.to_owned(), json_of_field(field, v)))
-            .collect(),
+        (Some(ty), Some(values)) => api_settings(&ty, values),
         _ => row
             .stored
             .iter()

@@ -118,14 +118,6 @@ pub enum Command {
         /// The sample's id (`rbs_sources::still::SAMPLES`).
         sample: String,
     },
-    /// Write a filter's full values (a released slider, a colour, Reset to defaults;
-    /// one undo step).
-    SetFilterValues {
-        /// The filter.
-        filter: FilterId,
-        /// Every field's value.
-        values: rbs_filters::Values,
-    },
     /// Show values on the running filter without changing the collection (a slider
     /// drag, ADR-0062 decision 3).
     PreviewFilter {
@@ -139,8 +131,6 @@ pub enum Command {
     /// Open the Measure sync offset window for a source (ADR-0126); answered with
     /// [`Update::SyncMeasure`].
     OpenSyncMeasure(SourceId),
-    /// Start measuring in that window against a picture source.
-    StartSyncMeasure(SourceId),
     /// The Measure window closed: a measurement it started is cancelled.
     CloseSyncMeasure,
     /// Grab small pictures of the listed targets of `kind`, two at a time off the control
@@ -189,27 +179,6 @@ pub enum Command {
     /// Whether a transition also puts the old program scene in preview (ADR-0098; the
     /// app setting `swap_after_transition`, off by default).
     SetSwapAfterTransition(bool),
-    /// Place a video source's picture: the box's top-left corner and size in canvas
-    /// pixels. Rotation, crop and opacity stay. A size of zero or a value that is not
-    /// finite is refused with [`Update::Error`]. Always answered with
-    /// [`Update::BoxPlaced`] carrying `seq`, after any new rows, also when nothing
-    /// changed, so the UI can send the next box of a drag (ADR-0048).
-    SetSourceBox {
-        /// The caller's number for this request.
-        seq: u64,
-        /// Boxes with the same number other than 0 that follow each other are one undo
-        /// step (one drag on the picture panel); 0 is a step of its own.
-        gesture: u64,
-        /// The source.
-        id: SourceId,
-        /// Top-left corner.
-        position: [f32; 2],
-        /// Width and height.
-        size: [f32; 2],
-        /// The canvas whose layout changes: the main one, or the vertical one, where
-        /// the box becomes the item's own layout there (ADR-0093 decision 4, U15).
-        canvas: OutputCanvas,
-    },
     /// The vertical canvas's recording settings as saved (`None`: it uses the main
     /// ones). Sent at start and after each change.
     SetVerticalProfile(Option<RecordProfile>),
@@ -252,22 +221,9 @@ pub enum Command {
         /// The event, in page pixels.
         event: rbs_browser_ipc::input::InputEvent,
     },
-    /// Change the canvas's size and rate (Settings, Video). The studio restarts with
-    /// it (ADR-0041: a running studio's canvas does not change); the program scene's
-    /// items are placed again for the new size. Refused while recording. Always
-    /// answered with [`Update::Canvas`]; the UI drops its preview connection first,
-    /// since the old studio's preview ends.
-    SetCanvas {
-        /// The new size.
-        size: Size,
-        /// The new rate.
-        fps: FrameRate,
-    },
     /// The recording settings as saved: what `record.start` uses for control API
     /// clients and `settings.get` shows. Sent at start and after each change.
     SetProfile(RecordProfile),
-    /// Stop sending to the virtual camera; answered with [`Update::VirtualCamera`].
-    StopVirtualCamera,
     /// The virtual camera as Settings › Virtual camera knows it: what `vcam.start` and
     /// `vcam.status` use for control API clients. Sent at start and after each change.
     SetVirtualCamera(CameraSetup),
@@ -275,12 +231,6 @@ pub enum Command {
     /// start and after each change; a buffer that runs keeps the settings it started
     /// with until it is armed again.
     SetReplay(crate::replay_settings::ReplaySetup),
-    /// Save the last `seconds` (all of the buffer for `None`) as a clip file; answered
-    /// with [`Update::ReplaySaved`] once it is written.
-    SaveReplay {
-        /// How much of the past, or `None` for all of it.
-        seconds: Option<u32>,
-    },
     /// A manual marker in every running recording (`marker.add`, ADR-0089 decision
     /// 1); answered with [`Update::Markers`], or [`Update::Error`] when refused.
     AddMarker,
@@ -360,9 +310,6 @@ pub enum Command {
     /// 4); [`Update::Permissions`] follows when it is answered. Ignored while a prompt
     /// for the kind is showing.
     RequestPermission(PermissionKind),
-    /// Read every add-on's status for Settings › Add-ons ([`Update::AddOns`],
-    /// ADR-0145). Reads each add-on's folder; starts nothing.
-    ListAddOns,
     /// A control API command from the window (ADR-0163 decision 1): run as a remote
     /// call is, with the same checks, handler, events and logging, but without the
     /// caller checks, because the window is the person at this computer (decision 3).
@@ -499,6 +446,8 @@ pub struct RecordRequest {
     pub editor_project: Option<crate::record_profile::EditorProject>,
     /// The reaction-time offset and the automatic markers (ADR-0089 decision 3).
     pub markers: crate::record_profile::MarkerSettings,
+    /// The bus of track 1, by name (ADR-0170 decision 3).
+    pub audio_bus: String,
 }
 
 /// Marks every non-zero undo gesture the window sends (ADR-0164 decision 2); the

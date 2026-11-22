@@ -107,4 +107,24 @@ impl StudioUi {
         };
         self.call_as(call, rbs_app::studio_host::ApiReply::Quiet);
     }
+
+    /// Settings, Video's canvas: `settings.set {canvas}`. The host tells the canvas
+    /// back also when nothing changed or the change was refused, and the window
+    /// connects its preview again then (ADR-0168 decision 2).
+    pub(super) fn send_canvas(
+        &self,
+        size: rbs_core::media::Size,
+        fps: rbs_core::timing::FrameRate,
+    ) {
+        let patch = rbs_api::request::SettingsPatch {
+            canvas: Some(rbs_api::types::Canvas {
+                width: size.width,
+                height: size.height,
+                fps_num: fps.per_second().num(),
+                fps_den: fps.per_second().den(),
+            }),
+            ..rbs_api::request::SettingsPatch::default()
+        };
+        self.call(C::SettingsSet(patch));
+    }
 }

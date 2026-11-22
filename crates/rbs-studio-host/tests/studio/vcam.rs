@@ -141,24 +141,21 @@ fn the_camera_sends_until_stopped_and_across_a_canvas_change() {
     );
     assert_eq!(s.failure, None);
 
-    host.send(Command::SetCanvas {
-        size: Size::new(1280, 720),
-        fps: FrameRate::FPS_30,
-    });
+    host.send(crate::set_canvas(Size::new(1280, 720), FrameRate::FPS_30));
     next(&rx, |u| match u {
         Update::Canvas { .. } => Some(()),
         Update::Error(e) | Update::Failed(e) => panic!("{e}"),
         _ => None,
     });
     // Still sending, at the camera's own size, with no error on the way.
-    host.send(Command::StopVirtualCamera);
+    host.send(crate::stop_camera());
     next(&rx, |u| match u {
         Update::Error(e) => panic!("{e}"),
         Update::VirtualCamera(None) => Some(()),
         _ => None,
     });
     // Stopping again is harmless.
-    host.send(Command::StopVirtualCamera);
+    host.send(crate::stop_camera());
     assert_eq!(camera(&rx), None);
 }
 
@@ -307,7 +304,7 @@ fn set_up(host: &StudioHost, rx: &Receiver<Update>, state: InstallState) {
         fps: FrameRate::new(15, 1).unwrap(),
         busy: false,
     }));
-    host.send(Command::StopVirtualCamera);
+    host.send(crate::stop_camera());
     stopped(rx);
 }
 
@@ -358,6 +355,12 @@ fn a_control_api_client_starts_and_stops_the_camera() {
     );
     let stop = c.call0("vcam.stop");
     assert_eq!(kind(&stop), "conflict", "{stop}");
+    // Only the window's own stop tells the window the camera's state (ADR-0168).
+    assert!(
+        rx.try_iter()
+            .all(|u| !matches!(u, Update::VirtualCamera(_))),
+        "a client's refused stop told the window"
+    );
 
     // Settings is changing the camera: no start meanwhile.
     factory.install().unwrap();
@@ -368,7 +371,7 @@ fn a_control_api_client_starts_and_stops_the_camera() {
         fps: FrameRate::new(15, 1).unwrap(),
         busy: true,
     }));
-    host.send(Command::StopVirtualCamera);
+    host.send(crate::stop_camera());
     stopped(&rx);
     let busy = c.call0("vcam.start");
     assert_eq!(kind(&busy), "conflict", "{busy}");

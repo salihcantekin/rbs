@@ -376,7 +376,15 @@ fn the_measure_window_lists_cameras_and_closes() {
     assert_eq!(view.references, vec![(id(cam), "Cam".to_owned())]);
 
     // A source without a picture is refused, and the window says why.
-    host.send(Command::StartSyncMeasure(id(mic)));
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::SyncMeasureStart(
+            rbs_api::request::SyncMeasureStart {
+                source: id(mic).get(),
+                reference: Some(id(mic).get()),
+            },
+        )),
+        reply: rbs_studio_host::studio_host::ApiReply::Quiet,
+    });
     let view = next(&updates, |u| match u {
         Update::SyncMeasure(Some(v)) if v.phase != SyncMeasurePhase::Ready => Some(v),
         _ => None,

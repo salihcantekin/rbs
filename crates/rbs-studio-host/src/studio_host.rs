@@ -556,6 +556,9 @@ struct Host {
     /// The studio is being stopped and started again (canvas change): a panic now
     /// leaves it stopped, so recovery treats it as dead (ADR-0055 decision 3).
     restarting: bool,
+    /// How many times the window was told the canvas ([`Update::Canvas`]): a window
+    /// `settings.set` that did not tell it tells it once more (ADR-0168 decision 2).
+    canvas_told: u64,
     /// An API request panicked in this round: the loop reconciles after it.
     caught: bool,
     /// The answer the UI waits for while a command runs, sent by
@@ -636,6 +639,7 @@ impl Host {
             trace.lock().unwrap_or_else(|e| e.into_inner()).push(method);
         }
         let unanswered = failures::api_answer_on_panic(&command);
+        let waits = failures::host_wait(&command);
         let result = rbs_crash::contain(|| {
             ApiTarget {
                 host: self,
@@ -647,6 +651,17 @@ impl Host {
         let result = result.unwrap_or_else(|_| {
             if let Some(u) = unanswered {
                 notify(u);
+            }
+            match waits {
+                Some(failures::HostWait::Canvas) => self.tell_canvas(notify),
+                Some(failures::HostWait::Camera) => {
+                    notify(Update::VirtualCamera(self.camera_status()));
+                }
+                Some(failures::HostWait::Measure(source)) => {
+                    let e = ApiError::new(ErrorKind::Internal, rbs_crash::CAUGHT_TEXT);
+                    self.measure_view_started(source, None, Err(&e), notify);
+                }
+                None => {}
             }
             self.caught = true;
             Err(ApiError::new(ErrorKind::Internal, rbs_crash::CAUGHT_TEXT))
@@ -697,7 +712,6 @@ impl Host {
             | Command::AddSourceWithAudio { .. }
             | Command::AddSource { .. }
             | Command::ReadPermissions
-            | Command::ListAddOns
             | Command::RequestPermission(..)
             | Command::AddGlobalSource { .. }
             | Command::SetSourceVolume { .. }
@@ -715,11 +729,9 @@ impl Host {
             | Command::SetLoudnessSettings { .. } => self.canvas_and_mix_command(c, notify),
             Command::AddSample { .. }
             | Command::ApplyLook { .. }
-            | Command::SetFilterValues { .. }
             | Command::PreviewFilter { .. }
             | Command::RestoreFilter(..)
             | Command::OpenSyncMeasure(..)
-            | Command::StartSyncMeasure(..)
             | Command::CloseSyncMeasure
             | Command::GrabThumbnails { .. }
             | Command::StopThumbnails
@@ -731,7 +743,6 @@ impl Host {
             | Command::SwitchScene(..)
             | Command::SetStudioMode(..)
             | Command::SetSwapAfterTransition(..) => self.scene_command(c, notify),
-            Command::SetSourceBox { .. } => self.item_command(c, notify),
             Command::SetVerticalProfile(..)
             | Command::SetVerticalStreamProfile(..)
             | Command::SetStreamDestinations(..)
@@ -742,16 +753,13 @@ impl Host {
             | Command::CloseInteract(..)
             | Command::InteractInput { .. }
             | Command::CloseProjector(..)
-            | Command::SetCanvas { .. }
             | Command::SetProfile(..)
-            | Command::StopVirtualCamera
             | Command::SetReplay(..)
             | Command::AddMarker
             | Command::RemoveMarkers(..) => self.output_command(c, notify),
             Command::PauseRecording
             | Command::HoldStream
             | Command::Break
-            | Command::SaveReplay { .. }
             | Command::SetVirtualCamera(..)
             | Command::SetStreamProfile(..)
             | Command::SaveStreamKey(..)
@@ -824,15 +832,6 @@ impl Host {
                 // A switch made before a refused removal is still news.
                 self.publish(notify);
             }
-        }
-    }
-
-    /// Like [`Host::answer`] for volume and mute, which reached the mixer already.
-    fn answer_live(&mut self, done: Result<bool, Refusal>, notify: &dyn Fn(Update)) {
-        match done {
-            Ok(true) => self.publish(notify),
-            Ok(false) => {}
-            Err(e) => notify(Update::Error(e.text().to_owned())),
         }
     }
 

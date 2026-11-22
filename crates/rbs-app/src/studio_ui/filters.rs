@@ -607,12 +607,29 @@ impl StudioUi {
         self.send(Command::PreviewFilter { filter: id, values });
     }
 
+    /// A filter's full values as `filter.set_settings` (one undo step): an unchanged
+    /// release puts the stored values back on the running filter (ADR-0168).
+    fn send_filter_values(&self, filter: FilterId, values: &Values) {
+        let Some(ty) = self
+            .filter_row(filter.get() as i32)
+            .and_then(FilterRow::any)
+        else {
+            return;
+        };
+        self.call(rbs_api::Command::FilterSetSettings(
+            rbs_api::request::SetFilterSettings {
+                filter: filter.get(),
+                settings: rbs_app::studio_host::filters::api_settings(&ty, values),
+            },
+        ));
+    }
+
     /// The slider was let go: what it showed becomes one undo step.
     pub fn commit_filter(&mut self, filter: i32) {
         match self.filter_ui.drag.take() {
             Some((id, values)) if id.get() as i32 == filter => {
                 self.deleted.clear();
-                self.send(Command::SetFilterValues { filter: id, values });
+                self.send_filter_values(id, &values);
             }
             _ => {}
         }
@@ -658,10 +675,7 @@ impl StudioUi {
             return;
         };
         self.deleted.clear();
-        self.send(Command::SetFilterValues {
-            filter: FilterId::from_raw(filter as u32),
-            values,
-        });
+        self.send_filter_values(FilterId::from_raw(filter as u32), &values);
     }
 
     /// An option picked in a choice field, or a switch flipped (`option` 0 or 1): one
@@ -685,10 +699,7 @@ impl StudioUi {
             return;
         };
         self.deleted.clear();
-        self.send(Command::SetFilterValues {
-            filter: FilterId::from_raw(filter as u32),
-            values,
-        });
+        self.send_filter_values(FilterId::from_raw(filter as u32), &values);
     }
 
     /// A colour picked or typed (`#rrggbb` or `#rrggbbaa`; anything else changes
@@ -705,10 +716,7 @@ impl StudioUi {
         };
         if let Ok(values) = values.with(&ty, [(f.key, Value::Color(colour))]) {
             self.deleted.clear();
-            self.send(Command::SetFilterValues {
-                filter: FilterId::from_raw(filter as u32),
-                values,
-            });
+            self.send_filter_values(FilterId::from_raw(filter as u32), &values);
         }
     }
 
@@ -722,10 +730,7 @@ impl StudioUi {
         };
         if let Ok(values) = values.with(&ty, [(f.key, f.kind.default_value())]) {
             self.deleted.clear();
-            self.send(Command::SetFilterValues {
-                filter: FilterId::from_raw(filter as u32),
-                values,
-            });
+            self.send_filter_values(FilterId::from_raw(filter as u32), &values);
         }
     }
 
@@ -734,10 +739,7 @@ impl StudioUi {
             return;
         };
         self.deleted.clear();
-        self.send(Command::SetFilterValues {
-            filter: FilterId::from_raw(filter as u32),
-            values: Values::defaults(&ty),
-        });
+        self.send_filter_values(FilterId::from_raw(filter as u32), &Values::defaults(&ty));
     }
 }
 

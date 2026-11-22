@@ -93,7 +93,9 @@ impl Host {
                 Some(p) => {
                     check_profile(&p.id)?;
                     absolute(&p.folder, "the folder")?;
-                    let profile = RecordProfile::from_api(p);
+                    let current = self.recording.vertical_profile.as_ref();
+                    let profile =
+                        RecordProfile::from_api_over(p, current.unwrap_or(&self.recording.profile));
                     if let Some(why) = profile.problem() {
                         return Err(invalid(why));
                     }

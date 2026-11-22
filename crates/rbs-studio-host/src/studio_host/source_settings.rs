@@ -743,14 +743,6 @@ impl Host {
                     notify,
                 );
             }
-            Command::SetFilterValues { filter, values } => {
-                let done = self.set_filter_values(filter, values);
-                // An unchanged release still puts the collection's values back on air.
-                if matches!(done, Ok(false)) {
-                    self.studio.restore_filter(filter);
-                }
-                self.answer(done, notify);
-            }
             Command::PreviewFilter { filter, values } => {
                 self.studio.preview_filter(filter, values);
             }
@@ -758,9 +750,6 @@ impl Host {
                 self.studio.restore_filter(filter);
             }
             Command::OpenSyncMeasure(id) => self.open_sync_measure_window(id, notify),
-            Command::StartSyncMeasure(reference) => {
-                self.start_sync_measure_window(reference, notify);
-            }
             Command::CloseSyncMeasure => self.close_sync_measure_window(notify),
             Command::GrabThumbnails { kind, rows, max } => self.grab_thumbnails(kind, rows, max),
             Command::StopThumbnails => {
@@ -785,26 +774,29 @@ impl Host {
                     .map_err(|e| Refusal::Conflict(e.message));
                 self.answer(done, notify);
             }
+            // The page's state picks the call (ADR-0168 decision 1): a reload of a page
+            // that does not run opens it again, and a script with no page is quiet.
             Command::BrowserControl { id, message } => {
-                let browser = self
-                    .collection
-                    .source(id)
-                    .is_some_and(|s| s.type_id.as_str() == types::BROWSER_SOURCE);
-                if !browser {
-                    let e = Refusal::NotFound(format!("There is no browser source {}.", id.get()));
-                    self.answer_live(Err(e), notify);
-                } else if self.studio.browser_control(id, &message) {
-                    self.answer_live(Ok(true), notify);
-                } else if matches!(message, rbs_browser_ipc::control::Control::Reload { .. }) {
-                    match self.reload_source(id) {
-                        Ok(Reload::Retargeted) => self.answer(Ok(true), notify),
-                        Ok(Reload::Restarted(done)) => self.answer_live(Ok(done), notify),
-                        Err(e) => self.answer_live(Err(e), notify),
+                use rbs_api::request as rq;
+                use rbs_browser_ipc::control::Control;
+                let source = id.get();
+                let running = self.studio.browser_running(id);
+                let call = match message {
+                    Control::Reload { bypass_cache } if running => {
+                        rbs_api::Command::BrowserReload(rq::BrowserReload {
+                            source,
+                            bypass_cache,
+                        })
                     }
-                } else {
-                    // No page runs: nothing to run the script in.
-                    self.answer_live(Ok(false), notify);
-                }
+                    Control::Reload { .. } => {
+                        rbs_api::Command::SourceReload(rq::ReloadSource { source })
+                    }
+                    Control::RunScript(script) if running => {
+                        rbs_api::Command::BrowserRunScript(rq::BrowserRunScript { source, script })
+                    }
+                    _ => return,
+                };
+                self.run_ui_api(call, notify);
             }
             // Routed elsewhere by `Host::command`.
             _ => {}
