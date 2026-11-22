@@ -17,6 +17,7 @@ mod api_source2;
 mod api_source3;
 mod api_studio;
 mod api_vcam;
+mod window_answers;
 
 /// The control API's view of the host: one request at a time on the control thread.
 pub(super) struct ApiTarget<'a> {
@@ -91,6 +92,16 @@ impl ControlTarget for ApiTarget<'_> {
 
 impl ApiTarget<'_> {
     pub(super) fn run(&mut self, command: rbs_api::Command) -> Result<Response, ApiError> {
+        if self.window {
+            self.run_for_window(command)
+        } else {
+            self.route(command)
+        }
+    }
+
+    /// Answers `command` for any caller; [`ApiTarget::run_for_window`] adds what the
+    /// window waits for.
+    fn route(&mut self, command: rbs_api::Command) -> Result<Response, ApiError> {
         use rbs_api::Command as C;
         if let Some(e) = output_refusal(self.host, &command) {
             // The window's start waits for its output's state (ADR-0164 decision 3).

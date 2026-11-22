@@ -610,9 +610,20 @@ fn the_properties_tabs_commands_edit_filters_and_the_sync_offset() {
         values: dragged,
     });
     host.send(Command::RestoreFilter(filter));
-    host.send(Command::SetFilterValues {
-        filter,
-        values: dragged,
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::FilterSetSettings(
+            rbs_api::request::SetFilterSettings {
+                filter: filter.get(),
+                settings: rbs_studio_host::studio_host::filters::api_settings(
+                    &rbs_studio_host::studio_host::filters::AnyFilter::find(
+                        "org.rbs.filter.sharpen",
+                    )
+                    .unwrap(),
+                    &dragged,
+                ),
+            },
+        )),
+        reply: rbs_studio_host::studio_host::ApiReply::Shown,
     });
     let got = rows(&|r| chain(r).first().and_then(|f| f.values) == Some(dragged));
     assert_eq!(chain(&got)[0].name, "Sharpen");

@@ -6,7 +6,8 @@
 //!   mono-to-stereo channel-matrix dot, each over one 480-frame block.
 //! - `mixer`: a mixer of 16 stereo inputs with a meter on every strip and the output,
 //!   without and with the monitor output read (4 strips monitored); and 1, 4 and 16
-//!   stereo inputs with meters attached and with none attached (F-15a).
+//!   stereo inputs with meters attached and with none attached (F-15a); 16 inputs
+//!   with 1 and 5 bus outputs read (ADR-0170).
 //! - `output`: one output node from the 48 kHz stereo graph to a 48 kHz and a 44.1 kHz
 //!   stereo device (FIFO, steer, resample, map channels, volume, ring push); the
 //!   bench pulls the ring like a device, outside the node.
@@ -18,8 +19,8 @@ use std::time::Duration;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use rbs_audio::{
-    AudioGraphConfig, DEFAULT_OUTPUT_TARGET, InputNode, LevelMeter, MixerNode, MixerParams,
-    MonitorMode, OutputNode, Strip,
+    AudioGraphConfig, BUS_PINS, DEFAULT_OUTPUT_TARGET, InputNode, LevelMeter, MixerNode,
+    MixerParams, MonitorMode, OutputNode, Strip,
 };
 use rbs_audio_io::{
     AudioBackend, AudioIoError, AudioOutput, EndpointId, InputRequest, OutputConsumer,
@@ -202,17 +203,28 @@ fn input(c: &mut Criterion) {
 fn mixer(c: &mut Criterion) {
     // `inputs` stereo strips; `monitored` of them on the monitor (`Also`), its output
     // read when non-zero; the last `muted` strips muted; a meter on every strip and
-    // the output when `meters`.
-    for (label, inputs, monitored, muted, meters) in [
-        ("16_stereo_inputs_with_meters", 16, 0, 0, true),
-        ("16_stereo_inputs_with_meters_4_monitored", 16, 4, 0, true),
-        ("16_stereo_inputs_with_meters_8_muted", 16, 0, 8, true),
-        ("16_stereo_inputs_no_meters", 16, 0, 0, false),
-        ("16_stereo_inputs_no_meters_4_monitored", 16, 4, 0, false),
-        ("4_stereo_inputs_with_meters", 4, 0, 0, true),
-        ("4_stereo_inputs_no_meters", 4, 0, 0, false),
-        ("1_stereo_input_with_meters", 1, 0, 0, true),
-        ("1_stereo_input_no_meters", 1, 0, 0, false),
+    // the output when `meters`; the first `buses` bus outputs read, every strip
+    // sending to each of them (ADR-0170), with a meter on each when `meters`.
+    for (label, inputs, monitored, muted, meters, buses) in [
+        ("16_stereo_inputs_with_meters", 16, 0, 0, true, 0),
+        (
+            "16_stereo_inputs_with_meters_4_monitored",
+            16,
+            4,
+            0,
+            true,
+            0,
+        ),
+        ("16_stereo_inputs_with_meters_8_muted", 16, 0, 8, true, 0),
+        ("16_stereo_inputs_no_meters", 16, 0, 0, false, 0),
+        ("16_stereo_inputs_no_meters_4_monitored", 16, 4, 0, false, 0),
+        ("16_stereo_inputs_with_meters_1_bus", 16, 0, 0, true, 1),
+        ("16_stereo_inputs_with_meters_5_buses", 16, 0, 0, true, 5),
+        ("16_stereo_inputs_no_meters_1_bus", 16, 0, 0, false, 1),
+        ("4_stereo_inputs_with_meters", 4, 0, 0, true, 0),
+        ("4_stereo_inputs_no_meters", 4, 0, 0, false, 0),
+        ("1_stereo_input_with_meters", 1, 0, 0, true, 0),
+        ("1_stereo_input_no_meters", 1, 0, 0, false, 0),
     ] {
         let config = AudioGraphConfig::default();
         let (mut ctl, mut exec) = channel::<()>(Arc::new(()), ());
@@ -239,9 +251,12 @@ fn mixer(c: &mut Criterion) {
             } else {
                 MonitorMode::Off
             };
-            let strip = Strip::new(id, 0.7)
+            let mut strip = Strip::new(id, 0.7)
                 .with_monitor(mode)
                 .with_muted(k >= inputs - muted);
+            for slot in 0..buses {
+                strip = strip.with_send(slot, 0.8);
+            }
             strips.push(if meters {
                 strip.with_meter(Arc::new(LevelMeter::new(2)))
             } else {
@@ -250,11 +265,15 @@ fn mixer(c: &mut Criterion) {
             ids.push(id);
         }
         let params = MixerParams::new(strips);
-        let params = if meters {
+        let mut params = if meters {
             params.with_master_meter(Arc::new(LevelMeter::new(2)))
         } else {
             params
         };
+        for slot in 0..buses {
+            let meter = meters.then(|| Arc::new(LevelMeter::new(2)));
+            params = params.with_bus(slot, 0.9, meter);
+        }
         let (mixer, _, _) = MixerNode::new(config, 16, params);
         let m = active(&mut g, Node::<()>::descriptor(&mixer));
         let s = sink();
@@ -270,6 +289,12 @@ fn mixer(c: &mut Criterion) {
             let mo = active(&mut g, &s.0);
             g.connect(m, "monitor", mo, "in").unwrap();
             ctl.adopt(mo, Box::new(s)).unwrap();
+        }
+        for pin in BUS_PINS.iter().take(buses) {
+            let s = sink();
+            let bo = active(&mut g, &s.0);
+            g.connect(m, pin, bo, "in").unwrap();
+            ctl.adopt(bo, Box::new(s)).unwrap();
         }
         ctl.apply(&g).unwrap();
         exec.swap_pending();

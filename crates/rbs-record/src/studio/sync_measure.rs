@@ -223,7 +223,7 @@ impl Studio {
             self.engine
                 .adopt::<GpuRuntime>(RENDER, picture_id, Box::new(picture_node))?;
             adopted.push(picture);
-            self.engine.apply(&graph)?;
+            self.send_graph(Some(&graph), false)?;
             Ok(())
         })();
         if let Err(e) = result {
@@ -398,7 +398,7 @@ impl Studio {
             let _ = self.graph.set_state(added.node, Lifecycle::Standby);
             let _ = self.graph.remove_node(added.node);
         }
-        let _ = self.engine.apply(&self.graph);
+        let _ = self.send_graph(None, false);
         for added in [run.audio, run.picture] {
             if !take(&mut self.engine, added) {
                 self.pending_takes.push((added, None));

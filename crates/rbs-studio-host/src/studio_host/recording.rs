@@ -595,6 +595,7 @@ impl Host {
         // next start (ADR-0102). `None` stays the canvas, including a side above 7680.
         // An audio-only file has no picture size.
         out.size = if r.video.is_none() { None } else { r.size };
+        out.audio_bus = Some(r.audio_bus.clone());
         out
     }
 
@@ -1323,6 +1324,7 @@ impl Host {
             iso: self.recording.separate_files,
             editor_project: p.editor_project,
             markers: p.markers,
+            audio_bus: p.audio_tracks.first().cloned().unwrap_or_default(),
         })
     }
 

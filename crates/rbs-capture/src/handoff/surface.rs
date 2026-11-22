@@ -21,6 +21,7 @@ pub struct SurfaceConsumer<O: AsRef<Ring> + LeaseOwner + 'static> {
     owner: Arc<dyn LeaseOwner>,
     format: VideoFormat,
     delivered: u64,
+    last_slot: Option<usize>,
 }
 
 impl<O: AsRef<Ring> + LeaseOwner + 'static> SurfaceConsumer<O> {
@@ -39,6 +40,7 @@ impl<O: AsRef<Ring> + LeaseOwner + 'static> SurfaceConsumer<O> {
             owner,
             format,
             delivered: 0,
+            last_slot: None,
         }
     }
 
@@ -50,6 +52,13 @@ impl<O: AsRef<Ring> + LeaseOwner + 'static> SurfaceConsumer<O> {
     /// Frames returned by [`SurfaceConsumer::next`].
     pub fn delivered(&self) -> u64 {
         self.delivered
+    }
+
+    /// The ring slot of the frame [`SurfaceConsumer::next`] returned last, so the
+    /// adapter can read what it stored beside that slot (ADR-0165 picture mapping).
+    /// The slot's contents stay put while that frame is held.
+    pub fn last_slot(&self) -> Option<usize> {
+        self.last_slot
     }
 
     /// The newest published frame, if one arrived since the last call. Does not
@@ -79,6 +88,7 @@ impl<O: AsRef<Ring> + LeaseOwner + 'static> SurfaceConsumer<O> {
             )
         };
         self.delivered += 1;
+        self.last_slot = Some(slot);
         Some(
             frame
                 .with_sequence(meta.sequence)

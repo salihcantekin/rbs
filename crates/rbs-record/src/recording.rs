@@ -529,6 +529,7 @@ impl RecordSettings {
             pausable: false,
             shared_pause: None,
             holdable: false,
+            audio_bus: None,
         }
     }
 }
@@ -616,6 +617,9 @@ pub enum RecordError {
         /// The refused height.
         height: u32,
     },
+    /// The output's `audio_bus` names no bus of the main canvas (ADR-0170 decision 9).
+    /// Nothing was started; the output never falls back to `main`.
+    UnknownBus(String),
     /// The output asked for neither video nor audio. Nothing was chosen.
     EmptyOutput,
     /// Separate audio files are already open ([`crate::Studio::start_iso_audio`]).
@@ -670,6 +674,7 @@ impl fmt::Display for RecordError {
                     "output size {width}x{height} is not an even size from 2 to 7680"
                 )
             }
+            RecordError::UnknownBus(name) => write!(f, "no audio bus named {name:?}"),
             RecordError::EmptyOutput => f.write_str("the output has neither video nor audio"),
             RecordError::IsoRunning => f.write_str("separate audio files are already open"),
             RecordError::Iso(e) => write!(f, "separate files: {e}"),
@@ -1014,6 +1019,7 @@ impl Recording {
             (canvas.size.width, canvas.size.height),
             canvas.frame_rate,
             settings.audio_graph,
+            None,
             &Chains::default(),
             crate::studio::native_encode_of(&gpu),
             None,

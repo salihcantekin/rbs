@@ -367,6 +367,7 @@ pub(super) fn stream_output(
     // The size this stream starts with. A later settings change waits for the next
     // start (ADR-0102). `None` stays the canvas.
     out.size = r.size;
+    out.audio_bus = Some(r.audio_bus.clone());
     // Every stream can be held (ADR-0124 decision 12).
     out.holdable = true;
     out
@@ -519,6 +520,8 @@ pub struct StreamRequest {
     pub audio_bitrate_bps: u64,
     /// Encoded picture size (ADR-0102). `None`: this output's canvas.
     pub size: Option<(u32, u32)>,
+    /// The bus the stream sends, by name (ADR-0170).
+    pub audio_bus: String,
 }
 
 impl StreamRequest {
@@ -564,6 +567,7 @@ impl StreamRequest {
             video: e.video_settings(),
             audio_bitrate_bps: e.audio_bps(),
             size: p.output_size.map(|s| s.pair()),
+            audio_bus: p.audio_bus.clone(),
         })
     }
 }

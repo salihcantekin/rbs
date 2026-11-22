@@ -2113,13 +2113,6 @@ impl StudioUi {
         self.send(Command::OpenSyncMeasure(SourceId::from_raw(id as u32)));
     }
 
-    /// Start in the Measure window, against the picture source `reference`.
-    pub fn start_sync_measure(&mut self, reference: i32) {
-        self.send(Command::StartSyncMeasure(SourceId::from_raw(
-            reference as u32,
-        )));
-    }
-
     /// Ask what the Paste attributes (`paste`) or Reset source window shows.
     pub fn open_attributes(&mut self, id: i32, paste: bool) {
         self.attributes_dialog = None;
@@ -2902,14 +2895,15 @@ impl StudioUi {
             OutputCanvas::Vertical if gesture == 0 => (seq | VERTICAL_SEQ, 0),
             OutputCanvas::Vertical => (seq | VERTICAL_SEQ, gesture | VERTICAL_SEQ),
         };
-        self.send(Command::SetSourceBox {
-            seq,
-            gesture,
-            id: SourceId::from_raw(id as u32),
+        let call = rbs_api::request::SetItemBox {
+            source: id as u32,
             position,
             size,
+            gesture,
+            seq,
             canvas,
-        });
+        };
+        self.call_box(call);
     }
 
     /// The video sources as the picture panel places them, bottom first.
@@ -4894,10 +4888,7 @@ impl StudioUi {
         self.vertical_preview_ready = false;
         self.vertical_preview_failed = false;
         self.canvas_restarting = true;
-        self.send(Command::SetCanvas {
-            size: next.size(),
-            fps: next.frame_rate(),
-        });
+        self.send_canvas(next.size(), next.frame_rate());
     }
 
     /// Reads the output profiles and scene collections for the menus again.
@@ -5721,7 +5712,6 @@ impl StudioUi {
             | Update::VerticalStreamProfile(_) => {}
             Update::ApiAnswer { ticket, result } => self.api_answer(ticket, result, &mut out),
             Update::TBarReset => self.tbar_resets = self.tbar_resets.wrapping_add(1),
-            Update::AddOns(list) => self.add_ons = list.add_ons,
             Update::OpenAddOn(id) => self.open_add_on = Some(id),
             Update::AddOnChanged(changed) => {
                 if let Some(row) = self.add_ons.iter_mut().find(|a| a.id == changed.id) {
@@ -5735,14 +5725,6 @@ impl StudioUi {
             } => self.source_picture(adapter, target, picture),
             #[cfg(feature = "fault-injection")]
             Update::Recovered { .. } => {}
-            Update::BoxPlaced { seq, ok } if seq & VERTICAL_SEQ != 0 => {
-                let next = self.vedit.answered(seq & !VERTICAL_SEQ, ok);
-                self.run_vertical(next);
-            }
-            Update::BoxPlaced { seq, ok } => {
-                let next = self.edit.answered(seq, ok);
-                self.run(next);
-            }
             Update::Encoders {
                 encoders,
                 cannot_record,

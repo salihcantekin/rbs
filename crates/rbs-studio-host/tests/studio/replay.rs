@@ -338,7 +338,12 @@ fn the_buffer_arms_holds_the_past_saves_a_clip_and_disarms() {
         },
     );
 
-    host.send(Command::SaveReplay { seconds: None });
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::ReplaySave(rbs_api::request::ReplaySave {
+            seconds: None,
+        })),
+        reply: rbs_studio_host::studio_host::ApiReply::Quiet,
+    });
     let path = next_while(
         &rx,
         || clock.advance(Duration::from_millis(33)),

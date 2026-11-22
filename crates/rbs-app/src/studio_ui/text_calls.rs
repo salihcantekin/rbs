@@ -36,8 +36,14 @@ impl StudioUi {
         if ticket == super::add_calls::BROWSER_TICKET {
             return self.browser_answer(result, out);
         }
-        if ticket & super::crop_calls::CROP_TICKET != 0 {
-            return self.crop_answer(ticket & !super::crop_calls::CROP_TICKET, result, out);
+        if ticket & super::crop_calls::EDIT_TICKET != 0 {
+            return self.crop_answer(ticket & !super::crop_calls::EDIT_TICKET, result, out);
+        }
+        if ticket == super::add_calls::ADD_ONS_TICKET {
+            if let Ok(Response::AddOnList(list)) = result {
+                self.add_ons = list.add_ons;
+            }
+            return;
         }
         if self.font.1 != Some(ticket) {
             return;

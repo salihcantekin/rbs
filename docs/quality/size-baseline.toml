@@ -5,12 +5,12 @@
 
 [files]
 "crates/rbs-api/src/request.rs" = 2779
-"crates/rbs-api/src/types.rs" = 3054
-"crates/rbs-api/tests/json.rs" = 3353
+"crates/rbs-api/src/types.rs" = 2990
+"crates/rbs-api/tests/json.rs" = 3281
 "crates/rbs-app/src/main.rs" = 6505
 "crates/rbs-app/src/menu_bar.rs" = 2518
-"crates/rbs-app/src/studio_ui.rs" = 10048
-"crates/rbs-record/src/studio.rs" = 5947
+"crates/rbs-app/src/studio_ui.rs" = 10030
+"crates/rbs-record/src/studio.rs" = 5907
 "crates/rbs-record/tests/studio.rs" = 3241
 "crates/rbs-scene/src/collection.rs" = 2830
 "crates/rbs-scene/tests/binder.rs" = 2882
@@ -20,7 +20,7 @@
 
 [functions]
 "crates/rbs-api/src/session.rs::message" = 249
-"crates/rbs-api/tests/json.rs::every_request" = 591
+"crates/rbs-api/tests/json.rs::every_request" = 581
 "crates/rbs-api/tests/json.rs::every_result_and_event_type_round_trips" = 360
 "crates/rbs-app/examples/audio_graph.rs::main" = 248
 "crates/rbs-app/examples/go_live.rs::main" = 215
@@ -33,7 +33,7 @@
 "crates/rbs-app/src/menu_bar.rs::enabled" = 504
 "crates/rbs-app/src/menu_bar.rs::run" = 286
 "crates/rbs-app/src/shortcuts_page.rs::install" = 203
-"crates/rbs-app/src/studio_ui.rs::apply" = 528
+"crates/rbs-app/src/studio_ui.rs::apply" = 519
 "crates/rbs-app/src/studio_ui.rs::new" = 231
 "crates/rbs-app/src/studio_ui.rs::push" = 274
 "crates/rbs-app/src/studio_ui.rs::set_rows" = 250
@@ -55,10 +55,10 @@
 "crates/rbs-project/src/fcpxml.rs::write" = 241
 "crates/rbs-project/src/xmeml.rs::write" = 231
 "crates/rbs-record/src/estimate.rs::rows_of" = 281
-"crates/rbs-record/src/studio.rs::add_output" = 312
-"crates/rbs-record/src/studio.rs::choose" = 254
-"crates/rbs-record/src/studio.rs::reconcile" = 659
-"crates/rbs-record/src/studio.rs::start_with" = 323
+"crates/rbs-record/src/studio.rs::add_output" = 285
+"crates/rbs-record/src/studio.rs::choose" = 239
+"crates/rbs-record/src/studio.rs::reconcile" = 626
+"crates/rbs-record/src/studio.rs::start_with" = 322
 "crates/rbs-record/src/studio/iso_video.rs::start_iso_video" = 292
 "crates/rbs-record/src/studio/transition.rs::note_transitions" = 224
 "crates/rbs-scene/src/binder.rs::sync" = 684

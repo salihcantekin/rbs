@@ -13,7 +13,7 @@ Turns audio from input streams into mixed, master-clock-timed blocks for audio e
 
 In scope: the graph format and block timing, the audio partition's pacing, audio values on links and across partitions, the input node, the resampler and channel matrix, the mixer, level meters, the audio encoder node.
 
-Out of scope (later): buses other than `main` (ADR-0097 F2), audio filters, the mixer's monitor output and the host wiring of monitoring (ADR-0097 F1, later steps), the scene model's audio items and the binder that creates these nodes, mux and transport nodes, adaptive latency.
+Out of scope (later): bus meter sinks for buses no output reads and bus filters (ADR-0097 F2, ADR-0170), audio filters, the mixer's monitor output and the host wiring of monitoring (ADR-0097 F1, later steps), the scene model's audio items and the binder that creates these nodes, mux and transport nodes, adaptive latency.
 
 ## Contract
 
@@ -138,16 +138,21 @@ impl MixerNode {
         -> (Self, ParamSender<MixerParams>, Arc<MixerStats>);
 }
 #[non_exhaustive] pub struct MixerParams { pub strips: Vec<Strip>, pub master: f32,
-    pub master_meter: Option<Arc<LevelMeter>>, pub ramp: Duration }       // ramp default DEFAULT_RAMP (10 ms)
+    pub master_meter: Option<Arc<LevelMeter>>, pub ramp: Duration,        // ramp default DEFAULT_RAMP (10 ms)
+    pub buses: [BusOutput; MAX_BUS_OUTPUTS] }                              // ADR-0170; with_bus(slot, gain, meter)
+#[non_exhaustive] pub struct BusOutput { pub gain: f32 /* 1 */, pub meter: Option<Arc<LevelMeter>> }
+pub const MAX_BUS_OUTPUTS: usize = 5;                                      // six buses with `main`
+pub const BUS_PINS: [&str; MAX_BUS_OUTPUTS];                               // "bus1".."bus5"
 #[non_exhaustive] pub struct Strip { pub producer: NodeId, pub gain: f32, pub muted: bool,
     pub meter: Option<Arc<LevelMeter>>, pub monitor: MonitorMode, pub solo: bool,
-    pub ramp_override: Option<(Timestamp, Duration)> }                     // ADR-0128
-    // with_muted, with_meter, with_monitor, with_solo, with_ramp_override
+    pub ramp_override: Option<(Timestamp, Duration)>,                      // ADR-0128
+    pub main_send: f32 /* 1 */, pub sends: [f32; MAX_BUS_OUTPUTS] /* 0 */ } // ADR-0097 decision 9
+    // with_muted, with_meter, with_monitor, with_solo, with_ramp_override, with_main_send, with_send(slot, level)
 #[non_exhaustive] pub enum MonitorMode { Off /* default */, Only, Also }
 impl MixerStats { pub fn invalid_inputs(&self) -> u64; pub fn unknown_inputs(&self) -> u64; }
 ```
 
-Descriptor `org.rbs.audio.mixer`, kind `AudioMixer`, input `in` (Audio, many), outputs `main` (Audio) and `monitor` (Audio, ADR-0097 decision 6).
+Descriptor `org.rbs.audio.mixer`, kind `AudioMixer`, input `in` (Audio, many), outputs `main` (Audio), `monitor` (Audio, ADR-0097 decision 6) and `bus1` to `bus5` (Audio, pins 2 to 6, bus slots 0 to 4; ADR-0170).
 
 - Every tick writes one block at `block_time(tick)`: the sum over inputs of `strip gain x input`, times the master gain. Inputs are named by producer `NodeId`, so they must come from the same partition (a queue reader has a reserved id).
 - An input whose producer has no strip is not heard (`unknown_inputs`). An input block whose format or length is not the graph's is skipped (`invalid_inputs`); the rest of the mix continues. With no inputs the block is silence.
@@ -159,7 +164,9 @@ Descriptor `org.rbs.audio.mixer`, kind `AudioMixer`, input `in` (Audio, many), o
 - Meters are post-fader: a strip's meter gets the peak of its input times its gain, the master meter the peak of the output, per channel. A strip's meter records once per block whatever the outputs. A strip or master without a meter (`None`) takes add-only loops: the same lanes and the same samples written, but no peak or sum of squares is kept and `record_block` is not called (F-15a of the 2026-11 resource audit; the `Option` is the only test, once per strip and channel per block). The studio keeps a meter per audio source and one for the master, but puts them in the mixer's parameters only while something reads them (F-15b): `rbs-record` `Studio::set_meters_on`, which the studio host calls with true while the Mixer is shown in a window that is not hidden (the app sends `SetMetersUi`; every window hidden with Keep RBS running counts as not shown) or a control client subscribes to `audio.levels`, checked once per control round. A repeat sends nothing; a change is one parameter send. Putting them back first clears both banks of every meter, so a peak or clip kept from before they came off is not shown as new (`rbs-record` `tests/meters.rs`). A Studio starts with meters on, so a front end that never says otherwise (the CLI) keeps them.
 - **Monitor** (ADR-0097 decisions 5 and 6). The `monitor` output is always declared; the mixer writes it only while a scheduled node reads it (`Outputs::is_linked(1)`), so an unread monitor costs one check per block and no accumulation. Linking or unlinking it is a schedule swap that keeps the node, so every ramp continues. Each strip has, besides its fader (gain and mute), a mix send and a monitor send, each 0 or 1 and ramped over `ramp` like the fader: the mix send is 0 for `Only` while the monitor is read and 1 otherwise (so `Only` is `Off` while nothing monitors, including while the monitor's output node failed and waits for a restart, and its stored gain is kept; while solo is on, an `Only` strip that is not soloed is heard nowhere); the monitor send is 1 while the monitor is read and the strip is heard there, that is soloed when any strip is soloed (a soloed `Off` strip included), else not `Off`. The mix is `sum(input x fader x mix send) x master`; the monitor is `sum(input x fader x monitor send)`, after the strip's fader and mute and before (without) the master. A change of target re-ramps from the current value; taking the same target again (new parameters, or the monitor link changing) leaves a ramp running unchanged. Strips with both sends steady at their defaults (mix 1, monitor 0) take the same per-sample path as before the monitor existed. A strip muted and settled at gain 0 with those sends adds nothing and its meter records a silent block, without a pass over its samples. The mix loops keep 8 partial peaks and sums so they vectorise: the samples written are exactly those of a per-frame loop, only the meters' sums of squares add up in another order (last bits). A strip finds its meter by its index in the parameters, taken with them, not by a search per block. The monitor mix is accumulated in a buffer allocated in `new` and copied to the pin, so linking allocates nothing.
 
-Tests: `crates/rbs-audio/tests/mixer.rs`, `crates/rbs-audio/tests/monitor.rs`.
+- **Buses** (ADR-0097 decisions 6, 9 and 10, ADR-0170 decisions 1 and 2). The five bus outputs are always declared; the mixer sums a bus only while a scheduled node reads its pin (one `is_linked` check per slot per block, kept as a bit mask), so unread buses cost no pass over samples and linking one is a schedule swap that keeps every ramp. Each strip has a send level to `main` (`main_send`, default 1) and to each bus slot (`sends`, default 0), post-fader, each ramped over `ramp`; `Only` while the monitor is read makes every send 0, not only `main`'s. A read bus is `sum(input x fader x send) x bus gain` (`BusOutput::gain`, ramped, the bus's volume and mute), metered after its gain like the master; the master applies to `main` only. Per strip and read bus with a non-zero send the mixer makes one more pass over the strip's samples (the add-only lane loop); a strip whose fader is settled at 0 adds to no bus. A strip with `main_send` 1 and no read bus takes the same per-sample path as before buses existed. The bus sums are planar buffers of the graph's channel count allocated in `new` (five slots), so linking allocates nothing. A bus pin's first block after it is linked is at the bus's current level, with no fade-in (the consumer is a new output starting). Each read bus is written to its pin in one pass that applies the bus gain. Which collection bus is which slot is the studio's choice (`rbs-record` `studio/buses.rs` `MixBuses`): a new bus takes the first free slot, and a slot keeps its bus while the bus exists, so a running output's pin never changes bus when another bus is added or removed; a removed bus's slot stays silent while a chain still reads it and is given away only after. The studio sends each strip's stored sends (`Canvas::sends`) and each bus's fader with every mixer parameter set (start, `Studio::update`, `set_mix`, `set_solo`); a bus meter is given to the mixer while meters are on (`Studio::bus_meter(name)`) and reads levels only while an output takes the bus.
+
+Tests: `crates/rbs-audio/tests/mixer.rs`, `crates/rbs-audio/tests/monitor.rs`, `crates/rbs-audio/tests/buses.rs`.
 
 ### Level meter (`rbs_audio::LevelMeter`)
 
@@ -196,7 +203,7 @@ pub fn meter_sink_descriptor() -> NodeDescriptor;   // Output, input "in" (Audio
 impl MeterSinkNode { pub fn new() -> Self; }
 ```
 
-Generic over the runtime; runs in the mixer's partition (no queue). `process` does nothing: the node only gives the scheduler a path to an output, so a mixer whose meters a UI shows runs while nothing records or plays. `prepare` and `release` do nothing.
+Generic over the runtime; runs in the mixer's partition (no queue). `process` does nothing: the node only gives the scheduler a path to an output, so a mixer whose meters a UI shows runs while nothing records or plays. `prepare` and `release` do nothing. The studio keeps it in its own graph for its life but sends it to the engine only while the audio branch is awake (ADR-0169, recording spec "Audio branch rest"): while it is left out and nothing else reads the mixer, the plan leaves out the mixer, its inputs and their filters (`SkipReason::NoSink`) and the audio partition has no worker.
 
 ### Loudness meter (`rbs_audio::loudness`, ADR-0092 stage 1)
 

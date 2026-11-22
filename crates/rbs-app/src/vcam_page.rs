@@ -192,7 +192,7 @@ pub fn send(app: &mut App, on: bool) {
             rbs_app::studio_host::ApiReply::QuietIf(rbs_api::ErrorKind::Conflict),
         );
     } else if page.sending.is_some() {
-        app.studio.send(Command::StopVirtualCamera);
+        stop(app);
     }
 }
 
@@ -318,7 +318,7 @@ fn run(app: &mut App, work: Work) {
     }
     // Stopping first: the camera is not removed while RBS sends to it.
     if matches!(work, Work::Removing | Work::RemovingAll) && app.vcam.page.sending.is_some() {
-        app.studio.send(Command::StopVirtualCamera);
+        stop(app);
     }
     app.vcam.page.work = Some(work);
     let format = camera_format(&app.vcam.page.settings);
@@ -389,4 +389,13 @@ fn finished(app: &mut App, work: Work, done: Vec<Done>) {
     if work == Work::Adding && page.state == Some(InstallState::Installed) {
         set_enabled(app, true);
     }
+}
+
+/// `vcam.stop`: the card hears the camera's state, also when nothing sent, so a
+/// `conflict` is not shown (ADR-0168 decision 2).
+fn stop(app: &App) {
+    app.studio.call_as(
+        rbs_api::Command::VcamStop,
+        rbs_app::studio_host::ApiReply::QuietIf(rbs_api::ErrorKind::Conflict),
+    );
 }

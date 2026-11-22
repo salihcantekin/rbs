@@ -7,6 +7,8 @@ use rbs_api::Command as C;
 use rbs_api::request as rq;
 use rbs_api::types::{Glide, GlideEasing, OutputCanvas};
 
+use slint::Model as _;
+
 use super::StudioUi;
 
 /// Source `id` in the scene being edited, as the attribute and duplicate calls
@@ -221,5 +223,20 @@ impl StudioUi {
             settings,
             gesture,
         }));
+    }
+
+    /// Start in the Measure window, against the picture source `reference`: the
+    /// host shows the phase in the view (ADR-0168 decision 2).
+    pub fn start_sync_measure(&mut self, reference: i32) {
+        let Some(view) = self.sync_measure.row_data(0) else {
+            return;
+        };
+        self.call_as(
+            C::SyncMeasureStart(rq::SyncMeasureStart {
+                source: view.source as u32,
+                reference: Some(reference as u32),
+            }),
+            rbs_app::studio_host::ApiReply::Quiet,
+        );
     }
 }

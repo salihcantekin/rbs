@@ -209,3 +209,58 @@ fn set_crop(
         reply: rbs_studio_host::studio_host::ApiReply::Ticket(ticket),
     }
 }
+
+/// Settings, Video's canvas as the window sends it: `settings.set {canvas}`
+/// (ADR-0168 decision 2).
+fn set_canvas(
+    size: rbs_core::media::Size,
+    fps: rbs_core::timing::FrameRate,
+) -> rbs_studio_host::studio_host::Command {
+    let r = fps.per_second();
+    let patch = rbs_api::request::SettingsPatch {
+        canvas: Some(rbs_api::types::Canvas {
+            width: size.width,
+            height: size.height,
+            fps_num: r.num(),
+            fps_den: r.den(),
+        }),
+        ..rbs_api::request::SettingsPatch::default()
+    };
+    rbs_studio_host::studio_host::Command::Api {
+        call: Box::new(rbs_api::Command::SettingsSet(patch)),
+        reply: rbs_studio_host::studio_host::ApiReply::Shown,
+    }
+}
+
+/// The camera's Stop as the window sends it: `vcam.stop`, quiet on `conflict`.
+fn stop_camera() -> rbs_studio_host::studio_host::Command {
+    rbs_studio_host::studio_host::Command::Api {
+        call: Box::new(rbs_api::Command::VcamStop),
+        reply: rbs_studio_host::studio_host::ApiReply::QuietIf(rbs_api::ErrorKind::Conflict),
+    }
+}
+
+/// A box as the picture panel sends it (ADR-0168 step 2).
+struct SetBox {
+    seq: u64,
+    gesture: u64,
+    id: rbs_scene::model::SourceId,
+    position: [f32; 2],
+    size: [f32; 2],
+    canvas: rbs_studio_host::studio_host::OutputCanvas,
+}
+
+/// `item.set_box` answered by the ticket `seq`, as the window sends a box.
+fn set_box(b: SetBox) -> rbs_studio_host::studio_host::Command {
+    rbs_studio_host::studio_host::Command::Api {
+        call: Box::new(rbs_api::Command::ItemSetBox(rbs_api::request::SetItemBox {
+            source: b.id.get(),
+            position: b.position,
+            size: b.size,
+            gesture: b.gesture,
+            seq: b.seq,
+            canvas: b.canvas,
+        })),
+        reply: rbs_studio_host::studio_host::ApiReply::Ticket(b.seq),
+    }
+}

@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use rbs_audio::{
     AudioGraphConfig, EncoderNode, InputParams, InputStats, LevelMeter, MeterSinkNode, MixerNode,
-    MixerParams, MixerStats, MonitorMode, Strip,
+    MixerParams, MixerStats, Strip,
 };
 use rbs_audio_filters::{
     AudioFilterNode, AudioFilterStats, AudioFilterType, DspSetup, FilterMeter,
@@ -72,9 +72,11 @@ use crate::recording::{
     peak_db, sum,
 };
 use crate::select::{self, Chosen};
+use buses::{MixBuses, master_of, mixer_params};
 
 mod adopt;
 mod browser_page;
+mod buses;
 mod estimate_plan;
 mod health;
 mod vcam;
@@ -173,6 +175,9 @@ pub struct StudioSettings {
     /// Audio: the canvas's mixer, its inputs and a meter sink run, so meters move and a
     /// recording can take audio. `false`: audio sources are not opened.
     pub audio: bool,
+    /// The audio branch is awake at start (ADR-0169): `false` leaves the meter sink out
+    /// of the engine's graph until [`Studio::set_audio_awake`]. `true` by default.
+    pub audio_awake: bool,
     /// The audio graph's format, block size and latency.
     pub audio_graph: AudioGraphConfig,
     /// Partition ids.
@@ -219,6 +224,7 @@ impl StudioSettings {
         Self {
             canvas,
             audio: true,
+            audio_awake: true,
             audio_graph: AudioGraphConfig::default(),
             partitions: Partitions::default(),
             preview: None,
@@ -281,6 +287,11 @@ pub struct OutputSettings {
     /// Off (and not `pausable`): none of that is built and [`Studio::hold_output`]
     /// refuses with [`HoldRefused::NotHoldable`].
     pub holdable: bool,
+    /// The bus of the main canvas whose mix this output encodes (ADR-0170 decision 3),
+    /// by name. `None` is `main`. A name the canvas has no bus for refuses the start
+    /// with [`RecordError::UnknownBus`]. Two outputs share an audio encoder only when
+    /// they take the same bus.
+    pub audio_bus: Option<String>,
 }
 
 /// Smallest side of an explicit output size (ADR-0102 decision 7).
@@ -338,6 +349,7 @@ impl OutputSettings {
             pausable: false,
             shared_pause: None,
             holdable: false,
+            audio_bus: None,
         }
     }
 
@@ -619,8 +631,72 @@ enum AudioPlan {
         chosen: Chosen,
         settings: AudioSettings,
         stream: StreamDescriptor,
+        /// The mixer bus slot it reads, `None` for `main`.
+        bus: Option<usize>,
     },
     Shared(usize),
+}
+
+impl AudioPlan {
+    /// A new chain's node, and its chain with `encoder` as the added node.
+    fn into_chain(self, encoder: Added) -> Option<(Box<dyn Node<()>>, AudioChain)> {
+        let AudioPlan::New {
+            node,
+            counters,
+            chain_pause,
+            chain_hold,
+            chosen,
+            settings,
+            stream,
+            bus,
+        } = self
+        else {
+            return None;
+        };
+        let chain = AudioChain {
+            settings,
+            chosen,
+            stream,
+            encoder,
+            dropped: counters.dropped,
+            flushes: counters.flushes,
+            tail_lost: counters.tail_lost,
+            queue: None,
+            pause: chain_pause,
+            hold: chain_hold,
+            bus,
+        };
+        Some((node, chain))
+    }
+}
+
+/// An audio encoder node that follows `pause` and `hold` (ADR-0124), boxed, and its
+/// counters.
+fn gated(
+    node: EncoderNode,
+    pause: Option<&Arc<PauseWindow>>,
+    hold: Option<&Arc<HoldSwitch>>,
+    frames: usize,
+) -> (Box<dyn Node<()>>, AudioCounters) {
+    match (pause, hold) {
+        (Some(p), hold) => {
+            let mut node = node.with_pause(Arc::clone(p), frames);
+            if let Some(h) = hold {
+                node = node.and_hold(Arc::clone(h));
+            }
+            let counters = AudioCounters::of(&node);
+            (Box::new(node), counters)
+        }
+        (None, Some(h)) => {
+            let node = node.with_hold(Arc::clone(h), frames);
+            let counters = AudioCounters::of(&node);
+            (Box::new(node), counters)
+        }
+        (None, None) => {
+            let counters = AudioCounters::of(&node);
+            (Box::new(node), counters)
+        }
+    }
 }
 
 /// An audio encoder node's counters, kept when the node is boxed.
@@ -741,6 +817,7 @@ impl Prepared {
         canvas_size: (u32, u32),
         fps: FrameRate,
         audio_graph: AudioGraphConfig,
+        bus: Option<usize>,
         running: &Chains,
         native: Option<(MemoryKind, GpuDeviceId)>,
         camera: Option<&CameraDownload>,
@@ -891,6 +968,7 @@ impl Prepared {
                 let shared = running.audio.iter().enumerate().find_map(|(i, c)| {
                     let c = c.as_ref()?;
                     (c.settings == *a
+                        && c.bus == bus
                         && never_paused(c.pause.as_ref())
                         && select::is_audio_candidate(
                             &adapters.audio_encoders,
@@ -916,26 +994,8 @@ impl Prepared {
                         let chain_pause = pause.as_ref().map(|_| Arc::new(PauseWindow::default()));
                         let chain_hold = holds.then(|| Arc::new(HoldSwitch::default()));
                         let frames = audio_graph.block_frames as usize;
-                        let (node, counters): (Box<dyn Node<()>>, _) =
-                            match (&chain_pause, &chain_hold) {
-                                (Some(p), hold) => {
-                                    let mut node = node.with_pause(Arc::clone(p), frames);
-                                    if let Some(h) = hold {
-                                        node = node.and_hold(Arc::clone(h));
-                                    }
-                                    let counters = AudioCounters::of(&node);
-                                    (Box::new(node), counters)
-                                }
-                                (None, Some(h)) => {
-                                    let node = node.with_hold(Arc::clone(h), frames);
-                                    let counters = AudioCounters::of(&node);
-                                    (Box::new(node), counters)
-                                }
-                                (None, None) => {
-                                    let counters = AudioCounters::of(&node);
-                                    (Box::new(node), counters)
-                                }
-                            };
+                        let (node, counters) =
+                            gated(node, chain_pause.as_ref(), chain_hold.as_ref(), frames);
                         AudioPlan::New {
                             node,
                             counters,
@@ -944,6 +1004,7 @@ impl Prepared {
                             chosen,
                             settings: a.clone(),
                             stream,
+                            bus,
                         }
                     }
                 }
@@ -1051,6 +1112,8 @@ struct AudioChain {
     pause: Option<Arc<PauseWindow>>,
     /// Its hold switch, as for the video chain.
     hold: Option<Arc<HoldSwitch>>,
+    /// The mixer bus slot it reads (ADR-0170), `None` for `main`.
+    bus: Option<usize>,
 }
 
 /// The encoder chains running, by slot (the slot picks their partitions).
@@ -1152,6 +1215,8 @@ struct Queues {
 /// The mixer of the canvas and what the studio keeps of it.
 struct Mixer {
     node: NodeId,
+    /// The meter sink on `main`, left out of the engine's graph while resting.
+    sink: NodeId,
     params: ParamSender<MixerParams>,
     stats: Arc<MixerStats>,
     master: Arc<LevelMeter>,
@@ -1334,11 +1399,14 @@ pub struct Studio {
     /// Meters are in the mixer's parameters. Off while the Mixer is hidden and no
     /// control client samples `audio.levels` (ADR-0143 R2).
     meters_on: bool,
+    /// The meter sink is in the engine's graph (ADR-0169).
+    audio_awake: bool,
     /// Volume and mute per source, from the last [`Studio::update`] or
     /// [`Studio::set_mix`].
     mix: BTreeMap<SourceId, SourceAudio>,
-    /// The canvas's master volume and mute (ADR-0081), from the same calls.
-    master: MasterAudio,
+    /// The canvas's master volume and mute (ADR-0081) and its buses and sends
+    /// (ADR-0170), from the same calls.
+    buses: MixBuses,
     /// Bound filters, with an instance once scheduled.
     filters: Vec<FilterEntry>,
     /// Stored filter settings adjusted on load.
@@ -1714,13 +1782,11 @@ impl Studio {
                     .with_master_meter(Arc::clone(&master)),
             );
             engine.adopt::<()>(parts.audio, mixer_id, Box::new(node))?;
-            let sink = MeterSinkNode::new();
-            let sink_id = add_active(&mut graph, Node::<()>::descriptor(&sink), parts.audio)?;
-            graph.connect(mixer_id, "main", sink_id, "in")?;
-            engine.adopt::<()>(parts.audio, sink_id, Box::new(sink))?;
+            let sink_id = meters::add_sink(&mut engine, &mut graph, mixer_id, parts.audio)?;
             essential.insert(sink_id, "meter sink");
             mixer = Some(Mixer {
                 node: mixer_id,
+                sink: sink_id,
                 params,
                 stats,
                 master,
@@ -1802,8 +1868,9 @@ impl Studio {
             retiring_owners: Vec::new(),
             strips: Vec::new(),
             meters_on: true,
+            audio_awake: settings.audio_awake,
             mix: mix_of(collection, canvas_id),
-            master: master_of(collection, canvas_id),
+            buses: MixBuses::of(collection, canvas_id, settings.audio_graph.format.channels),
             filters: Vec::new(),
             filter_problems: Vec::new(),
             source_adjusted: Vec::new(),
@@ -2674,7 +2741,7 @@ impl Studio {
         self.collection = Cow::clone(collection).into_owned();
         self.note_scene_change(collection, &effective, old_main, &old_extra, old_layers);
         self.mix = mix_of(collection, self.settings.canvas);
-        self.master = master_of(collection, self.settings.canvas);
+        self.refresh_buses(collection);
         // Separate tracks and source pictures follow a source whose node the sync
         // replaced.
         self.relink_iso_video();
@@ -2869,7 +2936,8 @@ impl Studio {
                     let _ = first.set_state(*new, Lifecycle::Standby);
                     let _ = first.remove_node(*new);
                 }
-                let applied = self.engine.apply(&first)?;
+                let rest = meters::resting_sink(self);
+                let applied = meters::send_to(&mut self.engine, &first, rest, false)?;
                 failed.extend(engine_failures(&applied));
                 for e in gone.iter_mut() {
                     if !take_instance(&mut self.engine, e, &mut self.pending_takes) {
@@ -3217,7 +3285,7 @@ impl Studio {
             let _ = mixer.params.send(mixer_params(
                 &union,
                 &mixer.master,
-                self.master,
+                &self.buses,
                 &self.solo,
                 self.meters_on,
             ));
@@ -3225,7 +3293,7 @@ impl Studio {
                 trimmed = Some(mixer_params(
                     &staged,
                     &mixer.master,
-                    self.master,
+                    &self.buses,
                     &self.solo,
                     self.meters_on,
                 ));
@@ -3243,7 +3311,7 @@ impl Studio {
             &self.browser_background,
         ));
         self.drive_background_pages();
-        let applied = self.engine.apply(&self.graph);
+        let applied = self.send_raw(None, false);
         if applied.is_ok()
             && let Some(report) = report.as_mut()
         {
@@ -3272,7 +3340,7 @@ impl Studio {
                     trimmed = Some(mixer_params(
                         &new,
                         &mixer.master,
-                        self.master,
+                        &self.buses,
                         &self.solo,
                         self.meters_on,
                     ));
@@ -3284,41 +3352,7 @@ impl Studio {
             let _ = mixer.params.send(params);
         }
         let applied = applied?;
-        failed.extend(engine_failures(&applied));
-        for report in applied.reports.values() {
-            for (node, why) in &report.failed {
-                let role = self
-                    .essential
-                    .get(node)
-                    .copied()
-                    .or_else(|| self.output_role(*node));
-                if let Some(role) = role {
-                    let failure = StartFailure {
-                        node: role.to_owned(),
-                        reason: why.to_string(),
-                    };
-                    self.failed_nodes.insert(*node, failure.clone());
-                    failed.push(failure);
-                } else if let Some(p) = self
-                    .pictures
-                    .iter_mut()
-                    .find(|p| p.node == *node || p.normalise == Some(*node))
-                {
-                    // Not essential (ADR-0125 decision 2): only that picture stops.
-                    p.failure = Some(why.to_string());
-                } else if let Some(e) = self.entries.iter_mut().find(|e| e.state.node == *node) {
-                    // The first reason stays: a source without an instance is reported
-                    // again on every apply as having none.
-                    if e.state.failed.is_none() {
-                        e.state.failed = Some(why.to_string());
-                        failed.push(StartFailure {
-                            node: "source".to_owned(),
-                            reason: format!("{}: {why}", e.state.name),
-                        });
-                    }
-                }
-            }
-        }
+        self.record_failures(&applied, &mut failed);
         for e in gone.iter_mut() {
             take_instance(&mut self.engine, e, &mut self.pending_takes);
         }
@@ -3433,7 +3467,7 @@ impl Studio {
     /// Returns false if the studio has no mixer.
     pub fn set_mix(&mut self, collection: &SceneCollection) -> bool {
         self.mix = mix_of(collection, self.settings.canvas);
-        self.master = master_of(collection, self.settings.canvas);
+        self.refresh_buses(collection);
         self.set_hold_mix(collection);
         self.send_mix()
     }
@@ -3456,7 +3490,7 @@ impl Studio {
         let _ = mixer.params.send(mixer_params(
             &self.strips,
             &mixer.master,
-            self.master,
+            &self.buses,
             &self.solo,
             self.meters_on,
         ));
@@ -4434,6 +4468,10 @@ impl Studio {
             return Err(RecordError::TooManyOutputs);
         }
         let size = self.canvas_size(canvas)?;
+        let bus = match out.audio {
+            Some(_) => self.buses.slot_of(out.audio_bus.as_deref())?,
+            None => None,
+        };
         Prepared::choose(
             adapters,
             out,
@@ -4441,6 +4479,7 @@ impl Studio {
             size,
             self.fps,
             self.settings.audio_graph,
+            bus,
             &self.chains,
             self.native_encode(),
             self.camera.as_ref().map(|c| &c.download),
@@ -4664,7 +4703,7 @@ impl Studio {
                 graph.connect(c.encoder.node, "packets", output_id, audio_pin)?;
                 Some(*i)
             }
-            AudioPlan::New { node, .. } => {
+            AudioPlan::New { node, bus, .. } => {
                 let mixer = self
                     .mixer
                     .as_ref()
@@ -4675,7 +4714,7 @@ impl Studio {
                 })?;
                 let part = parts.audio_encoder_of(i);
                 let id = add_active(&mut graph, Node::<()>::descriptor(&**node), part)?;
-                graph.connect(mixer, "main", id, "in")?;
+                graph.connect(mixer, buses::pin(*bus), id, "in")?;
                 graph.connect(id, "packets", output_id, audio_pin)?;
                 let a = Added {
                     node: id,
@@ -4757,39 +4796,12 @@ impl Studio {
         }
         let mut audio_chain = None;
         let mut audio_shared = audio_slot.is_some();
-        if let (
-            AudioPlan::New {
-                node,
-                counters:
-                    AudioCounters {
-                        dropped,
-                        flushes,
-                        tail_lost,
-                    },
-                chain_pause,
-                chain_hold,
-                chosen,
-                settings,
-                stream,
-            },
-            Some(a),
-        ) = (p.audio, new_audio)
-        {
+        if let Some((node, chain)) = new_audio.and_then(|a| p.audio.into_chain(a)) {
             audio_shared = false;
+            let a = chain.encoder;
             let r = self.engine.adopt::<()>(a.partition, a.node, node);
             adopt(&mut self.engine, a, r)?;
-            audio_chain = Some(AudioChain {
-                settings,
-                chosen,
-                stream,
-                encoder: a,
-                dropped,
-                flushes,
-                tail_lost,
-                queue: None,
-                pause: chain_pause,
-                hold: chain_hold,
-            });
+            audio_chain = Some(chain);
         }
         let r = self
             .engine
@@ -5037,11 +5049,7 @@ impl Studio {
             let _ = self.graph.set_state(n.node, Lifecycle::Standby);
             let _ = self.graph.remove_node(n.node);
         }
-        let applied = if drain {
-            self.engine.apply_draining(&self.graph)
-        } else {
-            self.engine.apply(&self.graph)
-        };
+        let applied = self.send_graph(None, drain);
         let errors: Vec<String> = match applied {
             Ok(a) => a.errors.iter().map(ToString::to_string).collect(),
             Err(e) => vec![e.to_string()],
@@ -5811,54 +5819,6 @@ struct MixStrip {
     audio: SourceAudio,
     /// The fader's own ramp while a transition runs (ADR-0128 decision 10).
     ramp: Option<(Timestamp, Duration)>,
-}
-
-/// The mixer's monitor mode for a source's saved one (ADR-0097 decision 5).
-fn monitor_mode(m: SourceMonitor) -> MonitorMode {
-    match m {
-        SourceMonitor::Off => MonitorMode::Off,
-        SourceMonitor::Only => MonitorMode::Only,
-        SourceMonitor::Also => MonitorMode::Also,
-    }
-}
-
-/// The canvas's master volume and mute (the defaults for a canvas that is gone).
-fn master_of(collection: &SceneCollection, canvas: CanvasId) -> MasterAudio {
-    collection
-        .canvas(canvas)
-        .map(|c| c.master)
-        .unwrap_or_default()
-}
-
-/// The mixer's parameters for `strips` (each at its source's volume and mute), the
-/// master gain (its volume, or silence while muted) and the master meter.
-fn mixer_params(
-    strips: &[MixStrip],
-    meter: &Arc<LevelMeter>,
-    master: MasterAudio,
-    solo: &BTreeSet<SourceId>,
-    meters_on: bool,
-) -> MixerParams {
-    let strips = strips
-        .iter()
-        .map(|s| {
-            let strip = Strip::new(s.producer, s.audio.volume)
-                .with_muted(s.audio.muted)
-                .with_monitor(monitor_mode(s.audio.monitor))
-                .with_solo(solo.contains(&s.source))
-                .with_ramp_override(s.ramp);
-            match &s.meter {
-                Some(m) if meters_on => strip.with_meter(Arc::clone(m)),
-                _ => strip,
-            }
-        })
-        .collect();
-    let params = MixerParams::new(strips).with_master(master.gain());
-    if meters_on {
-        params.with_master_meter(Arc::clone(meter))
-    } else {
-        params
-    }
 }
 
 /// The adjustments of every text source's stored settings (ADR-0129): what

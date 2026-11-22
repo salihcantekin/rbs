@@ -2,13 +2,16 @@
 //!
 //! Threads: `open`, `start`, `stop` and `enumerate` run on a control thread;
 //! `latest_frame` on the render thread; the sample handler and the stream delegate on
-//! ScreenCaptureKit's queues. The render thread only touches the lock-free ring. The
-//! producer state is behind a mutex that only the sample handler and `stop` take.
+//! ScreenCaptureKit's queues; the watcher thread (`rbs-sck-watch`) only while a window
+//! capture draws the cursor or the picture mapping is on. The render thread only
+//! touches the lock-free ring and the per-slot mapping cells. The producer state is
+//! behind a mutex that only the sample handler and `stop` take.
 
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{TryLockError, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -25,7 +28,7 @@ use objc2_core_graphics::{
     CGDisplayMode, CGEvent, CGImageAlphaInfo, CGInterpolationQuality, CGMainDisplayID,
     CGPreflightScreenCaptureAccess, CGRectMakeWithDictionaryRepresentation,
     CGRequestScreenCaptureAccess, CGWindowListCopyWindowInfo, CGWindowListOption,
-    kCGColorSpaceSRGB, kCGWindowAlpha, kCGWindowBounds, kCGWindowLayer,
+    kCGColorSpaceSRGB, kCGWindowAlpha, kCGWindowBounds, kCGWindowLayer, kCGWindowNumber,
 };
 use objc2_core_media::{CMSampleBuffer, CMTime, CMTimeFlags};
 use objc2_core_video::{
@@ -47,9 +50,9 @@ use rbs_capture::edge::EdgeClock;
 use rbs_capture::handoff::{FrameMeta, Grave, Graveyard, Ring};
 use rbs_capture::{
     CaptureChange, CaptureError, CaptureFactory, CaptureRequest, CaptureSession, CaptureStats,
-    CaptureTarget, DisplayReading, DisplayScale, ErrorDomain, GpuDeviceId, Permission,
-    REGION_GRAB_LONG, RegionGrab, SyncKind, THUMBNAIL_MAX, TargetId, TargetKind, Thumbnail, caps,
-    choose_framebuffer,
+    CaptureTarget, Cover, DisplayReading, DisplayScale, ErrorDomain, GpuDeviceId, MappingCell,
+    MappingRegistration, MappingSwitch, Permission, PictureMapping, REGION_GRAB_LONG, RegionGrab,
+    SyncKind, THUMBNAIL_MAX, TargetId, TargetKind, Thumbnail, caps, choose_framebuffer,
 };
 use rbs_core::capability::{CapabilitySet, CapabilityValue};
 use rbs_core::media::{ColorSpace, LeaseOwner, MemoryKind, PixelFormat, Size, VideoFormat};
@@ -59,7 +62,11 @@ use rbs_core::time::{Clock, Timestamp};
 use rbs_core::timing::FrameRate;
 
 use crate::cursor::{self, Above};
+use crate::geometry::{self, Content};
 use crate::{ADAPTER_ID, Consumer, FRAMES_IN_FLIGHT, QUEUE_DEPTH, RING_SLOTS};
+
+mod watch;
+use watch::{Geometry, Watch, cursor_covered};
 
 /// Highest frame rate requested from ScreenCaptureKit (ProMotion displays).
 const MAX_RATE: i64 = 120;
@@ -378,6 +385,25 @@ fn prompt_is_safe() -> bool {
 /// How long a thumbnail grab may take in all (capture-port.md, `thumbnail`).
 const THUMBNAIL_TIMEOUT: Duration = Duration::from_millis(1000);
 
+/// The budget while no screenshot has answered in this process yet. On macOS 26 the
+/// first `SCScreenshotManager` grab of a process takes 1.25 to 1.6 s (M4 Pro, macOS
+/// 26.7.1, 2026-11-22) and later ones 90 to 185 ms, so with the warm budget the first
+/// thumbnail and Region preview of every session failed (capture-port.md, ScreenCaptureKit).
+const THUMBNAIL_COLD_TIMEOUT: Duration = Duration::from_millis(3000);
+
+/// A screenshot has answered in this process: later grabs get the warm budget.
+static SCREENSHOT_WARM: AtomicBool = AtomicBool::new(false);
+
+/// The whole-grab budget: [`THUMBNAIL_COLD_TIMEOUT`] until the first screenshot of
+/// the process answers, then [`THUMBNAIL_TIMEOUT`].
+fn grab_budget() -> Duration {
+    if SCREENSHOT_WARM.load(Ordering::Acquire) {
+        THUMBNAIL_TIMEOUT
+    } else {
+        THUMBNAIL_COLD_TIMEOUT
+    }
+}
+
 /// `SCScreenshotManager` appeared in macOS 14; the class is looked up by name so an
 /// older system gets `Unsupported` instead of a missing-class panic.
 fn screenshots_available() -> bool {
@@ -499,7 +525,8 @@ fn grab_rgba(
         return Err(CaptureError::PermissionNotDetermined);
     }
     // Backend failures of a grab are recoverable: the next try may find a frame.
-    let content = shareable_content_within(THUMBNAIL_TIMEOUT).map_err(|e| match e {
+    let budget = grab_budget();
+    let content = shareable_content_within(budget).map_err(|e| match e {
         CaptureError::Backend { .. } => grab_failed(),
         other => other,
     })?;
@@ -535,6 +562,7 @@ fn grab_rgba(
         let block = RcBlock::new(
             move |image: *mut objc2_core_graphics::CGImage, error: *mut NSError| {
                 catch_callback(|| {
+                    SCREENSHOT_WARM.store(true, Ordering::Release);
                     let result = match NonNull::new(image) {
                         // SAFETY: ScreenCaptureKit passes a valid image for the call; it
                         // is retained before the handler returns.
@@ -560,7 +588,7 @@ fn grab_rgba(
                 Some(&block),
             )
         };
-        let left = THUMBNAIL_TIMEOUT.saturating_sub(started.elapsed());
+        let left = budget.saturating_sub(started.elapsed());
         let image = rx.recv_timeout(left).map_err(|_| grab_failed())??.0;
         let rgba = image_to_rgba(&image, width, height)?;
         Ok((width, height, rgba))
@@ -644,6 +672,7 @@ impl AdapterFactory for SckCaptureFactory {
             .with(caps::PIXEL_FORMATS, set(&[PixelFormat::Bgra8.as_str()]))
             .with(caps::MEMORY, set(&[MemoryKind::Metal.as_str()]))
             .with(caps::CURSOR, CapabilityValue::Flag(true))
+            .with(caps::MAPPING, set(&kinds))
             .with(caps::FRAME_RATE_MAX, CapabilityValue::Int(MAX_RATE))
             .with(
                 caps::FRAMES_IN_FLIGHT,
@@ -762,10 +791,21 @@ impl CaptureFactory for SckCaptureFactory {
         // Screens and windows are captured at their own size (`request.size` is for
         // cameras).
         let size = Size::new(w, h);
-        let config = accept(request, size)?;
+        let config = Arc::new(Mutex::new(accept(request, size)?));
+        let watch = Arc::new(Watch::new(
+            match parsed {
+                Parsed::Display(id) => Parsed::Display(id),
+                Parsed::Window(id) => Parsed::Window(id),
+            },
+            Arc::clone(&config),
+        ));
         Ok(Box::new(SckSession {
             parsed,
-            config: Arc::new(Mutex::new(config)),
+            config,
+            switch: request.mapping.clone(),
+            registration: None,
+            watch,
+            mapping: None,
             clock: Arc::clone(&request.clock),
             format: VideoFormat::new(size, PixelFormat::Bgra8, ColorSpace::SRGB),
             active: None,
@@ -828,6 +868,9 @@ struct Shared {
     ring: Ring,
     /// One entry per slot. Only the producer (sample handler, or `stop`) locks it.
     slots: Mutex<Vec<Option<Sendable<Held>>>>,
+    /// The picture mapping of each slot's frame, written by the producer while it has
+    /// the slot claimed and read by `latest_frame` while the frame is held.
+    mappings: Box<[MappingCell]>,
 }
 
 impl AsRef<Ring> for Shared {
@@ -944,6 +987,10 @@ struct Producer {
     /// only the monotonic floor from the session's last delivered stamp.
     edge: EdgeClock,
     stopped: bool,
+    /// The mapping switch and the target's desktop frame, from the watcher thread.
+    watch: Arc<Watch>,
+    /// The last geometry read from `watch`, used when the watcher holds its lock.
+    geometry: Option<Geometry>,
 }
 
 /// Nanoseconds on the host clock (`mach_absolute_time`), the clock of the sample
@@ -974,6 +1021,8 @@ struct FrameInfo {
     /// The target's own size in pixels, before ScreenCaptureKit scaled it to fit the
     /// configured output.
     native_size: Option<(u32, u32)>,
+    /// Where the content sits in the output buffer.
+    content: Option<Content>,
 }
 
 fn number(dict: &NSDictionary<NSString, AnyObject>, key: &NSString) -> Option<Retained<NSNumber>> {
@@ -1009,6 +1058,7 @@ fn frame_info(sample: &CMSampleBuffer) -> Option<FrameInfo> {
         )
     };
     let status = SCFrameStatus(number(dict, status_key)?.integerValue());
+    let mut content = None;
     let native_size = (|| {
         let rect_dict = dict
             .objectForKey(rect_key)?
@@ -1026,6 +1076,15 @@ fn frame_info(sample: &CMSampleBuffer) -> Option<FrameInfo> {
         if !ok || content_scale <= 0.0 || scale <= 0.0 {
             return None;
         }
+        content = Some(Content {
+            rect: cursor::Rect {
+                x: rect.origin.x,
+                y: rect.origin.y,
+                width: rect.size.width,
+                height: rect.size.height,
+            },
+            scale_factor: scale,
+        });
         // The content rect is in points of the output; undo the fit scaling.
         let size = rect_pixels(rect, scale / content_scale);
         (size.0 > 0 && size.1 > 0).then_some(size)
@@ -1033,6 +1092,7 @@ fn frame_info(sample: &CMSampleBuffer) -> Option<FrameInfo> {
     Some(FrameInfo {
         status,
         native_size,
+        content,
     })
 }
 
@@ -1115,6 +1175,16 @@ impl Producer {
             None => self.edge.deliver_arrival(arrived),
         };
 
+        // While the switch is off the cell is left alone: `latest_frame` then reads
+        // none, and a stale one carries another frame's time.
+        if self.watch.mapping.load(Ordering::Acquire) {
+            let mapping = self.mapping(timestamp, info.content, (width, height));
+            if let Some(cell) = shared.mappings.get(slot) {
+                cell.publish(mapping);
+            }
+        } else {
+            self.geometry = None;
+        }
         ring.publish(
             slot,
             FrameMeta::new(
@@ -1126,6 +1196,27 @@ impl Producer {
             ),
         );
         self.sequence += 1;
+    }
+
+    /// The picture mapping of a frame (switch on), once the watcher has read the
+    /// target's frame. Never waits for the watcher's lock.
+    fn mapping(
+        &mut self,
+        timestamp: Timestamp,
+        content: Option<Content>,
+        (width, height): (u32, u32),
+    ) -> Option<PictureMapping> {
+        match self.watch.geometry.try_lock() {
+            Ok(geometry) => self.geometry = *geometry,
+            Err(TryLockError::Poisoned(geometry)) => self.geometry = *geometry.into_inner(),
+            Err(TryLockError::WouldBlock) => {}
+        }
+        let geometry = self.geometry?;
+        let (origin, scale) = geometry::picture_mapping(geometry.target, content, (width, height))?;
+        Some(
+            PictureMapping::new(timestamp, origin, scale, Size::new(width, height))
+                .with_cover(geometry.cover),
+        )
     }
 
     /// Reconfigures the stream when the target's size changed, so later frames are
@@ -1210,8 +1301,6 @@ impl Output {
 
 struct Active {
     stream: Sendable<Retained<SCStream>>,
-    /// Window captures with the cursor: hides it while it is over another window.
-    cursor_watch: Option<CursorWatch>,
     output: Sendable<Retained<Output>>,
     _queue: Sendable<DispatchRetained<DispatchQueue>>,
     producer: Arc<Mutex<Producer>>,
@@ -1223,6 +1312,14 @@ struct Active {
 struct SckSession {
     parsed: Parsed,
     config: Arc<Mutex<Config>>,
+    /// The host's mapping switch (ADR-0165 decision 5).
+    switch: Option<MappingSwitch>,
+    /// Held while Active with a switch.
+    registration: Option<MappingRegistration>,
+    /// The watcher thread's state (cursor of window captures, picture mapping).
+    watch: Arc<Watch>,
+    /// The mapping of the frame `latest_frame` returned last.
+    mapping: Option<PictureMapping>,
     clock: Arc<dyn Clock>,
     format: VideoFormat,
     active: Option<Active>,
@@ -1302,6 +1399,7 @@ impl SckSession {
         let shared = Arc::new(Shared {
             ring: Ring::new(&[0; RING_SLOTS]),
             slots: Mutex::new((0..RING_SLOTS).map(|_| None).collect()),
+            mappings: (0..RING_SLOTS).map(|_| MappingCell::new()).collect(),
         });
         let lost = Arc::new(AtomicBool::new(false));
         let producer = Arc::new(Mutex::new(Producer {
@@ -1321,6 +1419,8 @@ impl SckSession {
                 edge
             },
             stopped: false,
+            watch: Arc::clone(&self.watch),
+            geometry: None,
         }));
         let output = Output::new(OutputIvars {
             producer: Arc::clone(&producer),
@@ -1367,15 +1467,9 @@ impl SckSession {
         // the published size, retained in `shared.slots` while their slot is referenced
         // (see the `LeaseOwner` impl); ScreenCaptureKit delivers complete frames only.
         let consumer = unsafe { Consumer::new(Arc::clone(&shared), self.format) };
-        let cursor_watch = match window {
-            Some(id) if lock(&self.config).cursor => {
-                CursorWatch::start(id, &stream, Arc::clone(&self.config))
-            }
-            _ => None,
-        };
+        *lock(&self.watch.stream) = Some(Sendable(stream.clone()));
         Ok(Active {
             stream: Sendable(stream),
-            cursor_watch,
             output: Sendable(output),
             _queue: Sendable(queue),
             producer,
@@ -1412,16 +1506,39 @@ impl CaptureSession for SckSession {
         }
         let active = self.activate()?;
         self.active = Some(active);
+        let watch = &self.watch;
+        watch.cursor.store(
+            matches!(self.parsed, Parsed::Window(_)) && lock(&self.config).cursor,
+            Ordering::SeqCst,
+        );
+        watch.active.store(true, Ordering::SeqCst);
+        if let Some(switch) = &self.switch {
+            // The callback only stores the state and, when it turns on, spawns the
+            // watcher if none runs (no join, no wait); `stop` joins it (capture-port.md, picture mapping
+            // rule 2).
+            let weak: Weak<Watch> = Arc::downgrade(watch);
+            self.registration = Some(switch.register(move |on| {
+                if let Some(watch) = weak.upgrade() {
+                    watch.mapping.store(on, Ordering::SeqCst);
+                    if on {
+                        watch.signal();
+                    }
+                }
+            }));
+        }
+        watch.ensure();
         Ok(())
     }
 
     fn stop(&mut self) {
-        let Some(mut active) = self.active.take() else {
+        // Unregister first, holding no lock the callback takes.
+        self.registration = None;
+        self.mapping = None;
+        self.watch.mapping.store(false, Ordering::SeqCst);
+        self.watch.stop();
+        let Some(active) = self.active.take() else {
             return;
         };
-        if let Some(watch) = active.cursor_watch.take() {
-            watch.stop();
-        }
         let stream = &active.stream.0;
         // SAFETY: a completion block of the documented signature.
         let _ = wait_completion(|block| unsafe {
@@ -1480,7 +1597,27 @@ impl CaptureSession for SckSession {
         if active.lost.load(Ordering::Acquire) {
             return Err(CaptureError::TargetLost);
         }
-        Ok(active.consumer.next())
+        let frame = active.consumer.next();
+        if let Some(frame) = frame.as_ref() {
+            // The frame holds its slot, so the producer does not rewrite this cell. A
+            // mapping written before the switch last went off belongs to another frame.
+            self.mapping = if self.watch.mapping.load(Ordering::Acquire) {
+                active
+                    .consumer
+                    .last_slot()
+                    .and_then(|slot| active.shared.mappings.get(slot))
+                    .and_then(MappingCell::get)
+                    .filter(|m| m.frame_time == frame.timestamp())
+            } else {
+                None
+            };
+        }
+        Ok(frame)
+    }
+
+    fn latest_mapping(&self) -> Option<PictureMapping> {
+        self.mapping
+            .filter(|_| self.active.is_some() && self.watch.mapping.load(Ordering::Acquire))
     }
 
     fn stats(&self) -> CaptureStats {
@@ -1500,16 +1637,10 @@ impl CaptureSession for SckSession {
                     config.cursor = on;
                     config.cursor_covered = false;
                 }
-                if let (Some(active), Parsed::Window(id)) = (self.active.as_mut(), &self.parsed) {
-                    match (on, active.cursor_watch.take()) {
-                        (true, None) => {
-                            active.cursor_watch =
-                                CursorWatch::start(*id, &active.stream.0, Arc::clone(&self.config));
-                        }
-                        (true, Some(watch)) => active.cursor_watch = Some(watch),
-                        (false, Some(watch)) => watch.stop(),
-                        (false, None) => {}
-                    }
+                if matches!(self.parsed, Parsed::Window(_)) {
+                    // A watcher with nothing left to do ends within one poll.
+                    self.watch.cursor.store(on, Ordering::SeqCst);
+                    self.watch.ensure();
                 }
                 self.update_configuration()
             }
@@ -1519,127 +1650,6 @@ impl CaptureSession for SckSession {
             }
             _ => Err(CaptureError::Unsupported("change not supported")),
         }
-    }
-}
-
-/// The pointer in global display points, origin top left.
-fn pointer() -> Option<(f64, f64)> {
-    let event = CGEvent::new(None)?;
-    let point = CGEvent::location(Some(&event));
-    Some((point.x, point.y))
-}
-
-/// Reads an `NSString` key of a CoreGraphics constant.
-fn ns_key(key: &CFString) -> &NSString {
-    // SAFETY: CFString is toll-free bridged to NSString.
-    unsafe { &*(key as *const CFString).cast::<NSString>() }
-}
-
-/// The on-screen windows stacked above `window`, from the window server's list.
-fn windows_above(window: u32) -> Vec<Above> {
-    let options =
-        CGWindowListOption::OptionOnScreenAboveWindow | CGWindowListOption::ExcludeDesktopElements;
-    let Some(list) = CGWindowListCopyWindowInfo(options, window) else {
-        return Vec::new();
-    };
-    // SAFETY: CFArray is toll-free bridged to NSArray; the window list holds
-    // dictionaries with string keys.
-    let list = unsafe {
-        &*(&*list as *const CFArray).cast::<NSArray<NSDictionary<NSString, AnyObject>>>()
-    };
-    // SAFETY: the keys are immutable framework constants.
-    let (bounds_key, alpha_key, layer_key) = unsafe {
-        (
-            ns_key(kCGWindowBounds),
-            ns_key(kCGWindowAlpha),
-            ns_key(kCGWindowLayer),
-        )
-    };
-    list.iter()
-        .filter_map(|info| {
-            let bounds = info
-                .objectForKey(bounds_key)?
-                .downcast::<NSDictionary>()
-                .ok()?;
-            let mut rect = CGRect::default();
-            // SAFETY: a dictionary of a CGRect (kCGWindowBounds), toll-free bridged;
-            // `rect` is a valid out pointer.
-            let ok = unsafe {
-                let cf = &*(&*bounds as *const NSDictionary).cast::<CFDictionary>();
-                CGRectMakeWithDictionaryRepresentation(Some(cf), &mut rect)
-            };
-            let alpha = number(&info, alpha_key).map_or(1.0, |n| n.doubleValue());
-            let layer = number(&info, layer_key).map_or(0, |n| n.integerValue() as i64);
-            ok.then_some(Above {
-                bounds: cursor::Rect {
-                    x: rect.origin.x,
-                    y: rect.origin.y,
-                    width: rect.size.width,
-                    height: rect.size.height,
-                },
-                alpha,
-                layer,
-            })
-        })
-        .collect()
-}
-
-/// Whether a window stacked above `window` is under the pointer at `point`.
-fn covered_at(window: u32, point: Option<(f64, f64)>) -> bool {
-    autoreleasepool(|_| point.is_some_and(|(x, y)| cursor::covered(x, y, windows_above(window))))
-}
-
-/// Whether a window stacked above `window` is under the pointer now.
-fn cursor_covered(window: u32) -> bool {
-    covered_at(window, pointer())
-}
-
-/// The watcher thread of an Active window capture with the cursor (`crate::cursor`).
-/// Exists only while Active (P13); `stop` joins it.
-struct CursorWatch {
-    stop: mpsc::Sender<()>,
-    thread: JoinHandle<()>,
-}
-
-impl CursorWatch {
-    /// Starts watching; `None` if the thread cannot start, which leaves the cursor
-    /// drawn as ScreenCaptureKit does by default.
-    fn start(window: u32, stream: &Retained<SCStream>, config: Arc<Mutex<Config>>) -> Option<Self> {
-        let (stop, stopped) = mpsc::channel::<()>();
-        let stream = Sendable(stream.clone());
-        let thread = std::thread::Builder::new()
-            .name("rbs-sck-cursor".into())
-            .spawn(move || {
-                let stream = stream;
-                let mut last_point = None;
-                let mut last_query = None;
-                // Ends when `stop` drops the sender (or sends). The thread keeps
-                // waking: only the window-server query is skipped.
-                while let Err(mpsc::RecvTimeoutError::Timeout) = stopped.recv_timeout(cursor::POLL)
-                {
-                    let now = Instant::now();
-                    let point = pointer();
-                    let moved = point != last_point;
-                    last_point = point;
-                    if !cursor::should_query(moved, last_query, now) {
-                        continue;
-                    }
-                    last_query = Some(now);
-                    let covered = covered_at(window, point);
-                    let mut config = lock(&config);
-                    if config.cursor && config.cursor_covered != covered {
-                        config.cursor_covered = covered;
-                        autoreleasepool(|_| send_configuration(&stream.0, &config));
-                    }
-                }
-            })
-            .ok()?;
-        Some(Self { stop, thread })
-    }
-
-    fn stop(self) {
-        drop(self.stop);
-        let _ = self.thread.join();
     }
 }
 
