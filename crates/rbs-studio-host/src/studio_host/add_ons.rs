@@ -60,6 +60,39 @@ impl AddOnsHost {
         }
     }
 
+    /// The cleans of updates the app quit before (ADR-0164 decision 6, add-ons spec
+    /// "Update"): one check of the disk per entry at start, and a thread only for an
+    /// entry that has one to run.
+    pub(super) fn finish_updates(&self) {
+        let Some(store) = self.store() else {
+            return;
+        };
+        for entry in self.catalog.iter().filter(|e| store.clean_pending(e)) {
+            let (store, entry) = (store.clone(), entry.clone());
+            let spawned = std::thread::Builder::new()
+                .name("rbs-add-on-clean".into())
+                .spawn(move || match store.finish_update(&entry) {
+                    Ok(true) => rbs_core::info!(
+                        rbs_core::log::Area::AddOns,
+                        "cleaned the older versions of {} after an update",
+                        entry.id
+                    ),
+                    Ok(false) => {}
+                    Err(e) => rbs_core::warn!(
+                        rbs_core::log::Area::AddOns,
+                        "cleaning old versions of {} failed: {e}",
+                        entry.id
+                    ),
+                });
+            if let Err(e) = spawned {
+                rbs_core::warn!(
+                    rbs_core::log::Area::AddOns,
+                    "cannot start the clean of an update: {e}"
+                );
+            }
+        }
+    }
+
     fn store(&self) -> Option<AddOns> {
         self.setup
             .as_ref()
@@ -315,13 +348,18 @@ impl Host {
             AddOnMsg::Done(result) => {
                 let clean_after = run.clean_after;
                 self.add_ons.runs[index] = None;
+                // An update ends here: its clean, or only its note when the install
+                // did not finish (the old version stays).
+                let finished = match self.add_ons.store() {
+                    Some(store) if clean_after => {
+                        store.finish_update(&self.add_ons.catalog[index]).map(drop)
+                    }
+                    _ => Ok(()),
+                };
                 match result {
                     Ok(_) => {
                         self.add_ons.failed[index] = None;
-                        if clean_after
-                            && let Some(store) = self.add_ons.store()
-                            && let Err(e) = store.clean(&self.add_ons.catalog[index])
-                        {
+                        if let Err(e) = finished {
                             rbs_core::warn!(
                                 rbs_core::log::Area::AddOns,
                                 "cleaning old versions of {} failed: {e}",
@@ -359,6 +397,15 @@ impl Host {
             && let Some(run) = self.add_ons.runs[index].as_mut()
         {
             run.clean_after = true;
+            // The note outlives a quit before the clean: the next start runs it.
+            if let Some(store) = self.add_ons.store()
+                && let Err(e) = store.mark_clean_pending(&self.add_ons.catalog[index])
+            {
+                rbs_core::warn!(
+                    rbs_core::log::Area::AddOns,
+                    "the update of {id} cannot note its clean: {e}"
+                );
+            }
         }
         Ok(())
     }

@@ -154,7 +154,7 @@ pub enum InstallError {
 
 ### Clean
 
-`AddOns::clean(id)` takes the lock and removes every version lower than the highest version below the catalog's (it keeps the catalog's version, the one before it, every higher version and every version that does not parse), marker first as in Remove. The desktop Update command runs clean only after an install that succeeded.
+`AddOns::clean(id)` takes the lock and removes every version lower than the highest version below the catalog's (it keeps the catalog's version, the one before it, every higher version and every version that does not parse), marker first as in Remove. The desktop Update command (and `addon.update`) runs clean only after an install that succeeded. Before its install starts it writes `<root>/<id>/.clean-pending` (`AddOns::mark_clean_pending`); the install's done event runs `AddOns::finish_update`, which cleans when the catalog's version is installed and then deletes the note, so a failed or cancelled install keeps the old version and leaves nothing to do. When the app quit between the install and the clean, the next start finds the note (one check of the disk per catalog entry) and runs `finish_update` once on a thread of its own (ADR-0164 decision 6). Remove deletes the note with the versions.
 
 ### Storage
 
