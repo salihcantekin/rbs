@@ -348,3 +348,33 @@ fn add_source(
 ) -> rbs_studio_host::studio_host::Command {
     add_source_as(kind, target, false, false)
 }
+
+/// The test binary's one GPU device, shared by every module (ADR-0159 decision 7 made
+/// the modules one binary). Several devices created and dropped while other threads
+/// build pipelines deadlocked inside the NVIDIA D3D12 driver (SC-PC, 2026-11-22: an
+/// adapter dropped during `GpuContext::new` waits for the driver's lock exclusively,
+/// behind the pipeline creations of the other devices). Software Vulkan drivers also
+/// crash with several. `None` without an adapter: the test skips, unless
+/// `RBS_REQUIRE_GPU` is set.
+fn gpu() -> Option<std::sync::Arc<rbs_gpu::GpuContext>> {
+    static CTX: std::sync::OnceLock<Option<std::sync::Arc<rbs_gpu::GpuContext>>> =
+        std::sync::OnceLock::new();
+    let ctx = CTX.get_or_init(|| {
+        match rbs_gpu::GpuContext::new(&rbs_gpu::GpuRequest {
+            allow_software: true,
+            ..rbs_gpu::GpuRequest::default()
+        }) {
+            Ok(ctx) => Some(std::sync::Arc::new(ctx)),
+            Err(rbs_gpu::GpuError::NoAdapter) => None,
+            Err(e) => panic!("{e}"),
+        }
+    });
+    if ctx.is_none() {
+        assert!(
+            std::env::var_os("RBS_REQUIRE_GPU").is_none_or(|v| v.is_empty()),
+            "RBS_REQUIRE_GPU is set but no adapter was found"
+        );
+        rbs_crash::errln!("SKIPPED: no GPU adapter");
+    }
+    ctx.clone()
+}

@@ -11,7 +11,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
 
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rbs_api::request::ClientInfo;
@@ -33,7 +33,7 @@ use rbs_core::media::{
 use rbs_core::registry::{AdapterFactory, AdapterId, ProbeError};
 use rbs_core::time::TestClock;
 use rbs_engine::{Engine, EngineConfig};
-use rbs_gpu::{GpuContext, GpuError, GpuRequest};
+use rbs_gpu::GpuContext;
 use rbs_record::{END_TAIL_LIMIT, RecordAdapters};
 use rbs_studio_host::record_profile::RecordProfile;
 use rbs_studio_host::stream_key::{ACCOUNT, KeyStore, MemoryKeyStore};
@@ -51,26 +51,7 @@ use rbs_transport::{
 const LIMIT: Duration = Duration::from_secs(20);
 
 fn gpu() -> Option<Arc<GpuContext>> {
-    // One device per test binary: software Vulkan drivers crash with several.
-    static CTX: OnceLock<Option<Arc<GpuContext>>> = OnceLock::new();
-    let ctx = CTX.get_or_init(|| {
-        match GpuContext::new(&GpuRequest {
-            allow_software: true,
-            ..GpuRequest::default()
-        }) {
-            Ok(ctx) => Some(Arc::new(ctx)),
-            Err(GpuError::NoAdapter) => None,
-            Err(e) => panic!("{e}"),
-        }
-    });
-    if ctx.is_none() {
-        assert!(
-            std::env::var_os("RBS_REQUIRE_GPU").is_none_or(|v| v.is_empty()),
-            "RBS_REQUIRE_GPU is set but no adapter was found"
-        );
-        rbs_crash::errln!("SKIPPED: no GPU adapter");
-    }
-    ctx.clone()
+    crate::gpu()
 }
 
 /// H.264 from system NV12; a `broken` one probes but cannot open a session.

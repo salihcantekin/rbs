@@ -4,8 +4,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
 
+use std::sync::Arc;
 use std::sync::mpsc;
-use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use rbs_audio_io_test::TestAudioBackend;
@@ -13,7 +13,7 @@ use rbs_capture::{Permission, TargetKind};
 use rbs_capture_test::TestCaptureFactory;
 use rbs_core::time::TestClock;
 use rbs_engine::{Engine, EngineConfig};
-use rbs_gpu::{GpuContext, GpuError, GpuRequest};
+use rbs_gpu::GpuContext;
 use rbs_record::RecordAdapters;
 use rbs_studio_host::studio_host::{HostConfig, SourceKind, StudioHost, Update};
 use serde_json::json;
@@ -22,18 +22,7 @@ use serde_json::json;
 const LIMIT: Duration = Duration::from_secs(20);
 
 fn gpu() -> Option<Arc<GpuContext>> {
-    static CTX: OnceLock<Option<Arc<GpuContext>>> = OnceLock::new();
-    CTX.get_or_init(|| {
-        match GpuContext::new(&GpuRequest {
-            allow_software: true,
-            ..GpuRequest::default()
-        }) {
-            Ok(ctx) => Some(Arc::new(ctx)),
-            Err(GpuError::NoAdapter) => None,
-            Err(e) => panic!("{e}"),
-        }
-    })
-    .clone()
+    crate::gpu()
 }
 
 #[test]

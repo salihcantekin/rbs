@@ -36,8 +36,8 @@ fn projector_limits_count_eight_surfaces_per_projector_on_every_platform() {
 
 #[cfg(any(windows, target_vendor = "apple"))]
 mod with_pictures {
+    use std::sync::Arc;
     use std::sync::mpsc::{self, Receiver};
-    use std::sync::{Arc, OnceLock};
     use std::time::Duration;
 
     use rbs_api::types::OutputCanvas;
@@ -47,8 +47,8 @@ mod with_pictures {
     use rbs_core::time::TestClock;
     use rbs_core::timing::FrameRate;
     use rbs_engine::{Engine, EngineConfig};
+    use rbs_gpu::GpuContext;
     use rbs_gpu::share::PreviewEndpoint;
-    use rbs_gpu::{GpuContext, GpuError, GpuRequest};
     use rbs_record::RecordAdapters;
     use rbs_studio_host::studio_host::{Command, HostConfig, ProjectorState, StudioHost, Update};
 
@@ -56,25 +56,7 @@ mod with_pictures {
     const LIMIT: Duration = Duration::from_secs(20);
 
     fn gpu() -> Option<Arc<GpuContext>> {
-        static CTX: OnceLock<Option<Arc<GpuContext>>> = OnceLock::new();
-        let ctx = CTX.get_or_init(|| {
-            match GpuContext::new(&GpuRequest {
-                allow_software: true,
-                ..GpuRequest::default()
-            }) {
-                Ok(ctx) => Some(Arc::new(ctx)),
-                Err(GpuError::NoAdapter) => None,
-                Err(e) => panic!("{e}"),
-            }
-        });
-        if ctx.is_none() {
-            assert!(
-                std::env::var_os("RBS_REQUIRE_GPU").is_none_or(|v| v.is_empty()),
-                "RBS_REQUIRE_GPU is set but no adapter was found"
-            );
-            rbs_crash::errln!("SKIPPED: no GPU adapter");
-        }
-        ctx.clone()
+        crate::gpu()
     }
 
     fn host(gpu: Arc<GpuContext>) -> (StudioHost, Receiver<Update>) {

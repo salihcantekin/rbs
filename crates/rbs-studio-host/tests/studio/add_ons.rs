@@ -10,8 +10,8 @@
 use std::io::{Cursor, Read};
 use std::ops::ControlFlow;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use rbs_add_ons::{
@@ -24,7 +24,7 @@ use rbs_api::transport::{CloseReason, ConnectionHandle, ConnectionSender, PeerIn
 use rbs_api::{ApiServer, TokenStore};
 use rbs_core::time::TestClock;
 use rbs_engine::{Engine, EngineConfig};
-use rbs_gpu::{GpuContext, GpuError, GpuRequest};
+use rbs_gpu::GpuContext;
 use rbs_record::RecordAdapters;
 use rbs_sources::{
     BROWSER_RUNTIME_MISSING, BrowserFrameSink, BrowserSession, BrowserSound, BrowserTree,
@@ -43,25 +43,7 @@ const BODY: &[u8] = b"rbs add-on test archive";
 const BODY_SHA256: &str = "e10f3014583d3a9068cb636bb6b530996d3f4ad80ef7fc8ad1a708f8177d1977";
 
 fn gpu() -> Option<Arc<GpuContext>> {
-    static CTX: OnceLock<Option<Arc<GpuContext>>> = OnceLock::new();
-    let ctx = CTX.get_or_init(|| {
-        match GpuContext::new(&GpuRequest {
-            allow_software: true,
-            ..GpuRequest::default()
-        }) {
-            Ok(ctx) => Some(Arc::new(ctx)),
-            Err(GpuError::NoAdapter) => None,
-            Err(e) => panic!("{e}"),
-        }
-    });
-    if ctx.is_none() {
-        assert!(
-            std::env::var_os("RBS_REQUIRE_GPU").is_none_or(|v| v.is_empty()),
-            "RBS_REQUIRE_GPU is set but no adapter was found"
-        );
-        rbs_crash::errln!("SKIPPED: no GPU adapter");
-    }
-    ctx.clone()
+    crate::gpu()
 }
 
 fn entry(id: &str, file: &str, platform: bool) -> rbs_add_ons::Entry {

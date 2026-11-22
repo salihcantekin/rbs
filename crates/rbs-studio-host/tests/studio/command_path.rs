@@ -7,8 +7,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
 
 use std::cell::Cell;
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver};
-use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use rbs_api::request::VerticalLayout;
@@ -18,7 +18,7 @@ use rbs_capture_test::TestCaptureFactory;
 use rbs_core::media::Size;
 use rbs_core::time::TestClock;
 use rbs_engine::{Engine, EngineConfig};
-use rbs_gpu::{GpuContext, GpuError, GpuRequest};
+use rbs_gpu::GpuContext;
 use rbs_record::RecordAdapters;
 use rbs_scene::model::{FilterId, SceneId, SourceId};
 use rbs_studio_host::studio_host::{
@@ -30,26 +30,7 @@ use rbs_studio_host::studio_host::{
 const LIMIT: Duration = Duration::from_secs(20);
 
 fn gpu() -> Option<Arc<GpuContext>> {
-    // One device per test binary: software Vulkan drivers crash with several.
-    static CTX: OnceLock<Option<Arc<GpuContext>>> = OnceLock::new();
-    let ctx = CTX.get_or_init(|| {
-        match GpuContext::new(&GpuRequest {
-            allow_software: true,
-            ..GpuRequest::default()
-        }) {
-            Ok(ctx) => Some(Arc::new(ctx)),
-            Err(GpuError::NoAdapter) => None,
-            Err(e) => panic!("{e}"),
-        }
-    });
-    if ctx.is_none() {
-        assert!(
-            std::env::var_os("RBS_REQUIRE_GPU").is_none_or(|v| v.is_empty()),
-            "RBS_REQUIRE_GPU is set but no adapter was found"
-        );
-        rbs_crash::errln!("SKIPPED: no GPU adapter");
-    }
-    ctx.clone()
+    crate::gpu()
 }
 
 /// A started host on the reference adapters, its updates and its API trace.
