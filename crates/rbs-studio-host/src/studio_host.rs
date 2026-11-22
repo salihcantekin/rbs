@@ -501,6 +501,9 @@ struct Host {
     media_pause_release: Duration,
     /// The play states sent last ([`Update::Media`]); `None` sends them again.
     media_sent: Option<Vec<MediaTick>>,
+    /// Media ticks still sent after a slide show's Next, Previous or Restart, so a
+    /// paused or manual one shows its new picture number once the picture moved.
+    slides_follow: u8,
     /// The Show cues sent last ([`Update::Cues`]).
     cues_sent: Vec<(ItemId, u32)>,
     /// The source pickers' state: thumbnail and region grabs, and the permission prompts.

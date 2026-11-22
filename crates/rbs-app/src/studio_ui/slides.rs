@@ -31,6 +31,24 @@ fn position(tick: Option<&MediaTick>) -> String {
     }
 }
 
+/// Writes what moves while a slide show plays into its row: the folder note, "n / N"
+/// and Pause or Resume. True when something changed.
+pub(super) fn patch_live(d: &mut SourceData, tick: Option<&MediaTick>) -> bool {
+    let note = note(tick);
+    let position = position(tick);
+    let paused = tick.is_some_and(|t| t.state == 1);
+    if d.slides_note.as_str() == note
+        && d.slides_position.as_str() == position
+        && d.slides_paused == paused
+    {
+        return false;
+    }
+    d.slides_note = note.into();
+    d.slides_position = position.into();
+    d.slides_paused = paused;
+    true
+}
+
 /// `d` with the file rows of `r` filled in: a media file's path and Loop, or a slide
 /// show's rows; other kinds are left as they are.
 pub(super) fn fill(
@@ -53,9 +71,7 @@ pub(super) fn fill(
         Some(SettingValue::Text(t)) => t.as_str().into(),
         _ => "".into(),
     };
-    d.slides_note = note(tick).into();
-    d.slides_position = position(tick).into();
-    d.slides_paused = tick.is_some_and(|t| t.state == 1);
+    patch_live(&mut d, tick);
     let values = slideshow::values(settings);
     d.slides_fields = models.slides_rows(d.id, field_data(FIELDS, &values, r.id, &[]));
     d
@@ -165,6 +181,17 @@ mod tests {
             "No PNG or JPEG pictures in this folder."
         );
         assert!(note(None).contains("listed when"));
+    }
+
+    #[test]
+    fn a_new_tick_moves_the_picture_number_in_the_row() {
+        let mut d = SourceData::default();
+        assert!(patch_live(&mut d, Some(&tick(0, 2, 24))));
+        assert_eq!(d.slides_position.as_str(), "3 / 24");
+        assert!(!patch_live(&mut d, Some(&tick(0, 2, 24))));
+        assert!(patch_live(&mut d, Some(&tick(1, 3, 24))));
+        assert_eq!(d.slides_position.as_str(), "4 / 24");
+        assert!(d.slides_paused);
     }
 
     #[test]

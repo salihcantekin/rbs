@@ -61,6 +61,9 @@ impl Host {
             MediaOp::Previous => self.studio.slideshow_command(id, SlideCommand::Previous),
             MediaOp::State => true,
         };
+        if done && matches!(op, MediaOp::Restart | MediaOp::Next | MediaOp::Previous) {
+            self.slides_follow = SLIDES_FOLLOW;
+        }
         let millis = |d: Duration| u64::try_from(d.as_millis()).unwrap_or(u64::MAX);
         let Some(s) = self.studio.slideshow_state(id).filter(|_| done) else {
             if matches!(op, MediaOp::State) {
@@ -121,6 +124,10 @@ impl Host {
             .collect()
     }
 }
+
+/// Media ticks after a step: the picture moves on a later render tick, and the
+/// transition can take up to 5 s (ADR-0171), so about 6 s at [`super::rows::MEDIA_TICK`].
+const SLIDES_FOLLOW: u8 = 24;
 
 /// A slide show's state as [`MediaTick::state`] numbers it: 0 playing, 1 paused,
 /// 3 ended, 4 standby, 5 unavailable (the folder cannot be read).
