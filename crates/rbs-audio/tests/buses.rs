@@ -331,3 +331,75 @@ fn reading_buses_does_not_allocate() {
     let changed = allocation_counter::measure(|| r.run(10));
     assert_eq!(changed.count_total, base.count_total);
 }
+
+/// Every sample of `seen` from block `from` on, in order.
+fn since(seen: &Seen, from: usize) -> Vec<f32> {
+    seen.lock().unwrap()[from..]
+        .iter()
+        .flat_map(|b| b.clone().unwrap())
+        .collect()
+}
+
+fn steps_smoothly(v: &[f32], max_step: f32) -> bool {
+    v.windows(2).all(|w| (w[1] - w[0]).abs() <= max_step)
+}
+
+#[test]
+fn a_fader_move_and_a_bus_gain_change_ramp_on_the_bus() {
+    let ramp = std::time::Duration::from_millis(20);
+    let mut r = Rig::new(&[0.4], |s| {
+        MixerParams::new(vec![Strip::new(s[0], 1.0).with_send(0, 1.0)]).with_ramp(ramp)
+    });
+    r.link(BUS_PINS[0], true);
+    r.run(2);
+    let from = r.bus[0].lock().unwrap().len();
+    // Fader 1 -> 0.5 and bus gain 1 -> 0.5 at once: 0.4 -> 0.1 over two blocks.
+    let s = r.sources.clone();
+    r.params.send(
+        MixerParams::new(vec![Strip::new(s[0], 0.5).with_send(0, 1.0)])
+            .with_ramp(ramp)
+            .with_bus(0, 0.5, None),
+    );
+    r.run(3);
+    let v = since(&r.bus[0], from);
+    assert!(steps_smoothly(&v, 0.001), "a step in the bus");
+    assert!(all(&v[2 * FRAMES..], 0.1), "{}", v[2 * FRAMES]);
+}
+
+#[test]
+fn a_muted_strip_adds_nothing_to_a_bus() {
+    let mut r = Rig::new(&[0.4, 0.2], |s| {
+        MixerParams::new(vec![
+            Strip::new(s[0], 1.0).with_send(0, 1.0).with_muted(true),
+            Strip::new(s[1], 1.0).with_send(0, 1.0),
+        ])
+    });
+    r.link(BUS_PINS[0], true);
+    r.run(3);
+    assert!(all(&Rig::last(&r.bus[0]).unwrap(), 0.2));
+}
+
+#[test]
+fn unlinking_and_relinking_a_bus_mid_ramp_continues_the_ramp() {
+    let ramp = std::time::Duration::from_millis(40);
+    let mut r = Rig::new(&[0.4], |s| {
+        MixerParams::new(vec![Strip::new(s[0], 1.0).with_send(0, 1.0)]).with_ramp(ramp)
+    });
+    r.link(BUS_PINS[0], true);
+    r.run(2);
+    let s = r.sources.clone();
+    r.params
+        .send(MixerParams::new(vec![Strip::new(s[0], 1.0).with_send(0, 0.0)]).with_ramp(ramp));
+    r.run(1);
+    r.link(BUS_PINS[0], false);
+    r.run(1);
+    r.link(BUS_PINS[0], true);
+    let from = r.bus[0].lock().unwrap().len();
+    r.run(3);
+    let v = since(&r.bus[0], from);
+    // Two of the four ramp blocks were run or skipped: the rest falls to 0 from about
+    // half way, not from the start again.
+    assert!(v[0] < 0.21 && v[0] > 0.19, "{}", v[0]);
+    assert!(v.windows(2).take(2 * FRAMES - 1).all(|w| w[1] <= w[0]));
+    assert!(all(&v[2 * FRAMES..], 0.0));
+}

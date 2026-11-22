@@ -676,7 +676,6 @@ impl<X: Runtime> Node<X> for MixerNode {
                         let Some(src) = block.channel(c) else {
                             continue;
                         };
-                        let src = &src[..frames];
                         if gains.steady && b0 == b1 {
                             // Settled fader and send: one constant factor.
                             let f = g0 * b0;
@@ -717,20 +716,21 @@ impl<X: Runtime> Node<X> for MixerNode {
             let (a0, a1) = (self.bus_masters[k].at(t0), self.bus_masters[k].at(t1));
             let da = (a1 - a0) * inv;
             let meter = self.params.get().buses[k].meter.as_deref();
-            let mix = &mut self.bus_mix[k * bus_len..(k + 1) * bus_len];
+            let mix = &self.bus_mix[k * bus_len..(k + 1) * bus_len];
             let mut bus = ctx.outputs().audio(FIRST_BUS_PIN + k)?;
             for (c, (ch, sum)) in bus
                 .channels_mut(n)
-                .zip(mix.chunks_exact_mut(frames))
+                .zip(mix.chunks_exact(frames))
                 .enumerate()
             {
+                // One pass: the bus fader applied while writing the pin.
+                let out = &mut ch[..frames];
                 if let Some(m) = meter {
-                    let (peak, sum_sq) = scale_lanes::<true>(sum, |w| a0 + da * w);
+                    let (peak, sum_sq) = scale_into_lanes::<true>(out, sum, |w| a0 + da * w);
                     m.record_block(c, peak, sum_sq, frames as u32);
                 } else {
-                    scale_lanes::<false>(sum, |w| a0 + da * w);
+                    scale_into_lanes::<false>(out, sum, |w| a0 + da * w);
                 }
-                ch[..frames].copy_from_slice(sum);
             }
             bus.commit(format, t0, frames)?;
         }
@@ -738,9 +738,18 @@ impl<X: Runtime> Node<X> for MixerNode {
     }
 }
 
-/// The slots set in `mask`, lowest first.
+/// The slots set in `mask`, lowest first: only the set bits are visited (ADR-0170
+/// decision 1), never every slot.
 fn bits(mask: u8) -> impl Iterator<Item = usize> {
-    (0..MAX_BUS_OUTPUTS).filter(move |k| mask & (1 << k) != 0)
+    let mut m = mask;
+    std::iter::from_fn(move || {
+        if m == 0 {
+            return None;
+        }
+        let k = m.trailing_zeros() as usize;
+        m &= m - 1;
+        Some(k)
+    })
 }
 
 /// Accumulator lanes of the mix loops. The loops keep this many partial peaks and
@@ -895,6 +904,49 @@ fn scale_lanes<const METER: bool>(out: &mut [f32], gain: impl Fn(f32) -> f32) ->
         if METER {
             p = p.max(o.abs());
             q += *o * *o;
+        }
+    }
+    (fold_peak(peak, p), fold_sum(sum, q))
+}
+
+/// Writes `src * gain(w)` to `out` (as [`scale_lanes`], without the in-place pass and a
+/// copy) and returns the peak and the sum of squares of what it wrote.
+#[inline(always)]
+fn scale_into_lanes<const METER: bool>(
+    out: &mut [f32],
+    src: &[f32],
+    gain: impl Fn(f32) -> f32,
+) -> (f32, f32) {
+    let mut peak = [0.0f32; LANES];
+    let mut sum = [0.0f32; LANES];
+    let mut out_chunks = out.chunks_exact_mut(LANES);
+    let mut src_chunks = src.chunks_exact(LANES);
+    let mut base = 0.0f32;
+    for (o, x) in (&mut out_chunks).zip(&mut src_chunks) {
+        for l in 0..LANES {
+            let y = x[l] * gain(base + (l + 1) as f32);
+            o[l] = y;
+            if METER {
+                let a = y.abs();
+                peak[l] = if a > peak[l] { a } else { peak[l] };
+                sum[l] += y * y;
+            }
+        }
+        base += LANES as f32;
+    }
+    let mut p = 0.0f32;
+    let mut q = 0.0f32;
+    for (o, &x) in out_chunks
+        .into_remainder()
+        .iter_mut()
+        .zip(src_chunks.remainder())
+    {
+        base += 1.0;
+        let y = x * gain(base);
+        *o = y;
+        if METER {
+            p = p.max(y.abs());
+            q += y * y;
         }
     }
     (fold_peak(peak, p), fold_sum(sum, q))
