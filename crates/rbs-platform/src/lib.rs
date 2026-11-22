@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use rbs_codec::VideoEncoderFactory;
 use rbs_core::registry::DuplicateAdapter;
+use rbs_core::time::Clock;
 use rbs_media_decode::MediaDecoderFactory;
 use rbs_record::RecordAdapters;
 
@@ -19,19 +20,39 @@ pub use text_clock::LocalTextClock;
 pub use vcam::{VcamUnavailable, VirtualCamera, vcam_link_file, virtual_camera};
 
 /// What a root asks for beyond the shared list.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 #[non_exhaustive]
 pub struct Options {
     /// Registers the deterministic reference adapters (synthetic displays, cameras and
     /// audio). Only with the crate's feature `demo-sources`; without it this field is
     /// ignored.
     pub demo_sources: bool,
+    /// The engine's master clock. With it, the platform's input adapter is set as the
+    /// sources' input monitor, stamping events on this clock so pointer times and
+    /// capture frame times share one clock (ADR-0165, "Time"). Without it no input
+    /// monitor is set, and pointer filters pass their input through.
+    pub master_clock: Option<Arc<dyn Clock>>,
+}
+
+impl std::fmt::Debug for Options {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Options")
+            .field("demo_sources", &self.demo_sources)
+            .field("master_clock", &self.master_clock.is_some())
+            .finish()
+    }
 }
 
 impl Options {
     /// The default options with `demo_sources` set.
     pub fn with_demo_sources(mut self, on: bool) -> Self {
         self.demo_sources = on;
+        self
+    }
+
+    /// These options with `master_clock` set: the clock the engine runs on.
+    pub fn with_master_clock(mut self, clock: Arc<dyn Clock>) -> Self {
+        self.master_clock = Some(clock);
         self
     }
 }
@@ -63,6 +84,7 @@ pub fn adapters(options: &Options) -> PlatformAdapters {
         note(a.video_encoders.register(Arc::clone(factory)));
     }
     register_demo(&mut a, &mut note, options);
+    register_input(&mut a, options);
     for factory in media_factories() {
         note(a.sources.register_media(factory));
     }
@@ -223,6 +245,18 @@ fn register_demo(
         );
     }
     let _ = (a, note, options);
+}
+
+/// The platform's input monitor on the engine's clock (ADR-0165 phase 1: macOS).
+/// Constructing it starts nothing; the first pointer filter's subscription does.
+fn register_input(a: &mut RecordAdapters, options: &Options) {
+    #[cfg(target_os = "macos")]
+    if let Some(clock) = &options.master_clock {
+        a.sources.set_input(rbs_input::InputMonitor::new(Box::new(
+            rbs_input_mac::MacInput::new(Arc::clone(clock)),
+        )));
+    }
+    let _ = (a, options);
 }
 
 /// Media decoders in registration order (ADR-0108).

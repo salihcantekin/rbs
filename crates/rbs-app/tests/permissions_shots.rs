@@ -11,7 +11,8 @@
 use rbs_app::permission_text::{self, Action, Os, Tone};
 use rbs_app_ui::tokens_apply::{apply_tokens, slot};
 use rbs_app_ui::{
-    Overlays, PermissionRowData, PropertiesProbe, SettingsWindow, SourceData, Studio, Theme, Tokens,
+    FilterData, FilterFieldData, Overlays, PermissionRowData, PropertiesProbe, SettingsWindow,
+    SourceData, Studio, Theme, Tokens,
 };
 use rbs_sources::permissions::{PermissionInfo, PermissionKind, PermissionStatus as S};
 use rbs_ui::tokens::{Base, ThemeBody, Tokens as TokenFile};
@@ -32,6 +33,10 @@ fn rows(keep: &[PermissionKind]) -> ModelRc<PermissionRowData> {
         (PermissionKind::Microphone, info(S::Allowed, false, false)),
         (PermissionKind::Screen, info(S::Blocked, false, true)),
         (PermissionKind::SystemSound, info(S::Unknown, false, false)),
+        (
+            PermissionKind::InputMonitoring,
+            info(S::NotAsked, true, true),
+        ),
     ];
     let data: Vec<PermissionRowData> = all
         .into_iter()
@@ -140,6 +145,97 @@ fn first_run(file: &TokenFile, base: Base, name: &str, dir: &std::path::Path) {
     w.hide().expect("hide");
 }
 
+/// A screen capture with Click rings before Blur, Click rings selected: its note says
+/// why it cannot see clicks (`action` 1 Allow, 2 Fix permission), and neither filter
+/// can move across the other (ADR-0165 decisions 3 and 7).
+fn pointer_filter(file: &TokenFile, base: Base, name: &str, action: i32, dir: &std::path::Path) {
+    let w = PropertiesProbe::new().expect("the probe window");
+    tokens(file, base, &w.global::<Theme>(), &w.global::<Tokens>());
+    let info = if action == 1 {
+        info(S::NotAsked, true, true)
+    } else {
+        info(S::Blocked, false, true)
+    };
+    let (text, action) = permission_text::pointer_note(Some(info), false).expect("a note");
+    let filter = |id: i32, name: &str, pointer: bool| FilterData {
+        id,
+        name: name.into(),
+        enabled: true,
+        known: true,
+        can_up: !pointer,
+        can_down: pointer,
+        perm_text: if pointer {
+            text.as_str().into()
+        } else {
+            "".into()
+        },
+        perm_action: if pointer { action } else { 0 },
+        ..Default::default()
+    };
+    g_sources(
+        &w,
+        vec![filter(1, "Click rings", true), filter(2, "Blur", false)],
+    );
+    w.global::<Studio>().set_properties_tab(1);
+    w.window().set_size(slint::LogicalSize::new(380.0, 560.0));
+    w.show().expect("show");
+    save(w.window(), dir, name);
+    w.hide().expect("hide");
+}
+
+/// Pointer halo with the Laser look chosen and Input monitoring allowed (no note).
+fn laser_field(file: &TokenFile, base: Base, name: &str, dir: &std::path::Path) {
+    let w = PropertiesProbe::new().expect("the probe window");
+    tokens(file, base, &w.global::<Theme>(), &w.global::<Tokens>());
+    let look = FilterFieldData {
+        label: "Look".into(),
+        help: "Laser: a red dot. Turn off the source's Show the cursor so only it shows.".into(),
+        kind: 4,
+        options: ModelRc::new(VecModel::from(vec![
+            slint::SharedString::from("Halo"),
+            slint::SharedString::from("Laser"),
+        ])),
+        choice: 1,
+        changed: true,
+        default_text: "Halo".into(),
+        ..Default::default()
+    };
+    let halo = FilterData {
+        id: 1,
+        name: "Pointer halo".into(),
+        enabled: true,
+        known: true,
+        fields: ModelRc::new(VecModel::from(vec![look])),
+        ..Default::default()
+    };
+    g_sources(&w, vec![halo]);
+    w.global::<Studio>().set_properties_tab(1);
+    w.window().set_size(slint::LogicalSize::new(380.0, 560.0));
+    w.show().expect("show");
+    save(w.window(), dir, name);
+    w.hide().expect("hide");
+}
+
+fn g_sources(w: &PropertiesProbe, filters: Vec<FilterData>) {
+    let g = w.global::<Studio>();
+    g.set_sources(ModelRc::new(VecModel::from(vec![SourceData {
+        id: 7,
+        name: "Display 1".into(),
+        kind: "Screen capture".into(),
+        icon: "display".into(),
+        status: "Live".into(),
+        ok: true,
+        picture: true,
+        visible: true,
+        places: 1,
+        perm_kind: -1,
+        filters: ModelRc::new(VecModel::from(filters)),
+        selected_filter: 1,
+        ..Default::default()
+    }])));
+    g.set_properties_source(7);
+}
+
 #[test]
 #[ignore = "a tool: writes screenshots for the owner's approval"]
 fn permissions_screenshots() {
@@ -158,5 +254,8 @@ fn permissions_screenshots() {
         source_tab(&file, base, &format!("source-allow-{b}"), 1, &dir);
         source_tab(&file, base, &format!("source-fix-{b}"), 2, &dir);
         first_run(&file, base, &format!("first-run-{b}"), &dir);
+        pointer_filter(&file, base, &format!("pointer-allow-{b}"), 1, &dir);
+        pointer_filter(&file, base, &format!("pointer-fix-{b}"), 2, &dir);
+        laser_field(&file, base, &format!("laser-field-{b}"), &dir);
     }
 }

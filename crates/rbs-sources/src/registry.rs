@@ -558,6 +558,7 @@ pub struct PermissionRequest {
     kind: PermissionKind,
     capture: Vec<(Arc<dyn CaptureFactory>, TargetKind)>,
     audio: Vec<(Arc<dyn AudioBackend>, EndpointKind)>,
+    input: Option<rbs_input::InputMonitor>,
 }
 
 impl PermissionRequest {
@@ -568,7 +569,7 @@ impl PermissionRequest {
 
     /// True when no adapter would prompt.
     pub fn is_empty(&self) -> bool {
-        self.capture.is_empty() && self.audio.is_empty()
+        self.capture.is_empty() && self.audio.is_empty() && self.input.is_none()
     }
 
     /// Shows the prompts, one after another; blocks until each is answered.
@@ -578,6 +579,9 @@ impl PermissionRequest {
         }
         for (b, e) in self.audio {
             let _ = b.request_permission(e);
+        }
+        if let Some(monitor) = self.input {
+            let _ = monitor.request_permission();
         }
     }
 }
@@ -908,6 +912,7 @@ impl SourceTypes {
             kind,
             capture: Vec::new(),
             audio: Vec::new(),
+            input: self.input_request(kind),
         };
         for &t in kind.target_kinds() {
             let prompt_key = capture_caps::permission_keys(t).2;
@@ -939,7 +944,7 @@ impl SourceTypes {
     }
 
     fn permission_answers(&self, kind: PermissionKind) -> Vec<AdapterAnswer> {
-        let mut answers = Vec::new();
+        let mut answers: Vec<AdapterAnswer> = self.input_answer(kind).into_iter().collect();
         for &t in kind.target_kinds() {
             let (has, restart, prompt) = capture_caps::permission_keys(t);
             for f in self.capture_candidates(t) {

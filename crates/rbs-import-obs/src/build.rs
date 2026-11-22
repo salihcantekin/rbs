@@ -404,13 +404,12 @@ pub(crate) fn build(
         .or_else(|| scene_list.first().map(|(_, id, _)| *id));
     ctx.report.exact.scenes = scene_list.len() - renamed;
 
-    let counters = IdCounters {
-        canvas: 2,
-        source: ctx.next_source,
-        scene: out_scenes.len() as u32 + 1,
-        item: next_item,
-        filter: ctx.next_filter,
-    };
+    let counters = counters(
+        ctx.next_source,
+        out_scenes.len(),
+        next_item,
+        ctx.next_filter,
+    );
     let collection = SceneCollection::from_parts(
         vec![canvas],
         std::mem::take(&mut ctx.sources),
@@ -1071,5 +1070,17 @@ impl Ctx<'_> {
         on_stack.pop();
         memo.insert(si, (depth, layers));
         (depth, layers)
+    }
+}
+
+/// The id counters of an imported collection: one canvas, no bus.
+fn counters(source: u32, scenes: usize, item: u32, filter: u32) -> IdCounters {
+    IdCounters {
+        canvas: 2,
+        source,
+        scene: scenes as u32 + 1,
+        item,
+        filter,
+        bus: 0,
     }
 }

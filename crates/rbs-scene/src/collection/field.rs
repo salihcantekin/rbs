@@ -16,7 +16,7 @@ pub struct LevelEdits {
     /// Field edits whose records are all `SourceAudio` changes (volume, mute,
     /// monitor, sync offset, Mixer visibility).
     pub source_audio: u64,
-    /// Field edits whose records are all canvas master changes.
+    /// Field edits whose records are all canvas master, bus level or send changes.
     pub master: u64,
 }
 
@@ -46,6 +46,7 @@ impl SceneCollection {
         match op {
             Op::SetSourceAudio { new, .. } => new.is_valid(),
             Op::SetCanvasMaster { new, .. } => new.is_valid(),
+            Op::Bus(op) => op.is_field(),
             Op::Batch(ops) => !ops.is_empty() && ops.iter().all(Self::field_edit),
             _ => false,
         }
@@ -102,7 +103,9 @@ enum Level {
 fn level_kind(op: &Op) -> Option<Level> {
     match op {
         Op::SetSourceAudio { .. } => Some(Level::Source),
+        // Bus levels and sends are mix levels like the master: no row changes shape.
         Op::SetCanvasMaster { .. } => Some(Level::Master),
+        Op::Bus(op) if op.is_field() => Some(Level::Master),
         Op::Batch(ops) => {
             let first = level_kind(ops.first()?)?;
             ops.iter()

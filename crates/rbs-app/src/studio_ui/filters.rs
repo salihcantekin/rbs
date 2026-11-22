@@ -10,6 +10,7 @@ use rbs_app::studio_host::{Command, SourceRow};
 use rbs_filters::Values;
 use rbs_params::{Curve, FieldKind, Schema, Value, color_text, parse_color};
 use rbs_scene::model::{FilterId, SourceId};
+use rbs_sources::permissions::PermissionKind;
 use slint::{ModelRc, VecModel};
 
 use super::StudioUi;
@@ -341,7 +342,19 @@ impl FilterUi {
         &mut self,
         row: &SourceRow,
         sounds: &[(u32, String)],
+        permissions: &(
+            Vec<(PermissionKind, rbs_sources::permissions::PermissionInfo)>,
+            Option<PermissionKind>,
+        ),
     ) -> (ModelRc<FilterData>, i32) {
+        // Why pointer filters cannot see clicks, if they cannot (ADR-0165 decision 7).
+        let pointer_note = {
+            let (statuses, waiting) = permissions;
+            let kind = PermissionKind::InputMonitoring;
+            let info = statuses.iter().find(|(k, _)| *k == kind).map(|(_, i)| *i);
+            rbs_app::permission_text::pointer_note(info, *waiting == Some(kind))
+        };
+        let pointer_note = pointer_note.as_ref();
         let source = row.id.get() as i32;
         let ids: Vec<i32> = row.filters.iter().map(|f| f.id.get() as i32).collect();
         // A filter that was not there before was just added: select it.
@@ -355,7 +368,16 @@ impl FilterUi {
             Some(id) if ids.contains(id) => *id,
             _ => ids.first().copied().unwrap_or(-1),
         };
-        let last = row.filters.len().saturating_sub(1);
+        // Pointer filters stay before the others (ADR-0165 decision 3), so Move up
+        // and Move down stop at that line, from the declared need, never a type id.
+        let pointer: Vec<bool> = row
+            .filters
+            .iter()
+            .map(|f| {
+                rbs_filters::find(f.type_id.as_str())
+                    .is_some_and(|t| t.needs().contains(rbs_filters::Needs::POINTER))
+            })
+            .collect();
         let data: Vec<FilterData> = row
             .filters
             .iter()
@@ -409,8 +431,16 @@ impl FilterUi {
                     name: f.name.as_str().into(),
                     enabled: f.enabled,
                     known: f.any().is_some(),
-                    can_up: i > 0,
-                    can_down: i < last,
+                    can_up: room(&pointer, i).0,
+                    can_down: room(&pointer, i).1,
+                    perm_text: match pointer_note {
+                        Some((text, _)) if pointer[i] => text.as_str().into(),
+                        _ => "".into(),
+                    },
+                    perm_action: match pointer_note {
+                        Some((_, action)) if pointer[i] => *action,
+                        _ => 0,
+                    },
                     fields: {
                         let model = self.fields.0.entry(id).or_default();
                         super::set_rows(model, fields);
@@ -713,6 +743,14 @@ impl StudioUi {
 
 /// Whether the platform's input serves the pointer to filters, set once from the
 /// adapters (spec `video-filters.md`, "Pointer types").
+/// Whether the filter at `i` can move up and down, given which filters of the chain
+/// are pointer filters: not past either end, nor across the line after the pointer
+/// filters (ADR-0165 decision 3; the host refuses that move).
+fn room(pointer: &[bool], i: usize) -> (bool, bool) {
+    let same = |j: usize| pointer.get(j) == pointer.get(i);
+    (i > 0 && same(i - 1), i + 1 < pointer.len() && same(i + 1))
+}
+
 static POINTER_SERVED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Sets what the platform serves to filters; Add filter then offers only the picture
@@ -752,6 +790,16 @@ pub fn filter_types(audio: bool) -> Vec<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn moves_stop_at_the_ends_and_at_the_pointer_line() {
+        let chain = [true, true, false, false];
+        assert_eq!(room(&chain, 0), (false, true));
+        assert_eq!(room(&chain, 1), (true, false), "last pointer filter");
+        assert_eq!(room(&chain, 2), (false, true), "first other filter");
+        assert_eq!(room(&chain, 3), (true, false));
+        assert_eq!(room(&[false], 0), (false, false));
+    }
 
     #[test]
     #[allow(clippy::unwrap_used)] // Tests fail by panicking.

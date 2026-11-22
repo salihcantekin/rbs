@@ -95,6 +95,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::document::{self, BodyError, Document};
 
+mod buses;
+
 #[derive(Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 struct Body {
@@ -354,6 +356,9 @@ struct Next {
     item: u32,
     #[serde(default)]
     filter: u32,
+    /// Next bus id (format 29, ADR-0170); written once a bus was ever added.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    bus: u32,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -390,6 +395,12 @@ struct CanvasDoc {
     /// Layout space height (format 15, ADR-0110). Absent: `height`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     layout_height: Option<u32>,
+    /// Buses other than `main` (format 29, ADR-0170).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    buses: Vec<buses::BusDoc>,
+    /// Send levels that differ from the default (format 29).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    sends: Vec<buses::SendDoc>,
 }
 
 /// A follower's fallback: `"keep_last"` or `{ scene = id }`.
@@ -1307,9 +1318,13 @@ fn later(found: u32, keys: &'static str, since: u32) -> BodyError {
 
 impl Document for SceneCollection {
     const KIND: &'static str = "scene-collection";
-    const FORMAT: u32 = 28;
+    const FORMAT: u32 = 29;
 
     fn write_format(&self) -> u32 {
+        // An older build refuses buses and sends as unknown keys (ADR-0170).
+        if buses::needs_29(self) {
+            return 29;
+        }
         // An older build would start a continuing scroll over (ADR-0152 decision 6).
         let continues = |l: &Layout| l.scroll.is_some_and(|s| s.on_return == OnReturn::Continue);
         if self.scenes().any(|s| {
@@ -1432,8 +1447,16 @@ impl Document for SceneCollection {
     /// a format 27 body without it (Move outside studio mode), and a file is written as
     /// 27 only when it is not Move. Format 28 adds the optional scroll `on_return`
     /// (`continue`, ADR-0152 decision 6); a format 27 or older body is a format 28 body
-    /// without it, and a file is written as 28 only when a scroll continues.
+    /// without it, and a file is written as 28 only when a scroll continues. Format 29
+    /// adds the optional canvas `buses` and `sends` and `next.bus` (ADR-0097 decision
+    /// 9, ADR-0170); a format 28 or older body is a format 29 body without them (only
+    /// `main`, the canvas master, and default sends), and a file is written as 29 only
+    /// when a bus was ever added.
     fn upgrade(from: u32, body: &mut toml::Table) -> Result<(), BodyError> {
+        buses::refuse_before_29(from, body)?;
+        if from == 28 {
+            return Ok(());
+        }
         let direct = body
             .get("transition")
             .and_then(toml::Value::as_table)
@@ -1638,7 +1661,7 @@ impl Document for SceneCollection {
             .canvases()
             .map(|c| {
                 let r = c.frame_rate.per_second();
-                CanvasDoc {
+                Ok(CanvasDoc {
                     id: c.id.get(),
                     name: c.name.clone(),
                     width: c.size.width,
@@ -1661,9 +1684,11 @@ impl Document for SceneCollection {
                     order: c.order.iter().map(|id| id.get()).collect(),
                     layout_width: (c.layout_size != c.size).then_some(c.layout_size.width),
                     layout_height: (c.layout_size != c.size).then_some(c.layout_size.height),
-                }
+                    buses: buses::bus_docs(c)?,
+                    sends: buses::send_docs(c),
+                })
             })
-            .collect();
+            .collect::<Result<_, BodyError>>()?;
         let sources = self
             .sources()
             .map(|s| {
@@ -1762,6 +1787,7 @@ impl Document for SceneCollection {
                 scene: n.scene,
                 item: n.item,
                 filter: n.filter,
+                bus: n.bus,
             },
             glide,
             transition,
@@ -1809,6 +1835,7 @@ impl Document for SceneCollection {
                         )));
                     }
                 };
+                buses::read(&mut canvas, c.buses, c.sends)?;
                 Ok(canvas)
             })
             .collect::<Result<Vec<_>, BodyError>>()?;
@@ -1923,6 +1950,7 @@ impl Document for SceneCollection {
                 scene: n.scene,
                 item: n.item,
                 filter: n.filter,
+                bus: n.bus,
             },
             glide,
             transition,

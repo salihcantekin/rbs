@@ -1,4 +1,5 @@
-//! OS permissions as the user sees them (ADR-0141): four kinds, one status each.
+//! OS permissions as the user sees them (ADR-0141): five kinds, one status each
+//! (the fifth, Input monitoring, from ADR-0165 decision 7).
 //!
 //! The capture and audio input ports answer per adapter and per port kind
 //! (`permission`, fast, never prompts). This module maps the user's four kinds to
@@ -16,7 +17,8 @@ use rbs_graph::node::NodeTypeId;
 
 use crate::types::{SourceClass, class_of};
 
-/// What the user gives permission for.
+/// What the user gives permission for. Workspace-internal: a new kind is added to
+/// [`PermissionKind::ALL`] and every match in the same change (not a plugin contract).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PermissionKind {
     /// Cameras.
@@ -27,15 +29,19 @@ pub enum PermissionKind {
     Screen,
     /// The sound of the computer or of one application.
     SystemSound,
+    /// Mouse (and later keyboard) input anywhere on the desktop, read by the input
+    /// port's monitor (ADR-0165 decision 7).
+    InputMonitoring,
 }
 
 impl PermissionKind {
     /// Every kind, in the order a page lists them.
-    pub const ALL: [PermissionKind; 4] = [
+    pub const ALL: [PermissionKind; 5] = [
         PermissionKind::Camera,
         PermissionKind::Microphone,
         PermissionKind::Screen,
         PermissionKind::SystemSound,
+        PermissionKind::InputMonitoring,
     ];
 
     /// The capture port kinds this kind covers.
@@ -43,7 +49,9 @@ impl PermissionKind {
         match self {
             PermissionKind::Camera => &[TargetKind::Camera],
             PermissionKind::Screen => &[TargetKind::Display, TargetKind::Window],
-            PermissionKind::Microphone | PermissionKind::SystemSound => &[],
+            PermissionKind::Microphone
+            | PermissionKind::SystemSound
+            | PermissionKind::InputMonitoring => &[],
         }
     }
 
@@ -54,7 +62,9 @@ impl PermissionKind {
             PermissionKind::SystemSound => {
                 &[EndpointKind::OutputLoopback, EndpointKind::Application]
             }
-            PermissionKind::Camera | PermissionKind::Screen => &[],
+            PermissionKind::Camera | PermissionKind::Screen | PermissionKind::InputMonitoring => {
+                &[]
+            }
         }
     }
 
@@ -127,6 +137,19 @@ pub enum Answer {
 impl From<rbs_capture::Permission> for Answer {
     fn from(p: rbs_capture::Permission) -> Self {
         use rbs_capture::Permission as P;
+        match p {
+            P::Granted => Answer::Granted,
+            P::Denied => Answer::Denied,
+            P::NotDetermined => Answer::NotDetermined,
+            P::Restricted => Answer::Restricted,
+            _ => Answer::Unknown,
+        }
+    }
+}
+
+impl From<rbs_input::Permission> for Answer {
+    fn from(p: rbs_input::Permission) -> Self {
+        use rbs_input::Permission as P;
         match p {
             P::Granted => Answer::Granted,
             P::Denied => Answer::Denied,

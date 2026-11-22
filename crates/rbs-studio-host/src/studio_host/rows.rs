@@ -314,6 +314,15 @@ impl Host {
                     _ => None,
                 })
                 .collect();
+            // A pointer filter shows whether RBS may see the mouse (ADR-0165 decision
+            // 7), so the window needs that status as soon as one is in a chain.
+            if rows.iter().any(|r| {
+                r.filters
+                    .iter()
+                    .any(|f| super::pointer_chain::is_pointer_str(&f.type_id))
+            }) {
+                refused.push(PermissionKind::InputMonitoring);
+            }
             refused.sort_by_key(|k| PermissionKind::ALL.iter().position(|a| a == k));
             refused.dedup();
             if refused != self.pickers.permission_refused {

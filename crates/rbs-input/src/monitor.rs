@@ -11,7 +11,7 @@ use rbs_core::time::Timestamp;
 
 use crate::caps;
 use crate::error::InputError;
-use crate::event::{EventMask, PointerSample, TimedEvent};
+use crate::event::{EventMask, Permission, PointerSample, TimedEvent};
 use crate::ring::{EventRing, PointerHistory};
 
 /// Subscriptions one monitor holds at once.
@@ -27,6 +27,18 @@ pub trait InputBackend: Send + Sync + 'static {
     /// lack). Control thread; may start a thread and wait at most 500 ms for it. Events
     /// go to `sink` from the adapter's one listener thread.
     fn start(&self, mask: EventMask, sink: InputSink) -> Result<Box<dyn RunningInput>, InputError>;
+    /// Whether the OS lets this process read input. Fast, never prompts, any thread.
+    /// The default is `Granted`: no OS permission.
+    fn permission(&self) -> Permission {
+        Permission::Granted
+    }
+    /// Shows the OS prompt when the user was not asked yet and returns the answer
+    /// known after it (an OS that applies a grant only after a restart may still say
+    /// `Denied`). Blocks while the prompt shows: a worker or control thread, never the
+    /// UI or a real-time thread. The default returns [`permission`](Self::permission).
+    fn request_permission(&self) -> Permission {
+        self.permission()
+    }
 }
 
 /// A started OS listener.
@@ -158,6 +170,17 @@ impl InputMonitor {
     /// The backend's name.
     pub fn backend_name(&self) -> &'static str {
         self.inner.backend.name()
+    }
+
+    /// Whether the OS lets this process read input (fast, never prompts).
+    pub fn permission(&self) -> Permission {
+        self.inner.backend.permission()
+    }
+
+    /// Asks the OS for input access; blocks while its prompt shows (worker thread).
+    /// Never takes the monitor's lock.
+    pub fn request_permission(&self) -> Permission {
+        self.inner.backend.request_permission()
     }
 
     /// Whether the OS listener runs now.

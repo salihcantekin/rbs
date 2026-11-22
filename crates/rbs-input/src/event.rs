@@ -130,6 +130,24 @@ pub struct PointerSample {
     pub at: DesktopPoint,
 }
 
+/// Whether the OS lets this process read input (ADR-0165 decision 7, ADR-0141).
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Permission {
+    /// Input may be read (or the OS has no permission for it).
+    Granted,
+    /// The user or a policy refused it; only the OS settings can change it.
+    Denied,
+    /// The user has not been asked yet; [`InputMonitor::request_permission`] asks.
+    ///
+    /// [`InputMonitor::request_permission`]: crate::InputMonitor::request_permission
+    NotDetermined,
+    /// An administrator forbids it and the user cannot change it.
+    Restricted,
+    /// The OS has a permission but no way to read it before use.
+    Unknown,
+}
+
 /// Which event classes a subscription wants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct EventMask(u8);

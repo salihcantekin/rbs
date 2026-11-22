@@ -162,6 +162,7 @@ fn adapter_crates(os: Os) -> &'static [&'static str] {
             "rbs-audio-io-coreaudio",
             "rbs-codec-videotoolbox",
             "rbs-codec-audiotoolbox",
+            "rbs-input-mac",
         ],
         Os::Linux => &[
             "rbs-capture-pipewire",
