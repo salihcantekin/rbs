@@ -5,13 +5,13 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
 
-const SCENE_SOURCE: &str = include_str!("../../rbs-scene/src/collection.rs");
+const SCENE_SOURCE: &str = include_str!("../../rbs-scene/src/collection/error.rs");
 const SPEC: &str = include_str!("../../../docs/specs/obs-import.md");
 
 fn variants() -> Vec<&'static str> {
     let start = SCENE_SOURCE
         .find("pub enum SceneError {")
-        .expect("SceneError is in collection.rs");
+        .expect("SceneError is in collection/error.rs");
     let body = &SCENE_SOURCE[start..];
     let body = &body[body.find('{').unwrap() + 1..body.find("\n}").unwrap()];
     body.lines()
