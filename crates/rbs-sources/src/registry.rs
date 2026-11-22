@@ -1696,7 +1696,7 @@ fn still_pixels(type_id: &str, settings: &Settings) -> Result<crate::still::Pict
     use crate::still;
     if type_id == types::IMAGE_SOURCE {
         if let Some(path) = text(settings, keys::PATH)? {
-            return still::decode_png(std::path::Path::new(path)).map_err(SourceError::Image);
+            return still::decode_picture(std::path::Path::new(path)).map_err(SourceError::Image);
         }
         let id = text(settings, keys::SAMPLE)?.ok_or(SourceError::InvalidSetting {
             key: keys::PATH,

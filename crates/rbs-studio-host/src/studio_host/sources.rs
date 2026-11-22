@@ -707,13 +707,13 @@ impl Host {
         )
     }
 
-    /// Adds a PNG file as an image source, fitted inside half the canvas and centred.
+    /// Adds a PNG or JPEG file as an image source, fitted inside half the canvas and centred.
     pub(super) fn add_image_file(
         &mut self,
         path: &std::path::Path,
         name: Option<&str>,
     ) -> Result<SourceId, Refusal> {
-        let (pw, ph, _) = rbs_sources::still::decode_png(path).map_err(Refusal::Invalid)?;
+        let (pw, ph, _) = rbs_sources::still::decode_picture(path).map_err(Refusal::Invalid)?;
         let canvas = self
             .collection
             .canvas(self.canvas)

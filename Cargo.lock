@@ -5556,6 +5556,8 @@ dependencies = [
  "rbs-text",
  "rbs-text-test",
  "rtrb",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]

@@ -4077,12 +4077,12 @@ mod file_dialog {
             .map(|f| f.path().to_owned()))
     }
 
-    /// A PNG picture; `Ok(None)` when cancelled.
+    /// A PNG or JPEG picture (ADR-0171 decision 3); `Ok(None)` when cancelled.
     #[cfg(any(target_os = "macos", windows))]
     pub async fn open_png(title: &str) -> Result<Option<PathBuf>, String> {
         Ok(rfd::AsyncFileDialog::new()
             .set_title(title)
-            .add_filter("PNG image", &["png"])
+            .add_filter("Image", &["png", "jpg", "jpeg"])
             .pick_file()
             .await
             .map(|f| f.path().to_owned()))

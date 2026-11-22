@@ -98,6 +98,21 @@ pub fn color_picture(
     }
 }
 
+/// Decodes a PNG or JPEG file into straight-alpha RGBA8, chosen by the file's first
+/// bytes, not its name (ADR-0171 decision 3). A JPEG is turned upright by its EXIF
+/// orientation.
+pub fn decode_picture(path: &Path) -> Result<Picture, String> {
+    use std::io::Read;
+    let mut head = [0u8; 8];
+    let n = File::open(path)
+        .and_then(|mut f| f.read(&mut head))
+        .map_err(|e| e.to_string())?;
+    match &head[..n] {
+        [0xFF, 0xD8, 0xFF, ..] => crate::jpeg::decode_jpeg(path),
+        _ => decode_png(path),
+    }
+}
+
 /// Decodes a PNG file into straight-alpha RGBA8.
 pub fn decode_png(path: &Path) -> Result<Picture, String> {
     decode_limited(path, MAX_BYTES)
