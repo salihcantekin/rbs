@@ -16,6 +16,8 @@ mod projector;
 mod record;
 mod replay;
 mod scenes;
+#[cfg(all(windows, target_arch = "x86_64"))]
+mod stacks;
 mod stream;
 mod sync_offset;
 mod vcam;

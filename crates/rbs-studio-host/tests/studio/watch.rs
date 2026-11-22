@@ -7,7 +7,8 @@
 //! [`STALL`], far beyond any test (seconds) and every update wait (`LIMIT`, 20 s), it
 //! prints every live host, the update each one sent last, the panic its test thread hit
 //! (with the test's own frames), the last diagnostics log lines of its control thread
-//! and of the whole process, then ends the process.
+//! and of the whole process, and on Windows every thread's stack (`stacks.rs`), then
+//! ends the process.
 //!
 //! A test thread that panicked (for example on a 20 s update wait) and is still listed is
 //! stuck dropping its `StudioHost`: the drop joins a control thread that does not end.
@@ -29,6 +30,20 @@ use rbs_studio_host::studio_host::Update;
 /// Hang guard only: how long a host may live before the run is called stuck.
 const STALL: Duration = Duration::from_secs(120);
 
+/// Replaces [`STALL`], in seconds: a small value makes any host trip the report, to try
+/// the report itself (for example the stack dump on Windows).
+const STALL_VAR: &str = "RBS_STUDIO_TEST_STALL_SECS";
+
+fn stall() -> Duration {
+    static STALL_AT: OnceLock<Duration> = OnceLock::new();
+    *STALL_AT.get_or_init(|| {
+        std::env::var(STALL_VAR)
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .map_or(STALL, Duration::from_secs)
+    })
+}
+
 /// How often the watchdog looks.
 const LOOK: Duration = Duration::from_secs(5);
 
@@ -41,6 +56,10 @@ const LOG_LINES: usize = 400;
 /// Of those, how many the report shows per stuck control thread and for the process.
 const SHOWN_PER_HOST: usize = 25;
 const SHOWN_LAST: usize = 40;
+
+/// Hang guard only: how long the report waits for every thread's stack.
+#[cfg(all(windows, target_arch = "x86_64"))]
+const STACKS_GUARD: Duration = Duration::from_secs(60);
 
 /// Test frames of a panic's backtrace kept.
 const PANIC_FRAMES: usize = 12;
@@ -174,7 +193,7 @@ fn test_frames() -> String {
 impl Watch {
     fn look(&self) {
         let hosts = self.hosts.lock().unwrap_or_else(PoisonError::into_inner);
-        if !hosts.values().any(|h| h.since.elapsed() >= STALL) {
+        if !hosts.values().any(|h| h.since.elapsed() >= stall()) {
             return;
         }
         let panics = self.panics.lock().unwrap_or_else(PoisonError::into_inner);
@@ -182,7 +201,7 @@ impl Watch {
         let secs = |t: Instant| t.saturating_duration_since(self.started).as_secs_f64();
         let mut report = format!(
             "\nSTUDIO TESTS STUCK: a studio host is still alive after {} s (run time {:.1} s). Live hosts, oldest first:\n",
-            STALL.as_secs(),
+            stall().as_secs(),
             self.started.elapsed().as_secs_f64(),
         );
         let mut rows: Vec<&Live> = hosts.values().collect();
@@ -226,8 +245,39 @@ impl Watch {
         for l in log.iter().rev().take(SHOWN_LAST).rev() {
             let _ = writeln!(report, "  {:.3} s {}", secs(l.at), l.text);
         }
+        drop((log, panics, hosts));
+        // The summary first: if the stack dump fails badly, it is already out.
         rbs_crash::errln!("{report}");
+        rbs_crash::errln!("{}", every_stack());
         std::process::exit(101);
+    }
+}
+
+/// Every thread's stack (Windows x64), taken on a thread of its own and waited for at
+/// most [`STACKS_GUARD`], so a dump that blocks cannot keep the run alive.
+fn every_stack() -> String {
+    #[cfg(all(windows, target_arch = "x86_64"))]
+    {
+        let (tx, rx) = mpsc::channel();
+        let spawned = std::thread::Builder::new()
+            .name("studio-test-stacks".into())
+            .spawn(move || {
+                let _ = tx.send(crate::stacks::all());
+            });
+        if spawned.is_err() {
+            return "Thread stacks: could not start the dump thread.".to_owned();
+        }
+        match rx.recv_timeout(STACKS_GUARD) {
+            Ok(stacks) => format!("Thread stacks, innermost frame first:\n{stacks}"),
+            Err(_) => format!(
+                "Thread stacks: the dump did not finish within {} s.",
+                STACKS_GUARD.as_secs()
+            ),
+        }
+    }
+    #[cfg(not(all(windows, target_arch = "x86_64")))]
+    {
+        "Thread stacks: taken on Windows x64 only; elsewhere attach a debugger (gdb -p).".to_owned()
     }
 }
 

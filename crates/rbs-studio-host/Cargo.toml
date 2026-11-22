@@ -72,5 +72,11 @@ rbs-mux = { path = "../rbs-mux" }
 # A scripted input monitor with a permission (tests/studio/filters.rs, ADR-0165).
 rbs-input = { path = "../rbs-input" }
 
+# The studio test watchdog prints every thread's stack when a run hangs on Windows
+# (tests/studio/stacks.rs): dbghelp and the unwind tables are part of Windows, so no
+# debugger has to be installed. Already in the workspace (rbs-app, rbs-add-ons-sys).
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Diagnostics_Debug", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Kernel", "Win32_System_Threading"] }
+
 [lints]
 workspace = true
