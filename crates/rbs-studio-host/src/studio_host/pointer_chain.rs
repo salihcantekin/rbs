@@ -36,7 +36,7 @@ impl Host {
             Ok(())
         } else {
             Err(Refusal::Invalid(format!(
-                "{name} draws on display and window captures only."
+                "{name} needs a Screen capture or Window capture that can follow the pointer."
             )))
         }
     }
@@ -102,6 +102,11 @@ mod tests {
         assert_eq!(clamp_move(true, 0, 1, 4), 0);
         assert_eq!(clamp_move(false, 0, 1, 4), 1, "another filter stays behind");
         assert_eq!(clamp_move(false, 3, 1, 4), 3);
+        // A chain of one, all pointer filters, none.
+        assert_eq!(clamp_move(true, 0, 0, 1), 0);
+        assert_eq!(clamp_move(false, 0, 0, 1), 0);
+        assert_eq!(clamp_move(true, 2, 2, 3), 2, "all pointer: free");
+        assert_eq!(clamp_move(false, 1, 0, 3), 1, "none: unchanged");
         assert!(is_pointer(&NodeTypeId::new_static(
             rbs_filters::CLICK_RINGS
         )));

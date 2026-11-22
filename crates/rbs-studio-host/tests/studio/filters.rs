@@ -992,9 +992,11 @@ fn pointer_filters_stay_first_and_go_only_on_sources_with_a_mapping() {
             .collect()
     };
     assert_eq!(order(&mut c), [json!(rings), json!(blur)]);
-    // Neither can move past the other.
-    ok(&c.call("filter.move", json!({"filter": rings, "index": 1})));
-    ok(&c.call("filter.move", json!({"filter": blur, "index": 0})));
+    // Neither can move past the other: refused with the reason.
+    for (filter, index) in [(rings, 1), (blur, 0)] {
+        let moved = c.call("filter.move", json!({"filter": filter, "index": index}));
+        assert_eq!(kind(&moved), "invalid_params", "{moved}");
+    }
     assert_eq!(order(&mut c), [json!(rings), json!(blur)]);
     // One undo removes the added filter and its move together.
     ok(&c.call("edit.undo", json!({})));

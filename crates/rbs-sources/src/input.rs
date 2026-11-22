@@ -45,7 +45,7 @@ impl SourceTypes {
         };
         self.capture_candidates(kind).iter().any(|f| {
             matches!(
-                self.capture.capabilities(&f.id()).and_then(|c| c.get(&rbs_capture::caps::MAPPING)),
+                self.capture_capabilities(&f.id()).and_then(|c| c.get(&rbs_capture::caps::MAPPING)),
                 Some(rbs_core::capability::CapabilityValue::Set(kinds))
                     if kinds.iter().any(|k| k == kind.as_str())
             )

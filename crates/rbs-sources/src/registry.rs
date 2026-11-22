@@ -515,7 +515,7 @@ pub use crate::activity::activity_traits;
 /// Control thread only. Registering an adapter costs nothing: adapters hold no
 /// resources until a session or stream starts (P13).
 pub struct SourceTypes {
-    pub(crate) capture: Registry<dyn CaptureFactory>,
+    capture: Registry<dyn CaptureFactory>,
     audio: Registry<dyn AudioBackend>,
     media: Registry<dyn rbs_media_decode::MediaDecoderFactory>,
     /// Text renderers, in registration order (ADR-0129 decision 2).
@@ -979,6 +979,10 @@ impl SourceTypes {
         self.capture_candidates(kind)
             .into_iter()
             .find(|f| &f.id() == adapter)
+    }
+
+    pub(crate) fn capture_capabilities(&self, id: &AdapterId) -> Option<&CapabilitySet> {
+        self.capture.capabilities(id)
     }
 
     pub(crate) fn capture_candidates(&self, kind: TargetKind) -> Vec<Arc<dyn CaptureFactory>> {

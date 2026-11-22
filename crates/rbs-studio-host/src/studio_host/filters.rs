@@ -457,9 +457,15 @@ impl Host {
             .collection
             .add_filter(source, ty.type_id(), filter_settings(&ty, &values))
             .map_err(|e| Refusal::of(&e))?;
-        // A pointer filter goes before the others (ADR-0165 decision 3).
+        // A pointer filter goes before the others (ADR-0165 decision 3); any other
+        // filter stays at the end.
         let mut records = vec![undo];
-        if let Err(e) = self.pointer_filters_first(source, &mut records) {
+        let ordered = if super::pointer_chain::is_pointer(&ty.type_id()) {
+            self.pointer_filters_first(source, &mut records)
+        } else {
+            Ok(())
+        };
+        if let Err(e) = ordered {
             self.roll_back(records);
             return Err(e);
         }
@@ -699,7 +705,15 @@ impl Host {
             .iter()
             .filter(|f| f.id != filter && super::pointer_chain::is_pointer(&f.type_id))
             .count();
+        let asked = index;
         let index = super::pointer_chain::clamp_move(pointer, index, others, chain.len());
+        if index != asked && chain.get(index).is_some_and(|f| f.id == filter) {
+            return Err(Refusal::Invalid(if pointer {
+                "Pointer filters stay before the other filters.".to_owned()
+            } else {
+                "This filter stays after the pointer filters.".to_owned()
+            }));
+        }
         if chain.get(index).is_some_and(|f| f.id == filter) {
             return Ok(false);
         }
