@@ -412,7 +412,7 @@ The inspector pattern (as in Figma, Blender, DaVinci Resolve and Visual Studio),
 
 ### Workspace file
 
-Workspaces are stored as versioned TOML in the user's config directory, one file per workspace, so they can be shared and kept in version control. A JSON Schema for the format is published with the UI crate and checked in CI.
+Workspaces are stored as versioned TOML in the user's config directory, one file per workspace, so they can be shared and kept in version control. Where a closed panel was (ADR-0172) is kept in memory only and is not in the file. A JSON Schema for the format is published with the UI crate and checked in CI.
 
 Format 2 (ADR-0049; format 1 is read and migrated, see below):
 

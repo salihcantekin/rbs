@@ -10,7 +10,9 @@ use super::{
     DEFAULT_FLYOUT, EdgeGroup, MAX_EDGE_GROUPS, MAX_GROUP_TABS, Placement, Side, Window,
     WindowContent, Workspace,
 };
-use crate::layout::{Axis, Edge, MAX_DEPTH, Node, Tabs};
+use std::sync::Arc;
+
+use crate::layout::{Axis, Edge, MAX_DEPTH, Node, Split, Tabs};
 use crate::panel::PanelId;
 
 /// Most remembered spots; the oldest is forgotten first.
@@ -40,17 +42,31 @@ struct Spot {
     mates: Vec<PanelId>,
     /// Its tab index in that stack.
     index: usize,
-    /// A panel of the neighbour its stack shared a split with, the side of that
-    /// neighbour's stack the panel was on, and the panel's share of the two.
-    anchor: Option<(PanelId, Edge, f32)>,
+    /// The neighbour its stack (or the part of the tree holding it) shared a split
+    /// with.
+    anchor: Option<Neighbour>,
+}
+
+/// The neighbour of a closed panel's part of the tree.
+#[derive(Clone, Debug, PartialEq)]
+struct Neighbour {
+    /// Every panel of the neighbour node, sorted: the node is found again by them.
+    panels: Vec<PanelId>,
+    /// The side of the neighbour the panel was on.
+    edge: Edge,
+    /// The panel's part's share of the two.
+    share: f32,
 }
 
 /// The spots of the panels closed while this workspace was open, oldest first.
 ///
 /// It is not part of the layout: two workspaces that differ only in their spots are
-/// equal, so comparing layouts (history, "modified" checks) ignores it.
+/// equal, so comparing layouts (history, "modified" checks) ignores it. On purpose,
+/// a command that changed only spots is then no layout change and is dropped by the
+/// session; spots change only with a close or an open, which change the layout too.
+/// Shared between clones (each layout history step holds one) until one changes.
 #[derive(Clone, Debug, Default)]
-pub struct ClosedSpots(Vec<(PanelId, Spot)>);
+pub struct ClosedSpots(Arc<Vec<(PanelId, Spot)>>);
 
 impl PartialEq for ClosedSpots {
     fn eq(&self, _: &ClosedSpots) -> bool {
@@ -61,15 +77,16 @@ impl PartialEq for ClosedSpots {
 impl ClosedSpots {
     fn take(&mut self, id: &PanelId) -> Option<Spot> {
         let i = self.0.iter().position(|(p, _)| p == id)?;
-        Some(self.0.remove(i).1)
+        Some(Arc::make_mut(&mut self.0).remove(i).1)
     }
 
     fn put(&mut self, id: PanelId, spot: Spot) {
         self.take(&id);
-        if self.0.len() >= MAX_SPOTS {
-            self.0.remove(0);
+        let all = Arc::make_mut(&mut self.0);
+        if all.len() >= MAX_SPOTS {
+            all.remove(0);
         }
-        self.0.push((id, spot));
+        all.push((id, spot));
     }
 }
 
@@ -104,8 +121,10 @@ impl Workspace {
                 let Some((tree, local)) = win.locate(stack) else {
                     continue;
                 };
-                if let Some(t) = win.trees_mut().into_iter().nth(tree) {
-                    return t.insert_into_stack(local, id.clone(), Some(spot.index));
+                if let Some(t) = win.trees_mut().into_iter().nth(tree)
+                    && t.insert_into_stack(local, id.clone(), Some(spot.index))
+                {
+                    return true;
                 }
             }
             let Some(m) = self.main_layout_mut() else {
@@ -124,29 +143,36 @@ impl Workspace {
         false
     }
 
-    /// In a new stack on the same side of the neighbour it shared a split with.
+    /// In a new stack on the same side of the neighbour it shared a split with, at its
+    /// old share: beside that whole node when it is found again by its panels, else
+    /// beside the stack of one of them.
     fn beside_anchor(&mut self, id: &PanelId, spot: &Spot) -> bool {
-        let Some((anchor, edge, share)) = &spot.anchor else {
+        let Some(n) = &spot.anchor else {
             return false;
+        };
+        let share = n.share.clamp(MIN_SHARE, 1.0 - MIN_SHARE);
+        let stack = Tabs {
+            tabs: vec![id.clone()],
+            active: 0,
+            collapsed: false,
         };
         for win in &mut self.windows {
             for tree in win.trees_mut() {
-                let Some((local, _)) = tree.find(anchor) else {
-                    continue;
-                };
                 let mut next = tree.clone();
-                let stack = Tabs {
-                    tabs: vec![id.clone()],
-                    active: 0,
-                    collapsed: false,
-                };
-                let share = share.clamp(MIN_SHARE, 1.0 - MIN_SHARE);
-                if next.insert_beside_share(local, stack, *edge, share) && next.depth() <= MAX_DEPTH
-                {
+                let placed = insert_beside_node(&mut next, &n.panels, &stack, n.edge, share)
+                    || n.panels
+                        .iter()
+                        .find_map(|p| next.find(p))
+                        .is_some_and(|(local, _)| {
+                            next.insert_beside_share(local, stack.clone(), n.edge, share)
+                        });
+                if placed {
+                    if next.depth() > MAX_DEPTH {
+                        return false;
+                    }
                     *tree = next;
                     return true;
                 }
-                return false;
             }
         }
         false
@@ -177,8 +203,9 @@ impl Workspace {
                 };
                 if let Some(g) = m.auto_hide.iter_mut().find(|g| g.edge == *side) {
                     if g.tabs.len() < MAX_GROUP_TABS {
-                        g.tabs.push(id.clone());
-                        g.active = g.tabs.len() - 1;
+                        let at = spot.index.min(g.tabs.len());
+                        g.tabs.insert(at, id.clone());
+                        g.active = at;
                         return true;
                     }
                     return false;
@@ -254,16 +281,15 @@ fn spot_in_tree(home: Home, tree: &Node, id: &PanelId) -> Option<Spot> {
 enum Below {
     /// Panel `id` is not in this node.
     Absent,
-    /// It is, and no neighbour with a tab stack was found yet.
+    /// It is, and no neighbour was found yet.
     Alone,
-    /// It is, with this anchor.
-    Anchored(PanelId, Edge, f32),
+    /// It is, with this neighbour.
+    Anchored(Neighbour),
 }
 
-/// A panel of the nearest neighbour of `id`'s stack that has a tab stack, the side
-/// of that neighbour's stack `id` was on, and the share of the two that `id`'s part
-/// of the split had. A neighbour before it is preferred.
-fn anchor_of(tree: &Node, id: &PanelId) -> Option<(PanelId, Edge, f32)> {
+/// The node next to the part of the tree that holds `id`'s stack, at the lowest
+/// split that has one (the one before it preferred), with the side and share.
+fn anchor_of(tree: &Node, id: &PanelId) -> Option<Neighbour> {
     fn go(n: &Node, id: &PanelId) -> Below {
         match n {
             Node::Tabs(t) if t.tabs.contains(id) => Below::Alone,
@@ -285,37 +311,81 @@ fn anchor_of(tree: &Node, id: &PanelId) -> Option<(PanelId, Edge, f32)> {
                     Axis::Horizontal => (Edge::Right, Edge::Left),
                     Axis::Vertical => (Edge::Bottom, Edge::Top),
                 };
-                let share = |n: usize| {
-                    let (mine, theirs) = (s.ratios[i], s.ratios[n]);
-                    mine / (mine + theirs)
+                let (b, edge) = match i.checked_sub(1) {
+                    Some(b) => (b, after_it),
+                    None if i + 1 < s.children.len() => (i + 1, before_it),
+                    None => return Below::Alone,
                 };
-                if let Some(b) = i.checked_sub(1)
-                    && let Some(p) = last_panel(&s.children[b])
-                {
-                    return Below::Anchored(p, after_it, share(b));
-                }
-                match s.children.get(i + 1).and_then(first_panel) {
-                    Some(p) => Below::Anchored(p, before_it, share(i + 1)),
-                    None => Below::Alone,
-                }
+                let (mine, theirs) = (s.ratios[i], s.ratios[b]);
+                Below::Anchored(Neighbour {
+                    panels: sorted_panels(&s.children[b]),
+                    edge,
+                    share: mine / (mine + theirs),
+                })
             }
         }
     }
     match go(tree, id) {
-        Below::Anchored(p, e, share) => Some((p, e, share)),
+        Below::Anchored(n) => Some(n),
         _ => None,
     }
 }
 
-/// The first tab of the last tab stack of `n`.
-fn last_panel(n: &Node) -> Option<PanelId> {
-    let count = n.stack_count();
-    n.stack(count.checked_sub(1)?)?.tabs.first().cloned()
+fn sorted_panels(n: &Node) -> Vec<PanelId> {
+    let mut all: Vec<PanelId> = n.panels().into_iter().cloned().collect();
+    all.sort();
+    all
 }
 
-/// The first tab of the first tab stack of `n`.
-fn first_panel(n: &Node) -> Option<PanelId> {
-    n.stack(0)?.tabs.first().cloned()
+/// Put `stack` on the `edge` side of the node whose panels are exactly `panels`,
+/// taking `share` of its place: inside its parent split when that split runs along
+/// the edge's axis, else in a new split in its place. Returns false (and leaves the
+/// tree alone) when there is no such node.
+fn insert_beside_node(
+    tree: &mut Node,
+    panels: &[PanelId],
+    stack: &Tabs,
+    edge: Edge,
+    share: f32,
+) -> bool {
+    let (axis, first) = match edge {
+        Edge::Left => (Axis::Horizontal, true),
+        Edge::Right => (Axis::Horizontal, false),
+        Edge::Top => (Axis::Vertical, true),
+        Edge::Bottom => (Axis::Vertical, false),
+    };
+    let new = || Node::Tabs(stack.clone());
+    if sorted_panels(tree) == panels {
+        let old = std::mem::replace(tree, Node::empty());
+        let parts = if first {
+            vec![(share, new()), (1.0 - share, old)]
+        } else {
+            vec![(1.0 - share, old), (share, new())]
+        };
+        *tree = Node::split(axis, parts);
+        return true;
+    }
+    let Node::Split(Split {
+        axis: a,
+        ratios,
+        children,
+    }) = tree
+    else {
+        return false;
+    };
+    if *a == axis
+        && let Some(i) = children.iter().position(|c| sorted_panels(c) == panels)
+    {
+        let part = ratios[i] * share;
+        ratios[i] -= part;
+        let at = if first { i } else { i + 1 };
+        ratios.insert(at, part);
+        children.insert(at, new());
+        return true;
+    }
+    children
+        .iter_mut()
+        .any(|c| insert_beside_node(c, panels, stack, edge, share))
 }
 
 #[cfg(test)]
@@ -440,5 +510,79 @@ mod tests {
         assert_eq!(side_of(&fresh, "rbs.mixer"), Some(Side::Bottom));
         w.open(id("rbs.mixer")).unwrap();
         assert_eq!(w.to_toml().unwrap(), file);
+    }
+
+    #[test]
+    fn a_stack_beside_a_nested_split_reopens_beside_the_whole_split() {
+        let mut w = builtin::edit();
+        // Left area: Scenes over Sources, with Properties right of that whole split.
+        let m = w.main_layout_mut().unwrap();
+        let old = m.left.layout.take().unwrap();
+        m.left.layout = Some(Node::split(
+            Axis::Horizontal,
+            vec![(0.7, old), (0.3, Node::tabs(vec![id("rbs.properties")]))],
+        ));
+        m.right.layout = None;
+        let before = w.clone();
+        w.close(&id("rbs.properties")).unwrap();
+        w.open(id("rbs.properties")).unwrap();
+        let (l, r) = (
+            w.main_layout().unwrap().left.layout.clone(),
+            before.main_layout().unwrap().left.layout.clone(),
+        );
+        let ratios = |n: &Option<Node>| match n {
+            Some(Node::Split(s)) => (s.axis, s.ratios.clone(), s.children.len()),
+            _ => panic!("a split"),
+        };
+        let (axis, got, n) = ratios(&l);
+        assert_eq!((axis, n), (Axis::Horizontal, 2));
+        assert!((got[0] - 0.7).abs() < 1e-4);
+        assert_eq!(
+            sorted_panels(l.as_ref().unwrap()),
+            sorted_panels(r.as_ref().unwrap())
+        );
+        w.validate().unwrap();
+    }
+
+    #[test]
+    fn a_closed_floating_window_comes_back_as_one_window() {
+        let mut w = builtin::edit();
+        let f = w.float(&id("rbs.scenes")).unwrap();
+        let stack = w.find(&id("rbs.scenes")).unwrap().1;
+        w.move_to_stack(&id("rbs.sources"), f, stack).unwrap();
+        w.close_window(f).unwrap();
+        w.open(id("rbs.scenes")).unwrap();
+        w.open(id("rbs.sources")).unwrap();
+        assert_eq!(w.windows.len(), 2);
+        assert_eq!(
+            place(&w, "rbs.sources").1.tabs,
+            [id("rbs.scenes"), id("rbs.sources")]
+        );
+        w.validate().unwrap();
+    }
+
+    #[test]
+    fn undo_and_redo_of_a_close_and_a_reopen() {
+        use crate::session::{LayoutCommand, LayoutSession, Origin};
+        let mut w = builtin::edit();
+        let props = stack_of(&w, "rbs.properties");
+        w.move_to_stack(&id("rbs.mixer"), 0, props).unwrap();
+        let start = w.clone();
+        let mut s = LayoutSession::new(w);
+        let mixer = id("rbs.mixer");
+        s.apply(LayoutCommand::ClosePanel(mixer.clone()), Origin::Command)
+            .unwrap();
+        assert!(s.undo());
+        assert_eq!(s.workspace(), &start);
+        assert!(s.redo());
+        assert!(!s.workspace().is_open(&mixer));
+        s.apply(LayoutCommand::OpenPanel(mixer.clone()), Origin::Command)
+            .unwrap();
+        assert_eq!(s.workspace(), &start);
+        assert!(s.undo());
+        // Undoing the reopen gives the spot back, so it reopens there again.
+        s.apply(LayoutCommand::OpenPanel(mixer), Origin::Command)
+            .unwrap();
+        assert_eq!(s.workspace(), &start);
     }
 }
