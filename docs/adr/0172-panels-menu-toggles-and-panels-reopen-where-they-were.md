@@ -1,6 +1,6 @@
 # ADR-0172: The Panels menu toggles, and a closed panel reopens where it was
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-22
 - Deciders: Salih (owner)
 - Spec: [ui-design-system](../specs/ui-design-system.md) (Pictures leaf paragraph, menu table row `ui.panel.select`, window frame)
@@ -58,4 +58,4 @@ Independent review per ADR-0014, 2026-11-22, fresh AI session: approve with chan
 9. Spec sync: the ADR now says "the Panels menu"; the spec's Workspace file section says spots are not saved; ADR-0073 gets its "superseded in part" line when this ADR is accepted.
 10. The macOS check mark after a refused close: the menu's check marks are bound to the panel list that is read from the workspace on every sync after a command, refused or not, so a refused close shows the mark as it was; to be confirmed on the Mac.
 
-Pending: the owner's approval.
+Salih (owner) approved on 2026-11-22 ("Onayla, Mac'te dene, merge et"); merge after a hand check of the Panels menu on the Mac.
