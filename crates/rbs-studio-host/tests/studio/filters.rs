@@ -967,3 +967,46 @@ fn a_display_can_capture_the_system_sound_too() {
     c.call("source.delete", json!({"source": screen}));
     assert!(sources(&mut c).iter().all(|s| s["companion_of"].is_null()));
 }
+
+#[test]
+fn pointer_filters_stay_first_and_go_only_on_sources_with_a_mapping() {
+    let Some((_host, _updates, _api, mut c)) = start() else {
+        return;
+    };
+    let screen = add(&mut c, "screen", "Screen");
+    let blur = c.call(
+        "filter.add",
+        json!({"source": screen, "type": "org.rbs.filter.blur"}),
+    );
+    let blur = ok(&blur)["filter"].as_u64().unwrap();
+    // Added after blur, it goes before it.
+    let rings = c.call(
+        "filter.add",
+        json!({"source": screen, "type": rbs_filters::CLICK_RINGS}),
+    );
+    let rings = ok(&rings)["filter"].as_u64().unwrap();
+    let order = |c: &mut Client| -> Vec<Value> {
+        filters_of(c, screen)
+            .iter()
+            .map(|f| f["id"].clone())
+            .collect()
+    };
+    assert_eq!(order(&mut c), [json!(rings), json!(blur)]);
+    // Neither can move past the other: refused with the reason.
+    for (filter, index) in [(rings, 1), (blur, 0)] {
+        let moved = c.call("filter.move", json!({"filter": filter, "index": index}));
+        assert_eq!(kind(&moved), "invalid_params", "{moved}");
+    }
+    assert_eq!(order(&mut c), [json!(rings), json!(blur)]);
+    // One undo removes the added filter and its move together.
+    ok(&c.call("edit.undo", json!({})));
+    assert_eq!(order(&mut c), [json!(blur)]);
+
+    // A camera publishes no picture mapping.
+    let cam = add(&mut c, "camera", "Camera");
+    let refused = c.call(
+        "filter.add",
+        json!({"source": cam, "type": rbs_filters::CLICK_RINGS}),
+    );
+    assert_eq!(kind(&refused), "invalid_params", "{refused}");
+}

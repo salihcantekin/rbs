@@ -981,7 +981,11 @@ impl SourceTypes {
             .find(|f| &f.id() == adapter)
     }
 
-    fn capture_candidates(&self, kind: TargetKind) -> Vec<Arc<dyn CaptureFactory>> {
+    pub(crate) fn capture_capabilities(&self, id: &AdapterId) -> Option<&CapabilitySet> {
+        self.capture.capabilities(id)
+    }
+
+    pub(crate) fn capture_candidates(&self, kind: TargetKind) -> Vec<Arc<dyn CaptureFactory>> {
         self.capture.select(&capture_requirement(kind)).candidates
     }
 
