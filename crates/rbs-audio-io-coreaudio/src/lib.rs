@@ -6,7 +6,12 @@
 //! | --- | --- | --- |
 //! | `Input` | a device with input channels (microphone, line input, interface) | `input:<device UID>` |
 //! | `OutputLoopback` | a device with output channels, read through a process tap of its output (macOS 14.4+) | `output:<device UID>` |
-//! | `Application` | a process playing audio, read through a process tap (macOS 14.4+) | `app:<process id>` |
+//! | `Application` | an application playing audio, read through a process tap of all its processes (macOS 14.4+) | `app:<process id>` |
+//!
+//! An application is the outermost `.app` bundle of a process's executable, so helper
+//! processes inside it (`Contents/Frameworks/… Helper.app`, where browsers and Electron
+//! applications play their sound) are listed once, under the application's name, and
+//! tapped together with it. A process outside any bundle is its own application.
 //!
 //! Device UIDs are stable across restarts. `enumerate` only reads properties of the
 //! HAL's objects; it creates nothing and never prompts.
@@ -116,6 +121,22 @@ pub(crate) fn layout(channels: usize) -> Option<ChannelLayout> {
     }
 }
 
+/// The application bundle an executable belongs to: the path of the outermost
+/// `.app` folder in `exe` and that folder's name without `.app`. `None` outside
+/// any bundle.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn app_bundle(exe: &str) -> Option<(&str, &str)> {
+    let mut start = 0;
+    for part in exe.split('/') {
+        let end = start + part.len();
+        if let Some(name) = part.strip_suffix(".app").filter(|n| !n.is_empty()) {
+            return Some((&exe[..end], name));
+        }
+        start = end + 1;
+    }
+    None
+}
+
 /// Endpoint id prefixes.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) mod ids {
@@ -220,6 +241,23 @@ mod tests {
         }
         assert_eq!(ids::parse(&EndpointId::new("input:")), None);
         assert_eq!(ids::parse(&EndpointId::new("capture:x")), None);
+    }
+
+    #[test]
+    fn helpers_belong_to_their_outermost_application() {
+        let helper = "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome \
+                      Framework.framework/Versions/1/Helpers/Google Chrome Helper.app/\
+                      Contents/MacOS/Google Chrome Helper";
+        assert_eq!(
+            app_bundle(helper),
+            Some(("/Applications/Google Chrome.app", "Google Chrome"))
+        );
+        assert_eq!(
+            app_bundle("/Applications/Discord.app/Contents/MacOS/Discord"),
+            Some(("/Applications/Discord.app", "Discord"))
+        );
+        assert_eq!(app_bundle("/usr/bin/afplay"), None);
+        assert_eq!(app_bundle("/tmp/.app/x"), None);
     }
 
     #[test]

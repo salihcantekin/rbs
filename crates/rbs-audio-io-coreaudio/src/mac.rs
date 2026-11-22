@@ -274,6 +274,52 @@ fn process_name(pid: i32) -> Option<String> {
     Some(String::from_utf8_lossy(&buffer[..len]).into_owned())
 }
 
+fn process_path(pid: i32) -> Option<String> {
+    let mut buffer = vec![0_u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+    // SAFETY: `buffer` is writable for its whole length, which is passed as the size.
+    let len = unsafe { libc::proc_pidpath(pid, buffer.as_mut_ptr().cast(), buffer.len() as u32) };
+    let len = usize::try_from(len).ok().filter(|l| *l > 0)?;
+    buffer.truncate(len);
+    String::from_utf8(buffer).ok()
+}
+
+/// The application a process belongs to (`crate::app_bundle`): its bundle path and
+/// name, or `None` for a process outside any bundle.
+fn application_of(pid: i32) -> Option<(String, String)> {
+    let path = process_path(pid)?;
+    let (bundle, name) = crate::app_bundle(&path)?;
+    Some((bundle.to_owned(), name.to_owned()))
+}
+
+/// The process objects of `pid`'s application: `process` first, then every other
+/// process of the same bundle the HAL knows (helpers that play the sound).
+fn application_processes(pid: i32, process: AudioObjectID) -> Vec<AudioObjectID> {
+    let mut objects = vec![process];
+    let Some((bundle, _)) = application_of(pid) else {
+        return objects;
+    };
+    let own = std::process::id() as i32;
+    for other in get_ids(
+        SYSTEM,
+        kAudioHardwarePropertyProcessObjectList,
+        kAudioObjectPropertyScopeGlobal,
+    ) {
+        let same = other != process
+            && get::<i32>(
+                other,
+                kAudioProcessPropertyPID,
+                kAudioObjectPropertyScopeGlobal,
+            )
+            .filter(|p| *p > 0 && *p != own)
+            .and_then(application_of)
+            .is_some_and(|(b, _)| b == bundle);
+        if same {
+            objects.push(other);
+        }
+    }
+    objects
+}
+
 /// Whether every input stream of `device` hands IO procs 32-bit native float, the
 /// only sample type the IO proc reads.
 fn input_is_float(device: AudioObjectID) -> bool {
@@ -532,6 +578,8 @@ impl CoreAudioBackend {
         let format = Self::application_format();
         let own = std::process::id() as i32;
         let mut pids: Vec<i32> = Vec::new();
+        // One endpoint per application: its helpers play under its name.
+        let mut bundles: Vec<String> = Vec::new();
         let mut found = Vec::new();
         for process in get_ids(
             SYSTEM,
@@ -555,7 +603,16 @@ impl CoreAudioBackend {
                 continue;
             }
             pids.push(pid);
-            let name = process_name(pid)
+            let application = application_of(pid);
+            if let Some((bundle, _)) = &application {
+                if bundles.contains(bundle) {
+                    continue;
+                }
+                bundles.push(bundle.clone());
+            }
+            let name = application
+                .map(|(_, name)| name)
+                .or_else(|| process_name(pid))
                 .or_else(|| get_string(process, kAudioProcessPropertyBundleID))
                 .unwrap_or_else(|| format!("Process {pid}"));
             found.push(AudioEndpoint::new(
@@ -1077,11 +1134,11 @@ impl Drop for Session {
 }
 
 /// A private process tap: of an output device's stream (mixed down to stereo) or of
-/// one process (stereo). `exclude` is a process object left out of the device tap.
+/// the processes of one application (stereo). `exclude` is a process object left out of the device tap.
 /// Returns the tap and its UID.
 fn create_tap(
     output: Option<&str>,
-    process: Option<AudioObjectID>,
+    processes: &[AudioObjectID],
     exclude: Option<AudioObjectID>,
 ) -> Result<(AudioObjectID, String), AudioIoError> {
     let api = tap_api().ok_or(AudioIoError::Unsupported("process taps need macOS 14.4"))?;
@@ -1092,7 +1149,7 @@ fn create_tap(
     // SAFETY: CATapDescription initialisers and setters on a fresh object; the class
     // exists (macOS 14.2+, checked by `tap_api`).
     let description = unsafe {
-        let description = match (output, process) {
+        let description = match (output, processes) {
             (Some(uid), _) => {
                 let d = CATapDescription::initExcludingProcesses_andDeviceUID_withStream(
                     CATapDescription::alloc(),
@@ -1104,11 +1161,14 @@ fn create_tap(
                 d.setMono(false);
                 d
             }
-            (None, Some(process)) => CATapDescription::initStereoMixdownOfProcesses(
-                CATapDescription::alloc(),
-                &NSArray::from_retained_slice(&[NSNumber::new_u32(process)]),
-            ),
-            (None, None) => return Err(AudioIoError::EndpointNotFound),
+            (None, []) => return Err(AudioIoError::EndpointNotFound),
+            (None, processes) => {
+                let numbers: Vec<_> = processes.iter().map(|p| NSNumber::new_u32(*p)).collect();
+                CATapDescription::initStereoMixdownOfProcesses(
+                    CATapDescription::alloc(),
+                    &NSArray::from_retained_slice(&numbers),
+                )
+            }
         };
         description.setPrivate(true);
         description.setName(&NSString::from_str("RBS audio capture"));
@@ -1232,7 +1292,7 @@ impl CoreAudioStream {
                 let own = exclude_self
                     .then(|| process_object(std::process::id() as i32))
                     .flatten();
-                let (tap, tap_uid) = create_tap(Some(uid), None, own)?;
+                let (tap, tap_uid) = create_tap(Some(uid), &[], own)?;
                 session.tap = Some((tap, Owned::new()));
                 let aggregate = create_aggregate(uid, &tap_uid)?;
                 session.aggregate = Some((aggregate, Owned::new()));
@@ -1247,7 +1307,8 @@ impl CoreAudioStream {
                 if nominal_rate(output) != Some(rate) {
                     return Err(AudioIoError::FormatChanged);
                 }
-                let (tap, tap_uid) = create_tap(None, Some(process), None)?;
+                let processes = application_processes(*pid, process);
+                let (tap, tap_uid) = create_tap(None, &processes, None)?;
                 session.tap = Some((tap, Owned::new()));
                 let aggregate = create_aggregate(&output_uid, &tap_uid)?;
                 session.aggregate = Some((aggregate, Owned::new()));
