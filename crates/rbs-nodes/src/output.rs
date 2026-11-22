@@ -26,9 +26,9 @@ pub const OUTPUT_NODE_TYPE: &str = "org.rbs.output";
 pub const DEFAULT_BACKLOG: usize = 4096;
 /// Default time `release` waits to deliver the tail and close the transport.
 pub const DEFAULT_FINISH_TIMEOUT: Duration = Duration::from_secs(5);
-/// Packets of the other streams an output with video keeps while it waits for the
+/// Packets of each other stream an output with video keeps while it waits for the
 /// first video packet (aligned start); past it the oldest are dropped (`start_drops`).
-/// About 5 s of AAC at 48 kHz.
+/// About 5 s of AAC at 48 kHz. One hold per stream (ADR-0170 decision 5).
 pub const START_HOLD: usize = 256;
 /// How often `release` retries a full queue while it delivers the tail.
 const FINISH_RETRY: Duration = Duration::from_millis(5);
@@ -70,9 +70,13 @@ pub struct OutputNodeStats {
     pub connected: AtomicBool,
     /// Items still undelivered when `release` gave up.
     pub finish_lost: AtomicU64,
-    /// Packets of other streams dropped because they end before the first video
-    /// packet (aligned start), or because the hold before it was full.
+    /// Packets of the first stream after the video dropped because they end before
+    /// the first video packet (aligned start), or because a hold before it was full.
+    /// With one audio stream, every start drop.
     pub start_drops: AtomicU64,
+    /// The same, per stream in pin order (ADR-0170 decision 5: equal on every audio
+    /// track of a recording); empty until `prepare`'s output was built with streams.
+    pub stream_start_drops: Box<[AtomicU64]>,
     /// Why the output stopped for good, set once at the first permanent failure.
     pub failure: OnceLock<String>,
     /// The earliest `pts` delivered (muxed, or forwarded without a muxer), in
@@ -99,6 +103,7 @@ impl Default for OutputNodeStats {
             connected: AtomicBool::new(false),
             finish_lost: AtomicU64::new(0),
             start_drops: AtomicU64::new(0),
+            stream_start_drops: Box::default(),
             failure: OnceLock::new(),
             first_pts_ns: AtomicU64::new(u64::MAX),
             end_ns: AtomicU64::new(0),
@@ -107,6 +112,22 @@ impl Default for OutputNodeStats {
 }
 
 impl OutputNodeStats {
+    /// Counters for an output of `streams` streams.
+    pub fn with_streams(streams: usize) -> Self {
+        Self {
+            stream_start_drops: (0..streams).map(|_| AtomicU64::new(0)).collect(),
+            ..Self::default()
+        }
+    }
+
+    /// Packets of stream `stream` dropped at the aligned start (0 for an unknown
+    /// stream).
+    pub fn start_drops_of(&self, stream: usize) -> u64 {
+        self.stream_start_drops
+            .get(stream)
+            .map_or(0, |c| c.load(Ordering::Relaxed))
+    }
+
     /// The media delivered so far, `(first pts, end)` in nanoseconds on the master
     /// clock; `None` before the first packet.
     pub fn span(&self) -> Option<(u64, u64)> {
@@ -158,6 +179,16 @@ impl WaitClock for SystemWaitClock {
 
 fn add(counter: &AtomicU64, n: u64) {
     counter.fetch_add(n, Ordering::Relaxed);
+}
+
+/// Counts a start drop of `stream`; `first` is the stream `start_drops` counts.
+fn start_drop(stats: &OutputNodeStats, stream: usize, first: Option<usize>) {
+    if let Some(c) = stats.stream_start_drops.get(stream) {
+        add(c, 1);
+    }
+    if first == Some(stream) {
+        add(&stats.start_drops, 1);
+    }
 }
 
 /// Something waiting for room in the transport's queue.
@@ -295,8 +326,16 @@ pub struct OutputNode<S: SpanPolicy = NoSpan, G: PacketGate = NoCut> {
     events: Vec<TransportEvent>,
     /// The video stream's index, if the output has one and other streams too.
     video: Option<usize>,
+    /// The first stream that is not the video, whose drops `start_drops` counts.
+    first_held: Option<usize>,
     start: Start,
-    held: VecDeque<(usize, EncodedPacket)>,
+    /// While waiting, the latest time an overflow dropped up to: a packet of any
+    /// stream at or before it is dropped on arrival, so a track that arrives late
+    /// loses the same span as the others (ADR-0170 decision 5).
+    dropped_to: Option<Timestamp>,
+    /// One hold per stream while waiting for video (none for the video stream), each
+    /// of [`START_HOLD`] packets, built in `prepare`.
+    holds: Vec<VecDeque<EncodedPacket>>,
     span: S,
     /// Which packets are written (ADR-0124: a recording that shares an encoder).
     gate: G,
@@ -318,13 +357,17 @@ impl OutputNode {
             .iter()
             .position(|s| matches!(s.params, StreamParams::Video { .. }))
             .filter(|_| streams.len() > 1);
+        let first_held = video.and_then(|v| (0..streams.len()).find(|&i| i != v));
         Self {
             descriptor: output_descriptor(streams.len()),
             span: NoSpan,
             gate: NoCut,
             video,
+            first_held,
             start: Start::Open,
-            held: VecDeque::new(),
+            dropped_to: None,
+            holds: Vec::new(),
+            stats: Arc::new(OutputNodeStats::with_streams(streams.len())),
             streams,
             transport_factory: factory,
             transport_config: config,
@@ -338,7 +381,6 @@ impl OutputNode {
             backlog: VecDeque::new(),
             chunks: Vec::new(),
             events: Vec::new(),
-            stats: Arc::default(),
             abandon: Arc::default(),
         }
     }
@@ -385,8 +427,10 @@ impl<S: SpanPolicy, G: PacketGate> OutputNode<S, G> {
             chunks: self.chunks,
             events: self.events,
             video: self.video,
+            first_held: self.first_held,
             start: self.start,
-            held: self.held,
+            dropped_to: self.dropped_to,
+            holds: self.holds,
             span,
             gate,
             stats: self.stats,
@@ -525,14 +569,14 @@ impl<S: SpanPolicy, G: PacketGate> OutputNode<S, G> {
 
     /// Takes one packet of stream `stream` in: the output starts at the first video
     /// packet, so packets of other streams that end before it are dropped and packets
-    /// that come first are held until it arrives. Real-time: the hold is preallocated
-    /// and a packet clone shares its payload.
+    /// that come first are held until it arrives, one hold per stream. Real-time: the
+    /// holds are preallocated and a packet clone shares its payload.
     fn accept(&mut self, stream: usize, packet: &EncodedPacket) -> Result<(), NodeError> {
         match self.start {
             Start::Open => self.write(stream, packet),
             Start::From(start) => {
                 if Some(stream) != self.video && ends_before(packet, start) {
-                    add(&self.stats.start_drops, 1);
+                    start_drop(&self.stats, stream, self.first_held);
                     return Ok(());
                 }
                 self.write(stream, packet)
@@ -540,22 +584,70 @@ impl<S: SpanPolicy, G: PacketGate> OutputNode<S, G> {
             Start::Waiting if Some(stream) == self.video => {
                 let start = packet.pts();
                 self.start = Start::From(start);
-                while let Some((s, held)) = self.held.pop_front() {
-                    if ends_before(&held, start) {
-                        add(&self.stats.start_drops, 1);
-                    } else {
-                        self.write(s, &held)?;
-                    }
-                }
+                self.drain_holds(Some(start))?;
                 self.write(stream, packet)
             }
             Start::Waiting => {
-                if self.held.len() >= START_HOLD {
-                    self.held.pop_front();
-                    add(&self.stats.start_drops, 1);
+                let Some(hold) = self.holds.get(stream) else {
+                    return Ok(());
+                };
+                if self.dropped_to.is_some_and(|t| packet.pts() <= t) {
+                    start_drop(&self.stats, stream, self.first_held);
+                    return Ok(());
                 }
-                self.held.push_back((stream, packet.clone()));
+                if hold.len() >= START_HOLD {
+                    self.overflow(stream);
+                }
+                if let Some(hold) = self.holds.get_mut(stream) {
+                    hold.push_back(packet.clone());
+                }
                 Ok(())
+            }
+        }
+    }
+
+    /// A full hold: every hold drops its packets at or before the oldest of
+    /// `stream`'s, and later packets at or before it are dropped on arrival, so the
+    /// streams' drops stay equal by rule (ADR-0170 decision 5).
+    fn overflow(&mut self, stream: usize) {
+        let Some(oldest) = self
+            .holds
+            .get(stream)
+            .and_then(|h| h.front())
+            .map(|p| p.pts())
+        else {
+            return;
+        };
+        self.dropped_to = Some(self.dropped_to.map_or(oldest, |t| t.max(oldest)));
+        for (s, hold) in self.holds.iter_mut().enumerate() {
+            while hold.front().is_some_and(|p| p.pts() <= oldest) {
+                hold.pop_front();
+                start_drop(&self.stats, s, self.first_held);
+            }
+        }
+    }
+
+    /// Writes the held packets merged by dts, ties by stream index; with `start`,
+    /// those that end before it are dropped. Stops at the first write error.
+    fn drain_holds(&mut self, start: Option<Timestamp>) -> Result<(), NodeError> {
+        loop {
+            let next = self
+                .holds
+                .iter()
+                .enumerate()
+                .filter_map(|(s, h)| h.front().map(|p| (p.dts(), s)))
+                .min();
+            let Some((_, s)) = next else {
+                return Ok(());
+            };
+            let Some(packet) = self.holds.get_mut(s).and_then(VecDeque::pop_front) else {
+                return Ok(());
+            };
+            match start {
+                Some(start) if ends_before(&packet, start) => {
+                    start_drop(&self.stats, s, self.first_held);
+                }
+                _ => self.write(s, &packet)?,
             }
         }
     }
@@ -681,9 +773,18 @@ impl<S: SpanPolicy, G: PacketGate, X: Runtime> Node<X> for OutputNode<S, G> {
             .map_err(|e| self.transport_error("transport start", e))?;
         self.transport = Some(transport);
         self.backlog = VecDeque::with_capacity(self.backlog_limit);
-        if self.video.is_some() {
+        if let Some(video) = self.video {
             self.start = Start::Waiting;
-            self.held = VecDeque::with_capacity(START_HOLD);
+            self.dropped_to = None;
+            self.holds = (0..self.streams.len())
+                .map(|s| {
+                    if s == video {
+                        VecDeque::new()
+                    } else {
+                        VecDeque::with_capacity(START_HOLD)
+                    }
+                })
+                .collect();
         }
         self.chunks = Vec::with_capacity(16);
         self.events = Vec::with_capacity(16);
@@ -758,10 +859,11 @@ impl<S: SpanPolicy, G: PacketGate, X: Runtime> Node<X> for OutputNode<S, G> {
     fn release(&mut self, _ctx: &mut PrepareCtx<'_, X>) {
         if self.abandon.load(Ordering::Acquire) {
             // Removed without a drain: nothing more is delivered or finished.
-            let lost = self.held.len() + self.backlog.len();
+            let held: usize = self.holds.iter().map(VecDeque::len).sum();
+            let lost = held + self.backlog.len();
             add(&self.stats.finish_lost, lost as u64);
             self.start = Start::Open;
-            self.held = VecDeque::new();
+            self.holds = Vec::new();
             self.backlog = VecDeque::new();
             self.muxer = None;
             self.transport = None;
@@ -770,14 +872,13 @@ impl<S: SpanPolicy, G: PacketGate, X: Runtime> Node<X> for OutputNode<S, G> {
             self.events = Vec::new();
             return;
         }
-        // No video packet ever came: the held packets are all the output has.
+        // No video packet ever came: the held packets are all the output has, in the
+        // same merged order as when video arrives.
         self.start = Start::Open;
-        let held = std::mem::take(&mut self.held);
-        for (stream, packet) in held {
-            if self.transport.is_some() && self.write(stream, &packet).is_err() {
-                break;
-            }
+        if self.transport.is_some() {
+            let _ = self.drain_holds(None);
         }
+        self.holds = Vec::new();
         let deadline = self.clock.now() + self.finish_timeout;
         let mut delivered = self.transport.is_some() && self.drain_until(deadline);
         if let Some(mut muxer) = self.muxer.take() {
