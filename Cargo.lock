@@ -5216,6 +5216,7 @@ dependencies = [
  "objc2-core-graphics",
  "rbs-core",
  "rbs-input",
+ "rbs-system-probe",
 ]
 
 [[package]]

@@ -17,7 +17,8 @@ use rbs_graph::node::NodeTypeId;
 
 use crate::types::{SourceClass, class_of};
 
-/// What the user gives permission for.
+/// What the user gives permission for. Workspace-internal: a new kind is added to
+/// [`PermissionKind::ALL`] and every match in the same change (not a plugin contract).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PermissionKind {
     /// Cameras.

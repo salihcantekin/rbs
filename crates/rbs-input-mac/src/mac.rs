@@ -52,6 +52,11 @@ pub mod codes {
 /// A permission request already ran in this process: the system prompts only once.
 static ASKED: AtomicBool = AtomicBool::new(false);
 
+/// Whether this process is the app macOS asks about (not a terminal that started it).
+fn own_app() -> bool {
+    rbs_system_probe::app_identity::cached().is_own_app()
+}
+
 /// Mouse input from a listen-only `CGEventTap`.
 pub struct MacInput {
     clock: Arc<dyn Clock>,
@@ -111,9 +116,11 @@ impl InputBackend for MacInput {
             .with(caps::BUTTONS, CapabilityValue::Flag(true))
             .with(caps::WHEEL, CapabilityValue::Flag(true))
             // Input Monitoring: a user permission, asked with the system's own prompt
-            // (no usage key in Info.plist), applied after a restart.
+            // (no usage key in Info.plist), applied after a restart. The prompt only
+            // when RBS is its own responsible app: from a terminal it would ask for,
+            // and grant, the terminal's access (ADR-0141 decisions 5 and 10).
             .with(caps::PERMISSION, CapabilityValue::Flag(true))
-            .with(caps::PERMISSION_PROMPT, CapabilityValue::Flag(true))
+            .with(caps::PERMISSION_PROMPT, CapabilityValue::Flag(own_app()))
             .with(caps::PERMISSION_RESTART, CapabilityValue::Flag(true))
     }
 
@@ -127,6 +134,9 @@ impl InputBackend for MacInput {
     fn request_permission(&self) -> Permission {
         if objc2_core_graphics::CGPreflightListenEventAccess() {
             return Permission::Granted;
+        }
+        if !own_app() {
+            return self.permission();
         }
         // Shows the system's prompt the first time in this process; the grant applies
         // after a restart, so the answer read now is still "not granted".

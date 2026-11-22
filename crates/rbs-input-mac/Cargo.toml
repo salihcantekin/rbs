@@ -11,6 +11,9 @@ publish.workspace = true
 [dependencies]
 rbs-core = { path = "../rbs-core" }
 rbs-input = { path = "../rbs-input" }
+# Whether this process is its own responsible app, for the Input Monitoring prompt
+# (ADR-0141 decision 10).
+rbs-system-probe = { path = "../rbs-system-probe" }
 
 # Apple's frameworks through the objc2 bindings (MIT OR Apache-2.0 OR Zlib), same
 # versions as rbs-capture-sck.
