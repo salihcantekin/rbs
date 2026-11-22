@@ -141,8 +141,9 @@ impl InputBackend for MacInput {
                 Err(e)
             }
             Err(RecvTimeoutError::Timeout) => {
-                // The thread sees the closed channel when it reports and removes its
-                // tap; it is not joined here, so `start` keeps its 500 ms bound.
+                // The thread sees the stop flag (or the closed channel) when it
+                // reports and removes its tap; it is not joined here, so `start`
+                // keeps its 500 ms bound.
                 control.stop.store(true, Ordering::Release);
                 Err(InputError::Backend {
                     code: codes::READY_TIMEOUT,
@@ -361,8 +362,11 @@ fn listen(
             return;
         }
     };
-    if ready.send(Ok(LoopHandle(run_loop.clone()))).is_err() {
-        return; // `start` gave up waiting.
+    // `start` may give up between this send and its receive: the buffered send then
+    // succeeds, so the stop flag it sets is checked before the loop as well.
+    if ready.send(Ok(LoopHandle(run_loop.clone()))).is_err() || control.stop.load(Ordering::Acquire)
+    {
+        return; // `start` gave up waiting; `tap` and `owned` drop here.
     }
     drop(ready);
     let (events, reenabled) = (control.stats.events(), control.stats.reenabled());
