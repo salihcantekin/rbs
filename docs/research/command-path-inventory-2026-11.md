@@ -26,7 +26,7 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | T-bar steps and Interact input | Stale ones ignored | Refused (`conflict`) | `api_scene.rs`, `interact.rs` |
 | Undo / Redo with nothing to undo | Silent | `conflict` | `history.rs`, `api_item2.rs` |
 | Remove from scene | Sends `Update::Deleted` (undo toast) | Sends nothing | `sources.rs`, `api_source2.rs` |
-| Forget sign-in | Stops the page first | Does not | `source_settings.rs`, `api_source2.rs` |
+| Forget sign-in | Stops the page first | Does with `restart: true` (protocol 1.101, ADR-0168) | `source_settings.rs`, `api_source2.rs` |
 | Filter values on an unchanged release | Restores the stored values | Does not for a client; a window call does (ADR-0168 step 1) | `api_canvas.rs` |
 | Collection transition | Sends the whole transition it last saw | A patch of the parts given; the stinger cut point is checked against the file's length | `scenes.rs` `set_transition`; the window now sends only the parts that changed |
 | Scroll controls | Published the views after a control | Did not; now publishes too (step 6) | `items.rs` `api_scroll` |
@@ -115,7 +115,7 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `SetSourceSettings` | Moved to `Command::Api` (ADR-0164 step 1) | source.set_settings with `gesture`; the text-file refusal is a caller check, so the window passes |
 | `ReloadSource` | Moved to `Command::Api` (step 3) | source.reload; the API now publishes after a restart, as the window did |
 | `BrowserControl` | Translates (ADR-0168 step 1) | browser.reload or browser.run_script while the page runs; a reload of a page that does not run is source.reload, a script with no page is quiet |
-| `ForgetBrowserSignIn` | Pending | browser.forget_sign_in; stays: the window stops the page first so its profile can be removed, the API does not (an API change for Group B) |
+| `ForgetBrowserSignIn` | Moved to `Command::Api` (ADR-0168 step 3) | browser.forget_sign_in with `restart: true` (protocol 1.101): a running page restarts with the new profile, as before |
 | `Media` | Moved to `Command::Api` (step 6) | media.play, media.pause, media.seek, media.restart (the API now also forces the next media-state publish) |
 | `SetCompanionAudio` | Moved to `Command::Api` (step 3) | source.set_companion_audio |
 | `RenameSource` | Moved to `Command::Api` (step 3) | source.rename |

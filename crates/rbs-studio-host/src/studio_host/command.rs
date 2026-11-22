@@ -159,9 +159,6 @@ pub enum Command {
         /// What to send.
         message: rbs_browser_ipc::control::Control,
     },
-    /// Forget sign-in on the Page tab (ADR-0132 decision 10): the page restarts with a
-    /// fresh profile and the kept one is deleted.
-    ForgetBrowserSignIn(SourceId),
     /// Ask for what the Reset source (`paste` false) or Paste attributes dialog shows
     /// ([`Update::Attributes`]).
     OpenAttributes {

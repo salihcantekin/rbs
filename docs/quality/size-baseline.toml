@@ -4,12 +4,12 @@
 # increase the owner approved goes to size-exceptions.toml with `--except`.
 
 [files]
-"crates/rbs-api/src/request.rs" = 2829
-"crates/rbs-api/src/types.rs" = 3002
-"crates/rbs-api/tests/json.rs" = 3305
+"crates/rbs-api/src/request.rs" = 2675
+"crates/rbs-api/src/types.rs" = 2988
+"crates/rbs-api/tests/json.rs" = 3267
 "crates/rbs-app/src/main.rs" = 6536
 "crates/rbs-app/src/menu_bar.rs" = 2518
-"crates/rbs-app/src/studio_ui.rs" = 10066
+"crates/rbs-app/src/studio_ui.rs" = 10058
 "crates/rbs-record/src/studio.rs" = 5925
 "crates/rbs-record/tests/studio.rs" = 3241
 "crates/rbs-scene/src/collection.rs" = 2830
@@ -20,8 +20,8 @@
 
 [functions]
 "crates/rbs-api/src/session.rs::message" = 249
-"crates/rbs-api/tests/json.rs::every_request" = 588
-"crates/rbs-api/tests/json.rs::every_result_and_event_type_round_trips" = 360
+"crates/rbs-api/tests/json.rs::every_request" = 556
+"crates/rbs-api/tests/json.rs::every_result_and_event_type_round_trips" = 351
 "crates/rbs-app/examples/audio_graph.rs::main" = 248
 "crates/rbs-app/examples/go_live.rs::main" = 215
 "crates/rbs-app/examples/remote_preview.rs::run" = 313

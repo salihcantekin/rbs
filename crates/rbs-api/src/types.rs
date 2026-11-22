@@ -6,9 +6,11 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+mod capture_target;
 mod output_settings;
 mod scroll;
 mod serde_defaults;
+pub use capture_target::CaptureTarget;
 pub use output_settings::{
     ReplaySettings, SeparateFilesSettings, Settings, StreamSettings, StreamSettingsPatch,
 };
@@ -891,22 +893,6 @@ pub fn parse_color(text: &str) -> Option<[u8; 4]> {
 /// `#rrggbbaa`.
 pub fn format_color(c: [u8; 4]) -> String {
     format!("#{:02x}{:02x}{:02x}{:02x}", c[0], c[1], c[2], c[3])
-}
-
-/// Something a source can capture: a display, window, camera or audio endpoint.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CaptureTarget {
-    /// Name from the OS (a window title can be private: `source.targets` needs
-    /// `control`).
-    pub name: String,
-    /// The adapter that listed it.
-    pub adapter: String,
-    /// Its id for that adapter.
-    pub target: String,
-    /// The OS default of its kind (audio endpoints).
-    pub is_default: bool,
-    /// Native size when known (displays and windows).
-    pub size: Option<Dimensions>,
 }
 
 /// A video encoder the user can pick, with what its quality settings can be.

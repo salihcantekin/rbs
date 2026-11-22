@@ -731,43 +731,11 @@ fn every_request() -> Vec<Request> {
         })),
         c(Command::BrowserForgetSignIn(BrowserForgetSignIn {
             source: 3,
+            restart: true,
         })),
         c(Command::BrowserInput(BrowserInput {
             source: 3,
-            events: vec![
-                BrowserInputEvent::Move {
-                    x: 1,
-                    y: 2,
-                    modifiers: BrowserModifiers::default(),
-                },
-                BrowserInputEvent::Leave,
-                BrowserInputEvent::Button {
-                    x: 1,
-                    y: 2,
-                    button: BrowserMouseButton::Left,
-                    down: true,
-                    clicks: 2,
-                    modifiers: BrowserModifiers {
-                        shift: true,
-                        ..BrowserModifiers::default()
-                    },
-                },
-                BrowserInputEvent::Wheel {
-                    x: 1,
-                    y: 2,
-                    dx: 0,
-                    dy: -120,
-                    modifiers: BrowserModifiers::default(),
-                },
-                BrowserInputEvent::Key {
-                    key: "Enter".to_owned(),
-                    down: false,
-                    modifiers: BrowserModifiers::default(),
-                },
-                BrowserInputEvent::Text {
-                    text: "hi".to_owned(),
-                },
-            ],
+            events: browser_events(),
         })),
         c(Command::SourceGetSettings(GetSourceSettings { source: 3 })),
         c(Command::MediaPlay(MediaSource { source: 3 })),
@@ -810,6 +778,9 @@ fn engine() -> AddOnRef {
     }
 }
 
+#[path = "json/samples.rs"]
+mod samples;
+use samples::{browser_events, capture_target};
 #[path = "json/scrolls.rs"]
 mod scrolls;
 #[path = "json/settings.rs"]
@@ -1008,16 +979,7 @@ fn every_result_and_event_type_round_trips() {
     });
     round_trip(&TargetList {
         kind: SourceKind::Screen,
-        targets: vec![CaptureTarget {
-            name: "Display 1".into(),
-            adapter: "wgc".into(),
-            target: "1".into(),
-            is_default: true,
-            size: Some(Dimensions {
-                width: 2560,
-                height: 1440,
-            }),
-        }],
+        targets: vec![capture_target()],
     });
     round_trip(&SourceAdded { source: 9 });
     round_trip(&TokenList {
