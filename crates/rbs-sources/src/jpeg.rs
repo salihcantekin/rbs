@@ -58,6 +58,26 @@ pub fn decode_jpeg_bytes(bytes: &[u8]) -> Result<Picture, String> {
     Ok(orient((w, h, rgba), orientation))
 }
 
+/// The upright size of a JPEG file from its headers alone (the OBS importer's picture
+/// size); `None` when it is not a JPEG or the headers are not in its first 256 KiB.
+pub fn jpeg_size(path: &Path) -> Option<(u32, u32)> {
+    use std::io::Read as _;
+    let mut head = Vec::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(256 * 1024)
+        .read_to_end(&mut head)
+        .ok()?;
+    let mut decoder = JpegDecoder::new(ZCursor::new(&head[..]));
+    decoder.decode_headers().ok()?;
+    let info = decoder.info()?;
+    let (w, h) = (u32::from(info.width), u32::from(info.height));
+    let turned = decoder
+        .exif()
+        .is_some_and(|exif| exif_orientation(exif).swaps_sides());
+    (w > 0 && h > 0).then_some(if turned { (h, w) } else { (w, h) })
+}
+
 /// The eight EXIF orientations (tag values 1 to 8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Orientation {
@@ -369,5 +389,14 @@ mod file_tests {
         let (w, h, _) = crate::still::decode_picture(&data("plain-4x2.jpg")).unwrap();
         assert_eq!((w, h), (4, 2));
         assert!(crate::still::decode_picture(&data("missing.jpg")).is_err());
+    }
+
+    #[test]
+    fn the_header_size_is_the_upright_size() {
+        for name in ["plain-4x2.jpg", "turn90-4x2.jpg"] {
+            let (w, h, _) = decode_jpeg(&data(name)).unwrap();
+            assert_eq!(jpeg_size(&data(name)), Some((w, h)), "{name}");
+        }
+        assert_eq!(jpeg_size(&data("missing.jpg")), None);
     }
 }

@@ -512,6 +512,9 @@ impl rbs_import_obs::Lookup for AppLookup {
         use std::io::Read as _;
         let mut head = [0u8; 24];
         std::fs::File::open(path).ok()?.read_exact(&mut head).ok()?;
+        if head[..3] == [0xFF, 0xD8, 0xFF] {
+            return rbs_sources::jpeg::jpeg_size(path);
+        }
         if head[..8] != *b"\x89PNG\r\n\x1a\n" || head[12..16] != *b"IHDR" {
             return None;
         }
