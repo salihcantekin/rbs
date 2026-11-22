@@ -480,6 +480,10 @@ impl Host {
             .chain(slides)
             .collect();
         playing |= slides_playing;
+        if self.slides_follow > 0 {
+            self.slides_follow -= 1;
+            playing = true;
+        }
         if self.media_sent.as_ref() != Some(&ticks) {
             self.media_sent = Some(ticks.clone());
             notify(Update::Media(ticks));

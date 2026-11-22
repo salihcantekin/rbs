@@ -58,6 +58,13 @@ impl StudioUi {
             let Some(mut row) = self.sources.row_data(i) else {
                 continue;
             };
+            if row.slides {
+                let tick = self.live.media.iter().find(|t| t.id.get() as i32 == row.id);
+                if super::slides::patch_live(&mut row, tick) {
+                    self.sources.set_row_data(i, row);
+                }
+                continue;
+            }
             if !row.media {
                 continue;
             }

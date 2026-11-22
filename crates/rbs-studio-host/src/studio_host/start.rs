@@ -143,6 +143,7 @@ pub(super) fn start(
         swap_after_transition: config.swap_after_transition,
         media_pause_release: config.media_pause_release,
         media_sent: None,
+        slides_follow: 0,
         pickers: pickers::Pickers::default(),
         // A collection that had to be completed is saved at the first publish.
         saved: loaded,
