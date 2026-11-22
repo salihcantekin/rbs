@@ -77,9 +77,7 @@ fn host_with(gpu: Arc<GpuContext>, config: HostConfig) -> (StudioHost, Receiver<
                 EngineConfig::default().swap_timeout(LIMIT),
             )
         },
-        move |u| {
-            let _ = tx.send(u);
-        },
+        crate::watch::forward(tx),
     )
     .unwrap();
     (host, rx)
@@ -596,9 +594,7 @@ fn screens_only_an_os_picker_offers_are_added_through_it() {
                 EngineConfig::default().swap_timeout(LIMIT),
             )
         },
-        move |u| {
-            let _ = tx.send(u);
-        },
+        crate::watch::forward(tx),
     )
     .unwrap();
     next(&rx, |u| match u {

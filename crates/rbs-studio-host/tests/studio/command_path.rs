@@ -86,9 +86,7 @@ impl Studio {
                     EngineConfig::default().swap_timeout(LIMIT),
                 )
             },
-            move |u| {
-                let _ = tx.send(u);
-            },
+            crate::watch::forward(tx),
         )
         .unwrap();
         let studio = Self {

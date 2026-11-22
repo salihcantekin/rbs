@@ -157,9 +157,7 @@ fn start_with_media(
                 EngineConfig::default().swap_timeout(LIMIT),
             )
         },
-        move |u| {
-            let _ = tx.send(u);
-        },
+        crate::watch::forward(tx),
     )
     .unwrap();
     next(&updates, |u| match u {

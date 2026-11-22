@@ -120,9 +120,7 @@ fn a_panicking_command_fails_alone_and_the_studio_goes_on() {
                 EngineConfig::default().swap_timeout(LIMIT),
             )
         },
-        move |u| {
-            let _ = tx.send(u);
-        },
+        crate::watch::forward(tx),
     )
     .unwrap();
     next(&rx, |u| match u {

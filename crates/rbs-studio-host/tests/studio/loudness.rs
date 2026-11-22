@@ -125,9 +125,7 @@ fn start_with(
                 EngineConfig::default().swap_timeout(LIMIT),
             )
         },
-        move |u| {
-            let _ = tx.send(u);
-        },
+        crate::watch::forward(tx),
     )
     .unwrap();
     // Waits for the start and for the first loudness view, which the host sends
