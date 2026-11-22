@@ -295,6 +295,7 @@ impl AdapterFactory for TestCaptureFactory {
             )
             .with(caps::MEMORY, set(&[MemoryKind::System.as_str()]))
             .with(caps::CURSOR, CapabilityValue::Flag(false))
+            .with(caps::COLOR_OVERRIDE, CapabilityValue::Flag(true))
             .with(
                 caps::MAPPING,
                 set(&[TargetKind::Display.as_str(), TargetKind::Window.as_str()]),
@@ -424,7 +425,8 @@ impl CaptureFactory for TestCaptureFactory {
         let current = unpack(target.size.load(Ordering::Acquire));
         let (size, pixel_format, rate) = negotiate(&target.info, current, request)?;
         let color = if pixel_format.is_yuv() {
-            ColorSpace::BT709_LIMITED
+            // The user's colour space and range win over the device's (ADR-0175).
+            request.color_for(ColorSpace::BT709_LIMITED)
         } else {
             ColorSpace::SRGB
         };
@@ -840,6 +842,7 @@ fn fit_inside(src: (u32, u32), max: (u32, u32)) -> Option<(u32, u32)> {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
     use super::*;
+    use rbs_core::media::{ColorRange, MatrixCoefficients};
     use rbs_core::time::TestClock;
 
     fn open(factory: &TestCaptureFactory, id: &str, clock: &TestClock) -> Box<dyn CaptureSession> {
@@ -1003,6 +1006,30 @@ mod tests {
         assert_eq!(
             factory.open(&gpu_only).err(),
             Some(CaptureError::FormatUnsupported)
+        );
+    }
+
+    #[test]
+    fn camera_frames_carry_the_users_colour_choice() {
+        let factory = TestCaptureFactory::new();
+        let clock = TestClock::new();
+        let request = CaptureRequest::new(TargetId::new("test-camera-0"), Arc::new(clock.clone()))
+            .with_pixel_formats(&[PixelFormat::Yuy2])
+            .with_memory(&[MemoryKind::System])
+            .with_color(Some(MatrixCoefficients::Bt601), Some(ColorRange::Full));
+        let mut session = factory.open(&request).unwrap();
+        let color = session.format().color;
+        assert_eq!(
+            (color.matrix, color.range),
+            (MatrixCoefficients::Bt601, ColorRange::Full)
+        );
+        assert!(session.start().is_ok());
+        clock.advance(Duration::from_millis(40));
+        let f = frame(session.as_mut()).expect("a frame");
+        assert_eq!(
+            f.format().color,
+            color,
+            "frames match format() (invariant 4)"
         );
     }
 

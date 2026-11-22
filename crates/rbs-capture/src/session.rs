@@ -3,7 +3,10 @@
 use std::fmt;
 use std::sync::Arc;
 
-use rbs_core::media::{MemoryKind, PixelFormat, Size, VideoFormat, VideoFrame};
+use rbs_core::media::{
+    ColorRange, ColorSpace, MatrixCoefficients, MemoryKind, PixelFormat, Size, VideoFormat,
+    VideoFrame,
+};
 use rbs_core::registry::AdapterFactory;
 use rbs_core::time::Clock;
 use rbs_core::timing::FrameRate;
@@ -91,6 +94,13 @@ pub struct CaptureRequest {
     /// `None`: the host never asks for a mapping. An adapter that declares
     /// `capture.mapping` registers on it and does its mapping work only while it is on.
     pub mapping: Option<MappingSwitch>,
+    /// The user's colour matrix for a camera's Y'CbCr frames, instead of what the
+    /// device reports; `None` is Automatic (ADR-0175). Honoured only by adapters
+    /// that declare `capture.color.override`; RGB frames ignore it.
+    pub color_matrix: Option<MatrixCoefficients>,
+    /// The user's code range for a camera's Y'CbCr frames, instead of what the device
+    /// reports; `None` is Automatic (ADR-0175). Same rules as `color_matrix`.
+    pub color_range: Option<ColorRange>,
 }
 
 impl CaptureRequest {
@@ -107,6 +117,8 @@ impl CaptureRequest {
             cursor: false,
             clock,
             mapping: None,
+            color_matrix: None,
+            color_range: None,
         }
     }
 
@@ -151,6 +163,33 @@ impl CaptureRequest {
         self.mapping = Some(switch);
         self
     }
+
+    /// Sets the user's colour matrix and range for Y'CbCr frames; `None` keeps what
+    /// the device reports (ADR-0175).
+    pub fn with_color(
+        mut self,
+        matrix: Option<MatrixCoefficients>,
+        range: Option<ColorRange>,
+    ) -> Self {
+        self.color_matrix = matrix;
+        self.color_range = range;
+        self
+    }
+
+    /// The colour of frames whose device reports `device`, with the user's matrix and
+    /// range applied (ADR-0175). RGB colour (an `Rgb` matrix) is returned unchanged.
+    /// Adapters call this once when they build the session's format, never per frame.
+    pub fn color_for(&self, device: ColorSpace) -> ColorSpace {
+        if device.matrix == MatrixCoefficients::Rgb {
+            return device;
+        }
+        ColorSpace::new(
+            device.primaries,
+            device.transfer,
+            self.color_matrix.unwrap_or(device.matrix),
+            self.color_range.unwrap_or(device.range),
+        )
+    }
 }
 
 impl fmt::Debug for CaptureRequest {
@@ -164,6 +203,8 @@ impl fmt::Debug for CaptureRequest {
             .field("size", &self.size)
             .field("cursor", &self.cursor)
             .field("mapping", &self.mapping)
+            .field("color_matrix", &self.color_matrix)
+            .field("color_range", &self.color_range)
             .finish_non_exhaustive()
     }
 }
@@ -349,5 +390,47 @@ pub trait CaptureFactory: AdapterFactory {
     fn region_grab(&self, target: &TargetId, max_long: u32) -> Result<RegionGrab, CaptureError> {
         let _ = (target, max_long);
         Err(CaptureError::Unsupported("region_grab"))
+    }
+}
+
+#[cfg(test)]
+mod color_tests {
+    use super::*;
+    use rbs_core::time::TestClock;
+
+    fn request() -> CaptureRequest {
+        CaptureRequest::new(TargetId::new("cam"), Arc::new(TestClock::new()))
+    }
+
+    #[test]
+    fn automatic_keeps_the_device_colour() {
+        let r = request();
+        assert_eq!(
+            r.color_for(ColorSpace::BT709_LIMITED),
+            ColorSpace::BT709_LIMITED
+        );
+    }
+
+    #[test]
+    fn the_users_matrix_and_range_win_for_ycbcr() {
+        let r = request().with_color(Some(MatrixCoefficients::Bt601), Some(ColorRange::Full));
+        let c = r.color_for(ColorSpace::BT709_LIMITED);
+        assert_eq!(
+            (c.matrix, c.range),
+            (MatrixCoefficients::Bt601, ColorRange::Full)
+        );
+        assert_eq!(c.transfer, ColorSpace::BT709_LIMITED.transfer);
+        let only_range = request().with_color(None, Some(ColorRange::Full));
+        let c = only_range.color_for(ColorSpace::BT709_LIMITED);
+        assert_eq!(
+            (c.matrix, c.range),
+            (MatrixCoefficients::Bt709, ColorRange::Full)
+        );
+    }
+
+    #[test]
+    fn rgb_frames_ignore_it() {
+        let r = request().with_color(Some(MatrixCoefficients::Bt601), Some(ColorRange::Limited));
+        assert_eq!(r.color_for(ColorSpace::SRGB), ColorSpace::SRGB);
     }
 }

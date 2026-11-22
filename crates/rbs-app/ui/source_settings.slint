@@ -60,7 +60,8 @@ export component SourceSettingsWindow inherits Window {
         id: -1, name: "", kind-code: -1, modes: [], mode-labels: [], mode-index: -1, rates: [], rate-index: -1,
         has-cursor: false, cursor: true, cap-has: false, cap-l: 0, cap-t: 0, cap-r: 0, cap-b: 0,
         chrome-on: false, chrome-t: 0, chrome-r: 0, chrome-b: 0, chrome-l: 0, chrome-fill: 0, has-work-rect: false,
-        pic-w: 0, pic-h: 0, has-region-preview: false, region-preview: @image-url("../assets/brand/icon-win-256.png")
+        pic-w: 0, pic-h: 0, has-region-preview: false, region-preview: @image-url("../assets/brand/icon-win-256.png"),
+        has-color: false, color-matrix: 0, color-range: 0
     };
     // A browser source: the window shows its Page fields, which apply at once.
     property <bool> browser: Studio.browser-props.on && Studio.browser-props.id == d.id;
@@ -68,6 +69,10 @@ export component SourceSettingsWindow inherits Window {
     in-out property <int> mode-index: -1;
     in-out property <int> rate-index: -1;
     in-out property <bool> cursor: true;
+    // A camera's colour choice (ADR-0175): 0 Automatic, then Rec. 709 / Rec. 601 and
+    // Limited / Full.
+    in-out property <int> color-matrix: 0;
+    in-out property <int> color-range: 0;
     in-out property <bool> cap-has: false;
     in-out property <int> cap-l: 0;
     in-out property <int> cap-t: 0;
@@ -272,6 +277,8 @@ export component SourceSettingsWindow inherits Window {
         root.mode-index = d.mode-index;
         root.rate-index = d.rate-index;
         root.cursor = d.cursor;
+        root.color-matrix = d.color-matrix;
+        root.color-range = d.color-range;
         root.cap-has = d.cap-has;
         root.cap-l = d.cap-l;
         root.cap-t = d.cap-t;
@@ -358,7 +365,7 @@ export component SourceSettingsWindow inherits Window {
                 if !root.browser: SettingsCard {
                     title: @tr("Video");
                     id: "source-settings.video";
-                    description: @tr("Mode, frame rate and cursor for this capture.");
+                    description: camera && d.has-color ? @tr("Mode, frame rate and colours for this camera.") : @tr("Mode, frame rate and cursor for this capture.");
                     if camera: SettingRow {
                         label: @tr("Mode");
                         summary: @tr("Picture size from the camera");
@@ -386,6 +393,34 @@ export component SourceSettingsWindow inherits Window {
                             index: root.rate-index;
                             placeholder: @tr("Default");
                             selected(i) => { root.rate-index = i; }
+                        }
+                    }
+                    if camera && d.has-color: SettingRow {
+                        label: @tr("Colour space");
+                        summary: @tr("How colours are read");
+                        hint: @tr("Automatic uses what the camera reports. Pick another if colours look off.");
+                        changed: root.color-matrix != 0;
+                        default-text: @tr("Automatic");
+                        reset => { root.color-matrix = 0; }
+                        Select {
+                            label: @tr("Colour space");
+                            options: [@tr("Automatic"), @tr("Rec. 709"), @tr("Rec. 601")];
+                            index: root.color-matrix;
+                            selected(i) => { root.color-matrix = i; }
+                        }
+                    }
+                    if camera && d.has-color: SettingRow {
+                        label: @tr("Colour range");
+                        summary: @tr("Black and white levels");
+                        hint: @tr("Automatic uses what the camera reports. Pick Full if blacks look grey, Limited if they look crushed.");
+                        changed: root.color-range != 0;
+                        default-text: @tr("Automatic");
+                        reset => { root.color-range = 0; }
+                        Select {
+                            label: @tr("Colour range");
+                            options: [@tr("Automatic"), @tr("Limited"), @tr("Full")];
+                            index: root.color-range;
+                            selected(i) => { root.color-range = i; }
                         }
                     }
                     if d.has-cursor: SettingRow {
@@ -716,11 +751,11 @@ export component SourceSettingsWindow inherits Window {
                 extra-enabled: d.id >= 0;
                 cancelled => { root.dismiss(); }
                 extra-clicked => {
-                    Studio.apply-source-settings(d.id, root.mode-index, root.rate-index, root.cursor);
+                    Studio.apply-source-settings(d.id, root.mode-index, root.rate-index, root.cursor, root.color-matrix, root.color-range);
                     root.apply-region-chrome();
                 }
                 confirmed => {
-                    Studio.apply-source-settings(d.id, root.mode-index, root.rate-index, root.cursor);
+                    Studio.apply-source-settings(d.id, root.mode-index, root.rate-index, root.cursor, root.color-matrix, root.color-range);
                     root.apply-region-chrome();
                     root.dismiss();
                 }

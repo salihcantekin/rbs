@@ -93,6 +93,7 @@ A capture source instantiated with a `mapping` passes its switch to `CaptureRequ
 | `cursor` | Bool | display, window | Draw the cursor; default true |
 | `width`, `height` | Int > 0 | display, window, camera, color | Requested size; both or neither. For `color` it is the picture size, default 1920 x 1080, at most 8192. A camera without them asks for the context's canvas size (the nearest mode, not the largest; audit C-21); a display or window keeps its own size |
 | `fps` | Int > 0 | display, window, camera | Requested frame rate. With a canvas in the `InstanceContext` (the studio passes the main canvas), a capture never runs faster than the canvas rate, and without `fps` it runs at the canvas rate (audit C-02) |
+| `color_matrix`, `color_range` | Text | camera | The colour of its Y'CbCr frames instead of what the device reports (ADR-0175): `bt709` or `bt601`, and `limited` or `full`; absent is Automatic. Other values are refused. Honoured where the capture adapter declares `capture.color.override`, ignored otherwise. Option keys: Reset source removes them (Automatic) and Paste attributes copies them; `option_defaults` leaves them out. They are plain keys until the camera type has an `rbs-params` schema, and move into it then. A change opens the camera again, like a mode change. `source.set_settings` sets them (`null` removes); no new method |
 | `path` | Text | image | A PNG or JPEG file, told apart by its first bytes (ADR-0171 decision 3; straight alpha, any colour type; a JPEG is turned upright by its EXIF orientation; a side over 8192 pixels or a decoder buffer over 128 MiB is refused; gamma and colour profiles are ignored, pixels are sRGB). Wins over `sample` |
 | `sample` | Text | image | A built-in sample picture id (below) at 1920 x 1080 |
 | `color` | Text | color | `#rrggbb` or `#rrggbbaa`; default `#000000` |
@@ -179,7 +180,7 @@ Tests: `src/scroll.rs` (runs start and end with their keys, a pause is continuou
 
 | Class | Identity keys | Option keys |
 | --- | --- | --- |
-| Camera capture | `adapter`, `target` | `width`, `height`, `fps` |
+| Camera capture | `adapter`, `target` | `width`, `height`, `fps`, `color_matrix`, `color_range` |
 | Display and window capture | `adapter`, `target` | `cursor`, `width`, `height`, `fps` |
 | Output loopback audio | `adapter`, `target` | `exclude_own_process` (never written on a companion) |
 | Audio input, application audio | `adapter`, `target` | none |

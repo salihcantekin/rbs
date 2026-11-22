@@ -25,6 +25,10 @@ pub const CURSOR: CapabilityKey = CapabilityKey::new_static("capture.cursor");
 pub const FRAME_RATE_MAX: CapabilityKey = CapabilityKey::new_static("capture.frame_rate.max");
 /// Int: frames the consumer may hold at once.
 pub const FRAMES_IN_FLIGHT: CapabilityKey = CapabilityKey::new_static("capture.frames.in_flight");
+/// Flag: the adapter honours `CaptureRequest::color_matrix` and `color_range` for
+/// cameras that deliver Y'CbCr (ADR-0175). Absent: they are ignored, and a UI does
+/// not offer them.
+pub const COLOR_OVERRIDE: CapabilityKey = CapabilityKey::new_static("capture.color.override");
 /// Flag: HDR delivery for HDR displays.
 pub const HDR: CapabilityKey = CapabilityKey::new_static("capture.hdr");
 /// Flag: `open` and `start` return at once, without waiting on the OS or a device, so

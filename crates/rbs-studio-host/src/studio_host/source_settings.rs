@@ -19,17 +19,29 @@ impl Host {
             Some(SettingValue::Text(t)) => Some(t.clone()),
             _ => None,
         };
-        let modes = match (kind, text(keys::TARGET)) {
+        let camera_target = match (kind, text(keys::TARGET)) {
             (SourceKind::Camera, Some(target)) => self
                 .adapters
                 .sources
                 .targets(&kind.type_id())
                 .unwrap_or_default()
                 .into_iter()
-                .find(|t| t.target == target)
-                .map(|t| t.modes)
-                .unwrap_or_default(),
-            _ => Vec::new(),
+                .find(|t| t.target == target),
+            _ => None,
+        };
+        let has_color = camera_target
+            .as_ref()
+            .is_some_and(|t| self.adapters.sources.camera_color_choice(&t.adapter));
+        let modes = camera_target.map(|t| t.modes).unwrap_or_default();
+        let color_matrix = match text(keys::COLOR_MATRIX).as_deref() {
+            Some("bt709") => 1,
+            Some("bt601") => 2,
+            _ => 0,
+        };
+        let color_range = match text(keys::COLOR_RANGE).as_deref() {
+            Some("limited") => 1,
+            Some("full") => 2,
+            _ => 0,
         };
         let (cap_has, cap_l, cap_t, cap_r, cap_b) = match source.region {
             Some(r) => (true, r.left, r.top, r.right, r.bottom),
@@ -76,6 +88,9 @@ impl Host {
             has_work_rect,
             pic_w: self.sizes.get(&id).map(|(w, _)| *w).unwrap_or(0),
             pic_h: self.sizes.get(&id).map(|(_, h)| *h).unwrap_or(0),
+            has_color,
+            color_matrix,
+            color_range,
         })
     }
 

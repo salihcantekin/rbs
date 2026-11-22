@@ -465,6 +465,12 @@ pub struct SourceSettingsView {
     pub pic_w: u32,
     /// Delivered picture height when known.
     pub pic_h: u32,
+    /// The camera's adapter honours a colour choice (ADR-0175).
+    pub has_color: bool,
+    /// The stored colour matrix (`color_matrix`): 0 Automatic, 1 Rec. 709, 2 Rec. 601.
+    pub color_matrix: u8,
+    /// The stored colour range (`color_range`): 0 Automatic, 1 Limited, 2 Full.
+    pub color_range: u8,
 }
 
 /// The studio and the scene it runs.

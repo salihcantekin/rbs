@@ -163,6 +163,8 @@ pub struct CaptureRequest {
     pub cursor: bool,
     pub clock: Arc<dyn Clock>,             // master clock (ADR-0004)
     pub mapping: Option<MappingSwitch>,    // host's switch for the picture mapping (ADR-0165); None by default
+    pub color_matrix: Option<MatrixCoefficients>, // user's matrix for Y'CbCr camera frames (ADR-0175); None: Automatic
+    pub color_range: Option<ColorRange>,  // user's range for Y'CbCr camera frames (ADR-0175); None: Automatic
 }   // + new / with_* builders (with_mapping)
 
 /// Where native frames are imported; filled in by rbs-gpu (P4).
@@ -283,6 +285,7 @@ Constants in `rbs_capture::caps`.
 | `capture.mapping` | Set of kinds | Kinds for which `latest_mapping` gives a desktop to picture mapping while the request's switch is on (ADR-0165) |
 | `capture.frame_rate.max` | Int (frames per second) | Highest rate the adapter can deliver |
 | `capture.frames.in_flight` | Int | Frames the consumer may hold at once |
+| `capture.color.override` | Flag | Honours `CaptureRequest::color_matrix` and `color_range` for cameras that deliver Y'CbCr (ADR-0175): the session's `format().color`, and every frame's, carries the user's matrix and range (`CaptureRequest::color_for`, applied once when the format is built, never per frame); RGB frames are unchanged. Absent: they are ignored and a UI does not offer them. Media Foundation and the test adapter declare it. AVFoundation does not yet: its `'420v'` frames come from an OS conversion that is always limited range, so a range tag alone would mis-decode them (follow-up: request `'420f'` for Full). PipeWire delivers RGB only |
 | `capture.hdr` | Flag | Can deliver HDR (`rgba16f`, PQ or scRGB) for HDR displays |
 | `capture.start.instant` | Flag | `open` and `start` return at once, without waiting on the OS or a device (the synthetic test adapter). The capture source node then opens in `prepare` on the control thread; without it the node opens on a thread of its own and `prepare` does not wait (ADR-0152 decision 5, io-nodes spec). No OS adapter declares it |
 | `capture.permission.<camera\|display\|window>` | Flag | The OS has a user permission for this kind (ADR-0141). Absent: `permission` is always `Granted` and a UI says no permission is needed |

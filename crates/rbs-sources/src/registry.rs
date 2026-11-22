@@ -14,7 +14,7 @@ use rbs_audio_io::{
 use rbs_capture::caps as capture_caps;
 use rbs_capture::{CaptureError, CaptureFactory, CaptureRequest, TargetId, TargetKind};
 use rbs_core::capability::{CapabilitySet, CapabilityValue, Constraint, Requirement};
-use rbs_core::media::Size;
+use rbs_core::media::{ColorRange, MatrixCoefficients, Size};
 use rbs_core::registry::{AdapterFactory, AdapterId, DuplicateAdapter, Registry};
 use rbs_core::time::Clock;
 use rbs_core::timing::FrameRate;
@@ -615,6 +615,8 @@ fn known_keys(type_id: &NodeTypeId) -> Option<&'static [&'static str]> {
             keys::WIDTH,
             keys::HEIGHT,
             keys::FPS,
+            keys::COLOR_MATRIX,
+            keys::COLOR_RANGE,
         ],
         SourceClass::Capture(_) => &[
             keys::ADAPTER,
@@ -666,7 +668,13 @@ fn known_keys(type_id: &NodeTypeId) -> Option<&'static [&'static str]> {
 /// companion source (decision 2, companion rule).
 pub fn option_keys(type_id: &NodeTypeId) -> &'static [&'static str] {
     match class_of(type_id) {
-        Some(SourceClass::Capture(TargetKind::Camera)) => &[keys::WIDTH, keys::HEIGHT, keys::FPS],
+        Some(SourceClass::Capture(TargetKind::Camera)) => &[
+            keys::WIDTH,
+            keys::HEIGHT,
+            keys::FPS,
+            keys::COLOR_MATRIX,
+            keys::COLOR_RANGE,
+        ],
         Some(SourceClass::Capture(_)) => &[keys::CURSOR, keys::WIDTH, keys::HEIGHT, keys::FPS],
         Some(SourceClass::Audio(EndpointKind::OutputLoopback)) => &[keys::EXCLUDE_OWN_PROCESS],
         Some(SourceClass::Media) => &[keys::LOOP, keys::START_MS, keys::END_MS],
@@ -737,6 +745,7 @@ pub fn validate_settings(type_id: &NodeTypeId, settings: &Settings) -> Result<()
             expected: "at most 240 frames per second",
         });
     }
+    camera_color(settings)?;
     text(settings, keys::PATH)?;
     text(settings, keys::SAMPLE)?;
     text(settings, keys::COLOR)?;
@@ -751,6 +760,35 @@ pub fn validate_settings(type_id: &NodeTypeId, settings: &Settings) -> Result<()
         });
     }
     Ok(())
+}
+
+/// A camera's colour choice (ADR-0175): matrix and range, `None` for Automatic.
+fn camera_color(
+    settings: &Settings,
+) -> Result<(Option<MatrixCoefficients>, Option<ColorRange>), SourceError> {
+    let matrix = match text(settings, keys::COLOR_MATRIX)? {
+        None => None,
+        Some("bt709") => Some(MatrixCoefficients::Bt709),
+        Some("bt601") => Some(MatrixCoefficients::Bt601),
+        Some(_) => {
+            return Err(SourceError::InvalidSetting {
+                key: keys::COLOR_MATRIX,
+                expected: "bt709 or bt601",
+            });
+        }
+    };
+    let range = match text(settings, keys::COLOR_RANGE)? {
+        None => None,
+        Some("limited") => Some(ColorRange::Limited),
+        Some("full") => Some(ColorRange::Full),
+        Some(_) => {
+            return Err(SourceError::InvalidSetting {
+                key: keys::COLOR_RANGE,
+                expected: "limited or full",
+            });
+        }
+    };
+    Ok((matrix, range))
 }
 
 pub(crate) fn text<'a>(
@@ -884,6 +922,14 @@ impl SourceTypes {
     /// The capture adapters, to set a preference order or the user's choice.
     pub fn capture_adapters(&mut self) -> &mut Registry<dyn CaptureFactory> {
         &mut self.capture
+    }
+
+    /// Whether the capture adapter `adapter` honours a camera's colour choice
+    /// (`capture.color.override`, ADR-0175), so a window can offer it.
+    pub fn camera_color_choice(&self, adapter: &AdapterId) -> bool {
+        self.capture.capabilities(adapter).is_some_and(|c| {
+            c.get(&rbs_capture::caps::COLOR_OVERRIDE) == Some(&CapabilityValue::Flag(true))
+        })
     }
 
     /// The audio input adapters, to set a preference order or the user's choice.
@@ -1307,8 +1353,12 @@ impl SourceTypes {
                         .ok_or_else(|| SourceError::NoTarget(type_id.clone()))?,
                 };
                 let (size, fps) = capture_shape(kind, size, fps, ctx.canvas);
-                let mut request =
-                    CaptureRequest::new(target.clone(), Arc::clone(&ctx.clock)).with_cursor(cursor);
+                // A value this version does not know (a newer file) means Automatic;
+                // only `validate_settings` refuses it.
+                let (matrix, range) = camera_color(settings).unwrap_or((None, None));
+                let mut request = CaptureRequest::new(target.clone(), Arc::clone(&ctx.clock))
+                    .with_cursor(cursor)
+                    .with_color(matrix, range);
                 if let Some(size) = size {
                     request = request.with_size(size);
                 }

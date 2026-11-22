@@ -68,6 +68,12 @@ pub mod keys {
     pub const HEIGHT: &str = "height";
     /// Int, display, window and camera: requested frames per second.
     pub const FPS: &str = "fps";
+    /// Text, camera: the colour matrix of its Y'CbCr frames, `bt709` or `bt601`.
+    /// Absent: Automatic, what the device reports (ADR-0175).
+    pub const COLOR_MATRIX: &str = "color_matrix";
+    /// Text, camera: the code range of its Y'CbCr frames, `limited` or `full`.
+    /// Absent: Automatic, what the device reports (ADR-0175).
+    pub const COLOR_RANGE: &str = "color_range";
     /// Text, image: path of a PNG file. Wins over `sample`.
     pub const PATH: &str = "path";
     /// Text, image: id of a built-in sample picture (`still::SAMPLES`).

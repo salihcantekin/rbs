@@ -4687,8 +4687,8 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     }
     on!(
         on_apply_source_settings,
-        |app, id: i32, mode: i32, rate: i32, cursor: bool| {
-            app.studio.apply_source_settings(id, mode, rate, cursor);
+        |app, id: i32, mode: i32, fps: i32, cur: bool, m: i32, r: i32| {
+            app.studio.apply_source_settings(id, mode, fps, cur, (m, r));
         }
     );
     on!(on_start_sync_measure, |app, reference: i32| {

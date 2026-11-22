@@ -1399,7 +1399,7 @@ export struct TextData { on: bool, id: int, kind: int, text: string, file: strin
 // 5 the page runs drawn without the graphics card (ADR-0157 decision 9).
 export struct BrowserData { on: bool, id: int, file: bool, url: string, file-name: string, width: int, height: int, canvas-w: int, canvas-h: int, fps: int, zoom: int, transparent: bool, css: string, reload-on-file-change: bool, keep-signed-in: bool, reload-every: int, script: string, script-on-load: bool, script-every: int, run: int, on-return: int, linger: int, retry-on-error: bool, running: bool, state: int, status: string }
 
-export struct SourceSettingsData { id: int, name: string, kind-code: int, modes: [ModeData], mode-labels: [string], mode-index: int, rates: [string], rate-index: int, has-cursor: bool, cursor: bool, cap-has: bool, cap-l: int, cap-t: int, cap-r: int, cap-b: int, chrome-on: bool, chrome-t: int, chrome-r: int, chrome-b: int, chrome-l: int, chrome-fill: int, has-work-rect: bool, pic-w: int, pic-h: int, has-region-preview: bool, region-preview: image }
+export struct SourceSettingsData { id: int, name: string, kind-code: int, modes: [ModeData], mode-labels: [string], mode-index: int, rates: [string], rate-index: int, has-cursor: bool, cursor: bool, cap-has: bool, cap-l: int, cap-t: int, cap-r: int, cap-b: int, chrome-on: bool, chrome-t: int, chrome-r: int, chrome-b: int, chrome-l: int, chrome-fill: int, has-work-rect: bool, pic-w: int, pic-h: int, has-region-preview: bool, region-preview: image, has-color: bool, color-matrix: int, color-range: int }
 
 // `heading` is set on the first row of a group ("Same application", "Other").
 // `picture` is the target's thumbnail when `has-picture`; `wants-picture` is set for displays and windows, whose rows keep the kind's icon until the picture comes.
@@ -1626,7 +1626,7 @@ export global Studio {
     callback attributes-append(bool);
     callback attributes-apply();
     // Apply or OK in the Source settings window: the chosen mode (cameras), rate and cursor.
-    callback apply-source-settings(int /* source */, int /* mode */, int /* rate */, bool /* cursor */);
+    callback apply-source-settings(int /* source */, int /* mode */, int /* rate */, bool /* cursor */, int /* colour matrix: 0 auto, 1 709, 2 601 */, int /* colour range: 0 auto, 1 limited, 2 full */);
     callback filter-source-targets(string);
     callback retarget-source(int /* source */, int /* index */);
     callback reload-source(int /* source */);

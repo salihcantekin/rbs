@@ -404,6 +404,7 @@ impl AdapterFactory for MfCaptureFactory {
                 set(&[MemoryKind::D3d11.as_str(), MemoryKind::System.as_str()]),
             )
             .with(caps::CURSOR, CapabilityValue::Flag(false))
+            .with(caps::COLOR_OVERRIDE, CapabilityValue::Flag(true))
             .with(caps::FRAME_RATE_MAX, CapabilityValue::Int(MAX_RATE))
             .with(
                 caps::FRAMES_IN_FLIGHT,
@@ -499,7 +500,12 @@ impl CaptureFactory for MfCaptureFactory {
             .get(choice.index)
             .and_then(Option::as_ref)
             .ok_or(CaptureError::FormatUnsupported)?;
-        let format = VideoFormat::new(choice.size, choice.pixel_format, info.color);
+        // The user's colour space and range win over the device's (ADR-0175).
+        let format = VideoFormat::new(
+            choice.size,
+            choice.pixel_format,
+            request.color_for(info.color),
+        );
         let gpu = request.memory.contains(&MemoryKind::D3d11)
             && request
                 .gpu

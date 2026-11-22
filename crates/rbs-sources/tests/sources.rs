@@ -994,3 +994,29 @@ fn monitor_devices_are_listed_and_opened_in_standby() {
         Err(SourceError::NoAdapter(_))
     ));
 }
+
+#[test]
+fn only_cameras_take_a_colour_choice() {
+    use rbs_sources::{option_keys, validate_settings};
+    let camera = ty(types::CAMERA_SOURCE);
+    let choice = settings(&[
+        (keys::COLOR_MATRIX, text("bt601")),
+        (keys::COLOR_RANGE, text("full")),
+    ]);
+    assert!(validate_settings(&camera, &choice).is_ok());
+    assert!(validate_settings(&ty(types::DISPLAY_SOURCE), &choice).is_err());
+    let bad = settings(&[(keys::COLOR_MATRIX, text("bt2020"))]);
+    assert!(validate_settings(&camera, &bad).is_err());
+    let bad = settings(&[(keys::COLOR_RANGE, text("partial"))]);
+    assert!(validate_settings(&camera, &bad).is_err());
+    // Options: Reset removes them (Automatic) and Paste attributes copies them.
+    let options = option_keys(&camera);
+    assert!(options.contains(&keys::COLOR_MATRIX) && options.contains(&keys::COLOR_RANGE));
+    let cam = video(
+        registry()
+            .0
+            .instantiate(&source(types::CAMERA_SOURCE, choice), &ctx())
+            .unwrap(),
+    );
+    assert_eq!(cam.target.as_str(), "test-camera-0");
+}
