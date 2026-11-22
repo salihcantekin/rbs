@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use rbs_core::time::Timestamp;
 use rbs_gpu::SlideKind;
 use rbs_graph::runtime::param::ParamSender;
 use rbs_nodes::{SlideFrame, SlideshowShared};
@@ -291,6 +292,14 @@ pub struct SlideState {
     pub ended: bool,
     /// The folder could not be read.
     pub folder_error: bool,
+    /// The timer is stopped (`media.pause`).
+    pub paused: bool,
+    /// The node is Active: shown on Program, or as a preview it plays.
+    pub warm: bool,
+    /// How long each picture shows; `None` for `advance = manual`.
+    pub interval: Option<Duration>,
+    /// How long the picture on the output has been shown, by the `now` given.
+    pub shown_for: Duration,
 }
 
 /// How often a watched folder is listed again while warm.
@@ -527,8 +536,8 @@ impl SlideshowHub {
         true
     }
 
-    /// What `media.state` reports.
-    pub fn state(&self, source: SourceId) -> Option<SlideState> {
+    /// What `media.state` reports; `now` is the master clock's time.
+    pub fn state(&self, source: SourceId, now: Timestamp) -> Option<SlideState> {
         let state = lock(&self.state);
         let slot = state.slots.get(&source)?;
         let shown = slot.shared.shown.load(Ordering::Acquire);
@@ -543,6 +552,16 @@ impl SlideshowHub {
             left_out: slot.listing.as_ref().map_or(0, |l| l.left_out),
             ended: slot.ended,
             folder_error: slot.folder_error,
+            paused: slot.shared.paused.load(Ordering::Relaxed),
+            warm: slot.shared.warm.load(Ordering::Acquire),
+            interval: slot.shared.interval(),
+            shown_for: match shown {
+                0 => Duration::ZERO,
+                _ => Duration::from_nanos(
+                    now.as_nanos()
+                        .saturating_sub(slot.shared.shown_at_ns.load(Ordering::Acquire)),
+                ),
+            },
         })
     }
 

@@ -778,14 +778,6 @@ fn every_request() -> Vec<Request> {
             ],
         })),
         c(Command::SourceGetSettings(GetSourceSettings { source: 3 })),
-        c(Command::MediaPlay(MediaSource { source: 3 })),
-        c(Command::MediaPause(MediaSource { source: 3 })),
-        c(Command::MediaSeek(MediaSeek {
-            source: 3,
-            position_ms: 1_500,
-        })),
-        c(Command::MediaRestart(MediaSource { source: 3 })),
-        c(Command::MediaState(MediaSource { source: 3 })),
         c(Command::SourceSetSettings(SetSourceSettings {
             gesture: 0,
             source: 3,
@@ -809,6 +801,7 @@ fn every_request() -> Vec<Request> {
         c(Command::AddonRemove(engine())),
     ];
     all.extend(transforms::requests());
+    all.extend(media::requests());
     all
 }
 
@@ -818,6 +811,8 @@ fn engine() -> AddOnRef {
     }
 }
 
+#[path = "json/media.rs"]
+mod media;
 #[path = "json/scrolls.rs"]
 mod scrolls;
 #[path = "json/settings.rs"]
@@ -3188,25 +3183,6 @@ fn stream_destinations_have_a_stable_wire_form() {
             "connects": 1, "reconnect_attempts": 2, "dropped": 7, "on_air_ms": 60000,
         })
     );
-}
-
-#[test]
-fn a_media_state_round_trips_and_an_unknown_state_is_kept_as_unknown() {
-    let info = MediaStateInfo {
-        source: 3,
-        state: MediaPlayState::Cued,
-        cursor_ms: 1_500,
-        duration_ms: Some(10_000),
-    };
-    round_trip(&info);
-    assert_eq!(
-        serde_json::to_value(info).unwrap(),
-        json!({"source": 3, "state": "cued", "cursor_ms": 1500, "duration_ms": 10000})
-    );
-    let newer: MediaStateInfo =
-        serde_json::from_value(json!({"source": 3, "state": "buffering", "cursor_ms": 0})).unwrap();
-    assert_eq!(newer.state, MediaPlayState::Unknown);
-    assert_eq!(newer.duration_ms, None);
 }
 
 #[test]

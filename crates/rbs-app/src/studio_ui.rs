@@ -7739,7 +7739,7 @@ fn source_icon(kind: Option<SourceKind>) -> &'static str {
         Some(SourceKind::Camera) => "camera",
         Some(SourceKind::AudioInput) => "mic",
         Some(SourceKind::SystemAudio | SourceKind::ApplicationAudio) => "speaker",
-        Some(SourceKind::Image) => "image",
+        Some(SourceKind::Image | SourceKind::Slideshow) => "image",
         Some(SourceKind::Color) => "palette",
         Some(SourceKind::Media) => "film",
         Some(SourceKind::Browser) => "globe",

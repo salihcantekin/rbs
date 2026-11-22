@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
+use rbs_core::time::Timestamp;
 use rbs_graph::runtime::param::{ParamReceiver, channel};
 use rbs_nodes::{SlideFrame, SlideshowShared};
 use rbs_scene::model::{SettingValue, Settings, SourceId};
@@ -87,7 +88,7 @@ impl Rig {
     }
 
     fn index(&self) -> Option<usize> {
-        self.hub.state(self.id).unwrap().index
+        self.hub.state(self.id, Timestamp::ZERO).unwrap().index
     }
 }
 
@@ -157,7 +158,7 @@ fn the_first_picture_is_a_cut_and_the_next_is_prefetched() {
     let (second, now, cut) = rig.next_frame(first);
     assert!(!now && !cut, "prefetched, waits for the node's timer");
     rig.show(second);
-    assert_eq!(rig.hub.state(rig.id).unwrap().count, 3);
+    assert_eq!(rig.hub.state(rig.id, Timestamp::ZERO).unwrap().count, 3);
     let third = rig.next_frame(second).0;
     rig.show(third);
     assert_eq!(rig.index(), Some(2));
@@ -198,7 +199,7 @@ fn without_loop_the_last_picture_stays() {
     let b = rig.next_frame(a).0;
     rig.show(b);
     let start = Instant::now();
-    while !rig.hub.state(rig.id).unwrap().ended {
+    while !rig.hub.state(rig.id, Timestamp::ZERO).unwrap().ended {
         assert!(start.elapsed() < HANG_GUARD);
         rig.hub.command(rig.id, SlideCommand::Next);
         rig.hub.nudge();
@@ -212,7 +213,7 @@ fn without_loop_the_last_picture_stays() {
 fn a_missing_folder_is_reported_and_sends_nothing() {
     let mut rig = Rig::new(&settings(Path::new("/nowhere/at/all"), &[]));
     let start = Instant::now();
-    while !rig.hub.state(rig.id).unwrap().folder_error {
+    while !rig.hub.state(rig.id, Timestamp::ZERO).unwrap().folder_error {
         assert!(start.elapsed() < HANG_GUARD);
         rig.hub.nudge();
         std::thread::yield_now();
@@ -229,7 +230,7 @@ fn a_folder_of_broken_files_stops_instead_of_spinning() {
     }
     let mut rig = Rig::new(&settings(&dir, &[]));
     let start = Instant::now();
-    while rig.hub.state(rig.id).unwrap().count != 2 {
+    while rig.hub.state(rig.id, Timestamp::ZERO).unwrap().count != 2 {
         assert!(start.elapsed() < HANG_GUARD);
         rig.hub.nudge();
         std::thread::yield_now();

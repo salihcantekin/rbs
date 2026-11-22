@@ -78,7 +78,7 @@ impl Studio {
 
     /// What `media.state` reports for a running slide show.
     pub fn slideshow_state(&self, source: SourceId) -> Option<SlideState> {
-        self.slideshows.state(source)
+        self.slideshows.state(source, self.engine.clock().now())
     }
 }
 

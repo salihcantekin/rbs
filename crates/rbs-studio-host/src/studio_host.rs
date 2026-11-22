@@ -130,6 +130,7 @@ mod recording_markers;
 mod refusal;
 mod rows;
 mod scenes;
+mod slideshow;
 mod source_settings;
 mod sources;
 mod start;

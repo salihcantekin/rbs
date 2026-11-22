@@ -75,13 +75,15 @@ impl ApiTarget<'_> {
         let invalid = |text: &str| ApiError::new(ErrorKind::InvalidParams, text);
         let fits = match p.kind {
             K::Color => p.stamp.is_some() && p.path.is_none() && p.url.is_none(),
-            K::Image | K::Media => p.path.is_some() && p.stamp.is_none() && p.url.is_none(),
+            K::Image | K::Media | K::Slideshow => {
+                p.path.is_some() && p.stamp.is_none() && p.url.is_none()
+            }
             K::Browser => p.url.is_some() && p.stamp.is_none() && p.path.is_none(),
             _ => false,
         };
         if !fits || p.text.is_some() {
             return Err(invalid(
-                "stamp is for a color source, path for an image or media file, url for a browser page",
+                "stamp is for a color source, path for an image or media file or a slide show's folder, url for a browser page",
             ));
         }
         if p.global || p.with_audio {
@@ -125,6 +127,9 @@ impl ApiTarget<'_> {
             (None, Some(file)) if p.kind == K::Image => h
                 .add_image_file(std::path::Path::new(file), name)
                 // The decoder's words never name the path (ADR-0074 decision 9).
+                .map_err(|e| refused(&e)),
+            (None, Some(folder)) if p.kind == K::Slideshow => h
+                .add_slideshow_folder(std::path::Path::new(folder), name)
                 .map_err(|e| refused(&e)),
             (None, Some(file)) => h
                 .add_media_file(std::path::Path::new(file), name)
