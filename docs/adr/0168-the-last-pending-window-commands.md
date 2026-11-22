@@ -1,6 +1,6 @@
 # ADR-0168: The last fifteen Pending window commands
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-22
 - Deciders: Salih Cantekin (owner)
 
@@ -140,3 +140,7 @@ Nits applied:
 - `StartSyncMeasure` is now under one pattern.
 - One line on what `app` and `recent` tell a token.
 - The `InteractInput` measurement note.
+
+### Owner approval
+
+Salih Cantekin accepted the ADR as recorded after round 2 (decision card, 2026-11-22 14:39 UTC).
