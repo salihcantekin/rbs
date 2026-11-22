@@ -131,16 +131,41 @@ pub fn when_done<R: 'static, E: std::fmt::Display + 'static>(
     work: impl Future<Output = Result<R, E>> + 'static,
     done: impl FnOnce(Result<R, String>) + 'static,
 ) {
+    let at = Location::caller();
+    when_done_on(
+        |task| {
+            slint::spawn_local(Guarded(Some(task), at))
+                .map(drop)
+                .map_err(|e| e.to_string())
+        },
+        work,
+        done,
+    );
+}
+
+/// [`when_done`] with the executor `spawn`, which answers whether the task started.
+/// `done` stays with the task until it ends; it is taken back only when the task
+/// could not start, so it runs exactly once either way.
+fn when_done_on<R: 'static, E: std::fmt::Display + 'static>(
+    spawn: impl FnOnce(Pin<Box<dyn Future<Output = ()>>>) -> Result<(), String>,
+    work: impl Future<Output = Result<R, E>> + 'static,
+    done: impl FnOnce(Result<R, String>) + 'static,
+) {
     let done = std::rc::Rc::new(std::cell::Cell::new(Some(done)));
     let then = std::rc::Rc::clone(&done);
-    let task = spawn_local(async move {
+    let started = spawn(Box::pin(async move {
         let result = work.await.map_err(|e| e.to_string());
         if let Some(f) = then.take() {
             f(result);
         }
-    });
-    if let (Err(e), Some(f)) = (task, done.take()) {
-        f(Err(e.to_string()));
+    }));
+    // Taken only on a failed start: taking it first (as a tuple did) dropped `done`
+    // while the task still ran, so its result never arrived (profile and scene
+    // collection switches did nothing, found on Windows 2026-11-22).
+    if let Err(e) = started
+        && let Some(f) = done.take()
+    {
+        f(Err(e));
     }
 }
 
@@ -210,5 +235,65 @@ impl Drop for Guarded {
 fn drop_guarded(task: Option<Pin<Box<dyn Future<Output = ()>>>>, at: &'static Location<'static>) {
     if let Some(task) = task {
         guard_from(at, move || drop(task));
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)] // Tests fail by panicking.
+mod tests {
+    use super::*;
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+    use std::task::Waker;
+
+    type Task = Pin<Box<dyn Future<Output = ()>>>;
+
+    /// A writer-thread result that is not there at the first poll.
+    struct Later(bool);
+
+    impl Future for Later {
+        type Output = Result<u32, String>;
+        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+            if self.0 {
+                return Poll::Ready(Ok(7));
+            }
+            self.0 = true;
+            cx.waker().wake_by_ref();
+            Poll::Pending
+        }
+    }
+
+    #[test]
+    fn a_task_that_ends_later_still_hands_its_result_over() {
+        let queued: Rc<RefCell<Option<Task>>> = Rc::default();
+        let got = Rc::new(Cell::new(None));
+        let (q, g) = (Rc::clone(&queued), Rc::clone(&got));
+        // As the event loop: the task is only queued at spawn, and polled afterwards.
+        when_done_on(
+            move |task| {
+                *q.borrow_mut() = Some(task);
+                Ok(())
+            },
+            Later(false),
+            move |r| g.set(Some(r)),
+        );
+        assert_eq!(got.take(), None, "nothing ran yet");
+        let mut task = queued.borrow_mut().take().unwrap();
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(task.as_mut().poll(&mut cx).is_pending());
+        assert!(task.as_mut().poll(&mut cx).is_ready());
+        assert_eq!(got.take(), Some(Ok(7)));
+    }
+
+    #[test]
+    fn a_task_that_cannot_start_answers_its_error_once() {
+        let got = Rc::new(Cell::new(None));
+        let g = Rc::clone(&got);
+        when_done_on(
+            |_task| Err("no event loop".to_owned()),
+            Later(false),
+            move |r: Result<u32, String>| g.set(Some(r)),
+        );
+        assert_eq!(got.take(), Some(Err("no event loop".to_owned())));
     }
 }
