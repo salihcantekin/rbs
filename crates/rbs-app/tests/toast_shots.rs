@@ -1,6 +1,6 @@
 //! Screenshots of the notice cards for the owner's approval of the visual change
 //! (CLAUDE.md rule 16): the error bar with a short and a long (two-line) message, the
-//! error bar just after a copy, and the delete undo toast at 3 s, in Dark and Light.
+//! error bar just after a copy, and the delete undo toast, in Dark and Light.
 //! It writes raw RGBA files to `RBS_SHOTS_DIR` with Skia's real pixels; it is not a
 //! check, so it is ignored and run by hand:
 //!
@@ -36,18 +36,11 @@ fn shot(file: &TokenFile, base: Base, case: &Case, name: &str, dir: &std::path::
     )
     .unwrap();
     match case {
-        Case::Error(detail, copy) => {
+        Case::Error(detail, _) => {
             let g = w.global::<Shell>();
             g.set_error_detail((*detail).into());
             g.set_error_kind(2);
             g.set_error_generation(1);
-            if *copy {
-                let shown = format!("That did not work: {detail}");
-                ElementHandle::find_by_accessible_label(&w, &shown)
-                    .next()
-                    .expect("the words")
-                    .invoke_accessible_default_action();
-            }
         }
         Case::Deleted => {
             let st = w.global::<Studio>();
@@ -62,6 +55,19 @@ fn shot(file: &TokenFile, base: Base, case: &Case, name: &str, dir: &std::path::
     };
     w.window().set_size(slint::LogicalSize::new(1280.0, h));
     w.show().unwrap();
+    // Let some of the time pass, so the ring shows part of it (2 of 3 s, 5 of 8 s).
+    i_slint_backend_testing::mock_elapsed_time(std::time::Duration::ZERO);
+    let steps = if matches!(case, Case::Deleted) { 1 } else { 3 };
+    for _ in 0..steps {
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(1000));
+    }
+    if let Case::Error(detail, true) = case {
+        ElementHandle::find_by_accessible_label(&w, detail)
+            .next()
+            .expect("the words")
+            .invoke_accessible_default_action();
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::ZERO);
+    }
     let px = w.window().take_snapshot().unwrap();
     let path = dir.join(format!("{name}-{}x{}.rgba", px.width(), px.height()));
     std::fs::write(&path, px.as_bytes()).unwrap();
@@ -76,6 +82,7 @@ fn toast_screenshots() {
     let backend = i_slint_backend_testing::TestingBackend::new(
         i_slint_backend_testing::TestingBackendOptions {
             renderer_name: Some("skia".into()),
+            mock_time: true,
             ..Default::default()
         },
     );

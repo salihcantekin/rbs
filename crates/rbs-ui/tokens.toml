@@ -24,8 +24,8 @@ format = 4
 "color.scrollbar.thumb" = "#6e7683"
 "color.scrollbar.thumb-hot" = "#a8afbb"
 # Notice card: a blue fill and a light edge, so it does not blend into the grey panels.
-"color.toast.surface" = "#1a2030"
-"color.toast.edge" = "#d6e4ff"
+"color.toast.surface" = "#1e2026"
+"color.toast.edge" = "#6e7683"
 "color.text.primary" = "#eceef2"
 "color.text.secondary" = "#a8afbb"
 "color.text.disabled" = "#6b717c"
@@ -65,7 +65,7 @@ format = 4
 "color.scrollbar.thumb" = "#767c86"
 "color.scrollbar.thumb-hot" = "#4f555e"
 "color.toast.surface" = "#ffffff"
-"color.toast.edge" = "#0a4db8"
+"color.toast.edge" = "#7a808a"
 "color.text.primary" = "#15171a"
 "color.text.secondary" = "#4f555e"
 "color.text.disabled" = "#9aa0a8"
@@ -229,10 +229,13 @@ format = 4
 # smaller than the minimum when the window shrinks.
 "size.target.preview-h" = 280
 "size.target.preview-min-h" = 160
-# Notice card: the outline, the side mark plus the countdown bar, and the widest
-# the card may be. A longer message elides; the card never grows with the window.
-"size.toast.border" = 2
-"size.toast.rail" = 4
+# Notice card (redesign, owner 2026-11-22): the outline, the time line along its
+# bottom edge, and the widest the card may be. A longer message elides; the card never
+# grows with the window.
+"size.toast.border" = 1
+"size.toast.rail" = 2
+# The coloured edge down the left side that says what kind of notice it is.
+"size.toast.edge" = 4
 "size.toast.max" = 480
 # The widest the error bar may be: its message wraps to two lines first (CopyText).
 "size.toast.wide" = 720

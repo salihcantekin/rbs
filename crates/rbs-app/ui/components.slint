@@ -413,6 +413,7 @@ export component Button inherits Rectangle {
         : kind == "primary" ? (touch.pressed ? Theme.accent-pressed : touch.has-hover ? Theme.accent-hover : Theme.accent)
         : kind == "live" ? Theme.state-live
         : kind == "danger" ? (touch.has-hover || touch.pressed ? Theme.action-destructive-subtle-hover : root.round ? transparent : Theme.action-destructive-subtle)
+        : kind == "link" ? (touch.pressed ? Theme.accent-subtle-hover : touch.has-hover ? Theme.accent-subtle : transparent)
         : checked ? (touch.has-hover || touch.pressed ? Theme.accent-subtle-hover : Theme.accent-subtle)
         : touch.pressed ? Theme.button-pressed
         : touch.has-hover ? Theme.button-hover
@@ -553,7 +554,7 @@ export component Button inherits Rectangle {
             }
         }
     }
-    out property <color> ink: !enabled ? Theme.text-disabled : kind == "primary" ? Theme.text-inverse : kind == "live" ? Theme.text-on-live : kind == "danger" ? Theme.state-error : Theme.text-primary;
+    out property <color> ink: !enabled ? Theme.text-disabled : kind == "primary" ? Theme.text-inverse : kind == "live" ? Theme.text-on-live : kind == "danger" ? Theme.state-error : kind == "link" ? Theme.accent : Theme.text-primary;
     // A danger button always shows the trash icon (ADR-0076): it is never bare coloured text.
     property <IconName> shown-lead: root.lead != IconName.none ? root.lead : kind == "danger" && root.icon == IconName.none ? IconName.trash : IconName.none;
     content := HorizontalLayout {
@@ -1114,34 +1115,82 @@ export component IconButton inherits Button {
     width: Tokens.size-control-sm;
 }
 
-// CopyText: words the user copies (first use: the error bar). A click on the words,
-// Return or Space, or the optional Copy button (`copy-button`, an icon-only `copy`) puts the
-// whole `text` on the clipboard, also the part an elided line hides; the words then
-// read "Copied to the clipboard." for `delay.copied`, while `confirming` is true. The
-// text wraps to at most `lines` lines and elides after that. The words are a button
-// named after the text; their tooltip says what a click does.
+// CountdownClose: the Dismiss button of a notice with the time left drawn as a ring
+// around it (owner 2026-11-22): a `border.subtle` track and an `accent` arc of
+// `size.toast.rail` that starts full at the top and shortens counter-clockwise as
+// `left` (1 to 0) falls. The owner steps `left` (no animation, so it runs under
+// reduce motion too). `time-label` ("5 seconds left") is the button's description.
+export component CountdownClose inherits Rectangle {
+    in property <float> left: 1.0;
+    in property <string> name: @tr("Dismiss");
+    in property <string> time-label;
+    callback clicked();
+    property <length> box: Tokens.size-control-sm;
+    // The ring's centre and radius in the path's own units (logical pixels).
+    property <float> c: root.box / 1px / 2;
+    property <float> r: (root.box - Tokens.size-toast-rail) / 1px / 2;
+    property <angle> turn: clamp(root.left, 0, 1) * 360deg;
+    property <float> ex: root.c + root.r * sin(root.turn);
+    property <float> ey: root.c - root.r * cos(root.turn);
+    property <int> large: root.left > 0.5 ? 1 : 0;
+    width: root.box;
+    height: root.box;
+    accessible-role: none;
+    Rectangle {
+        border-radius: self.width / 2;
+        border-width: Tokens.size-toast-rail;
+        border-color: Theme.border-subtle;
+        accessible-role: none;
+    }
+    if root.left > 0: Path {
+        width: root.box;
+        height: root.box;
+        viewbox-x: 0;
+        viewbox-y: 0;
+        viewbox-width: root.box / 1px;
+        viewbox-height: root.box / 1px;
+        fill: transparent;
+        stroke: Theme.accent;
+        stroke-width: Tokens.size-toast-rail;
+        // A full ring is two half arcs: one arc cannot end where it starts.
+        commands: root.left >= 1
+            ? "M \{root.c} \{root.c - root.r} A \{root.r} \{root.r} 0 1 1 \{root.c} \{root.c + root.r} A \{root.r} \{root.r} 0 1 1 \{root.c} \{root.c - root.r}"
+            : "M \{root.c} \{root.c - root.r} A \{root.r} \{root.r} 0 \{root.large} 1 \{root.ex} \{root.ey}";
+        accessible-role: none;
+    }
+    IconButton {
+        icon: IconName.close;
+        name: root.name;
+        description: root.time-label;
+        clicked => { root.clicked(); }
+    }
+}
+
+// CopyText: words the user copies (first use: the error bar's detail). While `active`,
+// a click on the words, Return or Space, or the owner calling `copy()` (its Copy
+// button) puts the whole `text` on the clipboard, also the part an elided line hides;
+// the words then read "Copied to the clipboard." for `delay.copied`, while `confirming`
+// is true. The text wraps to at most `lines` lines and elides after that. While active
+// the words are a button named after the text; their tooltip says what a click does.
 export component CopyText inherits Rectangle {
     in property <string> text;
     in property <int> lines: 1;
     in property <color> ink: Theme.text-primary;
-    in property <bool> copy-button: false;
+    in property <bool> active: true;
     // True from the copy until `delay.copied` has passed.
     in-out property <bool> confirming;
-    // The height the words (and the button) take at the current width, at most `lines`
-    // lines; the owner sizes its row from it.
-    out property <length> wanted-height: max(min(measure.preferred-height, root.lines * root.line-h), root.copy-button ? Tokens.size-control-sm : 0px);
     property <length> line-h: Tokens.type-body-line;
     property <string> tip: @tr("Click to copy the whole message.");
     property <int> tip-owner;
-    property <bool> tip-wanted: touch.has-hover || focus.keyed;
+    property <bool> tip-wanted: root.active && (touch.has-hover || focus.keyed);
     changed tip-wanted => {
         if root.tip-wanted {
-            root.tip-owner = Overlays.tip-enter(root.tip, words.absolute-position.x, words.absolute-position.y, words.width, words.height, focus.keyed && !touch.has-hover);
+            root.tip-owner = Overlays.tip-enter(root.tip, root.absolute-position.x, root.absolute-position.y, root.width, root.height, focus.keyed && !touch.has-hover);
         } else {
             Overlays.tip-leave(root.tip-owner);
         }
     }
-    function copy() {
+    public function copy() {
         clip.select-all();
         clip.copy();
         clip.clear-selection();
@@ -1149,12 +1198,19 @@ export component CopyText inherits Rectangle {
         root.confirming = false;
         root.confirming = true;
     }
-    // Sized by the text itself, so the card keeps its size while the confirmation shows.
+    // Sized by the text itself, so its owner keeps its size while the confirmation shows.
     min-width: 0px;
-    preferred-width: measure.preferred-width + (root.copy-button ? Tokens.space-2 + Tokens.size-control-sm : 0px);
-    min-height: root.wanted-height;
-    preferred-height: root.wanted-height;
-    accessible-role: none;
+    preferred-width: measure.preferred-width;
+    // No words take no room.
+    min-height: root.text == "" ? 0px : min(measure.preferred-height, root.lines * root.line-h);
+    preferred-height: self.min-height;
+    max-height: self.min-height;
+    // A button (a constant role); while not `active` it does nothing.
+    accessible-role: button;
+    accessible-label: root.confirming ? @tr("Copied to the clipboard.") : root.text;
+    accessible-description: root.active ? root.tip : "";
+    accessible-action-default => { if root.active { root.copy(); } }
+    forward-focus: focus;
     // Holds the words for the clipboard only; never shown or focused.
     clip := TextInput {
         text: root.text;
@@ -1166,7 +1222,7 @@ export component CopyText inherits Rectangle {
         accessible-role: none;
     }
     measure := Text {
-        width: words.width;
+        width: root.width;
         text: root.text;
         font-size: Tokens.type-body-size;
         wrap: root.lines > 1 ? word-wrap : no-wrap;
@@ -1178,51 +1234,31 @@ export component CopyText inherits Rectangle {
         running: root.confirming;
         triggered => { root.confirming = false; }
     }
-    HorizontalLayout {
-        spacing: Tokens.space-2;
-        words := Rectangle {
-            horizontal-stretch: 1;
-            min-width: 0px;
-            accessible-role: button;
-            accessible-label: root.confirming ? @tr("Copied to the clipboard.") : root.text;
-            accessible-description: root.tip;
-            accessible-action-default => { root.copy(); }
-            forward-focus: focus;
-            focus := RingFocus {
-                key-pressed(e) => {
-                    if e.text == Key.Escape && Overlays.tip-dismiss(root.tip-owner) { return accept; }
-                    if e.text == Key.Return || e.text == " " { root.copy(); return accept; }
-                    reject
-                }
-            }
-            touch := TouchArea {
-                mouse-cursor: pointer;
-                clicked => { focus.focus-pointer(); root.copy(); }
-            }
-            label := Text {
-                width: parent.width;
-                height: min(parent.height, root.lines * root.line-h);
-                y: (parent.height - self.height) / 2;
-                text: root.confirming ? @tr("Copied to the clipboard.") : root.text;
-                color: root.ink;
-                font-size: Tokens.type-body-size;
-                // More lines than fit start at the top, so the first ones show.
-                vertical-alignment: measure.preferred-height > self.height ? top : center;
-                wrap: root.lines > 1 ? word-wrap : no-wrap;
-                overflow: elide;
-                accessible-role: none;
-            }
-            FocusRing { show: focus.ring; }
-        }
-        if root.copy-button: VerticalLayout {
-            alignment: center;
-            IconButton {
-                icon: IconName.copy;
-                name: @tr("Copy the message");
-                clicked => { root.copy(); }
-            }
+    focus := RingFocus {
+        enabled: root.active;
+        key-pressed(e) => {
+            if e.text == Key.Escape && Overlays.tip-dismiss(root.tip-owner) { return accept; }
+            if e.text == Key.Return || e.text == " " { root.copy(); return accept; }
+            reject
         }
     }
+    touch := TouchArea {
+        enabled: root.active;
+        mouse-cursor: root.active ? MouseCursor.pointer : MouseCursor.default;
+        clicked => { focus.focus-pointer(); root.copy(); }
+    }
+    Text {
+        width: parent.width;
+        height: parent.height;
+        text: root.confirming ? @tr("Copied to the clipboard.") : root.text;
+        color: root.ink;
+        font-size: Tokens.type-body-size;
+        vertical-alignment: top;
+        wrap: root.lines > 1 ? word-wrap : no-wrap;
+        overflow: elide;
+        accessible-role: none;
+    }
+    FocusRing { show: focus.ring; }
 }
 
 // Menu item inside a Menu popup.

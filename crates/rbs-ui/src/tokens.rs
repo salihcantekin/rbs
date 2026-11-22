@@ -78,8 +78,8 @@ pub const FIXED: &[(&str, &str)] = &[
 /// visible and icons legible (rule U7), and the main window must fit the 1280 x 720 minimum (rule U11).
 pub const MINIMUMS: &[(&str, f32, &str)] = &[
     ("size.focus-ring", 2.0, "rule U7"),
-    ("size.toast.border", 2.0, "the notice stays visible"),
-    ("size.toast.rail", 4.0, "the notice stays visible"),
+    ("size.toast.border", 1.0, "the notice stays visible"),
+    ("size.toast.rail", 2.0, "the time left stays visible"),
     ("size.panel.pad", 8.0, "ADR-0076"),
     ("size.section.gap", 12.0, "ADR-0076"),
     ("size.field.gap", 6.0, "ADR-0076"),
@@ -183,6 +183,7 @@ pub const LENGTHS: &[&str] = &[
     "size.toast.rail",
     "size.toast.max",
     "size.toast.wide",
+    "size.toast.edge",
     "size.first-run.w",
     "size.projector.resize-edge",
 ];
@@ -502,14 +503,14 @@ pub const THEME_CONTRAST_RULES: &[(&str, &str, f64)] = &[
     // controls on it, and the edge against the window and the panels it floats over.
     ("color.text.primary", "color.toast.surface", 4.5),
     ("color.text.secondary", "color.toast.surface", 4.5),
-    // The outline, the side mark and the notice icon are the edge colour on the fill.
-    ("color.toast.edge", "color.toast.surface", 4.5),
-    // The countdown chip is filled with the edge colour; the seconds and the hourglass
-    // are the surface colour, and the seconds are text.
-    ("color.toast.surface", "color.toast.edge", 4.5),
+    // The outline is the edge colour on the fill; the tone's mark and edge and the
+    // time ring (accent) are graphics on it.
+    ("color.toast.edge", "color.toast.surface", 3.0),
+    ("color.state.warning", "color.toast.surface", 3.0),
     ("color.border.focus", "color.toast.surface", 3.0),
     ("color.border.strong", "color.toast.surface", 3.0),
-    ("color.accent", "color.toast.surface", 3.0),
+    // A link button's word (Undo) is accent text on the card.
+    ("color.accent", "color.toast.surface", 4.5),
     ("color.toast.edge", "color.surface.base", 3.0),
     ("color.toast.edge", "color.surface.raised", 3.0),
     ("color.toast.edge", "color.surface.overlay", 3.0),

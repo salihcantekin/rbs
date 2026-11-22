@@ -373,7 +373,7 @@ pub const THEMEABLE: &[Themeable] = &[
         "size.toast.border",
         "Notice outline width",
         Shapes,
-        2.0,
+        1.0,
         4.0,
     ),
     motion("motion.fast", "Short animation"),

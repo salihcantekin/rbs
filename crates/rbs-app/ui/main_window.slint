@@ -3,7 +3,7 @@
 // toolkit-neutral rbs-ui crate: Slint has no recursive components, so Rust flattens
 // each window's layout tree into tab stacks and splitter handles with absolute positions.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, CopyText, SplitButton, IconButton, Icon, FocusRing, RingFocus, EmptyState, Select, NumberField, Toggle, SegmentedControl, ColorPicker, InfoHint, OverlayHost, PopoverLayer, PopoverCard, Checkbox, DialogActions, Slider, VSlider, PanelTab } from "components.slint";
+import { Button, CopyText, CountdownClose, SplitButton, IconButton, Icon, FocusRing, RingFocus, EmptyState, Select, NumberField, Toggle, SegmentedControl, ColorPicker, InfoHint, OverlayHost, PopoverLayer, PopoverCard, Checkbox, DialogActions, Slider, VSlider, PanelTab } from "components.slint";
 import { CommandMenu } from "context_menu.slint";
 import { AppMenu, AppMenuButton } from "app_menu.slint";
 import { ProgramPanel, ScenesPanel, SourcesPanel, PropertiesPanel, MixerPanel, LiveControlsPanel, TransitionPanel, OutputsPanel, LibraryPanel, StatsPanel } from "studio.slint";
@@ -2150,51 +2150,57 @@ component StatusBar inherits Rectangle {
     collection-menu := CommandMenu { context: "collections"; }
 }
 
-// A notice card (undo toast, delete toast, error bar). One control tall and at
-// most `size.toast.max` wide: stretch stays 0, because a layout that stretches
-// inside a free-floating child of the window takes the window and covers the
-// preview. The fill stays quiet; the outline, the side mark and the icon are
-// what make it visible on every theme. While `timed`, the seconds left sit at
-// the right end in an edge-coloured chip with a filled hourglass, and the card
-// closes when they run out; Dismiss closes it sooner. The countdown steps
-// by `delay.toast-tick` (not an animation, so it still runs under reduce motion).
-// The first-close notice sets `timed` off: its buttons hide the windows (ADR-0056).
-// `copyable` (the error bar) makes the words a CopyText: a click copies the whole
-// message, the mark shows `check` while "Copied" reads, and a long message wraps to
-// two lines, the card growing to fit them.
+// A notice card (undo toast, delete toast, error bar), redesigned with the owner on
+// 2026-11-22: a quiet `toast.surface` card with a thin `toast.edge` outline and a
+// `size.toast.edge` edge down the left in the notice's tone (information `accent`,
+// warning `state.warning`, error `state.error`); the mark in the same tone, a bold
+// title and an optional detail of up to two lines in `text.secondary`; then the action
+// as a small link button, Copy (error bar) and Dismiss. While it counts down, Dismiss is
+// a CountdownClose: the time left is a ring around it that shortens every
+// `delay.toast-tick` (a step, not an animation, so it still runs under reduce motion);
+// the card closes when it is gone, or sooner with Dismiss. Its width stays within
+// `size.toast.max` (`size.toast.wide` for the error bar) and stretch stays 0: a layout
+// that stretches inside a free-floating child of the window takes the window and
+// covers the preview. The first-close notice sets `timed` off: its buttons hide the
+// windows (ADR-0056).
 component Toast inherits Rectangle {
-    in property <string> text;
+    in property <string> title;
+    in property <string> detail;
     in property <string> action;
-    // The action button's lead icon (`none` draws the words alone).
-    in property <IconName> action-icon: IconName.none;
     // Reports its rectangle as `Shell.top-toast` (the error bar) instead of
     // `Shell.bottom-toast`.
     in property <bool> top;
     in property <bool> timed: true;
     // How long the card stays (`delay.toast`; the delete undo uses `delay.toast-undo`).
     in property <duration> stay: Tokens.delay-toast;
+    // The detail is a CopyText with a Copy button (the error bar).
     in property <bool> copyable: false;
-    property <bool> copied;
     // A new notice, even with the same words, starts the countdown again.
     in property <int> generation;
     in property <IconName> mark: IconName.info;
+    // What kind of notice: 0 information (`accent`), 1 warning (`state.warning`),
+    // 2 error (`state.error`). Colours the left edge and the mark.
+    in property <int> tone: 0;
+    property <color> tone-ink: root.tone == 2 ? Theme.state-error : root.tone == 1 ? Theme.state-warning : Theme.accent;
     callback act();
     callback dismiss();
+    property <bool> copied;
     // A direct child of the window, so its own coordinates are the window's.
     property <Cover> rect: { x: self.x, y: self.y, width: self.width, height: self.height };
     property <int> total-ms: round(root.stay / 1ms);
     property <int> tick-ms: max(1, round(Tokens.delay-toast-tick / 1ms));
     property <int> left-ms: total-ms;
-    // The height of the words: one control unless a copyable message wraps.
-    property <length> words-h: Tokens.size-control-md;
     // Never reads 0: the last step closes the card while it still says 1 s.
     property <int> seconds: max(1, ceil(root.left-ms * 1.0 / root.tick-ms));
     // False, then true, restarts the one-second step (a running timer keeps its phase).
     property <bool> clock: false;
+    property <length> widest: root.copyable ? Tokens.size-toast-wide : Tokens.size-toast-max;
     init => { report(); root.restart(); }
     changed rect => { report(); }
     changed generation => { root.restart(); }
-    changed text => { root.restart(); }
+    changed title => { root.restart(); }
+    changed detail => { root.restart(); }
+    function copy-detail() { detail-words.copy(); }
     function report() {
         if top { Shell.top-toast = rect; } else { Shell.bottom-toast = rect; }
     }
@@ -2221,111 +2227,88 @@ component Toast inherits Rectangle {
     }
     horizontal-stretch: 0;
     vertical-stretch: 0;
-    // The row, its vertical padding and the outline. Fixed, so the card cannot
-    // grow with the window the way an unsized layout does.
-    height: max(Tokens.size-control-md, words-h) + 2 * Tokens.space-1 + 2 * Tokens.size-toast-border;
-    // The error bar may be wider, so a long message reads in its two lines.
-    property <length> widest: root.copyable ? Tokens.size-toast-wide : Tokens.size-toast-max;
+    // Fixed to what the row asks, so the card cannot grow with the window the way an
+    // unsized layout does.
+    height: body.preferred-height;
     width: min(root.widest, body.preferred-width);
     background: Theme.toast-surface;
     border-color: Theme.toast-edge;
     border-width: Tokens.size-toast-border;
-    border-radius: Tokens.radius-md;
+    border-radius: Tokens.radius-lg;
     clip: true;
     accessible-role: none;
     body := HorizontalLayout {
-        alignment: center;
-        Rectangle {
-            width: Tokens.size-toast-rail;
-            vertical-stretch: 1;
-            background: Theme.toast-edge;
-            accessible-role: none;
-        }
-        HorizontalLayout {
-            horizontal-stretch: 1;
-            padding-left: Tokens.space-3;
-            padding-right: Tokens.space-3;
-            padding-top: Tokens.space-1;
-            padding-bottom: Tokens.space-1;
-            spacing: Tokens.space-3;
+        padding-left: Tokens.size-toast-edge + Tokens.space-3;
+        padding-right: Tokens.space-2;
+        padding-top: Tokens.space-2;
+        padding-bottom: Tokens.space-2;
+        spacing: Tokens.space-3;
+        alignment: start;
+        cross-axis-alignment: center;
+        VerticalLayout {
             alignment: center;
-            // A fixed-height button stays at the top of a row that stretches. Centre
-            // every child on the card, the words included.
-            cross-axis-alignment: center;
-            VerticalLayout {
-                alignment: center;
-                width: Tokens.size-icon-box;
-                Icon { name: root.copied ? IconName.check : root.mark; ink: Theme.toast-edge; }
-            }
-            if root.copyable: CopyText {
-                text: root.text;
-                lines: 2;
-                copy-button: true;
-                confirming <=> root.copied;
-                horizontal-stretch: 1;
-                max-width: root.widest;
-                init => { root.words-h = self.wanted-height; }
-                changed wanted-height => { root.words-h = self.wanted-height; }
-            }
-            if !root.copyable: Text {
-                text: root.text;
+            width: Tokens.size-icon-box;
+            Icon { name: root.copied ? IconName.check : root.mark; ink: root.tone-ink; }
+        }
+        VerticalLayout {
+            horizontal-stretch: 1;
+            min-width: 0px;
+            alignment: center;
+            Text {
+                text: root.title;
                 color: Theme.text-primary;
                 font-size: Tokens.type-body-size;
-                vertical-alignment: center;
-                horizontal-stretch: 1;
+                font-weight: Tokens.type-label-weight;
                 min-width: 0px;
-                max-width: Tokens.size-toast-max;
                 overflow: elide;
             }
-            // Small buttons (owner 2026-11-22): the action keeps its word, Dismiss is
-            // the `close` icon alone, named and with a tooltip.
+            detail-words := CopyText {
+                visible: root.detail != "";
+                text: root.detail;
+                lines: 2;
+                ink: Theme.text-secondary;
+                active: root.copyable;
+                confirming <=> root.copied;
+                max-width: root.widest;
+            }
+        }
+        // The buttons sit close together after the words (owner 2026-11-22: small).
+        HorizontalLayout {
+            horizontal-stretch: 0;
+            spacing: Tokens.space-1;
+            alignment: end;
+            cross-axis-alignment: center;
             if action != "": Button {
                 text: root.action;
-                kind: "primary";
+                kind: "link";
                 dense: true;
-                lead: root.action-icon;
                 clicked => { act(); }
             }
-            IconButton {
+            if root.copyable: IconButton {
+                icon: IconName.copy;
+                name: @tr("Copy the message");
+                clicked => { root.copy-detail(); }
+            }
+            if root.timed: CountdownClose {
+                left: root.left-ms * 1.0 / max(1, root.total-ms);
+                time-label: @tr("{n} second left" | "{n} seconds left" % root.seconds);
+                clicked => { dismiss(); }
+            }
+            if !root.timed: IconButton {
                 icon: IconName.close;
                 name: @tr("Dismiss");
                 clicked => { dismiss(); }
             }
-            // Past the buttons, so the time reads as the end of the card, not another action.
-            // The chip is the edge colour with the surface colour on it, so the passing
-            // time stands out from the quiet fill.
-            if root.timed: VerticalLayout {
-                horizontal-stretch: 0;
-                alignment: center;
-                padding-left: Tokens.space-3;
-                Rectangle {
-                    horizontal-stretch: 0;
-                    background: Theme.toast-edge;
-                    border-radius: Tokens.radius-sm;
-                    HorizontalLayout {
-                        padding-left: Tokens.space-2;
-                        padding-right: Tokens.space-2;
-                        padding-top: Tokens.space-1;
-                        padding-bottom: Tokens.space-1;
-                        spacing: Tokens.space-1;
-                        alignment: center;
-                        VerticalLayout {
-                            alignment: center;
-                            Icon { name: IconName.hourglass; ink: Theme.toast-surface; }
-                        }
-                        Text {
-                            horizontal-stretch: 0;
-                            text: @tr("{} s", root.seconds);
-                            color: Theme.toast-surface;
-                            font-size: Tokens.type-body-size;
-                            font-weight: Tokens.type-label-weight;
-                            vertical-alignment: center;
-                            accessible-label: @tr("{n} second left" | "{n} seconds left" % root.seconds);
-                        }
-                    }
-                }
-            }
         }
+    }
+    // The kind of notice as a coloured edge down the left side (with the mark, so
+    // colour is not the only signal). The card's corners clip it.
+    Rectangle {
+        x: 0px;
+        width: Tokens.size-toast-edge;
+        height: parent.height;
+        background: root.tone-ink;
+        accessible-role: none;
     }
 }
 
@@ -2655,9 +2638,8 @@ export component MainWindow inherits Window {
     if Shell.toast-kind != 0: Toast {
         x: (parent.width - self.width) / 2;
         y: parent.height - self.height - Tokens.space-6;
-        text: Shell.toast-kind == 1 ? @tr("{} closed.", Shell.toast-subject) : @tr("Switched workspace automatically from {}.", Shell.toast-subject);
+        title: Shell.toast-kind == 1 ? @tr("{} closed", Shell.toast-subject) : @tr("Switched workspace automatically from {}", Shell.toast-subject);
         action: @tr("Undo");
-        action-icon: IconName.undo;
         mark: IconName.undo;
         generation: Shell.toast-generation;
         act => { Shell.toast-undo(); }
@@ -2666,9 +2648,9 @@ export component MainWindow inherits Window {
     if Studio.deleted != "" && Shell.toast-kind == 0: Toast {
         x: (parent.width - self.width) / 2;
         y: parent.height - self.height - Tokens.space-6;
-        text: Studio.deleted-from-scene ? @tr("{} removed from this scene.", Studio.deleted) : @tr("{} deleted.", Studio.deleted);
+        title: Studio.deleted-from-scene ? @tr("{} removed from this scene", Studio.deleted) : @tr("{} deleted", Studio.deleted);
+        mark: IconName.trash;
         action: @tr("Undo");
-        action-icon: IconName.undo;
         generation: Studio.deleted-generation;
         act => { Studio.undo-delete(); }
         dismiss => { Studio.dismiss-deleted(); }
@@ -2680,10 +2662,10 @@ export component MainWindow inherits Window {
         x: (parent.width - self.width) / 2;
         y: parent.height - self.height - Tokens.space-6;
         mark: IconName.canvas-vertical;
-        text: Shell.vertical-left == 1 ? @tr("Vertical recording still on")
+        tone: 1;
+        title: Shell.vertical-left == 1 ? @tr("Vertical recording still on")
             : @tr("Vertical stream still live");
         action: Shell.vertical-left == 1 ? @tr("Stop it") : @tr("End it");
-        action-icon: IconName.stop;
         act => { Shell.vertical-left-stop(); }
         dismiss => { Shell.vertical-left-dismiss(); }
     }
@@ -2693,9 +2675,8 @@ export component MainWindow inherits Window {
         x: (parent.width - self.width) / 2;
         y: parent.height - self.height - Tokens.space-6;
         mark: IconName.flag;
-        text: Studio.marker-note;
+        title: Studio.marker-note;
         action: @tr("Undo");
-        action-icon: IconName.undo;
         generation: Studio.marker-generation;
         act => { Studio.undo-marker(); }
         dismiss => { Studio.dismiss-marker(); }
@@ -2731,10 +2712,10 @@ export component MainWindow inherits Window {
         top: true;
         // Closing this one hides the windows, so it waits for OK or Dismiss.
         timed: false;
-        text: Shell.background-notice == 1 ? @tr("RBS keeps running in the Dock. Quit with Cmd+Q.")
-            : @tr("RBS keeps running in the notification area (under the ^ arrow until you pin it). Quit it from the RBS icon there.");
+        title: @tr("RBS keeps running");
+        detail: Shell.background-notice == 1 ? @tr("In the Dock. Quit with Cmd+Q.")
+            : @tr("In the notification area (under the ^ arrow until you pin it). Quit it from the RBS icon there.");
         action: @tr("OK");
-        action-icon: IconName.check;
         act => { Shell.background-notice-ok(); }
         dismiss => { Shell.background-notice-ok(); }
     }
@@ -2744,9 +2725,11 @@ export component MainWindow inherits Window {
         top: true;
         generation: Shell.error-generation;
         mark: Shell.error-kind == 3 ? IconName.info : IconName.warning;
-        text: Shell.error-kind == 1 ? @tr("The layout is locked. Unlock it from the workspace menu.")
-            : Shell.error-kind == 3 ? Shell.error-detail
-            : @tr("That did not work: {}", Shell.error-detail);
+        tone: Shell.error-kind == 2 ? 2 : Shell.error-kind == 1 ? 1 : 0;
+        title: Shell.error-kind == 1 ? @tr("The layout is locked")
+            : Shell.error-kind == 3 ? @tr("Note")
+            : @tr("That did not work");
+        detail: Shell.error-kind == 1 ? @tr("Unlock it from the workspace menu.") : Shell.error-detail;
         action: "";
         copyable: true;
         dismiss => { Shell.dismiss-error(); }
