@@ -27,8 +27,8 @@ use windows::Win32::UI::Input::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetCursorPos, GetMessageW,
-    HWND_MESSAGE, MSG, PostMessageW, RegisterClassExW, UnregisterClassW, WINDOW_EX_STYLE, WM_APP,
-    WM_INPUT, WNDCLASSEXW, WS_OVERLAPPED,
+    HWND_MESSAGE, MSG, PostMessageW, RegisterClassExW, WINDOW_EX_STYLE, WM_APP, WM_INPUT,
+    WNDCLASSEXW, WS_OVERLAPPED,
 };
 use windows::core::{PCWSTR, w};
 
@@ -139,9 +139,11 @@ impl InputBackend for WinInput {
                 Err(e)
             }
             Err(RecvTimeoutError::Timeout) => {
-                // The thread checks the flag right after it reports and then removes
-                // its registration; not joined here, so `start` keeps its bound.
-                control.stop.store(true, Ordering::Release);
+                // Not joined, so `start` keeps its bound. The flag and the window are
+                // SeqCst on both sides: either the thread sees the flag right after it
+                // reports, or `wake` sees its window and posts the stop message.
+                control.stop.store(true, Ordering::SeqCst);
+                control.wake();
                 Err(InputError::Backend {
                     code: codes::READY_TIMEOUT,
                 })
@@ -169,7 +171,7 @@ struct Control {
 impl Control {
     /// Ends the thread's message loop. Any thread; never waits.
     fn wake(&self) {
-        let window = self.window.load(Ordering::Acquire);
+        let window = self.window.load(Ordering::SeqCst);
         if window != 0 {
             // SAFETY: posting to a window of another thread is allowed; a window that
             // is already gone makes the call fail, which is harmless.
@@ -204,7 +206,7 @@ impl Running {
         let Some(thread) = self.thread.take() else {
             return;
         };
-        self.control.stop.store(true, Ordering::Release);
+        self.control.stop.store(true, Ordering::SeqCst);
         self.control.wake();
         let _ = thread.join();
     }
@@ -216,6 +218,8 @@ impl Drop for Running {
     }
 }
 
+/// Cannot panic: it only forwards to `DefWindowProcW` (a panic must not unwind into
+/// the system's frames).
 unsafe extern "system" fn window_proc(
     window: HWND,
     message: u32,
@@ -227,9 +231,14 @@ unsafe extern "system" fn window_proc(
 }
 
 /// The message-only window and its Raw Input registration; removed on drop, on the
-/// thread that made them.
+/// thread that made them. The window class stays registered for the process's life:
+/// a later start reuses it, and unregistering it while another start creates a window
+/// would race.
 struct Sink {
     window: HWND,
+    /// The mouse registration succeeded. Registration is per process and usage, so a
+    /// sink that never registered must not remove someone else's.
+    registered: bool,
 }
 
 impl Sink {
@@ -272,7 +281,10 @@ impl Sink {
         .map_err(|_| InputError::Backend {
             code: codes::NO_WINDOW,
         })?;
-        let sink = Sink { window };
+        let mut sink = Sink {
+            window,
+            registered: false,
+        };
         let device = RAWINPUTDEVICE {
             usUsagePage: USAGE_PAGE_GENERIC,
             usUsage: USAGE_MOUSE,
@@ -284,6 +296,7 @@ impl Sink {
             .map_err(|_| InputError::Backend {
                 code: codes::NOT_REGISTERED,
             })?;
+        sink.registered = true;
         Ok(sink)
     }
 }
@@ -296,15 +309,16 @@ impl Drop for Sink {
             dwFlags: RIDEV_REMOVE,
             hwndTarget: HWND::default(),
         };
-        // SAFETY: removes this process's mouse registration (the target must be null
-        // with `RIDEV_REMOVE`), then destroys the window this thread created.
+        // SAFETY: removes the mouse registration this sink made (the target must be
+        // null with `RIDEV_REMOVE`), then destroys the window this thread created.
         unsafe {
-            let _ =
-                RegisterRawInputDevices(&[device], std::mem::size_of::<RAWINPUTDEVICE>() as u32);
-            let _ = DestroyWindow(self.window);
-            if let Ok(instance) = GetModuleHandleW(None) {
-                let _ = UnregisterClassW(CLASS, Some(instance.into()));
+            if self.registered {
+                let _ = RegisterRawInputDevices(
+                    &[device],
+                    std::mem::size_of::<RAWINPUTDEVICE>() as u32,
+                );
             }
+            let _ = DestroyWindow(self.window);
         }
     }
 }
@@ -330,11 +344,11 @@ fn listen(
     };
     control
         .window
-        .store(window.window.0 as isize, Ordering::Release);
+        .store(window.window.0 as isize, Ordering::SeqCst);
     // `start` may give up between this send and its receive: the stop flag it sets is
     // checked right after.
-    if ready.send(Ok(())).is_err() || control.stop.load(Ordering::Acquire) {
-        control.window.store(0, Ordering::Release);
+    if ready.send(Ok(())).is_err() || control.stop.load(Ordering::SeqCst) {
+        control.window.store(0, Ordering::SeqCst);
         return; // `window` drops here: registration removed, window destroyed.
     }
     drop(ready);
@@ -354,7 +368,7 @@ fn listen(
         // SAFETY: `message` is a valid out pointer; messages of any window of this
         // thread. 0 is WM_QUIT, -1 an error: both end the loop.
         let got = unsafe { GetMessageW(&mut message, None, 0, 0) };
-        if got.0 <= 0 || message.message == WM_STOP || control.stop.load(Ordering::Acquire) {
+        if got.0 <= 0 || message.message == WM_STOP || control.stop.load(Ordering::SeqCst) {
             break;
         }
         if message.message == WM_INPUT {
@@ -364,7 +378,7 @@ fn listen(
         // SAFETY: a message this thread just received.
         unsafe { DispatchMessageW(&message) };
     }
-    control.window.store(0, Ordering::Release);
+    control.window.store(0, Ordering::SeqCst);
     drop(window);
     let cpu = thread_cpu_nanos();
     control.stats.cpu_nanos.fetch_add(cpu, Ordering::Relaxed);

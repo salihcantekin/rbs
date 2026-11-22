@@ -14,8 +14,9 @@ use windows::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWi
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, EVENT_OBJECT_LOCATIONCHANGE, EVENT_SYSTEM_FOREGROUND, GA_ROOT, GetAncestor,
     GetCursorPos, GetWindowThreadProcessId, IsIconic, MSG, MWMO_INPUTAVAILABLE,
-    MsgWaitForMultipleObjectsEx, OBJID_WINDOW, PM_REMOVE, PeekMessageW, PostThreadMessageW,
-    QS_ALLINPUT, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_NULL, WindowFromPoint,
+    MsgWaitForMultipleObjectsEx, OBJID_WINDOW, PM_NOREMOVE, PM_REMOVE, PeekMessageW,
+    PostThreadMessageW, QS_ALLINPUT, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_NULL,
+    WindowFromPoint,
 };
 
 use super::*;
@@ -149,23 +150,32 @@ impl Watch {
 
     fn run(self: Arc<Self>) {
         // A panic in a look (an OS call) must not leave `running` claimed.
-        struct Unclaim<'a>(&'a AtomicBool, &'a AtomicU32);
+        struct Unclaim<'a>(&'a AtomicBool, &'a AtomicU32, u32);
         impl Drop for Unclaim<'_> {
             fn drop(&mut self) {
-                self.1.store(0, Ordering::SeqCst);
+                // Only this thread's own id: a newer thread may already have stored its.
+                let _ = self
+                    .1
+                    .compare_exchange(self.2, 0, Ordering::SeqCst, Ordering::SeqCst);
                 if std::thread::panicking() {
                     self.0.store(false, Ordering::SeqCst);
                 }
             }
         }
-        let _unclaim = Unclaim(&self.running, &self.thread_id);
+        // SAFETY: no arguments.
+        let own_id = unsafe { GetCurrentThreadId() };
+        let _unclaim = Unclaim(&self.running, &self.thread_id, own_id);
         // Rule 5: the same coordinates as the input adapter's thread.
         // SAFETY: the constant is a documented sentinel; the call changes this thread.
         let _ = unsafe { SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
-        // SAFETY: no arguments.
-        self.thread_id
-            .store(unsafe { GetCurrentThreadId() }, Ordering::SeqCst);
         let hooks = Hooks::install(self.target);
+        // The id is published only once this thread has a message queue, so a wake
+        // never goes to a thread that cannot receive it. A change before that is seen
+        // by the `needed` check at the top of the loop.
+        let mut message = MSG::default();
+        // SAFETY: `message` is a valid out pointer; PM_NOREMOVE only creates the queue.
+        let _ = unsafe { PeekMessageW(&mut message, None, 0, 0, PM_NOREMOVE) };
+        self.thread_id.store(own_id, Ordering::SeqCst);
         let mut last_point = None;
         loop {
             if !self.needed() {
@@ -301,6 +311,8 @@ thread_local! {
     static WATCHED: Cell<isize> = const { Cell::new(0) };
 }
 
+/// Cannot panic: two thread-local cell accesses and comparisons (a panic must not
+/// unwind into the system's frames).
 unsafe extern "system" fn on_window_event(
     _hook: HWINEVENTHOOK,
     event: u32,
@@ -330,7 +342,9 @@ impl Hooks {
         let mut process = 0u32;
         // SAFETY: a plain query with a valid out pointer.
         let thread = unsafe { GetWindowThreadProcessId(hwnd, Some(&mut process)) };
-        let flags = WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS;
+        // The location hook does not skip this process: the target may be one of
+        // RBS's own windows. The foreground hook does, since RBS's own focus changes
+        // need no look of their own (the poll sees them).
         // SAFETY: out-of-context hooks with a callback of the documented signature;
         // they are delivered to this thread's message queue, and removed on drop on
         // this thread.
@@ -343,7 +357,7 @@ impl Hooks {
                     Some(on_window_event),
                     process,
                     thread,
-                    flags,
+                    WINEVENT_OUTOFCONTEXT,
                 ),
                 SetWinEventHook(
                     EVENT_SYSTEM_FOREGROUND,
@@ -352,7 +366,7 @@ impl Hooks {
                     Some(on_window_event),
                     0,
                     0,
-                    flags,
+                    WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
                 ),
             ]
         };
