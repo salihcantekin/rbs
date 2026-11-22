@@ -411,7 +411,19 @@ mod tests {
         let mut out = Vec::new();
         run(&cmd, &config, &mut out).unwrap();
         let text = String::from_utf8(out).unwrap();
-        assert!(text.contains("of 4 hotkeys as shortcuts."), "{text}");
+        // The fixture has four hotkeys. On macOS, Option+P alone types a character, so
+        // the plan skips it there and reports why (rbs_ui `Chord::app_problem`).
+        let mac = rbs_ui::shortcut::Platform::current() == rbs_ui::shortcut::Platform::MacOs;
+        let hotkeys = if mac { 3 } else { 4 };
+        assert!(
+            text.contains(&format!("of {hotkeys} hotkeys as shortcuts.")),
+            "{text}"
+        );
+        assert_eq!(
+            text.contains("Option with this key types a character"),
+            mac,
+            "{text}"
+        );
         assert!(!text.contains("SECRET"), "{text}");
         let (doc, err) = rbs_user_data::UserData::new(&config).shortcuts();
         assert!(err.is_none());
