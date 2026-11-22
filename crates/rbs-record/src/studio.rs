@@ -171,6 +171,9 @@ pub struct StudioSettings {
     /// Audio: the canvas's mixer, its inputs and a meter sink run, so meters move and a
     /// recording can take audio. `false`: audio sources are not opened.
     pub audio: bool,
+    /// The audio branch is awake at start (ADR-0169): `false` leaves the meter sink out
+    /// of the engine's graph until [`Studio::set_audio_awake`]. `true` by default.
+    pub audio_awake: bool,
     /// The audio graph's format, block size and latency.
     pub audio_graph: AudioGraphConfig,
     /// Partition ids.
@@ -217,6 +220,7 @@ impl StudioSettings {
         Self {
             canvas,
             audio: true,
+            audio_awake: true,
             audio_graph: AudioGraphConfig::default(),
             partitions: Partitions::default(),
             preview: None,
@@ -1149,6 +1153,8 @@ struct Queues {
 /// The mixer of the canvas and what the studio keeps of it.
 struct Mixer {
     node: NodeId,
+    /// The meter sink on `main`, left out of the engine's graph while resting.
+    sink: NodeId,
     params: ParamSender<MixerParams>,
     stats: Arc<MixerStats>,
     master: Arc<LevelMeter>,
@@ -1331,6 +1337,8 @@ pub struct Studio {
     /// Meters are in the mixer's parameters. Off while the Mixer is hidden and no
     /// control client samples `audio.levels` (ADR-0143 R2).
     meters_on: bool,
+    /// The meter sink is in the engine's graph (ADR-0169).
+    audio_awake: bool,
     /// Volume and mute per source, from the last [`Studio::update`] or
     /// [`Studio::set_mix`].
     mix: BTreeMap<SourceId, SourceAudio>,
@@ -1732,13 +1740,11 @@ impl Studio {
                     .with_master_meter(Arc::clone(&master)),
             );
             engine.adopt::<()>(parts.audio, mixer_id, Box::new(node))?;
-            let sink = MeterSinkNode::new();
-            let sink_id = add_active(&mut graph, Node::<()>::descriptor(&sink), parts.audio)?;
-            graph.connect(mixer_id, "main", sink_id, "in")?;
-            engine.adopt::<()>(parts.audio, sink_id, Box::new(sink))?;
+            let sink_id = meters::add_sink(&mut engine, &mut graph, mixer_id, parts.audio)?;
             essential.insert(sink_id, "meter sink");
             mixer = Some(Mixer {
                 node: mixer_id,
+                sink: sink_id,
                 params,
                 stats,
                 master,
@@ -1820,6 +1826,7 @@ impl Studio {
             retiring_owners: Vec::new(),
             strips: Vec::new(),
             meters_on: true,
+            audio_awake: settings.audio_awake,
             mix: mix_of(collection, canvas_id),
             master: master_of(collection, canvas_id),
             filters: Vec::new(),
@@ -2884,7 +2891,8 @@ impl Studio {
                     let _ = first.set_state(*new, Lifecycle::Standby);
                     let _ = first.remove_node(*new);
                 }
-                let applied = self.engine.apply(&first)?;
+                let rest = meters::resting_sink(self);
+                let applied = meters::send_to(&mut self.engine, &first, rest, false)?;
                 failed.extend(engine_failures(&applied));
                 for e in gone.iter_mut() {
                     if !take_instance(&mut self.engine, e, &mut self.pending_takes) {
@@ -3262,7 +3270,7 @@ impl Studio {
             &self.browser_background,
         ));
         self.drive_background_pages();
-        let applied = self.engine.apply(&self.graph);
+        let applied = self.send_raw(None, false);
         if applied.is_ok()
             && let Some(report) = report.as_mut()
         {
@@ -3303,41 +3311,7 @@ impl Studio {
             let _ = mixer.params.send(params);
         }
         let applied = applied?;
-        failed.extend(engine_failures(&applied));
-        for report in applied.reports.values() {
-            for (node, why) in &report.failed {
-                let role = self
-                    .essential
-                    .get(node)
-                    .copied()
-                    .or_else(|| self.output_role(*node));
-                if let Some(role) = role {
-                    let failure = StartFailure {
-                        node: role.to_owned(),
-                        reason: why.to_string(),
-                    };
-                    self.failed_nodes.insert(*node, failure.clone());
-                    failed.push(failure);
-                } else if let Some(p) = self
-                    .pictures
-                    .iter_mut()
-                    .find(|p| p.node == *node || p.normalise == Some(*node))
-                {
-                    // Not essential (ADR-0125 decision 2): only that picture stops.
-                    p.failure = Some(why.to_string());
-                } else if let Some(e) = self.entries.iter_mut().find(|e| e.state.node == *node) {
-                    // The first reason stays: a source without an instance is reported
-                    // again on every apply as having none.
-                    if e.state.failed.is_none() {
-                        e.state.failed = Some(why.to_string());
-                        failed.push(StartFailure {
-                            node: "source".to_owned(),
-                            reason: format!("{}: {why}", e.state.name),
-                        });
-                    }
-                }
-            }
-        }
+        self.record_failures(&applied, &mut failed);
         for e in gone.iter_mut() {
             take_instance(&mut self.engine, e, &mut self.pending_takes);
         }
@@ -5055,11 +5029,7 @@ impl Studio {
             let _ = self.graph.set_state(n.node, Lifecycle::Standby);
             let _ = self.graph.remove_node(n.node);
         }
-        let applied = if drain {
-            self.engine.apply_draining(&self.graph)
-        } else {
-            self.engine.apply(&self.graph)
-        };
+        let applied = self.send_graph(None, drain);
         let errors: Vec<String> = match applied {
             Ok(a) => a.errors.iter().map(ToString::to_string).collect(),
             Err(e) => vec![e.to_string()],

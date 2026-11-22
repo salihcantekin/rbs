@@ -82,6 +82,14 @@ fn collection(monitor: SourceMonitor) -> SceneCollection {
 }
 
 fn start(monitor: SourceMonitor) -> Option<(StudioHost, Receiver<Update>, Arc<TestAudioBackend>)> {
+    start_clocked(monitor, TestClock::new())
+}
+
+/// [`start`] on `clock`, which the test moves.
+fn start_clocked(
+    monitor: SourceMonitor,
+    clock: TestClock,
+) -> Option<(StudioHost, Receiver<Update>, Arc<TestAudioBackend>)> {
     let gpu = gpu()?;
     let (tx, updates) = mpsc::channel();
     let audio = Arc::new(TestAudioBackend::new());
@@ -100,9 +108,9 @@ fn start(monitor: SourceMonitor) -> Option<(StudioHost, Receiver<Update>, Arc<Te
             (a, Vec::new())
         },
         move || Ok(gpu),
-        || {
+        move || {
             Engine::with_clock(
-                Arc::new(TestClock::new()),
+                Arc::new(clock.clone()),
                 EngineConfig::default().swap_timeout(LIMIT),
             )
         },
@@ -155,10 +163,60 @@ fn without_a_monitored_source_no_device_opens() {
     let Some((host, _updates, audio)) = start(SourceMonitor::Off) else {
         return;
     };
-    // The microphone runs; nothing else opens.
+    // Nothing reads the mixer, so the microphone rests (ADR-0169); the Mixer shown
+    // wakes it, and nothing else opens.
+    assert!(streams_reach(&audio, 0));
+    host.send(rbs_studio_host::studio_host::Command::SetMetersUi(true));
     assert!(streams_reach(&audio, 1));
     drop(host);
     assert!(streams_reach(&audio, 0));
+}
+
+/// Two commands that answer: once the second answer is in, the round of the first one
+/// (and its timed work) is over.
+fn rounds_done(host: &StudioHost, updates: &Receiver<Update>) {
+    use rbs_studio_host::studio_host::{Command, SourceKind};
+    for _ in 0..2 {
+        host.send(Command::ListTargets(SourceKind::AudioInput));
+        let deadline = Instant::now() + LIMIT;
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if let Update::Targets(..) = updates.recv_timeout(left).expect("an answer") {
+                break;
+            }
+        }
+    }
+}
+
+#[test]
+fn the_audio_branch_rests_two_seconds_after_the_mixer_is_hidden() {
+    use rbs_studio_host::studio_host::{AUDIO_REST_AFTER, Command};
+    let clock = TestClock::new();
+    let Some((host, updates, audio)) = start_clocked(SourceMonitor::Off, clock.clone()) else {
+        return;
+    };
+    host.send(Command::SetMetersUi(true));
+    assert!(streams_reach(&audio, 1));
+
+    // Hidden, then shown again within the grace: the stream never stops.
+    host.send(Command::SetMetersUi(false));
+    rounds_done(&host, &updates);
+    clock.advance(AUDIO_REST_AFTER / 2);
+    host.send(Command::SetMetersUi(true));
+    clock.advance(AUDIO_REST_AFTER);
+    rounds_done(&host, &updates);
+    assert_eq!(audio.active_streams(), 1, "a quick return keeps it awake");
+
+    // Hidden for the whole grace: the microphone stops.
+    host.send(Command::SetMetersUi(false));
+    rounds_done(&host, &updates);
+    clock.advance(AUDIO_REST_AFTER / 2);
+    rounds_done(&host, &updates);
+    assert_eq!(audio.active_streams(), 1, "still within the grace");
+    clock.advance(AUDIO_REST_AFTER);
+    rounds_done(&host, &updates);
+    assert!(streams_reach(&audio, 0), "rests after the grace");
+    drop(host);
 }
 
 struct ChannelSender(Sender<Value>);
@@ -334,7 +392,8 @@ fn the_control_api_sets_and_reports_the_monitor() {
     c.event("monitor.changed", |d| {
         d["wanted"] == false && d["playing"] == false && d.get("solo").is_none()
     });
-    assert!(streams_reach(&audio, 1));
+    // The monitor was the mixer's only reader: the microphone rests too (ADR-0169).
+    assert!(streams_reach(&audio, 0));
 
     // A deleted source leaves solo.
     ok(&c.call("monitor.set_solo", json!({"sources": [mic]})));
@@ -420,6 +479,7 @@ fn the_ui_commands_drive_the_monitor_and_report_it() {
     api(source_monitor(rbs_api::types::MonitorMode::Off));
     api(solo(Vec::new()));
     monitor_until(&updates, |s| !s.wanted && !s.playing && s.solo.is_empty());
-    assert!(streams_reach(&audio, 1));
+    // The monitor was the mixer's only reader: the microphone rests too (ADR-0169).
+    assert!(streams_reach(&audio, 0));
     drop(host);
 }

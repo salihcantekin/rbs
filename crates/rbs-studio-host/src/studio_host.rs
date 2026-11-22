@@ -113,6 +113,7 @@ pub use refusal::Refusal;
 pub use rows::*;
 pub use updates::*;
 mod canvas;
+pub use canvas::AUDIO_REST_AFTER;
 mod command;
 mod command_path;
 mod control_loop;
@@ -570,6 +571,8 @@ struct Host {
     meters_ui: bool,
     /// What the mixer was last told.
     meters_applied: bool,
+    /// When the audio branch rests, while its grace runs (ADR-0169 decision 7).
+    audio_rest_at: Option<rbs_core::time::Timestamp>,
     /// The control API, while remote control is on.
     api: Option<Api>,
     /// Kinds the adapters can add.

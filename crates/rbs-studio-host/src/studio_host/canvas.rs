@@ -106,14 +106,36 @@ impl Host {
             });
     }
 
-    /// Puts meters on the mixer while the Mixer is shown or a client samples levels.
+    /// Puts meters on the mixer while the Mixer is shown or a client samples levels,
+    /// and keeps the audio branch awake until [`AUDIO_REST_AFTER`] after the last of
+    /// them left (ADR-0169 decisions 6 and 7).
     pub(super) fn sync_meters(&mut self) {
         let on = self.meters_ui || self.events.subscribed(rbs_api::Topic::AudioLevels);
-        if on == self.meters_applied {
-            return;
+        if on != self.meters_applied {
+            self.studio.set_meters_on(on);
+            self.meters_applied = on;
         }
-        self.studio.set_meters_on(on);
-        self.meters_applied = on;
+        if on {
+            self.audio_rest_at = None;
+            if !self.studio.audio_awake() {
+                let failed = self.studio.set_audio_awake(true);
+                log_audio_failures("woke", &failed);
+            }
+        } else if self.studio.audio_awake() && self.audio_rest_at.is_none() {
+            self.audio_rest_at = Some(self.clock.now() + AUDIO_REST_AFTER);
+        }
+    }
+
+    /// Lets the audio branch rest once its grace ended; the time left otherwise.
+    pub(super) fn drive_audio_rest(&mut self, now: Timestamp) -> Option<Duration> {
+        let at = self.audio_rest_at?;
+        if now < at {
+            return Some(at.saturating_since(now));
+        }
+        self.audio_rest_at = None;
+        let failed = self.studio.set_audio_awake(false);
+        log_audio_failures("rested", &failed);
+        None
     }
 
     /// Serves one waiting control API request; true when one was served.
@@ -350,6 +372,8 @@ impl Host {
         settings.scene_preview = SCENE_PICTURE;
         settings.audio_offsets = filters::audio_offsets(&self.collection);
         settings.media_pause_release = self.media_pause_release;
+        // The audio branch and the meters stay as they were (ADR-0169 decision 8).
+        settings.audio_awake = self.studio.audio_awake();
         if let Some(v) = self
             .verticals
             .vertical
@@ -378,6 +402,10 @@ impl Host {
         .map_err(|e| Refusal::Failed(e.to_string()))?;
         self.studio = studio;
         self.clock = clock;
+        self.studio.set_meters_on(self.meters_applied);
+        self.audio_rest_at = self
+            .audio_rest_at
+            .map(|at| self.clock.now() + at.saturating_since(old_now));
         self.studio.set_text_timers(&timers);
         self.texts.text_elapsed = self.texts.text_elapsed.moved(old_now, self.clock.now());
         self.waiting = self.studio.waiting();
@@ -403,5 +431,20 @@ impl Host {
         self.restore_loudness();
         rbs_core::info!(rbs_core::log::Area::Studio, "the studio restarted");
         Ok(())
+    }
+}
+
+/// How long the audio branch stays awake after the last meter reader left: longer
+/// than a tab switch or a quick minimise, so device streams do not stop and start for
+/// them (ADR-0169 decision 7).
+pub const AUDIO_REST_AFTER: Duration = Duration::from_secs(2);
+
+fn log_audio_failures(what: &str, failed: &[rbs_record::StartFailure]) {
+    if !failed.is_empty() {
+        rbs_core::warn!(
+            rbs_core::log::Area::Audio,
+            "the audio branch {what} with {} failures",
+            failed.len()
+        );
     }
 }

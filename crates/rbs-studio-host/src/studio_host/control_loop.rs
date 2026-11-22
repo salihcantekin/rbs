@@ -421,6 +421,9 @@ pub(super) fn drive_timed(
     if let Some(left) = host.drive_monitor(now) {
         arm(wait, armed, left);
     }
+    if let Some(left) = host.drive_audio_rest(now) {
+        arm(wait, armed, left);
+    }
     if let Some(left) = host.drive_calibration() {
         arm(wait, armed, left);
     }
