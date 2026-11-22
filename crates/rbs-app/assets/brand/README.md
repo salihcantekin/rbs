@@ -8,5 +8,5 @@
 
 ## Where the icons are used
 
-- macOS: `crates/rbs-app/macos/bundle.sh` builds `RBS.app` (name "RBS", `rbs.icns`) from the built executable; the app also sets the Dock icon and the app name at run time so a bare `cargo run` shows the logo.
+- macOS: `crates/rbs-app/macos/bundle.sh` builds `RBS.app` (name "RBS", `rbs.icns`) from the built executable; the app also sets the Dock icon and the app name at run time so a bare `cargo run` shows the logo. It signs the bundle with the local identity "RBS Development" when the keychain has it (`crates/rbs-app/macos/dev-identity.sh` creates it once per Mac), so macOS privacy grants survive rebuilds (ADR-0141 follow-up); otherwise ad hoc.
 - Windows: `crates/rbs-app/build.rs` embeds `rbs.ico` as the executable's icon resource (file and taskbar icon).

@@ -29,16 +29,12 @@ basicConstraints = critical, CA:false
 keyUsage = critical, digitalSignature
 extendedKeyUsage = critical, codeSigning
 EOF
-openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -config "$dir/cert.cnf" \
+# The system openssl (LibreSSL) writes PKCS#12 files the keychain can read; a newer
+# OpenSSL on PATH (Homebrew) writes ones it cannot.
+ssl=/usr/bin/openssl
+"$ssl" req -x509 -newkey rsa:2048 -nodes -days 3650 -config "$dir/cert.cnf" \
     -keyout "$dir/key.pem" -out "$dir/cert.pem" 2>/dev/null
-# OpenSSL 3 writes PKCS#12 files the macOS keychain cannot read unless asked for
-# the legacy algorithms; LibreSSL (the system openssl) does not know the flag.
-legacy=""
-if openssl version | grep -q '^OpenSSL 3'; then
-    legacy="-legacy"
-fi
-# shellcheck disable=SC2086
-openssl pkcs12 -export $legacy -inkey "$dir/key.pem" -in "$dir/cert.pem" \
+"$ssl" pkcs12 -export -inkey "$dir/key.pem" -in "$dir/cert.pem" \
     -name "$name" -passout pass:rbs -out "$dir/id.p12"
 security import "$dir/id.p12" -k "$keychain" -P rbs -T /usr/bin/codesign >/dev/null
 echo "Created \"$name\". bundle.sh now signs RBS.app with it."
