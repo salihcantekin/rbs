@@ -6,7 +6,7 @@
 //! | --- | --- | --- |
 //! | `Input` | a device with input channels (microphone, line input, interface) | `input:<device UID>` |
 //! | `OutputLoopback` | a device with output channels, read through a process tap of its output (macOS 14.4+) | `output:<device UID>` |
-//! | `Application` | an application playing audio, read through a process tap of all its processes (macOS 14.4+) | `app:<process id>` |
+//! | `Application` | an application that has used audio (playing ones first), read through a process tap of all its processes (macOS 14.4+) | `app:<process id>` |
 //!
 //! An application is the outermost `.app` bundle of a process's executable, so helper
 //! processes inside it (`Contents/Frameworks/… Helper.app`, where browsers and Electron

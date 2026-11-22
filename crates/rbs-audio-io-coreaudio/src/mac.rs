@@ -538,29 +538,42 @@ impl CoreAudioBackend {
         let mut bundles: Vec<String> = Vec::new();
         let mut families: Vec<String> = Vec::new();
         let mut found = Vec::new();
-        for process in get_ids(
+        // Every process the HAL knows, those playing now first: an application that
+        // is silent now (a call app between calls) can still be tapped, and its tap
+        // delivers silence until it plays.
+        let mut processes: Vec<(AudioObjectID, i32, bool)> = get_ids(
             SYSTEM,
             kAudioHardwarePropertyProcessObjectList,
             kAudioObjectPropertyScopeGlobal,
-        ) {
-            let Some(pid) = get::<i32>(
+        )
+        .into_iter()
+        .filter_map(|process| {
+            let pid = get::<i32>(
                 process,
                 kAudioProcessPropertyPID,
                 kAudioObjectPropertyScopeGlobal,
-            ) else {
-                continue;
-            };
+            )?;
             let playing = get::<u32>(
                 process,
                 kAudioProcessPropertyIsRunningOutput,
                 kAudioObjectPropertyScopeGlobal,
             )
             .is_some_and(|v| v != 0);
-            if !playing || pid <= 0 || pid == own || pids.contains(&pid) {
+            Some((process, pid, playing))
+        })
+        .collect();
+        processes.sort_by_key(|(_, _, playing)| !playing);
+        for (process, pid, playing) in processes {
+            if pid <= 0 || pid == own || pids.contains(&pid) {
                 continue;
             }
             pids.push(pid);
             let application = apps::application_of(pid);
+            // A silent process outside any bundle is a system helper, not something
+            // to offer.
+            if !playing && application.is_none() {
+                continue;
+            }
             if let Some(app) = &application {
                 if bundles.contains(&app.bundle) {
                     continue;
@@ -580,7 +593,7 @@ impl CoreAudioBackend {
                 format,
             ));
         }
-        // Web apps a playing browser runs: their sound is the browser's.
+        // Web apps a browser runs: their sound is the browser's.
         for (pid, name) in apps::family_members(&families, &bundles) {
             found.push(AudioEndpoint::new(
                 ids::endpoint(EndpointKind::Application, &pid.to_string()),
