@@ -2260,6 +2260,7 @@ component Toast inherits Rectangle {
             if root.copyable: CopyText {
                 text: root.text;
                 lines: 2;
+                copy-button: true;
                 confirming <=> root.copied;
                 horizontal-stretch: 1;
                 max-width: root.widest;
@@ -2276,16 +2277,18 @@ component Toast inherits Rectangle {
                 max-width: Tokens.size-toast-max;
                 overflow: elide;
             }
+            // Small buttons (owner 2026-11-22): the action keeps its word, Dismiss is
+            // the `close` icon alone, named and with a tooltip.
             if action != "": Button {
                 text: root.action;
                 kind: "primary";
+                dense: true;
                 lead: root.action-icon;
                 clicked => { act(); }
             }
-            Button {
-                text: @tr("Dismiss");
-                kind: "secondary";
-                lead: IconName.close;
+            IconButton {
+                icon: IconName.close;
+                name: @tr("Dismiss");
                 clicked => { dismiss(); }
             }
             // Past the buttons, so the time reads as the end of the card, not another action.
