@@ -15,3 +15,17 @@ pub const CODECS: CapabilityKey = CapabilityKey::new_static("mux.codecs");
 pub const LIVE: CapabilityKey = CapabilityKey::new_static("mux.live");
 /// Flag: `finish` may emit patch chunks for seekable transports.
 pub const PATCHES: CapabilityKey = CapabilityKey::new_static("mux.patches");
+/// Int: audio streams one file of this muxer carries (ADR-0170 decision 7). A muxer
+/// that does not declare it takes one: read it with [`audio_streams`].
+pub const AUDIO_STREAMS: CapabilityKey = CapabilityKey::new_static("mux.audio_streams");
+
+/// Audio streams one file of a muxer with `caps` carries: its [`AUDIO_STREAMS`], or 1
+/// when it declares none (or a value below 1).
+pub fn audio_streams(caps: &rbs_core::capability::CapabilitySet) -> usize {
+    match caps.get(&AUDIO_STREAMS) {
+        Some(rbs_core::capability::CapabilityValue::Int(n)) => {
+            usize::try_from(*n).unwrap_or(0).max(1)
+        }
+        _ => 1,
+    }
+}

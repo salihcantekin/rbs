@@ -37,6 +37,8 @@ const TRACK_NUMBER: u32 = 0xd7;
 const TRACK_UID: u32 = 0x73c5;
 const TRACK_TYPE: u32 = 0x83;
 const FLAG_LACING: u32 = 0x9c;
+const FLAG_DEFAULT: u32 = 0x88;
+const NAME: u32 = 0x536e;
 const LANGUAGE: u32 = 0x22_b59c;
 const CODEC_ID: u32 = 0x86;
 const CODEC_PRIVATE: u32 = 0x63a2;
@@ -304,6 +306,13 @@ impl MatroskaMuxer {
             ebml::uint(&mut header, TRACK_NUMBER, number);
             ebml::uint(&mut header, TRACK_UID, number);
             ebml::uint(&mut header, FLAG_LACING, 0);
+            // FlagDefault is 1 when absent: written only for a track that is not.
+            if !stream.default {
+                ebml::uint(&mut header, FLAG_DEFAULT, 0);
+            }
+            if let Some(name) = &stream.name {
+                ebml::bytes(&mut header, NAME, name.as_bytes());
+            }
             ebml::bytes(&mut header, LANGUAGE, b"und");
             match (stream.codec, stream.params) {
                 (
