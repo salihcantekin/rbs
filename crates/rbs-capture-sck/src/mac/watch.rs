@@ -129,6 +129,10 @@ pub(super) struct Watch {
     pub(super) threads: Mutex<Vec<JoinHandle<()>>>,
     /// Read by the sample handler with `try_lock`.
     pub(super) geometry: Mutex<Option<Geometry>>,
+    /// The newest covered test (`geometry::cover_bits`), read by `latest_mapping`
+    /// without a lock: ScreenCaptureKit sends no frame while a window's content stands
+    /// still (an unfocused window with the cursor hidden), but the pointer still moves.
+    cover: std::sync::atomic::AtomicU8,
 }
 
 impl Watch {
@@ -143,6 +147,7 @@ impl Watch {
             running: AtomicBool::new(false),
             threads: Mutex::new(Vec::new()),
             geometry: Mutex::new(None),
+            cover: std::sync::atomic::AtomicU8::new(0),
         }
     }
 
@@ -286,7 +291,18 @@ impl Watch {
                 }
             }
         };
+        if let Some(geometry) = geometry {
+            self.cover.store(
+                crate::geometry::cover_bits(geometry.cover),
+                Ordering::Relaxed,
+            );
+        }
         *lock(&self.geometry) = geometry;
+    }
+
+    /// The newest covered test (any thread; one atomic load).
+    pub(super) fn cover(&self) -> Cover {
+        crate::geometry::cover_of(self.cover.load(Ordering::Relaxed))
     }
 }
 

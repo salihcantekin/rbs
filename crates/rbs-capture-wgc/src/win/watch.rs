@@ -3,7 +3,7 @@
 //! decision 5, capture-port.md "Picture mapping" rules 4 and 5, `crate::geometry`).
 
 use std::cell::Cell;
-use std::sync::atomic::{AtomicBool, AtomicU32};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32};
 use std::thread::JoinHandle;
 
 use rbs_capture::Cover;
@@ -66,6 +66,10 @@ pub(super) struct Watch {
     threads: Mutex<Vec<JoinHandle<()>>>,
     /// Read by the frame handler with `try_lock`.
     pub(super) geometry: Mutex<Option<Geometry>>,
+    /// The newest covered test ([`geometry::cover_bits`]), read by `latest_mapping`
+    /// without a lock: WGC sends no frame while a window's content stands still (an
+    /// unfocused window with the cursor hidden), but the pointer still moves over it.
+    cover: AtomicU8,
 }
 
 impl Watch {
@@ -78,7 +82,13 @@ impl Watch {
             thread_id: AtomicU32::new(0),
             threads: Mutex::new(Vec::new()),
             geometry: Mutex::new(None),
+            cover: AtomicU8::new(0),
         }
+    }
+
+    /// The newest covered test (any thread; one atomic load).
+    pub(super) fn cover(&self) -> Cover {
+        geometry::cover_of(self.cover.load(Ordering::Relaxed))
     }
 
     fn needed(&self) -> bool {
@@ -195,6 +205,8 @@ impl Watch {
             let changed = CHANGED.with(|c| c.replace(false));
             let geometry = self.look(&mut last_point, changed);
             if let Some(geometry) = geometry {
+                self.cover
+                    .store(geometry::cover_bits(geometry.cover), Ordering::Relaxed);
                 *lock(&self.geometry) = Some(geometry);
             }
             wait_for_messages();

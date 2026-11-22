@@ -71,6 +71,25 @@ pub(crate) fn window_cover(
     }
 }
 
+/// [`Cover`] as one byte, for the watcher's atomic: the newest covered test reaches
+/// `latest_mapping` without a new frame (capture-port.md rule 4).
+pub(crate) fn cover_bits(cover: Cover) -> u8 {
+    match cover {
+        Cover::Clear => 1,
+        Cover::Covered => 2,
+        _ => 0,
+    }
+}
+
+/// The inverse of [`cover_bits`].
+pub(crate) fn cover_of(bits: u8) -> Cover {
+    match bits {
+        1 => Cover::Clear,
+        2 => Cover::Covered,
+        _ => Cover::Unknown,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::expect_used)]
@@ -184,5 +203,12 @@ mod tests {
             window_cover(Some((200.0, 10.0)), window, [above]),
             Cover::Covered
         );
+    }
+
+    #[test]
+    fn cover_bits_round_trip() {
+        for cover in [Cover::Unknown, Cover::Clear, Cover::Covered] {
+            assert_eq!(cover_of(cover_bits(cover)), cover);
+        }
     }
 }

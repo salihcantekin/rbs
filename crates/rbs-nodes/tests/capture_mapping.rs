@@ -144,6 +144,18 @@ impl Rig {
         panic!("no frame in four ticks");
     }
 
+    /// One render tick at the same time: the reference adapter has no new frame.
+    fn tick_still(&mut self) -> u64 {
+        let cadence = Cadence::frames(Timestamp::ZERO, FrameRate::FPS_30);
+        let mut tick = Tick::of(&cadence, self.tick);
+        tick.time = self.clock.now();
+        self.exec.run_tick(tick);
+        self.tick += 1;
+        self.ctx.wait_idle().unwrap();
+        self.ctx.poll();
+        self.stats.frames.load(Ordering::Relaxed)
+    }
+
     fn release(&mut self) {
         self.graph
             .set_state(self.capture, Lifecycle::Standby)
@@ -196,4 +208,26 @@ fn without_a_switch_the_cell_is_never_written() {
         rig.next_frame();
     }
     assert_eq!(cell.get(), None);
+}
+
+/// A tick without a new frame publishes the mapping again, so a covered test that
+/// changed while a window's content stood still reaches the filters (capture-port.md
+/// rule 4: WGC and ScreenCaptureKit send no frame then).
+#[test]
+fn a_tick_without_a_frame_publishes_the_mapping_again() {
+    let switch = MappingSwitch::new();
+    switch.set(true);
+    let cell = MappingCell::new();
+    let Some(mut rig) = Rig::new("test-window-0", Some(&switch), &cell) else {
+        return;
+    };
+    rig.next_frame();
+    let mapping = cell.get().expect("mapped");
+    // Stands in for an older value: the next tick must overwrite it.
+    cell.publish(Some(mapping.with_cover(Cover::Covered)));
+    let frames = rig.stats.frames.load(Ordering::Relaxed);
+    assert_eq!(rig.tick_still(), frames, "no new frame on a still tick");
+    let again = cell.get().expect("still mapped");
+    assert_eq!(again.cover, Cover::Clear);
+    assert_eq!(again.frame_time, mapping.frame_time);
 }

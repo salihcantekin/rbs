@@ -440,8 +440,19 @@ impl Node<GpuRuntime> for CaptureSourceNode {
             return Ok(());
         };
         let frame = match session.latest_frame() {
-            // No new frame: the slot keeps the last one.
-            Ok(None) => return Ok(()),
+            // No new frame: the slot keeps the last one. While mapped, the mapping is
+            // published again: a window whose content stands still sends no frames,
+            // but its covered test still follows the pointer (capture-port.md rule 4).
+            // Two atomic loads and a publish per tick, only with a pointer filter.
+            Ok(None) => {
+                if let Some((switch, cell)) = &self.mapping
+                    && self.mapped.is_some()
+                    && switch.is_on()
+                {
+                    cell.publish(session.latest_mapping());
+                }
+                return Ok(());
+            }
             Ok(Some(frame)) => frame,
             Err(e) => {
                 // An error path, not a frame: one store.

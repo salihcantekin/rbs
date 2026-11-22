@@ -1482,8 +1482,11 @@ impl CaptureSession for WgcSession {
     }
 
     fn latest_mapping(&self) -> Option<PictureMapping> {
+        // The frame's origin and scale with the newest covered test: no new frame
+        // arrives while a window's content stands still (capture-port.md rule 4).
         self.mapping
             .filter(|_| self.active.is_some() && self.watch.mapping.load(Ordering::Acquire))
+            .map(|m| m.with_cover(self.watch.cover()))
     }
 
     fn stats(&self) -> CaptureStats {
