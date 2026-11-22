@@ -6,7 +6,8 @@ use rbs_core::capability::{CapabilitySet, CapabilityValue};
 use rbs_core::time::Timestamp;
 use rbs_input::{
     Button, DesktopPoint, EVENT_RING, EventMask, InputBackend, InputError, InputEvent,
-    InputMonitor, InputSink, MAX_SUBSCRIPTIONS, PointerSample, RunningInput, TimedEvent, caps,
+    InputMonitor, InputSink, MAX_SUBSCRIPTIONS, Permission, PointerSample, RunningInput,
+    TimedEvent, caps,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,6 +117,15 @@ fn ts(ms: u64) -> Timestamp {
 fn monitor() -> (InputMonitor, Scripted) {
     let script = Scripted::default();
     (InputMonitor::new(Box::new(script.clone())), script)
+}
+
+#[test]
+fn a_backend_without_a_permission_is_granted_and_asks_nothing() {
+    let (m, script) = monitor();
+    assert_eq!(m.permission(), Permission::Granted);
+    assert_eq!(m.request_permission(), Permission::Granted);
+    assert!(script.lock().calls.is_empty(), "asking starts nothing");
+    assert!(!m.is_running());
 }
 
 #[test]

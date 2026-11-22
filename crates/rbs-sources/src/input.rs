@@ -2,6 +2,8 @@
 //! composition root, lent by the studio to pointer filters, and what the host serves
 //! to filters (spec `video-filters.md`, "Pointer types").
 
+use rbs_core::capability::CapabilityValue;
+
 use crate::SourceTypes;
 
 impl SourceTypes {
@@ -50,5 +52,44 @@ impl SourceTypes {
                     if kinds.iter().any(|k| k == kind.as_str())
             )
         })
+    }
+
+    /// The input monitor's answer for Input monitoring (ADR-0165 decision 7); none
+    /// for another kind or without a monitor.
+    pub(crate) fn input_answer(
+        &self,
+        kind: crate::permissions::PermissionKind,
+    ) -> Option<crate::permissions::AdapterAnswer> {
+        let monitor = self.input_for(kind)?;
+        let caps = monitor.capabilities();
+        let flag = |key| matches!(caps.get(&key), Some(CapabilityValue::Flag(true)));
+        Some(crate::permissions::AdapterAnswer {
+            answer: monitor.permission().into(),
+            has_permission: flag(rbs_input::caps::PERMISSION),
+            can_prompt: flag(rbs_input::caps::PERMISSION_PROMPT),
+            restart: flag(rbs_input::caps::PERMISSION_RESTART),
+            consent_per_pick: false,
+        })
+    }
+
+    /// The monitor to ask when Input monitoring is requested: one that was not asked
+    /// yet and can prompt.
+    pub(crate) fn input_request(
+        &self,
+        kind: crate::permissions::PermissionKind,
+    ) -> Option<rbs_input::InputMonitor> {
+        let answer = self.input_answer(kind)?;
+        (answer.can_prompt && answer.answer == crate::permissions::Answer::NotDetermined)
+            .then(|| self.input_for(kind).cloned())
+            .flatten()
+    }
+
+    fn input_for(
+        &self,
+        kind: crate::permissions::PermissionKind,
+    ) -> Option<&rbs_input::InputMonitor> {
+        (kind == crate::permissions::PermissionKind::InputMonitoring)
+            .then_some(self.input.as_ref())
+            .flatten()
     }
 }

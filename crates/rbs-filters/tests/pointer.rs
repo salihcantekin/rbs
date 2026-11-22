@@ -297,3 +297,92 @@ fn the_pointer_halo_covers_the_pointer() {
     let p = picture.at(4, 5);
     assert!(p[0] > 0.99 && p[1] < 0.01, "red at the pointer: {p:?}");
 }
+
+#[test]
+fn the_laser_look_draws_a_red_dot_whatever_the_colour() {
+    use rbs_filters::Value;
+    let Some(Setup2 { mut rig, script }) = built_in(
+        &rbs_filters::PointerHalo,
+        &[
+            ("color", Value::Color([0, 0, 255, 255])),
+            ("size", Value::Number(12.0)),
+            ("style", Value::Choice(1)),
+        ],
+    ) else {
+        return;
+    };
+    rig.tick();
+    let at = rig.last_time().as_nanos() + 1;
+    script.point(at, 104.0, 55.0);
+    tick_past(&mut rig, at);
+    let (picture, _, _) = rig.output().expect("a drawn frame");
+    let p = picture.at(4, 5);
+    assert!(
+        p[0] > 0.9 && p[2] < 0.9,
+        "a red-hot dot at the pointer: {p:?}"
+    );
+    let far = picture.at(0, 0);
+    assert!(far[2] < 0.01, "no blue halo: {far:?}");
+}
+
+/// A tool, run by hand: writes the halo and the laser over a 480x270 gradient to
+/// `RBS_SHOTS_DIR` as raw linear RGBA f32 files, for the owner's approval of the look
+/// (CLAUDE.md rule 16).
+///
+/// `RBS_SHOTS_DIR=/tmp/shots cargo test -p rbs-filters --test pointer -- --ignored`
+#[test]
+#[ignore = "a tool: writes pictures for the owner's approval"]
+fn laser_and_halo_pictures() {
+    use rbs_capture::PictureMapping;
+    use rbs_core::media::Size;
+    use rbs_core::time::Timestamp;
+    use rbs_filters::Value;
+    let dir = std::path::PathBuf::from(std::env::var_os("RBS_SHOTS_DIR").expect("RBS_SHOTS_DIR"));
+    let Some(ctx) = common::gpu() else { return };
+    let (w, h) = (480u32, 270u32);
+    let pixels = (0..h)
+        .flat_map(|y| {
+            (0..w).map(move |x| {
+                let (fx, fy) = (x as f32 / w as f32, y as f32 / h as f32);
+                [0.15 + 0.5 * fx, 0.2 + 0.4 * fy, 0.45, 1.0]
+            })
+        })
+        .collect();
+    let input = Picture {
+        width: w,
+        height: h,
+        pixels,
+        srgb8: false,
+    };
+    for (name, style) in [("halo", 0u8), ("laser", 1)] {
+        let script = Scripted::default();
+        let monitor = InputMonitor::new(Box::new(script.clone()));
+        let cell = MappingCell::new();
+        cell.publish(Some(PictureMapping::new(
+            Timestamp::ZERO,
+            [0.0, 0.0],
+            [1.0, 1.0],
+            Size::new(w, h),
+        )));
+        let ty: &'static dyn FilterType = &rbs_filters::PointerHalo;
+        let values = Values::defaults(ty)
+            .with(ty, [("style", Value::Choice(style))])
+            .unwrap();
+        let feed = PointerFeed::new(monitor, cell);
+        let mut rig =
+            Rig::with_pointer(ctx.clone(), Arc::new(ty), values, Some([w, h]), feed).unwrap();
+        rig.set_input(input.clone().encoded());
+        rig.tick();
+        let at = rig.last_time().as_nanos() + 1;
+        script.point(at, 240.0, 135.0);
+        tick_past(&mut rig, at);
+        let (picture, _, _) = rig.output().expect("a drawn frame");
+        let bytes: Vec<u8> = picture
+            .pixels
+            .iter()
+            .flatten()
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+        std::fs::write(dir.join(format!("{name}-{w}x{h}.f32")), bytes).unwrap();
+    }
+}

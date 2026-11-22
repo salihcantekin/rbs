@@ -2,7 +2,7 @@
 //! what an event type means, the other-button numbers, and which clock an event
 //! timestamp is in. Pure, so their tests run on every OS.
 
-use rbs_input::{Button, EventMask};
+use rbs_input::{Button, EventMask, Permission};
 
 /// Core Graphics event type numbers (`CGEventType`, stable since macOS 10.4).
 pub(crate) mod cg {
@@ -159,6 +159,19 @@ pub(crate) fn event_host_nanos(raw: u64, numer: u32, denom: u32, now_nanos: u64)
     }
 }
 
+/// The Input Monitoring status (`input-port.md`, "macOS adapter"). `granted`:
+/// `CGPreflightListenEventAccess`. `asked`: a request already ran in this process.
+/// The preflight cannot tell "not asked" from "refused", and the system shows its
+/// prompt only once, so after one request a missing grant reads `Denied` (the same
+/// rule as ScreenCaptureKit, ADR-0141 decision 5).
+pub(crate) fn permission(granted: bool, asked: bool) -> Permission {
+    match (granted, asked) {
+        (true, _) => Permission::Granted,
+        (false, true) => Permission::Denied,
+        (false, false) => Permission::NotDetermined,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -278,5 +291,13 @@ mod tests {
     #[test]
     fn a_zero_denominator_reads_raw() {
         assert_eq!(event_host_nanos(NOW - 10, 125, 0, NOW), NOW - 10);
+    }
+
+    #[test]
+    fn permission_reads_denied_only_after_a_request() {
+        assert_eq!(permission(true, false), Permission::Granted);
+        assert_eq!(permission(true, true), Permission::Granted);
+        assert_eq!(permission(false, false), Permission::NotDetermined);
+        assert_eq!(permission(false, true), Permission::Denied);
     }
 }

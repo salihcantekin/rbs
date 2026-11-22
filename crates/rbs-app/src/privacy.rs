@@ -22,6 +22,9 @@ pub fn pane(kind: PermissionKind) -> Option<&'static str> {
             PermissionKind::SystemSound => {
                 "x-apple.systempreferences:com.apple.preference.security?Privacy_AudioCapture"
             }
+            PermissionKind::InputMonitoring => {
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent"
+            }
         });
     }
     #[cfg(windows)]
