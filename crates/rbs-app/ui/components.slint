@@ -413,7 +413,8 @@ export component Button inherits Rectangle {
         : kind == "primary" ? (touch.pressed ? Theme.accent-pressed : touch.has-hover ? Theme.accent-hover : Theme.accent)
         : kind == "live" ? Theme.state-live
         : kind == "danger" ? (touch.has-hover || touch.pressed ? Theme.action-destructive-subtle-hover : root.round ? transparent : Theme.action-destructive-subtle)
-        : kind == "link" ? (touch.pressed ? Theme.accent-subtle-hover : touch.has-hover ? Theme.accent-subtle : transparent)
+        // A link has no fill; hover and press only brighten its word.
+        : kind == "link" ? transparent
         : checked ? (touch.has-hover || touch.pressed ? Theme.accent-subtle-hover : Theme.accent-subtle)
         : touch.pressed ? Theme.button-pressed
         : touch.has-hover ? Theme.button-hover
@@ -554,7 +555,7 @@ export component Button inherits Rectangle {
             }
         }
     }
-    out property <color> ink: !enabled ? Theme.text-disabled : kind == "primary" ? Theme.text-inverse : kind == "live" ? Theme.text-on-live : kind == "danger" ? Theme.state-error : kind == "link" ? Theme.accent : Theme.text-primary;
+    out property <color> ink: !enabled ? Theme.text-disabled : kind == "primary" ? Theme.text-inverse : kind == "live" ? Theme.text-on-live : kind == "danger" ? Theme.state-error : kind == "link" ? (touch.has-hover || touch.pressed ? Theme.accent-hover : Theme.accent) : Theme.text-primary;
     // A danger button always shows the trash icon (ADR-0076): it is never bare coloured text.
     property <IconName> shown-lead: root.lead != IconName.none ? root.lead : kind == "danger" && root.icon == IconName.none ? IconName.trash : IconName.none;
     content := HorizontalLayout {

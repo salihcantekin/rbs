@@ -438,6 +438,8 @@ pub const THEME_CONTRAST_RULES: &[(&str, &str, f64)] = &[
     ("color.text.primary", "color.button.hover", 4.5),
     ("color.text.primary", "color.button.pressed", 4.5),
     ("color.accent", "color.button.chip", 3.0),
+    // A link button's lead icon while hovered (the notice card's action).
+    ("color.accent.hover", "color.button.chip", 3.0),
     // The focus ring is drawn inside a button, over its own fill (ADR-0118).
     ("color.border.focus", "color.button.fill", 3.0),
     ("color.border.focus", "color.button.hover", 3.0),
@@ -507,10 +509,12 @@ pub const THEME_CONTRAST_RULES: &[(&str, &str, f64)] = &[
     // time ring (accent) are graphics on it.
     ("color.toast.edge", "color.toast.surface", 3.0),
     ("color.state.warning", "color.toast.surface", 3.0),
+    ("color.state.error", "color.toast.surface", 3.0),
     ("color.border.focus", "color.toast.surface", 3.0),
     ("color.border.strong", "color.toast.surface", 3.0),
     // A link button's word (Undo) is accent text on the card.
     ("color.accent", "color.toast.surface", 4.5),
+    ("color.accent.hover", "color.toast.surface", 4.5),
     ("color.toast.edge", "color.surface.base", 3.0),
     ("color.toast.edge", "color.surface.raised", 3.0),
     ("color.toast.edge", "color.surface.overlay", 3.0),
