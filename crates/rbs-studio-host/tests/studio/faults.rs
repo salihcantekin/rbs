@@ -85,12 +85,7 @@ fn next<T>(rx: &Receiver<Update>, mut pick: impl FnMut(Update) -> Option<T>) -> 
 }
 
 fn targets(host: &StudioHost, rx: &Receiver<Update>, kind: SourceKind) -> Vec<Target> {
-    host.send(Command::ListTargets(kind));
-    next(rx, |u| match u {
-        Update::Targets(k, t) if k == kind => Some(t),
-        Update::Error(e) => panic!("{e}"),
-        _ => None,
-    })
+    crate::listed(host, rx, kind)
 }
 
 #[test]
@@ -137,11 +132,18 @@ fn a_panicking_command_fails_alone_and_the_studio_goes_on() {
     });
 
     armed.store(true, Ordering::Relaxed);
-    host.send(Command::ListTargets(SourceKind::Camera));
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::SourceTargets(
+            rbs_api::request::TargetsParams {
+                kind: rbs_api::types::SourceKind::Camera,
+            },
+        )),
+        reply: rbs_studio_host::studio_host::ApiReply::Ticket(1),
+    });
     let error = next(&rx, |u| match u {
         Update::Error(e) => Some(e),
         Update::Failed(e) => panic!("the studio failed: {e}"),
-        Update::Targets(..) => panic!("listed while the adapter panics"),
+        Update::ApiAnswer { result: Ok(_), .. } => panic!("listed while the adapter panics"),
         _ => None,
     });
     assert_eq!(error, rbs_crash::CAUGHT_TEXT);
@@ -149,10 +151,7 @@ fn a_panicking_command_fails_alone_and_the_studio_goes_on() {
     // The control thread is alive and the studio still runs: a camera is added.
     armed.store(false, Ordering::Relaxed);
     let cameras = targets(&host, &rx, SourceKind::Camera);
-    host.send(Command::AddSource {
-        kind: SourceKind::Camera,
-        target: cameras[0].clone(),
-    });
+    host.send(crate::add_source(SourceKind::Camera, &cameras[0].clone()));
     let rows = next(&rx, |u| match u {
         Update::Error(e) | Update::Failed(e) => panic!("{e}"),
         Update::Sources(rows) if !rows.is_empty() => Some(rows),

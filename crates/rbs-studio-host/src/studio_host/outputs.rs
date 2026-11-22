@@ -744,7 +744,6 @@ impl Host {
                 self.close_interact(source);
                 self.publish(notify);
             }
-            Command::InteractInput { source, event } => self.interact_input(source, event),
             Command::CloseProjector(id) => {
                 self.close_projector(id);
                 self.publish(notify);

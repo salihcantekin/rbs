@@ -33,6 +33,9 @@ use rbs_app::studio_host::{
 };
 use rbs_transport::Secret;
 
+#[path = "shared/add_default.rs"]
+mod add_default;
+
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
     let url = args
@@ -93,27 +96,7 @@ fn main() -> ExitCode {
         }
     }
     for kind in [SourceKind::Screen, SourceKind::AudioInput] {
-        host.send(Command::ListTargets(kind));
-        let target = loop {
-            match wait(&rx) {
-                Ok(Update::Targets(k, t)) if k == kind => {
-                    break t
-                        .iter()
-                        .find(|t| t.is_default && !t.picker)
-                        .cloned()
-                        .or_else(|| t.into_iter().find(|t| !t.picker));
-                }
-                Ok(_) => {}
-                Err(_) => break None,
-            }
-        };
-        match target {
-            Some(target) => {
-                rbs_crash::outln!("adding {:?}: {}", kind, target.name);
-                host.send(Command::AddSource { kind, target });
-            }
-            None => rbs_crash::outln!("no {kind:?} to add"),
-        }
+        add_default::add_default(&host, &rx, kind, Duration::from_secs(60));
     }
 
     if let Some(k) = &new_key {

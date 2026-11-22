@@ -118,11 +118,7 @@ fn move_item(host: &StudioHost, item: u32, direction: rbs_api::request::LayerDir
 }
 
 fn targets(host: &StudioHost, rx: &Receiver<Update>, kind: SourceKind) -> Vec<Target> {
-    host.send(Command::ListTargets(kind));
-    next(rx, |u| match u {
-        Update::Targets(k, t) if k == kind => Some(t),
-        _ => None,
-    })
+    crate::listed(host, rx, kind)
 }
 
 #[test]
@@ -150,10 +146,7 @@ fn sources_are_added_deleted_and_restored_through_the_host() {
     // A display: without a preview or a recording nothing shows it, so it stays closed.
     let displays = targets(&host, &rx, SourceKind::Screen);
     assert!(!displays.is_empty());
-    host.send(Command::AddSource {
-        kind: SourceKind::Screen,
-        target: displays[0].clone(),
-    });
+    host.send(crate::add_source(SourceKind::Screen, &displays[0].clone()));
     let rows = rows_where(&rx, |r| r.len() == 1);
     assert_eq!(rows[0].kind, Some(SourceKind::Screen));
     assert_eq!(rows[0].status, SourceStatus::Idle);
@@ -161,10 +154,7 @@ fn sources_are_added_deleted_and_restored_through_the_host() {
     // The default microphone plays for the meters, on top of the list.
     let inputs = targets(&host, &rx, SourceKind::AudioInput);
     let mic = inputs.iter().find(|t| t.is_default).unwrap_or(&inputs[0]);
-    host.send(Command::AddSource {
-        kind: SourceKind::AudioInput,
-        target: mic.clone(),
-    });
+    host.send(crate::add_source(SourceKind::AudioInput, &mic.clone()));
     let rows = rows_where(&rx, |r| r.len() == 2);
     assert_eq!(rows[0].kind, Some(SourceKind::AudioInput));
     assert_eq!(rows[0].status, SourceStatus::Running, "{rows:?}");
@@ -172,10 +162,7 @@ fn sources_are_added_deleted_and_restored_through_the_host() {
     let mic_id = rows[0].id;
 
     // The same target again gets a unique name.
-    host.send(Command::AddSource {
-        kind: SourceKind::AudioInput,
-        target: mic.clone(),
-    });
+    host.send(crate::add_source(SourceKind::AudioInput, &mic.clone()));
     let rows = rows_where(&rx, |r| r.len() == 3);
     assert_eq!(rows[0].name, format!("{} 2", rows[1].name));
 
@@ -223,16 +210,10 @@ fn sources_change_layer_order_and_box_through_the_host() {
         _ => None,
     });
     let displays = targets(&host, &rx, SourceKind::Screen);
-    host.send(Command::AddSource {
-        kind: SourceKind::Screen,
-        target: displays[0].clone(),
-    });
+    host.send(crate::add_source(SourceKind::Screen, &displays[0].clone()));
     rows_where(&rx, |r| r.len() == 1);
     let cameras = targets(&host, &rx, SourceKind::Camera);
-    host.send(Command::AddSource {
-        kind: SourceKind::Camera,
-        target: cameras[0].clone(),
-    });
+    host.send(crate::add_source(SourceKind::Camera, &cameras[0].clone()));
     let rows = rows_where(&rx, |r| r.len() == 2);
     // Top first: the camera was added last, so it is over the screen.
     assert_eq!(rows[0].kind, Some(SourceKind::Camera));
@@ -286,10 +267,10 @@ fn sources_change_layer_order_and_box_through_the_host() {
     // A sound-only source between them does not count: one move takes the camera
     // under the screen.
     let inputs = targets(&host, &rx, SourceKind::AudioInput);
-    host.send(Command::AddSource {
-        kind: SourceKind::AudioInput,
-        target: inputs[0].clone(),
-    });
+    host.send(crate::add_source(
+        SourceKind::AudioInput,
+        &inputs[0].clone(),
+    ));
     rows_where(&rx, |r| r.len() == 3);
     move_item(&host, camera_item, rbs_api::request::LayerDirection::Down);
     let rows = rows_where(&rx, |r| r.len() == 3 && r[2].id == camera);
@@ -330,16 +311,10 @@ fn edits_are_undone_and_redone_and_a_drag_is_one_step() {
         _ => None,
     });
     let displays = targets(&host, &rx, SourceKind::Screen);
-    host.send(Command::AddSource {
-        kind: SourceKind::Screen,
-        target: displays[0].clone(),
-    });
+    host.send(crate::add_source(SourceKind::Screen, &displays[0].clone()));
     rows_where(&rx, |r| r.len() == 1);
     let cameras = targets(&host, &rx, SourceKind::Camera);
-    host.send(Command::AddSource {
-        kind: SourceKind::Camera,
-        target: cameras[0].clone(),
-    });
+    host.send(crate::add_source(SourceKind::Camera, &cameras[0].clone()));
     let rows = rows_where(&rx, |r| r.len() == 2);
     let (camera, screen) = (rows[0].id, rows[1].id);
     let camera_item = rows[0].item.get();
@@ -476,10 +451,10 @@ fn a_new_canvas_restarts_the_studio_with_the_sources() {
     });
     assert_eq!(size, (Size::new(1920, 1080), FrameRate::FPS_30));
     let inputs = targets(&host, &rx, SourceKind::AudioInput);
-    host.send(Command::AddSource {
-        kind: SourceKind::AudioInput,
-        target: inputs[0].clone(),
-    });
+    host.send(crate::add_source(
+        SourceKind::AudioInput,
+        &inputs[0].clone(),
+    ));
     let rows = rows_where(&rx, |r| {
         r.len() == 1 && r[0].status == SourceStatus::Running
     });
@@ -643,24 +618,24 @@ fn screens_only_an_os_picker_offers_are_added_through_it() {
     );
 
     // The choice is added like a listed screen, with the adapter that picked it.
-    host.send(Command::AddSource {
+    host.send(Command::PickSource {
         kind: SourceKind::Screen,
-        target: screens[0].clone(),
+        adapter: screens[0].adapter.clone(),
     });
     let rows = rows_where(&rx, |r| r.len() == 1);
     assert_eq!(rows[0].kind, Some(SourceKind::Screen));
     assert_eq!(rows[0].name, "Picked display");
 
     // A closed dialog adds nothing and says nothing: the next row is the microphone.
-    host.send(Command::AddSource {
+    host.send(Command::PickSource {
         kind: SourceKind::Screen,
-        target: screens[0].clone(),
+        adapter: screens[0].adapter.clone(),
     });
     let inputs = targets(&host, &rx, SourceKind::AudioInput);
-    host.send(Command::AddSource {
-        kind: SourceKind::AudioInput,
-        target: inputs[0].clone(),
-    });
+    host.send(crate::add_source(
+        SourceKind::AudioInput,
+        &inputs[0].clone(),
+    ));
     let rows = next(&rx, |u| match u {
         Update::Error(e) => panic!("{e}"),
         Update::Sources(rows) if rows.len() >= 2 => Some(rows),
@@ -670,9 +645,9 @@ fn screens_only_an_os_picker_offers_are_added_through_it() {
     assert_eq!(rows[0].kind, Some(SourceKind::AudioInput));
 
     // A refusal is shown.
-    host.send(Command::AddSource {
+    host.send(Command::PickSource {
         kind: SourceKind::Screen,
-        target: screens[0].clone(),
+        adapter: screens[0].adapter.clone(),
     });
     let error = next(&rx, |u| match u {
         Update::Error(e) => Some(e),
@@ -712,10 +687,7 @@ fn the_scene_collection_is_saved_after_edits_and_runs_again_after_a_restart() {
     });
     assert_eq!(size, Size::new(1920, 1080));
     let displays = targets(&host, &rx, SourceKind::Screen);
-    host.send(Command::AddSource {
-        kind: SourceKind::Screen,
-        target: displays[0].clone(),
-    });
+    host.send(crate::add_source(SourceKind::Screen, &displays[0].clone()));
     let rows = rows_where(&rx, |r| r.len() == 1);
     stop(host, &rx);
     user.flush();
@@ -774,10 +746,7 @@ fn another_scene_collection_runs_and_keeps_its_own_edits() {
     assert_eq!(result, (7, Ok(())));
 
     let displays = targets(&host, &rx, SourceKind::Screen);
-    host.send(Command::AddSource {
-        kind: SourceKind::Screen,
-        target: displays[0].clone(),
-    });
+    host.send(crate::add_source(SourceKind::Screen, &displays[0].clone()));
     rows_where(&rx, |r| r.len() == 1);
     stop(host, &rx);
     // The edit went into the second collection only.
@@ -801,10 +770,7 @@ fn a_source_is_pointed_at_another_target_keeping_its_place_and_one_undo_step() {
     });
     let mics = targets(&host, &rx, SourceKind::AudioInput);
     assert!(mics.len() >= 2, "the reference adapter lists two mics");
-    host.send(Command::AddSource {
-        kind: SourceKind::AudioInput,
-        target: mics[0].clone(),
-    });
+    host.send(crate::add_source(SourceKind::AudioInput, &mics[0].clone()));
     let rows = rows_where(&rx, |r| r.len() == 1);
     let (id, name, item, layout) = (
         rows[0].id,
@@ -886,10 +852,7 @@ fn targets_a_source_was_given_are_listed_as_recent_newest_first() {
         mics.iter().all(|t| t.recent.is_none()),
         "nothing picked yet"
     );
-    host.send(Command::AddSource {
-        kind: SourceKind::AudioInput,
-        target: mics[0].clone(),
-    });
+    host.send(crate::add_source(SourceKind::AudioInput, &mics[0].clone()));
     let rows = rows_where(&rx, |r| r.len() == 1);
     host.send(retarget(rows[0].id, &mics[1]));
     // Commands run in order, so the list below sees both picks.
@@ -1051,4 +1014,56 @@ fn retarget(id: rbs_scene::model::SourceId, t: &Target) -> Command {
         )),
         reply: ApiReply::Shown,
     }
+}
+
+/// Control-thread time per Interact pointer event, for ADR-0168's measurement note:
+/// `N` moves to a browser page open in Interact, then a barrier. Run with
+/// `--ignored --nocapture` on a quiet machine.
+#[test]
+#[ignore = "slow: a measurement, not a check"]
+fn slow_interact_input_cost_per_event() {
+    use rbs_api::request::{BrowserHeld, BrowserInput, BrowserInputEvent};
+    const N: u32 = 20_000;
+    let Some(gpu) = gpu() else { return };
+    let (host, rx) = host(gpu);
+    next(&rx, |u| matches!(u, Update::Started { .. }).then_some(()));
+    host.send(crate::add_browser("", ApiReply::Shown));
+    let rows = rows_where(&rx, |r| r.iter().any(|r| r.browser.is_some()));
+    let id = rows.iter().find(|r| r.browser.is_some()).unwrap().id;
+    host.send(Command::OpenInteract(id));
+    let barrier = |ticket| {
+        host.send(Command::Api {
+            call: Box::new(rbs_api::Command::SceneList),
+            reply: ApiReply::Ticket(ticket),
+        });
+        next(&rx, |u| match u {
+            Update::ApiAnswer { ticket: t, .. } if t == ticket => Some(()),
+            _ => None,
+        });
+    };
+    barrier(1);
+    let start = std::time::Instant::now();
+    for i in 0..N {
+        // As the window sends it: one event, quiet (ADR-0168 step 4).
+        let event = BrowserInputEvent::Move {
+            x: (i % 640) as i32,
+            y: 10,
+            modifiers: Default::default(),
+            held: BrowserHeld {
+                left: true,
+                ..BrowserHeld::default()
+            },
+        };
+        host.send(Command::Api {
+            call: Box::new(rbs_api::Command::BrowserInput(BrowserInput {
+                source: id.get(),
+                events: vec![event],
+            })),
+            reply: ApiReply::Quiet,
+        });
+    }
+    barrier(2);
+    let per = start.elapsed() / N;
+    rbs_crash::errln!("interact input: {per:?} per event over {N} events");
+    stop(host, &rx);
 }

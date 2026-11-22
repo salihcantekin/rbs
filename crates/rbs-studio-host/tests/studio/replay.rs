@@ -307,15 +307,11 @@ fn the_buffer_arms_holds_the_past_saves_a_clip_and_disarms() {
         Update::Failed(e) => panic!("{e}"),
         _ => None,
     });
-    host.send(Command::ListTargets(SourceKind::Screen));
-    let display = next(&rx, |u| match u {
-        Update::Targets(SourceKind::Screen, t) => Some(t[0].clone()),
-        _ => None,
-    });
-    host.send(Command::AddSource {
-        kind: SourceKind::Screen,
-        target: display,
-    });
+    let display = {
+        let t = crate::listed(&host, &rx, SourceKind::Screen);
+        t[0].clone()
+    };
+    host.send(crate::add_source(SourceKind::Screen, &display));
     rows_where(&rx, |r| r.len() == 1);
 
     let setup = ReplaySetup {
@@ -455,15 +451,11 @@ fn a_control_api_client_arms_saves_and_disarms_the_buffer() {
         Update::Failed(e) => panic!("{e}"),
         _ => None,
     });
-    host.send(Command::ListTargets(SourceKind::Screen));
-    let display = next(&rx, |u| match u {
-        Update::Targets(SourceKind::Screen, t) => Some(t[0].clone()),
-        _ => None,
-    });
-    host.send(Command::AddSource {
-        kind: SourceKind::Screen,
-        target: display,
-    });
+    let display = {
+        let t = crate::listed(&host, &rx, SourceKind::Screen);
+        t[0].clone()
+    };
+    host.send(crate::add_source(SourceKind::Screen, &display));
     rows_where(&rx, |r| r.len() == 1);
     host.send(Command::SetReplay(ReplaySetup {
         folder: Some(dir.clone()),

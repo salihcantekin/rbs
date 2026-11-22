@@ -444,15 +444,11 @@ fn recordings_start_with_the_picked_encoder_and_stop_into_a_closed_file() {
     assert!(ids.contains(&BROKEN) && ids.contains(&WORKING), "{ids:?}");
 
     // A display: closed while nothing shows or records it.
-    host.send(Command::ListTargets(SourceKind::Screen));
-    let display = next(&rx, |u| match u {
-        Update::Targets(SourceKind::Screen, t) => Some(t[0].clone()),
-        _ => None,
-    });
-    host.send(Command::AddSource {
-        kind: SourceKind::Screen,
-        target: display,
-    });
+    let display = {
+        let t = crate::listed(&host, &rx, SourceKind::Screen);
+        t[0].clone()
+    };
+    host.send(crate::add_source(SourceKind::Screen, &display));
     rows_where(&rx, |r| r.len() == 1 && r[0].status == SourceStatus::Idle);
 
     // The picked encoder is the only one tried: it cannot open, so nothing records and
@@ -542,15 +538,11 @@ fn ready(gpu: Arc<GpuContext>, clock: &TestClock, fault: Fault) -> (StudioHost, 
         Update::Failed(e) => panic!("{e}"),
         _ => None,
     });
-    host.send(Command::ListTargets(SourceKind::Screen));
-    let display = next(&rx, |u| match u {
-        Update::Targets(SourceKind::Screen, t) => Some(t[0].clone()),
-        _ => None,
-    });
-    host.send(Command::AddSource {
-        kind: SourceKind::Screen,
-        target: display,
-    });
+    let display = {
+        let t = crate::listed(&host, &rx, SourceKind::Screen);
+        t[0].clone()
+    };
+    host.send(crate::add_source(SourceKind::Screen, &display));
     rows_where(&rx, |r| r.len() == 1);
     (host, rx)
 }
@@ -669,15 +661,11 @@ fn a_crop_keeps_the_scale_is_one_undo_step_and_regions_fit_the_canvas() {
         Update::Failed(e) => panic!("{e}"),
         _ => None,
     });
-    host.send(Command::ListTargets(SourceKind::Screen));
-    let display = next(&rx, |u| match u {
-        Update::Targets(SourceKind::Screen, t) => Some(t[0].clone()),
-        _ => None,
-    });
-    host.send(Command::AddSource {
-        kind: SourceKind::Screen,
-        target: display,
-    });
+    let display = {
+        let t = crate::listed(&host, &rx, SourceKind::Screen);
+        t[0].clone()
+    };
+    host.send(crate::add_source(SourceKind::Screen, &display));
     rows_where(&rx, |r| r.len() == 1);
     crate::record_into(&host, dir.join("crop.mkv"), None);
     assert!(matches!(recording(&rx), RecordingUpdate::Started { .. }));
@@ -776,12 +764,8 @@ fn a_marked_microphone_records_its_own_file_next_to_the_master() {
         _ => None,
     });
     for kind in [SourceKind::Screen, SourceKind::AudioInput] {
-        host.send(Command::ListTargets(kind));
-        let target = next(&rx, |u| match u {
-            Update::Targets(k, t) if k == kind => Some(t[0].clone()),
-            _ => None,
-        });
-        host.send(Command::AddSource { kind, target });
+        let target = crate::listed(&host, &rx, kind)[0].clone();
+        host.send(crate::add_source(kind, &target));
     }
     let rows = rows_where(&rx, |r| r.len() == 2);
     let mic = rows
@@ -1062,12 +1046,14 @@ fn a_text_box_is_locked_while_a_take_records_its_picture_separately() {
     }
     // After the take the same edit goes through.
     host.send(width(320));
-    host.send(Command::ListTargets(SourceKind::Screen));
-    next(&rx, |u| match u {
-        Update::Error(why) => panic!("refused after the take: {why}"),
-        Update::Targets(SourceKind::Screen, _) => Some(()),
-        _ => None,
+    // The list answers behind the edit; a refusal would come first.
+    let mut errors = Vec::new();
+    let _ = crate::listed_seeing(&host, &rx, SourceKind::Screen, |u| {
+        if let Update::Error(why) = u {
+            errors.push(why.clone());
+        }
     });
+    assert!(errors.is_empty(), "refused after the take: {errors:?}");
     drop(host);
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -1226,12 +1212,8 @@ fn marked(
         _ => None,
     });
     for kind in [SourceKind::Screen, SourceKind::AudioInput] {
-        host.send(Command::ListTargets(kind));
-        let target = next(&rx, |u| match u {
-            Update::Targets(k, t) if k == kind => Some(t[0].clone()),
-            _ => None,
-        });
-        host.send(Command::AddSource { kind, target });
+        let target = crate::listed(&host, &rx, kind)[0].clone();
+        host.send(crate::add_source(kind, &target));
     }
     let rows = rows_where(&rx, |r| r.len() == 2);
     let find = |k: SourceKind| rows.iter().find(|r| r.kind == Some(k)).unwrap().clone();
@@ -1504,7 +1486,7 @@ impl Client {
 }
 
 /// A control API connection to `host` (same-user IPC: every scope).
-struct ApiClient {
+pub(crate) struct ApiClient {
     _api: rbs_api::ApiServer,
     handle: rbs_api::transport::ConnectionHandle,
     rx: Receiver<serde_json::Value>,
@@ -1526,7 +1508,7 @@ impl rbs_api::transport::ConnectionSender for JsonSender {
 }
 
 impl ApiClient {
-    fn attach(host: &StudioHost) -> Self {
+    pub(crate) fn attach(host: &StudioHost) -> Self {
         Self::attach_with(host, rbs_api::TokenStore::new())
     }
 
@@ -1587,7 +1569,7 @@ impl ApiClient {
         self.hello();
     }
 
-    fn call(&mut self, method: &str, params: serde_json::Value) -> serde_json::Value {
+    pub(crate) fn call(&mut self, method: &str, params: serde_json::Value) -> serde_json::Value {
         let id = self.next;
         self.next += 1;
         let text =

@@ -191,8 +191,6 @@ pub enum Update {
         /// Its state.
         state: InteractState,
     },
-    /// What a kind can capture, in OS order.
-    Targets(SourceKind, Vec<Target>),
     /// One target's picture ([`Command::GrabThumbnails`]); `None` when the adapter has
     /// none for it (the row keeps its icon).
     Thumbnail {

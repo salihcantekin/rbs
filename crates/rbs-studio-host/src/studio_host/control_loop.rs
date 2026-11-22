@@ -48,6 +48,7 @@ pub(super) fn run(
                     Msg::Ui(_)
                     | Msg::ApiWake
                     | Msg::PickFailed(_)
+                    | Msg::Picked { .. }
                     | Msg::ReplayWritten(_)
                     | Msg::Thumbnail { .. }
                     | Msg::RegionPreview { .. }
@@ -313,6 +314,7 @@ pub(super) fn take_msg(
             host.api = None;
         }
         Some(Msg::PickFailed(why)) => notify(Update::Error(why)),
+        Some(Msg::Picked { kind, target }) => host.add_picked(kind, &target, notify),
         Some(Msg::PermissionAnswered(kind)) => host.permission_answered(kind, notify),
         Some(Msg::ReplayWritten(result)) => host.replay_written(result, notify),
         Some(Msg::Thumbnail {

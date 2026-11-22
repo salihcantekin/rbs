@@ -2,6 +2,7 @@
 //! was its own `rbs-app` test file and keeps its own helpers.
 
 mod add_ons;
+mod add_source;
 mod api;
 mod attributes;
 mod chapters;
@@ -263,4 +264,84 @@ fn set_box(b: SetBox) -> rbs_studio_host::studio_host::Command {
         })),
         reply: rbs_studio_host::studio_host::ApiReply::Ticket(b.seq),
     }
+}
+
+/// What `kind` can capture, asked as the window asks it: `source.targets` by ticket
+/// (ADR-0168 step 4). Updates before the answer are skipped.
+fn listed(
+    host: &rbs_studio_host::studio_host::StudioHost,
+    rx: &std::sync::mpsc::Receiver<rbs_studio_host::studio_host::Update>,
+    kind: rbs_studio_host::studio_host::SourceKind,
+) -> Vec<rbs_studio_host::studio_host::Target> {
+    listed_seeing(host, rx, kind, |_| {})
+}
+
+/// [`listed`], showing `seen` each update before the answer.
+#[allow(clippy::expect_used)] // Tests fail by panicking.
+fn listed_seeing(
+    host: &rbs_studio_host::studio_host::StudioHost,
+    rx: &std::sync::mpsc::Receiver<rbs_studio_host::studio_host::Update>,
+    kind: rbs_studio_host::studio_host::SourceKind,
+    mut seen: impl FnMut(&rbs_studio_host::studio_host::Update),
+) -> Vec<rbs_studio_host::studio_host::Target> {
+    use rbs_studio_host::studio_host::{ApiReply, Command, Target, Update, kind_for_api};
+    const TARGETS: u64 = u64::MAX - 3;
+    let call = rbs_api::Command::SourceTargets(rbs_api::request::TargetsParams {
+        kind: kind_for_api(kind).expect("a listed kind"),
+    });
+    host.send(Command::Api {
+        call: Box::new(call),
+        reply: ApiReply::Ticket(TARGETS),
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        match rx.recv_timeout(left).expect("the host answered") {
+            Update::ApiAnswer {
+                ticket: TARGETS,
+                result,
+            } => match result {
+                Ok(rbs_api::Response::Targets(l)) => {
+                    return l.targets.into_iter().map(Target::from_api).collect();
+                }
+                other => panic!("{other:?}"),
+            },
+            u => seen(&u),
+        }
+    }
+}
+
+/// Add source as the window sends it: `source.add` of a listed target, with its
+/// sound when `audio` (ADR-0168 step 4).
+#[allow(clippy::expect_used)] // Tests fail by panicking.
+fn add_source_as(
+    kind: rbs_studio_host::studio_host::SourceKind,
+    target: &rbs_studio_host::studio_host::Target,
+    audio: bool,
+    global: bool,
+) -> rbs_studio_host::studio_host::Command {
+    rbs_studio_host::studio_host::Command::Api {
+        call: Box::new(rbs_api::Command::SourceAdd(rbs_api::request::AddSource {
+            kind: rbs_studio_host::studio_host::kind_for_api(kind).expect("a listed kind"),
+            adapter: target.adapter.clone(),
+            target: target.target.clone(),
+            name: None,
+            scene: None,
+            global,
+            with_audio: audio,
+            text: None,
+            stamp: None,
+            path: None,
+            url: None,
+        })),
+        reply: rbs_studio_host::studio_host::ApiReply::Shown,
+    }
+}
+
+/// [`add_source_as`] of the picture alone.
+fn add_source(
+    kind: rbs_studio_host::studio_host::SourceKind,
+    target: &rbs_studio_host::studio_host::Target,
+) -> rbs_studio_host::studio_host::Command {
+    add_source_as(kind, target, false, false)
 }

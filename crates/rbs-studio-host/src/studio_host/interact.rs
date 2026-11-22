@@ -218,18 +218,9 @@ impl Host {
         }
     }
 
-    /// Input from an open Interact window to its page (ADR-0132 decision 6): sent
-    /// only while the window has focus, which the UI checks. Dropped when the page
-    /// does not run. Text is never logged.
-    pub(super) fn interact_input(
-        &mut self,
-        source: SourceId,
-        event: rbs_browser_ipc::input::InputEvent,
-    ) {
-        if self.interacts.iter().any(|r| r.source == source) {
-            let _ = self
-                .studio
-                .browser_control(source, &rbs_sources::BrowserMessage::Input(event));
-        }
+    /// Whether `source`'s page is open in an Interact window: input from the window
+    /// goes only there (ADR-0132 decision 6, ADR-0168 decision 2).
+    pub(super) fn interacting(&self, source: SourceId) -> bool {
+        self.interacts.iter().any(|r| r.source == source)
     }
 }

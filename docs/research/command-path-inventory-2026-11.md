@@ -4,6 +4,8 @@ First-pass classification of every `rbs_studio_host::Command` variant on main `c
 
 Step 0 moved `ResetLoudness` to `Command::Api`; step 1 (scenes and transitions) moved ten scene variants and made Switch scene and Studio mode translations; step 2 (items) moved the Sources row's lock, eye and layer buttons, Add existing source and the timed show; step 3 (sources, first part) moved rename, the per-source slide, keep open, the sync offset, Duplicate source, Copy, Paste and Reset attributes, Delete source, the companion audio, global sources, the capture region and display chrome; step 4 (filters) moved add, remove, move and on/off of a filter; step 5 (audio) moved the monitor mode, solo, device, volume and the device list (the first ticketed answer); step 6 (outputs, first part) moved adding and removing the vertical canvas, then (owner's choice 2026-11-21) the record and stream stops, with `record.stop` ending a file gracefully, and Remove from scene, with `item.remove` sending the undo toast; `command_path.rs` holds the current counts. First-pass counts: 21 Translates (already run through `run_ui_api` or `ApiTarget::run`), 83 Pending, 10 Contract, 20 Missing, 27 WindowOnly (13 View, 9 LocalOnly, 2 Preview, 3 Mirror). Total 161. Corrected after review rounds 1 to 3.
 
+ADR-0168 (steps 1 to 4, 2026-11-22) moved the last fifteen Pending rows: none is left. Translates 24, View 13, LocalOnly 11 (`PickSource`).
+
 ## Known differences between the two paths
 
 Each step decides these for its variants; the window takes the API's behaviour unless a visible text changes (owner's approval).
@@ -23,7 +25,7 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | Measure sync offset refusals | Shown in the Measure view's phase | `ApiError` | `sync_measure.rs` |
 | Record and stream starts | Window sends its own `RecordRequest` / `StreamRequest` | Built from host state | `studio_ui.rs`, `api_item2.rs` |
 | Virtual camera start | Window sends size and rate | `vcam.start` takes none | `outputs.rs` |
-| T-bar steps and Interact input | Stale ones ignored | Refused (`conflict`) | `api_scene.rs`, `interact.rs` |
+| T-bar steps and Interact input | Stale ones ignored | Refused (`conflict`); a window call is dropped quietly (ADR-0168) | `api_scene.rs`, `window_answers.rs` |
 | Undo / Redo with nothing to undo | Silent | `conflict` | `history.rs`, `api_item2.rs` |
 | Remove from scene | Sends `Update::Deleted` (undo toast) | Sends nothing | `sources.rs`, `api_source2.rs` |
 | Forget sign-in | Stops the page first | Does with `restart: true` (protocol 1.101, ADR-0168) | `source_settings.rs`, `api_source2.rs` |
@@ -44,14 +46,14 @@ Each step decides these for its variants; the window takes the API's behaviour u
 
 | Variant | Path | API methods, or why |
 | --- | --- | --- |
-| `ListTargets` | Pending | source.targets |
-| `AddSourceWithAudio` | Pending | source.add (with_audio: true); split as AddSource |
-| `AddSource` | Pending | source.add; split: the OS permission prompt and system picker stay in the window (LocalOnly) |
+| `ListTargets` | Moved to `Command::Api` (ADR-0168 step 4) | source.targets with a ticket; 1.101 rows carry the app, the recent rank, the camera's microphone, the sound and picker entries the window lists |
+| `AddSourceWithAudio` | Moved to `Command::Api` (ADR-0168 step 4) | source.add with `with_audio: true`; the OS permission prompt runs first, as for Add source |
+| `AddSource` | Moved to `Command::Api` (ADR-0168 step 4) | source.add; for a window call the host asks the OS permission first and replays the call once it is answered (a client's never prompts); a picker entry is `PickSource` |
 | `DeleteSource` | Moved to `Command::Api` (step 3) | source.delete |
 | `RemoveFromScene` | Moved to `Command::Api` (step 6) | item.remove; must still send Update::Deleted for the undo toast |
 | `SetGlobal` | Moved to `Command::Api` (step 3) | global.add, global.remove |
 | `RemoveGlobal` | Moved to `Command::Api` (step 3) | global.remove |
-| `AddGlobalSource` | Pending | source.add (global: true) |
+| `AddGlobalSource` | Moved to `Command::Api` (ADR-0168 step 4) | source.add with `global: true` (no prompt, as before) |
 | `UndoDelete` | Moved to `Command::Api` | edit.undo_delete; the window is quiet on `conflict` (ADR-0164 step 4) |
 | `Undo` | Moved to `Command::Api` (step 3) | edit.undo, sent with `ApiReply::QuietIf(conflict)`: nothing to undo says nothing, a refused step (`undo_conflict`) is shown |
 | `Redo` | Moved to `Command::Api` (step 3) | edit.redo, sent with `ApiReply::QuietIf(conflict)`: nothing to undo says nothing, a refused step (`undo_conflict`) is shown |
@@ -173,7 +175,7 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `CloseProjector` | WindowOnly View |  |
 | `OpenInteract` | WindowOnly View |  |
 | `CloseInteract` | WindowOnly View |  |
-| `InteractInput` | Pending | browser.input; stays: one wire event per mouse move, the API takes a checked list of its own event form; input to a page not in Interact is ignored, the API refuses it |
+| `InteractInput` | Moved to `Command::Api` (ADR-0168 step 4) | browser.input with one event and the 1.101 `held` buttons, quiet; for a window call input to a page not open in Interact, or with no page running, is dropped without a refusal |
 | `SetCanvas` | Moved to `Command::Api` (ADR-0168 step 1) | settings.set (canvas); for a window call the host sends `Update::Canvas` when the call sent none (a refusal or an unchanged canvas), so the preview opens again; an unchanged canvas while recording is no longer refused |
 | `SetProfile` | WindowOnly Mirror |  |
 | `StartStream` | Moved to `Command::Api` | stream.start {canvas}; the host builds from the saved settings, refusals carry `data.reason` (ADR-0164 step 6) |
@@ -202,6 +204,7 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `SwitchCollection` | WindowOnly Mirror |  |
 | `SetLibrary` | Missing | no settings.set field |
 | `ReadPermissions` | WindowOnly LocalOnly |  |
+| `PickSource` | WindowOnly LocalOnly | ADR-0168 decision 1: the OS picker of a picker entry needs the person at this computer; it prompts first, and the chosen target is added on the window's own path (no list holds it) |
 | `RequestPermission` | WindowOnly LocalOnly |  |
 | `ListAddOns` | Moved to `Command::Api` (ADR-0168 step 2) | addon.list with a ticket; the answer fills Settings › Add-ons |
 | `AddOn` | Moved to `Command::Api` | addon.install, addon.update, addon.cancel and addon.remove (ADR-0164 step 4) |

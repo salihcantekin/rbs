@@ -6115,10 +6115,10 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
                     interact::close(source);
                     app.studio.send(studio_host::Command::CloseInteract(source));
                 }
-                interact::Event::Input(source, event) => {
-                    app.studio
-                        .send(studio_host::Command::InteractInput { source, event });
-                }
+                interact::Event::Input(source, event) => app.studio.call_as(
+                    interact::api_input::call(source, event),
+                    studio_host::ApiReply::Quiet,
+                ),
                 interact::Event::OpenEngine => {
                     app.studio.open_add_on = Some(rbs_app::add_ons::BROWSER_ENGINE.to_owned());
                 }

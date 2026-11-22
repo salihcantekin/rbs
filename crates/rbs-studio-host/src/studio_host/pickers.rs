@@ -217,6 +217,31 @@ impl Host {
 
     /// The permission kind to ask for before adding a source of `kind`: one that was
     /// not asked yet and can show a prompt, at most once per run (ADR-0141 decision 4).
+    /// The permission a window's `source.add` of a listed target asks first, as the
+    /// window's own add did (ADR-0168 decision 2). A global add never prompted.
+    pub(super) fn source_prompt_first(&self, call: &rbs_api::Command) -> Option<PermissionKind> {
+        match call {
+            rbs_api::Command::SourceAdd(p) if !p.global && !p.target.is_empty() => {
+                self.prompt_first(api_convert::app_kind(p.kind))
+            }
+            _ => None,
+        }
+    }
+
+    /// A target the user chose in an OS picker: added as the window's own add did,
+    /// with the error bar for a refusal.
+    pub(super) fn add_picked(
+        &mut self,
+        kind: SourceKind,
+        target: &Target,
+        notify: &dyn Fn(Update),
+    ) {
+        match self.add(kind, target) {
+            Ok(_) => self.apply(notify),
+            Err(e) => notify(Update::Error(e.into_text())),
+        }
+    }
+
     pub(super) fn prompt_first(&self, kind: SourceKind) -> Option<PermissionKind> {
         let p = PermissionKind::of_type(&kind.type_id())?;
         if self.pickers.permission_asked.contains(&p) {
@@ -325,18 +350,23 @@ impl Host {
     /// Shows the OS picker of `entry.adapter` on a thread of its own (it blocks while
     /// the dialog is up, and this thread keeps the studio and any recording running),
     /// then adds the chosen target like a listed one. Closing the dialog adds nothing.
-    pub(super) fn pick(&self, kind: SourceKind, entry: &Target) {
+    pub(super) fn pick(&self, kind: SourceKind, adapter: &str) {
         let Some(picker) = self
             .adapters
             .sources
             .pickers(&kind.type_id())
             .unwrap_or_default()
             .into_iter()
-            .find(|p| p.adapter().as_str() == entry.adapter)
+            .find(|p| p.adapter().as_str() == adapter)
         else {
+            // The entry's name, as the list showed it.
+            let name = self
+                .targets(kind)
+                .into_iter()
+                .find(|t| t.picker && t.adapter == adapter)
+                .map_or_else(|| format!("The {} picker", kind_noun(kind)), |t| t.name);
             self.post(Msg::PickFailed(format!(
-                "{} is not available any more.",
-                entry.name
+                "{name} is not available any more."
             )));
             return;
         };
@@ -345,10 +375,10 @@ impl Host {
             .name("rbs-picker".into())
             .spawn(move || {
                 let msg = match picker.pick() {
-                    Ok(t) => Msg::Ui(Command::AddSource {
+                    Ok(t) => Msg::Picked {
                         kind,
                         target: target_of(t),
-                    }),
+                    },
                     Err(SourceError::Capture(CaptureError::Cancelled)) => return,
                     Err(e) => {
                         Msg::PickFailed(format!("The {} could not be chosen: {e}", kind_noun(kind)))

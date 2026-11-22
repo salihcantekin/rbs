@@ -323,11 +323,7 @@ pub(super) fn profile_in(host: &StudioHost, rx: &Receiver<Update>, folder: PathB
     p.folder = folder;
     host.send(Command::SetProfile(p));
     // The host takes commands in order: once this answer comes, the profile is set.
-    host.send(Command::ListTargets(SourceKind::Screen));
-    next(rx, |u| match u {
-        Update::Targets(SourceKind::Screen, _) => Some(()),
-        _ => None,
-    });
+    crate::listed(host, rx, SourceKind::Screen);
 }
 
 /// The one take folder in `folder`, and its manifest.
@@ -367,16 +363,12 @@ pub(super) fn mark_screens(host: &StudioHost, rx: &Receiver<Update>, n: usize) -
         Update::Failed(e) => panic!("{e}"),
         _ => None,
     });
-    host.send(Command::ListTargets(SourceKind::Screen));
-    let target = next(rx, |u| match u {
-        Update::Targets(SourceKind::Screen, t) => Some(t[0].clone()),
-        _ => None,
-    });
+    let target = {
+        let t = crate::listed(host, rx, SourceKind::Screen);
+        t[0].clone()
+    };
     for _ in 0..n {
-        host.send(Command::AddSource {
-            kind: SourceKind::Screen,
-            target: target.clone(),
-        });
+        host.send(crate::add_source(SourceKind::Screen, &target.clone()));
     }
     let rows = rows_where(rx, |r| r.len() == n);
     for r in &rows {
@@ -1254,15 +1246,11 @@ pub(super) fn slow_a_matroska_master_gets_its_markers_as_chapters() {
         Update::Failed(e) => panic!("{e}"),
         _ => None,
     });
-    host.send(Command::ListTargets(SourceKind::Screen));
-    let target = next(&rx, |u| match u {
-        Update::Targets(SourceKind::Screen, t) => Some(t[0].clone()),
-        _ => None,
-    });
-    host.send(Command::AddSource {
-        kind: SourceKind::Screen,
-        target,
-    });
+    let target = {
+        let t = crate::listed(&host, &rx, SourceKind::Screen);
+        t[0].clone()
+    };
+    host.send(crate::add_source(SourceKind::Screen, &target));
     rows_where(&rx, |r| r.len() == 1);
     let mut api = ApiClient::attach(&host);
 
@@ -1396,15 +1384,11 @@ pub(super) fn a_token_without_the_permission_cannot_change_what_is_on_air() {
         Update::Failed(e) => panic!("{e}"),
         _ => None,
     });
-    host.send(Command::ListTargets(SourceKind::Screen));
-    let display = next(&rx, |u| match u {
-        Update::Targets(SourceKind::Screen, t) => Some(t[0].clone()),
-        _ => None,
-    });
-    host.send(Command::AddSource {
-        kind: SourceKind::Screen,
-        target: display,
-    });
+    let display = {
+        let t = crate::listed(&host, &rx, SourceKind::Screen);
+        t[0].clone()
+    };
+    host.send(crate::add_source(SourceKind::Screen, &display));
     let source = rows_where(&rx, |r| r.len() == 1)[0].id.get();
 
     let token = rbs_api::token::Token::from_bytes(&[7; 32]);

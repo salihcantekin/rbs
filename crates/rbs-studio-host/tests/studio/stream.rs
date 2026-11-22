@@ -395,15 +395,11 @@ fn key_saved(rx: &Receiver<Update>) -> Result<bool, String> {
 }
 
 fn add_display(host: &StudioHost, rx: &Receiver<Update>) {
-    host.send(Command::ListTargets(SourceKind::Screen));
-    let display = next(rx, |u| match u {
-        Update::Targets(SourceKind::Screen, t) => Some(t[0].clone()),
-        _ => None,
-    });
-    host.send(Command::AddSource {
-        kind: SourceKind::Screen,
-        target: display,
-    });
+    let display = {
+        let t = crate::listed(host, rx, SourceKind::Screen);
+        t[0].clone()
+    };
+    host.send(crate::add_source(SourceKind::Screen, &display));
 }
 
 #[test]
@@ -1084,8 +1080,7 @@ fn a_control_api_client_goes_live_and_ends_the_stream() {
     let mut profile = StreamProfile::new();
     profile.server = "rtmp://".into();
     host.send(Command::SetStreamProfile(profile));
-    host.send(Command::ListTargets(SourceKind::Screen));
-    next(&rx, |u| matches!(u, Update::Targets(..)).then_some(()));
+    crate::listed(&host, &rx, SourceKind::Screen);
     let bad = c.call("stream.start", none.clone());
     assert_eq!(bad["error"]["data"]["kind"], "failed", "{bad}");
     assert!(!bad.to_string().contains("rtmp://"), "{bad}");
@@ -1094,8 +1089,7 @@ fn a_control_api_client_goes_live_and_ends_the_stream() {
     profile.server = URL.into();
     profile.reconnect = false;
     host.send(Command::SetStreamProfile(profile));
-    host.send(Command::ListTargets(SourceKind::Screen));
-    next(&rx, |u| matches!(u, Update::Targets(..)).then_some(()));
+    crate::listed(&host, &rx, SourceKind::Screen);
 
     // RTMP without a saved key: nothing opens.
     let no_key = c.call("stream.start", none.clone());

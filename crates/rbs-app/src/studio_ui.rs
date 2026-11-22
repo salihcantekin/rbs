@@ -91,6 +91,7 @@ mod output_calls;
 mod scene_calls;
 mod settings_mirror;
 mod source_calls;
+mod target_calls;
 mod text_calls;
 pub use library_ops::EntryWrite;
 mod live_ticks;
@@ -1981,7 +1982,7 @@ impl StudioUi {
         let Some(kind) = self.kind_list.get(code as usize).copied() else {
             return;
         };
-        self.send(Command::ListTargets(kind));
+        self.list_kind_targets(kind);
     }
 
     /// The Source tab opened for a source: its kind's targets are listed again.
@@ -1999,7 +2000,7 @@ impl StudioUi {
         self.source_pictures.clear();
         self.send(Command::StopThumbnails);
         self.source_targets.set_vec(Vec::new());
-        self.send(Command::ListTargets(kind));
+        self.list_kind_targets(kind);
     }
 
     /// The search field of the Source tab changed.
@@ -2300,7 +2301,7 @@ impl StudioUi {
         self.deleted.clear();
         if let Some(target) = self.global_targets.get(i).cloned() {
             if let Some(kind) = self.global_source_kind() {
-                self.send(Command::AddGlobalSource { kind, target });
+                self.add_target(kind, target, false, true);
             }
         } else if let Some(id) = self.global_existing.get(i - self.global_targets.len()) {
             self.call(rbs_api::Command::GlobalAdd(rbs_api::request::AddGlobal {
@@ -2553,7 +2554,7 @@ impl StudioUi {
                 let Some(kind) = self.kind_list.get(code as usize).copied() else {
                     return;
                 };
-                self.send(Command::ListTargets(kind));
+                self.list_kind_targets(kind);
                 add_picker::AddPicker::for_kind(kind)
             }
             AddWhat::Existing => add_picker::AddPicker::existing(&self.existing),
@@ -2599,11 +2600,7 @@ impl StudioUi {
                 // A camera without a microphone of its own adds just the camera.
                 let with_sound =
                     audio && !target.picker && (kind != SourceKind::Camera || target.mic.is_some());
-                if with_sound {
-                    self.send(Command::AddSourceWithAudio { kind, target });
-                } else {
-                    self.send(Command::AddSource { kind, target });
-                }
+                self.add_target(kind, target, with_sound, false);
             }
             Some(add_picker::Pick::Existing(id)) => self.add_existing_source(id.get() as i32),
             Some(add_picker::Pick::Font(id, family)) => {
@@ -6000,27 +5997,6 @@ impl StudioUi {
                         row.has_region_preview = false;
                     }
                     self.source_settings.set_row_data(0, row);
-                }
-            }
-            Update::Targets(kind, list) => {
-                if let Some(p) = &mut self.add_picker
-                    && p.answer(kind, &list)
-                {
-                    self.picker_dirty = true;
-                }
-                let picked = self.kind_list.get(self.global_kind as usize).copied();
-                if picked == Some(kind) {
-                    self.global_targets = list.clone();
-                    self.refresh_global_existing();
-                }
-                // The Source tab's list is for the source whose kind this is.
-                let for_kind = self
-                    .source_targets_for
-                    .and_then(|id| self.rows.iter().find(|r| r.id == id))
-                    .and_then(|r| r.kind);
-                if for_kind == Some(kind) {
-                    self.source_target_list = list.clone();
-                    self.refresh_source_targets();
                 }
             }
             Update::Deleted { name, from_scene } => {

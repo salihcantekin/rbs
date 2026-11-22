@@ -104,7 +104,10 @@ mod control_api;
 use api_answers::*;
 use api_convert::*;
 /// The API forms of a style and a scroll, for the window's calls (ADR-0164).
-pub use api_convert::{api_scroll as scroll_for_api, api_style as style_for_api};
+pub use api_convert::{
+    api_kind as kind_for_api, api_scroll as scroll_for_api, api_style as style_for_api,
+    app_kind as kind_from_api,
+};
 pub use command::*;
 pub use command_path::{CommandPath, WindowReason};
 use control_api::*;
@@ -319,6 +322,12 @@ enum Msg {
     ApiWake,
     /// An OS picker failed (not cancelled).
     PickFailed(String),
+    /// The user chose `target` in the OS picker of a [`Command::PickSource`]; it is
+    /// added on the window's own path, since no list holds it (ADR-0168 decision 1).
+    Picked {
+        kind: SourceKind,
+        target: Target,
+    },
     /// A replay clip writer finished.
     ReplayWritten(Result<std::path::PathBuf, String>),
     /// A thumbnail worker finished one target.
@@ -725,12 +734,9 @@ impl Host {
     fn command(&mut self, c: Command, notify: &dyn Fn(Update)) {
         // Every command by concern; each handler matches only its own variants.
         match c {
-            Command::ListTargets(..)
-            | Command::AddSourceWithAudio { .. }
-            | Command::AddSource { .. }
-            | Command::ReadPermissions
+            Command::ReadPermissions
+            | Command::PickSource { .. }
             | Command::RequestPermission(..)
-            | Command::AddGlobalSource { .. }
             | Command::SetSourceVolume { .. }
             | Command::SetSourceMuted { .. }
             | Command::SetMetersUi(..)
@@ -767,7 +773,6 @@ impl Host {
             | Command::OpenProjector { .. }
             | Command::OpenInteract(..)
             | Command::CloseInteract(..)
-            | Command::InteractInput { .. }
             | Command::CloseProjector(..)
             | Command::SetProfile(..)
             | Command::SetReplay(..)
@@ -797,6 +802,14 @@ impl Host {
                     Some(c),
                     notify,
                 );
+            }
+            // Add source from the window asks the OS permission first and adds once it
+            // is answered, as the window's own add did (ADR-0168 decision 2); a client's
+            // `source.add` never prompts.
+            Command::Api { ref call, .. } if self.source_prompt_first(call).is_some() => {
+                if let Some(p) = self.source_prompt_first(call) {
+                    self.ask_permission(p, Some(c), notify);
+                }
             }
             Command::Api { call, reply } => self.api_command(*call, reply, notify),
         }

@@ -499,11 +499,7 @@ fn items_lock_and_hide_and_sources_mute_rename_and_change_volume() {
 fn set_swap(host: &StudioHost, updates: &Receiver<Update>) {
     use rbs_studio_host::studio_host::{Command, SourceKind};
     host.send(Command::SetSwapAfterTransition(true));
-    host.send(Command::ListTargets(SourceKind::AudioInput));
-    next(updates, |u| match u {
-        Update::Targets(SourceKind::AudioInput, _) => Some(()),
-        _ => None,
-    });
+    crate::listed(host, updates, SourceKind::AudioInput);
 }
 
 #[test]

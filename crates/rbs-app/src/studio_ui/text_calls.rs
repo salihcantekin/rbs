@@ -39,6 +39,9 @@ impl StudioUi {
         if ticket & super::crop_calls::EDIT_TICKET != 0 {
             return self.crop_answer(ticket & !super::crop_calls::EDIT_TICKET, result, out);
         }
+        if ticket == super::target_calls::TARGETS_TICKET {
+            return self.targets_answer(result);
+        }
         if ticket == super::add_calls::ADD_ONS_TICKET {
             if let Ok(Response::AddOnList(list)) = result {
                 self.add_ons = list.add_ons;

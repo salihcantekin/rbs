@@ -1384,39 +1384,14 @@ impl Host {
     /// The window commands of this concern, routed by `Host::command`.
     pub(super) fn source_command(&mut self, c: Command, notify: &dyn Fn(Update)) {
         match c {
-            Command::ListTargets(kind) => {
-                let targets = self.targets(kind);
-                notify(Update::Targets(kind, targets));
-            }
-            Command::AddSourceWithAudio { ref kind, .. } | Command::AddSource { ref kind, .. }
-                if self.prompt_first(*kind).is_some() =>
-            {
-                if let Some(p) = self.prompt_first(*kind) {
+            Command::PickSource { kind, .. } if self.prompt_first(kind).is_some() => {
+                if let Some(p) = self.prompt_first(kind) {
                     self.ask_permission(p, Some(c), notify);
                 }
             }
+            Command::PickSource { kind, adapter } => self.pick(kind, &adapter),
             Command::ReadPermissions => self.send_permissions(notify),
             Command::RequestPermission(kind) => self.ask_permission(kind, None, notify),
-            Command::AddSourceWithAudio { kind, target } => {
-                let done = self.add(kind, &target).and_then(|id| {
-                    self.add_companion(id, true).inspect_err(|_| {
-                        let _ = self.delete(id);
-                    })
-                });
-                match done {
-                    Ok(_) => self.apply(notify),
-                    Err(e) => notify(Update::Error(e.text().to_owned())),
-                }
-            }
-            Command::AddSource { kind, target } if target.picker => self.pick(kind, &target),
-            Command::AddSource { kind, target } => match self.add(kind, &target) {
-                Ok(_) => self.apply(notify),
-                Err(e) => notify(Update::Error(e.into_text())),
-            },
-            Command::AddGlobalSource { kind, target } => {
-                let done = self.add_global(kind, &target).map(|_| true);
-                self.answer(done, notify);
-            }
             Command::SetSourceVolume { id, volume } => {
                 let call = if self.levels_take(id) {
                     rbs_api::Command::SceneAudioSet(rbs_api::request::SetSceneLevel {

@@ -37,6 +37,8 @@ use winit::keyboard::{Key as WKey, ModifiersState, NamedKey as WNamed};
 use crate::entry;
 use crate::ui::InteractWindow;
 
+pub mod api_input;
+
 /// How long connecting to the page's picture may take before it is given up.
 #[cfg(any(target_os = "macos", windows))]
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);

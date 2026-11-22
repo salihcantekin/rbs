@@ -203,6 +203,25 @@ pub struct Target {
     pub sound: bool,
 }
 
+impl Target {
+    /// A `source.targets` row as the window lists it (protocol 1.101 carries every
+    /// field, ADR-0168).
+    pub fn from_api(t: rbs_api::types::CaptureTarget) -> Self {
+        Self {
+            name: t.name,
+            adapter: t.adapter,
+            target: t.target,
+            is_default: t.is_default,
+            size: t.size.map(|d| (d.width, d.height)),
+            app: t.app,
+            recent: t.recent.map(|r| r as usize),
+            picker: t.picker,
+            mic: t.mic,
+            sound: t.sound,
+        }
+    }
+}
+
 /// How a source is doing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SourceStatus {

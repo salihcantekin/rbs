@@ -5,31 +5,6 @@ use super::*;
 /// What the UI asks the studio to do.
 #[derive(Debug, Clone)]
 pub enum Command {
-    /// List what a kind can capture ([`Update::Targets`]).
-    ListTargets(SourceKind),
-    /// Add a display or window and its "Capture audio too" companion sound as one
-    /// undo step (ADR-0096). A refused companion adds nothing.
-    AddSourceWithAudio {
-        /// Its kind (a display or a window).
-        kind: SourceKind,
-        /// What it captures.
-        target: Target,
-    },
-    /// Add a source of `kind` capturing `target` to the program scene, on top.
-    AddSource {
-        /// Its kind.
-        kind: SourceKind,
-        /// What it captures.
-        target: Target,
-    },
-    /// Add a new source of `kind` capturing `target` as a global source (one undo
-    /// step).
-    AddGlobalSource {
-        /// Its kind.
-        kind: SourceKind,
-        /// What it captures.
-        target: Target,
-    },
     /// A source's volume, a linear factor from 0 to 1 (ADR-0059). A live control: not
     /// on the undo stack, and it reaches the mixer without rebinding the scene. The
     /// window's fader: while the program scene keeps its own levels and places the
@@ -211,13 +186,6 @@ pub enum Command {
     OpenInteract(SourceId),
     /// Close the Interact window of a browser source.
     CloseInteract(SourceId),
-    /// Input from a focused Interact window to its page (never logged).
-    InteractInput {
-        /// The browser source.
-        source: SourceId,
-        /// The event, in page pixels.
-        event: rbs_browser_ipc::input::InputEvent,
-    },
     /// The recording settings as saved: what `record.start` uses for control API
     /// clients and `settings.get` shows. Sent at start and after each change.
     SetProfile(RecordProfile),
@@ -303,6 +271,16 @@ pub enum Command {
     /// Read the OS permission statuses ([`Update::Permissions`], ADR-0141). Fast, never
     /// prompts.
     ReadPermissions,
+    /// Add source's picker entry (`source.targets` row with `picker`): asks the OS
+    /// permission first when needed, then runs the OS picker of `adapter` on a
+    /// thread and adds what the user chooses (ADR-0168 decision 1). The picker needs
+    /// the person at this computer, so a client cannot ask for it.
+    PickSource {
+        /// The kind (a display or a window).
+        kind: SourceKind,
+        /// The adapter whose picker runs.
+        adapter: String,
+    },
     /// Show the OS prompt for a permission kind on a worker thread (ADR-0141 decision
     /// 4); [`Update::Permissions`] follows when it is answered. Ignored while a prompt
     /// for the kind is showing.

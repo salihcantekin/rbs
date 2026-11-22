@@ -100,8 +100,7 @@ pub(super) fn the_vertical_canvas_records_and_streams_beside_the_main_one() {
     // "Record when the stream starts" is per canvas.
     shorts.auto_record = true;
     host.send(Command::SetVerticalStreamProfile(Some(shorts)));
-    host.send(Command::ListTargets(SourceKind::Screen));
-    next(&rx, |u| matches!(u, Update::Targets(..)).then_some(()));
+    crate::listed(&host, &rx, SourceKind::Screen);
     // Its key is its own: the main key is not used for it.
     let no_key = c.call("stream.start", vertical.clone());
     assert!(no_key.to_string().contains("vertical stream"), "{no_key}");

@@ -114,10 +114,6 @@ fn next<T>(rx: &Receiver<Update>, mut pick: impl FnMut(Update) -> Option<T>) -> 
     }
 }
 
-/// Sends a UI command and waits until the control thread took it. UI commands and API
-/// requests reach the control thread on separate queues, so a request sent after a
-/// command may still be served first; a `ListTargets` sent behind the command is
-/// answered only after it.
 /// A target just picked is listed as the newest recent one (protocol 1.101); a field
 /// it did not have before is left out.
 fn listed_as_recent(c: &mut Client, t: &Value) {
@@ -134,13 +130,13 @@ fn listed_as_recent(c: &mut Client, t: &Value) {
     assert_eq!(row["recent"], 0, "{row}");
 }
 
+/// Sends a UI command and waits until the control thread took it. UI commands and API
+/// requests reach the control thread on separate queues, so a request sent after a
+/// command may still be served first; a `source.targets` sent behind the command is
+/// answered only after it.
 fn send_and_wait(host: &StudioHost, updates: &Receiver<Update>, command: Command) {
     host.send(command);
-    host.send(Command::ListTargets(SourceKind::Screen));
-    next(updates, |u| match u {
-        Update::Targets(SourceKind::Screen, _) => Some(()),
-        _ => None,
-    });
+    crate::listed(host, updates, SourceKind::Screen);
 }
 
 #[test]

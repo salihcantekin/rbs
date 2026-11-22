@@ -20,7 +20,7 @@ use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
 use rbs_app::record_profile::RecordProfile;
-use rbs_app::studio_host::{Command, HostConfig, SourceKind, StudioHost, Update};
+use rbs_app::studio_host::{Command, HostConfig, StudioHost, Update};
 use rbs_core::media::Size;
 use rbs_core::timing::FrameRate;
 
@@ -107,10 +107,17 @@ fn main() -> ExitCode {
     profile.folder = folder.join("rec");
     host.send(Command::SetProfile(profile));
     // The host takes commands in order: once this answer comes, the profile is set.
-    host.send(Command::ListTargets(SourceKind::Screen));
+    host.send(Command::Api {
+        call: Box::new(rbs_api::Command::SourceTargets(
+            rbs_api::request::TargetsParams {
+                kind: rbs_api::types::SourceKind::Screen,
+            },
+        )),
+        reply: rbs_app::studio_host::ApiReply::Ticket(1),
+    });
     loop {
         match wait(&rx) {
-            Ok(Update::Targets(SourceKind::Screen, _)) => break,
+            Ok(Update::ApiAnswer { ticket: 1, .. }) => break,
             Ok(_) => {}
             Err(_) => {
                 rbs_crash::errln!("the studio did not answer");

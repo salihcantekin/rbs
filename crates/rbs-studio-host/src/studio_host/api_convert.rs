@@ -118,7 +118,7 @@ pub(super) fn failed(message: impl Into<String>) -> ApiError {
 }
 
 /// The control API's name of a kind (protocol 1.34 names the picture kinds too).
-pub(super) fn api_kind(k: SourceKind) -> Option<api::SourceKind> {
+pub fn api_kind(k: SourceKind) -> Option<api::SourceKind> {
     Some(match k {
         SourceKind::Screen => api::SourceKind::Screen,
         SourceKind::Window => api::SourceKind::Window,
@@ -134,7 +134,8 @@ pub(super) fn api_kind(k: SourceKind) -> Option<api::SourceKind> {
     })
 }
 
-pub(super) fn app_kind(k: api::SourceKind) -> SourceKind {
+/// The window's kind for a control API kind.
+pub fn app_kind(k: api::SourceKind) -> SourceKind {
     match k {
         api::SourceKind::Screen => SourceKind::Screen,
         api::SourceKind::Window => SourceKind::Window,

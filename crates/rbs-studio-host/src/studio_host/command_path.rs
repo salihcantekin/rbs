@@ -76,14 +76,10 @@ macro_rules! paths {
 }
 
 paths! {
-    ListTargets => Pending(&["source.targets"]),
     // with_audio: true; split as AddSource
-    AddSourceWithAudio => Pending(&["source.add"]),
     // split: the OS permission prompt and system picker stay in the window (LocalOnly)
-    AddSource => Pending(&["source.add"]),
     // must still send Update::Deleted for the undo toast
     // global: true
-    AddGlobalSource => Pending(&["source.add"]),
     // quiet when there is nothing to undo
     // as Undo
     SetSourceVolume => Translates(&["source.set_volume", "scene.audio.set"]),
@@ -130,7 +126,6 @@ paths! {
     OpenInteract => WindowOnly(View),
     CloseInteract => WindowOnly(View),
     // quiet answer (input to a closed page is ignored today)
-    InteractInput => Pending(&["browser.input"]),
     SetProfile => WindowOnly(Mirror),
     SetVirtualCamera => WindowOnly(LocalOnly),
     SetReplay => WindowOnly(Mirror),
@@ -155,6 +150,7 @@ paths! {
     // no settings.set field
     SetLibrary => Missing,
     ReadPermissions => WindowOnly(LocalOnly),
+    PickSource => WindowOnly(LocalOnly),
     RequestPermission => WindowOnly(LocalOnly),
     Api => Api,
 }
@@ -171,11 +167,11 @@ mod tests {
     /// (owner, 2026-11-21). `TRANSLATES` 22 to 24 and `LOCAL_ONLY` 10 to 11 are
     /// approved by ADR-0168 decision 4 (owner, 2026-11-22).
     const TRANSLATES: usize = 24;
-    const PENDING: usize = 5;
+    const PENDING: usize = 0;
     const CONTRACT: usize = 0;
     const MISSING: usize = 1;
     const VIEW: usize = 13;
-    const LOCAL_ONLY: usize = 10;
+    const LOCAL_ONLY: usize = 11;
     const PREVIEW: usize = 2;
     const MIRROR: usize = 8;
 

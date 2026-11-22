@@ -170,15 +170,9 @@ impl Studio {
     }
 
     fn add_screen(&self) -> SourceId {
-        self.host.send(Command::ListTargets(SourceKind::Screen));
-        let targets: Vec<Target> = self.next(|u| match u {
-            Update::Targets(SourceKind::Screen, t) => Some(t.clone()),
-            _ => None,
-        });
-        self.host.send(Command::AddSource {
-            kind: SourceKind::Screen,
-            target: targets[0].clone(),
-        });
+        let targets: Vec<Target> = crate::listed(&self.host, &self.rx, SourceKind::Screen);
+        self.host
+            .send(crate::add_source(SourceKind::Screen, &targets[0].clone()));
         self.next(|u| match u {
             Update::Sources(rows) if !rows.is_empty() => Some(rows[0].id),
             _ => None,

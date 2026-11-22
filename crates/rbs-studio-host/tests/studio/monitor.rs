@@ -175,16 +175,9 @@ fn without_a_monitored_source_no_device_opens() {
 /// Two commands that answer: once the second answer is in, the round of the first one
 /// (and its timed work) is over.
 fn rounds_done(host: &StudioHost, updates: &Receiver<Update>) {
-    use rbs_studio_host::studio_host::{Command, SourceKind};
+    use rbs_studio_host::studio_host::SourceKind;
     for _ in 0..2 {
-        host.send(Command::ListTargets(SourceKind::AudioInput));
-        let deadline = Instant::now() + LIMIT;
-        loop {
-            let left = deadline.saturating_duration_since(Instant::now());
-            if let Update::Targets(..) = updates.recv_timeout(left).expect("an answer") {
-                break;
-            }
-        }
+        crate::listed(host, updates, SourceKind::AudioInput);
     }
 }
 

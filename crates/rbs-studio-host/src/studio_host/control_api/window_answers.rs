@@ -51,6 +51,16 @@ impl ApiTarget<'_> {
                     .measure_view_started(source, reference, ended, notify);
                 result
             }
+            // Interact input goes only to a page open in Interact, and while no page
+            // runs it is dropped quietly as before: nothing is logged at pointer rate.
+            C::BrowserInput(ref p) => {
+                let id = SourceId::from_raw(p.source);
+                if self.host.interacting(id) && self.host.studio.browser_running(id) {
+                    self.route(command)
+                } else {
+                    Ok(Response::Done(Empty {}))
+                }
+            }
             command => self.route(command),
         }
     }
