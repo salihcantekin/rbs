@@ -182,6 +182,7 @@ pub const LENGTHS: &[&str] = &[
     "size.toast.border",
     "size.toast.rail",
     "size.toast.max",
+    "size.toast.wide",
     "size.first-run.w",
     "size.projector.resize-edge",
 ];
@@ -197,6 +198,8 @@ pub const DURATIONS: &[&str] = &[
     "delay.submenu",
     "delay.toast",
     "delay.toast-tick",
+    "delay.toast-undo",
+    "delay.copied",
     "delay.find-fallback",
     "delay.find-mark",
     "delay.projector-cursor",

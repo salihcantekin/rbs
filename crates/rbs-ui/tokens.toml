@@ -234,6 +234,8 @@ format = 4
 "size.toast.border" = 2
 "size.toast.rail" = 4
 "size.toast.max" = 480
+# The widest the error bar may be: its message wraps to two lines first (CopyText).
+"size.toast.wide" = 720
 
 # The first-run card (ADR-0113 decision 5): wide enough for the three choices with
 # their one-line descriptions. Not themeable.
@@ -261,6 +263,11 @@ format = 4
 # Not motion: how long a toast stays before it closes, and how often the time left steps.
 "delay.toast" = 8000
 "delay.toast-tick" = 1000
+# Not motion: how long the undo toast after deleting a source stays (shorter than
+# `delay.toast`: Undo is wanted at once or not at all, owner 2026-11-22).
+"delay.toast-undo" = 3000
+# Not motion: how long copied words read "Copied to the clipboard." (CopyText).
+"delay.copied" = 1500
 # Not motion: Settings search (settings-search.md). How long the window waits for the
 # setting's row to answer before it shows the card instead, and how long the row
 # found stays marked.

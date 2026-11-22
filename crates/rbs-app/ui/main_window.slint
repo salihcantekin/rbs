@@ -3,7 +3,7 @@
 // toolkit-neutral rbs-ui crate: Slint has no recursive components, so Rust flattens
 // each window's layout tree into tab stacks and splitter handles with absolute positions.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, SplitButton, IconButton, Icon, FocusRing, RingFocus, EmptyState, Select, NumberField, Toggle, SegmentedControl, ColorPicker, InfoHint, OverlayHost, PopoverLayer, PopoverCard, Checkbox, DialogActions, Slider, VSlider, PanelTab } from "components.slint";
+import { Button, CopyText, SplitButton, IconButton, Icon, FocusRing, RingFocus, EmptyState, Select, NumberField, Toggle, SegmentedControl, ColorPicker, InfoHint, OverlayHost, PopoverLayer, PopoverCard, Checkbox, DialogActions, Slider, VSlider, PanelTab } from "components.slint";
 import { CommandMenu } from "context_menu.slint";
 import { AppMenu, AppMenuButton } from "app_menu.slint";
 import { ProgramPanel, ScenesPanel, SourcesPanel, PropertiesPanel, MixerPanel, LiveControlsPanel, TransitionPanel, OutputsPanel, LibraryPanel, StatsPanel } from "studio.slint";
@@ -2159,6 +2159,9 @@ component StatusBar inherits Rectangle {
 // closes when they run out; Dismiss closes it sooner. The countdown steps
 // by `delay.toast-tick` (not an animation, so it still runs under reduce motion).
 // The first-close notice sets `timed` off: its buttons hide the windows (ADR-0056).
+// `copyable` (the error bar) makes the words a CopyText: a click copies the whole
+// message, the mark shows `check` while "Copied" reads, and a long message wraps to
+// two lines, the card growing to fit them.
 component Toast inherits Rectangle {
     in property <string> text;
     in property <string> action;
@@ -2168,6 +2171,10 @@ component Toast inherits Rectangle {
     // `Shell.bottom-toast`.
     in property <bool> top;
     in property <bool> timed: true;
+    // How long the card stays (`delay.toast`; the delete undo uses `delay.toast-undo`).
+    in property <duration> stay: Tokens.delay-toast;
+    in property <bool> copyable: false;
+    property <bool> copied;
     // A new notice, even with the same words, starts the countdown again.
     in property <int> generation;
     in property <IconName> mark: IconName.info;
@@ -2175,9 +2182,11 @@ component Toast inherits Rectangle {
     callback dismiss();
     // A direct child of the window, so its own coordinates are the window's.
     property <Cover> rect: { x: self.x, y: self.y, width: self.width, height: self.height };
-    property <int> total-ms: round(Tokens.delay-toast / 1ms);
+    property <int> total-ms: round(root.stay / 1ms);
     property <int> tick-ms: max(1, round(Tokens.delay-toast-tick / 1ms));
     property <int> left-ms: total-ms;
+    // The height of the words: one control unless a copyable message wraps.
+    property <length> words-h: Tokens.size-control-md;
     // Never reads 0: the last step closes the card while it still says 1 s.
     property <int> seconds: max(1, ceil(root.left-ms * 1.0 / root.tick-ms));
     // False, then true, restarts the one-second step (a running timer keeps its phase).
@@ -2214,8 +2223,10 @@ component Toast inherits Rectangle {
     vertical-stretch: 0;
     // The row, its vertical padding and the outline. Fixed, so the card cannot
     // grow with the window the way an unsized layout does.
-    height: Tokens.size-control-md + 2 * Tokens.space-1 + 2 * Tokens.size-toast-border;
-    width: min(Tokens.size-toast-max, body.preferred-width);
+    height: max(Tokens.size-control-md, words-h) + 2 * Tokens.space-1 + 2 * Tokens.size-toast-border;
+    // The error bar may be wider, so a long message reads in its two lines.
+    property <length> widest: root.copyable ? Tokens.size-toast-wide : Tokens.size-toast-max;
+    width: min(root.widest, body.preferred-width);
     background: Theme.toast-surface;
     border-color: Theme.toast-edge;
     border-width: Tokens.size-toast-border;
@@ -2244,9 +2255,18 @@ component Toast inherits Rectangle {
             VerticalLayout {
                 alignment: center;
                 width: Tokens.size-icon-box;
-                Icon { name: root.mark; ink: Theme.toast-edge; }
+                Icon { name: root.copied ? IconName.check : root.mark; ink: Theme.toast-edge; }
             }
-            Text {
+            if root.copyable: CopyText {
+                text: root.text;
+                lines: 2;
+                confirming <=> root.copied;
+                horizontal-stretch: 1;
+                max-width: root.widest;
+                init => { root.words-h = self.wanted-height; }
+                changed wanted-height => { root.words-h = self.wanted-height; }
+            }
+            if !root.copyable: Text {
                 text: root.text;
                 color: Theme.text-primary;
                 font-size: Tokens.type-body-size;
@@ -2649,6 +2669,7 @@ export component MainWindow inherits Window {
         generation: Studio.deleted-generation;
         act => { Studio.undo-delete(); }
         dismiss => { Studio.dismiss-deleted(); }
+        stay: Tokens.delay-toast-undo;
     }
     // The main output stopped and its vertical one runs on (ADR-0111 decision 6): once
     // per such stop, not modal; Stop ends that output (a stream asks first, U4).
@@ -2724,6 +2745,7 @@ export component MainWindow inherits Window {
             : Shell.error-kind == 3 ? Shell.error-detail
             : @tr("That did not work: {}", Shell.error-detail);
         action: "";
+        copyable: true;
         dismiss => { Shell.dismiss-error(); }
     }
     // The RBS menu: a layer under the hint and tooltip layer; a click outside closes it.
