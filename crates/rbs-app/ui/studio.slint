@@ -212,6 +212,12 @@ export component ProgramPanel inherits Rectangle {
 // picture, Lock. Move up, Move down and Remove are in the row's menu; Delete asks first.
 component SourceRowView inherits Rectangle {
     in property <SourceData> data;
+    // Focus handed to the row of source `focus-to` (a sound row's Left goes to its
+    // picture, ADR-0173); `focus-serial` changes on each hand-over.
+    in property <int> focus-to: -1;
+    in property <int> focus-serial;
+    callback focus-asked(int /* source */);
+    changed focus-serial => { if root.focus-to == data.id { row.focus-row(); } }
     // Move up, Move down or Remove was confirmed: the list is made again, so
     // the row's focus is about to go.
     callback leaving();
@@ -245,13 +251,20 @@ component SourceRowView inherits Rectangle {
         has-icon: true;
         icon: Icons.named(data.icon);
         name: data.name;
+        // A picture's companion sound opens under it (ADR-0173).
+        disclosure-room: data.arrow-room;
+        expandable: data.expandable;
+        expanded: data.open;
+        expand-toggled(o) => { Studio.open-sound(data.id, o); }
         // A source that is not running (its window closed, its camera unplugged): the
         // mark and the reason say so, the name is dimmed (ADR-0077, U7).
         warning: !data.ok;
         note: data.ok ? "" : data.status;
         dimmed: !data.visible;
         selected: root.selected;
-        accessible-name: @tr("{}, {}, {}{}{}", data.name, data.kind, data.status, data.visible ? "" : @tr(", hidden"), data.locked ? @tr(", locked") : "");
+        accessible-name: @tr("{}, {}, {}{}{}", data.name, data.kind, data.status, data.visible ? "" : @tr(", hidden"), data.locked ? @tr(", locked") : "")
+            + (data.nested ? @tr(", sound of {}", data.parent-name) : "")
+            + (data.expandable ? (data.sound-muted ? @tr(", has sound, sound muted") : @tr(", has sound")) : "");
         accessible-hint: (data.global ? @tr("In every scene. ") : data.in-globals ? @tr("Also in every scene. ") : data.also-in != "" ? @tr("Also in {}. ", data.also-in) : "")
             + (data.picture ? @tr("Alt+Up or Alt+Down changes the layer, F2 renames it, double-click opens Source settings when available, Delete asks before removing it from this scene, the Menu key or Shift+F10 opens its menu") : @tr("F2 renames it, double-click opens Source settings when available, Delete asks before removing it from this scene, the Menu key or Shift+F10 opens its menu"));
         edit-label: @tr("Name of the source {}", data.name);
@@ -282,12 +295,14 @@ component SourceRowView inherits Rectangle {
             if root.delete-all { Studio.delete-source(data.id); } else { Studio.remove-from-scene(data.id); }
         }
         dragging(on) => { Studio.dragging-source = on ? data.id : -1; }
-        can-take(d) => { return !Studio.is-panel(d) && Studio.dragging-source >= 0 && data.picture && Studio.dragging-source != data.id; }
+        // A drop on an open sound row counts as a drop on its picture (ADR-0173).
+        can-take(d) => { return !Studio.is-panel(d) && Studio.dragging-source >= 0 && (data.picture || data.nested) && Studio.dragging-source != (data.nested ? data.parent : data.id); }
         took(d) => {
-            Studio.move-source-to(Studio.dragging-source, data.id);
+            Studio.move-source-to(Studio.dragging-source, data.nested ? data.parent : data.id);
             Studio.dragging-source = -1;
         }
         key(e) => {
+            if e.text == Key.LeftArrow && data.nested { root.focus-asked(data.parent); return accept; }
             if e.modifiers.alt && e.text == Key.UpArrow && data.picture && data.can-up {
                 root.leaving(); Studio.move-source(data.id, true); return accept;
             }
@@ -321,6 +336,29 @@ component SourceRowView inherits Rectangle {
                     name: data.media-state == 0 ? @tr("Pause {}", data.name) : @tr("Play {}", data.name);
                     enabled: data.media-state != 5;
                     clicked => { Studio.media-play-pause(data.id); }
+                }
+            }
+            // A closed picture row says its sound is muted; an open sound row shows its
+            // level and mute, as its Mixer strip (ADR-0173). Not in studio mode: the
+            // list shows the preview scene there, the Mixer the program scene.
+            if data.expandable && !data.open && data.sound-muted && !Studio.studio-mode: VerticalLayout {
+                alignment: center;
+                Icon { name: IconName.speaker-off; ink: Theme.text-secondary; }
+            }
+            if data.nested && !Studio.studio-mode: Text {
+                text: data.volume-text;
+                color: Theme.text-secondary;
+                font-size: Tokens.type-caption-size;
+                vertical-alignment: center;
+                accessible-role: none;
+            }
+            if data.nested && !Studio.studio-mode: VerticalLayout {
+                alignment: center;
+                IconButton {
+                    icon: data.muted ? IconName.speaker-off : IconName.speaker;
+                    name: data.muted ? @tr("Unmute {}", data.name) : @tr("Mute {}", data.name);
+                    checked: data.muted;
+                    clicked => { Studio.set-source-muted(data.id, !data.muted); }
                 }
             }
             // Eye = lasting hide/show (undoable). Hourglass = timed show (ADR-0105).
@@ -626,6 +664,14 @@ export component SourcesPanel inherits Rectangle {
     property <length> header: 0px;
     // The Global group is closed until the user opens it (ADR-0078, ADR-0065).
     property <bool> globals-open: !Sections.closed("sources.global", Sections.rev);
+    // The row that takes the focus next (ADR-0173), handed over by `focus-serial`.
+    property <int> focus-to: -1;
+    property <int> focus-serial;
+    // Row `i` is a picture whose first or second sound row is selected.
+    pure function holds-selected(i: int) -> bool {
+        (Studio.sources[i + 1].nested && Studio.sources[i + 1].parent == Studio.sources[i].id && Studio.sources[i + 1].id == Studio.selected-source)
+            || (Studio.sources[i + 2].nested && Studio.sources[i + 2].parent == Studio.sources[i].id && Studio.sources[i + 2].id == Studio.selected-source)
+    }
     // A right-click outside the rows: the panel's own menu (Add source).
     panel-menu := CommandMenu { context: "sources"; }
     // The empty state's Add source: the source types as a menu (ADR-0094 B1).
@@ -667,14 +713,23 @@ export component SourcesPanel inherits Rectangle {
             spacing: 0;
             alignment: start;
             for s[i] in Studio.sources: VerticalLayout {
+                // A global row shows while the group is open or it is selected; a
+                // sound row under its picture while that is open or it is selected,
+                // and a selected sound shows its picture in a closed group (ADR-0173).
+                property <bool> shown: (!s.global || root.globals-open || Studio.selected-source == s.id || root.holds-selected(i))
+                    && (!s.nested || s.open || Studio.selected-source == s.id);
                 spacing: Tokens.space-1;
-                padding-bottom: !s.global || root.globals-open || Studio.selected-source == s.id || i == 0 ? Tokens.space-1 : 0;
+                padding-left: s.nested ? Tokens.size-list-indent : 0;
+                padding-bottom: self.shown || i == 0 ? Tokens.space-1 : 0;
                 // Global sources come first, under their own heading (ADR-0065): they
                 // are drawn above every scene. The group is folded unless opened.
                 if s.global && i == 0: GlobalsHeader { open: root.globals-open; }
                 if !s.global && i > 0 && Studio.sources[i - 1].global: SectionHeader { title: @tr("This scene"); }
-                if !s.global || root.globals-open || Studio.selected-source == s.id: SourceRowView {
+                if self.shown: SourceRowView {
                     data: s;
+                    focus-to: root.focus-to;
+                    focus-serial: root.focus-serial;
+                    focus-asked(id) => { root.focus-to = id; root.focus-serial += 1; }
                     leaving => { list-focus.focus(); }
                 }
             }

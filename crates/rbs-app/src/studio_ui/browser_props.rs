@@ -225,6 +225,27 @@ pub fn file_url(path: &std::path::Path) -> String {
     }
 }
 
+/// The browser sources of `rows`, by id: their stored settings and how they run.
+pub fn rows(
+    rows: &[rbs_app::studio_host::SourceRow],
+) -> std::collections::BTreeMap<i32, (Settings, Run)> {
+    use rbs_app::studio_host::SourceStatus;
+    rows.iter()
+        .filter_map(|r| {
+            let run = Run {
+                running: matches!(r.status, SourceStatus::Running),
+                reason: r.browser_reason,
+                failed: match &r.status {
+                    SourceStatus::Failed(why) => why.clone(),
+                    SourceStatus::Unavailable { detail, .. } => detail.clone(),
+                    _ => String::new(),
+                },
+            };
+            Some((r.id.get() as i32, (r.browser.clone()?, run)))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

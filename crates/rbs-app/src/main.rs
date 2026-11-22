@@ -46,6 +46,7 @@ mod quit;
 mod replay_page;
 mod reveal;
 mod shortcuts_page;
+mod source_list_calls;
 mod studio_start;
 mod studio_ui;
 mod swap_setting;
@@ -4757,36 +4758,12 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
                 .set_media_range_mark(id, studio_ui::RangeMark::from_code(mark), at);
         }
     );
-    on!(on_set_companion_audio, |app, id: i32, on: bool| {
-        app.studio.set_companion_audio(id, on);
-    });
-    on!(on_delete_source, |app, id: i32| {
-        app.studio.delete_source(id);
-    });
-    on!(on_remove_from_scene, |app, id: i32| {
-        app.studio.remove_from_scene(id);
-    });
+    source_list_calls::install(g, ctx);
     on!(on_ask_remove_selected, |app| {
         let id = app.studio.selected;
         if id >= 0 {
             app.ask_remove_source(id, false);
         }
-    });
-    on!(on_set_global, |app, id: i32, global: bool| {
-        app.studio.set_global(id, global);
-    });
-    on!(on_remove_global, |app, id: i32| {
-        app.studio.remove_global(id);
-    });
-    on!(on_pick_global_kind, |app, index: i32| {
-        app.studio.pick_global_kind(index);
-    });
-    on!(on_add_global, |app, option: i32| {
-        app.studio.add_global(option);
-    });
-    on!(on_select_source, |app, id: i32| {
-        app.studio.selected = id;
-        app.studio.refresh_marks();
     });
     on!(on_preview_press, |app,
                            x: f32,

@@ -42,7 +42,7 @@ macro_rules! reexport_probes {
         pub use $probes::{
             EffectsProbe, ExperienceProbe, FocusRevealProbe, MenuProbe, NumberFieldProbe,
             OverlayProbe, PropertiesProbe, ReplayProbe, SegmentProbe, SettingRowAlignProbe,
-            SettingRowProbe,
+            SettingRowProbe, SourcesProbe,
         };
     };
 }

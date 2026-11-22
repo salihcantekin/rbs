@@ -53,7 +53,7 @@ use rbs_scene::model::{
 use rbs_sources::permissions::PermissionKind;
 use rbs_transport::Secret;
 use rbs_ui::fader;
-use rbs_ui::meter::{self, Meter, SCALE_MARKS_DB};
+use rbs_ui::meter::{self, Meter};
 use rbs_ui::transform::{DragKeys, MAX_MARKS, Mark, MarkKind, SourceBox};
 use rbs_user_data::EntryId;
 use slint::{Model, ModelRc, SharedString, VecModel};
@@ -93,6 +93,7 @@ mod settings_mirror;
 mod slides;
 mod source_look;
 use source_look::{source_icon, unavailable_text};
+mod sound_nest;
 mod source_calls;
 mod target_calls;
 mod text_calls;
@@ -339,6 +340,8 @@ pub struct StudioUi {
     inspected: Cell<i32>,
     /// The Filters tab's selection and the drag in progress (ADR-0062).
     filter_ui: filters::FilterUi,
+    /// The pictures whose sound rows are open in the Sources list (ADR-0173).
+    nest: sound_nest::Open,
     /// The play state of each media source and the time left on each Show cue.
     live: live_ticks::LiveTicks,
     /// An Add source is on its way: the next new source is selected.
@@ -727,13 +730,6 @@ impl StudioUi {
         // Without the lock: `rbs-cli` replaces the file in one rename, so this reads
         // either version whole; a bad file it moves aside is never one `rbs-cli` wrote.
         let (remote, remote_why) = remote_profile::load(config);
-        let scale = SCALE_MARKS_DB
-            .iter()
-            .map(|db| ScaleMark {
-                label: format!("{db:.0}").into(),
-                at: meter::position(*db),
-            })
-            .collect::<Vec<_>>();
         let mut ui = Self {
             host: None,
             state: 0,
@@ -749,6 +745,7 @@ impl StudioUi {
             library_samples: Rc::new(VecModel::default()),
             library_thumb_height: 0,
             filter_ui: filters::FilterUi::default(),
+            nest: sound_nest::Open::default(),
             live: live_ticks::LiveTicks::default(),
             selected: -1,
             attributes_clipboard: None,
@@ -806,7 +803,7 @@ impl StudioUi {
             meter_values: meter_values::MeterValues::default(),
             hidden_meters: Rc::new(VecModel::default()),
             stats: Rc::new(VecModel::default()),
-            scale: Rc::new(VecModel::from(scale)),
+            scale: Rc::new(VecModel::from(meter_values::scale_marks())),
             meter_start: Instant::now(),
             meter_ticks: 0,
             preview_offered: false,
@@ -6302,6 +6299,7 @@ impl StudioUi {
     }
 
     fn set_rows(&mut self, rows: Vec<SourceRow>) {
+        let rows = sound_nest::order(rows, sound_nest::key);
         // Layers move within their group: the global sources, then the scene's.
         let pictures = |global: bool| -> Vec<usize> {
             (0..rows.len())
@@ -6311,7 +6309,7 @@ impl StudioUi {
         let (global_pictures, scene_pictures) = (pictures(true), pictures(false));
         self.filter_ui.retain(&rows);
         let sounds = filters::sound_sources(&rows);
-        let data: Vec<SourceData> = rows
+        let mut data: Vec<SourceData> = rows
             .iter()
             .enumerate()
             .map(|(i, r)| {
@@ -6451,7 +6449,6 @@ impl StudioUi {
                     also_in: r.also_in.join(", ").into(),
                     in_globals: r.in_globals,
                     places: (1 + r.also_in.len() + usize::from(r.in_globals)) as i32,
-                    companion: rows.iter().any(|c| c.companion_of == Some(r.id)),
                     custom_glide: r.glide.is_some(),
                     glide_duration: r.glide.map(|g| g.duration_ms as i32).unwrap_or(400),
                     glide_easing: r.glide.map_or(1, |g| {
@@ -6527,26 +6524,14 @@ impl StudioUi {
         } else if !data.iter().any(|d| d.id == self.selected) {
             self.selected = -1;
         }
+        let keys: Vec<sound_nest::Key> = rows.iter().map(sound_nest::key).collect();
+        self.nest.mark(&mut data, &keys, self.selected);
         set_rows(&self.sources, data);
         self.text_settings = rows
             .iter()
             .filter_map(|r| Some((r.id.get() as i32, r.text.clone()?)))
             .collect();
-        self.browser_rows = rows
-            .iter()
-            .filter_map(|r| {
-                let run = browser_props::Run {
-                    running: matches!(r.status, SourceStatus::Running),
-                    reason: r.browser_reason,
-                    failed: match &r.status {
-                        SourceStatus::Failed(why) => why.clone(),
-                        SourceStatus::Unavailable { detail, .. } => detail.clone(),
-                        _ => String::new(),
-                    },
-                };
-                Some((r.id.get() as i32, (r.browser.clone()?, run)))
-            })
-            .collect();
+        self.browser_rows = browser_props::rows(&rows);
         self.rows = rows;
         // The Source tab marks the source's own target: it may have changed.
         self.refresh_source_targets();
