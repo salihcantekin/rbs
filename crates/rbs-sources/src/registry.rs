@@ -402,6 +402,9 @@ pub enum SourceInstance {
     /// Adopt into the render partition; hand `frames` to the text worker. Boxed: it
     /// carries its settings.
     Text(Box<TextSource>),
+    /// Adopt into the render partition; attach `frames` to the slide show hub
+    /// (ADR-0171). Boxed like text.
+    Slideshow(Box<crate::slideshow::SlideshowSource>),
     /// Adopt into the audio partition. Boxed: larger than the picture variants.
     Audio(Box<AudioSource>),
 }
@@ -430,6 +433,10 @@ impl fmt::Debug for SourceInstance {
                 .debug_struct("Text")
                 .field("kind", &t.settings.kind)
                 .field("box", &t.settings.block.box_size)
+                .finish_non_exhaustive(),
+            SourceInstance::Slideshow(s) => f
+                .debug_struct("Slideshow")
+                .field("size", &s.size)
                 .finish_non_exhaustive(),
             SourceInstance::Audio(a) => f
                 .debug_struct("Audio")
@@ -495,6 +502,8 @@ impl NodeTypes for NodeTypeTable {
             // CSS, zoom, the script and the timers reach the running page over IPC
             // (ADR-0132 decision 4, ADR-0149 decision 1).
             Some(SourceClass::Browser) => &crate::browser::BROWSER_LIVE_KEYS,
+            // Every schema key but `transition` (ADR-0171 decision 4).
+            Some(SourceClass::Slideshow) => crate::slideshow::LIVE_KEYS,
             _ => &[],
         }
     }
@@ -632,6 +641,7 @@ fn known_keys(type_id: &NodeTypeId) -> Option<&'static [&'static str]> {
             keys::END_MS,
         ],
         SourceClass::Text => crate::text::TEXT_KEYS,
+        SourceClass::Slideshow => crate::slideshow::KEYS,
         SourceClass::Browser => &[
             keys::URL,
             keys::WIDTH,
@@ -660,6 +670,8 @@ pub fn option_keys(type_id: &NodeTypeId) -> &'static [&'static str] {
         // (the text, the file) is decided with the text UI (ADR-0129 phase (f)); until
         // then Reset source and Paste attributes leave a text's settings alone.
         Some(SourceClass::Text) => &[],
+        // The folder and the output size are identity; the schema keys are options.
+        Some(SourceClass::Slideshow) => crate::slideshow::OPTION_KEYS,
     }
 }
 
@@ -673,6 +685,10 @@ pub fn validate_settings(type_id: &NodeTypeId, settings: &Settings) -> Result<()
     }
     if class_of(type_id) == Some(SourceClass::Text) {
         return crate::text::validate_text(settings).map(|_| ());
+    }
+    if class_of(type_id) == Some(SourceClass::Slideshow) {
+        return crate::slideshow::validate(settings)
+            .map_err(|(key, expected)| SourceError::InvalidSetting { key, expected });
     }
     if class_of(type_id) == Some(SourceClass::Browser) {
         return crate::browser::validate_browser(settings)
@@ -1093,7 +1109,8 @@ impl SourceTypes {
             | SourceClass::Still
             | SourceClass::Media
             | SourceClass::Browser
-            | SourceClass::Text => Ok(Vec::new()),
+            | SourceClass::Text
+            | SourceClass::Slideshow => Ok(Vec::new()),
         }
     }
 
@@ -1102,7 +1119,7 @@ impl SourceTypes {
         match class_of(type_id) {
             Some(SourceClass::Capture(kind)) => !self.capture_candidates(kind).is_empty(),
             Some(SourceClass::Audio(kind)) => !self.audio_candidates(kind).is_empty(),
-            Some(SourceClass::Still) | Some(SourceClass::Browser) => true,
+            Some(SourceClass::Still | SourceClass::Browser | SourceClass::Slideshow) => true,
             Some(SourceClass::Media) => !self.media_candidates(None).is_empty(),
             Some(SourceClass::Text) => !self.text.is_empty(),
             _ => false,
@@ -1158,6 +1175,7 @@ impl SourceTypes {
                     crate::browser::browser_descriptor()
                 }
                 Some(SourceClass::Text) => rbs_nodes::text_descriptor(),
+                Some(SourceClass::Slideshow) => rbs_nodes::slideshow_descriptor(),
                 _ => rbs_audio::input_descriptor(),
             };
             table.insert(t, descriptor);
@@ -1209,7 +1227,11 @@ impl SourceTypes {
                     }
                 }
             }
-            SourceClass::Still | SourceClass::Media | SourceClass::Browser | SourceClass::Text => {}
+            SourceClass::Still
+            | SourceClass::Media
+            | SourceClass::Browser
+            | SourceClass::Text
+            | SourceClass::Slideshow => {}
         }
         Ok(out)
     }
@@ -1329,6 +1351,12 @@ impl SourceTypes {
                     settings,
                 })))
             }
+            SourceClass::Slideshow => Ok(SourceInstance::Slideshow(Box::new(
+                crate::slideshow::instantiate(
+                    settings,
+                    ctx.canvas.map(|(s, _)| (s.width, s.height)),
+                ),
+            ))),
             SourceClass::Audio(kind) => {
                 let candidates = choose(&self.audio_candidates(kind), named, type_id)?;
                 let (backend, endpoint) = match target {

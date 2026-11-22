@@ -28,9 +28,11 @@ pub const BROWSER_SOURCE: &str = "org.rbs.source.browser";
 /// A text block, a clock or a timer drawn by a text renderer (ADR-0129). Installed only
 /// when a renderer is registered.
 pub const TEXT_SOURCE: &str = "org.rbs.source.text";
+/// A folder of PNG and JPEG pictures shown in turn (ADR-0171).
+pub const SLIDESHOW_SOURCE: &str = "org.rbs.source.slideshow";
 
 /// Every built-in source type, in a fixed order.
-pub const ALL: [&str; 11] = [
+pub const ALL: [&str; 12] = [
     DISPLAY_SOURCE,
     WINDOW_SOURCE,
     CAMERA_SOURCE,
@@ -42,6 +44,7 @@ pub const ALL: [&str; 11] = [
     MEDIA_SOURCE,
     BROWSER_SOURCE,
     TEXT_SOURCE,
+    SLIDESHOW_SOURCE,
 ];
 
 /// Settings keys. Keys a type does not use are ignored, so a document written by a
@@ -197,6 +200,8 @@ pub enum SourceClass {
     /// A text, clock or timer (ADR-0129). Video pin only; still or not depends on
     /// its settings ([`crate::is_still`]).
     Text,
+    /// A folder of pictures shown in turn (ADR-0171). Video pin only; never still.
+    Slideshow,
 }
 
 /// The class of a built-in source type, or `None` for any other type.
@@ -212,6 +217,7 @@ pub fn class_of(type_id: &NodeTypeId) -> Option<SourceClass> {
         MEDIA_SOURCE => SourceClass::Media,
         BROWSER_SOURCE => SourceClass::Browser,
         TEXT_SOURCE => SourceClass::Text,
+        SLIDESHOW_SOURCE => SourceClass::Slideshow,
         _ => return None,
     })
 }

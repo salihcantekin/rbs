@@ -76,6 +76,7 @@ fn types_are_installed_only_by_probed_adapters_that_capture_their_kind() {
         types::IMAGE_SOURCE,
         types::COLOR_SOURCE,
         types::BROWSER_SOURCE,
+        types::SLIDESHOW_SOURCE,
     ]
     .map(ty);
     assert_eq!(reg.installed(), still);
@@ -97,6 +98,7 @@ fn types_are_installed_only_by_probed_adapters_that_capture_their_kind() {
             types::IMAGE_SOURCE,
             types::COLOR_SOURCE,
             types::BROWSER_SOURCE,
+            types::SLIDESHOW_SOURCE,
         ]
         .map(ty)
     );
@@ -218,6 +220,7 @@ fn an_empty_registry_still_has_the_compositor_the_mixer_and_the_filters() {
             "org.rbs.source.browser",
             "org.rbs.source.color",
             "org.rbs.source.image",
+            "org.rbs.source.slideshow",
         ]
     );
 }
@@ -250,6 +253,7 @@ fn instances_match_the_descriptors_the_binder_uses() {
                 Node::<GpuRuntime>::descriptor(&m.picture)
             }
             SourceInstance::Browser(b) => Node::<GpuRuntime>::descriptor(&b.node),
+            SourceInstance::Slideshow(s) => Node::<GpuRuntime>::descriptor(&s.node),
             other => panic!("unexpected {other:?}"),
         };
         assert_eq!(

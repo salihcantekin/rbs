@@ -40,6 +40,9 @@ pub fn slideshow_descriptor() -> NodeDescriptor {
 /// only. The host writes the live keys and `paused`; the node writes `shown`.
 #[derive(Debug, Default)]
 pub struct SlideshowShared {
+    /// Set by the node from `warm` to `cool`: the decode thread works only for warm
+    /// sources and keeps no pictures for others (ADR-0171 decision 6).
+    pub warm: AtomicBool,
     /// The timer stops; a picture sent with `now` still shows.
     pub paused: AtomicBool,
     /// Milliseconds each picture shows; 0 for `advance = manual`.
@@ -279,6 +282,7 @@ impl Node<GpuRuntime> for SlideshowNode {
         self.current = None;
         self.incoming = None;
         self.change = None;
+        self.shared.warm.store(true, Ordering::Release);
         Ok(())
     }
 
@@ -441,6 +445,7 @@ impl Node<GpuRuntime> for SlideshowNode {
     }
 
     fn cool(&mut self, ctx: &mut WarmCtx<'_, GpuRuntime>) {
+        self.shared.warm.store(false, Ordering::Release);
         if let Some(t) = self.textures.take() {
             t.give_back(&mut ctx.local.pool);
         }
@@ -455,6 +460,7 @@ impl Node<GpuRuntime> for SlideshowNode {
     }
 
     fn release(&mut self, _ctx: &mut PrepareCtx<'_, GpuRuntime>) {
+        self.shared.warm.store(false, Ordering::Release);
         self.textures = None;
         self.gpu = None;
     }

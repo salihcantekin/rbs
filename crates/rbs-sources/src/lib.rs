@@ -30,6 +30,7 @@ mod mapping;
 pub mod permissions;
 mod registry;
 pub mod scroll;
+pub mod slideshow;
 pub mod slideshow_files;
 pub mod still;
 pub mod stinger;
