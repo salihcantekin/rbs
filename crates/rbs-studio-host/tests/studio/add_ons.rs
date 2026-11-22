@@ -237,9 +237,7 @@ fn a_control_api_client_installs_and_removes_an_add_on() {
                 EngineConfig::default().swap_timeout(LIMIT),
             )
         },
-        move |u| {
-            let _ = tx.send(u);
-        },
+        crate::watch::forward(tx),
     )
     .unwrap();
     next(&updates, |u| match u {
@@ -429,9 +427,7 @@ fn add_source_browser_leads_to_the_engine_until_it_is_installed() {
                 EngineConfig::default().swap_timeout(LIMIT),
             )
         },
-        move |u| {
-            let _ = tx.send(u);
-        },
+        crate::watch::forward(tx),
     )
     .unwrap();
     next(&updates, |u| match u {

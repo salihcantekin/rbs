@@ -66,9 +66,7 @@ fn a_window_add_prompts_first_and_a_client_add_never_does() {
                 EngineConfig::default().swap_timeout(LIMIT),
             )
         },
-        move |u| {
-            let _ = tx.send(u);
-        },
+        crate::watch::forward(tx),
     )
     .unwrap();
     loop {

@@ -164,9 +164,7 @@ fn a_control_api_client_drives_the_studio() {
                 EngineConfig::default().swap_timeout(LIMIT),
             )
         },
-        move |u| {
-            let _ = tx.send(u);
-        },
+        crate::watch::forward(tx),
     )
     .unwrap();
     next(&updates, |u| match u {
@@ -787,9 +785,7 @@ fn a_control_api_client_adds_and_edits_a_text_source() {
                 EngineConfig::default().swap_timeout(LIMIT),
             )
         },
-        move |u| {
-            let _ = tx.send(u);
-        },
+        crate::watch::forward(tx),
     )
     .unwrap();
     next(&updates, |u| match u {

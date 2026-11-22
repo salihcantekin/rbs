@@ -62,6 +62,6 @@
 "crates/rbs-scene/src/collection.rs::perform" = 560
 "crates/rbs-scene/tests/binder.rs::check_consistent" = 218
 "crates/rbs-sources/examples/scene_sources.rs::run" = 321
-"crates/rbs-studio-host/tests/studio/api.rs::a_control_api_client_adds_and_edits_a_text_source" = 227
-"crates/rbs-studio-host/tests/studio/api.rs::a_control_api_client_drives_the_studio" = 600
+"crates/rbs-studio-host/tests/studio/api.rs::a_control_api_client_adds_and_edits_a_text_source" = 225
+"crates/rbs-studio-host/tests/studio/api.rs::a_control_api_client_drives_the_studio" = 598
 "crates/rbs-ui/src/command.rs::context_menu" = 205

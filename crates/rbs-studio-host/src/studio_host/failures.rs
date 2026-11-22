@@ -27,8 +27,12 @@ impl Kind {
             name: [0; 48],
             len: 0,
         };
-        // The writer stops the formatting at the first bracket or space (an error).
-        let _ = write!(kind, "{c:?}");
+        // The writer stops the formatting at the first bracket or space (an error). A
+        // control API call the window sends is named by its call: `Api:RecordStart`.
+        let _ = match c {
+            Command::Api { call, .. } => write!(kind, "Api:{call:?}"),
+            _ => write!(kind, "{c:?}"),
+        };
         rbs_core::trace!(Area::Studio, "command {kind}");
         Some(kind)
     }

@@ -19,6 +19,7 @@ mod scenes;
 mod stream;
 mod sync_offset;
 mod vcam;
+mod watch;
 
 /// `source.set_settings` as the window sends it (ADR-0164): one undo step, or part of
 /// `gesture`'s.

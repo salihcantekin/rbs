@@ -100,9 +100,7 @@ mod with_pictures {
                     EngineConfig::default().swap_timeout(LIMIT),
                 )
             },
-            move |u| {
-                let _ = tx.send(u);
-            },
+            crate::watch::forward(tx),
         )
         .unwrap();
         next(&rx, |u| match u {
