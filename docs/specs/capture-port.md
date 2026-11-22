@@ -133,7 +133,8 @@ pub trait CaptureFactory: AdapterFactory {
     /// minor version of the port, additive). Scaled to fit in min(max, THUMBNAIL_MAX
     /// = 192 x 108), aspect kept, never upscaled, at least 1 x 1; empty `max` ->
     /// FormatUnsupported. Needs no session: grabs one frame and releases everything
-    /// before returning. Never prompts. Returns within ~1 s or a recoverable Backend
+    /// before returning. Never prompts. Returns within ~1 s (~3 s for an adapter's
+    /// first grab in a process, where its section says so) or a recoverable Backend
     /// error; the host cannot cancel, it abandons the call. Any non-real-time thread,
     /// concurrent calls and open sessions allowed. No user-visible side effect (no
     /// prompt, capture border, indicator or camera light); an adapter that cannot
@@ -449,7 +450,7 @@ Checks: probe returns within 1 s (the fastest of up to three calls, so one-time 
 ### ScreenCaptureKit adapter notes
 
 - Permission (ADR-0141 decision 5): `CGPreflightScreenCaptureAccess` cannot tell "not asked" from "denied", and `CGRequestScreenCaptureAccess` shows its alert once per app. So `permission` is `NotDetermined` until a request in this process is refused, and `Denied` after that. Display and window declare the permission, `.restart` (a grant applies after the app restarts) and `.prompt` only when this process is its own responsible app and declares `NSScreenCaptureUsageDescription`.
-- `thumbnail` (ADR-0077): one `SCScreenshotManager` grab, macOS 14 and later (`Unsupported` before), cursor off, within a 1 s budget. Without permission it returns `PermissionNotDetermined`, because macOS does not tell "not asked" from "denied". Known limits, to be checked on macOS 14 and 15 hardware: the periodic screen-recording re-approval alert of macOS 15 and the menu-bar indicator may appear on a grab (the adapter cannot prevent either); a grab that timed out keeps running inside ScreenCaptureKit until it ends, so a hung system can pile up abandoned requests (the host asks at most two at a time and only for the rows shown).
+- `thumbnail` (ADR-0077): one `SCScreenshotManager` grab, macOS 14 and later (`Unsupported` before), cursor off, within a 1 s budget (3 s until the first screenshot of the process has answered: on macOS 26 that first grab takes 1.25 to 1.6 s and later ones 90 to 185 ms, M4 Pro, macOS 26.7.1, 2026-11-22; with 1 s the first thumbnail and Region preview of every session failed). Without permission it returns `PermissionNotDetermined`, because macOS does not tell "not asked" from "denied". Known limits, to be checked on macOS 14 and 15 hardware: the periodic screen-recording re-approval alert of macOS 15 and the menu-bar indicator may appear on a grab (the adapter cannot prevent either); a grab that timed out keeps running inside ScreenCaptureKit until it ends, so a hung system can pile up abandoned requests (the host asks at most two at a time and only for the rows shown).
 - `region_grab` (ADR-0103): the same `SCScreenshotManager` grab, scaled to fit in a square of `min(max_long, 960)`. `THUMBNAIL_MAX` is not raised. An empty `max_long` is `FormatUnsupported`. The same permission, timeout and no-prompt rules as `thumbnail`.
 
 - Minimum deployment target macOS 12.3: the bindings link ScreenCaptureKit strongly, so an older macOS cannot load the binary; the probe's version check only catches a wrong deployment setting.

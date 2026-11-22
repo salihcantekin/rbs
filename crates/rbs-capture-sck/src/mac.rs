@@ -385,6 +385,25 @@ fn prompt_is_safe() -> bool {
 /// How long a thumbnail grab may take in all (capture-port.md, `thumbnail`).
 const THUMBNAIL_TIMEOUT: Duration = Duration::from_millis(1000);
 
+/// The budget while no screenshot has answered in this process yet. On macOS 26 the
+/// first `SCScreenshotManager` grab of a process takes 1.25 to 1.6 s (M4 Pro, macOS
+/// 26.7.1, 2026-11-22) and later ones 90 to 185 ms, so with the warm budget the first
+/// thumbnail and Region preview of every session failed (capture-port.md, ScreenCaptureKit).
+const THUMBNAIL_COLD_TIMEOUT: Duration = Duration::from_millis(3000);
+
+/// A screenshot has answered in this process: later grabs get the warm budget.
+static SCREENSHOT_WARM: AtomicBool = AtomicBool::new(false);
+
+/// The whole-grab budget: [`THUMBNAIL_COLD_TIMEOUT`] until the first screenshot of
+/// the process answers, then [`THUMBNAIL_TIMEOUT`].
+fn grab_budget() -> Duration {
+    if SCREENSHOT_WARM.load(Ordering::Acquire) {
+        THUMBNAIL_TIMEOUT
+    } else {
+        THUMBNAIL_COLD_TIMEOUT
+    }
+}
+
 /// `SCScreenshotManager` appeared in macOS 14; the class is looked up by name so an
 /// older system gets `Unsupported` instead of a missing-class panic.
 fn screenshots_available() -> bool {
@@ -506,7 +525,8 @@ fn grab_rgba(
         return Err(CaptureError::PermissionNotDetermined);
     }
     // Backend failures of a grab are recoverable: the next try may find a frame.
-    let content = shareable_content_within(THUMBNAIL_TIMEOUT).map_err(|e| match e {
+    let budget = grab_budget();
+    let content = shareable_content_within(budget).map_err(|e| match e {
         CaptureError::Backend { .. } => grab_failed(),
         other => other,
     })?;
@@ -542,6 +562,7 @@ fn grab_rgba(
         let block = RcBlock::new(
             move |image: *mut objc2_core_graphics::CGImage, error: *mut NSError| {
                 catch_callback(|| {
+                    SCREENSHOT_WARM.store(true, Ordering::Release);
                     let result = match NonNull::new(image) {
                         // SAFETY: ScreenCaptureKit passes a valid image for the call; it
                         // is retained before the handler returns.
@@ -567,7 +588,7 @@ fn grab_rgba(
                 Some(&block),
             )
         };
-        let left = THUMBNAIL_TIMEOUT.saturating_sub(started.elapsed());
+        let left = budget.saturating_sub(started.elapsed());
         let image = rx.recv_timeout(left).map_err(|_| grab_failed())??.0;
         let rgba = image_to_rgba(&image, width, height)?;
         Ok((width, height, rgba))

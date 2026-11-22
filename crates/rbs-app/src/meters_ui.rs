@@ -54,7 +54,9 @@ impl Readers {
 /// [`GATE_QUIET`] late.
 pub(crate) fn gate_levels(ctx: &Ctx, app: &App, filter: i32) -> (f32, f32) {
     let r = &app.meters_ui;
-    if app.hidden {
+    // A bar in a Properties panel that is not on screen (a hidden window, a stack
+    // showing another tab) still reads: it does not count, so its quiet time runs.
+    if !properties_shown(app) {
         return app.studio.filter_levels(filter);
     }
     if r.gate.get() {
@@ -76,4 +78,13 @@ pub(crate) fn gate_levels(ctx: &Ctx, app: &App, filter: i32) -> (f32, f32) {
         );
     }
     app.studio.filter_levels(filter)
+}
+
+/// Properties is the shown tab of a stack in the main window or a floating one, and
+/// not every window is hidden.
+fn properties_shown(app: &App) -> bool {
+    const ID: &str = "rbs.properties";
+    let shown = |stacks| crate::studio_ui::active_content(stacks, ID, 0.0, 0.0).is_some();
+    !app.hidden
+        && (shown(&app.main_models.stacks) || app.floats.iter().any(|f| shown(&f.models.stacks)))
 }

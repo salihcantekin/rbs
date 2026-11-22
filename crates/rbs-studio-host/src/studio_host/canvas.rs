@@ -118,6 +118,12 @@ impl Host {
     pub(super) fn sync_meters(&mut self) {
         let on = self.meters_ui || self.events.subscribed(rbs_api::Topic::AudioLevels);
         if on != self.meters_applied {
+            rbs_core::debug!(
+                rbs_core::log::Area::Audio,
+                "level readers: window {}, control api {}",
+                self.meters_ui,
+                on && !self.meters_ui
+            );
             self.studio.set_meters_on(on);
             self.meters_applied = on;
         }
@@ -125,6 +131,7 @@ impl Host {
             self.audio_rest_at = None;
             if !self.studio.audio_awake() {
                 let failed = self.studio.set_audio_awake(true);
+                rbs_core::debug!(rbs_core::log::Area::Audio, "the audio branch woke");
                 log_audio_failures("woke", &failed);
             }
         } else if self.studio.audio_awake() && self.audio_rest_at.is_none() {
@@ -140,6 +147,7 @@ impl Host {
         }
         self.audio_rest_at = None;
         let failed = self.studio.set_audio_awake(false);
+        rbs_core::debug!(rbs_core::log::Area::Audio, "the audio branch rests");
         log_audio_failures("rested", &failed);
         None
     }
