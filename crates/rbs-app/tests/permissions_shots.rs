@@ -183,13 +183,14 @@ fn pointer_filter(file: &TokenFile, base: Base, name: &str, action: i32, dir: &s
     w.hide().expect("hide");
 }
 
-/// Pointer halo with the Laser look chosen and Input monitoring allowed (no note).
+/// Pointer halo with Spotlight on, the Laser look chosen and the source's Show the
+/// cursor off, Input monitoring allowed (no note).
 fn laser_field(file: &TokenFile, base: Base, name: &str, dir: &std::path::Path) {
     let w = PropertiesProbe::new().expect("the probe window");
     tokens(file, base, &w.global::<Theme>(), &w.global::<Tokens>());
     let look = FilterFieldData {
         label: "Look".into(),
-        help: "Laser: a red dot. Turn off the source's Show the cursor so only it shows.".into(),
+        help: "Laser: a red dot. Turn off Show the cursor below so only the dot shows.".into(),
         kind: 4,
         options: ModelRc::new(VecModel::from(vec![
             slint::SharedString::from("Halo"),
@@ -200,17 +201,28 @@ fn laser_field(file: &TokenFile, base: Base, name: &str, dir: &std::path::Path) 
         default_text: "Halo".into(),
         ..Default::default()
     };
+    let spotlight = FilterFieldData {
+        label: "Spotlight".into(),
+        help: "Darkens the picture outside a circle around the pointer.".into(),
+        kind: 5,
+        choice: 1,
+        changed: true,
+        default_text: "off".into(),
+        ..Default::default()
+    };
     let halo = FilterData {
         id: 1,
         name: "Pointer halo".into(),
         enabled: true,
         known: true,
-        fields: ModelRc::new(VecModel::from(vec![look])),
+        // The source's Show the cursor, turned off (1).
+        cursor: 1,
+        fields: ModelRc::new(VecModel::from(vec![spotlight, look])),
         ..Default::default()
     };
     g_sources(&w, vec![halo]);
     w.global::<Studio>().set_properties_tab(1);
-    w.window().set_size(slint::LogicalSize::new(380.0, 560.0));
+    w.window().set_size(slint::LogicalSize::new(380.0, 640.0));
     w.show().expect("show");
     save(w.window(), dir, name);
     w.hide().expect("hide");

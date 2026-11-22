@@ -126,6 +126,39 @@ fn sequence(streams: &[StreamDescriptor]) -> Vec<(StreamIndex, EncodedPacket)> {
     out
 }
 
+/// The file `factory` writes for `config`'s streams with the synthetic sequence, with
+/// its patches applied: for interop tests that read it with another tool.
+pub fn mux_file(factory: &dyn MuxerFactory, config: &MuxerConfig) -> Result<Vec<u8>, String> {
+    let mut chunks: Vec<MuxChunk> = Vec::new();
+    let mut muxer = factory.create(config).map_err(|e| format!("create: {e}"))?;
+    muxer
+        .begin(&mut chunks)
+        .map_err(|e| format!("begin: {e}"))?;
+    for (stream, packet) in sequence(&config.streams) {
+        muxer
+            .write(stream, &packet, &mut chunks)
+            .map_err(|e| format!("write: {e}"))?;
+    }
+    muxer
+        .finish(&mut chunks)
+        .map_err(|e| format!("finish: {e}"))?;
+    let mut file: Vec<u8> = chunks
+        .iter()
+        .filter(|c| !matches!(c.kind, ChunkKind::Patch { .. }))
+        .flat_map(|c| c.data.iter().copied())
+        .collect();
+    for c in &chunks {
+        if let ChunkKind::Patch { offset } = c.kind {
+            let at = usize::try_from(offset).map_err(|e| e.to_string())?;
+            let end = at + c.data.len();
+            file.get_mut(at..end)
+                .ok_or("patch past the end")?
+                .copy_from_slice(&c.data);
+        }
+    }
+    Ok(file)
+}
+
 /// Runs the muxer suite against `factory`.
 pub fn muxer(factory: &dyn MuxerFactory) -> Report {
     let mut report = Report::default();
@@ -167,8 +200,44 @@ pub fn muxer(factory: &dyn MuxerFactory) -> Report {
         mux_sequence(&mut report, name, factory, &config, &caps);
         non_monotonic_case(&mut report, name, factory, &config);
         unsupported_codec_case(&mut report, name, factory, container, &codecs);
+        several_audio_case(&mut report, name, factory, container, &streams, &caps);
     }
     report
+}
+
+/// A muxer declaring [`caps::AUDIO_STREAMS`] above 1 writes that many named AAC
+/// streams, only the first default, beside the video (ADR-0170 decision 6).
+fn several_audio_case(
+    report: &mut Report,
+    name: &str,
+    factory: &dyn MuxerFactory,
+    container: ContainerId,
+    streams: &[StreamDescriptor],
+    caps: &CapabilitySet,
+) {
+    let tracks = caps::audio_streams(caps);
+    if tracks < 2 || !streams.iter().any(|s| s.codec == CodecId::Aac) {
+        return;
+    }
+    let mut several: Vec<StreamDescriptor> = streams
+        .iter()
+        .filter(|s| s.codec != CodecId::Aac)
+        .cloned()
+        .collect();
+    several.extend((0..tracks).map(|n| {
+        aac_stream()
+            .with_name(format!("bus {}", n + 1))
+            .with_default(n == 0)
+    }));
+    let config =
+        MuxerConfig::new(container, several).with_fragment_duration(Duration::from_millis(500));
+    mux_sequence(
+        report,
+        &format!("{name}/audio-streams-{tracks}"),
+        factory,
+        &config,
+        caps,
+    );
 }
 
 fn mux_sequence(

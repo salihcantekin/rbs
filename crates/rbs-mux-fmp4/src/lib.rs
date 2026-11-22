@@ -110,7 +110,9 @@ impl AdapterFactory for Fmp4MuxerFactory {
                 ]),
             )
             .with(caps::LIVE, CapabilityValue::Flag(true))
-            .with(caps::PATCHES, CapabilityValue::Flag(true)))
+            .with(caps::PATCHES, CapabilityValue::Flag(true))
+            // ADR-0170: a recording writes up to six buses as audio tracks.
+            .with(caps::AUDIO_STREAMS, CapabilityValue::Int(6)))
     }
 }
 

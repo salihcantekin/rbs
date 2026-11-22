@@ -3128,7 +3128,10 @@ component SchemaFieldView inherits VerticalLayout {
             accessible-role: none;
         }
         // A switch is the label line itself (a setting is a Toggle, ui-review item 18).
+        // It keeps its own width, so the (i) sits right after its words as after any
+        // other field's name (ADR-0094 C2).
         if data.kind == 5: Toggle {
+            horizontal-stretch: 0;
             label: @tr("{} of {}", data.label, root.owner);
             text: data.label;
             checked: data.choice == 1;
@@ -3467,6 +3470,22 @@ component FiltersFields inherits VerticalLayout {
                     filter: f;
                     data: field;
                     index: j;
+                }
+                // Pointer halo shows the capture's own Show the cursor, so the laser can
+                // stand alone (owner 2026-11-22): the same setting, not a filter value.
+                if f.cursor > 0: SchemaFieldView {
+                    owner: f.name;
+                    data: {
+                        label: @tr("Show the cursor"),
+                        help: @tr("The source's own setting: off hides the system cursor in this capture."),
+                        kind: 5,
+                        choice: f.cursor - 1,
+                        changed: f.cursor == 1,
+                        default-text: @tr("On"),
+                    };
+                    index: 0;
+                    set-option(_, on) => { Studio.set-source-cursor(data.id, on == 1); }
+                    reset-field(_) => { Studio.set-source-cursor(data.id, true); }
                 }
                 HorizontalLayout {
                     alignment: start;

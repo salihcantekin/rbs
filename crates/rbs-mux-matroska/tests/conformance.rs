@@ -15,5 +15,7 @@ fn passes_the_muxer_suite() {
         "matroska/live-stream-structure",
         "matroska/non-monotonic-dts",
         "matroska/undeclared-codec",
+        "matroska/audio-streams-6/chunk-order",
+        "matroska/audio-streams-6/live-stream-structure",
     ]);
 }

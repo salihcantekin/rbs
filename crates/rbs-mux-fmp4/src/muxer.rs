@@ -376,12 +376,35 @@ fn pcm_bits(extradata: &[u8]) -> Result<u16, CreateError> {
     }
 }
 
+/// What a `trak` says about its track to players (ADR-0170 decision 6).
+#[derive(Clone, Copy)]
+struct Label<'a> {
+    /// Track name, in `hdlr` and `udta`/`name`; `None` keeps `hdlr` "RBS".
+    name: Option<&'a str>,
+    /// `tkhd` enabled flag.
+    enabled: bool,
+    /// `tkhd` alternate_group: 1 for every audio track of a file with several.
+    group: u16,
+}
+
+impl<'a> Label<'a> {
+    fn of(stream: &'a StreamDescriptor, several_audio: bool) -> Self {
+        let audio = matches!(stream.params, StreamParams::Audio { .. });
+        Self {
+            name: stream.name.as_deref(),
+            enabled: stream.default,
+            group: u16::from(audio && several_audio),
+        }
+    }
+}
+
 /// Writes one `trak` and returns the file-relative offset of its `tkhd` duration
 /// within `out` (the caller adds where `out` itself is placed).
 fn trak(
     out: &mut Vec<u8>,
     container: ContainerId,
     track: &Track,
+    label: Label<'_>,
     entry: &dyn Fn(&mut Vec<u8>),
     width: u16,
     height: u16,
@@ -389,7 +412,8 @@ fn trak(
     let qt = container == ContainerId::Mov;
     let video = track.kind.is_video();
     let trak = boxes::open(out, b"trak");
-    let tkhd = boxes::open_full(out, b"tkhd", 0, 3); // enabled, in movie
+    // In movie (2), and enabled (1) unless a player should not play it by default.
+    let tkhd = boxes::open_full(out, b"tkhd", 0, if label.enabled { 3 } else { 2 });
     boxes::zeros(out, 8); // creation, modification
     boxes::u32(out, track.id);
     boxes::u32(out, 0); // reserved
@@ -397,7 +421,7 @@ fn trak(
     boxes::u32(out, 0); // duration, patched at finish
     boxes::zeros(out, 8); // reserved
     boxes::u16(out, 0); // layer
-    boxes::u16(out, 0); // alternate_group
+    boxes::u16(out, label.group); // alternate_group
     boxes::u16(out, if video { 0 } else { 0x0100 }); // volume
     boxes::u16(out, 0);
     boxes::matrix(out);
@@ -425,7 +449,15 @@ fn trak(
     out.extend_from_slice(if qt { b"mhlr" } else { &[0; 4] });
     out.extend_from_slice(if video { b"vide" } else { b"soun" });
     boxes::zeros(out, 12);
-    out.extend_from_slice(if qt { b"\x03RBS" } else { b"RBS\0" });
+    let name = label.name.unwrap_or("RBS").as_bytes();
+    if qt {
+        let name = &name[..name.len().min(255)];
+        out.push(name.len() as u8); // at most 255
+        out.extend_from_slice(name);
+    } else {
+        out.extend_from_slice(name);
+        out.push(0);
+    }
     boxes::close(out, hdlr);
 
     let minf = boxes::open(out, b"minf");
@@ -465,8 +497,50 @@ fn trak(
     boxes::close(out, stbl);
     boxes::close(out, minf);
     boxes::close(out, mdia);
+    // Editors that skip `udta` read the name from `hdlr`.
+    if let Some(name) = label.name {
+        let udta = boxes::open(out, b"udta");
+        let name_box = boxes::open(out, b"name");
+        out.extend_from_slice(name.as_bytes());
+        boxes::close(out, name_box);
+        boxes::close(out, udta);
+    }
     boxes::close(out, trak);
     duration_at
+}
+
+/// More than one audio stream: their tracks share an alternate group.
+fn several_audio(streams: &[StreamDescriptor]) -> bool {
+    streams
+        .iter()
+        .filter(|s| matches!(s.params, StreamParams::Audio { .. }))
+        .count()
+        > 1
+}
+
+/// The `ftyp` box: QuickTime's brand for MOV, ISO brands (and `av01` with AV1)
+/// otherwise.
+fn ftyp(header: &mut Vec<u8>, qt: bool, streams: &[StreamDescriptor]) {
+    let ftyp = boxes::open(header, b"ftyp");
+    if qt {
+        // QuickTime: major and only compatible brand `qt  `, minor version as
+        // QuickTime writes it (a BCD date, 2005-03).
+        header.extend_from_slice(b"qt  ");
+        boxes::u32(header, 0x2005_0300);
+        header.extend_from_slice(b"qt  ");
+    } else {
+        header.extend_from_slice(b"iso6");
+        boxes::u32(header, 0);
+        // Not `cmfc`: a CMAF track file has one track, and these fragments carry all.
+        let av1 = streams.iter().any(|s| s.codec == CodecId::Av1);
+        for brand in [b"iso6", b"isom", b"mp41"] {
+            header.extend_from_slice(brand);
+        }
+        if av1 {
+            header.extend_from_slice(b"av01");
+        }
+    }
+    boxes::close(header, ftyp);
 }
 
 impl Fmp4Muxer {
@@ -479,29 +553,11 @@ impl Fmp4Muxer {
         // Names this file in error text.
         let name = if qt { "MOV" } else { "fragmented MP4" };
         let mut header = Vec::new();
-        let ftyp = boxes::open(&mut header, b"ftyp");
-        if qt {
-            // QuickTime: major and only compatible brand `qt  `, minor version as
-            // QuickTime writes it (a BCD date, 2005-03).
-            header.extend_from_slice(b"qt  ");
-            boxes::u32(&mut header, 0x2005_0300);
-            header.extend_from_slice(b"qt  ");
-        } else {
-            header.extend_from_slice(b"iso6");
-            boxes::u32(&mut header, 0);
-            // Not `cmfc`: a CMAF track file has one track, and these fragments carry all.
-            let av1 = config.streams.iter().any(|s| s.codec == CodecId::Av1);
-            for brand in [b"iso6", b"isom", b"mp41"] {
-                header.extend_from_slice(brand);
-            }
-            if av1 {
-                header.extend_from_slice(b"av01");
-            }
-        }
-        boxes::close(&mut header, ftyp);
+        ftyp(&mut header, qt, &config.streams);
 
         let mut tracks = Vec::with_capacity(config.streams.len());
         let mut traks = Vec::new();
+        let several_audio = several_audio(&config.streams);
         for (i, stream) in config.streams.iter().enumerate() {
             let id = i as u32 + 1;
             match (stream.codec, stream.params) {
@@ -575,6 +631,7 @@ impl Fmp4Muxer {
                         &mut traks,
                         container,
                         &track,
+                        Label::of(stream, several_audio),
                         &|out| {
                             if hevc {
                                 hvc1_entry(out, width, height, &config);
@@ -641,6 +698,7 @@ impl Fmp4Muxer {
                         &mut traks,
                         container,
                         &track,
+                        Label::of(stream, several_audio),
                         &|out| visual_entry(out, b"av01", b"av1C", width, height, &config_record),
                         width,
                         height,
@@ -689,6 +747,7 @@ impl Fmp4Muxer {
                         &mut traks,
                         container,
                         &track,
+                        Label::of(stream, several_audio),
                         &|out| mp4a_entry(out, channels, rate, &asc, qt.then_some(frame_size)),
                         0,
                         0,
@@ -735,6 +794,7 @@ impl Fmp4Muxer {
                         &mut traks,
                         container,
                         &track,
+                        Label::of(stream, several_audio),
                         &|out| lpcm_entry(out, channels, rate, bits),
                         0,
                         0,

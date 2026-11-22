@@ -447,6 +447,12 @@ impl FilterUi {
                         Some((_, action)) if pointer[i] => *action,
                         _ => 0,
                     },
+                    // Pointer halo shows the capture's own cursor setting (owner
+                    // 2026-11-22): 1 off, 2 on, 0 no row.
+                    cursor: match row.cursor {
+                        Some(on) if f.type_id == rbs_filters::POINTER_HALO => 1 + i32::from(on),
+                        _ => 0,
+                    },
                     fields: {
                         let model = self.fields.0.entry(id).or_default();
                         super::set_rows(model, fields);

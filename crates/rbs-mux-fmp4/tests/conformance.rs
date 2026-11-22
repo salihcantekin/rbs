@@ -15,5 +15,8 @@ fn passes_the_muxer_suite() {
         "mp4.fragmented/live-stream-structure",
         "mp4.fragmented/non-monotonic-dts",
         "mp4.fragmented/undeclared-codec",
+        "mp4.fragmented/audio-streams-6/chunk-order",
+        "mp4.fragmented/audio-streams-6/live-stream-structure",
+        "mov/audio-streams-6/chunk-order",
     ]);
 }

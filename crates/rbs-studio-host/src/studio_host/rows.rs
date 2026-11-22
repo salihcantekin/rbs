@@ -61,6 +61,10 @@ pub struct SourceRow {
     /// A colour source draws its fill. False leaves the inside empty. True for every
     /// other kind and when the setting is absent.
     pub filled: bool,
+    /// Draw the cursor: `Some` for a screen or window capture (the stored `cursor`
+    /// setting, on when absent), `None` for every other kind. Pointer halo shows it
+    /// (ADR-0165, owner 2026-11-22).
+    pub cursor: Option<bool>,
     /// A text source's stored settings (ADR-0129 decision 13: the Text tab shows
     /// them); `None` for every other kind.
     pub text: Option<Settings>,
@@ -237,6 +241,7 @@ impl PartialEq for SourceRow {
             && self.glide == other.glide
             && self.fill == other.fill
             && self.filled == other.filled
+            && self.cursor == other.cursor
             && self.text == other.text
             && self.browser == other.browser
             && self.slideshow == other.slideshow
