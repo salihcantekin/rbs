@@ -596,6 +596,7 @@ impl Host {
         // An audio-only file has no picture size.
         out.size = if r.video.is_none() { None } else { r.size };
         out.audio_bus = Some(r.audio_bus.clone());
+        out.more_tracks = r.more_tracks.clone();
         out
     }
 
@@ -1325,6 +1326,7 @@ impl Host {
             editor_project: p.editor_project,
             markers: p.markers,
             audio_bus: p.audio_tracks.first().cloned().unwrap_or_default(),
+            more_tracks: p.audio_tracks.get(1..).unwrap_or_default().to_vec(),
         })
     }
 

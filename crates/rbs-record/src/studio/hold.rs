@@ -368,8 +368,10 @@ impl Studio {
                     if let Some(chain) = self.chains.audio[slot].as_ref()
                         && chain.hold.is_some()
                     {
-                        self.graph
-                            .connect(bound.node, "main", chain.encoder.node, "hold")?;
+                        for encoder in chain.encoders() {
+                            self.graph
+                                .connect(bound.node, "main", encoder.node, "hold")?;
+                        }
                     }
                 }
                 run.mixer = Some(HoldMix {

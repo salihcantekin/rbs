@@ -91,3 +91,106 @@ fn an_output_on_a_bus_hears_only_what_is_sent_to_it() {
     let (_, errors) = studio.shutdown();
     assert!(errors.is_empty(), "{errors:?}");
 }
+
+#[test]
+fn a_recording_writes_one_named_track_per_bus_on_the_same_packet_grid() {
+    let Some(gpu) = gpu() else { return };
+    let r = rig();
+    let (mut col, canvas) = scene();
+    col.add_bus(canvas, "Music").unwrap();
+    let (engine, clock) = engine_at_start();
+    let mut studio = Studio::start(
+        engine,
+        gpu,
+        &col,
+        &r.adapters.sources,
+        &StudioSettings::new(canvas),
+    )
+    .unwrap();
+    let tracks = |names: &[&str]| {
+        let mut out = audio_only("mem://tracks", None);
+        out.more_tracks = names.iter().map(|n| (*n).to_owned()).collect();
+        out.pausable = true;
+        out
+    };
+
+    // Refused before anything opens: a bus named twice, a missing bus, and more
+    // tracks than a packet transport carries.
+    assert!(matches!(
+        studio.start_output(&r.adapters, &tracks(&["Music", "Music"])),
+        Err(RecordError::RepeatedTrack(n)) if n == "Music"
+    ));
+    assert!(matches!(
+        studio.start_output(&r.adapters, &tracks(&["Nope"])),
+        Err(RecordError::UnknownBus(n)) if n == "Nope"
+    ));
+    let mut packets = OutputSettings::packets("stream://live");
+    packets.video = None;
+    packets.more_tracks = vec!["Music".to_owned()];
+    assert!(matches!(
+        studio.start_output(&r.adapters, &packets),
+        Err(RecordError::TracksUnsupported { allowed: 1 })
+    ));
+    assert!(studio.outputs().is_empty());
+
+    let id = studio
+        .start_output(&r.adapters, &tracks(&["Music"]))
+        .unwrap();
+    let report = studio.output(id).unwrap();
+    assert!(!report.audio_shared);
+    let buses: Vec<&str> = report.tracks.iter().map(|t| t.bus.as_str()).collect();
+    assert_eq!(buses, ["main", "Music"]);
+    let streams = r.log.streams.lock().unwrap().clone();
+    let named: Vec<(Option<&str>, bool)> = streams
+        .iter()
+        .map(|s| (s.name.as_deref(), s.default))
+        .collect();
+    assert_eq!(named, [(Some("main"), true), (Some("Music"), false)]);
+
+    let blocks = |s: &Studio| s.engine().worker_stats(AUDIO).unwrap().ticks();
+    let t = blocks(&studio);
+    assert!(run_until(&mut studio, &clock, |s| blocks(s) >= t + 20
+        && r.log.count(1) >= 5));
+    let progress = studio.output_progress(id).unwrap();
+    assert_eq!(progress.tracks.len(), 2);
+    assert_eq!(progress.tracks[1].bus, "Music");
+
+    // Paused and resumed: both tracks' encoders follow one window, cut on the same
+    // block.
+    studio.pause_output(id).unwrap();
+    let t = blocks(&studio);
+    assert!(run_until(&mut studio, &clock, |s| blocks(s) >= t + 10));
+    studio.resume_output(id).unwrap();
+    let (before, t) = (r.log.count(1), blocks(&studio));
+    assert!(run_until(&mut studio, &clock, |s| blocks(s) >= t + 20
+        && r.log.count(1) >= before + 5));
+    assert!(!studio.output_progress(id).unwrap().paused);
+
+    // Both tracks' encoders cut the same blocks: the same packet times, in order.
+    let pts = |stream: u16| -> Vec<_> {
+        let all = r.log.packets.lock().unwrap();
+        all.iter()
+            .filter(|p| p.stream == stream)
+            .map(|p| p.pts)
+            .collect()
+    };
+    let (one, two) = (pts(0), pts(1));
+    let n = one.len().min(two.len());
+    assert!(
+        n >= 5 && one.len().abs_diff(two.len()) <= 1,
+        "{} {}",
+        one.len(),
+        two.len()
+    );
+    assert_eq!(one[..n], two[..n]);
+
+    // A one-track output of `main` never joins the multi-track chain.
+    let main = studio
+        .start_output(&r.adapters, &audio_only("mem://main", None))
+        .unwrap();
+    assert!(!studio.output(main).unwrap().audio_shared);
+    assert!(studio.output(main).unwrap().tracks.is_empty());
+
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+}

@@ -11,7 +11,7 @@ use rbs_scene::model::{
     BusId, CanvasId, MAIN_BUS_NAME, MAX_BUSES, MasterAudio, Sends, SourceId, SourceMonitor,
 };
 
-use super::MixStrip;
+use super::{MixStrip, OutputSettings};
 use crate::recording::RecordError;
 
 // Every bus but `main` has a mixer pin of its own.
@@ -159,8 +159,27 @@ impl super::Studio {
         let chains = &self.chains.audio;
         self.buses
             .refresh(collection, self.settings.canvas, |slot| {
-                chains.iter().flatten().any(|c| c.bus == Some(slot))
+                chains.iter().flatten().any(|c| c.reads(slot))
             });
+    }
+
+    /// The bus slots of `out`'s tracks, track 1 first (ADR-0170 decision 3). A name
+    /// the main canvas has no bus for is `UnknownBus`, a bus named twice
+    /// `RepeatedTrack`; neither ever falls back to `main`.
+    pub(super) fn track_slots(
+        &self,
+        out: &OutputSettings,
+    ) -> Result<Vec<Option<usize>>, RecordError> {
+        let mut slots = Vec::with_capacity(1 + out.more_tracks.len());
+        slots.push(self.buses.slot_of(out.audio_bus.as_deref())?);
+        for name in &out.more_tracks {
+            let slot = self.buses.slot_of(Some(name))?;
+            if slots.contains(&slot) {
+                return Err(RecordError::RepeatedTrack(name.clone()));
+            }
+            slots.push(slot);
+        }
+        Ok(slots)
     }
 
     /// The meter of the bus called `name` on the main canvas (not `main`: that is

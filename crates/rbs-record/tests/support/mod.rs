@@ -250,7 +250,9 @@ impl AdapterFactory for LogMuxerFactory {
         "log muxer"
     }
     fn probe(&self) -> Result<CapabilitySet, ProbeError> {
-        Ok(CapabilitySet::new().with(mux_caps::CONTAINER, set(&["matroska"])))
+        Ok(CapabilitySet::new()
+            .with(mux_caps::CONTAINER, set(&["matroska"]))
+            .with(mux_caps::AUDIO_STREAMS, CapabilityValue::Int(6)))
     }
 }
 
