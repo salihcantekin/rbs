@@ -137,6 +137,18 @@ pub(crate) fn app_bundle(exe: &str) -> Option<(&str, &str)> {
     None
 }
 
+/// Whether bundle id `sub` belongs to the application `parent`: `parent`, a dot,
+/// then more (a browser's installed web app is `<browser id>.app.<id>`, and plays
+/// its sound through the browser).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn belongs_to(sub: &str, parent: &str) -> bool {
+    !parent.is_empty()
+        && sub
+            .strip_prefix(parent)
+            .and_then(|rest| rest.strip_prefix('.'))
+            .is_some_and(|rest| !rest.is_empty())
+}
+
 /// Endpoint id prefixes.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) mod ids {
@@ -257,6 +269,17 @@ mod tests {
             Some(("/Applications/Discord.app", "Discord"))
         );
         assert_eq!(app_bundle("/usr/bin/afplay"), None);
+        assert!(belongs_to(
+            "com.example.Browser.app.abc",
+            "com.example.Browser"
+        ));
+        assert!(!belongs_to(
+            "com.example.BrowserBeta",
+            "com.example.Browser"
+        ));
+        assert!(!belongs_to("com.example.Browser", "com.example.Browser"));
+        assert!(!belongs_to("com.example.Browser.", "com.example.Browser"));
+        assert!(!belongs_to("anything", ""));
         assert_eq!(app_bundle("/tmp/.app/x"), None);
     }
 

@@ -67,6 +67,8 @@ use rbs_core::timing::SampleRate;
 use crate::packets::{Buffer, Cycle, Packets};
 use crate::{ADAPTER_ID, Owned, PROCESS_TAP_VERSION, ids, layout};
 
+mod apps;
+
 const SYSTEM: AudioObjectID = kAudioObjectSystemObject as AudioObjectID;
 
 /// UID prefix of the private aggregate devices the adapter creates. They are listed
@@ -272,52 +274,6 @@ fn process_name(pid: i32) -> Option<String> {
     let len = unsafe { libc::proc_name(pid, buffer.as_mut_ptr().cast(), buffer.len() as u32) };
     let len = usize::try_from(len).ok().filter(|l| *l > 0)?;
     Some(String::from_utf8_lossy(&buffer[..len]).into_owned())
-}
-
-fn process_path(pid: i32) -> Option<String> {
-    let mut buffer = vec![0_u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
-    // SAFETY: `buffer` is writable for its whole length, which is passed as the size.
-    let len = unsafe { libc::proc_pidpath(pid, buffer.as_mut_ptr().cast(), buffer.len() as u32) };
-    let len = usize::try_from(len).ok().filter(|l| *l > 0)?;
-    buffer.truncate(len);
-    String::from_utf8(buffer).ok()
-}
-
-/// The application a process belongs to (`crate::app_bundle`): its bundle path and
-/// name, or `None` for a process outside any bundle.
-fn application_of(pid: i32) -> Option<(String, String)> {
-    let path = process_path(pid)?;
-    let (bundle, name) = crate::app_bundle(&path)?;
-    Some((bundle.to_owned(), name.to_owned()))
-}
-
-/// The process objects of `pid`'s application: `process` first, then every other
-/// process of the same bundle the HAL knows (helpers that play the sound).
-fn application_processes(pid: i32, process: AudioObjectID) -> Vec<AudioObjectID> {
-    let mut objects = vec![process];
-    let Some((bundle, _)) = application_of(pid) else {
-        return objects;
-    };
-    let own = std::process::id() as i32;
-    for other in get_ids(
-        SYSTEM,
-        kAudioHardwarePropertyProcessObjectList,
-        kAudioObjectPropertyScopeGlobal,
-    ) {
-        let same = other != process
-            && get::<i32>(
-                other,
-                kAudioProcessPropertyPID,
-                kAudioObjectPropertyScopeGlobal,
-            )
-            .filter(|p| *p > 0 && *p != own)
-            .and_then(application_of)
-            .is_some_and(|(b, _)| b == bundle);
-        if same {
-            objects.push(other);
-        }
-    }
-    objects
 }
 
 /// Whether every input stream of `device` hands IO procs 32-bit native float, the
@@ -580,6 +536,7 @@ impl CoreAudioBackend {
         let mut pids: Vec<i32> = Vec::new();
         // One endpoint per application: its helpers play under its name.
         let mut bundles: Vec<String> = Vec::new();
+        let mut families: Vec<String> = Vec::new();
         let mut found = Vec::new();
         for process in get_ids(
             SYSTEM,
@@ -603,18 +560,28 @@ impl CoreAudioBackend {
                 continue;
             }
             pids.push(pid);
-            let application = application_of(pid);
-            if let Some((bundle, _)) = &application {
-                if bundles.contains(bundle) {
+            let application = apps::application_of(pid);
+            if let Some(app) = &application {
+                if bundles.contains(&app.bundle) {
                     continue;
                 }
-                bundles.push(bundle.clone());
+                bundles.push(app.bundle.clone());
+                families.extend(apps::bundle_id(&app.bundle));
             }
             let name = application
-                .map(|(_, name)| name)
+                .map(|app| app.name)
                 .or_else(|| process_name(pid))
                 .or_else(|| get_string(process, kAudioProcessPropertyBundleID))
                 .unwrap_or_else(|| format!("Process {pid}"));
+            found.push(AudioEndpoint::new(
+                ids::endpoint(EndpointKind::Application, &pid.to_string()),
+                EndpointKind::Application,
+                name,
+                format,
+            ));
+        }
+        // Web apps a playing browser runs: their sound is the browser's.
+        for (pid, name) in apps::family_members(&families, &bundles) {
             found.push(AudioEndpoint::new(
                 ids::endpoint(EndpointKind::Application, &pid.to_string()),
                 EndpointKind::Application,
@@ -740,7 +707,9 @@ impl AudioBackend for CoreAudioBackend {
             }
             _ => {
                 let pid: i32 = native.parse().map_err(|_| AudioIoError::EndpointNotFound)?;
-                process_object(pid).ok_or(AudioIoError::EndpointNotFound)?;
+                if apps::application_processes(pid).is_empty() {
+                    return Err(AudioIoError::EndpointNotFound);
+                }
                 (Target::Application(pid), Self::application_format())
             }
         };
@@ -1300,14 +1269,14 @@ impl CoreAudioStream {
                 (aggregate, device, None, Buffers::Tap(index))
             }
             Target::Application(pid) => {
-                let process = process_object(*pid).ok_or(AudioIoError::EndpointLost)?;
+                let processes = apps::application_processes(*pid);
+                let process = *processes.first().ok_or(AudioIoError::EndpointLost)?;
                 let output = default_device(kAudioHardwarePropertyDefaultOutputDevice)
                     .ok_or(AudioIoError::EndpointLost)?;
                 let output_uid = uid(output).ok_or(AudioIoError::EndpointLost)?;
                 if nominal_rate(output) != Some(rate) {
                     return Err(AudioIoError::FormatChanged);
                 }
-                let processes = application_processes(*pid, process);
                 let (tap, tap_uid) = create_tap(None, &processes, None)?;
                 session.tap = Some((tap, Owned::new()));
                 let aggregate = create_aggregate(&output_uid, &tap_uid)?;

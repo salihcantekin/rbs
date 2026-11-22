@@ -24,7 +24,7 @@ objc2-av-foundation = { version = "0.3.2", default-features = false, features = 
 objc2-core-audio = { version = "0.3.2", default-features = false, features = ["std", "AudioHardware", "HostTime", "block2", "dispatch2", "objc2", "objc2-core-audio-types", "objc2-foundation"] }
 objc2-core-audio-types = { version = "0.3.2", default-features = false, features = ["std"] }
 objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFDictionary", "CFString"] }
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSObject", "NSProcessInfo", "NSString", "NSUUID", "NSValue"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSBundle", "NSDictionary", "NSObject", "NSProcessInfo", "NSString", "NSUUID", "NSValue"] }
 
 [dev-dependencies]
 rbs-audio-io = { path = "../rbs-audio-io", features = ["conformance"] }
