@@ -27,6 +27,7 @@ mod input;
 pub mod jpeg;
 mod layers;
 mod mapping;
+mod media_settings;
 pub mod permissions;
 mod registry;
 pub mod scroll;

@@ -54,7 +54,7 @@ use rbs_sources::scroll::ScrollRuns;
 use rbs_sources::text::TextKind;
 use rbs_sources::text_file::{FileProbe, RealFileProbe};
 use rbs_sources::text_live::{Language, LiveInputs, RunTime};
-use rbs_sources::text_worker::{ProblemSlot, SystemTextClock, TextClock, TextProblem, TextWorker};
+use rbs_sources::text_worker::{ProblemSlot, TextClock, TextProblem, TextWorker};
 use rbs_sources::{
     BrowserBudget, BrowserClaim, BrowserControlSidecar, BrowserTree, InstanceContext, ShowClass,
     SourceInstance, SourceTypes, filter_values_lenient, glide_layers, glide_max_duration,
@@ -73,10 +73,12 @@ use crate::recording::{
 };
 use crate::select::{self, Chosen};
 
+mod adopt;
 mod browser_page;
 mod estimate_plan;
 mod health;
 mod vcam;
+use adopt::{adopt_slideshow, render_instance, text_worker};
 pub use estimate_plan::{PlannedOutput, StartPlanRequest};
 use vcam::{CameraDownload, CameraRun, download_share};
 pub use vcam::{VirtualCameraSettings, VirtualCameraState};
@@ -392,8 +394,9 @@ pub(crate) enum Watch {
     Audio(Arc<InputStats>, Arc<LevelMeter>),
     /// Media-file counters (ADR-0108). The picture size is known after a frame.
     Media(Arc<MediaStats>),
-    /// Browser page size from settings (ADR-0109). The node lives in the render partition.
-    Browser {
+    /// A size from settings: a browser page (ADR-0109) or a slide show (ADR-0171).
+    /// Render partition.
+    Sized {
         size: (u32, u32),
     },
     /// Text node counters (ADR-0129). Render partition.
@@ -1374,6 +1377,8 @@ pub struct Studio {
     media_controls: BTreeMap<SourceId, rbs_nodes::MediaControl>,
     /// Draws text sources (ADR-0129); made on the first text instance.
     text: Option<TextWorker>,
+    /// Feeds slide shows (ADR-0171); its thread runs only while one is warm.
+    slideshows: rbs_sources::slideshow::SlideshowHub,
     /// File access and wall clock of the text worker (real unless a host or test
     /// sets them before the first text source).
     text_io: (Arc<dyn FileProbe>, Option<Arc<dyn TextClock>>),
@@ -1405,28 +1410,6 @@ pub enum TextDue {
     Late,
     /// Wait for the next service.
     Wait,
-}
-
-/// The text worker, made on first use with the registered renderers.
-fn text_worker<'a>(
-    text: &'a mut Option<TextWorker>,
-    io: &(Arc<dyn FileProbe>, Option<Arc<dyn TextClock>>),
-    clock: Arc<dyn rbs_core::time::Clock>,
-    sources: &SourceTypes,
-    live: &LiveInputs,
-) -> &'a mut TextWorker {
-    text.get_or_insert_with(|| {
-        let mut worker = TextWorker::new(
-            sources.text_renderers(),
-            Arc::clone(&io.0),
-            clock,
-            io.1.clone()
-                .or_else(|| sources.text_clock())
-                .unwrap_or_else(|| Arc::new(SystemTextClock)),
-        );
-        worker.set_live(live);
-        worker
-    })
 }
 
 /// What `text.timer` does to a countdown or stopwatch (ADR-0129 decision 11).
@@ -1626,8 +1609,7 @@ impl Studio {
             .get(&(canvas_id, Role::Program))
             .cloned()
             .ok_or(RecordError::NotBound("program compositor"))?;
-        let mut essential = BTreeMap::new();
-        essential.insert(compositor_id, "compositor");
+        let mut essential = BTreeMap::from([(compositor_id, "compositor")]);
 
         // Partitions: no worker until a schedule with nodes is applied (ADR-0013).
         let frames = Cadence::frames(Timestamp::ZERO, fps);
@@ -1839,6 +1821,7 @@ impl Studio {
             browser_controls: BTreeMap::new(),
             media_controls: BTreeMap::new(),
             text: None,
+            slideshows: rbs_sources::slideshow::SlideshowHub::new(),
             text_io: (Arc::new(RealFileProbe), None),
             text_problems: BTreeMap::new(),
             text_watched: BTreeSet::new(),
@@ -2762,6 +2745,7 @@ impl Studio {
             self.entries = kept;
             for e in &old {
                 self.media_controls.remove(&e.source);
+                self.slideshows.detach(e.source);
             }
             gone = old;
             // Levels are written before the apply, so a source that wakes in this
@@ -2860,6 +2844,7 @@ impl Studio {
                 ) {
                     let _ = rbs_sources::apply_browser_live(control, &s.settings);
                 }
+                adopt::slideshow_live(&mut self.slideshows, collection, *source);
             }
             if let Some(worker) = self.text.as_mut() {
                 for (source, _) in &report.changed_sources {
@@ -3088,14 +3073,10 @@ impl Studio {
                     );
                     worker.attach(entry.source, t.frames, t.settings);
                     self.text_attached.insert(entry.source);
-                    entry.instance = Some(Instance {
-                        partition: RENDER,
-                        gpu: true,
-                        watch: Watch::Text(t.stats),
-                        offset: None,
-                        sent_offset_ns: 0,
-                        sound: SoundHalf::None,
-                    });
+                    entry.instance = Some(render_instance(Watch::Text(t.stats)));
+                }
+                SourceInstance::Slideshow(s) => {
+                    adopt_slideshow(&mut self.engine, &mut self.slideshows, entry, *s)?;
                 }
                 SourceInstance::Browser(b) => {
                     // The picture node in the render partition (ADR-0109); size is
@@ -3109,7 +3090,7 @@ impl Studio {
                     let instance = entry.instance.insert(Instance {
                         partition: RENDER,
                         gpu: true,
-                        watch: Watch::Browser { size },
+                        watch: Watch::Sized { size },
                         offset: None,
                         sent_offset_ns: 0,
                         sound: SoundHalf::None,
@@ -4039,7 +4020,7 @@ impl Studio {
         match &entry.instance.as_ref()?.watch {
             Watch::Video(stats) => stats.picture_size(),
             Watch::Text(stats) => stats.picture_size(),
-            Watch::Browser { size } => Some(*size),
+            Watch::Sized { size } => Some(*size),
             Watch::Media(_) | Watch::Audio(_, _) => None,
         }
     }
@@ -4169,6 +4150,7 @@ impl Studio {
             control.service();
         }
         self.service_text();
+        self.slideshows.service();
         let mut serviced = self.engine.service();
         let mut extra: Option<Duration> = None;
         // A live text on air wakes the control loop on its whole second.
@@ -5285,7 +5267,7 @@ impl Studio {
                     resyncs: 0,
                     errors: stats.gpu_errors.load(Ordering::Relaxed),
                 },
-                Watch::Browser { .. } => SourceProgress {
+                Watch::Sized { .. } => SourceProgress {
                     name: e.state.name.clone(),
                     frames: 0,
                     peak_db: None,
