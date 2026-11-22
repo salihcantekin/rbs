@@ -25,6 +25,7 @@ mod config;
 mod context_menu;
 mod entry;
 mod file_calls;
+mod filter_calls;
 mod icons;
 mod interact;
 mod library_transfer;
@@ -4988,51 +4989,7 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
         app.show_source_properties(source, tab);
         app.bump_look_reveal();
     });
-    on!(on_select_filter, |app, source: i32, filter: i32| {
-        app.studio.select_filter(source, filter);
-    });
-    on!(on_remove_filter, |app, filter: i32| {
-        app.studio.remove_filter(filter);
-    });
-    on!(on_move_filter, |app, filter: i32, index: i32| {
-        app.studio.move_filter(filter, index);
-    });
-    on!(on_set_filter_enabled, |app, filter: i32, on: bool| {
-        app.studio.set_filter_enabled(filter, on);
-    });
-    on!(
-        on_preview_filter,
-        |app, filter: i32, field: i32, position: f32| {
-            app.studio.preview_filter(filter, field, position);
-        }
-    );
-    on!(
-        on_set_filter_source,
-        |app, filter: i32, field: i32, option: i32| {
-            app.studio.set_filter_source(filter, field, option);
-        }
-    );
-    on!(
-        on_set_filter_option,
-        |app, filter: i32, field: i32, option: i32| {
-            app.studio.set_filter_option(filter, field, option);
-        }
-    );
-    on!(on_reset_filter_field, |app, filter: i32, field: i32| {
-        app.studio.reset_filter_field(filter, field);
-    });
-    on!(on_commit_filter, |app, filter: i32| {
-        app.studio.commit_filter(filter);
-    });
-    on!(on_cancel_filter, |app, filter: i32| {
-        app.studio.cancel_filter(filter);
-    });
-    on!(
-        on_set_filter_colour,
-        |app, filter: i32, field: i32, colour: slint::SharedString| {
-            app.studio.set_filter_colour(filter, field, &colour);
-        }
-    );
+    filter_calls::install(g, ctx);
     {
         let ctx = ctx.clone();
         g.on_filter_levels(move |filter: i32| {
@@ -5049,9 +5006,6 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
         entry::guard_or(slint::SharedString::default, || {
             studio_ui::filters::fit_path(&commands, vb_w, vb_h, w, h).into()
         })
-    });
-    on!(on_reset_filter, |app, filter: i32| {
-        app.studio.reset_filter(filter);
     });
     on!(
         on_rename_source,

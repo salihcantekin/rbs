@@ -96,6 +96,16 @@ impl StudioUi {
         self.call(C::SourceDelete(rq::SourceRef { source: id as u32 }));
     }
 
+    /// The source's own Show the cursor, from a Pointer halo's settings: one undo step.
+    pub fn set_source_cursor(&mut self, id: i32, on: bool) {
+        let key = rbs_sources::types::keys::CURSOR.to_owned();
+        self.send_settings(
+            id,
+            std::iter::once((key, serde_json::json!(on))).collect(),
+            0,
+        );
+    }
+
     /// Adds or removes the "Capture audio too" companion of a display or window.
     pub fn set_companion_audio(&mut self, id: i32, on: bool) {
         self.call(C::SourceSetCompanionAudio(rq::SetCompanionAudio {

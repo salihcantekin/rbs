@@ -162,7 +162,7 @@ const HALO_FIELDS: [Field; 6] = [
     ),
     // Last, so saved values keep their places; the editor shows it after them.
     Field::choice("style", "Look", &STYLES, "halo")
-        .with_help("Laser: a red dot. Turn off the source's Show the cursor so only it shows."),
+        .with_help("Laser: a red dot. Turn off Show the cursor below so only the dot shows."),
 ];
 const HALO_PASSES: [Pass; 1] = [Pass {
     shader: include_str!("shaders/pointer_halo.wgsl"),

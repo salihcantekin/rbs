@@ -1206,6 +1206,14 @@ impl Host {
                         s.settings.get(keys::FILLED),
                         Some(SettingValue::Bool(false))
                     ),
+                    cursor: matches!(kind, Some(SourceKind::Screen | SourceKind::Window)).then(
+                        || {
+                            !matches!(
+                                s.settings.get(keys::CURSOR),
+                                Some(SettingValue::Bool(false))
+                            )
+                        },
+                    ),
                     text: (SourceKind::of(&s.type_id) == Some(SourceKind::Text))
                         .then(|| s.settings.clone()),
                     browser: (kind == Some(SourceKind::Browser)).then(|| browser_page_settings(s)),
