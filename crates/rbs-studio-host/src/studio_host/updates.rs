@@ -80,8 +80,6 @@ pub enum Update {
     /// An add-on's status changed (ADR-0145): an install's progress or end, a clean
     /// or a removal. Settings › Add-ons asks for the whole list when it opens.
     AddOnChanged(api::AddOnChanged),
-    /// Every add-on, answering [`Command::ListAddOns`].
-    AddOns(api::AddOnList),
     /// Show this add-on in Settings › Add-ons: Add Source › Browser was chosen while
     /// the browser engine is missing, and no source was added (ADR-0145 decision 8).
     OpenAddOn(String),
@@ -117,15 +115,6 @@ pub enum Update {
     /// the running meter's values (`None` while off or without audio), the target and
     /// the true-peak limit. Sent once at the start and when any of them changes.
     Loudness(LoudnessView),
-    /// The answer to [`Command::SetSourceBox`] number `seq`: `ok` when the box is the
-    /// source's now (changed or already so), else it was refused (an
-    /// [`Update::Error`] says why).
-    BoxPlaced {
-        /// The request's number.
-        seq: u64,
-        /// Taken.
-        ok: bool,
-    },
     /// The studio runs. `preview`: where the UI connects to the canvas preview (`None`
     /// where the platform has none). `kinds`: the kinds the adapters can add.
     Started {

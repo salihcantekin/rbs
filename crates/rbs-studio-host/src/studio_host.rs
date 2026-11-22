@@ -712,7 +712,6 @@ impl Host {
             | Command::AddSourceWithAudio { .. }
             | Command::AddSource { .. }
             | Command::ReadPermissions
-            | Command::ListAddOns
             | Command::RequestPermission(..)
             | Command::AddGlobalSource { .. }
             | Command::SetSourceVolume { .. }
@@ -744,7 +743,6 @@ impl Host {
             | Command::SwitchScene(..)
             | Command::SetStudioMode(..)
             | Command::SetSwapAfterTransition(..) => self.scene_command(c, notify),
-            Command::SetSourceBox { .. } => self.item_command(c, notify),
             Command::SetVerticalProfile(..)
             | Command::SetVerticalStreamProfile(..)
             | Command::SetStreamDestinations(..)

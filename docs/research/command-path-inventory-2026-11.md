@@ -143,7 +143,7 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `SetSwapAfterTransition` | WindowOnly(Mirror) | settings.set `swap_after_transition` (ADR-0164 step 5); the window saves the file it owns |
 | `SetSourceActive` | Moved to `Command::Api` (step 3) | source.set_active |
 | `SetSourceVisible` | Moved to `Command::Api` (step 2) | item.set_visible |
-| `SetSourceBox` | Pending | item.set_box |
+| `SetSourceBox` | Moved to `Command::Api` (ADR-0168 step 2) | item.set_box with a ticket; its `{seq}` answer replaces `BoxPlaced`, on both canvases |
 | `SetSourceCrop` | Moved to `Command::Api` | item.set_crop with `gesture`, answered by ticket; a refusal puts the handles back (ADR-0164 step 6) |
 | `TransformSource` | Moved to `Command::Api` (ADR-0166) | the item transform methods and item.set_rotation; the window maps each op |
 | `SetSourceRegion` | Moved to `Command::Api` (ADR-0164 step 2) | item.set_shown_region; the window names the main canvas, as before (the vertical canvas's Show buttons are a follow-up) |
@@ -203,5 +203,5 @@ Each step decides these for its variants; the window takes the API's behaviour u
 | `SetLibrary` | Missing | no settings.set field |
 | `ReadPermissions` | WindowOnly LocalOnly |  |
 | `RequestPermission` | WindowOnly LocalOnly |  |
-| `ListAddOns` | Pending | addon.list |
+| `ListAddOns` | Moved to `Command::Api` (ADR-0168 step 2) | addon.list with a ticket; the answer fills Settings › Add-ons |
 | `AddOn` | Moved to `Command::Api` | addon.install, addon.update, addon.cancel and addon.remove (ADR-0164 step 4) |

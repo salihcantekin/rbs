@@ -13,6 +13,8 @@ use super::{Applied, StudioUi};
 /// The ticket of Add source › Browser's call: one at a time, and far from the
 /// counter's tickets (`api_call.rs`).
 pub(super) const BROWSER_TICKET: u64 = u64::MAX - 1;
+/// The ticket of Settings › Add-ons' `addon.list` (ADR-0168): one list at a time.
+pub(super) const ADD_ONS_TICKET: u64 = u64::MAX - 2;
 
 /// `source.add` of `kind` with no target: the shape, file or address says what.
 fn made(kind: K) -> rq::AddSource {
@@ -105,5 +107,16 @@ impl StudioUi {
             }
             _ => out.error = Some(e.message),
         }
+    }
+}
+
+impl StudioUi {
+    /// Reads every add-on's status for Settings › Add-ons; the answer fills
+    /// `add_ons` (ADR-0168 step 2).
+    pub fn list_add_ons(&self) {
+        self.call_as(
+            rbs_api::Command::AddonList,
+            rbs_app::studio_host::ApiReply::Ticket(ADD_ONS_TICKET),
+        );
     }
 }

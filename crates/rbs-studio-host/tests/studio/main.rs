@@ -239,3 +239,28 @@ fn stop_camera() -> rbs_studio_host::studio_host::Command {
         reply: rbs_studio_host::studio_host::ApiReply::QuietIf(rbs_api::ErrorKind::Conflict),
     }
 }
+
+/// A box as the picture panel sends it (ADR-0168 step 2).
+struct SetBox {
+    seq: u64,
+    gesture: u64,
+    id: rbs_scene::model::SourceId,
+    position: [f32; 2],
+    size: [f32; 2],
+    canvas: rbs_studio_host::studio_host::OutputCanvas,
+}
+
+/// `item.set_box` answered by the ticket `seq`, as the window sends a box.
+fn set_box(b: SetBox) -> rbs_studio_host::studio_host::Command {
+    rbs_studio_host::studio_host::Command::Api {
+        call: Box::new(rbs_api::Command::ItemSetBox(rbs_api::request::SetItemBox {
+            source: b.id.get(),
+            position: b.position,
+            size: b.size,
+            gesture: b.gesture,
+            seq: b.seq,
+            canvas: b.canvas,
+        })),
+        reply: rbs_studio_host::studio_host::ApiReply::Ticket(b.seq),
+    }
+}

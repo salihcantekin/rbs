@@ -120,7 +120,6 @@ paths! {
     SwitchScene => Translates(&["scene.switch", "canvas.set_preview"]),
     SetStudioMode => Translates(&["canvas.set_preview"]),
     SetSwapAfterTransition => WindowOnly(Mirror),
-    SetSourceBox => Pending(&["item.set_box"]),
     SetVerticalProfile => WindowOnly(Mirror),
     SetVerticalStreamProfile => WindowOnly(Mirror),
     // servers and key flags are the local user's; on/off is stream.destination.set_enabled
@@ -158,7 +157,6 @@ paths! {
     SetLibrary => Missing,
     ReadPermissions => WindowOnly(LocalOnly),
     RequestPermission => WindowOnly(LocalOnly),
-    ListAddOns => Pending(&["addon.list"]),
     Api => Api,
 }
 
@@ -174,7 +172,7 @@ mod tests {
     /// (owner, 2026-11-21). `TRANSLATES` 22 to 24 and `LOCAL_ONLY` 10 to 11 are
     /// approved by ADR-0168 decision 4 (owner, 2026-11-22).
     const TRANSLATES: usize = 24;
-    const PENDING: usize = 8;
+    const PENDING: usize = 6;
     const CONTRACT: usize = 0;
     const MISSING: usize = 1;
     const VIEW: usize = 13;

@@ -300,6 +300,22 @@ fn a_control_api_client_installs_and_removes_an_add_on() {
     assert!(root.join("org.example.good/1.2.3/lib/a.bin").is_file());
     let list = c.call("addon.list", json!({}));
     assert_eq!(list["result"]["add_ons"][0]["status"]["state"], "installed");
+    // Settings › Add-ons asks the same method by ticket (ADR-0168 step 2).
+    host.send(rbs_studio_host::studio_host::Command::Api {
+        call: Box::new(rbs_api::Command::AddonList),
+        reply: rbs_studio_host::studio_host::ApiReply::Ticket(9),
+    });
+    let window = next(&updates, |u| match u {
+        Update::ApiAnswer {
+            ticket: 9,
+            result: Ok(rbs_api::Response::AddOnList(list)),
+        } => Some(list),
+        _ => None,
+    });
+    assert!(matches!(
+        window.add_ons[0].status,
+        rbs_api::types::AddOnStatus::Installed { .. }
+    ));
 
     // A failed download shows its reason on the row until the next try.
     c.call("addon.install", json!({"id": "org.example.broken"}));

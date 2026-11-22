@@ -179,27 +179,6 @@ pub enum Command {
     /// Whether a transition also puts the old program scene in preview (ADR-0098; the
     /// app setting `swap_after_transition`, off by default).
     SetSwapAfterTransition(bool),
-    /// Place a video source's picture: the box's top-left corner and size in canvas
-    /// pixels. Rotation, crop and opacity stay. A size of zero or a value that is not
-    /// finite is refused with [`Update::Error`]. Always answered with
-    /// [`Update::BoxPlaced`] carrying `seq`, after any new rows, also when nothing
-    /// changed, so the UI can send the next box of a drag (ADR-0048).
-    SetSourceBox {
-        /// The caller's number for this request.
-        seq: u64,
-        /// Boxes with the same number other than 0 that follow each other are one undo
-        /// step (one drag on the picture panel); 0 is a step of its own.
-        gesture: u64,
-        /// The source.
-        id: SourceId,
-        /// Top-left corner.
-        position: [f32; 2],
-        /// Width and height.
-        size: [f32; 2],
-        /// The canvas whose layout changes: the main one, or the vertical one, where
-        /// the box becomes the item's own layout there (ADR-0093 decision 4, U15).
-        canvas: OutputCanvas,
-    },
     /// The vertical canvas's recording settings as saved (`None`: it uses the main
     /// ones). Sent at start and after each change.
     SetVerticalProfile(Option<RecordProfile>),
@@ -331,9 +310,6 @@ pub enum Command {
     /// 4); [`Update::Permissions`] follows when it is answered. Ignored while a prompt
     /// for the kind is showing.
     RequestPermission(PermissionKind),
-    /// Read every add-on's status for Settings › Add-ons ([`Update::AddOns`],
-    /// ADR-0145). Reads each add-on's folder; starts nothing.
-    ListAddOns,
     /// A control API command from the window (ADR-0163 decision 1): run as a remote
     /// call is, with the same checks, handler, events and logging, but without the
     /// caller checks, because the window is the person at this computer (decision 3).
