@@ -1,6 +1,6 @@
 # ADR-0173: A companion sound is shown under its picture in the Sources list
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-22
 - Deciders: Salih (owner)
 - Spec: [ui-design-system](../specs/ui-design-system.md) (Sources panel)
@@ -39,6 +39,6 @@
 
 Independent review per ADR-0014, 2026-11-22, fresh AI session: changes requested, 10 findings, all taken into the text: mute in studio mode (hidden while the listed scene is not the program), duplicates and several companions, the shared window sound limit, a selected companion opens its picture, keyboard focus, `accessible-expandable`, drop on a sound row, the remove question (kept out, offered separately), spec and an own indent token, the header (Builds on, not Supersedes) and the tests.
 
-Owner: chose the arrow only on rows with something under them (decision card, 2026-11-22). Approval of the ADR and the screenshots pending.
+Owner: chose the arrow only on rows with something under them (decision card, 2026-11-22). Owner approval of the ADR and the dark and light screenshots: Salih, 2026-11-22 ("onaylıyorum").
 
 As built: `ListRow` disclosure (`components.slint`), `studio_ui/sound_nest.rs` (ordering, marks, open state, six unit tests), `source_list_calls.rs` (`open-sound`), the Sources panel rows (`studio.slint`), `size.list.indent`; screenshots from `tests/sound_nest_shots.rs`.
