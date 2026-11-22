@@ -6400,7 +6400,7 @@ impl StudioUi {
                     .border
                     .unwrap_or(Border::new(DEFAULT_BORDER_WIDTH, [255, 255, 255, 255]));
                 let [cr, cg, cb, ca] = border.color;
-                let (filters, selected_filter) = self.filter_ui.data(r, &sounds);
+                let (filters, selected_filter) = self.filter_ui.data(r, &sounds, &self.permissions);
                 let pictures = if r.global {
                     &global_pictures
                 } else {

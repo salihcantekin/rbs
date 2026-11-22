@@ -10,3 +10,10 @@ pub const BUTTONS: CapabilityKey = CapabilityKey::new_static("input.buttons");
 pub const WHEEL: CapabilityKey = CapabilityKey::new_static("input.wheel");
 /// Flag: keys (ADR-0165 phase 2; no adapter declares it yet).
 pub const KEYS: CapabilityKey = CapabilityKey::new_static("input.keys");
+/// Flag: the OS has a user permission for input (macOS Input Monitoring).
+pub const PERMISSION: CapabilityKey = CapabilityKey::new_static("input.permission");
+/// Flag: [`InputMonitor::request_permission`](crate::InputMonitor::request_permission)
+/// can show the OS prompt in this process.
+pub const PERMISSION_PROMPT: CapabilityKey = CapabilityKey::new_static("input.permission.prompt");
+/// Flag: a grant takes effect only after the app restarts.
+pub const PERMISSION_RESTART: CapabilityKey = CapabilityKey::new_static("input.permission.restart");

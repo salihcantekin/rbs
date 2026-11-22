@@ -3393,6 +3393,38 @@ component FiltersFields inherits VerticalLayout {
                     font-size: Tokens.type-caption-size;
                     wrap: word-wrap;
                 }
+                // A pointer filter that cannot see clicks says why, with the same
+                // fix as a refused source (ADR-0165 decision 7, ADR-0141 decision 8).
+                if f.perm-text != "": HorizontalLayout {
+                    spacing: Tokens.size-field-gap;
+                    VerticalLayout {
+                        alignment: center;
+                        Icon { name: IconName.warning; ink: Theme.state-warning; }
+                    }
+                    Text {
+                        horizontal-stretch: 1;
+                        vertical-alignment: center;
+                        text: f.perm-text;
+                        color: Theme.text-primary;
+                        font-size: Tokens.type-body-size;
+                        wrap: word-wrap;
+                    }
+                    if f.perm-action == 1: Button {
+                        text: @tr("Allow");
+                        accessible-name: @tr("Allow Input monitoring for {}", f.name);
+                        kind: "primary";
+                        dense: true;
+                        // 4: Input monitoring (`permission_text::kind_code`).
+                        clicked => { Studio.permission-action(4, 1); }
+                    }
+                    if f.perm-action == 2: Button {
+                        lead: IconName.lock;
+                        text: @tr("Fix permission");
+                        accessible-name: @tr("Fix permission for {}", f.name);
+                        dense: true;
+                        clicked => { Studio.open-permission-settings(); }
+                    }
+                }
                 if f.gate: GateBar { filter: f; }
                 if f.curve != "": EqCurve { filter: f; }
                 for field[j] in f.fields: FilterFieldView {

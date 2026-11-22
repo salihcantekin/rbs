@@ -307,10 +307,14 @@ fn config(app: &App, keys: Arc<dyn KeyStore>, collection: SceneCollection) -> Ho
 /// Starts a control thread whose updates reach the window while it is the newest.
 fn spawn(config: HostConfig) -> std::io::Result<StudioHost> {
     let generation = GENERATION.load(Ordering::Relaxed);
+    // One master clock for the engine and the input monitor, so pointer events and
+    // capture frames (stamped on the engine's clock) share one time line (ADR-0165).
+    let clock: Arc<dyn rbs_core::time::Clock> = Arc::new(rbs_core::time::MonotonicClock::new());
+    let input_clock = Arc::clone(&clock);
     StudioHost::spawn(
         config,
-        || {
-            let (adapters, errors) = rbs_app::platform::adapters();
+        move || {
+            let (adapters, errors) = rbs_app::platform::adapters_on(input_clock);
             // Add filter offers only the picture types this platform can run.
             crate::studio_ui::filters::set_served(adapters.sources.serves());
             (adapters, errors)
@@ -329,8 +333,11 @@ fn spawn(config: HostConfig) -> std::io::Result<StudioHost> {
             };
             ctx.map(Arc::new).map_err(|e| format!("no usable GPU: {e}"))
         },
-        || {
-            let mut engine = rbs_engine::Engine::new();
+        move || {
+            let mut engine = rbs_engine::Engine::with_clock(
+                Arc::clone(&clock),
+                rbs_engine::EngineConfig::default(),
+            );
             engine.set_thread_policy(Some(Arc::new(rbs_thread_os::OsThreadPolicy::new())));
             engine
         },

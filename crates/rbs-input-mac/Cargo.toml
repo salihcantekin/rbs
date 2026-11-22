@@ -1,0 +1,30 @@
+[package]
+name = "rbs-input-mac"
+description = "macOS adapter for the RBS input port: mouse events from a listen-only CGEventTap on its own run-loop thread."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rbs-core = { path = "../rbs-core" }
+rbs-input = { path = "../rbs-input" }
+# Whether this process is its own responsible app, for the Input Monitoring prompt
+# (ADR-0141 decision 10).
+rbs-system-probe = { path = "../rbs-system-probe" }
+
+# Apple's frameworks through the objc2 bindings (MIT OR Apache-2.0 OR Zlib), same
+# versions as rbs-capture-sck.
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+libc = "0.2"
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "block2", "CFCGTypes", "CFDate", "CFMachPort", "CFRunLoop", "CFString"] }
+objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGEvent", "CGEventSource", "CGEventTypes", "CGRemoteOperation"] }
+
+[dev-dependencies]
+allocation-counter = "0.8"
+
+[lints]
+workspace = true

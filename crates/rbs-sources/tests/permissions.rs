@@ -12,6 +12,54 @@ use rbs_capture_test::TestCaptureFactory;
 use rbs_sources::SourceTypes;
 use rbs_sources::permissions::{PermissionKind, PermissionStatus};
 
+mod input {
+    //! A scripted input backend with a permission (ADR-0165 decision 7).
+
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    use rbs_core::capability::{CapabilitySet, CapabilityValue};
+    use rbs_input::{
+        EventMask, InputBackend, InputError, InputSink, Permission, RunningInput, caps,
+    };
+
+    pub struct Asking {
+        pub state: Arc<Mutex<Permission>>,
+        pub answer: Permission,
+        pub prompts: Arc<AtomicU32>,
+        pub has_permission: bool,
+    }
+
+    impl InputBackend for Asking {
+        fn name(&self) -> &'static str {
+            "asking"
+        }
+        fn capabilities(&self) -> CapabilitySet {
+            let set = CapabilitySet::new()
+                .with(caps::POINTER, CapabilityValue::Flag(true))
+                .with(caps::BUTTONS, CapabilityValue::Flag(true));
+            if self.has_permission {
+                set.with(caps::PERMISSION, CapabilityValue::Flag(true))
+                    .with(caps::PERMISSION_PROMPT, CapabilityValue::Flag(true))
+                    .with(caps::PERMISSION_RESTART, CapabilityValue::Flag(true))
+            } else {
+                set
+            }
+        }
+        fn start(&self, _: EventMask, _: InputSink) -> Result<Box<dyn RunningInput>, InputError> {
+            Err(InputError::PermissionDenied)
+        }
+        fn permission(&self) -> Permission {
+            *self.state.lock().unwrap()
+        }
+        fn request_permission(&self) -> Permission {
+            self.prompts.fetch_add(1, Ordering::Relaxed);
+            *self.state.lock().unwrap() = self.answer;
+            self.answer
+        }
+    }
+}
+
 fn types(
     capture: TestCaptureFactory,
     audio: TestAudioBackend,
@@ -29,11 +77,13 @@ fn types(
 fn adapters_without_a_permission_model_need_none() {
     let (reg, _, _) = types(TestCaptureFactory::new(), TestAudioBackend::new());
     for kind in PermissionKind::ALL {
-        assert_eq!(
-            reg.permission(kind).status,
-            PermissionStatus::NotNeeded,
-            "{kind:?}"
-        );
+        // Input monitoring comes from the input monitor, which is not set here.
+        let expected = if kind == PermissionKind::InputMonitoring {
+            PermissionStatus::Unavailable
+        } else {
+            PermissionStatus::NotNeeded
+        };
+        assert_eq!(reg.permission(kind).status, expected, "{kind:?}");
     }
 }
 
@@ -147,4 +197,58 @@ fn a_request_runs_off_the_registry() {
         PermissionStatus::Allowed
     );
     assert!(reg.permission_request(PermissionKind::Camera).is_empty());
+}
+
+fn with_input(has_permission: bool) -> (SourceTypes, std::sync::Arc<std::sync::atomic::AtomicU32>) {
+    let (mut reg, _, _) = types(TestCaptureFactory::new(), TestAudioBackend::new());
+    let prompts = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    reg.set_input(rbs_input::InputMonitor::new(Box::new(input::Asking {
+        state: Arc::new(std::sync::Mutex::new(if has_permission {
+            rbs_input::Permission::NotDetermined
+        } else {
+            // A backend with no OS permission answers with the port's default.
+            rbs_input::Permission::Granted
+        })),
+        answer: rbs_input::Permission::Denied,
+        prompts: prompts.clone(),
+        has_permission,
+    })));
+    (reg, prompts)
+}
+
+#[test]
+fn input_monitoring_follows_the_input_monitor() {
+    let (reg, prompts) = with_input(true);
+    let before = reg.permission(PermissionKind::InputMonitoring);
+    assert_eq!(before.status, PermissionStatus::NotAsked);
+    assert!(before.can_prompt);
+    assert!(before.restart, "the grant applies after a restart");
+    assert_eq!(
+        prompts.load(std::sync::atomic::Ordering::Relaxed),
+        0,
+        "reading never prompts"
+    );
+    // Another kind never asks the monitor.
+    assert!(reg.permission_request(PermissionKind::Camera).is_empty());
+
+    let after = reg.request_permission(PermissionKind::InputMonitoring);
+    assert_eq!(after.status, PermissionStatus::Blocked);
+    assert_eq!(prompts.load(std::sync::atomic::Ordering::Relaxed), 1);
+    assert!(
+        reg.permission_request(PermissionKind::InputMonitoring)
+            .is_empty(),
+        "asked once"
+    );
+}
+
+#[test]
+fn a_monitor_without_a_permission_needs_none() {
+    let (reg, prompts) = with_input(false);
+    let info = reg.permission(PermissionKind::InputMonitoring);
+    assert_eq!(info.status, PermissionStatus::NotNeeded);
+    assert!(
+        reg.permission_request(PermissionKind::InputMonitoring)
+            .is_empty()
+    );
+    assert_eq!(prompts.load(std::sync::atomic::Ordering::Relaxed), 0);
 }

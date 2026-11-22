@@ -10,9 +10,21 @@ pub use rbs_platform::VirtualCamera;
 /// (a duplicate id) are returned as messages; they mean a bug in the list.
 /// `RBS_DEMO_SOURCES=1` adds the reference adapters in builds with `demo-sources`.
 pub fn adapters() -> (RecordAdapters, Vec<String>) {
+    registered(rbs_platform::Options::default())
+}
+
+/// [`adapters`] plus the platform's input monitor stamping on `clock`, which must be
+/// the clock the engine runs on (`rbs_engine::Engine::with_clock`), so pointer and
+/// frame times share one clock (ADR-0165).
+pub fn adapters_on(
+    clock: std::sync::Arc<dyn rbs_core::time::Clock>,
+) -> (RecordAdapters, Vec<String>) {
+    registered(rbs_platform::Options::default().with_master_clock(clock))
+}
+
+fn registered(options: rbs_platform::Options) -> (RecordAdapters, Vec<String>) {
     let demo = std::env::var_os("RBS_DEMO_SOURCES").is_some_and(|v| v == "1");
-    let registered =
-        rbs_platform::adapters(&rbs_platform::Options::default().with_demo_sources(demo));
+    let registered = rbs_platform::adapters(&options.with_demo_sources(demo));
     (registered.adapters, registered.errors)
 }
 

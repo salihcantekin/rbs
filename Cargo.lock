@@ -3671,6 +3671,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2a180dd8642fa45cdb7dd721cd4c11b1cadd4929ce112ebd8b9f5803cc79d536"
 dependencies = [
  "bitflags 2.13.2",
+ "block2 0.6.2",
  "dispatch2",
  "objc2 0.6.5",
 ]
@@ -5205,6 +5206,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "rbs-input-mac"
+version = "0.0.1"
+dependencies = [
+ "allocation-counter",
+ "block2 0.6.2",
+ "libc",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "rbs-core",
+ "rbs-input",
+ "rbs-system-probe",
+]
+
+[[package]]
 name = "rbs-log"
 version = "0.0.1"
 dependencies = [
@@ -5432,6 +5447,8 @@ dependencies = [
  "rbs-codec-vaapi",
  "rbs-codec-videotoolbox",
  "rbs-core",
+ "rbs-input",
+ "rbs-input-mac",
  "rbs-media-anim",
  "rbs-media-avf",
  "rbs-media-decode",
@@ -5582,6 +5599,7 @@ dependencies = [
  "rbs-gpu",
  "rbs-graph",
  "rbs-import-obs",
+ "rbs-input",
  "rbs-manifest",
  "rbs-media-decode-test",
  "rbs-mux",
