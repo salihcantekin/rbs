@@ -288,13 +288,15 @@ fn api_field(f: &Field) -> api::FilterField {
 
 /// `filter.types`' answer for `domains`: video types first, then audio types. An
 /// audio type's latency is for `setup`, the running graph's (ADR-0130 decision 2).
-pub fn api_types(domains: FilterDomains, setup: DspSetup) -> api::FilterTypeList {
+/// Video types whose host services the host does not serve (`serves`) are left out
+/// (spec `video-filters.md`, "Pointer types").
+pub fn api_types(
+    domains: FilterDomains,
+    setup: DspSetup,
+    serves: rbs_filters::Needs,
+) -> api::FilterTypeList {
     let video = matches!(domains, FilterDomains::Video | FilterDomains::All)
-        .then(|| {
-            rbs_filters::catalogue()
-                .iter()
-                .map(|t| AnyFilter::Video(*t))
-        })
+        .then(|| rbs_filters::offered(serves).map(AnyFilter::Video))
         .into_iter()
         .flatten();
     let audio = matches!(domains, FilterDomains::Audio | FilterDomains::All)
