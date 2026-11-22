@@ -110,7 +110,7 @@ fn the_voice_chain_and_the_stinger_file_are_api_calls() {
 
     let relative = c.call("collection.set_stinger_file", json!({"path": "sting.mov"}));
     assert_eq!(kind(&relative), "invalid_params", "{relative}");
-    let dir = std::env::temp_dir().join(format!("rbs-stinger-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("rbs-stinger-file-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let file = dir.join("sting.mov");
     std::fs::write(&file, b"demo").unwrap();
