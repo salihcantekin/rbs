@@ -52,8 +52,8 @@ pub use loudness::{
 };
 pub use meter::{LevelMeter, Levels};
 pub use mixer::{
-    DEFAULT_RAMP, MIXER_NODE_TYPE, MixerNode, MixerParams, MixerStats, MonitorMode, Strip,
-    mixer_descriptor,
+    BUS_PINS, BusOutput, DEFAULT_RAMP, MAX_BUS_OUTPUTS, MIXER_NODE_TYPE, MixerNode, MixerParams,
+    MixerStats, MonitorMode, Strip, mixer_descriptor,
 };
 pub use output::{
     DEFAULT_OUTPUT_TARGET, MAX_OUTPUT_VOLUME, OUTPUT_NODE_TYPE, OUTPUT_VOLUME_RAMP, OutputCounters,

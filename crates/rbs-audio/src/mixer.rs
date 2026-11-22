@@ -1,5 +1,6 @@
 //! The mixer: per-strip gain and mute with ramps, post-fader meters (ADR-0037 decision
-//! 7, audio graph spec "Mixer"), and the monitor mix (ADR-0097 decisions 5 and 6).
+//! 7, audio graph spec "Mixer"), the monitor mix (ADR-0097 decisions 5 and 6) and the
+//! bus outputs (ADR-0097 decisions 6 and 10, ADR-0170 decisions 1 and 2).
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -20,6 +21,16 @@ pub const MIXER_NODE_TYPE: &str = "org.rbs.audio.mixer";
 
 /// How long a gain change takes by default (one 10 ms block).
 pub const DEFAULT_RAMP: Duration = Duration::from_millis(10);
+
+/// Bus outputs besides `main` (ADR-0170 decision 1: six buses with `main`). Output pin
+/// `2 + k` is bus slot `k`; the binder maps a collection's buses to slots.
+pub const MAX_BUS_OUTPUTS: usize = 5;
+
+/// Names of the bus output pins, by slot.
+pub const BUS_PINS: [&str; MAX_BUS_OUTPUTS] = ["bus1", "bus2", "bus3", "bus4", "bus5"];
+
+/// Output pin of the first bus slot (after `main` and `monitor`).
+const FIRST_BUS_PIN: usize = 2;
 
 /// Whether a strip is heard on the monitor (ADR-0097 decision 5).
 #[non_exhaustive]
@@ -56,6 +67,10 @@ pub struct Strip {
     /// clock, so a scene transition's sound follows its picture. `None` uses the
     /// mixer's default ramp. Also applies when the input joins.
     pub ramp_override: Option<(Timestamp, Duration)>,
+    /// Send level to `main`, post-fader (ADR-0097 decision 9); default 1.
+    pub main_send: f32,
+    /// Send level to each bus slot, post-fader; default 0 (no send).
+    pub sends: [f32; MAX_BUS_OUTPUTS],
 }
 
 impl Strip {
@@ -69,7 +84,24 @@ impl Strip {
             monitor: MonitorMode::Off,
             solo: false,
             ramp_override: None,
+            main_send: 1.0,
+            sends: [0.0; MAX_BUS_OUTPUTS],
         }
+    }
+
+    /// Sets the send level to `main`.
+    pub fn with_main_send(mut self, level: f32) -> Self {
+        self.main_send = level;
+        self
+    }
+
+    /// Sets the send level to bus slot `slot`; a slot past [`MAX_BUS_OUTPUTS`] is
+    /// ignored.
+    pub fn with_send(mut self, slot: usize, level: f32) -> Self {
+        if let Some(s) = self.sends.get_mut(slot) {
+            *s = level;
+        }
+        self
     }
 
     /// Mutes or unmutes.
@@ -111,6 +143,26 @@ fn sanitize(g: f32) -> f32 {
     if g.is_finite() && g > 0.0 { g } else { 0.0 }
 }
 
+/// One bus output's fader and meter (ADR-0170): applied after the bus's sum, like the
+/// master on `main`.
+#[non_exhaustive]
+#[derive(Debug, Clone)]
+pub struct BusOutput {
+    /// Linear gain (the bus's volume, 0 while muted).
+    pub gain: f32,
+    /// Meter of the bus output.
+    pub meter: Option<Arc<LevelMeter>>,
+}
+
+impl Default for BusOutput {
+    fn default() -> Self {
+        Self {
+            gain: 1.0,
+            meter: None,
+        }
+    }
+}
+
 /// The mixer's parameters (ADR-0023 channel).
 #[non_exhaustive]
 #[derive(Debug, Clone)]
@@ -123,6 +175,8 @@ pub struct MixerParams {
     pub master_meter: Option<Arc<LevelMeter>>,
     /// How long gain and mute changes, and inputs joining, take to reach their level.
     pub ramp: Duration,
+    /// The bus outputs' faders and meters, by slot.
+    pub buses: [BusOutput; MAX_BUS_OUTPUTS],
 }
 
 impl Default for MixerParams {
@@ -132,6 +186,7 @@ impl Default for MixerParams {
             master: 1.0,
             master_meter: None,
             ramp: DEFAULT_RAMP,
+            buses: Default::default(),
         }
     }
 }
@@ -160,6 +215,15 @@ impl MixerParams {
     /// Sets the ramp time.
     pub fn with_ramp(mut self, ramp: Duration) -> Self {
         self.ramp = ramp;
+        self
+    }
+
+    /// Sets bus slot `slot`'s gain and meter; a slot past [`MAX_BUS_OUTPUTS`] is
+    /// ignored.
+    pub fn with_bus(mut self, slot: usize, gain: f32, meter: Option<Arc<LevelMeter>>) -> Self {
+        if let Some(b) = self.buses.get_mut(slot) {
+            *b = BusOutput { gain, meter };
+        }
         self
     }
 }
@@ -259,8 +323,10 @@ struct StripState {
     producer: NodeId,
     /// Fader: gain and mute.
     ramp: Ramp,
-    /// Send to the mix, 0 or 1 (0 for `Only` while the monitor is read).
+    /// Send to `main`: its send level, 0 for `Only` while the monitor is read.
     send: Ramp,
+    /// Send to each bus slot, likewise.
+    bus: [Ramp; MAX_BUS_OUTPUTS],
     /// Send to the monitor, 0 or 1.
     monitor: Ramp,
     /// The strip's own ramp, also used when the input joins (ADR-0128).
@@ -292,6 +358,11 @@ pub struct MixerNode {
     /// Planar monitor mix, `MAX_CHANNELS` channels of `block_frames`; allocated in
     /// `new` so linking the monitor output allocates nothing.
     monitor_mix: Box<[f32]>,
+    /// Bus faders, by slot.
+    bus_masters: [Ramp; MAX_BUS_OUTPUTS],
+    /// Planar bus mixes: slot, then the graph's channels, then `block_frames`;
+    /// allocated in `new` so linking a bus output allocates nothing.
+    bus_mix: Box<[f32]>,
     stats: Arc<MixerStats>,
 }
 
@@ -304,6 +375,11 @@ pub fn mixer_descriptor() -> NodeDescriptor {
         vec![
             Pin::one("main", LinkKind::Audio),
             Pin::one("monitor", LinkKind::Audio),
+            Pin::one(BUS_PINS[0], LinkKind::Audio),
+            Pin::one(BUS_PINS[1], LinkKind::Audio),
+            Pin::one(BUS_PINS[2], LinkKind::Audio),
+            Pin::one(BUS_PINS[3], LinkKind::Audio),
+            Pin::one(BUS_PINS[4], LinkKind::Audio),
         ],
     )
 }
@@ -332,6 +408,14 @@ impl MixerNode {
                 monitoring: false,
                 monitor_mix: vec![0.0; config.block_frames as usize * MAX_CHANNELS]
                     .into_boxed_slice(),
+                bus_masters: [Ramp::steady(1.0); MAX_BUS_OUTPUTS],
+                bus_mix: vec![
+                    0.0;
+                    MAX_BUS_OUTPUTS
+                        * config.format.channels.channels()
+                        * config.block_frames as usize
+                ]
+                .into_boxed_slice(),
                 stats: Arc::clone(&stats),
             },
             tx,
@@ -350,11 +434,14 @@ impl MixerNode {
         self.scratch.clear();
         for (index, strip) in p.strips.iter().take(self.capacity).enumerate() {
             let target = strip.target();
-            let send = if monitoring && strip.monitor == MonitorMode::Only {
+            // `Only` leaves every mix while the monitor is read (ADR-0097 decision 5).
+            let on_mix = if monitoring && strip.monitor == MonitorMode::Only {
                 0.0
             } else {
                 1.0
             };
+            let send = sanitize(strip.main_send) * on_mix;
+            let bus = strip.sends.map(|l| sanitize(l) * on_mix);
             let heard = if solo {
                 strip.solo
             } else {
@@ -371,6 +458,7 @@ impl MixerNode {
                     },
                     join: strip.ramp_override,
                     send: old.send.towards(send, t, ramp),
+                    bus: std::array::from_fn(|k| old.bus[k].towards(bus[k], t, ramp)),
                     monitor: old.monitor.towards(monitor, t, ramp),
                     present: old.present,
                     seen: false,
@@ -381,6 +469,7 @@ impl MixerNode {
                     ramp: Ramp::steady(target),
                     join: strip.ramp_override,
                     send: Ramp::steady(send),
+                    bus: bus.map(Ramp::steady),
                     monitor: Ramp::steady(monitor),
                     present: old.present,
                     seen: false,
@@ -391,6 +480,7 @@ impl MixerNode {
                     ramp: Ramp::steady(target),
                     join: strip.ramp_override,
                     send: Ramp::steady(send),
+                    bus: bus.map(Ramp::steady),
                     monitor: Ramp::steady(monitor),
                     present: false,
                     seen: false,
@@ -412,18 +502,30 @@ impl MixerNode {
         } else {
             self.master.towards(master, t, ramp)
         };
+        for (state, bus) in self.bus_masters.iter_mut().zip(&p.buses) {
+            let gain = sanitize(bus.gain);
+            *state = if self.fresh {
+                Ramp::steady(gain)
+            } else {
+                state.towards(gain, t, ramp)
+            };
+        }
         self.fresh = false;
     }
 
     /// The strip for `producer`, from the table `apply_params` sorted.
-    fn strip_mut(&mut self, producer: NodeId) -> Option<&mut StripState> {
-        let at = self.by_producer.partition_point(|entry| entry.0 < producer);
-        let index = self
-            .by_producer
+    /// A field borrow, so the caller can still write the mix buffers.
+    fn strip_mut<'s>(
+        strips: &'s mut [StripState],
+        by_producer: &[(NodeId, usize)],
+        producer: NodeId,
+    ) -> Option<&'s mut StripState> {
+        let at = by_producer.partition_point(|entry| entry.0 < producer);
+        let index = by_producer
             .get(at)
             .filter(|entry| entry.0 == producer)
             .map(|entry| entry.1)?;
-        self.strips.get_mut(index)
+        strips.get_mut(index)
     }
 }
 
@@ -451,6 +553,13 @@ impl<X: Runtime> Node<X> for MixerNode {
         let period = self.config.period();
         let t1 = t0 + period;
         let monitoring = ctx.outputs().is_linked(1);
+        // Bus slots whose output is read: only those are summed (ADR-0170 decision 1).
+        let mut buses = 0u8;
+        for k in 0..MAX_BUS_OUTPUTS {
+            if ctx.outputs().is_linked(FIRST_BUS_PIN + k) {
+                buses |= 1 << k;
+            }
+        }
         let flipped = monitoring != self.monitoring;
         self.monitoring = monitoring;
         if self.params.update() || self.fresh || flipped {
@@ -471,6 +580,12 @@ impl<X: Runtime> Node<X> for MixerNode {
         if monitoring {
             self.monitor_mix[..frames * n].fill(0.0);
         }
+        let bus_len = n * frames;
+        if buses != 0 {
+            for k in bits(buses) {
+                self.bus_mix[k * bus_len..(k + 1) * bus_len].fill(0.0);
+            }
+        }
 
         for s in &mut self.strips {
             s.seen = false;
@@ -480,7 +595,7 @@ impl<X: Runtime> Node<X> for MixerNode {
             let Some(producer) = inputs.source(0, link) else {
                 continue;
             };
-            let Some(strip) = self.strip_mut(producer) else {
+            let Some(strip) = Self::strip_mut(&mut self.strips, &self.by_producer, producer) else {
                 self.stats.unknown_inputs.fetch_add(1, Ordering::Relaxed);
                 continue;
             };
@@ -547,6 +662,31 @@ impl<X: Runtime> Node<X> for MixerNode {
                     gains.mix::<false>(out, src, &mut self.monitor_mix, c);
                 }
             }
+            if buses != 0 && !(g0 == 0.0 && g1 == 0.0) {
+                // Post-fader sends to the read buses: one pass per bus with a send.
+                let dg = gains.dg;
+                for k in bits(buses) {
+                    let (b0, b1) = (strip.bus[k].at(t0), strip.bus[k].at(t1));
+                    if b0 == 0.0 && b1 == 0.0 {
+                        continue;
+                    }
+                    let db = (b1 - b0) * inv;
+                    let mix = &mut self.bus_mix[k * bus_len..(k + 1) * bus_len];
+                    for (c, dst) in mix.chunks_exact_mut(frames).enumerate() {
+                        let Some(src) = block.channel(c) else {
+                            continue;
+                        };
+                        let src = &src[..frames];
+                        if gains.steady && b0 == b1 {
+                            // Settled fader and send: one constant factor.
+                            let f = g0 * b0;
+                            mix_lanes::<false>(dst, src, |_| f, |_| 1.0);
+                        } else {
+                            mix_lanes::<false>(dst, src, |w| g0 + dg * w, |w| b0 + db * w);
+                        }
+                    }
+                }
+            }
         }
         for s in &mut self.strips {
             s.present = s.seen;
@@ -572,8 +712,35 @@ impl<X: Runtime> Node<X> for MixerNode {
             }
             mon.commit(format, t0, frames)?;
         }
+        for k in bits(buses) {
+            // Each read bus after its own fader, like `main` after the master.
+            let (a0, a1) = (self.bus_masters[k].at(t0), self.bus_masters[k].at(t1));
+            let da = (a1 - a0) * inv;
+            let meter = self.params.get().buses[k].meter.as_deref();
+            let mix = &mut self.bus_mix[k * bus_len..(k + 1) * bus_len];
+            let mut bus = ctx.outputs().audio(FIRST_BUS_PIN + k)?;
+            for (c, (ch, sum)) in bus
+                .channels_mut(n)
+                .zip(mix.chunks_exact_mut(frames))
+                .enumerate()
+            {
+                if let Some(m) = meter {
+                    let (peak, sum_sq) = scale_lanes::<true>(sum, |w| a0 + da * w);
+                    m.record_block(c, peak, sum_sq, frames as u32);
+                } else {
+                    scale_lanes::<false>(sum, |w| a0 + da * w);
+                }
+                ch[..frames].copy_from_slice(sum);
+            }
+            bus.commit(format, t0, frames)?;
+        }
         Ok(())
     }
+}
+
+/// The slots set in `mask`, lowest first.
+fn bits(mask: u8) -> impl Iterator<Item = usize> {
+    (0..MAX_BUS_OUTPUTS).filter(move |k| mask & (1 << k) != 0)
 }
 
 /// Accumulator lanes of the mix loops. The loops keep this many partial peaks and
