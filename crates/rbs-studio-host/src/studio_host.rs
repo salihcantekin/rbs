@@ -121,6 +121,7 @@ mod history;
 mod items;
 mod outputs;
 mod pickers;
+mod pointer_chain;
 mod projector;
 #[cfg(test)]
 mod publish_cost;

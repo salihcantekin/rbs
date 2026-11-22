@@ -1087,6 +1087,8 @@ impl Host {
                 }
             }
         }
+        // Pasted pointer filters go before the others (ADR-0165 decision 3).
+        self.pointer_filters_first(id, records)?;
         Ok(if records.len() == before {
             Err(Skip::Unchanged)
         } else {

@@ -452,13 +452,20 @@ impl Host {
         }
         let values = Values::from_pairs(&ty, pairs(ty, settings)?).map_err(|e| invalid(&e))?;
         self.check_key_sources(source, &ty, &values)?;
+        self.check_pointer_source(source, &ty.type_id(), ty.name())?;
         let (id, undo) = self
             .collection
             .add_filter(source, ty.type_id(), filter_settings(&ty, &values))
             .map_err(|e| Refusal::of(&e))?;
+        // A pointer filter goes before the others (ADR-0165 decision 3).
+        let mut records = vec![undo];
+        if let Err(e) = self.pointer_filters_first(source, &mut records) {
+            self.roll_back(records);
+            return Err(e);
+        }
         self.edits
             .history
-            .record(EditKind::Filter, &name, 0, vec![undo]);
+            .record(EditKind::Filter, &name, 0, records);
         Ok(id)
     }
 
@@ -683,6 +690,16 @@ impl Host {
                 chain.len()
             )));
         }
+        // Pointer filters stay before the others (ADR-0165 decision 3).
+        let pointer = chain
+            .iter()
+            .find(|f| f.id == filter)
+            .is_some_and(|f| super::pointer_chain::is_pointer(&f.type_id));
+        let others = chain
+            .iter()
+            .filter(|f| f.id != filter && super::pointer_chain::is_pointer(&f.type_id))
+            .count();
+        let index = super::pointer_chain::clamp_move(pointer, index, others, chain.len());
         if chain.get(index).is_some_and(|f| f.id == filter) {
             return Ok(false);
         }

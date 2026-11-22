@@ -35,4 +35,20 @@ impl SourceTypes {
             rbs_filters::Needs::NONE
         }
     }
+
+    /// Whether a source of `type_id` publishes a picture mapping (ADR-0165 decision
+    /// 5): it is a capture type and one of its adapters declares `capture.mapping` for
+    /// its target kind. Pointer filters draw only on such a source.
+    pub fn publishes_mapping(&self, type_id: &rbs_graph::node::NodeTypeId) -> bool {
+        let Some(crate::types::SourceClass::Capture(kind)) = crate::types::class_of(type_id) else {
+            return false;
+        };
+        self.capture_candidates(kind).iter().any(|f| {
+            matches!(
+                self.capture.capabilities(&f.id()).and_then(|c| c.get(&rbs_capture::caps::MAPPING)),
+                Some(rbs_core::capability::CapabilityValue::Set(kinds))
+                    if kinds.iter().any(|k| k == kind.as_str())
+            )
+        })
+    }
 }
