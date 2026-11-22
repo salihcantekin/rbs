@@ -1492,15 +1492,15 @@ impl CaptureSession for SckSession {
         );
         watch.active.store(true, Ordering::SeqCst);
         if let Some(switch) = &self.switch {
-            // The callback only stores the state and, when it turns on, starts the
-            // watcher if none runs; `stop` joins it (capture-port.md, picture mapping
+            // The callback only stores the state and, when it turns on, spawns the
+            // watcher if none runs (no join, no wait); `stop` joins it (capture-port.md, picture mapping
             // rule 2).
             let weak: Weak<Watch> = Arc::downgrade(watch);
             self.registration = Some(switch.register(move |on| {
                 if let Some(watch) = weak.upgrade() {
                     watch.mapping.store(on, Ordering::SeqCst);
                     if on {
-                        watch.ensure();
+                        watch.signal();
                     }
                 }
             }));

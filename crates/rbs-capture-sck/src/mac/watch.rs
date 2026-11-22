@@ -151,9 +151,33 @@ impl Watch {
             && (self.cursor.load(Ordering::SeqCst) || self.mapping.load(Ordering::SeqCst))
     }
 
-    /// Starts the thread if it has a job and none runs. If the thread cannot start,
-    /// the cursor is drawn as ScreenCaptureKit does and frames carry no mapping.
+    /// Starts the thread if it has a job and none runs (control path), and joins
+    /// threads that already ended on their own (joining them does not wait). If the
+    /// thread cannot start, the cursor is drawn as ScreenCaptureKit does and frames
+    /// carry no mapping.
     pub(super) fn ensure(self: &Arc<Self>) {
+        let done: Vec<_> = {
+            let mut threads = lock(&self.threads);
+            let (done, running): (Vec<_>, Vec<_>) =
+                threads.drain(..).partition(JoinHandle::is_finished);
+            *threads = running;
+            done
+        };
+        for thread in done {
+            let _ = thread.join();
+        }
+        self.spawn_if_needed();
+    }
+
+    /// [`ensure`](Self::ensure) for the mapping switch's callback, which runs under
+    /// the switch's lock: it only spawns, never joins or waits (capture-port.md,
+    /// picture mapping rule 2). Ended threads are joined by the next `ensure` or by
+    /// `stop`.
+    pub(super) fn signal(self: &Arc<Self>) {
+        self.spawn_if_needed();
+    }
+
+    fn spawn_if_needed(self: &Arc<Self>) {
         if !self.needed()
             || self
                 .running
@@ -166,15 +190,6 @@ impl Watch {
         let spawned = std::thread::Builder::new()
             .name("rbs-sck-watch".into())
             .spawn(move || watch.run());
-        let mut threads = lock(&self.threads);
-        // Threads that ended on their own are reaped here; joining them does not wait.
-        let (done, running): (Vec<_>, Vec<_>) =
-            threads.drain(..).partition(JoinHandle::is_finished);
-        *threads = running;
-        drop(threads);
-        for thread in done {
-            let _ = thread.join();
-        }
         match spawned {
             Ok(thread) => lock(&self.threads).push(thread),
             Err(_) => self.running.store(false, Ordering::SeqCst),
@@ -194,6 +209,17 @@ impl Watch {
     }
 
     fn run(self: Arc<Self>) {
+        // A panic in a poll (an OS call) must not leave `running` claimed, or no
+        // watcher would start again in this session.
+        struct Unclaim<'a>(&'a AtomicBool);
+        impl Drop for Unclaim<'_> {
+            fn drop(&mut self) {
+                if std::thread::panicking() {
+                    self.0.store(false, Ordering::SeqCst);
+                }
+            }
+        }
+        let _unclaim = Unclaim(&self.running);
         let mut last_point = None;
         let mut last_query = None;
         loop {
@@ -218,7 +244,11 @@ impl Watch {
 
     fn poll(&self, last_point: &mut Option<(f64, f64)>, last_query: &mut Option<Instant>) {
         let now = Instant::now();
-        let point = pointer();
+        // A display's cover is always `Unknown`: no pointer read for it.
+        let point = match self.target {
+            Parsed::Window(_) => pointer(),
+            Parsed::Display(_) => None,
+        };
         let moved = point != *last_point;
         *last_point = point;
         let mapping = self.mapping.load(Ordering::SeqCst);
