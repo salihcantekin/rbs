@@ -84,3 +84,58 @@ impl StudioUi {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)] // Tests fail by panicking.
+
+    use rbs_api::request::TargetList;
+    use rbs_api::types::{AddOnInfo, AddOnList, AddOnStatus, CaptureTarget};
+
+    use super::*;
+
+    /// The fixed tickets carry the edit mark's bit, so the answer of each must still
+    /// reach its own list (a Mac check found Add source empty).
+    #[test]
+    fn target_and_add_on_answers_reach_their_lists() {
+        let (mut ui, d) = super::super::tests::ui("target-answer");
+        ui.add_picker = Some(super::super::add_picker::AddPicker::for_kind(
+            SourceKind::Screen,
+        ));
+        let screen = CaptureTarget {
+            name: "Display 1".into(),
+            adapter: "test".into(),
+            target: "1".into(),
+            ..CaptureTarget::default()
+        };
+        let mut out = super::super::Applied::default();
+        ui.api_answer(
+            TARGETS_TICKET,
+            Ok(Response::Targets(TargetList {
+                kind: rbs_api::types::SourceKind::Screen,
+                targets: vec![screen],
+            })),
+            &mut out,
+        );
+        assert_eq!(ui.add_picker.as_ref().unwrap().rows().len(), 1);
+        ui.api_answer(
+            super::super::add_calls::ADD_ONS_TICKET,
+            Ok(Response::AddOnList(AddOnList {
+                add_ons: vec![AddOnInfo {
+                    id: "org.example.one".into(),
+                    kind: "runtime".into(),
+                    name: "One".into(),
+                    summary: String::new(),
+                    version: "1".into(),
+                    size: None,
+                    unpacked_size: None,
+                    available: false,
+                    status: AddOnStatus::NotInstalled,
+                }],
+            })),
+            &mut out,
+        );
+        assert_eq!(ui.add_ons.len(), 1);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+}

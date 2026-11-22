@@ -33,11 +33,10 @@ impl StudioUi {
         result: Result<Response, ApiError>,
         out: &mut super::Applied,
     ) {
+        // The fixed tickets first: they sit near `u64::MAX`, so they carry the edit
+        // mark's bit too.
         if ticket == super::add_calls::BROWSER_TICKET {
             return self.browser_answer(result, out);
-        }
-        if ticket & super::crop_calls::EDIT_TICKET != 0 {
-            return self.crop_answer(ticket & !super::crop_calls::EDIT_TICKET, result, out);
         }
         if ticket == super::target_calls::TARGETS_TICKET {
             return self.targets_answer(result);
@@ -47,6 +46,9 @@ impl StudioUi {
                 self.add_ons = list.add_ons;
             }
             return;
+        }
+        if ticket & super::crop_calls::EDIT_TICKET != 0 {
+            return self.crop_answer(ticket & !super::crop_calls::EDIT_TICKET, result, out);
         }
         if self.font.1 != Some(ticket) {
             return;
