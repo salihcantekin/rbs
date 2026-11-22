@@ -65,7 +65,7 @@ Names are the OS thread names (`std::thread::Builder::name`), so they show in a 
 | `rbs-estimate-probe`, `rbs-protection-probe` | `rbs-record` | Encoder probes for the recording estimate and protection | The encoder | |
 | `rbs-file-transport`, `rbs-rtmp-transport`, `rbs-srt-transport` | `rbs-transport-*` | Write or send packets of a recording or stream | The disk, the network, their packet queue | |
 | Audio device threads (`rbs-wasapi-audio`, `rbs-wasapi-render`, `rbs-pw-audio`; CoreAudio's own callback threads) | `rbs-audio-io-*` | Device callbacks and the sample rings (hot path) | The device | Anything P6 forbids |
-| Capture threads (`rbs-pipewire`, `rbs-sck-cursor`; ScreenCaptureKit, AVFoundation and Media Foundation callback queues) | `rbs-capture-*` | Frame callbacks and the hand-off ring (hot path) | The OS capture API | Anything P6 forbids |
+| Capture threads (`rbs-pipewire`, `rbs-sck-watch`; ScreenCaptureKit, AVFoundation and Media Foundation callback queues) | `rbs-capture-*` | Frame callbacks and the hand-off ring (hot path) | The OS capture API | Anything P6 forbids |
 | `rbs-vcam-mf` | `rbs-vcam-mf` | The Windows virtual camera's media source | The camera frame server | |
 | `rbs-browser-supervisor` | `rbs-browser-runner` | One per browser source: forwards control messages to the helper, publishes its frames and sound, checks the helper's heartbeat | A timed poll (twice per page frame; slower while hidden) | Waiting on the helper without a deadline |
 
