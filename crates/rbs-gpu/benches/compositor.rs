@@ -12,7 +12,7 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use rbs_gpu::{
     CanvasDesc, Compositor, GpuContext, GpuRequest, Layer, LayerShape, LayerStyle, ScaleKernel,
-    TextureDesc, TexturePool, YuvConverter, YuvFormat, readback, yuv,
+    TextureDesc, TexturePool, Transfer, YuvConverter, YuvFormat, readback, yuv,
 };
 
 const W: u32 = 1920;
@@ -139,8 +139,8 @@ fn bench(c: &mut Criterion) {
             },
         );
     }
-    // NV12 conversion alone: two plane textures vs one NV12 texture (when supported; on
-    // software adapters the single surface uses the staged copy path).
+    srgb_alpha(&mut group, &ctx, &mut pool, &mut comp, canvas);
+    // NV12 conversion alone: two planes vs one NV12 texture (software: staged copy path).
     group.bench_function("nv12_planes", |b| {
         b.iter(|| {
             conv.convert(&ctx, &pool, canvas, luma, chroma)
@@ -438,3 +438,42 @@ fn bench(c: &mut Criterion) {
 
 criterion_group!(benches, bench);
 criterion_main!(benches);
+
+/// sRGB `Rgba8` uploads (stills, text, browser pages) decoded in the shader: the
+/// premultiplied branch against the straight-alpha branch, eight full-canvas layers.
+fn srgb_alpha(
+    group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
+    ctx: &GpuContext,
+    pool: &mut TexturePool,
+    comp: &mut Compositor,
+    canvas: rbs_gpu::TextureId,
+) {
+    let unorm = pool
+        .acquire(
+            ctx,
+            &TextureDesc::source(W, H, wgpu::TextureFormat::Rgba8Unorm),
+        )
+        .expect("unorm source");
+    let soft: Vec<u8> = (0..W * H)
+        .flat_map(|i| [255, 200, 40, (i % 256) as u8])
+        .collect();
+    readback::upload(ctx, pool, unorm, &soft).expect("upload");
+    for (name, transfer) in [
+        ("rgba8_srgb_8_layers_premultiplied", Transfer::Srgb),
+        ("rgba8_srgb_8_layers_straight", Transfer::SrgbStraight),
+    ] {
+        let layers: Vec<Layer> = (0..8)
+            .map(|_| {
+                let mut l = Layer::new(unorm, 0.0, 0.0, W as f32, H as f32);
+                l.source_transfer = transfer;
+                l
+            })
+            .collect();
+        group.bench_function(name, |b| {
+            b.iter(|| {
+                comp.render(ctx, pool, &layers, canvas).expect("render");
+                ctx.wait_idle().expect("wait");
+            });
+        });
+    }
+}

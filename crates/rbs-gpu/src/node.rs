@@ -6,8 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use rbs_core::media::{
-    ColorSpace, FramePayload, PixelFormat, Size, TextureId, TransferFunction, VideoFormat,
-    next_generation,
+    ColorSpace, FramePayload, PixelFormat, Size, TextureId, VideoFormat, next_generation,
 };
 use rbs_core::time::Timestamp;
 use rbs_graph::description::NodeId;
@@ -610,12 +609,7 @@ impl<R: ReadySignal, D: Redraw> Node<GpuRuntime> for CompositorNode<R, D> {
                     }
                 }
             };
-            let source_transfer =
-                if frame.format().color.transfer == TransferFunction::Srgb && !d.format.is_srgb() {
-                    Transfer::Srgb
-                } else {
-                    Transfer::Linear
-                };
+            let source_transfer = Transfer::of(frame.format(), d.format);
             // Room for `capacity` layers was reserved in `prepare`, so this push does not
             // allocate.
             self.scratch.push(Layer {

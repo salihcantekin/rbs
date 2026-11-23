@@ -79,7 +79,9 @@ fn wrap_colour(l: LayerGpu, uv: vec2<f32>, along: f32) -> vec4<f32> {
     if (l.params.z > 0.5) {
         c = vec4<f32>(c.rgb, 1.0);
     }
-    if (l.params.y > 0.5) {
+    if (l.params.y > 1.5) {
+        c = vec4<f32>(srgb_to_linear(c.rgb) * c.a, c.a);
+    } else if (l.params.y > 0.5) {
         let a = max(c.a, 1e-6);
         c = vec4<f32>(srgb_to_linear(c.rgb / a) * c.a, c.a);
     }

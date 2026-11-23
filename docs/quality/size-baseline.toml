@@ -43,7 +43,7 @@
 "crates/rbs-codec-vaapi/src/engine.rs::open" = 204
 "crates/rbs-codec-videotoolbox/src/mac/session.rs::new" = 235
 "crates/rbs-gpu/benches/compositor.rs::bench" = 417
-"crates/rbs-gpu/src/compositor.rs::render_scrolled" = 211
+"crates/rbs-gpu/src/compositor.rs::render_scrolled" = 207
 "crates/rbs-import-obs/src/build.rs::build" = 321
 "crates/rbs-import-obs/src/profile.rs::read" = 240
 "crates/rbs-mux-fmp4/src/muxer.rs::new" = 323

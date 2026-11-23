@@ -81,3 +81,13 @@ fn outline_reaches_past_the_fill() {
             .any(|px| px == [255, 255, 255, 255])
     );
 }
+
+#[test]
+fn clear_pixels_keep_the_ink_colour_without_coverage() {
+    // Sampling between a clear pixel and an inked one must not darken the edge.
+    let mut b = TextBlock::new("I", [60, 60]);
+    b.fill.color = [255, 200, 0, 255];
+    let (p, _) = renderer().render(&b).unwrap_or_else(|e| panic!("{e}"));
+    let corner = &p.rgba()[..4];
+    assert_eq!(corner, &[255, 200, 0, 0]);
+}
