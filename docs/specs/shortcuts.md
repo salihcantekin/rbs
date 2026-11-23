@@ -57,7 +57,7 @@ pub enum Platform { MacOs, Windows, Linux }
 
 - Every registry entry whose `shortcut` is set gives a default app binding of its plain id.
 - `rbs_ui::shortcut::DEFAULT_SHORTCUTS: &[(&str, &str)]` gives the rest, as `(command id, chord)`: `edit.redo` `Ctrl+Y` (Windows convention, also on macOS where it does nothing else), and `scene.position?n=1` … `n=9` → `Ctrl+1` … `Ctrl+9`.
-- No default is global, none uses `Ctrl+Alt`, none is reserved or has an app-scope problem on any platform, and no two defaults share a chord (tested). A default whose command is not in the registry of this build is left out.
+- Only the scene position defaults (`scene.position?n=1`…`9`, Ctrl+1…9) are global; on a platform without global shortcuts they are app scope. A global default's chord passes the global rule on macOS and Windows and is not one other apps commonly use. None uses `Ctrl+Alt`, none is reserved or has an app-scope problem on any platform, and no two defaults share a chord (tested). A default whose command is not in the registry of this build is left out.
 
 ### Keymap (`rbs_ui::shortcut::Keymap`)
 
@@ -145,6 +145,7 @@ pub fn system(on_event: fn(u32 /* id */, bool /* pressed */)) -> Result<Box<dyn 
 - macOS and Windows: `system` wraps `global-hotkey`. RBS `Ctrl` is the crate's `META` on macOS and `CONTROL` on Windows, `Meta` the other one. The crate's process-global event handler is set once, before the first manager, and hands `(id, pressed)` to the UI thread. There a press runs the command through the control-surface path (`App::run_command_as(id, false)`: the enabled check, no local confirmation, ADR-0060 decision 7); a second press of an id before its release is ignored (`Presses`).
 - Refusals become problems on the page: `TakenByOtherApp` ("Another app uses this shortcut."), `Unsupported`, `Other(why)`. `system` failing lists every global binding with its reason.
 - While the page records a chord, `set(&[])` is called, and the keymap's chords are set again when recording ends (Add, Cancel, Escape, leaving the section or closing the window).
+- A global chord the OS refused stays listed as a problem and runs in app scope while an RBS window has the focus.
 - Linux: `system` fails; global bindings are listed with "Global shortcuts are not available on this system yet."
 
 ### Scene commands (`rbs_ui::command`)
@@ -187,7 +188,7 @@ Rows for picker choices list the current choices (scenes of the canvas, workspac
 ## Conformance tests
 
 - `Chord`: parse and display round trip for every key and modifier set (property test); every refusal case; macOS and Windows labels.
-- Defaults: unique chords, none reserved on any platform, none global, none `Ctrl+Alt`, every id resolves in the registry (or names a scene command).
+- Defaults: unique chords, none reserved on any platform, only the scene position ones global (app scope on Linux), none `Ctrl+Alt`, every id resolves in the registry (or names a scene command).
 - Keymap: removed defaults, user replacing a default, conflicts kept in file order, reserved per platform, global modifier rule, limits; `check` for each outcome; resolution of an arbitrary document never panics and never puts one chord in force twice (property test).
 - Document: round trip, unknown keys refused, bad chord refused, size limit, minimal editing operations.
 - App: key mapping of letters, digits, F-keys, named keys and modifier keys from Slint text; repeats run nothing; a globally bound chord is not run in app scope; undo and redo defaults reach the studio.
