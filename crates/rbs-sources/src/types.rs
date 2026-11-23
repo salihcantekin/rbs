@@ -74,6 +74,12 @@ pub mod keys {
     /// Text, camera: the code range of its Y'CbCr frames, `limited` or `full`.
     /// Absent: Automatic, what the device reports (ADR-0175).
     pub const COLOR_RANGE: &str = "color_range";
+    /// Int, color: the item width Reset transform gives the source, in canvas pixels
+    /// (with `box_height`). A Library shape or plain frame stores the box it was added
+    /// with, since its picture is only a 2 x 2 fill that the item's box stretches.
+    pub const BOX_WIDTH: &str = "box_width";
+    /// Int, color: the item height Reset transform gives the source (with `box_width`).
+    pub const BOX_HEIGHT: &str = "box_height";
     /// Text, image: path of a PNG file. Wins over `sample`.
     pub const PATH: &str = "path";
     /// Text, image: id of a built-in sample picture (`still::SAMPLES`).
