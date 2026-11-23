@@ -164,6 +164,31 @@ pub(super) enum Reload {
     Restarted(bool),
 }
 
+/// Whether two application names are the same program: equal ignoring ASCII case and
+/// an optional `.exe` suffix (older sources saved `chrome.exe`, window capture says `chrome`).
+pub(super) fn same_app(a: &str, b: &str) -> bool {
+    fn stem(n: &str) -> &str {
+        match n.len().checked_sub(4) {
+            Some(i) if n.is_char_boundary(i) && n[i..].eq_ignore_ascii_case(".exe") => &n[..i],
+            _ => n,
+        }
+    }
+    stem(a).eq_ignore_ascii_case(stem(b))
+}
+
+#[cfg(test)]
+mod same_app_tests {
+    use super::same_app;
+
+    #[test]
+    fn ignores_case_and_exe_suffix() {
+        assert!(same_app("chrome", "chrome.exe"));
+        assert!(same_app("Chrome.EXE", "chrome"));
+        assert!(same_app("Google Chrome", "google chrome"));
+        assert!(!same_app("chrome", "chromium.exe"));
+    }
+}
+
 /// The hint keys of a source (ADR-0077): the application and the title its target had.
 pub(super) const HINT_APP: &str = "target_app";
 pub(super) const HINT_TITLE: &str = "target_title";
