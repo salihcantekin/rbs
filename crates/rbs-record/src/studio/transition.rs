@@ -34,6 +34,8 @@ use rbs_scene::{CollectionTransition, GlideEasing, SwipeDirection, TransitionKin
 
 use super::*;
 
+mod move_blend;
+
 /// The longest a transition waits for the incoming picture before it starts anyway
 /// (ADR-0128 decision 7), on the master clock. The same bound covers the wait for
 /// the program compositor to take the plain layers at the end (decision 8).
@@ -502,6 +504,7 @@ pub(super) fn rehearsal_layers(
                 start,
                 duration,
                 easing: ease,
+                from_crop: None,
             });
             if push {
                 let at = bottom.transform;
@@ -511,6 +514,7 @@ pub(super) fn rehearsal_layers(
                     start,
                     duration,
                     easing: ease,
+                    from_crop: None,
                 });
             }
             layers.push(bottom);
@@ -1100,41 +1104,14 @@ impl Studio {
             let Phase::Running(start) = t.phase else {
                 return None;
             };
-            // The incoming layers with their glide, then the leaving ones fading out
-            // above them so the fade is seen, then the globals above everything.
-            let mut current = program.clone();
-            current.layers.retain(|l| !is_global(l));
-            let drawn: BTreeSet<SourceId> = current.layers.iter().map(|l| l.source).collect();
-            let mut layers = paint_layers(
-                &current,
-                plan,
-                self.glide.as_ref(),
-                now,
+            let (duration, from) = (t.duration, t.from.clone());
+            let glide = move_blend::MoveGlide {
                 canvas,
-                &self.scroll_runs,
-            );
-            let mut leaving = program.clone();
-            leaving.layers = t
-                .from
-                .iter()
-                .filter(|l| !is_global(l) && !drawn.contains(&l.source))
-                .cloned()
-                .collect();
-            for mut l in node_layers(&leaving, plan, &self.scroll_runs) {
-                l.fade = Some(Fade {
-                    from: l.opacity,
-                    start,
-                    duration: t.duration,
-                    // As the glide's fade-ins (ADR-0100).
-                    easing: rbs_gpu::node::Easing::Linear,
-                });
-                l.opacity = 0.0;
-                layers.push(l);
-            }
-            let mut above = program.clone();
-            above.layers.retain(|l| is_global(l));
-            layers.extend(node_layers(&above, plan, &self.scroll_runs));
-            return Some(layers);
+                start,
+                duration,
+                now,
+            };
+            return Some(self.move_layers(&glide, plan, program, &from, &is_global));
         }
         let running = matches!(t.phase, Phase::Running(_));
         if let Some(view) = &mut t.incoming {
@@ -1241,6 +1218,7 @@ impl Studio {
                                 start,
                                 duration: t.duration,
                                 easing: ease,
+                                from_crop: None,
                             });
                             if push {
                                 let out = (-offset.0, -offset.1);
@@ -1252,6 +1230,7 @@ impl Studio {
                                         start,
                                         duration: t.duration,
                                         easing: ease,
+                                        from_crop: None,
                                     });
                                 }
                             }

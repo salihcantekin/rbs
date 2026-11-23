@@ -793,7 +793,13 @@ pub struct NodeLayer {
     pub scroll: Option<LayerScroll>, // a scroll and its run (ADR-0150), evaluated against tick time
 }
 pub struct Fade { pub from: f32, pub start: Timestamp, pub duration: Duration, pub easing: Easing }
-pub struct Slide { pub from: Affine2, pub start: Timestamp, pub duration: Duration, pub easing: Easing }
+pub struct Slide { pub from: Affine2, pub start: Timestamp, pub duration: Duration, pub easing: Easing,
+                   pub from_crop: Option<PixelCrop> }  // the crop moves from `from_crop` with the box; None keeps `crop`
+// While a slide runs, the node draws the layer with the moved box, the crop moved from
+// `from_crop` (texture coordinates, same easing) and the style's `box_size` scaled on each
+// axis by the moved box's column length over the end box's, so a circle stays round and a
+// border keeps its width while the box's aspect changes (owner, 2026-11-23). A few
+// multiplies per sliding layer, no allocation; layers without a slide are untouched.
 
 pub type LayerSender = ParamSender<Vec<NodeLayer>>;
 pub type ScrollSender = ParamSender<Option<ScrollBinding>>;  // CompositorNode::with_scroll; owned, so the node writes its staging

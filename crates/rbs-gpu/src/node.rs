@@ -148,21 +148,34 @@ pub struct Slide {
     pub duration: Duration,
     /// How unit time is mapped (ADR-0100).
     pub easing: Easing,
+    /// The crop at and before `start`, moved to the layer's `crop` with the box, so a
+    /// picture cropped in only one of the two scenes keeps its shape (ADR-0128 review, owner 2026-11-23).
+    /// `None` keeps the layer's crop all along.
+    pub from_crop: Option<PixelCrop>,
 }
 
 impl Slide {
     /// The box at `now` for a move ending at `to`.
     pub fn at(&self, to: Affine2, now: Timestamp) -> Affine2 {
+        match self.progress(now) {
+            Some(t) => self.from.lerp(to, t),
+            None if now <= self.start => self.from,
+            None => to,
+        }
+    }
+
+    /// The eased progress strictly inside the move, `None` at and before `start`
+    /// and at and after the end.
+    fn progress(&self, now: Timestamp) -> Option<f32> {
         if now <= self.start || self.duration.is_zero() {
-            return if now <= self.start { self.from } else { to };
+            return None;
         }
         let elapsed = now.saturating_since(self.start);
         if elapsed >= self.duration {
-            return to;
+            return None;
         }
         let u = elapsed.as_secs_f64() / self.duration.as_secs_f64();
-        let t = self.easing.map(u);
-        self.from.lerp(to, t)
+        Some(self.easing.map(u))
     }
 }
 
@@ -472,6 +485,72 @@ fn uv(crop: PixelCrop, width: u32, height: u32) -> UvRect {
     }
 }
 
+/// Where a layer is drawn at `now` on a `width x height` source: its box, crop and
+/// style, moved by its slide (ADR-0100). While a slide runs, the crop moves from the
+/// slide's `from_crop` with the box, and the style's box size follows the box's own
+/// scale on each axis, so a circle stays round and a border keeps its width on a box
+/// whose aspect changes (ADR-0128 review, owner 2026-11-23). No allocation; a few multiplies per sliding layer.
+#[inline(always)]
+fn placement(
+    spec: &NodeLayer,
+    now: Timestamp,
+    width: u32,
+    height: u32,
+) -> (Affine2, UvRect, LayerStyle) {
+    match &spec.slide {
+        None => (spec.transform, uv(spec.crop, width, height), spec.style),
+        Some(slide) => sliding(spec, slide, now, width, height),
+    }
+}
+
+/// [`placement`] of a layer with a slide; kept out of line so a layer without one
+/// costs what it did before.
+#[inline(never)]
+fn sliding(
+    spec: &NodeLayer,
+    slide: &Slide,
+    now: Timestamp,
+    width: u32,
+    height: u32,
+) -> (Affine2, UvRect, LayerStyle) {
+    let crop = uv(spec.crop, width, height);
+    let Some(t) = slide.progress(now) else {
+        // Ended: the layer's own place. Not started yet: where it comes from.
+        if now > slide.start {
+            return (spec.transform, crop, spec.style);
+        }
+        let from_crop = slide.from_crop.map_or(crop, |c| uv(c, width, height));
+        return (slide.from, from_crop, spec.style);
+    };
+    let transform = slide.from.lerp(spec.transform, t);
+    let crop = match slide.from_crop {
+        Some(from) => {
+            let f = uv(from, width, height);
+            let m = |a: f32, b: f32| a + (b - a) * t;
+            UvRect {
+                u0: m(f.u0, crop.u0),
+                v0: m(f.v0, crop.v0),
+                u1: m(f.u1, crop.u1),
+                v1: m(f.v1, crop.v1),
+            }
+        }
+        None => crop,
+    };
+    let mut style = spec.style;
+    let ratio = |x: f32, y: f32, to_x: f32, to_y: f32| {
+        let end = to_x.hypot(to_y);
+        if end > 0.0 && end.is_finite() {
+            x.hypot(y) / end
+        } else {
+            1.0
+        }
+    };
+    let to = &spec.transform;
+    style.box_size[0] *= ratio(transform.a, transform.b, to.a, to.b);
+    style.box_size[1] *= ratio(transform.c, transform.d, to.c, to.d);
+    (transform, crop, style)
+}
+
 impl<R: ReadySignal, D: Redraw> Node<GpuRuntime> for CompositorNode<R, D> {
     fn descriptor(&self) -> &NodeDescriptor {
         &self.descriptor
@@ -552,11 +631,7 @@ impl<R: ReadySignal, D: Redraw> Node<GpuRuntime> for CompositorNode<R, D> {
                 // Scroll motion uses the same box as the draw (tick time), so a slide
                 // that changes the window still forces a draw.
                 if let Some(sc) = &spec.scroll {
-                    let transform = match &spec.slide {
-                        Some(slide) => slide.at(spec.transform, tick.time),
-                        None => spec.transform,
-                    };
-                    let crop = uv(spec.crop, d.width, d.height);
+                    let (transform, crop, _) = placement(spec, tick.time, d.width, d.height);
                     let ended = sc
                         .frame(&transform, &crop, d.width, d.height, self.drawn_at)
                         .is_some_and(|f| f.ended);
@@ -594,11 +669,7 @@ impl<R: ReadySignal, D: Redraw> Node<GpuRuntime> for CompositorNode<R, D> {
                 missing = R::TRACKS;
                 continue;
             };
-            let transform = match &spec.slide {
-                Some(slide) => slide.at(spec.transform, tick.time),
-                None => spec.transform,
-            };
-            let crop = uv(spec.crop, d.width, d.height);
+            let (transform, crop, style) = placement(spec, tick.time, d.width, d.height);
             let scroll = match &spec.scroll {
                 None => None,
                 Some(sc) => {
@@ -622,7 +693,7 @@ impl<R: ReadySignal, D: Redraw> Node<GpuRuntime> for CompositorNode<R, D> {
                 },
                 source_transfer,
                 opaque: spec.opaque,
-                style: spec.style,
+                style,
                 // A 4:2:0 picture is sampled as it is, with its own colour space (R-11).
                 ycbcr: frame.format().color,
                 scroll,
@@ -672,9 +743,18 @@ impl<R: ReadySignal, D: Redraw> Node<GpuRuntime> for CompositorNode<R, D> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compositor::LayerShape;
 
     fn ms(v: u64) -> Timestamp {
         Timestamp::from_nanos(v * 1_000_000)
+    }
+
+    /// A node id for a layer that is never linked.
+    fn some_node() -> NodeId {
+        let mut graph = rbs_graph::description::GraphDescription::new();
+        graph
+            .add_node(Arc::new(compositor_descriptor()))
+            .expect("an empty graph takes a node")
     }
 
     #[test]
@@ -699,6 +779,7 @@ mod tests {
             start: ms(0),
             duration: Duration::from_millis(400),
             easing: Easing::EaseInOut,
+            from_crop: None,
         };
         let to = Affine2::rect(200.0, 0.0, 100.0, 100.0);
         assert_eq!(slide.at(to, ms(0)).tx, 0.0);
@@ -717,10 +798,77 @@ mod tests {
             start: ms(0),
             duration: Duration::from_millis(400),
             easing: Easing::Linear,
+            from_crop: None,
         };
         let to = Affine2::rect(200.0, 0.0, 100.0, 100.0);
         assert!((slide.at(to, ms(200)).tx - 100.0).abs() < 1e-3);
         assert!((slide.at(to, ms(100)).tx - 50.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn a_sliding_circle_follows_the_box_aspect_and_the_crop_moves_with_it() {
+        // ADR-0128 review (owner 2026-11-23): from a 16:9 full box, uncropped, to a square box cropped at the
+        // sides. Halfway the shape's box has the drawn box's aspect, not the end box's.
+        let to_box = Affine2::rect(1500.0, 800.0, 300.0, 300.0);
+        let mut spec = NodeLayer::new(some_node(), 0, 1500.0, 800.0, 300.0, 300.0);
+        spec.crop = PixelCrop {
+            left: 400,
+            top: 0,
+            right: 400,
+            bottom: 0,
+        };
+        spec.style = LayerStyle::new(LayerShape::Circle, 0.0, [0; 4], [300.0, 300.0]);
+        spec.slide = Some(Slide {
+            from: Affine2::rect(0.0, 0.0, 1920.0, 1080.0),
+            start: ms(0),
+            duration: Duration::from_millis(400),
+            easing: Easing::Linear,
+            from_crop: Some(PixelCrop::default()),
+        });
+        let (w, h) = (1920, 1080);
+
+        let (t, crop, style) = placement(&spec, ms(0), w, h);
+        assert_eq!(t, Affine2::rect(0.0, 0.0, 1920.0, 1080.0));
+        assert_eq!(crop, UvRect::FULL);
+        assert_eq!(style.box_size, [300.0, 300.0]);
+
+        let (t, crop, style) = placement(&spec, ms(200), w, h);
+        let [bw, bh] = style.box_size;
+        assert!(
+            (bw / bh - t.a / t.d).abs() < 1e-4,
+            "{bw}x{bh} vs {}x{}",
+            t.a,
+            t.d
+        );
+        // The box units per canvas pixel stay those of the end box.
+        assert!((bw / t.a - 300.0 / 300.0).abs() < 1e-4);
+        assert!((crop.u0 - 200.0 / 1920.0).abs() < 1e-6);
+        assert!((crop.u1 - (1.0 - 200.0 / 1920.0)).abs() < 1e-6);
+
+        let (t, crop, style) = placement(&spec, ms(400), w, h);
+        assert_eq!(t, to_box);
+        assert_eq!(crop, uv(spec.crop, w, h));
+        assert_eq!(style, spec.style);
+    }
+
+    #[test]
+    fn a_mirrored_box_keeps_a_positive_shape_size_while_it_slides() {
+        // A mirrored item (negative width) has a negative column; the shape's box
+        // follows the length, so its size stays as the item's own.
+        let mut spec = NodeLayer::new(some_node(), 0, 600.0, 0.0, -300.0, 300.0);
+        spec.style = LayerStyle::new(LayerShape::Circle, 0.0, [0; 4], [300.0, 300.0]);
+        spec.slide = Some(Slide {
+            from: Affine2::rect(1920.0, 0.0, -1920.0, 1080.0),
+            start: ms(0),
+            duration: Duration::from_millis(400),
+            easing: Easing::Linear,
+            from_crop: None,
+        });
+        let (t, crop, style) = placement(&spec, ms(200), 1920, 1080);
+        assert_eq!(crop, UvRect::FULL);
+        let [bw, bh] = style.box_size;
+        assert!(bw > 0.0 && bh > 0.0);
+        assert!((bw / bh - t.a.abs() / t.d).abs() < 1e-4);
     }
 
     #[test]

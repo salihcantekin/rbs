@@ -127,3 +127,5 @@ Independent review per ADR-0014.
 Owner acceptance, 2026-11-16: Salih approved the ADR after both review rounds.
 
 Superseded in part by [ADR-0153](0153-a-transition-of-its-own-outside-studio-mode.md) decision 1, 2026-11-18: decision 14 (one kind for every program change) no longer holds; outside studio mode a program change uses a kind of its own, Move by default.
+
+Owner decision, 2026-11-23 (Salih, without a new ADR): Move's leaving layers are no longer all drawn above the incoming layers (decisions 2 and 5). A full-canvas background that leaves covered a source that slides, so the slide looked like a fade-in and a shared camera went dark for a moment. Each leaving layer now fades out where the outgoing scene stacked it: just below the incoming layer of the nearest source above it that both scenes draw, or on top when none is above it, so an overlay still fades out visibly over the picture. In the same change a slide also moves a changed crop with the box and keeps a shape's box at the moved box's aspect, so a cropped circle no longer stretches into an ellipse (gpu-compositor spec, `Slide`).

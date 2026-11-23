@@ -60,7 +60,9 @@ pub use browser_sound::{
     BrowserSoundNode, BrowserSoundStats, browser_sound_descriptor,
 };
 pub use filters::{filter_settings, filter_values, filter_values_lenient};
-pub use layers::{GLIDE, glide_layers, glide_max_duration, gpu_easing, node_layers, resolve_slide};
+pub use layers::{
+    GLIDE, glide_layers, glide_max_duration, gpu_easing, node_layers, resolve_slide, stack_leaving,
+};
 pub use mapping::SourceMapping;
 /// A message to a running browser page (`browser.reload`, `browser.run_script`, live
 /// page options, input).

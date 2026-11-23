@@ -6,7 +6,7 @@ use rbs_core::time::Timestamp;
 use rbs_gpu::compositor::{LayerShape, LayerStyle};
 use rbs_gpu::math::Affine2;
 use rbs_gpu::node::{Easing, Fade, NodeLayer, PixelCrop, Slide};
-use rbs_graph::description::SchedulePlan;
+use rbs_graph::description::{NodeId, SchedulePlan};
 use rbs_scene::binder::{BoundCompositor, BoundLayer, resolve};
 use rbs_scene::model::{CollectionGlide, GlideEasing, ItemStyle, Shape, SourceGlide, SourceId};
 
@@ -45,12 +45,7 @@ pub fn node_layers(
                 tx: t.tx,
                 ty: t.ty,
             };
-            out.crop = PixelCrop {
-                left: layer.crop.left,
-                top: layer.crop.top,
-                right: layer.crop.right,
-                bottom: layer.crop.bottom,
-            };
+            out.crop = pixel_crop(layer.crop);
             out.opacity = layer.opacity;
             out.style = layer_style(&layer.style, layer.box_size);
             out.scroll = scroll;
@@ -90,6 +85,21 @@ pub fn resolve_slide(
     }
 }
 
+/// The scene crop as the compositor's crop.
+fn pixel_crop(c: rbs_scene::model::Crop) -> PixelCrop {
+    PixelCrop {
+        left: c.left,
+        top: c.top,
+        right: c.right,
+        bottom: c.bottom,
+    }
+}
+
+/// True when a source in both scenes moves: its box or its crop changes.
+fn moves(old: &BoundLayer, new: &BoundLayer) -> bool {
+    old.transform != new.transform || old.crop != new.crop
+}
+
 /// The scene transform as the compositor's transform.
 fn gpu_affine(t: rbs_scene::Affine2) -> Affine2 {
     Affine2 {
@@ -102,8 +112,8 @@ fn gpu_affine(t: rbs_scene::Affine2) -> Affine2 {
     }
 }
 
-/// Moves a source that was already on the program to its new box, and fades in a
-/// source that was not. `current` is the compositor's layer list; `layers` is that
+/// Moves a source that was already on the program to its new box and crop, and fades
+/// in a source that was not. `current` is the compositor's layer list; `layers` is that
 /// list after producers that are not scheduled have been left out. `from` is the
 /// program's layers before the scene change. Slides use the collection glide or a
 /// per-source override; fade-ins use the collection duration and linear easing
@@ -122,13 +132,15 @@ pub fn glide_layers(
             continue;
         };
         match from.iter().find(|old| old.source == layer.source) {
-            Some(old) if old.transform != layer.transform => {
+            Some(old) if moves(old, layer) => {
                 let (duration, easing) = resolve_slide(collection, source_glide(layer.source));
                 out.slide = Some(Slide {
                     from: gpu_affine(old.transform),
                     start,
                     duration,
                     easing,
+                    // The crop moves with the box (ADR-0128 review, owner 2026-11-23).
+                    from_crop: (old.crop != layer.crop).then(|| pixel_crop(old.crop)),
                 });
             }
             None => {
@@ -158,7 +170,7 @@ pub fn glide_max_duration(
         let Some(old) = from.iter().find(|old| old.source == layer.source) else {
             continue;
         };
-        if old.transform == layer.transform {
+        if !moves(old, layer) {
             continue;
         }
         if let Some(g) = source_glide(layer.source) {
@@ -166,6 +178,34 @@ pub fn glide_max_duration(
         }
     }
     Duration::from_millis(u64::from(max_ms))
+}
+
+/// Puts each layer that leaves on a Move where the outgoing scene stacked it
+/// (ADR-0128 review, owner 2026-11-23): just below the incoming layer of the nearest source above it in `from`
+/// that the incoming scene also draws, or on top when no such source is above it. So a
+/// leaving background fades out under a picture that slides, and a leaving overlay
+/// fades out over it. `layers` are the incoming layers; `current` names the source and
+/// producer of each incoming bound layer; `from` names the source of each outgoing
+/// layer, bottom first; `leaving` pairs the index in `from` of each leaving layer,
+/// bottom first, with its layer.
+pub fn stack_leaving(
+    mut layers: Vec<NodeLayer>,
+    current: &[(SourceId, NodeId)],
+    from: &[SourceId],
+    leaving: Vec<(usize, NodeLayer)>,
+) -> Vec<NodeLayer> {
+    for (index, layer) in leaving {
+        let anchor = from
+            .iter()
+            .skip(index + 1)
+            .find_map(|above| current.iter().find(|(source, _)| source == above))
+            .and_then(|(_, producer)| layers.iter().position(|l| l.producer == *producer));
+        match anchor {
+            Some(at) => layers.insert(at, layer),
+            None => layers.push(layer),
+        }
+    }
+    layers
 }
 
 /// The compositor's form of an item's style (ADR-0053): the border colour in linear
@@ -207,6 +247,66 @@ mod tests {
         );
         assert_eq!(d, Duration::from_millis(800));
         assert_eq!(e, Easing::Linear);
+    }
+
+    fn nodes(n: usize) -> Vec<NodeId> {
+        let mut graph = rbs_graph::description::GraphDescription::new();
+        (0..n)
+            .map(|_| {
+                graph
+                    .add_node(std::sync::Arc::new(rbs_gpu::node::compositor_descriptor()))
+                    .expect("an empty graph takes nodes")
+            })
+            .collect()
+    }
+
+    fn order(layers: &[NodeLayer]) -> Vec<NodeId> {
+        layers.iter().map(|l| l.producer).collect()
+    }
+
+    #[test]
+    fn a_leaving_background_fades_under_the_picture_that_slides() {
+        // Screen_Cam [Dots, Display, Camera] to Full Screen [Display]: Dots stays
+        // below the display, the camera (above it before) fades out on top.
+        let n = nodes(3);
+        let (dots, display, camera) = (n[0], n[1], n[2]);
+        let (s_dots, s_display, s_camera) = (
+            SourceId::from_raw(10),
+            SourceId::from_raw(2),
+            SourceId::from_raw(1),
+        );
+        let layer = |p| NodeLayer::new(p, 0, 0.0, 0.0, 1.0, 1.0);
+        let out = stack_leaving(
+            vec![layer(display)],
+            &[(s_display, display)],
+            &[s_dots, s_display, s_camera],
+            vec![(0, layer(dots)), (2, layer(camera))],
+        );
+        assert_eq!(order(&out), vec![dots, display, camera]);
+    }
+
+    #[test]
+    fn leaving_layers_keep_their_order_under_one_shared_source() {
+        // Screen_Cam [Dots, Display, Camera] to Full Cam [Camera, new overlay]: both
+        // leaving layers go below the camera in their own order; the overlay that
+        // fades in stays above.
+        let n = nodes(4);
+        let (dots, display, camera, overlay) = (n[0], n[1], n[2], n[3]);
+        let layer = |p| NodeLayer::new(p, 0, 0.0, 0.0, 1.0, 1.0);
+        let out = stack_leaving(
+            vec![layer(camera), layer(overlay)],
+            &[
+                (SourceId::from_raw(1), camera),
+                (SourceId::from_raw(5), overlay),
+            ],
+            &[
+                SourceId::from_raw(10),
+                SourceId::from_raw(2),
+                SourceId::from_raw(1),
+            ],
+            vec![(0, layer(dots)), (1, layer(display))],
+        );
+        assert_eq!(order(&out), vec![dots, display, camera, overlay]);
     }
 
     #[test]
