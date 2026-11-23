@@ -1,45 +1,110 @@
 # RBS
 
-**Rust Broadcasting Software**: an open, modular live production, streaming and recording engine written in Rust.
+**Produce live. Record with more control. Build what comes next.**
 
-RBS aims to be a long-lived alternative to OBS Studio, built on a foundation that is:
+Rust Broadcasting Software is an open live production, streaming and recording
+project built in Rust. It brings familiar studio workflows together with
+production tools built into the application — and a modular foundation designed
+to make new capabilities easier to add.
 
-- **Solid**: a crash in a source or plugin never takes down a live stream or a recording.
-- **Swappable**: every external library, protocol and hardware API sits behind a stable interface. FFmpeg, NVENC, PipeWire or RTMP can be replaced without touching the core.
-- **Efficient**: frames stay on the GPU from capture to encoder, the audio path never allocates, and every change is measured against CPU, GPU and memory budgets.
-- **Open to contributors**: clear specs, recorded decisions and conformance tests, so anyone (human or AI) can add a backend or plugin with confidence.
+The goal is more than an OBS alternative: a studio that can grow beyond parity,
+with less reliance on assembling a production workflow from separate add-ons.
 
-> Status: pre-alpha. This repository currently holds the foundation documents and the workspace skeleton. No usable application yet.
+> **Development status: pre-alpha.** The desktop application and core media
+> paths are implemented, but features and platform support are incomplete.
+> RBS is not yet a drop-in replacement for OBS or a production-stability
+> guarantee. See [current status](docs/status.md) for what is implemented.
 
-## Where to start
+## A studio built for the whole workflow
 
-| Read this | To learn |
-| --- | --- |
-| [docs/vision.md](docs/vision.md) | What we build, for whom, and what we will not build |
-| [docs/architecture/overview.md](docs/architecture/overview.md) | How the system fits together |
-| [docs/architecture/principles.md](docs/architecture/principles.md) | The rules every change must respect |
-| [docs/adr/](docs/adr/) | Why each major decision was made |
-| [docs/ui/principles.md](docs/ui/principles.md) | Binding UI rules |
-| [docs/specs/](docs/specs/) | Contracts: backend ports, media graph, plugins, performance budgets |
-| [docs/roadmap.md](docs/roadmap.md) | Phases and exit gates |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | How to contribute |
-| [CLAUDE.md](CLAUDE.md) | Instructions for AI coding agents working in this repo |
+**Go live with familiar tools.** Arrange scenes and sources, apply transitions
+and transforms, mix audio, and record and stream together. Capture, image,
+text, media-file and browser sources are part of the studio; availability
+depends on the platform and installed components.
 
-## Building
+**Keep more of your production built in.**
+
+- **Sound:** source and master faders, meters and headphone monitoring, plus
+  gain, noise gate, ducking and master loudness metering.
+- **Edit after the show:** record marked sources separately alongside the
+  master, add recording markers, and export supported editor project formats.
+- **Make sources work harder:** live text sources include clocks, countdowns
+  and timers; browser sources support page interaction, CSS and scripts.
+- **Bring your setup:** the OBS import wizard and CLI import supported scene
+  collections and profiles, with a report of approximated or skipped items.
+- **Automate:** a partial control API and MCP integration expose studio
+  operations to remote clients and AI tools.
+
+Some of these workflows are still being built out. For example, the engine
+supports multiple audio buses and recording tracks, but bus editing and
+track-list UI are not yet available. See [current status](docs/status.md) for
+the scope and limitations of each feature.
+
+## Designed to grow
+
+The desktop studio sits on a headless media engine. Capture, audio, encoding
+and transport use ports and replaceable adapters, so new implementations can
+be added without tying the core to a particular vendor. The media graph,
+capability model and parameter schemas provide a foundation for new sources,
+filters and other extensions. These are design principles, not a promise that
+every future integration will be effortless.
+
+Native GPU encoder input is preferred when the device and encoder support it,
+with system-memory fallback otherwise. The plugin host can discover manifests,
+but loading plugin code is not implemented yet; crash isolation is partial.
+Linux support is incomplete and has not been tested on a GPU-equipped Linux
+machine; video-file decoding is not yet implemented on Linux. See the
+[architecture](docs/architecture/overview.md),
+[status](docs/status.md) and [specifications](docs/specs/) for details.
+
+## Try a development build
+
+Install the Rust toolchain pinned in [`rust-toolchain.toml`](rust-toolchain.toml)
+and the platform's build prerequisites. The development scripts build the app
+with its companion programs; they do not produce an installer.
+
+macOS / Linux:
+
+```sh
+tools/dev/run.sh --build --no-browser --fresh-config
+```
+
+Windows (PowerShell):
+
+```powershell
+.\tools\dev\run.ps1 -Build -NoBrowser -FreshConfig
+```
+
+These commands use a fresh temporary configuration and skip the browser
+runner, so browser sources are unavailable. For browser support, release
+builds, prerequisites and more options, see
+[`tools/dev/README.md`](tools/dev/README.md). Back up your existing production
+setup and test locally before relying on RBS for a live show.
+
+## Build and contribute
 
 ```sh
 cargo build --workspace
 cargo test --workspace
 ```
 
-To build the app with the programs it starts (browser runner, AI tools) and run it in
-debug, release, UI live preview or with a fresh configuration, use the scripts in
-[`tools/dev`](tools/dev/README.md).
+Start with [contribution guidance](CONTRIBUTING.md). The project records
+contracts and design decisions alongside the code, and welcomes contributions
+that keep backends replaceable and real-time work predictable.
 
-The minimum supported Rust version is pinned in [`rust-toolchain.toml`](rust-toolchain.toml).
+| Explore | Purpose |
+| --- | --- |
+| [Current status](docs/status.md) | Implemented features and known gaps |
+| [Vision](docs/vision.md) | Goals and intended audience |
+| [Architecture overview](docs/architecture/overview.md) and [principles](docs/architecture/principles.md) | System layers and design rules |
+| [Specifications](docs/specs/) and [decisions](docs/adr/) | Contracts and rationale |
+| [UI principles](docs/ui/principles.md) | Rules for the desktop experience |
+| [Roadmap](docs/roadmap.md) | Planned phases and exit gates |
+| [Agent instructions](CLAUDE.md) | Guidance for AI coding agents |
 
 ## License
 
-RBS is free software under the [GNU General Public License v3.0 or later](LICENSE). See [ADR-0010](docs/adr/0010-project-license.md) for the reasoning.
+RBS is free software under the [GNU General Public License v3.0 or later](LICENSE).
+See [ADR-0010](docs/adr/0010-project-license.md) for the reasoning.
 
 Copyright (C) 2026 Salih Cantekin and contributors.
