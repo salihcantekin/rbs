@@ -287,3 +287,25 @@ fn opaque_layer_ignores_undefined_source_alpha() {
     let px = readback::read_rgba16f(ctx, &pool, target).unwrap();
     assert_close(at(&px, W, 16, 16), [1.0, 0.0, 0.0, 1.0], TOL);
 }
+
+#[test]
+fn straight_alpha_srgb_sources_keep_their_coverage() {
+    // Anti-aliased text edges and soft image edges: `Rgba8` uploads hold sRGB codes with
+    // straight alpha. White at half coverage is half-covered white, not full white.
+    let Some((ctx, mut pool, mut comp, target)) = setup() else {
+        return;
+    };
+    let src = pool
+        .acquire(
+            ctx,
+            &TextureDesc::source(2, 2, wgpu::TextureFormat::Rgba8Unorm),
+        )
+        .unwrap();
+    readback::upload(ctx, &pool, src, &[255u8, 255, 255, 128].repeat(4)).unwrap();
+    let mut layer = Layer::new(src, 0.0, 0.0, 64.0, 64.0);
+    layer.source_transfer = Transfer::SrgbStraight;
+    comp.render(ctx, &pool, &[layer], target).unwrap();
+    let px = readback::read_rgba16f(ctx, &pool, target).unwrap();
+    let a = 128.0 / 255.0;
+    assert_close(at(&px, W, 32, 32), [a, a, a, a], TOL);
+}

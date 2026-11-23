@@ -56,6 +56,8 @@ pub trait TextRenderer: Send + Sync {
 }
 ```
 
+A pixel with no coverage keeps the colour of the ink beside it (the outline colour, else the fill colour at that pixel) with alpha 0, so a picture sampled between pixels (a fractional position or a stretch) does not get a dark fringe. The compositor reads the picture as straight alpha (`Transfer::SrgbStraight`, gpu-compositor spec "Source alpha").
+
 Ranges (`validate`, each refusal names the source setting): box sides 1 to 4096 and area at most 8 388 608 pixels (`width`, `height`); at most 10 000 characters (`text`); `size` 1 to 1024; `weight` 100 to 900; gradient `angle` finite; `line_spacing` 0.5 to 3; `letter_spacing` -50 to 200; outline width above 0 and at most 64 (`outline_width`); shadow offsets within ±256 (`shadow_x`, `shadow_y`) and blur 0 to 64 (`shadow_blur`); `padding` 0 to 1024. Non-finite numbers are refused.
 
 Capabilities (`rbs_text::caps`, flags): `text.color_glyphs` (emoji in colour), `text.tabular_figures` (honours `tabular_figures`), `text.system_fonts` (lists the system's families).

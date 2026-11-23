@@ -56,8 +56,11 @@ fn layer_colour(l: LayerGpu, uv: vec2<f32>) -> vec4<f32> {
         // XRGB sources: the fourth channel is undefined, the colour is not premultiplied.
         c = vec4<f32>(c.rgb, 1.0);
     }
-    if (l.params.y > 0.5) {
-        // Sources are premultiplied; decode the colour, not the coverage.
+    if (l.params.y > 1.5) {
+        // Straight alpha (`Rgba8` uploads): decode the colour, then premultiply.
+        c = vec4<f32>(srgb_to_linear(c.rgb) * c.a, c.a);
+    } else if (l.params.y > 0.5) {
+        // Premultiplied: decode the colour, not the coverage.
         let a = max(c.a, 1e-6);
         c = vec4<f32>(srgb_to_linear(c.rgb / a) * c.a, c.a);
     }

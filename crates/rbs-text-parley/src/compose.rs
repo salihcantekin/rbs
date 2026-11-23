@@ -217,10 +217,17 @@ pub(crate) fn compose(
         }
     }
     let mut rgba = Vec::with_capacity(out.len() * 4);
-    for d in out {
+    for (i, d) in out.into_iter().enumerate() {
         let a = d[3];
         if a <= 0.0 {
-            rgba.extend_from_slice(&[0, 0, 0, 0]);
+            // Clear pixels keep the colour of the ink beside them, with no coverage, so
+            // a picture sampled between pixels (a fractional position or a stretch)
+            // blends the straight colours without a dark fringe.
+            let edge = match block.outline {
+                Some(outline) => outline.color,
+                None => fill_at(block, i as u32 % w, i as u32 / w),
+            };
+            rgba.extend_from_slice(&[edge[0], edge[1], edge[2], 0]);
             continue;
         }
         for c in &d[..3] {

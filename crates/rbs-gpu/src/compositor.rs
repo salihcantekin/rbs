@@ -25,8 +25,39 @@ pub enum Transfer {
     /// Already linear light (for example an `*Srgb` texture format, decoded by the sampler).
     #[default]
     Linear,
-    /// sRGB-encoded values in a non-sRGB format; decoded to linear in the shader.
+    /// sRGB-encoded values with premultiplied alpha in a non-sRGB format; decoded to
+    /// linear in the shader.
     Srgb,
+    /// sRGB-encoded values with straight alpha in a non-sRGB format (`Rgba8` uploads:
+    /// stills, text, browser pages, media and slide show pictures); decoded to linear and
+    /// premultiplied in the shader.
+    SrgbStraight,
+}
+
+impl Transfer {
+    /// How a frame of `format` held in a texture of `texture` format is sampled. `Rgba8`
+    /// frames are straight alpha by contract (gpu-compositor spec, "Source alpha");
+    /// every other sRGB-tagged layout is premultiplied or opaque.
+    pub fn of(format: &rbs_core::media::VideoFormat, texture: wgpu::TextureFormat) -> Self {
+        use rbs_core::media::{PixelFormat, TransferFunction};
+        if format.color.transfer != TransferFunction::Srgb || texture.is_srgb() {
+            Transfer::Linear
+        } else if format.pixel_format == PixelFormat::Rgba8 {
+            Transfer::SrgbStraight
+        } else {
+            Transfer::Srgb
+        }
+    }
+
+    /// The shader's code for this transfer: 0 linear, 1 sRGB premultiplied, 2 sRGB
+    /// straight (`composite.wgsl`, `wrap.wgsl`, the filter prelude).
+    pub fn code(self) -> f32 {
+        match self {
+            Transfer::Linear => 0.0,
+            Transfer::Srgb => 1.0,
+            Transfer::SrgbStraight => 2.0,
+        }
+    }
 }
 
 /// The size of a canvas. The format is always [`crate::CANVAS_FORMAT`].
@@ -711,11 +742,7 @@ impl Compositor {
                 crop: [c.u0, c.v0, c.u1, c.v1],
                 params: [
                     layer.opacity.clamp(0.0, 1.0),
-                    if layer.source_transfer == Transfer::Srgb {
-                        1.0
-                    } else {
-                        0.0
-                    },
+                    layer.source_transfer.code(),
                     if layer.opaque { 1.0 } else { 0.0 },
                     style_index,
                 ],
@@ -937,6 +964,25 @@ mod tests {
         );
         assert!(!LayerStyle::new(LayerShape::Triangle, 0.0, [0; 4], BOX).is_plain());
         assert!(!LayerStyle::new(LayerShape::Arrow, 0.0, [0; 4], BOX).is_plain());
+    }
+
+    #[test]
+    fn rgba8_uploads_are_straight_and_other_srgb_layouts_premultiplied() {
+        use rbs_core::media::{PixelFormat, Size, VideoFormat};
+        use wgpu::TextureFormat as T;
+        let f = |p| VideoFormat::new(Size::new(2, 2), p, ColorSpace::SRGB);
+        let rgba = f(PixelFormat::Rgba8);
+        let bgra = f(PixelFormat::Bgra8);
+        assert_eq!(Transfer::of(&rgba, T::Rgba8Unorm), Transfer::SrgbStraight);
+        assert_eq!(Transfer::of(&bgra, T::Bgra8Unorm), Transfer::Srgb);
+        assert_eq!(Transfer::of(&rgba, T::Rgba8UnormSrgb), Transfer::Linear);
+        let mut linear = rgba;
+        linear.color = ColorSpace::LINEAR_BT709;
+        assert_eq!(Transfer::of(&linear, T::Rgba16Float), Transfer::Linear);
+        assert_eq!(
+            [Transfer::Linear, Transfer::Srgb, Transfer::SrgbStraight].map(Transfer::code),
+            [0.0, 1.0, 2.0]
+        );
     }
 
     #[test]

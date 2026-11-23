@@ -5,13 +5,13 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use rbs_core::media::{
-    ColorSpace, FramePayload, PixelFormat, Size, TextureId, TransferFunction, VideoFormat,
-    VideoFrame, next_generation,
+    ColorSpace, FramePayload, PixelFormat, Size, TextureId, VideoFormat, VideoFrame,
+    next_generation,
 };
 use rbs_core::time::Timestamp;
 use rbs_gpu::node::GpuRuntime;
 use rbs_gpu::yuv_decode::YuvToRgb;
-use rbs_gpu::{GpuContext, GpuError, TextureDesc, TexturePool};
+use rbs_gpu::{GpuContext, GpuError, TextureDesc, TexturePool, Transfer};
 use rbs_graph::node::{LinkKind, NodeDescriptor, NodeKind, Pin};
 use rbs_graph::runtime::param::{self, ParamReceiver, ParamSender};
 use rbs_graph::runtime::{Node, NodeError, PrepareCtx, ProcessCtx, WarmCtx};
@@ -96,8 +96,8 @@ pub struct FilterNode {
     gpu: Option<Prepared>,
     /// The size `warm` acquired textures for.
     warmed: Option<[u32; 2]>,
-    /// What the uniform buffers hold: values, input size, decode flag.
-    written: Option<(Values, [u32; 2], bool)>,
+    /// What the uniform buffers hold: values, input size, source transfer.
+    written: Option<(Values, [u32; 2], Transfer)>,
     /// The input frame (texture, time) behind the frame published last.
     published: Option<(TextureId, Timestamp)>,
     /// The output texture published last (still read by the output slot).
@@ -395,8 +395,7 @@ impl Node<GpuRuntime> for FilterNode {
             let tex = local.pool.get(id)?;
             tex.sampled_bind_group()?;
             let d = tex.desc();
-            let decode =
-                frame.format().color.transfer == TransferFunction::Srgb && !d.format.is_srgb();
+            let decode = Transfer::of(frame.format(), d.format);
             let format = frame.format();
             // Publishing this frame leaves the pixels and the tags the pass would claim.
             let linear_canvas = d.format == wgpu::TextureFormat::Rgba16Float
@@ -488,7 +487,7 @@ impl Node<GpuRuntime> for FilterNode {
                     1.0 / source[0] as f32,
                     1.0 / source[1] as f32,
                     0.0,
-                    if first && decode { 1.0 } else { 0.0 },
+                    if first { decode.code() } else { 0.0 },
                 ];
             }
             // Identity colour correction on linear canvas pixels is a no-op, including
@@ -496,7 +495,7 @@ impl Node<GpuRuntime> for FilterNode {
             // or an sRGB-encoded input, still runs the pass below.
             if self.identity_skip
                 && linear_canvas
-                && !decode
+                && decode == Transfer::Linear
                 && colour_correction_is_identity(&self.uniforms[0])
             {
                 let src = inputs.video(IN_PIN, 0);

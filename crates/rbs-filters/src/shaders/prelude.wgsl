@@ -6,8 +6,8 @@ struct FilterIn {
     @location(0) uv: vec2<f32>,
 };
 
-// u[0]..u[14]: the filter type's; u[15]: xy source texel size, w 1.0 when the source
-// is sRGB-encoded.
+// u[0]..u[14]: the filter type's; u[15]: xy source texel size, w the source's transfer
+// code (0 linear, 1 sRGB premultiplied, 2 sRGB straight alpha; `rbs_gpu::Transfer`).
 @group(0) @binding(0) var<uniform> u: array<vec4<f32>, 16>;
 @group(1) @binding(0) var src: texture_2d<f32>;
 @group(1) @binding(1) var src_sampler: sampler;
@@ -38,7 +38,10 @@ fn linear_to_srgb(c: vec3<f32>) -> vec3<f32> {
 // The source at `uv`, linear light, premultiplied.
 fn sample_linear(uv: vec2<f32>) -> vec4<f32> {
     var c = textureSampleLevel(src, src_sampler, uv, 0.0);
-    if (u[15].w > 0.5) {
+    if (u[15].w > 1.5) {
+        // Straight alpha (`Rgba8` uploads): decode the colour, then premultiply.
+        c = vec4<f32>(srgb_to_linear(c.rgb) * c.a, c.a);
+    } else if (u[15].w > 0.5) {
         let a = max(c.a, 1e-6);
         c = vec4<f32>(srgb_to_linear(c.rgb / a) * c.a, c.a);
     }
