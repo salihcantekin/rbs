@@ -32,6 +32,10 @@ cargo build --workspace
 cargo test --workspace
 ```
 
+To build the app with the programs it starts (browser runner, AI tools) and run it in
+debug, release, UI live preview or with a fresh configuration, use the scripts in
+[`tools/dev`](tools/dev/README.md).
+
 The minimum supported Rust version is pinned in [`rust-toolchain.toml`](rust-toolchain.toml).
 
 ## License
