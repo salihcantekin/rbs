@@ -57,8 +57,7 @@ use rbs_sources::text_live::{Language, LiveInputs, RunTime};
 use rbs_sources::text_worker::{ProblemSlot, TextClock, TextProblem, TextWorker};
 use rbs_sources::{
     BrowserBudget, BrowserClaim, BrowserControlSidecar, BrowserTree, InstanceContext, ShowClass,
-    SourceInstance, SourceTypes, filter_values_lenient, glide_layers, glide_max_duration,
-    node_layers,
+    SourceInstance, SourceTypes, filter_values_lenient, node_layers,
 };
 use rbs_transport::{ReconnectPolicy, Secret, TransportConfig, TransportInput};
 use scroll::CompositorPort;
@@ -86,6 +85,7 @@ use adopt::{adopt_slideshow, render_instance, text_worker};
 pub use estimate_plan::{PlannedOutput, StartPlanRequest};
 use vcam::{CameraDownload, CameraRun, download_share};
 pub use vcam::{VirtualCameraSettings, VirtualCameraState};
+mod glide;
 mod hold;
 mod iso_audio;
 mod iso_video;
@@ -105,6 +105,7 @@ mod stinger;
 mod studio_mode;
 mod sync_measure;
 mod transition;
+use glide::{Glide, paint_layers};
 pub use hold::{HOLD_SCENE_TIMEOUT, HoldFallback, HoldRefused, HoldSound, HoldState};
 pub use iso_audio::{IsoAudioStart, IsoAudioStarted};
 pub use iso_video::{
@@ -1078,51 +1079,8 @@ struct Mixer {
     master: Arc<LevelMeter>,
 }
 
-/// Boxes to glide from when a canvas's program scene changes.
-struct Glide {
-    /// Master-clock time the scene changed.
-    start: Timestamp,
-    /// The program layers each canvas was drawing.
-    from: BTreeMap<CanvasId, Vec<BoundLayer>>,
-    /// Longest morph still running (ADR-0100).
-    max_duration: std::time::Duration,
-    /// Collection glide used to build the morph.
-    collection: rbs_scene::CollectionGlide,
-    /// Per-source slide overrides snapshot at the scene change.
-    source_glide: BTreeMap<rbs_scene::model::SourceId, rbs_scene::SourceGlide>,
-}
-
 fn program_scene(collection: &SceneCollection, canvas: CanvasId) -> Option<SceneId> {
     collection.canvas(canvas).and_then(|canvas| canvas.program)
-}
-
-fn paint_layers(
-    bound: &BoundCompositor,
-    plan: &rbs_graph::description::SchedulePlan,
-    glide: Option<&Glide>,
-    now: Timestamp,
-    canvas: CanvasId,
-    runs: &ScrollRuns,
-) -> Vec<rbs_gpu::node::NodeLayer> {
-    let layers = node_layers(bound, plan, runs);
-    let Some(glide) = glide else {
-        return layers;
-    };
-    if now.saturating_since(glide.start) >= glide.max_duration {
-        return layers;
-    }
-    let Some(from) = glide.from.get(&canvas) else {
-        return layers;
-    };
-    let overrides = &glide.source_glide;
-    glide_layers(
-        layers,
-        &bound.layers,
-        from,
-        glide.start,
-        glide.collection,
-        |id| overrides.get(&id).copied(),
-    )
 }
 
 /// The program scene of one canvas, running.
@@ -2287,82 +2245,6 @@ impl Studio {
         layers
     }
 
-    /// Starts a glide on each canvas whose program scene changed. A scene that was
-    /// empty does not glide, so the first picture does not fade in from nothing.
-    fn note_scene_change(
-        &mut self,
-        collection: &SceneCollection,
-        effective: &transition::Effective,
-        old_main: Option<SceneId>,
-        old_extra: &BTreeMap<CanvasId, Option<SceneId>>,
-        old_layers: BTreeMap<CanvasId, Vec<BoundLayer>>,
-    ) {
-        // Only Move glides (ADR-0128 decision 2): Cut and the kinds that draw the
-        // incoming picture whole change the boxes at once.
-        if !effective.glides() {
-            self.glide = None;
-            return;
-        }
-        let mut from = BTreeMap::new();
-        let new_main = program_scene(collection, self.settings.canvas);
-        if old_main.is_some() && old_main != new_main {
-            if let Some(layers) = old_layers.get(&self.settings.canvas) {
-                from.insert(self.settings.canvas, layers.clone());
-            }
-        }
-        for extra in &self.extras {
-            let previous = old_extra.get(&extra.canvas).copied().flatten();
-            let next = program_scene(collection, extra.canvas);
-            if previous.is_some() && previous != next {
-                if let Some(layers) = old_layers.get(&extra.canvas) {
-                    from.insert(extra.canvas, layers.clone());
-                }
-            }
-        }
-        if from.is_empty() {
-            return;
-        }
-        let collection_glide = effective.glide;
-        // A one-off duration replaces every per-source override for this change.
-        let source_glide: BTreeMap<_, _> = if effective.source_glides {
-            collection
-                .sources()
-                .filter_map(|s| s.glide.map(|g| (s.id, g)))
-                .collect()
-        } else {
-            BTreeMap::new()
-        };
-        let mut max_duration =
-            std::time::Duration::from_millis(u64::from(collection_glide.duration_ms));
-        // Current layers after the bind that triggered this note.
-        let current_main = &self.bound.layers;
-        if let Some(old) = from.get(&self.settings.canvas) {
-            max_duration = max_duration.max(glide_max_duration(
-                current_main,
-                old,
-                collection_glide,
-                |id| source_glide.get(&id).copied(),
-            ));
-        }
-        for extra in &self.extras {
-            if let Some(old) = from.get(&extra.canvas) {
-                max_duration = max_duration.max(glide_max_duration(
-                    &extra.view.bound.layers,
-                    old,
-                    collection_glide,
-                    |id| source_glide.get(&id).copied(),
-                ));
-            }
-        }
-        self.glide = Some(Glide {
-            start: self.engine.clock().now(),
-            from,
-            max_duration,
-            collection: collection_glide,
-            source_glide,
-        });
-    }
-
     /// The run key of every scrolling layer a list draws, and of every item a shown
     /// program or preview scene fades to 0 (ADR-0150 decision 5).
     fn scroll_keys(&self) -> BTreeSet<rbs_scene::ScrollKey> {
@@ -2550,6 +2432,7 @@ impl Studio {
         self.relink_iso_video();
         self.relink_source_pictures();
         let (failed, problems) = self.reconcile(sources, Some(report), Strictness::Lenient)?;
+        self.refresh_glide_duration();
         if let Some(e) = attach_error {
             return Err(e);
         }
