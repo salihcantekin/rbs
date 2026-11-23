@@ -638,33 +638,37 @@ pub enum Scope {
 }
 
 /// Default bindings of ids with parameters, and second defaults of plain ids, as
-/// `(command id, chord)`. Plain ids' first defaults are the registry's `shortcut`.
-pub const DEFAULT_SHORTCUTS: &[(&str, &str)] = &[
-    ("edit.redo", "Ctrl+Y"),
-    ("scene.position?n=1", "Ctrl+1"),
-    ("scene.position?n=2", "Ctrl+2"),
-    ("scene.position?n=3", "Ctrl+3"),
-    ("scene.position?n=4", "Ctrl+4"),
-    ("scene.position?n=5", "Ctrl+5"),
-    ("scene.position?n=6", "Ctrl+6"),
-    ("scene.position?n=7", "Ctrl+7"),
-    ("scene.position?n=8", "Ctrl+8"),
-    ("scene.position?n=9", "Ctrl+9"),
+/// `(command id, chord, scope)`. Plain ids' first defaults are the registry's
+/// `shortcut`, in app scope. The scene position defaults are global (ADR-0060 review
+/// 2026-11-23): they switch scenes while a game or another app has the focus.
+pub const DEFAULT_SHORTCUTS: &[(&str, &str, Scope)] = &[
+    ("edit.redo", "Ctrl+Y", Scope::App),
+    ("scene.position?n=1", "Ctrl+1", Scope::Global),
+    ("scene.position?n=2", "Ctrl+2", Scope::Global),
+    ("scene.position?n=3", "Ctrl+3", Scope::Global),
+    ("scene.position?n=4", "Ctrl+4", Scope::Global),
+    ("scene.position?n=5", "Ctrl+5", Scope::Global),
+    ("scene.position?n=6", "Ctrl+6", Scope::Global),
+    ("scene.position?n=7", "Ctrl+7", Scope::Global),
+    ("scene.position?n=8", "Ctrl+8", Scope::Global),
+    ("scene.position?n=9", "Ctrl+9", Scope::Global),
 ];
 
-/// Every default binding, app scope, in a stable order: registry entries first, then
-/// [`DEFAULT_SHORTCUTS`]. Ids whose entry is not in the registry are left out, so a
-/// default never names a command this build does not have.
-pub fn defaults() -> Vec<(String, Chord)> {
+/// Every default binding with its scope, in a stable order: registry entries first
+/// (app scope), then [`DEFAULT_SHORTCUTS`]. Ids whose entry is not in the registry are
+/// left out, so a default never names a command this build does not have. On a
+/// platform without global shortcuts a global default works in app scope
+/// ([`Keymap::resolve`]).
+pub fn defaults() -> Vec<(String, Chord, Scope)> {
     let mut out = Vec::new();
     for e in ENTRIES {
         if let Some(text) = e.shortcut {
             if let Ok(c) = Chord::parse(text) {
-                out.push((e.id.to_owned(), c));
+                out.push((e.id.to_owned(), c, Scope::App));
             }
         }
     }
-    for (id, text) in DEFAULT_SHORTCUTS {
+    for (id, text, scope) in DEFAULT_SHORTCUTS {
         let Ok(id) = CommandId::parse(id) else {
             continue;
         };
@@ -672,10 +676,17 @@ pub fn defaults() -> Vec<(String, Chord)> {
             continue;
         }
         if let Ok(c) = Chord::parse(text) {
-            out.push((id.to_string(), c));
+            out.push((id.to_string(), c, *scope));
         }
     }
     out
+}
+
+/// Whether `command` on `chord` in `scope` is a default binding.
+fn is_default(command: &str, chord: &Chord, scope: Option<Scope>) -> bool {
+    defaults()
+        .iter()
+        .any(|(c, k, s)| c == command && k == chord && scope.is_none_or(|x| x == *s))
 }
 
 /// A binding the user added (`[[binding]]`).
@@ -745,7 +756,7 @@ impl ShortcutsDoc {
     pub fn add(&mut self, command: &str, chord: Chord, scope: Scope) {
         let command = canonical_id(command);
         let keys = chord.to_string();
-        if scope == Scope::App && defaults().iter().any(|(c, k)| *c == command && *k == chord) {
+        if is_default(&command, &chord, Some(scope)) {
             let before = self.removed.len();
             self.removed
                 .retain(|r| !(canonical_id(&r.command) == command && same_keys(&r.keys, &chord)));
@@ -775,12 +786,12 @@ impl ShortcutsDoc {
         if self.bindings.len() != before {
             return;
         }
-        let is_default = defaults().iter().any(|(c, k)| *c == command && *k == chord);
+        let default = is_default(&command, &chord, None);
         let already = self
             .removed
             .iter()
             .any(|r| canonical_id(&r.command) == command && same_keys(&r.keys, &chord));
-        if is_default && !already {
+        if default && !already {
             self.removed.push(Removed {
                 command,
                 keys: chord.to_string(),
@@ -972,11 +983,17 @@ impl Keymap {
         }
         // Defaults on the chords no user binding took, minus removed ones.
         let mut with_defaults = Vec::new();
-        for (command, chord) in defaults() {
+        for (command, chord, scope) in defaults() {
+            // A global default works in app scope where global shortcuts do not exist.
+            let scope = if scope == Scope::Global && !platform.has_global() {
+                Scope::App
+            } else {
+                scope
+            };
             if removed.iter().any(|(c, ch)| *c == command && *ch == chord)
                 || k.by_chord.contains_key(&chord)
                 || chord.reserved(platform).is_some()
-                || chord.app_problem(platform).is_some()
+                || scope_problem(&chord, scope, platform).is_some()
                 || k.count(&command)
                     + with_defaults
                         .iter()
@@ -989,7 +1006,7 @@ impl Keymap {
             with_defaults.push(Active {
                 command,
                 chord,
-                scope: Scope::App,
+                scope,
                 default: true,
             });
             // Only marks the chord as taken; the table is rebuilt below.
@@ -1221,16 +1238,24 @@ mod tests {
         let d = defaults();
         assert!(
             d.iter()
-                .any(|(id, ch)| id == "edit.undo" && *ch == c("Ctrl+Z"))
+                .any(|(id, ch, s)| id == "edit.undo" && *ch == c("Ctrl+Z") && *s == Scope::App)
         );
-        let mut chords: Vec<Chord> = d.iter().map(|(_, ch)| *ch).collect();
+        let mut chords: Vec<Chord> = d.iter().map(|(_, ch, _)| *ch).collect();
         chords.sort();
         let n = chords.len();
         chords.dedup();
         assert_eq!(chords.len(), n, "two defaults share a chord");
-        for (id, ch) in &d {
+        for (id, ch, scope) in &d {
             for p in PLATFORMS {
                 assert!(ch.reserved(p).is_none(), "{id} {ch} reserved on {p:?}");
+                assert!(
+                    ch.app_problem(p).is_none(),
+                    "{id} {ch} app problem on {p:?}"
+                );
+                if *scope == Scope::Global {
+                    assert!(ch.global_problem(p).is_none(), "{id} {ch} global on {p:?}");
+                    assert!(!ch.common_in_other_apps(), "{id} {ch}");
+                }
             }
             assert!(
                 !(ch.mods.ctrl && ch.mods.alt),
@@ -1241,10 +1266,38 @@ mod tests {
                 "{id}"
             );
         }
-        for (id, text) in DEFAULT_SHORTCUTS {
+        for (id, text, _) in DEFAULT_SHORTCUTS {
             CommandId::parse(id).unwrap();
             Chord::parse(text).unwrap();
         }
+    }
+
+    #[test]
+    fn scene_position_defaults_are_global_where_the_platform_has_them() {
+        for p in PLATFORMS {
+            let k = Keymap::resolve(&ShortcutsDoc::default(), p);
+            let b = k.holder(&c("Ctrl+1")).unwrap();
+            assert_eq!(b.command, "scene.position?n=1");
+            let want = if p.has_global() {
+                Scope::Global
+            } else {
+                Scope::App
+            };
+            assert_eq!(b.scope, want, "{p:?}");
+            assert_eq!(k.app(&c("Ctrl+1")).is_some(), !p.has_global(), "{p:?}");
+            assert_eq!(k.app(&c("Ctrl+Z")), Some("edit.undo"));
+        }
+        // Removing and adding back a global default keeps the file empty.
+        let mut d = ShortcutsDoc::default();
+        d.remove("scene.position?n=2", c("Ctrl+2"));
+        assert_eq!(d.removed.len(), 1);
+        d.add("scene.position?n=2", c("Ctrl+2"), Scope::Global);
+        assert_eq!(d, ShortcutsDoc::default());
+        // The same chord in app scope is the user's own binding.
+        d.remove("scene.position?n=2", c("Ctrl+2"));
+        d.add("scene.position?n=2", c("Ctrl+2"), Scope::App);
+        let k = Keymap::resolve(&d, Platform::Windows);
+        assert_eq!(k.app(&c("Ctrl+2")), Some("scene.position?n=2"));
     }
 
     fn doc(bindings: &[(&str, &str, Scope)], removed: &[(&str, &str)]) -> ShortcutsDoc {
@@ -1298,7 +1351,8 @@ mod tests {
         let k = Keymap::resolve(&d, Platform::MacOs);
         // Global chords are not run in app scope.
         assert_eq!(k.app(&c("Ctrl+Alt+R")), None);
-        assert_eq!(k.global().count(), 1);
+        // The user's one plus the nine scene position defaults.
+        assert_eq!(k.global().count(), 10);
         let kinds: Vec<&ProblemKind> = k.problems().iter().map(|p| &p.kind).collect();
         assert_eq!(kinds.len(), 3);
         assert_eq!(kinds[0], &ProblemKind::Conflict("record.toggle".into()));

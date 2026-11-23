@@ -200,7 +200,15 @@ impl Keys {
     /// The command an app-scope key press runs; `None` when the key is not bound.
     fn app_command(&self, text: &str, mods: Mods) -> Option<String> {
         match hotkeys::read_key(text, mods) {
-            Read::Chord(c) => self.keymap.app(&c).map(str::to_owned),
+            Read::Chord(c) => self.keymap.app(&c).map(str::to_owned).or_else(|| {
+                // A global chord the OS refused (another app holds it) still works
+                // while RBS has the focus.
+                let b = self.keymap.holder(&c)?;
+                self.refused
+                    .iter()
+                    .any(|(command, chord, _)| *chord == c && *command == b.command)
+                    .then(|| b.command.clone())
+            }),
             _ => None,
         }
     }
@@ -1104,7 +1112,14 @@ mod tests {
     /// listed, and the recorder unregisters every chord until it closes.
     #[test]
     fn global_chords_follow_the_keymap() {
-        let mut k = keys_with(ShortcutsDoc::default());
+        // The scene position defaults are global; without them nothing is global.
+        let mut none_global = ShortcutsDoc::default();
+        for (command, chord, scope) in rbs_ui::shortcut::defaults() {
+            if scope == Scope::Global {
+                none_global.remove(&command, chord);
+            }
+        }
+        let mut k = keys_with(none_global.clone());
         k.sync_global();
         assert!(k.global.is_none());
 
@@ -1127,13 +1142,23 @@ mod tests {
         }
         let calls = Rc::new(RefCell::new(Vec::new()));
         k.global = Some(Box::new(Fake(calls.clone())));
-        let mut doc = ShortcutsDoc::default();
+        let mut doc = none_global.clone();
         doc.add("record.toggle", Chord::parse("F13").unwrap(), Scope::Global);
         doc.add("stream.toggle", Chord::parse("F14").unwrap(), Scope::Global);
         k.set_doc(doc.clone());
         assert_eq!(k.global_ids, vec![(100, "record.toggle".to_owned())]);
         assert_eq!(k.refused.len(), 1);
         assert_eq!(k.refused[0].0, "stream.toggle");
+        // A refused global chord still works while RBS has the focus.
+        let f = |n: u32| {
+            let f1 = u32::from(char::from(slint::platform::Key::F1));
+            char::from_u32(f1 + n - 1).unwrap().to_string()
+        };
+        assert_eq!(
+            k.app_command(&f(14), Mods::NONE).as_deref(),
+            Some("stream.toggle")
+        );
+        assert_eq!(k.app_command(&f(13), Mods::NONE), None);
         k.recording = Some(Recording {
             command: "stream.toggle".into(),
             mods: Mods::NONE,
@@ -1148,8 +1173,16 @@ mod tests {
         k.recording = None;
         k.sync_global();
         assert_eq!(calls.borrow().last().unwrap().len(), 2);
-        doc.reset_all();
-        k.set_doc(doc);
+        k.set_doc(none_global);
         assert!(k.global.is_none(), "dropped with the last global binding");
+        // The defaults register the scene position chords.
+        k.global = Some(Box::new(Fake(calls.clone())));
+        k.set_doc(ShortcutsDoc::default());
+        assert_eq!(calls.borrow().last().unwrap().len(), 9);
+        assert!(
+            k.global_ids
+                .iter()
+                .all(|(_, c)| c.starts_with("scene.position"))
+        );
     }
 }
