@@ -54,28 +54,44 @@ if ($FreshConfig) {
     New-Item -ItemType Directory -Path $Config | Out-Null
     Write-Host "Fresh configuration: $Config"
 }
+# PowerShell runs a script in the calling shell's process, so every variable set here is
+# put back at the end; otherwise -Log would keep RBS_LOG set for later runs in the same
+# window (and Settings > Advanced > Log detail would stay locked).
+$saved = @{}
+foreach ($name in 'RBS_CONFIG_DIR', 'RBS_LOG', 'RBS_BROWSER_HELPER') {
+    $saved[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+}
+function Restore-Env {
+    foreach ($name in $saved.Keys) { [Environment]::SetEnvironmentVariable($name, $saved[$name], 'Process') }
+}
 if ($Config) { $env:RBS_CONFIG_DIR = $Config }
 if ($Log) { $env:RBS_LOG = $Log }
 
 if ($UiDev) {
     if ($TestBrowser) { Write-Warning '-TestBrowser is not used with -UiDev' }
     Push-Location $root
-    try { & cargo xtask ui-dev @AppArgs } finally { Pop-Location }
+    try { & cargo xtask ui-dev @AppArgs } finally { Pop-Location; Restore-Env }
     exit $LASTEXITCODE
 }
 
-if ($Build) {
-    $buildArgs = @{ Release = $Release; NoBrowser = $NoBrowser; TestBrowser = $TestBrowser }
-    & (Join-Path $PSScriptRoot 'build.ps1') @buildArgs
-}
+try {
+    if ($Build) {
+        $buildArgs = @{ Release = $Release; NoBrowser = $NoBrowser; TestBrowser = $TestBrowser }
+        & (Join-Path $PSScriptRoot 'build.ps1') @buildArgs
+    }
 
-if ($TestBrowser) {
-    $helper = Join-Path $out 'rbs-browser-helper.exe'
-    if (-not (Test-Path $helper)) { throw "$helper is missing; add -Build" }
-    $env:RBS_BROWSER_HELPER = $helper
-}
+    if ($TestBrowser) {
+        $helper = Join-Path $out 'rbs-browser-helper.exe'
+        if (-not (Test-Path $helper)) { throw "$helper is missing; add -Build" }
+        $env:RBS_BROWSER_HELPER = $helper
+    }
 
-$exe = Join-Path $out 'rbs.exe'
-if (-not (Test-Path $exe)) { throw "$exe is missing; add -Build" }
-& $exe @AppArgs
-exit $LASTEXITCODE
+    $exe = Join-Path $out 'rbs.exe'
+    if (-not (Test-Path $exe)) { throw "$exe is missing; add -Build" }
+    & $exe @AppArgs
+    $code = $LASTEXITCODE
+}
+finally {
+    Restore-Env
+}
+exit $code
