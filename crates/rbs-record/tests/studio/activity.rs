@@ -357,7 +357,7 @@ fn a_continuing_scroll_keeps_its_run_while_its_source_waits_in_another_scene() {
 #[test]
 fn a_source_grab_reads_one_frame_of_a_running_camera_and_never_opens_one() {
     // ADR-0176: the Region preview of a camera is one frame of the running source,
-    // before its crops, at most 960 on the long side; a camera in no shown scene is
+    // before its crops, at its own size; a camera in no shown scene is
     // not opened for it.
     let Some(gpu) = gpu() else { return };
     let r = rig();
@@ -389,14 +389,14 @@ fn a_source_grab_reads_one_frame_of_a_running_camera_and_never_opens_one() {
     let buffers = r.capture.live_buffers();
     assert!(
         studio
-            .add_source_grab(&col, &r.adapters.sources, loose, 960)
+            .add_source_grab(&col, &r.adapters.sources, loose)
             .is_err()
     );
     assert_eq!(r.capture.live_buffers(), buffers);
     assert!(studio.pictures().is_empty());
 
     let (pid, slot) = studio
-        .add_source_grab(&col, &r.adapters.sources, cam, 960)
+        .add_source_grab(&col, &r.adapters.sources, cam)
         .unwrap();
     let reached = run_until(&mut studio, &clock, |_| slot.is_ready());
     assert!(reached, "no frame came");
@@ -404,7 +404,7 @@ fn a_source_grab_reads_one_frame_of_a_running_camera_and_never_opens_one() {
     assert_eq!(
         (frame.format().size.width, frame.format().size.height),
         size,
-        "a picture under 960 keeps its size"
+        "the frame is the picture's own size"
     );
     studio
         .remove_picture(&col, &r.adapters.sources, pid)

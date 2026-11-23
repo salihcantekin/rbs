@@ -195,7 +195,7 @@ Test: `crates/rbs-nodes/tests/image_track_gpu.rs` (`a_change_inside_a_pause_*`; 
 
 ### Source grab node (ADR-0176)
 
-`rbs_nodes::SourceGrabNode` (`org.rbs.source-grab`, kind `Output`, input "picture", no outputs, render partition) reads one picture of a running source back for its Region preview. The studio puts it behind a normalisation pass of the source's own node (before its filters and crops) at the grab size: the picture size fitted in a square of `min(max_long, 960)`, aspect kept, never upscaled (`Studio::add_source_grab`). `new(width, height)` sizes its `RgbaDownload`; `waking(wake)` unparks the control thread when it is done; `slot()` is where the frame goes (`GrabSlot::take`, `is_ready`, `failed`).
+`rbs_nodes::SourceGrabNode` (`org.rbs.source-grab`, kind `Output`, input "picture", no outputs, render partition) reads one picture of a running source back for its Region preview. The studio puts it behind a normalisation pass of the source's own node (before its filters and crops) at the picture's own size (`Studio::add_source_grab`; the host scales the frame to fit 960 on the control thread). `new(width, height)` sizes its `RgbaDownload` (the source's picture size when known, else 1280 x 720; a larger picture grows it once); `waking(wake)` unparks the control thread when it is done; `slot()` is where the frame goes (`GrabSlot::take`, `is_ready`, `failed`).
 
 | Call | Does |
 | --- | --- |
@@ -203,7 +203,7 @@ Test: `crates/rbs-nodes/tests/image_track_gpu.rs` (`a_change_inside_a_pause_*`; 
 | `process` | 1. Done (frame stored or failed): nothing more, one compare. 2. A frame read back while the host held the slot's lock: stored now (`try_lock`, never waits). 3. A readback in flight: one non-blocking `take`; the frame goes into the slot, `ready` is set and the control thread is woken. 4. Otherwise the first input picture is submitted (`submit_at`, never waits). A failed conversion or readback sets `failed`, wakes the control thread and is not retried |
 | `release` | Drops the download and any frame not stored |
 
-The studio keeps it as a picture without an endpoint: `Studio::remove_picture` removes it with its pass, `Studio::picture_failure` reports a fault, and a replaced source node is relinked. It does not hold the source at Shown: a source without a node (standby, gone) or without a picture size yet is `NotBound`. Its readback counts in `GpuMetrics::frames_cpu_copied`.
+The studio keeps it as a picture without an endpoint: `Studio::remove_picture` removes it with its pass, `Studio::picture_failure` reports a fault, and a replaced source node is relinked. It does not hold the source at Shown: a source without an Active node (standby, gone) is `NotBound`. Its readback counts in `GpuMetrics::frames_cpu_copied`.
 
 Tests: `crates/rbs-nodes/tests/image_track_gpu.rs` (`a_source_grab_reads_one_picture_back_once`: the bytes as published, nothing more on later changed pictures); `crates/rbs-record/tests/studio/activity.rs` (`a_source_grab_*`: a running camera's frame at its size, a standby camera is refused and not opened).
 
