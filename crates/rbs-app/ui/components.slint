@@ -2421,6 +2421,10 @@ export component TextField inherits Rectangle {
     public function caret-to-end() {
         input.set-selection-offsets(2147483647, 2147483647);
     }
+    // Selects the whole text with the active end at the last character.
+    public function select-all-to-end() {
+        input.set-selection-offsets(0, 2147483647);
+    }
     height: Tokens.size-control-md;
     border-radius: Tokens.radius-sm;
     border-width: Tokens.size-border;
@@ -3719,7 +3723,7 @@ export component ListRow inherits Rectangle {
                     TextField {
                         label: root.edit-label;
                         text: root.name;
-                        init => { self.focus(); }
+                        init => { self.focus(); self.select-all-to-end(); }
                         accepted(t) => {
                             root.editing = false;
                             if t != root.name { root.renamed(t); }

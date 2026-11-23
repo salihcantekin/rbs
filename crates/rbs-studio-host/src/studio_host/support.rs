@@ -184,6 +184,26 @@ pub(super) fn unique_name(collection: &SceneCollection, base: &str) -> String {
         .unwrap_or_else(|| base.to_owned())
 }
 
+pub(super) fn unique_rename_name(
+    collection: &SceneCollection,
+    source: SourceId,
+    requested: &str,
+) -> String {
+    let requested = requested.trim();
+    let taken = |name: &str| {
+        collection
+            .sources()
+            .any(|candidate| candidate.id != source && candidate.name == name)
+    };
+    if !taken(requested) {
+        return requested.to_owned();
+    }
+    (1..)
+        .map(|n| format!("{requested} ({n})"))
+        .find(|name| !taken(name))
+        .unwrap_or_else(|| requested.to_owned())
+}
+
 pub(super) fn whole_fps(rate: FrameRate) -> i64 {
     let r = rate.per_second();
     i64::from(r.num().div_ceil(r.den().max(1)))

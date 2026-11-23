@@ -1358,9 +1358,10 @@ impl Host {
         if old == name.trim() {
             return Ok(false);
         }
+        let name = unique_rename_name(&self.collection, id, name);
         let undo = self
             .collection
-            .rename_source(id, name)
+            .rename_source(id, &name)
             .map_err(|e| Refusal::of(&e))?;
         self.edits
             .history

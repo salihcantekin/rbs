@@ -352,8 +352,15 @@ fn items_lock_and_hide_and_sources_mute_rename_and_change_volume() {
     let Some((host, updates, _api, mut c)) = start() else {
         return;
     };
+    let first_scene = scenes(&mut c)["program"].as_u64().unwrap();
     let screen = add(&mut c, "screen", "Main screen");
     let mic = add(&mut c, "audio_input", "Mic");
+    let other_scene = ok(&c.call("scene.add", json!({})))["scene"]
+        .as_u64()
+        .unwrap();
+    ok(&c.call("scene.switch", json!({"scene": other_scene})));
+    let numbered = add(&mut c, "audio_input", "Main screen (1)");
+    ok(&c.call("scene.switch", json!({"scene": first_scene})));
     let rows = sources(&mut c);
     let row = |rows: &[Value], id: u64| rows.iter().find(|r| r["id"] == id).unwrap().clone();
     let screen_row = row(&rows, screen);
@@ -450,17 +457,25 @@ fn items_lock_and_hide_and_sources_mute_rename_and_change_volume() {
     ok(&c.call("canvas.set_master_muted", json!({"muted": false})));
     assert_eq!(scenes(&mut c).get("master"), None);
 
-    // Rename: one undo step; the undo leaves the sound as it is now.
+    // Each rename is one undo step; the undo leaves the sound as it is now.
     ok(&c.call("source.rename", json!({"source": mic, "name": "Voice"})));
-    assert_eq!(
-        kind(&c.call(
-            "source.rename",
-            json!({"source": mic, "name": "Main screen"})
-        )),
-        "conflict"
-    );
-    assert_eq!(row(&sources(&mut c), mic)["name"], "Voice");
+    ok(&c.call(
+        "source.rename",
+        json!({"source": mic, "name": "Main screen"}),
+    ));
+    assert_eq!(row(&sources(&mut c), mic)["name"], "Main screen (2)");
+    ok(&c.call("scene.switch", json!({"scene": other_scene})));
+    assert_eq!(row(&sources(&mut c), numbered)["name"], "Main screen (1)");
+    ok(&c.call("scene.switch", json!({"scene": first_scene})));
+    // Renaming to the current name remains a no-op, not another numbered name.
+    ok(&c.call(
+        "source.rename",
+        json!({"source": mic, "name": "Main screen (2)"}),
+    ));
+    assert_eq!(row(&sources(&mut c), mic)["name"], "Main screen (2)");
     ok(&c.call("source.set_muted", json!({"source": mic, "muted": false})));
+    ok(&c.call("edit.undo", json!({})));
+    assert_eq!(row(&sources(&mut c), mic)["name"], "Voice");
     ok(&c.call("edit.undo", json!({})));
     let r = row(&sources(&mut c), mic);
     assert_eq!(r["name"], "Mic");
