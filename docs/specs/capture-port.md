@@ -148,7 +148,9 @@ pub trait CaptureFactory: AdapterFactory {
     /// `min(max_long, 960)`, aspect kept, never upscaled. Empty `max_long` ->
     /// FormatUnsupported. Same privacy and no-session rules as `thumbnail`. The
     /// host keeps one grab in flight and drops it when the section closes. Default
-    /// and cameras: Unsupported. The test adapter implements it.
+    /// and cameras: Unsupported; on Unsupported the host shows one frame of the
+    /// running source from the studio instead (ADR-0176). The test adapter
+    /// implements it for displays and windows.
     fn region_grab(&self, target: &TargetId, max_long: u32) -> Result<RegionGrab, CaptureError>;
 }
 

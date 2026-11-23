@@ -195,7 +195,7 @@ Option defaults depend on the canvas and are computed in `rbs-app` (`option_defa
 
 `region` and `chrome` live on `rbs_scene::Source`, not in settings. The binder compares settings only, so editing them does not replace the capture node. Chrome is refused on every type except `org.rbs.source.display`. Applying chrome writes the four insets into `region`. Cover and fit place the item box; they are not a compositor scale. `work_rect` is copied from `SourceTarget` when Reset runs, and Reset does nothing when that field is absent.
 
-The settings Region section and the add-source region step are not in the desktop UI yet (rule 16). The capture port's `region_grab` (long side at most 960, not `thumbnail`) is what that preview will call.
+The settings Region section's preview is the capture port's `region_grab` (long side at most 960, not `thumbnail`). Where the adapter answers `Unsupported` (cameras) it is one frame of the running source from the studio instead (ADR-0176); a source in standby gets none. The add-source region step is not in the desktop UI yet (rule 16).
 
 ## Media file (`org.rbs.source.media`, ADR-0108)
 

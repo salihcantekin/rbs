@@ -428,6 +428,7 @@ impl Host {
         for p in &mut self.projectors {
             p.picture = None;
         }
+        self.restart_studio_grab();
         // The camera keeps sending across a canvas change; when it cannot, the next
         // round says so.
         if let Some(settings) = self.vcam.camera.take()

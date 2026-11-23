@@ -40,6 +40,7 @@ pub use media_span::MediaSpan;
 pub use png_writer::{ImageFiles, PNG_WRITER_NODE_TYPE, PngWriterNode};
 /// The recording manifest model (ADR-0086, ADR-0089), owned by `rbs-manifest`.
 pub use rbs_manifest::{ManifestFile, RecordingManifest, SourceRef};
+pub use rbs_nodes::GrabSlot;
 pub use rbs_nodes::replay::{Clip, ClipBounds, ClipError};
 pub use rbs_nodes::replay_node::{ReplayStatus, RequestError as ReplayRequestError};
 pub use rbs_nodes::{MEDIA_PAUSE_RELEASE, MediaControl, MediaNodeError, MediaPlayState};

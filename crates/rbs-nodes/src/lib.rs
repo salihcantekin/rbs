@@ -35,6 +35,7 @@ pub mod preview;
 pub mod replay;
 pub mod replay_node;
 pub mod slideshow;
+pub mod source_grab;
 pub mod still;
 pub mod sync_probe;
 pub mod text;
@@ -63,6 +64,7 @@ pub use slideshow::{
     SLIDESHOW_NODE_TYPE, SlideFrame, SlideshowNode, SlideshowShared, SlideshowStats,
     slideshow_descriptor,
 };
+pub use source_grab::{GrabSlot, SOURCE_GRAB_NODE_TYPE, SourceGrabNode, source_grab_descriptor};
 pub use still::{STILL_NODE_TYPE, StillError, StillSourceNode, still_descriptor};
 pub use sync_probe::{
     SYNC_PICTURE_MAX_FPS, SYNC_PICTURE_PROBE_NODE_TYPE, SyncPictureLog, SyncPictureProbeNode,

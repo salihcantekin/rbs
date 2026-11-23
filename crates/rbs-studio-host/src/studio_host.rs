@@ -132,6 +132,7 @@ mod publish_cost;
 mod recording;
 mod recording_markers;
 mod refusal;
+mod region_grab;
 mod rows;
 mod scenes;
 mod slideshow;
@@ -343,6 +344,8 @@ enum Msg {
         generation: u64,
         id: SourceId,
         picture: Option<rbs_capture::RegionGrab>,
+        /// The adapter has no `region_grab`: the studio grabs the running source.
+        unsupported: bool,
     },
     /// The worker of calibration run `id` reports (ADR-0087 step D1).
     Calibration {

@@ -145,19 +145,19 @@ impl Host {
                 if current.load(AtomicOrdering::Acquire) != generation {
                     return;
                 }
-                let picture = factory
-                    .region_grab(
-                        &rbs_capture::TargetId::new(target),
-                        rbs_capture::REGION_GRAB_LONG,
-                    )
-                    .ok();
+                let grabbed = factory.region_grab(
+                    &rbs_capture::TargetId::new(target),
+                    rbs_capture::REGION_GRAB_LONG,
+                );
+                let unsupported = matches!(grabbed, Err(CaptureError::Unsupported(_)));
                 let Some(tx) = inbox.upgrade() else {
                     return;
                 };
                 let _ = tx.send(Msg::RegionPreview {
                     generation,
                     id,
-                    picture,
+                    picture: grabbed.ok(),
+                    unsupported,
                 });
             });
     }
@@ -411,4 +411,6 @@ pub(super) struct Pickers {
     pub(super) permission_refused: Vec<PermissionKind>,
     /// The generation of the region-preview grab that may still deliver (ADR-0103).
     pub(super) region_grabs: Arc<AtomicU64>,
+    /// The studio grab of a source whose adapter has no `region_grab` (ADR-0176).
+    pub(super) studio_grab: Option<super::region_grab::StudioGrab>,
 }

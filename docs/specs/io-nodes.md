@@ -193,6 +193,20 @@ Pause (ADR-0124, `with_pause(window)`, separate files of a pausable recording): 
 
 Test: `crates/rbs-nodes/tests/image_track_gpu.rs` (`a_change_inside_a_pause_*`; an unchanged picture is taken once over 30 ticks; a change on every tick for one second at 60 fps gives one image per interval, each change in between waits and is counted, images stamped at least 100 ms apart, bytes copied as published).
 
+### Source grab node (ADR-0176)
+
+`rbs_nodes::SourceGrabNode` (`org.rbs.source-grab`, kind `Output`, input "picture", no outputs, render partition) reads one picture of a running source back for its Region preview. The studio puts it behind a normalisation pass of the source's own node (before its filters and crops) at the grab size: the picture size fitted in a square of `min(max_long, 960)`, aspect kept, never upscaled (`Studio::add_source_grab`). `new(width, height)` sizes its `RgbaDownload`; `waking(wake)` unparks the control thread when it is done; `slot()` is where the frame goes (`GrabSlot::take`, `is_ready`, `failed`).
+
+| Call | Does |
+| --- | --- |
+| `prepare` | Creates the `RgbaDownload` (the only allocation) |
+| `process` | 1. Done (frame stored or failed): nothing more, one compare. 2. A frame read back while the host held the slot's lock: stored now (`try_lock`, never waits). 3. A readback in flight: one non-blocking `take`; the frame goes into the slot, `ready` is set and the control thread is woken. 4. Otherwise the first input picture is submitted (`submit_at`, never waits). A failed conversion or readback sets `failed`, wakes the control thread and is not retried |
+| `release` | Drops the download and any frame not stored |
+
+The studio keeps it as a picture without an endpoint: `Studio::remove_picture` removes it with its pass, `Studio::picture_failure` reports a fault, and a replaced source node is relinked. It does not hold the source at Shown: a source without a node (standby, gone) or without a picture size yet is `NotBound`. Its readback counts in `GpuMetrics::frames_cpu_copied`.
+
+Tests: `crates/rbs-nodes/tests/image_track_gpu.rs` (`a_source_grab_reads_one_picture_back_once`: the bytes as published, nothing more on later changed pictures); `crates/rbs-record/tests/studio/activity.rs` (`a_source_grab_*`: a running camera's frame at its size, a standby camera is refused and not opened).
+
 ### Sync picture probe (ADR-0126)
 
 `rbs_nodes::SyncPictureProbeNode` (`org.rbs.sync-picture-probe`, kind `Output`, input "picture", render partition) logs the motion of a reference picture while a sync offset measurement runs. `new(window)` returns the node and its `Arc<SyncPictureLog>`, sized for `window` at `SYNC_PICTURE_MAX_FPS` (240) new pictures per second, plus one.

@@ -235,6 +235,9 @@ pub(super) fn round(
     if let Some(left) = host.drive_crisp(notify) {
         arm(&mut wait, &mut armed, left);
     }
+    if let Some(left) = host.drive_studio_grab(notify) {
+        arm(&mut wait, &mut armed, left);
+    }
     if host.texts.fonts_wanted {
         host.list_text_fonts(notify);
         if host.texts.fonts_wanted {
@@ -336,8 +339,12 @@ pub(super) fn take_msg(
             generation,
             id,
             picture,
+            unsupported,
         }) => {
-            if generation == host.pickers.region_grabs.load(AtomicOrdering::Acquire) {
+            let current = generation == host.pickers.region_grabs.load(AtomicOrdering::Acquire);
+            if current && unsupported {
+                host.start_studio_grab(generation, id);
+            } else if current {
                 notify(Update::RegionPreview {
                     id,
                     generation,

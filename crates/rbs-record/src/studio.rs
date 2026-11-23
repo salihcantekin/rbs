@@ -100,6 +100,7 @@ mod rehearse;
 mod replay;
 mod scroll;
 mod source_entry;
+mod source_pictures;
 mod stinger;
 mod studio_mode;
 mod sync_measure;
@@ -582,6 +583,8 @@ struct AddedPicture {
     /// of the source's own size) drawn into the canvas format the preview node takes
     /// (as for separate video files, ADR-0086 decision 9).
     normalise: Option<NodeId>,
+    /// It holds its source at Shown (an Interact picture; a Region grab does not).
+    holds: bool,
     stats: Arc<PreviewNodeStats>,
     failure: Option<String>,
 }
@@ -2008,6 +2011,7 @@ impl Studio {
             source: None,
             node,
             normalise: None,
+            holds: false,
             stats,
             failure: None,
         });
@@ -2151,6 +2155,7 @@ impl Studio {
             source: Some(source),
             node,
             normalise: Some(normalise),
+            holds: true,
             stats,
             failure: None,
         });
@@ -2173,61 +2178,6 @@ impl Studio {
             (Err(e), _) => {
                 self.drop_picture(id);
                 Err(e)
-            }
-        }
-    }
-
-    /// Undoes the hold of a failed [`Studio::add_source_picture`] (`fresh`: it added
-    /// it) and binds again without it.
-    fn forget_shown_by(
-        &mut self,
-        fresh: bool,
-        source: SourceId,
-        collection: &SceneCollection,
-        sources: &SourceTypes,
-    ) {
-        if fresh && !self.pictures.iter().any(|p| p.source == Some(source)) {
-            self.shown_by.remove(&source);
-            let _ = self.update_with(collection, sources, None);
-        }
-    }
-
-    /// A source picture left: its source is no longer held, unless another picture
-    /// still shows it.
-    fn release_shown_by(&mut self, source: Option<SourceId>) {
-        if let Some(source) = source
-            && !self.pictures.iter().any(|p| p.source == Some(source))
-        {
-            self.shown_by.remove(&source);
-        }
-    }
-
-    /// Links each source picture from its source's node again after a sync that
-    /// replaced the node (a changed address, a restart).
-    fn relink_source_pictures(&mut self) {
-        let pairs: Vec<(SourceId, NodeId)> = self
-            .pictures
-            .iter()
-            .filter_map(|p| Some((p.source?, p.normalise?)))
-            .collect();
-        for (source, to) in pairs {
-            let Some(node) = self.binder.source_node(source) else {
-                continue;
-            };
-            let current = self
-                .graph
-                .links()
-                .iter()
-                .find(|l| l.to.node == to && l.to.pin == 0)
-                .copied();
-            if current.is_some_and(|l| l.from.node == node) {
-                continue;
-            }
-            if let Some(link) = current {
-                self.graph.disconnect(link);
-            }
-            if let Ok(pin) = iso_video::video_pin(&self.graph, node) {
-                let _ = self.graph.connect(node, &pin, to, "in");
             }
         }
     }

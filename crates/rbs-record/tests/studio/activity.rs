@@ -353,3 +353,64 @@ fn a_continuing_scroll_keeps_its_run_while_its_source_waits_in_another_scene() {
     let (_, errors) = studio.shutdown();
     assert!(errors.is_empty(), "{errors:?}");
 }
+
+#[test]
+fn a_source_grab_reads_one_frame_of_a_running_camera_and_never_opens_one() {
+    // ADR-0176: the Region preview of a camera is one frame of the running source,
+    // before its crops, at most 960 on the long side; a camera in no shown scene is
+    // not opened for it.
+    let Some(gpu) = gpu() else { return };
+    let r = rig();
+    let (mut col, main) = scene();
+    let cam = col
+        .sources()
+        .find(|s| s.type_id.as_str() == types::CAMERA_SOURCE)
+        .map(|s| s.id)
+        .unwrap();
+    let (loose, _) = col
+        .add_source(
+            "Loose camera",
+            NodeTypeId::new_static(types::CAMERA_SOURCE),
+            Settings::new(),
+        )
+        .unwrap();
+    let (engine, clock) = engine_at_start();
+    let mut settings = StudioSettings::new(main);
+    settings.audio = false;
+    let mut studio = Studio::start(engine, gpu, &col, &r.adapters.sources, &settings).unwrap();
+    let mut rec = OutputSettings::new("mem://main", ContainerId::Matroska);
+    rec.audio = None;
+    studio.start_output(&r.adapters, &rec).unwrap();
+    let reached = run_until(&mut studio, &clock, |s| s.picture_size(cam).is_some());
+    assert!(reached, "the camera opened");
+    let size = studio.picture_size(cam).unwrap();
+
+    // A camera in standby has no node: no grab, and it stays closed.
+    let buffers = r.capture.live_buffers();
+    assert!(
+        studio
+            .add_source_grab(&col, &r.adapters.sources, loose, 960)
+            .is_err()
+    );
+    assert_eq!(r.capture.live_buffers(), buffers);
+    assert!(studio.pictures().is_empty());
+
+    let (pid, slot) = studio
+        .add_source_grab(&col, &r.adapters.sources, cam, 960)
+        .unwrap();
+    let reached = run_until(&mut studio, &clock, |_| slot.is_ready());
+    assert!(reached, "no frame came");
+    let frame = slot.take().unwrap();
+    assert_eq!(
+        (frame.format().size.width, frame.format().size.height),
+        size,
+        "a picture under 960 keeps its size"
+    );
+    studio
+        .remove_picture(&col, &r.adapters.sources, pid)
+        .unwrap();
+    assert!(studio.pictures().is_empty());
+    assert_eq!(r.capture.live_buffers(), buffers);
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+}

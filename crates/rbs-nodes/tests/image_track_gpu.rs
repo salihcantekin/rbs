@@ -1,6 +1,7 @@
 //! Image track node (ADR-0117 decision 5; spec `io-nodes.md`, "Image track node"):
 //! one readback per picture change, at most one per `MIN_IMAGE_INTERVAL`, coalesced
-//! changes counted, nothing done for an unchanged picture. Runs on any GPU adapter,
+//! changes counted, nothing done for an unchanged picture. The source grab node
+//! (ADR-0176) reads one picture back once and then does nothing. Runs on any GPU adapter,
 //! software included; skips when there is none (set `RBS_REQUIRE_GPU` to fail instead).
 
 #![allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
@@ -16,10 +17,11 @@ use rbs_gpu::node::{GpuRuntime, RenderLocal};
 use rbs_gpu::{GpuContext, GpuError, GpuRequest, TextureDesc, TextureId};
 use rbs_graph::description::GraphDescription;
 use rbs_graph::node::{LinkKind, NodeDescriptor, NodeKind, NodeTypeId, Pin};
+use rbs_graph::runtime::ControlWake;
 use rbs_graph::runtime::{
     Controller, Executor, Node, NodeError, PrepareCtx, ProcessCtx, Tick, channel,
 };
-use rbs_nodes::ImageTrackNode;
+use rbs_nodes::{ImageTrackNode, SourceGrabNode};
 
 const W: u32 = 4;
 const H: u32 = 2;
@@ -286,4 +288,66 @@ fn a_change_inside_a_pause_is_taken_at_the_join_in_file_time() {
         times[1].abs_diff(cadence.time_of(10).as_nanos()) <= 1,
         "{times:?}"
     );
+}
+
+#[test]
+fn a_source_grab_reads_one_picture_back_once() {
+    let Some(ctx) = gpu() else { return };
+    let (ctl, exec) = channel::<GpuRuntime>(Arc::clone(&ctx), RenderLocal::default());
+    let mut ctl: Controller<GpuRuntime> = ctl;
+    let mut exec: Executor<GpuRuntime> = exec;
+    let mut graph = GraphDescription::new();
+    let mut add = |node: Box<dyn Node<GpuRuntime>>| {
+        let id = graph.add_node(Arc::new(node.descriptor().clone())).unwrap();
+        graph.set_state(id, Lifecycle::Standby).unwrap();
+        graph.set_state(id, Lifecycle::Active).unwrap();
+        ctl.adopt(id, node).unwrap();
+        id
+    };
+    let generation = Arc::new(AtomicU64::new(1));
+    let feed = add(Box::new(Feed {
+        desc: NodeDescriptor::new(
+            NodeTypeId::new_static("org.rbs.test.feed"),
+            NodeKind::Source,
+            vec![],
+            vec![Pin::one("video", LinkKind::Video)],
+        ),
+        texture: None,
+        generation: Arc::clone(&generation),
+    }));
+    let node = SourceGrabNode::new(W, H).waking(ControlWake::new());
+    let slot = node.slot();
+    let grab = add(Box::new(node));
+    graph.connect(feed, "video", grab, "picture").unwrap();
+    let report = ctl.apply(&graph).unwrap();
+    assert!(report.failed.is_empty(), "{report:?}");
+    exec.swap_pending();
+    let _ = ctl.collect();
+
+    let cadence = Cadence::frames(Timestamp::ZERO, FrameRate::FPS_60);
+    let mut ticks = 0;
+    // The readback lands within a few ticks; ten is a hang guard, not a timing.
+    while !slot.is_ready() && ticks < 10 {
+        generation.fetch_add(1, Ordering::Relaxed);
+        exec.run_tick(Tick::of(&cadence, ticks));
+        ticks += 1;
+        ctx.wait_idle().unwrap();
+        ctx.poll();
+        let _ = ctl.collect();
+    }
+    let frame = slot.take().expect("one frame");
+    assert!(!slot.failed());
+    let FramePayload::System(sys) = frame.payload() else {
+        panic!("not a system frame");
+    };
+    assert_eq!(sys.plane(0).unwrap().0, [200; (W * H * 4) as usize]);
+    // Later pictures, changed or not, are not read back again.
+    for tick in ticks..ticks + 5 {
+        generation.fetch_add(1, Ordering::Relaxed);
+        exec.run_tick(Tick::of(&cadence, tick));
+        ctx.wait_idle().unwrap();
+        ctx.poll();
+        let _ = ctl.collect();
+    }
+    assert!(slot.take().is_none());
 }
