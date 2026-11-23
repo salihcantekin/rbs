@@ -370,6 +370,25 @@ fn settle(canvas: ProjectorCanvas, tries: u32) {
 const SETTLE_RETRY: Duration = Duration::from_millis(20);
 const SETTLE_TRIES: u32 = 50;
 
+/// Places the layer for a window of `size` physical pixels now, in the resize event
+/// itself: the toolkit learns the new size only after this event, so the size comes
+/// from the event. Inside a borrow of the projectors (a size this module asked for is
+/// applied synchronously by some systems) it is placed after this event instead.
+#[cfg(any(target_os = "macos", windows))]
+fn place_now(
+    canvas: ProjectorCanvas,
+    pw: &ProjectorWindow,
+    size: winit::dpi::PhysicalSize<u32>,
+    scale: f64,
+) {
+    if !place_layer_at(canvas, pw, size, scale) {
+        place_soon(canvas, pw);
+    }
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
+fn place_now(_: ProjectorCanvas, _: &ProjectorWindow, _: winit::dpi::PhysicalSize<u32>, _: f64) {}
+
 /// Places the layer after this event, outside any borrow of the projectors.
 #[cfg(any(target_os = "macos", windows))]
 fn place_soon(canvas: ProjectorCanvas, pw: &ProjectorWindow) {
@@ -751,8 +770,12 @@ fn on_event(
             if !mine {
                 resized_by_hand(canvas);
             }
-            // The layer follows the window also when nothing in it draws again.
-            place_soon(canvas, pw);
+            // The layer follows the window at once, also when nothing in it draws
+            // again. A live resize on Windows runs in the OS's own sizing loop, where
+            // posted work (`place_soon`) waits until the mouse is released or the loop
+            // happens to run it: the picture then stayed at its old size and place,
+            // and a video call sharing the window saw it jump or half black.
+            place_now(canvas, pw, *size, w.scale_factor());
         }
         WindowEvent::ScaleFactorChanged { .. } => {
             rescale(canvas);
@@ -998,28 +1021,43 @@ fn setup(canvas: ProjectorCanvas, mut sub: PreviewSubscriber, generation: Arc<At
 /// layer keeps the canvas's aspect (resize-aspect), the backdrop shows around it.
 #[cfg(any(target_os = "macos", windows))]
 fn place_layer(canvas: ProjectorCanvas, window: &ProjectorWindow) {
+    let w = window.window();
+    let size = w.size();
+    let size = winit::dpi::PhysicalSize::new(size.width, size.height);
+    place_layer_at(canvas, window, size, f64::from(w.scale_factor()));
+}
+
+/// [`place_layer`] for a window of `size` physical pixels at `scale`. False only when
+/// the projectors are borrowed now (nothing placed; the caller places it later).
+#[cfg(any(target_os = "macos", windows))]
+fn place_layer_at(
+    canvas: ProjectorCanvas,
+    window: &ProjectorWindow,
+    size: winit::dpi::PhysicalSize<u32>,
+    scale: f64,
+) -> bool {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     use rbs_gpu::share::LayerRect;
     SLOTS.with(|slots| {
         let Ok(mut slots) = slots.try_borrow_mut() else {
-            return;
+            return false;
         };
         let Some(st) = slots
             .iter_mut()
             .find(|s| s.canvas == canvas)
             .and_then(|s| s.layer.as_mut())
         else {
-            return;
+            return true;
         };
         if !st.attached {
             let handle = window.window().window_handle();
             let Ok(handle) = handle.window_handle() else {
-                return;
+                return true;
             };
             #[cfg(target_os = "macos")]
             let attach = {
                 let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
-                    return;
+                    return true;
                 };
                 // SAFETY: the handle is the live NSView of this window, which the
                 // renderer made layer-backed; this runs on the main thread that owns it.
@@ -1028,7 +1066,7 @@ fn place_layer(canvas: ProjectorCanvas, window: &ProjectorWindow) {
             #[cfg(windows)]
             let attach = {
                 let RawWindowHandle::Win32(win32) = handle.as_raw() else {
-                    return;
+                    return true;
                 };
                 // SAFETY: the handle is the live top-level window of this process; this
                 // runs on the UI thread that owns it.
@@ -1039,7 +1077,7 @@ fn place_layer(canvas: ProjectorCanvas, window: &ProjectorWindow) {
                     rbs_core::log::Area::Ui,
                     "projector: cannot attach the layer: {e}"
                 );
-                return;
+                return true;
             }
             st.attached = true;
             rbs_core::debug!(
@@ -1049,12 +1087,13 @@ fn place_layer(canvas: ProjectorCanvas, window: &ProjectorWindow) {
             );
         }
         // Core Animation places in points; DirectComposition in physical pixels.
-        let size = window.window().size();
         #[cfg(target_os = "macos")]
         let (w, h) = {
-            let l = size.to_logical(window.window().scale_factor());
-            (f64::from(l.width), f64::from(l.height))
+            let l = size.to_logical::<f64>(scale);
+            (l.width, l.height)
         };
+        #[cfg(windows)]
+        let _ = scale;
         #[cfg(windows)]
         let (w, h) = (f64::from(size.width), f64::from(size.height));
         st.layer.set_rect(LayerRect {
@@ -1064,7 +1103,8 @@ fn place_layer(canvas: ProjectorCanvas, window: &ProjectorWindow) {
             height: h,
         });
         st.layer.set_hidden(false);
-    });
+        true
+    })
 }
 
 #[cfg(not(any(target_os = "macos", windows)))]
