@@ -251,3 +251,30 @@ fn undo_delete_and_rehearse_refuse_with_a_reason() {
     assert!(unknown.get("error").is_some(), "{unknown}");
     drop(host);
 }
+
+/// Reset transform on a Library shape gives back the box it was added with, not its
+/// 2 x 2 fill picture (ADR-0084 decision 4, `box_width` and `box_height`).
+#[test]
+fn a_shape_resets_to_the_size_it_was_added_with() {
+    let Some((host, _updates, _api, mut c)) = start() else {
+        return;
+    };
+    let shape = c.call("source.add", json!({"kind": "color", "stamp": "rectangle"}));
+    let id = ok(&shape)["source"].as_u64().unwrap();
+    let row = |c: &mut Client| sources(c).into_iter().find(|s| s["id"] == id).unwrap();
+    let added = row(&mut c)["layout"]["size"].clone();
+    let item = item_of(&mut c, id);
+    ok(&c.call("item.rotate", json!({"item": item, "degrees": 90})));
+    ok(&c.call("item.flip", json!({"item": item, "axis": "horizontal"})));
+    ok(&c.call("item.reset_transform", json!({"item": item})));
+    let reset = row(&mut c)["layout"].clone();
+    assert_eq!(reset["rotation"], 0.0, "{reset}");
+    let close = |a: &serde_json::Value, b: &serde_json::Value| {
+        (a.as_f64().unwrap() - b.as_f64().unwrap()).abs() < 1.0
+    };
+    assert!(
+        close(&reset["size"][0], &added[0]) && close(&reset["size"][1], &added[1]),
+        "added {added}, reset {reset}"
+    );
+    drop(host);
+}

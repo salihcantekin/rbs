@@ -683,7 +683,10 @@ impl Host {
                 .fitted(canvas, picture()?, mode)
                 .ok_or_else(|| Refusal::Invalid("The picture or the canvas is empty.".into()))?,
             TransformOp::Reset => old
-                .transform_reset(picture()?)
+                .transform_reset(match self.stored_box_of(source) {
+                    Some(size) => size,
+                    None => self.reset_size_of(source, picture()?, old.size),
+                })
                 .ok_or_else(|| Refusal::Invalid("The picture is empty.".into()))?,
         };
         if layout == old {
@@ -697,6 +700,26 @@ impl Host {
             .history
             .record(EditKind::Transform, &name, gesture, vec![undo]);
         Ok(true)
+    }
+
+    /// The box a Library shape or plain frame was added with (see [`stored_box`]).
+    fn stored_box_of(&self, source: SourceId) -> Option<(u32, u32)> {
+        self.collection
+            .source(source)
+            .and_then(|s| stored_box(&s.settings))
+    }
+
+    /// The size Reset transform gives `source`'s item (see [`reset_size`]).
+    pub(super) fn reset_size_of(
+        &self,
+        source: SourceId,
+        shown: (u32, u32),
+        current: [f32; 2],
+    ) -> (u32, u32) {
+        match self.collection.source(source) {
+            Some(s) => reset_size(&s.settings, shown, current),
+            None => shown,
+        }
     }
 
     /// Shows `region` of an item's picture on canvas `on` (Properties' Show buttons).

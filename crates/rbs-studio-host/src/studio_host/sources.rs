@@ -624,6 +624,9 @@ impl Host {
                 // The border is drawn in the item's box, so the picture itself stays tiny.
                 settings.insert(keys::WIDTH.into(), SettingValue::Int(2));
                 settings.insert(keys::HEIGHT.into(), SettingValue::Int(2));
+                let (w, h) = (canvas.size.width.into(), canvas.size.height.into());
+                settings.insert(keys::BOX_WIDTH.into(), SettingValue::Int(w));
+                settings.insert(keys::BOX_HEIGHT.into(), SettingValue::Int(h));
                 (SourceKind::Color.type_id(), settings)
             } else {
                 let mut settings = Settings::new();
@@ -698,6 +701,9 @@ impl Host {
         // The shape is the item's box. The texture only carries the fill.
         settings.insert(keys::WIDTH.into(), SettingValue::Int(2));
         settings.insert(keys::HEIGHT.into(), SettingValue::Int(2));
+        // What Reset transform returns to, as the picture has no size of its own.
+        settings.insert(keys::BOX_WIDTH.into(), SettingValue::Int(w.round() as i64));
+        settings.insert(keys::BOX_HEIGHT.into(), SettingValue::Int(h.round() as i64));
         self.add_still(
             name.unwrap_or(base),
             SourceKind::Color,

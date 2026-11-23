@@ -820,11 +820,16 @@ impl Host {
                 }
             }
             AttributeGroup::Transform => {
-                let Some(shown) = visible(old.crop) else {
+                let boxed = super::crop::stored_box(&source.settings);
+                let Some(shown) = boxed.or_else(|| visible(old.crop)) else {
                     return Ok(Err(Skip::NoPictureSize));
                 };
                 match from {
-                    None => match old.transform_reset(shown) {
+                    None => match old.transform_reset(super::crop::reset_size(
+                        &source.settings,
+                        shown,
+                        old.size,
+                    )) {
                         Some(l) => l,
                         None => return Ok(Err(Skip::NoPictureSize)),
                     },

@@ -51,6 +51,35 @@ pub enum TransformOp {
     Reset,
 }
 
+/// A picture this small on both sides is only a fill the item's box stretches, so its
+/// pixel size is no size to reset to.
+const FILL_ONLY: u32 = 2;
+
+/// The source's `box_width` x `box_height`, when it stores both as positive numbers.
+/// Reset transform needs no picture then.
+pub(super) fn stored_box(settings: &Settings) -> Option<(u32, u32)> {
+    let side = |key: &str| match settings.get(key) {
+        Some(SettingValue::Int(n)) => u32::try_from(*n).ok().filter(|n| *n > 0),
+        _ => None,
+    };
+    Some((side(keys::BOX_WIDTH)?, side(keys::BOX_HEIGHT)?))
+}
+
+/// The size Reset transform gives an item whose visible picture is `shown` (ADR-0084
+/// decision 4): the source's `box_width` x `box_height` when it stores them (a Library
+/// shape or plain frame), else the picture. A fill-only picture without them (a shape
+/// saved before the keys existed) keeps the item's `current` size.
+pub(super) fn reset_size(settings: &Settings, shown: (u32, u32), current: [f32; 2]) -> (u32, u32) {
+    if let Some(size) = stored_box(settings) {
+        return size;
+    }
+    if shown.0 <= FILL_ONLY && shown.1 <= FILL_ONLY {
+        let keep = |v: f32| (v.abs().round() as u32).max(1);
+        return (keep(current[0]), keep(current[1]));
+    }
+    shown
+}
+
 /// Why a crop was refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum CropRefusal {
@@ -78,5 +107,39 @@ impl CropRefusal {
                 "This source has no picture yet, so its crop cannot keep the scale.".into()
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn with_box(w: i64, h: i64) -> Settings {
+        let mut s = Settings::new();
+        s.insert(keys::BOX_WIDTH.into(), SettingValue::Int(w));
+        s.insert(keys::BOX_HEIGHT.into(), SettingValue::Int(h));
+        s
+    }
+
+    #[test]
+    fn a_shape_resets_to_the_box_it_was_added_with() {
+        let size = reset_size(&with_box(484, 302), (2, 2), [20.0, 20.0]);
+        assert_eq!(size, (484, 302));
+    }
+
+    #[test]
+    fn a_fill_only_picture_without_a_box_keeps_its_size() {
+        let size = reset_size(&Settings::new(), (2, 2), [-300.4, 120.0]);
+        assert_eq!(size, (300, 120));
+    }
+
+    #[test]
+    fn a_picture_resets_to_its_size_and_a_bad_box_is_ignored() {
+        let picture = (1920, 1080);
+        assert_eq!(reset_size(&Settings::new(), picture, [10.0, 10.0]), picture);
+        assert_eq!(
+            reset_size(&with_box(0, 300), picture, [10.0, 10.0]),
+            picture
+        );
     }
 }
