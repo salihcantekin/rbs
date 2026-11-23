@@ -752,9 +752,8 @@ impl Host {
             .set_source_region(id, region)
             .map_err(|e| Refusal::of(&e))?;
         let mut steps = vec![undo];
-        if region.is_some()
-            && let Ok(Some(fit)) = self.fit_item_to_visible(id, FitMode::Fill)
-        {
+        // Set or cleared, the box keeps its place and takes the picture's aspect.
+        if let Ok(Some(fit)) = self.fit_item_to_visible(id) {
             steps.push(fit);
         }
         self.edits.history.record(EditKind::Region, &name, 0, steps);

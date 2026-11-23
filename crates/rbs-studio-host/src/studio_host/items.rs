@@ -131,12 +131,10 @@ impl Host {
     }
 
     /// Places the edited scene's item for `id` using the visible picture size
-    /// (region ∩ crop). `None` when size or canvas is unknown.
-    pub(super) fn fit_item_to_visible(
-        &mut self,
-        id: SourceId,
-        mode: FitMode,
-    ) -> Result<Option<Undo>, Refusal> {
+    /// (the region and the item's own crop) in its own box: same centre, area,
+    /// rotation and flips, the visible picture's aspect (ADR-0178). `None` when the
+    /// size is unknown or nothing changes.
+    pub(super) fn fit_item_to_visible(&mut self, id: SourceId) -> Result<Option<Undo>, Refusal> {
         let source = self
             .collection
             .source(id)
@@ -144,8 +142,7 @@ impl Host {
         let picture = self.sizes.get(&id).copied().ok_or_else(|| {
             Refusal::Invalid("This source has no picture yet, so its size is not known.".into())
         })?;
-        let visible = visible_size(picture, source.region, Crop::default())
-            .ok_or_else(|| Refusal::Invalid("The region leaves no picture.".into()))?;
+        let region = source.region;
         let item = self.item_of(id)?.1.id;
         let (_, old, own) = self.crop_target(item).map_err(|e| match e {
             CropRefusal::NotFound(t) => Refusal::NotFound(t),
@@ -153,13 +150,8 @@ impl Host {
             CropRefusal::Conflict(t) => Refusal::Conflict(t),
             CropRefusal::NoPicture | CropRefusal::Failed(_) => Refusal::Failed(e.text()),
         })?;
-        let canvas = self
-            .collection
-            .canvas(self.canvas)
-            .map(|c| (c.size.width, c.size.height))
-            .ok_or_else(|| Refusal::Failed("the canvas is gone".into()))?;
-        let layout = old
-            .fitted(canvas, visible, mode)
+        let layout = visible_size(picture, region, old.crop)
+            .and_then(|visible| old.fitted_in_box(visible))
             .ok_or_else(|| Refusal::Invalid("The region leaves no picture.".into()))?;
         if layout == old {
             return Ok(None);

@@ -149,6 +149,25 @@ impl Layout {
         (w * c.abs() + h * s.abs(), w * s.abs() + h * c.abs())
     }
 
+    /// A box of `picture`'s aspect with this box's area, centre, rotation and flips
+    /// (a source region set or cleared in Source settings, ADR-0178: the item stays
+    /// where the user placed it, its size does not creep with each edit). `picture`
+    /// is the size of the cropped picture. `None` for an empty picture or box.
+    pub fn fitted_in_box(&self, picture: (u32, u32)) -> Option<Self> {
+        let n = self.normalised();
+        let (bw, bh) = (n.size[0].abs(), n.size[1].abs());
+        if picture.0 == 0 || picture.1 == 0 || bw <= 0.0 || bh <= 0.0 {
+            return None;
+        }
+        let aspect = picture.0 as f32 / picture.1 as f32;
+        let h = (bw * bh / aspect).sqrt();
+        let sign_w = if n.size[0] < 0.0 { -1.0 } else { 1.0 };
+        let mut out = n;
+        out.size = [h * aspect * sign_w, h];
+        let out = out.with_centre(n.centre());
+        out.is_valid().then_some(out)
+    }
+
     /// Placed on a `canvas` (width, height) according to `mode`, centred, with the
     /// rotation and flips kept. `picture` is the size of the cropped picture. `None`
     /// for an empty picture or canvas.
@@ -321,6 +340,26 @@ mod tests {
         let l = lay().flipped_horizontally();
         let fit = l.fitted((1920, 1080), (400, 200), FitMode::Fit).unwrap();
         assert!(fit.size[0] < 0.0 && fit.size[1] > 0.0);
+    }
+
+    #[test]
+    fn a_region_keeps_the_box_centre_and_area() {
+        // A 400 x 200 box at (100, 50), centre (300, 150), area 80 000.
+        let square = lay().fitted_in_box((720, 720)).unwrap();
+        let side = 80_000f32.sqrt();
+        assert!(close(square.size, [side, side]));
+        assert!(close(square.centre(), lay().centre()));
+        let same = lay().fitted_in_box((1280, 640)).unwrap();
+        assert!(close(same.size, lay().size) && close(same.position, lay().position));
+        // Back and forth does not shrink the box.
+        let back = square.fitted_in_box((1280, 640)).unwrap();
+        assert!(close(back.size, lay().size));
+        // Flips and rotation are kept.
+        let flipped = lay().flipped_horizontally().with_rotation(30.0);
+        let fit = flipped.fitted_in_box((720, 720)).unwrap();
+        assert!(fit.size[0] < 0.0 && near(fit.rotation, 30.0));
+        assert!(close(fit.centre(), flipped.centre()));
+        assert!(lay().fitted_in_box((0, 10)).is_none());
     }
 
     #[test]
