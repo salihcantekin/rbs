@@ -1,6 +1,6 @@
 # ADR-0176: A camera's Region preview is one frame of the running source
 
-- Status: Proposed
+- Status: Accepted (2026-11-23)
 - Date: 2026-11-23
 - Deciders: Salih (owner)
 - Supersedes: [ADR-0103](0103-source-region.md) decision 4, for sources whose adapter has no `region_grab`
@@ -53,4 +53,4 @@ Concerns and resolutions (author, 2026-11-23, written into the decisions):
 
 Second round (independent AI session, 2026-11-23): concerns 1-7 resolved; one new item. A studio restart starts picture ids again, so the grab's old id could name a projector's or Interact picture in the new studio and remove it, and its 3 s ran on the old clock. -> Resolved in decision 4: the restart path forgets the grab's picture without removing it and asks again with a new deadline (`Host::restart_studio_grab`).
 
-Owner approval: pending.
+Owner approval: Salih, 2026-11-23: "merge et main'e" ("merge it to main"), after reading the summary of this ADR, its reviews and the render-partition node (rule 12). Device check on Windows and macOS follows on the next build.
