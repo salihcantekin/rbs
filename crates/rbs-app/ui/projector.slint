@@ -12,6 +12,12 @@ export component ProjectorWindow inherits Window {
     in property <string> menu-target;
     // The title sharing apps list the window by; never drawn (decision 5).
     in property <string> window-title;
+    // No frame (Windows, decision 5). The toolkit applies `no-frame` to the OS window
+    // after it is made, so a frameless window asked for at creation alone got its
+    // caption back. macOS keeps its frame with a hidden, transparent title bar, which
+    // still resizes at the edges.
+    in property <bool> frameless;
+    no-frame: root.frameless;
     title: root.window-title;
     background: Theme.projector-backdrop;
     icon: @image-url("../assets/brand/icon-win-256.png");

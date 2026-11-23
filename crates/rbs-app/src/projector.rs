@@ -263,6 +263,7 @@ fn open_slot(
     };
     let canvas = content.canvas;
     window.set_window_title(title(canvas).into());
+    window.set_frameless(cfg!(windows));
     window.set_menu_target(format!("canvas={}", param(canvas)).into());
     make(&window);
     // A window as wide as a floating window, in the canvas's shape.
