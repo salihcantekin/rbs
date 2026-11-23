@@ -709,6 +709,11 @@ fn install_events(
         let _ = rbs_crash::contain(|| {
             sw.with_winit_window(|w| on_event(w, event, canvas, &pw, &at, &asked))
         });
+        // On Windows the pointer shows a resize arrow at the frameless edges; the
+        // toolkit, which has nothing to point at in this window, would set it back.
+        if cfg!(windows) && matches!(event, WindowEvent::CursorMoved { .. }) {
+            return EventResult::PreventDefault;
+        }
         EventResult::Propagate
     });
 }
@@ -724,6 +729,8 @@ fn on_event(
     match event {
         WindowEvent::CursorMoved { position, .. } => {
             at.set((position.x, position.y));
+            #[cfg(windows)]
+            w.set_cursor(edge_cursor(edge_at(w, at.get(), pw)));
             w.set_cursor_visible(true);
             rest_cursor(canvas, pw);
         }
@@ -897,6 +904,20 @@ fn edge_at(
         (_, _, _, true) => D::South,
         _ => return None,
     })
+}
+
+/// The pointer over a frameless window's edge (Windows): the resize arrow of that
+/// edge, so the user sees where a press resizes it; the plain arrow elsewhere.
+#[cfg(windows)]
+fn edge_cursor(edge: Option<winit::window::ResizeDirection>) -> winit::window::CursorIcon {
+    use winit::window::{CursorIcon as C, ResizeDirection as D};
+    match edge {
+        None => C::Default,
+        Some(D::East | D::West) => C::EwResize,
+        Some(D::North | D::South) => C::NsResize,
+        Some(D::NorthWest | D::SouthEast) => C::NwseResize,
+        Some(D::NorthEast | D::SouthWest) => C::NeswResize,
+    }
 }
 
 /// Building a native menu must not drop the window out of the compositor: that would
