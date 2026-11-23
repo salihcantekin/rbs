@@ -9,7 +9,7 @@
 #   --out DIR    where the zip goes (default: dist/ in the repository)
 #
 # Builds the release app with tools/dev/build.sh --release (rbs, rbs-mcp and the CEF
-# browser runner), collects exactly the files a user needs into
+# browser runner), collects exactly the files a user needs, plus the notes in tools/package/<platform>/, into
 # <out>/RBS-<version>-<label>/ and zips it to <out>/RBS-<version>-<label>.zip, with a
 # .sha256 file beside it. The browser engine (CEF runtime) is not included: the app
 # downloads it in Settings > Add-ons (ADR-0145). Prints the zip path on its last line.
@@ -58,22 +58,17 @@ if [ "$platform" = macos ]; then
     need "$bin/RBS.app"
     # ditto keeps the signature, symbolic links and extended attributes.
     ditto "$bin/RBS.app" "$stage/RBS.app"
-    run='Open the RBS folder and double-click RBS.app. The first time, macOS may say it cannot
-verify the app: right-click RBS.app, choose Open, then Open again.'
-    data='~/Library/Application Support/RBS'
 else
     need "$bin/rbs"
     need "$bin/rbs-mcp"
     cp "$bin/rbs" "$bin/rbs-mcp" "$stage/"
     # The browser runner is optional: without it browser sources are unavailable.
     if [ -e "$bin/rbs-browser-cef" ]; then cp "$bin/rbs-browser-cef" "$stage/"; fi
-    run='Run ./rbs from this folder.'
-    data='~/.config/rbs'
 fi
 
 cp "$root/LICENSE" "$stage/LICENSE"
-awk -v run="$run" -v data="$data" '{ gsub(/@RUN@/, run); gsub(/@DATA@/, data); print }' \
-    "$root/tools/package/README-user.txt" > "$stage/README.txt"
+# Everything in tools/package/<platform>/ (README.txt and any other notes) goes in as is.
+cp -R "$root/tools/package/$platform/." "$stage/"
 printf '%s\n' "$version" > "$stage/VERSION.txt"
 
 (
