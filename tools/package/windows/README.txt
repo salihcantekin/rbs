@@ -6,13 +6,14 @@ License: GPL-3.0-or-later (see LICENSE). Source: https://github.com/salihcanteki
 
 Run it
 ------
-@RUN@
+Double-click rbs.exe in this folder. If Windows SmartScreen warns about an unknown
+publisher, choose More info, then Run anyway.
 
 Notes
 -----
 - This is a portable download, not an installer. Your profiles, scene collections
   and settings are kept in:
-    @DATA@
+    %APPDATA%\RBS
   Copy that folder to back up your setup.
 - The browser source needs its engine (about 200 MB): download it once in
   Settings > Add-ons.

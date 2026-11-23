@@ -10,8 +10,9 @@ locally.
 | macOS, Linux | `tools/package/package.sh` | `dist/RBS-<version>-<platform>-<arch>.zip` |
 
 Each run builds the release app with `tools/dev/build.*` (`rbs`, `rbs-mcp` and the CEF
-browser runner), copies the files a user needs into a folder, adds `LICENSE`, a short
-`README.txt` and `VERSION.txt`, zips it and writes a `.sha256` beside the zip. The last
+browser runner), copies the files a user needs into a folder, adds `LICENSE`, `VERSION.txt` and
+everything in `tools/package/<platform>/` (`windows`, `macos`, `linux`: the `README.txt`
+and any other installation notes; edit them there, no script change needed), zips it and writes a `.sha256` beside the zip. The last
 line printed is the zip path. Options: `--no-build` / `-NoBuild` (package what is
 already built), `--label` / `-Label` (the name part after the version, for example a
 tag), `--out` / `-Out` (the output folder).

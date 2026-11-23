@@ -7,7 +7,7 @@ machine and in CI (macOS and Linux: package.sh).
     tools\package\package.ps1 [-NoBuild] [-Label <text>] [-Out <dir>]
 
 Builds the release app with tools\dev\build.ps1 -Release (rbs.exe, rbs-mcp.exe and the
-CEF browser runner), collects exactly the files a user needs into
+CEF browser runner), collects exactly the files a user needs, plus the notes in tools\package\windows\, into
 <out>\RBS-<version>-<label>\ and zips it to <out>\RBS-<version>-<label>.zip, with a
 .sha256 file beside it. The browser engine (CEF runtime) is not included: the app
 downloads it in Settings > Add-ons (ADR-0145). The virtual camera is not included
@@ -59,10 +59,8 @@ $runner = Join-Path $bin 'rbs-browser-cef.exe'
 if (Test-Path $runner) { Copy-Item $runner $stage }
 
 Copy-Item (Join-Path $root 'LICENSE') (Join-Path $stage 'LICENSE')
-$readme = (Get-Content -Raw (Join-Path $root 'tools\package\README-user.txt')).
-    Replace('@RUN@', 'Double-click rbs.exe in this folder. If Windows SmartScreen warns about an unknown publisher, choose More info, then Run anyway.').
-    Replace('@DATA@', '%APPDATA%\RBS')
-Set-Content -Path (Join-Path $stage 'README.txt') -Value $readme
+# Everything in tools\package\windows\ (README.txt and any other notes) goes in as is.
+Copy-Item -Recurse -Force (Join-Path $root 'tools\package\windows\*') $stage
 Set-Content -Path (Join-Path $stage 'VERSION.txt') -Value $version
 
 Compress-Archive -Path $stage -DestinationPath $zip -CompressionLevel Optimal
