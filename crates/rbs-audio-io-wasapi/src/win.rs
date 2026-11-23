@@ -394,7 +394,14 @@ fn process_name(pid: u32) -> Option<String> {
     }
     .ok()?;
     let path = String::from_utf16_lossy(&buffer[..len as usize]);
-    path.rsplit(['\\', '/']).next().map(str::to_owned)
+    let file = path.rsplit(['\\', '/']).next()?;
+    // The program name without its extension, as the window capture names a window's
+    // application (`chrome`, not `chrome.exe`), so a window's sound matches by name.
+    let stem = match file.rsplit_once('.') {
+        Some((stem, ext)) if ext.eq_ignore_ascii_case("exe") && !stem.is_empty() => stem,
+        _ => file,
+    };
+    Some(stem.to_owned())
 }
 
 /// Processes with a live audio session on some render endpoint.
