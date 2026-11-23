@@ -8,7 +8,10 @@
 //!   per-tick work for 64 scrolling layers).
 //! - `compositor_new`: building one compositor; nothing in it depends on scrolling.
 //! - `frame_1080p_scroll/*`: a 1080p frame of a full-canvas picture and seven tiles,
-//!   plain, with one 1920 x 80 ticker on top, and with all eight scrolling; each
+//!   plain, with one 1920 x 80 ticker on top, with all eight scrolling, with all eight
+//!   scrolling with a rounded style (`styled_8_scrolling`, the style on the window) and
+//!   eight Library shapes (2 x 2 fills with a style) scrolling (`shapes_8_scrolling`,
+//!   the style moving with the picture, ADR-0177); each
 //!   iteration renders and waits for the GPU. On software adapters this is CPU-bound and
 //!   only useful against `composite` of `benches/compositor.rs` on the same machine.
 //!
@@ -19,9 +22,9 @@ use std::time::{Duration, Instant};
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use rbs_core::time::Timestamp;
 use rbs_gpu::{
-    Affine2, CanvasDesc, Compositor, GpuContext, GpuRequest, Layer, LayerScroll, ScrollBinding,
-    ScrollDirection, ScrollRepeat, ScrollRun, ScrollStart, TextureDesc, TexturePool, UvRect,
-    readback,
+    Affine2, CanvasDesc, Compositor, GpuContext, GpuRequest, Layer, LayerScroll, LayerShape,
+    LayerStyle, ScrollBinding, ScrollDirection, ScrollRepeat, ScrollRun, ScrollStart, TextureDesc,
+    TexturePool, UvRect, readback,
 };
 
 const W: u32 = 1920;
@@ -144,6 +147,26 @@ fn bench(c: &mut Criterion) {
         .map(|(i, l)| scrolled(l, src, 1920, 1080, i))
         .collect();
 
+    let rounded = |l: &Layer| {
+        let mut l = *l;
+        let size = [l.transform.a.abs(), l.transform.d.abs()];
+        l.style = LayerStyle::new(LayerShape::Rounded { radius: 24.0 }, 6.0, [255; 4], size);
+        l
+    };
+    let styled: Vec<Layer> = all.iter().map(rounded).collect();
+    let fill = pool
+        .acquire(
+            &ctx,
+            &TextureDesc::source(2, 2, wgpu::TextureFormat::Rgba8UnormSrgb),
+        )
+        .expect("fill");
+    readback::upload(&ctx, &pool, fill, &[40, 110, 230, 255].repeat(4)).expect("upload");
+    let shapes: Vec<Layer> = plain
+        .iter()
+        .enumerate()
+        .map(|(i, l)| rounded(&scrolled(l, fill, 2, 2, i)))
+        .collect();
+
     let mut group = c.benchmark_group("frame_1080p_scroll");
     group.sample_size(20);
     for (name, layers) in [
@@ -151,6 +174,8 @@ fn bench(c: &mut Criterion) {
         ("plain_8_bar", &plain_bar),
         ("ticker_8_plus_1", &ticker),
         ("all_8_scrolling", &all),
+        ("styled_8_scrolling", &styled),
+        ("shapes_8_scrolling", &shapes),
     ] {
         group.bench_with_input(BenchmarkId::new("composite", name), layers, |b, layers| {
             b.iter(|| {
