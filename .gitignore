@@ -5,3 +5,4 @@
 .vscode/
 # The CEF runner has its own workspace, so its own target folder.
 /crates/rbs-browser-cef/target
+/dist
