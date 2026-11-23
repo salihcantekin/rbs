@@ -1,6 +1,6 @@
 # ADR-0177: A scrolling fill moves its whole shape
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-23
 - Deciders: Salih (owner)
 - Supersedes: part of [ADR-0150](0150-scrolling-layers-in-the-compositor.md) decision 2, for fills only
@@ -40,4 +40,5 @@ The owner chose that a shape scrolls as a whole (2026-11-23, in the thread).
 
 ## Review
 
-- 2026-11-23, independent AI session (fresh context; ADR, ADR-0150, spec and diff): **approve with changes**. Addressed: the Colour source is not a fill at its default size (Context, Consequences, spec, index); the seam coverage limit is written down; the fill threshold's relation to Reset transform is stated. It confirmed WGSL uniformity (derivatives before any branch, the only branch on a uniform), no border in gaps, unchanged paths for non-fills and non-scrolling styled layers, and no other old-formula length in the workspace. Open: a short SC-PC or Mac bench (P15) and the owner's approval.
+- 2026-11-23, independent AI session (fresh context; ADR, ADR-0150, spec and diff): **approve with changes**. Addressed: the Colour source is not a fill at its default size (Context, Consequences, spec, index); the seam coverage limit is written down; the fill threshold's relation to Reset transform is stated. It confirmed WGSL uniformity (derivatives before any branch, the only branch on a uniform), no border in gaps, unchanged paths for non-fills and non-scrolling styled layers, and no other old-formula length in the workspace.
+- Owner, 2026-11-23: approved this ADR and the hot-path change ("onaylıyorum"), on the cloud measurements; a device bench was offered and not required.
