@@ -63,5 +63,5 @@ tools/dev/run.sh --fresh-config             # try the first-run page
 ```
 
 These scripts are for development. Measurements use `cargo xtask device-check app`
-([testing strategy](../../docs/specs/testing-strategy.md)), and no package or installer
-is made here.
+([testing strategy](../../docs/specs/testing-strategy.md)), and the download zip is made by
+[`tools/package`](../package/README.md); there is no installer yet.
