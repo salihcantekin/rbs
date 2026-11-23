@@ -194,7 +194,7 @@ pub struct LayerScroll {
 /// The shader's record of one scrolling layer (WGSL `ScrollGpu`, bound with a dynamic
 /// offset on group 2): `a` = window start on the strip (wrapped for `Loop`), window
 /// length, picture length, period; `b` = axis (0 horizontal, 1 vertical), once (1),
-/// fade length, unused. Lengths in the transform's units.
+/// fade length, fill (1: the style moves with the picture, ADR-0177). Lengths in the transform's units.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Pod, Zeroable)]
 pub struct ScrollGpu {
@@ -216,6 +216,27 @@ pub struct ScrollFrame {
     pub period: f64,
     /// The picture has fully left the window and will not come back (`Once` only).
     pub ended: bool,
+    /// The picture is a fill ([`is_fill`]): it is as long as the window, and the
+    /// layer's style (shape, border) moves with it instead of staying on the window
+    /// (ADR-0177).
+    pub fill: bool,
+}
+
+/// The largest picture, in texels on each side, that is only a fill the item's box
+/// stretches (a colour, a Library shape): it has no aspect ratio of its own (ADR-0177).
+pub const FILL_TEXELS: u32 = 2;
+
+/// Whether a `width x height` texel picture is a fill (ADR-0177).
+pub fn is_fill(width: u32, height: u32) -> bool {
+    width <= FILL_TEXELS && height <= FILL_TEXELS
+}
+
+/// The length a scrolled picture has along the direction (ADR-0150 decision 2,
+/// ADR-0177): a picture `along` x `across` long (its cropped texels along and across
+/// the direction) in a box `window` long and `cross` wide fills the box across with
+/// its aspect ratio kept; a fill is as long as the window, the box it stretches to.
+pub fn picture_length(window: f64, cross: f64, along: f64, across: f64, fill: bool) -> f64 {
+    if fill { window } else { along * cross / across }
 }
 
 impl LayerScroll {
@@ -238,7 +259,8 @@ impl LayerScroll {
         } else {
             (x_len, y_len, pw, ph)
         };
-        let picture = along * cross / across;
+        let fill = is_fill(width, height);
+        let picture = picture_length(window, cross, along, across, fill);
         if !(window > 0.0 && picture > 0.0 && picture.is_finite() && window.is_finite()) {
             return None;
         }
@@ -272,6 +294,7 @@ impl LayerScroll {
             picture,
             period,
             ended,
+            fill,
         })
     }
 
@@ -306,7 +329,8 @@ impl ScrollFrame {
                     0.0
                 },
                 fade as f32,
-                0.0,
+                // A fill's style moves with the picture (ADR-0177).
+                if self.fill { 1.0 } else { 0.0 },
             ],
         }
     }
@@ -495,6 +519,30 @@ mod tests {
         assert_eq!(f.picture, 2000.0);
         let g = f.gpu(ScrollDirection::Up, ScrollRepeat::Loop, 1000.0);
         assert_eq!(g.b, [1.0, 0.0, 150.0, 0.0]);
+    }
+
+    #[test]
+    fn a_fill_is_as_long_as_the_window_and_its_style_moves() {
+        // A 2 x 2 fill stretched to a box resized on one edge only (ADR-0177).
+        let l = layer(
+            ScrollDirection::Left,
+            ScrollRepeat::Loop,
+            ScrollStart::Inside,
+        );
+        let t = Affine2::rect(0.0, 0.0, 600.0, 150.0);
+        let f = l.frame(&t, &UvRect::FULL, 2, 2, s(10.0)).expect("frame");
+        assert!(f.fill);
+        assert_eq!(f.picture, 600.0);
+        assert_eq!(f.period, 700.0);
+        assert_eq!(f.gpu(l.direction, l.repeat, 0.0).b[3], 1.0);
+        let up = layer(ScrollDirection::Up, ScrollRepeat::Once, ScrollStart::Inside);
+        let f = up.frame(&t, &UvRect::FULL, 1, 1, s(10.0)).expect("frame");
+        assert_eq!(f.picture, 150.0);
+        // A picture with texels of its own keeps its aspect ratio and its window style.
+        let f = l.frame(&t, &UvRect::FULL, 4, 2, s(10.0)).expect("frame");
+        assert!(!f.fill);
+        assert_eq!(f.picture, 300.0);
+        assert_eq!(f.gpu(l.direction, l.repeat, 0.0).b[3], 0.0);
     }
 
     #[test]

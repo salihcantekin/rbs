@@ -570,17 +570,22 @@ fn a_moving_scroll_draws_every_tick() {
 #[test]
 fn a_scroll_draws_its_picture_and_gap() {
     let Some(mut rig) = Rig::new() else { return };
-    // The 2 x 2 picture fills the 32 high box: 32 long, then a 32 gap.
+    // The 2 x 2 picture is a fill as long as the 64 wide box (ADR-0177), then a 32
+    // gap; held 48 along: 16 of the picture, the gap, then the next copy.
     let scene = rig.scroll_scene(|red, _| {
         vec![scrolling(
             red,
             ScrollRepeat::Loop,
-            ScrollRun::start(Timestamp::ZERO, 0.0),
+            ScrollRun {
+                position: 48.0,
+                ..ScrollRun::start(Timestamp::ZERO, 0.0)
+            },
         )]
     });
     rig.run(&scene, 2);
     assert_close(rig.pixel(&scene, 8, 16), RED, 0.01);
-    assert_close(rig.pixel(&scene, 48, 16), [0.0; 4], 0.01);
+    assert_close(rig.pixel(&scene, 32, 16), [0.0; 4], 0.01);
+    assert_close(rig.pixel(&scene, 56, 16), RED, 0.01);
 }
 
 #[test]
@@ -602,12 +607,13 @@ fn a_paused_scroll_lets_render_on_change_skip_again() {
 #[test]
 fn a_finished_once_scroll_draws_nothing_and_stops_drawing() {
     let Some(mut rig) = Rig::new() else { return };
-    // 32 long at 960 per second: gone at 33.3 ms, between ticks 2 and 3.
+    // A fill 64 long (the box, ADR-0177) at 1920 per second: gone at 33.3 ms, between
+    // ticks 2 and 3.
     let scene = rig.scroll_scene(|red, _| {
         vec![scrolling(
             red,
             ScrollRepeat::Once,
-            ScrollRun::start(Timestamp::ZERO, 960.0),
+            ScrollRun::start(Timestamp::ZERO, 1920.0),
         )]
     });
     rig.run(&scene, 10);

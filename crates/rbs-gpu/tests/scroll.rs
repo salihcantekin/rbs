@@ -390,3 +390,89 @@ fn a_speed_change_keeps_the_picture_where_it_was() {
     let b = spec(paused).frame(&t, &UvRect::FULL, 4, 2, s(9.0)).unwrap();
     assert!((a.start - b.start).abs() < 1e-9);
 }
+
+/// A 2 x 2 green fill in a 64 x 32 box with `shape` and a `border` wide red border,
+/// scrolled `travelled` with `repeat` (ADR-0177).
+fn fill_layer(
+    ctx: &GpuContext,
+    pool: &mut TexturePool,
+    shape: LayerShape,
+    border: f32,
+    repeat: ScrollRepeat,
+    travelled: f64,
+) -> Layer {
+    let t = texture(ctx, pool, 2, 2, |_, _| GREEN);
+    let mut layer = scrolling(
+        t,
+        2,
+        2,
+        [0.0, 0.0, 64.0, 32.0],
+        Scroll {
+            repeat,
+            travelled,
+            ..Scroll::default()
+        },
+    );
+    layer.style = LayerStyle::new(shape, border, [255, 0, 0, 255], [64.0, 32.0]);
+    layer
+}
+
+#[test]
+fn a_fill_scrolls_its_whole_shape_and_wraps() {
+    // Not scrolled yet: the ellipse is centred in its 64 x 32 box.
+    let Some(still) = render(|ctx, pool| {
+        vec![fill_layer(
+            ctx,
+            pool,
+            LayerShape::Ellipse,
+            0.0,
+            ScrollRepeat::Loop,
+            0.0,
+        )]
+    }) else {
+        return;
+    };
+    assert_close(at(&still, W, 32, 16), GREEN, TOL);
+    assert_close(at(&still, W, 1, 1), NONE, TOL);
+    // Half the box on: the ellipse is as long as the box (not 32, the box height) and
+    // its centre is at the left edge, its other half wrapped in at the right.
+    let Some(px) = render(|ctx, pool| {
+        vec![fill_layer(
+            ctx,
+            pool,
+            LayerShape::Ellipse,
+            0.0,
+            ScrollRepeat::Loop,
+            32.0,
+        )]
+    }) else {
+        return;
+    };
+    assert_close(at(&px, W, 32, 2), NONE, TOL);
+    assert_close(at(&px, W, 33, 5), NONE, TOL);
+    assert_close(at(&px, W, 31, 5), NONE, TOL);
+    assert_close(at(&px, W, 2, 16), GREEN, TOL);
+    assert_close(at(&px, W, 61, 16), GREEN, TOL);
+}
+
+#[test]
+fn a_once_fill_takes_its_border_along_and_leaves_the_rest_empty() {
+    let Some(px) = render(|ctx, pool| {
+        vec![fill_layer(
+            ctx,
+            pool,
+            LayerShape::Box,
+            4.0,
+            ScrollRepeat::Once,
+            32.0,
+        )]
+    }) else {
+        return;
+    };
+    // The picture's right half, with its right border, is on the left of the box.
+    assert_close(at(&px, W, 10, 16), GREEN, TOL);
+    assert_close(at(&px, W, 30, 16), RED, TOL);
+    // The window keeps no border: the right half is empty.
+    assert_close(at(&px, W, 62, 16), NONE, TOL);
+    assert_close(at(&px, W, 45, 16), NONE, TOL);
+}

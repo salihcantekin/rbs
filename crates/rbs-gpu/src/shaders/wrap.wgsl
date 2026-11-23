@@ -10,7 +10,8 @@ struct ScrollGpu {
     // Window start on the strip (wrapped for Loop), window length, picture length,
     // period (picture + gap). Lengths in canvas pixels.
     a: vec4<f32>,
-    // Axis (0 horizontal, 1 vertical), once (1), fade length, unused.
+    // Axis (0 horizontal, 1 vertical), once (1), fade length, fill (1: the style moves
+    // with the picture, ADR-0177).
     b: vec4<f32>,
 };
 
@@ -112,11 +113,29 @@ fn fs_wrap(in: StyledOut) -> @location(0) vec4<f32> {
     return wrap_colour(l, in.uv, w.x) * (w.y * l.params.x);
 }
 
+// Where a styled layer's shape is evaluated: on the window, or for a fill (as long as
+// the window) at the picture position `along`, so the shape moves with it (ADR-0177).
+fn wrap_shape_unit(unit: vec2<f32>, along: f32) -> vec2<f32> {
+    if (scroll.b.w < 0.5) {
+        return unit;
+    }
+    return select(vec2<f32>(along, unit.y), vec2<f32>(unit.x, along), scroll.b.x > 0.5);
+}
+
+// A styled wrap of colour `c` (not yet covered) with coverage `w.y`: the window's shape
+// and border over the covered picture, or for a fill the moved shape and border, all
+// covered, so a gap shows no border either (ADR-0177).
+fn wrap_styled(in: StyledOut, w: vec2<f32>, c: vec4<f32>) -> vec4<f32> {
+    let fill = scroll.b.w > 0.5;
+    let shaped = styled_at(in, wrap_shape_unit(in.unit, w.x), c * select(w.y, 1.0, fill));
+    return shaped * select(1.0, w.y, fill);
+}
+
 @fragment
 fn fs_wrap_styled(in: StyledOut) -> @location(0) vec4<f32> {
     let l = layers[in.layer];
     let w = wrap_along(in.unit);
-    return styled(in, wrap_colour(l, styled_uv(l, in.uv), w.x) * w.y);
+    return wrap_styled(in, w, wrap_colour(l, styled_uv(l, in.uv), w.x));
 }
 
 @fragment
@@ -130,5 +149,5 @@ fn fs_yuv_wrap(in: StyledOut) -> @location(0) vec4<f32> {
 fn fs_yuv_wrap_styled(in: StyledOut) -> @location(0) vec4<f32> {
     let l = layers[in.layer];
     let w = wrap_along(in.unit);
-    return styled(in, wrap_yuv_colour(in.layer, l, styled_uv(l, in.uv), w.x) * w.y);
+    return wrap_styled(in, w, wrap_yuv_colour(in.layer, l, styled_uv(l, in.uv), w.x));
 }

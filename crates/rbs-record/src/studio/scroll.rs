@@ -5,6 +5,7 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use rbs_gpu::node::{CompositorNode, LayerSender, NodeLayer};
+use rbs_gpu::scroll::{is_fill, picture_length};
 use rbs_gpu::{GpuContext, ScrollBinding, ScrollSender};
 use rbs_scene::ScrollKey;
 use rbs_scene::activity::Level;
@@ -245,7 +246,8 @@ impl Studio {
             if across <= 0.0 {
                 continue;
             }
-            let picture = along * cross / across;
+            // As the compositor measures it, a fill as long as the box (ADR-0177).
+            let picture = picture_length(window, cross, along, across, is_fill(size.0, size.1));
             let distance = once_distance(&scroll, window, picture);
             let Some(run) = self.scroll_runs.get(key) else {
                 continue;

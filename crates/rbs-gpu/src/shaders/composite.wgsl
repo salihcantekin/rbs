@@ -247,13 +247,20 @@ fn fs_yuv_styled(in: StyledOut) -> @location(0) vec4<f32> {
 
 // Shape, border and coverage of a styled layer over its picture colour `c`.
 fn styled(in: StyledOut, c: vec4<f32>) -> vec4<f32> {
+    return styled_at(in, in.unit, c);
+}
+
+// `styled` with the shape evaluated at box position `shape_unit` (a scrolling fill's
+// shape moves with its picture, ADR-0177); the pixel footprint still comes from the
+// box position, so a wrapped `shape_unit` keeps edges sharp at the seam.
+fn styled_at(in: StyledOut, shape_unit: vec2<f32>, c: vec4<f32>) -> vec4<f32> {
     let l = layers[in.layer];
     let st = styles[u32(l.params.w)];
     // Screen-space derivatives of the box position, taken before any branch (WGSL
     // uniformity).
-    let local = in.unit * st.size.xy;
-    let dx = dpdx(local);
-    let dy = dpdy(local);
+    let dx = dpdx(in.unit * st.size.xy);
+    let dy = dpdy(in.unit * st.size.xy);
+    let local = shape_unit * st.size.xy;
     let half = st.size.xy * 0.5;
     let p = local - half;
     let kind = st.shape.x;
