@@ -5,6 +5,7 @@
 //!
 //! UI thread only. Coordinates are the panel's, in logical pixels.
 
+use rbs_ui::group_transform;
 use rbs_ui::layout::Rect;
 use rbs_ui::transform::{
     self, Drag, DragKeys, Grip, MAX_MARKS, MAX_PLACEHOLDERS, Mark, SNAP_DISTANCE, SourceBox,
@@ -22,6 +23,18 @@ pub struct Placed {
     pub crop: [u32; 4],
     /// Its picture's size in pixels, once known (a crop drag needs it).
     pub picture: Option<(u32, u32)>,
+}
+
+/// A drag of several selected sources as one: they move or scale together inside the
+/// box that covers them all (multi-selection).
+#[derive(Debug, Clone, PartialEq)]
+struct GroupDrag {
+    /// Each source and its box when the drag started.
+    starts: Vec<(i32, SourceBox)>,
+    /// The covering rectangle when the drag started.
+    from: Rect,
+    /// The drag of the covering box.
+    drag: Drag,
 }
 
 /// What goes to the studio for one source.
@@ -61,6 +74,8 @@ pub enum Effect {
 pub struct PreviewEdit {
     panel: [f32; 2],
     drag: Option<(i32, Drag, Option<Cropping>)>,
+    /// A drag of several sources together, instead of `drag`.
+    group: Option<GroupDrag>,
     keys: DragKeys,
     /// Boxes shown for sources while the studio has not caught up with them (one per
     /// source).
@@ -91,6 +106,7 @@ impl PreviewEdit {
     /// answer will come for what was sent).
     pub fn reset(&mut self) {
         self.drag = None;
+        self.group = None;
         self.live.clear();
         self.in_flight = None;
         self.waiting.clear();
@@ -169,6 +185,117 @@ impl PreviewEdit {
         }
     }
 
+    /// A press while several sources are selected (`ids`, two or more): a handle of the
+    /// box that covers them, or inside it, starts moving or scaling all of them
+    /// together. `None` when the press is elsewhere: the caller handles it as a press
+    /// on one source, which ends the multi-selection.
+    pub fn press_group(
+        &mut self,
+        point: [f32; 2],
+        canvas: [f32; 2],
+        placed: &[Placed],
+        ids: &[i32],
+        keys: DragKeys,
+    ) -> Option<Effect> {
+        let view = self.view(canvas);
+        let at = view.to_canvas(point)?;
+        let starts: Vec<(i32, SourceBox)> = placed
+            .iter()
+            .filter(|p| ids.contains(&p.id))
+            .map(|p| (p.id, self.current(p)))
+            .collect();
+        if starts.len() < 2 {
+            return None;
+        }
+        let boxes: Vec<SourceBox> = starts.iter().map(|s| s.1).collect();
+        let from = group_transform::union(&boxes)?;
+        let cover = SourceBox::new([from.x, from.y], [from.w, from.h]);
+        let grip = transform::grip_at(&view, &cover, point)?;
+        self.keys = keys;
+        // Alt-crop is for one source; a group scales.
+        self.keys.crop = false;
+        self.drag = None;
+        self.group = Some(GroupDrag {
+            starts,
+            from,
+            drag: Drag::new(grip, at, cover),
+        });
+        self.new_gesture();
+        Some(Effect::None)
+    }
+
+    fn group_drag_to(&mut self, point: [f32; 2], canvas: [f32; 2]) -> Effect {
+        let view = self.view(canvas);
+        let (Some(g), Some(at)) = (self.group.as_ref(), view.to_canvas(point)) else {
+            return Effect::None;
+        };
+        let scale = view.scale();
+        let snap = if scale > 0.0 {
+            SNAP_DISTANCE / scale
+        } else {
+            0.0
+        };
+        let cover = g.drag.update(at, canvas, snap, self.keys).visual();
+        let sources: Vec<SourceBox> = g.starts.iter().map(|s| s.1).collect();
+        let moved = group_transform::scaled(&sources, g.from, cover);
+        let ids: Vec<i32> = g.starts.iter().map(|s| s.0).collect();
+        let starts = g.starts.clone();
+        let mut first = Effect::None;
+        for ((id, b), (_, from)) in ids.iter().zip(moved).zip(starts) {
+            if self.live_of(*id).unwrap_or(from) == b {
+                continue;
+            }
+            self.set_live(*id, b);
+            let e = self.send(*id, Edit::Box(b), self.gesture);
+            if first == Effect::None {
+                first = e;
+            }
+        }
+        first
+    }
+
+    /// Arrow keys with several sources selected: all move by `dx`, `dy`, as one undo
+    /// step. The first box goes now; the rest follow as the studio answers.
+    pub fn nudge_group(&mut self, placed: &[Placed], ids: &[i32], dx: f32, dy: f32) -> Effect {
+        self.new_gesture();
+        let mut first = Effect::None;
+        for p in placed.iter().filter(|p| ids.contains(&p.id)) {
+            let b = self.current(p).nudged(dx, dy);
+            self.set_live(p.id, b);
+            let e = self.send(p.id, Edit::Box(b), self.gesture);
+            if first == Effect::None {
+                first = e;
+            }
+        }
+        first
+    }
+
+    /// The marks of several selected sources: one covering box with handles, and an
+    /// outline for each of the first [`MAX_PLACEHOLDERS`] sources inside it.
+    pub fn group_marks(
+        &self,
+        canvas: [f32; 2],
+        placed: &[Placed],
+        ids: &[i32],
+        out: &mut Vec<Mark>,
+    ) {
+        out.clear();
+        let view = self.view(canvas);
+        let boxes: Vec<SourceBox> = placed
+            .iter()
+            .filter(|p| ids.contains(&p.id))
+            .map(|p| self.current(p))
+            .collect();
+        let Some(u) = group_transform::union(&boxes) else {
+            return;
+        };
+        out.reserve(MAX_MARKS + 4 * MAX_PLACEHOLDERS);
+        transform::marks(&view, &SourceBox::new([u.x, u.y], [u.w, u.h]), true, out);
+        for b in boxes.iter().take(MAX_PLACEHOLDERS) {
+            transform::placeholder_marks(&view, b, out);
+        }
+    }
+
     /// The topmost source whose picture is under `point` (a right-click: nothing is
     /// pressed or dragged).
     pub fn source_at(&self, point: [f32; 2], canvas: [f32; 2], placed: &[Placed]) -> Option<i32> {
@@ -183,6 +310,9 @@ impl PreviewEdit {
     /// The pointer moved to `point` with the button down.
     pub fn drag_to(&mut self, point: [f32; 2], canvas: [f32; 2]) -> Effect {
         let view = self.view(canvas);
+        if self.group.is_some() {
+            return self.group_drag_to(point, canvas);
+        }
         let (Some((id, drag, cropping)), Some(at)) = (self.drag, view.to_canvas(point)) else {
             return Effect::None;
         };
@@ -216,6 +346,13 @@ impl PreviewEdit {
     /// The button went up or the press was cancelled: the drag ends (its last box is
     /// already on its way).
     pub fn release(&mut self) {
+        if self.group.take().is_some() {
+            let waiting = &self.waiting;
+            let flight = self.in_flight;
+            self.live.retain(|(i, _)| {
+                waiting.iter().any(|(w, ..)| w == i) || flight.is_some_and(|(_, f)| f == *i)
+            });
+        }
         if let Some((id, ..)) = self.drag.take() {
             // Nothing more on its way for it: the studio's box shows again (it is the
             // drag's last box, or what an undo made of it since).
@@ -274,8 +411,14 @@ impl PreviewEdit {
         }
         let dragged = self.drag.map(|(d, ..)| d);
         let waiting = &self.waiting;
-        self.live
-            .retain(|(i, _)| Some(*i) == dragged || waiting.iter().any(|(w, ..)| w == i));
+        let group = &self.group;
+        self.live.retain(|(i, _)| {
+            Some(*i) == dragged
+                || group
+                    .as_ref()
+                    .is_some_and(|g| g.starts.iter().any(|(s, _)| s == i))
+                || waiting.iter().any(|(w, ..)| w == i)
+        });
         if self.waiting.is_empty() {
             return Effect::None;
         }
@@ -560,5 +703,36 @@ mod tests {
             e.drag_to([650.0, 350.0], CANVAS),
             Effect::Send(..)
         ));
+    }
+
+    #[test]
+    fn a_group_drag_moves_every_source_as_one_undo_step() {
+        let mut e = edit();
+        let s = scene();
+        let ids = [1, 2];
+        // Inside the covering box (it is the whole canvas here), away from the handles.
+        assert_eq!(
+            e.press_group([480.0, 270.0], CANVAS, &s, &ids, DragKeys::default()),
+            Some(Effect::None)
+        );
+        let first = e.drag_to([440.0, 270.0], CANVAS);
+        let (seq, id, _) = sent(first);
+        let g = gesture_of(first);
+        // The second box waits for the studio's answer and goes with the same gesture.
+        let next = e.answered(seq, true);
+        let (_, id2, _) = sent(next);
+        assert_ne!(id, id2);
+        assert_eq!(gesture_of(next), g);
+    }
+
+    #[test]
+    fn a_press_outside_the_group_is_not_a_group_press() {
+        let mut e = edit();
+        let s = scene();
+        let only = [s[1]];
+        assert_eq!(
+            e.press_group([10.0, 10.0], CANVAS, &only, &[2, 3], DragKeys::default()),
+            None
+        );
     }
 }

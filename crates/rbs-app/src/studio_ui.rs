@@ -2838,6 +2838,16 @@ impl StudioUi {
 
     /// The selection as a press on picture `on` sees it: none when the other picture
     /// shows its marks, so a handle never answers where it is not drawn.
+    /// The sources selected together (two or more) when the main picture shows the
+    /// marks; empty for a single selection.
+    fn group_ids(&self) -> Vec<i32> {
+        if self.marks_on() != OutputCanvas::Main {
+            return Vec::new();
+        }
+        let ids = self.picked.ids(self.selected);
+        if ids.len() > 1 { ids } else { Vec::new() }
+    }
+
     fn marked_selection(&self, on: OutputCanvas) -> i32 {
         if self.marks_on() == on {
             self.selected
@@ -3142,9 +3152,19 @@ impl StudioUi {
         let placed = self.placed();
         // The selection's handles answer only on the picture that shows them.
         let selected = self.marked_selection(OutputCanvas::Main);
-        let e = self
-            .edit
-            .press(at, self.canvas_px(), &placed, selected, keys);
+        let several = self.group_ids();
+        let grouped = (!several.is_empty())
+            .then(|| {
+                self.edit
+                    .press_group(at, self.canvas_px(), &placed, &several, keys)
+            })
+            .flatten();
+        let e = match grouped {
+            Some(e) => e,
+            None => self
+                .edit
+                .press(at, self.canvas_px(), &placed, selected, keys),
+        };
         self.pick_props(OutputCanvas::Main);
         self.run(e);
     }
@@ -3161,7 +3181,12 @@ impl StudioUi {
 
     pub fn preview_nudge(&mut self, dx: f32, dy: f32) {
         let placed = self.placed();
-        let e = self.edit.nudge(&placed, self.selected, dx, dy);
+        let several = self.group_ids();
+        let e = if several.is_empty() {
+            self.edit.nudge(&placed, self.selected, dx, dy)
+        } else {
+            self.edit.nudge_group(&placed, &several, dx, dy)
+        };
         self.run(e);
     }
 
@@ -3189,8 +3214,14 @@ impl StudioUi {
         let mut buf = std::mem::take(&mut self.mark_buf);
         if on == OutputCanvas::Main {
             let placed = self.placed();
-            self.edit
-                .marks(self.canvas_px(), &placed, self.selected, &mut buf);
+            let several = self.group_ids();
+            if several.is_empty() {
+                self.edit
+                    .marks(self.canvas_px(), &placed, self.selected, &mut buf);
+            } else {
+                self.edit
+                    .group_marks(self.canvas_px(), &placed, &several, &mut buf);
+            }
             // A web page with no address draws nothing: outline where it sits (ADR-0149).
             let empty = |id: i32| {
                 self.browser_rows
