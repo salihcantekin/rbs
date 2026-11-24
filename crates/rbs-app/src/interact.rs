@@ -140,6 +140,11 @@ pub fn open_sources() -> Vec<SourceId> {
     SLOTS.with(|slots| slots.borrow().iter().map(|s| s.source).collect())
 }
 
+/// How many Interact windows are open.
+pub fn count() -> usize {
+    SLOTS.with(|slots| slots.borrow().len())
+}
+
 /// True while `source` has an Interact window.
 pub fn is_open(source: SourceId) -> bool {
     SLOTS.with(|slots| slots.borrow().iter().any(|s| s.source == source))

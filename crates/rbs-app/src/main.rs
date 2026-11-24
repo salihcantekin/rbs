@@ -2608,7 +2608,7 @@ impl Ctx {
     /// Leaves every RBS window out of a screen capture, or puts them back.
     /// `false` when any window has no handle yet or the OS refused, so the next sync
     /// tries again. Windows (`WDA_EXCLUDEFROMCAPTURE`) and macOS (`NSWindow.sharingType`).
-    /// Linux keeps the windows in the capture.
+    /// Linux keeps the windows in the capture. Projectors are never left out.
     fn apply_capture_exclusion(app: &App) -> bool {
         let exclude = app.bg.exclude_own_window;
         let mut ok = exclude_window_from_capture(app.main.window(), exclude);
@@ -2630,7 +2630,14 @@ impl Ctx {
         for f in &app.floats {
             ok &= exclude_window_from_capture(f.window.window(), exclude);
         }
-        ok
+        // Interact windows follow the setting like every other RBS window; only the
+        // projector stays capturable, because sharing apps take it (ADR-0125).
+        let interact_ok = Cell::new(true);
+        interact::each_window(|w| {
+            let done = exclude_window_from_capture(w.window(), exclude);
+            interact_ok.set(interact_ok.get() && done);
+        });
+        ok && interact_ok.get()
     }
 
     /// How many OS windows the capture setting must cover right now.
@@ -2641,6 +2648,7 @@ impl Ctx {
             + usize::from(app.obs_import.is_some())
             + usize::from(app.attributes.is_some())
             + app.floats.len()
+            + interact::count()
     }
 
     /// Applies the capture setting to every current window. When a window is not ready
