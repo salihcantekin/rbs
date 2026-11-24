@@ -36,6 +36,15 @@ struct Counting;
 
 static ALLOCS: AtomicU64 = AtomicU64::new(0);
 
+/// Every test of this file holds this while it runs: `ALLOCS` counts the whole
+/// process, so a test that measures allocations must not overlap another one.
+static SERIAL: Mutex<()> = Mutex::new(());
+
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    // A failed test poisons the lock; the next one still needs to run alone.
+    SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 // SAFETY: forwards every call unchanged to the system allocator; only counts calls.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
@@ -217,6 +226,7 @@ fn running_page_sized(
 
 #[test]
 fn each_failed_import_counts_and_the_lease_is_given_back() {
+    let _alone = serial();
     let Some(ctx) = gpu() else { return };
     let (mut exec, mut ctl, sink) = running_page(&ctx);
     let slots = Arc::new(Slots::default());
@@ -243,6 +253,7 @@ fn each_failed_import_counts_and_the_lease_is_given_back() {
 /// (CLAUDE.md rule 5, ADR-0157 decision 11).
 #[test]
 fn a_native_picture_adds_no_allocation_to_the_tick() {
+    let _alone = serial();
     let Some(ctx) = gpu() else { return };
     let (mut exec, mut ctl, sink) = running_page(&ctx);
     let slots = Arc::new(Slots::default());
@@ -303,6 +314,7 @@ fn io_surface(
 #[cfg(target_os = "macos")]
 #[test]
 fn io_surface_pictures_import_and_give_every_lease_back() {
+    let _alone = serial();
     let Some(ctx) = gpu() else { return };
     let (mut exec, mut ctl, sink) = running_page(&ctx);
     let slots = Arc::new(Slots::default());
