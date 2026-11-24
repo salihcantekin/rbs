@@ -33,3 +33,17 @@ The first Mac test of the background removal filter (2026-11-24, Apple Vision, H
 ## Review
 
 Not reviewed yet. Needs an independent review and the owner's approval (rule 9, decision 4 of ADR-0179 is not removed: Fast keeps it).
+
+## Open points
+
+Found by the independent review (2026-11-24) and left for follow-up changes:
+
+- **NV12 decodes twice per tick.** `YuvToRgb` keeps one cached picture, so a 4:2:0 camera is decoded for the current picture and again for the held one; decide "unchanged" from the held timestamp, the matte generation and the settings before decoding, and add a `stats.frames()` test with NV12.
+- **Window of four pictures.** About 3.9 pictures of delay at 30 fps and 7.8 at 60 fps: size the window from the measured latency, count a miss (`exact_missed`) and define the fallback.
+- **Output rate** follows the matte rate: measure it on the Mac before Exact stays the default for every camera.
+- **Counters not logged.** `custom_node` drops `RemovalStats`; summarise `lost`, `failed`, `ring_full`, `bad_mattes` and `dropped_busy` on a cold thread (rule 20).
+- **Timestamp-only matching** in `Recent`: also match on the picture's sequence, for sources whose timestamps restart.
+- **Per-tick allocation** in `deliver` when the session keeps the bytes; state the number in the next hot-path review.
+- **Person-mask-port spec** rules 3 (stale limits) and 6 (leases) still describe the single-lease case.
+- **ADR-0179 decision 4** is amended in effect (Exact is the default); record it in ADR-0179 when this ADR is accepted.
+- **`rbs-params` additions** (`as_dropdown`, `shown_when`): note them in the control API spec (hidden fields stay listed and settable) and add `#[non_exhaustive]` care before a plugin SDK builds `Field` literals.
