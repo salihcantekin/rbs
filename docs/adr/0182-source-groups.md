@@ -1,6 +1,6 @@
 # ADR-0182: Sources can be grouped, and a group moves, resizes and hides as one
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-24
 - Deciders: Salih (owner)
 - Spec: [scene-model](../specs/scene-model.md), [ui-design-system](../specs/ui-design-system.md) (Sources panel), [control-api](../specs/control-api.md)
@@ -44,4 +44,4 @@ The owner asked (2026-11-24) for grouping: several sources used as one, moving a
 
 ## Review
 
-Independent review per ADR-0014, round 1, 2026-11-24, fresh AI session: changes requested, 13 findings (storage and ids, invariants, edits that split a block, lifted order, undo ops, per-canvas layouts, mixed state, selection cases, two-level list, format, ADR-0131 partial supersede, API details, tests). All taken into the text above. Round 2, same day, another fresh AI session: changes requested, 9 findings (undo record scope and dissolve mechanism, the scope rule, companion membership, copies and tags, moving a group, `group.create` details, id counter storage, the word Group, per-canvas boxes). All taken into the text above. Owner approval: pending.
+Independent review per ADR-0014, round 1, 2026-11-24, fresh AI session: changes requested, 13 findings (storage and ids, invariants, edits that split a block, lifted order, undo ops, per-canvas layouts, mixed state, selection cases, two-level list, format, ADR-0131 partial supersede, API details, tests). All taken into the text above. Round 2, same day, another fresh AI session: changes requested, 9 findings (undo record scope and dissolve mechanism, the scope rule, companion membership, copies and tags, moving a group, `group.create` details, id counter storage, the word Group, per-canvas boxes). All taken into the text above. Owner approval: Salih, 2026-11-24 (decision card, after two review rounds).
