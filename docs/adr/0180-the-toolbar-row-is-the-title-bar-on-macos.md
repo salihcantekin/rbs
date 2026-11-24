@@ -1,6 +1,6 @@
 # ADR-0180: The toolbar row is the title bar on macOS too, as on Windows
 
-- Status: Proposed
+- Status: Accepted (2026-11-24)
 - Date: 2026-11-24
 - Deciders: Salih (owner)
 - Amends: [ADR-0071](0071-merged-title-bar-on-windows.md) decision 3 (macOS kept the OS title bar)
@@ -45,3 +45,4 @@ The projector window (ADR-0125) already hides the macOS title bar with winit's a
 - 2026-11-24, same independent AI session, round 2: changes requested, 1 blocking and 6 minor. Resolved in this text: the window commands run in `rbs-app` with no studio command (changed in round 3: they are control API commands, U20) (decision 5); a fallback when `movable = NO` stops the drag or tiling (decision 3); the scope of `caption-min-height` (decision 6); the full-screen enter notification and the sliding menu bar (decisions 2 and 4); full screen on Windows and no duplicate menu item (decision 5); shortcuts through the window (decision 5); VoiceOver as a gate check.
 - 2026-11-24, same independent AI session, round 3: changes requested, 1 blocking and 4 minor. Resolved in this text: the window commands are control API commands as U20 requires (decision 5); the notification count (decision 8); when the full-screen menu default is registered and what happens if it is ignored, the Windows full-screen behaviour with the ADR-0071 subclass and its SC-PC gate, the fallback double-click (decisions 3 and 5).
 - 2026-11-24, same independent AI session, round 4: approve, with 4 minor points, all fixed in this text: the control API spec in the update list, the round-2 line corrected, the screenshot lines agree, calls that cannot act succeed and change nothing.
+- 2026-11-24: Accepted by the owner (Salih) on a decision card, after the review above. The visual result still goes to the owner before merge (rule 16).
