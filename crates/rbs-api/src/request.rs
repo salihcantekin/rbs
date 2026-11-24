@@ -37,7 +37,7 @@ pub use browser::*;
 pub use groups::*;
 pub use item_edits::*;
 pub use media::{MediaPlayState, MediaSeek, MediaSource, MediaStateInfo};
-pub use methods::METHODS;
+pub use methods::{METHODS, UI_METHODS};
 pub use scene_refs::*;
 pub use settings_patch::SettingsPatch;
 pub use transform::*;
@@ -2145,9 +2145,6 @@ impl Effect {
         matches!(self, Effect::Live | Effect::Destructive)
     }
 }
-
-mod ui_methods;
-pub use ui_methods::UI_METHODS;
 
 const fn m(name: &'static str, scope: Option<Scope>, effect: Effect) -> MethodInfo {
     MethodInfo {

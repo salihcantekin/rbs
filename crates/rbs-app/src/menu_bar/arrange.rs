@@ -6,7 +6,9 @@ use rbs_ui::command::{CommandId, Disabled};
 
 use crate::studio_ui::multi_select::ArrangeOp;
 
-use super::{Run, Shown, canvas_of};
+use rbs_api::types::OutputCanvas;
+
+use super::{Run, Shown};
 use crate::studio_host::TransformOp;
 
 impl Shown<'_> {
@@ -14,6 +16,7 @@ impl Shown<'_> {
     pub(super) fn arrange_enabled(&self, id: &CommandId) -> Result<(), Disabled> {
         self.running()?;
         match id.base() {
+            base if super::group_menu::is_group(base) => return self.group_enabled(id),
             "item.group" => return self.studio.group_items().map(|_| ()).map_err(Into::into),
             "item.ungroup" => return self.studio.ungroup_target().map(|_| ()).map_err(Into::into),
             "item.align_items" => {
@@ -50,8 +53,9 @@ impl Shown<'_> {
 }
 
 /// What a flip, reset, Group or Ungroup entry runs.
-pub(super) fn run(id: &CommandId, state: &Shown<'_>) -> Option<Run> {
+pub(super) fn run(id: &CommandId, state: &Shown<'_>, on: bool) -> Option<Run> {
     Some(match id.base() {
+        base if super::group_menu::is_group(base) => return super::group_menu::run(id, on),
         "item.group" => Run::Arrange(ArrangeOp::Group(true)),
         "item.ungroup" => Run::Arrange(ArrangeOp::Group(false)),
         "item.flip" => Run::Transform(
@@ -71,6 +75,15 @@ pub(super) fn run(id: &CommandId, state: &Shown<'_>) -> Option<Run> {
     })
 }
 
+/// Whether `base` is a command `run` answers: a flip, reset, Group or Ungroup, or a
+/// group row's.
+pub(super) fn runs(base: &str) -> bool {
+    matches!(
+        base,
+        "item.flip" | "item.reset_transform" | "item.group" | "item.ungroup"
+    ) || super::group_menu::is_group(base)
+}
+
 /// Whether `base` is an Arrange command this file answers.
 pub(super) fn is_arrange(base: &str) -> bool {
     matches!(
@@ -84,7 +97,7 @@ pub(super) fn is_arrange(base: &str) -> bool {
             | "item.ungroup"
             | "item.align_items"
             | "item.distribute"
-    )
+    ) || super::group_menu::is_group(base)
 }
 
 /// What a picker entry of Arrange runs for the chosen `value`.
@@ -132,4 +145,15 @@ pub(super) fn picked(id: &CommandId, value: &str, state: &Shown<'_>) -> Option<R
         ),
         _ => return None,
     })
+}
+
+/// The canvas an item edit names (`canvas`, protocol 1.44): `Some(None)` without one
+/// (the canvas Properties edits), `None` for an unknown value.
+fn canvas_of(id: &CommandId) -> Option<Option<OutputCanvas>> {
+    match id.param("canvas") {
+        None => Some(None),
+        Some("main") => Some(Some(OutputCanvas::Main)),
+        Some("vertical") => Some(Some(OutputCanvas::Vertical)),
+        Some(_) => None,
+    }
 }

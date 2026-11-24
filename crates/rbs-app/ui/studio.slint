@@ -423,9 +423,20 @@ component GroupRowView inherits Rectangle {
     in property <SourceData> data;
     property <bool> selected: Studio.selected-source == data.id || data.picked;
     height: row.height;
+    // The menu asked for the name field or the remove confirm (Rename group, Remove from
+    // scene): this row shows it and sets the id back to -1.
+    property <int> confirm-asked: Studio.confirm-group-asked;
+    changed confirm-asked => { root.take-asks(); }
+    property <int> rename-asked: Studio.rename-group-asked;
+    changed rename-asked => { root.take-asks(); }
+    init => { root.take-asks(); }
+    function take-asks() {
+        if Studio.confirming-group == data.group-id { row.confirm = true; Studio.confirming-group = -1; }
+        if Studio.renaming-group == data.group-id { row.editing = true; Studio.renaming-group = -1; }
+    }
     menu := CommandMenu {
-        context: "source";
-        target: "source=" + data.id;
+        context: "group";
+        target: "group=" + data.group-id;
     }
     row := ListRow {
         width: parent.width;

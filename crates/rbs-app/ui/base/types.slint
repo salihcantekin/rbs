@@ -1978,6 +1978,12 @@ export global Studio {
     in-out property <int> confirming-source: -1;
     in-out property <int> confirm-source-kind: 0;
     in-out property <int> confirm-source-asked;
+    // The same for a group's row in the Sources list (ADR-0182): its menu asks for the
+    // name field or the remove confirm.
+    in-out property <int> renaming-group: -1;
+    in-out property <int> rename-group-asked;
+    in-out property <int> confirming-group: -1;
+    in-out property <int> confirm-group-asked;
     // A video source's box on the canvas, in canvas pixels.
     callback set-source-box(int /* id */, float /* x */, float /* y */, float /* w */, float /* h */, int /* gesture: a dragged field's, 0 for none */);
     // Shape and border of a video source (ADR-0053); a colour that is not #rrggbb or
