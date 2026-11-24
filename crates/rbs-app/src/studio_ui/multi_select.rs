@@ -6,6 +6,8 @@
 
 use std::collections::BTreeSet;
 
+use slint::Model as _;
+
 /// How a row was clicked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Click {
@@ -120,7 +122,31 @@ impl super::StudioUi {
             Click::from_keys(ctrl, shift),
         );
         self.reveal_sound();
+        self.mark_picked();
         self.refresh_marks();
+    }
+
+    /// Forgets several selected sources (a plain selection) and unmarks their rows.
+    pub(crate) fn clear_picked(&mut self) {
+        if self.picked.0.is_empty() {
+            return;
+        }
+        self.picked.clear();
+        self.mark_picked();
+    }
+
+    /// Brings each Sources row's `picked` flag in line with the set. The rows are
+    /// only made again when the sources change, so a click must update them here.
+    pub(crate) fn mark_picked(&self) {
+        for i in 0..self.sources.row_count() {
+            if let Some(mut row) = self.sources.row_data(i) {
+                let picked = self.picked.has(row.id);
+                if row.picked != picked {
+                    row.picked = picked;
+                    self.sources.set_row_data(i, row);
+                }
+            }
+        }
     }
 }
 

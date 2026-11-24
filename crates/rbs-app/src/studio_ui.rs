@@ -2935,7 +2935,7 @@ impl StudioUi {
         self.edit.set_panel(size[0], size[1]);
         let placed = self.placed_where(|_| true);
         let hit = self.edit.source_at(at, self.canvas_px(), &placed);
-        self.picked.clear();
+        self.clear_picked();
         self.selected = hit.unwrap_or(-1);
         self.pick_props(OutputCanvas::Main);
         self.refresh_marks();
@@ -2967,7 +2967,7 @@ impl StudioUi {
         match effect {
             Effect::None => {}
             Effect::Select(id) => {
-                self.picked.clear();
+                self.clear_picked();
                 self.selected = id;
             }
             Effect::Send(seq, id, b, gesture) => {
@@ -2991,7 +2991,7 @@ impl StudioUi {
         match effect {
             Effect::None => {}
             Effect::Select(id) => {
-                self.picked.clear();
+                self.clear_picked();
                 self.selected = id;
             }
             Effect::Send(seq, id, b, gesture) => {
@@ -3081,7 +3081,7 @@ impl StudioUi {
         self.vedit.set_panel(size[0], size[1]);
         let placed = self.placed_vertical(true);
         let hit = self.vedit.source_at(at, canvas, &placed);
-        self.picked.clear();
+        self.clear_picked();
         self.selected = hit.unwrap_or(-1);
         self.pick_props(OutputCanvas::Vertical);
         self.refresh_marks();

@@ -290,7 +290,11 @@ component SourceRowView inherits Rectangle {
             // stays on F2 / menu).
             if (data.kind-code >= 0 && data.kind-code <= 2) || data.browser { Studio.open-source-settings(data.id); }
         }
-        menu-asked(at) => { Studio.select-source(data.id); menu.open(at); }
+        // A right click on one of several selected rows keeps them all selected.
+        menu-asked(at) => {
+            if !data.picked { Studio.select-source(data.id); }
+            menu.open(at);
+        }
         renamed(t) => { Studio.rename-source(data.id, t); }
         delete-asked => { root.delete-all = false; self.confirm = true; }
         confirmed => {

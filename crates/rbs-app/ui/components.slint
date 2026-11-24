@@ -3644,7 +3644,8 @@ export component ListRow inherits Rectangle {
             double-clicked => { root.double-clicked(); }
             pointer-event(e) => {
                 if e.kind == PointerEventKind.down {
-                    root.ctrl-held = e.modifiers.control;
+                    // Cmd (`control` on macOS) or Ctrl (`meta` on macOS) toggles a row.
+                    root.ctrl-held = e.modifiers.control || e.modifiers.meta;
                     root.shift-held = e.modifiers.shift;
                 }
                 if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
