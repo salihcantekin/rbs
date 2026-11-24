@@ -32,6 +32,8 @@ pub enum Axis {
     Vertical,
 }
 
+type RectFn = fn(&Rect) -> f32;
+
 /// The smallest rectangle that covers every box, or `None` for no boxes.
 pub fn union(boxes: &[SourceBox]) -> Option<Rect> {
     let mut it = boxes.iter().map(SourceBox::visual);
@@ -106,7 +108,7 @@ pub fn distribute(boxes: &[SourceBox], axis: Axis) -> Vec<SourceBox> {
     if n < 3 {
         return boxes.to_vec();
     }
-    let (start, len): (fn(&Rect) -> f32, fn(&Rect) -> f32) = match axis {
+    let (start, len): (RectFn, RectFn) = match axis {
         Axis::Horizontal => (|r| r.x, |r| r.w),
         Axis::Vertical => (|r| r.y, |r| r.h),
     };
