@@ -7,6 +7,8 @@
 use std::sync::Arc;
 
 use rbs_filters::{FilterNode, FilterStats, FilterType, Needs, PointerFeed, Values};
+use rbs_gpu::node::GpuRuntime;
+use rbs_graph::runtime::Node;
 use rbs_graph::runtime::param::ParamSender;
 use rbs_scene::model::SourceId;
 use rbs_sources::SourceTypes;
@@ -22,7 +24,12 @@ pub(super) fn video_filter(
     ty: &'static dyn FilterType,
     values: Values,
     sources: &SourceTypes,
-) -> (FilterNode, ParamSender<Values>, Arc<FilterStats>, bool) {
+) -> (
+    Box<dyn Node<GpuRuntime>>,
+    ParamSender<Values>,
+    Arc<FilterStats>,
+    bool,
+) {
     let entry = entries.iter().find(|e| e.source == source);
     let size = entry
         .and_then(|e| match &e.instance.as_ref()?.watch {
@@ -32,6 +39,11 @@ pub(super) fn video_filter(
             Watch::Media(_) | Watch::Audio(_, _) => None,
         })
         .map(|(w, h)| [w, h]);
+    // A type with its own node (background removal, ADR-0179) builds it; the generic
+    // pass node runs every other type.
+    if let Some(own) = ty.custom_node(values, size) {
+        return (own.node, own.values, own.stats, false);
+    }
     let shared: Arc<dyn FilterType> = Arc::new(ty);
     let (node, sender, stats) = FilterNode::new(shared, values, size);
     let feed = ty
@@ -45,8 +57,8 @@ pub(super) fn video_filter(
         })
         .flatten();
     match feed {
-        Some(feed) => (node.with_pointer(feed), sender, stats, true),
-        None => (node, sender, stats, false),
+        Some(feed) => (Box::new(node.with_pointer(feed)), sender, stats, true),
+        None => (Box::new(node), sender, stats, false),
     }
 }
 

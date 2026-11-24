@@ -34,6 +34,9 @@ rbs-manifest = { path = "../rbs-manifest" }
 png = "0.18"
 
 [dev-dependencies]
+# Background removal with a fake person mask backend (ADR-0179).
+rbs-filters-segment = { path = "../rbs-filters-segment" }
+rbs-segment = { path = "../rbs-segment" }
 # The input port, for a scripted input backend (ADR-0165).
 rbs-input = { path = "../rbs-input" }
 # Reference adapters of the capture and audio input ports (deterministic, no devices).

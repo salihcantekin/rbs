@@ -793,10 +793,16 @@ pub fn set_served(serves: rbs_filters::Needs) {
 }
 
 fn served() -> rbs_filters::Needs {
-    if POINTER_SERVED.load(std::sync::atomic::Ordering::Relaxed) {
+    let pointer = if POINTER_SERVED.load(std::sync::atomic::Ordering::Relaxed) {
         rbs_filters::Needs::POINTER
     } else {
         rbs_filters::Needs::NONE
+    };
+    // A person mask backend this computer can run (ADR-0179 decision 7).
+    if rbs_filters_segment::available() {
+        pointer.with(rbs_filters::Needs::PERSON_MASK)
+    } else {
+        pointer
     }
 }
 

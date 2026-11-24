@@ -67,6 +67,10 @@ rbs-scene = { path = "../rbs-scene" }
 rbs-sources = { path = "../rbs-sources" }
 rbs-text = { path = "../rbs-text" }
 rbs-filters = { path = "../rbs-filters" }
+# Background removal (ADR-0179): the filter and the person mask backends this build has.
+rbs-filters-segment = { path = "../rbs-filters-segment" }
+rbs-segment = { path = "../rbs-segment" }
+rbs-segment-vision = { path = "../rbs-segment-vision" }
 rbs-audio-filters = { path = "../rbs-audio-filters" }
 rbs-params = { path = "../rbs-params" }
 # CaptureError::Cancelled from OS pickers.

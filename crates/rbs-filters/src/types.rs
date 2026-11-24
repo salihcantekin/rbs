@@ -1,7 +1,12 @@
 //! The filter type contract: schema, values, passes and uniforms (spec
 //! `video-filters.md`, "Filter types" and "Values").
 
+use std::sync::Arc;
+
+use rbs_gpu::node::GpuRuntime;
 use rbs_graph::node::NodeTypeId;
+use rbs_graph::runtime::Node;
+use rbs_graph::runtime::param::ParamSender;
 
 use crate::pointer::{Effects, Needs, PointerView};
 pub use rbs_params::{
@@ -46,6 +51,23 @@ pub trait FilterType: Send + Sync + 'static {
     fn effects(&self, values: &Values, view: &PointerView<'_>, out: &mut Effects) {
         let _ = (values, view, out);
     }
+    /// A type that is not run by the generic pass node (background removal, ADR-0179)
+    /// builds its own node here, for a source whose picture is `size` when known.
+    /// `None` (the default) means the generic [`crate::FilterNode`]. Control thread.
+    fn custom_node(&self, values: Values, size: Option<[u32; 2]>) -> Option<CustomNode> {
+        let _ = (values, size);
+        None
+    }
+}
+
+/// A filter type's own node, with the value channel and statistics the studio keeps.
+pub struct CustomNode {
+    /// The node, ready to be adopted on the render partition.
+    pub node: Box<dyn Node<GpuRuntime>>,
+    /// Replaces the node's values while it runs.
+    pub values: ParamSender<Values>,
+    /// What the node shares with the control thread.
+    pub stats: Arc<crate::FilterStats>,
 }
 
 /// A catalogue entry used where an owned type is wanted: `Arc::new(entry)`.
@@ -70,6 +92,9 @@ impl FilterType for &'static dyn FilterType {
     }
     fn effects(&self, values: &Values, view: &PointerView<'_>, out: &mut Effects) {
         (**self).effects(values, view, out);
+    }
+    fn custom_node(&self, values: Values, size: Option<[u32; 2]>) -> Option<CustomNode> {
+        (**self).custom_node(values, size)
     }
 }
 

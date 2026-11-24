@@ -307,6 +307,8 @@ fn config(app: &App, keys: Arc<dyn KeyStore>, collection: SceneCollection) -> Ho
 /// Starts a control thread whose updates reach the window while it is the newest.
 fn spawn(config: HostConfig) -> std::io::Result<StudioHost> {
     let generation = GENERATION.load(Ordering::Relaxed);
+    // Background removal and its backends join the filter catalogue before it is read.
+    rbs_app::segment::install();
     // One master clock for the engine and the input monitor, so pointer events and
     // capture frames (stamped on the engine's clock) share one time line (ADR-0165).
     let clock: Arc<dyn rbs_core::time::Clock> = Arc::new(rbs_core::time::MonotonicClock::new());

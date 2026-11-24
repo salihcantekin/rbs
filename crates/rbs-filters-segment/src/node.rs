@@ -50,7 +50,7 @@ const MAPPED: u8 = 2;
 const FAILED: u8 = 3;
 
 const DOWNSCALE: &str = include_str!("shaders/downscale.wgsl");
-const COMPOSITE: &str = include_str!("shaders/composite.wgsl");
+use crate::COMPOSITE;
 /// The small picture's format: `Bgra8Unorm` is BGRA in memory, which is what a backend
 /// takes as `PixelFormat::Bgra8`.
 const SMALL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;

@@ -1,5 +1,7 @@
 //! The built-in filter types (spec `video-filters.md`, "Catalogue").
 
+use std::sync::OnceLock;
+
 use rbs_graph::node::NodeTypeId;
 
 use crate::pointer::Needs;
@@ -15,16 +17,33 @@ pub const BLUR: &str = "org.rbs.filter.blur";
 /// Type id of sharpen.
 pub const SHARPEN: &str = "org.rbs.filter.sharpen";
 
-/// Every built-in filter type, in the order the UI lists them.
+/// Filter types that live in other engine crates (ADR-0179: `rbs-filters-segment`),
+/// added by the composition root before the catalogue is first read.
+static EXTRA: OnceLock<&'static [&'static dyn FilterType]> = OnceLock::new();
+static ALL: OnceLock<Vec<&'static dyn FilterType>> = OnceLock::new();
+
+/// Adds filter types from other engine crates to the catalogue, after the built-in ones.
+/// Call once at start-up, before the first [`catalogue`] call; returns `false` (and adds
+/// nothing) when it is too late or already called. Extension registry of rule 19.
+pub fn install_extra(types: &'static [&'static dyn FilterType]) -> bool {
+    ALL.get().is_none() && EXTRA.set(types).is_ok()
+}
+
+/// Every built-in filter type, in the order the UI lists them, then the installed extra
+/// ones ([`install_extra`]).
 pub fn catalogue() -> &'static [&'static dyn FilterType] {
-    &[
-        &ColorCorrection,
-        &ChromaKey,
-        &Blur,
-        &Sharpen,
-        &ClickRings,
-        &PointerHalo,
-    ]
+    ALL.get_or_init(|| {
+        let mut all: Vec<&'static dyn FilterType> = vec![
+            &ColorCorrection,
+            &ChromaKey,
+            &Blur,
+            &Sharpen,
+            &ClickRings,
+            &PointerHalo,
+        ];
+        all.extend(EXTRA.get().copied().unwrap_or(&[]).iter().copied());
+        all
+    })
 }
 
 /// The catalogue types a host that `serves` these services can run, in catalogue

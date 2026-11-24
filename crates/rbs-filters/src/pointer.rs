@@ -24,6 +24,14 @@ impl Needs {
     pub const NONE: Needs = Needs(0);
     /// The pointer view and the effect buffer.
     pub const POINTER: Needs = Needs(1);
+    /// A person mask backend the computer can run (ADR-0179): the filter is offered only
+    /// where one exists.
+    pub const PERSON_MASK: Needs = Needs(2);
+
+    /// Both sets of services.
+    pub const fn with(self, other: Needs) -> Needs {
+        Needs(self.0 | other.0)
+    }
 
     /// Whether every service in `other` is in `self`.
     pub const fn contains(self, other: Needs) -> bool {

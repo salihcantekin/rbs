@@ -68,6 +68,7 @@ pub use rbs_studio_host::recent_targets;
 pub use rbs_studio_host::record_profile;
 pub mod remote_control;
 pub use rbs_studio_host::replay_settings;
+pub mod segment;
 pub mod shutdown;
 pub use rbs_studio_host::stream_destinations;
 pub mod stream_key;

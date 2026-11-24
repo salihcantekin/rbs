@@ -2898,8 +2898,7 @@ impl Studio {
                     let (node, sender, stats, fed) =
                         pointer::video_filter(&self.entries, entry.source, ty, values, sources);
                     entry.fed = fed;
-                    self.engine
-                        .adopt::<GpuRuntime>(RENDER, entry.node, Box::new(node))?;
+                    self.engine.adopt::<GpuRuntime>(RENDER, entry.node, node)?;
                     entry.instance = Some(FilterInstance::Video(sender, stats));
                 }
                 FilterKind::Audio(ty) => {

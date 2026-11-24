@@ -15,7 +15,7 @@ pub mod pointer;
 pub mod pointer_types;
 pub mod types;
 
-pub use catalogue::{catalogue, find, offered};
+pub use catalogue::{catalogue, find, install_extra, offered};
 pub use node::{FilterNode, FilterStats, PRELUDE, descriptor};
 pub use normalise::{NORMALISE, Normalise};
 pub use pointer::{
@@ -23,6 +23,6 @@ pub use pointer::{
 };
 pub use pointer_types::{CLICK_RINGS, ClickRings, POINTER_HALO, PointerHalo};
 pub use types::{
-    Field, FieldKind, FilterType, MAX_FIELDS, MAX_PASSES, ParamError, Pass, PassSource, Scale,
-    Schema, Uniforms, Value, Values, color_text, parse_color,
+    CustomNode, Field, FieldKind, FilterType, MAX_FIELDS, MAX_PASSES, ParamError, Pass, PassSource,
+    Scale, Schema, Uniforms, Value, Values, color_text, parse_color,
 };

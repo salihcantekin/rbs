@@ -4,8 +4,10 @@
 //! gets back. Never an adapter or a backend (the session comes from a factory), never a
 //! full-resolution readback.
 
+pub mod kind;
 pub mod node;
 
+pub use kind::{BACKGROUND_REMOVAL, BackgroundRemoval, available, install_backends};
 pub use node::{BackgroundRemovalNode, RemovalStats, SessionFactory, descriptor};
 use rbs_params::Field;
 
@@ -15,6 +17,8 @@ pub const TYPE_ID: &str = "org.rbs.filter.background-removal";
 pub const NAME: &str = "Background removal";
 /// Most fields the filter's schema has.
 pub const MAX_FIELDS: usize = 8;
+/// The composite pass: the generic type description shows it, the node runs it.
+pub(crate) const COMPOSITE: &str = include_str!("shaders/composite.wgsl");
 
 /// Matte value at the middle of the edge.
 pub const THRESHOLD: usize = 0;
@@ -24,8 +28,10 @@ pub const FEATHER: usize = 1;
 pub const EDGE_SHIFT: usize = 2;
 /// How much of the matte before it each new matte keeps.
 pub const SMOOTHING: usize = 3;
+/// Quality level of the session (Low, Medium, High); applies when the filter is switched on.
+pub const QUALITY: usize = 4;
 
-const FIELDS: [Field; 4] = [
+const FIELDS: [Field; 5] = [
     Field::number("threshold", "Threshold", 0.05, 0.95, 0.5, 0.01, "")
         .with_help("Matte value that counts as the edge of the person."),
     Field::number("feather", "Edge softness", 0.0, 0.5, 0.15, 0.01, "")
@@ -34,6 +40,13 @@ const FIELDS: [Field; 4] = [
         .with_help("Moves the edge into the person (negative) or out into the room (positive)."),
     Field::number("smoothing", "Smoothing", 0.0, 0.95, 0.5, 0.01, "")
         .with_help("Calms flicker between pictures; a higher value reacts more slowly."),
+    Field::choice(
+        "quality",
+        "Quality",
+        &[("low", "Low"), ("medium", "Medium"), ("high", "High")],
+        "medium",
+    )
+    .with_help("Higher quality cuts hair and hands better and uses more of the computer. Applies the next time the filter is switched on."),
 ];
 
 /// The settings schema, in display order.
