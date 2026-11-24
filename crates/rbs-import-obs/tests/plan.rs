@@ -181,9 +181,18 @@ fn summary(p: &ImportPlan) -> String {
                 _ => "other".to_owned(),
             };
             let l = &item.layout;
+            let group = item
+                .group
+                .map(|g| {
+                    format!(
+                        " group {:?}",
+                        scene.groups.iter().find(|x| x.id == g).unwrap().name
+                    )
+                })
+                .unwrap_or_default();
             writeln!(
                 s,
-                "  {what} pos [{:.2}, {:.2}] size [{:.2}, {:.2}] rot {:.2} crop {:?} visible {} locked {}",
+                "  {what}{group} pos [{:.2}, {:.2}] size [{:.2}, {:.2}] rot {:.2} crop {:?} visible {} locked {}",
                 l.position[0],
                 l.position[1],
                 l.size[0],
@@ -383,5 +392,49 @@ fn deep_nesting_and_many_layers_degrade_per_item() {
             .entries
             .iter()
             .any(|e| e.reason.contains("more layers than RBS draws"))
+    );
+}
+
+/// ADR-0182 decision 13: a group of two or more items becomes a group, one with fewer
+/// than two items left stays separate items and says so, names stay unique per scene.
+#[test]
+fn groups_become_groups_unless_they_have_fewer_than_two_items() {
+    let p = run(&Options::default(), &all(), &ThisComputer);
+    let main = p.collection.scenes().find(|s| s.name == "Main").unwrap();
+    assert_eq!(main.groups.len(), 1);
+    assert_eq!(main.groups[0].name, "Badges");
+    let members: Vec<_> = main.items.iter().filter(|i| i.group.is_some()).collect();
+    assert_eq!(members.len(), 2);
+    let first = main.items.iter().position(|i| i.group.is_some()).unwrap();
+    assert!(
+        main.items[first + 1].group.is_some(),
+        "members are next to each other"
+    );
+
+    // The same file with one item in the group: no group, a note in the report.
+    let one = SHOW.replacen(
+        r#"       {"name": "Badge colour", "visible": true, "pos": {"x": 0, "y": 0}, "scale": {"x": 1, "y": 1}, "align": 5},
+"#,
+        "",
+        1,
+    );
+    assert_ne!(one, SHOW);
+    let p = plan(
+        one.as_bytes(),
+        Some(&ProfileFiles::from_ini(BASIC_INI)),
+        &Mappers::builtin(),
+        &all(),
+        &ThisComputer,
+        &Options::default(),
+    )
+    .expect("plan");
+    assert!(p.collection.scenes().all(|s| s.groups.is_empty()));
+    assert!(
+        p.report
+            .entries
+            .iter()
+            .any(|e| e.obs_name == "Badges" && e.reason.contains("became separate items")),
+        "{}",
+        p.report
     );
 }

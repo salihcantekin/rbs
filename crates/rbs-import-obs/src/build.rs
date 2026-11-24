@@ -7,9 +7,9 @@ use rbs_core::media::Size;
 use rbs_core::timing::FrameRate;
 use rbs_graph::node::NodeTypeId;
 use rbs_scene::model::{
-    Canvas, CanvasId, Filter, FilterId, ItemContent, ItemId, Layout, MAX_SOURCE_VOLUME,
-    MAX_SYNC_OFFSET_MS, Scene, SceneId, SceneItem, SceneScope, SettingValue, Source, SourceAudio,
-    SourceId, SourceMonitor,
+    Canvas, CanvasId, Filter, FilterId, Group, GroupId, ItemContent, ItemId, Layout,
+    MAX_SOURCE_VOLUME, MAX_SYNC_OFFSET_MS, Scene, SceneId, SceneItem, SceneScope, SettingValue,
+    Source, SourceAudio, SourceId, SourceMonitor,
 };
 use rbs_scene::{
     IdCounters, MAX_CANVAS_SIDE, MAX_FRAME_RATE, MAX_LAYERS, MAX_NESTING_DEPTH, SceneCollection,
@@ -63,12 +63,18 @@ struct Imported {
     audio_only: bool,
 }
 
+/// The group an item is placed in: its placement, size, shown and locked, and its
+/// source index.
+type Parent<'a> = (&'a Placed, (u32, u32), bool, bool, usize);
+
 /// An item before limits and ids.
 struct Pending {
     content: PendingContent,
     layout: Layout,
     visible: bool,
     locked: bool,
+    /// The OBS group this item came from (the group source's index), if any.
+    group: Option<usize>,
 }
 
 #[derive(Clone, Copy)]
@@ -350,28 +356,12 @@ pub(crate) fn build(
 
     // Ids and the collection.
     let canvas_id = CanvasId::from_raw(1);
-    let mut next_item = 1u32;
-    let mut item_id = || {
-        let id = ItemId::from_raw(next_item);
-        next_item += 1;
-        id
-    };
+    let mut ids = Ids { item: 1, group: 1 };
     let mut out_scenes = Vec::new();
     for (si, id, name) in &scene_list {
         let mut scene = Scene::new(*id, name, SceneScope::Shared);
-        for p in pending.remove(si).unwrap_or_default() {
-            let content = match p.content {
-                PendingContent::Source(s) => ItemContent::Source(s),
-                PendingContent::Scene(c) => match scene_ids.get(&c) {
-                    Some(id) => ItemContent::Scene(*id),
-                    None => continue,
-                },
-            };
-            let mut item = SceneItem::new(item_id(), content, p.layout);
-            item.visible = p.visible;
-            item.locked = p.locked;
-            scene.items.push(item);
-        }
+        let items = pending.remove(si).unwrap_or_default();
+        ctx.fill_scene(&mut scene, items, &scene_ids, &mut ids);
         out_scenes.push(scene);
     }
     let mut canvas = Canvas::new(
@@ -386,7 +376,7 @@ pub(crate) fn build(
         let mut g = Scene::new(gid, GLOBAL_SCENE_NAME, SceneScope::Canvas(canvas_id));
         for s in &globals {
             g.items.push(SceneItem::new(
-                item_id(),
+                ids.item(),
                 ItemContent::Source(*s),
                 full_canvas(obs_canvas),
             ));
@@ -404,12 +394,7 @@ pub(crate) fn build(
         .or_else(|| scene_list.first().map(|(_, id, _)| *id));
     ctx.report.exact.scenes = scene_list.len() - renamed;
 
-    let counters = counters(
-        ctx.next_source,
-        out_scenes.len(),
-        next_item,
-        ctx.next_filter,
-    );
+    let counters = counters(ctx.next_source, out_scenes.len(), ids.item, ctx.next_filter);
     let collection = SceneCollection::from_parts(
         vec![canvas],
         std::mem::take(&mut ctx.sources),
@@ -428,6 +413,104 @@ pub(crate) fn build(
         },
         scene_list,
     ))
+}
+
+/// The groups of one scene: which OBS groups keep two or more items (they become RBS
+/// groups, ADR-0182 decision 13) and which become separate items.
+struct SceneGroups {
+    ids: HashMap<usize, GroupId>,
+    /// The OBS groups left with fewer than two items, with their item counts.
+    flat: Vec<(usize, usize)>,
+}
+
+impl SceneGroups {
+    /// The scene's group list, names kept and made unique in the scene.
+    fn make(&mut self, all: &[ObsSource]) -> Vec<Group> {
+        let mut keys: Vec<usize> = self.ids.keys().copied().collect();
+        keys.sort_by_key(|k| self.ids[k].get());
+        let mut names = Names::default();
+        keys.into_iter()
+            .map(|k| Group::new(self.ids[&k], &names.unique(&all[k].name, "Group")))
+            .collect()
+    }
+}
+
+fn group_ids(items: &[Pending], next: &mut u32) -> SceneGroups {
+    let mut counts: Vec<(usize, usize)> = Vec::new();
+    for key in items.iter().filter_map(|p| p.group) {
+        match counts.iter_mut().find(|c| c.0 == key) {
+            Some(c) => c.1 += 1,
+            None => counts.push((key, 1)),
+        }
+    }
+    let mut out = SceneGroups {
+        ids: HashMap::new(),
+        flat: Vec::new(),
+    };
+    for (key, count) in counts {
+        if count >= 2 {
+            out.ids.insert(key, GroupId::from_raw(*next));
+            *next += 1;
+        } else {
+            out.flat.push((key, count));
+        }
+    }
+    out
+}
+
+/// The next ids of the items and groups the import issues.
+struct Ids {
+    item: u32,
+    group: u32,
+}
+
+impl Ids {
+    fn item(&mut self) -> ItemId {
+        let id = ItemId::from_raw(self.item);
+        self.item += 1;
+        id
+    }
+}
+
+impl Ctx<'_> {
+    /// Puts the scene's items and groups in place (ADR-0182 decision 13).
+    fn fill_scene(
+        &mut self,
+        scene: &mut Scene,
+        items: Vec<Pending>,
+        scene_ids: &HashMap<usize, SceneId>,
+        ids: &mut Ids,
+    ) {
+        let mut groups = group_ids(&items, &mut ids.group);
+        for p in items {
+            let content = match p.content {
+                PendingContent::Source(s) => ItemContent::Source(s),
+                PendingContent::Scene(c) => match scene_ids.get(&c) {
+                    Some(id) => ItemContent::Scene(*id),
+                    None => continue,
+                },
+            };
+            let mut item = SceneItem::new(ids.item(), content, p.layout);
+            item.visible = p.visible;
+            item.locked = p.locked;
+            item.group = p.group.and_then(|k| groups.ids.get(&k).copied());
+            scene.items.push(item);
+        }
+        scene.groups = groups.make(&self.all);
+        for (key, count) in groups.flat {
+            let mut e = entry(
+                Outcome::Approximated,
+                Area::Scene,
+                &self.all[key].name,
+                "group",
+                format!(
+                    "The group has {count} item(s) here, so it became separate items in the scene."
+                ),
+            );
+            e.scenes = vec![scene.name.clone()];
+            self.report.push(e);
+        }
+    }
 }
 
 fn full_canvas(canvas: (u32, u32)) -> Layout {
@@ -821,7 +904,7 @@ impl Ctx<'_> {
         &mut self,
         item: &ObsItem,
         scene_name: &str,
-        group: Option<(&Placed, (u32, u32), bool, bool)>,
+        group: Option<Parent<'_>>,
         scene_ids: &HashMap<usize, SceneId>,
         out: &mut Vec<Pending>,
     ) {
@@ -875,24 +958,22 @@ impl Ctx<'_> {
             let Some(gp) = place(&t_obs, gsize) else {
                 return;
             };
-            let mut e = entry(
-                Outcome::Approximated,
-                Area::Scene,
-                &target.name,
-                "group",
-                "The group became separate items in the scene.",
-            );
             if t_obs.crop != [0; 4] || t_obs.bounds_crop {
-                e.reason
-                    .push_str(" The group's crop, which clipped its items, is not kept.");
+                let mut e = entry(
+                    Outcome::Approximated,
+                    Area::Scene,
+                    &target.name,
+                    "group",
+                    "The group's crop, which clipped its items, is not kept.",
+                );
+                e.scenes = vec![scene_name.to_owned()];
+                self.report.push(e);
             }
-            e.scenes = vec![scene_name.to_owned()];
-            self.report.push(e);
             for child in target.items() {
                 self.item(
                     &child,
                     scene_name,
-                    Some((&gp, gsize, visible, locked)),
+                    Some((&gp, gsize, visible, locked, t)),
                     scene_ids,
                     out,
                 );
@@ -940,7 +1021,7 @@ impl Ctx<'_> {
                 );
                 return;
             };
-            if let Some((gp, gsize, _, _)) = group {
+            if let Some((gp, gsize, _, _, _)) = group {
                 p = compose(gp, gsize, &p);
             }
             let (mut layout, sheared) = layout_from_corners(&p);
@@ -997,6 +1078,7 @@ impl Ctx<'_> {
             layout,
             visible,
             locked,
+            group: group.map(|g| g.4),
         });
     }
 

@@ -59,8 +59,8 @@ scene "Main"
   source "Webcam" pos [1580.00, 860.00] size [300.00, 180.00] rot 0.00 crop [40, 0, 40, 0] visible true locked false
   scene "Overlay" pos [0.00, 0.00] size [1920.00, 1080.00] rot 0.00 crop [0, 0, 0, 0] visible true locked false
   source "Alerts" pos [1520.00, 0.00] size [400.00, 300.00] rot 0.00 crop [0, 0, 0, 0] visible false locked false
-  source "Badge colour" pos [960.00, 100.00] size [300.00, 100.00] rot 0.00 crop [0, 0, 0, 0] visible true locked false
-  source "Badge logo" pos [1260.00, 100.00] size [1920.00, 1080.00] rot 0.00 crop [0, 0, 0, 0] visible false locked false
+  source "Badge colour" group "Badges" pos [960.00, 100.00] size [300.00, 100.00] rot 0.00 crop [0, 0, 0, 0] visible true locked false
+  source "Badge logo" group "Badges" pos [1260.00, 100.00] size [1920.00, 1080.00] rot 0.00 crop [0, 0, 0, 0] visible false locked false
 scene "Starting soon"
   source "Background" pos [0.00, 0.00] size [1920.00, 1080.00] rot 0.00 crop [0, 0, 0, 0] visible true locked false
   source "Logo" pos [1920.00, 0.00] size [-1920.00, 1080.00] rot 15.00 crop [0, 0, 0, 0] visible true locked false
@@ -76,7 +76,7 @@ scene "Global sources"
   source "Mic/Aux" pos [0.00, 0.00] size [1920.00, 1080.00] rot 0.00 crop [0, 0, 0, 0] visible true locked false
 report
 Imported exactly: 4 scenes, 3 sources, 5 items, 2 filters.
-Imported, not exactly as in OBS (22):
+Imported, not exactly as in OBS (21):
 - approximated source "Screen" (monitor_capture) in Main: This computer's devices were not checked, so RBS uses the default one.
 - approximated filter "Webcam: Crop" (crop_filter): The crop now happens after the source's other filters.
 - approximated source "Webcam" (dshow_input) in Camera only, Main: This computer's devices were not checked, so RBS uses the default one.
@@ -93,7 +93,6 @@ Imported, not exactly as in OBS (22):
 - approximated item "Screen" in Main: The source's picture size is not known here, so its size on the canvas may differ.
 - approximated item "Overlay" in Main: A crop on a nested scene is not in RBS.
 - approximated item "Alerts" in Main: Blending mode "additive" is not in RBS.
-- approximated scene "Badges" (group) in Main: The group became separate items in the scene.
 - approximated item "Badge logo" in Main: The source's picture size is not known here, so its size on the canvas may differ.
 - approximated item "Logo" in Starting soon: The source's picture size is not known here, so its size on the canvas may differ.
 - approximated item "Old photo" in Starting soon: The source's picture size is not known here, so its size on the canvas may differ.
