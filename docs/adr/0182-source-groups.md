@@ -1,4 +1,4 @@
-# ADR-0180: Sources can be grouped, and a group moves, resizes and hides as one
+# ADR-0182: Sources can be grouped, and a group moves, resizes and hides as one
 
 - Status: Proposed
 - Date: 2026-11-24
