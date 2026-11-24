@@ -52,9 +52,30 @@ extern "C" fn should_reopen(
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let hidden = HIDDEN.load(Ordering::Relaxed);
         show();
+        activate();
         if hidden { Bool::NO } else { Bool::YES }
     }))
     .unwrap_or(Bool::YES)
+}
+
+/// Makes RBS the active app. A reopen from the Dock or Finder comes with activation; one
+/// sent by a second launch (the reopen Apple event, ADR-0181) does not, so a hidden or
+/// minimized RBS came back behind the app in front (Mac check, 2026-11-24). Since
+/// macOS 14 the system may still decline it (cooperative activation).
+fn activate() {
+    // AppKit calls the reopen method on the main thread; a unit test calls it elsewhere.
+    if objc2::MainThreadMarker::new().is_none() {
+        return;
+    }
+    // SAFETY: `sharedApplication` is a class getter on the main thread, where AppKit
+    // calls the reopen method; `activateIgnoringOtherApps:` takes a BOOL and returns
+    // nothing (deprecated in macOS 14, where it acts as `activate`, but still there).
+    unsafe {
+        let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
+        if let Some(app) = app.as_ref() {
+            let _: () = msg_send![app, activateIgnoringOtherApps: true];
+        }
+    }
 }
 
 /// `NSApplicationDidResignActiveNotification`.
