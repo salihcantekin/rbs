@@ -6,7 +6,11 @@
 
 use std::collections::BTreeSet;
 
+use rbs_ui::transform::{DragKeys, Mark};
 use slint::Model as _;
+
+use super::{OutputCanvas, SourceData, sound_nest};
+use crate::preview_edit::{Effect, Placed};
 
 /// How a row was clicked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,6 +128,77 @@ impl super::StudioUi {
         self.reveal_sound();
         self.mark_picked();
         self.refresh_marks();
+    }
+
+    /// The sources selected together (two or more) when the main picture shows the
+    /// marks; empty for a single selection.
+    fn group_ids(&self) -> Vec<i32> {
+        if self.marks_on() != OutputCanvas::Main {
+            return Vec::new();
+        }
+        let ids = self.picked.ids(self.selected);
+        if ids.len() > 1 { ids } else { Vec::new() }
+    }
+
+    /// A press on the main picture: a drag of the covering box while several sources
+    /// are selected and it hits one, else the single-source press.
+    pub(super) fn press_edit(
+        &mut self,
+        at: [f32; 2],
+        placed: &[Placed],
+        selected: i32,
+        keys: DragKeys,
+    ) -> Effect {
+        let several = self.group_ids();
+        let grouped = (!several.is_empty())
+            .then(|| {
+                self.edit
+                    .press_group(at, self.canvas_px(), placed, &several, keys)
+            })
+            .flatten();
+        grouped.unwrap_or_else(|| {
+            self.edit
+                .press(at, self.canvas_px(), placed, selected, keys)
+        })
+    }
+
+    /// Arrow keys: all selected sources move together, else the selected one.
+    pub(super) fn nudge_edit(&mut self, placed: &[Placed], dx: f32, dy: f32) -> Effect {
+        let several = self.group_ids();
+        if several.is_empty() {
+            self.edit.nudge(placed, self.selected, dx, dy)
+        } else {
+            self.edit.nudge_group(placed, &several, dx, dy)
+        }
+    }
+
+    /// The selection's marks: one covering box for several sources, else the source's.
+    pub(super) fn marks_edit(&self, placed: &[Placed], buf: &mut Vec<Mark>) {
+        let several = self.group_ids();
+        if several.is_empty() {
+            self.edit
+                .marks(self.canvas_px(), placed, self.selected, buf);
+        } else {
+            self.edit
+                .group_marks(self.canvas_px(), placed, &several, buf);
+        }
+    }
+
+    /// Marks the Sources rows: companion nesting and which rows are part of a
+    /// multi-selection (sources that no longer exist leave the set).
+    pub(super) fn mark_rows(&mut self, data: &mut [SourceData], keys: &[sound_nest::Key]) {
+        let order: Vec<i32> = data.iter().map(|d| d.id).collect();
+        self.picked.retain(&order);
+        self.nest.mark(data, keys, self.selected);
+        for d in data {
+            d.picked = self.picked.has(d.id);
+        }
+    }
+
+    /// A plain selection of one source (or none, -1): ends any multi-selection.
+    pub(super) fn select_one(&mut self, id: i32) {
+        self.clear_picked();
+        self.selected = id;
     }
 
     /// Forgets several selected sources (a plain selection) and unmarks their rows.

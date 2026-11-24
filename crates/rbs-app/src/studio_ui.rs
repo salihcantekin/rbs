@@ -731,7 +731,6 @@ impl StudioUi {
             fps: whole_fps(canvas.1),
             ..CanvasProfile::new()
         };
-        let canvas_why: Option<String> = None;
         // Without the lock: `rbs-cli` replaces the file in one rename, so this reads
         // either version whole; a bad file it moves aside is never one `rbs-cli` wrote.
         let (remote, remote_why) = remote_profile::load(config);
@@ -867,9 +866,7 @@ impl StudioUi {
             canvas,
             display: None,
             canvas_restarting: false,
-            canvas_note: canvas_why
-                .map(|w| format!("The saved canvas was not used: {w}"))
-                .unwrap_or_default(),
+            canvas_note: String::new(),
             remote_port_text: remote.port.to_string(),
             remote,
             remote_server: None,
@@ -2838,16 +2835,6 @@ impl StudioUi {
 
     /// The selection as a press on picture `on` sees it: none when the other picture
     /// shows its marks, so a handle never answers where it is not drawn.
-    /// The sources selected together (two or more) when the main picture shows the
-    /// marks; empty for a single selection.
-    fn group_ids(&self) -> Vec<i32> {
-        if self.marks_on() != OutputCanvas::Main {
-            return Vec::new();
-        }
-        let ids = self.picked.ids(self.selected);
-        if ids.len() > 1 { ids } else { Vec::new() }
-    }
-
     fn marked_selection(&self, on: OutputCanvas) -> i32 {
         if self.marks_on() == on {
             self.selected
@@ -2935,8 +2922,7 @@ impl StudioUi {
         self.edit.set_panel(size[0], size[1]);
         let placed = self.placed_where(|_| true);
         let hit = self.edit.source_at(at, self.canvas_px(), &placed);
-        self.clear_picked();
-        self.selected = hit.unwrap_or(-1);
+        self.select_one(hit.unwrap_or(-1));
         self.pick_props(OutputCanvas::Main);
         self.refresh_marks();
         hit
@@ -2966,10 +2952,7 @@ impl StudioUi {
     fn run(&mut self, effect: Effect) {
         match effect {
             Effect::None => {}
-            Effect::Select(id) => {
-                self.clear_picked();
-                self.selected = id;
-            }
+            Effect::Select(id) => self.select_one(id),
             Effect::Send(seq, id, b, gesture) => {
                 self.deleted.clear();
                 self.send_box(seq, id, b, gesture, OutputCanvas::Main);
@@ -2990,10 +2973,7 @@ impl StudioUi {
     fn run_vertical(&mut self, effect: Effect) {
         match effect {
             Effect::None => {}
-            Effect::Select(id) => {
-                self.clear_picked();
-                self.selected = id;
-            }
+            Effect::Select(id) => self.select_one(id),
             Effect::Send(seq, id, b, gesture) => {
                 self.deleted.clear();
                 self.send_box(seq, id, b, gesture, OutputCanvas::Vertical);
@@ -3081,8 +3061,7 @@ impl StudioUi {
         self.vedit.set_panel(size[0], size[1]);
         let placed = self.placed_vertical(true);
         let hit = self.vedit.source_at(at, canvas, &placed);
-        self.clear_picked();
-        self.selected = hit.unwrap_or(-1);
+        self.select_one(hit.unwrap_or(-1));
         self.pick_props(OutputCanvas::Vertical);
         self.refresh_marks();
         hit
@@ -3152,19 +3131,7 @@ impl StudioUi {
         let placed = self.placed();
         // The selection's handles answer only on the picture that shows them.
         let selected = self.marked_selection(OutputCanvas::Main);
-        let several = self.group_ids();
-        let grouped = (!several.is_empty())
-            .then(|| {
-                self.edit
-                    .press_group(at, self.canvas_px(), &placed, &several, keys)
-            })
-            .flatten();
-        let e = match grouped {
-            Some(e) => e,
-            None => self
-                .edit
-                .press(at, self.canvas_px(), &placed, selected, keys),
-        };
+        let e = self.press_edit(at, &placed, selected, keys);
         self.pick_props(OutputCanvas::Main);
         self.run(e);
     }
@@ -3181,12 +3148,7 @@ impl StudioUi {
 
     pub fn preview_nudge(&mut self, dx: f32, dy: f32) {
         let placed = self.placed();
-        let several = self.group_ids();
-        let e = if several.is_empty() {
-            self.edit.nudge(&placed, self.selected, dx, dy)
-        } else {
-            self.edit.nudge_group(&placed, &several, dx, dy)
-        };
+        let e = self.nudge_edit(&placed, dx, dy);
         self.run(e);
     }
 
@@ -3214,14 +3176,7 @@ impl StudioUi {
         let mut buf = std::mem::take(&mut self.mark_buf);
         if on == OutputCanvas::Main {
             let placed = self.placed();
-            let several = self.group_ids();
-            if several.is_empty() {
-                self.edit
-                    .marks(self.canvas_px(), &placed, self.selected, &mut buf);
-            } else {
-                self.edit
-                    .group_marks(self.canvas_px(), &placed, &several, &mut buf);
-            }
+            self.marks_edit(&placed, &mut buf);
             // A web page with no address draws nothing: outline where it sits (ADR-0149).
             let empty = |id: i32| {
                 self.browser_rows
@@ -6577,12 +6532,7 @@ impl StudioUi {
             self.selected = -1;
         }
         let keys: Vec<sound_nest::Key> = rows.iter().map(sound_nest::key).collect();
-        let order: Vec<i32> = data.iter().map(|d| d.id).collect();
-        self.picked.retain(&order);
-        self.nest.mark(&mut data, &keys, self.selected);
-        for d in &mut data {
-            d.picked = self.picked.has(d.id);
-        }
+        self.mark_rows(&mut data, &keys);
         set_rows(&self.sources, data);
         self.text_settings = rows
             .iter()

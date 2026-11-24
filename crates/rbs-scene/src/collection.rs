@@ -12,6 +12,8 @@ mod error;
 pub use error::SceneError;
 mod buses;
 mod field;
+mod groups;
+mod scene_ops;
 pub use field::LevelEdits;
 mod removal;
 
@@ -21,8 +23,8 @@ pub use removal::Removed;
 use crate::arrange::{AutoItem, AutoLayout, auto_layout};
 use crate::model::{
     AudioFrom, Canvas, CanvasId, CollectionGlide, CollectionTransition, DISPLAY_SOURCE_TYPE,
-    DisplayChrome, Fallback, Filter, FilterId, Group, GroupId, ItemContent, ItemId, Layout,
-    MasterAudio, RecordSeparately, Scene, SceneAudio, SceneId, SceneItem, SceneLevel, SceneScope,
+    DisplayChrome, Fallback, Filter, FilterId, Group, ItemContent, ItemId, Layout, MasterAudio,
+    RecordSeparately, Scene, SceneAudio, SceneId, SceneItem, SceneLevel, SceneScope,
     SceneTransition, Sends, SettingValue, Settings, Source, SourceAudio, SourceGlide, SourceId,
     SourceMonitor, SourceRegion, show_for_is_valid,
 };
@@ -171,6 +173,13 @@ enum Op {
         expected: Option<SceneLevel>,
         new: Option<SceneLevel>,
     },
+    /// Replaces a scene's group list (ADR-0182). The items' tags change in the same
+    /// batch.
+    SetGroups {
+        scene: SceneId,
+        expected: Vec<Group>,
+        new: Vec<Group>,
+    },
     ReplaceSceneHeader {
         id: SceneId,
         expected: (String, SceneScope),
@@ -238,29 +247,6 @@ pub struct IdCounters {
     pub bus: u32,
     /// Next group id (ADR-0182). Always stored, with or without groups.
     pub group: u32,
-}
-
-/// Copies a scene's groups under fresh ids and points the copied `items` at them
-/// (ADR-0182: a copy never shares a group with the original).
-fn copy_groups(
-    next: &mut NextIds,
-    groups: &[Group],
-    items: &mut [SceneItem],
-) -> Result<Vec<Group>, SceneError> {
-    let mut map = BTreeMap::new();
-    let mut out = Vec::with_capacity(groups.len());
-    for g in groups {
-        let id = GroupId(issue(&mut next.group)?);
-        map.insert(g.id, id);
-        out.push(Group {
-            id,
-            name: g.name.clone(),
-        });
-    }
-    for i in items {
-        i.group = i.group.and_then(|g| map.get(&g).copied());
-    }
-    Ok(out)
 }
 
 fn issue(counter: &mut u32) -> Result<u32, SceneError> {
@@ -446,6 +432,9 @@ impl SceneCollection {
         for mut s in scenes {
             s.name = s.name.trim().to_owned();
             next.scene = above(next.scene, s.id.0)?;
+            for g in &s.groups {
+                next.group = above(next.group, g.id.0)?;
+            }
             for i in &s.items {
                 next.item = above(next.item, i.id.0)?;
                 if !items.insert(i.id) {
@@ -1354,110 +1343,10 @@ impl SceneCollection {
         Ok((id, undo))
     }
 
-    /// Copies a scene: new scene id and item ids, the same sources and nested scenes,
-    /// same layouts. Does not put it on air. Refused for a canvas's global scene
-    /// (ADR-0065).
-    pub fn duplicate_scene(
-        &mut self,
-        id: SceneId,
-        name: &str,
-    ) -> Result<(SceneId, Undo), SceneError> {
-        if self.canvases.values().any(|c| c.globals == Some(id)) {
-            return Err(SceneError::GlobalScene(id));
-        }
-        let source = self.get_scene(id)?.clone();
-        let mut next = self.next.clone();
-        let new_id = SceneId(issue(&mut next.scene)?);
-        let mut items = Vec::with_capacity(source.items.len());
-        for item in &source.items {
-            let mut copy = item.clone();
-            copy.id = ItemId(issue(&mut next.item)?);
-            items.push(copy);
-        }
-        let groups = copy_groups(&mut next, &source.groups, &mut items)?;
-        let scene = Scene {
-            id: new_id,
-            name: name.trim().to_owned(),
-            scope: source.scope,
-            items,
-            audio: source.audio.clone(),
-            transition_in: source.transition_in,
-            groups,
-        };
-        let undo = self.apply_with(
-            Op::InsertScene {
-                scene,
-                placements: Vec::new(),
-                shown: Vec::new(),
-                globals: Vec::new(),
-            },
-            next,
-        )?;
-        Ok((new_id, undo))
-    }
-
     /// Removes a scene. Items that nest it in other scenes are removed, and canvases
     /// showing it show nothing; the undo restores all of it.
     pub fn remove_scene(&mut self, id: SceneId) -> Result<Undo, SceneError> {
         self.apply(Op::RemoveScene(id))
-    }
-
-    /// Turns a scene's Own levels on (ADR-0091), with these entries: the caller copies
-    /// the effective levels of the scene's sources so nothing jumps
-    /// ([`SceneCollection::heard_levels`]). Refused for a global scene. One undo step;
-    /// the scene in Own levels already changes nothing but its entries.
-    pub fn set_scene_own_levels(
-        &mut self,
-        id: SceneId,
-        audio: SceneAudio,
-    ) -> Result<Undo, SceneError> {
-        if self.is_global_scene(id) {
-            return Err(SceneError::GlobalScene(id));
-        }
-        let expected_own = self.get_scene(id)?.audio.is_some();
-        self.apply(Op::SetSceneAudio {
-            scene: id,
-            expected_own,
-            new: Some(audio),
-        })
-    }
-
-    /// Puts a scene back in Shared levels, discarding its entries (ADR-0091). One undo
-    /// step, whose undo restores the entries.
-    pub fn set_scene_shared_levels(&mut self, id: SceneId) -> Result<Undo, SceneError> {
-        let expected_own = self.get_scene(id)?.audio.is_some();
-        self.apply(Op::SetSceneAudio {
-            scene: id,
-            expected_own,
-            new: None,
-        })
-    }
-
-    /// Sets, changes or (with `None`) removes a scene's entry for a source (ADR-0091).
-    /// `SharedLevels` while the scene is in Shared levels; `InvalidVolume` for a volume
-    /// outside `0.0..=1.0`. A live edit: the record covers only this entry.
-    pub fn set_scene_level(
-        &mut self,
-        scene: SceneId,
-        source: SourceId,
-        level: Option<SceneLevel>,
-    ) -> Result<Undo, SceneError> {
-        self.get_source(source)?;
-        let audio = self
-            .get_scene(scene)?
-            .audio
-            .as_ref()
-            .ok_or(SceneError::SharedLevels(scene))?;
-        if level.is_some_and(|l| !l.is_valid()) {
-            return Err(SceneError::InvalidVolume);
-        }
-        let expected = audio.level(source).copied();
-        self.apply(Op::SetSceneLevel {
-            scene,
-            source,
-            expected,
-            new: level,
-        })
     }
 
     /// Every source `scene` places on `canvas`: its own items, the items of scenes it
@@ -1588,9 +1477,10 @@ impl SceneCollection {
     ) -> Result<(ItemId, Undo), SceneError> {
         let mut next = self.next.clone();
         let id = ItemId(issue(&mut next.item)?);
+        let items = &self.get_scene(scene)?.items;
         let index = match index {
-            Some(i) => i,
-            None => self.get_scene(scene)?.items.len(),
+            Some(i) => groups::above_block(items, i),
+            None => items.len(),
         };
         let item = SceneItem {
             id,
@@ -1814,7 +1704,14 @@ impl SceneCollection {
         }
         let mut draft = self.clone();
         draft.next = next;
-        let inverse = draft.perform(op)?;
+        let mut inverse = draft.perform(op)?;
+        // A group left with fewer than two members dissolves in the same step (ADR-0182).
+        let settled = draft.settle_groups();
+        if !settled.is_empty() {
+            let mut all = settled;
+            all.push(inverse);
+            inverse = Op::Batch(all);
+        }
         draft.validate()?;
         // A document loaded with its stinger placed stays editable (ADR-0140 decision
         // 1); an edit may not make it so.
@@ -2028,14 +1925,7 @@ impl SceneCollection {
                 Ok(Op::RemoveSource(id))
             }
             Op::Bus(op) => self.perform_bus(op).map(Op::Bus),
-            Op::Batch(ops) => {
-                let mut inverse = Vec::with_capacity(ops.len());
-                for op in ops {
-                    inverse.push(self.perform(op)?);
-                }
-                inverse.reverse();
-                Ok(Op::Batch(inverse))
-            }
+            Op::Batch(ops) => self.perform_batch(ops),
             Op::RemoveSource(id) => {
                 let source = self
                     .sources
@@ -2095,6 +1985,11 @@ impl SceneCollection {
                     new: expected,
                 })
             }
+            Op::SetGroups {
+                scene,
+                expected,
+                new,
+            } => self.set_groups(scene, expected, new),
             Op::SetSceneTransition {
                 scene,
                 expected,
@@ -2617,6 +2512,7 @@ impl SceneCollection {
         let globals: BTreeSet<SceneId> = self.canvases.values().filter_map(|c| c.globals).collect();
         for s in self.scenes.values() {
             check_name(&s.name)?;
+            groups::validate_scene(s)?;
             // A global scene is never listed, so its name never takes one from the
             // user (ADR-0065).
             if !globals.contains(&s.id) && !names.insert(s.name.as_str()) {

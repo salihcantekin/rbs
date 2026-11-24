@@ -168,8 +168,12 @@ impl SceneCollection {
             };
             let index = below
                 .and_then(|b| s.items.iter().position(|it| it.id == b))
-                .map_or(s.items.len(), |p| p + 1);
+                .map_or(s.items.len(), |p| {
+                    super::groups::above_block(&s.items, p + 1)
+                });
             let mut new = template;
+            // A copy never carries the original's group (ADR-0182 decision 4).
+            new.group = None;
             new.id = ItemId(issue(&mut draft.next.item)?);
             new.content = ItemContent::Source(to);
             result.items.push((to, new.id));
@@ -218,7 +222,7 @@ impl SceneCollection {
             }
             items.push(copy);
         }
-        let groups = super::copy_groups(&mut next, &original.groups, &mut items)?;
+        let groups = super::groups::copy_groups(&mut next, &original.groups, &mut items)?;
         let audio = original.audio.clone().map(|mut a| {
             a.levels = a
                 .levels

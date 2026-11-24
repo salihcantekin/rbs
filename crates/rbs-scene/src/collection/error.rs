@@ -7,7 +7,7 @@ use rbs_graph::node::NodeTypeId;
 use super::{MAX_CANVAS_SIDE, MAX_FRAME_RATE, MAX_LAYERS, MAX_NESTING_DEPTH};
 use crate::activity::MAX_LINGER_S;
 use crate::model::{
-    BusId, CanvasId, FilterId, ItemId, MAX_BUSES, MAX_GLIDE_MS, MAX_SHOW_FOR_MS,
+    BusId, CanvasId, FilterId, GroupId, ItemId, MAX_BUSES, MAX_GLIDE_MS, MAX_SHOW_FOR_MS,
     MAX_SYNC_OFFSET_MS, SceneId, SourceId,
 };
 
@@ -25,6 +25,14 @@ pub enum SceneError {
     UnknownItem(ItemId),
     /// No filter with this id on the source.
     UnknownFilter(FilterId),
+    /// No group with this id in the scene (ADR-0182).
+    UnknownGroup(GroupId),
+    /// A group has fewer than two members (ADR-0182).
+    GroupTooSmall(GroupId),
+    /// A group's members are not next to each other in layer order (ADR-0182).
+    GroupNotContiguous(GroupId),
+    /// Items of two scenes cannot be grouped (ADR-0182).
+    GroupScope,
     /// Another canvas, source or scene already has this name.
     DuplicateName(String),
     /// Names must not be empty or only whitespace.
@@ -178,6 +186,12 @@ impl fmt::Display for SceneError {
                 write!(f, "{id} is the stinger and cannot be placed in a scene")
             }
             SceneError::UnknownBus(id) => write!(f, "unknown {id}"),
+            SceneError::UnknownGroup(id) => write!(f, "unknown {id}"),
+            SceneError::GroupTooSmall(id) => write!(f, "{id} needs at least two items"),
+            SceneError::GroupNotContiguous(id) => {
+                write!(f, "the items of {id} must be next to each other")
+            }
+            SceneError::GroupScope => write!(f, "items of two scenes cannot share a group"),
             SceneError::TooManyBuses => {
                 write!(
                     f,
