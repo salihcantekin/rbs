@@ -33,7 +33,12 @@ impl Host {
     }
 
     /// Locks or unlocks an item (ADR-0059); `Ok(false)` when it already is.
-    pub(super) fn set_item_locked(&mut self, item: ItemId, locked: bool) -> Result<bool, Refusal> {
+    pub(super) fn set_item_locked(
+        &mut self,
+        item: ItemId,
+        locked: bool,
+        gesture: u64,
+    ) -> Result<bool, Refusal> {
         let (_, found) = self
             .collection
             .item(item)
@@ -48,7 +53,7 @@ impl Host {
             .map_err(|e| Refusal::of(&e))?;
         self.edits
             .history
-            .record(EditKind::Lock, &name, 0, vec![undo]);
+            .record(EditKind::Lock, &name, gesture, vec![undo]);
         Ok(true)
     }
 
@@ -57,6 +62,7 @@ impl Host {
         &mut self,
         item: ItemId,
         visible: bool,
+        gesture: u64,
     ) -> Result<bool, Refusal> {
         let (_, found) = self
             .collection
@@ -72,7 +78,7 @@ impl Host {
             .map_err(|e| Refusal::of(&e))?;
         self.edits
             .history
-            .record(EditKind::Visibility, &name, 0, vec![undo]);
+            .record(EditKind::Visibility, &name, gesture, vec![undo]);
         // Opening the eye drops a running cue so the deadline cannot hide it later
         // (ADR-0105). Hiding does not start one.
         if visible {

@@ -116,7 +116,7 @@ impl ApiTarget<'_> {
             }
             C::ItemRemove(p) => {
                 let (name, removed) = host
-                    .remove_from_scene(ItemId::from_raw(p.item))
+                    .remove_from_scene(ItemId::from_raw(p.item), p.gesture)
                     .map_err(|e| refused(&e))?;
                 host.apply(notify);
                 // The window's undo toast, whoever removed it (owner, 2026-11-21).

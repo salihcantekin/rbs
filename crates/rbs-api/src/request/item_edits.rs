@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{LayerDirection, is_main};
+use super::{LayerDirection, is_main, is_zero_u64};
 use crate::types::OutputCanvas;
 
 /// `item.move` (protocol 1.32; `front` / `back` since 1.36; `to_item` since 1.100):
@@ -137,4 +137,44 @@ pub struct Rehearse {
     /// `"main"` (the default); the vertical canvas has no Preview picture.
     #[serde(default, skip_serializing_if = "is_main")]
     pub canvas: OutputCanvas,
+}
+
+/// `item.set_visible` (protocol 1.6; `gesture` since 1.105).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetItemVisible {
+    /// The item's id (`source.list`).
+    pub item: u32,
+    /// Shown.
+    pub visible: bool,
+    /// Calls with the same non-zero gesture and edit kind that follow each other are
+    /// one undo step (a group's eye, protocol 1.105, ADR-0164 decision 2); 0, the
+    /// default, is a step of its own. A gesture never refuses a call.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub gesture: u64,
+}
+
+/// `item.set_locked` (protocol 1.6; `gesture` since 1.105).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetItemLocked {
+    /// The item's id (`source.list`).
+    pub item: u32,
+    /// Locked.
+    pub locked: bool,
+    /// As on `item.set_visible`.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub gesture: u64,
+}
+
+/// `item.remove` (protocol 1.10, ADR-0065): Remove from scene; `gesture` since 1.105.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ItemRef {
+    /// The item's id.
+    pub item: u32,
+    /// As on `item.set_visible`: removals with the same non-zero gesture and edit kind
+    /// that follow each other are one undo step (Delete on a group's row).
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub gesture: u64,
 }

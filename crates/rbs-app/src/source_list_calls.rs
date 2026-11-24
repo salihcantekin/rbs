@@ -37,6 +37,9 @@ pub fn install(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_set_group_locked, |app, group: i32, on: bool| {
         app.studio.set_group_locked(group, on);
     });
+    on!(on_remove_group, |app, group: i32| {
+        app.studio.remove_group(group);
+    });
     on!(on_delete_source, |app, id: i32| {
         app.studio.delete_source(id);
     });

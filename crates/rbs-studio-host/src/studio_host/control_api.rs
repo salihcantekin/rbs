@@ -51,6 +51,9 @@ fn clear_window_gesture(command: &mut rbs_api::Command) {
     use rbs_api::Command as C;
     let gesture = match command {
         C::ItemSetBox(p) => &mut p.gesture,
+        C::ItemSetVisible(p) => &mut p.gesture,
+        C::ItemRemove(p) => &mut p.gesture,
+        C::ItemSetLocked(p) => &mut p.gesture,
         C::ItemSetCrop(p) => &mut p.gesture,
         C::ItemSetRotation(p) => &mut p.gesture,
         C::ItemSetStyle(p) => &mut p.gesture,

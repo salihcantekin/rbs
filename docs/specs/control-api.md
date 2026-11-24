@@ -555,6 +555,10 @@ Source rows carry `kind` `image` and `color` for those picture sources. A client
 - **State.** `record.state` and `record.canvas_state` add `paused` (bool), `paused_ms` and `recorded_ms`; `state` stays `recording` while paused. `paused` is set from the call on, including the ticks before the pause begins. `paused_ms` (time left out so far) and `recorded_ms` (time since the start less `paused_ms`) are as of the change; they are published on each pause and resume, never per frame, so a client counts on from them while not paused.
 - **Older clients and servers.** A 1.60 client ignores the new fields; a 1.60 server answers the methods `method_not_found` and omits the fields, which read as not paused.
 
+### Protocol 1.105: one undo step for a group's eye, lock and removal (ADR-0182 decision 8)
+
+- **`gesture`.** `item.set_visible`, `item.set_locked` and `item.remove` take the optional `gesture` the other item edits have (ADR-0164 decision 2): calls with the same non-zero gesture and edit kind that follow each other are one undo step; 0, the default, is a step of its own, and a gesture never refuses a call. The Sources list uses it so a group's Show/Hide, Lock and Delete are one step (removals that mix Delete and Remove from scene are two steps, as their kinds differ). A 1.104 server answers `invalid_params` to the field.
+
 ### Protocol 1.104: source groups (ADR-0182 decision 10)
 
 - **Methods** (`control`, edit class, one undo step each): `group.create {scene, items, name?}` groups at least two distinct items of one scene and answers `{group, name}`; any group among the items merges into the new one with all its members, and the members move next to the topmost one keeping their order (ADR-0182 decision 5). `name` defaults to the first free "Group N"; it must be unique in the scene. `group.remove {scene, group}` ungroups: the members stay where they are, and the answer is `{}`. `group.rename {scene, group, name}` answers `{}` (also when the name is unchanged, without an undo step).

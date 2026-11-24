@@ -1107,14 +1107,6 @@ pub struct AddItem {
     pub scene: Option<u32>,
 }
 
-/// `item.remove` (protocol 1.10, ADR-0065): Remove from scene.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ItemRef {
-    /// The item's id.
-    pub item: u32,
-}
-
 /// Which way `item.move` or `scene.move` steps in order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -1267,26 +1259,6 @@ pub struct RemoveGlobal {
 pub struct SetPreview {
     /// The preview scene's id, or `null`.
     pub scene: Option<u32>,
-}
-
-/// `item.set_visible` (protocol 1.6).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SetItemVisible {
-    /// The item's id (`source.list`).
-    pub item: u32,
-    /// Shown.
-    pub visible: bool,
-}
-
-/// `item.set_locked` (protocol 1.6).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SetItemLocked {
-    /// The item's id (`source.list`).
-    pub item: u32,
-    /// Locked.
-    pub locked: bool,
 }
 
 /// `item.set_show_for` (ADR-0105). Undoable document state. No protocol minor.

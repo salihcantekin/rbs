@@ -195,7 +195,11 @@ impl Host {
     /// placement. The rule is the model's (`SceneCollection::remove_from_scene`); the
     /// history entry carries the source's name, Delete when it was deleted, else
     /// Remove. Returns the name and what was removed.
-    pub(super) fn remove_from_scene(&mut self, item: ItemId) -> Result<(String, Removed), Refusal> {
+    pub(super) fn remove_from_scene(
+        &mut self,
+        item: ItemId,
+        gesture: u64,
+    ) -> Result<(String, Removed), Refusal> {
         let gone = || Refusal::NotFound(format!("There is no item {}.", item.get()));
         let (_, it) = self.collection.item(item).ok_or_else(gone)?;
         let ItemContent::Source(source) = it.content else {
@@ -213,7 +217,7 @@ impl Host {
         } else {
             EditKind::Remove
         };
-        self.edits.history.record(kind, &name, 0, vec![undo]);
+        self.edits.history.record(kind, &name, gesture, vec![undo]);
         Ok((name, removed))
     }
 
@@ -318,7 +322,7 @@ impl Host {
             });
         };
         if !keep {
-            let (_, removed) = self.remove_from_scene(item)?;
+            let (_, removed) = self.remove_from_scene(item, 0)?;
             return Ok(Err(removed));
         }
         let layout = self

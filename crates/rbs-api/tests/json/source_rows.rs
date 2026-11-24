@@ -143,6 +143,20 @@ pub(super) fn group_requests() -> Vec<Request> {
             name: "Cam".into(),
         }),
         Command::GroupList(SceneRef { scene: 2 }),
+        Command::ItemSetVisible(SetItemVisible {
+            item: 7,
+            visible: false,
+            gesture: 0,
+        }),
+        Command::ItemSetLocked(SetItemLocked {
+            item: 7,
+            locked: true,
+            gesture: 9,
+        }),
+        Command::ItemRemove(ItemRef {
+            item: 7,
+            gesture: 0,
+        }),
     ]
     .into_iter()
     .map(Request::Command)
@@ -270,4 +284,23 @@ fn a_status_with_missing_words_still_decodes() {
             reason: "held".into()
         }
     );
+}
+
+#[test]
+fn item_edits_take_an_optional_gesture() {
+    // Protocol 1.105: absent means 0, and 0 is not written.
+    let plain: SetItemVisible =
+        serde_json::from_value(json!({"item": 1, "visible": false})).unwrap();
+    assert_eq!(plain.gesture, 0);
+    assert!(
+        serde_json::to_value(plain)
+            .unwrap()
+            .get("gesture")
+            .is_none()
+    );
+    let locked: SetItemLocked =
+        serde_json::from_value(json!({"item": 1, "locked": true, "gesture": 5})).unwrap();
+    assert_eq!(locked.gesture, 5);
+    let removed: ItemRef = serde_json::from_value(json!({"item": 1, "gesture": 6})).unwrap();
+    assert_eq!(removed.gesture, 6);
 }

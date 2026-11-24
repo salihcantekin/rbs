@@ -88,3 +88,46 @@ fn groups_are_made_listed_renamed_ungrouped_and_undone_one_step_each() {
     assert_eq!(in_group(&mut c), 0);
     drop(host);
 }
+
+/// Hide, lock and remove calls that share a gesture are one undo step (protocol 1.105).
+#[test]
+fn a_gesture_makes_a_groups_eye_lock_and_removal_one_undo_step() {
+    let Some((host, _updates, _api, mut c)) = start() else {
+        return;
+    };
+    let a = add(&mut c, "screen", "A");
+    let b = add(&mut c, "screen", "B");
+    let scene = scenes(&mut c)["program"].as_u64().unwrap();
+    let items: Vec<u64> = [a, b]
+        .iter()
+        .map(|s| {
+            rows(&mut c, scene)
+                .iter()
+                .find(|r| r["id"] == *s)
+                .and_then(|r| r["item"].as_u64())
+                .unwrap()
+        })
+        .collect();
+    let hidden = |c: &mut Client| {
+        rows(c, scene)
+            .iter()
+            .filter(|r| r["visible"] == false)
+            .count()
+    };
+    for item in &items {
+        ok(&c.call(
+            "item.set_visible",
+            json!({"item": item, "visible": false, "gesture": 7}),
+        ));
+    }
+    assert_eq!(hidden(&mut c), 2);
+    ok(&c.call("edit.undo", json!({})));
+    assert_eq!(hidden(&mut c), 0, "one undo shows both again");
+    for item in &items {
+        ok(&c.call("item.remove", json!({"item": item, "gesture": 8})));
+    }
+    assert_eq!(rows(&mut c, scene).len(), 0);
+    ok(&c.call("edit.undo", json!({})));
+    assert_eq!(rows(&mut c, scene).len(), 2, "one undo brings both back");
+    drop(host);
+}

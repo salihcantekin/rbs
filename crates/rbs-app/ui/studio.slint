@@ -446,6 +446,10 @@ component GroupRowView inherits Rectangle {
             menu.open(at);
         }
         renamed(t) => { Studio.rename-group(data.group-id, t); }
+        confirm-question: @tr("Remove all of {} from this scene?", data.group-name);
+        confirm-name: @tr("Remove group {} from this scene", data.group-name);
+        delete-asked => { self.confirm = true; }
+        confirmed => { Studio.remove-group(data.group-id); }
         VerticalLayout {
             alignment: center;
             IconButton {

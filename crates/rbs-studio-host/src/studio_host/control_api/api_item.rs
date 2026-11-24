@@ -57,7 +57,7 @@ impl ApiTarget<'_> {
             }
             C::ItemSetVisible(p) => {
                 let changed = host
-                    .set_item_visible(ItemId::from_raw(p.item), p.visible)
+                    .set_item_visible(ItemId::from_raw(p.item), p.visible, p.gesture)
                     .map_err(|e| refused(&e))?;
                 if changed {
                     host.apply(notify);
@@ -66,7 +66,7 @@ impl ApiTarget<'_> {
             }
             C::ItemSetLocked(p) => {
                 let changed = host
-                    .set_item_locked(ItemId::from_raw(p.item), p.locked)
+                    .set_item_locked(ItemId::from_raw(p.item), p.locked, p.gesture)
                     .map_err(|e| refused(&e))?;
                 if changed {
                     host.apply(notify);

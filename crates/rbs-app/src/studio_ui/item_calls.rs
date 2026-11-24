@@ -38,17 +38,35 @@ impl StudioUi {
     }
 
     pub fn set_source_locked(&mut self, id: i32, locked: bool) {
+        self.set_source_locked_in(id, locked, 0);
+    }
+
+    /// As [`Self::set_source_locked`], part of `gesture`'s one undo step (0: its own).
+    pub(super) fn set_source_locked_in(&mut self, id: i32, locked: bool, gesture: u64) {
         self.deleted.clear();
         if let Some(item) = self.row_item(id) {
-            self.call(C::ItemSetLocked(rq::SetItemLocked { item, locked }));
+            self.call(C::ItemSetLocked(rq::SetItemLocked {
+                item,
+                locked,
+                gesture,
+            }));
         }
     }
 
     /// Show or hide a source in the program scene (the Sources row's eye button).
     pub fn set_source_visible(&mut self, id: i32, visible: bool) {
+        self.set_source_visible_in(id, visible, 0);
+    }
+
+    /// As [`Self::set_source_visible`], part of `gesture`'s one undo step (0: its own).
+    pub(super) fn set_source_visible_in(&mut self, id: i32, visible: bool, gesture: u64) {
         self.deleted.clear();
         if let Some(item) = self.row_item(id) {
-            self.call(C::ItemSetVisible(rq::SetItemVisible { item, visible }));
+            self.call(C::ItemSetVisible(rq::SetItemVisible {
+                item,
+                visible,
+                gesture,
+            }));
         }
     }
 
@@ -211,7 +229,7 @@ impl StudioUi {
     pub fn remove_from_scene(&mut self, id: i32) {
         self.deleted.clear();
         if let Some(item) = self.row_item(id) {
-            self.call(C::ItemRemove(rq::ItemRef { item }));
+            self.call(C::ItemRemove(rq::ItemRef { item, gesture: 0 }));
         }
     }
 
