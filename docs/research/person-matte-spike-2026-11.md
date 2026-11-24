@@ -84,3 +84,7 @@ Same four clips, first 120 frames, first 5 skipped, median of per-clip medians, 
 Flicker: the wall patch test gave exactly 0 for every model (it does not separate them). Whole-frame mean absolute alpha change x1000 on the still-talking clip: RVM 0.23, MediaPipe 0.26, MODNet 0.30, Vision 0.36, all very low; moving clips mix real motion into the number and cannot be compared. Apple Vision on the Neural Engine is still unmeasured (a sandboxed shell cannot build the plan; run `vision_probe` from a normal Terminal). A Windows kit with DirectML probes is on the Mac in `/tmp/matte-spike/windows_kit` for the open Windows measurement.
 
 Suggested quality tiers from these numbers (to confirm after Windows): Fast = MediaPipe on one or two CPU threads (2 to 4 ms); Balanced = Vision balanced on Mac, MODNet 384 elsewhere; High = Vision accurate, or RVM (GPL-3.0 is compatible with RBS, edge quality best, but needs our own GPU path to be lean). Edge quality was judged by eye on contact sheets, not measured.
+
+### Correction: Neural Engine (2026-11-24)
+
+The Neural Engine compile service of this Mac failed for every model (macOS 26.7.1, `ANECompilerService` "Compilation failed", also from a plain Terminal.app window and for a small MediaPipe model through the CoreML provider). So rows above labelled "CoreML (ALL / GPU / ANE)" did not run on the Neural Engine; only the CPU, GPU and Vision-on-GPU numbers are valid. The Neural Engine timings are open until the Mac is restarted (a restart usually clears this); no commands are needed from the owner.
