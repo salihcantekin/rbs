@@ -35,3 +35,12 @@ Date: 2026-11-24. Status: desk research done; measurements need the reference ma
 ## What needs the owner
 
 - Camera clips and permission to run the harness on SC-PC and the Mac (one device thread at a time, runs of 1 to 2 minutes, project rules).
+
+## First results (2026-11-24, cloud container, 4 vCPU, no GPU)
+
+- Licences read from the repositories' LICENSE files: RVM is GPL-3.0 (compatible with RBS), MODNet is Apache-2.0. The MediaPipe and Apple Vision rows are still unverified.
+- Clips: four 1620x1080 30 fps clips from the owner's Mac camera (6 to 14 s): a still person talking (clip1) and head turns (clip3) are the useful ones; low light and a second person passing were not recorded. They are in the project files folder `person-matte/clips/`.
+- RVM MobileNetV3 fp32 through ONNX Runtime on CPU, input 960x640, downsample ratio 0.25: median 30 ms per frame (about 33 fps on 4 vCPU, no GPU). It is a probe for quality, not an RBS measurement.
+- Visual result on green: clean edges around hair, beard and shoulders on the still clip; head turns keep the hair edge and ear. A frame with fast motion shows blur on the face and a soft hair edge, which is motion blur in the source. No halo or missing hair seen in the sampled frames. Frames reviewed: 8 of about 1,000, by eye; not a measurement.
+- Consequence for ADR-0179: RVM-class quality is reachable at a cost that a GPU can easily absorb; the open question is the engineering of the GPU-native run, not whether a model is good enough.
+- Next: the same clips through MODNet and MediaPipe for comparison, a GPU timing on the Windows machine, and a hand-checked frame set for edge error.
