@@ -5553,6 +5553,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "rbs-segment"
+version = "0.0.1"
+dependencies = [
+ "rbs-core",
+]
+
+[[package]]
 name = "rbs-sources"
 version = "0.0.1"
 dependencies = [
