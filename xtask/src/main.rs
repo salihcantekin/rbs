@@ -762,7 +762,7 @@ fn class(name: &str) -> Option<Class> {
         "rbs-codec-hw" | "rbs-vcam-mf-source" | "rbs-browser-shm" | "rbs-system-probe"
         | "rbs-mach" => Class::Support,
         "rbs-gpu" | "rbs-audio" | "rbs-audio-filters" | "rbs-engine" | "rbs-nodes"
-        | "rbs-sources" | "rbs-record" | "rbs-filters" => Class::Engine,
+        | "rbs-sources" | "rbs-record" | "rbs-filters" | "rbs-filters-segment" => Class::Engine,
         "rbs-log" => Class::Diagnostics,
         "rbs-api" => Class::Control,
         "rbs-api-ws" | "rbs-api-ipc" => Class::Transport,

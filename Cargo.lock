@@ -5161,6 +5161,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "rbs-filters-segment"
+version = "0.0.1"
+dependencies = [
+ "bytemuck",
+ "bytes",
+ "pollster",
+ "rbs-core",
+ "rbs-filters",
+ "rbs-gpu",
+ "rbs-graph",
+ "rbs-params",
+ "rbs-segment",
+ "wgpu",
+]
+
+[[package]]
 name = "rbs-gpu"
 version = "0.0.1"
 dependencies = [

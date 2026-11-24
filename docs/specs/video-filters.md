@@ -12,7 +12,7 @@ Built-in GPU video filters for sources: colour correction, chroma key, blur and 
 
 In scope: the `FilterType` trait, field schema and values, the `FilterNode`, the first catalogue, the conformance suite, how the scene binder and the studio use them, and where the user edits filters.
 
-Out of scope: audio filters; filters that need resources (LUT, image mask; a later version sends resource handles through the channel); background removal (own port, ADR-0053 decision 6); the drop shadow (an item style, ADR-0053 decision 5); looks (ADR-0053 decision 9); plugin filters (they will implement the same trait through the plugin SDK).
+Out of scope: audio filters; filters that need resources (LUT, image mask; a later version sends resource handles through the channel); background removal beyond the node described under "Background removal" (own port, ADR-0053 decision 6, ADR-0179); the drop shadow (an item style, ADR-0053 decision 5); looks (ADR-0053 decision 9); plugin filters (they will implement the same trait through the plugin SDK).
 
 ## Contract
 
@@ -212,6 +212,18 @@ Maths, on un-premultiplied colour `c` (alpha `a`), premultiplied again at the en
 ### Where the user edits filters
 
 The Filters tab of the Properties panel (ADR-0062 decision 9; `ui-design-system.md`, Properties). The control API's `filter.*` methods (`control-api.md`, protocol 1.8).
+
+### Background removal (`rbs-filters-segment`, ADR-0179)
+
+`org.rbs.filter.background-removal` is a video filter whose node, `BackgroundRemovalNode`, lives in the engine crate `rbs-filters-segment` (it needs the port `rbs-segment`, which `rbs-filters` must not depend on). Its settings schema is four numbers: Threshold, Edge softness, Edge shift and Smoothing (`rbs_filters_segment::fields()`); *method* and *quality* are not settings values: they choose the session (`SessionRequest`) the node's factory opens, so changing them builds a new node on the control thread. Contract of the node:
+
+- **Session lifecycle (P13).** The node is built with a `SessionFactory` and the session's small picture size. `warm` (control thread) opens the session and calls its `warm`; `cool` and `release` close it. A disabled filter is out of the schedule, so it holds no model, no worker and no texture. `process` never opens or drops a session.
+- **Small picture, the named readback exception (ADR-0179 decision 3).** On a new input picture, when one of `RING` (3) staging buffers is idle, the node draws the input at the session's small size (sRGB, straight, opaque, BGRA in memory), copies it into the staging buffer and maps it without waiting. A finished readback becomes a `PixelFormat::Bgra8` system frame lent to `submit`; older finished readbacks are dropped; a full ring skips the picture (counted `ring_full`); a busy session drops it (`dropped_busy`). The full-size picture never leaves the GPU; the readback is the only one and is at most about 0.3 MB.
+- **Matte.** The newest matte of `latest` is smoothed on the CPU against the matte before it (`keep = Smoothing`, integer maths, only when a new matte arrives) and uploaded to a one-channel texture of the matte's own size, made once per session and level. A GPU matte is released unused and counted `bad_mattes` (not read yet).
+- **Composite.** One pass: the input times `smoothstep(low, high, matte)`, the matte sampled bilinearly, `low` and `high` from Threshold, Edge softness and Edge shift. Output: linear light, premultiplied, `Rgba16Float`, the input's timestamp.
+- **Nothing before the first matte.** Until a matte exists the node publishes nothing (ADR-0053 decision 6); the unfiltered picture is never shown. A session that fails in `latest` publishes nothing and returns `NodeError::Backend`, which the graph's restart and back-off handle (ADR-0024).
+- **Size changes (person-mask-port rule 5).** The small size is fixed, so a size change keeps the session and the matte while the aspect ratio stays within 2 percent: the picture is drawn at the new size at once with the matte it has. A larger aspect change calls `reset`, drops the matte and publishes nothing until a new matte arrives; the host then builds a new node for the new aspect (control thread; not wired yet).
+- **Not built yet:** pairing the matte to the frame by timestamp and the stale-matte limits (person-mask-port rule 3: "mask late", nothing after 1 s), GPU mattes, replace or blur backgrounds, the studio binder, the Filters panel and the glossary term. Until those are done the node is reachable only from tests.
 
 ## Errors and failure behaviour
 

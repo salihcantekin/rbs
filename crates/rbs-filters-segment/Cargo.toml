@@ -1,0 +1,27 @@
+[package]
+name = "rbs-filters-segment"
+description = "Background removal filter for RBS: runs a person mask session beside the GPU filter chain (ADR-0179, spec person-mask-port.md)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+# Engine crates and the port (ADR-0179 decision 5): never an adapter or a backend.
+rbs-core = { path = "../rbs-core" }
+rbs-graph = { path = "../rbs-graph" }
+rbs-params = { path = "../rbs-params" }
+rbs-gpu = { path = "../rbs-gpu" }
+rbs-filters = { path = "../rbs-filters" }
+rbs-segment = { path = "../rbs-segment" }
+# Same version and features as rbs-gpu, so nothing new is built.
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "dx12", "metal", "vulkan", "wgsl"] }
+bytemuck = { version = "1.25", features = ["derive"] }
+bytes = "1.9"
+# Waits for the shader validation scope in `prepare` (control thread); as rbs-filters.
+pollster = "0.4"
+
+[lints]
+workspace = true

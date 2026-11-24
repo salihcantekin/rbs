@@ -31,6 +31,7 @@ pub const HOT: &[&str] = &[
     "rbs-graph/src/runtime/",
     "rbs-engine/src/worker.rs",
     "rbs-filters/src/node.rs",
+    "rbs-filters-segment/src/node.rs",
     "rbs-sources/src/browser_sound.rs",
     "rbs-browser-shm/src/sound.rs",
     "rbs-nodes/src/media/picture.rs",
