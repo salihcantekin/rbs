@@ -23,7 +23,10 @@ fn fs_main(in: FilterIn) -> @location(0) vec4<f32> {
     var bg = u[1];
     if (u[2].x < 1.5) {
         let r = textureSampleLevel(room, room_sampler, in.uv, 0.0);
-        bg = vec4<f32>(r.rgb / max(r.a, 1e-3), 1.0);
+        // The smallest strengths fade to the sharp picture: the room is drawn at 1/8 size,
+        // so it cannot be less blurred than about 8 pixels.
+        let keep = smoothstep(0.006, 0.03, u[2].z);
+        bg = vec4<f32>(mix(c.rgb, r.rgb / max(r.a, 1e-3), keep), 1.0);
     }
     return c * a + bg * (1.0 - a);
 }
