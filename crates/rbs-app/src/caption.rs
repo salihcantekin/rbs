@@ -1,6 +1,7 @@
-//! The merged title bar on Windows (ADR-0071): what a point of the window is, as pure
-//! functions. `win::caption` asks them for every `WM_NCHITTEST` and `WM_NCCALCSIZE`;
-//! they hold no platform code, so their tests run everywhere.
+//! The toolbar row as the title bar (ADR-0071 on Windows, ADR-0180 on macOS): what a
+//! point of the window is and what a double-click does, as pure functions. `win::caption`
+//! asks them for every `WM_NCHITTEST` and `WM_NCCALCSIZE`, the macOS frame for every
+//! press in the row; they hold no platform code, so their tests run everywhere.
 
 /// Where the toolbar row's parts are, in logical pixels from the client area's
 /// top-left corner (the UI sends them whenever one moves).
@@ -52,6 +53,38 @@ pub struct Probe {
     /// A popup is open in the window: a click must reach it (and close it), never start
     /// a drag.
     pub popup_open: bool,
+}
+
+/// Whether a press at `(x, y)` is in the row's flexible space, which moves the window
+/// (macOS, ADR-0180 decision 3; on Windows `hit` answers `Caption` there). Nothing is
+/// until the UI has sent the regions.
+pub fn in_drag_space(x: f32, y: f32, r: Regions) -> bool {
+    r.row_h > 0.0 && y >= 0.0 && y < r.row_h && x >= r.lead_end && x < r.end_start
+}
+
+/// What a double-click in the row's flexible space does on macOS.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DoubleClick {
+    /// Zoom (macOS's maximize).
+    Zoom,
+    /// Minimize to the Dock.
+    Minimize,
+    /// Nothing.
+    Nothing,
+}
+
+/// The system setting "Double-click a window's title bar to" (ADR-0180 decision 3):
+/// `action` is `AppleActionOnDoubleClick` ("Maximize", "Minimize", "None", "Fill"),
+/// `miniaturize` the older `AppleMiniaturizeOnDoubleClick`, used when `action` is
+/// missing. Anything else zooms, as macOS does by default.
+pub fn double_click(action: Option<&str>, miniaturize: Option<bool>) -> DoubleClick {
+    match action {
+        Some("Minimize") => DoubleClick::Minimize,
+        Some("None") => DoubleClick::Nothing,
+        Some(_) => DoubleClick::Zoom,
+        None if miniaturize == Some(true) => DoubleClick::Minimize,
+        None => DoubleClick::Zoom,
+    }
 }
 
 /// What `p` is (ADR-0071 decision 2, in its order).
@@ -253,5 +286,38 @@ mod tests {
         }
         assert_eq!(excess_height(PROGRAM, -3), 0);
         assert_eq!(corrected_height(10, 39), 1);
+    }
+
+    #[test]
+    fn only_the_flexible_space_moves_the_window() {
+        let r = Regions {
+            lead_end: 200.0,
+            end_start: 600.0,
+            max_x: 700.0,
+            max_w: 46.0,
+            row_h: 37.0,
+        };
+        assert!(in_drag_space(200.0, 10.0, r));
+        assert!(in_drag_space(599.0, 36.0, r));
+        assert!(!in_drag_space(199.0, 10.0, r), "leading group");
+        assert!(!in_drag_space(600.0, 10.0, r), "end group");
+        assert!(!in_drag_space(300.0, 37.0, r), "below the row");
+        assert!(
+            !in_drag_space(300.0, 10.0, Regions::default()),
+            "no regions yet"
+        );
+    }
+
+    #[test]
+    fn a_double_click_follows_the_system_setting() {
+        use DoubleClick::*;
+        assert_eq!(double_click(Some("Maximize"), None), Zoom);
+        assert_eq!(double_click(Some("Fill"), None), Zoom);
+        assert_eq!(double_click(Some("Minimize"), Some(false)), Minimize);
+        assert_eq!(double_click(Some("None"), Some(true)), Nothing);
+        assert_eq!(double_click(Some("Something new"), None), Zoom);
+        assert_eq!(double_click(None, Some(true)), Minimize);
+        assert_eq!(double_click(None, Some(false)), Zoom);
+        assert_eq!(double_click(None, None), Zoom);
     }
 }

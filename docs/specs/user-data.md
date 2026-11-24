@@ -74,7 +74,7 @@ A kind implements `Document`: `KIND`, `FORMAT` (the newest version this build re
 
 ### Writer lock
 
-Every library write (`create`, `save`, `rename`, `duplicate`, `delete`, `import`) and `set_current` takes `&WriterLock` as proof. `UserData::try_lock() -> Result<Option<WriterLock>, DataError>` locks `user-data.lock` in the config directory (`Ok(None)` when another program holds it). Only the holder writes libraries and `current.toml`; a second app instance works read-only; `rbs-cli` only reads. The holder sends every write through one writer thread, in order (ADR-0051 decision 8); the library itself does not order concurrent calls.
+Every library write (`create`, `save`, `rename`, `duplicate`, `delete`, `import`) and `set_current` takes `&WriterLock` as proof. `UserData::try_lock() -> Result<Option<WriterLock>, DataError>` locks `user-data.lock` in the config directory (`Ok(None)` when another program holds it). Only the holder writes libraries and `current.toml`; a second app instance works read-only (on Windows and macOS a second launch for the same settings folder brings the running RBS forward instead, ADR-0181, so this is reached only on Linux and when an older build that takes no `instance.lock` is running); `rbs-cli` only reads. The holder sends every write through one writer thread, in order (ADR-0051 decision 8); the library itself does not order concurrent calls.
 
 ### Output profile (`OutputProfile`, `kind = "output-profile"`, format 1)
 

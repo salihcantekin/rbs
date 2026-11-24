@@ -710,6 +710,22 @@ fn tee(
     ))
 }
 
+/// Whether an RBS holds the lock of `config` now (ADR-0181). The file is opened
+/// without truncating and the lock, if taken, is dropped at once. `File::try_lock` is
+/// newer than the workspace's MSRV; xtask runs on the toolchain that builds RBS, which
+/// already needs it (rbs-user-data, rbs-app).
+#[allow(clippy::incompatible_msrv)]
+fn rbs_running_in(config: &Path) -> bool {
+    let Ok(file) = fs::OpenOptions::new()
+        .write(true)
+        .truncate(false)
+        .open(config.join("instance.lock"))
+    else {
+        return false;
+    };
+    matches!(file.try_lock(), Err(fs::TryLockError::WouldBlock))
+}
+
 fn run_app(
     root: &Path,
     target: &Path,
@@ -733,6 +749,19 @@ fn run_app(
     } else {
         app_config_dir()
     };
+    // One RBS per settings folder (ADR-0181): a run would only bring that RBS forward.
+    if config.as_deref().is_some_and(rbs_running_in) {
+        reports.push(StepReport {
+            name: "app".into(),
+            ok: false,
+            facts: vec!["another RBS is running".into()],
+            lines: vec![
+                "Another RBS holds this settings folder: quit it, or run with --fresh-config."
+                    .into(),
+            ],
+        });
+        return Ok(reports);
+    }
     let crash_dir = config.as_ref().map(|c| c.join("crash-reports"));
     let crashes_before = crash_dir.as_deref().map(file_names).unwrap_or_default();
 

@@ -4,10 +4,13 @@
 
 mod background;
 mod capture;
+mod instance;
 mod meter_layer;
 mod quit;
+pub mod titlebar;
 
 pub use capture::{bring_forward, exclude_from_capture, forget_saved_frame};
+pub use instance::reopen_running;
 
 pub use background::{
     begin_quit_activity, request_attention, route_show, set_app_name, set_badge, set_hidden,

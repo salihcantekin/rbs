@@ -1760,13 +1760,14 @@ component ToolbarCell inherits HorizontalLayout {
     if item.kind == 3: Rectangle { }
 }
 
-// A window button on Windows (ADR-0071): minimize, maximize or restore, close. Not a
-// Tab stop, as the OS's own are not; Alt+Space, Win+arrows and Alt+F4 stay.
+// A window button (ADR-0071, ADR-0180): minimize, maximize or restore, close. Not a
+// Tab stop, as the OS's own are not; the system's window keys stay.
 component CaptionButton inherits Rectangle {
     in property <IconName> icon;
     in property <string> name;
     in property <bool> close;
-    // For maximize, whose mouse the OS handles: its state from there.
+    // For maximize on Windows, whose mouse the OS handles (snap layouts): its state
+    // from there.
     in property <bool> outside-hover;
     in property <bool> outside-pressed;
     in property <bool> outside: false;
@@ -1876,7 +1877,8 @@ component FrameBar inherits Rectangle {
     // bar does not opt in to the halo (ADR-0136), so Glow does not make it taller. Every
     // item keeps its size, centred; only the window buttons span the row.
     property <length> row-pad: Tokens.space-1;
-    height: Tokens.size-control-md + 2 * row-pad + Tokens.size-border;
+    // On macOS it is at least the hidden title band's height (ADR-0180 decision 6).
+    height: max(Tokens.size-control-md + 2 * row-pad + Tokens.size-border, Shell.caption-min-height);
     background: Theme.surface-base;
     Rectangle {
         y: parent.height - Tokens.size-border;
@@ -1933,7 +1935,7 @@ component FrameBar inherits Rectangle {
                 vertical-alignment: center;
             }
         }
-        // The flexible space: on Windows it moves the window (ADR-0071).
+        // The flexible space: it moves the window (ADR-0071, ADR-0180).
         Rectangle {
             horizontal-stretch: 1;
             min-width: Tokens.space-2;
@@ -1980,19 +1982,20 @@ component FrameBar inherits Rectangle {
             // Idle it is not in the layout at all (the status bar says "Not live").
             if Shell.live-state != 0 || Shell.live-camera: LiveIndicator { horizontal-stretch: 0; }
         }
-        // Windows: the window buttons end the row (ADR-0071).
+        // The window buttons end the row (ADR-0071, ADR-0180). In full screen only
+        // close stays.
         if Shell.custom-caption: HorizontalLayout {
             horizontal-stretch: 0;
             padding-left: Tokens.space-2;
-            CaptionButton {
+            if !Shell.window-full-screen: CaptionButton {
                 icon: IconName.window-minimize;
                 name: @tr("Minimize");
                 clicked => { Shell.caption(0); }
             }
-            max := CaptionButton {
+            if !Shell.window-full-screen: CaptionButton {
                 icon: Shell.window-maximized ? IconName.window-restore : IconName.window-maximize;
                 name: Shell.window-maximized ? @tr("Restore") : @tr("Maximize");
-                outside: true;
+                outside: Platform.os == OperatingSystemType.windows;
                 outside-hover: Shell.caption-max-hover;
                 outside-pressed: Shell.caption-max-pressed;
                 clicked => { Shell.caption(1); }

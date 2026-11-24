@@ -1,6 +1,7 @@
 # ADR-0071: The toolbar row is the title bar on Windows, and the row leaves no gaps
 
 - Status: Accepted
+- Amended by: [ADR-0180](0180-the-toolbar-row-is-the-title-bar-on-macos.md) (decision 3: macOS also uses the toolbar row as its title bar)
 - Date: 2026-11-07
 - Deciders: Salih (owner)
 - Builds on: ADR-0049 (frame and areas), ADR-0050 (toolbar), ADR-0054 (preview stays visible), ADR-0057 (theme tokens), ADR-0069 (RBS menu)

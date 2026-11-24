@@ -46,6 +46,7 @@ mod quit;
 mod replay_page;
 mod reveal;
 mod shortcuts_page;
+mod single;
 mod source_list_calls;
 mod studio_start;
 mod studio_ui;
@@ -291,9 +292,9 @@ struct App {
     vertical_picture_sent: bool,
     /// What the Dock badge or tray icon shows now; changed only when it differs.
     bg_state: background::LiveState,
-    /// The tray icon and the second-launch event while Keep RBS running is set.
+    /// The tray icon while Keep RBS running is set.
     #[cfg(windows)]
-    tray: Option<(rbs_app::win::Tray, Option<rbs_app::win::ShowEvent>)>,
+    tray: Option<rbs_app::win::Tray>,
     demo_since: Option<Instant>,
     studio: studio_ui::StudioUi,
     /// The Settings window while it is open (U17).
@@ -2467,8 +2468,8 @@ impl Ctx {
         Self::sync_tray_text(app);
     }
 
-    /// Makes or drops the tray icon and the second-launch event as the setting asks
-    /// (ADR-0056 decision 9: nothing exists while Quit RBS is set).
+    /// Makes or drops the tray icon as the setting asks (ADR-0056 decision 9: nothing
+    /// exists while Quit RBS is set). The second-launch event is `single`'s (ADR-0181).
     #[cfg(windows)]
     fn sync_tray(app: &mut App) {
         let want = app.bg.on_close == OnClose::KeepRunning && Self::way_back();
@@ -2476,10 +2477,7 @@ impl Ctx {
             (None, true) => {
                 let (status, tooltip) = Self::tray_text(app);
                 match rbs_app::win::Tray::new(app.bg_state, &status, &tooltip) {
-                    Ok(tray) => {
-                        let event = rbs_app::win::ShowEvent::create(show_from_system);
-                        app.tray = Some((tray, event));
-                    }
+                    Ok(tray) => app.tray = Some(tray),
                     Err(e) => {
                         // No way back: Close quits, and the setting's hint says so.
                         rbs_core::info!(Area::Ui, "tray icon: {e}; closing the window quits");
@@ -2521,7 +2519,7 @@ impl Ctx {
     fn sync_tray_text(app: &mut App) {
         let (status, tooltip) = Self::tray_text(app);
         let state = app.bg_state;
-        if let Some((tray, _)) = &mut app.tray {
+        if let Some(tray) = &mut app.tray {
             tray.set_state(state, &status, &tooltip);
         }
     }
@@ -2576,7 +2574,6 @@ impl Ctx {
         if !app.hidden {
             let _ = app.main.show();
             window_place::raise(app.main.window());
-            #[cfg(windows)]
             title_bar::attach_after_show(&app.main);
             return;
         }
@@ -2585,7 +2582,6 @@ impl Ctx {
         rbs_app::native::set_hidden(false);
         let _ = app.main.show();
         window_place::raise(app.main.window());
-        #[cfg(windows)]
         title_bar::attach_after_show(&app.main);
         for f in &app.floats {
             let _ = f.window.show();
@@ -2606,7 +2602,7 @@ impl Ctx {
     /// Leaves every RBS window out of a screen capture, or puts them back.
     /// `false` when any window has no handle yet or the OS refused, so the next sync
     /// tries again. Windows (`WDA_EXCLUDEFROMCAPTURE`) and macOS (`NSWindow.sharingType`).
-    /// Linux keeps the windows in the capture.
+    /// Linux keeps the windows in the capture. Projectors are never left out.
     fn apply_capture_exclusion(app: &App) -> bool {
         let exclude = app.bg.exclude_own_window;
         let mut ok = exclude_window_from_capture(app.main.window(), exclude);
@@ -2628,7 +2624,14 @@ impl Ctx {
         for f in &app.floats {
             ok &= exclude_window_from_capture(f.window.window(), exclude);
         }
-        ok
+        // Interact windows follow the setting like every other RBS window; only the
+        // projector stays capturable, because sharing apps take it (ADR-0125).
+        let interact_ok = Cell::new(true);
+        interact::each_window(|w| {
+            let done = exclude_window_from_capture(w.window(), exclude);
+            interact_ok.set(interact_ok.get() && done);
+        });
+        ok && interact_ok.get()
     }
 
     /// How many OS windows the capture setting must cover right now.
@@ -2639,6 +2642,7 @@ impl Ctx {
             + usize::from(app.obs_import.is_some())
             + usize::from(app.attributes.is_some())
             + app.floats.len()
+            + interact::count()
     }
 
     /// Applies the capture setting to every current window. When a window is not ready
@@ -5645,15 +5649,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The name macOS shows for the app is "RBS", not the executable's file name.
     #[cfg(target_os = "macos")]
     rbs_app::native::set_app_name(c"RBS");
-    let _log = rbs_app::diag_log::start();
     let config = config::config_dir();
-    // A second launch while RBS keeps running brings it forward and ends (ADR-0056 d. 6).
-    #[cfg(windows)]
-    if background::load(&config).0.on_close == OnClose::KeepRunning
-        && rbs_app::win::signal_running()
-    {
-        return Ok(());
-    }
+    let lock_note = single::claim_or_exit(&config);
+    let _log = rbs_app::diag_log::start();
+    single::log_note(lock_note);
     // Crash reports and the running marker (ADR-0055 decisions 4 and 5): a report for
     // every panic on the UI thread, and a notice when the last session ended badly.
     rbs_crash::report_panics_on_this_thread();
@@ -5687,8 +5686,7 @@ fn quit_from_system() {
     });
 }
 
-/// The Dock icon or Cmd+Tab (macOS), the tray icon or a second launch (Windows) asked
-/// for the main window (ADR-0056 decision 6), once the system's call has returned.
+/// The Dock, Cmd+Tab, the tray or a second launch asked for the main window (ADR-0056 d. 6).
 #[cfg(any(target_os = "macos", windows))]
 fn show_from_system() {
     let _ = entry::invoke(|| {
@@ -5879,7 +5877,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
     }
     let error_generation = i32::from(error.is_some());
     let main = MainWindow::new()?;
-    rbs_app::window_events::install(&main);
+    rbs_app::window_events::install_with(&main, title_bar::events(&main));
     look::apply(
         &main.global::<Theme>(),
         &main.global::<Tokens>(),
@@ -6135,7 +6133,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
 
     // Dock icon and Cmd+Tab bring a hidden main window back (ADR-0056 d. 6); else Close quits.
     #[cfg(target_os = "macos")]
-    WAY_BACK.with(|w| w.set(rbs_app::native::route_show(show_from_system)));
+    WAY_BACK.with(|w| w.set(single::route_show(show_from_system)));
     // Windows: the tray icon is the way back, made while Keep RBS running is set;
     // `sync_tray` clears this when it cannot be made.
     #[cfg(windows)]
@@ -6149,7 +6147,6 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
 
     // Hiding every window keeps the event loop (ADR-0056 decision 4); only Quit ends it.
     main.show()?;
-    #[cfg(windows)]
     title_bar::attach_after_show(&main);
     if let Some(seconds) = measure_ui::requested() {
         measure_ui::install(&main, seconds);

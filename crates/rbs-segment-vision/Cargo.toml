@@ -1,0 +1,25 @@
+[package]
+name = "rbs-segment-vision"
+description = "Apple Vision person segmentation backend for the RBS person mask port (macOS only)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rbs-core = { path = "../rbs-core" }
+rbs-segment = { path = "../rbs-segment" }
+
+# Apple's frameworks through the objc2 bindings (MIT OR Apache-2.0 OR Zlib), same
+# versions as rbs-capture-sck and rbs-gpu.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std"] }
+objc2-core-video = { version = "0.3.2", default-features = false, features = ["std", "CVBase", "CVBuffer", "CVImageBuffer", "CVPixelBuffer", "CVReturn"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSError", "NSObject", "NSProcessInfo", "NSString", "NSValue"] }
+objc2-vision = { version = "0.3.2", default-features = false, features = ["std", "VNGeneratePersonSegmentationRequest", "VNObservation", "VNRequest", "VNRequestHandler", "VNStatefulRequest", "objc2-core-video"] }
+
+[lints]
+workspace = true

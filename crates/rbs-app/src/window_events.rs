@@ -51,6 +51,17 @@ where
     C: ComponentHandle + 'static,
     for<'a> Overlays<'a>: Global<'a, C>,
 {
+    install_with(component, |_, _| EventResult::Propagate);
+}
+
+/// [`install`], with `extra` seeing each window event first; its result is the event's
+/// (the main window's frame takes presses in the title bar's flexible space, ADR-0180).
+pub fn install_with<C, F>(component: &C, mut extra: F)
+where
+    C: ComponentHandle + 'static,
+    for<'a> Overlays<'a>: Global<'a, C>,
+    F: FnMut(&slint::Window, &WindowEvent) -> EventResult + 'static,
+{
     follow_activation(component);
     let weak = component.as_weak();
     #[cfg(windows)]
@@ -84,7 +95,7 @@ where
             if close && let Some(c) = weak.upgrade() {
                 c.global::<Overlays>().invoke_tip_close();
             }
-            EventResult::Propagate
+            extra(window, event)
         });
 }
 

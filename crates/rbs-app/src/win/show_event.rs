@@ -1,16 +1,15 @@
-//! A second launch brings the running RBS forward (ADR-0056 decision 6).
+//! A second launch brings the running RBS forward (ADR-0056 decision 6, ADR-0181).
 //!
-//! While Keep RBS running is set, the running instance owns a named, per-user event
-//! (`Local\RBS.Show.<user SID>`) and waits on it in the system's wait pool
-//! (`RegisterWaitForSingleObject`): no thread of RBS's own, no polling. A second launch
-//! that finds the event lets the first take the foreground, signals it and exits.
+//! The RBS that holds a settings folder's lock owns a named, per-user event
+//! (`Local\RBS.Show.<user SID>.<folder key>`), with either close setting, and waits on
+//! it in the system's wait pool (`RegisterWaitForSingleObject`): no thread of RBS's
+//! own, no polling. A second launch that finds the event lets the first take the
+//! foreground, signals it and exits.
 
 use std::ffi::c_void;
 use std::sync::OnceLock;
 
-use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, INVALID_HANDLE_VALUE, LocalFree,
-};
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE, LocalFree};
 use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
 use windows_sys::Win32::Security::{GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenUser};
 use windows_sys::Win32::System::Threading::{
@@ -23,11 +22,12 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{ASFW_ANY, AllowSetForegroundWi
 static SHOW: OnceLock<fn()> = OnceLock::new();
 
 /// The event's name as a NUL-terminated wide string, or `None` when the user's SID
-/// cannot be read (then there is no way back through a second launch).
-fn name() -> Option<Vec<u16>> {
+/// cannot be read (then there is no way back through a second launch). `folder` is
+/// `instance::folder_key` of the settings folder.
+fn name(folder: &str) -> Option<Vec<u16>> {
     let sid = user_sid()?;
     Some(
-        format!("Local\\RBS.Show.{sid}")
+        format!("Local\\RBS.Show.{sid}.{folder}")
             .encode_utf16()
             .chain(std::iter::once(0))
             .collect(),
@@ -91,10 +91,10 @@ unsafe extern "system" fn signalled(_context: *mut c_void, _timed_out: bool) {
     }
 }
 
-/// A second launch calls this first: when an RBS that keeps running exists, it is
-/// asked to show its window and `true` is returned (the caller then exits).
-pub fn signal_running() -> bool {
-    let Some(name) = name() else {
+/// A second launch calls this: when the RBS of `folder` exists and is not closing, it
+/// is asked to show its window and `true` is returned (the caller then exits).
+pub fn signal_running(folder: &str) -> bool {
+    let Some(name) = name(folder) else {
         return false;
     };
     // SAFETY: `name` is NUL-terminated and lives for the call; the handle returned is
@@ -123,20 +123,17 @@ pub struct ShowEvent {
 impl ShowEvent {
     /// Creates the event and registers the wait; `show` runs on a wait-pool thread
     /// when a second launch signals it, and must only queue work on the UI thread.
-    /// `None` when it cannot be set up, or another RBS of this user already owns it.
-    pub fn create(show: fn()) -> Option<Self> {
+    /// `None` when it cannot be set up. Only the holder of the folder's lock calls
+    /// this (ADR-0181), so an event that already exists is kept: a waiting launch may
+    /// still hold a handle opened while the previous owner was alive.
+    pub fn create(show: fn(), folder: &str) -> Option<Self> {
         let _ = SHOW.set(show);
-        let name = name()?;
+        let name = name(folder)?;
         // SAFETY: auto-reset, initially not signalled, default security; `name` is
-        // NUL-terminated and lives for the call.
+        // NUL-terminated and lives for the call. On an existing event (ERROR_ALREADY_EXISTS)
+        // the handle returned is still ours to wait on and close.
         let event = unsafe { CreateEventW(std::ptr::null(), 0, 0, name.as_ptr()) };
         if event.is_null() {
-            return None;
-        }
-        // SAFETY: read right after CreateEventW on this thread.
-        if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
-            // SAFETY: our handle to the existing event; closed once.
-            unsafe { CloseHandle(event) };
             return None;
         }
         let mut wait: HANDLE = std::ptr::null_mut();

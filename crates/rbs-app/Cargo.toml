@@ -141,7 +141,7 @@ rbs-mach = { path = "../rbs-mach" }
 keyring = { version = "3.6.3", default-features = false, features = ["apple-native"] }
 objc2 = "0.6.3"
 objc2-quartz-core = { version = "0.3.2", default-features = false, features = ["std", "CALayer", "CATransaction", "objc2-core-foundation", "objc2-core-graphics"] }
-objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFCGTypes"] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFCGTypes", "objc2"] }
 objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGColor"] }
 # The main display's size at start: the studio host's main display probe
 # (src/platform.rs, ADR-0159 decision 4).
