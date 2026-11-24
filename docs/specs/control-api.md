@@ -554,6 +554,8 @@ An OBS WebSocket (v5) compatibility layer (subset) is a separate optional adapte
   compatibility classifier and client generation remain follow-ups.
   Regenerate with `cargo run -p rbs-api --example generate-schemas --features schema`
   and check with `cargo test -p rbs-api --features schema --test catalog`.
+  `cargo xtask verify` also checks the snapshot with the opt-in feature before a push;
+  its quick mode does not.
   Independent review: fresh AI reviewer, 2026-11-24, approve after changes. The
   reviewer identified insufficient schema validation in MCP; the implementation now
   validates schemas, bounds them and refuses external or unresolved references.

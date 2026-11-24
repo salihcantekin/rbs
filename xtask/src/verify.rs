@@ -4,6 +4,7 @@
 //! The quick part runs every time and needs no build of the workspace: `cargo fmt
 //! --check`, `check-layers`, `check-ui` and `check-size`. The affected part builds
 //! only what the change can break: `cargo xtask affected clippy` and `affected test`.
+//! It also checks the control API's generated schema snapshot with the opt-in feature.
 //! The affected part is skipped when a quick check failed, so a formatting slip is
 //! reported in seconds. One result line closes the run.
 
@@ -57,6 +58,25 @@ pub fn run(root: &Path, args: &[String]) -> Result<ExitCode, String> {
                 break;
             }
         }
+        if results.iter().all(|(_, ok)| *ok) {
+            let (_, mut cargo) = crate::cargo_command();
+            let schema_ok = cargo
+                .current_dir(root)
+                .args([
+                    "test",
+                    "-p",
+                    "rbs-api",
+                    "--features",
+                    "schema",
+                    "--test",
+                    "catalog",
+                    "generated_schemas_match_the_checked_in_snapshot",
+                ])
+                .status()
+                .map_err(|e| format!("run control API schema snapshot test: {e}"))?
+                .success();
+            results.push(("schema", schema_ok));
+        }
     }
     let line: Vec<String> = results
         .iter()
@@ -64,7 +84,7 @@ pub fn run(root: &Path, args: &[String]) -> Result<ExitCode, String> {
         .collect();
     let all_ok = results.iter().all(|(_, ok)| *ok);
     let skipped = if !quick && !quick_ok {
-        ", clippy and test skipped"
+        ", clippy, test and schema skipped"
     } else if quick {
         " (quick)"
     } else {
