@@ -88,3 +88,17 @@ Suggested quality tiers from these numbers (to confirm after Windows): Fast = Me
 ### Correction: Neural Engine (2026-11-24)
 
 The Neural Engine compile service of this Mac failed for every model (macOS 26.7.1, `ANECompilerService` "Compilation failed", also from a plain Terminal.app window and for a small MediaPipe model through the CoreML provider). So rows above labelled "CoreML (ALL / GPU / ANE)" did not run on the Neural Engine; only the CPU, GPU and Vision-on-GPU numbers are valid. The Neural Engine timings are open until the Mac is restarted (a restart usually clears this); no commands are needed from the owner.
+
+### Neural Engine result after a restart (2026-11-24)
+
+After the Mac was restarted (the compile service then worked; restarting only the two services did not help), Apple Vision was measured on the Neural Engine. Same clips and method (1620x1080, 120 frames, first 5 skipped, median of per-clip medians). The machine was still busy 1 to 3 minutes after boot (load average falling from 124 to 38), so values may be slightly pessimistic. The Neural Engine was confirmed by the explicit compute device (`MLNeuralEngineComputeDevice`), by default-device times equal to the Neural Engine times, and by no compile errors during the runs; `powermetrics` was not used (needs a password).
+
+| Vision level | Neural Engine ms | Default device ms | GPU ms | Mask |
+| --- | --- | --- | --- | --- |
+| fast | 3.4 | 2.7 | 8.0 | 256x192 |
+| balanced | 9.8 | 9.0 | 19.0 | 512x384 |
+| accurate | 30.1 | 29.7 | 55.7 | 2016x1512 |
+
+The Neural Engine is about twice as fast as the GPU here and leaves the GPU free for composition and encoding; even accurate fits a 33 ms frame at 30 fps. The earlier "Neural Engine did not work" correction applied to the state before the restart. Consequence for the Mac default: Vision on its default device (the Neural Engine), with quality levels of about 3, 9 and 30 ms.
+
+Note: the restart cleared `/tmp`, so the earlier contact sheets, `summary.json`, the models and the Windows probe kit on the Mac are gone (the numbers in this document stay valid). The Windows kit has to be rebuilt when SC-PC is available.
