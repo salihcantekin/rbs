@@ -38,7 +38,7 @@ pub fn install(g: &Studio<'_>, ctx: &Ctx) {
         app.studio.add_global(option);
     });
     on!(on_select_source, |app, id: i32| {
-        app.studio.picked.clear();
+        app.studio.clear_picked();
         app.studio.selected = id;
         app.studio.reveal_sound();
         app.studio.refresh_marks();
