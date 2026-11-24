@@ -60,3 +60,9 @@ First 120 frames of each of the 4 owner clips (1620x1080), first 5 skipped, medi
 | Apple Vision balanced / fast, CPU only | native | 42.5 / 16.0 | 46.2 | |
 
 Findings: ONNX Runtime's CoreML provider does not help RVM (pooling with `ceil_mode=1` and one 1-D Concat are unsupported, so the graph splits and copies cost more than they save); RVM on the Mac GPU or Neural Engine needs our own conversion. RVM on CPU is fast but uses about six cores (against rule 17). Vision balanced on the GPU fits 30 fps and looks close to accurate on these clips; RVM keeps more hair detail and handles motion blur better. Vision on the Neural Engine could not be measured from a sandboxed shell (it failed to build the inference plan), so that run is still open.
+
+## Open tasks
+
+- **Windows measurement (RTX 4090 and AMD iGPU)**, waiting for SC-PC (off on 2026-11-24): RVM through ONNX Runtime with DirectML and CUDA as a baseline, then one GPU-native prototype. Runs of 1 to 2 minutes, one device thread at a time.
+- Apple Vision on the Neural Engine: run `vision_probe balanced` from a normal Terminal (a sandboxed shell cannot build the inference plan).
+- Low-light and second-person clips (not recorded yet); MODNet and MediaPipe comparison on the same clips.
