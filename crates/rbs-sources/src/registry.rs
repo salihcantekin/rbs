@@ -639,6 +639,8 @@ fn known_keys(type_id: &NodeTypeId) -> Option<&'static [&'static str]> {
             keys::FILLED,
             keys::WIDTH,
             keys::HEIGHT,
+            keys::BOX_WIDTH,
+            keys::BOX_HEIGHT,
         ],
         SourceClass::Media => &[
             keys::ADAPTER,
@@ -746,6 +748,17 @@ pub fn validate_settings(type_id: &NodeTypeId, settings: &Settings) -> Result<()
         });
     }
     camera_color(settings)?;
+    // A Library shape's or plain frame's Reset transform size (scene-sources spec).
+    let (bw, bh) = (
+        positive(settings, keys::BOX_WIDTH)?,
+        positive(settings, keys::BOX_HEIGHT)?,
+    );
+    if bw.is_some() != bh.is_some() {
+        return Err(SourceError::InvalidSetting {
+            key: keys::BOX_WIDTH,
+            expected: "both box_width and box_height, or neither",
+        });
+    }
     text(settings, keys::PATH)?;
     text(settings, keys::SAMPLE)?;
     text(settings, keys::COLOR)?;
@@ -1868,6 +1881,18 @@ mod fill_tests {
         bad.insert(keys::FILLED.into(), SettingValue::Text("no".into()));
         assert!(validate_settings(&id, &bad).is_err());
         assert!(validate_settings(&id, &colour_settings(Some(false))).is_ok());
+    }
+
+    /// A Library shape stores its added box; changing its colour must still validate.
+    #[test]
+    fn a_shape_with_its_box_validates() {
+        let id = NodeTypeId::new(types::COLOR_SOURCE);
+        let mut shape = colour_settings(None);
+        shape.insert(keys::BOX_WIDTH.into(), SettingValue::Int(645));
+        shape.insert(keys::BOX_HEIGHT.into(), SettingValue::Int(403));
+        assert!(validate_settings(&id, &shape).is_ok());
+        shape.remove(keys::BOX_HEIGHT);
+        assert!(validate_settings(&id, &shape).is_err(), "both or neither");
     }
 }
 
