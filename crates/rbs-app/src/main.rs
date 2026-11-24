@@ -2530,41 +2530,6 @@ impl Ctx {
         WAY_BACK.with(Cell::get)
     }
 
-    /// Hides every RBS window and keeps running (ADR-0056 decisions 3 and 5): Settings
-    /// closes as by its own close button, floating windows hide without a layout
-    /// change, the preview unsubscribes and the meters stop.
-    fn hide_all(&self, app: &mut App) {
-        if let Some(w) = app.settings.take() {
-            let _ = w.hide();
-            app.studio.settings_closed();
-        }
-        app.main.global::<Shell>().set_background_notice(0);
-        for f in &app.floats {
-            let _ = f.window.hide();
-        }
-        let _ = app.main.hide();
-        #[cfg(any(target_os = "macos", windows))]
-        {
-            preview::close();
-            app.studio.preview_ready = false;
-            app.studio.scene_preview_ready = false;
-            app.studio.vertical_preview_ready = false;
-        }
-        // The vertical canvas stops making its picture while nothing can show it (P13);
-        // the next sync after showing asks for it again and a new endpoint follows.
-        if app.vertical_picture_sent {
-            app.studio
-                .send(studio_host::Command::SetVerticalPicture(false));
-            app.vertical_picture_sent = false;
-        }
-        app.vertical_preview_endpoint = None;
-        self.meter_timer.stop();
-        app.meters_ui.hidden(&app.studio);
-        app.hidden = true;
-        #[cfg(target_os = "macos")]
-        rbs_app::native::set_hidden(true);
-    }
-
     /// Shows the windows hidden by [`Self::hide_all`] again and connects the preview.
     fn show_all(&self, app: &mut App) {
         // A window never comes back while quitting (ADR-0156 decision 3).

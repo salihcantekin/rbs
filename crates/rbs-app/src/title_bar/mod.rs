@@ -68,6 +68,28 @@ thread_local! {
     /// Called when full screen changes, so the menus' checkmark follows a change the
     /// system made later (macOS) or alone (Esc, the green button).
     static ON_CHANGE: RefCell<Option<Box<dyn Fn()>>> = const { RefCell::new(None) };
+    /// What runs once full screen has ended, from [`leave_full_screen_then`].
+    static AFTER_EXIT: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) };
+}
+
+/// Ends full screen and runs `then` once it has ended, or after two seconds if the
+/// system never says so. A second call while one waits only replaces `then`. Used on
+/// macOS, where a window hidden in full screen leaves its Space behind.
+#[cfg(target_os = "macos")]
+pub fn leave_full_screen_then(main: &MainWindow, then: impl FnOnce() + 'static) {
+    let waiting = AFTER_EXIT.with(|a| a.borrow_mut().replace(Box::new(then)).is_some());
+    if waiting {
+        return;
+    }
+    current().toggle_full_screen(main);
+    entry::single_shot(std::time::Duration::from_secs(2), run_after_exit);
+}
+
+/// Runs what waits for the end of full screen, once.
+fn run_after_exit() {
+    if let Some(then) = AFTER_EXIT.with(|a| a.borrow_mut().take()) {
+        then();
+    }
 }
 
 /// Whether the main window is full screen (the Window menu's checkmark).
@@ -79,6 +101,10 @@ pub fn is_full_screen() -> bool {
 /// buttons follow it.
 fn note_full_screen(main: &MainWindow, on: bool) {
     main.global::<Shell>().set_window_full_screen(on);
+    if !on && AFTER_EXIT.with(|a| a.borrow().is_some()) {
+        // On the next turn: the caller may hold the window's state.
+        entry::single_shot(std::time::Duration::ZERO, run_after_exit);
+    }
     if FULL_SCREEN.with(|f| f.replace(on)) != on {
         ON_CHANGE.with(|c| {
             if let Some(changed) = c.borrow().as_ref() {

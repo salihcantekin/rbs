@@ -7,7 +7,7 @@
 "crates/rbs-api/src/request.rs" = 2554
 "crates/rbs-api/src/types.rs" = 2874
 "crates/rbs-api/tests/json.rs" = 3122
-"crates/rbs-app/src/main.rs" = 6418
+"crates/rbs-app/src/main.rs" = 6383
 "crates/rbs-app/src/menu_bar.rs" = 2292
 "crates/rbs-app/src/studio_ui.rs" = 9880
 "crates/rbs-record/src/studio.rs" = 5583

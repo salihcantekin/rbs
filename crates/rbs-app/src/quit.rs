@@ -82,6 +82,61 @@ fn live_state(s: &studio_ui::StudioUi) -> LiveState {
 }
 
 impl Ctx {
+    /// Hides every RBS window and keeps running (ADR-0056 decisions 3 and 5). On macOS
+    /// a window hidden in its full-screen Space leaves that Space empty and the app
+    /// looks gone, so full screen ends first and the hide follows (ADR-0180).
+    pub(crate) fn hide_all(&self, app: &mut App) {
+        #[cfg(target_os = "macos")]
+        if crate::title_bar::is_full_screen() {
+            let ctx = self.clone();
+            crate::title_bar::leave_full_screen_then(&app.main, move || {
+                let c = ctx.clone();
+                ctx.update(move |app| {
+                    if !app.hidden {
+                        c.hide_now(app);
+                    }
+                });
+            });
+            return;
+        }
+        self.hide_now(app);
+    }
+
+    /// [`Self::hide_all`] now: Settings closes as by its own close button, floating
+    /// windows hide without a layout change, the preview unsubscribes and the meters
+    /// stop.
+    fn hide_now(&self, app: &mut App) {
+        if let Some(w) = app.settings.take() {
+            let _ = w.hide();
+            app.studio.settings_closed();
+        }
+        app.main.global::<Shell>().set_background_notice(0);
+        for f in &app.floats {
+            let _ = f.window.hide();
+        }
+        let _ = app.main.hide();
+        #[cfg(any(target_os = "macos", windows))]
+        {
+            preview::close();
+            app.studio.preview_ready = false;
+            app.studio.scene_preview_ready = false;
+            app.studio.vertical_preview_ready = false;
+        }
+        // The vertical canvas stops making its picture while nothing can show it (P13);
+        // the next sync after showing asks for it again and a new endpoint follows.
+        if app.vertical_picture_sent {
+            app.studio
+                .send(rbs_app::studio_host::Command::SetVerticalPicture(false));
+            app.vertical_picture_sent = false;
+        }
+        app.vertical_preview_endpoint = None;
+        self.meter_timer.stop();
+        app.meters_ui.hidden(&app.studio);
+        app.hidden = true;
+        #[cfg(target_os = "macos")]
+        rbs_app::native::set_hidden(true);
+    }
+
     /// A Close or a Quit (ADR-0056 decision 3, ADR-0156 decision 1). Returns what the
     /// close handler answers the toolkit.
     pub(crate) fn request(&self, request: Request) -> slint::CloseRequestResponse {
