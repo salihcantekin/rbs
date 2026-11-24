@@ -20,21 +20,25 @@ use crate::types::{ItemScroll, ItemStyle};
 
 mod add_source;
 mod added;
+mod arrange;
 mod browser;
 mod groups;
 mod item_edits;
 mod media;
 mod methods;
+mod scene_refs;
 mod settings_patch;
 mod transform;
 mod wire;
 pub use add_source::AddSource;
 pub use added::*;
+pub use arrange::*;
 pub use browser::*;
 pub use groups::*;
 pub use item_edits::*;
 pub use media::{MediaPlayState, MediaSeek, MediaSource, MediaStateInfo};
 pub use methods::METHODS;
+pub use scene_refs::*;
 pub use settings_patch::SettingsPatch;
 pub use transform::*;
 use wire::WireRequest;
@@ -686,24 +690,6 @@ pub struct PasteAttributes {
     /// The canvas whose layouts are written.
     #[serde(default)]
     pub canvas: OutputCanvas,
-}
-
-/// `scene.remove` and `scene.switch` (protocol 1.6).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SceneRef {
-    /// The scene's id (`scene.list`).
-    pub scene: u32,
-}
-
-/// `scene.rename` (protocol 1.6).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RenameScene {
-    /// The scene's id.
-    pub scene: u32,
-    /// The new name, unique among scenes.
-    pub name: String,
 }
 
 /// `scene.set_transition` (protocol 1.86, ADR-0135 decision 10): sets or clears the
@@ -1673,6 +1659,10 @@ pub enum Command {
     ItemResetTransform(ResetItemTransform),
     /// `item.set_rotation` (protocol 1.100, ADR-0166).
     ItemSetRotation(SetItemRotation),
+    /// `item.align_items` (protocol 1.106).
+    ItemAlignItems(AlignItems),
+    /// `item.distribute` (protocol 1.106).
+    ItemDistribute(DistributeItems),
     /// `item.fit_text_box` (protocol 1.100).
     ItemFitTextBox(FitTextBox),
     /// `item.set_filled` (protocol 1.100).

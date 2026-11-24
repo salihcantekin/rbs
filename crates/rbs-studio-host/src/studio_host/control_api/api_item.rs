@@ -139,6 +139,8 @@ impl ApiTarget<'_> {
             C::ItemResetTransform(p) => {
                 host.api_transform(p.item, TransformOp::Reset, p.gesture, p.canvas, notify)
             }
+            C::ItemAlignItems(p) => host.api_align_items(p, notify),
+            C::ItemDistribute(p) => host.api_distribute(p, notify),
             C::ItemSetRotation(p) => {
                 if !p.degrees.is_finite() || p.degrees.abs() > 360.0 {
                     return Err(ApiError::new(

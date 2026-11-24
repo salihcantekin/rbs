@@ -131,3 +131,98 @@ fn a_gesture_makes_a_groups_eye_lock_and_removal_one_undo_step() {
     assert_eq!(rows(&mut c, scene).len(), 2, "one undo brings both back");
     drop(host);
 }
+
+#[test]
+fn items_are_aligned_and_distributed_as_one_undo_step() {
+    let Some((host, _updates, _api, mut c)) = start() else {
+        return;
+    };
+    let ids: Vec<u64> = ["A", "B", "C"]
+        .iter()
+        .map(|n| add(&mut c, "screen", n))
+        .collect();
+    let scene = scenes(&mut c)["program"].as_u64().unwrap();
+    let items: Vec<u64> = ids
+        .iter()
+        .map(|s| {
+            rows(&mut c, scene)
+                .iter()
+                .find(|r| r["id"] == *s)
+                .and_then(|r| r["item"].as_u64())
+                .unwrap()
+        })
+        .collect();
+    let place = |c: &mut Client, item: u64, x: f64, y: f64| {
+        let source = ids[items.iter().position(|i| *i == item).unwrap()];
+        ok(&c.call(
+            "item.set_box",
+            json!({"source": source, "position": [x, y], "size": [100.0, 100.0]}),
+        ));
+    };
+    place(&mut c, items[0], 0.0, 10.0);
+    place(&mut c, items[1], 150.0, 300.0);
+    place(&mut c, items[2], 700.0, 50.0);
+    let x_of = |c: &mut Client, i: usize| {
+        rows(c, scene)
+            .iter()
+            .find(|r| r["item"] == items[i])
+            .unwrap()["layout"]["position"][0]
+            .as_f64()
+            .unwrap()
+    };
+    let y_of = |c: &mut Client, i: usize| {
+        rows(c, scene)
+            .iter()
+            .find(|r| r["item"] == items[i])
+            .unwrap()["layout"]["position"][1]
+            .as_f64()
+            .unwrap()
+    };
+    // Distribute: the outer two stay, the middle one has equal gaps (gap (800 - 300) / 2 = 250).
+    ok(&c.call(
+        "item.distribute",
+        json!({"items": items, "axis": "horizontal"}),
+    ));
+    assert_eq!(
+        (x_of(&mut c, 0), x_of(&mut c, 1), x_of(&mut c, 2)),
+        (0.0, 350.0, 700.0)
+    );
+    ok(&c.call("edit.undo", json!({})));
+    assert_eq!(x_of(&mut c, 1), 150.0);
+    // Align top: all three on the smallest top, one undo step.
+    ok(&c.call("item.align_items", json!({"items": items, "edge": "top"})));
+    assert_eq!(
+        (y_of(&mut c, 0), y_of(&mut c, 1), y_of(&mut c, 2)),
+        (10.0, 10.0, 10.0)
+    );
+    ok(&c.call("edit.undo", json!({})));
+    assert_eq!(
+        (y_of(&mut c, 0), y_of(&mut c, 1), y_of(&mut c, 2)),
+        (10.0, 300.0, 50.0)
+    );
+    // Refusals.
+    assert_eq!(
+        kind(&c.call(
+            "item.align_items",
+            json!({"items": [items[0]], "edge": "left"})
+        )),
+        "invalid_params"
+    );
+    assert_eq!(
+        kind(&c.call(
+            "item.distribute",
+            json!({"items": [items[0], items[1]], "axis": "vertical"})
+        )),
+        "invalid_params"
+    );
+    ok(&c.call(
+        "item.align_items",
+        json!({"items": [items[0]], "edge": "right", "to": "canvas"}),
+    ));
+    ok(&c.call("item.set_locked", json!({"item": items[1], "locked": true})));
+    assert_eq!(
+        kind(&c.call("item.align_items", json!({"items": items, "edge": "left"}))),
+        "conflict"
+    );
+    drop(host);
+}

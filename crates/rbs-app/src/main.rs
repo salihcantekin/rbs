@@ -880,7 +880,7 @@ impl App {
             Run::SetSourceActive(id, active) => self.studio.set_source_active(id, active),
             Run::SourceVisible(id, on) => self.studio.set_source_visible(id, on),
             Run::SourceLocked(id, on) => self.studio.set_source_locked(id, on),
-            Run::Group(on) => self.studio.group_command(on),
+            Run::Arrange(op) => self.studio.arrange_command(op),
             Run::Transform(id, op, canvas) => self.studio.transform_source(id, op, canvas),
             Run::SourceMuted(id, on) => self.studio.set_source_muted(id, on),
             Run::SourceMixerHidden(id, on) => self.studio.set_source_mixer_hidden(id, on),
