@@ -73,6 +73,9 @@ struct Fake {
     pending: std::collections::VecDeque<(Timestamp, u32)>,
 }
 
+/// The next NV12 picture the feed makes: width, height and the three sample values.
+type Nv12Slot = Arc<Mutex<Option<(u32, u32, [u8; 3])>>>;
+
 const MATTE: [u32; 2] = [8, 4];
 /// Polls (ticks) a matte takes after its picture was lent: the real ones take two or three.
 const MATTE_LATENCY: u32 = 2;
@@ -129,7 +132,7 @@ struct Feed {
     desc: NodeDescriptor,
     next: Arc<Mutex<Option<Picture>>>,
     /// A 4:2:0 camera picture: width, height and the Y, Cb and Cr bytes of every texel.
-    next_nv12: Arc<Mutex<Option<(u32, u32, [u8; 3])>>>,
+    next_nv12: Nv12Slot,
     upload: SourceUpload,
     nv12: Option<VideoFrame>,
     current: Option<(TextureId, u32, u32, Timestamp)>,
@@ -243,7 +246,7 @@ pub struct Rig {
     pub ctx: Arc<GpuContext>,
     pub tick: u64,
     next: Arc<Mutex<Option<Picture>>>,
-    next_nv12: Arc<Mutex<Option<(u32, u32, [u8; 3])>>>,
+    next_nv12: Nv12Slot,
     pub last: Arc<Mutex<Option<VideoFrame>>>,
     pub node: NodeId,
     pub values: ParamSender<Values>,
