@@ -1,6 +1,6 @@
 # Spec: Person mask port
 
-- Status: Draft (written before any code, ADR-0179 decision 2; nothing is implemented). One independent review round on 2026-11-24 asked for changes; all eight are applied below, not yet re-reviewed.
+- Status: Draft (written before any code, ADR-0179 decision 2; nothing is implemented). Two independent review rounds on 2026-11-24 asked for changes (8, then 6); all are applied, the second set not yet re-reviewed.
 - Owner crate(s): `rbs-segment` (port), adapters `rbs-segment-*`, filter nodes in `rbs-filters-segment`
 - Related ADRs: [0179](../adr/0179-camera-background-removal.md), [0053](../adr/0053-item-style-and-video-filter-chains.md), [0013](../adr/0013-zero-cost-when-unused.md), [0162](../adr/0162-extension-ready-registries-and-plugin-order.md), [0005](../adr/0005-gpu-compositing-with-wgpu.md)
 - Related specs: [video-filters.md](video-filters.md), [backend-ports.md](backend-ports.md), [media-types.md](media-types.md), [params-schema in plugin-sdk.md](plugin-sdk.md)
@@ -69,7 +69,10 @@ pub trait PersonMaskSession: Send {
     /// ever use at `input_size` and the matte size.
     fn warm(&mut self) -> Result<(), SegmentError>;
     /// Non-blocking, render thread. Hands over a frame (a `VideoFrame::share()`);
-    /// the session may drop it when it is busy (the newest frame wins).
+    /// the session may drop it when it is busy (the newest frame wins). A frame
+    /// whose `share()` returns `None` (a capture or decoder surface no exporter
+    /// marked shareable) is not retained: the session gets `SubmitOutcome::NotShareable`
+    /// and the filter treats it as a dropped frame (the previous matte stays in use).
     fn submit(&mut self, frame: &VideoFrame) -> SubmitOutcome;
     /// Non-blocking, render thread. The newest finished matte, `Ok(None)` while
     /// there is none yet, or the reason the session can no longer produce one.
@@ -81,7 +84,7 @@ pub trait PersonMaskSession: Send {
 }
 
 #[non_exhaustive]
-pub enum SubmitOutcome { Accepted, DroppedBusy }
+pub enum SubmitOutcome { Accepted, DroppedBusy, NotShareable }
 
 /// One channel, values 0..1 (8 bit, or 16 bit float on the GPU), `size` fixed per
 /// session and level, declared at `open` (`Matte::size`), aspect of the input.
@@ -100,11 +103,11 @@ pub enum SegmentError {
 Rules:
 
 1. **One matte format.** Every backend gives one channel and a matte size that is fixed per session and level and known at `open`; the filter scales it to the frame, so changing method or quality does not change the filter's look beyond edge quality (ADR-0179 decision 12).
-2. **Threads.** `probe`, `open`, `warm` and `close` run on the control thread (model load, ADR-0179 decision 10). `submit`, `latest` and `reset` run on the render thread and do no I/O, no allocation after `warm`, and take no contended lock (P6). Inference runs on the session's own worker. A backend that cannot meet this is not a backend.
-3. **Frame pairing.** The filter picks the newest matte for a frame by timestamp. A matte older than 4 frame periods of the source is stale: the filter keeps using it but reports "mask late" through its stats, and after 1 second without a new matte it publishes nothing (the same rule as before the first matte). Until the first matte the filter publishes no frame (ADR-0053 decision 6; the compositor skips the layer, P7).
-4. **Temporal backends.** `temporal: true` backends still drop frames when busy; they must tolerate gaps (the state carries over) and the filter calls `reset()` on a scene cut, a source restart or a timestamp gap above 1 second.
-5. **Size changes.** A session is opened for one input size. When the source's size changes (a camera switching format), the filter asks the control thread to `close` and `open` again at the new size, publishing nothing in between; this follows ADR-0062 decision 5 for the filter itself (the filter's textures re-acquire once in `process`), while the session's models and buffers are re-created on the control thread, never in `process`. A backend that accepts any size says so by never returning `SizeChanged`.
-6. **Leases.** A session holds at most two frame leases, one in flight and one pending. A dropped frame's lease is released at once, in `submit`. A GPU matte is owned by the session, lives until the next `latest` call returns a newer matte or the session closes, and carries the completion fence the consumer must wait on in GPU queue order, never on the CPU in `process`.
+2. **Threads and ownership.** `probe`, `open`, `warm` and `close` run on the control thread (model load, ADR-0179 decision 10). The control thread hands the opened session to the filter node through the node's parameter channel (ADR-0023, latest value wins) and takes it back the same way before `close`; the render thread never drops a session, because dropping would run `close` on it. A node that is being torn down returns its session through the channel first. `submit`, `latest` and `reset` run on the render thread and do no I/O, no allocation after `warm`, and take no contended lock (P6). Inference runs on the session's own worker. A backend that cannot meet this is not a backend.
+3. **Frame pairing.** The filter picks the newest matte for a frame by timestamp, and all limits are measured on frame timestamps (the master clock), never wall time. `latest` returns each matte once; with nothing newer it returns `Ok(None)` and the filter keeps using the last matte it received. A matte older than 4 frame periods of the source is stale: the filter keeps using it but reports "mask late" through its stats, and after 1 second of frame time without a new matte it publishes nothing (the same rule as before the first matte). Until the first matte the filter publishes no frame (ADR-0053 decision 6; the compositor skips the layer, P7).
+4. **Temporal backends.** `temporal: true` backends still drop frames when busy; they must tolerate gaps (the state carries over) and the filter calls `reset()` on a scene cut, a source restart or a frame-timestamp gap above 1 second.
+5. **Size changes.** A session is opened for one `input_size`. When the source's size changes (a camera switching format), the filter keeps the session and the layer visible: it scales the frame on the GPU to the session's `input_size` (a letterbox-free resample of the whole frame, the matte aspect follows the original) and the matte is scaled back by the filter, as ADR-0062 decision 5 requires for the filter's own textures. A new session is opened (control thread, never in `process`) only when the source's aspect ratio changes by more than 2 percent, and the old matte stays in use until the new session produces one, so the layer is never blank because of a size change. A backend that cannot take the scaled input returns `SizeChanged` from `open`.
+6. **Leases.** A session holds at most two frame leases, one in flight and one pending. A dropped frame's lease is released at once, in `submit`. A GPU matte comes from a texture ring owned by the session (at least three textures). Each matte carries a completion fence the consumer waits on in GPU queue order, never on the CPU in `process`. The consumer gives a release fence back when its GPU work on the texture is submitted (`GpuMatte::release`); the session reuses a texture only after that fence has signalled, and never the one the consumer still holds. A CPU matte is an `Arc` the consumer may keep for as long as it likes.
 7. **Memory kinds are capabilities (P3, P4).** A backend that needs system-memory input declares it in `BackendInfo::input`; the filter then downscales on the GPU first and reads that small image back asynchronously. This is the named exception of ADR-0179 decision 3 and needs its own hot-path review. A backend that takes a GPU surface gets the frame with the usual lease rules.
 8. **Lifecycle (P13).** `probe` allocates nothing and starts no thread. `open` happens only when the filter is enabled on a running source; `close` when it is disabled or the source stops. An installed backend with no session has no thread, no GPU resource and no model in memory.
 9. **Errors are typed (rule 8).** A session that fails after `open` reports it through `latest`; the filter then publishes nothing and the UI shows the reason; it never shows the unfiltered picture. `DeviceLost` asks the control thread to re-open with back-off (ADR-0024).
@@ -123,7 +126,7 @@ Costs are hints for the UI, never used for decisions in engine code.
 
 ## Conformance suite (to be written with the port)
 
-Each backend passes the same tests with a fixed small test clip, with no sleeping (ADR-0032): the suite uses a test hook that lets a test wait for the worker to finish the submitted frame (a condition, with a hang guard only); a matte arrives for a submitted frame; `latest` never blocks (checked with an injected clock); closing releases all threads and device handles; a missing model gives `ModelMissing`; a frame submitted faster than the backend runs is dropped and its lease is released at once (counted); a temporal backend's `reset()` makes the next matte independent of earlier frames; a lost device is reported through `latest` as `DeviceLost`; a changed input size gives `SizeChanged` or is accepted, as declared; the matte format rules hold. Golden mattes for hand-checked frames use a mean absolute error band, never exact values.
+Each backend passes the same tests with a fixed small test clip, with no sleeping (ADR-0032): the suite uses a test hook that lets a test wait for the worker to finish the submitted frame (a condition, with a hang guard only); a matte arrives for a submitted frame; `latest` never blocks (the test holds the worker inside the model with a test gate, asks `latest` and expects an immediate `Ok(None)`, then releases the gate; a hang guard bounds real time); closing releases all threads and device handles; a missing model gives `ModelMissing`; a frame submitted faster than the backend runs is dropped and its lease is released at once (counted); a temporal backend's `reset()` makes the next matte independent of earlier frames; a lost device (a fault hook, `SessionRequest::test_fault`, compiled only for tests, makes the backend report `DeviceLost`) is reported through `latest`; a changed input size keeps the session and the layer visible, and an aspect change opens a new session while the old matte stays in use; a frame with `share() == None` is dropped without a retained lease; the texture ring reuses a texture only after the release fence; OS-only backends (Apple Vision) run only where `probe` says `available` and are skipped, not failed, elsewhere; the matte format rules hold. Golden mattes for hand-checked frames use a mean absolute error band, never exact values.
 
 ## Open questions
 
