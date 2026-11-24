@@ -53,6 +53,7 @@ const FAILED: u8 = 3;
 
 const DOWNSCALE: &str = include_str!("shaders/downscale.wgsl");
 use crate::COMPOSITE;
+use crate::ring::{COPY, CopyPass, Ring, picture_to_draw};
 /// The small picture's format: `Bgra8Unorm` is BGRA in memory, which is what a backend
 /// takes as `PixelFormat::Bgra8`.
 const SMALL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
@@ -146,6 +147,7 @@ struct Meta {
 /// GPU objects made in `prepare`.
 struct Prepared {
     down: wgpu::RenderPipeline,
+    copy: CopyPass,
     comp: wgpu::RenderPipeline,
     down_buffer: wgpu::Buffer,
     down_group: wgpu::BindGroup,
@@ -202,7 +204,7 @@ pub struct BackgroundRemovalNode {
     pixels: Option<BytesMut>,
     rgb: YuvToRgb,
     /// The last input pictures, to draw a picture with the matte made from it (Exact).
-    recent: Recent,
+    ring: Ring,
     /// The picture drawn last in Exact mode, kept alive while the ring moves on.
     held: Option<VideoFrame>,
 }
@@ -239,7 +241,7 @@ impl BackgroundRemovalNode {
             meta: [Meta::default(); RING],
             pixels: None,
             rgb: YuvToRgb::new(),
-            recent: Recent::default(),
+            ring: Ring::default(),
             held: None,
         };
         (node, sender, stats)
@@ -329,7 +331,7 @@ fn uniform_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
 
 /// 16 `vec4<f32>`, as every filter pass.
 const UNIFORM_BYTES: u64 = 256;
-type UniformBlock = [[f32; 4]; 16];
+pub(crate) type UniformBlock = [[f32; 4]; 16];
 
 fn uniform(
     device: &wgpu::Device,
@@ -363,7 +365,7 @@ fn give_back(pool: &mut TexturePool, size: [u32; 2], last_output: Option<Texture
 }
 
 /// A linear-light, premultiplied pass: input at group 1, matte at group 2 when given.
-fn draw(
+pub(crate) fn draw(
     encoder: &mut wgpu::CommandEncoder,
     pipeline: &wgpu::RenderPipeline,
     target: &wgpu::TextureView,
@@ -419,6 +421,12 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
         let down = pipeline(gpu, &down_layout, DOWNSCALE, SMALL_FORMAT)?;
         let comp = pipeline(gpu, &comp_layout, COMPOSITE, rbs_gpu::CANVAS_FORMAT)?;
         let (down_buffer, down_group) = uniform(device, &uniforms);
+        let (copy_buffer, copy_group) = uniform(device, &uniforms);
+        let copy = CopyPass {
+            pipeline: pipeline(gpu, &down_layout, COPY, rbs_gpu::CANVAS_FORMAT)?,
+            buffer: copy_buffer,
+            group: copy_group,
+        };
         let (comp_buffer, comp_group) = uniform(device, &uniforms);
         let stride = (self.small[0] * 4).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
             * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
@@ -435,6 +443,7 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
             .collect();
         self.gpu = Some(Prepared {
             down,
+            copy,
             comp,
             down_buffer,
             down_group,
@@ -495,7 +504,7 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
         self.drawn = None;
         self.submitted = None;
         self.pixels = None;
-        self.recent.clear();
+        self.ring.clear(pool);
         self.held = None;
         self.rgb.release();
         if let Some(session) = self.session.take() {
@@ -511,17 +520,14 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
         let (inputs, outputs, local) = ctx.parts();
 
         // What the input offers; a 4:2:0 input is decoded to RGB first, once per picture.
-        let source = inputs.video(IN_PIN, 0);
-        let mut frame = source;
+        let mut frame = inputs.video(IN_PIN, 0);
         if let Some(f) = frame
             && YuvToRgb::needs_decode(&local.pool, f)
         {
             frame = self.rgb.rgb(gpu, &mut local.pool, f).ok();
         }
-        // Exact keeps the source's own pictures (a 4:2:0 camera picture is decoded to RGB
-        // again when its matte arrives; the shared decode texture holds one picture).
+        // Exact copies each picture into node-owned textures (the source lends only a few).
         let exact = values.choice(SYNC) == 0;
-        keep_for_exact(&mut self.recent, &mut self.held, exact, source);
         let input = frame.and_then(|frame| describe(&local.pool, frame));
         let Some((input_id, size, decode, time)) = input else {
             self.drawn = None;
@@ -549,8 +555,14 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
             self.submitted = None;
             self.drawn = None;
             self.held = None;
-            self.recent.clear();
+            self.ring.clear(&mut local.pool);
         }
+        self.ring.sync(
+            exact,
+            &mut self.held,
+            (gpu, &mut local.pool, &prepared.copy),
+            (input_id, size, decode, time),
+        );
 
         // 1. A finished readback becomes a small frame for the session.
         deliver(
@@ -642,8 +654,8 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
         // The picture drawn with the matte: the newest one, or the one it was made from.
         let (input_id, size, decode, time) = picture_to_draw(
             &mut self.held,
-            &self.recent,
-            (gpu, &mut local.pool, &mut self.rgb),
+            &self.ring,
+            &mut local.pool,
             exact,
             matte_time,
             (input_id, size, decode, time),
@@ -700,7 +712,6 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
         self.written = None;
         self.drawn = None;
         self.submitted = None;
-        self.recent.clear();
         self.held = None;
         if let Some(session) = self.session.take() {
             session.close();
@@ -986,47 +997,11 @@ fn aspect_changed(old: [u32; 2], new: [u32; 2]) -> bool {
     (a - b).abs() > 0.02 * a.max(b)
 }
 
-/// How many input pictures Exact mode keeps: the mask comes about three pictures late
-/// at 30 fps. Each is a lease on the source's texture, not a copy.
-const RECENT: usize = 4;
-
-/// The last input pictures, newest last.
-#[derive(Default)]
-struct Recent {
-    frames: [Option<VideoFrame>; RECENT],
-    next: usize,
-}
-
-impl Recent {
-    /// Keeps a reference to `frame` unless it is the one kept last.
-    fn push(&mut self, frame: &VideoFrame) {
-        let last = (self.next + RECENT - 1) % RECENT;
-        if self.frames[last]
-            .as_ref()
-            .is_some_and(|f| f.timestamp() == frame.timestamp())
-        {
-            return;
-        }
-        self.frames[self.next] = frame.share();
-        self.next = (self.next + 1) % RECENT;
-    }
-
-    /// The kept picture made at `time`.
-    fn find(&self, time: Timestamp) -> Option<&VideoFrame> {
-        self.frames.iter().flatten().find(|f| f.timestamp() == time)
-    }
-
-    fn clear(&mut self) {
-        self.frames = Default::default();
-        self.next = 0;
-    }
-}
-
 /// What one input picture is to the passes: texture, size, transfer and time; `None`
 /// when it is not a sampleable texture.
-type Picture = (TextureId, [u32; 2], Transfer, Timestamp);
+pub(crate) type Picture = (TextureId, [u32; 2], Transfer, Timestamp);
 
-fn describe(pool: &TexturePool, frame: &VideoFrame) -> Option<Picture> {
+pub(crate) fn describe(pool: &TexturePool, frame: &VideoFrame) -> Option<Picture> {
     let FramePayload::Texture(id) = *frame.payload() else {
         return None;
     };
@@ -1039,66 +1014,6 @@ fn describe(pool: &TexturePool, frame: &VideoFrame) -> Option<Picture> {
         Transfer::of(frame.format(), d.format),
         frame.timestamp(),
     ))
-}
-
-/// Exact keeps the source's own pictures; Fast keeps none, so no camera picture stays
-/// leased (a held lease starves the camera's pool and freezes the picture).
-fn keep_for_exact(
-    recent: &mut Recent,
-    held: &mut Option<VideoFrame>,
-    exact: bool,
-    source: Option<&VideoFrame>,
-) {
-    if let (true, Some(f)) = (exact, source) {
-        recent.push(f);
-    } else {
-        recent.clear();
-        *held = None;
-    }
-}
-
-/// How far behind the newest picture a held one may be before Exact gives up on it.
-const STALE: std::time::Duration = std::time::Duration::from_millis(500);
-
-/// The picture to draw this tick. Fast: the current one. Exact: the one a new matte
-/// was made from (kept in `recent`), and until the next matte the same one again; a 4:2:0
-/// picture is decoded to RGB here.
-fn picture_to_draw(
-    held: &mut Option<VideoFrame>,
-    recent: &Recent,
-    (gpu, pool, rgb): (&GpuContext, &mut TexturePool, &mut YuvToRgb),
-    exact: bool,
-    matte_time: Option<Timestamp>,
-    current: Picture,
-) -> Picture {
-    if !exact {
-        *held = None;
-        return current;
-    }
-    if let Some(time) = matte_time
-        && let Some(frame) = recent.find(time).and_then(VideoFrame::share)
-    {
-        *held = Some(frame);
-    }
-    // Masks stopped coming (a stalled or busy session): show the newest picture again
-    // instead of one old picture for ever.
-    if held
-        .as_ref()
-        .is_some_and(|f| current.3.saturating_since(f.timestamp()) > STALE)
-    {
-        *held = None;
-    }
-    let Some(frame) = held.as_ref() else {
-        return current;
-    };
-    let picture = if YuvToRgb::needs_decode(pool, frame) {
-        rgb.rgb(gpu, pool, frame)
-            .ok()
-            .and_then(|decoded| describe(pool, decoded))
-    } else {
-        describe(pool, frame)
-    };
-    picture.unwrap_or(current)
 }
 
 /// What shows behind the person: the mode (0 transparent, 1 blur, 2 colour), the blur

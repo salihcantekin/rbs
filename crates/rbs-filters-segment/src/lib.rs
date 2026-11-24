@@ -6,6 +6,7 @@
 
 pub mod kind;
 pub mod node;
+mod ring;
 
 pub use kind::{BACKGROUND_REMOVAL, BackgroundRemoval, available, install_backends};
 pub use node::{BackgroundRemovalNode, RemovalStats, SessionFactory, descriptor};
