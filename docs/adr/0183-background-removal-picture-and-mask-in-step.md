@@ -1,6 +1,6 @@
 # ADR-0183: Background removal draws each picture with its own mask (Exact), the newest picture stays an option (Fast)
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-24
 - Deciders: Salih (owner)
 - Builds on: [ADR-0179](0179-camera-background-removal.md) decision 4 (the render thread uses the latest finished mask and never waits)
@@ -47,3 +47,14 @@ Found by the independent review (2026-11-24) and left for follow-up changes:
 - **Person-mask-port spec** rules 3 (stale limits) and 6 (leases) still describe the single-lease case.
 - **ADR-0179 decision 4** is amended in effect (Exact is the default); record it in ADR-0179 when this ADR is accepted.
 - **`rbs-params` additions** (`as_dropdown`, `shown_when`): note them in the control API spec (hidden fields stay listed and settable) and add `#[non_exhaustive]` care before a plugin SDK builds `Field` literals.
+- **Main-thread timer** (not this filter): about 10 percent of a core with the filter off, in a run-loop timer; a separate thread.
+- **Vision CPU:** Accurate about 35 ms and Balanced about 11 ms of CPU per frame; Balanced runs at the camera rate, so Medium costs more CPU than High. A frame-rate cap would conflict with Exact.
+- **macOS camera Video Effects** (Portrait, Studio Light) run inside the RBS process; show a hint when they are on.
+- **The High mask is 2016x1512** and is copied and uploaded every frame; larger than a 720p camera. Consider a smaller upload.
+- **Exact keeps four pictures** while the Mac camera lends three in flight; the stale limit protects it, but no test covers the stall.
+- **Help texts** over 90 characters (Picture and mask) move into the hint.
+- **Submit order:** the held picture is decoded again after the current picture's small draw was submitted; keep that order or give the held decode its own texture.
+
+## Review
+
+2026-11-24: independent review by a fresh AI session (verdict: accept with changes; the stale limit, the clearing of kept pictures on size change and when the input ends, `shown_when` validation and the Smoothing contradiction were applied, the rest is listed above). Measured on the Mac (M4 Pro, release) and approved by the owner on 2026-11-24 ("Onaylıyorum"). Status changed from Proposed to Accepted.
