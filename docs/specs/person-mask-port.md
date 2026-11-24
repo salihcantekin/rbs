@@ -115,7 +115,7 @@ Rules:
 
 ### Stray regions (2026-11-24)
 
-A network can take an object in the room (a hat on a shelf) for a second person. A backend may drop such regions with `rbs_segment::StrayFilter` on its own thread: it keeps the largest region of the matte and every region at least a tenth as large, and zeroes the rest. The ONNX backend does this; it needs no setting and no per-frame work outside the backend's thread.
+A network can take an object in the room (a hat on a shelf) for a second person. A backend may drop such regions with `rbs_segment::StrayFilter` on its own thread: it keeps the largest region of the matte and every region at least a tenth as large, zeroes the rest, and keeps any region that reaches the bottom row. The ONNX backend does this; it needs no setting and no per-frame work outside the backend's thread.
 
 ## Quality levels and declared cost
 

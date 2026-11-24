@@ -17,6 +17,8 @@ pub struct StrayFilter {
     labels: Vec<u32>,
     stack: Vec<u32>,
     areas: Vec<u32>,
+    /// Per label: the region reaches the bottom row (a body comes in from below).
+    grounded: Vec<bool>,
 }
 
 impl StrayFilter {
@@ -36,18 +38,24 @@ impl StrayFilter {
         self.labels.resize(plane.len(), 0);
         self.areas.clear();
         self.areas.push(0); // label 0: not in a region
+        self.grounded.clear();
+        self.grounded.push(false);
         for start in 0..plane.len() {
             if plane[start] < FLOOR || self.labels[start] != 0 {
                 continue;
             }
             let label = self.areas.len() as u32;
             self.areas.push(0);
+            self.grounded.push(false);
             self.labels[start] = label;
             self.stack.push(start as u32);
             while let Some(at) = self.stack.pop() {
                 let at = at as usize;
                 self.areas[label as usize] += 1;
                 let (x, y) = (at % w, at / w);
+                if y + 1 == h {
+                    self.grounded[label as usize] = true;
+                }
                 let mut visit = |next: usize| {
                     if plane[next] >= FLOOR && self.labels[next] == 0 {
                         self.labels[next] = label;
@@ -73,7 +81,8 @@ impl StrayFilter {
             return;
         }
         for (pixel, label) in plane.iter_mut().zip(&self.labels) {
-            if *label != 0 && self.areas[*label as usize] * SMALL < largest {
+            let l = *label as usize;
+            if *label != 0 && !self.grounded[l] && self.areas[l] * SMALL < largest {
                 *pixel = 0;
             }
         }
@@ -122,6 +131,16 @@ mod tests {
         block(&mut plane, w, 26, 8, 2, 6); // the hand, joined to the arm
         StrayFilter::new().apply(&mut plane, w as u32, h as u32);
         assert_eq!(plane[9 * w + 27], 255);
+    }
+
+    #[test]
+    fn a_small_region_touching_the_bottom_row_stays() {
+        let (w, h) = (40usize, 30usize);
+        let mut plane = vec![0u8; w * h];
+        block(&mut plane, w, 2, 2, 20, 20);
+        block(&mut plane, w, 30, 27, 3, 3); // a hand coming in from below
+        StrayFilter::new().apply(&mut plane, w as u32, h as u32);
+        assert_eq!(plane[28 * w + 31], 255);
     }
 
     #[test]
