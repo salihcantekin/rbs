@@ -66,3 +66,21 @@ Findings: ONNX Runtime's CoreML provider does not help RVM (pooling with `ceil_m
 - **Windows measurement (RTX 4090 and AMD iGPU)**, waiting for SC-PC (off on 2026-11-24): RVM through ONNX Runtime with DirectML and CUDA as a baseline, then one GPU-native prototype. Runs of 1 to 2 minutes, one device thread at a time.
 - Apple Vision on the Neural Engine: run `vision_probe balanced` from a normal Terminal (a sandboxed shell cannot build the inference plan).
 - Low-light and second-person clips (not recorded yet); MODNet and MediaPipe comparison on the same clips.
+
+## Mac round 2: MediaPipe and MODNet (2026-11-24, M4 Pro)
+
+Same four clips, first 120 frames, first 5 skipped, median of per-clip medians, inference only. Licences read from the official repositories: MODNet and MediaPipe Apache-2.0 (the ONNX files used are community conversions whose model cards say Apache-2.0: Xenova/modnet and onnx-community MediaPipe; the MediaPipe conversion was not compared with the official tflite). The clips contain no low-light or second-person scenes, which the owner waived.
+
+| Model / path | ms per frame | Notes |
+| --- | --- | --- |
+| MediaPipe selfie 256x144, CPU | 1.6 | cheapest; arms sometimes drop out |
+| MediaPipe selfie 256x256, CPU | 2.5 (1 thread 3.9, 2 threads 2.9) | also caught a blurred hand |
+| MediaPipe 256x256, CoreML | 7.6 | slower than CPU: graph split into 16 + 11 pieces |
+| MODNet 384x256, CPU / CoreML | 34.2 / 32.9 | CoreML takes 117 of 242 nodes |
+| MODNet 768x512, CPU | 134 | one frame leaked background (white area) |
+| RVM, CPU (default / 2 / 1 threads) | 14.2 / 25.6 / 44.0 | about 6 cores at default |
+| Apple Vision fast / balanced / accurate, GPU | 9.4 / 18.1 / 55.8 | CPU about 16% |
+
+Flicker: the wall patch test gave exactly 0 for every model (it does not separate them). Whole-frame mean absolute alpha change x1000 on the still-talking clip: RVM 0.23, MediaPipe 0.26, MODNet 0.30, Vision 0.36, all very low; moving clips mix real motion into the number and cannot be compared. Apple Vision on the Neural Engine is still unmeasured (a sandboxed shell cannot build the plan; run `vision_probe` from a normal Terminal). A Windows kit with DirectML probes is on the Mac in `/tmp/matte-spike/windows_kit` for the open Windows measurement.
+
+Suggested quality tiers from these numbers (to confirm after Windows): Fast = MediaPipe on one or two CPU threads (2 to 4 ms); Balanced = Vision balanced on Mac, MODNet 384 elsewhere; High = Vision accurate, or RVM (GPL-3.0 is compatible with RBS, edge quality best, but needs our own GPU path to be lean). Edge quality was judged by eye on contact sheets, not measured.
