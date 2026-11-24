@@ -48,12 +48,20 @@ fn reopen_in_pool(pid: u32, exe: &Path) -> bool {
     if running.is_none() || running != std::fs::canonicalize(exe).ok() {
         return false;
     }
+    // The reopen Apple event goes to this pid alone. Opening the bundle URL is not
+    // enough on its own: after `open -n` the launch is itself an instance of the
+    // bundle, and Launch Services may hand the reopen to it, so a hidden or minimized
+    // RBS stayed hidden (Mac check, 2026-11-24).
+    if send_reopen(pid) {
+        return true;
+    }
+    // Refused (Automation consent): unhide the app, which needs no consent, and let
+    // Launch Services reopen it.
+    // SAFETY: `unhide` of a live NSRunningApplication returns BOOL.
+    let _: Bool = unsafe { msg_send![app, unhide] };
     match url_path(bundle_url) {
-        // A bundle: Launch Services turns opening a running app into a reopen, with no
-        // Automation consent.
         Some(bundle) if bundle.extension().is_some_and(|e| e == "app") => open_url(bundle_url),
-        // A development binary: the reopen Apple event (macOS may ask once on its behalf).
-        _ => send_reopen(pid),
+        _ => false,
     }
 }
 
