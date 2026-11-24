@@ -30,6 +30,9 @@ pub(super) fn edit_error(e: &SceneError) -> String {
         }
         SceneError::UnknownGroup(_) => "This group is not there any more.".to_owned(),
         SceneError::GroupTooSmall(_) => "A group needs at least two sources.".to_owned(),
+        SceneError::GroupNotContiguous(_) => {
+            "A source of a group cannot be moved away from the group. Ungroup it first.".to_owned()
+        }
         SceneError::GroupScope => "Sources of two scenes cannot be in one group.".to_owned(),
         other => format!("The scene could not be changed ({other:?}). Try again."),
     }

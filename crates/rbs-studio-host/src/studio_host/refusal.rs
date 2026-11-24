@@ -53,6 +53,7 @@ impl Refusal {
             | SceneError::ChromeNotDisplay
             | SceneError::GroupTooSmall(_)
             | SceneError::GroupScope
+            | SceneError::GroupNotContiguous(_)
             | SceneError::IndexOutOfRange(_) => Self::Invalid(edit_error(e)),
             _ => Self::Failed(edit_error(e)),
         }
