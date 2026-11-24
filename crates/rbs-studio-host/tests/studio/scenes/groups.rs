@@ -2,7 +2,7 @@
 
 use super::*;
 
-fn rows(c: &mut Client, scene: u64) -> Vec<Value> {
+pub(super) fn rows(c: &mut Client, scene: u64) -> Vec<Value> {
     ok(&c.call("scene.sources", json!({"scene": scene})))["sources"]
         .as_array()
         .unwrap()

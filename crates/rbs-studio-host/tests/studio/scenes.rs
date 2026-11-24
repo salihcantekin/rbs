@@ -1161,6 +1161,7 @@ fn a_box_on_the_vertical_canvas_is_that_canvas_s_own_layout() {
     drop(host);
 }
 
+mod arrange;
 mod groups;
 mod item_edits;
 mod part_two;
