@@ -1,8 +1,8 @@
 //! The macOS backend: `VNGeneratePersonSegmentationRequest` on a worker thread.
 //!
-//! The worker owns every Vision object (they are not `Send`): it builds the request and
-//! a `VNSequenceRequestHandler` itself, so the request keeps its temporal state between
-//! frames. The render thread only touches a one-slot mailbox with `try_lock`, so it
+//! The worker owns every Vision object (they are not `Send`): it builds a new request
+//! for every frame, so a mask depends on its own frame alone (Vision's stateful request
+//! smooths over earlier frames and trails movement). The render thread only touches a one-slot mailbox with `try_lock`, so it
 //! never waits for the worker (principle P6).
 //!
 //! Zero cost when unused (P13): no thread exists before `warm`, and `close` joins it.
@@ -90,7 +90,7 @@ impl PersonMaskBackend for VisionBackend {
         ];
         info.input = MemoryKind::System;
         info.output = MemoryKind::System;
-        info.temporal = true;
+        info.temporal = false;
         info.hardware_assisted = true;
         info
     }
@@ -285,28 +285,39 @@ impl Drop for VisionSession {
 
 /// Everything the worker owns. Vision objects are created on the worker thread.
 struct Engine {
-    request: Retained<VNGeneratePersonSegmentationRequest>,
+    quality: VNGeneratePersonSegmentationRequestQualityLevel,
     handler: Retained<VNSequenceRequestHandler>,
 }
 
 impl Engine {
     fn new(quality: VNGeneratePersonSegmentationRequestQualityLevel) -> Self {
-        // SAFETY: plain Objective-C constructors and setters of Vision objects that this
+        // SAFETY: a plain Objective-C constructor of a Vision object that this thread
+        // alone owns.
+        let handler = unsafe { VNSequenceRequestHandler::new() };
+        Self { quality, handler }
+    }
+
+    /// A new request for every frame: Vision's request is stateful and smooths the mask
+    /// over the frames before it, so the mask of a moving hand trails the picture (Mac
+    /// test, 2026-11-24). A fresh request makes the mask depend on this frame alone,
+    /// which is what the filter's exact mode needs (ADR-0183); the filter smooths itself.
+    fn request(&self) -> Retained<VNGeneratePersonSegmentationRequest> {
+        // SAFETY: plain Objective-C constructor and setters of a Vision object that this
         // thread alone owns; the arguments are valid values of the declared types.
         unsafe {
             let request = VNGeneratePersonSegmentationRequest::new();
-            request.setQualityLevel(quality);
+            request.setQualityLevel(self.quality);
             request.setOutputPixelFormat(kCVPixelFormatType_OneComponent8);
-            let handler = VNSequenceRequestHandler::new();
-            Self { request, handler }
+            request
         }
     }
 
     /// Runs one frame and copies the mask out as one byte per pixel.
     fn run(&self, pending: &Pending) -> Result<Matte, SegmentError> {
         let buffer = make_pixel_buffer(pending).ok_or(SegmentError::DeviceLost)?;
+        let request = self.request();
         let requests = NSArray::from_retained_slice(&[Retained::into_super(Retained::into_super(
-            Retained::into_super(self.request.clone()),
+            Retained::into_super(request.clone()),
         ))]);
         let requests: Retained<NSArray<VNRequest>> = requests;
         // SAFETY: `buffer` is a valid pixel buffer for the call, `requests` holds the
@@ -320,7 +331,7 @@ impl Engine {
         }
         // SAFETY: `results` is read on the thread that performed the request, after it
         // finished.
-        let results = unsafe { self.request.results() }.ok_or(SegmentError::DeviceLost)?;
+        let results = unsafe { request.results() }.ok_or(SegmentError::DeviceLost)?;
         let observation = results.firstObject().ok_or(SegmentError::DeviceLost)?;
         // SAFETY: the observation is a valid object returned by Vision.
         let mask = unsafe { observation.pixelBuffer() };
