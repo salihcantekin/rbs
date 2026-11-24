@@ -178,3 +178,42 @@ fn exact_mode_works_on_a_4_2_0_camera_picture() {
         "tick {made_at}: the newest picture was drawn, not the one the matte came from"
     );
 }
+
+#[test]
+fn a_colour_background_fills_where_the_person_is_not() {
+    let Some(ctx) = gpu() else { return };
+    let mut rig = Rig::new(ctx, [8, 4]);
+    rig.set_values(&[
+        ("background", rbs_params::Value::Choice(2)),
+        (
+            "background_colour",
+            rbs_params::Value::Color([255, 0, 0, 255]),
+        ),
+    ]);
+    rig.set_input(Picture::solid(16, 8, [0.25, 0.5, 0.125, 1.0]));
+    assert!(rig.until_output());
+    let out = rig.output().unwrap();
+    let kept = out.at(2, 4);
+    assert!((kept[1] - 0.5).abs() < 0.02, "person kept: {kept:?}");
+    let room = out.at(13, 4);
+    assert!(
+        room[0] > 0.9 && room[1] < 0.02 && room[3] > 0.9,
+        "red behind: {room:?}"
+    );
+}
+
+#[test]
+fn a_blurred_background_is_the_room_not_the_person() {
+    let Some(ctx) = gpu() else { return };
+    let mut rig = Rig::new(ctx, [8, 4]);
+    rig.set_values(&[("background", rbs_params::Value::Choice(1))]);
+    rig.set_input(Picture::solid(16, 8, [0.25, 0.5, 0.125, 1.0]));
+    assert!(rig.until_output());
+    let out = rig.output().unwrap();
+    let room = out.at(13, 4);
+    // The room is the same flat colour, so the blur of it is that colour, and opaque.
+    assert!(
+        (room[1] - 0.5).abs() < 0.05 && room[3] > 0.9,
+        "blur: {room:?}"
+    );
+}

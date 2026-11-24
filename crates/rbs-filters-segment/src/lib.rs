@@ -32,8 +32,12 @@ pub const SMOOTHING: usize = 3;
 pub const QUALITY: usize = 4;
 /// Exact (0) draws each picture with the matte made from it; Fast (1) the newest picture.
 pub const SYNC: usize = 5;
+/// What is behind the person: transparent (0), a blurred room (1) or a colour (2).
+pub const BACKGROUND: usize = 6;
+/// The colour behind the person (background Colour).
+pub const BACKGROUND_COLOUR: usize = 7;
 
-const FIELDS: [Field; 6] = [
+const FIELDS: [Field; 8] = [
     Field::number("threshold", "Threshold", 0.05, 0.95, 0.5, 0.01, "")
         .with_help("Matte value that counts as the edge of the person."),
     Field::number("feather", "Edge softness", 0.0, 0.5, 0.15, 0.01, "")
@@ -56,6 +60,19 @@ const FIELDS: [Field; 6] = [
         "exact",
     )
     .with_help("Exact shows each picture together with the mask made from it, so nothing trails behind movement; the picture is delayed by the time the mask takes, about a tenth of a second. Fast shows the newest picture with the newest mask; quick movement can leave a trail."),
+    Field::choice(
+        "background",
+        "Background",
+        &[
+            ("transparent", "Transparent"),
+            ("blur", "Blur"),
+            ("colour", "Colour"),
+        ],
+        "transparent",
+    )
+    .with_help("What shows behind the person: nothing (the scene below), a blurred copy of the room, or one colour."),
+    Field::color("background_colour", "Background colour", [0, 160, 80, 255])
+        .with_help("The colour behind the person. Used when the background is Colour."),
 ];
 
 /// The settings schema, in display order.

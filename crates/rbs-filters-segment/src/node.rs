@@ -32,7 +32,9 @@ use rbs_graph::runtime::{Node, NodeError, PrepareCtx, ProcessCtx, WarmCtx};
 use rbs_params::Values;
 use rbs_segment::{Matte, MattePlane, PersonMaskSession, SegmentError, SubmitOutcome};
 
-use crate::{EDGE_SHIFT, FEATHER, SMOOTHING, SYNC, THRESHOLD, TYPE_ID, edges};
+use crate::{
+    BACKGROUND, BACKGROUND_COLOUR, EDGE_SHIFT, FEATHER, SMOOTHING, SYNC, THRESHOLD, TYPE_ID, edges,
+};
 
 /// Index of the "in" pin.
 pub const IN_PIN: usize = 0;
@@ -160,6 +162,7 @@ struct Written {
     edges: [f32; 2],
     size: [u32; 2],
     decode: Transfer,
+    look: Look,
 }
 
 /// What the last published picture was made of.
@@ -250,7 +253,9 @@ impl BackgroundRemovalNode {
             width: self.small[0],
             height: self.small[1],
             format: SMALL_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::TEXTURE_BINDING,
         }
     }
 }
@@ -362,14 +367,15 @@ fn give_back(pool: &mut TexturePool, size: [u32; 2], last_output: Option<Texture
     pool.forget(&TextureDesc::canvas(size[0], size[1]), count);
 }
 
-/// A linear-light, premultiplied pass: input at group 1, matte at group 2 when given.
+/// A linear-light, premultiplied pass: input at group 1, matte at group 2 and the small
+/// picture at group 3 when given.
 fn draw(
     encoder: &mut wgpu::CommandEncoder,
     pipeline: &wgpu::RenderPipeline,
     target: &wgpu::TextureView,
     uniforms: &wgpu::BindGroup,
     input: &wgpu::BindGroup,
-    matte: Option<&wgpu::BindGroup>,
+    matte: Option<(&wgpu::BindGroup, &wgpu::BindGroup)>,
 ) {
     let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("rbs-filters-segment pass"),
@@ -390,8 +396,9 @@ fn draw(
     rp.set_pipeline(pipeline);
     rp.set_bind_group(0, uniforms, &[]);
     rp.set_bind_group(1, input, &[]);
-    if let Some(matte) = matte {
+    if let Some((matte, small)) = matte {
         rp.set_bind_group(2, matte, &[]);
+        rp.set_bind_group(3, small, &[]);
     }
     rp.draw(0..3, 0..1);
 }
@@ -413,7 +420,7 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
         });
         let comp_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("rbs-filters-segment composite"),
-            bind_group_layouts: &[Some(&uniforms), Some(sampled), Some(sampled)],
+            bind_group_layouts: &[Some(&uniforms), Some(sampled), Some(sampled), Some(sampled)],
             immediate_size: 0,
         });
         let down = pipeline(gpu, &down_layout, DOWNSCALE, SMALL_FORMAT)?;
@@ -658,11 +665,12 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
             matte_time,
             (input_id, size, decode, time),
         );
-        let edge = edges_of(&values);
+        let (edge, look) = (edges_of(&values), look_of(&values));
         let state = Written {
             edges: edge,
             size,
             decode,
+            look,
         };
         let now = Drawn {
             input: input_id,
@@ -675,14 +683,14 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
             return Ok(());
         }
         if self.written != Some(state) {
-            write_composite(gpu, prepared, edge, size, decode);
+            write_composite(gpu, prepared, (edge, look), size, decode);
             self.written = Some(state);
         }
         let result = render_output(
             gpu,
             &mut local.pool,
             prepared,
-            (input_id, matte_id),
+            (input_id, matte_id, small_id),
             size,
             time,
         )?;
@@ -923,8 +931,7 @@ fn composite(
     gpu: &GpuContext,
     pool: &TexturePool,
     prepared: &Prepared,
-    input: TextureId,
-    matte: TextureId,
+    (input, matte, small): (TextureId, TextureId, TextureId),
     output: TextureId,
 ) -> Result<(), GpuError> {
     let src = pool
@@ -935,6 +942,10 @@ fn composite(
         .get(matte)
         .and_then(|t| t.sampled_bind_group())
         .ok_or(GpuError::StaleTexture(matte))?;
+    let room = pool
+        .get(small)
+        .and_then(|t| t.sampled_bind_group())
+        .ok_or(GpuError::StaleTexture(small))?;
     let target = pool.get(output).ok_or(GpuError::StaleTexture(output))?;
     let mut encoder = gpu
         .device()
@@ -947,7 +958,7 @@ fn composite(
         target.view(),
         &prepared.comp_group,
         src,
-        Some(mask),
+        Some((mask, room)),
     );
     gpu.queue().submit(Some(encoder.finish()));
     Ok(())
@@ -960,14 +971,14 @@ fn render_output(
     gpu: &GpuContext,
     pool: &mut TexturePool,
     prepared: &Prepared,
-    (input, matte): (TextureId, TextureId),
+    (input, matte, small): (TextureId, TextureId, TextureId),
     size: [u32; 2],
     time: Timestamp,
 ) -> Result<Result<(TextureId, VideoFrame), GpuError>, NodeError> {
     let output = pool
         .acquire(gpu, &TextureDesc::canvas(size[0], size[1]))
         .map_err(backend)?;
-    let result = composite(gpu, pool, prepared, input, matte, output).and_then(|()| {
+    let result = composite(gpu, pool, prepared, (input, matte, small), output).and_then(|()| {
         let format = VideoFormat::new(
             Size::new(size[0], size[1]),
             PixelFormat::Rgba16Float,
@@ -984,12 +995,14 @@ fn render_output(
 fn write_composite(
     gpu: &GpuContext,
     prepared: &Prepared,
-    edge: [f32; 2],
+    (edge, look): ([f32; 2], Look),
     size: [u32; 2],
     decode: Transfer,
 ) {
     let mut u: UniformBlock = [[0.0; 4]; 16];
     u[0] = [edge[0], edge[1], 0.0, 0.0];
+    u[1] = look.colour;
+    u[2] = [look.mode, look.blur[0], look.blur[1], 0.0];
     u[15] = [
         1.0 / size[0] as f32,
         1.0 / size[1] as f32,
@@ -1111,6 +1124,39 @@ fn picture_to_draw(
         describe(pool, frame)
     };
     picture.unwrap_or(current)
+}
+
+/// What shows behind the person: the mode (0 transparent, 1 blur, 2 colour), the blur
+/// radius in picture widths and heights, and the colour (linear, premultiplied).
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Look {
+    mode: f32,
+    blur: [f32; 2],
+    colour: [f32; 4],
+}
+
+/// Blur radius as a fraction of the picture height (a strength setting can come later).
+const BLUR_RADIUS: f32 = 0.04;
+
+fn look_of(values: &Values) -> Look {
+    let mode = values.choice(BACKGROUND);
+    let radius = BLUR_RADIUS;
+    let [r, g, b, a] = values.color(BACKGROUND_COLOUR);
+    let a = f32::from(a) / 255.0;
+    let lin = |c: u8| {
+        let e = f32::from(c) / 255.0;
+        if e <= 0.040_45 {
+            e / 12.92
+        } else {
+            ((e + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    Look {
+        mode: f32::from(mode),
+        // Wider than tall pictures blur by the same distance both ways.
+        blur: [radius * 0.5625, radius],
+        colour: [lin(r) * a, lin(g) * a, lin(b) * a, a],
+    }
 }
 
 /// The composite edges for the settings.

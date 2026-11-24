@@ -378,6 +378,14 @@ impl Rig {
         })
     }
 
+    /// Replaces settings by key.
+    pub fn set_values(&mut self, pairs: &[(&str, rbs_params::Value)]) {
+        let next = Values::defaults(&Defaults)
+            .with(&Defaults, pairs.iter().copied())
+            .unwrap();
+        let _ = self.values.send(next);
+    }
+
     pub fn disable(&mut self) {
         self.graph.set_state(self.node, Lifecycle::Standby).unwrap();
         self.ctl.apply(&self.graph).unwrap();
