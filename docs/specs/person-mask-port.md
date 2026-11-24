@@ -113,6 +113,10 @@ Rules:
 9. **Errors are typed (rule 8).** A session that fails after `open` reports it through `latest`; the filter then publishes nothing and the UI shows the reason; it never shows the unfiltered picture. `DeviceLost` asks the control thread to re-open with back-off (ADR-0024).
 10. **Untrusted data.** Model files are data and are checked (size, hash, format) before loading. A model path is never taken from a scene document; the user's data folder or an add-on provides it through `ModelRef`.
 
+### Stray regions (2026-11-24)
+
+A network can take an object in the room (a hat on a shelf) for a second person. A backend may drop such regions with `rbs_segment::StrayFilter` on its own thread: it keeps the largest region of the matte and every region at least a tenth as large, and zeroes the rest. The ONNX backend does this; it needs no setting and no per-frame work outside the backend's thread.
+
 ## Quality levels and declared cost
 
 Backends declare their levels; the UI shows each level's cost text built from `CostHint` (ADR-0179 decision 12). Numbers below are from the Mac spike (M4 Pro, 1620x1080 input) and are the first values for the Apple Vision backend; Windows and Linux backends fill theirs after their measurements.

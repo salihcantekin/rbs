@@ -15,6 +15,7 @@ mod error;
 mod info;
 mod matte;
 mod session;
+mod strays;
 
 pub use error::SegmentError;
 pub use info::{BackendInfo, ComputeUnit, CostHint, LevelId, QualityLevel};
@@ -22,3 +23,4 @@ pub use matte::{GpuMatte, Matte, MattePlane, MatteRelease};
 pub use session::{
     ModelRef, PersonMaskBackend, PersonMaskSession, SegmentHost, SessionRequest, SubmitOutcome,
 };
+pub use strays::StrayFilter;

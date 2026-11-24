@@ -14,7 +14,7 @@ use ort::session::Session;
 use ort::value::Tensor;
 use rbs_core::media::{FramePayload, PixelFormat, Size, VideoFrame};
 use rbs_core::time::Timestamp;
-use rbs_segment::{Matte, MattePlane, PersonMaskSession, SegmentError, SubmitOutcome};
+use rbs_segment::{Matte, MattePlane, PersonMaskSession, SegmentError, StrayFilter, SubmitOutcome};
 
 use crate::net::{self, Net, Spec};
 
@@ -235,6 +235,7 @@ struct Engine {
     spec: Spec,
     input: Vec<f32>,
     bytes: Vec<u8>,
+    strays: StrayFilter,
     /// RVM's four recurrent states, as (shape, data); empty for the other networks.
     states: Vec<(Vec<usize>, Vec<f32>)>,
 }
@@ -246,6 +247,7 @@ impl Engine {
             spec,
             input: Vec::new(),
             bytes: Vec::new(),
+            strays: StrayFilter::new(),
             states: Vec::new(),
         };
         engine.reset_states();
@@ -335,6 +337,8 @@ impl Engine {
             return Err(SegmentError::DeviceLost);
         }
         net::alpha_to_bytes(&alpha, &mut self.bytes);
+        // A hat or lamp the network took for a second person is dropped (not joined).
+        self.strays.apply(&mut self.bytes, dw, dh);
         Ok(Matte::new(
             pending.timestamp,
             Size::new(dw, dh),
