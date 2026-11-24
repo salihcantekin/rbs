@@ -49,6 +49,7 @@ pub mod diag_log;
 pub use rbs_studio_host::edit_history;
 pub mod encoder_form;
 pub mod hotkeys;
+pub mod instance;
 pub mod latest;
 pub use rbs_studio_host::levels;
 pub use rbs_studio_host::loudness_settings;

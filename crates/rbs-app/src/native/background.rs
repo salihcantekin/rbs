@@ -39,9 +39,10 @@ fn show() {
     }
 }
 
-/// `applicationShouldHandleReopen:hasVisibleWindows:`: shows the main window while it is
-/// hidden; otherwise AppKit does what it always does. A panic returns `YES` so AppKit
-/// keeps its own answer.
+/// `applicationShouldHandleReopen:hasVisibleWindows:` (the Dock icon, a Finder launch,
+/// a second launch, ADR-0181): shows the main window while it is hidden, and brings it
+/// forward while it is shown; AppKit then does what it always does for a shown window.
+/// A panic returns `YES` so AppKit keeps its own answer.
 extern "C" fn should_reopen(
     _this: *mut AnyObject,
     _cmd: Sel,
@@ -49,11 +50,9 @@ extern "C" fn should_reopen(
     _visible: Bool,
 ) -> Bool {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if HIDDEN.load(Ordering::Relaxed) {
-            show();
-            return Bool::NO;
-        }
-        Bool::YES
+        let hidden = HIDDEN.load(Ordering::Relaxed);
+        show();
+        if hidden { Bool::NO } else { Bool::YES }
     }))
     .unwrap_or(Bool::YES)
 }

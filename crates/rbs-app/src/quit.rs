@@ -150,6 +150,8 @@ impl Ctx {
         self.live_timer.stop();
         #[cfg(target_os = "macos")]
         rbs_app::native::begin_quit_activity();
+        // A second launch now waits for this RBS to end (ADR-0181 decision 2).
+        crate::single::closing();
         app.main.global::<Shell>().set_quit_confirm(false);
         if let Some(w) = app.settings.take() {
             let _ = w.hide();
@@ -175,7 +177,8 @@ impl Ctx {
         preview::close();
         projector::close_all();
         interact::close_all();
-        // No tray icon and no single-instance event while closing (ADR-0156 decision 7).
+        // No tray icon while closing (ADR-0156 decision 7); the single-instance event
+        // went with `single::closing` above.
         #[cfg(windows)]
         {
             app.tray = None;
