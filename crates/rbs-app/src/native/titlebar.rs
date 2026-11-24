@@ -6,9 +6,11 @@
 //! window: shadow, rounded corners, edge resizing, tiling and full screen stay
 //! AppKit's. AppKit can show the standard buttons again (after full screen, on
 //! activation, when the style mask is set again); three window notifications and each
-//! resize hide them again, and the notifications report full screen. The notifications
-//! go to an observer object of RBS's own, never to winit's window delegate, whose own
-//! subscriptions to the same names must stay.
+//! resize hide them again, and the notifications report full screen. Four more mark
+//! when the window starts and stops changing size, so frames are presented in step
+//! with AppKit while it does (smooth full-screen animation and live resize). The
+//! notifications go to an observer object of RBS's own, never to winit's window
+//! delegate, whose own subscriptions to the same names must stay.
 //!
 //! Marked low-level module (P11): AppKit calls through objc2, each `unsafe` block with
 //! its invariant. Everything runs on the main thread, which is the UI thread.
@@ -19,7 +21,7 @@ use std::ptr::NonNull;
 use std::sync::OnceLock;
 
 use objc2::rc::{Retained, autoreleasepool};
-use objc2::runtime::{AnyObject, ClassBuilder, MessageReceiver, Sel};
+use objc2::runtime::{AnyClass, AnyObject, ClassBuilder, MessageReceiver, Sel};
 use objc2::{class, msg_send};
 use objc2_core_foundation::CGRect;
 
@@ -41,17 +43,48 @@ thread_local! {
 /// Told when the window enters (`true`) or leaves full screen.
 static ON_FULL_SCREEN: OnceLock<fn(bool)> = OnceLock::new();
 
-/// The window notifications observed, as (selector of the observer, name).
-const NOTES: [(&CStr, &CStr); 3] = [
+/// A notification method of the observer: (self, _cmd, the notification).
+type Note = extern "C" fn(*mut AnyObject, Sel, *mut AnyObject);
+
+/// The window notifications observed, as (selector of the observer, name, method).
+/// The `Will…` ones and the end of a live resize switch presenting in step with
+/// AppKit's transaction on and off (see [`present_in_step`]).
+const NOTES: [(&CStr, &CStr, Note); 7] = [
     (
         c"rbsTitleEnterFullScreen:",
         c"NSWindowDidEnterFullScreenNotification",
+        on_enter,
     ),
     (
         c"rbsTitleExitFullScreen:",
         c"NSWindowDidExitFullScreenNotification",
+        on_exit,
     ),
-    (c"rbsTitleBecomeKey:", c"NSWindowDidBecomeKeyNotification"),
+    (
+        c"rbsTitleBecomeKey:",
+        c"NSWindowDidBecomeKeyNotification",
+        on_key,
+    ),
+    (
+        c"rbsTitleWillEnterFullScreen:",
+        c"NSWindowWillEnterFullScreenNotification",
+        on_will_change,
+    ),
+    (
+        c"rbsTitleWillExitFullScreen:",
+        c"NSWindowWillExitFullScreenNotification",
+        on_will_change,
+    ),
+    (
+        c"rbsTitleWillLiveResize:",
+        c"NSWindowWillStartLiveResizeNotification",
+        on_will_change,
+    ),
+    (
+        c"rbsTitleEndLiveResize:",
+        c"NSWindowDidEndLiveResizeNotification",
+        on_changed,
+    ),
 ];
 
 /// The `NSWindow` of `ns_view`, or null while the view is in no window.
@@ -102,21 +135,37 @@ extern "C" fn on_key(_this: *mut AnyObject, _cmd: Sel, note: *mut AnyObject) {
     on_note(note, None);
 }
 
-/// One observed notification: hides the buttons again and reports full screen. Never
-/// unwinds into AppKit.
+extern "C" fn on_will_change(_this: *mut AnyObject, _cmd: Sel, note: *mut AnyObject) {
+    on_size_note(note, true);
+}
+
+extern "C" fn on_changed(_this: *mut AnyObject, _cmd: Sel, note: *mut AnyObject) {
+    on_size_note(note, false);
+}
+
+/// The window a notification is about. Must run inside the observer method.
+fn note_window<'a>(note: *mut AnyObject) -> Option<&'a AnyObject> {
+    // SAFETY: AppKit passes a live NSNotification or nil.
+    let note = unsafe { note.as_ref() }?;
+    // SAFETY: its `object` is the window the observer was registered for, alive while
+    // it posts; checked for null; this process's window on the main thread.
+    unsafe {
+        let window: *mut AnyObject = msg_send![note, object];
+        window.as_ref()
+    }
+}
+
+/// One observed notification: hides the buttons again and reports full screen; after
+/// a full-screen change, presenting goes back to normal. Never unwinds into AppKit.
 fn on_note(note: *mut AnyObject, full_screen: Option<bool>) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        // SAFETY: AppKit passes a live NSNotification or nil.
-        let Some(note) = (unsafe { note.as_ref() }) else {
-            return;
-        };
-        // SAFETY: its `object` is the window the observer was registered for, alive
-        // while it posts.
-        let window: *mut AnyObject = unsafe { msg_send![note, object] };
-        // SAFETY: checked for null; this process's window on the main thread.
-        if let Some(window) = unsafe { window.as_ref() } {
-            // SAFETY: as above.
+        if let Some(window) = note_window(note) {
+            // SAFETY: a live window of this process on the main thread.
             unsafe { hide_standard_buttons(window) };
+            if full_screen.is_some() {
+                // SAFETY: as above.
+                unsafe { present_in_step(window, false) };
+            }
         }
         if let (Some(on), Some(f)) = (full_screen, ON_FULL_SCREEN.get()) {
             f(on);
@@ -124,7 +173,63 @@ fn on_note(note: *mut AnyObject, full_screen: Option<bool>) {
     }));
 }
 
-/// RBS's observer: an `NSObject` subclass with the three notification methods, made
+/// A size change starts (`true`: full screen in or out, a live resize) or a live
+/// resize ends. Never unwinds into AppKit.
+fn on_size_note(note: *mut AnyObject, starts: bool) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if let Some(window) = note_window(note) {
+            // SAFETY: a live window of this process on the main thread.
+            unsafe { present_in_step(window, starts) };
+        }
+    }));
+}
+
+/// Makes the window's Metal layers present in step with AppKit's transaction (`on`) or
+/// as soon as drawn (`off`, the default). While the window changes size, a frame
+/// presented on its own reaches the screen after AppKit has drawn the new window size,
+/// so the full-screen animation showed the old-size picture with black around it until
+/// it ended. In step costs a wait per frame, so it is on only during the change (P13).
+///
+/// # Safety
+/// `window` is a live `NSWindow` of this process, on the main thread.
+unsafe fn present_in_step(window: &AnyObject, on: bool) {
+    let Some(metal) = AnyClass::get(c"CAMetalLayer") else {
+        return;
+    };
+    // SAFETY: getters of a live window, view and layer, each nil-checked; `sublayers` is
+    // an NSArray of CALayer or nil; `isKindOfClass:` and `setPresentsWithTransaction:`
+    // take a class and a BOOL. The renderer reads the flag when it takes the next
+    // drawable, on this thread.
+    unsafe {
+        let view: *mut AnyObject = msg_send![window, contentView];
+        let Some(view) = view.as_ref() else {
+            return;
+        };
+        let root: *mut AnyObject = msg_send![view, layer];
+        let Some(root) = root.as_ref() else {
+            return;
+        };
+        let set = |layer: &AnyObject| {
+            let is_metal: bool = msg_send![layer, isKindOfClass: metal];
+            if is_metal {
+                let _: () = msg_send![layer, setPresentsWithTransaction: on];
+            }
+        };
+        set(root);
+        let subs: *mut AnyObject = msg_send![root, sublayers];
+        if let Some(subs) = subs.as_ref() {
+            let count: usize = msg_send![subs, count];
+            for i in 0..count {
+                let layer: *mut AnyObject = msg_send![subs, objectAtIndex: i];
+                if let Some(layer) = layer.as_ref() {
+                    set(layer);
+                }
+            }
+        }
+    }
+}
+
+/// RBS's observer: an `NSObject` subclass with the notification methods, made
 /// on first use. Null if the class cannot be made (a class of that name exists).
 fn observer() -> *mut AnyObject {
     OBSERVER.with(|o| {
@@ -136,16 +241,10 @@ fn observer() -> *mut AnyObject {
 }
 
 fn make_observer() -> *mut AnyObject {
-    type Note = extern "C" fn(*mut AnyObject, Sel, *mut AnyObject);
     let Some(mut builder) = ClassBuilder::new(c"RBSTitleBarObserver", class!(NSObject)) else {
         return std::ptr::null_mut();
     };
-    let methods: [(&CStr, Note); 3] = [
-        (NOTES[0].0, on_enter),
-        (NOTES[1].0, on_exit),
-        (NOTES[2].0, on_key),
-    ];
-    for (name, f) in methods {
+    for (name, _, f) in NOTES {
         // SAFETY: each function is (self, _cmd, one object) -> void, as a notification
         // method is called, and never unwinds (`on_note` catches). The names are new to
         // NSObject, so nothing is overridden.
@@ -186,8 +285,8 @@ fn attach_in_pool(ns_view: NonNull<c_void>, on_full_screen: fn(bool)) -> Result<
     let Some(center) = (unsafe { center.as_ref() }) else {
         return Err("no notification center");
     };
-    let mut names = [std::ptr::null_mut::<AnyObject>(); 3];
-    for (slot, (_, name)) in names.iter_mut().zip(NOTES) {
+    let mut names = [std::ptr::null_mut::<AnyObject>(); NOTES.len()];
+    for (slot, (_, name, _)) in names.iter_mut().zip(NOTES) {
         *slot = ns_string(name);
         if slot.is_null() {
             return Err("no notification name");
@@ -211,7 +310,7 @@ fn attach_in_pool(ns_view: NonNull<c_void>, on_full_screen: fn(bool)) -> Result<
         let observer: *const AnyObject = observer;
         let object: *const AnyObject = window;
         let _: () = msg_send![center, removeObserver: observer];
-        for ((selector, _), name) in NOTES.iter().zip(names) {
+        for ((selector, _, _), name) in NOTES.iter().zip(names) {
             let _: () = msg_send![
                 center,
                 addObserver: observer,
