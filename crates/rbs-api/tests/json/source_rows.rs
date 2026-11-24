@@ -2,6 +2,44 @@
 
 use super::*;
 
+#[path = "schema.rs"]
+pub(super) mod schema;
+
+#[test]
+fn source_list_schemas_match_serialized_rows_and_statuses() {
+    let schemas = rbs_api::schema::builtin_schemas().unwrap();
+    for status in [
+        SourceStatus::Running,
+        SourceStatus::Idle,
+        SourceStatus::Failed {
+            reason: "failed".into(),
+        },
+        SourceStatus::Unavailable {
+            fault: SourceFault::Busy,
+            detail: "busy".into(),
+        },
+    ] {
+        let row = SourceInfo { status, ..source() };
+        let result = Response::Sources(Snapshot {
+            seq: Default::default(),
+            data: vec![row.clone()],
+        });
+        let value = serde_json::to_value(result).unwrap();
+        assert!(jsonschema::is_valid(
+            &schemas["source.list"].output_schema,
+            &value
+        ));
+        let value = serde_json::to_value(Response::GlobalSources(GlobalSourceList {
+            sources: vec![row],
+        }))
+        .unwrap();
+        assert!(jsonschema::is_valid(
+            &schemas["global.list"].output_schema,
+            &value
+        ));
+    }
+}
+
 #[test]
 fn filter_latency_fields_are_optional_and_round_trip() {
     // Protocol 1.77 (ADR-0130 decision 9): a source without latent filters, offset or

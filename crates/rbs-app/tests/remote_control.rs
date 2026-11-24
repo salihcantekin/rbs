@@ -79,7 +79,13 @@ impl Client {
                 self.reader.read_exact(&mut b).unwrap();
                 usize::from(u16::from_be_bytes(b))
             }
-            127 => panic!("unexpectedly large frame"),
+            127 => {
+                let mut b = [0u8; 8];
+                self.reader.read_exact(&mut b).unwrap();
+                let length = u64::from_be_bytes(b);
+                assert!(length <= 1024 * 1024, "unexpectedly large frame");
+                usize::try_from(length).unwrap()
+            }
             n => usize::from(n),
         };
         let mut payload = vec![0; len];

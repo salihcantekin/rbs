@@ -8,6 +8,7 @@ use crate::types::OutputCanvas;
 
 /// The edge or centre line `item.align_items` lines the items up on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum AlignEdge {
     /// Left edges meet.
@@ -26,6 +27,7 @@ pub enum AlignEdge {
 
 /// What `item.align_items` lines the items up to.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum AlignTo {
     /// The area the items cover together (the default).
@@ -46,6 +48,7 @@ impl AlignTo {
 /// `conflict`; fewer than two items without `to: "canvas"`, a repeated item or an item
 /// without a picture is `invalid_params`; an unknown item is `not_found`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct AlignItems {
     /// The item ids.
@@ -68,6 +71,7 @@ pub struct AlignItems {
 /// neighbours along `axis` are equal; the two outermost stay. One undo step; the errors
 /// are those of `item.align_items`, and fewer than three items is `invalid_params`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct DistributeItems {
     /// The item ids.

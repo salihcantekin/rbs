@@ -142,6 +142,35 @@ fn the_token_file_narrows_the_session_and_rotation_needs_no_restart() {
     let names = tools(&mut mcp);
     assert!(mcp.connected(), "{:?}", mcp.hint_reason());
     assert!(names.contains(&"scene_add".to_owned()));
+    let response = mcp.handle(r#"{"jsonrpc":"2.0","id":4,"method":"tools/list"}"#);
+    let list: Value = serde_json::from_str(response.out.last().unwrap()).unwrap();
+    let catalog = rbs_api::schema::builtin_schemas().unwrap();
+    for tool in list["result"]["tools"].as_array().unwrap() {
+        let name = tool["name"].as_str().unwrap();
+        if name == "studio_summary" {
+            continue;
+        }
+        let method = catalog
+            .iter()
+            .find(|(method, _)| method.replace('.', "_") == name)
+            .unwrap_or_else(|| panic!("unexpected tool {name}"));
+        assert_eq!(tool["inputSchema"], method.1.input_schema, "{name}");
+        if method.1.output_schema["type"] == "object" {
+            assert_eq!(tool["outputSchema"], method.1.output_schema, "{name}");
+        } else if name == "source_attributes_clipboard" {
+            assert!(jsonschema::is_valid(
+                &tool["outputSchema"],
+                &serde_json::json!({"result": null})
+            ));
+            assert!(jsonschema::is_valid(
+                &tool["outputSchema"],
+                &serde_json::json!({"source": 1, "name": "Camera", "type": "camera", "groups": []})
+            ));
+        } else {
+            assert!(tool.get("outputSchema").is_none(), "{name}");
+        }
+    }
+    assert!(!names.contains(&"source_set_sync_offset".to_owned()));
     assert!(
         !names.contains(&"record_start".to_owned()),
         "no live tools without the permission"

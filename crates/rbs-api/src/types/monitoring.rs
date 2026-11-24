@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 /// The volume and mute a source is heard at (protocol 1.48, ADR-0091).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Heard {
     /// A linear factor from 0 to 1.
     pub volume: f32,
@@ -13,6 +14,7 @@ pub struct Heard {
 
 /// Whether a source is heard on the monitor output (protocol 1.30, ADR-0097).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum MonitorMode {
     /// Not monitored.
@@ -36,6 +38,7 @@ impl MonitorMode {
 /// no data: the meter is off, its window has not filled since it started or was
 /// reset, or the programme so far is below the -70 LUFS gate.
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct LoudnessStatus {
     /// The meter runs.
     pub enabled: bool,
@@ -70,6 +73,7 @@ pub struct LoudnessStatus {
 
 /// `monitor.status` and `monitor.changed` (protocol 1.30, ADR-0097).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct MonitorStatus {
     /// Some audio adapter can play to a device on this computer.
     pub available: bool,
@@ -94,6 +98,7 @@ pub struct MonitorStatus {
 
 /// One playback device of `monitor.devices` (protocol 1.30).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct MonitorDevice {
     /// Its id, for `monitor.set_device`.
     pub device: String,
@@ -105,6 +110,7 @@ pub struct MonitorDevice {
 
 /// `monitor.devices` (protocol 1.30).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct MonitorDeviceList {
     /// The playback devices, best adapter first.
     pub devices: Vec<MonitorDevice>,

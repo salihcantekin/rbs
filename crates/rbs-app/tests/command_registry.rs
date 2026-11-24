@@ -11,6 +11,7 @@ use rbs_ui::command::{ENTRIES, Kind, entry};
 
 #[test]
 fn every_entry_runs_control_api_methods() {
+    let schemas = rbs_api::schema::builtin_schemas().unwrap();
     for e in ENTRIES {
         for m in e.kind.methods() {
             let known = METHODS.iter().any(|i| i.name == m) || UI_METHODS.contains(&m);
@@ -19,7 +20,34 @@ fn every_entry_runs_control_api_methods() {
                 "{} runs {m}, which is not a control API method",
                 e.id
             );
+            if METHODS.iter().any(|method| method.name == m) {
+                let pair = schemas
+                    .get(m)
+                    .unwrap_or_else(|| panic!("{} runs {m} without typed schemas", e.id));
+                assert_eq!(
+                    pair.input_schema["type"], "object",
+                    "{} runs {m} without an object input schema",
+                    e.id
+                );
+                assert!(
+                    pair.output_schema.is_object(),
+                    "{} runs {m} without a result schema",
+                    e.id
+                );
+            }
         }
+    }
+}
+
+#[test]
+fn scene_commands_use_the_advertised_typed_methods() {
+    let schemas = rbs_api::schema::builtin_schemas().unwrap();
+    for id in ["scene.add", "scene.remove", "scene.rename"] {
+        let command = entry(id).unwrap();
+        assert_eq!(command.kind.methods(), [id]);
+        let pair = schemas.get(id).unwrap();
+        assert_eq!(pair.input_schema["type"], "object");
+        assert_eq!(pair.output_schema["type"], "object");
     }
 }
 

@@ -18,6 +18,36 @@ use serde_json::json;
 use support::*;
 
 #[test]
+fn describe_advertises_only_available_schema_pairs() {
+    #[derive(serde::Deserialize)]
+    struct LegacyMethod {
+        name: String,
+    }
+
+    let mut h = Harness::new();
+    let conn = h.login(PeerInfo::loopback_websocket(), PANEL_TOKEN_SEED);
+    h.call(conn, "api.describe", json!({}));
+    let answer = h.one(conn);
+    let methods = answer["result"]["methods"].as_array().unwrap();
+    let schemas = rbs_api::schema::builtin_schemas().unwrap();
+    for method in methods {
+        let name = method["name"].as_str().unwrap();
+        if let Some(pair) = schemas.get(name) {
+            assert_eq!(method["input_schema"], pair.input_schema);
+            assert_eq!(method["output_schema"], pair.output_schema);
+            let legacy: LegacyMethod = serde_json::from_value(method.clone()).unwrap();
+            assert_eq!(legacy.name, name);
+        } else {
+            assert!(method.get("input_schema").is_none(), "{name}");
+            assert!(method.get("output_schema").is_none(), "{name}");
+        }
+    }
+    for name in schemas.keys() {
+        assert!(methods.iter().any(|m| m["name"] == *name), "{name}");
+    }
+}
+
+#[test]
 fn handshake_then_authenticate_returns_scopes_and_instance() {
     let mut h = Harness::new();
     let conn = h.connect(PeerInfo::loopback_websocket());

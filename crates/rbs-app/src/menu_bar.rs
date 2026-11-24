@@ -275,10 +275,6 @@ pub enum AddWhat {
 /// API's `source.add` has no such kind).
 const EXISTING: &str = "existing";
 
-fn panel_of(id: &CommandId) -> Option<PanelId> {
-    PanelId::parse(id.param("id")?).ok()
-}
-
 fn rail_at(id: &CommandId) -> Option<RailAt> {
     match id.param("at")? {
         "between" => Some(RailAt::Between),
@@ -421,7 +417,9 @@ impl Shown<'_> {
 
 mod arrange;
 mod group_menu;
+mod registry;
 pub use group_menu::GroupOp;
+use registry::panel_of;
 
 impl CommandState for Shown<'_> {
     fn enabled(&self, id: &CommandId) -> Result<(), Disabled> {
@@ -1992,7 +1990,7 @@ fn float_or_dock(state: &Shown<'_>, id: &CommandId, on: bool) -> Option<Run> {
 pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
     use rbs_ui::LayoutCommand as L;
     let id = CommandId::parse(text).ok()?;
-    let entry = id.resolve().ok()??;
+    let entry = registry::resolve_catalogued_entry(&id)?;
     state.enabled(&id).ok()?;
     if let Kind::Picker { param, .. } = entry.kind {
         // `source.add?kind=K` opens the device picker of that kind; a bare one does

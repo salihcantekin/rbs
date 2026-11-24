@@ -6,6 +6,7 @@ use super::Dimensions;
 
 /// Something a source can capture: a display, window, camera or audio endpoint.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct CaptureTarget {
     /// Name from the OS (a window title can be private: `source.targets` needs
     /// `control`).

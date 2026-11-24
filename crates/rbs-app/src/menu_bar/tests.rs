@@ -1,9 +1,67 @@
 #![allow(clippy::expect_used)] // Tests fail by panicking.
 
 use super::*;
+use rbs_ui::command::{ENTRIES, Kind, entry};
 
 /// The window files that declare the menu bar (ADR-0138: one file per window group).
 const WINDOW_FILES: [&str; 2] = ["ui/main_window.slint", "ui/settings_window.slint"];
+
+#[test]
+fn runtime_registry_methods_use_the_shared_catalog() {
+    for command in ENTRIES {
+        assert!(
+            registry::check_entry(Some(command), |_, _| {}).is_some(),
+            "{} references a method outside the shared catalog",
+            command.id
+        );
+    }
+
+    let mut unlisted = *entry("scene.add").expect("scene.add entry");
+    unlisted.kind = Kind::Action {
+        method: "test.not_in_catalog",
+    };
+    let mut reported = None;
+    assert!(
+        registry::check_entry(Some(&unlisted), |id, method| {
+            reported = Some((id, method));
+        })
+        .is_none()
+    );
+    assert_eq!(reported, Some(("scene.add", "test.not_in_catalog")));
+    let mut unlisted_toggle = *entry("record.toggle").expect("record toggle");
+    unlisted_toggle.kind = Kind::Toggle {
+        on: "record.start",
+        off: "test.not_in_catalog",
+    };
+    assert!(
+        registry::check_entry(Some(&unlisted_toggle), |id, method| {
+            assert_eq!((id, method), ("record.toggle", "test.not_in_catalog"));
+        })
+        .is_none()
+    );
+
+    // Client-scoped methods are intentionally separate from engine methods.
+    assert!(
+        registry::check_entry(entry("ui.profile.new"), |_, _| {
+            panic!("valid UI method must not be reported")
+        })
+        .is_some()
+    );
+    assert!(
+        registry::check_entry(None, |_, _| {
+            panic!("unknown entries must not be reported")
+        })
+        .is_none()
+    );
+
+    // Catalog validation does not flatten special command semantics.
+    let toggle = entry("record.toggle").expect("resolved toggle");
+    assert!(matches!(toggle.kind, Kind::ResolvedToggle { .. }));
+    assert_eq!(toggle.kind.methods(), ["record.start", "record.stop"]);
+    let picker = entry("source.add").expect("source picker");
+    assert!(matches!(picker.kind, Kind::Picker { .. }));
+    assert_eq!(picker.kind.methods(), ["source.add"]);
+}
 
 #[test]
 fn the_window_files_have_the_current_menu_bar() {

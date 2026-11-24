@@ -28,6 +28,7 @@ use crate::types::SourceLevels;
 
 /// The protocol version this server speaks.
 ///
+/// 1.108 adds optional input and output schemas to `api.describe`.
 /// 1.102 adds the slide show source (ADR-0171 decision 9): the kind `slideshow`,
 /// `media.next` and `media.previous`, and `index` and `count` on a media state
 /// (1.101 is ADR-0168's).
@@ -134,7 +135,7 @@ use crate::types::SourceLevels;
 /// `record.start`, `tracks` on a running recording and `record_separately` on a source.
 /// 1.45 adds `"wav"` and `"flac"` on a recording profile (the mix with no picture).
 /// 1.44 is the vertical canvas layouts.
-pub const PROTOCOL_VERSION: &str = "1.107";
+pub const PROTOCOL_VERSION: &str = "1.108";
 
 /// Caps and timeouts (ADR-0044 decision 12). The defaults are the version 1 values in
 /// the control API spec.
@@ -1233,14 +1234,33 @@ impl Server {
                     self.send_now(conn, Some(&id), Ok(Response::Done(Empty {})));
                 }
                 Queued::Local(id, _) => {
+                    let mut schemas = match crate::schema::builtin_schemas() {
+                        Ok(schemas) => schemas,
+                        Err(_) => {
+                            self.send_now(
+                                conn,
+                                Some(&id),
+                                Err(ApiError::new(
+                                    ErrorKind::Internal,
+                                    "invalid built-in method schemas",
+                                )),
+                            );
+                            continue;
+                        }
+                    };
                     let d = Description {
                         protocol: PROTOCOL_VERSION.into(),
                         methods: METHODS
                             .iter()
-                            .map(|m| MethodInfoOwned {
-                                name: m.name.into(),
-                                scope: m.scope,
-                                effect: Some(m.effect),
+                            .map(|m| {
+                                let pair = schemas.remove(m.name);
+                                MethodInfoOwned {
+                                    name: m.name.into(),
+                                    scope: m.scope,
+                                    effect: Some(m.effect),
+                                    input_schema: pair.as_ref().map(|p| p.input_schema.clone()),
+                                    output_schema: pair.map(|p| p.output_schema),
+                                }
                             })
                             .collect(),
                         topics: Topic::ALL.to_vec(),
@@ -1248,6 +1268,21 @@ impl Server {
                     self.send_now(conn, Some(&id), Ok(Response::Describe(d)));
                 }
                 Queued::Forward(id, command) => {
+                    let Phase::Ready {
+                        scopes,
+                        irreversible,
+                        token,
+                        ..
+                    } = &s.phase
+                    else {
+                        return;
+                    };
+                    let caller = Caller {
+                        token: token.as_ref().map(|t| t.name.clone()),
+                        irreversible: *irreversible,
+                        scopes: *scopes,
+                        remote: !s.peer.is_local(),
+                    };
                     if let Command::EventsSubscribe(sub) = &command {
                         for t in &sub.topics {
                             s.topics = s.topics.with(*t);
@@ -1270,21 +1305,9 @@ impl Server {
                         }
                         self.update_mask();
                     }
-                    let mut caller = Caller::local();
                     if let Some(s) = self.sessions.get_mut(&conn) {
                         s.in_flight = true;
                         s.in_flight_method = Some(command.method());
-                        if let Phase::Ready {
-                            irreversible,
-                            token,
-                            ..
-                        } = &s.phase
-                        {
-                            caller = Caller {
-                                token: token.as_ref().map(|t| t.name.clone()),
-                                irreversible: *irreversible,
-                            };
-                        }
                     }
                     self.actions.push_back(Action::Forward(Forwarded {
                         conn,

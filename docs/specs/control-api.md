@@ -443,6 +443,13 @@ Some commands change the state of one UI client, not of the engine: for example 
 - They are not written to the engine command log and are not undoable through it. The client keeps its own layout undo history (UI rule U21).
 - The engine only routes them. Each connected UI client registers with a client id and a display name ("Studio PC"). A caller such as a Stream Deck plugin sends a `ui.*` command with a target client id, or without one to reach the desktop client that was focused most recently.
 - The engine stores no UI state for them; layout and workspaces belong to the client (UI design system spec, "Panels and workspaces").
+- **Routing groundwork.** Forwarded control commands carry the authenticated
+  session's effective, channel-limited scopes and its remote flag in `Caller`, in
+  addition to the token name and irreversible-actions permission. This is a Rust
+  API struct change; it does not change the wire protocol. It does not implement
+  UI-client registration, routing or same-session reauthorization by itself. A future
+  routed call must reauthorize against the live session, not trust this snapshot after
+  a disconnect or token revocation. Independent AI review, 2026-11-24: approved.
 
 ### Projectors (ADR-0125)
 
@@ -466,13 +473,38 @@ An OBS WebSocket (v5) compatibility layer (subset) is a separate optional adapte
 - Transport conformance suite: framing, size limits, close reasons, peer information, Origin and Host cases (`null`, allow list, IP literals), upgrade refused before completion.
 - Session state machine tests on `TestClock`: handshake timeout, IPC same-user handshake, auth success, uniform failure, token test vector, scopes, remote refusal of `admin`/`plugins`/`tokens`, connection and handshake caps, back-off, pre-auth size, rate limit, `busy`, round-robin fairness, UI priority, per-connection back-pressure, control thread never blocked by API output, responses and events delivered while the transport inbox is full, no response lost under an event flood or with a session closed while its request is in flight, an event written while the API thread drains the slots, event coalescing per state key, `seq` across subscribe, `seq` and instance id.
 - JSON round-trip test of every request, response and event type.
+- The wire decoder's complete derived method list equals the unique `METHODS` catalog, independent of the manually constructed request fixtures; new methods cannot bypass discovery.
 - Schema snapshot test with difference classification.
 - U20 test: every desktop UI command maps to a control API method. Registry entries: `rbs-app/tests/command_registry.rs`. The window's other commands (ADR-0163): `Command::path` in `rbs-studio-host` classifies each, a unit test caps the count of each kind and checks the named methods exist, and `tests/studio/command_path.rs` checks that the window's API calls answer as asked, that views and previews change no studio state, and that a translating command runs only its declared methods.
 - Idle-cost check: off starts no thread; on without a session has no wake-ups and produces no events (thread count and wake-ups, performance budgets spec).
 
 ## Implementation status
 
-- `rbs-api` implements the types and JSON codec of the first slice, tokens and the token store, scopes, the session state machine (`Server`), the control-thread side (`ControlTarget`, `ControlEndpoint`, `EventPublisher` with `seq` per state key and the event slots), the `ControlTransport` port with the bounded `TransportInbox`, the shared `Origin`/`Host` check for WebSocket adapters (`UpgradePolicy`), and the API thread (`ApiServer`).
+- **Protocol 1.108 typed discovery.** `api.describe` adds optional
+  `input_schema` and `output_schema` to a method. Both are standalone JSON Schema
+  documents generated from the Rust request and successful result types, respectively.
+  The checked-in snapshot covers all 192 built-in methods. A catalog test requires
+  every method to have both schemas. Input describes JSON-RPC `params`, output the successful
+  `result`, not errors. Schemas describe the serde wire types; application-level
+  constraints (such as valid ID existence and setting ranges) may be stricter.
+  The checked-in snapshot is
+  generated with the optional `rbs-api` `schema` feature; its test compares the
+  snapshot with fresh derivation. No state or plugin text enters the schemas. A
+  pre-1.108 client ignores the added fields, and a client receiving an older server's
+  answer treats absent fields as unavailable. Event schemas,
+  compatibility classifier and client generation remain follow-ups.
+  Regenerate with `cargo run -p rbs-api --example generate-schemas --features schema`
+  and check with `cargo test -p rbs-api --features schema --test catalog`.
+  Independent review: fresh AI reviewer, 2026-11-24, approve after changes. The
+  reviewer identified insufficient schema validation in MCP; the implementation now
+  validates schemas, bounds them and refuses external or unresolved references.
+  Earlier coverage expansion and MCP discovery: independent AI reviewer,
+  2026-11-24, approve. The reviewer checked those handler results and the unchanged
+  wire names of the moved types. Full coverage and MCP safety annotations:
+  independent AI reviewer, approve after changes. A pre-existing
+  `settings.set {canvas}` effect mismatch remains: the catalog says `edit`, but
+  the runtime classifies it as `live`; MCP marks the method destructive.
+- `rbs-api` implements the types and JSON codec, type-derived method schemas, tokens and the token store, scopes, the session state machine (`Server`), the control-thread side (`ControlTarget`, `ControlEndpoint`, `EventPublisher` with `seq` per state key and the event slots), the `ControlTransport` port with the bounded `TransportInbox`, the shared `Origin`/`Host` check for WebSocket adapters (`UpgradePolicy`), and the API thread (`ApiServer`).
 - `rbs-app` serves the API from its control thread (`StudioHost`): an `ApiTarget` implements `ControlTarget` for studio, source, edit, output, record and settings commands and publishes `source.changed`, `scene.changed`, `canvas.changed`, `settings.changed` and `record.state` events through one `EventPublisher`. API requests are drained after the UI's own commands. The control thread holds the authoritative copy of the recording profile; the UI sends it each change, and an API `settings.set` comes back to the UI, which still writes the settings files. The control thread serves it once remote control is on (below).
 - Scene levels (protocol 1.48, ADR-0091 Accepted, first stage): `rbs-api` has the five `scene.audio.*` methods and the `own_audio` and `heard` fields; `rbs-app` serves them on its control thread, and `crates/rbs-studio-host/tests/studio/scenes.rs` covers them through the API. The Mixer and Properties do not show or edit scene levels yet (a visual change that waits for the owner's approval), so a fader in the Mixer still edits the source's own level.
 - `rbs-api-ws` serves the API over WebSocket on loopback: one I/O thread on the OS readiness poller (no periodic wake-up), the HTTP upgrade completed only after the `Origin`/`Host` check, its own RFC 6455 framing that skips a message over the connection's limit as it arrives, bounded output per connection (`Full`, then `Writable`; a connection whose output is backed up is not read, so pings from a peer that never reads cannot grow it), an upgrade deadline (10 s), a cap on connections still sending their upgrade (16) and on sockets in any state (128), refusals answered before the socket closes, and accepting paused briefly after an accept error such as running out of file descriptors. A non-loopback address is refused at start without TLS. It passes the transport conformance suite in `rbs_api::conformance`, over plain WebSocket and over TLS 1.2 and 1.3.
@@ -499,7 +531,7 @@ An OBS WebSocket (v5) compatibility layer (subset) is a separate optional adapte
 - `rbs-app` serves `protection.status` and publishes `protection.changed` (protocol 1.49) from its control thread's guard (`studio_host::protection`); `crates/rbs-studio-host/tests/studio/record.rs` (`a_recording_stops_cleanly_with_the_reason_when_its_disk_reaches_the_reserve`) covers the idle state, `critical` with the main recording, and the state after the stop.
 - `rbs-app` serves `output_size` on `settings.get`, `settings.set` and `settings.changed` (protocol 1.39, ADR-0102): omitted or `null` is that output's canvas, and a size that does not fit the canvas is `invalid_params`. Vertical profile sections store the same field; from protocol 1.100 `vertical_profile` and `vertical_stream` carry it, fitted to the vertical canvas.
 - Not yet: logging the TLS version of each remote connection; a warning when the user's own certificate expires within 30 days (it needs a certificate parser); concurrent settings edits (recording and stream settings) from the UI and an API client are last-writer-wins, and an in-progress UI edit is replaced without notice;
-  the `schema` feature with the generated JSON Schema, its snapshot test and difference classifier (`api.describe` lists methods, scopes and topics until then); `stats` sampling; `ui.*` routing; the U20 test, which needs the UI's own commands on `rbs-api` too; the idle-cost check by thread count (by construction today: off constructs nothing; on without a session sets no deadline, tested). The master meter on `audio.levels` is not in the payload yet.
+  complete generated JSON Schema coverage, its difference classifier and client generation; `stats` sampling; `ui.*` routing; the U20 test, which needs the UI's own commands on `rbs-api` too; the idle-cost check by thread count (by construction today: off constructs nothing; on without a session sets no deadline, tested). The master meter on `audio.levels` is not in the payload yet.
 
 ## Open questions
 

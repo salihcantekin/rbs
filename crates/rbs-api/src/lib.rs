@@ -27,6 +27,7 @@ pub mod event;
 pub mod exposure;
 pub mod location;
 pub mod request;
+pub mod schema;
 pub mod scope;
 pub mod session;
 pub mod thread;

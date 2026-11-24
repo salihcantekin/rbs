@@ -7,6 +7,7 @@ use crate::types::{Canvas, RecordingProfile, StreamSettingsPatch};
 
 /// `settings.set`: the sections given replace the current ones.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SettingsPatch {
     /// New recording profiles.
     #[serde(default)]
@@ -37,6 +38,7 @@ pub struct SettingsPatch {
         deserialize_with = "crate::types::present",
         skip_serializing_if = "Option::is_none"
     )]
+    #[cfg_attr(feature = "schema", schemars(with = "Option<Box<RecordingProfile>>"))]
     pub vertical_profile: Option<Option<Box<RecordingProfile>>>,
     /// The vertical stream's settings (protocol 1.100), the `stream` patch shape: no
     /// server and no key are written or erased. `null` is `invalid_params`. Refused
@@ -45,6 +47,10 @@ pub struct SettingsPatch {
         default,
         deserialize_with = "crate::types::present",
         skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(with = "Option<Box<StreamSettingsPatch>>")
     )]
     pub vertical_stream: Option<Option<Box<StreamSettingsPatch>>>,
 }

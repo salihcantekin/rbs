@@ -14,6 +14,7 @@ use crate::types::{
 
 /// An event topic. Subscriptions and the subscriber mask are per topic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum Topic {
     /// The program scene's source list (state).
     #[serde(rename = "source.changed")]

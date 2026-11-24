@@ -53,7 +53,8 @@ fn main() -> ExitCode {
         note(format_args!("rbs-mcp: {why}"));
         return ExitCode::FAILURE;
     }
-    if let Some(why) = mcp.hint_reason() {
+    let mut last_hint = mcp.hint_reason().map(str::to_owned);
+    if let Some(why) = &last_hint {
         note(format_args!(
             "rbs-mcp: not connected to RBS yet ({why}); waiting for Start in Settings, AI tools"
         ));
@@ -68,6 +69,13 @@ fn main() -> ExitCode {
             continue;
         }
         let outcome = mcp.handle(&line);
+        let current_hint = mcp.hint_reason().map(str::to_owned);
+        if current_hint != last_hint {
+            if let Some(why) = &current_hint {
+                note(format_args!("rbs-mcp: not connected to RBS ({why})"));
+            }
+            last_hint = current_hint;
+        }
         for out in outcome.out {
             if writeln!(stdout, "{out}")
                 .and_then(|()| stdout.flush())

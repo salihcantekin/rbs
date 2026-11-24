@@ -28,6 +28,9 @@ pub const RETRY_EVERY: Duration = Duration::from_secs(2);
 /// What `studio_summary` answers while not connected.
 pub const HINT: &str = "RBS is not connected. Open RBS and press Start in Settings, AI tools.";
 
+const INVALID_CATALOG_HINT: &str =
+    "RBS sent an invalid method catalog. Check the rbs-mcp diagnostic output.";
+
 /// MCP protocol versions this server speaks, newest first.
 const MCP_VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
 
@@ -40,9 +43,15 @@ const NEVER_METHODS: &[&str] = &["edit.undo", "edit.redo"];
 /// Methods that reach the network or add a source that may (`openWorldHint`).
 const OPEN_WORLD: &[&str] = &[
     "stream.start",
+    "stream.destination.start",
     "source.add",
     "source.set_settings",
     "source.retarget",
+    "addon.install",
+    "addon.update",
+    "record.start_to_file",
+    "collection.set_stinger_file",
+    "settings.set",
 ];
 
 /// The reads `studio_summary` combines, under these keys.
@@ -67,7 +76,10 @@ pub struct Outcome {
 
 enum State {
     /// Not connected; the reason, for stderr only.
-    Hint(String),
+    Hint {
+        reason: String,
+        catalog_error: bool,
+    },
     Ready(Ready),
 }
 
@@ -95,7 +107,10 @@ impl<C: Connect> Mcp<C> {
             connector,
             clock,
             namespaces,
-            state: State::Hint("not tried yet".into()),
+            state: State::Hint {
+                reason: "not tried yet".into(),
+                catalog_error: false,
+            },
             last_try: None,
             initialized: false,
         }
@@ -118,7 +133,7 @@ impl<C: Connect> Mcp<C> {
     /// Why it is not connected, for stderr (never the token).
     pub fn hint_reason(&self) -> Option<&str> {
         match &self.state {
-            State::Hint(why) => Some(why),
+            State::Hint { reason, .. } => Some(reason),
             State::Ready(_) => None,
         }
     }
@@ -132,12 +147,18 @@ impl<C: Connect> Mcp<C> {
                 Ok(())
             }
             Err(e) => {
-                self.state = State::Hint(match &e {
+                let catalog_error = matches!(e, ConnectError::InvalidCatalog(_));
+                let reason = match &e {
                     ConnectError::Unreachable(w)
                     | ConnectError::NoToken(w)
                     | ConnectError::Refused(w)
+                    | ConnectError::InvalidCatalog(w)
                     | ConnectError::TooOld(w) => w.clone(),
-                });
+                };
+                self.state = State::Hint {
+                    reason,
+                    catalog_error,
+                };
                 Err(e)
             }
         }
@@ -233,12 +254,16 @@ impl<C: Connect> Mcp<C> {
         if let State::Ready(ready) = &self.state {
             for (tool, method) in &ready.tools {
                 let entry = catalog::entry(&method.name);
-                list.push(json!({
+                let mut tool = json!({
                     "name": tool,
                     "description": entry.description,
-                    "inputSchema": entry.input_schema,
+                    "inputSchema": method.input_schema.as_ref().unwrap_or(&entry.input_schema),
                     "annotations": annotations(method),
-                }));
+                });
+                if let Some(schema) = method.output_schema.as_ref().and_then(mcp_output_schema) {
+                    tool["outputSchema"] = schema;
+                }
+                list.push(tool);
             }
         }
         list
@@ -252,10 +277,21 @@ impl<C: Connect> Mcp<C> {
             .filter(Value::is_object)
             .unwrap_or_else(|| json!({}));
         let State::Ready(ready) = &mut self.state else {
-            return if name == "studio_summary" {
-                text_result(HINT, false)
+            let hint = if matches!(
+                self.state,
+                State::Hint {
+                    catalog_error: true,
+                    ..
+                }
+            ) {
+                INVALID_CATALOG_HINT
             } else {
-                text_result(HINT, true)
+                HINT
+            };
+            return if name == "studio_summary" {
+                text_result(hint, hint == INVALID_CATALOG_HINT)
+            } else {
+                text_result(hint, true)
             };
         };
         let answer = if name == "studio_summary" {
@@ -288,7 +324,10 @@ impl<C: Connect> Mcp<C> {
                 })
             }
             Err(CallError::Lost(why)) => {
-                self.state = State::Hint(why);
+                self.state = State::Hint {
+                    reason: why,
+                    catalog_error: false,
+                };
                 // Try again on the next call, not at once.
                 self.last_try = Some(self.clock.now());
                 if self.initialized {
@@ -303,23 +342,28 @@ impl<C: Connect> Mcp<C> {
     }
 }
 
-/// The generated tools of a session: methods built into this `rbs-api` that the
-/// session's scopes and permission allow, minus those never offered.
+/// The generated tools of a session: methods advertised by the connected RBS
+/// server that the session's scopes and permission allow, minus those never offered.
 fn generated(session: &Session, namespaces: Option<&[String]>) -> Vec<(String, Method)> {
     session
         .methods
         .iter()
-        .filter(|m| rbs_api::request::METHODS.iter().any(|b| b.name == m.name))
         .filter(|m| {
             let ns = m.name.split('.').next().unwrap_or("");
             !NEVER_NAMESPACES.contains(&ns)
                 && !NEVER_METHODS.contains(&m.name.as_str())
                 && namespaces.is_none_or(|list| list.iter().any(|n| n == ns))
         })
-        .filter(|m| m.scope.is_some_and(|s| session.scopes.contains(&s)))
-        .filter(|m| session.irreversible || !needs_permission(m.effect))
+        .filter(|m| allowed(session, m))
         .map(|m| (tool_name(&m.name), m.clone()))
         .collect()
+}
+
+fn allowed(session: &Session, method: &Method) -> bool {
+    method.scope.is_some_and(|scope| {
+        !matches!(scope, rbs_api::Scope::Plugins | rbs_api::Scope::Tokens)
+            && session.scopes.contains(&scope)
+    }) && (session.irreversible || !needs_permission(method.effect))
 }
 
 /// `source.add` → `source_add`.
@@ -333,7 +377,14 @@ fn annotations(method: &Method) -> Value {
         Some(Effect::Edit) => json!({ "readOnlyHint": false, "destructiveHint": false }),
         _ => json!({ "readOnlyHint": false, "destructiveHint": true }),
     };
-    if OPEN_WORLD.contains(&method.name.as_str()) {
+    if method.name == "settings.set" {
+        a["destructiveHint"] = json!(true);
+    }
+    if OPEN_WORLD.contains(&method.name.as_str())
+        || !rbs_api::request::METHODS
+            .iter()
+            .any(|known| known.name == method.name)
+    {
         a["openWorldHint"] = json!(true);
     }
     a
@@ -342,10 +393,12 @@ fn annotations(method: &Method) -> Value {
 fn summary(ready: &mut Ready) -> Result<Value, CallError> {
     let mut out = Map::new();
     for (key, method) in SUMMARY {
-        let allowed = ready.session.methods.iter().any(|m| {
-            m.name == *method && m.scope.is_some_and(|s| ready.session.scopes.contains(&s))
-        });
-        if !allowed {
+        if !ready
+            .session
+            .methods
+            .iter()
+            .any(|m| m.name == *method && allowed(&ready.session, m))
+        {
             continue;
         }
         match ready.session.api.call(method, json!({})) {
@@ -373,6 +426,61 @@ fn structured(value: Value) -> Value {
         "structuredContent": object,
         "isError": false
     })
+}
+
+fn mcp_output_schema(schema: &Value) -> Option<Value> {
+    fn references_stay_in_defs(value: &Value) -> bool {
+        match value {
+            Value::Object(object) => object.iter().all(|(key, value)| {
+                (key != "$ref"
+                    || value
+                        .as_str()
+                        .is_some_and(|reference| reference.starts_with("#/$defs/")))
+                    && references_stay_in_defs(value)
+            }),
+            Value::Array(values) => values.iter().all(references_stay_in_defs),
+            _ => true,
+        }
+    }
+
+    let root = schema.as_object()?;
+    if root.get("type") == Some(&json!("object")) {
+        return Some(schema.clone());
+    }
+    if root.keys().any(|key| {
+        !matches!(
+            key.as_str(),
+            "$schema" | "$defs" | "title" | "description" | "anyOf"
+        )
+    }) || !references_stay_in_defs(schema)
+    {
+        return None;
+    }
+    let branches = root.get("anyOf")?.as_array()?;
+    let [object, null] = branches.as_slice() else {
+        return None;
+    };
+    let reference = object.as_object()?;
+    if reference.len() != 1 {
+        return None;
+    }
+    let pointer = reference.get("$ref")?.as_str()?.strip_prefix('#')?;
+    let target = schema.pointer(pointer)?;
+    if target.get("type") != Some(&json!("object"))
+        || target.get("$ref").is_some()
+        || null != &json!({"type": "null"})
+    {
+        return None;
+    }
+    let mut result = schema.clone();
+    result["type"] = json!("object");
+    result["anyOf"][1] = json!({
+        "type": "object",
+        "properties": {"result": {"type": "null"}},
+        "required": ["result"],
+        "additionalProperties": false
+    });
+    Some(result)
 }
 
 fn text_result(text: &str, is_error: bool) -> Value {

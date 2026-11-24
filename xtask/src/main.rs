@@ -25,6 +25,7 @@ mod affected;
 mod check_logs;
 mod check_size;
 mod check_ui;
+mod control_schema;
 mod device_check;
 mod ui_dev;
 mod ui_split;
@@ -222,6 +223,9 @@ fn read_edges(manifest: &Path) -> Result<Vec<(String, String, bool)>, Vec<String
         .and_then(Value::as_str)
         .ok_or_else(|| vec![format!("{} has no package name", manifest.display())])?
         .to_owned();
+    if name == "rbs-api" {
+        control_schema::check(&value).map_err(|error| vec![error.to_owned()])?;
+    }
     let mut edges = Vec::new();
     push_dep_table(&mut edges, &name, value.get("dependencies"), false);
     push_dep_table(&mut edges, &name, value.get("dev-dependencies"), true);
@@ -336,6 +340,7 @@ fn deny(from: &str, to: &str) -> Option<String> {
                 "sha2",
                 "subtle",
                 "getrandom",
+                "schemars",
             ],
             "the control API stays free of the engine, adapters and transports",
         ),

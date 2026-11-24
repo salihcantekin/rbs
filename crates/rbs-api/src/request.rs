@@ -8,6 +8,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::event::Topic;
 use crate::scope::{Scope, ScopeSet};
+use crate::types::DeviceKey;
+use crate::types::ItemStyle;
+pub use crate::types::SyncDeviceList;
 use crate::types::{
     CalibrationState, CanvasRecordState, CanvasStreamState, CaptureTarget, EstimateAnswer,
     EstimateSummary, FilterTypeList, Library, LoudnessStatus, MonitorDeviceList, MonitorMode,
@@ -15,81 +18,50 @@ use crate::types::{
     ProtectionStatus, RecordState, ReplayStatus, SceneList, SeqMap, Settings, SkippedTrack,
     Snapshot, SourceInfo, SourceKind, StreamState, StudioInfo, VcamStatus,
 };
-use crate::types::{DeviceKey, DeviceSyncEntry};
-use crate::types::{ItemScroll, ItemStyle};
 
+mod access;
 mod add_source;
 mod added;
 mod arrange;
 mod browser;
+mod canvas;
 mod groups;
 mod item_edits;
 mod media;
 mod methods;
+mod obs_import;
 mod scene_refs;
+mod scroll;
+mod session;
 mod settings_patch;
 mod transform;
 mod wire;
+pub use access::*;
 pub use add_source::AddSource;
 pub use added::*;
 pub use arrange::*;
 pub use browser::*;
+pub use canvas::*;
 pub use groups::*;
 pub use item_edits::*;
 pub use media::{MediaPlayState, MediaSeek, MediaSource, MediaStateInfo};
-pub use methods::{METHODS, UI_METHODS};
+pub use methods::{METHODS, MethodInfoOwned, UI_METHODS};
+pub use obs_import::{ObsImport, ObsImportChoice};
 pub use scene_refs::*;
+pub use scroll::*;
+pub use session::{Authenticate, ClientInfo, Hello};
 pub use settings_patch::SettingsPatch;
 pub use transform::*;
-use wire::WireRequest;
+pub(crate) use wire::WireRequest;
 
 /// Parameters of a method that takes none. Unknown fields are ignored.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Empty {}
-
-/// `session.hello`: the protocol versions the client speaks, and who it is.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Hello {
-    /// `major.minor` versions, for example `["1.0"]`.
-    pub protocols: Vec<String>,
-    /// The client.
-    pub client: ClientInfo,
-}
-
-/// A client's or server's name and version.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ClientInfo {
-    /// Name.
-    pub name: String,
-    /// Version.
-    pub version: String,
-}
-
-impl ClientInfo {
-    /// A name and version.
-    pub fn new(name: impl Into<String>, version: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            version: version.into(),
-        }
-    }
-}
-
-/// `session.authenticate`.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Authenticate {
-    /// The token's text.
-    pub token: String,
-}
-
-impl std::fmt::Debug for Authenticate {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("Authenticate { token: <redacted> }")
-    }
-}
 
 /// `source.targets`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TargetsParams {
     /// The kind whose capture targets to list.
     pub kind: SourceKind,
@@ -98,6 +70,7 @@ pub struct TargetsParams {
 /// `source.set_text` (protocol 1.75, ADR-0129 decision 8): replaces a text source's
 /// `text` only. One undo step.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SetText {
     /// The text source's id.
@@ -108,6 +81,7 @@ pub struct SetText {
 
 /// What `text.timer` does (protocol 1.84, ADR-0129 decision 11).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum TimerAction {
     /// Runs it from its value; a countdown at zero starts over.
@@ -122,6 +96,7 @@ pub enum TimerAction {
 /// countdown (by duration) or stopwatch text source. A live action: not an undo step
 /// and not in the scene collection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct TextTimer {
     /// The text source's id.
@@ -134,6 +109,7 @@ pub struct TextTimer {
 /// audio too" companion of a display or window source. One undo step each way. Adding
 /// one that exists, or removing one that does not, changes nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SetCompanionAudio {
     /// The picture source's id.
@@ -144,6 +120,7 @@ pub struct SetCompanionAudio {
 
 /// `collection.set_glide` (protocol 1.35, ADR-0100): collection morph defaults.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SetCollectionGlide {
     /// Milliseconds in `0..=5000`. `0` jumps.
@@ -155,6 +132,7 @@ pub struct SetCollectionGlide {
 /// `collection.set_transition` (protocol 1.81, ADR-0128): the collection's transition.
 /// Only the given parts change; one undo step.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SetCollectionTransition {
     /// The kind a program change uses in studio mode (in every mode before 1.97).
@@ -180,6 +158,7 @@ pub struct SetCollectionTransition {
 /// The answer to `collection.set_transition` (protocol 1.89): empty, or a warning about
 /// the stinger (ADR-0140 decision 9).
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TransitionSet {
     /// The stinger's file has transparency no decoder on this computer keeps, so
     /// each Stinger change runs as a Cut; absent when false.
@@ -192,6 +171,7 @@ pub struct TransitionSet {
 /// it. With kind `move`, `duration_ms` replaces the glide's duration and every
 /// per-source override for this change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct TransitionOnce {
     /// The kind for this change.
@@ -204,6 +184,7 @@ pub struct TransitionOnce {
 
 /// `scene.switch` (protocol 1.6; `kind` and `duration_ms` since 1.81).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SwitchScene {
     /// The scene's id (`scene.list`).
@@ -229,6 +210,7 @@ impl SwitchScene {
 /// `source.set_glide` (protocol 1.35, ADR-0100): per-source slide override, or `null`
 /// to clear.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SetSourceGlide {
     /// The source's id.
@@ -241,6 +223,7 @@ pub struct SetSourceGlide {
 /// policy. A key left out (or `null`) is the type's default, so `{source}` alone
 /// resets it. One undo step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SetSourceActivity {
     /// The source's id.
@@ -258,6 +241,7 @@ pub struct SetSourceActivity {
 
 /// The policy in force for a source (protocol 1.95, ADR-0152).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct EffectiveActivity {
     /// When it runs.
     pub run: crate::types::ActivityRun,
@@ -270,6 +254,7 @@ pub struct EffectiveActivity {
 
 /// `source.get_activity`'s answer (protocol 1.95, ADR-0152).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SourceActivityInfo {
     /// The source's id.
     pub source: u32,
@@ -296,6 +281,7 @@ pub struct SourceActivityInfo {
 
 /// How a display's work area is placed on the canvas (protocol 1.41, ADR-0104).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum ChromeFill {
     /// Cover the canvas (layout fill).
@@ -314,6 +300,7 @@ impl ChromeFill {
 
 /// Display chrome insets in capture pixels (protocol 1.41, ADR-0104).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct ChromeSpec {
     /// Pixels cut from the top.
@@ -336,6 +323,7 @@ pub struct ChromeSpec {
 /// `source.set_region` (protocol 1.41, ADR-0103). One undo step, distinct from
 /// `item.set_crop`. `null` clears the region.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SetSourceRegion {
     /// The source's id.
@@ -349,6 +337,7 @@ pub struct SetSourceRegion {
 /// source's value. The per-track options of ADR-0086 decision 2 are later minors, so
 /// they are refused as unknown fields.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SetRecordSeparately {
     /// The source's id.
@@ -371,6 +360,7 @@ pub struct SetRecordSeparately {
 
 /// The form of a separate picture file (protocol 1.52, ADR-0117 decision 1).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum VideoAs {
     /// Images for a still source, a video file otherwise.
@@ -385,6 +375,7 @@ pub enum VideoAs {
 /// A marker colour (protocol 1.50, ADR-0089 decision 2): a fixed, semantic set that
 /// mirrors the recording manifest's. The app draws each from a theme token.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum MarkerColor {
     /// The default.
@@ -405,6 +396,7 @@ pub enum MarkerColor {
 /// `marker.add` (protocol 1.50, ADR-0089): a manual marker in the running
 /// recordings.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct MarkerAdd {
     /// One line of at most 200 characters; absent or blank is "Marker N".
@@ -420,6 +412,7 @@ pub struct MarkerAdd {
 
 /// `marker.remove` (protocol 1.50, ADR-0089): takes one marker back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct MarkerRemove {
     /// The recording's canvas.
@@ -430,6 +423,7 @@ pub struct MarkerRemove {
 
 /// One marker `marker.add` placed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct MarkerPlaced {
     /// The recording's canvas.
     pub canvas: OutputCanvas,
@@ -446,6 +440,7 @@ pub struct MarkerPlaced {
 
 /// `marker.add`'s answer: one entry per recording that got the marker.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct MarkersAdded {
     /// Main canvas first.
     pub markers: Vec<MarkerPlaced>,
@@ -454,6 +449,7 @@ pub struct MarkersAdded {
 /// `project.export` (protocol 1.58, ADR-0089 decisions 8 and 11): an editor project
 /// from a finished recording's manifest.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct ProjectExport {
     /// The recording's folder name, or a plain recording's file name, inside the
@@ -465,6 +461,7 @@ pub struct ProjectExport {
 
 /// `project.export`'s answer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ProjectExported {
     /// The project's file name, next to the manifest (never an absolute path).
     pub file: String,
@@ -474,6 +471,7 @@ pub struct ProjectExported {
 
 /// `source.get_region`'s answer (protocol 1.41).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SourceRegionInfo {
     /// The source's id.
     pub source: u32,
@@ -481,72 +479,10 @@ pub struct SourceRegionInfo {
     pub region: Option<[u32; 4]>,
 }
 
-/// `scene.audio.reset_source` (protocol 1.48, ADR-0091): a scene and one of the
-/// sources it may set a level for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SceneSourceRef {
-    /// The scene's id.
-    pub scene: u32,
-    /// The source's id.
-    pub source: u32,
-}
-
-/// `scene.audio.set` (protocol 1.48, ADR-0091): the scene's own level for a source.
-/// At least one of `volume` and `muted`; a field left out keeps what the scene has.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SetSceneLevel {
-    /// The scene's id.
-    pub scene: u32,
-    /// The source's id.
-    pub source: u32,
-    /// A linear factor from 0 to 1.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub volume: Option<f32>,
-    /// Muted.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub muted: Option<bool>,
-}
-
-/// One entry of a scene's own levels (protocol 1.48, ADR-0091); a field left out uses
-/// the source's own value.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct SceneLevelInfo {
-    /// The source's id.
-    pub source: u32,
-    /// The scene's volume for it, a linear factor from 0 to 1.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub volume: Option<f32>,
-    /// The scene's mute for it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub muted: Option<bool>,
-}
-
-/// `scene.audio.get`'s answer (protocol 1.48, ADR-0091).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SceneLevels {
-    /// The scene's id.
-    pub scene: u32,
-    /// Own levels (`true`) or Shared levels.
-    pub own: bool,
-    /// Its entries by source id; empty in Shared levels.
-    #[serde(default)]
-    pub levels: Vec<SceneLevelInfo>,
-}
-
-/// `scene.audio.set`'s answer (protocol 1.48).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SceneLevelSet {
-    /// The scene was in Shared levels and this call turned it to Own levels (one undo
-    /// step, copying what was heard).
-    #[serde(default)]
-    pub turned_own: bool,
-}
-
 /// `source.set_chrome` (protocol 1.41, ADR-0104). Writes the insets and the region
 /// they describe. Does not move the item box. `null` clears chrome and the region.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SetSourceChrome {
     /// The source's id.
@@ -557,6 +493,7 @@ pub struct SetSourceChrome {
 
 /// `source.get_chrome`'s answer (protocol 1.41).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SourceChromeInfo {
     /// The source's id.
     pub source: u32,
@@ -566,6 +503,7 @@ pub struct SourceChromeInfo {
 
 /// `source.delete`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SourceRef {
     /// The source's id.
     pub source: u32,
@@ -574,6 +512,7 @@ pub struct SourceRef {
 /// `item.set_style` (protocol 1.3, ADR-0053): replaces the whole style of the item's
 /// layout on the studio's canvas.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SetItemStyle {
     /// The item's id (`source.list` gives each video source's program-scene item).
     pub item: u32,
@@ -593,6 +532,7 @@ pub struct SetItemStyle {
 /// `item.set_crop` (protocol 1.5, ADR-0058): the source pixels cut from each edge of
 /// an item's picture, on the item's layout on the studio's canvas.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SetItemCrop {
     /// The item's id (`source.list` gives each video source's program-scene item).
@@ -626,6 +566,7 @@ fn is_true(v: &bool) -> bool {
 
 /// `scene.add` (protocol 1.6): an empty shared scene, not on air.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct AddScene {
     /// Its name; `null` lets the server pick "Scene", "Scene 2", ...
@@ -635,6 +576,7 @@ pub struct AddScene {
 
 /// `scene.duplicate` (protocol 1.43; `sources` from 1.68, ADR-0133 decision 4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct DuplicateScene {
     /// The scene's id (`scene.list`).
@@ -647,6 +589,7 @@ pub struct DuplicateScene {
 /// `source.duplicate` and `source.copy_attributes` (protocol 1.68, ADR-0133): a source,
 /// its item in `scene` (default: the scene being edited) or its global item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SourceInScene {
     /// The source's id.
@@ -661,6 +604,7 @@ pub struct SourceInScene {
 
 /// `source.reset` (protocol 1.68, ADR-0133 decision 5).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct ResetSource {
     /// The source's id.
@@ -678,6 +622,7 @@ pub struct ResetSource {
 
 /// `source.paste_attributes` (protocol 1.68, ADR-0133 decision 6).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct PasteAttributes {
     /// The target items, in any scene.
@@ -695,6 +640,7 @@ pub struct PasteAttributes {
 /// `scene.set_transition` (protocol 1.86, ADR-0135 decision 10): sets or clears the
 /// transition into a scene; one undo step. `null` or `{}` clears it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SetSceneTransition {
     /// The scene's id.
@@ -706,6 +652,7 @@ pub struct SetSceneTransition {
 
 /// `canvas.transition_progress` (protocol 1.87, ADR-0135 decision 1): a T-bar value.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct TransitionProgress {
     /// The canvas; the studio's main canvas when absent.
@@ -718,6 +665,7 @@ pub struct TransitionProgress {
 
 /// `source.rename` (protocol 1.6).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct RenameSource {
     /// The source's id.
@@ -728,6 +676,7 @@ pub struct RenameSource {
 
 /// `source.set_volume` (protocol 1.6).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SetSourceVolume {
     /// The source's id.
@@ -738,6 +687,7 @@ pub struct SetSourceVolume {
 
 /// `source.set_muted` (protocol 1.6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SetSourceMuted {
     /// The source's id.
@@ -748,6 +698,7 @@ pub struct SetSourceMuted {
 
 /// The arrangement `canvas.add_vertical` writes for the new shape (protocol 1.28).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum VerticalLayout {
     /// Each item scaled to fit, letterboxed.
@@ -761,6 +712,7 @@ pub enum VerticalLayout {
 /// `canvas.add_vertical` (protocol 1.28, ADR-0093 decision 8): adds and runs the
 /// second, vertical canvas. At most one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct AddVerticalCanvas {
     /// Picture width in pixels (default 1080).
@@ -778,31 +730,10 @@ pub struct AddVerticalCanvas {
     pub layout: Option<VerticalLayout>,
 }
 
-/// `canvas.auto_layout` (protocol 1.44, ADR-0093 decision 4): arranges a scene's
-/// visible source items for the vertical canvas, one undo step.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CanvasAutoLayout {
-    /// The canvas to arrange for; only `"vertical"` in 1.44.
-    pub canvas: OutputCanvas,
-    /// The arrangement.
-    pub mode: VerticalLayout,
-    /// The scene; the one the vertical canvas shows now when left out.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scene: Option<u32>,
-}
-
-/// `canvas.auto_layout`'s answer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AutoLayoutDone {
-    /// The number of layouts written; 0 is not an error.
-    pub items: u32,
-}
-
 /// `canvas.set_vertical_size` (protocol 1.44, ADR-0093 decision 8): the vertical
 /// canvas's size in pixels, even and from 64 to 8192.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SetVerticalSize {
     /// Width in pixels.
@@ -813,6 +744,7 @@ pub struct SetVerticalSize {
 
 /// `canvas.set_master_volume` (protocol 1.15, ADR-0081): the studio canvas's master.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SetMasterVolume {
     /// A linear factor from 0 to 1.
@@ -821,6 +753,7 @@ pub struct SetMasterVolume {
 
 /// `canvas.set_master_muted` (protocol 1.15, ADR-0081).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SetMasterMuted {
     /// Muted.
@@ -829,6 +762,7 @@ pub struct SetMasterMuted {
 
 /// `source.set_monitor` (protocol 1.30, ADR-0097).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SetSourceMonitor {
     /// The source's id.
@@ -839,6 +773,7 @@ pub struct SetSourceMonitor {
 
 /// `monitor.set_device` (protocol 1.30).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SetMonitorDevice {
     /// A `monitor.devices` id; `null`: System default.
@@ -847,6 +782,7 @@ pub struct SetMonitorDevice {
 
 /// `monitor.set_volume` (protocol 1.30).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SetMonitorVolume {
     /// Linear factor from 0 to 1.
@@ -855,6 +791,7 @@ pub struct SetMonitorVolume {
 
 /// `monitor.set_solo` (protocol 1.30).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SetMonitorSolo {
     /// The soloed sources; empty ends solo.
@@ -864,6 +801,7 @@ pub struct SetMonitorSolo {
 /// `loudness.set_enabled` (protocol 1.47, ADR-0092): starts or stops the main canvas's
 /// loudness meter. Session state: a restart of the app starts with it off.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SetLoudnessEnabled {
     /// Measure (true) or not.
@@ -872,6 +810,7 @@ pub struct SetLoudnessEnabled {
 
 /// `source.set_mixer_hidden` (protocol 1.14, ADR-0080).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SetSourceMixerHidden {
     /// The source's id.
@@ -882,6 +821,7 @@ pub struct SetSourceMixerHidden {
 
 /// Which filter types `filter.types` lists (protocol 1.16, ADR-0082).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum FilterDomains {
     /// Video filters only: what a 1.8 to 1.15 server lists, so old clients never meet
@@ -896,6 +836,7 @@ pub enum FilterDomains {
 
 /// `filter.types` (protocol 1.8; `domain` since 1.16).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct FilterTypesParams {
     /// Which types to list; video when absent.
     #[serde(default)]
@@ -904,6 +845,7 @@ pub struct FilterTypesParams {
 
 /// `filter.add` (protocol 1.8, ADR-0062): a filter at the end of a source's chain.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct AddFilter {
     /// The source's id.
@@ -919,6 +861,7 @@ pub struct AddFilter {
 
 /// `filter.remove` (protocol 1.8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct FilterRef {
     /// The filter's id (unique in the collection).
@@ -927,6 +870,7 @@ pub struct FilterRef {
 
 /// `filter.move` (protocol 1.8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct MoveFilter {
     /// The filter's id.
@@ -937,6 +881,7 @@ pub struct MoveFilter {
 
 /// `filter.set_enabled` (protocol 1.8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SetFilterEnabled {
     /// The filter's id.
@@ -947,6 +892,7 @@ pub struct SetFilterEnabled {
 
 /// `filter.set_settings` (protocol 1.8): a patch on the settings on air.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SetFilterSettings {
     /// The filter's id.
@@ -958,6 +904,7 @@ pub struct SetFilterSettings {
 /// `source.retarget` (protocol 1.13, ADR-0077): point a source at another listed target
 /// of its kind (listed from 1.100). Its name, layout, filters and places stay; one step.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct RetargetSource {
     /// The source's id.
@@ -971,6 +918,7 @@ pub struct RetargetSource {
 /// `source.reload` (protocol 1.13, ADR-0077): try a source that is not running again with
 /// its stored settings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct ReloadSource {
     /// The source's id.
@@ -979,6 +927,7 @@ pub struct ReloadSource {
 
 /// `source.get_settings` (protocol 1.17, ADR-0077).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct GetSourceSettings {
     /// The source's id.
@@ -990,6 +939,7 @@ pub struct GetSourceSettings {
 /// change is one undo step. The source is opened again with the new settings (filters,
 /// layout and its place in the scenes stay).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SetSourceSettings {
     /// The source's id.
@@ -1005,6 +955,7 @@ pub struct SetSourceSettings {
 
 /// `source.get_settings`' answer: every stored setting of the source.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SourceSettingsInfo {
     /// The source's id.
     pub source: u32,
@@ -1014,6 +965,7 @@ pub struct SourceSettingsInfo {
 
 /// `source.set_sync_offset` (protocol 1.8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SetSourceSyncOffset {
     /// The source's id.
@@ -1024,6 +976,7 @@ pub struct SetSourceSyncOffset {
 
 /// `sync.measure_start` (protocol 1.66, ADR-0126 decision 10).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SyncMeasureStart {
     /// The audio source to measure.
@@ -1036,6 +989,7 @@ pub struct SyncMeasureStart {
 
 /// `sync.measure_start`'s answer (protocol 1.66).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SyncMeasureStarted {
     /// The measurement's id, as `sync.measure.changed` names it.
     pub measurement: String,
@@ -1045,6 +999,7 @@ pub struct SyncMeasureStarted {
 
 /// `sync.measure_cancel` (protocol 1.66).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SyncMeasureCancel {
     /// The id `sync.measure_start` answered.
@@ -1053,6 +1008,7 @@ pub struct SyncMeasureCancel {
 
 /// `sync.forget_device` (protocol 1.66).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SyncForgetDevice {
     /// The device, as `sync.devices` lists it.
@@ -1061,6 +1017,7 @@ pub struct SyncForgetDevice {
 
 /// `sync.apply_to_device_sources` (protocol 1.66).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SyncApplyToDeviceSources {
     /// The source whose offset the other sources of its device get.
@@ -1069,21 +1026,16 @@ pub struct SyncApplyToDeviceSources {
 
 /// `sync.apply_to_device_sources`'s answer (protocol 1.66).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SyncAppliedToDeviceSources {
     /// The sources that changed.
     pub changed: Vec<u32>,
 }
 
-/// `sync.devices`'s answer (protocol 1.66).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SyncDeviceList {
-    /// One entry per remembered device.
-    pub devices: Vec<DeviceSyncEntry>,
-}
-
 /// `item.add` (protocol 1.6): a source the collection has, placed on top of the
 /// program scene.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct AddItem {
     /// The source's id (`scene.list` lists every source).
@@ -1093,23 +1045,10 @@ pub struct AddItem {
     pub scene: Option<u32>,
 }
 
-/// Which way `item.move` or `scene.move` steps in order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum LayerDirection {
-    /// Over the next source with a picture (or one place up in the scene list).
-    Up,
-    /// Under the next source with a picture (or one place down in the scene list).
-    Down,
-    /// To the top of the picture layers (or the start of the scene list). Protocol 1.36.
-    Front,
-    /// To the bottom of the picture layers (or the end of the scene list). Protocol 1.36.
-    Back,
-}
-
 /// `source.set_active` (protocol 1.33): keep the device open, or release it.
 /// Hiding a source does not release it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SetSourceActive {
     /// The source's id.
@@ -1120,6 +1059,7 @@ pub struct SetSourceActive {
 
 /// How the Library groups a built-in look (protocol 1.34, ADR-0075).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum LookGroup {
     /// Colour grading.
@@ -1136,6 +1076,7 @@ pub enum LookGroup {
 
 /// One built-in look, as `look.list` returns it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct LookInfo {
     /// Stable id, `builtin:<slug>`.
@@ -1149,6 +1090,7 @@ pub struct LookInfo {
 /// `look.list`'s answer (protocol 1.34): the built-in looks, in Library order.
 /// There are no user-saved looks.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct LookList {
     /// One row per built-in look.
@@ -1157,6 +1099,7 @@ pub struct LookList {
 
 /// `look.apply` (protocol 1.34, ADR-0075): copy a built-in look onto a source.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct ApplyLook {
     /// The source's id.
@@ -1167,6 +1110,7 @@ pub struct ApplyLook {
 
 /// `source.add_sample` (protocol 1.34, ADR-0075): a built-in sample picture.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct AddSample {
     /// The sample's id.
@@ -1175,6 +1119,7 @@ pub struct AddSample {
 
 /// `item.set_box` (protocol 1.34): the picture's box on the canvas the studio shows.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SetItemBox {
     /// The source's id. The box is the one on the scene being edited.
@@ -1200,6 +1145,7 @@ pub struct SetItemBox {
 
 /// `item.set_box`'s answer: the request's `seq`, and that the box is the source's now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct BoxPlaced {
     /// The request's `seq`.
@@ -1220,6 +1166,7 @@ fn is_zero_u64(v: &u64) -> bool {
 
 /// `global.add` (protocol 1.10, ADR-0065).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct AddGlobal {
     /// The source's id.
@@ -1228,6 +1175,7 @@ pub struct AddGlobal {
 
 /// `global.remove` (protocol 1.10, ADR-0065).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct RemoveGlobal {
     /// The source's id.
@@ -1241,6 +1189,7 @@ pub struct RemoveGlobal {
 /// `canvas.set_preview` (protocol 1.9, ADR-0061): a scene enters studio mode with it in
 /// preview, or changes the preview scene; `null` leaves studio mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SetPreview {
     /// The preview scene's id, or `null`.
@@ -1249,6 +1198,7 @@ pub struct SetPreview {
 
 /// `item.set_show_for` (ADR-0105). Undoable document state. No protocol minor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SetItemShowFor {
     /// The item's id (`source.list`).
@@ -1258,55 +1208,10 @@ pub struct SetItemShowFor {
     pub show_for_ms: Option<u32>,
 }
 
-/// `item.set_scroll` (protocol 1.94, ADR-0150 decision 11): sets or clears the saved
-/// scroll of a source item's layout on a canvas. One undo step.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SetItemScroll {
-    /// The item's id (`source.list`).
-    pub item: u32,
-    /// The scroll; `null` clears it.
-    pub scroll: Option<ItemScroll>,
-    /// `"main"` (the default) or `"vertical"`, as for the other item edits.
-    #[serde(default, skip_serializing_if = "is_main")]
-    pub canvas: OutputCanvas,
-    /// Calls with the same non-zero gesture and edit kind that follow each other are
-    /// one undo step (one drag, protocol 1.100, ADR-0164 decision 2); 0, the default,
-    /// is a step of its own. A gesture never refuses a call.
-    #[serde(default, skip_serializing_if = "is_zero_u64")]
-    pub gesture: u64,
-}
-
-/// `item.scroll_pause`, `item.scroll_resume` and `item.scroll_restart` (protocol 1.94,
-/// ADR-0150 decision 11): live, not saved, not undone. They act on the item's run on
-/// the canvas, so every item sharing that run moves too.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ScrollItem {
-    /// The item's id.
-    pub item: u32,
-    /// `"main"` (the default) or `"vertical"`.
-    #[serde(default, skip_serializing_if = "is_main")]
-    pub canvas: OutputCanvas,
-}
-
-/// `item.scroll_speed` (protocol 1.94, ADR-0150 decision 11): live speed of the item's
-/// run until a scroll edit, a restart or the run's end.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SetScrollSpeed {
-    /// The item's id.
-    pub item: u32,
-    /// Units per second, 1 to 4000 (0 is refused: pause is the call for it).
-    pub speed: f32,
-    /// `"main"` (the default) or `"vertical"`.
-    #[serde(default, skip_serializing_if = "is_main")]
-    pub canvas: OutputCanvas,
-}
-
 /// `item.show` (ADR-0105). Live session cue. Does not change `visible` and is not
 /// undone. No protocol minor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct ShowItem {
     /// The item's id (`source.list`).
@@ -1315,6 +1220,7 @@ pub struct ShowItem {
 
 /// `calibration.run` (protocol 1.55, ADR-0087 decision 4).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct CalibrationRun {
     /// The recording profile whose plan is measured (`output.profiles`).
     pub profile: String,
@@ -1326,6 +1232,7 @@ pub struct CalibrationRun {
 
 /// `record.start`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct RecordStart {
     /// A recording profile's id (`output.profiles`). The file goes into its folder.
     pub profile: String,
@@ -1364,6 +1271,7 @@ impl RecordStart {
 
 /// `record.start`'s `on_hardware_limit` (protocol 1.54, ADR-0087 decision 5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum HardwareLimitPolicy {
     /// Refuse the start and say which files do not fit.
@@ -1380,6 +1288,7 @@ pub enum HardwareLimitPolicy {
 /// `record.resume` and `record.pause_toggle` (protocol 1.61). Unknown fields are
 /// ignored.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct OnCanvases {
     /// The canvases; the main one when absent or `null`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1396,6 +1305,7 @@ impl OnCanvases {
 /// `stream.destinations` (protocol 1.74, ADR-0127 decision 16): one canvas's
 /// destinations, or both canvases' when `canvas` is absent.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct DestinationsOf {
     /// The canvas; both when absent or `null`.
@@ -1405,6 +1315,7 @@ pub struct DestinationsOf {
 
 /// `stream.destination.start` and `stream.destination.stop` (protocol 1.74).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct DestinationRef {
     /// The destination's id (`stream.destinations`).
@@ -1413,6 +1324,7 @@ pub struct DestinationRef {
 
 /// `stream.destination.set_enabled` (protocol 1.74).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SetDestinationEnabled {
     /// The destination's id.
@@ -1423,6 +1335,7 @@ pub struct SetDestinationEnabled {
 
 /// `output.set_with_vertical` (protocol 1.42, ADR-0111 decision 4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SetWithVertical {
     /// Recording or stream.
@@ -1436,6 +1349,7 @@ pub struct SetWithVertical {
 /// and its sound from protocol 1.67). Unknown
 /// fields are ignored; an unknown `picture` is `invalid_params`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct StreamHold {
     /// The canvases; the main one when absent or `null`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1464,6 +1378,7 @@ impl StreamHold {
 
 /// What a held stream sends (protocol 1.64, ADR-0124 decision 13).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum HoldPicture {
     /// The program's last frame, repeated.
@@ -1478,6 +1393,7 @@ pub enum HoldPicture {
 /// What a stream held with a scene sends for sound (protocol 1.67, ADR-0124 phase
 /// 2b).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum HoldSound {
     /// Silence, as a freeze or black hold.
@@ -1490,6 +1406,7 @@ pub enum HoldSound {
 /// `record.status` and `stream.status`: the canvas they report (protocol 1.29). Unknown
 /// fields are ignored.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct OnCanvas {
     /// The canvas; the main one when absent or `null`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1505,6 +1422,7 @@ impl OnCanvas {
 
 /// `replay.save` (protocol 1.27).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct ReplaySave {
     /// How many seconds back, 1 to the buffer's length; everything it holds when absent.
@@ -1514,6 +1432,7 @@ pub struct ReplaySave {
 
 /// `record.start_to_file` (`admin`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct RecordStartToFile {
     /// A recording profile's id, for the encoding settings.
     pub profile: String,
@@ -1524,57 +1443,9 @@ pub struct RecordStartToFile {
     pub canvas: Option<OutputCanvas>,
 }
 
-/// What `import.obs.check` and `import.obs.run` bring (protocol 1.82, ADR-0131
-/// decision 12): the parts the desktop wizard offers. Every part is on when absent.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ObsImportChoice {
-    /// The scenes to bring, by OBS name (and the scenes they nest); absent: all.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scenes: Option<Vec<String>>,
-    /// OBS's desktop audio and microphones.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub global_audio: Option<bool>,
-    /// Audio filters.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub audio_filters: Option<bool>,
-    /// Video filters.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub video_filters: Option<bool>,
-    /// The canvas size and frame rate of the profile.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub canvas: Option<bool>,
-    /// Recording settings.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub recording: Option<bool>,
-    /// The stream server.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stream_server: Option<bool>,
-    /// The stream key (into the credential store only; needs `stream_server`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stream_key: Option<bool>,
-    /// Hotkeys (added; never replacing a shortcut of the user's).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hotkeys: Option<bool>,
-}
-
-/// `import.obs.check` and `import.obs.run` (protocol 1.82): a collection and a
-/// profile named as `import.obs.scan` found them, never by path.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ObsImport {
-    /// A collection name from `import.obs.scan`.
-    pub collection: String,
-    /// A profile name from `import.obs.scan`; absent: no profile.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub profile: Option<String>,
-    /// What to bring; absent: everything.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub choose: Option<ObsImportChoice>,
-}
-
 /// `profile.switch` and `collection.switch` (protocol 1.4).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct EntryRef {
     /// The entry's id (`profile.list`, `collection.list`).
     pub id: String,
@@ -1582,6 +1453,7 @@ pub struct EntryRef {
 
 /// `events.subscribe`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Subscribe {
     /// Topics to add.
     pub topics: Vec<Topic>,
@@ -1592,42 +1464,10 @@ pub struct Subscribe {
 
 /// `events.unsubscribe`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Unsubscribe {
     /// Topics to drop.
     pub topics: Vec<Topic>,
-}
-
-/// `tokens.create`: a named access token for apps (ADR-0044 decision 9).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CreateToken {
-    /// Its name, unique; surrounding spaces are dropped.
-    pub name: String,
-    /// What it allows: `["read"]`, `["read", "control"]` or `["read", "control",
-    /// "admin"]` (the access levels the desktop app offers). Never more than the
-    /// caller's own scopes (`not_permitted`, protocol 1.80).
-    pub scopes: ScopeSet,
-    /// "Allow actions that cannot be undone" (protocol 1.80, ADR-0052 decision 4);
-    /// absent: allowed, as tokens behave without the field. Only a caller that holds
-    /// the permission reaches `tokens.create` (it is `destructive`), so it can give
-    /// either.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub irreversible: Option<bool>,
-}
-
-/// `tokens.revoke`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TokenRef {
-    /// The token's name.
-    pub name: String,
-}
-
-/// `addon.install`, `addon.cancel`, `addon.clean` and `addon.remove` (protocol 1.90,
-/// ADR-0145): an add-on of the built-in catalog, by id.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AddOnRef {
-    /// The add-on's id, as `addon.list` names it (`org.rbs.browser-engine`).
-    pub id: String,
 }
 
 /// A request the control thread carries out.
@@ -2125,6 +1965,7 @@ pub struct MethodInfo {
 /// permission "Allow actions that cannot be undone", `live` and `destructive`
 /// methods are refused with `not_permitted`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Effect {
     /// Reads state; changes nothing.
@@ -2176,6 +2017,7 @@ pub const fn topic_scope(topic: Topic) -> Scope {
 
 /// `session.hello`'s answer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct HelloResult {
     /// The protocol version the session speaks.
     pub protocol: String,
@@ -2184,13 +2026,16 @@ pub struct HelloResult {
     /// On IPC, a verified same-user peer is authenticated by `session.hello` and gets
     /// its scopes here; otherwise `null`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "schema", schemars(with = "Option<Vec<crate::Scope>>"))]
     pub scopes: Option<ScopeSet>,
 }
 
 /// `session.authenticate`'s answer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AuthResult {
     /// What the session may do (the token's scopes, limited by the channel).
+    #[cfg_attr(feature = "schema", schemars(with = "Vec<crate::Scope>"))]
     pub scopes: ScopeSet,
     /// Whether the token holds "Allow actions that cannot be undone" (protocol
     /// 1.76). Absent from an older server: a client treats it as `false`.
@@ -2200,8 +2045,9 @@ pub struct AuthResult {
     pub server: ClientInfo,
 }
 
-/// `api.describe`'s answer. The JSON Schema joins it with the schema generator.
+/// `api.describe`'s answer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Description {
     /// The protocol version the session speaks.
     pub protocol: String,
@@ -2211,21 +2057,9 @@ pub struct Description {
     pub topics: Vec<Topic>,
 }
 
-/// A method and its scope, owned (for deserializing).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MethodInfoOwned {
-    /// `namespace.verb`.
-    pub name: String,
-    /// The scope it needs; `null` for the handshake.
-    pub scope: Option<Scope>,
-    /// What it does (protocol 1.76); absent from an older server, which a client
-    /// treats as `destructive`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub effect: Option<Effect>,
-}
-
 /// `source.targets`' answer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TargetList {
     /// The kind.
     pub kind: SourceKind,
@@ -2235,6 +2069,7 @@ pub struct TargetList {
 
 /// `scene.sources`' answer (protocol 1.9).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SceneSourceList {
     /// The scene.
     pub scene: u32,
@@ -2244,6 +2079,7 @@ pub struct SceneSourceList {
 
 /// `item.remove`'s answer, and `global.remove`'s without `keep` (protocol 1.10).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ItemRemoved {
     /// The source was deleted too: it was its last placement.
     pub source_deleted: bool,
@@ -2260,6 +2096,7 @@ pub struct ItemRemoved {
 /// `global.list`'s answer (protocol 1.10): the global sources of the studio's canvas,
 /// top first, as `source.list` rows.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct GlobalSourceList {
     /// One row per global source.
     pub sources: Vec<SourceInfo>,
@@ -2267,6 +2104,7 @@ pub struct GlobalSourceList {
 
 /// `filter.add`'s answer (protocol 1.8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct FilterAdded {
     /// The new filter's id.
     pub filter: u32,
@@ -2274,6 +2112,7 @@ pub struct FilterAdded {
 
 /// `output.profiles`' answer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ProfileList {
     /// The recording profiles.
     pub profiles: Vec<OutputProfile>,
@@ -2281,6 +2120,7 @@ pub struct ProfileList {
 
 /// `record.start`'s answer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct RecordStarted {
     /// The video encoder's name.
     pub video_encoder: String,
@@ -2298,6 +2138,7 @@ pub struct RecordStarted {
 /// `stream.start`'s answer: the stream runs and connects in the background
 /// (`stream.state` says when it reaches the server).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct StreamStarted {
     /// The video encoder's name.
     pub video_encoder: String,
@@ -2307,6 +2148,7 @@ pub struct StreamStarted {
 
 /// `events.subscribe`'s answer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Subscribed {
     /// The current `seq` per state key of the subscribed state topics.
     pub seq: SeqMap,
@@ -2314,10 +2156,12 @@ pub struct Subscribed {
 
 /// An access token as `tokens.list` shows it: never the token or its hash.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TokenInfo {
     /// Its name.
     pub name: String,
     /// What it allows.
+    #[cfg_attr(feature = "schema", schemars(with = "Vec<crate::Scope>"))]
     pub scopes: ScopeSet,
     /// It has "Allow actions that cannot be undone" (protocol 1.80); an older server
     /// omits it, which reads as allowed.
@@ -2336,6 +2180,7 @@ fn allowed() -> bool {
 
 /// `tokens.list`' answer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TokenList {
     /// The tokens, oldest first.
     pub tokens: Vec<TokenInfo>,
@@ -2343,10 +2188,12 @@ pub struct TokenList {
 
 /// `tokens.create`'s answer: the only time the token exists in readable form.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TokenCreated {
     /// Its name as kept (trimmed).
     pub name: String,
     /// What it allows.
+    #[cfg_attr(feature = "schema", schemars(with = "Vec<crate::Scope>"))]
     pub scopes: ScopeSet,
     /// It has "Allow actions that cannot be undone" (protocol 1.80); an older server
     /// omits it, which reads as allowed.

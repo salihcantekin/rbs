@@ -13,6 +13,7 @@ use crate::request::HardwareLimitPolicy;
 
 /// Settings the control thread owns.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Settings {
     /// Recording profiles.
     pub profiles: Vec<RecordingProfile>,
@@ -46,6 +47,7 @@ pub struct Settings {
         deserialize_with = "present",
         skip_serializing_if = "Option::is_none"
     )]
+    #[cfg_attr(feature = "schema", schemars(with = "Option<Box<RecordingProfile>>"))]
     pub vertical_profile: Option<Option<Box<RecordingProfile>>>,
     /// The vertical stream's settings (protocol 1.100): `null` when it is not set up;
     /// absent from older servers.
@@ -54,12 +56,14 @@ pub struct Settings {
         deserialize_with = "present",
         skip_serializing_if = "Option::is_none"
     )]
+    #[cfg_attr(feature = "schema", schemars(with = "Option<Box<StreamSettings>>"))]
     pub vertical_stream: Option<Option<Box<StreamSettings>>>,
 }
 
 /// `settings.separate_files` (protocol 1.100): Settings › Recording › Separate files.
 /// Refused with `conflict` while a recording runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SeparateFilesSettings {
     /// Record and `record.start` without `iso` write the marked sources' files.
@@ -73,6 +77,7 @@ pub struct SeparateFilesSettings {
 /// `settings.replay` (protocol 1.100): the replay buffer's settings. A change applies
 /// at the next arm; a running buffer keeps its settings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct ReplaySettings {
     /// Arm the buffer when RBS starts.
@@ -95,6 +100,7 @@ pub struct ReplaySettings {
 /// part of them: only the local user enters it, in the app, so an API client can neither
 /// read it nor send the program and the stream key elsewhere. The key is never shown.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct StreamSettings {
     /// The saved server's protocol, or `null` when no server is saved.
     pub protocol: Option<StreamProtocol>,
@@ -136,6 +142,7 @@ pub struct StreamSettings {
 /// them but the server and the key. Unknown fields are ignored, so the
 /// [`StreamSettings`] that `settings.get` returned can be sent back changed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct StreamSettingsPatch {
     /// Reconnect when the connection drops.
     pub reconnect: bool,
@@ -161,6 +168,7 @@ pub struct StreamSettingsPatch {
         deserialize_with = "present",
         skip_serializing_if = "Option::is_none"
     )]
+    #[cfg_attr(feature = "schema", schemars(with = "Option<u32>"))]
     pub hold_scene: Option<Option<u32>>,
     /// The hold sound (protocol 1.67); absent: unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]

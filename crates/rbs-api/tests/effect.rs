@@ -254,6 +254,8 @@ fn the_caller_goes_with_the_command_and_on_air_refusals_are_audited() {
         rbs_api::Caller {
             token: Some("agent".into()),
             irreversible: false,
+            scopes: ScopeSet::PANEL,
+            remote: false,
         }
     );
     let mut data = serde_json::Map::new();
@@ -268,6 +270,40 @@ fn the_caller_goes_with_the_command_and_on_air_refusals_are_audited() {
         method: "scene.switch",
         reason: "on_air",
     }));
+}
+
+#[test]
+fn forwarded_caller_keeps_channel_limited_scopes_and_remote_identity() {
+    let mut h = harness();
+    let conn = h.login(PeerInfo::remote_websocket("192.0.2.1"), ALL_TOKEN_SEED);
+    h.call(conn, "scene.switch", json!({"scene": 1}));
+    let caller = &h.forwarded[0].caller;
+    assert_eq!(caller.scopes, ScopeSet::PANEL);
+    assert!(caller.remote);
+    assert_eq!(caller.token.as_deref(), Some("admin console"));
+
+    let mut h = Harness::with_config(|config| config.allow_remote_admin = true);
+    let conn = h.login(PeerInfo::remote_websocket("192.0.2.2"), ALL_TOKEN_SEED);
+    h.call(conn, "settings.get", json!({}));
+    let caller = &h.forwarded[0].caller;
+    assert_eq!(caller.scopes, ScopeSet::PANEL.with(rbs_api::Scope::Admin));
+    assert!(caller.remote);
+}
+
+#[test]
+fn an_ipc_caller_narrowed_to_a_token_carries_the_narrowed_scopes() {
+    let mut h = harness();
+    let conn = h.connect(PeerInfo::same_user_ipc());
+    h.call(conn, "session.hello", hello());
+    h.take(conn);
+    let t = Token::from_bytes(&[AGENT_SEED; 32]);
+    h.call(conn, "session.authenticate", json!({"token": t.expose()}));
+    h.take(conn);
+    h.call(conn, "scene.switch", json!({"scene": 1}));
+    let caller = &h.forwarded[0].caller;
+    assert_eq!(caller.scopes, ScopeSet::PANEL);
+    assert!(!caller.remote);
+    assert!(!caller.irreversible);
 }
 
 #[test]

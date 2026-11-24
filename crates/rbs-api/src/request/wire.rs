@@ -8,7 +8,7 @@ use super::*;
 /// The flat wire form of [`Request`]: `{"method": ..., "params": ...}`.
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "method", content = "params")]
-pub(super) enum WireRequest {
+pub(crate) enum WireRequest {
     #[serde(rename = "session.hello")]
     Hello(Hello),
     #[serde(rename = "session.authenticate")]
