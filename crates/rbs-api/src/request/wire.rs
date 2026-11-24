@@ -41,6 +41,10 @@ pub(super) enum WireRequest {
     ItemResetTransform(ResetItemTransform),
     #[serde(rename = "item.set_rotation")]
     ItemSetRotation(SetItemRotation),
+    #[serde(rename = "item.align_items")]
+    ItemAlignItems(AlignItems),
+    #[serde(rename = "item.distribute")]
+    ItemDistribute(DistributeItems),
     #[serde(rename = "item.fit_text_box")]
     ItemFitTextBox(FitTextBox),
     #[serde(rename = "item.set_filled")]
@@ -536,7 +540,7 @@ wire_conversions! {
     SourceSetCompanionAudio, SettingsClearRecentTargets, CanvasTransitionProgress,
     StreamDestinationStart, StreamDestinationSetEnabled, CollectionSetTransition,
     SourceSetRecordSeparately,
-    ItemSetRotation,
+    ItemSetRotation, ItemAlignItems, ItemDistribute,
     GroupCreate, GroupRemove, GroupRename, GroupList,
     CanvasRehearse,
     AddonUpdate,

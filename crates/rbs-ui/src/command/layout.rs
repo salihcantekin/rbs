@@ -108,6 +108,8 @@ pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
             "|",
             "item.group",
             "item.ungroup",
+            "item.align_items",
+            "item.distribute",
             "}",
             "{Visibility:eye",
             "source.active.toggle",

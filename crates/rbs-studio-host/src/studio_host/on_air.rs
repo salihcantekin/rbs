@@ -45,6 +45,8 @@ const BY_TARGET: &[&str] = &[
     "item.align",
     "item.reset_transform",
     "item.set_rotation",
+    "item.align_items",
+    "item.distribute",
     "item.set_visible",
     "item.set_locked",
     "item.set_show_for",
@@ -122,6 +124,10 @@ impl Targets {
             if let Some(id) = map.get(key).and_then(id_of) {
                 list.push(id);
             }
+        }
+        // `items` lists the item ids of a multi-item call.
+        if let Some(list) = map.get("items").and_then(Value::as_array) {
+            t.items.extend(list.iter().filter_map(id_of));
         }
         t
     }

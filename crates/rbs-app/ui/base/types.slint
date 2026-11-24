@@ -1646,6 +1646,8 @@ export global Studio {
     callback rename-group(int /* group */, string /* name */);
     callback set-group-visible(int /* group */, bool /* visible */);
     callback set-group-locked(int /* group */, bool /* locked */);
+    // Delete on a group's row, once confirmed: every member leaves the scene, one step.
+    callback remove-group(int /* group */);
     // Media files (ADR-0108 decision 10): live playback actions, then stored settings.
     // "m:ss" of a media time; hours as "h:mm:ss".
     pure public function media-clock(ms: int) -> string {

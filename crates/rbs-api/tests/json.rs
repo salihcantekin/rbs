@@ -399,7 +399,6 @@ fn every_request() -> Vec<Request> {
         c(Command::SceneSources(SceneRef { scene: 2 })),
         c(Command::CanvasSetPreview(SetPreview { scene: Some(2) })),
         c(Command::CanvasTransition(TransitionOnce::default())),
-        c(Command::ItemRemove(ItemRef { item: 7 })),
         c(Command::SourceSetActive(SetSourceActive {
             source: 3,
             active: false,
@@ -425,14 +424,6 @@ fn every_request() -> Vec<Request> {
         c(Command::GlobalRemove(RemoveGlobal {
             source: 3,
             keep: true,
-        })),
-        c(Command::ItemSetVisible(SetItemVisible {
-            item: 7,
-            visible: false,
-        })),
-        c(Command::ItemSetLocked(SetItemLocked {
-            item: 7,
-            locked: true,
         })),
         c(Command::ItemSetShowFor(SetItemShowFor {
             item: 7,
@@ -1892,7 +1883,10 @@ fn global_sources_and_item_remove_have_a_stable_wire_form() {
         serde_json::from_value(json!({"method": "item.remove", "params": {"item": 4}})).unwrap();
     assert_eq!(
         remove,
-        Request::Command(Command::ItemRemove(ItemRef { item: 4 }))
+        Request::Command(Command::ItemRemove(ItemRef {
+            item: 4,
+            gesture: 0
+        }))
     );
     assert_eq!(remove.scope(), Some(Scope::Control));
     let list: Request =

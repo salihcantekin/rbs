@@ -12,6 +12,8 @@ UI text uses these terms and no synonyms (rule U13). Code may use different inte
 | Duplicate scene with new sources | Copy a scene whose sources are copies too, so changing one scene does not change the other ("Duplicate scene" shares the sources) | Deep copy, clone scene | `scene.duplicate {sources: copied}` |
 | Group | Two or more sources of one scene that move, resize, hide and lock together; the Sources list shows them under one row with an arrow (ADR-0182) | Folder, set, nested scene | `Group`, `group.create` |
 | Ungroup | Dissolve a group; its sources stay where they are | Break, release | `item.ungroup`, `group.remove` |
+| Align | Line the selected sources up on one edge or centre line (Arrange menu) | Snap, justify | `item.align_items` |
+| Distribute | Spread three or more selected sources so the gaps between them are equal | Space evenly, tidy | `item.distribute` |
 | Attributes | The parts of a source and its placement that can be copied or reset on their own: Position and size, Crop, Opacity, Shape and border, Scroll, Picture filters, Sound filters, Source options, Capture region, Glide, Record separately, Volume and monitoring, Sync offset | Properties, settings (for these groups) | `AttributeGroup` |
 | Copy attributes | Remember a source's attributes to paste chosen ones onto other sources | Copy style, copy settings | `source.copy_attributes` |
 | Paste attributes | Write chosen copied attributes onto one or more sources, in one undo step | Paste style, apply settings | `source.paste_attributes` |

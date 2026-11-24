@@ -505,6 +505,7 @@ fn removing_sources_from_a_duplicated_scene_never_touches_the_original() {
         host.send(Command::Api {
             call: Box::new(rbs_api::Command::ItemRemove(rbs_api::request::ItemRef {
                 item: raw(&r["item"]),
+                gesture: 0,
             })),
             reply: rbs_studio_host::studio_host::ApiReply::Shown,
         });

@@ -20,21 +20,25 @@ use crate::types::{ItemScroll, ItemStyle};
 
 mod add_source;
 mod added;
+mod arrange;
 mod browser;
 mod groups;
 mod item_edits;
 mod media;
 mod methods;
+mod scene_refs;
 mod settings_patch;
 mod transform;
 mod wire;
 pub use add_source::AddSource;
 pub use added::*;
+pub use arrange::*;
 pub use browser::*;
 pub use groups::*;
 pub use item_edits::*;
 pub use media::{MediaPlayState, MediaSeek, MediaSource, MediaStateInfo};
 pub use methods::METHODS;
+pub use scene_refs::*;
 pub use settings_patch::SettingsPatch;
 pub use transform::*;
 use wire::WireRequest;
@@ -688,24 +692,6 @@ pub struct PasteAttributes {
     pub canvas: OutputCanvas,
 }
 
-/// `scene.remove` and `scene.switch` (protocol 1.6).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SceneRef {
-    /// The scene's id (`scene.list`).
-    pub scene: u32,
-}
-
-/// `scene.rename` (protocol 1.6).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RenameScene {
-    /// The scene's id.
-    pub scene: u32,
-    /// The new name, unique among scenes.
-    pub name: String,
-}
-
 /// `scene.set_transition` (protocol 1.86, ADR-0135 decision 10): sets or clears the
 /// transition into a scene; one undo step. `null` or `{}` clears it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1107,14 +1093,6 @@ pub struct AddItem {
     pub scene: Option<u32>,
 }
 
-/// `item.remove` (protocol 1.10, ADR-0065): Remove from scene.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ItemRef {
-    /// The item's id.
-    pub item: u32,
-}
-
 /// Which way `item.move` or `scene.move` steps in order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -1267,26 +1245,6 @@ pub struct RemoveGlobal {
 pub struct SetPreview {
     /// The preview scene's id, or `null`.
     pub scene: Option<u32>,
-}
-
-/// `item.set_visible` (protocol 1.6).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SetItemVisible {
-    /// The item's id (`source.list`).
-    pub item: u32,
-    /// Shown.
-    pub visible: bool,
-}
-
-/// `item.set_locked` (protocol 1.6).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SetItemLocked {
-    /// The item's id (`source.list`).
-    pub item: u32,
-    /// Locked.
-    pub locked: bool,
 }
 
 /// `item.set_show_for` (ADR-0105). Undoable document state. No protocol minor.
@@ -1701,6 +1659,10 @@ pub enum Command {
     ItemResetTransform(ResetItemTransform),
     /// `item.set_rotation` (protocol 1.100, ADR-0166).
     ItemSetRotation(SetItemRotation),
+    /// `item.align_items` (protocol 1.106).
+    ItemAlignItems(AlignItems),
+    /// `item.distribute` (protocol 1.106).
+    ItemDistribute(DistributeItems),
     /// `item.fit_text_box` (protocol 1.100).
     ItemFitTextBox(FitTextBox),
     /// `item.set_filled` (protocol 1.100).

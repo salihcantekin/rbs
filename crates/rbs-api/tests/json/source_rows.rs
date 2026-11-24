@@ -143,6 +143,40 @@ pub(super) fn group_requests() -> Vec<Request> {
             name: "Cam".into(),
         }),
         Command::GroupList(SceneRef { scene: 2 }),
+        Command::ItemAlignItems(AlignItems {
+            items: vec![4, 5],
+            edge: AlignEdge::Middle,
+            to: AlignTo::Selection,
+            canvas: OutputCanvas::Main,
+            gesture: 0,
+        }),
+        Command::ItemAlignItems(AlignItems {
+            items: vec![4],
+            edge: AlignEdge::Left,
+            to: AlignTo::Canvas,
+            canvas: OutputCanvas::Vertical,
+            gesture: 9,
+        }),
+        Command::ItemDistribute(DistributeItems {
+            items: vec![4, 5, 6],
+            axis: Axis::Horizontal,
+            canvas: OutputCanvas::Main,
+            gesture: 0,
+        }),
+        Command::ItemSetVisible(SetItemVisible {
+            item: 7,
+            visible: false,
+            gesture: 0,
+        }),
+        Command::ItemSetLocked(SetItemLocked {
+            item: 7,
+            locked: true,
+            gesture: 9,
+        }),
+        Command::ItemRemove(ItemRef {
+            item: 7,
+            gesture: 0,
+        }),
     ]
     .into_iter()
     .map(Request::Command)
@@ -269,5 +303,54 @@ fn a_status_with_missing_words_still_decodes() {
         SourceStatus::Failed {
             reason: "held".into()
         }
+    );
+}
+
+#[test]
+fn item_edits_take_an_optional_gesture() {
+    // Protocol 1.105: absent means 0, and 0 is not written.
+    let plain: SetItemVisible =
+        serde_json::from_value(json!({"item": 1, "visible": false})).unwrap();
+    assert_eq!(plain.gesture, 0);
+    assert!(
+        serde_json::to_value(plain)
+            .unwrap()
+            .get("gesture")
+            .is_none()
+    );
+    let locked: SetItemLocked =
+        serde_json::from_value(json!({"item": 1, "locked": true, "gesture": 5})).unwrap();
+    assert_eq!(locked.gesture, 5);
+    let removed: ItemRef = serde_json::from_value(json!({"item": 1, "gesture": 6})).unwrap();
+    assert_eq!(removed.gesture, 6);
+}
+
+#[test]
+fn align_and_distribute_read_their_defaults() {
+    let align: Request = serde_json::from_value(json!({
+        "method": "item.align_items", "params": {"items": [1, 2], "edge": "left"}
+    }))
+    .unwrap();
+    assert_eq!(
+        align,
+        Request::Command(Command::ItemAlignItems(AlignItems {
+            items: vec![1, 2],
+            edge: AlignEdge::Left,
+            to: AlignTo::Selection,
+            canvas: OutputCanvas::Main,
+            gesture: 0,
+        }))
+    );
+    let plain = serde_json::to_value(match align {
+        Request::Command(Command::ItemAlignItems(a)) => a,
+        _ => unreachable!(),
+    })
+    .unwrap();
+    assert!(plain.get("to").is_none() && plain.get("canvas").is_none());
+    assert!(
+        serde_json::from_value::<Request>(json!({
+            "method": "item.distribute", "params": {"items": [1, 2, 3], "axis": "diagonal"}
+        }))
+        .is_err()
     );
 }

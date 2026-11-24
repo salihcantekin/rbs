@@ -117,6 +117,7 @@ pub use rows::*;
 pub use updates::*;
 mod canvas;
 pub use canvas::AUDIO_REST_AFTER;
+mod arrange;
 mod command;
 mod command_path;
 mod control_loop;

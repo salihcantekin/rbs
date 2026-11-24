@@ -57,7 +57,7 @@ impl ApiTarget<'_> {
             }
             C::ItemSetVisible(p) => {
                 let changed = host
-                    .set_item_visible(ItemId::from_raw(p.item), p.visible)
+                    .set_item_visible(ItemId::from_raw(p.item), p.visible, p.gesture)
                     .map_err(|e| refused(&e))?;
                 if changed {
                     host.apply(notify);
@@ -66,7 +66,7 @@ impl ApiTarget<'_> {
             }
             C::ItemSetLocked(p) => {
                 let changed = host
-                    .set_item_locked(ItemId::from_raw(p.item), p.locked)
+                    .set_item_locked(ItemId::from_raw(p.item), p.locked, p.gesture)
                     .map_err(|e| refused(&e))?;
                 if changed {
                     host.apply(notify);
@@ -139,6 +139,8 @@ impl ApiTarget<'_> {
             C::ItemResetTransform(p) => {
                 host.api_transform(p.item, TransformOp::Reset, p.gesture, p.canvas, notify)
             }
+            C::ItemAlignItems(p) => host.api_align_items(p, notify),
+            C::ItemDistribute(p) => host.api_distribute(p, notify),
             C::ItemSetRotation(p) => {
                 if !p.degrees.is_finite() || p.degrees.abs() > 360.0 {
                     return Err(ApiError::new(

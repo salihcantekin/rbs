@@ -80,9 +80,14 @@ pub fn scaled(boxes: &[SourceBox], from: Rect, to: Rect) -> Vec<SourceBox> {
 
 /// The boxes aligned to the union of all of them (one box stays where it is).
 pub fn align(boxes: &[SourceBox], to: AlignTo) -> Vec<SourceBox> {
-    let Some(u) = union(boxes) else {
-        return Vec::new();
-    };
+    match union(boxes) {
+        Some(u) => align_within(boxes, to, u),
+        None => Vec::new(),
+    }
+}
+
+/// The boxes aligned to `area`'s edge or centre line (the canvas, or the union).
+pub fn align_within(boxes: &[SourceBox], to: AlignTo, u: Rect) -> Vec<SourceBox> {
     boxes
         .iter()
         .map(|b| {
@@ -139,6 +144,20 @@ mod tests {
 
     fn b(x: f32, y: f32, w: f32, h: f32) -> SourceBox {
         SourceBox::new([x, y], [w, h])
+    }
+
+    #[test]
+    fn aligning_to_an_area_uses_its_edges() {
+        let area = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 1920.0,
+            h: 1080.0,
+        };
+        let out = align_within(&[b(100.0, 50.0, 200.0, 100.0)], AlignTo::Right, area);
+        assert_eq!(out[0].position, [1720.0, 50.0]);
+        let out = align_within(&[b(100.0, 50.0, 200.0, 100.0)], AlignTo::CentreY, area);
+        assert_eq!(out[0].position, [100.0, 490.0]);
     }
 
     #[test]

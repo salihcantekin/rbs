@@ -114,6 +114,7 @@ ADR-0131 decision 8 is normative: absolute `pos`, `scale`, `bounds` are read; an
 
 ADR-0131 decision 7 is the first mapping table. Each mapper keeps its own row in this section when it is implemented.
 
+- `group` (ADR-0182 decision 13, replacing ADR-0131's flattening row) → an RBS group of the scene. The group's items are imported as before, with the group's transform composed into each child and a child shown only when group and child are, and they get the group's tag; they sit next to each other, in OBS order. The name is the OBS group's, made unique in the scene ("Name 2"). A group with fewer than two imported items (the others were skipped) becomes separate items and one report entry says so; a group inside a group does not occur in OBS. A crop on the group item, which clipped its children, is not kept and is reported. An import with no group adds no group list and no entry.
 - `image_source` → `org.rbs.source.image` for a `.png`, `.jpg` or `.jpeg` file (JPEG since ADR-0171); other formats are skipped. The picture size comes from the PNG header or the JPEG headers (upright by EXIF orientation).
 - `slideshow`, `slideshow_v2` → `org.rbs.source.slideshow` (ADR-0171 decision 11). The folder is the first `files` entry's folder (an entry that is not a picture name is a folder); entries in other folders, listed files (RBS shows every PNG and JPEG of the folder), and other picture formats are reported. `slide_time` → `interval_s` (nearest half second, 1 to 3600), `slide_mode: mode_manual` → `advance: manual`, `randomize` → `order: shuffle`, `loop`, `transition` (`cut`, `fade`, `slide`, `swipe`), `transition_speed` → `transition_ms` (down to a 50 ms step, at most 5000), `fit: contain`. `use_custom_size` `WxH` → `width`/`height`, else the canvas (an aspect ratio is reported). `playback_behavior` `always_play` (the default) → run `placed`; `pause_unpause` keeps the type default; `stop_restart` is reported (a slide show continues on return). `hide` is reported.
 
@@ -136,6 +137,7 @@ ADR-0131 decision 7 is the first mapping table. Each mapper keeps its own row in
 | `InvalidGlide`, `InvalidTransition`, `InvalidShowFor`, `InvalidActivity` | cannot arise: default glide and transition (ADR-0128), no timed show imported, no activity policy imported yet (ADR-0152) |
 | `ChromeNotDisplay` | cannot arise: chrome is never imported |
 | `StingerPlaced` | cannot arise: no stinger is imported, so the transition never names a source (ADR-0140 decision 1) |
+| `UnknownGroup`, `GroupTooSmall`, `GroupNotContiguous`, `GroupScope` | cannot arise: a group is made only from two or more items of one scene that sit next to each other; a group with fewer than two imported items becomes separate items and is reported (ADR-0182 decision 13) |
 | `UnknownBus`, `TooManyBuses` | cannot arise: the import adds no bus (ADR-0170); OBS track flags are mapped later |
 
 A test (`crates/rbs-import-obs/tests/scene_errors.rs`) reads the variants of `SceneError` from its source and fails when one has no row here, so a new variant fails until it has an action. `SceneError` is `#[non_exhaustive]`, so an exhaustive `match` outside `rbs-scene` is not possible.

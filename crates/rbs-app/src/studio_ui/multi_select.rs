@@ -11,8 +11,10 @@ use slint::Model as _;
 
 use super::{OutputCanvas, SourceData, sound_nest};
 
+mod arrange;
 mod groups;
 use crate::preview_edit::{Effect, Placed};
+pub use arrange::ArrangeOp;
 
 /// How a row was clicked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

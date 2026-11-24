@@ -10,7 +10,6 @@
 
 use rbs_api::types::OutputKind;
 use rbs_scene::model::SourceMonitor;
-use rbs_scene::{CenterAxis, FitMode};
 use rbs_ui::command::{CommandId, CommandState, Disabled, Kind, MenuItem, menus};
 use rbs_ui::layout::RailAt;
 use rbs_ui::panel::PanelId;
@@ -19,6 +18,7 @@ use rbs_ui::workspace::{MixerOrientation, Side, Workspace};
 
 use crate::studio_host::{OutputCanvas, STREAMING_OFF, TransformOp};
 use crate::studio_ui::filters::filter_types;
+use crate::studio_ui::multi_select::ArrangeOp;
 use crate::studio_ui::{SourceFacts, StudioUi, VerticalOut, rec_state, st_state};
 use crate::title_bar::WindowCommand;
 
@@ -600,13 +600,7 @@ impl CommandState for Shown<'_> {
                     _ => Err("Say which Properties tab to open.".into()),
                 }
             }
-            "item.flip"
-            | "item.rotate"
-            | "item.align"
-            | "item.fit"
-            | "item.reset_transform"
-            | "item.group"
-            | "item.ungroup" => self.arrange_enabled(id),
+            base if arrange::is_arrange(base) => self.arrange_enabled(id),
             "item.locked.toggle" => {
                 self.running()?;
                 if self.source(id)?.picture {
@@ -1108,6 +1102,18 @@ impl CommandState for Shown<'_> {
                 ("Fit each source".into(), "fit".into(), false),
                 ("Fill with each source".into(), "fill".into(), false),
                 ("Stack top to bottom".into(), "stack".into(), false),
+            ],
+            "item.align_items" => vec![
+                ("Align left".into(), "left".into(), false),
+                ("Align horizontal centres".into(), "center".into(), false),
+                ("Align right".into(), "right".into(), false),
+                ("Align top".into(), "top".into(), false),
+                ("Align vertical centres".into(), "middle".into(), false),
+                ("Align bottom".into(), "bottom".into(), false),
+            ],
+            "item.distribute" => vec![
+                ("Distribute horizontally".into(), "horizontal".into(), false),
+                ("Distribute vertically".into(), "vertical".into(), false),
             ],
             "item.rotate" => vec![
                 ("Rotate 90° clockwise".into(), "90".into(), false),
@@ -1842,8 +1848,8 @@ pub enum Run {
     /// Flip, turn, fit or centre the source with this id (ADR-0084), on this canvas
     /// (`canvas`, protocol 1.44), or without one on the canvas Properties edits.
     Transform(i32, TransformOp, Option<OutputCanvas>),
-    /// Group (`true`) or ungroup (`false`) the selected sources (ADR-0182).
-    Group(bool),
+    /// Group, ungroup, align or distribute the selected sources (ADR-0182).
+    Arrange(ArrangeOp),
     /// Arrange the scene the vertical canvas shows (`canvas.auto_layout`).
     AutoLayoutVertical(rbs_api::request::VerticalLayout),
     /// The vertical canvas's size in pixels (`canvas.vertical_size`).
@@ -2044,31 +2050,9 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
                     _ => return None,
                 })
             }
-            "item.rotate" => Run::Transform(
-                state.source(&id).ok()?.id,
-                TransformOp::Turn(value.parse::<i32>().ok()? as f32),
-                canvas_of(&id)?,
-            ),
-            "item.fit" => Run::Transform(
-                state.source(&id).ok()?.id,
-                TransformOp::Fit(match value.as_str() {
-                    "fit" => FitMode::Fit,
-                    "fill" => FitMode::Fill,
-                    "stretch" => FitMode::Stretch,
-                    _ => return None,
-                }),
-                canvas_of(&id)?,
-            ),
-            "item.align" => Run::Transform(
-                state.source(&id).ok()?.id,
-                TransformOp::Center(match value.as_str() {
-                    "both" => CenterAxis::Both,
-                    "horizontal" => CenterAxis::Horizontal,
-                    "vertical" => CenterAxis::Vertical,
-                    _ => return None,
-                }),
-                canvas_of(&id)?,
-            ),
+            "item.rotate" | "item.fit" | "item.align" | "item.align_items" | "item.distribute" => {
+                return arrange::picked(&id, &value, state);
+            }
             _ => return None,
         });
     }

@@ -104,23 +104,47 @@ impl StudioUi {
         }
     }
 
-    /// Shows or hides every member of a group.
+    /// Shows or hides every member of a group: one undo step.
     pub fn set_group_visible(&mut self, group: i32, visible: bool) {
+        let gesture = group_gesture();
         for id in self.group_members(group) {
-            self.set_source_visible(id, visible);
+            self.set_source_visible_in(id, visible, gesture);
         }
     }
 
-    /// Locks or unlocks every picture member of a group.
+    /// Locks or unlocks every picture member of a group: one undo step.
     pub fn set_group_locked(&mut self, group: i32, locked: bool) {
+        let gesture = group_gesture();
         for id in self.group_members(group) {
             if self
                 .rows
                 .iter()
                 .any(|r| r.id.get() as i32 == id && r.layout.is_some())
             {
-                self.set_source_locked(id, locked);
+                self.set_source_locked_in(id, locked, gesture);
             }
+        }
+    }
+
+    /// Removes every member of a group from the scene (Delete on its row): one undo
+    /// step. A "Capture audio too" companion goes with its picture, so it is not asked
+    /// for twice.
+    pub fn remove_group(&mut self, group: i32) {
+        let members = self.group_members(group);
+        let gesture = group_gesture();
+        self.deleted.clear();
+        let items: Vec<u32> = self
+            .rows
+            .iter()
+            .filter(|r| members.contains(&(r.id.get() as i32)))
+            .filter(|r| {
+                !r.companion_of
+                    .is_some_and(|p| members.contains(&(p.get() as i32)))
+            })
+            .map(|r| r.item.get())
+            .collect();
+        for item in items {
+            self.call(C::ItemRemove(rq::ItemRef { item, gesture }));
         }
     }
 
@@ -189,4 +213,12 @@ impl StudioUi {
         self.picked.mark_groups(&mut data, &self.rows);
         crate::studio_ui::set_rows(&self.sources, data);
     }
+}
+
+/// A new window gesture for one group action, so its member edits are one undo step.
+/// The numbers start above the ones the panels' sliders count up from.
+fn group_gesture() -> u64 {
+    use std::sync::atomic::{AtomicI32, Ordering};
+    static NEXT: AtomicI32 = AtomicI32::new(1 << 24);
+    super::super::ui_gesture(NEXT.fetch_add(1, Ordering::Relaxed))
 }
