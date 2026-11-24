@@ -132,6 +132,10 @@ pub struct Tray {
     icon: TrayIcon,
     shown: Option<(TrayGlyph, bool)>,
     tooltip: String,
+    /// A problem was already announced (ADR-0056 decision 8).
+    problem: bool,
+    /// The icon's id with the shell, once [`notify_problem`] found it.
+    shell_id: Option<u32>,
 }
 
 impl Tray {
@@ -153,12 +157,19 @@ impl Tray {
             icon,
             shown: Some(crate::background::tray_state(state)),
             tooltip: tooltip.to_owned(),
+            problem: state.problem,
+            shell_id: None,
         })
     }
 
-    /// Shows `state`: the icon's variant, the menu's status line and the tooltip.
-    /// Only what differs is changed.
+    /// Shows `state`: the icon's variant, the menu's status line and the tooltip, and
+    /// a new problem as a system notification from the icon (the Dock bounce's
+    /// counterpart, ADR-0056 decision 8). Only what differs is changed.
     pub fn set_state(&mut self, state: LiveState, status: &str, tooltip: &str) {
+        if state.problem && !self.problem {
+            self.shell_id = notify_problem(self.shell_id);
+        }
+        self.problem = state.problem;
         let variant = crate::background::tray_state(state);
         if self.shown != Some(variant) {
             if let Some(i) = icon(state) {
@@ -175,6 +186,60 @@ impl Tray {
             let _ = self.icon.set_tooltip(Some(tooltip));
             tooltip.clone_into(&mut self.tooltip);
         }
+    }
+}
+
+/// Shows "A problem needs your attention" from the tray icon, without a sound (a sound
+/// could reach a stream that captures the desktop's audio), unless the user's quiet
+/// time is on. `tray-icon` does not say the icon's id with the shell: each icon has a
+/// message window of its own, so the one id that window accepts is found by trying
+/// the crate's small counter values, then kept. Returns that id, `None` if no balloon
+/// could be shown.
+fn notify_problem(known: Option<u32>) -> Option<u32> {
+    use windows_sys::Win32::UI::Shell::{
+        NIF_INFO, NIIF_NOSOUND, NIIF_RESPECT_QUIET_TIME, NIIF_WARNING, NIM_MODIFY, NOTIFYICONDATAW,
+        Shell_NotifyIconW,
+    };
+    let hwnd = WINDOW.load(Ordering::Relaxed) as HWND;
+    if hwnd.is_null() {
+        return None;
+    }
+    let mut data = NOTIFYICONDATAW {
+        cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
+        hWnd: hwnd,
+        uFlags: NIF_INFO,
+        dwInfoFlags: NIIF_WARNING | NIIF_NOSOUND | NIIF_RESPECT_QUIET_TIME,
+        ..Default::default()
+    };
+    fill(&mut data.szInfoTitle, "RBS");
+    fill(
+        &mut data.szInfo,
+        "A problem needs your attention. Open RBS to see it.",
+    );
+    // `tray-icon` 0.24 numbers its icons from 1, two numbers per icon made.
+    for id in known.into_iter().chain(1..=PROBE_IDS) {
+        data.uID = id;
+        // SAFETY: `data` is a complete NOTIFYICONDATAW with its size set; a modify
+        // with an id the window does not own fails and changes nothing.
+        if unsafe { Shell_NotifyIconW(NIM_MODIFY, &data) } != 0 {
+            return Some(id);
+        }
+    }
+    rbs_core::info!(
+        rbs_core::log::Area::Ui,
+        "tray icon: the problem notification was not shown"
+    );
+    None
+}
+
+/// The ids [`notify_problem`] tries: far more than a session makes icons.
+const PROBE_IDS: u32 = 256;
+
+/// Copies `text` into a fixed, null-terminated UTF-16 field, cut to fit.
+fn fill(field: &mut [u16], text: &str) {
+    let max = field.len() - 1;
+    for (dst, src) in field.iter_mut().zip(text.encode_utf16().take(max)) {
+        *dst = src;
     }
 }
 
