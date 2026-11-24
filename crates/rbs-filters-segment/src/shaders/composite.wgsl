@@ -7,19 +7,26 @@
 @group(2) @binding(0) var matte: texture_2d<f32>;
 @group(2) @binding(1) var matte_sampler: sampler;
 
-const TAPS = 20;
+const TAPS = 32;
 const GOLDEN = 2.399963;
 
 // The room around the person, from the picture being drawn (the one the matte was made
 // from): taps on a disc, each weighted by how much of it is background so the person's
 // colours do not bleed into the blur.
-fn blurred(uv: vec2<f32>) -> vec3<f32> {
+// A per-pixel angle (interleaved gradient noise) turns the disc's fixed tap pattern into
+// fine grain instead of visible blocks.
+fn spin(pos: vec2<f32>) -> f32 {
+    return 6.2831853 * fract(52.9829189 * fract(dot(pos, vec2<f32>(0.06711056, 0.00583715))));
+}
+
+fn blurred(uv: vec2<f32>, pos: vec2<f32>) -> vec3<f32> {
+    let turn = spin(pos);
     var sum = vec3<f32>(0.0);
     var weight = 0.0;
     var plain = vec3<f32>(0.0);
     for (var i = 0; i < TAPS; i = i + 1) {
         let t = (f32(i) + 0.5) / f32(TAPS);
-        let angle = f32(i) * GOLDEN;
+        let angle = f32(i) * GOLDEN + turn;
         let p = uv + vec2<f32>(cos(angle), sin(angle)) * sqrt(t) * u[2].yz;
         let s = sample_linear(p);
         let c = s.rgb / max(s.a, 1e-4);
@@ -29,7 +36,8 @@ fn blurred(uv: vec2<f32>) -> vec3<f32> {
         weight = weight + w;
         plain = plain + c;
     }
-    return select(plain / f32(TAPS), sum / max(weight, 1e-4), weight > 0.5);
+    let room = sum / max(weight, 1e-4);
+    return mix(plain / f32(TAPS), room, clamp(weight * 0.25, 0.0, 1.0));
 }
 
 @fragment
@@ -42,7 +50,7 @@ fn fs_main(in: FilterIn) -> @location(0) vec4<f32> {
     }
     var bg = u[1];
     if (u[2].x < 1.5) {
-        bg = vec4<f32>(blurred(in.uv), 1.0);
+        bg = vec4<f32>(blurred(in.uv, in.position.xy), 1.0);
     }
     return c * a + bg * (1.0 - a);
 }
