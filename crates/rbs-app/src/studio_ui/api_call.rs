@@ -15,6 +15,11 @@ impl StudioUi {
         }
     }
 
+    /// Arranges the scene the vertical canvas shows (`canvas.auto_layout`).
+    pub fn auto_layout_vertical(&self, mode: rbs_api::request::VerticalLayout) {
+        self.send(Command::AutoLayoutVertical(mode));
+    }
+
     /// Runs a control API command on the control thread; a refusal shows as the error
     /// bar and state comes back through the usual updates (ADR-0163 decision 2).
     pub fn call(&self, call: rbs_api::Command) {

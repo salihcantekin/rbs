@@ -6534,7 +6534,7 @@ impl StudioUi {
             self.selected = -1;
         }
         let keys: Vec<sound_nest::Key> = rows.iter().map(sound_nest::key).collect();
-        self.mark_rows(&mut data, &keys);
+        self.mark_rows(&mut data, &keys, &rows);
         set_rows(&self.sources, data);
         self.text_settings = rows
             .iter()

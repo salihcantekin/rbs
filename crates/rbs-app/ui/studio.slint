@@ -416,6 +416,57 @@ component SourceRowView inherits Rectangle {
     }
 }
 
+// A group's row in the Sources list (ADR-0182): the arrow opens its members, a click
+// selects them all, and Show/Hide and Lock act on every member. It stands above the
+// first member's row; Ungroup is in the row menu (Arrange).
+component GroupRowView inherits Rectangle {
+    in property <SourceData> data;
+    property <bool> selected: Studio.selected-source == data.id || data.picked;
+    height: row.height;
+    menu := CommandMenu {
+        context: "source";
+        target: "source=" + data.id;
+    }
+    row := ListRow {
+        width: parent.width;
+        has-icon: true;
+        icon: Icons.named("layout");
+        name: data.group-name;
+        disclosure-room: true;
+        expandable: true;
+        expanded: data.group-open;
+        expand-toggled(o) => { Studio.open-group(data.group-id, o); }
+        selected: root.selected;
+        accessible-name: @tr("Group {}", data.group-name);
+        accessible-hint: @tr("F2 renames it, the Menu key or Shift+F10 opens its menu, Ungroup is under Arrange");
+        edit-label: @tr("Name of the group {}", data.group-name);
+        activated => { Studio.select-group(data.group-id); }
+        menu-asked(at) => {
+            Studio.select-group(data.group-id);
+            menu.open(at);
+        }
+        renamed(t) => { Studio.rename-group(data.group-id, t); }
+        VerticalLayout {
+            alignment: center;
+            IconButton {
+                icon: data.group-hidden ? IconName.eye-off : IconName.eye;
+                name: data.group-hidden ? @tr("Show group {}", data.group-name) : @tr("Hide group {}", data.group-name);
+                checked: data.group-hidden;
+                clicked => { Studio.set-group-visible(data.group-id, data.group-hidden); }
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            IconButton {
+                icon: data.group-locked ? IconName.lock : IconName.unlock;
+                name: data.group-locked ? @tr("Unlock group {}", data.group-name) : @tr("Lock group {}", data.group-name);
+                checked: data.group-locked;
+                clicked => { Studio.set-group-locked(data.group-id, !data.group-locked); }
+            }
+        }
+    }
+}
+
 // One scene in the Scenes panel: its number, its name and, on air, a Live badge
 // (mockup E). A click puts it on air. Rename shows on hover. Delete asks first.
 component SceneRowView inherits Rectangle {
@@ -724,20 +775,25 @@ export component SourcesPanel inherits Rectangle {
                 // sound row under its picture while that is open or it is selected,
                 // and a selected sound shows its picture in a closed group (ADR-0173).
                 property <bool> shown: (!s.global || root.globals-open || Studio.selected-source == s.id || root.holds-selected(i))
-                    && (!s.nested || s.open || Studio.selected-source == s.id);
+                    && (!s.nested || s.open || Studio.selected-source == s.id)
+                    && (!s.grouped || s.group-open);
                 spacing: Tokens.space-1;
                 padding-left: s.nested ? Tokens.size-list-indent : 0;
-                padding-bottom: self.shown || i == 0 ? Tokens.space-1 : 0;
+                padding-bottom: self.shown || s.group-head || i == 0 ? Tokens.space-1 : 0;
                 // Global sources come first, under their own heading (ADR-0065): they
                 // are drawn above every scene. The group is folded unless opened.
                 if s.global && i == 0: GlobalsHeader { open: root.globals-open; }
                 if !s.global && i > 0 && Studio.sources[i - 1].global: SectionHeader { title: @tr("This scene"); }
-                if self.shown: SourceRowView {
-                    data: s;
-                    focus-to: root.focus-to;
-                    focus-serial: root.focus-serial;
-                    focus-asked(id) => { root.focus-to = id; root.focus-serial += 1; }
-                    leaving => { list-focus.focus(); }
+                if s.group-head: GroupRowView { data: s; }
+                if self.shown: HorizontalLayout {
+                    padding-left: s.grouped ? Tokens.size-list-indent : 0;
+                    SourceRowView {
+                        data: s;
+                        focus-to: root.focus-to;
+                        focus-serial: root.focus-serial;
+                        focus-asked(id) => { root.focus-to = id; root.focus-serial += 1; }
+                        leaving => { list-focus.focus(); }
+                    }
                 }
             }
         }

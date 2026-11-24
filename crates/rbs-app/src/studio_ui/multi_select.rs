@@ -10,6 +10,8 @@ use rbs_ui::transform::{DragKeys, Mark};
 use slint::Model as _;
 
 use super::{OutputCanvas, SourceData, sound_nest};
+
+mod groups;
 use crate::preview_edit::{Effect, Placed};
 
 /// How a row was clicked.
@@ -36,9 +38,10 @@ impl Click {
     }
 }
 
-/// The selected sources when there are several (the primary one included).
+/// The selected sources when there are several (the primary one included), then the
+/// groups of the Sources list that are open (ADR-0182).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub(crate) struct Picked(BTreeSet<i32>);
+pub(crate) struct Picked(BTreeSet<i32>, BTreeSet<i32>);
 
 impl Picked {
     /// Whether `id` is one of several selected sources.
@@ -96,6 +99,12 @@ impl Picked {
         }
     }
 
+    /// Makes `ids` the selected set (fewer than two is no set).
+    pub(super) fn set(&mut self, ids: impl IntoIterator<Item = i32>) {
+        self.0 = ids.into_iter().collect();
+        self.settle();
+    }
+
     /// A set of fewer than two is not a multi-selection.
     fn settle(&mut self) {
         if self.0.len() < 2 {
@@ -118,6 +127,17 @@ impl Picked {
 impl super::StudioUi {
     /// A Sources row was clicked with Ctrl/Cmd or Shift held.
     pub fn select_with(&mut self, id: i32, ctrl: bool, shift: bool) {
+        // Ctrl/Cmd on a member of a selected whole group picks that member alone.
+        if ctrl && !shift && self.group_of(id).is_some() && self.picked.has(id) {
+            let block = self.group_of(id).map(|g| self.group_members(g));
+            if block.is_some_and(|b| self.picked.ids(self.selected) == b) {
+                self.picked.clear();
+                self.selected = id;
+                self.mark_picked();
+                self.refresh_marks();
+                return;
+            }
+        }
         let order: Vec<i32> = self.rows.iter().map(|r| r.id.get() as i32).collect();
         self.picked.click(
             &order,
@@ -186,19 +206,29 @@ impl super::StudioUi {
 
     /// Marks the Sources rows: companion nesting and which rows are part of a
     /// multi-selection (sources that no longer exist leave the set).
-    pub(super) fn mark_rows(&mut self, data: &mut [SourceData], keys: &[sound_nest::Key]) {
+    pub(super) fn mark_rows(
+        &mut self,
+        data: &mut [SourceData],
+        keys: &[sound_nest::Key],
+        rows: &[super::SourceRow],
+    ) {
         let order: Vec<i32> = data.iter().map(|d| d.id).collect();
         self.picked.retain(&order);
         self.nest.mark(data, keys, self.selected);
+        self.picked.mark_groups(data, rows);
         for d in data {
             d.picked = self.picked.has(d.id);
         }
     }
 
-    /// A plain selection of one source (or none, -1): ends any multi-selection.
-    pub(super) fn select_one(&mut self, id: i32) {
-        self.clear_picked();
-        self.selected = id;
+    /// A plain selection of one source (or none, -1): ends any multi-selection. A source in a group selects its whole block (ADR-0182 decision 9).
+    pub(crate) fn select_one(&mut self, id: i32) {
+        if self.group_of(id).is_some() {
+            self.select_block(id);
+        } else {
+            self.clear_picked();
+            self.selected = id;
+        }
     }
 
     /// Forgets several selected sources (a plain selection) and unmarks their rows.
@@ -270,5 +300,15 @@ mod tests {
         p.click(&ORDER, &mut sel, 2, Click::Toggle);
         p.retain(&[1, 3]);
         assert!(!p.has(1) && !p.has(2));
+    }
+
+    #[test]
+    fn a_group_block_is_a_set_and_one_member_is_not() {
+        let (mut p, sel) = (Picked::default(), 3);
+        p.set([2, 3, 4]);
+        assert_eq!(p.ids(sel), vec![2, 3, 4]);
+        p.set([3]);
+        assert!(!p.has(3), "one source is not a set");
+        assert_eq!(p.ids(sel), vec![3]);
     }
 }

@@ -313,8 +313,9 @@ impl ApiTarget<'_> {
             | C::TokensList
             | C::TokensCreate(..)
             | C::TokensRevoke(..) => self.answer_source3(command),
-            // `group.*` (ADR-0182); anything it does not own is unsupported.
-            _ => self.answer_group(command),
+            C::GroupCreate(..) | C::GroupRemove(..) | C::GroupRename(..) | C::GroupList(..) => {
+                self.answer_group(command)
+            }
         }
     }
 
