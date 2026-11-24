@@ -522,9 +522,7 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
         // Exact keeps the source's own pictures (a 4:2:0 camera picture is decoded to RGB
         // again when its matte arrives; the shared decode texture holds one picture).
         let exact = values.choice(SYNC) == 0;
-        if exact && let Some(f) = source {
-            self.recent.push(f);
-        }
+        keep_for_exact(&mut self.recent, &mut self.held, exact, source);
         let input = frame.and_then(|frame| describe(&local.pool, frame));
         let Some((input_id, size, decode, time)) = input else {
             self.drawn = None;
@@ -1062,6 +1060,24 @@ fn describe(pool: &TexturePool, frame: &VideoFrame) -> Option<Picture> {
         Transfer::of(frame.format(), d.format),
         frame.timestamp(),
     ))
+}
+
+/// Exact keeps the source's own pictures; Fast keeps none, so no camera picture stays
+/// leased (a held lease starves the camera's pool and freezes the picture).
+fn keep_for_exact(
+    recent: &mut Recent,
+    held: &mut Option<VideoFrame>,
+    exact: bool,
+    source: Option<&VideoFrame>,
+) {
+    if exact {
+        if let Some(f) = source {
+            recent.push(f);
+        }
+    } else {
+        recent.clear();
+        *held = None;
+    }
 }
 
 /// The picture to draw this tick. Fast: the current one. Exact: the one a new matte
