@@ -102,3 +102,19 @@ After the Mac was restarted (the compile service then worked; restarting only th
 The Neural Engine is about twice as fast as the GPU here and leaves the GPU free for composition and encoding; even accurate fits a 33 ms frame at 30 fps. The earlier "Neural Engine did not work" correction applied to the state before the restart. Consequence for the Mac default: Vision on its default device (the Neural Engine), with quality levels of about 3, 9 and 30 ms.
 
 Note: the restart cleared `/tmp`, so the earlier contact sheets, `summary.json`, the models and the Windows probe kit on the Mac are gone (the numbers in this document stay valid). The Windows kit has to be rebuilt when SC-PC is available.
+
+## Windows timings (2026-11-24, SC-PC)
+
+Ryzen 9 7950X (32 threads), RTX 4090 (driver 32.0.16.2124), Windows 11 Pro 10.0.26300, onnxruntime-directml 1.24.4, Python 3.12.10. Synthetic 1620x1080 frames resized on the CPU to the model input (the cost of these networks does not depend on picture content); `session.run` timed with inputs and outputs through host memory; 5 warm-up and 120 timed frames. A Windows per-process GPU counter showed every DirectML run on the RTX 4090. Median / p90 ms per frame (process CPU in percent of one core):
+
+| Model | RTX 4090, DirectML | CPU 4 threads | CPU 32 threads |
+| --- | --- | --- | --- |
+| RVM 960x640 | 8.1 / 8.9 (164%) | 15.8 / 16.6 (445%) | 17.9 / 19.2 (1600%) |
+| MODNet 384x256 | 4.5 / 5.0 (156%) | 35.8 / 37.1 | 27.4 / 29.2 |
+| MODNet 768x512 | 6.7 / 7.2 (168%) | 153.6 / 157.5 | 105.7 / 108.8 |
+| MediaPipe 256x256 | 1.35 / 1.52 (141%) | 2.14 / 2.27 | 3.39 / 3.76 |
+| MediaPipe 256x144 | 1.32 / 1.49 (142%) | 1.16 / 1.28 | 2.17 / 2.33 |
+
+Notes: the CPU resize and normalise step adds 3 to 7 ms per frame, which RBS would do on the GPU; CPU numbers include spin-waiting at ORT's default threads. DirectML session creation takes about 0.3 s with cached shaders and 2.7 to 3.8 s the first time. On DirectML only small shape operations (Slice, Concat, Gather, Unsqueeze) fall back to the CPU (RVM 9 of 260 nodes, MODNet 6 of 239, MediaPipe 6 of 123); every convolution runs on the GPU. An extra RVM variant keeping the recurrent states on the GPU with IOBinding failed (DML error 80070057 on node Expand_174, then an access violation); likely a binding bug in the probe, no driver reset in the event log; all GPU runs were stopped there per the safety rule.
+
+Not measured: the AMD iGPU and the CUDA provider. Consequences: on an RTX 4090, RVM through stock DirectML already costs about 8 ms per frame at 960x640 with only shape operations on the CPU, so RVM is practical on Windows for a high tier even before a GPU-native path; a GPU-native path is still needed for a lean middle ground, to avoid host-memory round trips (P4) and to run on weaker GPUs. Tier proposal for Windows and Linux, to be confirmed on the iGPU: Low = MediaPipe (about 1 to 2 ms), Medium = MODNet 384 (about 5 ms on a discrete GPU, about 30 ms on the CPU), High = RVM (about 8 ms on a discrete GPU).
