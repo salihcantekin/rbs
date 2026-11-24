@@ -755,7 +755,7 @@ enum Class {
 fn class(name: &str) -> Option<Class> {
     Some(match name {
         "rbs-core" | "rbs-graph" | "rbs-scene" | "rbs-capture" | "rbs-audio-io" | "rbs-input" | "rbs-codec"
-        | "rbs-mux" | "rbs-transport" | "rbs-vcam" | "rbs-media-decode" | "rbs-text" => Class::Core,
+        | "rbs-mux" | "rbs-transport" | "rbs-vcam" | "rbs-media-decode" | "rbs-text" | "rbs-segment" => Class::Core,
         "rbs-params" | "rbs-media-format" | "rbs-crash" | "rbs-vcam-ring" | "rbs-browser-ipc" => {
             Class::Helper
         }
