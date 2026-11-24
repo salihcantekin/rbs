@@ -789,6 +789,7 @@ fn class(name: &str) -> Option<Class> {
         | "rbs-capture-pipewire"
         | "rbs-capture-test"
         | "rbs-segment-vision"
+        | "rbs-segment-ort"
         | "rbs-audio-io-coreaudio"
         | "rbs-audio-io-pipewire"
         | "rbs-audio-io-wasapi"
