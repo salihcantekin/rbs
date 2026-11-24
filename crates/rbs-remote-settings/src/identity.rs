@@ -129,10 +129,10 @@ fn readable_by_others(path: &Path) -> Option<String> {
 fn readable_by_others(path: &Path) -> Option<String> {
     match crate::win_acl::others_may(path, crate::win_acl::READ | crate::win_acl::CHANGE) {
         Ok(false) => None,
-        Ok(true) => Some(
-            "other users can read or change this key file (its access list); make it readable by you only"
-                .to_owned(),
-        ),
+        Ok(true) => Some(format!(
+            "other users can read or change this key file (its owner or access list); {}",
+            crate::win_acl::HOW_TO
+        )),
         Err(why) => Some(why),
     }
 }

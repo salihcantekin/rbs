@@ -447,10 +447,10 @@ fn writable_by_others(path: &Path) -> Option<String> {
 fn writable_by_others(path: &Path) -> Option<String> {
     match win_acl::others_may(path, win_acl::CHANGE) {
         Ok(false) => None,
-        Ok(true) => Some(
-            "other users can change this file (its access list), so its access tokens are not trusted"
-                .to_owned(),
-        ),
+        Ok(true) => Some(format!(
+            "other users can change this file (its owner or access list), so its access tokens are not trusted; {}",
+            win_acl::HOW_TO
+        )),
         Err(why) => Some(format!("{why}, so its access tokens are not trusted")),
     }
 }
@@ -470,8 +470,9 @@ pub fn save(config: &Path, profile: &RemoteProfile) -> std::io::Result<()> {
 }
 
 /// Replaces `path` with `bytes` in one step (a temporary file renamed over it), the
-/// new file readable and writable by the current user only: its permissions are set
-/// before anything is written, so the secret never exists with other permissions.
+/// new file readable and writable by the current user only: it is created with those
+/// permissions (mode 0600 on Unix, its own access list on Windows), so the secret never
+/// exists with other permissions.
 fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     // A name of its own, so two saves at once (the app and `rbs-cli`, which also
@@ -481,22 +482,20 @@ fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let mut name = path.file_name().unwrap_or_default().to_owned();
     name.push(format!(".{}-{n}.tmp", std::process::id()));
     let tmp = path.with_file_name(name);
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut f = options.open(&tmp)?;
-    // The handle keeps the access it was opened with; the list applies to later opens.
     #[cfg(windows)]
-    let f_private = win_acl::make_private(&tmp);
+    let mut f = win_acl::create_private(&tmp)?;
     #[cfg(not(windows))]
-    let f_private = Ok(());
-    let written = f_private
-        .and_then(|()| f.write_all(bytes))
-        .and_then(|()| f.sync_all());
+    let mut f = {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        options.open(&tmp)?
+    };
+    let written = f.write_all(bytes).and_then(|()| f.sync_all());
     drop(f);
     let done = written.and_then(|()| std::fs::rename(&tmp, path));
     if done.is_err() {

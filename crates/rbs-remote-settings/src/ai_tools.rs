@@ -245,8 +245,8 @@ fn read_token(config: &Path) -> Option<Token> {
 }
 
 /// Writes the token file: a new temporary file in the same directory, created
-/// exclusively with its final permissions (Unix mode 0600 at creation; Windows
-/// inheriting the user-only folder ACL), flushed and synced, renamed over the old one,
+/// exclusively with its final permissions (mode 0600 on Unix; on Windows an access list
+/// of its own for the user and the system), flushed and synced, renamed over the old one,
 /// then the directory synced. On Windows a replace refused because `rbs-mcp` holds the
 /// file open is tried a few more times.
 fn write_token(config: &Path, token: &Token) -> std::io::Result<()> {
