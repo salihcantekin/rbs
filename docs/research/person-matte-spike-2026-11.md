@@ -66,3 +66,39 @@ Findings: ONNX Runtime's CoreML provider does not help RVM (pooling with `ceil_m
 - **Windows measurement (RTX 4090 and AMD iGPU)**, waiting for SC-PC (off on 2026-11-24): RVM through ONNX Runtime with DirectML and CUDA as a baseline, then one GPU-native prototype. Runs of 1 to 2 minutes, one device thread at a time.
 - Apple Vision on the Neural Engine: run `vision_probe balanced` from a normal Terminal (a sandboxed shell cannot build the inference plan).
 - Low-light and second-person clips (not recorded yet); MODNet and MediaPipe comparison on the same clips.
+
+## Mac round 2: MediaPipe and MODNet (2026-11-24, M4 Pro)
+
+Same four clips, first 120 frames, first 5 skipped, median of per-clip medians, inference only. Licences read from the official repositories: MODNet and MediaPipe Apache-2.0 (the ONNX files used are community conversions whose model cards say Apache-2.0: Xenova/modnet and onnx-community MediaPipe; the MediaPipe conversion was not compared with the official tflite). The clips contain no low-light or second-person scenes, which the owner waived.
+
+| Model / path | ms per frame | Notes |
+| --- | --- | --- |
+| MediaPipe selfie 256x144, CPU | 1.6 | cheapest; arms sometimes drop out |
+| MediaPipe selfie 256x256, CPU | 2.5 (1 thread 3.9, 2 threads 2.9) | also caught a blurred hand |
+| MediaPipe 256x256, CoreML | 7.6 | slower than CPU: graph split into 16 + 11 pieces |
+| MODNet 384x256, CPU / CoreML | 34.2 / 32.9 | CoreML takes 117 of 242 nodes |
+| MODNet 768x512, CPU | 134 | one frame leaked background (white area) |
+| RVM, CPU (default / 2 / 1 threads) | 14.2 / 25.6 / 44.0 | about 6 cores at default |
+| Apple Vision fast / balanced / accurate, GPU | 9.4 / 18.1 / 55.8 | CPU about 16% |
+
+Flicker: the wall patch test gave exactly 0 for every model (it does not separate them). Whole-frame mean absolute alpha change x1000 on the still-talking clip: RVM 0.23, MediaPipe 0.26, MODNet 0.30, Vision 0.36, all very low; moving clips mix real motion into the number and cannot be compared. Apple Vision on the Neural Engine is still unmeasured (a sandboxed shell cannot build the plan; run `vision_probe` from a normal Terminal). A Windows kit with DirectML probes is on the Mac in `/tmp/matte-spike/windows_kit` for the open Windows measurement.
+
+Suggested quality tiers from these numbers (to confirm after Windows): Fast = MediaPipe on one or two CPU threads (2 to 4 ms); Balanced = Vision balanced on Mac, MODNet 384 elsewhere; High = Vision accurate, or RVM (GPL-3.0 is compatible with RBS, edge quality best, but needs our own GPU path to be lean). Edge quality was judged by eye on contact sheets, not measured.
+
+### Correction: Neural Engine (2026-11-24)
+
+The Neural Engine compile service of this Mac failed for every model (macOS 26.7.1, `ANECompilerService` "Compilation failed", also from a plain Terminal.app window and for a small MediaPipe model through the CoreML provider). So rows above labelled "CoreML (ALL / GPU / ANE)" did not run on the Neural Engine; only the CPU, GPU and Vision-on-GPU numbers are valid. The Neural Engine timings are open until the Mac is restarted (a restart usually clears this); no commands are needed from the owner.
+
+### Neural Engine result after a restart (2026-11-24)
+
+After the Mac was restarted (the compile service then worked; restarting only the two services did not help), Apple Vision was measured on the Neural Engine. Same clips and method (1620x1080, 120 frames, first 5 skipped, median of per-clip medians). The machine was still busy 1 to 3 minutes after boot (load average falling from 124 to 38), so values may be slightly pessimistic. The Neural Engine was confirmed by the explicit compute device (`MLNeuralEngineComputeDevice`), by default-device times equal to the Neural Engine times, and by no compile errors during the runs; `powermetrics` was not used (needs a password).
+
+| Vision level | Neural Engine ms | Default device ms | GPU ms | Mask |
+| --- | --- | --- | --- | --- |
+| fast | 3.4 | 2.7 | 8.0 | 256x192 |
+| balanced | 9.8 | 9.0 | 19.0 | 512x384 |
+| accurate | 30.1 | 29.7 | 55.7 | 2016x1512 |
+
+The Neural Engine is about twice as fast as the GPU here and leaves the GPU free for composition and encoding; even accurate fits a 33 ms frame at 30 fps. The earlier "Neural Engine did not work" correction applied to the state before the restart. Consequence for the Mac default: Vision on its default device (the Neural Engine), with quality levels of about 3, 9 and 30 ms.
+
+Note: the restart cleared `/tmp`, so the earlier contact sheets, `summary.json`, the models and the Windows probe kit on the Mac are gone (the numbers in this document stay valid). The Windows kit has to be rebuilt when SC-PC is available.
