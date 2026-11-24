@@ -453,6 +453,21 @@ pub fn check_fields(fields: &[Field], max_fields: usize) -> Result<(), String> {
         if fields[..i].iter().any(|g| g.key == f.key) {
             return Err(format!("field key {:?} is used twice", f.key));
         }
+        if f.dropdown && !matches!(f.kind, FieldKind::Choice { .. }) {
+            return Err(format!("{}: only a choice can be a dropdown", f.key));
+        }
+        if let Some((key, option)) = f.shown_when {
+            let target = fields[..i].iter().find(|g| g.key == key);
+            match target.map(|g| g.kind) {
+                Some(FieldKind::Choice { options, .. }) if usize::from(option) < options.len() => {}
+                _ => {
+                    return Err(format!(
+                        "{}: shown_when must name an earlier choice field and one of its options",
+                        f.key
+                    ));
+                }
+            }
+        }
         match f.kind {
             FieldKind::Number {
                 min,
@@ -509,6 +524,28 @@ mod tests {
         assert_eq!(parse_color("#gg0000"), None);
         assert_eq!(color_text([0, 255, 0, 255]), "#00ff00");
         assert_eq!(color_text([1, 2, 3, 4]), "#01020304");
+    }
+
+    #[test]
+    fn shown_when_must_name_an_earlier_choice_and_option() {
+        const MODE: Field = Field::choice("mode", "Mode", &[("a", "A"), ("b", "B")], "a");
+        let ok = [
+            MODE,
+            Field::number("n", "N", 0.0, 1.0, 0.5, 0.1, "").shown_when("mode", 1),
+        ];
+        assert!(check_fields(&ok, 8).is_ok());
+        let bad_option = [
+            MODE,
+            Field::number("n", "N", 0.0, 1.0, 0.5, 0.1, "").shown_when("mode", 2),
+        ];
+        assert!(check_fields(&bad_option, 8).is_err());
+        let later = [
+            Field::number("n", "N", 0.0, 1.0, 0.5, 0.1, "").shown_when("mode", 0),
+            MODE,
+        ];
+        assert!(check_fields(&later, 8).is_err());
+        let not_choice = [Field::number("n", "N", 0.0, 1.0, 0.5, 0.1, "").as_dropdown()];
+        assert!(check_fields(&not_choice, 8).is_err());
     }
 
     #[test]

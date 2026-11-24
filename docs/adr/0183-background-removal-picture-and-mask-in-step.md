@@ -15,7 +15,8 @@ The first Mac test of the background removal filter (2026-11-24, Apple Vision, H
 2. Exact keeps four references (leases, not copies) to the source's input pictures; no extra GPU memory is allocated and nothing is read back beyond the small picture of ADR-0179 decision 3. The kept pictures are the source's own, so a 4:2:0 camera picture (NV12, the Mac camera) is decoded to RGB again when its matte arrives: at most one extra decode pass per drawn picture.
 3. Output rate in Exact follows the rate of finished mattes: a picture is published when its matte arrives, and until the next matte the same picture stays (the output slot keeps its frame). A session that is slower than the source lowers the filter's frame rate; it never queues.
 4. Exact delays only the picture. The source's sound is not delayed by the filter; keeping them in step uses the source's audio sync offset until a video latency report exists (open question below).
-5. Smoothing defaults to 0 (was 0.5): blending the matte before it brings the trail back.
+5. The Smoothing setting is removed (it defaulted to 0.5 and brought the trail back; the filter schema is limited to eight fields).
+6. Stale limit: when the held picture is more than 500 ms behind the newest one (the session stopped delivering masks), Exact shows the newest picture with the last matte (Fast behaviour) until masks arrive again, so the camera never freezes. The kept pictures are given back whenever the input disappears, the mode is Fast or the picture size changes.
 
 ## Consequences
 

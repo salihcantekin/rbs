@@ -539,7 +539,6 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
                 if aspect_changed(old, size) {
                     session.reset();
                     self.matte_generation = 0;
-                    self.recent.clear();
                     if let Some((id, _)) = self.matte.take() {
                         let _ = local.pool.release(id);
                         local.pool.forget_texture(id);
@@ -550,6 +549,7 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
             self.submitted = None;
             self.drawn = None;
             self.held = None;
+            self.recent.clear();
         }
 
         // 1. A finished readback becomes a small frame for the session.
@@ -1049,15 +1049,16 @@ fn keep_for_exact(
     exact: bool,
     source: Option<&VideoFrame>,
 ) {
-    if exact {
-        if let Some(f) = source {
-            recent.push(f);
-        }
+    if let (true, Some(f)) = (exact, source) {
+        recent.push(f);
     } else {
         recent.clear();
         *held = None;
     }
 }
+
+/// How far behind the newest picture a held one may be before Exact gives up on it.
+const STALE: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// The picture to draw this tick. Fast: the current one. Exact: the one a new matte
 /// was made from (kept in `recent`), and until the next matte the same one again; a 4:2:0
@@ -1078,6 +1079,14 @@ fn picture_to_draw(
         && let Some(frame) = recent.find(time).and_then(VideoFrame::share)
     {
         *held = Some(frame);
+    }
+    // Masks stopped coming (a stalled or busy session): show the newest picture again
+    // instead of one old picture for ever.
+    if held
+        .as_ref()
+        .is_some_and(|f| current.3.saturating_since(f.timestamp()) > STALE)
+    {
+        *held = None;
     }
     let Some(frame) = held.as_ref() else {
         return current;
