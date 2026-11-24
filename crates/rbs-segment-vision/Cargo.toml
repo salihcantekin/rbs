@@ -16,8 +16,8 @@ rbs-segment = { path = "../rbs-segment" }
 # versions as rbs-capture-sck and rbs-gpu.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std"] }
-objc2-core-video = { version = "0.3.2", default-features = false, features = ["std", "CVBase", "CVBuffer", "CVImageBuffer", "CVPixelBuffer", "CVReturn"] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFDictionary", "CFNumber", "CFString"] }
+objc2-core-video = { version = "0.3.2", default-features = false, features = ["std", "CVBase", "CVBuffer", "CVImageBuffer", "CVPixelBuffer", "CVPixelBufferPool", "CVReturn"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSError", "NSObject", "NSProcessInfo", "NSString", "NSValue"] }
 objc2-vision = { version = "0.3.2", default-features = false, features = ["std", "VNGeneratePersonSegmentationRequest", "VNObservation", "VNRequest", "VNRequestHandler", "VNStatefulRequest", "objc2-core-video"] }
 

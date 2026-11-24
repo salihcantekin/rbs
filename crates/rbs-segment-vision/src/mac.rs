@@ -13,11 +13,14 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 
 use objc2::rc::Retained;
+use objc2_core_foundation::{CFDictionary, CFNumber, CFRetained, CFString, CFType};
 use objc2_core_video::{
-    CVPixelBuffer, CVPixelBufferCreate, CVPixelBufferGetBaseAddress, CVPixelBufferGetBytesPerRow,
+    CVPixelBuffer, CVPixelBufferGetBaseAddress, CVPixelBufferGetBytesPerRow,
     CVPixelBufferGetHeight, CVPixelBufferGetWidth, CVPixelBufferLockBaseAddress,
-    CVPixelBufferLockFlags, CVPixelBufferUnlockBaseAddress, kCVPixelFormatType_32BGRA,
-    kCVPixelFormatType_OneComponent8,
+    CVPixelBufferLockFlags, CVPixelBufferPool, CVPixelBufferUnlockBaseAddress,
+    kCVPixelBufferHeightKey, kCVPixelBufferIOSurfacePropertiesKey,
+    kCVPixelBufferMetalCompatibilityKey, kCVPixelBufferPixelFormatTypeKey, kCVPixelBufferWidthKey,
+    kCVPixelFormatType_32BGRA, kCVPixelFormatType_OneComponent8,
 };
 use objc2_foundation::{NSArray, NSOperatingSystemVersion, NSProcessInfo};
 use objc2_vision::{
@@ -287,6 +290,74 @@ impl Drop for VisionSession {
 struct Engine {
     quality: VNGeneratePersonSegmentationRequestQualityLevel,
     handler: Retained<VNSequenceRequestHandler>,
+    /// Input buffers for Vision, made once per picture size and reused.
+    pool: Option<InputPool>,
+}
+
+/// IOSurface-backed BGRA buffers of one size. With a plain buffer (no IOSurface) Vision
+/// scales and converts the picture for the model with VideoToolbox on the CPU, the
+/// largest part of the worker's time in a release profile; with these buffers the
+/// Accurate level took 34.9 instead of 40.9 ms of CPU per 512x288 picture (M4 Pro,
+/// 2026-11-24; Fast and Balanced unchanged, masks equal). The pool also ends one
+/// buffer allocation per frame.
+struct InputPool {
+    size: Size,
+    pool: CFRetained<CVPixelBufferPool>,
+}
+
+impl InputPool {
+    fn new(size: Size) -> Option<Self> {
+        let width = CFNumber::new_i32(i32::try_from(size.width).ok()?);
+        let height = CFNumber::new_i32(i32::try_from(size.height).ok()?);
+        // The four-character code fits in an i32 bit for bit; CoreVideo reads it back so.
+        let format = CFNumber::new_i32(kCVPixelFormatType_32BGRA as i32);
+        let surface = CFDictionary::<CFString, CFType>::empty();
+        let yes = objc2_core_foundation::CFBoolean::new(true);
+        // SAFETY: the keys are CoreVideo constants that live for the whole process.
+        let keys: [&CFString; 5] = unsafe {
+            [
+                kCVPixelBufferWidthKey,
+                kCVPixelBufferHeightKey,
+                kCVPixelBufferPixelFormatTypeKey,
+                kCVPixelBufferIOSurfacePropertiesKey,
+                kCVPixelBufferMetalCompatibilityKey,
+            ]
+        };
+        let values: [&CFType; 5] = [&width, &height, &format, &surface, yes];
+        let attributes = CFDictionary::from_slices(&keys, &values);
+        let mut raw: *mut CVPixelBufferPool = std::ptr::null_mut();
+        // SAFETY: `raw` is a valid out pointer and `attributes` a dictionary of pixel
+        // buffer keys with values of the documented types. On success CoreVideo returns
+        // a +1 retained pool that `CFRetained::from_raw` adopts.
+        let pool = unsafe {
+            if CVPixelBufferPool::create(
+                None,
+                None,
+                Some(attributes.as_opaque()),
+                NonNull::new(&mut raw)?,
+            ) != 0
+            {
+                return None;
+            }
+            CFRetained::from_raw(NonNull::new(raw)?)
+        };
+        Some(Self { size, pool })
+    }
+
+    fn buffer(&self) -> Option<Retained<CVPixelBuffer>> {
+        let mut raw: *mut CVPixelBuffer = std::ptr::null_mut();
+        // SAFETY: `raw` is a valid out pointer and the pool is alive. On success
+        // CoreVideo returns a +1 retained buffer that `Retained::from_raw` adopts; the
+        // buffer goes back to the pool when its last reference is dropped.
+        unsafe {
+            if CVPixelBufferPool::create_pixel_buffer(None, &self.pool, NonNull::new(&mut raw)?)
+                != 0
+            {
+                return None;
+            }
+            Retained::from_raw(raw)
+        }
+    }
 }
 
 impl Engine {
@@ -294,7 +365,11 @@ impl Engine {
         // SAFETY: a plain Objective-C constructor of a Vision object that this thread
         // alone owns.
         let handler = unsafe { VNSequenceRequestHandler::new() };
-        Self { quality, handler }
+        Self {
+            quality,
+            handler,
+            pool: None,
+        }
     }
 
     /// A new request for every frame: Vision's request is stateful and smooths the mask
@@ -313,8 +388,12 @@ impl Engine {
     }
 
     /// Runs one frame and copies the mask out as one byte per pixel.
-    fn run(&self, pending: &Pending) -> Result<Matte, SegmentError> {
-        let buffer = make_pixel_buffer(pending).ok_or(SegmentError::DeviceLost)?;
+    fn run(&mut self, pending: &Pending) -> Result<Matte, SegmentError> {
+        if self.pool.as_ref().is_none_or(|p| p.size != pending.size) {
+            self.pool = InputPool::new(pending.size);
+        }
+        let pool = self.pool.as_ref().ok_or(SegmentError::DeviceLost)?;
+        let buffer = fill_pixel_buffer(pool, pending).ok_or(SegmentError::DeviceLost)?;
         let request = self.request();
         let requests = NSArray::from_retained_slice(&[Retained::into_super(Retained::into_super(
             Retained::into_super(request.clone()),
@@ -339,27 +418,11 @@ impl Engine {
     }
 }
 
-fn make_pixel_buffer(pending: &Pending) -> Option<Retained<CVPixelBuffer>> {
+/// A pool buffer holding `pending`'s pixels.
+fn fill_pixel_buffer(pool: &InputPool, pending: &Pending) -> Option<Retained<CVPixelBuffer>> {
     let width = pending.size.width as usize;
     let height = pending.size.height as usize;
-    let mut raw: *mut CVPixelBuffer = std::ptr::null_mut();
-    // SAFETY: `raw` is a valid out pointer; the other arguments are plain values. On
-    // success CoreVideo returns a +1 retained buffer that `Retained::from_raw` adopts.
-    let status = unsafe {
-        CVPixelBufferCreate(
-            None,
-            width,
-            height,
-            kCVPixelFormatType_32BGRA,
-            None,
-            NonNull::new(&mut raw)?,
-        )
-    };
-    if status != 0 {
-        return None;
-    }
-    // SAFETY: `raw` was written by a successful `CVPixelBufferCreate`.
-    let buffer = unsafe { Retained::from_raw(raw) }?;
+    let buffer = pool.buffer()?;
     // SAFETY: the buffer is locked for writing while its base address is used, and
     // unlocked before it leaves this function. Each row copy stays inside both the
     // source (`width * 4` bytes per row, checked in `to_bgra`) and the buffer row.
