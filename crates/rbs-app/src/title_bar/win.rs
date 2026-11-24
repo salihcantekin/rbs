@@ -29,6 +29,15 @@ impl WindowFrame for Frame {
     fn set_regions(&self, r: Regions) {
         rbs_app::win::caption::set_regions(r);
     }
+
+    /// Borderless full screen on the window's display; the subclass steps aside first
+    /// (ADR-0180 decision 5).
+    fn toggle_full_screen(&self, main: &MainWindow) {
+        let on = !super::is_full_screen();
+        rbs_app::win::caption::set_full_screen(on);
+        main.window().set_fullscreen(on);
+        super::note_full_screen(main, on);
+    }
 }
 
 /// After the main window is shown: once its Win32 window exists (and again whenever

@@ -20,6 +20,7 @@ use rbs_ui::workspace::{MixerOrientation, Side, Workspace};
 use crate::studio_host::{OutputCanvas, STREAMING_OFF, TransformOp};
 use crate::studio_ui::filters::filter_types;
 use crate::studio_ui::{SourceFacts, StudioUi, VerticalOut, rec_state, st_state};
+use crate::title_bar::WindowCommand;
 
 /// The run-time values of the menu bar, in the generated items' order: one entry
 /// per command or choice submenu in `titles`, `enabled` and `checked`, one list per
@@ -940,6 +941,7 @@ impl CommandState for Shown<'_> {
             "canvas.studio_mode.toggle" => self.studio.studio_mode,
             "canvas.vertical_preview.toggle" => self.vertical_panel_open(),
             "ui.projector.open" => self.projector_kept(id),
+            "ui.window.full_screen" => crate::title_bar::is_full_screen(),
             "canvas.vertical_size" => match (self.studio.vertical, size_of(id)) {
                 (Some(v), Some((w, h))) => v.size.width == w && v.size.height == h,
                 _ => false,
@@ -1759,6 +1761,8 @@ pub enum Run {
     OpenSettings(Option<i32>, Option<SettingsTarget>),
     /// Open the RBS menu with its search field (`ui.app_menu.open`).
     OpenAppMenu,
+    /// A main window command (`ui.window.*`, ADR-0180 decision 5).
+    Window(WindowCommand),
     /// Open the Import from OBS window (`ui.collection.import_obs`, ADR-0131).
     OpenObsImport,
     /// Scene edit undo (`true`) or redo.
@@ -1966,6 +1970,18 @@ fn direct_choices(
         .collect()
 }
 
+/// `ui.panel.float`: docks a floating panel's window back (`on`), or floats the panel.
+fn float_or_dock(state: &Shown<'_>, id: &CommandId, on: bool) -> Option<Run> {
+    let panel = panel_of(id)?;
+    Some(Run::Layout(if on {
+        rbs_ui::LayoutCommand::Dock {
+            window: state.workspace.find(&panel)?.0,
+        }
+    } else {
+        rbs_ui::LayoutCommand::Float(panel)
+    }))
+}
+
 /// What `text` runs in this state; `None` for ids that cannot run (unknown, bad
 /// parameters, a bare picker, disabled).
 pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
@@ -2080,6 +2096,7 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
         "ui.theme.reload" => Run::ReloadThemes,
         "ui.settings.open" => open_settings(&id)?,
         "ui.app_menu.open" => Run::OpenAppMenu,
+        base if base.starts_with("ui.window.") => Run::Window(WindowCommand::from_id(base)?),
         "ui.collection.import_obs" => Run::OpenObsImport,
         "ui.panel.maximize" => Run::Maximize(panel_of(&id)?, !on),
         "ui.panel.collapse" => Run::Layout(L::SetCollapsed {
@@ -2096,16 +2113,7 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
         "ui.layout.lock" => Run::Layout(L::SetLocked(!on)),
         "ui.layout.undo" => Run::LayoutHistory(true),
         "ui.layout.redo" => Run::LayoutHistory(false),
-        "ui.panel.float" => {
-            let panel = panel_of(&id)?;
-            if on {
-                Run::Layout(L::Dock {
-                    window: state.workspace.find(&panel)?.0,
-                })
-            } else {
-                Run::Layout(L::Float(panel))
-            }
-        }
+        "ui.panel.float" => float_or_dock(state, &id, on)?,
         "ui.panel.close" => Run::Layout(L::ClosePanel(panel_of(&id)?)),
         "canvas.studio_mode.toggle" => Run::StudioMode(!on),
         "canvas.vertical_preview.toggle" => {
@@ -2298,221 +2306,4 @@ fn heard_source(id: &CommandId) -> Option<i32> {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)] // Tests fail by panicking.
-mod tests {
-    use super::*;
-
-    /// The window files that declare the menu bar (ADR-0138: one file per window group).
-    const WINDOW_FILES: [&str; 2] = ["ui/main_window.slint", "ui/settings_window.slint"];
-
-    #[test]
-    fn the_window_files_have_the_current_menu_bar() {
-        let mut copies = 0;
-        for file in WINDOW_FILES {
-            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(file);
-            let text = std::fs::read_to_string(&path).expect("the window file is readable");
-            // A Windows checkout may have CRLF line ends; the generated text has LF.
-            let text = text.replace("\r\n", "\n");
-            let fresh = refreshed(&text).expect("the window file has the menu bar markers");
-            if fresh != text && std::env::var_os("RBS_UPDATE_MENU_BAR").is_some() {
-                std::fs::write(&path, &fresh).expect("the window file is writable");
-                copies += fresh.matches(BEGIN).count();
-                continue;
-            }
-            assert!(
-                fresh == text,
-                "the menu bar in {file} is out of date: run \
-                 `RBS_UPDATE_MENU_BAR=1 cargo test -p rbs-app --bin rbs menu_bar`"
-            );
-            copies += text.matches(BEGIN).count();
-        }
-        // Main, floating and Settings windows each declare the menu bar (macOS).
-        assert_eq!(copies, 3);
-    }
-
-    #[test]
-    fn values_follow_the_generated_order() {
-        let shape = slint_text("");
-        let v = values(&Shape);
-        // One `Menus.titles[i]` per value, numbered in order.
-        for i in 0..v.titles.len() {
-            assert!(shape.contains(&format!("Menus.titles[{i}]")), "{i}");
-        }
-        assert!(!shape.contains(&format!("Menus.titles[{}]", v.titles.len())));
-        for i in 0..v.choices.len() {
-            assert!(shape.contains(&format!("Menus.choices[{i}]")), "{i}");
-        }
-        assert_eq!(v.enabled.len(), v.titles.len());
-        assert_eq!(v.checked.len(), v.titles.len());
-    }
-
-    #[test]
-    fn the_transition_outside_studio_mode_checks_the_current_kind() {
-        use rbs_scene::{CollectionTransition, TransitionKind as K};
-        let t = CollectionTransition::default();
-        let choices = direct_choices(t, 400);
-        let titles: Vec<_> = choices.iter().map(|(t, _, _)| t.as_str()).collect();
-        assert_eq!(
-            titles,
-            [
-                "Cut",
-                "Fade (300 ms)",
-                "Move (400 ms)",
-                "Swipe (500 ms)",
-                "Slide (500 ms)",
-                "Stinger (no file: a cut)"
-            ]
-        );
-        let checked: Vec<_> = choices.iter().filter(|c| c.2).collect();
-        assert_eq!(checked.len(), 1);
-        assert_eq!(checked[0].1, "move");
-        // Every value names a kind the run parses back (the picker's `direct_kind`).
-        for (_, value, _) in &choices {
-            assert!(K::parse(value).is_some(), "{value}");
-        }
-        // A 0 ms glide makes Move a cut, and the title says so.
-        let fade = CollectionTransition {
-            direct: K::Fade,
-            ..t
-        };
-        let still = direct_choices(fade, 0);
-        assert_eq!(still[2].0, "Move (0 ms: a cut)");
-        assert!(still[1].2);
-    }
-
-    #[test]
-    fn every_settings_section_has_its_window_number() {
-        let mut seen: Vec<i32> = rbs_ui::command::SETTINGS_SECTIONS
-            .iter()
-            .map(|s| settings_section(s).expect("known section"))
-            .collect();
-        seen.sort_unstable();
-        assert_eq!(seen, (0..14).collect::<Vec<_>>());
-        assert_eq!(settings_section("mixer"), None);
-        let run = |t: &str| open_settings(&CommandId::parse(t).expect("id"));
-        assert_eq!(run("ui.settings.open"), Some(Run::OpenSettings(None, None)));
-        assert_eq!(
-            run("ui.settings.open?section=shortcuts"),
-            Some(Run::OpenSettings(Some(6), None))
-        );
-        assert_eq!(run("ui.settings.open?section=mixer"), None);
-    }
-
-    /// `setting` names an index key in its section, `command` a command in Shortcuts
-    /// (spec `settings-search.md`).
-    #[test]
-    fn settings_open_at_a_setting() {
-        let run = |t: &str| open_settings(&CommandId::parse(t).expect("id"));
-        let at = |section, key: &str| {
-            Some(Run::OpenSettings(
-                Some(section),
-                Some(SettingsTarget::Setting(key.to_owned())),
-            ))
-        };
-        assert_eq!(
-            run("ui.settings.open?section=stream&setting=encoding.b-frames"),
-            at(2, "encoding.b-frames")
-        );
-        // Without a section: the key's first section.
-        assert_eq!(
-            run("ui.settings.open?setting=encoding.b-frames"),
-            at(1, "encoding.b-frames")
-        );
-        assert_eq!(
-            run("ui.settings.open?setting=settings.recording.replay"),
-            at(1, "settings.recording.replay")
-        );
-        // Not shown in that section, unknown, or a command as a key.
-        assert_eq!(
-            run("ui.settings.open?section=general&setting=encoding.b-frames"),
-            None
-        );
-        assert_eq!(run("ui.settings.open?setting=nope"), None);
-        assert_eq!(run("ui.settings.open?setting=record.main.toggle"), None);
-        // A command in Shortcuts, with or without the section.
-        let shortcut = Some(Run::OpenSettings(
-            Some(6),
-            Some(SettingsTarget::Command("record.main.toggle".to_owned())),
-        ));
-        assert_eq!(run("ui.settings.open?command=record.main.toggle"), shortcut);
-        assert_eq!(
-            run("ui.settings.open?command=record.main.toggle&section=shortcuts"),
-            shortcut
-        );
-        assert_eq!(
-            run("ui.settings.open?command=record.main.toggle&section=stream"),
-            None
-        );
-        assert_eq!(run("ui.settings.open?command=no.such"), None);
-        // Only a bare id: a parameterised command has no row of its own.
-        assert_eq!(
-            run("ui.settings.open?command=ui.area.toggle%3Farea%3Dleft"),
-            None
-        );
-        assert_eq!(
-            run("ui.settings.open?command=record.main.toggle&setting=encoding.b-frames"),
-            None
-        );
-    }
-
-    #[test]
-    fn the_row_splits_at_the_space_and_tidies_separators() {
-        let item = |kind, id: &str| ToolItem {
-            id: id.to_owned(),
-            title: id.to_owned(),
-            kind,
-            enabled: true,
-            checked: false,
-            live: false,
-            icon: String::new(),
-            icon_only: false,
-        };
-        let c = |id: &str| item(ToolKind::Command, id);
-        let sep = || item(ToolKind::Separator, "");
-        let space = || item(ToolKind::Space, "");
-        let ids = |v: &[ToolItem]| {
-            v.iter()
-                .map(|i| if i.id.is_empty() { "|" } else { i.id.as_str() })
-                .collect::<Vec<_>>()
-                .join(" ")
-        };
-        let row = split_row(vec![
-            sep(),
-            c("a"),
-            sep(),
-            sep(),
-            c("b"),
-            sep(),
-            space(),
-            sep(),
-            c("c"),
-            space(),
-            c("d"),
-            sep(),
-        ]);
-        assert_eq!(ids(&row.lead), "a | b");
-        assert_eq!(ids(&row.end), "c d");
-        let row = split_row(vec![c("a"), sep(), c("b")]);
-        assert_eq!(ids(&row.lead), "a | b");
-        assert!(row.end.is_empty());
-        assert_eq!(split_row(vec![sep(), space(), sep()]), Row::default());
-    }
-
-    #[test]
-    fn titles_are_quoted_for_slint() {
-        assert_eq!(quoted("a \"b\" \\"), "\"a \\\"b\\\" \\\\\"");
-    }
-
-    #[test]
-    fn refreshing_keeps_the_text_around_the_markers() {
-        // A marker no menu title contains ("old" is in "Hold stream").
-        let text = format!("a\n    {BEGIN}\n    stale-line\n    {END}\nb\n");
-        let fresh = refreshed(&text).expect("markers");
-        assert!(fresh.starts_with(&format!(
-            "a\n    {BEGIN}\n    if Shell.native-menu-bar: MenuBar {{\n"
-        )));
-        assert!(fresh.ends_with(&format!("    }}\n    {END}\nb\n")));
-        assert!(!fresh.contains("stale-line"));
-        assert_eq!(refreshed("no markers"), None);
-    }
-}
+mod tests;

@@ -941,15 +941,15 @@ impl App {
             Run::PauseRecording => self.studio.pause_recording(),
             Run::HoldStream => self.studio.hold_stream(),
             Run::Break => self.studio.take_break(),
-            // Needs the look and the Appearance page, which the next sync has.
+            // These need the look or the Appearance page, which the next sync has.
             Run::ReloadThemes => self.reload_themes = true,
+            Run::SelectDensity(density) => self.select_density = Some(density),
             Run::SelectTheme(id) => self.select_theme = Some(id),
             Run::SelectExperience(level) => Ctx::set_experience(self, level),
-            // Needs the Appearance page, which the next sync has.
-            Run::SelectDensity(density) => self.select_density = Some(density),
             // Making the window needs the shell's context, which the next sync has.
             Run::OpenSettings(section, setting) => self.open_settings = Some((section, setting)),
             Run::OpenAppMenu => self.open_app_menu = true,
+            Run::Window(command) => title_bar::run(&self.main, command),
             Run::OpenObsImport => self.open_obs_import = true,
             Run::Projector(canvas, true) => self.open_projector(canvas),
             Run::Projector(canvas, false) => self.close_projector(canvas),

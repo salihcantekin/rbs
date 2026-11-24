@@ -57,6 +57,7 @@ pub enum Platform { MacOs, Windows, Linux }
 
 - Every registry entry whose `shortcut` is set gives a default app binding of its plain id.
 - `rbs_ui::shortcut::DEFAULT_SHORTCUTS: &[(&str, &str)]` gives the rest, as `(command id, chord)`: `edit.redo` `Ctrl+Y` (Windows convention, also on macOS where it does nothing else), and `scene.position?n=1` … `n=9` → `Ctrl+1` … `Ctrl+9`.
+- `MAC_DEFAULT_SHORTCUTS` gives defaults on macOS only, app scope (`defaults_on(platform)`; `defaults()` is this platform's): `ui.window.minimize` `Ctrl+M` (Cmd+M) and `ui.window.full_screen` `Ctrl+Meta+F` (Ctrl+Cmd+F), the system's keys for the main window's own title bar (ADR-0180 decision 5). Cmd+M is therefore not reserved on macOS.
 - Only the scene position defaults (`scene.position?n=1`…`9`, Ctrl+1…9) are global; on a platform without global shortcuts they are app scope. A global default's chord passes the global rule on macOS and Windows and is not one other apps commonly use. None uses `Ctrl+Alt`, none is reserved or has an app-scope problem on any platform, and no two defaults share a chord (tested). A default whose command is not in the registry of this build is left out.
 
 ### Keymap (`rbs_ui::shortcut::Keymap`)

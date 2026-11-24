@@ -13,7 +13,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::command::{CommandId, CommandIdError, ENTRIES};
+use crate::command::{CommandId, CommandIdError, ENTRIES, entry};
 
 /// Longest chord text in bytes.
 pub const MAX_CHORD_LEN: usize = 64;
@@ -524,12 +524,13 @@ impl Chord {
         );
         match platform {
             Platform::MacOs => {
+                // Cmd+M is not reserved: RBS's own title bar runs Minimize with it
+                // (ADR-0180 decision 5).
                 let cmd = only(true, false, false, false);
                 let reserved = (cmd
                     && (letter(b'Q')
                         || letter(b'W')
                         || letter(b'H')
-                        || letter(b'M')
                         || named(Named::Comma)
                         || named(Named::Tab)
                         || named(Named::Space)
@@ -654,12 +655,25 @@ pub const DEFAULT_SHORTCUTS: &[(&str, &str, Scope)] = &[
     ("scene.position?n=9", "Ctrl+9", Scope::Global),
 ];
 
-/// Every default binding with its scope, in a stable order: registry entries first
-/// (app scope), then [`DEFAULT_SHORTCUTS`]. Ids whose entry is not in the registry are
-/// left out, so a default never names a command this build does not have. On a
-/// platform without global shortcuts a global default works in app scope
-/// ([`Keymap::resolve`]).
+/// Defaults on macOS only, in app scope: the system's own keys for the window commands
+/// (ADR-0180 decision 5), which RBS's title bar takes over (`Ctrl` is Command and
+/// `Meta` is Control there). Windows keeps its system keys (Win+Down, Win+Up).
+pub const MAC_DEFAULT_SHORTCUTS: &[(&str, &str)] = &[
+    ("ui.window.minimize", "Ctrl+M"),
+    ("ui.window.full_screen", "Ctrl+Meta+F"),
+];
+
+/// Every default binding with its scope on this platform ([`defaults_on`]).
 pub fn defaults() -> Vec<(String, Chord, Scope)> {
+    defaults_on(Platform::current())
+}
+
+/// Every default binding with its scope on `platform`, in a stable order: registry
+/// entries first (app scope), then [`DEFAULT_SHORTCUTS`], then on macOS
+/// [`MAC_DEFAULT_SHORTCUTS`]. Ids whose entry is not in the registry are left out, so
+/// a default never names a command this build does not have. On a platform without
+/// global shortcuts a global default works in app scope ([`Keymap::resolve`]).
+pub fn defaults_on(platform: Platform) -> Vec<(String, Chord, Scope)> {
     let mut out = Vec::new();
     for e in ENTRIES {
         if let Some(text) = e.shortcut {
@@ -677,6 +691,15 @@ pub fn defaults() -> Vec<(String, Chord, Scope)> {
         }
         if let Ok(c) = Chord::parse(text) {
             out.push((id.to_string(), c, *scope));
+        }
+    }
+    if platform == Platform::MacOs {
+        for (id, text) in MAC_DEFAULT_SHORTCUTS {
+            if entry(id).is_some()
+                && let Ok(c) = Chord::parse(text)
+            {
+                out.push(((*id).to_owned(), c, Scope::App));
+            }
         }
     }
     out
@@ -983,7 +1006,7 @@ impl Keymap {
         }
         // Defaults on the chords no user binding took, minus removed ones.
         let mut with_defaults = Vec::new();
-        for (command, chord, scope) in defaults() {
+        for (command, chord, scope) in defaults_on(platform) {
             // A global default works in app scope where global shortcuts do not exist.
             let scope = if scope == Scope::Global && !platform.has_global() {
                 Scope::App
@@ -1231,6 +1254,33 @@ mod tests {
         assert!(c("Ctrl+Alt+A").app_problem(Platform::MacOs).is_none());
         assert!(c("Alt+A").app_problem(Platform::Windows).is_none());
         assert!(c("Ctrl+S").common_in_other_apps());
+    }
+
+    #[test]
+    fn window_command_keys_are_defaults_on_macos_only() {
+        let has = |p, id: &str, keys: &str| {
+            defaults_on(p)
+                .iter()
+                .any(|(i, ch, s)| i == id && *ch == c(keys) && *s == Scope::App)
+        };
+        assert!(has(Platform::MacOs, "ui.window.minimize", "Ctrl+M"));
+        assert!(has(Platform::MacOs, "ui.window.full_screen", "Ctrl+Meta+F"));
+        assert!(!has(Platform::Windows, "ui.window.minimize", "Ctrl+M"));
+        assert!(!has(
+            Platform::Windows,
+            "ui.window.full_screen",
+            "Ctrl+Meta+F"
+        ));
+        for p in [Platform::MacOs, Platform::Windows, Platform::Linux] {
+            for (_, ch, _) in defaults_on(p) {
+                assert!(ch.reserved(p).is_none(), "{ch} is reserved on {p:?}");
+            }
+            let mut chords: Vec<Chord> = defaults_on(p).iter().map(|(_, ch, _)| *ch).collect();
+            let n = chords.len();
+            chords.sort();
+            chords.dedup();
+            assert_eq!(chords.len(), n, "two defaults share a chord on {p:?}");
+        }
     }
 
     #[test]

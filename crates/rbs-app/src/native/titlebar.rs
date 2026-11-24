@@ -424,6 +424,47 @@ unsafe fn zoom(window: &AnyObject) {
     }
 }
 
+/// Puts the window of `ns_view` into the system's full screen, or out of it.
+pub fn toggle_full_screen(ns_view: NonNull<c_void>) {
+    let window = window_of(ns_view);
+    // SAFETY: checked for null; `toggleFullScreen:` takes a sender, which may be nil,
+    // and returns nothing.
+    if let Some(window) = unsafe { window.as_ref() } {
+        // SAFETY: as above.
+        unsafe {
+            let _: () = msg_send![window, toggleFullScreen: std::ptr::null_mut::<AnyObject>()];
+        }
+    }
+}
+
+/// Turns off AppKit's own "Enter Full Screen" menu item, since View has RBS's (ADR-0180
+/// decision 5): registers `NSFullScreenMenuItemEverywhere` as NO. Call before the
+/// event loop starts. Apple does not document the key; a macOS that ignores it shows
+/// a second, working item.
+pub fn hide_system_full_screen_item() {
+    autoreleasepool(|_| {
+        let key = ns_string(c"NSFullScreenMenuItemEverywhere");
+        if key.is_null() {
+            return;
+        }
+        // SAFETY: class methods returning autoreleased objects or nil, each checked;
+        // `numberWithBool:` takes a BOOL, `dictionaryWithObject:forKey:` two objects,
+        // `registerDefaults:` a dictionary and returns nothing.
+        unsafe {
+            let no: *mut AnyObject = msg_send![class!(NSNumber), numberWithBool: false];
+            if no.is_null() {
+                return;
+            }
+            let dict: *mut AnyObject =
+                msg_send![class!(NSDictionary), dictionaryWithObject: no, forKey: key];
+            let defaults: *mut AnyObject = msg_send![class!(NSUserDefaults), standardUserDefaults];
+            if let (Some(dict), Some(defaults)) = (dict.as_ref(), defaults.as_ref()) {
+                let _: () = msg_send![defaults, registerDefaults: dict];
+            }
+        }
+    });
+}
+
 /// Whether the window of `ns_view` is zoomed now.
 pub fn zoomed(ns_view: NonNull<c_void>) -> bool {
     let window = window_of(ns_view);

@@ -6,7 +6,7 @@
 //! Everything here runs on the UI thread, which owns the window: the state is a
 //! `thread_local`, read without allocation for every mouse message (P13).
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::num::NonZeroIsize;
 use std::rc::Rc;
 
@@ -257,6 +257,22 @@ fn user_sizing() -> bool {
     })
 }
 
+thread_local! {
+    /// The main window is borderless full screen (ADR-0180 decision 5).
+    static FULL_SCREEN: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Sets whether the main window is borderless full screen: then the subclass leaves
+/// the window's frame, size and hit test to Windows and winit (no top inset, no top
+/// resize band, no caption drag). Call before changing it, on the UI thread.
+pub fn set_full_screen(on: bool) {
+    FULL_SCREEN.with(|f| f.set(on));
+}
+
+fn full_screen() -> bool {
+    FULL_SCREEN.with(Cell::get)
+}
+
 /// Whether the window is maximized or minimized.
 fn zoomed_or_iconic(hwnd: HWND) -> bool {
     // SAFETY: only reads the live window's state.
@@ -364,6 +380,15 @@ unsafe extern "system" fn procedure(
 fn handle(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     // SAFETY: Windows' own arguments for this window, passed on unchanged.
     let pass = || unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) };
+    // Full screen has no frame of RBS's to draw or move by: Windows' own handling.
+    if full_screen()
+        && matches!(
+            msg,
+            WM_NCCALCSIZE | WM_WINDOWPOSCHANGING | WM_GETMINMAXINFO | WM_NCHITTEST
+        )
+    {
+        return pass();
+    }
     match msg {
         WM_NCCALCSIZE if wparam != 0 => {
             let params = lparam as *mut NCCALCSIZE_PARAMS;

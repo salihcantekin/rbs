@@ -54,8 +54,8 @@ fn full_screen_changed(on: bool) {
     let _ = entry::invoke(move || {
         let main = MAIN.with(|m| m.borrow().as_ref().and_then(slint::Weak::upgrade));
         if let Some(main) = main {
+            super::note_full_screen(&main, on);
             let g = main.global::<Shell>();
-            g.set_window_full_screen(on);
             if let Some(v) = view(&main) {
                 g.set_caption_min_height(titlebar::band_height(v) as f32);
                 g.set_window_maximized(titlebar::zoomed(v));
@@ -88,6 +88,13 @@ impl WindowFrame for Frame {
 
     fn set_regions(&self, r: Regions) {
         REGIONS.with(|c| c.set(r));
+    }
+
+    /// The system's full screen (its own Space); the notifications report the change.
+    fn toggle_full_screen(&self, main: &MainWindow) {
+        if let Some(v) = view(main) {
+            titlebar::toggle_full_screen(v);
+        }
     }
 
     fn window_event(&self, main: &MainWindow, w: &Window, e: &WindowEvent) -> EventResult {
@@ -191,7 +198,7 @@ fn attach_if_new(main: &MainWindow) {
             Ok(band) => {
                 g.set_caption_min_height(band as f32);
                 g.set_window_maximized(titlebar::zoomed(v));
-                g.set_window_full_screen(titlebar::full_screen(v));
+                super::note_full_screen(&main, titlebar::full_screen(v));
                 g.set_custom_caption(true);
             }
             Err(why) => {
