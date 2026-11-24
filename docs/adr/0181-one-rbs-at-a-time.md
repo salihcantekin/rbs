@@ -1,4 +1,4 @@
-# ADR-0179: One RBS at a time, on every system
+# ADR-0181: One RBS at a time, on every system
 
 - Status: Proposed
 - Date: 2026-11-24
