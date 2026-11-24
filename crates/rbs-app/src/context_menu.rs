@@ -298,6 +298,26 @@ mod tests {
     }
 
     #[test]
+    fn a_group_row_menu_names_its_group_and_offers_only_group_commands() {
+        let target = target("group=4").unwrap();
+        let ids: Vec<String> = items(Context::Group, &target, &All)
+            .into_iter()
+            .filter(|i| i.kind != Kind::Separator)
+            .map(|i| i.id)
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                "ui.group.visible.toggle?group=4",
+                "ui.group.locked.toggle?group=4",
+                "ui.group.rename?group=4",
+                "item.ungroup",
+                "ui.group.remove?group=4",
+            ]
+        );
+    }
+
+    #[test]
     fn items_carry_ids_states_and_submenus() {
         let target = target("source=2&item=3").unwrap();
         let source = items(Context::Source, &target, &All);

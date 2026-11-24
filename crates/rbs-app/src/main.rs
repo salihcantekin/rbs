@@ -26,6 +26,7 @@ mod context_menu;
 mod entry;
 mod file_calls;
 mod filter_calls;
+mod group_run;
 mod icons;
 mod interact;
 mod library_transfer;
@@ -881,6 +882,7 @@ impl App {
             Run::SourceVisible(id, on) => self.studio.set_source_visible(id, on),
             Run::SourceLocked(id, on) => self.studio.set_source_locked(id, on),
             Run::Arrange(op) => self.studio.arrange_command(op),
+            Run::Group(group, op) => self.run_group(group, op, confirm),
             Run::Transform(id, op, canvas) => self.studio.transform_source(id, op, canvas),
             Run::SourceMuted(id, on) => self.studio.set_source_muted(id, on),
             Run::SourceMixerHidden(id, on) => self.studio.set_source_mixer_hidden(id, on),
@@ -1044,31 +1046,6 @@ impl App {
         Ok(())
     }
 
-    /// Starts the name field of a scene's (`scene`) or source's row: Rename from a menu
-    /// or a shortcut. The row's panel is opened first.
-    fn ask_rename(&mut self, id: i32, scene: bool) {
-        let name = if scene { "rbs.scenes" } else { "rbs.sources" };
-        if let Some(p) = panel(name) {
-            self.command(LayoutCommand::OpenPanel(p.clone()), Origin::Command);
-            self.raise_host_of(&p);
-        }
-        // The id says which row; the count makes each ask a change, also for the same
-        // row twice. A row made later (its panel was closed) checks the id when made.
-        let ask = |g: Studio<'_>| {
-            if scene {
-                g.set_renaming_scene(id);
-                g.set_rename_scene_asked(g.get_rename_scene_asked() + 1);
-            } else {
-                g.set_renaming_source(id);
-                g.set_rename_source_asked(g.get_rename_source_asked() + 1);
-            }
-        };
-        ask(self.main.global::<Studio>());
-        for f in &self.floats {
-            ask(f.window.global::<Studio>());
-        }
-    }
-
     /// Opens the scene's "Transition into this scene" card under its row (ADR-0135).
     /// The Scenes panel opens so the row is there.
     fn ask_scene_transition(&mut self, id: i32) {
@@ -1138,27 +1115,6 @@ impl App {
         apply(self.main.global::<Studio>());
         for f in &self.floats {
             apply(f.window.global::<Studio>());
-        }
-    }
-
-    /// Shows the source row's confirm before Remove from scene (`delete` false) or
-    /// Delete source (`delete` true). The Sources panel opens, and the source is
-    /// selected so a folded global row is in the list.
-    fn ask_remove_source(&mut self, id: i32, delete: bool) {
-        if let Some(p) = panel("rbs.sources") {
-            self.command(LayoutCommand::OpenPanel(p.clone()), Origin::Command);
-            self.raise_host_of(&p);
-        }
-        self.studio.selected = id;
-        let ask = |g: Studio<'_>| {
-            g.set_selected_source(id);
-            g.set_confirm_source_kind(if delete { 2 } else { 1 });
-            g.set_confirming_source(id);
-            g.set_confirm_source_asked(g.get_confirm_source_asked() + 1);
-        };
-        ask(self.main.global::<Studio>());
-        for f in &self.floats {
-            ask(f.window.global::<Studio>());
         }
     }
 

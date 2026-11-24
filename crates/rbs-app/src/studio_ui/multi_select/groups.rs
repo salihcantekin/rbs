@@ -51,6 +51,17 @@ impl StudioUi {
             .collect()
     }
 
+    /// Whether group `group` is in the scene being edited, and whether all its members
+    /// are hidden and all its pictures locked (what its row's eye and lock show).
+    pub fn group_state(&self, group: i32) -> Option<(bool, bool)> {
+        let row = self
+            .rows
+            .iter()
+            .find(|r| r.group.map(|g| g.get() as i32) == Some(group))?;
+        let members = || self.rows.iter().filter(|r| r.group == row.group);
+        Some((members().all(|r| !r.visible), members().all(|r| r.locked)))
+    }
+
     /// The group a source is in, if any.
     pub(in crate::studio_ui) fn group_of(&self, source: i32) -> Option<i32> {
         self.rows

@@ -419,6 +419,8 @@ impl Shown<'_> {
 }
 
 mod arrange;
+mod group_menu;
+pub use group_menu::GroupOp;
 
 impl CommandState for Shown<'_> {
     fn enabled(&self, id: &CommandId) -> Result<(), Disabled> {
@@ -935,6 +937,7 @@ impl CommandState for Shown<'_> {
                 Some("vertical") => f.flip.vertical,
                 _ => false,
             }),
+            "ui.group.visible.toggle" | "ui.group.locked.toggle" => self.group_checked(id),
             "item.visible.toggle" => self.source(id).is_ok_and(|f| f.visible),
             "source.active.toggle" => self.source(id).is_ok_and(|f| f.active),
             "item.locked.toggle" => self.source(id).is_ok_and(|f| f.locked),
@@ -1846,6 +1849,8 @@ pub enum Run {
     Transform(i32, TransformOp, Option<OutputCanvas>),
     /// Group, ungroup, align or distribute the selected sources (ADR-0182).
     Arrange(ArrangeOp),
+    /// A group row's menu entry, on the group with this id (ADR-0182).
+    Group(i32, GroupOp),
     /// Arrange the scene the vertical canvas shows (`canvas.auto_layout`).
     AutoLayoutVertical(rbs_api::request::VerticalLayout),
     /// The vertical canvas's size in pixels (`canvas.vertical_size`).
@@ -2159,9 +2164,7 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
         "source.active.toggle" => Run::SetSourceActive(state.source(&id).ok()?.id, !on),
         "item.visible.toggle" => Run::SourceVisible(state.source(&id).ok()?.id, !on),
         "item.locked.toggle" => Run::SourceLocked(state.source(&id).ok()?.id, !on),
-        "item.flip" | "item.reset_transform" | "item.group" | "item.ungroup" => {
-            return arrange::run(&id, state);
-        }
+        base if arrange::runs(base) => return arrange::run(&id, state, on),
         "source.muted.toggle" => Run::SourceMuted(state.source(&id).ok()?.id, !on),
         "source.mixer_hidden.toggle" => Run::SourceMixerHidden(state.source(&id).ok()?.id, !on),
         "source.monitor_solo.toggle" => Run::SourceSolo(state.source(&id).ok()?.id, !on),
@@ -2220,17 +2223,6 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
         }
         _ => return None,
     })
-}
-
-/// The canvas an item edit names (`canvas`, protocol 1.44): `Some(None)` without one
-/// (the canvas Properties edits), `None` for an unknown value.
-fn canvas_of(id: &CommandId) -> Option<Option<OutputCanvas>> {
-    match id.param("canvas") {
-        None => Some(None),
-        Some("main") => Some(Some(OutputCanvas::Main)),
-        Some("vertical") => Some(Some(OutputCanvas::Vertical)),
-        Some(_) => None,
-    }
 }
 
 /// `canvas.vertical_size`'s width and height, when both are numbers.
