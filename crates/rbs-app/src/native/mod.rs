@@ -7,6 +7,7 @@ mod capture;
 mod instance;
 mod meter_layer;
 mod quit;
+pub mod titlebar;
 
 pub use capture::{bring_forward, exclude_from_capture, forget_saved_frame};
 pub use instance::reopen_running;

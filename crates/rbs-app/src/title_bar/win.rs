@@ -1,59 +1,47 @@
-//! The toolbar row as the title bar on Windows (ADR-0071): connects the main window's
-//! `Shell` to `rbs_app::win::caption`. Elsewhere the OS title bar stays and nothing
-//! here runs (the window buttons are never shown).
+//! The Windows window frame (ADR-0071): the caption removed by a window subclass in
+//! `rbs_app::win::caption`; the OS answers drags and double-clicks in the row's
+//! flexible space through its hit test.
 
 use crate::entry;
 use crate::ui::{MainWindow, Shell};
+use rbs_app::caption::Regions;
 use slint::ComponentHandle;
 
-/// The window buttons and the regions the UI sends.
-pub fn install_handlers(main: &MainWindow) {
-    main.global::<Shell>().on_caption(move |which| {
-        entry::guard(|| {
-            #[cfg(windows)]
-            {
-                use rbs_app::win::caption::{Button, press};
-                press(match which {
-                    0 => Button::Minimize,
-                    1 => Button::Maximize,
-                    _ => Button::Close,
-                });
-            }
-            #[cfg(not(windows))]
-            let _ = which;
+use super::{Button, WindowFrame};
+
+/// The Windows frame.
+pub struct Frame;
+
+impl WindowFrame for Frame {
+    fn attach_after_show(&self, main: &MainWindow) {
+        attach_after_show(main);
+    }
+
+    fn press(&self, _main: &MainWindow, button: Button) {
+        use rbs_app::win::caption::{Button as B, press};
+        press(match button {
+            Button::Minimize => B::Minimize,
+            Button::Maximize => B::Maximize,
+            Button::Close => B::Close,
         });
-    });
-    main.global::<Shell>()
-        .on_caption_regions(move |lead_end, end_start, max_x, max_w, row_h| {
-            entry::guard(|| {
-                #[cfg(windows)]
-                rbs_app::win::caption::set_regions(rbs_app::caption::Regions {
-                    lead_end,
-                    end_start,
-                    max_x,
-                    max_w,
-                    row_h,
-                });
-                #[cfg(not(windows))]
-                let _ = (lead_end, end_start, max_x, max_w, row_h);
-            });
-        });
+    }
+
+    fn set_regions(&self, r: Regions) {
+        rbs_app::win::caption::set_regions(r);
+    }
 }
 
 /// After the main window is shown: once its Win32 window exists (and again whenever
 /// it is a new one), removes the caption. Not from a rendering notifier: Slint's
 /// Direct3D surface, which Windows falls back to, never calls one. The window is made
 /// once the event loop runs, so this looks again a few times, briefly.
-#[cfg(windows)]
-pub fn attach_after_show(main: &MainWindow) {
+fn attach_after_show(main: &MainWindow) {
     schedule(main.as_weak(), 0);
 }
 
 /// About two seconds of looking (40 x 50 ms); after that the OS title bar stays.
-#[cfg(windows)]
 const TRIES: u32 = 40;
 
-#[cfg(windows)]
 fn schedule(weak: slint::Weak<MainWindow>, tries: u32) {
     let after = std::time::Duration::from_millis(if tries == 0 { 0 } else { 50 });
     entry::single_shot(after, move || {
@@ -77,7 +65,6 @@ fn schedule(weak: slint::Weak<MainWindow>, tries: u32) {
 }
 
 /// The main window's Win32 handle, once the window exists.
-#[cfg(windows)]
 fn hwnd(main: &MainWindow) -> Option<std::num::NonZeroIsize> {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     let window_handle = main.window().window_handle();
@@ -88,7 +75,6 @@ fn hwnd(main: &MainWindow) -> Option<std::num::NonZeroIsize> {
     }
 }
 
-#[cfg(windows)]
 fn install(main: &MainWindow, hwnd: std::num::NonZeroIsize) {
     use std::cell::RefCell;
     use std::rc::Rc;

@@ -832,10 +832,15 @@ export global Shell {
     // hidden too.
     in property <[ToolbarData]> toolbar-fixed;
     in property <bool> toolbar-visible: true;
-    // Windows (ADR-0071): the toolbar row is the title bar and ends with the window
-    // buttons. Set once the window's caption is removed.
+    // Windows (ADR-0071) and macOS (ADR-0180): the toolbar row is the title bar and
+    // ends with the window buttons. Set once the OS title bar is taken away.
     in property <bool> custom-caption;
     in property <bool> window-maximized;
+    // macOS (ADR-0180 decision 6): the system's title bar height, which the row covers.
+    // Measured from the window, not a visual value; 0 elsewhere.
+    in property <length> caption-min-height;
+    // The main window is full screen: minimize and maximize hide (ADR-0180 decision 4).
+    in property <bool> window-full-screen;
     // The maximize button gets its mouse through the OS (snap layouts): its hover and
     // pressed state come from there.
     in property <bool> caption-max-hover;

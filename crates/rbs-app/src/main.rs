@@ -2576,7 +2576,6 @@ impl Ctx {
         if !app.hidden {
             let _ = app.main.show();
             window_place::raise(app.main.window());
-            #[cfg(windows)]
             title_bar::attach_after_show(&app.main);
             return;
         }
@@ -2585,7 +2584,6 @@ impl Ctx {
         rbs_app::native::set_hidden(false);
         let _ = app.main.show();
         window_place::raise(app.main.window());
-        #[cfg(windows)]
         title_bar::attach_after_show(&app.main);
         for f in &app.floats {
             let _ = f.window.show();
@@ -5881,7 +5879,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
     }
     let error_generation = i32::from(error.is_some());
     let main = MainWindow::new()?;
-    rbs_app::window_events::install(&main);
+    rbs_app::window_events::install_with(&main, title_bar::events(&main));
     look::apply(
         &main.global::<Theme>(),
         &main.global::<Tokens>(),
@@ -6151,7 +6149,6 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
 
     // Hiding every window keeps the event loop (ADR-0056 decision 4); only Quit ends it.
     main.show()?;
-    #[cfg(windows)]
     title_bar::attach_after_show(&main);
     if let Some(seconds) = measure_ui::requested() {
         measure_ui::install(&main, seconds);
