@@ -181,6 +181,7 @@ mod tests {
                 locked,      // never
                 layout,      // see Layout
                 overrides,   // the canvas rule
+                group,       // never (a group is not copied or reset, ADR-0182)
             } = i;
         }
         #[allow(unused_variables, dead_code)]

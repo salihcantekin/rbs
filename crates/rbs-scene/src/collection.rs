@@ -21,8 +21,8 @@ pub use removal::Removed;
 use crate::arrange::{AutoItem, AutoLayout, auto_layout};
 use crate::model::{
     AudioFrom, Canvas, CanvasId, CollectionGlide, CollectionTransition, DISPLAY_SOURCE_TYPE,
-    DisplayChrome, Fallback, Filter, FilterId, ItemContent, ItemId, Layout, MasterAudio,
-    RecordSeparately, Scene, SceneAudio, SceneId, SceneItem, SceneLevel, SceneScope,
+    DisplayChrome, Fallback, Filter, FilterId, Group, GroupId, ItemContent, ItemId, Layout,
+    MasterAudio, RecordSeparately, Scene, SceneAudio, SceneId, SceneItem, SceneLevel, SceneScope,
     SceneTransition, Sends, SettingValue, Settings, Source, SourceAudio, SourceGlide, SourceId,
     SourceMonitor, SourceRegion, show_for_is_valid,
 };
@@ -212,6 +212,7 @@ struct NextIds {
     item: u32,
     filter: u32,
     bus: u32,
+    group: u32,
 }
 
 /// The next id of each kind a collection will issue: what a document stores so ids are
@@ -235,6 +236,31 @@ pub struct IdCounters {
     pub filter: u32,
     /// Next bus id (scene format 29, ADR-0170). 0 and 1 both issue 1: 0 is `main`.
     pub bus: u32,
+    /// Next group id (ADR-0182). Always stored, with or without groups.
+    pub group: u32,
+}
+
+/// Copies a scene's groups under fresh ids and points the copied `items` at them
+/// (ADR-0182: a copy never shares a group with the original).
+fn copy_groups(
+    next: &mut NextIds,
+    groups: &[Group],
+    items: &mut [SceneItem],
+) -> Result<Vec<Group>, SceneError> {
+    let mut map = BTreeMap::new();
+    let mut out = Vec::with_capacity(groups.len());
+    for g in groups {
+        let id = GroupId(issue(&mut next.group)?);
+        map.insert(g.id, id);
+        out.push(Group {
+            id,
+            name: g.name.clone(),
+        });
+    }
+    for i in items {
+        i.group = i.group.and_then(|g| map.get(&g).copied());
+    }
+    Ok(out)
 }
 
 fn issue(counter: &mut u32) -> Result<u32, SceneError> {
@@ -393,6 +419,7 @@ impl SceneCollection {
             item: counters.item,
             filter: counters.filter,
             bus: counters.bus,
+            group: counters.group,
         };
         let mut col = SceneCollection::new();
         for mut c in canvases {
@@ -449,6 +476,7 @@ impl SceneCollection {
             item: n.item,
             filter: n.filter,
             bus: n.bus,
+            group: n.group,
         }
     }
 
@@ -1312,6 +1340,7 @@ impl SceneCollection {
             items: Vec::new(),
             audio: None,
             transition_in: None,
+            groups: Vec::new(),
         };
         let undo = self.apply_with(
             Op::InsertScene {
@@ -1345,6 +1374,7 @@ impl SceneCollection {
             copy.id = ItemId(issue(&mut next.item)?);
             items.push(copy);
         }
+        let groups = copy_groups(&mut next, &source.groups, &mut items)?;
         let scene = Scene {
             id: new_id,
             name: name.trim().to_owned(),
@@ -1352,6 +1382,7 @@ impl SceneCollection {
             items,
             audio: source.audio.clone(),
             transition_in: source.transition_in,
+            groups,
         };
         let undo = self.apply_with(
             Op::InsertScene {
@@ -1569,6 +1600,7 @@ impl SceneCollection {
             locked: false,
             layout,
             overrides: BTreeMap::new(),
+            group: None,
         };
         let undo = self.apply_with(Op::InsertItem { scene, index, item }, next)?;
         Ok((id, undo))

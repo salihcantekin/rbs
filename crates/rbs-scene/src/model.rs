@@ -61,6 +61,12 @@ id_type!(
     "filter"
 );
 id_type!(
+    /// Identifies a group of items inside a scene (ADR-0182). Never reused inside the
+    /// collection.
+    GroupId,
+    "group"
+);
+id_type!(
     /// Identifies a bus of a canvas (ADR-0097 decision 9). Never reused inside the
     /// collection; [`BusId::MAIN`] is the canvas's master.
     BusId,
@@ -1053,6 +1059,31 @@ pub struct Scene {
     /// The transition used when this scene comes on air (ADR-0135 decision 8); `None`
     /// uses the collection's.
     pub transition_in: Option<SceneTransition>,
+    /// The scene's groups (ADR-0182), in creation order. Their members are items of
+    /// this scene whose `group` names the group.
+    pub groups: Vec<Group>,
+}
+
+/// A group of two or more contiguous items of one scene (ADR-0182). The members are
+/// the scene's items whose [`SceneItem::group`] is this group's id; the group has no
+/// transform of its own.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Group {
+    /// Its id.
+    pub id: GroupId,
+    /// Display name, non-blank and unique in the scene.
+    pub name: String,
+}
+
+impl Group {
+    /// A group, for documents.
+    pub fn new(id: GroupId, name: &str) -> Self {
+        Self {
+            id,
+            name: name.to_owned(),
+        }
+    }
 }
 
 impl Scene {
@@ -1065,6 +1096,7 @@ impl Scene {
             items: Vec::new(),
             audio: None,
             transition_in: None,
+            groups: Vec::new(),
         }
     }
 
@@ -1679,6 +1711,8 @@ pub struct SceneItem {
     /// Per-canvas layouts for shared scenes shown on several canvases (U15), ordered
     /// by canvas id.
     pub overrides: BTreeMap<CanvasId, Layout>,
+    /// The group this item belongs to, if any (ADR-0182).
+    pub group: Option<GroupId>,
 }
 
 impl SceneItem {
@@ -1692,6 +1726,7 @@ impl SceneItem {
             locked: false,
             layout,
             overrides: BTreeMap::new(),
+            group: None,
         }
     }
 

@@ -218,6 +218,7 @@ impl SceneCollection {
             }
             items.push(copy);
         }
+        let groups = super::copy_groups(&mut next, &original.groups, &mut items)?;
         let audio = original.audio.clone().map(|mut a| {
             a.levels = a
                 .levels
@@ -243,6 +244,7 @@ impl SceneCollection {
                 items,
                 audio,
                 transition_in: original.transition_in,
+                groups,
             },
             placements: Vec::new(),
             shown: Vec::new(),

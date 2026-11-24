@@ -1951,6 +1951,8 @@ impl Document for SceneCollection {
                 item: n.item,
                 filter: n.filter,
                 bus: n.bus,
+                // Groups are not stored yet (ADR-0182, next step); none exist to clash.
+                group: 0,
             },
             glide,
             transition,
