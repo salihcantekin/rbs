@@ -33,7 +33,7 @@ use rbs_params::Values;
 use rbs_segment::{Matte, MattePlane, PersonMaskSession, SegmentError, SubmitOutcome};
 
 use crate::{
-    BACKGROUND, BACKGROUND_COLOUR, EDGE_SHIFT, FEATHER, SMOOTHING, SYNC, THRESHOLD, TYPE_ID, edges,
+    BACKGROUND, BACKGROUND_COLOUR, BLUR, EDGE_SHIFT, FEATHER, SYNC, THRESHOLD, TYPE_ID, edges,
 };
 
 /// Index of the "in" pin.
@@ -187,8 +187,6 @@ pub struct BackgroundRemovalNode {
     small_texture: Option<TextureId>,
     /// The matte texture and its size; made when the first matte arrives.
     matte: Option<(TextureId, [u32; 2])>,
-    /// The smoothed matte as uploaded, and how many mattes made it.
-    smooth: Vec<u8>,
     matte_generation: u64,
     /// The input size the pictures are for.
     size: Option<[u32; 2]>,
@@ -230,7 +228,6 @@ impl BackgroundRemovalNode {
             gpu: None,
             small_texture: None,
             matte: None,
-            smooth: Vec::new(),
             matte_generation: 0,
             size: None,
             down_written: None,
@@ -253,9 +250,7 @@ impl BackgroundRemovalNode {
             width: self.small[0],
             height: self.small[1],
             format: SMALL_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::COPY_SRC
-                | wgpu::TextureUsages::TEXTURE_BINDING,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
         }
     }
 }
@@ -367,15 +362,14 @@ fn give_back(pool: &mut TexturePool, size: [u32; 2], last_output: Option<Texture
     pool.forget(&TextureDesc::canvas(size[0], size[1]), count);
 }
 
-/// A linear-light, premultiplied pass: input at group 1, matte at group 2 and the small
-/// picture at group 3 when given.
+/// A linear-light, premultiplied pass: input at group 1, matte at group 2 when given.
 fn draw(
     encoder: &mut wgpu::CommandEncoder,
     pipeline: &wgpu::RenderPipeline,
     target: &wgpu::TextureView,
     uniforms: &wgpu::BindGroup,
     input: &wgpu::BindGroup,
-    matte: Option<(&wgpu::BindGroup, &wgpu::BindGroup)>,
+    matte: Option<&wgpu::BindGroup>,
 ) {
     let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("rbs-filters-segment pass"),
@@ -396,9 +390,8 @@ fn draw(
     rp.set_pipeline(pipeline);
     rp.set_bind_group(0, uniforms, &[]);
     rp.set_bind_group(1, input, &[]);
-    if let Some((matte, small)) = matte {
+    if let Some(matte) = matte {
         rp.set_bind_group(2, matte, &[]);
-        rp.set_bind_group(3, small, &[]);
     }
     rp.draw(0..3, 0..1);
 }
@@ -420,7 +413,7 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
         });
         let comp_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("rbs-filters-segment composite"),
-            bind_group_layouts: &[Some(&uniforms), Some(sampled), Some(sampled), Some(sampled)],
+            bind_group_layouts: &[Some(&uniforms), Some(sampled), Some(sampled)],
             immediate_size: 0,
         });
         let down = pipeline(gpu, &down_layout, DOWNSCALE, SMALL_FORMAT)?;
@@ -501,7 +494,6 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
         self.last_output = None;
         self.drawn = None;
         self.submitted = None;
-        self.smooth = Vec::new();
         self.pixels = None;
         self.recent.clear();
         self.held = None;
@@ -547,7 +539,6 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
                 if aspect_changed(old, size) {
                     session.reset();
                     self.matte_generation = 0;
-                    self.smooth.clear();
                     self.recent.clear();
                     if let Some((id, _)) = self.matte.take() {
                         let _ = local.pool.release(id);
@@ -623,20 +614,12 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
             }
         }
 
-        // 3. The newest finished matte, smoothed and uploaded.
+        // 3. The newest finished matte, uploaded.
         let mut matte_time = None;
         match session.latest() {
             Ok(Some(matte)) => {
                 let time = matte.timestamp;
-                if take_matte(
-                    gpu,
-                    &mut local.pool,
-                    matte,
-                    values.number(SMOOTHING),
-                    &mut self.smooth,
-                    &mut self.matte,
-                    &self.stats,
-                ) {
+                if take_matte(gpu, &mut local.pool, matte, &mut self.matte, &self.stats) {
                     self.matte_generation += 1;
                     matte_time = Some(time);
                 }
@@ -690,7 +673,7 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
             gpu,
             &mut local.pool,
             prepared,
-            (input_id, matte_id, small_id),
+            (input_id, matte_id),
             size,
             time,
         )?;
@@ -861,15 +844,13 @@ fn deliver(
     }
 }
 
-/// Smooths a CPU matte into `smooth` and uploads it to the matte texture (made, or
+/// Uploads a CPU matte to the matte texture (made, or
 /// remade, when the matte's size changed: once per session and level). Returns whether
 /// the texture holds a new matte.
 fn take_matte(
     gpu: &GpuContext,
     pool: &mut TexturePool,
     matte: Matte,
-    smoothing: f32,
-    smooth: &mut Vec<u8>,
     texture: &mut Option<(TextureId, [u32; 2])>,
     stats: &RemovalStats,
 ) -> bool {
@@ -903,22 +884,11 @@ fn take_matte(
                 return false;
             }
         }
-        smooth.clear();
     }
     let Some((id, _)) = *texture else {
         return false;
     };
-    if smooth.len() == pixels.len() {
-        // Each new matte keeps `smoothing` of the matte before it, in 1/256.
-        let keep = (smoothing.clamp(0.0, 0.95) * 256.0) as u32;
-        for (old, new) in smooth.iter_mut().zip(pixels.iter()) {
-            *old = ((u32::from(*old) * keep + u32::from(*new) * (256 - keep)) >> 8) as u8;
-        }
-    } else {
-        smooth.clear();
-        smooth.extend_from_slice(&pixels);
-    }
-    if readback::upload(gpu, pool, id, smooth).is_err() {
+    if readback::upload(gpu, pool, id, &pixels).is_err() {
         stats.bad_mattes.fetch_add(1, Ordering::Relaxed);
         return false;
     }
@@ -931,7 +901,7 @@ fn composite(
     gpu: &GpuContext,
     pool: &TexturePool,
     prepared: &Prepared,
-    (input, matte, small): (TextureId, TextureId, TextureId),
+    (input, matte): (TextureId, TextureId),
     output: TextureId,
 ) -> Result<(), GpuError> {
     let src = pool
@@ -942,10 +912,6 @@ fn composite(
         .get(matte)
         .and_then(|t| t.sampled_bind_group())
         .ok_or(GpuError::StaleTexture(matte))?;
-    let room = pool
-        .get(small)
-        .and_then(|t| t.sampled_bind_group())
-        .ok_or(GpuError::StaleTexture(small))?;
     let target = pool.get(output).ok_or(GpuError::StaleTexture(output))?;
     let mut encoder = gpu
         .device()
@@ -958,7 +924,7 @@ fn composite(
         target.view(),
         &prepared.comp_group,
         src,
-        Some((mask, room)),
+        Some(mask),
     );
     gpu.queue().submit(Some(encoder.finish()));
     Ok(())
@@ -971,14 +937,14 @@ fn render_output(
     gpu: &GpuContext,
     pool: &mut TexturePool,
     prepared: &Prepared,
-    (input, matte, small): (TextureId, TextureId, TextureId),
+    (input, matte): (TextureId, TextureId),
     size: [u32; 2],
     time: Timestamp,
 ) -> Result<Result<(TextureId, VideoFrame), GpuError>, NodeError> {
     let output = pool
         .acquire(gpu, &TextureDesc::canvas(size[0], size[1]))
         .map_err(backend)?;
-    let result = composite(gpu, pool, prepared, (input, matte, small), output).and_then(|()| {
+    let result = composite(gpu, pool, prepared, (input, matte), output).and_then(|()| {
         let format = VideoFormat::new(
             Size::new(size[0], size[1]),
             PixelFormat::Rgba16Float,
@@ -1135,12 +1101,9 @@ struct Look {
     colour: [f32; 4],
 }
 
-/// Blur radius as a fraction of the picture height (a strength setting can come later).
-const BLUR_RADIUS: f32 = 0.04;
-
 fn look_of(values: &Values) -> Look {
     let mode = values.choice(BACKGROUND);
-    let radius = BLUR_RADIUS;
+    let radius = 0.005 + 0.075 * values.number(BLUR);
     let [r, g, b, a] = values.color(BACKGROUND_COLOUR);
     let a = f32::from(a) / 255.0;
     let lin = |c: u8| {

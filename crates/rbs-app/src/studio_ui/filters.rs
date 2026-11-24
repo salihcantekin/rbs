@@ -228,118 +228,138 @@ pub(super) fn field_data(
     fields
         .iter()
         .zip(values.as_slice())
-        .map(|(f, v)| match (f.kind, *v) {
-            (
-                FieldKind::Number {
-                    min,
-                    max,
-                    step,
-                    unit,
-                    curve,
-                    default,
-                    ..
+        .enumerate()
+        .filter(|(_, (f, _))| shown(fields, values, f))
+        .map(|(at, (f, v))| (at, f, v))
+        .map(|(at, f, v)| {
+            let mut row = match (f.kind, *v) {
+                (
+                    FieldKind::Number {
+                        min,
+                        max,
+                        step,
+                        unit,
+                        curve,
+                        default,
+                        ..
+                    },
+                    Value::Number(n),
+                ) => {
+                    let log = log_scaled(min, curve);
+                    let span = (max - min).max(f32::EPSILON);
+                    // Compared as shown, so a value on the default's step reads as the default.
+                    let shown = number_text(n, step, unit);
+                    let default_text = number_text(default, step, unit);
+                    FilterFieldData {
+                        changed: shown != default_text,
+                        default_text: default_text.into(),
+                        label: f.label.into(),
+                        help: f.help.into(),
+                        log,
+                        kind: 0,
+                        position: position_of(n, min, max, log),
+                        step: if log { 0.02 } else { step / span },
+                        value_text: number_text(n, step, unit).into(),
+                        min,
+                        max,
+                        snap: step,
+                        decimals: decimals(step),
+                        suffix: suffix(unit).into(),
+                        ..FilterFieldData::default()
+                    }
+                }
+                (FieldKind::Color { default }, Value::Color(c)) => FilterFieldData {
+                    changed: c != default,
+                    default_text: color_text(default).into(),
+                    label: f.label.into(),
+                    help: f.help.into(),
+                    kind: 1,
+                    colour: color_text(c).into(),
+                    swatch: slint::Color::from_argb_u8(c[3], c[0], c[1], c[2]),
+                    ..FilterFieldData::default()
                 },
-                Value::Number(n),
-            ) => {
-                let log = log_scaled(min, curve);
-                let span = (max - min).max(f32::EPSILON);
-                // Compared as shown, so a value on the default's step reads as the default.
-                let shown = number_text(n, step, unit);
-                let default_text = number_text(default, step, unit);
-                FilterFieldData {
-                    changed: shown != default_text,
-                    default_text: default_text.into(),
+                // A source picker (ADR-0095); the editor lists the collection's sound sources.
+                (FieldKind::Source, Value::Source(id)) => {
+                    // "None", then every other sound source; a key that is not among them
+                    // (not in this scene) shows no choice.
+                    let others: Vec<&(u32, String)> =
+                        sounds.iter().filter(|s| s.0 != own.get()).collect();
+                    let choice = match id {
+                        None => 0,
+                        Some(id) => others
+                            .iter()
+                            .position(|s| s.0 == id)
+                            .map_or(-1, |i| i as i32 + 1),
+                    };
+                    let options: Vec<slint::SharedString> =
+                        std::iter::once(slint::SharedString::from("None"))
+                            .chain(others.iter().map(|s| s.1.as_str().into()))
+                            .collect();
+                    FilterFieldData {
+                        changed: id.is_some(),
+                        default_text: "None".into(),
+                        label: f.label.into(),
+                        help: f.help.into(),
+                        kind: 3,
+                        options: ModelRc::new(VecModel::from(options)),
+                        choice,
+                        ..FilterFieldData::default()
+                    }
+                }
+                // One of a fixed list (ADR-0130): a segmented control or a dropdown.
+                (FieldKind::Choice { options, .. }, Value::Choice(i)) => {
+                    let default = f.kind.default_value();
+                    let labels: Vec<slint::SharedString> =
+                        options.iter().map(|(_, label)| (*label).into()).collect();
+                    let default_text = match default {
+                        Value::Choice(d) => options.get(usize::from(d)).map_or("", |o| o.1),
+                        _ => "",
+                    };
+                    FilterFieldData {
+                        changed: Value::Choice(i) != default,
+                        default_text: default_text.into(),
+                        label: f.label.into(),
+                        help: f.help.into(),
+                        kind: 4,
+                        options: ModelRc::new(VecModel::from(labels)),
+                        choice: i32::from(i),
+                        ..FilterFieldData::default()
+                    }
+                }
+                // An on/off switch (ADR-0130).
+                (FieldKind::Toggle { default }, Value::Toggle(on)) => FilterFieldData {
+                    changed: on != default,
+                    default_text: if default { "on" } else { "off" }.into(),
                     label: f.label.into(),
                     help: f.help.into(),
-                    log,
-                    kind: 0,
-                    position: position_of(n, min, max, log),
-                    step: if log { 0.02 } else { step / span },
-                    value_text: number_text(n, step, unit).into(),
-                    min,
-                    max,
-                    snap: step,
-                    decimals: decimals(step),
-                    suffix: suffix(unit).into(),
+                    kind: 5,
+                    choice: i32::from(on),
                     ..FilterFieldData::default()
-                }
-            }
-            (FieldKind::Color { default }, Value::Color(c)) => FilterFieldData {
-                changed: c != default,
-                default_text: color_text(default).into(),
-                label: f.label.into(),
-                help: f.help.into(),
-                kind: 1,
-                colour: color_text(c).into(),
-                swatch: slint::Color::from_argb_u8(c[3], c[0], c[1], c[2]),
-                ..FilterFieldData::default()
-            },
-            // A source picker (ADR-0095); the editor lists the collection's sound sources.
-            (FieldKind::Source, Value::Source(id)) => {
-                // "None", then every other sound source; a key that is not among them
-                // (not in this scene) shows no choice.
-                let others: Vec<&(u32, String)> =
-                    sounds.iter().filter(|s| s.0 != own.get()).collect();
-                let choice = match id {
-                    None => 0,
-                    Some(id) => others
-                        .iter()
-                        .position(|s| s.0 == id)
-                        .map_or(-1, |i| i as i32 + 1),
-                };
-                let options: Vec<slint::SharedString> =
-                    std::iter::once(slint::SharedString::from("None"))
-                        .chain(others.iter().map(|s| s.1.as_str().into()))
-                        .collect();
-                FilterFieldData {
-                    changed: id.is_some(),
-                    default_text: "None".into(),
+                },
+                _ => FilterFieldData {
                     label: f.label.into(),
                     help: f.help.into(),
-                    kind: 3,
-                    options: ModelRc::new(VecModel::from(options)),
-                    choice,
+                    kind: 2,
                     ..FilterFieldData::default()
-                }
-            }
-            // One of a fixed list (ADR-0130): a segmented control or a dropdown.
-            (FieldKind::Choice { options, .. }, Value::Choice(i)) => {
-                let default = f.kind.default_value();
-                let labels: Vec<slint::SharedString> =
-                    options.iter().map(|(_, label)| (*label).into()).collect();
-                let default_text = match default {
-                    Value::Choice(d) => options.get(usize::from(d)).map_or("", |o| o.1),
-                    _ => "",
-                };
-                FilterFieldData {
-                    changed: Value::Choice(i) != default,
-                    default_text: default_text.into(),
-                    label: f.label.into(),
-                    help: f.help.into(),
-                    kind: 4,
-                    options: ModelRc::new(VecModel::from(labels)),
-                    choice: i32::from(i),
-                    ..FilterFieldData::default()
-                }
-            }
-            // An on/off switch (ADR-0130).
-            (FieldKind::Toggle { default }, Value::Toggle(on)) => FilterFieldData {
-                changed: on != default,
-                default_text: if default { "on" } else { "off" }.into(),
-                label: f.label.into(),
-                help: f.help.into(),
-                kind: 5,
-                choice: i32::from(on),
-                ..FilterFieldData::default()
-            },
-            _ => FilterFieldData {
-                label: f.label.into(),
-                help: f.help.into(),
-                kind: 2,
-                ..FilterFieldData::default()
-            },
+                },
+            };
+            row.at = at as i32;
+            row.dropdown = f.dropdown;
+            row
         })
         .collect()
+}
+
+/// Whether a field shows: always, or while the choice field its `shown_when` names holds
+/// the option it names.
+fn shown(fields: &[rbs_params::Field], values: &Values, f: &rbs_params::Field) -> bool {
+    let Some((key, option)) = f.shown_when else {
+        return true;
+    };
+    fields
+        .iter()
+        .position(|g| g.key == key)
+        .is_some_and(|i| values.get(i) == Some(Value::Choice(option)))
 }
 
 impl FilterUi {

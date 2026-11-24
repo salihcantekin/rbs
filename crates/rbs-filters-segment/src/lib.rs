@@ -26,16 +26,16 @@ pub const THRESHOLD: usize = 0;
 pub const FEATHER: usize = 1;
 /// Moves the edge in (negative) or out (positive).
 pub const EDGE_SHIFT: usize = 2;
-/// How much of the matte before it each new matte keeps.
-pub const SMOOTHING: usize = 3;
 /// Quality level of the session (Low, Medium, High); applies when the filter is switched on.
-pub const QUALITY: usize = 4;
+pub const QUALITY: usize = 3;
 /// Exact (0) draws each picture with the matte made from it; Fast (1) the newest picture.
-pub const SYNC: usize = 5;
+pub const SYNC: usize = 4;
 /// What is behind the person: transparent (0), a blurred room (1) or a colour (2).
-pub const BACKGROUND: usize = 6;
+pub const BACKGROUND: usize = 5;
 /// The colour behind the person (background Colour).
 pub const BACKGROUND_COLOUR: usize = 7;
+/// How strongly the room is blurred (background Blur).
+pub const BLUR: usize = 6;
 
 const FIELDS: [Field; 8] = [
     Field::number("threshold", "Threshold", 0.05, 0.95, 0.5, 0.01, "")
@@ -44,8 +44,6 @@ const FIELDS: [Field; 8] = [
         .with_help("How soft the edge of the person is."),
     Field::number("edge_shift", "Edge shift", -1.0, 1.0, 0.0, 0.01, "")
         .with_help("Moves the edge into the person (negative) or out into the room (positive)."),
-    Field::number("smoothing", "Smoothing", 0.0, 0.95, 0.0, 0.01, "")
-        .with_help("Calms flicker between pictures; a higher value reacts more slowly."),
     Field::choice(
         "quality",
         "Quality",
@@ -70,8 +68,13 @@ const FIELDS: [Field; 8] = [
         ],
         "transparent",
     )
+    .as_dropdown()
     .with_help("What shows behind the person: nothing (the scene below), a blurred copy of the room, or one colour."),
+    Field::number("blur", "Blur strength", 0.0, 1.0, 0.5, 0.01, "")
+        .shown_when("background", 1)
+        .with_help("How strongly the room is blurred."),
     Field::color("background_colour", "Background colour", [0, 160, 80, 255])
+        .shown_when("background", 2)
         .with_help("The colour behind the person. Used when the background is Colour."),
 ];
 

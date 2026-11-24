@@ -3350,14 +3350,14 @@ component SchemaFieldView inherits VerticalLayout {
         }
     }
     // One of a fixed list: side by side up to three options, else a dropdown.
-    if data.kind == 4 && data.options.length <= 3: SegmentedControl {
+    if data.kind == 4 && data.options.length <= 3 && !data.dropdown: SegmentedControl {
         label: @tr("{} of {}", data.label, root.owner);
         options: data.options;
         index: data.choice;
         enabled: root.editable;
         selected(i) => { if i != data.choice { root.set-option(index, i); } }
     }
-    if data.kind == 4 && data.options.length > 3: Select {
+    if data.kind == 4 && (data.options.length > 3 || data.dropdown): Select {
         label: @tr("{} of {}", data.label, root.owner);
         options: data.options;
         index: data.choice;
@@ -3602,7 +3602,7 @@ component FiltersFields inherits VerticalLayout {
                 for field[j] in f.fields: FilterFieldView {
                     filter: f;
                     data: field;
-                    index: j;
+                    index: field.at;
                 }
                 // Pointer halo shows the capture's own Show the cursor, so the laser can
                 // stand alone (owner 2026-11-22): the same setting, not a filter value.
@@ -4013,7 +4013,7 @@ component SourceFields inherits VerticalLayout {
             source: root.data.id;
             owner: root.data.name;
             data: field;
-            index: j;
+            index: field.at;
         }
     }
     // Runs and Keep running for of a display, window or camera (ADR-0152 phase 4); a

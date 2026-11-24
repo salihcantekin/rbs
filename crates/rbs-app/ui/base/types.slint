@@ -1328,7 +1328,7 @@ export global Shortcuts {
 // there, `value-text` the value with its unit; `min`, `max`, `snap` (the value's step),
 // `decimals` and `suffix` (the unit with its space) for the text while dragging), 1 a colour (`colour` as #rrggbb or
 // #rrggbbaa, `swatch` the same colour).
-export struct FilterFieldData { label: string, help: string, log: bool, options: [string], choice: int, kind: int, position: float, step: float, value-text: string, min: float, max: float, snap: float, decimals: int, suffix: string, colour: string, swatch: color, changed: bool, default-text: string }
+export struct FilterFieldData { label: string, help: string, log: bool, options: [string], choice: int, kind: int, position: float, step: float, value-text: string, min: float, max: float, snap: float, decimals: int, suffix: string, colour: string, swatch: color, changed: bool, default-text: string, dropdown: bool, at: int }
 
 // One filter of a source's chain: `known` false for a type this version lacks (it can
 // only be removed); `can-up` / `can-down` false at the ends of the chain and at the

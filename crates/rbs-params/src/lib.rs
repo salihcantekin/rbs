@@ -40,6 +40,11 @@ pub struct Field {
     pub kind: FieldKind,
     /// One plain sentence the UI shows with the control; may be empty.
     pub help: &'static str,
+    /// A choice the UI shows as a dropdown even when few options would fit side by side.
+    pub dropdown: bool,
+    /// The field is shown only while the choice field with this key holds this option
+    /// index; `None` shows it always. Hidden fields keep their values.
+    pub shown_when: Option<(&'static str, u8)>,
 }
 
 impl Field {
@@ -66,6 +71,8 @@ impl Field {
                 curve: Curve::Linear,
             },
             help: "",
+            dropdown: false,
+            shown_when: None,
         }
     }
 
@@ -76,6 +83,8 @@ impl Field {
             label,
             kind: FieldKind::Color { default },
             help: "",
+            dropdown: false,
+            shown_when: None,
         }
     }
 
@@ -86,6 +95,8 @@ impl Field {
             label,
             kind: FieldKind::Toggle { default },
             help: "",
+            dropdown: false,
+            shown_when: None,
         }
     }
 
@@ -102,6 +113,8 @@ impl Field {
             label,
             kind: FieldKind::Choice { options, default },
             help: "",
+            dropdown: false,
+            shown_when: None,
         }
     }
 
@@ -113,12 +126,26 @@ impl Field {
             label,
             kind: FieldKind::Source,
             help: "",
+            dropdown: false,
+            shown_when: None,
         }
     }
 
     /// This field with `help` text.
     pub const fn with_help(mut self, help: &'static str) -> Self {
         self.help = help;
+        self
+    }
+
+    /// This choice field as a dropdown in the UI.
+    pub const fn as_dropdown(mut self) -> Self {
+        self.dropdown = true;
+        self
+    }
+
+    /// This field shown only while the choice field `key` holds option `option`.
+    pub const fn shown_when(mut self, key: &'static str, option: u8) -> Self {
+        self.shown_when = Some((key, option));
         self
     }
 
