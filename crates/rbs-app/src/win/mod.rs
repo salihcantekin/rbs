@@ -16,6 +16,38 @@ use windows_sys::Win32::Foundation::HWND;
 pub use show_event::{ShowEvent, signal_running};
 pub use tray::{Tray, install_handlers};
 
+/// The Videos known folder (it follows the user's move of the folder); `None` if the
+/// shell cannot say.
+pub fn videos_folder() -> Option<std::path::PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::System::Com::CoTaskMemFree;
+    use windows_sys::Win32::UI::Shell::{FOLDERID_Videos, KF_FLAG_DEFAULT, SHGetKnownFolderPath};
+    let mut raw: windows_sys::core::PWSTR = std::ptr::null_mut();
+    // SAFETY: `FOLDERID_Videos` is a static GUID, a null token means the current user,
+    // and `raw` is a writable pointer the call fills.
+    let hr = unsafe {
+        SHGetKnownFolderPath(
+            &FOLDERID_Videos,
+            KF_FLAG_DEFAULT as u32,
+            std::ptr::null_mut(),
+            &mut raw,
+        )
+    };
+    let path = (hr >= 0 && !raw.is_null()).then(|| {
+        // SAFETY: on success `raw` is a null-terminated UTF-16 string the shell owns
+        // until it is freed below; the slice ends before the terminator.
+        let wide = unsafe {
+            let len = (0..).take_while(|&i| *raw.add(i) != 0).count();
+            std::slice::from_raw_parts(raw, len)
+        };
+        std::path::PathBuf::from(std::ffi::OsString::from_wide(wide))
+    });
+    // SAFETY: the shell allocated `raw` with CoTaskMemAlloc (it must be freed even when
+    // the call fails); it is freed once, after its last read. Null is allowed.
+    unsafe { CoTaskMemFree(raw.cast()) };
+    path.filter(|p| !p.as_os_str().is_empty())
+}
+
 /// The system cursor in screen pixels; `None` if the system cannot say. The press that
 /// closes a system context menu reaches the window at the place the menu opened, so the
 /// app compares with this.

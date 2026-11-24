@@ -1515,9 +1515,22 @@ impl Encoding {
     }
 }
 
-/// The user's videos folder: `%USERPROFILE%\Videos` on Windows, `~/Movies` on macOS,
-/// `~/Videos` elsewhere; the current directory if no home is known.
+/// The system's videos folder, set once by the app before profiles load (Windows: the
+/// Videos known folder, which the user may have moved to another drive).
+static VIDEOS: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Gives [`default_folder`] the system's videos folder. Only the first call counts.
+pub fn set_videos_folder(path: PathBuf) {
+    let _ = VIDEOS.set(path);
+}
+
+/// The user's videos folder: the one [`set_videos_folder`] gave, else
+/// `%USERPROFILE%\Videos` on Windows, `~/Movies` on macOS, `~/Videos` elsewhere; the
+/// current directory if no home is known.
 pub fn default_folder() -> PathBuf {
+    if let Some(videos) = VIDEOS.get() {
+        return videos.clone();
+    }
     let home = if cfg!(windows) {
         std::env::var_os("USERPROFILE")
     } else {

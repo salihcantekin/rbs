@@ -5812,9 +5812,9 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
     let selector = selector.require_d3d();
     selector.select()?;
 
-    // The stream key's store: read only when a stream starts (src/stream_key.rs).
-    let keys = rbs_app::stream_key::system();
+    let keys = rbs_app::stream_key::system(); // Read only when a stream starts.
     let studio_config = config.clone();
+    rbs_app::platform::note_user_folders();
     // The output profile and collection in use (ADR-0051); failed saves show as studio errors.
     let (user, collection) = rbs_app::user_session::open(
         &config,

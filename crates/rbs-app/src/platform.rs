@@ -22,6 +22,15 @@ pub fn adapters_on(
     registered(rbs_platform::Options::default().with_master_clock(clock))
 }
 
+/// Tells the settings the system's user folders before profiles load: on Windows the
+/// Videos known folder, the default recording folder even when the user moved it.
+pub fn note_user_folders() {
+    #[cfg(windows)]
+    if let Some(videos) = crate::win::videos_folder() {
+        crate::record_profile::set_videos_folder(videos);
+    }
+}
+
 fn registered(options: rbs_platform::Options) -> (RecordAdapters, Vec<String>) {
     let demo = std::env::var_os("RBS_DEMO_SOURCES").is_some_and(|v| v == "1");
     let registered = rbs_platform::adapters(&options.with_demo_sources(demo));
