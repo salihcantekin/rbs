@@ -213,9 +213,10 @@ pub fn install_handlers(main: &MainWindow, changed: impl Fn() + 'static) {
                 1 => Button::Maximize,
                 _ => Button::Close,
             };
-            // In full screen the row's close button ends full screen; the next press
-            // closes (owner, 2026-11-24).
-            if button == Button::Close && is_full_screen() {
+            // In macOS full screen (a Space of its own) the row's close button ends
+            // full screen; the next press closes. Windows closes at once (owner,
+            // 2026-11-24).
+            if cfg!(target_os = "macos") && button == Button::Close && is_full_screen() {
                 return current().toggle_full_screen(&main);
             }
             current().press(&main, button);

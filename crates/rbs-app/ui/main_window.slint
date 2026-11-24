@@ -1983,7 +1983,7 @@ component FrameBar inherits Rectangle {
             if Shell.live-state != 0 || Shell.live-camera: LiveIndicator { horizontal-stretch: 0; }
         }
         // The window buttons end the row (ADR-0071, ADR-0180). In full screen only
-        // close stays, and it ends full screen.
+        // close stays (on macOS it ends full screen first).
         if Shell.custom-caption: HorizontalLayout {
             horizontal-stretch: 0;
             padding-left: Tokens.space-2;
@@ -2000,11 +2000,11 @@ component FrameBar inherits Rectangle {
                 outside-pressed: Shell.caption-max-pressed;
                 clicked => { Shell.caption(1); }
             }
-            // In full screen it ends full screen first; the next press closes (owner,
-            // 2026-11-24).
+            // In macOS full screen it ends full screen first; the next press closes
+            // (owner, 2026-11-24).
             CaptionButton {
                 icon: IconName.close;
-                name: Shell.window-full-screen ? @tr("Exit full screen") : @tr("Close");
+                name: Shell.window-full-screen && Platform.os == OperatingSystemType.macos ? @tr("Exit full screen") : @tr("Close");
                 close: true;
                 clicked => { Shell.caption(2); }
             }
