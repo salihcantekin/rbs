@@ -30,15 +30,17 @@ pub const EDGE_SHIFT: usize = 2;
 pub const SMOOTHING: usize = 3;
 /// Quality level of the session (Low, Medium, High); applies when the filter is switched on.
 pub const QUALITY: usize = 4;
+/// Exact (0) draws each picture with the matte made from it; Fast (1) the newest picture.
+pub const SYNC: usize = 5;
 
-const FIELDS: [Field; 5] = [
+const FIELDS: [Field; 6] = [
     Field::number("threshold", "Threshold", 0.05, 0.95, 0.5, 0.01, "")
         .with_help("Matte value that counts as the edge of the person."),
     Field::number("feather", "Edge softness", 0.0, 0.5, 0.15, 0.01, "")
         .with_help("How soft the edge of the person is."),
     Field::number("edge_shift", "Edge shift", -1.0, 1.0, 0.0, 0.01, "")
         .with_help("Moves the edge into the person (negative) or out into the room (positive)."),
-    Field::number("smoothing", "Smoothing", 0.0, 0.95, 0.5, 0.01, "")
+    Field::number("smoothing", "Smoothing", 0.0, 0.95, 0.25, 0.01, "")
         .with_help("Calms flicker between pictures; a higher value reacts more slowly."),
     Field::choice(
         "quality",
@@ -47,6 +49,13 @@ const FIELDS: [Field; 5] = [
         "medium",
     )
     .with_help("Higher quality cuts hair and hands better and uses more of the computer. Applies the next time the filter is switched on."),
+    Field::choice(
+        "sync",
+        "Picture and mask",
+        &[("exact", "Exact"), ("fast", "Fast")],
+        "exact",
+    )
+    .with_help("Exact shows each picture together with the mask made from it, so nothing trails behind movement; the picture is delayed by the time the mask takes, about a tenth of a second. Fast shows the newest picture with the newest mask; quick movement can leave a trail."),
 ];
 
 /// The settings schema, in display order.

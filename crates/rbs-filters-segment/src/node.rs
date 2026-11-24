@@ -32,7 +32,7 @@ use rbs_graph::runtime::{Node, NodeError, PrepareCtx, ProcessCtx, WarmCtx};
 use rbs_params::Values;
 use rbs_segment::{Matte, MattePlane, PersonMaskSession, SegmentError, SubmitOutcome};
 
-use crate::{EDGE_SHIFT, FEATHER, SMOOTHING, THRESHOLD, TYPE_ID, edges};
+use crate::{EDGE_SHIFT, FEATHER, SMOOTHING, SYNC, THRESHOLD, TYPE_ID, edges};
 
 /// Index of the "in" pin.
 pub const IN_PIN: usize = 0;
@@ -200,6 +200,10 @@ pub struct BackgroundRemovalNode {
     /// The buffer the small frame is built in; given back by the session's drop.
     pixels: Option<BytesMut>,
     rgb: YuvToRgb,
+    /// The last input pictures, to draw a picture with the matte made from it (Exact).
+    recent: Recent,
+    /// The picture drawn last in Exact mode, kept alive while the ring moves on.
+    held: Option<VideoFrame>,
 }
 
 impl BackgroundRemovalNode {
@@ -235,6 +239,8 @@ impl BackgroundRemovalNode {
             meta: [Meta::default(); RING],
             pixels: None,
             rgb: YuvToRgb::new(),
+            recent: Recent::default(),
+            held: None,
         };
         (node, sender, stats)
     }
@@ -490,6 +496,8 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
         self.submitted = None;
         self.smooth = Vec::new();
         self.pixels = None;
+        self.recent.clear();
+        self.held = None;
         self.rgb.release();
         if let Some(session) = self.session.take() {
             session.close();
@@ -505,25 +513,19 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
 
         // What the input offers; a 4:2:0 input is decoded to RGB first, once per picture.
         let mut frame = inputs.video(IN_PIN, 0);
+        let mut decoded = false;
         if let Some(f) = frame
             && YuvToRgb::needs_decode(&local.pool, f)
         {
             frame = self.rgb.rgb(gpu, &mut local.pool, f).ok();
+            decoded = true;
         }
-        let input = frame.and_then(|frame| {
-            let FramePayload::Texture(id) = *frame.payload() else {
-                return None;
-            };
-            let tex = local.pool.get(id)?;
-            tex.sampled_bind_group()?;
-            let d = tex.desc();
-            Some((
-                id,
-                [d.width, d.height],
-                Transfer::of(frame.format(), d.format),
-                frame.timestamp(),
-            ))
-        });
+        // A 4:2:0 input is decoded into one shared texture, so it has no kept pictures.
+        let exact = values.choice(SYNC) == 0 && !decoded;
+        if exact && let Some(f) = frame {
+            self.recent.push(f);
+        }
+        let input = frame.and_then(|frame| describe(&local.pool, frame));
         let Some((input_id, size, decode, time)) = input else {
             self.drawn = None;
             drop(outputs.set_video(OUT_PIN, None)?);
@@ -541,6 +543,7 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
                     session.reset();
                     self.matte_generation = 0;
                     self.smooth.clear();
+                    self.recent.clear();
                     if let Some((id, _)) = self.matte.take() {
                         let _ = local.pool.release(id);
                         local.pool.forget_texture(id);
@@ -550,6 +553,7 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
             self.size = Some(size);
             self.submitted = None;
             self.drawn = None;
+            self.held = None;
         }
 
         // 1. A finished readback becomes a small frame for the session.
@@ -615,8 +619,10 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
         }
 
         // 3. The newest finished matte, smoothed and uploaded.
+        let mut matte_time = None;
         match session.latest() {
             Ok(Some(matte)) => {
+                let time = matte.timestamp;
                 if take_matte(
                     gpu,
                     &mut local.pool,
@@ -627,6 +633,7 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
                     &self.stats,
                 ) {
                     self.matte_generation += 1;
+                    matte_time = Some(time);
                 }
             }
             Ok(None) => {}
@@ -644,11 +651,16 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
             drop(outputs.set_video(OUT_PIN, None)?);
             return Ok(());
         };
-        let edge = edges(
-            values.number(THRESHOLD),
-            values.number(FEATHER),
-            values.number(EDGE_SHIFT),
+        // The picture drawn with the matte: the newest one, or the one it was made from.
+        let (input_id, size, decode, time) = picture_to_draw(
+            &mut self.held,
+            &self.recent,
+            &local.pool,
+            exact,
+            matte_time,
+            (input_id, size, decode, time),
         );
+        let edge = edges_of(&values);
         let state = Written {
             edges: edge,
             size,
@@ -699,6 +711,8 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
         self.written = None;
         self.drawn = None;
         self.submitted = None;
+        self.recent.clear();
+        self.held = None;
         if let Some(session) = self.session.take() {
             session.close();
         }
@@ -993,4 +1007,92 @@ fn aspect_changed(old: [u32; 2], new: [u32; 2]) -> bool {
     let a = f64::from(old[0]) * f64::from(new[1]);
     let b = f64::from(new[0]) * f64::from(old[1]);
     (a - b).abs() > 0.02 * a.max(b)
+}
+
+/// How many input pictures Exact mode keeps: the mask comes about three pictures late
+/// at 30 fps. Each is a lease on the source's texture, not a copy.
+const RECENT: usize = 4;
+
+/// The last input pictures, newest last.
+#[derive(Default)]
+struct Recent {
+    frames: [Option<VideoFrame>; RECENT],
+    next: usize,
+}
+
+impl Recent {
+    /// Keeps a reference to `frame` unless it is the one kept last.
+    fn push(&mut self, frame: &VideoFrame) {
+        let last = (self.next + RECENT - 1) % RECENT;
+        if self.frames[last]
+            .as_ref()
+            .is_some_and(|f| f.timestamp() == frame.timestamp())
+        {
+            return;
+        }
+        self.frames[self.next] = frame.share();
+        self.next = (self.next + 1) % RECENT;
+    }
+
+    /// The kept picture made at `time`.
+    fn find(&self, time: Timestamp) -> Option<&VideoFrame> {
+        self.frames.iter().flatten().find(|f| f.timestamp() == time)
+    }
+
+    fn clear(&mut self) {
+        self.frames = Default::default();
+        self.next = 0;
+    }
+}
+
+/// What one input picture is to the passes: texture, size, transfer and time; `None`
+/// when it is not a sampleable texture.
+type Picture = (TextureId, [u32; 2], Transfer, Timestamp);
+
+fn describe(pool: &TexturePool, frame: &VideoFrame) -> Option<Picture> {
+    let FramePayload::Texture(id) = *frame.payload() else {
+        return None;
+    };
+    let tex = pool.get(id)?;
+    tex.sampled_bind_group()?;
+    let d = tex.desc();
+    Some((
+        id,
+        [d.width, d.height],
+        Transfer::of(frame.format(), d.format),
+        frame.timestamp(),
+    ))
+}
+
+/// The picture to draw this tick. Fast: the current one. Exact: the one a new matte
+/// was made from (kept in `recent`), and until the next matte the same one again.
+fn picture_to_draw(
+    held: &mut Option<VideoFrame>,
+    recent: &Recent,
+    pool: &TexturePool,
+    exact: bool,
+    matte_time: Option<Timestamp>,
+    current: Picture,
+) -> Picture {
+    if !exact {
+        *held = None;
+        return current;
+    }
+    if let Some(time) = matte_time
+        && let Some(frame) = recent.find(time).and_then(VideoFrame::share)
+    {
+        *held = Some(frame);
+    }
+    held.as_ref()
+        .and_then(|f| describe(pool, f))
+        .unwrap_or(current)
+}
+
+/// The composite edges for the settings.
+fn edges_of(values: &Values) -> [f32; 2] {
+    edges(
+        values.number(THRESHOLD),
+        values.number(FEATHER),
+        values.number(EDGE_SHIFT),
+    )
 }

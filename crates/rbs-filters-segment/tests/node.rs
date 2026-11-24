@@ -103,3 +103,33 @@ fn a_new_aspect_resets_the_session_and_waits_for_a_new_matte() {
     let out = rig.output().unwrap();
     assert_eq!((out.width, out.height), (8, 16));
 }
+
+#[test]
+fn exact_mode_draws_the_picture_the_matte_was_made_from() {
+    use rbs_core::time::Timestamp;
+    use rbs_core::timing::{Cadence, FrameRate};
+    use rbs_graph::runtime::Tick;
+
+    let Some(ctx) = gpu() else { return };
+    let mut rig = Rig::new(ctx, [8, 4]);
+    // A different green level every tick; the matte of an early tick arrives later.
+    let level = |n: u64| 0.1 + 0.05 * n as f32;
+    let cadence = Cadence::frames(Timestamp::ZERO, FrameRate::FPS_60);
+    for n in 0..6u64 {
+        rig.set_input(Picture::solid(16, 8, [0.0, level(n), 0.0, 1.0]));
+        rig.tick();
+        rig.ctx.wait_idle().unwrap();
+    }
+    assert!(rig.until_output());
+    let time = lock(&rig.last).as_ref().unwrap().timestamp();
+    let made_at = (0..40u64)
+        .find(|n| Tick::of(&cadence, *n).time == time)
+        .expect("the output carries the time of one of the pictures");
+    let out = rig.output().unwrap();
+    // The output shows the picture of its own time, not the newest one.
+    let g = out.at(2, 4)[1];
+    assert!(
+        (g - level(made_at)).abs() < 0.02,
+        "tick {made_at}: green {g}"
+    );
+}

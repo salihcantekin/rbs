@@ -190,3 +190,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0180](0180-the-toolbar-row-is-the-title-bar-on-macos.md) | The toolbar row is the title bar on macOS too, with the window buttons on the right as on Windows, behind one `WindowFrame` interface (amends ADR-0071 decision 3) | Accepted |
 | [0181](0181-one-rbs-at-a-time.md) | One RBS per settings folder on every system and with either close setting: an `instance.lock`, a second launch brings the running RBS forward and ends; several copies parked (amends ADR-0056, ADR-0051, ADR-0156) | Accepted |
 | [0182](0182-source-groups.md) | Sources can be grouped, and a group moves, resizes and hides as one | Accepted |
+| [0183](0183-background-removal-picture-and-mask-in-step.md) | Background removal draws each picture with its own mask (Exact); the newest picture stays an option (Fast) | Proposed |
