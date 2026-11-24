@@ -221,7 +221,7 @@ component SourceRowView inherits Rectangle {
     // Move up, Move down or Remove was confirmed: the list is made again, so
     // the row's focus is about to go.
     callback leaving();
-    property <bool> selected: Studio.selected-source == data.id;
+    property <bool> selected: Studio.selected-source == data.id || data.picked;
     // `delete-all`: the confirm removes the source from every scene (Delete source).
     property <bool> delete-all;
     property <int> confirm-asked: Studio.confirm-source-asked;
@@ -279,7 +279,10 @@ component SourceRowView inherits Rectangle {
         allow-drag: data.picture;
         drag-data: Studio.source-data(data.id);
         drop-enabled: Studio.dragging-source >= 0;
-        activated => { Studio.select-source(data.id); }
+        activated => {
+            if row.ctrl-held || row.shift-held { Studio.select-source-with(data.id, row.ctrl-held, row.shift-held); }
+            else { Studio.select-source(data.id); }
+        }
         double-clicked => {
             Studio.select-source(data.id);
             // Screens, windows and cameras (kind-code 0–2) and browser pages have a

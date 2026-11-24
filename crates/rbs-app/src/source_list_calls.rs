@@ -38,8 +38,15 @@ pub fn install(g: &Studio<'_>, ctx: &Ctx) {
         app.studio.add_global(option);
     });
     on!(on_select_source, |app, id: i32| {
+        app.studio.picked.clear();
         app.studio.selected = id;
         app.studio.reveal_sound();
         app.studio.refresh_marks();
     });
+    on!(
+        on_select_source_with,
+        |app, id: i32, ctrl: bool, shift: bool| {
+            app.studio.select_with(id, ctrl, shift);
+        }
+    );
 }

@@ -95,6 +95,7 @@ mod settings_mirror;
 mod slides;
 mod source_look;
 use source_look::{source_icon, unavailable_text};
+pub(crate) mod multi_select;
 mod sound_nest;
 mod source_calls;
 mod target_calls;
@@ -344,6 +345,8 @@ pub struct StudioUi {
     filter_ui: filters::FilterUi,
     /// The pictures whose sound rows are open in the Sources list (ADR-0173).
     nest: sound_nest::Open,
+    /// Several sources selected in the Sources list (ADR pending; see multi_select).
+    pub picked: multi_select::Picked,
     /// The play state of each media source and the time left on each Show cue.
     live: live_ticks::LiveTicks,
     /// An Add source is on its way: the next new source is selected.
@@ -748,6 +751,7 @@ impl StudioUi {
             library_thumb_height: 0,
             filter_ui: filters::FilterUi::default(),
             nest: sound_nest::Open::default(),
+            picked: multi_select::Picked::default(),
             live: live_ticks::LiveTicks::default(),
             selected: -1,
             attributes_clipboard: None,
@@ -2921,6 +2925,7 @@ impl StudioUi {
         self.edit.set_panel(size[0], size[1]);
         let placed = self.placed_where(|_| true);
         let hit = self.edit.source_at(at, self.canvas_px(), &placed);
+        self.picked.clear();
         self.selected = hit.unwrap_or(-1);
         self.pick_props(OutputCanvas::Main);
         self.refresh_marks();
@@ -2951,7 +2956,10 @@ impl StudioUi {
     fn run(&mut self, effect: Effect) {
         match effect {
             Effect::None => {}
-            Effect::Select(id) => self.selected = id,
+            Effect::Select(id) => {
+                self.picked.clear();
+                self.selected = id;
+            }
             Effect::Send(seq, id, b, gesture) => {
                 self.deleted.clear();
                 self.send_box(seq, id, b, gesture, OutputCanvas::Main);
@@ -2972,7 +2980,10 @@ impl StudioUi {
     fn run_vertical(&mut self, effect: Effect) {
         match effect {
             Effect::None => {}
-            Effect::Select(id) => self.selected = id,
+            Effect::Select(id) => {
+                self.picked.clear();
+                self.selected = id;
+            }
             Effect::Send(seq, id, b, gesture) => {
                 self.deleted.clear();
                 self.send_box(seq, id, b, gesture, OutputCanvas::Vertical);
@@ -3060,6 +3071,7 @@ impl StudioUi {
         self.vedit.set_panel(size[0], size[1]);
         let placed = self.placed_vertical(true);
         let hit = self.vedit.source_at(at, canvas, &placed);
+        self.picked.clear();
         self.selected = hit.unwrap_or(-1);
         self.pick_props(OutputCanvas::Vertical);
         self.refresh_marks();
@@ -6534,7 +6546,12 @@ impl StudioUi {
             self.selected = -1;
         }
         let keys: Vec<sound_nest::Key> = rows.iter().map(sound_nest::key).collect();
+        let order: Vec<i32> = data.iter().map(|d| d.id).collect();
+        self.picked.retain(&order);
         self.nest.mark(&mut data, &keys, self.selected);
+        for d in &mut data {
+            d.picked = self.picked.has(d.id);
+        }
         set_rows(&self.sources, data);
         self.text_settings = rows
             .iter()
