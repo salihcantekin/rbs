@@ -124,6 +124,7 @@ fn source() -> SourceInfo {
         visible: false,
         locked: true,
         companion_of: Some(2),
+        group: None,
         volume: 0.5,
         muted: true,
         mixer_hidden: true,
@@ -802,7 +803,8 @@ mod source_rows;
 
 #[test]
 fn every_request_round_trips_and_every_method_is_covered() {
-    let all = every_request();
+    let mut all = every_request();
+    all.extend(source_rows::group_requests());
     for r in &all {
         round_trip(r);
     }
@@ -1884,109 +1886,6 @@ fn scenes_lock_and_volume_are_a_minor_addition() {
 }
 
 #[test]
-fn studio_mode_is_a_minor_addition() {
-    // A 1.6 scene list and 1.6 requests still read, meaning the program scene.
-    let old: SceneList = serde_json::from_value(json!({
-        "scenes": [{"id": 0, "name": "Talk"}], "program": 0, "sources": []
-    }))
-    .unwrap();
-    assert_eq!(old.preview, None);
-    let add: AddItem = serde_json::from_value(json!({"source": 3})).unwrap();
-    assert_eq!(add.scene, None);
-    let off: Request =
-        serde_json::from_value(json!({"method": "canvas.set_preview", "params": {"scene": null}}))
-            .unwrap();
-    assert_eq!(
-        off,
-        Request::Command(Command::CanvasSetPreview(SetPreview { scene: None }))
-    );
-    assert_eq!(off.scope(), Some(Scope::Control));
-    let cut: Request =
-        serde_json::from_value(json!({"method": "canvas.transition", "params": {}})).unwrap();
-    assert_eq!(
-        cut,
-        Request::Command(Command::CanvasTransition(TransitionOnce::default()))
-    );
-    // Protocol 1.81 (ADR-0128): a one-off kind and duration; old requests still parse.
-    let fade: Request = serde_json::from_value(json!({
-        "method": "canvas.transition",
-        "params": {"kind": "fade", "duration_ms": 1000}
-    }))
-    .unwrap();
-    assert_eq!(
-        fade,
-        Request::Command(Command::CanvasTransition(TransitionOnce {
-            kind: Some(TransitionKind::Fade),
-            duration_ms: Some(1000),
-        }))
-    );
-    let switch: Request =
-        serde_json::from_value(json!({"method": "scene.switch", "params": {"scene": 4}})).unwrap();
-    assert_eq!(
-        switch,
-        Request::Command(Command::SceneSwitch(SwitchScene {
-            scene: 4,
-            kind: None,
-            duration_ms: None,
-        }))
-    );
-    let set: Request = serde_json::from_value(json!({
-        "method": "collection.set_transition",
-        "params": {"kind": "fade"}
-    }))
-    .unwrap();
-    assert_eq!(set.scope(), Some(Scope::Control));
-    // The kind outside studio mode (protocol 1.97, ADR-0153).
-    let direct: Request = serde_json::from_value(json!({
-        "method": "collection.set_transition",
-        "params": {"direct_kind": "cut"}
-    }))
-    .unwrap();
-    assert_eq!(
-        direct,
-        Request::Command(Command::CollectionSetTransition(SetCollectionTransition {
-            direct_kind: Some(TransitionKind::Cut),
-            ..Default::default()
-        }))
-    );
-    let mut cut = scenes();
-    cut.transition.direct_kind = TransitionKind::Cut;
-    let wire = serde_json::to_value(&cut).unwrap();
-    assert_eq!(wire["transition"]["direct_kind"], "cut");
-    round_trip(&cut);
-    // Move, the default, is left out.
-    assert!(
-        serde_json::to_value(scenes()).unwrap()["transition"]
-            .get("direct_kind")
-            .is_none()
-    );
-    assert!(
-        serde_json::from_value::<Request>(json!({
-            "method": "canvas.transition",
-            "params": {"kind": "wipe"}
-        }))
-        .is_err()
-    );
-    // A default transition is left out of the scene list.
-    let mut plain = scenes();
-    plain.transition = Transition::default();
-    assert!(
-        serde_json::to_value(&plain)
-            .unwrap()
-            .get("transition")
-            .is_none()
-    );
-    let sources: Request =
-        serde_json::from_value(json!({"method": "scene.sources", "params": {"scene": 1}})).unwrap();
-    assert_eq!(sources.scope(), Some(Scope::Read));
-    assert!(serde_json::from_value::<SetPreview>(json!({"scene": 1, "x": 0})).is_err());
-    round_trip(&SceneSourceList {
-        scene: 2,
-        sources: vec![source()],
-    });
-}
-
-#[test]
 fn global_sources_and_item_remove_have_a_stable_wire_form() {
     // Protocol 1.10 (ADR-0065).
     let remove: Request =
@@ -2203,26 +2102,6 @@ fn the_unavailable_source_status_round_trips_and_older_clients_read_it_as_failed
         SourceStatus::Unavailable {
             fault: SourceFault::Other,
             detail: "hot".into()
-        }
-    );
-}
-
-#[test]
-fn a_status_with_missing_words_still_decodes() {
-    let bare: SourceStatus = serde_json::from_value(json!({"state": "unavailable"})).unwrap();
-    assert_eq!(
-        bare,
-        SourceStatus::Unavailable {
-            fault: SourceFault::Other,
-            detail: String::new()
-        }
-    );
-    let held: SourceStatus =
-        serde_json::from_value(json!({"state": "paused", "detail": "held"})).unwrap();
-    assert_eq!(
-        held,
-        SourceStatus::Failed {
-            reason: "held".into()
         }
     );
 }

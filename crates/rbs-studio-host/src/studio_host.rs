@@ -121,6 +121,7 @@ mod command;
 mod command_path;
 mod control_loop;
 mod cues;
+mod groups;
 mod history;
 mod items;
 mod outputs;
@@ -1158,6 +1159,7 @@ impl Host {
                     id: s.id,
                     item: item.id,
                     companion_of: s.companion_of(),
+                    group: item.group,
                     record_separately: s.record_separately,
                     name: s.name.clone(),
                     kind,

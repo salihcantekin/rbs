@@ -553,6 +553,14 @@ Source rows carry `kind` `image` and `color` for those picture sources. A client
 - **State.** `record.state` and `record.canvas_state` add `paused` (bool), `paused_ms` and `recorded_ms`; `state` stays `recording` while paused. `paused` is set from the call on, including the ticks before the pause begins. `paused_ms` (time left out so far) and `recorded_ms` (time since the start less `paused_ms`) are as of the change; they are published on each pause and resume, never per frame, so a client counts on from them while not paused.
 - **Older clients and servers.** A 1.60 client ignores the new fields; a 1.60 server answers the methods `method_not_found` and omits the fields, which read as not paused.
 
+### Protocol 1.104: source groups (ADR-0182 decision 10)
+
+- **Methods** (`control`, edit class, one undo step each): `group.create {scene, items, name?}` groups at least two distinct items of one scene and answers `{group, name}`; any group among the items merges into the new one with all its members, and the members move next to the topmost one keeping their order (ADR-0182 decision 5). `name` defaults to the first free "Group N"; it must be unique in the scene. `group.remove {scene, group}` ungroups: the members stay where they are, and the answer is `{}`. `group.rename {scene, group, name}` answers `{}` (also when the name is unchanged, without an undo step).
+- **`group.list {scene}`** (`read`) answers `{scene, groups: [{id, name, items}]}`: the groups in creation order, each with its members' item ids, top first as in `scene.sources`.
+- **Rows.** `scene.sources`, `source.list` and `source.changed` rows add `group`, the id of the group the row's item is in within that scene; omitted when it is in none. An older client ignores it.
+- **Errors.** `invalid_params`: fewer than two distinct items, an item of another scene, a blank name. `conflict`: a name another group of the scene has. `not_found`: no such scene, item or group.
+- **Not in 1.104.** The group edits the window makes (moving, scaling, hiding and locking a group, drawn as one batch of member edits) and `item.group` / `item.ungroup` shortcuts come with the Sources list's group row; align and distribute are a separate change.
+
 ### Protocol 1.103: the bus an output takes (ADR-0170 decisions 3, 9 and 11)
 
 - **Settings.** `stream` in `settings.get`, `settings.set` and `settings.changed` adds `audio_bus`, the name of the bus of the main canvas the stream sends (every destination sends it); omitted when `main`. In a `settings.set` patch, absent leaves it. A recording profile adds `audio_tracks`, the bus names it writes as audio tracks, track 1 first; omitted when `["main"]`, and in `settings.set` absent keeps the stored tracks. An empty name, a repeated name or more than six tracks are `invalid_params`; so are several tracks until multi-track recording is built (one track for now). Saved in the output profile's stream and recording sections, omitted at the default.

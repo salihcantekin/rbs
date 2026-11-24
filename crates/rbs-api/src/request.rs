@@ -19,7 +19,9 @@ use crate::types::{DeviceKey, DeviceSyncEntry};
 use crate::types::{ItemScroll, ItemStyle};
 
 mod add_source;
+mod added;
 mod browser;
+mod groups;
 mod item_edits;
 mod media;
 mod methods;
@@ -27,7 +29,9 @@ mod settings_patch;
 mod transform;
 mod wire;
 pub use add_source::AddSource;
+pub use added::*;
 pub use browser::*;
+pub use groups::*;
 pub use item_edits::*;
 pub use media::{MediaPlayState, MediaSeek, MediaSource, MediaStateInfo};
 pub use methods::METHODS;
@@ -1715,6 +1719,14 @@ pub enum Command {
     SceneRemove(SceneRef),
     /// `scene.rename` (protocol 1.6).
     SceneRename(RenameScene),
+    /// `group.create` (protocol 1.104, ADR-0182).
+    GroupCreate(CreateGroup),
+    /// `group.remove` (protocol 1.104): ungroups.
+    GroupRemove(GroupRef),
+    /// `group.rename` (protocol 1.104).
+    GroupRename(RenameGroup),
+    /// `group.list` (protocol 1.104).
+    GroupList(SceneRef),
     /// `scene.set_transition` (protocol 1.86).
     SceneSetTransition(SetSceneTransition),
     /// `scene.duplicate` (protocol 1.43): a copy of the scene, not on air.
@@ -2337,27 +2349,6 @@ pub struct SceneSourceList {
     pub sources: Vec<SourceInfo>,
 }
 
-/// `source.add`'s answer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SourceAdded {
-    /// The new source's id.
-    pub source: u32,
-}
-
-/// `scene.add`'s answer (protocol 1.6).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SceneAdded {
-    /// The new scene's id.
-    pub scene: u32,
-}
-
-/// `item.add`'s answer (protocol 1.6).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ItemAdded {
-    /// The new item's id.
-    pub item: u32,
-}
-
 /// `item.remove`'s answer, and `global.remove`'s without `keep` (protocol 1.10).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ItemRemoved {
@@ -2506,6 +2497,10 @@ pub enum Response {
     Scenes(Snapshot<SceneList>),
     /// `scene.add` (protocol 1.6).
     SceneAdded(SceneAdded),
+    /// `group.create` (protocol 1.104).
+    GroupCreated(GroupCreated),
+    /// `group.list` (protocol 1.104).
+    Groups(GroupList),
     /// `item.add` (protocol 1.6).
     ItemAdded(ItemAdded),
     /// `filter.types` (protocol 1.8).

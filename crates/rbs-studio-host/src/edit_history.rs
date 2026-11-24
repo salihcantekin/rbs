@@ -87,6 +87,12 @@ pub enum EditKind {
     DiscardPreview,
     /// A source's scroll was set, changed or cleared (ADR-0150).
     Scroll,
+    /// Items were grouped (ADR-0182; the name is the group's).
+    Group,
+    /// A group was dissolved with Ungroup (ADR-0182; the name is the group's).
+    Ungroup,
+    /// A group was renamed (ADR-0182; the name is the old one).
+    RenameGroup,
 }
 
 /// The step the next undo or redo applies: its kind and the name of the source or

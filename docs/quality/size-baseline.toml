@@ -4,12 +4,12 @@
 # increase the owner approved goes to size-exceptions.toml with `--except`.
 
 [files]
-"crates/rbs-api/src/request.rs" = 2625
-"crates/rbs-api/src/types.rs" = 2976
-"crates/rbs-api/tests/json.rs" = 3243
+"crates/rbs-api/src/request.rs" = 2620
+"crates/rbs-api/src/types.rs" = 2874
+"crates/rbs-api/tests/json.rs" = 3122
 "crates/rbs-app/src/main.rs" = 6423
 "crates/rbs-app/src/menu_bar.rs" = 2518
-"crates/rbs-app/src/studio_ui.rs" = 9932
+"crates/rbs-app/src/studio_ui.rs" = 9880
 "crates/rbs-record/src/studio.rs" = 5583
 "crates/rbs-record/tests/studio.rs" = 3241
 "crates/rbs-scene/src/collection.rs" = 2758

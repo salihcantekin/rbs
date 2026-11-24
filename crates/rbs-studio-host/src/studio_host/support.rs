@@ -28,6 +28,9 @@ pub(super) fn edit_error(e: &SceneError) -> String {
         SceneError::StingerPlaced(_) => {
             "This source is the stinger, so it cannot be in a scene.".to_owned()
         }
+        SceneError::UnknownGroup(_) => "This group is not there any more.".to_owned(),
+        SceneError::GroupTooSmall(_) => "A group needs at least two sources.".to_owned(),
+        SceneError::GroupScope => "Sources of two scenes cannot be in one group.".to_owned(),
         other => format!("The scene could not be changed ({other:?}). Try again."),
     }
 }

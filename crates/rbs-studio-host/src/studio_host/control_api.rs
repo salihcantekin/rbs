@@ -5,6 +5,7 @@ use super::*;
 mod api_add;
 mod api_canvas;
 mod api_collection;
+mod api_group;
 mod api_item;
 mod api_item2;
 mod api_item3;
@@ -312,6 +313,8 @@ impl ApiTarget<'_> {
             | C::TokensList
             | C::TokensCreate(..)
             | C::TokensRevoke(..) => self.answer_source3(command),
+            // `group.*` (ADR-0182); anything it does not own is unsupported.
+            _ => self.answer_group(command),
         }
     }
 
