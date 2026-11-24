@@ -42,7 +42,9 @@ static SERIAL: Mutex<()> = Mutex::new(());
 
 fn serial() -> std::sync::MutexGuard<'static, ()> {
     // A failed test poisons the lock; the next one still needs to run alone.
-    SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 // SAFETY: forwards every call unchanged to the system allocator; only counts calls.
