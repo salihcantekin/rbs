@@ -13,6 +13,8 @@
 pub mod ai_tools;
 mod api;
 mod identity;
+#[cfg(windows)]
+mod win_acl;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -439,14 +441,28 @@ fn writable_by_others(path: &Path) -> Option<String> {
     })
 }
 
-#[cfg(not(unix))]
+/// On Windows: anyone besides the user, the system and Administrators allowed to change
+/// it (its access list). A list that cannot be read is refused too.
+#[cfg(windows)]
+fn writable_by_others(path: &Path) -> Option<String> {
+    match win_acl::others_may(path, win_acl::CHANGE) {
+        Ok(false) => None,
+        Ok(true) => Some(
+            "other users can change this file (its access list), so its access tokens are not trusted"
+                .to_owned(),
+        ),
+        Err(why) => Some(format!("{why}, so its access tokens are not trusted")),
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
 fn writable_by_others(_path: &Path) -> Option<String> {
     None
 }
 
-/// Writes the settings, replacing the file in one step. On Unix the file is made
-/// readable and writable by the current user only (mode 0600); on Windows the per-user
-/// application data folder already is.
+/// Writes the settings, replacing the file in one step, readable and writable by the
+/// current user only: mode 0600 on Unix, an access list of its own on Windows (the user
+/// and the system), so a config folder others may read does not expose it.
 pub fn save(config: &Path, profile: &RemoteProfile) -> std::io::Result<()> {
     std::fs::create_dir_all(config)?;
     let text = toml::to_string(profile).map_err(std::io::Error::other)?;
@@ -454,8 +470,8 @@ pub fn save(config: &Path, profile: &RemoteProfile) -> std::io::Result<()> {
 }
 
 /// Replaces `path` with `bytes` in one step (a temporary file renamed over it), the
-/// new file readable and writable by the current user only on Unix: it never exists
-/// with other permissions, not even briefly.
+/// new file readable and writable by the current user only: its permissions are set
+/// before anything is written, so the secret never exists with other permissions.
 fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     // A name of its own, so two saves at once (the app and `rbs-cli`, which also
@@ -473,7 +489,14 @@ fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         options.mode(0o600);
     }
     let mut f = options.open(&tmp)?;
-    let written = f.write_all(bytes).and_then(|()| f.sync_all());
+    // The handle keeps the access it was opened with; the list applies to later opens.
+    #[cfg(windows)]
+    let f_private = win_acl::make_private(&tmp);
+    #[cfg(not(windows))]
+    let f_private = Ok(());
+    let written = f_private
+        .and_then(|()| f.write_all(bytes))
+        .and_then(|()| f.sync_all());
     drop(f);
     let done = written.and_then(|()| std::fs::rename(&tmp, path));
     if done.is_err() {

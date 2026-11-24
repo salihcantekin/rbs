@@ -123,7 +123,21 @@ fn readable_by_others(path: &Path) -> Option<String> {
     })
 }
 
-#[cfg(not(unix))]
+/// On Windows: anyone besides the user, the system and Administrators allowed to read
+/// or change it (its access list).
+#[cfg(windows)]
+fn readable_by_others(path: &Path) -> Option<String> {
+    match crate::win_acl::others_may(path, crate::win_acl::READ | crate::win_acl::CHANGE) {
+        Ok(false) => None,
+        Ok(true) => Some(
+            "other users can read or change this key file (its access list); make it readable by you only"
+                .to_owned(),
+        ),
+        Err(why) => Some(why),
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
 fn readable_by_others(_path: &Path) -> Option<String> {
     None
 }

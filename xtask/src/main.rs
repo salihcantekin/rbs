@@ -359,8 +359,8 @@ fn deny(from: &str, to: &str) -> Option<String> {
         Class::Settings => deny_named(
             to,
             to_class,
-            &["rbs-api", "serde", "toml"],
-            "remote-control settings are shared by the app and the cli",
+            &["rbs-api", "serde", "toml", "windows-sys"],
+            "remote-control settings are shared by the app and the cli (windows-sys: the secret files' access list)",
         ),
         Class::UserData => deny_named(
             to,

@@ -20,5 +20,10 @@ rbs-api = { path = "../rbs-api" }
 serde = { version = "1", features = ["derive"] }
 toml = "0.9"
 
+# Windows: who may read or change a secret file, the counterpart of mode 0600
+# (`src/win_acl.rs`). Already in the lockfile through rbs-app.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
+
 [lints]
 workspace = true
