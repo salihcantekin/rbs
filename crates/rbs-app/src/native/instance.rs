@@ -15,12 +15,19 @@ const REOPEN_APPLICATION: u32 = u32::from_be_bytes(*b"rapp");
 const AUTO_RETURN_ID: i16 = -1;
 const ANY_TRANSACTION: i32 = 0;
 const SEND_NO_REPLY: usize = 1;
+/// Seconds one send may block; the launch retries every 500 ms anyway.
+const SEND_TIMEOUT: f64 = 0.5;
 
 /// Asks the app with process id `pid` to reopen, which shows a hidden main window and
 /// brings a shown one forward (`applicationShouldHandleReopen:`). Only when that
 /// process runs `exe`, so a reused pid is never asked. True when the request was
-/// handed to the system.
+/// handed to the system. Runs inside its own autorelease pool: the launch calls it
+/// every retry, before `NSApplication` exists, so nothing else would drain one.
 pub fn reopen_running(pid: u32, exe: &Path) -> bool {
+    objc2::rc::autoreleasepool(|_| reopen_in_pool(pid, exe))
+}
+
+fn reopen_in_pool(pid: u32, exe: &Path) -> bool {
     let Ok(pid) = i32::try_from(pid) else {
         return false;
     };
@@ -28,14 +35,17 @@ pub fn reopen_running(pid: u32, exe: &Path) -> bool {
     let app: *mut AnyObject = unsafe {
         msg_send![class!(NSRunningApplication), runningApplicationWithProcessIdentifier: pid]
     };
-    // SAFETY: checked for null; the object is autoreleased and outlives this call.
+    // SAFETY: checked for null; the object is autoreleased into the pool of
+    // `reopen_running`, which drains after this function returns.
     let Some(app) = (unsafe { app.as_ref() }) else {
         return false;
     };
     // SAFETY: plain getters of a live NSRunningApplication; each may return nil.
     let (exe_url, bundle_url): (*mut AnyObject, *mut AnyObject) =
         unsafe { (msg_send![app, executableURL], msg_send![app, bundleURL]) };
-    if url_path(exe_url).as_deref() != Some(exe) {
+    // Both sides canonical, so a symlink or `/var` vs `/private/var` spelling matches.
+    let running = url_path(exe_url).and_then(|p| std::fs::canonicalize(p).ok());
+    if running.is_none() || running != std::fs::canonicalize(exe).ok() {
         return false;
     }
     match url_path(bundle_url) {
@@ -52,7 +62,7 @@ fn url_path(url: *mut AnyObject) -> Option<std::path::PathBuf> {
     // SAFETY: checked for null; an NSURL passed in by the caller, alive for the call.
     let url = unsafe { url.as_ref() }?;
     // SAFETY: `path` returns an NSString or nil; `UTF8String` a NUL-terminated buffer
-    // owned by that string, which lives until the autorelease pool drains (after us).
+    // owned by that string, which lives until the pool of `reopen_running` drains.
     let text: *const std::ffi::c_char = unsafe {
         let path: *mut AnyObject = msg_send![url, path];
         let path = path.as_ref()?;
@@ -83,7 +93,9 @@ fn send_reopen(pid: i32) -> bool {
     // SAFETY: Foundation class methods with the argument types of their declarations
     // (pid_t, AEEventClass, AEEventID, AEReturnID, AETransactionID, an
     // NSAppleEventDescriptor target); `sendEventWithOptions:timeout:error:` returns nil
-    // and sets `error` on failure. Every object is autoreleased.
+    // and sets `error` on failure. Every object is autoreleased into the pool of
+    // `reopen_running`. The short timeout keeps a pending Automation prompt from
+    // stretching the launch's 15-second wait by much.
     unsafe {
         let target: *mut AnyObject = msg_send![
             class!(NSAppleEventDescriptor),
@@ -107,7 +119,7 @@ fn send_reopen(pid: i32) -> bool {
         let reply: *mut AnyObject = msg_send![
             event,
             sendEventWithOptions: SEND_NO_REPLY,
-            timeout: 2.0_f64,
+            timeout: SEND_TIMEOUT,
             error: &mut error
         ];
         !reply.is_null() && error.is_null()

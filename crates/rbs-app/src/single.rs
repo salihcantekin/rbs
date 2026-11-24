@@ -53,9 +53,12 @@ fn own(lock: InstanceLock, folder: &Path) -> Start {
     // A leftover state from a run that ended without cleaning up is not this run's.
     let _ = instance::write_state(&lock, folder, &instance::State::Starting);
     let _ = HELD.set((lock, folder.to_path_buf()));
+    // The log is not running yet, so a failure comes back as the note `main` logs.
     #[cfg(windows)]
-    win::make_event(folder);
-    Start::Run(None)
+    let note = win::make_event(folder);
+    #[cfg(not(windows))]
+    let note = None;
+    Start::Run(note)
 }
 
 /// Tries once to make the running RBS show its main window; true when the signal was
@@ -125,6 +128,11 @@ pub fn route_show(show: fn()) -> bool {
     let routed = rbs_app::native::route_show(show);
     if routed {
         set_state(true);
+    } else {
+        rbs_core::warn!(
+            rbs_core::log::Area::App,
+            "single instance: no reopen handler; a second launch waits, then says RBS did not respond"
+        );
     }
     routed
 }
@@ -140,7 +148,7 @@ pub fn claim_or_exit(folder: &Path) -> Option<String> {
     }
 }
 
-/// Logs why the lock could not be used, once the log runs.
+/// Logs why single instance is not fully set up, once the log runs.
 pub fn log_note(note: Option<String>) {
     if let Some(note) = note {
         rbs_core::warn!(rbs_core::log::Area::App, "{note}");
@@ -164,17 +172,17 @@ mod win {
         static EVENT: RefCell<Option<rbs_app::win::ShowEvent>> = const { RefCell::new(None) };
     }
 
-    /// Made on the main thread, which becomes the UI thread.
-    pub fn make_event(folder: &Path) {
+    /// Made on the main thread, which becomes the UI thread. The text is the warning
+    /// to log once the log runs when there is no event.
+    pub fn make_event(folder: &Path) -> Option<String> {
         let key = rbs_app::instance::folder_key(folder);
         let event = rbs_app::win::ShowEvent::create(crate::show_from_system, &key);
-        if event.is_none() {
-            rbs_core::warn!(
-                rbs_core::log::Area::App,
-                "single instance: no show event; a second launch waits, then says RBS did not respond"
-            );
-        }
+        let note = event.is_none().then(|| {
+            "single instance: no show event; a second launch waits, then says RBS did not respond"
+                .to_owned()
+        });
         EVENT.with(|e| *e.borrow_mut() = event);
+        note
     }
 
     pub fn drop_event() {

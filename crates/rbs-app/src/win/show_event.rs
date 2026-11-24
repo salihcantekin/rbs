@@ -9,9 +9,7 @@
 use std::ffi::c_void;
 use std::sync::OnceLock;
 
-use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, INVALID_HANDLE_VALUE, LocalFree,
-};
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE, LocalFree};
 use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
 use windows_sys::Win32::Security::{GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenUser};
 use windows_sys::Win32::System::Threading::{
@@ -125,20 +123,17 @@ pub struct ShowEvent {
 impl ShowEvent {
     /// Creates the event and registers the wait; `show` runs on a wait-pool thread
     /// when a second launch signals it, and must only queue work on the UI thread.
-    /// `None` when it cannot be set up, or another RBS of this user already owns it.
+    /// `None` when it cannot be set up. Only the holder of the folder's lock calls
+    /// this (ADR-0181), so an event that already exists is kept: a waiting launch may
+    /// still hold a handle opened while the previous owner was alive.
     pub fn create(show: fn(), folder: &str) -> Option<Self> {
         let _ = SHOW.set(show);
         let name = name(folder)?;
         // SAFETY: auto-reset, initially not signalled, default security; `name` is
-        // NUL-terminated and lives for the call.
+        // NUL-terminated and lives for the call. On an existing event (ERROR_ALREADY_EXISTS)
+        // the handle returned is still ours to wait on and close.
         let event = unsafe { CreateEventW(std::ptr::null(), 0, 0, name.as_ptr()) };
         if event.is_null() {
-            return None;
-        }
-        // SAFETY: read right after CreateEventW on this thread.
-        if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
-            // SAFETY: our handle to the existing event; closed once.
-            unsafe { CloseHandle(event) };
             return None;
         }
         let mut wait: HANDLE = std::ptr::null_mut();
