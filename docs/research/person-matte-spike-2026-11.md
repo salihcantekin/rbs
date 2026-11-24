@@ -44,3 +44,19 @@ Date: 2026-11-24. Status: desk research done; measurements need the reference ma
 - Visual result on green: clean edges around hair, beard and shoulders on the still clip; head turns keep the hair edge and ear. A frame with fast motion shows blur on the face and a soft hair edge, which is motion blur in the source. No halo or missing hair seen in the sampled frames. Frames reviewed: 8 of about 1,000, by eye; not a measurement.
 - Consequence for ADR-0179: RVM-class quality is reachable at a cost that a GPU can easily absorb; the open question is the engineering of the GPU-native run, not whether a model is good enough.
 - Next: the same clips through MODNet and MediaPipe for comparison, a GPU timing on the Windows machine, and a hand-checked frame set for edge error.
+
+## Mac timings (2026-11-24, Apple M4 Pro, macOS 26.7.1, onnxruntime 1.19.2)
+
+First 120 frames of each of the 4 owner clips (1620x1080), first 5 skipped, median of the four per-clip medians; inference only (RVM pre-processing adds about 1.2 ms). The result files stayed on the Mac in `/tmp/matte-spike/out`.
+
+| Engine | Input | Median ms | Worst p90 | Notes |
+| --- | --- | --- | --- | --- |
+| RVM MobileNetV3 fp32, CPU | 960x640, ratio 0.25 | 14.2 | 15.7 | about 5.8 cores busy |
+| RVM, CoreML provider (ALL, GPU, ANE alike) | same | 20.6 to 20.9 | 23.8 | 244 of 303 nodes on CoreML in 48 pieces; the rest on CPU |
+| RVM, fixed-shape model, CPU / CoreML | same | 17.9 / about 40 | 49.8 | slower |
+| Apple Vision fast, GPU | native | 7.1 | 9.4 | 256x192 mask, blocky edges, jagged shoulder |
+| Apple Vision balanced, GPU | native | 19.0 | 21.8 | 512x384 mask, CPU about 16% |
+| Apple Vision accurate, GPU | native | 56.6 | 61.3 | 2016x1512 mask, too slow for 30 fps |
+| Apple Vision balanced / fast, CPU only | native | 42.5 / 16.0 | 46.2 | |
+
+Findings: ONNX Runtime's CoreML provider does not help RVM (pooling with `ceil_mode=1` and one 1-D Concat are unsupported, so the graph splits and copies cost more than they save); RVM on the Mac GPU or Neural Engine needs our own conversion. RVM on CPU is fast but uses about six cores (against rule 17). Vision balanced on the GPU fits 30 fps and looks close to accurate on these clips; RVM keeps more hair detail and handles motion blur better. Vision on the Neural Engine could not be measured from a sandboxed shell (it failed to build the inference plan), so that run is still open.
