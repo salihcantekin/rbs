@@ -1,6 +1,6 @@
 # Spec: Person mask port
 
-- Status: Draft (written before any code, ADR-0179 decision 2; nothing is implemented). Two independent review rounds on 2026-11-24 asked for changes (8, then 6); all are applied, the second set not yet re-reviewed.
+- Status: Accepted by the owner on 2026-11-24 after two independent review rounds (the second set of fixes was not re-reviewed, at the owner's request; nothing is implemented yet and the Windows backend table is still open). Two independent review rounds on 2026-11-24 asked for changes (8, then 6); all are applied, the second set not yet re-reviewed.
 - Owner crate(s): `rbs-segment` (port), adapters `rbs-segment-*`, filter nodes in `rbs-filters-segment`
 - Related ADRs: [0179](../adr/0179-camera-background-removal.md), [0053](../adr/0053-item-style-and-video-filter-chains.md), [0013](../adr/0013-zero-cost-when-unused.md), [0162](../adr/0162-extension-ready-registries-and-plugin-order.md), [0005](../adr/0005-gpu-compositing-with-wgpu.md)
 - Related specs: [video-filters.md](video-filters.md), [backend-ports.md](backend-ports.md), [media-types.md](media-types.md), [params-schema in plugin-sdk.md](plugin-sdk.md)
