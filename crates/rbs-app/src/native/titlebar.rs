@@ -5,16 +5,21 @@
 //! title band neither draws nor drags over the row. It stays a titled, resizable
 //! window: shadow, rounded corners, edge resizing, tiling and full screen stay
 //! AppKit's. AppKit can show the standard buttons again (after full screen, on
-//! activation); three window notifications hide them again and report full screen.
+//! activation, when the style mask is set again); three window notifications and each
+//! resize hide them again, and the notifications report full screen. The notifications
+//! go to an observer object of RBS's own, never to winit's window delegate, whose own
+//! subscriptions to the same names must stay.
 //!
 //! Marked low-level module (P11): AppKit calls through objc2, each `unsafe` block with
 //! its invariant. Everything runs on the main thread, which is the UI thread.
 
+use std::cell::Cell;
 use std::ffi::{CStr, c_char, c_void};
 use std::ptr::NonNull;
 use std::sync::OnceLock;
 
-use objc2::runtime::{AnyClass, AnyObject, Imp, Sel};
+use objc2::rc::{Retained, autoreleasepool};
+use objc2::runtime::{AnyObject, ClassBuilder, MessageReceiver, Sel};
 use objc2::{class, msg_send};
 use objc2_core_foundation::CGRect;
 
@@ -25,11 +30,18 @@ const MASK_FULL_SIZE_CONTENT: usize = 1 << 15;
 const TITLE_HIDDEN: isize = 1;
 /// `NSWindowCloseButton`, `NSWindowMiniaturizeButton`, `NSWindowZoomButton`.
 const STANDARD_BUTTONS: [usize; 3] = [0, 1, 2];
+/// `NSEventTypeLeftMouseDown`.
+const LEFT_MOUSE_DOWN: usize = 1;
+
+thread_local! {
+    /// RBS's observer object, made once on the main thread and never freed.
+    static OBSERVER: Cell<*mut AnyObject> = const { Cell::new(std::ptr::null_mut()) };
+}
 
 /// Told when the window enters (`true`) or leaves full screen.
 static ON_FULL_SCREEN: OnceLock<fn(bool)> = OnceLock::new();
 
-/// The window notifications observed, as (selector added to the delegate, name).
+/// The window notifications observed, as (selector of the observer, name).
 const NOTES: [(&CStr, &CStr); 3] = [
     (
         c"rbsTitleEnterFullScreen:",
@@ -48,6 +60,11 @@ fn window_of(ns_view: NonNull<c_void>) -> *mut AnyObject {
     // SAFETY: `ns_view` is the live NSView of a window this process shows, used on the
     // main thread; `window` is nil until the view is in a window.
     unsafe { msg_send![view, window] }
+}
+
+/// Whether `ns_view` is in a window yet.
+pub fn in_window(ns_view: NonNull<c_void>) -> bool {
+    !window_of(ns_view).is_null()
 }
 
 /// An autoreleased `NSString`, or null.
@@ -107,45 +124,75 @@ fn on_note(note: *mut AnyObject, full_screen: Option<bool>) {
     }));
 }
 
-/// Adds the observer methods to the delegate's class once per class.
-///
-/// # Safety
-/// `class` is a live Objective-C class.
-unsafe fn add_methods(class: &AnyClass) {
+/// RBS's observer: an `NSObject` subclass with the three notification methods, made
+/// on first use. Null if the class cannot be made (a class of that name exists).
+fn observer() -> *mut AnyObject {
+    OBSERVER.with(|o| {
+        if o.get().is_null() {
+            o.set(make_observer());
+        }
+        o.get()
+    })
+}
+
+fn make_observer() -> *mut AnyObject {
     type Note = extern "C" fn(*mut AnyObject, Sel, *mut AnyObject);
+    let Some(mut builder) = ClassBuilder::new(c"RBSTitleBarObserver", class!(NSObject)) else {
+        return std::ptr::null_mut();
+    };
     let methods: [(&CStr, Note); 3] = [
         (NOTES[0].0, on_enter),
         (NOTES[1].0, on_exit),
         (NOTES[2].0, on_key),
     ];
     for (name, f) in methods {
-        let sel = Sel::register(name);
-        // SAFETY: each function has the signature "v@:@" says (void, self, _cmd, one
-        // object) and never unwinds (`on_note` catches). `class_addMethod` leaves a
-        // method the class already has alone, so a second window adds nothing.
-        unsafe {
-            let imp = std::mem::transmute::<Note, Imp>(f);
-            objc2::ffi::class_addMethod(
-                std::ptr::from_ref(class).cast_mut(),
-                sel,
-                imp,
-                c"v@:@".as_ptr().cast::<c_char>(),
-            );
-        }
+        // SAFETY: each function is (self, _cmd, one object) -> void, as a notification
+        // method is called, and never unwinds (`on_note` catches). The names are new to
+        // NSObject, so nothing is overridden.
+        unsafe { builder.add_method(Sel::register(name), f) };
     }
+    let class = builder.register();
+    // SAFETY: `new` on a registered NSObject subclass returns a +1 object or nil.
+    let object: Option<Retained<AnyObject>> = unsafe { msg_send![class, new] };
+    // Kept for the life of the process: the notification center does not retain it.
+    object.map_or(std::ptr::null_mut(), Retained::into_raw)
 }
 
-/// Changes the window of `ns_view` as ADR-0180 decision 2 says and (re)registers the
-/// three observers; `on_full_screen` hears full screen change. Call after every show.
-/// Returns the system title band's height in points, which the row must cover, or why
-/// it could not be done (the OS title bar then stays).
+/// Changes the window of `ns_view` as ADR-0180 decision 2 says and observes it (an
+/// earlier window's observation ends); `on_full_screen` hears full screen change. Call
+/// after every show. Returns the system title band's height in points, which the row
+/// must cover, or why it could not be done: then the window is left unchanged and the
+/// OS title bar stays.
 pub fn attach(ns_view: NonNull<c_void>, on_full_screen: fn(bool)) -> Result<f64, &'static str> {
+    autoreleasepool(|_| attach_in_pool(ns_view, on_full_screen))
+}
+
+fn attach_in_pool(ns_view: NonNull<c_void>, on_full_screen: fn(bool)) -> Result<f64, &'static str> {
     let _ = ON_FULL_SCREEN.set(on_full_screen);
     let window = window_of(ns_view);
     // SAFETY: checked for null; this process's NSWindow on the main thread.
     let Some(window) = (unsafe { window.as_ref() }) else {
         return Err("the view is in no window yet");
     };
+    // Everything that can fail is looked up before the window changes.
+    let observer = observer();
+    // SAFETY: checked for null; kept alive for the process (`make_observer`).
+    let Some(observer) = (unsafe { observer.as_ref() }) else {
+        return Err("no notification observer");
+    };
+    // SAFETY: `defaultCenter` is a class getter returning the shared center.
+    let center: *mut AnyObject = unsafe { msg_send![class!(NSNotificationCenter), defaultCenter] };
+    // SAFETY: checked for null; the shared center lives for the process.
+    let Some(center) = (unsafe { center.as_ref() }) else {
+        return Err("no notification center");
+    };
+    let mut names = [std::ptr::null_mut::<AnyObject>(); 3];
+    for (slot, (_, name)) in names.iter_mut().zip(NOTES) {
+        *slot = ns_string(name);
+        if slot.is_null() {
+            return Err("no notification name");
+        }
+    }
     // SAFETY: plain setters and getters of a live NSWindow with the argument types of
     // their declarations (NSUInteger mask, BOOL, NSInteger title visibility).
     unsafe {
@@ -156,31 +203,15 @@ pub fn attach(ns_view: NonNull<c_void>, on_full_screen: fn(bool)) -> Result<f64,
         let _: () = msg_send![window, setMovable: false];
         hide_standard_buttons(window);
     }
-    // SAFETY: `delegate` is a getter; winit's delegate lives as long as the window.
-    let delegate: *mut AnyObject = unsafe { msg_send![window, delegate] };
-    // SAFETY: checked for null; alive with the window.
-    let Some(delegate) = (unsafe { delegate.as_ref() }) else {
-        return Err("the window has no delegate");
-    };
-    // SAFETY: the delegate's class is a live class.
-    unsafe { add_methods(delegate.class()) };
-    // SAFETY: `defaultCenter` is a getter. For each name the observation of this
-    // delegate for this window is removed first, so a second attach never doubles it,
-    // then added with a selector added above. Only these names are removed: AppKit's
-    // own delegate registrations for other names stay.
+    // SAFETY: the observer is RBS's own object, so removing all of its observations
+    // touches nothing of winit's or AppKit's; it ends an earlier window's, so a second
+    // attach never doubles one. Each name is a live NSString (checked above), the
+    // selector one the observer's class has.
     unsafe {
-        let center: *mut AnyObject = msg_send![class!(NSNotificationCenter), defaultCenter];
-        let Some(center) = center.as_ref() else {
-            return Err("no notification center");
-        };
-        for (selector, name) in NOTES {
-            let name = ns_string(name);
-            if name.is_null() {
-                return Err("no notification name");
-            }
-            let observer: *const AnyObject = delegate;
-            let object: *const AnyObject = window;
-            let _: () = msg_send![center, removeObserver: observer, name: name, object: object];
+        let observer: *const AnyObject = observer;
+        let object: *const AnyObject = window;
+        let _: () = msg_send![center, removeObserver: observer];
+        for ((selector, _), name) in NOTES.iter().zip(names) {
             let _: () = msg_send![
                 center,
                 addObserver: observer,
@@ -191,6 +222,18 @@ pub fn attach(ns_view: NonNull<c_void>, on_full_screen: fn(bool)) -> Result<f64,
         }
     }
     Ok(band_height(ns_view))
+}
+
+/// Hides the standard buttons of the window of `ns_view` again: AppKit can rebuild
+/// them when the style mask is set again (winit does on a resizable change), which no
+/// notification reports. Called on each resize.
+pub fn hide_buttons_again(ns_view: NonNull<c_void>) {
+    let window = window_of(ns_view);
+    // SAFETY: checked for null; this process's NSWindow on the main thread.
+    if let Some(window) = unsafe { window.as_ref() } {
+        // SAFETY: as above.
+        unsafe { hide_standard_buttons(window) };
+    }
 }
 
 /// The height of the system's title band in points: the window's frame minus the
@@ -266,11 +309,13 @@ pub fn full_screen(ns_view: NonNull<c_void>) -> bool {
 }
 
 /// The press being handled now is the second of a double-click (`clickCount` of the
-/// event AppKit is dispatching).
+/// event AppKit is dispatching). False when that event is not a left mouse down: winit
+/// can deliver a press late, and `clickCount` raises on other events.
 pub fn is_double_click() -> bool {
     // SAFETY: `sharedApplication` and `currentEvent` are getters on the main thread;
-    // `currentEvent` is nil outside event dispatch; `clickCount` returns NSInteger and is
-    // valid for mouse events, which is what is being dispatched when this is asked.
+    // `currentEvent` is nil outside event dispatch; `type` returns NSEventType
+    // (NSUInteger), sent by a dynamic selector because `type` is a Rust keyword;
+    // `clickCount` returns NSInteger and is asked only of a mouse down.
     unsafe {
         let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
         let Some(app) = app.as_ref() else {
@@ -280,6 +325,10 @@ pub fn is_double_click() -> bool {
         let Some(event) = event.as_ref() else {
             return false;
         };
+        let kind: usize = event.send_message(Sel::register(c"type"), ());
+        if kind != LEFT_MOUSE_DOWN {
+            return false;
+        }
         let count: isize = msg_send![event, clickCount];
         count == 2
     }
@@ -288,10 +337,14 @@ pub fn is_double_click() -> bool {
 /// The system's "Double-click a window's title bar to" values: `AppleActionOnDoubleClick`
 /// and the older `AppleMiniaturizeOnDoubleClick` (see `caption::double_click`).
 pub fn double_click_setting() -> (Option<String>, Option<bool>) {
+    autoreleasepool(|_| double_click_in_pool())
+}
+
+fn double_click_in_pool() -> (Option<String>, Option<bool>) {
     // SAFETY: `standardUserDefaults` is a getter; `stringForKey:` returns nil or an
-    // NSString whose UTF-8 buffer lives until the autorelease pool drains, after this
-    // call; `objectForKey:` returns nil or an object, `boolValue` a BOOL for NSNumber and
-    // NSString, the only types the defaults system stores for this key.
+    // NSString (nil for a value of another type) whose UTF-8 buffer lives until the
+    // pool of `double_click_setting` drains; `objectForKey:` returns nil or an object,
+    // only tested for presence; `boolForKey:` returns BOOL for a value of any type.
     unsafe {
         let defaults: *mut AnyObject = msg_send![class!(NSUserDefaults), standardUserDefaults];
         let Some(defaults) = defaults.as_ref() else {
@@ -312,7 +365,7 @@ pub fn double_click_setting() -> (Option<String>, Option<bool>) {
             None
         } else {
             let value: *mut AnyObject = msg_send![defaults, objectForKey: key];
-            value.as_ref().map(|v| msg_send![v, boolValue])
+            (!value.is_null()).then(|| msg_send![defaults, boolForKey: key])
         };
         (action, miniaturize)
     }

@@ -1,6 +1,11 @@
 //! The macOS window frame (ADR-0180): the window is changed after every show
 //! (`rbs_app::native::titlebar`), a press in the row's flexible space moves it, and a
 //! double-click there does what the system setting says.
+//!
+//! The `NSWindow` exists only once the event loop has made it, which can be after a
+//! show and after timers run, so the change is also made from the window's events:
+//! whenever its view is not the one last changed (a first window, or one Slint made
+//! again), on a resize or a focus change. No polling.
 
 use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
@@ -26,6 +31,8 @@ thread_local! {
     static MAIN: RefCell<Option<slint::Weak<MainWindow>>> = const { RefCell::new(None) };
     /// The open popups, refilled for each press without allocating again.
     static POPUPS: RefCell<Vec<rbs_ui::layout::Rect>> = const { RefCell::new(Vec::new()) };
+    /// The view last changed, so a new window is changed once; null before any.
+    static ATTACHED: Cell<*mut c_void> = const { Cell::new(std::ptr::null_mut()) };
 }
 
 /// The macOS frame.
@@ -37,7 +44,7 @@ fn view(main: &MainWindow) -> Option<NonNull<c_void>> {
     let handle = main.window().window_handle();
     let handle = handle.window_handle().ok()?;
     match handle.as_raw() {
-        RawWindowHandle::AppKit(v) => NonNull::new(v.ns_view.as_ptr()),
+        RawWindowHandle::AppKit(v) => Some(v.ns_view),
         _ => None,
     }
 }
@@ -60,36 +67,9 @@ fn full_screen_changed(on: bool) {
 impl WindowFrame for Frame {
     fn attach_after_show(&self, main: &MainWindow) {
         MAIN.with(|m| *m.borrow_mut() = Some(main.as_weak()));
-        // The NSWindow exists once the event loop has run the show; look on the next turn.
-        let weak = main.as_weak();
-        entry::single_shot(std::time::Duration::ZERO, move || {
-            let Some(main) = weak.upgrade() else {
-                return;
-            };
-            let g = main.global::<Shell>();
-            let Some(v) = view(&main) else {
-                rbs_core::warn!(
-                    rbs_core::log::Area::Ui,
-                    "title bar: the main window has no view"
-                );
-                return;
-            };
-            match titlebar::attach(v, full_screen_changed) {
-                Ok(band) => {
-                    g.set_caption_min_height(band as f32);
-                    g.set_window_maximized(titlebar::zoomed(v));
-                    g.set_window_full_screen(titlebar::full_screen(v));
-                    g.set_custom_caption(true);
-                }
-                Err(why) => {
-                    g.set_custom_caption(false);
-                    rbs_core::warn!(
-                        rbs_core::log::Area::Ui,
-                        "title bar: the OS title bar stays: {why}"
-                    );
-                }
-            }
-        });
+        // A window made again by this show is changed now, or from its first events.
+        ATTACHED.with(|a| a.set(std::ptr::null_mut()));
+        attach_if_new(main);
     }
 
     fn press(&self, main: &MainWindow, button: Button) {
@@ -111,7 +91,18 @@ impl WindowFrame for Frame {
     }
 
     fn window_event(&self, main: &MainWindow, w: &Window, e: &WindowEvent) -> EventResult {
-        if !main.global::<Shell>().get_custom_caption() {
+        // Objective-C calls run here: a panic stays inside (ADR-0055).
+        entry::guard_or(|| EventResult::Propagate, || self.frame_event(main, w, e))
+    }
+}
+
+impl Frame {
+    fn frame_event(&self, main: &MainWindow, w: &Window, e: &WindowEvent) -> EventResult {
+        if matches!(e, WindowEvent::Resized(_) | WindowEvent::Focused(_)) {
+            attach_if_new(main);
+        }
+        let g = main.global::<Shell>();
+        if !g.get_custom_caption() {
             return EventResult::Propagate;
         }
         match e {
@@ -121,9 +112,10 @@ impl WindowFrame for Frame {
                 EventResult::Propagate
             }
             WindowEvent::Resized(_) => {
-                // The title band can change with the display or its scale too.
+                // The title band can change with the display or its scale too, and a
+                // new style mask can bring the standard buttons back.
                 if let Some(v) = view(main) {
-                    let g = main.global::<Shell>();
+                    titlebar::hide_buttons_again(v);
                     g.set_window_maximized(titlebar::zoomed(v));
                     g.set_caption_min_height(titlebar::band_height(v) as f32);
                 }
@@ -135,8 +127,12 @@ impl WindowFrame for Frame {
                 ..
             } => {
                 let (x, y) = POINTER.with(Cell::get);
-                if !caption::in_drag_space(x, y, REGIONS.with(Cell::get)) || popup_open(main) {
-                    // A press that closes a popup never moves the window (ADR-0071).
+                // Full screen does not move or zoom (decision 4); a press that closes a
+                // popup never moves the window (ADR-0071).
+                if g.get_window_full_screen()
+                    || !caption::in_drag_space(x, y, REGIONS.with(Cell::get))
+                    || popup_open(main)
+                {
                     return EventResult::Propagate;
                 }
                 if titlebar::is_double_click() {
@@ -168,4 +164,43 @@ fn popup_open(main: &MainWindow) -> bool {
         rbs_app::popups::open_in(main.window(), &mut p);
         !p.is_empty()
     })
+}
+
+/// Changes the main window when its view is not the one last changed, on the next
+/// event loop turn (outside the toolkit's event handling).
+fn attach_if_new(main: &MainWindow) {
+    let Some(v) = view(main) else {
+        return;
+    };
+    if ATTACHED.with(Cell::get) == v.as_ptr() {
+        return;
+    }
+    ATTACHED.with(|a| a.set(v.as_ptr()));
+    let weak = main.as_weak();
+    entry::single_shot(std::time::Duration::ZERO, move || {
+        let Some(main) = weak.upgrade() else {
+            return;
+        };
+        // Not in a window yet: a later event tries again.
+        let Some(v) = view(&main).filter(|v| titlebar::in_window(*v)) else {
+            ATTACHED.with(|a| a.set(std::ptr::null_mut()));
+            return;
+        };
+        let g = main.global::<Shell>();
+        match titlebar::attach(v, full_screen_changed) {
+            Ok(band) => {
+                g.set_caption_min_height(band as f32);
+                g.set_window_maximized(titlebar::zoomed(v));
+                g.set_window_full_screen(titlebar::full_screen(v));
+                g.set_custom_caption(true);
+            }
+            Err(why) => {
+                g.set_custom_caption(false);
+                rbs_core::warn!(
+                    rbs_core::log::Area::Ui,
+                    "title bar: the OS title bar stays: {why}"
+                );
+            }
+        }
+    });
 }
