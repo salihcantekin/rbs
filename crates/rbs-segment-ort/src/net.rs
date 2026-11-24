@@ -23,7 +23,7 @@ pub struct Spec {
     pub net: Net,
     /// The model's name for the [`crate::ModelSource`].
     pub model: &'static str,
-    /// Milliseconds per frame on an RTX 4090 through DirectML (spike, 2026-11-24).
+    /// Milliseconds per frame (picture in to matte out, 512x288) on an RTX 4090 through DirectML (measured 2026-11-24).
     pub gpu_ms: f32,
     /// The cost text's note.
     pub note: &'static str,
@@ -36,21 +36,21 @@ pub fn spec_of(level: LevelId) -> Option<Spec> {
             level,
             net: Net::MediaPipe,
             model: "mediapipe-selfie-256",
-            gpu_ms: 1.4,
+            gpu_ms: 1.8,
             note: "fast, coarse edges",
         },
         LevelId::Medium => Spec {
             level,
             net: Net::Modnet,
             model: "modnet-webcam",
-            gpu_ms: 4.5,
+            gpu_ms: 6.3,
             note: "balanced",
         },
         LevelId::High => Spec {
             level,
             net: Net::Rvm,
             model: "rvm-mobilenetv3-fp32",
-            gpu_ms: 8.0,
+            gpu_ms: 7.3,
             note: "best edges and hair, remembers earlier pictures",
         },
         _ => return None,
