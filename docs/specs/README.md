@@ -31,7 +31,7 @@ Specs are the current contracts of RBS. Code must match them; a PR that changes 
 | [recording.md](recording.md) | Draft | `rbs-record` (scene to encoders and a muxed output on the engine), `rbs-cli` (`record`, `devices`) |
 | [diagnostics-log.md](diagnostics-log.md) | Draft | `rbs-core` (`log`), `rbs-log` (rotating log file, redaction, `log` bridge; ADR-0158) |
 | [recording-protection.md](recording-protection.md) | Draft | `rbs-record` (`protection`: guard, probe port and worker), `rbs-system-probe` (OS readings), `rbs-app` (host, `protection.status`; ADR-0090 phase one) |
-| [person-mask-port.md](person-mask-port.md) | Draft | `rbs-segment`, `rbs-segment-*` adapters, `rbs-filters-segment` |
+| [person-mask-port.md](person-mask-port.md) | Accepted | `rbs-segment`, `rbs-segment-*` adapters, `rbs-filters-segment` |
 | [output-estimate.md](output-estimate.md) | Draft | `rbs-record` (`estimate`: the pure cost estimate of a start and the disk probe), `rbs-app` (`calibration_file`: `calibration.toml`). Calibration run, API and UI are later steps (ADR-0087) |
 | [plugin-sdk.md](plugin-sdk.md) | Draft | `rbs-plugin-sdk` (manifest), `rbs-plugin-host` (reads manifests, loads nothing). Loaders are not started |
 | [performance-budgets.md](performance-budgets.md) | Draft | `benches/`, CI |
