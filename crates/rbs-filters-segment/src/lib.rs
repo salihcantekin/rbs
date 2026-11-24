@@ -39,7 +39,7 @@ pub const BACKGROUND_COLOUR: usize = 7;
 pub const BLUR: usize = 6;
 
 const FIELDS: [Field; 8] = [
-    Field::number("threshold", "Threshold", 0.05, 0.95, 0.5, 0.01, "")
+    Field::number("threshold", "Threshold", 0.05, 0.95, 0.35, 0.01, "")
         .with_help("Matte value that counts as the edge of the person."),
     Field::number("feather", "Edge softness", 0.0, 0.5, 0.15, 0.01, "")
         .with_help("How soft the edge of the person is."),

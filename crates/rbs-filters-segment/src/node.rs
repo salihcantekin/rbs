@@ -53,7 +53,9 @@ const FAILED: u8 = 3;
 
 const DOWNSCALE: &str = include_str!("shaders/downscale.wgsl");
 use crate::COMPOSITE;
+mod blur;
 use crate::ring::{COPY, CopyPass, Ring, picture_to_draw};
+use blur::{BlurPass, render_output};
 /// The small picture's format: `Bgra8Unorm` is BGRA in memory, which is what a backend
 /// takes as `PixelFormat::Bgra8`.
 const SMALL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
@@ -149,6 +151,7 @@ struct Prepared {
     down: wgpu::RenderPipeline,
     copy: CopyPass,
     comp: wgpu::RenderPipeline,
+    blur: BlurPass,
     down_buffer: wgpu::Buffer,
     down_group: wgpu::BindGroup,
     comp_buffer: wgpu::Buffer,
@@ -413,13 +416,19 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
             bind_group_layouts: &[Some(&uniforms), Some(sampled)],
             immediate_size: 0,
         });
+        let pass_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("rbs-filters-segment blur"),
+            bind_group_layouts: &[Some(&uniforms), Some(sampled), Some(sampled)],
+            immediate_size: 0,
+        });
         let comp_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("rbs-filters-segment composite"),
-            bind_group_layouts: &[Some(&uniforms), Some(sampled), Some(sampled)],
+            bind_group_layouts: &[Some(&uniforms), Some(sampled), Some(sampled), Some(sampled)],
             immediate_size: 0,
         });
         let down = pipeline(gpu, &down_layout, DOWNSCALE, SMALL_FORMAT)?;
         let comp = pipeline(gpu, &comp_layout, COMPOSITE, rbs_gpu::CANVAS_FORMAT)?;
+        let blur = BlurPass::new(gpu, &uniforms, &pass_layout)?;
         let (down_buffer, down_group) = uniform(device, &uniforms);
         let (copy_buffer, copy_group) = uniform(device, &uniforms);
         let copy = CopyPass {
@@ -445,6 +454,7 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
             down,
             copy,
             comp,
+            blur,
             down_buffer,
             down_group,
             comp_buffer,
@@ -688,6 +698,7 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
             (input_id, matte_id),
             size,
             time,
+            look.mode > 0.5 && look.mode < 1.5,
         )?;
         match result {
             Ok((output, frame)) => {
@@ -907,66 +918,6 @@ fn take_matte(
     true
 }
 
-/// Draws the input times the matte into `output`.
-fn composite(
-    gpu: &GpuContext,
-    pool: &TexturePool,
-    prepared: &Prepared,
-    (input, matte): (TextureId, TextureId),
-    output: TextureId,
-) -> Result<(), GpuError> {
-    let src = pool
-        .get(input)
-        .and_then(|t| t.sampled_bind_group())
-        .ok_or(GpuError::StaleTexture(input))?;
-    let mask = pool
-        .get(matte)
-        .and_then(|t| t.sampled_bind_group())
-        .ok_or(GpuError::StaleTexture(matte))?;
-    let target = pool.get(output).ok_or(GpuError::StaleTexture(output))?;
-    let mut encoder = gpu
-        .device()
-        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("rbs-filters-segment composite"),
-        });
-    draw(
-        &mut encoder,
-        &prepared.comp,
-        target.view(),
-        &prepared.comp_group,
-        src,
-        Some(mask),
-    );
-    gpu.queue().submit(Some(encoder.finish()));
-    Ok(())
-}
-
-/// Draws the composite into a new output and makes the frame; the frame's lease keeps
-/// the output alive and the pool reuses the rest at once. A failed draw is returned
-/// inside `Ok` so the caller can publish nothing; a pool failure is the node's.
-fn render_output(
-    gpu: &GpuContext,
-    pool: &mut TexturePool,
-    prepared: &Prepared,
-    (input, matte): (TextureId, TextureId),
-    size: [u32; 2],
-    time: Timestamp,
-) -> Result<Result<(TextureId, VideoFrame), GpuError>, NodeError> {
-    let output = pool
-        .acquire(gpu, &TextureDesc::canvas(size[0], size[1]))
-        .map_err(backend)?;
-    let result = composite(gpu, pool, prepared, (input, matte), output).and_then(|()| {
-        let format = VideoFormat::new(
-            Size::new(size[0], size[1]),
-            PixelFormat::Rgba16Float,
-            ColorSpace::LINEAR_BT709,
-        );
-        pool.frame(output, format, time)
-    });
-    pool.release(output).map_err(backend)?;
-    Ok(result.map(|frame| (output, frame)))
-}
-
 /// Writes the composite pass's uniforms: the matte edges and the input's texel size and
 /// transfer.
 fn write_composite(
@@ -988,6 +939,7 @@ fn write_composite(
     ];
     gpu.queue()
         .write_buffer(&prepared.comp_buffer, 0, bytemuck::bytes_of(&u));
+    blur::write(gpu, prepared, (edge, look), size, decode);
 }
 
 /// True when the aspect ratio of `new` differs from `old` by more than 2 percent.
