@@ -40,7 +40,7 @@ const FIELDS: [Field; 6] = [
         .with_help("How soft the edge of the person is."),
     Field::number("edge_shift", "Edge shift", -1.0, 1.0, 0.0, 0.01, "")
         .with_help("Moves the edge into the person (negative) or out into the room (positive)."),
-    Field::number("smoothing", "Smoothing", 0.0, 0.95, 0.25, 0.01, "")
+    Field::number("smoothing", "Smoothing", 0.0, 0.95, 0.0, 0.01, "")
         .with_help("Calms flicker between pictures; a higher value reacts more slowly."),
     Field::choice(
         "quality",

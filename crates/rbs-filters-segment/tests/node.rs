@@ -133,3 +133,48 @@ fn exact_mode_draws_the_picture_the_matte_was_made_from() {
         "tick {made_at}: green {g}"
     );
 }
+
+/// Linear light of a limited-range BT.709 grey `y` (sRGB-encoded transfer).
+fn grey_linear(y: u8) -> f32 {
+    let e = ((f32::from(y) - 16.0) / 219.0).clamp(0.0, 1.0);
+    if e <= 0.04045 {
+        e / 12.92
+    } else {
+        ((e + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+#[test]
+fn exact_mode_works_on_a_4_2_0_camera_picture() {
+    use rbs_core::time::Timestamp;
+    use rbs_core::timing::{Cadence, FrameRate};
+    use rbs_graph::runtime::Tick;
+
+    let Some(ctx) = gpu() else { return };
+    let mut rig = Rig::new(ctx, [8, 4]);
+    // A camera that delivers NV12 (the MacBook camera does): a different grey every
+    // tick. The matte of an early tick arrives later; its own picture must be drawn.
+    let grey = |n: u64| 60 + 20 * n as u8;
+    let cadence = Cadence::frames(Timestamp::ZERO, FrameRate::FPS_60);
+    for n in 0..6u64 {
+        rig.set_nv12(16, 8, [grey(n), 128, 128]);
+        rig.tick();
+        rig.ctx.wait_idle().unwrap();
+    }
+    assert!(rig.until_output());
+    let time = lock(&rig.last).as_ref().unwrap().timestamp();
+    let made_at = (0..40u64)
+        .find(|n| Tick::of(&cadence, *n).time == time)
+        .expect("the output carries the time of one of the pictures");
+    let out = rig.output().unwrap();
+    let g = out.at(2, 4)[1];
+    assert!(
+        (g - grey_linear(grey(made_at))).abs() < 0.03,
+        "tick {made_at}: {g} against {}",
+        grey_linear(grey(made_at))
+    );
+    assert!(
+        made_at < 5,
+        "tick {made_at}: the newest picture was drawn, not the one the matte came from"
+    );
+}

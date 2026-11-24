@@ -512,17 +512,17 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
         let (inputs, outputs, local) = ctx.parts();
 
         // What the input offers; a 4:2:0 input is decoded to RGB first, once per picture.
-        let mut frame = inputs.video(IN_PIN, 0);
-        let mut decoded = false;
+        let source = inputs.video(IN_PIN, 0);
+        let mut frame = source;
         if let Some(f) = frame
             && YuvToRgb::needs_decode(&local.pool, f)
         {
             frame = self.rgb.rgb(gpu, &mut local.pool, f).ok();
-            decoded = true;
         }
-        // A 4:2:0 input is decoded into one shared texture, so it has no kept pictures.
-        let exact = values.choice(SYNC) == 0 && !decoded;
-        if exact && let Some(f) = frame {
+        // Exact keeps the source's own pictures (a 4:2:0 camera picture is decoded to RGB
+        // again when its matte arrives; the shared decode texture holds one picture).
+        let exact = values.choice(SYNC) == 0;
+        if exact && let Some(f) = source {
             self.recent.push(f);
         }
         let input = frame.and_then(|frame| describe(&local.pool, frame));
@@ -655,7 +655,7 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
         let (input_id, size, decode, time) = picture_to_draw(
             &mut self.held,
             &self.recent,
-            &local.pool,
+            (gpu, &mut local.pool, &mut self.rgb),
             exact,
             matte_time,
             (input_id, size, decode, time),
@@ -1065,11 +1065,12 @@ fn describe(pool: &TexturePool, frame: &VideoFrame) -> Option<Picture> {
 }
 
 /// The picture to draw this tick. Fast: the current one. Exact: the one a new matte
-/// was made from (kept in `recent`), and until the next matte the same one again.
+/// was made from (kept in `recent`), and until the next matte the same one again; a 4:2:0
+/// picture is decoded to RGB here.
 fn picture_to_draw(
     held: &mut Option<VideoFrame>,
     recent: &Recent,
-    pool: &TexturePool,
+    (gpu, pool, rgb): (&GpuContext, &mut TexturePool, &mut YuvToRgb),
     exact: bool,
     matte_time: Option<Timestamp>,
     current: Picture,
@@ -1083,9 +1084,17 @@ fn picture_to_draw(
     {
         *held = Some(frame);
     }
-    held.as_ref()
-        .and_then(|f| describe(pool, f))
-        .unwrap_or(current)
+    let Some(frame) = held.as_ref() else {
+        return current;
+    };
+    let picture = if YuvToRgb::needs_decode(pool, frame) {
+        rgb.rgb(gpu, pool, frame)
+            .ok()
+            .and_then(|decoded| describe(pool, decoded))
+    } else {
+        describe(pool, frame)
+    };
+    picture.unwrap_or(current)
 }
 
 /// The composite edges for the settings.

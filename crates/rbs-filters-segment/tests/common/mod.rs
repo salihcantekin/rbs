@@ -8,13 +8,16 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use rbs_core::lifecycle::Lifecycle;
 use rbs_core::media::ColorSpace;
-use rbs_core::media::{FramePayload, PixelFormat, Size, TextureId, VideoFormat, VideoFrame};
+use rbs_core::media::{
+    Bytes, FramePayload, PixelFormat, PlaneLayout, Size, SystemFrame, TextureId, VideoFormat,
+    VideoFrame,
+};
 use rbs_core::time::Timestamp;
 use rbs_core::timing::{Cadence, FrameRate};
 use rbs_filters::conformance::{Picture, f32_to_f16};
 use rbs_filters_segment::{BackgroundRemovalNode, RemovalStats, fields};
 use rbs_gpu::node::{GpuRuntime, RenderLocal};
-use rbs_gpu::{GpuContext, GpuError, GpuRequest, TextureDesc, readback};
+use rbs_gpu::{GpuContext, GpuError, GpuRequest, SourceUpload, TextureDesc, readback};
 use rbs_graph::description::{GraphDescription, NodeId};
 use rbs_graph::node::{LinkKind, NodeDescriptor, NodeKind, NodeTypeId, Pin};
 use rbs_graph::runtime::param::ParamSender;
@@ -66,10 +69,13 @@ pub struct Log {
 
 struct Fake {
     pub log: Arc<Log>,
-    pending: Option<Timestamp>,
+    /// The picture a matte is made for and the polls left before it is ready.
+    pending: std::collections::VecDeque<(Timestamp, u32)>,
 }
 
 const MATTE: [u32; 2] = [8, 4];
+/// Polls (ticks) a matte takes after its picture was lent: the real ones take two or three.
+const MATTE_LATENCY: u32 = 2;
 
 impl PersonMaskSession for Fake {
     fn warm(&mut self) -> Result<(), SegmentError> {
@@ -87,11 +93,17 @@ impl PersonMaskSession for Fake {
             frame.format().pixel_format,
             [bytes[0], bytes[1], bytes[2], bytes[3]],
         ));
-        self.pending = Some(frame.timestamp());
+        self.pending.push_back((frame.timestamp(), MATTE_LATENCY));
         SubmitOutcome::Accepted
     }
     fn latest(&mut self) -> Result<Option<Matte>, SegmentError> {
-        let Some(time) = self.pending.take() else {
+        for entry in &mut self.pending {
+            entry.1 = entry.1.saturating_sub(1);
+        }
+        if self.pending.front().is_none_or(|e| e.1 > 0) {
+            return Ok(None);
+        }
+        let Some((time, _)) = self.pending.pop_front() else {
             return Ok(None);
         };
         let mut data = vec![0u8; (MATTE[0] * MATTE[1]) as usize];
@@ -106,7 +118,7 @@ impl PersonMaskSession for Fake {
     }
     fn reset(&mut self) {
         self.log.resets.fetch_add(1, Ordering::Relaxed);
-        self.pending = None;
+        self.pending.clear();
     }
     fn close(self: Box<Self>) {
         self.log.closed.fetch_add(1, Ordering::Relaxed);
@@ -116,6 +128,10 @@ impl PersonMaskSession for Fake {
 struct Feed {
     desc: NodeDescriptor,
     next: Arc<Mutex<Option<Picture>>>,
+    /// A 4:2:0 camera picture: width, height and the Y, Cb and Cr bytes of every texel.
+    next_nv12: Arc<Mutex<Option<(u32, u32, [u8; 3])>>>,
+    upload: SourceUpload,
+    nv12: Option<VideoFrame>,
     current: Option<(TextureId, u32, u32, Timestamp)>,
 }
 
@@ -130,6 +146,39 @@ impl Node<GpuRuntime> for Feed {
         let time = ctx.tick().time;
         let gpu = ctx.shared();
         let (_, outputs, local) = ctx.parts();
+        if let Some((w, h, [y, cb, cr])) = lock(&self.next_nv12).take() {
+            let mut data = vec![y; (w * h) as usize];
+            for _ in 0..(w * h / 4) {
+                data.extend_from_slice(&[cb, cr]);
+            }
+            let format = VideoFormat::new(
+                Size::new(w, h),
+                PixelFormat::Nv12,
+                ColorSpace::BT709_LIMITED,
+            );
+            let planes = [
+                PlaneLayout {
+                    offset: 0,
+                    stride: w as usize,
+                },
+                PlaneLayout {
+                    offset: (w * h) as usize,
+                    stride: w as usize,
+                },
+            ];
+            let system = SystemFrame::new(format, Bytes::from(data), &planes).unwrap();
+            let frame = VideoFrame::system(time, system, None);
+            let uploaded = self
+                .upload
+                .upload(gpu, &mut local.pool, frame)
+                .map_err(|_| NodeError::Backend("feed"))?;
+            self.nv12 = Some(uploaded);
+            self.current = None;
+        }
+        if let Some(frame) = self.nv12.as_ref().and_then(VideoFrame::share) {
+            drop(outputs.set_video(0, Some(frame))?);
+            return Ok(());
+        }
         if let Some(p) = lock(&self.next).take() {
             let mut desc = TextureDesc::source(p.width, p.height, wgpu::TextureFormat::Rgba16Float);
             desc.usage |= wgpu::TextureUsages::COPY_SRC;
@@ -194,6 +243,7 @@ pub struct Rig {
     pub ctx: Arc<GpuContext>,
     pub tick: u64,
     next: Arc<Mutex<Option<Picture>>>,
+    next_nv12: Arc<Mutex<Option<(u32, u32, [u8; 3])>>>,
     pub last: Arc<Mutex<Option<VideoFrame>>>,
     pub node: NodeId,
     pub values: ParamSender<Values>,
@@ -213,7 +263,7 @@ impl Rig {
                 factory_log.opened.fetch_add(1, Ordering::Relaxed);
                 Ok(Box::new(Fake {
                     log: Arc::clone(&factory_log),
-                    pending: None,
+                    pending: Default::default(),
                 }))
             },
         );
@@ -222,6 +272,7 @@ impl Rig {
         let (mut ctl, exec) = channel::<GpuRuntime>(Arc::clone(&ctx), RenderLocal::default());
         let mut graph = GraphDescription::new();
         let next = Arc::new(Mutex::new(None));
+        let next_nv12 = Arc::new(Mutex::new(None));
         let last = Arc::new(Mutex::new(None));
         let feed = Feed {
             desc: NodeDescriptor::new(
@@ -231,6 +282,9 @@ impl Rig {
                 vec![Pin::one("out", LinkKind::Video)],
             ),
             next: Arc::clone(&next),
+            next_nv12: Arc::clone(&next_nv12),
+            upload: SourceUpload::new(),
+            nv12: None,
             current: None,
         };
         let probe = Probe {
@@ -261,6 +315,7 @@ impl Rig {
             ctx,
             tick: 0,
             next,
+            next_nv12,
             last,
             node: filter,
             values,
@@ -278,6 +333,11 @@ impl Rig {
 
     pub fn set_input(&self, p: Picture) {
         *lock(&self.next) = Some(p);
+    }
+
+    /// A solid 4:2:0 camera picture (limited-range BT.709 `y`, `cb`, `cr`).
+    pub fn set_nv12(&self, width: u32, height: u32, ycc: [u8; 3]) {
+        *lock(&self.next_nv12) = Some((width, height, ycc));
     }
 
     pub fn tick(&mut self) {
