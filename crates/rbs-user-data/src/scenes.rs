@@ -83,11 +83,11 @@ use rbs_core::timing::FrameRate;
 use rbs_graph::node::NodeTypeId;
 use rbs_scene::model::{
     Border, Canvas, CanvasId, CollectionGlide, CollectionTransition, Crop, DEFAULT_SCROLL_RAMP_MS,
-    FadeSettings, Fallback, Filter, FilterId, GlideEasing, ItemContent, ItemId, ItemStyle, Layout,
-    MasterAudio, RecordSeparately, Scene, SceneAudio, SceneId, SceneItem, SceneLevel, SceneScope,
-    Scroll, ScrollDirection, ScrollRepeat, ScrollStart, SettingValue, Settings, Shadow, Shape,
-    Source, SourceAudio, SourceGlide, SourceId, SourceMonitor, SourceRegion, StingerSettings,
-    SwipeDirection, SwipeSettings, TransitionKind, VideoAs,
+    FadeSettings, Fallback, Filter, FilterId, GlideEasing, GroupId, ItemContent, ItemId, ItemStyle,
+    Layout, MasterAudio, RecordSeparately, Scene, SceneAudio, SceneId, SceneItem, SceneLevel,
+    SceneScope, Scroll, ScrollDirection, ScrollRepeat, ScrollStart, SettingValue, Settings, Shadow,
+    Shape, Source, SourceAudio, SourceGlide, SourceId, SourceMonitor, SourceRegion,
+    StingerSettings, SwipeDirection, SwipeSettings, TransitionKind, VideoAs,
 };
 use rbs_scene::{ChromeFill, DisplayChrome};
 use rbs_scene::{IdCounters, MAX_GLIDE_MS, SceneCollection, SceneTransition};
@@ -96,6 +96,7 @@ use serde::{Deserialize, Serialize};
 use crate::document::{self, BodyError, Document};
 
 mod buses;
+mod groups;
 
 #[derive(Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
@@ -359,6 +360,9 @@ struct Next {
     /// Next bus id (format 29, ADR-0170); written once a bus was ever added.
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     bus: u32,
+    /// Next group id (format 30, ADR-0182); written once a group was ever made.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    group: u32,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -707,6 +711,9 @@ struct SceneDoc {
     /// The transition into this scene (format 20, ADR-0135). Absent: the collection's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     transition_in: Option<SceneTransitionDoc>,
+    /// The scene's groups (format 30, ADR-0182).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    groups: Vec<groups::GroupDoc>,
 }
 
 /// A scene's transition override in the document (ADR-0135 decision 9).
@@ -815,6 +822,9 @@ struct ItemDoc {
     /// Timed-show duration while hidden (format 13, ADR-0105). Absent: none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     show_for_ms: Option<u32>,
+    /// The group the item belongs to (format 30, ADR-0182).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    group: Option<u32>,
     layout: LayoutDoc,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     overrides: Vec<OverrideDoc>,
@@ -1318,9 +1328,13 @@ fn later(found: u32, keys: &'static str, since: u32) -> BodyError {
 
 impl Document for SceneCollection {
     const KIND: &'static str = "scene-collection";
-    const FORMAT: u32 = 29;
+    const FORMAT: u32 = 30;
 
     fn write_format(&self) -> u32 {
+        // An older build refuses groups as unknown keys (ADR-0182).
+        if groups::needs_30(self) {
+            return 30;
+        }
         // An older build refuses buses and sends as unknown keys (ADR-0170).
         if buses::needs_29(self) {
             return 29;
@@ -1453,8 +1467,9 @@ impl Document for SceneCollection {
     /// `main`, the canvas master, and default sends), and a file is written as 29 only
     /// when a bus was ever added.
     fn upgrade(from: u32, body: &mut toml::Table) -> Result<(), BodyError> {
+        groups::refuse_before_30(from, body)?;
         buses::refuse_before_29(from, body)?;
-        if from == 28 {
+        if (28..=29).contains(&from) {
             return Ok(());
         }
         let direct = body
@@ -1758,6 +1773,7 @@ impl Document for SceneCollection {
                             visible: i.visible,
                             locked: i.locked,
                             show_for_ms: i.show_for_ms,
+                            group: i.group.map(|g| g.get()),
                             layout: LayoutDoc::of(&i.layout),
                             overrides: i
                                 .overrides
@@ -1777,6 +1793,7 @@ impl Document for SceneCollection {
                     items,
                     audio: s.audio.as_ref().map(SceneAudioDoc::of),
                     transition_in: s.transition_in.map(SceneTransitionDoc::of),
+                    groups: groups::group_docs(&s.groups),
                 })
             })
             .collect::<Result<_, BodyError>>()?;
@@ -1788,6 +1805,7 @@ impl Document for SceneCollection {
                 item: n.item,
                 filter: n.filter,
                 bus: n.bus,
+                group: n.group,
             },
             glide,
             transition,
@@ -1899,6 +1917,7 @@ impl Document for SceneCollection {
                 let mut scene =
                     Scene::new(SceneId::from_raw(s.id), &s.name, scope).with_audio(audio);
                 scene.transition_in = transition_in;
+                scene.groups = groups::read(s.groups);
                 scene.items = s
                     .items
                     .into_iter()
@@ -1918,6 +1937,7 @@ impl Document for SceneCollection {
                         item.visible = i.visible;
                         item.locked = i.locked;
                         item.show_for_ms = i.show_for_ms;
+                        item.group = i.group.map(GroupId::from_raw);
                         for o in i.overrides {
                             let canvas = CanvasId::from_raw(o.canvas);
                             if item.overrides.insert(canvas, o.layout.layout()?).is_some() {
@@ -1951,8 +1971,7 @@ impl Document for SceneCollection {
                 item: n.item,
                 filter: n.filter,
                 bus: n.bus,
-                // Groups are not stored yet (ADR-0182, next step); none exist to clash.
-                group: 0,
+                group: n.group,
             },
             glide,
             transition,
