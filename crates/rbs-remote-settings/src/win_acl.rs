@@ -48,7 +48,7 @@ pub const CHANGE: u32 = FILE_WRITE_DATA
 pub const READ: u32 = FILE_READ_DATA | GENERIC_READ | GENERIC_ALL;
 
 /// What to do so only the user may use a file, for refusal messages.
-pub const HOW_TO: &str = "make it yours only (icacls <file> /inheritance:r /grant:r \"%USERNAME%:F\" /setowner \"%USERNAME%\")";
+pub const HOW_TO: &str = "make it yours only: in its Properties, Security, Advanced, set yourself as the owner, turn off inheritance and keep only yourself, SYSTEM and Administrators";
 
 /// Whether the file at `path` is owned by someone untrusted, or someone untrusted holds
 /// any of `rights` on it: `Ok(true)` also for a file without an access list (everyone
@@ -126,7 +126,13 @@ pub fn create_private(path: &Path) -> std::io::Result<File> {
     let sid = CurrentUser::get()
         .and_then(|u| u.string())
         .map_err(std::io::Error::other)?;
-    let sd = descriptor(&format!("D:P(A;;FA;;;{sid})(A;;FA;;;SY)"))?;
+    create_with(path, &format!("D:P(A;;FA;;;{sid})(A;;FA;;;SY)"))
+}
+
+/// Creates the new file `path` with the access list `sddl`, for writing, shared with
+/// no one while open.
+fn create_with(path: &Path, sddl: &str) -> std::io::Result<File> {
+    let sd = descriptor(sddl)?;
     let attributes = SECURITY_ATTRIBUTES {
         nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
         lpSecurityDescriptor: sd.0,
@@ -283,28 +289,7 @@ mod tests {
     /// A file made with the access list `sddl` (owner: the current user).
     fn file_with(dir: &Dir, name: &str, sddl: &str) -> std::path::PathBuf {
         let path = dir.0.join(name);
-        let sd = descriptor(sddl).unwrap();
-        let attributes = SECURITY_ATTRIBUTES {
-            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
-            lpSecurityDescriptor: sd.0,
-            bInheritHandle: 0,
-        };
-        let wide = wide(&path);
-        // SAFETY: as in `create_private`.
-        let h = unsafe {
-            CreateFileW(
-                wide.as_ptr(),
-                GENERIC_WRITE,
-                0,
-                &attributes,
-                CREATE_NEW,
-                FILE_ATTRIBUTE_NORMAL,
-                null_mut(),
-            )
-        };
-        assert_ne!(h, INVALID_HANDLE_VALUE);
-        // SAFETY: a valid handle just opened.
-        drop(unsafe { File::from_raw_handle(h) });
+        drop(create_with(&path, sddl).unwrap());
         path
     }
 
@@ -334,6 +319,12 @@ mod tests {
         assert!(others_may(&users_read, READ).unwrap());
         let denied = file_with(&dir, "denied", &format!("D:P(D;;FA;;;AN)(A;;FA;;;{me})"));
         assert!(!others_may(&denied, CHANGE | READ).unwrap());
+        let inherit_only = file_with(
+            &dir,
+            "inherit-only",
+            &format!("D:P(A;OICIIO;FA;;;WD)(A;;FA;;;{me})"),
+        );
+        assert!(!others_may(&inherit_only, CHANGE | READ).unwrap());
         let null = file_with(&dir, "null", "D:NO_ACCESS_CONTROL");
         assert!(others_may(&null, CHANGE).unwrap());
     }
