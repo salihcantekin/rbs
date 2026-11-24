@@ -3538,6 +3538,9 @@ export component ListRow inherits Rectangle {
     out property <bool> hovered: touch.has-hover;
     out property <bool> keyboard-focus: focus.ring;
     callback activated();
+    // Modifier keys held when the row was pressed (for `activated`).
+    out property <bool> ctrl-held;
+    out property <bool> shift-held;
     callback double-clicked();
     // Right click, the Menu key or Shift+F10: where the menu opens, in row coordinates.
     callback menu-asked(Point);
@@ -3640,6 +3643,11 @@ export component ListRow inherits Rectangle {
             clicked => { focus.focus-pointer(); root.activated(); }
             double-clicked => { root.double-clicked(); }
             pointer-event(e) => {
+                if e.kind == PointerEventKind.down {
+                    // Cmd (`control` on macOS) or Ctrl (`meta` on macOS) toggles a row.
+                    root.ctrl-held = e.modifiers.control || e.modifiers.meta;
+                    root.shift-held = e.modifiers.shift;
+                }
                 if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
                     focus.focus-pointer();
                     root.menu-asked({ x: self.mouse-x, y: self.mouse-y });

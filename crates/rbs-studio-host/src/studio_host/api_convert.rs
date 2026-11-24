@@ -342,6 +342,7 @@ pub(super) fn api_source(row: &SourceRow) -> api::SourceInfo {
         mixer_hidden: row.audio.mixer_hidden,
         monitor: monitor::api_mode(row.audio.monitor),
         companion_of: row.companion_of.map(|c| c.get()),
+        group: row.group.map(|g| g.get()),
         // 1.46's meaning: the main feed (a picture source's picture, anything
         // else's sound), so an older client's switch shows and clears that feed.
         record_separately: if row

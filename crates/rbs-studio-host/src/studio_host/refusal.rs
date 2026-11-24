@@ -39,7 +39,8 @@ impl Refusal {
             SceneError::UnknownSource(_)
             | SceneError::UnknownScene(_)
             | SceneError::UnknownItem(_)
-            | SceneError::UnknownFilter(_) => Self::NotFound(edit_error(e)),
+            | SceneError::UnknownFilter(_)
+            | SceneError::UnknownGroup(_) => Self::NotFound(edit_error(e)),
             SceneError::DuplicateName(_) | SceneError::StingerPlaced(_) => {
                 Self::Conflict(edit_error(e))
             }
@@ -50,6 +51,9 @@ impl Refusal {
             | SceneError::InvalidActivity
             | SceneError::InvalidTransition
             | SceneError::ChromeNotDisplay
+            | SceneError::GroupTooSmall(_)
+            | SceneError::GroupScope
+            | SceneError::GroupNotContiguous(_)
             | SceneError::IndexOutOfRange(_) => Self::Invalid(edit_error(e)),
             _ => Self::Failed(edit_error(e)),
         }

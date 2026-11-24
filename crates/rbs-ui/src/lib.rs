@@ -26,6 +26,7 @@ pub mod command;
 pub mod display;
 pub mod fader;
 pub mod frame;
+pub mod group_transform;
 pub mod history;
 pub mod icon;
 pub mod layout;

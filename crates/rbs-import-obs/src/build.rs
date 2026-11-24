@@ -1082,5 +1082,6 @@ fn counters(source: u32, scenes: usize, item: u32, filter: u32) -> IdCounters {
         item,
         filter,
         bus: 0,
+        group: 0,
     }
 }

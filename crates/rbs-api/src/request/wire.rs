@@ -179,6 +179,14 @@ pub(super) enum WireRequest {
     ItemScrollSpeed(SetScrollSpeed),
     #[serde(rename = "scene.sources")]
     SceneSources(SceneRef),
+    #[serde(rename = "group.create")]
+    GroupCreate(CreateGroup),
+    #[serde(rename = "group.remove")]
+    GroupRemove(GroupRef),
+    #[serde(rename = "group.rename")]
+    GroupRename(RenameGroup),
+    #[serde(rename = "group.list")]
+    GroupList(SceneRef),
     #[serde(rename = "canvas.set_preview")]
     CanvasSetPreview(SetPreview),
     #[serde(rename = "canvas.transition")]
@@ -529,6 +537,7 @@ wire_conversions! {
     StreamDestinationStart, StreamDestinationSetEnabled, CollectionSetTransition,
     SourceSetRecordSeparately,
     ItemSetRotation,
+    GroupCreate, GroupRemove, GroupRename, GroupList,
     CanvasRehearse,
     AddonUpdate,
     ]

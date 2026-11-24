@@ -121,6 +121,7 @@ mod command;
 mod command_path;
 mod control_loop;
 mod cues;
+mod groups;
 mod history;
 mod items;
 mod outputs;
@@ -1081,7 +1082,11 @@ impl Host {
                 item.visible.hash(&mut hasher);
                 item.locked.hash(&mut hasher);
                 item.show_for_ms.hash(&mut hasher);
+                item.group.hash(&mut hasher);
                 self.scroll_paused_of(item).hash(&mut hasher);
+            }
+            for group in &scene.groups {
+                group.name.hash(&mut hasher);
             }
         }
         hasher.finish()
@@ -1158,6 +1163,12 @@ impl Host {
                     id: s.id,
                     item: item.id,
                     companion_of: s.companion_of(),
+                    group: item.group,
+                    group_name: item
+                        .group
+                        .and_then(|g| scene.groups.iter().find(|x| x.id == g))
+                        .map(|g| g.name.clone())
+                        .unwrap_or_default(),
                     record_separately: s.record_separately,
                     name: s.name.clone(),
                     kind,

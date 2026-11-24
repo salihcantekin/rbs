@@ -4,18 +4,18 @@
 # increase the owner approved goes to size-exceptions.toml with `--except`.
 
 [files]
-"crates/rbs-api/src/request.rs" = 2559
-"crates/rbs-api/src/types.rs" = 2976
-"crates/rbs-api/tests/json.rs" = 3243
-"crates/rbs-app/src/main.rs" = 6420
-"crates/rbs-app/src/menu_bar.rs" = 2309
-"crates/rbs-app/src/studio_ui.rs" = 9934
+"crates/rbs-api/src/request.rs" = 2554
+"crates/rbs-api/src/types.rs" = 2874
+"crates/rbs-api/tests/json.rs" = 3122
+"crates/rbs-app/src/main.rs" = 6418
+"crates/rbs-app/src/menu_bar.rs" = 2292
+"crates/rbs-app/src/studio_ui.rs" = 9880
 "crates/rbs-record/src/studio.rs" = 5583
 "crates/rbs-record/tests/studio.rs" = 3241
-"crates/rbs-scene/src/collection.rs" = 2830
+"crates/rbs-scene/src/collection.rs" = 2758
 "crates/rbs-scene/tests/binder.rs" = 2882
 "crates/rbs-scene/tests/collection.rs" = 2759
-"crates/rbs-ui/src/command.rs" = 3540
+"crates/rbs-ui/src/command.rs" = 3399
 
 [functions]
 "crates/rbs-api/src/session.rs::message" = 249
@@ -28,11 +28,11 @@
 "crates/rbs-app/src/main.rs::run" = 372
 "crates/rbs-app/src/main.rs::sync" = 327
 "crates/rbs-app/src/main.rs::sync_studio" = 206
-"crates/rbs-app/src/menu_bar.rs::enabled" = 504
-"crates/rbs-app/src/menu_bar.rs::run" = 278
+"crates/rbs-app/src/menu_bar.rs::enabled" = 494
+"crates/rbs-app/src/menu_bar.rs::run" = 267
 "crates/rbs-app/src/shortcuts_page.rs::install" = 203
 "crates/rbs-app/src/studio_ui.rs::apply" = 498
-"crates/rbs-app/src/studio_ui.rs::new" = 225
+"crates/rbs-app/src/studio_ui.rs::new" = 223
 "crates/rbs-app/src/studio_ui.rs::push" = 274
 "crates/rbs-app/src/studio_ui.rs::set_rows" = 238
 "crates/rbs-app/src/studio_ui.rs::the_vertical_output_commands_follow_the_vertical_canvas_and_its_outputs" = 218
@@ -59,9 +59,10 @@
 "crates/rbs-record/src/studio/iso_video.rs::start_iso_video" = 292
 "crates/rbs-record/src/studio/transition.rs::note_transitions" = 224
 "crates/rbs-scene/src/binder.rs::sync" = 684
-"crates/rbs-scene/src/collection.rs::perform" = 560
+"crates/rbs-scene/src/collection.rs::perform" = 558
 "crates/rbs-scene/tests/binder.rs::check_consistent" = 218
 "crates/rbs-sources/examples/scene_sources.rs::run" = 321
+"crates/rbs-studio-host/src/studio_host/control_api.rs::route" = 201
 "crates/rbs-studio-host/tests/studio/api.rs::a_control_api_client_adds_and_edits_a_text_source" = 225
 "crates/rbs-studio-host/tests/studio/api.rs::a_control_api_client_drives_the_studio" = 598
 "crates/rbs-ui/src/command.rs::context_menu" = 205

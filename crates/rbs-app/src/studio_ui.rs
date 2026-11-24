@@ -86,6 +86,8 @@ mod crop_calls;
 pub(crate) mod destinations;
 pub(crate) mod filters;
 mod item_calls;
+mod step_view;
+use step_view::step_view;
 mod library_ops;
 mod output_calls;
 mod scene_calls;
@@ -95,6 +97,7 @@ mod settings_mirror;
 mod slides;
 mod source_look;
 use source_look::{source_icon, unavailable_text};
+pub(crate) mod multi_select;
 mod sound_nest;
 mod source_calls;
 mod target_calls;
@@ -344,6 +347,8 @@ pub struct StudioUi {
     filter_ui: filters::FilterUi,
     /// The pictures whose sound rows are open in the Sources list (ADR-0173).
     nest: sound_nest::Open,
+    /// Several sources selected in the Sources list (ADR pending; see multi_select).
+    pub picked: multi_select::Picked,
     /// The play state of each media source and the time left on each Show cue.
     live: live_ticks::LiveTicks,
     /// An Add source is on its way: the next new source is selected.
@@ -728,7 +733,6 @@ impl StudioUi {
             fps: whole_fps(canvas.1),
             ..CanvasProfile::new()
         };
-        let canvas_why: Option<String> = None;
         // Without the lock: `rbs-cli` replaces the file in one rename, so this reads
         // either version whole; a bad file it moves aside is never one `rbs-cli` wrote.
         let (remote, remote_why) = remote_profile::load(config);
@@ -748,6 +752,7 @@ impl StudioUi {
             library_thumb_height: 0,
             filter_ui: filters::FilterUi::default(),
             nest: sound_nest::Open::default(),
+            picked: multi_select::Picked::default(),
             live: live_ticks::LiveTicks::default(),
             selected: -1,
             attributes_clipboard: None,
@@ -863,9 +868,7 @@ impl StudioUi {
             canvas,
             display: None,
             canvas_restarting: false,
-            canvas_note: canvas_why
-                .map(|w| format!("The saved canvas was not used: {w}"))
-                .unwrap_or_default(),
+            canvas_note: String::new(),
             remote_port_text: remote.port.to_string(),
             remote,
             remote_server: None,
@@ -2921,7 +2924,7 @@ impl StudioUi {
         self.edit.set_panel(size[0], size[1]);
         let placed = self.placed_where(|_| true);
         let hit = self.edit.source_at(at, self.canvas_px(), &placed);
-        self.selected = hit.unwrap_or(-1);
+        self.select_one(hit.unwrap_or(-1));
         self.pick_props(OutputCanvas::Main);
         self.refresh_marks();
         hit
@@ -2951,7 +2954,7 @@ impl StudioUi {
     fn run(&mut self, effect: Effect) {
         match effect {
             Effect::None => {}
-            Effect::Select(id) => self.selected = id,
+            Effect::Select(id) => self.select_one(id),
             Effect::Send(seq, id, b, gesture) => {
                 self.deleted.clear();
                 self.send_box(seq, id, b, gesture, OutputCanvas::Main);
@@ -2972,7 +2975,7 @@ impl StudioUi {
     fn run_vertical(&mut self, effect: Effect) {
         match effect {
             Effect::None => {}
-            Effect::Select(id) => self.selected = id,
+            Effect::Select(id) => self.select_one(id),
             Effect::Send(seq, id, b, gesture) => {
                 self.deleted.clear();
                 self.send_box(seq, id, b, gesture, OutputCanvas::Vertical);
@@ -3060,7 +3063,7 @@ impl StudioUi {
         self.vedit.set_panel(size[0], size[1]);
         let placed = self.placed_vertical(true);
         let hit = self.vedit.source_at(at, canvas, &placed);
-        self.selected = hit.unwrap_or(-1);
+        self.select_one(hit.unwrap_or(-1));
         self.pick_props(OutputCanvas::Vertical);
         self.refresh_marks();
         hit
@@ -3130,9 +3133,7 @@ impl StudioUi {
         let placed = self.placed();
         // The selection's handles answer only on the picture that shows them.
         let selected = self.marked_selection(OutputCanvas::Main);
-        let e = self
-            .edit
-            .press(at, self.canvas_px(), &placed, selected, keys);
+        let e = self.press_edit(at, &placed, selected, keys);
         self.pick_props(OutputCanvas::Main);
         self.run(e);
     }
@@ -3149,7 +3150,7 @@ impl StudioUi {
 
     pub fn preview_nudge(&mut self, dx: f32, dy: f32) {
         let placed = self.placed();
-        let e = self.edit.nudge(&placed, self.selected, dx, dy);
+        let e = self.nudge_edit(&placed, dx, dy);
         self.run(e);
     }
 
@@ -3177,8 +3178,7 @@ impl StudioUi {
         let mut buf = std::mem::take(&mut self.mark_buf);
         if on == OutputCanvas::Main {
             let placed = self.placed();
-            self.edit
-                .marks(self.canvas_px(), &placed, self.selected, &mut buf);
+            self.marks_edit(&placed, &mut buf);
             // A web page with no address draws nothing: outline where it sits (ADR-0149).
             let empty = |id: i32| {
                 self.browser_rows
@@ -6534,7 +6534,7 @@ impl StudioUi {
             self.selected = -1;
         }
         let keys: Vec<sound_nest::Key> = rows.iter().map(sound_nest::key).collect();
-        self.nest.mark(&mut data, &keys, self.selected);
+        self.mark_rows(&mut data, &keys, &rows);
         set_rows(&self.sources, data);
         self.text_settings = rows
             .iter()
@@ -7665,60 +7665,6 @@ fn marks_picture(studio_mode: bool, vertical_shown: bool, edited: OutputCanvas) 
         OutputCanvas::Main
     } else {
         edited
-    }
-}
-
-/// The Studio global's `undo-kind` / `redo-kind` code and the source's name for a
-/// step: 0 nothing, 1 add, 2 delete, 3 layer order, 4 move or resize, 5 shape or
-/// border, 6 crop, 7 shown or hidden, 8 lock, 9 source rename, 10 scene added, 11
-/// scene removed, 12 scene renamed (the name is the scene's, or the old name), 13
-/// filters changed, 14 removed from one scene, 15 made global or moved back into a
-/// scene, 16 look applied, 17 source pointed at another target, 18 source settings
-/// changed, 19 flipped, turned, fitted or centred, 20 glide duration or easing,
-/// 21 how long Show draws a hidden item (the cue itself is not an undo step),
-/// 22 the source's capture region, 23 the source's Record separately mark, 24 a
-/// scene's levels (ADR-0091; the name is the scene's), 25 a source duplicated, 26 a
-/// source reset, 27 attributes pasted (ADR-0133; the copied source's name), 28 the
-/// collection's transition, 29 Preview edits dropped when studio mode ended (ADR-0151;
-/// the scene's name), 30 the scroll (ADR-0150).
-fn step_view(step: Option<&StepInfo>) -> (i32, &str) {
-    match step {
-        None => (0, ""),
-        Some(s) => (
-            match s.kind {
-                EditKind::Add => 1,
-                EditKind::Delete => 2,
-                EditKind::Order => 3,
-                EditKind::Place => 4,
-                EditKind::Style => 5,
-                EditKind::Crop => 6,
-                EditKind::Visibility => 7,
-                EditKind::Lock => 8,
-                EditKind::RenameSource => 9,
-                EditKind::AddScene => 10,
-                EditKind::RemoveScene => 11,
-                EditKind::RenameScene => 12,
-                EditKind::Filter => 13,
-                EditKind::Remove => 14,
-                EditKind::Global => 15,
-                EditKind::Look => 16,
-                EditKind::Retarget => 17,
-                EditKind::SourceSettings => 18,
-                EditKind::Transform => 19,
-                EditKind::Glide => 20,
-                EditKind::ShowFor => 21,
-                EditKind::Region => 22,
-                EditKind::RecordSeparately => 23,
-                EditKind::SceneLevels => 24,
-                EditKind::Duplicate => 25,
-                EditKind::Reset => 26,
-                EditKind::PasteAttributes => 27,
-                EditKind::Transition => 28,
-                EditKind::DiscardPreview => 29,
-                EditKind::Scroll => 30,
-            },
-            s.name.as_str(),
-        ),
     }
 }
 

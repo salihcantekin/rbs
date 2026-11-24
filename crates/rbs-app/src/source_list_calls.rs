@@ -19,6 +19,24 @@ pub fn install(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_open_sound, |app, id: i32, open: bool| {
         app.studio.open_sound(id, open);
     });
+    on!(on_open_group, |app, group: i32, open: bool| {
+        app.studio.open_group(group, open);
+    });
+    on!(on_select_group, |app, group: i32| {
+        app.studio.select_group(group);
+    });
+    on!(
+        on_rename_group,
+        |app, group: i32, name: slint::SharedString| {
+            app.studio.rename_group(group, &name);
+        }
+    );
+    on!(on_set_group_visible, |app, group: i32, on: bool| {
+        app.studio.set_group_visible(group, on);
+    });
+    on!(on_set_group_locked, |app, group: i32, on: bool| {
+        app.studio.set_group_locked(group, on);
+    });
     on!(on_delete_source, |app, id: i32| {
         app.studio.delete_source(id);
     });
@@ -38,8 +56,14 @@ pub fn install(g: &Studio<'_>, ctx: &Ctx) {
         app.studio.add_global(option);
     });
     on!(on_select_source, |app, id: i32| {
-        app.studio.selected = id;
+        app.studio.select_one(id);
         app.studio.reveal_sound();
         app.studio.refresh_marks();
     });
+    on!(
+        on_select_source_with,
+        |app, id: i32, ctrl: bool, shift: bool| {
+            app.studio.select_with(id, ctrl, shift);
+        }
+    );
 }

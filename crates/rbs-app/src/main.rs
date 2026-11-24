@@ -880,6 +880,7 @@ impl App {
             Run::SetSourceActive(id, active) => self.studio.set_source_active(id, active),
             Run::SourceVisible(id, on) => self.studio.set_source_visible(id, on),
             Run::SourceLocked(id, on) => self.studio.set_source_locked(id, on),
+            Run::Group(on) => self.studio.group_command(on),
             Run::Transform(id, op, canvas) => self.studio.transform_source(id, op, canvas),
             Run::SourceMuted(id, on) => self.studio.set_source_muted(id, on),
             Run::SourceMixerHidden(id, on) => self.studio.set_source_mixer_hidden(id, on),
@@ -922,10 +923,7 @@ impl App {
                 self.studio.set_vertical_flags(flags);
             }
             Run::RemoveVertical => self.studio.remove_vertical(),
-            Run::AutoLayoutVertical(mode) => {
-                self.studio
-                    .send(studio_host::Command::AutoLayoutVertical(mode));
-            }
+            Run::AutoLayoutVertical(mode) => self.studio.auto_layout_vertical(mode),
             Run::VerticalSize(w, h) => self.studio.send(studio_host::Command::SetVerticalSize(
                 rbs_core::media::Size::new(w, h),
             )),

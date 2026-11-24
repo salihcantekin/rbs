@@ -25,6 +25,10 @@ pub struct SourceRow {
     pub item: ItemId,
     /// The picture this source is the "Capture audio too" companion of (ADR-0096).
     pub companion_of: Option<SourceId>,
+    /// The group its item is in, in its scene (ADR-0182).
+    pub group: Option<rbs_scene::GroupId>,
+    /// The name of that group; empty when the item is in none.
+    pub group_name: String,
     /// Width and height in pixels of its picture, as last seen while it ran (video
     /// sources, ADR-0058); `None` before it ran.
     pub picture: Option<(u32, u32)>,
@@ -222,6 +226,8 @@ impl PartialEq for SourceRow {
             && self.vertical_layout == other.vertical_layout
             && self.item == other.item
             && self.companion_of == other.companion_of
+            && self.group == other.group
+            && self.group_name == other.group_name
             && self.record_separately == other.record_separately
             && self.device_peers == other.device_peers
             && self.latency == other.latency

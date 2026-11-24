@@ -189,3 +189,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0179](0179-camera-background-removal.md) | Camera background removal: a video filter on a person matte: model spike first, then a `PersonMask` port with a GPU-native backend (OS backends where they exist); GPU-only default path, worker off the render thread | Accepted |
 | [0180](0180-the-toolbar-row-is-the-title-bar-on-macos.md) | The toolbar row is the title bar on macOS too, with the window buttons on the right as on Windows, behind one `WindowFrame` interface (amends ADR-0071 decision 3) | Accepted |
 | [0181](0181-one-rbs-at-a-time.md) | One RBS per settings folder on every system and with either close setting: an `instance.lock`, a second launch brings the running RBS forward and ends; several copies parked (amends ADR-0056, ADR-0051, ADR-0156) | Accepted |
+| [0182](0182-source-groups.md) | Sources can be grouped, and a group moves, resizes and hides as one | Accepted |

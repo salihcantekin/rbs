@@ -419,6 +419,8 @@ impl Shown<'_> {
     }
 }
 
+mod arrange;
+
 impl CommandState for Shown<'_> {
     fn enabled(&self, id: &CommandId) -> Result<(), Disabled> {
         let s = self.studio;
@@ -598,23 +600,13 @@ impl CommandState for Shown<'_> {
                     _ => Err("Say which Properties tab to open.".into()),
                 }
             }
-            "item.flip" | "item.rotate" | "item.align" | "item.fit" | "item.reset_transform" => {
-                self.running()?;
-                if id.param("canvas") == Some("vertical") {
-                    self.vertical_edited()?;
-                }
-                let f = self.source(id)?;
-                if !f.picture {
-                    return Err("The source has no picture.".into());
-                }
-                if f.locked {
-                    return Err("Unlock the source to change its transform.".into());
-                }
-                if matches!(id.base(), "item.fit" | "item.reset_transform") && !f.sized {
-                    return Err("The source has no picture yet.".into());
-                }
-                Ok(())
-            }
+            "item.flip"
+            | "item.rotate"
+            | "item.align"
+            | "item.fit"
+            | "item.reset_transform"
+            | "item.group"
+            | "item.ungroup" => self.arrange_enabled(id),
             "item.locked.toggle" => {
                 self.running()?;
                 if self.source(id)?.picture {
@@ -1850,6 +1842,8 @@ pub enum Run {
     /// Flip, turn, fit or centre the source with this id (ADR-0084), on this canvas
     /// (`canvas`, protocol 1.44), or without one on the canvas Properties edits.
     Transform(i32, TransformOp, Option<OutputCanvas>),
+    /// Group (`true`) or ungroup (`false`) the selected sources (ADR-0182).
+    Group(bool),
     /// Arrange the scene the vertical canvas shows (`canvas.auto_layout`).
     AutoLayoutVertical(rbs_api::request::VerticalLayout),
     /// The vertical canvas's size in pixels (`canvas.vertical_size`).
@@ -2189,20 +2183,9 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
         "source.active.toggle" => Run::SetSourceActive(state.source(&id).ok()?.id, !on),
         "item.visible.toggle" => Run::SourceVisible(state.source(&id).ok()?.id, !on),
         "item.locked.toggle" => Run::SourceLocked(state.source(&id).ok()?.id, !on),
-        "item.flip" => Run::Transform(
-            state.source(&id).ok()?.id,
-            match id.param("axis")? {
-                "horizontal" => TransformOp::FlipHorizontal,
-                "vertical" => TransformOp::FlipVertical,
-                _ => return None,
-            },
-            canvas_of(&id)?,
-        ),
-        "item.reset_transform" => Run::Transform(
-            state.source(&id).ok()?.id,
-            TransformOp::Reset,
-            canvas_of(&id)?,
-        ),
+        "item.flip" | "item.reset_transform" | "item.group" | "item.ungroup" => {
+            return arrange::run(&id, state);
+        }
         "source.muted.toggle" => Run::SourceMuted(state.source(&id).ok()?.id, !on),
         "source.mixer_hidden.toggle" => Run::SourceMixerHidden(state.source(&id).ok()?.id, !on),
         "source.monitor_solo.toggle" => Run::SourceSolo(state.source(&id).ok()?.id, !on),
