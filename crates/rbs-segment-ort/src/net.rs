@@ -50,7 +50,7 @@ pub fn spec_of(level: LevelId) -> Option<Spec> {
             level,
             net: Net::Rvm,
             model: "rvm-mobilenetv3-fp32",
-            gpu_ms: 7.3,
+            gpu_ms: 11.0,
             note: "best edges and hair, remembers earlier pictures",
         },
         _ => return None,
@@ -70,9 +70,10 @@ fn round32(v: u32) -> u32 {
     (((v + 16) / 32) * 32).max(32)
 }
 
-/// The downsample ratio RVM runs its backbone at: the long side about 256 pixels.
+/// The downsample ratio RVM runs its backbone at: the long side about 512 pixels (a smaller backbone
+/// loses a fast-moving hand: measured 2026-11-24).
 pub fn rvm_ratio(width: u32, height: u32) -> f32 {
-    (256.0 / width.max(height).max(1) as f32).min(1.0)
+    (512.0 / width.max(height).max(1) as f32).min(1.0)
 }
 
 /// Fills `out` (NCHW, RGB) with `bgra` of `sw` x `sh` resized bilinearly to `dw` x `dh`
@@ -133,7 +134,8 @@ mod tests {
         assert_eq!(input_dims(Net::Modnet, 384, 216), (384, 224));
         assert_eq!(input_dims(Net::Modnet, 5, 5), (32, 32));
         assert_eq!(input_dims(Net::Rvm, 512, 288), (512, 288));
-        assert!((rvm_ratio(512, 288) - 0.5).abs() < 1e-6);
+        assert!((rvm_ratio(512, 288) - 1.0).abs() < 1e-6);
+        assert!((rvm_ratio(1024, 576) - 0.5).abs() < 1e-6);
         assert!((rvm_ratio(200, 100) - 1.0).abs() < 1e-6);
     }
 

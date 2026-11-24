@@ -11,7 +11,7 @@
 //! | --- | --- | --- | --- |
 //! | Low | MediaPipe selfie segmentation | 256x256 | about 1.8 ms on an RTX 4090 |
 //! | Medium | MODNet (webcam) | the small picture, sides rounded to 32 | about 6.3 ms |
-//! | High | Robust Video Matting, MobileNetV3 | the small picture | about 7.3 ms, best edges |
+//! | High | Robust Video Matting, MobileNetV3 | the small picture | about 11 ms, best edges |
 //!
 //! Models are data, not code: a [`ModelSource`] lends their checked bytes, so a path from
 //! a scene document is never a model (spec rule 10).

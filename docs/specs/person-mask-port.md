@@ -120,7 +120,7 @@ Backends declare their levels; the UI shows each level's cost text built from `C
 | Backend (type id) | Low | Medium | High |
 | --- | --- | --- | --- |
 | `org.rbs.segment.apple-vision` (macOS) | fast, about 3 ms, Neural Engine | balanced, about 9 ms | accurate, about 30 ms |
-| `org.rbs.segment.onnx` (ONNX Runtime; DirectML on Windows; RTX 4090, 512x288 picture, 2026-11-24) | MediaPipe selfie, about 1.8 ms | MODNet, about 6.3 ms | Robust Video Matting, about 7.3 ms |
+| `org.rbs.segment.onnx` (ONNX Runtime; DirectML on Windows; RTX 4090, 512x288 picture, 2026-11-24) | MediaPipe selfie, about 1.8 ms | MODNet, about 6.3 ms | Robust Video Matting, about 11 ms (backbone at 512 pixels) |
 | GPU-native network (later) | to be measured | to be measured | to be measured |
 
 The ONNX backend needs two kinds of data the app does not bundle (ADR-0179 decision 8): the ONNX Runtime library (`<config>/runtime/onnxruntime/onnxruntime.dll` with DirectML, or `RBS_ONNXRUNTIME`) and the model files `<config>/models/person-mask/<name>.onnx` (`mediapipe-selfie-256`, `modnet-webcam`, `rvm-mobilenetv3-fp32`). The composition root lends a model only when its size and SHA-256 match its list (`rbs-app` `segment_models.rs`); the backend lists only the levels whose model is present and is unavailable without the library. The AMD iGPU is not measured yet. Licences: ONNX Runtime MIT, `ort` MIT or Apache-2.0, MediaPipe and MODNet Apache-2.0, RVM GPL-3.0.
