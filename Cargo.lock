@@ -3956,6 +3956,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-vision"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bfc194758a2d5d7540b1ad283bfb9ca318ec608991892326e95b428230b2689b"
+dependencies = [
+ "objc2 0.6.5",
+ "objc2-core-video",
+ "objc2-foundation 0.3.2",
+]
+
+[[package]]
 name = "oid-registry"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5557,6 +5568,19 @@ name = "rbs-segment"
 version = "0.0.1"
 dependencies = [
  "rbs-core",
+]
+
+[[package]]
+name = "rbs-segment-vision"
+version = "0.0.1"
+dependencies = [
+ "objc2 0.6.5",
+ "objc2-core-foundation",
+ "objc2-core-video",
+ "objc2-foundation 0.3.2",
+ "objc2-vision",
+ "rbs-core",
+ "rbs-segment",
 ]
 
 [[package]]
