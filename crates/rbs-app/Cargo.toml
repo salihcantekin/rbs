@@ -71,6 +71,8 @@ rbs-filters = { path = "../rbs-filters" }
 rbs-filters-segment = { path = "../rbs-filters-segment" }
 rbs-segment = { path = "../rbs-segment" }
 rbs-segment-vision = { path = "../rbs-segment-vision" }
+rbs-segment-ort = { path = "../rbs-segment-ort" }
+sha2 = "0.10"
 rbs-audio-filters = { path = "../rbs-audio-filters" }
 rbs-params = { path = "../rbs-params" }
 # CaptureError::Cancelled from OS pickers.

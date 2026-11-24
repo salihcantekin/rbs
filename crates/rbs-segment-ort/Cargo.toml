@@ -1,0 +1,23 @@
+[package]
+name = "rbs-segment-ort"
+description = "ONNX Runtime person segmentation backend for the RBS person mask port (DirectML on Windows)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rbs-core = { path = "../rbs-core" }
+rbs-segment = { path = "../rbs-segment" }
+
+# ONNX Runtime through its C API, loaded from a library file at run time (no download at
+# build time, nothing loaded until a session opens). MIT OR Apache-2.0.
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "load-dynamic", "ndarray"] }
+
+[target.'cfg(windows)'.dependencies]
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "load-dynamic", "ndarray", "directml"] }
+
+[lints]
+workspace = true
