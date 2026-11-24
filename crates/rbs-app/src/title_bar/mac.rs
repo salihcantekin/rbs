@@ -74,7 +74,7 @@ impl WindowFrame for Frame {
 
     fn press(&self, main: &MainWindow, button: Button) {
         let Some(v) = view(main) else {
-            return;
+            return super::toolkit_press(main, button);
         };
         titlebar::press(
             v,

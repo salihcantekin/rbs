@@ -6089,8 +6089,8 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             });
         });
     }
-    // The window buttons on Windows (ADR-0071).
-    title_bar::install_handlers(&main);
+    let c = ctx.clone(); // Full screen changes sync the menus (ADR-0180 decision 5).
+    title_bar::install_handlers(&main, move || c.update(|_| {}));
     {
         let ctx = ctx.clone();
         main.global::<Shell>().on_quit_keep(move || {

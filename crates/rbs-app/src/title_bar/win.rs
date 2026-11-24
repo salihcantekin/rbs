@@ -17,8 +17,11 @@ impl WindowFrame for Frame {
         attach_after_show(main);
     }
 
-    fn press(&self, _main: &MainWindow, button: Button) {
+    fn press(&self, main: &MainWindow, button: Button) {
         use rbs_app::win::caption::{Button as B, press};
+        if rbs_app::win::caption::window().is_none() {
+            return super::toolkit_press(main, button);
+        }
         press(match button {
             Button::Minimize => B::Minimize,
             Button::Maximize => B::Maximize,

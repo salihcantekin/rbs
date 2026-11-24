@@ -555,7 +555,7 @@ Source rows carry `kind` `image` and `color` for those picture sources. A client
 
 ### Protocol 1.105: main window commands (ADR-0180 decision 5)
 
-- **Methods** (`control`, client-scoped `ui.*`, in `UI_METHODS`; routed, so not in the schema): `ui.window.minimize`, `ui.window.zoom` (maximize, or restore a maximized window) and `ui.window.full_screen` (into full screen, or out of it: macOS's own full screen, borderless full screen on the window's display on Windows and Linux). No parameters, result `{}`. They act on that client's main window. A call that cannot act now succeeds and changes nothing: while the window is hidden (ADR-0056), and `minimize` or `zoom` in full screen.
+- **Methods** (`control`, client-scoped `ui.*`, in `UI_METHODS`; routed, so not in the schema): `ui.window.minimize`, `ui.window.zoom` (maximize, or restore a maximized window) and `ui.window.full_screen` (into full screen, or out of it: macOS's own full screen, borderless full screen on the window's display on Windows and Linux). No parameters, result `{}`. They act on that client's main window. A call that cannot act now succeeds and changes nothing: while the window is hidden (ADR-0056) or minimized, and `minimize` or `zoom` in full screen. Routing of `ui.*` methods is not built yet ([status](../status.md)): over the API this version is a contract only; the registry path (menus, shortcuts, `ui.command.run` inside the client) is built.
 - **Registry.** The same ids are registry entries: Window › Minimize and Maximize, View › Full screen (checked while full screen). Default keys on macOS only: Cmd+M and Ctrl+Cmd+F.
 - **Older clients and servers.** A 1.104 server answers these methods `method_not_found`. (1.104 is taken by another change in progress.)
 

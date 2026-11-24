@@ -4,7 +4,7 @@
 //! Linux keeps the OS title bar: its frame does nothing and the window buttons are
 //! never shown.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 use rbs_app::caption::Regions;
 use slint::ComponentHandle;
@@ -55,15 +55,19 @@ impl WindowCommand {
 }
 
 /// Whether `command` acts now (ADR-0180 decision 5): nothing while the main window
-/// is hidden (ADR-0056), and minimize and zoom do nothing in full screen, where their
-/// buttons are hidden. A call that does not act still succeeds.
-pub fn acts(command: WindowCommand, shown: bool, full_screen: bool) -> bool {
-    shown && (command == WindowCommand::FullScreen || !full_screen)
+/// is hidden (ADR-0056) or minimized (the system cannot restyle a minimized window
+/// reliably), and minimize and zoom do nothing in full screen, where their buttons are
+/// hidden. A call that does not act still succeeds.
+pub fn acts(command: WindowCommand, shown: bool, minimized: bool, full_screen: bool) -> bool {
+    shown && !minimized && (command == WindowCommand::FullScreen || !full_screen)
 }
 
 thread_local! {
     /// The main window is full screen, as its frame last reported.
     static FULL_SCREEN: Cell<bool> = const { Cell::new(false) };
+    /// Called when full screen changes, so the menus' checkmark follows a change the
+    /// system made later (macOS) or alone (Esc, the green button).
+    static ON_CHANGE: RefCell<Option<Box<dyn Fn()>>> = const { RefCell::new(None) };
 }
 
 /// Whether the main window is full screen (the Window menu's checkmark).
@@ -74,13 +78,20 @@ pub fn is_full_screen() -> bool {
 /// The frame reports full screen on or off: the menu's checkmark and the row's
 /// buttons follow it.
 fn note_full_screen(main: &MainWindow, on: bool) {
-    FULL_SCREEN.with(|f| f.set(on));
     main.global::<Shell>().set_window_full_screen(on);
+    if FULL_SCREEN.with(|f| f.replace(on)) != on {
+        ON_CHANGE.with(|c| {
+            if let Some(changed) = c.borrow().as_ref() {
+                changed();
+            }
+        });
+    }
 }
 
 /// Runs a window command on the main window.
 pub fn run(main: &MainWindow, command: WindowCommand) {
-    if !acts(command, main.window().is_visible(), is_full_screen()) {
+    let w = main.window();
+    if !acts(command, w.is_visible(), w.is_minimized(), is_full_screen()) {
         return;
     }
     let frame = current();
@@ -126,14 +137,21 @@ impl WindowFrame for OsFrame {
     fn attach_after_show(&self, _main: &MainWindow) {}
     /// The OS title bar has the buttons; the window commands use the toolkit's calls.
     fn press(&self, main: &MainWindow, button: Button) {
-        let w = main.window();
-        match button {
-            Button::Minimize => w.set_minimized(true),
-            Button::Maximize => w.set_maximized(!w.is_maximized()),
-            Button::Close => {}
-        }
+        toolkit_press(main, button);
     }
     fn set_regions(&self, _r: Regions) {}
+}
+
+/// Minimize and maximize through the toolkit: the frame of a system without RBS's own,
+/// and the fallback while RBS's frame is not attached (the OS title bar stayed). Close
+/// is the OS title bar's own there.
+fn toolkit_press(main: &MainWindow, button: Button) {
+    let w = main.window();
+    match button {
+        Button::Minimize => w.set_minimized(true),
+        Button::Maximize => w.set_maximized(!w.is_maximized()),
+        Button::Close => {}
+    }
 }
 
 /// The frame of this system.
@@ -152,8 +170,10 @@ pub fn current() -> &'static dyn WindowFrame {
     }
 }
 
-/// The window buttons and the regions the UI sends. Runs before the event loop.
-pub fn install_handlers(main: &MainWindow) {
+/// The window buttons and the regions the UI sends; `changed` runs when full screen
+/// begins or ends. Runs before the event loop.
+pub fn install_handlers(main: &MainWindow, changed: impl Fn() + 'static) {
+    ON_CHANGE.with(|c| *c.borrow_mut() = Some(Box::new(changed)));
     #[cfg(target_os = "macos")]
     rbs_app::native::titlebar::hide_system_full_screen_item();
     let weak = main.as_weak();
@@ -193,7 +213,15 @@ pub fn attach_after_show(main: &MainWindow) {
 pub fn events(main: &MainWindow) -> impl FnMut(&Window, &WindowEvent) -> EventResult + 'static {
     let weak = main.as_weak();
     move |w, e| match weak.upgrade() {
-        Some(main) => current().window_event(&main, w, e),
+        Some(main) => {
+            // Without a frame of RBS's own the window manager may end full screen
+            // itself; the toolkit's flag follows winit on every resize.
+            #[cfg(not(any(windows, target_os = "macos")))]
+            if matches!(e, WindowEvent::Resized(_)) {
+                note_full_screen(&main, w.is_fullscreen());
+            }
+            current().window_event(&main, w, e)
+        }
         None => EventResult::Propagate,
     }
 }
@@ -204,16 +232,21 @@ mod tests {
 
     #[test]
     fn a_window_command_acts_only_when_it_can() {
+        // acts(command, shown, minimized, full_screen)
         for c in [C::Minimize, C::Zoom, C::FullScreen] {
-            assert!(acts(c, true, false), "{c:?} on a shown window");
-            assert!(!acts(c, false, false), "{c:?} on a hidden window");
+            assert!(acts(c, true, false, false), "{c:?} on a shown window");
+            assert!(!acts(c, false, false, false), "{c:?} on a hidden window");
             assert!(
-                !acts(c, false, true),
+                !acts(c, false, false, true),
                 "{c:?} on a hidden full-screen window"
             );
+            assert!(!acts(c, true, true, false), "{c:?} on a minimized window");
         }
-        assert!(acts(C::FullScreen, true, true), "leaving full screen");
-        assert!(!acts(C::Minimize, true, true));
-        assert!(!acts(C::Zoom, true, true));
+        assert!(
+            acts(C::FullScreen, true, false, true),
+            "leaving full screen"
+        );
+        assert!(!acts(C::Minimize, true, false, true));
+        assert!(!acts(C::Zoom, true, false, true));
     }
 }

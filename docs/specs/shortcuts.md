@@ -90,7 +90,7 @@ Refused in every scope (as RBS chord text; on macOS `Ctrl` is Command and `Meta`
 
 | Platform | Reserved |
 | --- | --- |
-| macOS | Ctrl+Q, Ctrl+W, Ctrl+H, Ctrl+M, Ctrl+Comma, Ctrl+Tab, Ctrl+Space, Ctrl+Backquote, Ctrl+Alt+Escape, Ctrl+Meta+Q, Meta+Space, Meta+Left, Meta+Right, Meta+Up, Meta+Down |
+| macOS | Ctrl+Q, Ctrl+W, Ctrl+H, Ctrl+Comma, Ctrl+Tab, Ctrl+Space, Ctrl+Backquote, Ctrl+Alt+Escape, Ctrl+Meta+Q, Meta+Space, Meta+Left, Meta+Right, Meta+Up, Meta+Down |
 | Windows | every chord with Meta, Alt+F4, Alt+Tab, Alt+Shift+Tab, Alt+Space, Ctrl+Escape, Ctrl+Shift+Escape, F10, Shift+F10 |
 | Linux | every chord with Meta, Alt+F4, Alt+Tab, Alt+Shift+Tab, Alt+Space |
 
