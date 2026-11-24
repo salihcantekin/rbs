@@ -36,6 +36,8 @@ const STANDARD_BUTTONS: [usize; 3] = [0, 1, 2];
 const LEFT_MOUSE_DOWN: usize = 1;
 
 thread_local! {
+    /// The frame the main window had before RBS zoomed it, for the way back.
+    static UNZOOMED: Cell<Option<CGRect>> = const { Cell::new(None) };
     /// RBS's observer object, made once on the main thread and never freed.
     static OBSERVER: Cell<*mut AnyObject> = const { Cell::new(std::ptr::null_mut()) };
 }
@@ -378,13 +380,47 @@ pub fn press(ns_view: NonNull<c_void>, button: Button) {
             Button::Minimize => {
                 let _: () = msg_send![window, miniaturize: nil];
             }
-            Button::Zoom => {
-                let _: () = msg_send![window, zoom: nil];
-            }
+            Button::Zoom => zoom(window),
             Button::Close => {
                 let _: () = msg_send![window, performClose: nil];
             }
         }
+    }
+}
+
+/// Zooms `window` to its screen's visible area, or back to the frame it had, without
+/// AppKit's animation: during `zoom:`'s animated frame change the toolkit draws no new
+/// frame, so the old-size picture sat in the growing window with black around it
+/// (owner's Mac test, 2026-11-24). A window zoomed some other way (the Window menu,
+/// tiling) is restored by `zoom:` itself.
+///
+/// # Safety
+/// `window` is a live `NSWindow` of this process, on the main thread.
+unsafe fn zoom(window: &AnyObject) {
+    // SAFETY: getters and setters of a live window and its screen with their declared
+    // types (BOOL, NSRect, an NSScreen or nil); `zoom:` takes a nil sender.
+    unsafe {
+        let zoomed: bool = msg_send![window, isZoomed];
+        if zoomed {
+            match UNZOOMED.with(Cell::take) {
+                Some(frame) => {
+                    let _: () = msg_send![window, setFrame: frame, display: true, animate: false];
+                }
+                None => {
+                    let _: () = msg_send![window, zoom: std::ptr::null_mut::<AnyObject>()];
+                }
+            }
+            return;
+        }
+        let screen: *mut AnyObject = msg_send![window, screen];
+        let Some(screen) = screen.as_ref() else {
+            let _: () = msg_send![window, zoom: std::ptr::null_mut::<AnyObject>()];
+            return;
+        };
+        let target: CGRect = msg_send![screen, visibleFrame];
+        let frame: CGRect = msg_send![window, frame];
+        UNZOOMED.with(|u| u.set(Some(frame)));
+        let _: () = msg_send![window, setFrame: target, display: true, animate: false];
     }
 }
 
