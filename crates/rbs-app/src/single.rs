@@ -83,7 +83,11 @@ fn signal(folder: &Path) -> bool {
 }
 
 /// The message box of decision 4; English, like the app's other texts made in Rust.
+#[allow(clippy::disallowed_methods)] // Blocking dialog: see below.
 fn tell_no_answer() {
+    // The blocking dialog is allowed here: this runs first in `main`, before the event
+    // loop or any window exists, so there is no outer loop to nest in (ADR-0055), and
+    // the process ends right after it.
     #[cfg(any(target_os = "macos", windows))]
     {
         let _ = rfd::MessageDialog::new()
