@@ -34,6 +34,7 @@ pub mod thread;
 pub mod token;
 pub mod transport;
 pub mod types;
+pub mod ui;
 pub mod wake;
 
 pub use codec::{Codec, JsonCodec, RequestId};

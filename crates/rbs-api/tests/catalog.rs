@@ -6,7 +6,7 @@ use rbs_api::{Request, request::METHODS};
 use serde_json::json;
 
 #[test]
-fn every_wire_method_is_in_the_catalog_and_every_catalog_name_is_unique() {
+fn every_wire_method_is_declared_and_the_engine_catalogue_excludes_ui_methods() {
     // Serde's unknown-variant error includes the names from the derived wire enum,
     // independently of the manually constructed request fixtures.
     let error = serde_json::from_value::<Request>(json!({
@@ -22,7 +22,26 @@ fn every_wire_method_is_in_the_catalog_and_every_catalog_name_is_unique() {
     let wire: BTreeSet<_> = expected.split('`').skip(1).step_by(2).collect();
     let catalog: BTreeSet<_> = METHODS.iter().map(|m| m.name).collect();
     assert_eq!(catalog.len(), METHODS.len(), "duplicate catalog method");
-    assert_eq!(wire, catalog, "wire methods and catalog differ");
+    let routed: BTreeSet<_> = wire.difference(&catalog).copied().collect();
+    assert_eq!(
+        routed,
+        BTreeSet::from(["ui.command.list", "ui.command.run"])
+    );
+    assert!(
+        routed
+            .iter()
+            .all(|method| rbs_api::request::UI_METHODS.contains(method))
+    );
+    assert!(
+        catalog
+            .iter()
+            .all(|method| !rbs_api::request::UI_METHODS.contains(method))
+    );
+    assert_eq!(
+        wire,
+        catalog.union(&routed).copied().collect(),
+        "wire methods and declarations differ"
+    );
 }
 
 #[test]

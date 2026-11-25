@@ -19,6 +19,8 @@ use crate::wake::Wake;
 
 /// What the API thread needs besides the configuration.
 pub struct ApiOptions {
+    /// Registered desktop UI clients. Default: no UI routing destination.
+    pub ui: crate::ui::UiRouter,
     /// Transports to start (WebSocket, IPC).
     pub transports: Vec<Box<dyn ControlTransport>>,
     /// Samples latest-value topics; `None`: `audio.levels` sends nothing.
@@ -36,6 +38,7 @@ impl ApiOptions {
     /// control thread and audit records are dropped.
     pub fn new(control_waker: impl Fn() + Send + Sync + 'static) -> Self {
         Self {
+            ui: crate::ui::UiRouter::default(),
             transports: Vec::new(),
             sampler: None,
             control_waker: Box::new(control_waker),
@@ -104,6 +107,7 @@ impl std::fmt::Debug for TokenHandle {
 /// A running control API server. Dropping it stops the transports, closes every
 /// session and joins the API thread.
 pub struct ApiServer {
+    ui: crate::ui::UiRouter,
     shared: Arc<Shared>,
     inbox: TransportInbox,
     transports: Vec<Box<dyn ControlTransport>>,
@@ -119,6 +123,7 @@ impl ApiServer {
         options: ApiOptions,
     ) -> Result<(ApiServer, ControlEndpoint), TransportError> {
         let ApiOptions {
+            ui,
             transports,
             sampler,
             control_waker,
@@ -139,6 +144,7 @@ impl ApiServer {
         // send never fails or blocks while the API thread runs.
         let (forward_tx, forward_rx) = mpsc::channel();
         let (reply_tx, reply_rx) = mpsc::channel();
+        let (ui_tx, ui_rx) = mpsc::channel();
         let events = Arc::new(EventShared::new(wake.clone()));
         let endpoint = ControlEndpoint {
             requests: forward_rx,
@@ -154,6 +160,7 @@ impl ApiServer {
             rounds: AtomicU64::new(0),
         });
         let thread = {
+            let ui = ui.clone();
             let shared = shared.clone();
             let inbox = inbox.clone();
             std::thread::Builder::new()
@@ -162,6 +169,21 @@ impl ApiServer {
                     let mut dispatch = |server: &mut Server| {
                         while let Some(action) = server.next_action() {
                             match action {
+                                Action::Ui(call) => {
+                                    let sender = ui_tx.clone();
+                                    let wake = shared.wake.clone();
+                                    ui.route(
+                                        call,
+                                        crate::ui::UiResponder {
+                                            send: Arc::new(move |reply| {
+                                                if sender.send(reply).is_ok() {
+                                                    wake.signal();
+                                                }
+                                            }),
+                                            sent: Arc::new(AtomicBool::new(false)),
+                                        },
+                                    );
+                                }
                                 Action::Forward(f) => {
                                     // The control thread may be gone at shutdown.
                                     if forward_tx.send(f).is_ok() {
@@ -199,6 +221,10 @@ impl ApiServer {
                         while let Ok(reply) = reply_rx.try_recv() {
                             server.handle(Input::Reply(reply), now);
                         }
+                        while let Ok(resolved) = ui_rx.try_recv() {
+                            shared.apply_pending(&mut server);
+                            server.handle(Input::Ui(resolved), now);
+                        }
                         let drained = events.drain();
                         if !drained.is_empty() {
                             server.handle(Input::Events(drained), now);
@@ -214,6 +240,7 @@ impl ApiServer {
                 .map_err(|e| TransportError(format!("cannot start the API thread: {e}")))?
         };
         let mut api = ApiServer {
+            ui,
             shared,
             inbox,
             transports: Vec::new(),
@@ -230,6 +257,11 @@ impl ApiServer {
     /// revoked tokens are closed.
     pub fn set_tokens(&self, tokens: TokenStore) {
         self.token_handle().set(tokens);
+    }
+
+    /// The registration handle for the desktop clients of this server.
+    pub fn ui_router(&self) -> crate::ui::UiRouter {
+        self.ui.clone()
     }
 
     /// Replaces the token store and the AI tools flags.

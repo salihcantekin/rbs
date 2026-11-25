@@ -68,6 +68,7 @@ pub struct Harness {
     pub wires: Vec<(ConnectionId, Arc<Mutex<Wire>>)>,
     pub next_id: i64,
     pub forwarded: Vec<Forwarded>,
+    pub ui: Vec<rbs_api::ui::UiForwarded>,
     pub audit: Vec<AuditEvent>,
     pub masks: Vec<rbs_api::TopicSet>,
     pub inbox: rbs_api::TransportInbox,
@@ -101,6 +102,7 @@ impl Harness {
             wires: Vec::new(),
             next_id: 1,
             forwarded: Vec::new(),
+            ui: Vec::new(),
             audit: Vec::new(),
             masks: Vec::new(),
         }
@@ -206,6 +208,7 @@ impl Harness {
     pub fn collect(&mut self) {
         while let Some(a) = self.server.next_action() {
             match a {
+                Action::Ui(call) => self.ui.push(call),
                 Action::Forward(f) => self.forwarded.push(f),
                 Action::Audit(e) => self.audit.push(e),
                 Action::SetMask(m) => self.masks.push(m),

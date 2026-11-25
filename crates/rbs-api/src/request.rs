@@ -1871,24 +1871,8 @@ pub enum Request {
     Unsubscribe(Unsubscribe),
     /// A command for the control thread.
     Command(Command),
-}
-
-impl Request {
-    /// Its method name.
-    pub fn method(&self) -> &'static str {
-        match self {
-            Request::Hello(_) => "session.hello",
-            Request::Authenticate(_) => "session.authenticate",
-            Request::Describe => "api.describe",
-            Request::Unsubscribe(_) => "events.unsubscribe",
-            Request::Command(c) => c.method(),
-        }
-    }
-
-    /// The scope it needs, or `None` for the handshake.
-    pub fn scope(&self) -> Option<Scope> {
-        method_scope(self.method()).flatten()
-    }
+    /// A client-scoped UI request, outside the engine catalogue.
+    Ui(crate::ui::UiRequest),
 }
 
 impl Command {
@@ -2219,6 +2203,8 @@ impl std::fmt::Debug for TokenCreated {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum Response {
+    /// The targeted UI client's registry, separate from `api.describe`.
+    UiCommands(Vec<crate::ui::UiCommandInfo>),
     /// `session.hello`.
     Hello(HelloResult),
     /// `session.authenticate`.

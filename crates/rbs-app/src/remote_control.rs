@@ -84,6 +84,10 @@ pub struct NetworkOptions {
 }
 
 impl RemoteServer {
+    /// Register desktop clients without adding UI methods to the engine catalogue.
+    pub fn ui_router(&self) -> rbs_api::ui::UiRouter {
+        self.api.ui_router()
+    }
     /// Starts the API thread and listens on `addresses`, which must be loopback. The
     /// returned endpoint goes to the control thread. On failure nothing keeps running.
     pub fn start(

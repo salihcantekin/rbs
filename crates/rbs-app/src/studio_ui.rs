@@ -84,6 +84,7 @@ pub(crate) mod attributes;
 pub(crate) mod browser_props;
 mod crop_calls;
 pub(crate) mod destinations;
+mod external_commands;
 pub(crate) mod filters;
 mod item_calls;
 mod step_view;
@@ -323,7 +324,7 @@ pub struct StudioUi {
     /// The sources of other scenes the scene on air does not have (Add source).
     existing: Vec<(SourceId, String)>,
     /// The open Add source picker (ADR-0094 B1) and whether the dialog must be redrawn.
-    add_picker: Option<add_picker::AddPicker>,
+    pub(super) add_picker: Option<add_picker::AddPicker>,
     picker_dirty: bool,
     /// The font the font picker marks as current, and the ticket of the
     /// `text.fonts` question it waits on.
@@ -1463,60 +1464,6 @@ impl StudioUi {
                     .slot(ai_settings::union_store(&self.remote, &self.ai)),
             );
         }
-    }
-
-    /// Starts the API thread and attaches it to the control thread, with local IPC
-    /// when it can be served (so `rbs-cli token` changes reach this app at once).
-    /// False (the reason in `remote_failure`) when it did not start.
-    fn start_api(&mut self) -> bool {
-        let Some(host) = &self.host else {
-            return false;
-        };
-        // The sink is fixed while the server runs: AI tools records go to the forward,
-        // which keeps them only while AI tools are started (ADR-0134 decision 7).
-        let forward = self.ai_forward.clone();
-        let flags = self.slot_flags.clone();
-        let options = RemoteOptions {
-            control_waker: Box::new(host.api_waker()),
-            audit: Box::new(move |a| {
-                forward.record(&a, unix_now(), flags.ai_tools_started());
-                rbs_core::debug!(Area::Remote, "{a:?}");
-            }),
-            ipc: None,
-            levels: Some(host.level_feed()),
-        };
-        self.slot_flags.set(self.ai_started, self.remote.enabled);
-        let slot = self
-            .slot_flags
-            .slot(ai_settings::union_store(&self.remote, &self.ai));
-        let (mut server, endpoint) = match RemoteServer::start_api(slot, options) {
-            Ok(started) => started,
-            Err(e) => {
-                rbs_core::error!(Area::Remote, "did not start: {e}");
-                self.remote_failure = Some(format!("Remote control did not start: {e}"));
-                return false;
-            }
-        };
-        match rbs_api_ipc::Endpoint::for_current_user() {
-            Ok(e) => {
-                let shown = e.to_string();
-                match server.start_ipc(e) {
-                    Ok(()) => rbs_core::info!(Area::Remote, "local IPC at {shown}"),
-                    Err(why) => {
-                        rbs_core::warn!(Area::Remote, "no local IPC: {why}")
-                    }
-                }
-            }
-            Err(why) => {
-                rbs_core::warn!(Area::Remote, "no local IPC endpoint: {why}")
-            }
-        }
-        host.attach_api(
-            endpoint,
-            Some(server.api_tokens(self.config.clone(), self.slot_flags.clone())),
-        );
-        self.remote_server = Some(server);
-        true
     }
 
     /// The TLS identity and settings for network access when it is on, made or renewed
@@ -7959,7 +7906,7 @@ fn rgb_hex(s: &str) -> Option<[u8; 3]> {
 /// media source `id`, as the rows show them.
 #[cfg(test)]
 #[allow(clippy::unwrap_used)] // Tests fail by panicking.
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::cell::RefCell;
 
@@ -8472,7 +8419,7 @@ mod tests {
         assert_eq!((c.value.as_str(), c.bad), ("Not connected", true));
     }
 
-    pub(super) fn ui(name: &str) -> (StudioUi, std::path::PathBuf) {
+    pub(crate) fn ui(name: &str) -> (StudioUi, std::path::PathBuf) {
         let d = std::env::temp_dir().join(format!("rbs-app-ui-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
