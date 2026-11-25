@@ -3381,15 +3381,8 @@ fn install_app_menu(g: &AppMenus<'_>, ctx: &Ctx) {
                 .map(Into::into)
                 .collect();
             g.set_categories(ModelRc::new(VecModel::from(cats)));
-            let chips: Vec<AppMenuChip> = app_menu::profiles(&shown)
-                .into_iter()
-                .map(|(title, id, current)| AppMenuChip {
-                    title: title.into(),
-                    id: id.into(),
-                    current,
-                })
-                .collect();
-            g.set_profiles(ModelRc::new(VecModel::from(chips)));
+            g.set_profile_picker(app_menu::picker_at(&shown, "profile.select"));
+            g.set_collection_picker(app_menu::picker_at(&shown, "collection.select"));
             g.set_search_shortcut(keys.label("ui.app_menu.open").unwrap_or_default().into());
             g.set_settings_shortcut(keys.label("ui.settings.open").unwrap_or_default().into());
         })

@@ -964,11 +964,11 @@ export struct AppMenuRow {
     down: int,
 }
 
-// An Output profile chip in the bottom row.
-export struct AppMenuChip {
-    title: string,
-    id: string,
-    current: bool,
+// Where a picker of the bottom row (Output profile, Scene collection) opens: its menu
+// (`category`, -1: in no menu) and its row there (`picker`).
+export struct AppMenuPicker {
+    category: int,
+    picker: string,
 }
 
 export global AppMenus {
@@ -980,11 +980,13 @@ export global AppMenus {
     in-out property <int> category;
     // The menus, in menu bar order (refreshed when the menu opens).
     in-out property <[string]> categories;
-    in-out property <[AppMenuChip]> profiles;
+    // The bottom row's Output profile and Scene collection pickers.
+    in-out property <AppMenuPicker> profile-picker: { category: -1 };
+    in-out property <AppMenuPicker> collection-picker: { category: -1 };
     // The shortcuts of the search command and of Settings, or "".
     in-out property <string> search-shortcut;
     in-out property <string> settings-shortcut;
-    // Fills `categories`, `profiles` and the shortcuts.
+    // Fills `categories`, the pickers and the shortcuts.
     callback prepare();
     // The rows of menu `category`, of the picker `picker` when it is not "", or the
     // search results for `query` when it is not blank.

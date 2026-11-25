@@ -1,13 +1,13 @@
 // The RBS menu (spec `ui-design-system.md`, "RBS menu"; mockup G's app menu): a
 // flyout from the RBS button with a search field, the menus as a column of
-// categories, the chosen menu's items in sections, the Output profiles as chips and
-// Settings. Every item is a command registry id (ADR-0050); Rust builds the rows
+// categories, the chosen menu's items in sections, the Output profile and Scene
+// collection in use and Settings. Every item is a command registry id (ADR-0050); Rust builds the rows
 // (`app_menu.rs`) when the menu opens or its view changes, so nothing is computed
 // while it is closed (P13).
 import { Theme, Tokens } from "tokens.slint";
 import { ScrollArea, Button, Icon, ListRow, MenuSurface } from "components.slint";
-import { AppMenuRow, AppMenuChip, AppMenus, IconName, Icons, OverlayCover, ContextMenus } from "base/types.slint";
-export { AppMenuRow, AppMenuChip, AppMenus }
+import { AppMenuRow, AppMenuPicker, AppMenus, IconName, Icons, OverlayCover, ContextMenus, Studio } from "base/types.slint";
+export { AppMenuRow, AppMenuPicker, AppMenus }
 
 // A category (one menu) in the left column.
 component CategoryRow inherits Rectangle {
@@ -76,12 +76,14 @@ component ItemRow inherits Rectangle {
     }
 }
 
-// A chip in the bottom row: an Output profile, a dense Button checked while in use.
-component Chip inherits Button {
-    in property <bool> current;
+// A picker in the bottom row: the Output profile or Scene collection in use, a dense
+// ghost Button with its icon; a click opens its choices in the item column.
+component PickerButton inherits Button {
+    in property <string> label;
+    kind: "ghost";
     dense: true;
-    checked: current;
-    accessible-name: @tr("Output profile {}", self.text);
+    tooltip: label;
+    accessible-name: @tr("{}: {}", label, self.text);
 }
 
 // The flyout. The owner places it under the RBS button and shows it.
@@ -146,6 +148,16 @@ export component AppMenu inherits Rectangle {
         AppMenus.category = i;
         picker = "";
         query.text = "";
+        refresh();
+    }
+    // Shows a picker's choices in the item column, its menu chosen in the categories.
+    function open-picker(p: AppMenuPicker) {
+        if p.category < 0 { return; }
+        column = 0;
+        category = p.category;
+        AppMenus.category = p.category;
+        query.text = "";
+        picker = p.picker;
         refresh();
     }
     function activate(i: int) {
@@ -322,18 +334,24 @@ export component AppMenu inherits Rectangle {
                     padding-left: Tokens.space-3;
                     padding-right: Tokens.space-2;
                     spacing: Tokens.space-2;
-                    if AppMenus.profiles.length > 0: Text {
-                        text: @tr("Profiles:");
-                        color: Theme.text-secondary;
-                        font-size: Tokens.type-caption-size;
-                        vertical-alignment: center;
-                    }
-                    for p in AppMenus.profiles: VerticalLayout {
+                    if Studio.profile-name != "": VerticalLayout {
                         alignment: center;
-                        Chip {
-                            text: p.title;
-                            current: p.current;
-                            clicked => { AppMenus.run(p.id); AppMenus.open = false; }
+                        PickerButton {
+                            lead: IconName.sliders;
+                            label: @tr("Output profile");
+                            text: Studio.profile-name;
+                            enabled: AppMenus.profile-picker.category >= 0;
+                            clicked => { root.open-picker(AppMenus.profile-picker); }
+                        }
+                    }
+                    if Studio.collection-name != "": VerticalLayout {
+                        alignment: center;
+                        PickerButton {
+                            lead: IconName.folder;
+                            label: @tr("Scene collection");
+                            text: Studio.collection-name;
+                            enabled: AppMenus.collection-picker.category >= 0;
+                            clicked => { root.open-picker(AppMenus.collection-picker); }
                         }
                     }
                     Rectangle { horizontal-stretch: 1; }

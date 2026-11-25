@@ -3,7 +3,7 @@
 //! `ui/app_menu.slint`. Built when the menu opens or its view changes, never while it
 //! is closed (P13).
 
-use rbs_ui::command::{AppRow, CommandId, CommandState, MenuItem, app_menu, search};
+use rbs_ui::command::{AppRow, CommandState, MenuItem, app_menu, search};
 
 /// What a row is (`AppMenuRow.kind`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -197,26 +197,39 @@ fn rows_of(
         .collect()
 }
 
-/// The Output profiles as `(title, id to run, current)`: the choices of
-/// `profile.select` (the bottom row's chips).
-pub fn profiles(state: &dyn CommandState) -> Vec<(String, String, bool)> {
-    let Ok(id) = CommandId::plain("profile.select") else {
-        return Vec::new();
-    };
-    state
-        .choices(&id)
+/// Where the picker `base` (`profile.select`) is in the RBS menu, as
+/// `(category, row)` for [`rows`]' `picker`: the bottom row's buttons open it.
+pub fn picker_of(state: &dyn CommandState, base: &str) -> Option<(usize, usize)> {
+    app_menu(state)
         .into_iter()
-        .filter_map(|(title, value, current)| {
-            let run = CommandId::with_params("profile.select", &[("id", &value)]).ok()?;
-            Some((title, run.to_string(), current))
+        .enumerate()
+        .find_map(|(category, (_, rows))| {
+            rows.into_iter()
+                .position(|row| {
+                    matches!(row, AppRow::Item(MenuItem::Choices { choices, .. })
+                    if choices.iter().any(|c| c.1.base() == base))
+                })
+                .map(|at| (category, at))
         })
-        .collect()
+}
+
+/// [`picker_of`] as the menu's `AppMenuPicker` takes it: category -1 when the picker
+/// is in no menu.
+pub fn picker_at(state: &dyn CommandState, base: &str) -> crate::ui::AppMenuPicker {
+    let (category, at) = picker_of(state, base)
+        .and_then(|(category, at)| Some((i32::try_from(category).ok()?, at.to_string())))
+        .unwrap_or((-1, String::new()));
+    crate::ui::AppMenuPicker {
+        category,
+        picker: at.into(),
+    }
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)] // Tests fail by panicking.
 mod tests {
     use super::*;
+    use rbs_ui::command::CommandId;
 
     struct State;
 
@@ -323,11 +336,12 @@ mod tests {
     }
 
     #[test]
-    fn profiles_run_their_choice() {
-        let p = profiles(&State);
-        assert_eq!(
-            p[1],
-            ("Podcast".into(), "profile.select?id=p2".into(), false)
-        );
+    fn the_profile_picker_opens_its_choices() {
+        let (category, at) = picker_of(&State, "profile.select").unwrap();
+        let r = rows(&State, category, &at.to_string(), "", &none);
+        assert_eq!(r[0].kind, Kind::Back);
+        assert_eq!(r[1].id, "profile.select?id=p1");
+        assert!(r[1].checked);
+        assert_eq!(picker_of(&State, "no.such"), None);
     }
 }

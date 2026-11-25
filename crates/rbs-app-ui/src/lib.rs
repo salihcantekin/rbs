@@ -19,7 +19,7 @@ macro_rules! reexport {
         pub use $main::{FloatWindow, MainWindow};
         pub use $settings::SettingsWindow;
         pub use $types::{
-            AddOnRowData, AiActionRow, AppMenuChip, AppMenuRow, AppMenus, Appearance,
+            AddOnRowData, AiActionRow, AppMenuPicker, AppMenuRow, AppMenus, Appearance,
             AttributeGroupRow, AttributeTargetRow, AttributesData, BrowserData, ContextChoice,
             ContextItem, ContextMenus, Cover, DestinationRow, EdgeTabData, EncoderData, EntryRow,
             Experience, FilterData, FilterFieldData, FilterLevels, FocusReveal, HandleData,
