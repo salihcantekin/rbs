@@ -43,7 +43,7 @@ pub(super) struct Setup {
 
 /// The helper thread's handle. Dropping it ends the thread.
 pub(super) struct Readback {
-    sender: Option<mpsc::Sender<Job>>,
+    sender: Option<mpsc::SyncSender<Job>>,
     stop: Arc<AtomicBool>,
 }
 
@@ -53,7 +53,9 @@ impl Readback {
     /// # Errors
     /// The thread could not be started.
     pub(super) fn start(setup: Setup) -> Result<Self, NodeError> {
-        let (sender, receiver) = mpsc::channel::<Job>();
+        // Bounded by the staging ring (a job exists only for a busy slot), so `try_send`
+        // never allocates on the render thread.
+        let (sender, receiver) = mpsc::sync_channel::<Job>(RING);
         let stop = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&stop);
         std::thread::Builder::new()
@@ -69,7 +71,7 @@ impl Readback {
     /// Hands a queued readback over. Never blocks.
     pub(super) fn send(&self, job: Job) {
         if let Some(sender) = &self.sender {
-            let _ = sender.send(job);
+            let _ = sender.try_send(job);
         }
     }
 }

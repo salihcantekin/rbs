@@ -94,7 +94,7 @@ pub trait PersonMaskSession: Send {
     /// `DeviceLost`, `ModelLoadFailed`.
     fn warm(&mut self) -> Result<(), SegmentError>;
 
-    /// Render thread, non-blocking: hands over a frame. The session may drop it when it
+    /// Render thread or the filter's readback thread, non-blocking: hands over a frame. The session may drop it when it
     /// is busy (the newest frame wins) and never queues more than one pending frame.
     fn submit(&mut self, frame: &VideoFrame) -> SubmitOutcome;
 
