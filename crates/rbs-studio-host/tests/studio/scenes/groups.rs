@@ -52,6 +52,11 @@ fn groups_are_made_listed_renamed_ungrouped_and_undone_one_step_each() {
         "invalid_params"
     );
     assert_eq!(
+        kind(&c.call("group.create", json!({"scene": scene, "items": [ia, ic]}))),
+        "conflict"
+    );
+    assert_eq!(in_group(&mut c), 2);
+    assert_eq!(
         kind(&c.call(
             "group.rename",
             json!({"scene": scene, "group": 99, "name": "x"})
@@ -223,6 +228,74 @@ fn items_are_aligned_and_distributed_as_one_undo_step() {
     assert_eq!(
         kind(&c.call("item.align_items", json!({"items": items, "edge": "left"}))),
         "conflict"
+    );
+    drop(host);
+}
+
+/// `group.get` and `group.apply` are routed: a duration set on the group is one undo
+/// step for every member, and refusals change nothing.
+#[test]
+fn group_get_and_apply_act_on_every_member() {
+    let Some((host, _updates, _api, mut c)) = start() else {
+        return;
+    };
+    let a = add(&mut c, "screen", "A");
+    let b = add(&mut c, "screen", "B");
+    let scene = scenes(&mut c)["program"].as_u64().unwrap();
+    let items: Vec<u64> = [a, b]
+        .iter()
+        .map(|s| {
+            rows(&mut c, scene)
+                .iter()
+                .find(|r| r["id"] == *s)
+                .and_then(|r| r["item"].as_u64())
+                .unwrap()
+        })
+        .collect();
+    let made = c.call("group.create", json!({"scene": scene, "items": items}));
+    let group = ok(&made)["group"].as_u64().unwrap();
+    let durations = |c: &mut Client| -> Vec<Value> {
+        let got = c.call("group.get", json!({"scene": scene, "group": group}));
+        ok(&got)["members"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["show_for_ms"].clone())
+            .collect()
+    };
+    assert_eq!(durations(&mut c), vec![Value::Null, Value::Null]);
+    let apply = |c: &mut Client, items: &[u64], operation: Value| {
+        c.call(
+            "group.apply",
+            json!({"scene": scene, "group": group, "items": items, "operation": operation}),
+        )
+    };
+    ok(&apply(
+        &mut c,
+        &items,
+        json!({"type": "set_show_for", "show_for_ms": 4000}),
+    ));
+    assert_eq!(durations(&mut c), vec![json!(4000), json!(4000)]);
+    ok(&c.call("edit.undo", json!({})));
+    assert_eq!(durations(&mut c), vec![Value::Null, Value::Null]);
+
+    assert_eq!(
+        kind(&apply(
+            &mut c,
+            &items[..1],
+            json!({"type": "set_show_for", "show_for_ms": 10})
+        )),
+        "conflict",
+        "stale members"
+    );
+    assert_eq!(
+        kind(&apply(&mut c, &items, json!({"type": "scroll_pause"}))),
+        "invalid_params",
+        "no saved group Scroll"
+    );
+    assert_eq!(
+        kind(&c.call("group.get", json!({"scene": scene, "group": 99}))),
+        "not_found"
     );
     drop(host);
 }

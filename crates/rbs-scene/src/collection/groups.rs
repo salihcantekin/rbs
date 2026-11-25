@@ -7,8 +7,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::{NextIds, Op, SceneCollection, SceneError, Undo, check_name, issue};
-use crate::model::{Group, GroupId, ItemId, Scene, SceneId, SceneItem};
+use super::{NextIds, Op, SceneCollection, SceneError, Undo, allowed_on, check_name, issue};
+use crate::model::{CanvasId, Group, GroupId, GroupScroll, ItemId, Scene, SceneId, SceneItem};
 
 /// Copies a scene's groups under fresh ids and points the copied `items` at them
 /// (ADR-0182: a copy never shares a group with the original).
@@ -25,6 +25,7 @@ pub(super) fn copy_groups(
         out.push(Group {
             id,
             name: g.name.clone(),
+            scrolls: g.scrolls.clone(),
         });
     }
     for i in items {
@@ -93,13 +94,121 @@ pub(super) fn validate_scene(scene: &Scene) -> Result<(), SceneError> {
 }
 
 impl SceneCollection {
+    pub(super) fn validate_group_scrolls(&self, scene: &Scene) -> Result<(), SceneError> {
+        for group in &scene.groups {
+            for (&canvas, scroll) in &group.scrolls {
+                self.get_canvas(canvas)?;
+                if !allowed_on(scene.scope, canvas) {
+                    return Err(SceneError::ScopeViolation(scene.id));
+                }
+                if !scroll.is_valid() {
+                    return Err(SceneError::InvalidLayout);
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// The groups of `scene`, in creation order.
     pub fn groups(&self, scene: SceneId) -> Result<&[Group], SceneError> {
         Ok(&self.get_scene(scene)?.groups)
     }
 
-    /// Groups `items` of `scene` (ADR-0182 decision 5). Any group among them is merged
-    /// into the new one with all its members. The members move next to the topmost
+    /// Sets the timed-show duration of exactly the expected group members as one edit.
+    /// Membership is compared as a set; duplicate or stale ids are refused.
+    pub fn set_group_show_for(
+        &mut self,
+        scene: SceneId,
+        group: GroupId,
+        expected_members: &[ItemId],
+        show_for_ms: Option<u32>,
+    ) -> Result<Undo, SceneError> {
+        let s = self.get_scene(scene)?;
+        if !s.groups.iter().any(|g| g.id == group) {
+            return Err(SceneError::UnknownGroup(group));
+        }
+        let expected: BTreeSet<_> = expected_members.iter().copied().collect();
+        let actual: BTreeSet<_> = s
+            .items
+            .iter()
+            .filter(|i| i.group == Some(group))
+            .map(|i| i.id)
+            .collect();
+        if expected.len() != expected_members.len() || expected != actual {
+            return Err(SceneError::UndoConflict);
+        }
+        if !crate::model::show_for_is_valid(show_for_ms) {
+            return Err(SceneError::InvalidShowFor);
+        }
+        let old = s.items.clone();
+        let mut new = old.clone();
+        for item in &mut new {
+            if item.group == Some(group) {
+                item.show_for_ms = show_for_ms;
+            }
+        }
+        self.apply(Op::SetSceneItems {
+            scene,
+            expected: old,
+            new,
+        })
+    }
+
+    /// Replaces the saved Scroll for one canvas in a single undoable edit.
+    pub fn set_group_scroll(
+        &mut self,
+        scene: SceneId,
+        group: GroupId,
+        expected_members: &[ItemId],
+        canvas: CanvasId,
+        scroll: Option<GroupScroll>,
+    ) -> Result<Undo, SceneError> {
+        self.get_canvas(canvas)?;
+        let s = self.get_scene(scene)?;
+        if !super::allowed_on(s.scope, canvas) {
+            return Err(SceneError::ScopeViolation(scene));
+        }
+        if scroll.is_some_and(|s| !s.is_valid()) {
+            return Err(SceneError::InvalidLayout);
+        }
+        let expected = s.groups.clone();
+        let mut new = expected.clone();
+        let target = new
+            .iter_mut()
+            .find(|g| g.id == group)
+            .ok_or(SceneError::UnknownGroup(group))?;
+        let wanted: BTreeSet<_> = expected_members.iter().copied().collect();
+        let actual: BTreeSet<_> = s
+            .items
+            .iter()
+            .filter(|i| i.group == Some(group))
+            .map(|i| i.id)
+            .collect();
+        if wanted.len() != expected_members.len() || wanted != actual {
+            return Err(SceneError::UndoConflict);
+        }
+        if let Some(scroll) = scroll {
+            target.scrolls.insert(canvas, scroll);
+        } else {
+            target.scrolls.remove(&canvas);
+        }
+        let items = s.items.clone();
+        self.apply(Op::Batch(vec![
+            Op::SetSceneItems {
+                scene,
+                expected: items.clone(),
+                new: items,
+            },
+            Op::SetGroups {
+                scene,
+                expected,
+                new,
+            },
+        ]))
+    }
+
+    /// Groups ungrouped `items` of `scene` (ADR-0186), including uniquely placed
+    /// companion sound items. The members move next to the topmost
     /// one, keeping their order; other items keep theirs. `name` defaults to the first
     /// free "Group N". `UnknownItem` for an item that does not exist, `GroupScope` for
     /// one in another scene, `GroupTooSmall` for fewer than two distinct items.
@@ -110,6 +219,9 @@ impl SceneCollection {
         name: Option<&str>,
     ) -> Result<(GroupId, Undo), SceneError> {
         let s = self.get_scene(scene)?.clone();
+        if let Some(name) = name {
+            check_name(name.trim())?;
+        }
         let mut wanted = BTreeSet::new();
         for id in items {
             let owner = self
@@ -122,20 +234,43 @@ impl SceneCollection {
             }
             wanted.insert(*id);
         }
-        // Groups among the items merge: all their members join.
-        let merged: BTreeSet<GroupId> = s
-            .items
-            .iter()
-            .filter(|i| wanted.contains(&i.id))
-            .filter_map(|i| i.group)
-            .collect();
-        for i in &s.items {
-            if i.group.is_some_and(|g| merged.contains(&g)) {
-                wanted.insert(i.id);
-            }
-        }
         if wanted.len() < 2 {
             return Err(SceneError::GroupTooSmall(GroupId(0)));
+        }
+        let selected = wanted.clone();
+        for item in s.items.iter().filter(|i| selected.contains(&i.id)) {
+            let crate::model::ItemContent::Source(picture) = item.content else {
+                continue;
+            };
+            let companions: Vec<_> = s
+                .items
+                .iter()
+                .filter(|candidate| {
+                    let crate::model::ItemContent::Source(source) = candidate.content else {
+                        return false;
+                    };
+                    self.source(source)
+                        .is_some_and(|source| source.companion_of() == Some(picture))
+                })
+                .collect();
+            if !companions.is_empty() {
+                let pictures = s
+                    .items
+                    .iter()
+                    .filter(|i| i.content == crate::model::ItemContent::Source(picture))
+                    .count();
+                if pictures != 1 || companions.len() != 1 {
+                    return Err(SceneError::AmbiguousCompanion);
+                }
+                wanted.insert(companions[0].id);
+            }
+        }
+        if let Some(item) = s
+            .items
+            .iter()
+            .find(|i| wanted.contains(&i.id) && i.group.is_some())
+        {
+            return Err(SceneError::ItemAlreadyGrouped(item.id));
         }
         let mut next = self.next.clone();
         let id = GroupId(super::issue(&mut next.group)?);
@@ -169,13 +304,8 @@ impl SceneCollection {
                 ordered.push(item.clone());
             }
         }
-        let mut groups: Vec<Group> = s
-            .groups
-            .iter()
-            .filter(|g| !merged.contains(&g.id))
-            .cloned()
-            .collect();
-        groups.push(Group { id, name });
+        let mut groups = s.groups.clone();
+        groups.push(Group::new(id, &name));
         let ops = vec![
             Op::SetSceneItems {
                 scene,

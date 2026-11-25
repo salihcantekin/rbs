@@ -7,7 +7,7 @@ use super::{Host, Refusal};
 use crate::edit_history::EditKind;
 
 impl Host {
-    fn group_scene(&self, scene: SceneId) -> Result<(), Refusal> {
+    pub(super) fn group_scene(&self, scene: SceneId) -> Result<(), Refusal> {
         if self.listed(scene) {
             Ok(())
         } else {
@@ -18,7 +18,7 @@ impl Host {
         }
     }
 
-    fn group_name(&self, scene: SceneId, group: GroupId) -> Result<String, Refusal> {
+    pub(super) fn group_name(&self, scene: SceneId, group: GroupId) -> Result<String, Refusal> {
         self.collection
             .groups(scene)
             .map_err(|e| Refusal::of(&e))?
@@ -41,11 +41,18 @@ impl Host {
         {
             return Err(Refusal::Invalid("A group needs a name.".to_owned()));
         }
-        let (id, undo) = self
-            .collection
+        let mut draft = self.collection.clone();
+        let (id, undo) = draft
             .group_items(scene, items, name)
             .map_err(|e| Refusal::of(&e))?;
-        let name = self.group_name(scene, id)?;
+        let name = draft
+            .groups(scene)
+            .map_err(|e| Refusal::of(&e))?
+            .iter()
+            .find(|group| group.id == id)
+            .map(|group| group.name.clone())
+            .ok_or_else(|| Refusal::Failed("The new group is unavailable.".to_owned()))?;
+        self.collection = draft;
         self.edits
             .history
             .record(EditKind::Group, &name, 0, vec![undo]);
@@ -56,10 +63,9 @@ impl Host {
     pub(super) fn ungroup(&mut self, scene: SceneId, group: GroupId) -> Result<(), Refusal> {
         self.group_scene(scene)?;
         let name = self.group_name(scene, group)?;
-        let undo = self
-            .collection
-            .ungroup(scene, group)
-            .map_err(|e| Refusal::of(&e))?;
+        let mut draft = self.collection.clone();
+        let undo = draft.ungroup(scene, group).map_err(|e| Refusal::of(&e))?;
+        self.collection = draft;
         self.edits
             .history
             .record(EditKind::Ungroup, &name, 0, vec![undo]);

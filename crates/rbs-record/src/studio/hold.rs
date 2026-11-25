@@ -207,7 +207,7 @@ pub(super) struct HoldRun {
     since: Timestamp,
     frames_at: u64,
     /// Its compositor once bound and adopted.
-    view: Option<HoldView>,
+    pub(super) view: Option<HoldView>,
     /// Its hold mixer once bound and adopted ([`HoldSound::Scene`] with audio on).
     mixer: Option<HoldMix>,
     /// Set when it fell back: the binder no longer binds it.

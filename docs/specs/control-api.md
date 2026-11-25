@@ -107,6 +107,12 @@ Event topics declare a scope the same way: `settings.changed` carries recording 
 
 Protocol version `major.minor`, independent of the `rbs-api` crate's semver. Minor: new methods, event topics, optional request fields, response fields, enum values in responses, error kinds. Major: removing or renaming anything, changing a type or meaning, a new required request field. Clients ignore unknown response fields and treat unknown enum values and error kinds generically. The server supports the current and the previous major for at least one release cycle (P9). A CI tool compares the generated schema with the checked-in one, classifies each difference, and fails unless the version bump matches. A new value of an existing request field, which an older server refuses with `invalid_params`, is minor too (ADR-0111): a client checks the protocol version before sending it. When such a value selects another answer shape, the method's answer schema becomes a `oneOf` of the shapes, selected by the request, and the classifier counts an added `oneOf` branch as minor. Exception (ADR-0098, owner-accepted): the preview outcome of `canvas.transition` is defined by the app's setting; protocol 1.31 documents its default change from swap to keep. Exception (ADR-0151 decision 7, owner-accepted): what leaving studio mode does to a held scene changes in protocol 1.92, a minor version. Exception (ADR-0153 decision 5, owner-accepted): from protocol 1.97 the collection's transition `kind` applies only in studio mode; outside it a program change uses `direct_kind` (default Move), a minor version.
 
+Exception (ADR-0186, owner-approved): from protocol 1.108 `group.create`
+refuses regrouping and expands uniquely placed companion sounds, and a new
+companion add is refused when the picture source has multiple placements.
+Exception (ADR-0188, owner-approved): from protocol 1.109 scenes cannot be
+placed inside other scenes.
+
 ## Exposure and limits
 
 - Off by default. When off, no server exists: no thread, socket, timer or event buffer (ADR-0013 rule 1).
@@ -184,7 +190,7 @@ Everything a user can do in the desktop app must be doable through this API, wit
 - `scene.*`, `canvas.*` and the remaining `source.*` methods for the scene model's operations.
 - `edit.apply {label, operations}` (`control`): a list of undoable scene operations only, validated as a whole, applied all or none, recorded as one undo step named `label`; waits for the serialisable scene operation type.
 - An `effect` per method in the schema: `read`, `edit` (undoable, or reversed by another call with nothing lost, or only adds a new file and never replaces one: `project.export`, `replay.save`; owner 2026-11-15; or only adds an add-on version and never removes or replaces one with a marker: `addon.install`, ADR-0145), `live` (record, stream and virtual camera start and stop, `profile.switch`) or `destructive` (removes something outside the undo history). Clients such as `rbs-mcp` ([MCP server spec](mcp-server.md)) turn it into tool annotations; a client treats a missing or unknown effect as `destructive`.
-- A per-token permission, "Allow actions that cannot be undone". Without it, `live` and `destructive` methods, `edit` methods (undo, redo, program switch and `collection.switch` included) that change what is on air (for a canvas with any active output: its format, everything reachable from its program scene, nested scenes, shared sources and filters included, and its audio mix), adding or re-addressing a source of a type that opens network connections, and any location field (paths and URLs in source settings, recording folders, `record.start_to_file`, import and export paths; marked in the schema) whose value is not a local absolute file system path (URL schemes, UNC and `\\?\UNC` paths, device paths), are refused; a source type that does not declare itself local-only, with its location fields, counts as network with a new error kind `not_permitted` (code -32012, `data.reason` `irreversible`, `on_air` or `network`). A token store entry without the field has it, so existing tokens and same-user IPC peers keep today's behaviour; `tokens.create` takes an optional `irreversible` (default `true` when the caller holds the permission) and never gives more scopes or permission than the caller holds (`not_permitted`). `settings.set` is `edit`; its `canvas` field gets the on-air check. `ControlTarget::handle` receives the caller context (token name or a fixed label, and the permission).
+- A per-token permission, "Allow actions that cannot be undone". Without it, `live` and `destructive` methods, `edit` methods (undo, redo, program switch and `collection.switch` included) that change what is on air (for a canvas with any active output: its format, everything reachable from its program scene, shared sources and filters included, and its audio mix), adding or re-addressing a source of a type that opens network connections, and any location field (paths and URLs in source settings, recording folders, `record.start_to_file`, import and export paths; marked in the schema) whose value is not a local absolute file system path (URL schemes, UNC and `\\?\UNC` paths, device paths), are refused; a source type that does not declare itself local-only, with its location fields, counts as network with a new error kind `not_permitted` (code -32012, `data.reason` `irreversible`, `on_air` or `network`). A token store entry without the field has it, so existing tokens and same-user IPC peers keep today's behaviour; `tokens.create` takes an optional `irreversible` (default `true` when the caller holds the permission) and never gives more scopes or permission than the caller holds (`not_permitted`). `settings.set` is `edit`; its `canvas` field gets the on-air check. `ControlTarget::handle` receives the caller context (token name or a fixed label, and the permission).
 - An audit record, with the caller label, for every `live` and `destructive` call and every `not_permitted` refusal, written on the API thread.
 - The scopes and effects of `profile.*` and `collection.*` are listed in ADR-0052 decision 1.
 
@@ -556,6 +562,390 @@ Source rows carry `kind` `image` and `color` for those picture sources. A client
 - **State.** `record.state` and `record.canvas_state` add `paused` (bool), `paused_ms` and `recorded_ms`; `state` stays `recording` while paused. `paused` is set from the call on, including the ticks before the pause begins. `paused_ms` (time left out so far) and `recorded_ms` (time since the start less `paused_ms`) are as of the change; they are published on each pause and resume, never per frame, so a client counts on from them while not paused.
 - **Older clients and servers.** A 1.60 client ignores the new fields; a 1.60 server answers the methods `method_not_found` and omits the fields, which read as not paused.
 
+### Protocol 1.109: defer nested scenes (ADR-0188)
+
+The owner approved this behavioural change for older clients as an exception
+to P9 and the major-version rule. A server before 1.109 retains its own scene
+and OBS-import behaviour. As built (2026-11-25): the scene model refuses a
+scene placement in every edit and loader before other checks, so no exposed
+edit reaches one on valid state; were one attempted, the host maps the refusal
+to `invalid_params` with the message below.
+
+- A valid collection has no scene-as-item placements. `item.add` still accepts
+  only a source. `scene.duplicate` in either source-copy mode, clipboard/paste
+  and `edit.undo`/`edit.redo` retain their existing behaviour on valid state and
+  cannot introduce a nested placement. An exposed edit that attempts one is
+  `invalid_params` (-32602), "Scenes cannot be placed inside other scenes.";
+  it changes no state, IDs, history or events.
+- `collection.switch` remains asynchronous. Before closing views or changing the
+  running studio or selected collection id, the app loads and validates the
+  target. An unsupported nested-scene document leaves the original selection,
+  collection and runtime unchanged, clears `pending`, and reports the reason
+  through the existing outcome and error line. Startup and import/export leave
+  such files untouched; see the user-data spec.
+- `import.obs.check` and `import.obs.run` skip and report each nested-scene
+  placement for every client. Scene selection and the exact report fields are
+  in the OBS import spec; selecting a parent no longer implicitly selects a
+  nested scene. This applies to old clients too.
+- In `group.get` and `group.apply`, the members are source placements only.
+  `scroll_bounds` unions direct picture boxes after their rotations and flips;
+  group Scroll never composes a nested scene or a nested group. The picture and
+  all-or-none preflight rules of 1.108 otherwise remain.
+
+### Planned protocol 1.110: address source placements (ADR-0189)
+
+**Proposed; not implemented.** ADR-0189 remains Proposed. The owner has
+approved independent placement selection and the `global.add` conflict below,
+but not the full contract. On 2026-11-25, the owner decided that a shared
+capture-region change re-aspects only the selected placement while source
+pixels and region remain shared. 1.110 is the next minor after 1.109 in
+this tree; recheck it before implementation. Do not advertise 1.110 until its
+contract is implemented.
+
+- **Placement selector.** The following requests gain optional `item` (an
+  `ItemId`) while retaining their existing required fields, other optional
+  fields, response shapes and effects:
+
+  | Method | 1.110 request shape |
+  | --- | --- |
+  | `item.set_box` | `{source, item?, position, size, gesture?, seq?, canvas?}` |
+  | `source.duplicate` | `{source, scene?, item?}` |
+  | `source.copy_attributes` | `{source, scene?, canvas?, item?}` |
+  | `source.reset` | `{source, scene?, canvas?, groups?, item?}` |
+  | `look.apply` | `{source, look, item?}` |
+  | `source.set_region` | `{source, region, item?}` |
+  | `source.fit_chrome` | `{source, item?}` |
+
+  `source.set_chrome`, `source.reset_chrome`, `source.get_region` and
+  `source.get_chrome` remain source-only: they do not choose or change an item
+  layout. No other request shape changes.
+
+- **Resolution.** With `item`, the server targets exactly that placement, and
+  it must place the named `source`. When `scene` is supplied, it must be the
+  item's scene; a global-scene item uses `item` with `scene` absent. The
+  applicable scene is otherwise the item's owning scene. `canvas` continues to
+  select only the canvas already supported by that method. No `item` preserves
+  each method's old contract. For legacy `Host::item_of` lookup, this means the
+  first matching item in the edited scene (preview in studio mode, otherwise
+  program), falling back to the canvas's global scene only if the edited scene
+  has no match. If both contain the source, the edited-scene item wins.
+  Explicit `scene` handling remains method-specific; for example, existing
+  methods that reject `scene` for a global source keep doing so.
+  `source.reset` can still apply source-only groups without an item.
+  There is no source-id fallback after an explicit `item`.
+
+- **Per-method effects.** Source settings, filters, audio, playback, capture
+  region and display chrome remain shared source state. Item layout and style
+  remain placement state.
+  - `item.set_box` changes the selected item's layout on the requested canvas.
+    Its `position`, `size`, `gesture`, `seq` and `canvas` semantics and
+    `{seq, ok}` answer are unchanged.
+  - `source.duplicate` copies the named source and creates its new item
+    directly above the selected item. Existing companion, standby, undo and
+    answer rules remain. `source.copy_attributes` snapshots source groups from
+    the source and item groups from the selected item; its clipboard and answer
+    are unchanged. `source.reset` applies source groups to the source and item
+    groups to the selected item on `canvas`, preserving its existing
+    `{targets: [...]}` answer and one-step undo.
+  - `look.apply` applies its optional style to the selected item and its
+    filters to the shared source, as before; all validation precedes mutation,
+    a change is one undo step, and no change answers `{}`.
+  - `source.set_region` changes the shared region; its placement-layout
+    adjustment applies only to the addressed item, following ADR-0178. A known
+    picture size keeps that item's centre, area, rotation and flips and takes
+    the visible aspect after region and item crop. An unknown picture size
+    stores the region without changing the box. The region and item layout are
+    one undo step. `source.reset` of the `region` group follows the same rule.
+    This selected-placement behavior records the owner's decision of
+    2026-11-25; source pixels and region remain shared.
+  - `source.paste_attributes` is not given the single-item selector: its
+    existing `items` list names a multi-target set. Under ADR-0133, item groups
+    apply to every listed item and each source group applies once per source.
+    Pasting the `region` group changes the shared region without re-aspecting
+    item boxes. Requests without a new opt-in retain this behavior. Owner input
+    is needed on whether to keep all paste requests unchanged, add an opt-in to
+    re-aspect every listed placement of each affected source, or add an opt-in
+    naming one item from the list per affected source and re-aspect only that
+    item. The opt-in request shape is unresolved.
+  - `source.fit_chrome` fits only the selected item's box with the source's
+    stored chrome fill (`cover` fills the canvas, `fit` letterboxes) and
+    existing region-size rule. It is a separate undo step and does not change
+    the shared region or chrome. `source.set_chrome` continues to write shared
+    chrome and region without moving any item.
+  - `item.fit_text_box` remains source-wide: every placement keeps its centre
+    and scale. `item.set_filled` keeps its shared source fill and selected-item
+    border behavior.
+
+- **`item.move`.** `item.move {item, direction?, to_item?}` already names an
+  item. The `direction` form must move that exact item within its scene, not
+  resolve its source and move another placement. The `to_item` form and window
+  callers also preserve the requested item id. No request or answer shape
+  changes.
+
+- **Authorization, locks and atomicity.** Scope and effect classifications do
+  not change (`source.reset` remains `destructive`). For an edit, the on-air
+  check must include the complete effects: source-owned changes check the
+  shared source, placement changes check the selected item, and mixed changes
+  check both; `global.add` checks the source and every placement it removes.
+  Existing item-lock semantics remain: locking blocks pointer selection, move,
+  resize and crop on the preview panel, not Properties, control API, undo or
+  layer-order edits.
+  Existing group move/resize lock rules remain specific to group operations.
+  Validate the selector and affected state again on the serialized control
+  thread immediately before mutation. A refused operation changes no scene,
+  clipboard, history, gesture state or event. Existing undo granularity is
+  preserved: `source.set_region` is one region-plus-layout step; `look.apply`,
+  `source.reset` and `source.duplicate` are one step; `source.copy_attributes`
+  only updates the shared attribute clipboard; `item.set_box` retains its
+  gesture and sequence semantics. Live writes remain outside undo.
+
+- **Errors and precedence.** Malformed request shapes, unknown fields and
+  invalid field encodings remain `invalid_params` at decode time. For a
+  well-formed request, existing scope and irreversible/on-air authorization
+  gates run before method-level selector lookup. Then an unknown source or item
+  is `not_found`; an existing item with the wrong source, or an explicit scene
+  that does not own it, is `invalid_params`; then existing method-specific
+  type/range validation runs with its existing error kind. The server must
+  never substitute another placement after an explicit selector. Refusals
+  leave the entire operation unchanged.
+
+- **Global conversion.** `global.add {source}` keeps its request and response
+  shape. If the operation would remove more than one placement of that source
+  from any one showable scene on the canvas, it answers `conflict` before any
+  mutation, undo record or event, explaining that the extra placements in
+  that scene must first be removed. One placement in each of multiple scenes
+  retains ADR-0065 behavior. The refusal applies to clients of every version,
+  as the owner's explicit exception to the major-version compatibility rule.
+
+- **Older servers.** A server before 1.110 does not support these selectors.
+  A client checks `api.describe` before sending them. If unsupported, the UI
+  disables or refuses the placement-scoped action with a clear reason and
+  never retries it without `item`; it may continue to use an older request only
+  for a genuinely source-scoped action. Existing clients that omit `item` keep
+  their prior behavior, except for the approved `global.add` refusal.
+  `method_not_found` remains the response to a new method not known by a
+  server, but 1.110 adds no methods.
+
+### Protocol 1.108: group Properties (ADR-0184, ADR-0185)
+
+Independent contract review, 2026-11-25: approved (ADR-0185 decision 6; covers
+the group API, scene, document, compositor and UI contracts). The group
+Properties operations do not change `item.*`. The ADR-0186 exceptions below
+also change existing group and companion-add commands for older clients.
+ADR-0187 changes run identity; its session-only settings generation is not a
+public run id. Protocol 1.109 (ADR-0188) replaces the nested-scene portions of
+this contract.
+**As built (2026-11-25).** The studio, not the host, issues settings
+generations and run ids; a collection switch retires them and a failed switch
+restores them. `run` and `render_failures` come from the studio; an occurrence
+id is its role and its place among that role's failures (`"program-1"`). The live
+Scroll variants are `invalid_params` without a saved Scroll on that canvas and
+`conflict` when no list draws the edited scene's group. Each `group.changed`
+and `group.render_state` key `(scene, group, canvas)` has an opaque object id
+the server issues while the key lives (`seq` maps name `group.changed:N`);
+clients read the scene, group and canvas from the payload. `group.changed` is
+compared on each control round while a client or the window subscribes; the
+first round after a subscription publishes every key once. A
+`group.scroll_finished` key is retired with its event, so it never appears in
+a `seq` map. A countdown alone (`remaining_ms`) publishes nothing; a cue start,
+restart or end does.
+
+- **Read.** `group.get {scene, group, canvas?}` needs `read` and answers
+  `{scene, group, name, items, members, canvas, bounds, scroll_bounds, scroll, run, render_failures}`. `items` is the
+  current member item ids, top first as in `group.list`; `canvas` is `"main"` or
+  `"vertical"`, default `"main"`. `members` is in the same order and has one
+  `{item, visible, locked, show_for_ms, cued, remaining_ms, has_picture}` for each source
+  placement. `show_for_ms` is an integer or `null`; `has_picture`
+  says whether the direct member can supply a picture. `cued` and
+  `remaining_ms` describe the edited scene's live cue, not a held or outgoing
+  copy; `remaining_ms` is an integer at the read instant, or `null` when not
+  cued. Clients may count it down locally without polling. `bounds` is the selected
+  canvas's finite, positive group-transform box `{x, y, width, height}` in
+  canvas pixels, or `null` when no valid picture bounds exist. It uses the
+  existing position-and-size union, without expanding rotations; Properties
+  displays it and resize maps it. `scroll_bounds` has the same shape but is
+  the rotated and flipped direct-picture union defined by
+  the compositor for the Scroll window, or `null` when that window is
+  invalid. The two boxes can differ. Both include hidden members and are
+  calculated from member layouts, not source rows. `render_failures` is the
+  current failures array defined under Runtime health, including an empty
+  array when none are failing. `scroll` is the selected canvas's saved group
+  Scroll object or `null`; `run` is `null` without a matching live run, else
+  `{id, paused, speed}`. `speed` is the run's current target speed in group
+  layout units per second, including the speed queued while paused, not its
+  instantaneous ramp speed. `id` is a monotonically issued unsigned 64-bit
+  run-incarnation identifier, distinct from the settings generation,
+  unique for the lifetime of the API server. A live `scroll_restart` or later
+  reappearance issues a new id; a studio restart that continues the run keeps
+  its id while the API server remains running. The host owns the id allocator,
+  and handover transfers snapshot identities, keys, generations, incarnations,
+  run state and public ids. A newly started API server instance starts a new id
+  lifetime; restarting or reattaching only a transport of the same instance
+  does not. The control thread assigns fresh ids to active runs before the
+  new server exposes queries or events. Id exhaustion is an error; never wrap
+  or reuse an id in one lifetime. A successful collection switch retires old
+  runs and ids but does not reset this allocator; a failed switch restores
+  the old mappings, runs and ids. The
+  number is distinct from a scene, group or canvas id and is not saved. This is
+  the edited scene's state, never a held program copy.
+  An unknown scene or group is `not_found`; the existing canvas editing rules
+  apply. The window derives mixed values from `members`, never an arbitrary
+  primary member.
+- **Atomic request.** `group.apply {scene, group, items, canvas?, operation,
+  gesture?}` needs `control`. `items` is the complete expected set of item ids
+  from `group.get` or `group.list`, without duplicates; order does not matter.
+  The tagged `operation` object has exactly one of these shapes:
+  - `{type: "set_show_for", show_for_ms: N|null}` sets or clears every member's
+    duration. `N` is an integer in `1..=600000`.
+  - `{type: "show"}` starts or restarts every hidden member's cue at the same
+    control-clock instant, using each member's own duration. A visible member is
+    unchanged as in `item.show`; every hidden member must have a duration before
+    any cue starts. If all members are visible, Show succeeds without a change
+    or an event. Cue state is live, not undoable.
+    It runs on the control thread in one step
+    ([ADR-0193](../adr/0193-simple-group-show-and-scroll-resources.md)
+    decision 1): preflight compares the expected membership, checks scopes and
+    checks every hidden member's duration; a refusal changes nothing. Then all
+    cues start or restart with one `now` in one control-state change and the
+    studio reconciles as for `item.show`. Only the edited scene is cued: a held
+    program copy and an outgoing transition keep their captured cues. A source
+    that later fails to start or render is runtime health; nothing is rolled
+    back. `item.show` is unchanged.
+  - `{type: "set_visible", visible}` and `{type: "set_locked", locked}` set
+    the lasting value on every member. `{type: "remove_members"}` removes the
+    entire group from its scene, not merely its group tag; it applies the
+    existing `item.remove` last-placement and companion rules to the complete
+    set. Deduplicate removals and their dependent companions before validating
+    and applying the union as one model edit and undo record. The on-air
+    check covers all indirectly affected sources and placements too.
+    `group.remove` still means Ungroup.
+  - `{type: "move", dx, dy}` translates every member by finite canvas-pixel
+    offsets. `{type: "resize", x, y, width, height}` maps their current group
+    covering box to that finite, positive target rectangle in canvas pixels,
+    retaining member flips and rotations and using the existing multi-selection
+    resize rules. `{type: "flip", axis}` mirrors the arrangement and each member
+    about the covering box's centre; `axis` is `"horizontal"` or `"vertical"`.
+    Each operation changes only the named canvas's overrides.
+  - `{type: "set_scroll", scroll: S|null}` sets or clears group Scroll on that
+    canvas. `S` has `speed`, `direction`, `gap`, `repeat`, `start`, `fade` and
+    `ramp_ms` with `item.set_scroll`'s ranges and defaults. Group runs end when
+    no rendered snapshot uses them (ADR-0185 decision 3), so `on_return` is not
+    a group Scroll field. Unknown fields, including `on_return`, are refused.
+  - `{type: "scroll_pause"}`, `{type: "scroll_resume"}`,
+    `{type: "scroll_restart"}` and `{type: "scroll_speed", speed}` change only
+    the selected group's live run; `speed` is 1 to 4000, as for
+    `item.scroll_speed`. They never mutate a member's run or saved settings.
+- **Preflight and result.** On the control thread, resolve the scene, canvas,
+  group and current members, compare the complete expected set, check the
+  caller's on-air permission against every affected member, then validate the
+  operation and all members before changing any state. Group move, nudge and
+  resize refuse the whole operation if any member is locked. A transform takes
+  its covering box from picture members but applies the same mapping to every
+  member's stored layout, including an audio-only member. It is unavailable
+  when the group has no picture bounds. Scroll is unavailable if any direct
+  member has no picture. Scroll
+  set also refuses a window over 8,388,608 pixels or `MAX_CANVAS_SIDE` on a
+  side (ADR-0193 decision 4); ordinary item edits are not preflighted against
+  it. A live Scroll call without saved Scroll or without
+  a run is refused. No refusal changes a layout, cue, run, history or event.
+  Success answers `{}`, including an unchanged edit. A changed saved edit is
+  one undo record; a non-zero `gesture` coalesces successive saved edits of the
+  same kind as in protocol 1.100. Live actions never add undo records and
+  reject a non-zero `gesture`.
+- **Effect and permission.** `group.apply` is exposed as `edit` in the method
+  registry and schema, matching the existing item Show and Scroll controls,
+  even though its live variants do not enter undo history. Every variant is
+  checked for `control` and uses the existing edit on-air permission before
+  execution, consistent with the existing `edit` classification of
+  `item.show` and `item.scroll_*` (owner choice); resolve the actual scene and
+  members rather than trusting supplied
+  ids. The check is conservative for an ADR-0063 held program: when that scene
+  or member is on air, a caller without the irreversible-actions permission is
+  refused even if the particular saved edit would only change Preview. A
+  permitted live Scroll action targets the run selected by the edited scene's
+  saved settings and may also move equal-key held Program and outgoing
+  transition occurrences.
+  The request answers after the change or refusal. As for other
+  dispatched commands, client disconnect does not cancel it; the server
+  completes it and publishes any resulting state even if the answer cannot be
+  delivered.
+- **Errors.** Unknown scene or group: `not_found`; unknown fields, duplicate or
+  empty `items`, invalid operation, values or absent saved Scroll:
+  `invalid_params`; stale membership, locked member, unavailable picture,
+  invalid or oversized group bounds, canvas conflict or no live run: `conflict`
+  with a plain-language reason. On-air permission is `not_permitted` with the
+  existing `on_air` reason. The on-air check resolves the actual group and
+  members on the control thread: a caller cannot bypass it with stale or
+  incomplete `items`. A later render failure does not
+  undo a committed edit; it is reported through runtime health.
+- **Observing.** Group rename and changes to the returned member state or bounds, including cue
+  start, restart, cancellation and expiry, saved group Scroll or membership,
+  run creation or
+  retirement, pause, resume, speed and restart publish
+  `group.changed`, a `read` state topic keyed by `(scene, group, canvas)` whose
+  payload is the corresponding `group.get` answer for the edited scene's
+  matching run. Publish after the control-thread state change, including
+  speed changes while paused; no per-frame events are emitted for a ramp.
+  A subscriber obtains the initial state from `group.get` and uses the
+  existing state-key sequence rules. Held-only runs do not masquerade as
+  the edited scene's run; their completion uses `run_id` below. Removal publishes the same
+  key with `{scene, group, canvas, removed: true}`. A group `Once` run ending
+  publishes `group.scroll_finished` (`read`, keyed by
+  `(scene, group, canvas, run_id)`) with `{scene, group, canvas, run_id}` once
+  per run; held copies use the originating scene and group ids. The state key
+  is retired with the run, so it cannot grow with past generations. An event
+  means all occurrences rendered at that instant have exited, not that a later
+  bounds or membership change cannot make another occurrence visible. Restart,
+  a settings edit, or a later new run has a new id and can report another end.
+  Existing item Scroll events remain unchanged.
+- **Runtime health.** `group.render_state` (`read`, state keyed by
+  `(scene, group, canvas)`) carries `{scene, group, canvas, failures}`.
+  `failures` is the complete array of currently failing occurrences, each
+  `{occurrence, role, reason}`: an opaque occurrence id, role `"program"`,
+  `"preview"`, `"incoming"`, `"outgoing"` or `"hold"`, and reason `"invalid_bounds"`,
+  `"too_large"`, `"budget"`, `"allocation"` or `"render"`. An empty array
+  reports recovery. `group.get.render_failures` reads this same current array,
+  so a subscriber can establish initial state even when no failure changed
+  after subscription. Retiring the last occurrence clears the state key. The
+  control side publishes changes and logs one warning per failure transition
+  and recovery, not once per failed frame; the window shows the group and a
+  plain-language reason. Device loss follows the separate graph-level device
+  recovery and is not misreported as a recoverable group failure.
+- **Compatibility.** A server before 1.108 answers `method_not_found` for the
+  new methods and refuses the new topics. Clients check the negotiated version
+  and disable group Properties actions with a reason; they must not simulate
+  atomic edits by sending a sequence of item requests. Older clients ignore the
+  new topics; their existing item methods are unchanged. The
+  `group.create` exception below applies to older clients too.
+- **`group.create` change (ADR-0186).** 1.108 refuses any explicitly selected or
+  implicitly included already-grouped item with `conflict`; it never merges
+  groups. It adds a same-scene companion item for a selected picture only when
+  picture and companion placements are each unique in that scene; ambiguous
+  placements refuse without a change. Explicit unknown item ids remain
+  `not_found`. After decoding, validation checks the scene, blank name,
+  explicit item ids and their scene in request order, the minimum of two
+  distinct explicit items, expansion ambiguity, existing membership, and
+  duplicate group name, in that order. Expansion does not satisfy the minimum.
+  An unknown scene or item is `not_found`; blank name, wrong-scene item or
+  too few distinct explicit items is `invalid_params`; ambiguity, grouped
+  membership or duplicate name is `conflict`. This changes existing 1.104
+  clients' behavior too: they remain
+  connected but may receive the refusal or see an additional companion member.
+  The answer remains `{group, name}`; clients use `group.list` or scene rows
+  to discover the resulting membership. The owner approved this limited
+  exception to the major-version rule for both the refusal and companion
+  expansion.
+- **Companion-add change (ADR-0186).** Adding a new companion with
+  `source.set_companion_audio` refuses with `conflict` when the picture has
+  multiple item placements across scenes or within one scene. With exactly
+  one, the companion is placed directly above it in layer order and inherits
+  its group when present, in the same atomic undoable add. Refusal or failure
+  after staging changes no source, item, id or history. Failure as part of
+  `source.add` with audio leaves that entire request unchanged. Existing
+  companions remain valid. Existing clients receive the same refusal; the
+  owner approved the limited 1.108 exception to the major-version rule for
+  this change too.
+
 ### Protocol 1.107: main window commands (ADR-0180 decision 5)
 
 - **Methods** (`control`, client-scoped `ui.*`, in `UI_METHODS`; routed, so not in the schema): `ui.window.minimize`, `ui.window.zoom` (maximize, or restore a maximized window) and `ui.window.full_screen` (into full screen, or out of it: macOS's own full screen, borderless full screen on the window's display on Windows and Linux). No parameters, result `{}`. They act on that client's main window. A call that cannot act now succeeds and changes nothing: while the window is hidden (ADR-0056) or minimized, and `minimize` or `zoom` in full screen. Routing of `ui.*` methods is not built yet ([status](../status.md)): over the API this version is a contract only; the registry path (menus, shortcuts, `ui.command.run` inside the client) is built.
@@ -581,6 +971,9 @@ Source rows carry `kind` `image` and `color` for those picture sources. A client
 - **Rows.** `scene.sources`, `source.list` and `source.changed` rows add `group`, the id of the group the row's item is in within that scene; omitted when it is in none. An older client ignores it.
 - **Errors.** `invalid_params`: fewer than two distinct items, an item of another scene, a blank name. `conflict`: a name another group of the scene has. `not_found`: no such scene, item or group. An edit that would split a group's block of items (for example `item.move` of one member away from the others) is `invalid_params`. A 1.103 server answers the methods `method_not_found` and its rows have no `group`.
 - **Not in 1.104.** The group edits the window makes (moving, scaling, hiding and locking a group, drawn as one batch of member edits) and `item.group` / `item.ungroup` shortcuts come with the Sources list's group row; align and distribute are a separate change.
+- **Later exception.** From 1.108 (ADR-0186), `group.create` refuses grouped
+  items instead of merging and expands uniquely placed companion sounds, also
+  for older clients; see "Protocol 1.108".
 
 ### Protocol 1.103: the bus an output takes (ADR-0170 decisions 3, 9 and 11)
 
@@ -886,12 +1279,12 @@ ADR-0127 planned these as 1.68; other changes took 1.68 to 1.73 first, so they a
 ### Protocol 1.68: duplicate, reset and paste attributes of sources (ADR-0133)
 
 - **Attribute groups** (ids): `transform`, `crop`, `opacity`, `style`, `scroll` (ADR-0150) (on the item), `video_filters`, `audio_filters`, `options`, `region`, `glide`, `record_separately` (on the source; undoable), `sound` and `sync_offset` (live: written outside the undo step, never chosen by default). The table, defaults and applicability are ADR-0133 decision 1 and `scene-model.md`, "Copies, resets and attribute groups".
-- **Addressing.** `source.duplicate`, `source.reset` and `source.copy_attributes` take `{source, scene?}`: the source's first item in `scene`, by default the scene being edited (the preview in studio mode, else the program); a global source uses its global item and takes no `scene` (`invalid_params`). `canvas?` (`main`, `vertical`) picks the layout read or written.
+- **Addressing.** `source.duplicate`, `source.reset` and `source.copy_attributes` take `{source, scene?}`. With `scene`, they retain their existing named-scene behavior; a global source with `scene` is refused (`invalid_params`). Without `scene`, legacy `Host::item_of` lookup selects the first matching item in the edited scene (preview in studio mode, otherwise program), then falls back to the canvas's global scene only when there is no match in the edited scene. If the source occurs in both, the edited-scene item wins. `canvas?` (`main`, `vertical`) picks the layout read or written.
 - **`source.duplicate {source, scene?}`** (`control`; effect `edit` with the on-air check, as `source.add`) makes an independent copy directly above the item, named like "Camera 2", with every filter (new ids), sound, glide, region, chrome and Record separately. A picture's companions are copied too, muted, pointing at the copy. A camera copy starts in standby. Answers `{source, item, active, companions: [{source, item}]}`; one undo step.
-- **`scene.duplicate {scene, sources?}`**: `sources` is `shared` (default, as before) or `copied`: the copy places copies of the scene's own sources and their companions (global sources and nested scenes stay references), its own levels re-keyed and key links remapped inside the copied set. The answer adds `sources: [{from, to}]` when copied. A server before 1.68 refuses `sources` with `invalid_params`.
+- **`scene.duplicate {scene, sources?}`**: `sources` is `shared` (default, as before) or `copied`: the copy places copies of the scene's own sources and their companions (global sources stay references), its own levels re-keyed and key links remapped inside the copied set. Under protocol 1.109 (ADR-0188), both modes copy only source placements; nested-scene placements are invalid. The answer adds `sources: [{from, to}]` when copied. A server before 1.68 refuses `sources` with `invalid_params`.
 - **`source.reset {source, scene?, canvas?, groups?}`** (`control`; `edit` with the on-air check) sets each group to its default; without `groups`, every non-live group. Identity keys (device, window, file, URL) are kept.
 - **`source.copy_attributes {source, scene?, canvas?}`** (`control`) takes a snapshot of every group into the server's one attribute clipboard (shared by the window and every API session, cleared by a scene collection switch) and answers the clipboard. **`source.attributes_clipboard {}`** (`read`) answers `{source, name, type, groups}` or `null`; `groups` are those whose copied value is not the default.
-- **`source.paste_attributes {items, groups, filters?, canvas?}`** (`control`; `edit` with the on-air check) applies the chosen groups of the snapshot to every item, in any scene, as one undo step. `filters` is `replace` (default; the same type sequence keeps the target's filter ids and writes only settings and `enabled`) or `append`. `conflict` while the clipboard is empty.
+- **`source.paste_attributes {items, groups, filters?, canvas?}`** (`control`; `edit` with the on-air check) applies the chosen groups of the snapshot to every item, in any scene, as one undo step. Each source group is applied once per source; `region` changes the shared source region without re-aspecting any item. `filters` is `replace` (default; the same type sequence keeps the target's filter ids and writes only settings and `enabled`) or `append`. `conflict` while the clipboard is empty.
 - **Answers** of reset and paste: `{targets: [{source, item?, changed: [group], live: [group], skipped: [{group, reason}]}]}`, reasons `not_applicable`, `unchanged`, `locked`, `no_picture_size`, `out_of_picture`. `invalid_params` for an empty or unknown group or an empty `items`; `not_found` for an unknown source, item or scene.
 - **Topic `source.attributes_clipboard.changed`** (`read`, state): `{clipboard}`, the `source.attributes_clipboard` answer or `null`, published on copy and on clear.
 - **Older clients and servers.** A 1.67 server answers the new methods `method_not_found`.

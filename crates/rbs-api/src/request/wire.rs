@@ -191,6 +191,10 @@ pub(super) enum WireRequest {
     GroupRename(RenameGroup),
     #[serde(rename = "group.list")]
     GroupList(SceneRef),
+    #[serde(rename = "group.get")]
+    GroupGet(GetGroup),
+    #[serde(rename = "group.apply")]
+    GroupApply(ApplyGroup),
     #[serde(rename = "canvas.set_preview")]
     CanvasSetPreview(SetPreview),
     #[serde(rename = "canvas.transition")]
@@ -541,7 +545,7 @@ wire_conversions! {
     StreamDestinationStart, StreamDestinationSetEnabled, CollectionSetTransition,
     SourceSetRecordSeparately,
     ItemSetRotation, ItemAlignItems, ItemDistribute,
-    GroupCreate, GroupRemove, GroupRename, GroupList,
+    GroupCreate, GroupRemove, GroupRename, GroupList, GroupGet, GroupApply,
     CanvasRehearse,
     AddonUpdate,
     ]

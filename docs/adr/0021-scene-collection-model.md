@@ -1,6 +1,6 @@
 # ADR-0021: Scene collection as a validated model with scoped scenes and inverse-edit undo
 
-- Status: Accepted
+- Status: Accepted (decisions 2, 3 and 7 superseded in part by ADR-0188)
 - Date: 2026-11-02
 - Deciders: Salih (owner)
 

@@ -2,7 +2,7 @@
 
 - Status: Draft
 - Owner crate(s): `rbs-gpu`
-- Related ADRs: [0005](../adr/0005-gpu-compositing-with-wgpu.md), [0013](../adr/0013-zero-cost-when-unused.md), [0022](../adr/0022-native-ui-toolkit.md), [0025](../adr/0025-encoder-surface-export.md), [0028](../adr/0028-cross-process-preview-surfaces.md), [0102](../adr/0102-output-size-distinct-from-canvas.md)
+- Related ADRs: [0005](../adr/0005-gpu-compositing-with-wgpu.md), [0013](../adr/0013-zero-cost-when-unused.md), [0022](../adr/0022-native-ui-toolkit.md), [0025](../adr/0025-encoder-surface-export.md), [0028](../adr/0028-cross-process-preview-surfaces.md), [0102](../adr/0102-output-size-distinct-from-canvas.md), [0193](../adr/0193-simple-group-show-and-scroll-resources.md)
 - Related specs: [media-graph.md](media-graph.md), [performance-budgets.md](performance-budgets.md)
 
 ## Purpose
@@ -23,7 +23,7 @@ In scope:
 Out of scope (later specs or PRs):
 
 - Export on D3D12 (NT handle) and Vulkan (exportable memory, DMA-BUF); same frame shape as the macOS exporter (ADR-0025). Cross-process preview on Linux and Windows (ADR-0028).
-- Scene tree evaluation (groups, nesting, animation): `rbs-scene` flattens a scene into the layer list below.
+- Scene layout, grouping and animation evaluation: `rbs-scene` supplies the layer list below. The source-only scene restriction in ADR-0188 is pending implementation after independent review of the combined contracts.
 - Filters, image masks, blend modes other than "normal" and HDR output (PQ, HLG, BT.2020). Analytic shapes and borders of layers are in scope (ADR-0053). Scene transitions draw with what is here: another compositor's canvas as one layer with a fade (ADR-0128); no transition shader is in scope yet.
 
 ## Contract
@@ -134,7 +134,7 @@ pub struct LayerStyle {
     pub shape: LayerShape,
     pub border_width: f32,       // box units, inside the shape's edge; 0 for none
     pub border_color: [f32; 4],  // linear, premultiplied (LayerStyle::new converts sRGB8 straight alpha)
-    pub box_size: [f32; 2],      // the box in its own units (the item's |Layout::size|, before nesting)
+    pub box_size: [f32; 2],      // the box in its own units (the item's |Layout::size|)
 }
 
 impl Compositor {
@@ -200,6 +200,213 @@ impl GpuContext { pub fn prepare_scrolling(&self); pub fn scrolling_ready(&self)
 - **Window.** Lengths are in the transform's units (canvas pixels). Along the direction the window is the box's length, across it the picture fills the box with its aspect kept, so the picture is `along_texels × cross_box / cross_texels` long and a period is that plus `gap`. A **fill** (ADR-0177), a picture of at most `FILL_TEXELS` (2) texels on each side such as a Library shape or a plain frame (2 x 2 colour pictures), has no aspect ratio of its own: it is as long as the window, the box it is stretched to. `picture_length` is the one formula; the studio's `Once` end uses it too. Copy `k` covers `[k · period, k · period + picture)` on the strip and the window covers `[start, start + window)`. `start` is the run's distance (forward for Left and Up, backward for Right and Down) from an origin: 0 for `Inside`, `−window` for a forward `Outside`, `picture` for a backward one. `Loop` wraps it with `rem_euclid(period)` in f64; `Once` clamps it to just outside the picture, and `ended` is true once the picture has fully left the window. Only the wrapped `start` reaches the GPU, as f32.
 - **Pipelines.** The four wrap pipelines (`vs_wrap` + `fs_wrap`, `vs_styled` + `fs_wrap_styled`, `vs_wrap` + `fs_yuv_wrap`, `vs_styled` + `fs_yuv_wrap_styled`) are built once per device in a `OnceLock` on `GpuContext` by `prepare_scrolling`, from a module of `composite.wgsl` and `wrap.wgsl`, with a pipeline layout of the device's layers layout (group 0, also used by `Compositor::new`), the sampled or 4:2:0 layout (group 1) and a uniform record at a dynamic offset (group 2). A device where nothing scrolled has none of them; `Compositor::new` is unchanged by them. `ScrollBinding::new` builds them if needed and a 64 × 256-byte uniform buffer with its bind group and a staging array of the same size for one compositor.
 - **Drawing.** `render_scrolled` places each scrolling layer's record at `slot × 256` in the binding's staging array (reserved by `ScrollBinding::new`, so no allocation) and writes them in one queue write and draws it with the wrap pipeline of its kind at that offset. The fragment stage maps the box position along the direction to the strip, draws transparent in the gap and, for `Once`, outside the single copy, samples at level 0 (no derivatives across the seam) with the texture coordinate kept half a texel inside the crop of the plane sampled (luma and CbCr each with its own size), so the last column of a copy never blends with the first of the next, and multiplies the edge fade (`clamp(min(a, 1 − a) · window / fade)`, the fade clamped to half the window). Styled scrolling layers keep the shape of the window; a fill's record has `b.w = 1` and its shape and border are evaluated at the picture position instead (`styled_at`, the pixel footprint still from the box position), so the whole shape moves and wraps, and its coverage multiplies shape and border together, so no border shows in a gap or after a `Once`; each pixel takes the shape of the copy its centre is in, so with no gap an edge meeting the seam mid-pixel may lose up to half a pixel of coverage (ADR-0177). Without a binding, without the device's wrap pipelines, or past `MAX_SCROLL_LAYERS`, a scrolling layer draws nothing and counts in `unscrolled_layers`: a long picture is never squeezed into the window.
+
+### Scrolling groups (ADR-0185, ADR-0188, ADR-0193)
+
+**Implemented (2026-11-25).** This section follows accepted
+[ADR-0188](../adr/0188-defer-new-nested-scenes.md) and
+[ADR-0193](../adr/0193-simple-group-show-and-scroll-resources.md), which
+supersedes ADR-0190 and ADR-0191 in full and ADR-0185 decision 5's control-side
+allocation clause. As built: `rbs-gpu` draws `LayerList` spans; the
+binder marks each drawn member with its group's window, scaled Scroll and limits
+(`BoundLayer::group`, `SpanLimits` with the device's largest texture side,
+`BindProblem::GroupSpanRefused`); `rbs-record` sends spans with `send_list`, keeps
+the runs (`GroupRuns`, keyed `GroupRunKey`, handed over on restart), takes live
+calls (`Studio::group_scroll_control`, `group_run`) and reports transparent
+occurrences (`Studio::group_render_failures`). The binder's group Scroll gate is
+gone. The studio issues a settings generation per effective change it sees and
+a public run id per run incarnation from the host's `GroupIds` allocators
+(`StudioSettings::group_ids`), which the host owns for its lifetime, so values
+are never reused across studio restarts and collection switches (ADR-0187). A
+held copy maps to its scene through `StudioSettings::scene_origins` (before the
+first bind) and `Studio::set_scene_origins`. A committed collection switch
+retires the old runs (`Studio::retire_group_runs`; a failed switch restores
+them); a new API server attachment renews live run ids
+(`Studio::renew_group_run_ids`). A transition's outgoing snapshot pins each
+group's captured settings and run key when it is taken (timed start, a manual
+transition's first `t > 0`); the studio keeps pinned runs apart from live ones
+and never re-derives them. A push Swipe moves a span's canvas layer
+(`GroupSpan::offset` and `slide`), not its members, so the intermediate is not
+redrawn as it moves. The node publishes which span slots fail now
+(`CompositorStats::span_acquire_failing` and `span_pass_failing`, one bit per
+slot, rewritten at every draw with spans and cleared by a list without); the
+studio maps a slot to its group through the `GroupSpan::tag` of the last list
+sent (the run's first id, kept when `renew_group_run_ids` renews its public id)
+and reports `Allocation` or `Render` until it recovers. `Once` ends are taken
+with `Studio::take_group_scroll_finished` (event `group.scroll_finished`); the
+host routes `group.get` and `group.apply` (protocol 1.109). Still open: the
+hot-path measurements and human approval (performance budgets).
+During a Move transition a leaving group member is not drawn.
+Group Scroll uses group spans in the compositor's layer list, not a new
+per-group graph node. A list without spans costs one emptiness check per tick
+and has no group intermediates, passes or GPU work. Saved settings in a scene
+not rendered by any consumer are not active.
+
+- **Supported members.** A group contains source items of one scene, not scene
+  items or other groups. There is no recursive scene/group composition or
+  scene-depth requirement for a valid plan. Under ADR-0188, the scene model
+  rejects `ItemContent::Scene` with `SceneError::NestingUnsupported`, including
+  unsupported documents and snapshots, before binding. The compositor must not flatten or otherwise repair such content.
+- **Plan and geometry.** For each rendered group occurrence, walk its source
+  members bottom first. Compute the axis-aligned union of all direct
+  member picture boxes after their rotations, flips and
+  layout-space-to-canvas mapping, including hidden and cued members. It is the
+  window. Zero-phase parity is required within the window, not for pixels
+  outside it. This preserves the direct-member window and clipping in ADR-0185
+  decision 2.
+  Non-finite or empty bounds are invalid. Let `(x0,y0)` be the floor of the
+  minimum corner and `(x1,y1)` the ceiling of the maximum corner, in destination
+  pixels; the texture is `(x1-x0, y1-y0)` and its origin is `(x0,y0)`. Keep the
+  original fractional window as a clip, not as a rounded layout edit. The
+  member-to-texture transform is its existing destination transform translated
+  by `(-x0,-y0)`. This alignment permits an unshifted sample at destination
+  pixel centres without another aspect fit or an additional resampling scale.
+- **Composite.** Clear the intermediate `Rgba16Float` texture to transparent
+  black, then draw the existing member pictures source-over in their original
+  order, using their crops, shapes, borders, per-item Scroll and effective
+  opacities. Apply each member's effective opacity before blending, not as a
+  separate opacity on the completed group. Clip to the original group window.
+  Transparent gaps stay transparent. At `Inside` and zero phase the picture
+  within the window matches direct member drawing, subject to `Rgba16Float` rounding.
+  Compare the two paths in a fixed eight-overlapping-layer fixture to within
+  `1/1024` per linear colour and alpha component; include fractional positions,
+  flips, rotation and translucent overlaps.
+- **Scroll.** The intermediate picture fills the window exactly; the strip's
+  picture length and window length are both the window length along its axis,
+  regardless of rounded texture dimensions. It is never treated as the 2-by-2
+  colour-fill special case. Apply the existing direction, gap, repeat, start,
+  fade and smoothstep ramp rules in group layout units. The host keeps one
+  closed-form f64 `ScrollRun`, keyed by `(canvas, originating scene, group,
+  settings generation)` (ADR-0187). Normalise negative zero before comparing
+  finite settings for a no-op edit. Each effective saved settings edit,
+  including Undo and Redo, gets a fresh session-only generation; the no-op
+  does not. A snapshot captures its settings and generation together and does
+  not look them up again from the edited scene. Duplicate or restored groups
+  get fresh generations. Generations survive studio restart, not collection
+  replacement, and the host's allocator never reuses them.
+  Position is the integral specified under Scrolling layers; `Loop` wraps with
+  `rem_euclid(window_length + gap)` and `Once` uses the existing non-wrapping
+  entry and exit rules. Scale the phase and lengths into each occurrence's
+  destination space; differently sized snapshots use the same unwrapped phase.
+  A membership or bounds edit keeps phase and uses the new period; a saved
+  settings edit creates a fresh run. Pause, resume, speed and restart follow
+  ADR-0150 and do not touch any member run. A studio restart moves anchors by
+  the signed difference between the old and new clocks.
+- **Snapshots.** A held program copy carries its original scene and group ids
+  independently of its temporary run-scene and item ids. Its membership,
+  layouts and group settings are frozen by the existing program hold; source
+  frames and source-owned settings remain live. Preview uses the edited scene's
+  snapshot. Equal keys share a phase, not a texture; each effective settings
+  edit forks the run even when returning to an older held value. A held copy captures each active cue's deadline when the hold
+  starts, mapping the original item id to its held item id. Its captured cues
+  expire on the studio clock independently of later Preview cue starts,
+  restarts, cancellations and item edits. A new Preview Show does not cue the
+  held Program. Deleting a source still removes its held item
+  under ADR-0063; retiring the hold drops its cue state. Audio and video use
+  the same snapshot-specific draw predicate. While active, cue deadlines use
+  the existing bounded wake mechanism; an empty set schedules no wake.
+  Timed transitions retain their outgoing layer snapshot; manual transitions
+  retain the existing live Program layers (ADR-0135), except for the captured
+  outgoing cue draw state and group Scroll settings described here. Both draw
+  the incoming snapshot by the existing transition rules. Other Program edits
+  in a manual transition remain live; freezing the cue state does not freeze
+  source frames or other Program layer changes. Capture the manual outgoing
+  cue state at the first `t > 0` that starts the transition, before the
+  incoming-ready wait. During that wait and the rest of the transition,
+  outgoing cues remain at that captured draw state; incoming and Preview cues
+  remain live. Timed transitions capture it at their outgoing snapshot.
+  The outgoing occurrence
+  retains its captured group settings and its matching
+  run key for the transition's lifetime; an edit to the saved settings cannot
+  change that snapshot's settings or run. Its cue draw state is frozen at
+  capture: a cue expiring or starting later does not change the outgoing
+  picture before the transition ends. Incoming and Preview use their own live
+  cues. Frozen layout and membership do not freeze source frames or group
+  phase.
+  Rehearsal samples its existing program and preview pictures. A hold *scene*
+  renders that scene live in its own role; a freeze-frame hold uses the already
+  captured output and creates no separate group snapshot. Today's replay ring
+  records encoded program frames and neither rebuilds a group snapshot nor
+  re-renders saved clips. A consumer leaving the schedule frees its
+  intermediates through `cool`; frame leases keep in-flight pictures alive.
+- **Completion.** A `Once` occurrence stops drawing when its own window is
+  exited. Report the shared run finished once all its currently rendered
+  occurrences have exited, at the first control-side wake that can establish
+  that fact. A later bounds or membership change preserves phase and recomputes
+  each occurrence's exit; it does not produce a second finished event for the
+  same run. A newly appearing, larger occurrence may therefore draw after that
+  event; restart or a new run is required for another event. Each run has the
+  control API's run-incarnation id, so a held run and a preview run
+  with different settings cannot be confused. Pause cancels or
+  recalculates the wake, and resume, speed, geometry and consumer changes
+  recalculate it. A moving or not-yet-exited occurrence cannot be declared
+  finished early.
+- **Spans.** The layer list carries an optional list of group spans next to
+  its layers; each names its member layer range, its canvas window and its
+  group Scroll record. The binder gives no span to a group with no drawn member.
+  The node draws each span's members into the span's intermediate (a span
+  pass), then samples it as one scrolling layer at the span's position in the
+  canvas pass, which draws the non-members plus one layer per span. Neither
+  pass exceeds the list length, already capped at `capacity` (`MAX_LAYERS`).
+  `Compositor` gains a pass into an intermediate of its own size with layer
+  records in the span's window space; today's canvas-size check still applies
+  to the canvas pass.
+- **Scroll records.** Member and group Scroll records together count against
+  `MAX_SCROLL_LAYERS`, at distinct offsets of the one `ScrollBinding`, assigned
+  bottom first in draw order with a span's own record before its members'.
+  Past the limit a layer draws nothing and counts in `unscrolled_layers`; a
+  span without a record gets no span pass and its members are not drawn. Each
+  pass is its own `render_scrolled` call with its own record write and submit;
+  `render_scrolled` gains a base record slot so a later pass does not overwrite
+  an earlier pass's records before its submit.
+- **Resources.** Under ADR-0062 decision 5's real-time exception, extended to a
+  span appearing or changing size, the node acquires one `Rgba16Float`
+  intermediate for that span from its own executor's pool, at most one acquire
+  per span per such event, and reuses it while the size is unchanged. The
+  sampling bind group comes from the pool; the wrap pipelines and
+  `ScrollBinding` are built on the control thread first (ADR-0150 decision 7).
+  `prepare` preallocates per-pass buffers from the node's existing capacity,
+  plus one extra layer list of that capacity for the canvas pass. Nothing else
+  allocates in `process`. On a size change or when a span leaves the list, the
+  node gives the texture back with `forget_texture`; `CompositorNode` gains a
+  `cool` that forgets its intermediates, so a scene leaving the schedule frees
+  them. No CPU readback.
+- **Limits.** Each intermediate is at most 8,388,608 pixels, at most
+  `MAX_CANVAS_SIDE` (16384) and the device's `max_texture_dimension_2d`
+  (passed to the binder) on a side. `group.apply` Scroll set refuses a window
+  over the first two with a reason; ordinary item edits are not preflighted.
+  The binder also caps each compositor at 4 spans and 16,777,216 summed span
+  pixels (128 MiB); a group past a limit or cap gets no span, bottom-most spans
+  keeping theirs. One render executor's compositors share its pool: today up
+  to four roles on `MAX_CANVASES` = 2 canvases, so at most 8 compositors, 32
+  pool slots and 1 GiB of intermediates. The owner accepts this bound; there is
+  no studio-wide budget, reservation or retirement proof.
+- **Failure.** A group without a span, a typed acquire error (`PoolFull` or
+  another `GpuError`) or a failed span pass draws that group transparent, never
+  its members separately; it is counted, reported in runtime health from the
+  control side (never logged from the render path), and does not affect other
+  layers or the rest of the bind. A failure invalidates the span's key so a
+  later tick retries. An out-of-memory wgpu does not return as a typed error
+  falls under the existing device-loss recovery; studio restart and collection
+  switch use the existing shutdown and release paths.
+- **Render on change.** A span pass runs only when a member's key changed
+  (member list, cue or visibility, geometry, crop, style, effective opacity,
+  frame identity or member animation, including per-item Scroll) or the
+  intermediate was re-acquired; otherwise the last intermediate is reused. In
+  the redraw-on-change check a span whose Scroll is still moving (`moving_at`
+  on the window frame) counts as moving, so the canvas pass redraws; paused or
+  finished group Scroll permits the existing skip.
+- **Required evidence.** A list without spans takes the existing path; scene
+  items are refused before binding; zero-phase parity, gaps, alpha, member
+  Scroll, hidden and cued members, fractional and oversized bounds, independent
+  canvas settings, held and transition snapshots, live controls and `Once` with
+  different occurrence bounds. No texture is allocated while unused, one is
+  reused while shown and freed on removal, size change and `cool`; a moving
+  group Scroll over unchanged members keeps moving under `OnChange` without a
+  span pass; an oversized group and a failed acquire draw transparent without
+  affecting other layers. Measure no group Scroll, saved but unshown, and one
+  and several active groups (CPU, GPU, memory) against the baseline on a named
+  machine; complete the hot-path checklist and obtain human approval.
 
 ### Encoder conversion (NV12, P010)
 
@@ -845,6 +1052,9 @@ impl CompositorNode {   // CompositorNode<R: ReadySignal = NoReady, D: Redraw = 
 - **Readers of a canvas.** A reader that only shows pictures (preview, a hold scene's export, a queue to another partition) keys on `(timestamp, sequence)` and does nothing for an unchanged canvas. A reader that must put out one frame per tick (the video export, the virtual camera) sends the last picture again with the tick's time without converting it ([io-nodes.md](io-nodes.md)). Every producer of a layer picture must change its key when its pixels change: capture sources take a new timestamp per frame; stills, text, browser pages and filters take a new generation per new picture (ADR-0117 decision 4).
 - **A/B switch.** `RBS_RENDER_EVERY_TICK=1` makes `into_node` build `EveryTick` compositors, which draw every tick as before render on change. It is read once per process and is a diagnostic, not a user setting.
 - Layer lists reach the node through the graph runtime's parameter channel ([ADR-0023](../adr/0023-node-parameter-channels.md)): the latest list wins, and the control side reuses the replaced list with `LayerSender::recycle` before `send`, so steady edits allocate nothing on either side. Fades are sent once as targets with timing (ADR-0023, decision 7), not as one list per frame.
+- **Group Show (ADR-0193).** Group Show (`group.apply`) only starts member
+  cues on the control thread, like `item.show`; the compositor receives ordinary
+  layer lists. There is no staged bank, acknowledgment or commit epoch.
 - Growing past `capacity` needs a new node (the compositor's layer buffer is sized in `prepare`, a non-real-time call). The application picks a capacity with room for the scene, for example the scene's layer count rounded up to a multiple of 16.
 
 ### Readback (fallback only)

@@ -8,7 +8,7 @@ import { SettingsCard, SettingBlock, SettingsStatus, SettingsNotice, SettingsCal
 import { CommandMenu } from "context_menu.slint";
 import { Section, BrowserFields, ActivityFields } from "browser_fields.slint";
 import { ReplayControls, ReplaySettings } from "replay.slint";
-import { FilterFieldData, FilterLevels, FilterData, SourceData, SceneData, LookData, SampleData, KindData, MarkData, ModeData, SyncMeasureData, AttributeGroupRow, AttributeTargetRow, AttributesData, TextData, BrowserData, SourceSettingsData, SourceTargetData, MeterRow, ScaleMark, LoudnessData, DestinationRow, EncoderData, TokenRow, AiActionRow, StatRow, EntryRow, PermissionRowData, Studio, Sections, Experience, IconName, Icons, SizeBand, Overlays } from "base/types.slint";
+import { FilterFieldData, FilterLevels, FilterData, GroupPropsData, SourceData, SceneData, LookData, SampleData, KindData, MarkData, ModeData, SyncMeasureData, AttributeGroupRow, AttributeTargetRow, AttributesData, TextData, BrowserData, SourceSettingsData, SourceTargetData, MeterRow, ScaleMark, LoudnessData, DestinationRow, EncoderData, TokenRow, AiActionRow, StatRow, EntryRow, PermissionRowData, Studio, Sections, Experience, IconName, Icons, SizeBand, Overlays } from "base/types.slint";
 export { FilterFieldData, FilterLevels, FilterData, SourceData, SceneData, LookData, SampleData, KindData, MarkData, ModeData, SyncMeasureData, AttributeGroupRow, AttributeTargetRow, AttributesData, TextData, BrowserData, SourceSettingsData, SourceTargetData, MeterRow, ScaleMark, LoudnessData, DestinationRow, EncoderData, TokenRow, AiActionRow, StatRow, EntryRow, PermissionRowData, Studio }
 
 // The audio-only strip above a program picture. The native picture starts below it, so
@@ -4959,6 +4959,275 @@ component SourceProperties inherits VerticalLayout {
     }
 }
 
+// The Scroll of a whole group (ADR-0185): the group's picture moves as one. The same
+// fields as an item's Scroll, without When it comes back.
+component GroupScrollFields inherits FeatureSection {
+    in property <GroupPropsData> data;
+    property <bool> can: data.scroll-on && data.scroll-why == 0;
+    title: @tr("Scroll");
+    id: "properties.scroll";
+    hint: @tr("Moves the group's picture as one, like a news ticker. The members keep their own Scroll.");
+    on: data.scroll-on;
+    // A refused switch goes back to what the group has: every read changes `rev`.
+    changed data => { root.on = data.scroll-on; }
+    toggled(on) => { root.set(on, data.scroll-dir, data.scroll-speed, data.scroll-gap, data.scroll-repeat, data.scroll-start, data.scroll-fade, 0); }
+    function set(on: bool, dir: int, speed: float, gap: float, repeat: int, start: int, fade: float, gesture: int) {
+        Studio.group-set-scroll(on, dir, speed, gap, repeat, start, fade, gesture);
+    }
+    if data.scroll-why == 1: Hint { text: @tr("A member has no picture, so the group cannot scroll."); }
+    if data.scroll-why == 2: Hint { text: @tr("The group has no picture area to scroll."); }
+    Field {
+        label: @tr("Direction");
+        SegmentedControl {
+            label: @tr("Scroll direction of {}", data.name);
+            options: [@tr("Left"), @tr("Right"), @tr("Up"), @tr("Down")];
+            index: data.scroll-dir;
+            enabled: root.can;
+            selected(i) => { if i != data.scroll-dir { root.set(true, i, data.scroll-speed, data.scroll-gap, data.scroll-repeat, data.scroll-start, data.scroll-fade, 0); } }
+        }
+    }
+    HorizontalLayout {
+        spacing: Tokens.size-field-gap;
+        Field {
+            horizontal-stretch: 1;
+            preferred-width: 0px;
+            label: @tr("Speed");
+            NumberField {
+                label: @tr("Scroll speed of {} in pixels per second", data.name);
+                unit: @tr("px/s");
+                value: data.scroll-speed;
+                enabled: root.can;
+                edited(v) => { root.set(true, data.scroll-dir, max(1, min(4000, v)), data.scroll-gap, data.scroll-repeat, data.scroll-start, data.scroll-fade, self.gesture); }
+            }
+        }
+        Field {
+            horizontal-stretch: 1;
+            preferred-width: 0px;
+            label: @tr("Gap");
+            NumberField {
+                label: @tr("Gap between copies of {} in pixels", data.name);
+                unit: @tr("px");
+                value: data.scroll-gap;
+                enabled: root.can;
+                edited(v) => { root.set(true, data.scroll-dir, data.scroll-speed, max(0, min(16384, v)), data.scroll-repeat, data.scroll-start, data.scroll-fade, self.gesture); }
+            }
+        }
+    }
+    HorizontalLayout {
+        spacing: Tokens.size-field-gap;
+        Field {
+            horizontal-stretch: 1;
+            preferred-width: 0px;
+            label: @tr("Edge fade");
+            NumberField {
+                label: @tr("Edge fade of {} in pixels", data.name);
+                unit: @tr("px");
+                value: data.scroll-fade;
+                enabled: root.can;
+                edited(v) => { root.set(true, data.scroll-dir, data.scroll-speed, data.scroll-gap, data.scroll-repeat, data.scroll-start, max(0, min(2048, v)), self.gesture); }
+            }
+        }
+        Rectangle { horizontal-stretch: 1; preferred-width: 0px; }
+    }
+    Field {
+        label: @tr("Repeat");
+        SegmentedControl {
+            label: @tr("Scroll repeat of {}", data.name);
+            options: [@tr("Loop"), @tr("Once")];
+            index: data.scroll-repeat;
+            enabled: root.can;
+            selected(i) => { if i != data.scroll-repeat { root.set(true, data.scroll-dir, data.scroll-speed, data.scroll-gap, i, data.scroll-start, data.scroll-fade, 0); } }
+        }
+    }
+    Field {
+        label: @tr("Start");
+        SegmentedControl {
+            label: @tr("Where the scroll of {} starts", data.name);
+            options: [@tr("Inside"), @tr("Outside")];
+            index: data.scroll-start;
+            enabled: root.can;
+            selected(i) => { if i != data.scroll-start { root.set(true, data.scroll-dir, data.scroll-speed, data.scroll-gap, data.scroll-repeat, i, data.scroll-fade, 0); } }
+        }
+    }
+    // Live, not undone: a refusal (no running scroll) shows in the error bar.
+    HorizontalLayout {
+        spacing: Tokens.size-field-gap;
+        Field {
+            horizontal-stretch: 1;
+            preferred-width: 0px;
+            label: @tr("Live speed");
+            NumberField {
+                live: false;
+                label: @tr("Live scroll speed of {} in pixels per second", data.name);
+                unit: @tr("px/s");
+                value: data.run-speed;
+                enabled: data.scroll-on;
+                edited(v) => { Studio.group-scroll-live(3, max(1, min(4000, v))); }
+            }
+        }
+        Rectangle { horizontal-stretch: 1; preferred-width: 0px; }
+    }
+    HorizontalLayout {
+        spacing: Tokens.space-1;
+        alignment: start;
+        Button {
+            lead: data.run-paused ? IconName.play : IconName.pause;
+            text: data.run-paused ? @tr("Resume") : @tr("Pause");
+            kind: "secondary";
+            enabled: data.scroll-on;
+            accessible-name: data.run-paused ? @tr("Resume the scroll of {}", data.name) : @tr("Pause the scroll of {}", data.name);
+            clicked => { Studio.group-scroll-live(data.run-paused ? 1 : 0, 0); }
+        }
+        Button {
+            lead: IconName.reset;
+            text: @tr("Restart");
+            kind: "secondary";
+            enabled: data.scroll-on;
+            accessible-name: @tr("Restart the scroll of {}", data.name);
+            clicked => { Studio.group-scroll-live(2, 0); }
+        }
+        VerticalLayout {
+            alignment: center;
+            InfoHint {
+                label: @tr("Pause and Restart");
+                text: @tr("Live, not undone. They also move the same scroll on the program.");
+            }
+        }
+    }
+}
+
+// A whole group selected in Sources (ADR-0184): its name, then what applies to every
+// member at once: Position and size of the covering box, Timed show and the group's
+// Scroll. Crop, shape, border, opacity, rotation, filters and source settings stay
+// with each member: Ctrl or Cmd+click a member to edit it alone.
+component GroupProperties inherits VerticalLayout {
+    in property <GroupPropsData> data;
+    init => { Studio.properties-folds = "properties.position,properties.timed-show,properties.scroll"; }
+    spacing: Tokens.size-section-gap;
+    alignment: start;
+    VerticalLayout {
+        spacing: Tokens.size-field-gap;
+        HorizontalLayout {
+            spacing: Tokens.size-field-gap;
+            VerticalLayout {
+                alignment: center;
+                Icon { name: Icons.named("layout"); ink: Theme.text-primary; }
+            }
+            Text {
+                horizontal-stretch: 1;
+                text: data.name;
+                color: Theme.text-primary;
+                font-size: Tokens.type-label-size;
+                font-weight: Tokens.type-title-weight;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            Text {
+                text: @tr("Group");
+                color: Theme.text-secondary;
+                font-size: Tokens.type-caption-size;
+                vertical-alignment: center;
+            }
+        }
+        Hint { text: @tr("Changes here apply to every member. Ctrl or Cmd+click a member to edit it alone."); }
+    }
+    if data.can-vertical: SegmentedControl {
+        label: @tr("Canvas of {}", data.name);
+        options: [@tr("Main"), @tr("Vertical")];
+        index: data.vertical ? 1 : 0;
+        selected(i) => { Studio.set-props-vertical(i == 1); }
+    }
+    if data.vertical: Hint { text: @tr("Changes here apply to the vertical canvas only."); }
+    Section {
+        title: @tr("Position and size");
+        id: "properties.position";
+        hint: @tr("The box that covers every member, in canvas pixels. The members keep their places inside it.");
+        if data.box-why == 1: Hint { text: @tr("A member is locked. Unlock it to move the group."); }
+        if data.box-why == 2: Hint { text: @tr("The group has no picture to place."); }
+        HorizontalLayout {
+            spacing: Tokens.size-field-gap;
+            NumberField {
+                horizontal-stretch: 1;
+                preferred-width: 0;
+                prefix: @tr("X");
+                label: @tr("Position X of {}", data.name);
+                value: data.x;
+                enabled: data.box-why == 0;
+                edited(v) => { Studio.group-set-box(v, data.y, data.w, data.h, self.gesture); }
+            }
+            NumberField {
+                horizontal-stretch: 1;
+                preferred-width: 0;
+                prefix: @tr("Y");
+                label: @tr("Position Y of {}", data.name);
+                value: data.y;
+                enabled: data.box-why == 0;
+                edited(v) => { Studio.group-set-box(data.x, v, data.w, data.h, self.gesture); }
+            }
+        }
+        HorizontalLayout {
+            spacing: Tokens.size-field-gap;
+            NumberField {
+                horizontal-stretch: 1;
+                preferred-width: 0;
+                prefix: @tr("W");
+                label: @tr("Width of {}", data.name);
+                value: data.w;
+                enabled: data.box-why == 0;
+                edited(v) => { Studio.group-set-box(data.x, data.y, v, data.h, self.gesture); }
+            }
+            NumberField {
+                horizontal-stretch: 1;
+                preferred-width: 0;
+                prefix: @tr("H");
+                label: @tr("Height of {}", data.name);
+                value: data.h;
+                enabled: data.box-why == 0;
+                edited(v) => { Studio.group-set-box(data.x, data.y, data.w, v, self.gesture); }
+            }
+        }
+    }
+    Section {
+        title: @tr("Timed show");
+        id: "properties.timed-show";
+        hint: @tr("Show now shows every hidden member for its own duration at once, then hides it again without Undo. A new duration sets every member.");
+        HorizontalLayout {
+            spacing: Tokens.size-field-gap;
+            NumberField {
+                live: false;
+                horizontal-stretch: 1;
+                preferred-width: 0;
+                label: data.show-mixed ? @tr("Show duration of {} in milliseconds, mixed", data.name) : @tr("Show duration of {} in milliseconds", data.name);
+                unit: @tr("ms");
+                value: data.show-mixed ? 0 : data.show-for-ms;
+                edited(v) => { Studio.group-set-show-for(max(0, min(600000, round(v)))); }
+            }
+        }
+        if data.show-mixed: Hint { text: @tr("Mixed: the members have different durations."); }
+        HorizontalLayout {
+            spacing: Tokens.size-field-gap;
+            Button {
+                lead: IconName.eye;
+                text: @tr("Show now");
+                kind: "primary";
+                dense: true;
+                enabled: data.show-why == 0;
+                clicked => { Studio.group-show(); }
+            }
+            Button {
+                lead: IconName.eraser;
+                text: @tr("Clear");
+                dense: true;
+                enabled: data.show-mixed || data.show-for-ms > 0;
+                clicked => { Studio.group-set-show-for(0); }
+            }
+        }
+        if data.show-why == 1: Hint { text: @tr("Every member is shown already."); }
+        if data.show-why == 2: Hint { text: @tr("A hidden member has no show duration. Set one first."); }
+    }
+    GroupScrollFields { data: data; }
+}
+
 // The selected source's properties (mockup E): its icon, name and type, its name as a
 // field, then the Transform, Filters and Audio tabs (ADR-0062). A source without a
 // picture has only the Audio tab, so no tab control shows. The tab picked last applies
@@ -4968,6 +5237,8 @@ export component PropertiesPanel inherits Rectangle {
     in property <int> live-state;
     background: Theme.surface-raised;
     property <bool> any: Studio.properties-source >= 0;
+    // A selected whole group replaces its first member's properties (ADR-0184).
+    property <bool> group: Studio.group-props.length > 0 && Studio.group-props[0].anchor == Studio.selected-source;
     if !any: EmptyState {
         width: parent.width;
         height: parent.height;
@@ -4995,9 +5266,12 @@ export component PropertiesPanel inherits Rectangle {
             // The bar sits in the trailing padding, so both sides look alike.
             padding-right: max(0px, Tokens.size-panel-pad - props.bar-room);
             alignment: start;
+            for g in Studio.group-props: VerticalLayout {
+                if root.group: GroupProperties { data: g; }
+            }
             for s in Studio.sources: VerticalLayout {
                 spacing: Tokens.size-section-gap;
-                if s.id == Studio.properties-source: SourceProperties {
+                if s.id == Studio.properties-source && !root.group: SourceProperties {
                     data: s;
                     live-state: root.live-state;
                 }

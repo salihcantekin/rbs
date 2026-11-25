@@ -28,6 +28,11 @@ use crate::types::SourceLevels;
 
 /// The protocol version this server speaks.
 ///
+/// 1.109 defers nested scenes (ADR-0188): a scene placement is refused with
+/// `invalid_params`, and OBS import skips and reports one.
+/// 1.108 adds group Properties (ADR-0184, ADR-0185, ADR-0186, ADR-0193): `group.get`,
+/// `group.apply` and the topics `group.changed`, `group.render_state` and
+/// `group.scroll_finished`; `group.create` refuses grouped items.
 /// 1.102 adds the slide show source (ADR-0171 decision 9): the kind `slideshow`,
 /// `media.next` and `media.previous`, and `index` and `count` on a media state
 /// (1.101 is ADR-0168's).
@@ -134,7 +139,7 @@ use crate::types::SourceLevels;
 /// `record.start`, `tracks` on a running recording and `record_separately` on a source.
 /// 1.45 adds `"wav"` and `"flac"` on a recording profile (the mix with no picture).
 /// 1.44 is the vertical canvas layouts.
-pub const PROTOCOL_VERSION: &str = "1.107";
+pub const PROTOCOL_VERSION: &str = "1.109";
 
 /// Caps and timeouts (ADR-0044 decision 12). The defaults are the version 1 values in
 /// the control API spec.

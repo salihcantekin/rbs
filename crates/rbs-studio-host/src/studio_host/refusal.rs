@@ -41,9 +41,11 @@ impl Refusal {
             | SceneError::UnknownItem(_)
             | SceneError::UnknownFilter(_)
             | SceneError::UnknownGroup(_) => Self::NotFound(edit_error(e)),
-            SceneError::DuplicateName(_) | SceneError::StingerPlaced(_) => {
-                Self::Conflict(edit_error(e))
-            }
+            SceneError::DuplicateName(_)
+            | SceneError::StingerPlaced(_)
+            | SceneError::ItemAlreadyGrouped(_)
+            | SceneError::AmbiguousCompanion
+            | SceneError::CompanionExists(_) => Self::Conflict(edit_error(e)),
             SceneError::EmptyName
             | SceneError::InvalidVolume
             | SceneError::InvalidSyncOffset
@@ -53,7 +55,9 @@ impl Refusal {
             | SceneError::ChromeNotDisplay
             | SceneError::GroupTooSmall(_)
             | SceneError::GroupScope
+            | SceneError::PictureNotPlaced(_)
             | SceneError::GroupNotContiguous(_)
+            | SceneError::NestingUnsupported
             | SceneError::IndexOutOfRange(_) => Self::Invalid(edit_error(e)),
             _ => Self::Failed(edit_error(e)),
         }
@@ -77,5 +81,33 @@ impl From<CropRefusal> for Refusal {
             CropRefusal::NoPicture | CropRefusal::Conflict(_) => Refusal::Conflict(text),
             CropRefusal::Failed(_) => Refusal::Failed(text),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rbs_scene::model::ItemId;
+
+    #[test]
+    fn grouping_conflicts_are_reported_as_conflicts() {
+        for error in [
+            SceneError::ItemAlreadyGrouped(ItemId::from_raw(1)),
+            SceneError::AmbiguousCompanion,
+        ] {
+            assert!(matches!(Refusal::of(&error), Refusal::Conflict(_)));
+            assert_eq!(Refusal::of(&error).text(), error.to_string());
+        }
+    }
+
+    #[test]
+    fn a_scene_placement_is_invalid_params_in_plain_words() {
+        let error = SceneError::NestingUnsupported;
+        let refusal = Refusal::of(&error);
+        assert!(matches!(refusal, Refusal::Invalid(_)));
+        assert_eq!(
+            refusal.text(),
+            "Scenes cannot be placed inside other scenes."
+        );
     }
 }

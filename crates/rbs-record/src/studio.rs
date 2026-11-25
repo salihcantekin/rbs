@@ -9,6 +9,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
+pub use group_scroll::{
+    GroupFailure, GroupFailureReason, GroupIds, GroupOccurrence, GroupRunKey, GroupRunState,
+    GroupRuns, GroupScrollFinished,
+};
 use rbs_audio::{
     AudioGraphConfig, EncoderNode, InputParams, InputStats, LevelMeter, MeterSinkNode, MixerNode,
     MixerParams, MixerStats, Strip,
@@ -57,11 +61,11 @@ use rbs_sources::text_live::{Language, LiveInputs, RunTime};
 use rbs_sources::text_worker::{ProblemSlot, TextClock, TextProblem, TextWorker};
 use rbs_sources::{
     BrowserBudget, BrowserClaim, BrowserControlSidecar, BrowserTree, InstanceContext, ShowClass,
-    SourceInstance, SourceTypes, filter_values_lenient, node_layers,
+    SourceInstance, SourceTypes, filter_values_lenient,
 };
 use rbs_transport::{ReconnectPolicy, Secret, TransportConfig, TransportInput};
 use scroll::CompositorPort;
-pub use scroll::{ScrollControl, ScrollFinished, ScrollRefused};
+pub use scroll::{ScrollControl, ScrollFinished, ScrollHandover, ScrollRefused};
 
 use crate::timed_show::ShowCues;
 
@@ -78,8 +82,13 @@ mod adopt;
 mod audio_chain;
 mod browser_page;
 mod buses;
+mod cues;
+pub use cues::HeldShowCues;
 mod estimate_plan;
+mod group_scroll;
+mod group_support;
 mod health;
+use group_support::{program_scene, with_followers};
 mod vcam;
 use adopt::{adopt_slideshow, render_instance, text_worker};
 pub use estimate_plan::{PlannedOutput, StartPlanRequest};
@@ -207,19 +216,14 @@ pub struct StudioSettings {
     /// The scroll runs of the studio this one replaces, so tickers go on where they
     /// were (ADR-0150 decision 5). `None`: every run starts at its start.
     pub scroll_runs: Option<ScrollHandover>,
-}
-
-/// Scroll runs handed from a studio to the one that replaces it (ADR-0150 decision 5).
-#[derive(Debug, Clone, PartialEq)]
-pub struct ScrollHandover {
-    /// The runs, on the old studio's clock.
-    pub runs: ScrollRuns,
-    /// The old clock's time when they were taken; the new studio's start time is the
-    /// same instant on its clock, so the runs move by the difference (either sign).
-    pub at: Timestamp,
-    /// When each lingering source's linger ends, on the old clock; moved the same way
-    /// (ADR-0152 decision 8).
-    pub lingers: BTreeMap<SourceId, Timestamp>,
+    /// Held-copy cues on this engine's clock, applied before the first graph bind.
+    /// `None` for an ordinary start.
+    pub held_cues: Option<HeldShowCues>,
+    /// The scene each held copy stands for (ADR-0185 decision 4), set before the first
+    /// bind so a held Program shares its original's group runs from the first frame.
+    pub scene_origins: BTreeMap<SceneId, SceneId>,
+    /// The host's group generation and run-id allocators (ADR-0187); a new one by default.
+    pub group_ids: GroupIds,
 }
 
 impl StudioSettings {
@@ -237,6 +241,9 @@ impl StudioSettings {
             extra_canvases: Vec::new(),
             media_pause_release: rbs_nodes::MEDIA_PAUSE_RELEASE,
             scroll_runs: None,
+            held_cues: None,
+            scene_origins: BTreeMap::new(),
+            group_ids: GroupIds::default(),
         }
     }
 }
@@ -1079,10 +1086,6 @@ struct Mixer {
     master: Arc<LevelMeter>,
 }
 
-fn program_scene(collection: &SceneCollection, canvas: CanvasId) -> Option<SceneId> {
-    collection.canvas(canvas).and_then(|canvas| canvas.program)
-}
-
 /// The program scene of one canvas, running.
 ///
 /// [`Studio::start`] binds the collection, builds the canvas's compositor and mixer and,
@@ -1106,6 +1109,8 @@ pub struct Studio {
     collection: SceneCollection,
     /// Timed-show cues (ADR-0105). Session only: not saved, empty after a restart.
     cues: ShowCues,
+    /// Captured deadlines for the held program's remapped item ids.
+    held_cues: Option<HeldShowCues>,
     compositor: NodeId,
     layers: CompositorPort,
     bound: BoundCompositor,
@@ -1114,6 +1119,7 @@ pub struct Studio {
     /// The scroll run of every key a list draws (ADR-0150 decision 5). Empty while
     /// nothing scrolls.
     scroll_runs: ScrollRuns,
+    group_runs: GroupRuns,
     /// Ends of `Once` runs not taken yet ([`Studio::take_scroll_finished`]).
     scroll_finished: Vec<ScrollFinished>,
     mixer: Option<Mixer>,
@@ -1460,18 +1466,17 @@ impl Studio {
                 return Err(RecordError::CanvasRate(extra.canvas));
             }
         }
-
         let mut graph = GraphDescription::new();
-        let mut binder = linger::binder(sources, &engine, settings.scroll_runs.as_ref());
+        let mut binder = linger::binder(sources, &engine, settings.scroll_runs.as_ref())
+            .with_span_limits(group_scroll::span_limits(&gpu));
         if settings.audio {
             binder = binder.with_audio(parts.audio);
         }
-        let report = binder
-            .sync(collection, &mut graph)
-            .map_err(RecordError::Bind)?;
+        let (held_cues, items, report) =
+            cues::initial_bind(&mut binder, &mut graph, collection, settings, &engine)?;
         if strictness == Strictness::Strict {
             let shown = collection
-                .visible_sources(canvas_id, program)
+                .visible_sources_cued(canvas_id, program, &items)
                 .map_err(|_| RecordError::NoProgram(canvas_id))?;
             let fatal: Vec<BindProblem> = report
                 .problems
@@ -1611,16 +1616,10 @@ impl Studio {
         let audio_worker = engine.worker_stats(parts.audio);
         // Runs of the studio this one replaces go on from where they were, moved to
         // this engine's clock (ADR-0150 decision 5).
-        let scroll_runs = match &settings.scroll_runs {
-            Some(h) => {
-                let mut runs = h.runs.clone();
-                runs.moved(h.at, engine.clock().now());
-                runs
-            }
-            None => ScrollRuns::new(),
-        };
+        let (scroll_runs, group_runs) = scroll::handed_over(settings, engine.clock().now());
         let mut settings = settings.clone();
         settings.scroll_runs = None;
+        settings.held_cues = None;
         let settings = &settings;
         let mut studio = Self {
             engine,
@@ -1631,10 +1630,12 @@ impl Studio {
             graph,
             collection: Cow::clone(collection).into_owned(),
             cues: ShowCues::new(),
+            held_cues,
             compositor: compositor_id,
             layers,
             gpu: Arc::clone(&gpu),
             scroll_runs,
+            group_runs,
             scroll_finished: Vec::new(),
             bound,
             mixer,
@@ -1828,7 +1829,7 @@ impl Studio {
         }
         // The checks of an update run before anything changes.
         let followed = with_followers(collection, &mut self.last_follow.clone());
-        self.check_collection(&followed)?;
+        self.check_collection_shape(&followed)?;
         let run = self.extras.remove(at);
         self.settings.extra_canvases.retain(|e| e.canvas != canvas);
         self.last_follow.remove(&canvas);
@@ -1901,7 +1902,7 @@ impl Studio {
             return Ok(Updated::default());
         }
         let followed = with_followers(collection, &mut self.last_follow.clone());
-        self.check_collection(&followed)?;
+        self.check_collection_shape(&followed)?;
         let mut leaving = None;
         match desc {
             Some(desc) => {
@@ -1959,7 +1960,7 @@ impl Studio {
     ) -> Result<(PictureId, Updated), RecordError> {
         let compositor = self.program_compositor(canvas)?;
         let followed = with_followers(collection, &mut self.last_follow.clone());
-        self.check_collection(&followed)?;
+        self.check_collection_shape(&followed)?;
         let (node, stats) = add_picture(&mut self.engine, &mut self.graph, compositor, desc)?;
         let id = PictureId(self.next_picture);
         self.next_picture += 1;
@@ -2212,7 +2213,7 @@ impl Studio {
     /// What an update needs of `collection` before anything changes: the main canvas and
     /// the running further canvases keep size and rate and have a program scene (without
     /// one the binder would retire the compositor that runs).
-    fn check_collection(&self, collection: &SceneCollection) -> Result<(), RecordError> {
+    fn check_collection_shape(&self, collection: &SceneCollection) -> Result<(), RecordError> {
         let canvas = collection
             .canvas(self.settings.canvas)
             .ok_or(RecordError::UnknownCanvas(self.settings.canvas))?;
@@ -2261,7 +2262,7 @@ impl Studio {
         }
         self.transition_scroll_keys(&mut keys);
         // Items at opacity 0 are not in the lists; their runs go on (decision 5).
-        let cued = self.cues.items();
+        let cued = self.cued_items();
         let canvases =
             std::iter::once(self.settings.canvas).chain(self.extras.iter().map(|e| e.canvas));
         for canvas in canvases {
@@ -2296,7 +2297,7 @@ impl Studio {
                 self.glide.as_ref(),
                 now,
                 self.settings.canvas,
-                &self.scroll_runs,
+                (&self.scroll_runs, &self.group_runs),
             ),
         };
         let views: Vec<(CanvasId, BoundCompositor)> = self
@@ -2314,27 +2315,25 @@ impl Studio {
                     self.glide.as_ref(),
                     now,
                     canvas,
-                    &self.scroll_runs,
+                    (&self.scroll_runs, &self.group_runs),
                 ),
             };
             extras.push((canvas, layers));
         }
-        self.layers.send(main, &self.gpu);
+        self.layers.send_list(main, &self.gpu);
+        let runs = (&self.scroll_runs, &self.group_runs);
+        let list = |b: &BoundCompositor| group_scroll::node_list(b, plan, runs.0, runs.1);
         if let Some(preview) = &mut self.scene_preview {
-            preview.layers.send(
-                node_layers(&preview.bound, plan, &self.scroll_runs),
-                &self.gpu,
-            );
+            preview.layers.send_list(list(&preview.bound), &self.gpu);
         }
         for run in self.hold_scenes.values_mut() {
             if let Some(view) = run.view_mut() {
-                view.layers
-                    .send(node_layers(&view.bound, plan, &self.scroll_runs), &self.gpu);
+                view.layers.send_list(list(&view.bound), &self.gpu);
             }
         }
         for (canvas, layers) in extras {
             if let Some(extra) = self.extras.iter_mut().find(|extra| extra.canvas == canvas) {
-                extra.view.layers.send(layers, &self.gpu);
+                extra.view.layers.send_list(layers, &self.gpu);
             }
         }
     }
@@ -2345,10 +2344,10 @@ impl Studio {
         sources: &SourceTypes,
         add: Option<ExtraCanvas>,
     ) -> Result<Updated, RecordError> {
-        let followed = with_followers(collection, &mut self.last_follow);
+        let mut next_follow = self.last_follow.clone();
+        let followed = with_followers(collection, &mut next_follow);
         let collection = &followed;
         // A new program or preview scene ends a rehearsal at once (ADR-0135 decision 13).
-        self.end_rehearsal_for(collection);
         let old_layers = self.layer_snapshot();
         // The same picture under another id: the "old" program is the new one, so no
         // change is noted (`update_same_picture`).
@@ -2363,8 +2362,7 @@ impl Studio {
             .iter()
             .map(|extra| (extra.canvas, program_scene(was, extra.canvas)))
             .collect();
-        self.check_collection(collection)?;
-        self.check_hold_scenes_in(collection);
+        self.check_collection_shape(collection)?;
         let fps = self.fps;
         let new = match add {
             Some(extra) => {
@@ -2381,6 +2379,9 @@ impl Studio {
             }
             None => None,
         };
+        self.last_follow = next_follow;
+        self.end_rehearsal_for(collection);
+        self.check_hold_scenes_in(collection);
         let effective = self.effective_transition(collection);
         self.note_transitions(collection, &effective, old_main, &old_extra, &old_layers);
         self.drop_gone_stinger(collection);
@@ -2646,8 +2647,7 @@ impl Studio {
         let bound: BTreeSet<SourceId> = self.entries.iter().map(|e| e.source).collect();
         self.browser_controls
             .retain(|source, _| bound.contains(source));
-        // One budget and one helper tree from the composition root (ADR-0109).
-        // Captures follow the main canvas's size and rate (every canvas runs at it).
+        // Shared browser budget and helper tree (ADR-0109); captures use canvas size/rate.
         let (width, height) = self.size;
         let ctx = InstanceContext::new(self.engine.clock(), self.settings.audio_graph)
             .with_browser(Arc::clone(&self.browser_budget), self.browser_tree.clone())
@@ -2670,7 +2670,7 @@ impl Studio {
             }
             // A rename updates the collection without rebuilding the node: keep the
             // name the UI and diagnostics show in step with it.
-            if let Some(source) = collection.source(entry.source) {
+            if let Some(source) = self.collection.source(entry.source) {
                 entry.state.name = source.name.clone();
             }
             entry.scheduled = in_plan(&self.binder, entry, &scheduled);
@@ -2742,11 +2742,11 @@ impl Studio {
                 SourceInstance::Audio(a) => {
                     entry.state.adapter = a.adapter;
                     entry.state.target = a.endpoint.as_str().to_owned();
-                    let meter = Arc::clone(self.meters.entry(entry.source).or_insert_with(|| {
-                        Arc::new(LevelMeter::new(
-                            self.settings.audio_graph.format.channels.channels(),
-                        ))
-                    }));
+                    let meter = meters::for_source(
+                        &mut self.meters,
+                        entry.source,
+                        &self.settings.audio_graph,
+                    );
                     let partition = self.settings.partitions.audio;
                     let mut offset = a.offset;
                     // Sent before the node runs, so its first block already has it. The
@@ -2944,6 +2944,7 @@ impl Studio {
         // like any other (ADR-0106).
         let mut trimmed = None;
         let shape = self.transition_mix();
+        meters::ensure_sound_meters(self, &scheduled);
         if let (Some(mixer), Some(bound)) = (&mut self.mixer, &self.bound_mixer) {
             let live: BTreeSet<SourceId> = self.entries.iter().map(|e| e.source).collect();
             self.meters.retain(|s, _| live.contains(s));
@@ -3789,14 +3790,19 @@ impl Studio {
         let hold = self.hold_requests();
         let outgoing = self.outgoing_scenes();
         if self.cues.is_empty()
+            && self.held_cues.as_ref().is_none_or(HeldShowCues::is_empty)
             && hold.is_empty()
             && outgoing.is_empty()
             && self.shown_by.is_empty()
         {
             return self.binder.sync(collection, &mut self.graph);
         }
-        let items = self.cues.items();
-        let mut sources = collection.cued_drawn_sources(&items);
+        let items = self.cued_items();
+        let mut sources = if outgoing.values().any(|scene| scene.program_cues.is_some()) {
+            BTreeSet::new()
+        } else {
+            collection.cued_drawn_sources(&items)
+        };
         // An open Interact window raises its page to Shown (ADR-0152 decision 2).
         sources.extend(
             self.shown_by
@@ -3814,25 +3820,6 @@ impl Studio {
         )
     }
 
-    /// Starts or restarts a timed show. Does nothing when `visible` is true or
-    /// `show_for_ms` is absent (ADR-0105). The deadline is `now + show_for_ms` on
-    /// the studio clock. Returns whether a cue is now running for `item`.
-    pub fn show_cue(&mut self, item: ItemId, visible: bool, show_for_ms: Option<u32>) -> bool {
-        let now = self.engine.clock().now();
-        self.cues.show(item, visible, show_for_ms, now)
-    }
-
-    /// Drops the cue when the eye opens. The deadline must not hide the item later.
-    pub fn drop_cue(&mut self, item: ItemId) -> bool {
-        self.cues.drop_item(item)
-    }
-
-    /// Ends cues whose deadline has passed. False when the map is empty or every
-    /// deadline is still ahead, without scanning the scene.
-    pub fn expire_cues(&mut self, now: Timestamp) -> bool {
-        self.cues.expire(now)
-    }
-
     /// The playback handle of a media source that has an instance: play, pause,
     /// seek and restart (ADR-0108 decision 10).
     pub fn media_control(&self, source: SourceId) -> Option<&crate::MediaControl> {
@@ -3842,17 +3829,6 @@ impl Studio {
     /// Every media instance's playback handle, by source id.
     pub fn media_controls(&self) -> impl Iterator<Item = (SourceId, &crate::MediaControl)> {
         self.media_controls.iter().map(|(id, c)| (*id, c))
-    }
-
-    /// How long the control thread may sleep before the soonest cue ends. `None`
-    /// when no cue is running, so nothing is armed (P13).
-    pub fn cue_wait(&self, now: Timestamp) -> Option<Duration> {
-        self.cues.wait(now)
-    }
-
-    /// Milliseconds left on a timed-show cue for `item`. `None` when it has none.
-    pub fn cue_remaining_ms(&self, item: ItemId, now: Timestamp) -> Option<u32> {
-        self.cues.remaining_ms(item, now)
     }
 
     /// Runs the engine's control loop once and notes failures: a source that fails is
@@ -3878,9 +3854,7 @@ impl Studio {
             serviced.wait = Some(serviced.wait.map_or(due, |w| w.min(due)));
         }
         // A `Once` scroll wakes it when its picture leaves (ADR-0150 decision 11).
-        if !self.scroll_runs.is_empty()
-            && let Some(due) = self.service_scroll()
-        {
+        if let Some(due) = self.service_scrolls() {
             extra = Some(extra.map_or(due, |e| e.min(due)));
             serviced.wait = Some(serviced.wait.map_or(due, |w| w.min(due)));
         }
@@ -5378,27 +5352,6 @@ struct ScenePreview {
     bound: BoundCompositor,
     /// The preview node and its counters.
     picture: (NodeId, Arc<PreviewNodeStats>),
-}
-
-/// `collection` with every following canvas's program scene set to what it shows now
-/// (ADR-0093 decision 3); `last` remembers it for the `KeepLast` fallback. The binder
-/// sees only program scenes, so it needs to know nothing of following.
-fn with_followers<'a>(
-    collection: &'a SceneCollection,
-    last: &mut BTreeMap<CanvasId, SceneId>,
-) -> Cow<'a, SceneCollection> {
-    let shown = collection.followed_programs(last);
-    if shown.is_empty() {
-        return Cow::Borrowed(collection);
-    }
-    let mut resolved = collection.clone();
-    for (canvas, scene) in shown {
-        // An override the collection refuses leaves the canvas on its own program.
-        if resolved.set_program(canvas, Some(scene)).is_ok() {
-            last.insert(canvas, scene);
-        }
-    }
-    Cow::Owned(resolved)
 }
 
 /// A further canvas that runs (ADR-0093).

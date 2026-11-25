@@ -25,6 +25,12 @@ impl Host {
         notify: &dyn Fn(Update),
     ) {
         self.close_projector(id);
+        if self.projectors.iter().any(|p| p.id == id) {
+            notify(Update::Error(
+                "The projector could not be replaced while a Program update is pending.".to_owned(),
+            ));
+            return;
+        }
         if let Some((_, size, _)) = self.projector_canvas(canvas) {
             let (count, open) = self.projectors_open();
             if let Some(why) = projector_refusal(count, open, size) {
@@ -40,6 +46,7 @@ impl Host {
             id,
             canvas,
             picture: None,
+            closing: false,
             size: Size::new(0, 0),
             sent: None,
         });
@@ -50,16 +57,27 @@ impl Host {
         let Some(at) = self.projectors.iter().position(|p| p.id == id) else {
             return;
         };
-        let p = self.projectors.remove(at);
-        if let Some(picture) = p.picture {
-            let run = self.run_collection();
+        let run = if self.projectors[at].picture.is_some() {
+            let Ok(run) = self.auxiliary_run_collection() else {
+                self.projectors[at].closing = true;
+                return;
+            };
+            run
+        } else {
+            None
+        };
+        if let Some(picture) = self.projectors[at].picture {
             let running = run.as_ref().unwrap_or(&self.collection);
-            // A picture that did not leave cleanly goes with the next update.
-            let _ = self
+            let result = self
                 .studio
                 .remove_picture(running, &self.adapters.sources, picture);
             self.waiting = self.studio.waiting();
+            if result.is_err() && self.studio.pictures().contains(&picture) {
+                self.projectors[at].closing = true;
+                return;
+            }
         }
+        self.projectors.remove(at);
     }
 
     /// How many projectors have a picture, and the surface memory they count.
@@ -81,9 +99,21 @@ impl Host {
         if self.projectors.is_empty() {
             return;
         }
+        let closing: Vec<_> = self
+            .projectors
+            .iter()
+            .filter(|p| p.closing)
+            .map(|p| p.id)
+            .collect();
+        for id in closing {
+            self.close_projector(id);
+        }
         let present = self.studio.pictures();
         let mut closed = Vec::new();
         for at in 0..self.projectors.len() {
+            if self.projectors[at].closing {
+                continue;
+            }
             let (canvas, picture) = (self.projectors[at].canvas, self.projectors[at].picture);
             // Gone with its canvas (the studio removed it).
             if let Some(pid) = picture
@@ -116,7 +146,9 @@ impl Host {
                 height: size.height,
                 surfaces: preview_surfaces(fps),
             };
-            let run = self.run_collection();
+            let Ok(run) = self.auxiliary_run_collection() else {
+                continue;
+            };
             let running = run.as_ref().unwrap_or(&self.collection);
             match self
                 .studio
@@ -143,6 +175,9 @@ impl Host {
             notify(Update::Error(why));
         }
         for p in &mut self.projectors {
+            if p.closing {
+                continue;
+            }
             let now = match p.picture {
                 Some(pid) => (self.studio.picture(pid), ProjectorState::Open),
                 None => (None, ProjectorState::Suspended),

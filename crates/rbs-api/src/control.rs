@@ -196,6 +196,12 @@ impl EventPublisher {
             .is_some_and(|link| link.subscribed(topic))
     }
 
+    /// True when a connected client or the in-process UI subscribes to `topic`, so a
+    /// payload of it would be built.
+    pub fn wanted(&self, topic: Topic) -> bool {
+        self.subscribed(topic) || self.local.as_ref().is_some_and(|(t, _)| t.contains(topic))
+    }
+
     /// Registers the in-process UI as a permanent subscriber to `topics`; `sink` runs on
     /// the control thread and must not block.
     pub fn set_local(&mut self, topics: TopicSet, sink: impl FnMut(&Event) + Send + 'static) {

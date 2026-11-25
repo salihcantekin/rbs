@@ -1,10 +1,3 @@
 # Approved size increases for `cargo xtask check-size`. Do not edit by hand.
 # An entry is added with `cargo xtask check-size --except` after the owner approves
 # in writing; `--lower` removes it once the item no longer needs it.
-
-[[exception]]
-item = "crates/rbs-studio-host/src/studio_host/control_api.rs::route"
-lines = 203
-reason = "item.align_items and item.distribute arms"
-approved = "Salih 2026-11-24 17:41 (decision card, Onayla +2 satir)"
-date = "2026-11-24"

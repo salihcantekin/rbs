@@ -18,7 +18,7 @@ fn full() -> Layout {
 }
 
 #[test]
-fn program_nested_scenes_and_their_sources_are_on_air_others_are_not() {
+fn program_scene_and_its_sources_are_on_air_others_are_not() {
     let mut col = SceneCollection::new();
     let (canvas, _) = col
         .add_canvas("Horizontal", Size::new(1920, 1080), FrameRate::FPS_60)
@@ -33,16 +33,12 @@ fn program_nested_scenes_and_their_sources_are_on_air_others_are_not() {
         .add_source("Logo", ty("image"), Settings::new())
         .unwrap();
     let (program, _) = col.add_scene("Live", SceneScope::Shared).unwrap();
-    let (nested, _) = col.add_scene("Lower third", SceneScope::Shared).unwrap();
     let (spare, _) = col.add_scene("Spare", SceneScope::Shared).unwrap();
     let (cam_item, _) = col
         .add_item(program, ItemContent::Source(cam), full(), None)
         .unwrap();
-    let (nest_item, _) = col
-        .add_item(program, ItemContent::Scene(nested), full(), None)
-        .unwrap();
     let (logo_item, _) = col
-        .add_item(nested, ItemContent::Source(logo), full(), None)
+        .add_item(program, ItemContent::Source(logo), full(), None)
         .unwrap();
     let (screen_item, _) = col
         .add_item(spare, ItemContent::Source(screen), full(), None)
@@ -55,9 +51,8 @@ fn program_nested_scenes_and_their_sources_are_on_air_others_are_not() {
 
     let on_air = col.on_air();
     assert!(on_air.scenes.contains(&program));
-    assert!(on_air.scenes.contains(&nested));
     assert!(!on_air.scenes.contains(&spare));
-    for item in [cam_item, nest_item, logo_item] {
+    for item in [cam_item, logo_item] {
         assert!(on_air.items.contains(&item));
     }
     assert!(!on_air.items.contains(&screen_item));

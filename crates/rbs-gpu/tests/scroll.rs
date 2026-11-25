@@ -126,7 +126,7 @@ fn render_with(
     let target = pool.acquire(ctx, &TextureDesc::canvas(W, H)).unwrap();
     let layers = build(ctx, &mut pool);
     let stats = comp
-        .render_scrolled(ctx, &pool, &layers, target, binding.as_mut())
+        .render_scrolled(ctx, &pool, &layers, target, binding.as_mut(), 0)
         .unwrap();
     Some((readback::read_rgba16f(ctx, &pool, target).unwrap(), stats))
 }

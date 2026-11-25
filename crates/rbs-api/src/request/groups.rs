@@ -3,9 +3,12 @@
 
 use serde::{Deserialize, Serialize};
 
-/// `group.create` (protocol 1.104): groups items of one scene. Any group among them
-/// merges into the new one with all its members; the members move next to the topmost
-/// one (ADR-0182 decision 5). One undo step; answers [`GroupCreated`].
+mod group_properties;
+pub use group_properties::*;
+
+/// `group.create`: groups ungrouped items of one scene, including their eligible
+/// companion items. Existing group members are refused (ADR-0186). One undo step;
+/// answers [`GroupCreated`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreateGroup {

@@ -27,13 +27,17 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use super::group_scroll::{Pin, joined, node_list, pin_marks, pinned_list};
+use frozen::{frozen_blend, pushed};
 use rbs_gpu::compositor::{LayerShape, LayerStyle};
-use rbs_gpu::node::{Fade, Slide};
+use rbs_gpu::node::{Fade, LayerList, Slide};
 use rbs_scene::binder::OutgoingScene;
 use rbs_scene::{CollectionTransition, GlideEasing, SwipeDirection, TransitionKind};
 
+use super::cues::outgoing_cues;
 use super::*;
 
+mod frozen;
 mod move_blend;
 
 /// The longest a transition waits for the incoming picture before it starts anyway
@@ -163,15 +167,17 @@ enum Phase {
 /// The incoming compositor of one canvas, once adopted.
 pub(super) struct IncomingView {
     compositor: NodeId,
-    layers: CompositorPort,
-    bound: BoundCompositor,
+    pub(super) layers: CompositorPort,
+    pub(super) bound: BoundCompositor,
     ready: Arc<AtomicU64>,
 }
 
 /// A transition running on one canvas.
 pub(super) struct CanvasTransition {
     /// The program compositor's layers when the change was accepted.
-    from: Vec<BoundLayer>,
+    pub(super) from: Vec<BoundLayer>,
+    /// The group settings and runs of `from`, captured with it.
+    pub(super) pins: Vec<Pin>,
     /// What the binder keeps of the outgoing scene.
     outgoing: OutgoingScene,
     duration: Duration,
@@ -179,7 +185,7 @@ pub(super) struct CanvasTransition {
     /// What the blend draws (Fade, Swipe or Slide and their settings).
     blend: Blend,
     phase: Phase,
-    incoming: Option<IncomingView>,
+    pub(super) incoming: Option<IncomingView>,
     /// The mixer's levels before the change (main canvas; decision 10).
     from_mix: BTreeMap<SourceId, SourceAudio>,
     /// The sources the new program scene is heard with (main canvas).
@@ -242,10 +248,6 @@ pub(super) struct Manual {
     kind: TransitionKind,
     /// When it passed its ready gate (`started` was published).
     started: Option<Timestamp>,
-    /// The sources the program mixer heard at its start.
-    from_heard: BTreeSet<SourceId>,
-    /// The levels the preview scene is heard with.
-    to_mix: BTreeMap<SourceId, SourceAudio>,
     /// Cancelled (t back to 0, or ended without a program change): the program
     /// alone again until the settle.
     cancelled: bool,
@@ -594,55 +596,6 @@ impl Step {
     }
 }
 
-/// The incoming canvas over the outgoing `layers`, frozen at progress `t` (ADR-0135
-/// decision 3): what the timed transition shows at `t` times its duration. Returns the
-/// layers to draw above `layers`, and moves `layers` out for a Slide.
-fn frozen_blend(
-    compositor: NodeId,
-    (w, h): (u32, u32),
-    blend: Blend,
-    ease: GlideEasing,
-    t: f32,
-    layers: &mut [rbs_gpu::node::NodeLayer],
-) -> Vec<rbs_gpu::node::NodeLayer> {
-    let e = |u: f32| easing(ease).map(f64::from(u));
-    let full = || rbs_gpu::node::NodeLayer::new(compositor, 0, 0.0, 0.0, w as f32, h as f32);
-    let mut top = full();
-    // Transparent areas are the picture over black, as after the transition.
-    top.opaque = true;
-    let mut out = Vec::with_capacity(2);
-    match blend {
-        Blend::Fade { via: None } | Blend::Move | Blend::Stinger { .. } => top.opacity = e(t),
-        Blend::Fade {
-            via: Some([r, g, b]),
-        } => {
-            let mut colour = full();
-            colour.style = LayerStyle::new(
-                LayerShape::Box,
-                w.max(h) as f32,
-                [r, g, b, 255],
-                [w as f32, h as f32],
-            );
-            colour.opacity = e((2.0 * t).min(1.0));
-            out.push(colour);
-            top.opacity = e((2.0 * t - 1.0).max(0.0));
-        }
-        Blend::Swipe { direction, push } => {
-            let (dx, dy) = swipe_offset(direction, (w, h));
-            let gone = e(t);
-            let k = 1.0 - gone;
-            top.transform = shifted(top.transform, (dx * k, dy * k));
-            if push {
-                for l in layers.iter_mut() {
-                    l.transform = shifted(l.transform, (-dx * gone, -dy * gone));
-                }
-            }
-        }
-    }
-    out.push(top);
-    out
-}
-
 /// The levels `scene` is heard with (ADR-0091): its own entries over the sources'.
 fn scene_mix(collection: &SceneCollection, scene: SceneId) -> BTreeMap<SourceId, SourceAudio> {
     let levels = collection.scene(scene).and_then(|s| s.audio.as_ref());
@@ -783,7 +736,7 @@ impl Studio {
             self.stinger_plan(collection, effective)
         };
         let now = self.engine.clock().now();
-        let cued = self.cues.items();
+        let cued = self.cued_items();
         let globals_of = |canvas: CanvasId| -> BTreeSet<ItemId> {
             collection
                 .globals_of(canvas)
@@ -952,12 +905,12 @@ impl Studio {
                 }
                 _ => None,
             };
-            let outgoing = outgoing.with_stinger(run_stinger.map(|r| r.source));
             self.transitions.insert(
                 canvas,
                 CanvasTransition {
+                    pins: self.group_runs.pins(&from),
                     from,
-                    outgoing,
+                    outgoing: outgoing.with_stinger(run_stinger.map(|r| r.source)),
                     duration,
                     easing,
                     blend: kind_blend,
@@ -1048,17 +1001,22 @@ impl Studio {
         Ok(())
     }
 
-    /// Every layer the transitions draw: the outgoing pictures and the incoming
-    /// compositors.
-    pub(super) fn transition_layers_all(&self) -> Vec<&BoundLayer> {
-        let mut out = Vec::new();
-        for t in self.transitions.values() {
-            out.extend(&t.from);
-            if let Some(view) = &t.incoming {
-                out.extend(&view.bound.layers);
-            }
-        }
-        out
+    /// The layers of the transitions' incoming compositors.
+    pub(super) fn transition_incoming_layers(&self) -> Vec<&BoundLayer> {
+        let views = self
+            .transitions
+            .values()
+            .filter_map(|t| t.incoming.as_ref());
+        views.flat_map(|v| &v.bound.layers).collect()
+    }
+
+    /// The pins of the outgoing snapshots still drawn.
+    pub(super) fn transition_pins(&self) -> Vec<Pin> {
+        let drawn = self
+            .transitions
+            .values()
+            .filter(|t| matches!(t.phase, Phase::Waiting(_) | Phase::Running(_)));
+        drawn.flat_map(|t| t.pins.iter().copied()).collect()
     }
 
     /// The scroll runs the transitions draw: the outgoing pictures and the incoming
@@ -1079,7 +1037,7 @@ impl Studio {
         canvas: CanvasId,
         plan: &rbs_graph::description::SchedulePlan,
         program: &BoundCompositor,
-    ) -> Option<Vec<rbs_gpu::node::NodeLayer>> {
+    ) -> Option<LayerList> {
         let size = self.canvas_size(canvas).ok()?;
         // Items of the canvas's global scene (ADR-0065): drawn once, above the blend
         // (decision 5), so an overlay does not double, dim or move.
@@ -1114,36 +1072,41 @@ impl Studio {
             return Some(self.move_layers(&glide, plan, program, &from, &is_global));
         }
         let running = matches!(t.phase, Phase::Running(_));
+        let list = |b: &BoundCompositor| node_list(b, plan, &self.scroll_runs, &self.group_runs);
+        let pinned = |b: &BoundCompositor, pins: &[Pin]| {
+            pinned_list(b, plan, &self.scroll_runs, &self.group_runs, pins)
+        };
         if let Some(view) = &mut t.incoming {
             let mut incoming = view.bound.clone();
             if running {
                 incoming.layers.retain(|l| !is_global(l));
             }
-            view.layers
-                .send(node_layers(&incoming, plan, &self.scroll_runs), &self.gpu);
+            view.layers.send_list(list(&incoming), &self.gpu);
         }
         let mut outgoing = program.clone();
         // A manual transition keeps the program as it is, edits included.
         if t.manual.is_none() {
             outgoing.layers.clone_from(&t.from);
         }
+        // Its group settings and runs as captured (spec "Snapshots").
+        pin_marks(&mut outgoing.layers, &t.pins);
         if let (Some(m), Phase::Running(_)) = (&t.manual, t.phase) {
             outgoing.layers.retain(|l| !is_global(l));
-            let mut layers = node_layers(&outgoing, plan, &self.scroll_runs);
+            let mut list_out = pinned(&outgoing, &t.pins);
             if let Some(view) = &t.incoming {
-                let top = frozen_blend(view.compositor, size, t.blend, t.easing, m.t, &mut layers);
-                layers.extend(top);
+                let top =
+                    frozen_blend(view.compositor, size, t.blend, t.easing, m.t, &mut list_out);
+                list_out.layers.extend(top);
             }
             let mut above = program.clone();
             above.layers.retain(|l| is_global(l));
-            layers.extend(node_layers(&above, plan, &self.scroll_runs));
-            return Some(layers);
+            return Some(joined(list_out, list(&above)));
         }
         match t.phase {
-            Phase::Waiting(_) => Some(node_layers(&outgoing, plan, &self.scroll_runs)),
+            Phase::Waiting(_) => Some(pinned(&outgoing, &t.pins)),
             Phase::Running(start) => {
                 outgoing.layers.retain(|l| !is_global(l));
-                let mut layers = node_layers(&outgoing, plan, &self.scroll_runs);
+                let mut list_out = pinned(&outgoing, &t.pins);
                 if let Some(view) = &t.incoming {
                     let (w, h) = size;
                     let full = || {
@@ -1191,7 +1154,7 @@ impl Studio {
                                 duration: half,
                                 easing: ease,
                             });
-                            layers.push(colour);
+                            list_out.layers.push(colour);
                             top.fade = Some(Fade {
                                 from: 0.0,
                                 start: start + half,
@@ -1222,28 +1185,25 @@ impl Studio {
                             });
                             if push {
                                 let out = (-offset.0, -offset.1);
-                                for l in &mut layers {
-                                    let at = l.transform;
-                                    l.transform = shifted(at, out);
-                                    l.slide = Some(Slide {
-                                        from: at,
+                                pushed(&mut list_out, out, |from| {
+                                    Some(Slide {
+                                        from,
                                         start,
                                         duration: t.duration,
                                         easing: ease,
                                         from_crop: None,
-                                    });
-                                }
+                                    })
+                                });
                             }
                         }
                     }
-                    layers.push(top);
+                    list_out.layers.push(top);
                 }
-                layers.extend(stinger_layer);
+                list_out.layers.extend(stinger_layer);
                 // The globals as they are now, above everything.
                 let mut above = program.clone();
                 above.layers.retain(|l| is_global(l));
-                layers.extend(node_layers(&above, plan, &self.scroll_runs));
-                Some(layers)
+                Some(joined(list_out, list(&above)))
             }
             Phase::Ending(_) | Phase::Done => None,
         }
@@ -1407,18 +1367,41 @@ impl Studio {
         let t = self.transitions.get(&self.settings.canvas)?;
         if let Some(m) = &t.manual {
             let ease = easing(t.easing);
+            let canvas = self.settings.canvas;
+            let live_cues = self.cued_items();
+            let program_cues = t.outgoing.program_cues.as_ref().unwrap_or(&live_cues);
+            let program = program_scene(&self.collection, canvas);
+            let from_heard = program
+                .and_then(|scene| {
+                    self.collection
+                        .visible_sources_cued(canvas, scene, program_cues)
+                        .ok()
+                })
+                .unwrap_or_default();
+            let to_heard = t.outgoing.incoming_scene.and_then(|scene| {
+                self.collection
+                    .visible_sources_cued(canvas, scene, &live_cues)
+                    .ok()
+            });
+            let from_mix = program
+                .map(|scene| scene_mix(&self.collection, scene))
+                .unwrap_or_default();
+            let to_mix = t
+                .outgoing
+                .incoming_scene
+                .map(|scene| scene_mix(&self.collection, scene))
+                .unwrap_or_default();
             return Some(MixShape {
-                manual: (!m.cancelled && !m.taken)
-                    .then(|| (ease.map(f64::from(m.t)), m.to_mix.clone())),
+                manual: (!m.cancelled && !m.taken).then(|| (ease.map(f64::from(m.t)), to_mix)),
                 phase: t.phase,
                 duration: t.duration,
-                outgoing: m.from_heard.clone(),
-                from_mix: t.from_mix.clone(),
+                outgoing: from_heard.clone(),
+                from_mix,
                 // Cancelled: the program's own sources only (decision 6).
-                to_heard: if m.cancelled {
-                    m.from_heard.clone()
+                to_heard: if m.cancelled || m.taken {
+                    from_heard
                 } else {
-                    t.to_heard.clone()
+                    to_heard.unwrap_or_default()
                 },
                 stinger: None,
             });
@@ -1498,6 +1481,8 @@ impl Studio {
             }
             if t <= 0.0 {
                 self.cancel_manual(canvas);
+                let collection = self.collection.clone();
+                self.update(&collection, sources)?;
                 return Ok(ManualStep::Idle);
             }
             let running = matches!(tr.phase, Phase::Running(_));
@@ -1583,19 +1568,16 @@ impl Studio {
         }
         let main = canvas == self.settings.canvas;
         let from = self.layer_snapshot().remove(&canvas).unwrap_or_default();
-        let cued = self.cues.items();
-        let (from_heard, from_mix, to_heard, to_mix) = if main {
+        let pins = self.group_runs.pins(&from);
+        let cued = outgoing_cues(&collection, canvas, &self.capture_outgoing_cues());
+        let live_cues = self.cued_items();
+        let (from_mix, to_heard) = if main {
             (
-                self.bound_mixer
-                    .as_ref()
-                    .map(|m| m.inputs.iter().map(|i| i.source).collect())
-                    .unwrap_or_default(),
                 self.mix.clone(),
                 collection
-                    .visible_sources_cued(canvas, preview, &cued)
+                    .visible_sources_cued(canvas, preview, &live_cues)
                     .map(|v| v.into_iter().collect())
                     .unwrap_or_default(),
-                scene_mix(&collection, preview),
             )
         } else {
             Default::default()
@@ -1604,7 +1586,8 @@ impl Studio {
             canvas,
             CanvasTransition {
                 from,
-                outgoing: OutgoingScene::towards(preview),
+                pins,
+                outgoing: OutgoingScene::towards(preview).with_program_cues(cued),
                 duration: Duration::ZERO,
                 easing,
                 blend,
@@ -1617,8 +1600,6 @@ impl Studio {
                     t,
                     kind,
                     started: None,
-                    from_heard,
-                    to_mix,
                     cancelled: false,
                     taken: false,
                 }),
@@ -1643,6 +1624,7 @@ impl Studio {
         };
         m.cancelled = true;
         m.t = 0.0;
+        tr.outgoing.program_cues = None;
         if let Some(started) = m.started {
             let from = tr.scenes.0;
             self.transition_events.push(TransitionEvent {
@@ -1838,7 +1820,7 @@ mod tests {
 
     /// A node id for layers that are never drawn.
     #[allow(clippy::unwrap_used)] // Tests fail by panicking.
-    fn any_node() -> NodeId {
+    pub(super) fn any_node() -> NodeId {
         let mut g = rbs_graph::description::GraphDescription::new();
         let d = rbs_graph::node::NodeDescriptor::new(
             rbs_graph::node::NodeTypeId::new_static("test.node"),
@@ -1850,43 +1832,6 @@ mod tests {
             )],
         );
         g.add_node(Arc::new(d)).unwrap()
-    }
-
-    #[test]
-    fn a_frozen_blend_shows_what_the_timed_one_shows_at_t() {
-        let node = any_node();
-        let size = (1920, 1080);
-        let lin = GlideEasing::Linear;
-        // A crossfade: the incoming opacity is e(t).
-        let top = frozen_blend(node, size, Blend::Fade { via: None }, lin, 0.3, &mut []);
-        assert_eq!(top.len(), 1);
-        assert!((top[0].opacity - 0.3).abs() < 1e-6);
-        assert!(
-            top[0].fade.is_none() && top[0].slide.is_none(),
-            "static layers"
-        );
-        // Through a colour: the colour in the first half, the scene in the second.
-        let via = Blend::Fade {
-            via: Some([0, 0, 0]),
-        };
-        let first = frozen_blend(node, size, via, lin, 0.25, &mut []);
-        assert!((first[0].opacity - 0.5).abs() < 1e-6);
-        assert_eq!(first[1].opacity, 0.0);
-        let second = frozen_blend(node, size, via, lin, 0.75, &mut []);
-        assert_eq!(second[0].opacity, 1.0);
-        assert!((second[1].opacity - 0.5).abs() < 1e-6);
-        // A Slide at half way: the incoming canvas half in, the outgoing half out.
-        let mut out = [rbs_gpu::node::NodeLayer::new(
-            node, 0, 0.0, 0.0, 1920.0, 1080.0,
-        )];
-        let before = out[0].transform.tx;
-        let slide = Blend::Swipe {
-            direction: SwipeDirection::Left,
-            push: true,
-        };
-        let top = frozen_blend(node, size, slide, lin, 0.5, &mut out);
-        assert!((top[0].transform.tx - 960.0).abs() < 1e-3);
-        assert!((out[0].transform.tx - (before - 960.0)).abs() < 1e-3);
     }
 
     #[test]

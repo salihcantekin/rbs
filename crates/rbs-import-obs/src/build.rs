@@ -12,8 +12,7 @@ use rbs_scene::model::{
     Source, SourceAudio, SourceId, SourceMonitor,
 };
 use rbs_scene::{
-    IdCounters, MAX_CANVAS_SIDE, MAX_FRAME_RATE, MAX_LAYERS, MAX_NESTING_DEPTH, SceneCollection,
-    SourceRegion,
+    IdCounters, MAX_CANVAS_SIDE, MAX_FRAME_RATE, MAX_LAYERS, SceneCollection, SourceRegion,
 };
 use serde_json::Value;
 
@@ -80,7 +79,6 @@ struct Pending {
 #[derive(Clone, Copy)]
 enum PendingContent {
     Source(SourceId),
-    Scene(usize),
 }
 
 struct Ctx<'a> {
@@ -216,44 +214,7 @@ pub(crate) fn build(
     };
     let mut map_ctx = MapContext::new(lookup, catalogue, obs_canvas);
 
-    // Scenes in OBS's order: `scene_order`, then any other scene.
-    let mut order: Vec<usize> = Vec::new();
-    if let Some(a) = root.get("scene_order").and_then(Value::as_array) {
-        for s in a {
-            if let Some(i) = s
-                .get("name")
-                .and_then(Value::as_str)
-                .and_then(|n| ctx.by_name.get(n))
-                && ctx.all[*i].is_scene()
-                && !order.contains(i)
-            {
-                order.push(*i);
-            }
-        }
-    }
-    for (i, s) in ctx.all.iter().enumerate() {
-        if s.is_scene() && !order.contains(&i) {
-            order.push(i);
-        }
-    }
-    let chosen = ctx.chosen_scenes(&order);
-    for &i in &order {
-        if !chosen.contains(&i) {
-            let s = &ctx.all[i];
-            ctx.report.push(entry(
-                Outcome::NotChosen,
-                Area::Scene,
-                &s.name,
-                "scene",
-                "This scene was not chosen.",
-            ));
-        }
-    }
-    let scenes: Vec<usize> = order
-        .iter()
-        .copied()
-        .filter(|i| chosen.contains(i))
-        .collect();
+    let scenes = ctx.chosen_scene_order(root);
 
     // Sources placed in the chosen scenes, with the scenes they are in.
     let mut placed: Vec<(usize, BTreeSet<String>)> = Vec::new();
@@ -341,17 +302,17 @@ pub(crate) fn build(
         scene_list.push((si, id, name));
     }
     let mut pending: HashMap<usize, Vec<Pending>> = HashMap::new();
+    let mut scene_groups: HashMap<usize, Vec<usize>> = HashMap::new();
     for &si in &scenes {
-        let items = ctx.scene_items(si, &scene_ids);
+        let (items, groups) = ctx.scene_items(si);
         pending.insert(si, items);
+        scene_groups.insert(si, groups);
     }
 
-    // Limits (ADR-0131 decision 4): cycles, nesting depth, layers with the globals.
+    // The layer limit includes the global audio items.
     let global_layers = globals.len() as u64;
-    let mut memo: HashMap<usize, (usize, u64)> = HashMap::new();
     for &si in &scenes {
-        let mut on_stack = Vec::new();
-        ctx.limit(si, &mut pending, &mut memo, &mut on_stack, global_layers);
+        ctx.limit(si, &mut pending, global_layers);
     }
 
     // Ids and the collection.
@@ -361,7 +322,12 @@ pub(crate) fn build(
     for (si, id, name) in &scene_list {
         let mut scene = Scene::new(*id, name, SceneScope::Shared);
         let items = pending.remove(si).unwrap_or_default();
-        ctx.fill_scene(&mut scene, items, &scene_ids, &mut ids);
+        ctx.fill_scene(
+            &mut scene,
+            items,
+            scene_groups.remove(si).unwrap_or_default(),
+            &mut ids,
+        );
         out_scenes.push(scene);
     }
     let mut canvas = Canvas::new(
@@ -435,8 +401,8 @@ impl SceneGroups {
     }
 }
 
-fn group_ids(items: &[Pending], next: &mut u32) -> SceneGroups {
-    let mut counts: Vec<(usize, usize)> = Vec::new();
+fn group_ids(items: &[Pending], groups: Vec<usize>, next: &mut u32) -> SceneGroups {
+    let mut counts: Vec<(usize, usize)> = groups.into_iter().map(|key| (key, 0)).collect();
     for key in items.iter().filter_map(|p| p.group) {
         match counts.iter_mut().find(|c| c.0 == key) {
             Some(c) => c.1 += 1,
@@ -473,23 +439,55 @@ impl Ids {
 }
 
 impl Ctx<'_> {
+    /// Chosen scenes in OBS order, reporting those the user did not choose.
+    fn chosen_scene_order(&mut self, root: &Value) -> Vec<usize> {
+        let mut order: Vec<usize> = Vec::new();
+        if let Some(a) = root.get("scene_order").and_then(Value::as_array) {
+            for s in a {
+                if let Some(i) = s
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .and_then(|n| self.by_name.get(n))
+                    && self.all[*i].is_scene()
+                    && !order.contains(i)
+                {
+                    order.push(*i);
+                }
+            }
+        }
+        for (i, s) in self.all.iter().enumerate() {
+            if s.is_scene() && !order.contains(&i) {
+                order.push(i);
+            }
+        }
+        let chosen = self.chosen_scenes(&order);
+        for &i in &order {
+            if !chosen.contains(&i) {
+                let s = &self.all[i];
+                self.report.push(entry(
+                    Outcome::NotChosen,
+                    Area::Scene,
+                    &s.name,
+                    "scene",
+                    "This scene was not chosen.",
+                ));
+            }
+        }
+        order.into_iter().filter(|i| chosen.contains(i)).collect()
+    }
+
     /// Puts the scene's items and groups in place (ADR-0182 decision 13).
     fn fill_scene(
         &mut self,
         scene: &mut Scene,
         items: Vec<Pending>,
-        scene_ids: &HashMap<usize, SceneId>,
+        group_sources: Vec<usize>,
         ids: &mut Ids,
     ) {
-        let mut groups = group_ids(&items, &mut ids.group);
+        let mut groups = group_ids(&items, group_sources, &mut ids.group);
         for p in items {
-            let content = match p.content {
-                PendingContent::Source(s) => ItemContent::Source(s),
-                PendingContent::Scene(c) => match scene_ids.get(&c) {
-                    Some(id) => ItemContent::Scene(*id),
-                    None => continue,
-                },
-            };
+            let PendingContent::Source(source) = p.content;
+            let content = ItemContent::Source(source);
             let mut item = SceneItem::new(ids.item(), content, p.layout);
             item.visible = p.visible;
             item.locked = p.locked;
@@ -548,32 +546,16 @@ impl Ctx<'_> {
             .copied()
     }
 
-    /// The chosen scenes and every scene they nest, also through groups.
+    /// The scenes selected explicitly by the user, in OBS scene order.
     fn chosen_scenes(&self, order: &[usize]) -> BTreeSet<usize> {
-        let mut out = BTreeSet::new();
-        let mut todo: Vec<usize> = match &self.options.scenes {
-            SceneChoice::All => order.to_vec(),
+        match &self.options.scenes {
+            SceneChoice::All => order.iter().copied().collect(),
             SceneChoice::Only(names) => order
                 .iter()
                 .copied()
                 .filter(|i| names.contains(&self.all[*i].name))
                 .collect(),
-        };
-        while let Some(i) = todo.pop() {
-            let s = &self.all[i];
-            if s.is_scene() && !out.insert(i) {
-                continue;
-            }
-            for item in s.items() {
-                if let Some(t) = self.resolve(&item) {
-                    let ts = &self.all[t];
-                    if (ts.is_scene() && !out.contains(&t)) || ts.is_group() {
-                        todo.push(t);
-                    }
-                }
-            }
         }
-        out
     }
 
     fn import_source(
@@ -890,14 +872,49 @@ impl Ctx<'_> {
         }
     }
 
-    /// The items of a scene, groups flattened.
-    fn scene_items(&mut self, si: usize, scene_ids: &HashMap<usize, SceneId>) -> Vec<Pending> {
+    /// The surviving source items of a scene, with OBS groups flattened.
+    fn scene_items(&mut self, si: usize) -> (Vec<Pending>, Vec<usize>) {
         let scene_name = self.all[si].name.clone();
         let mut out = Vec::new();
+        let mut groups = Vec::new();
         for item in self.all[si].items() {
-            self.item(&item, &scene_name, None, scene_ids, &mut out);
+            if let Some(target) = self.resolve(&item)
+                && self.all[target].is_group()
+                && !groups.contains(&target)
+            {
+                groups.push(target);
+            }
+            self.report_nested_item(&item, &scene_name, &mut Vec::new());
+            self.item(&item, &scene_name, None, &mut out);
         }
-        out
+        (out, groups)
+    }
+
+    fn report_nested_item(&mut self, item: &ObsItem, scene_name: &str, groups: &mut Vec<usize>) {
+        let Some(target_index) = self.resolve(item) else {
+            return;
+        };
+        let target = self.all[target_index].clone();
+        if target.is_scene() {
+            let mut e = entry(
+                Outcome::Skipped,
+                Area::Scene,
+                &target.name,
+                "scene",
+                "Scenes cannot be placed inside other scenes.",
+            );
+            e.scenes = vec![scene_name.to_owned()];
+            self.report.push(e);
+            return;
+        }
+        if !target.is_group() || groups.contains(&target_index) {
+            return;
+        }
+        groups.push(target_index);
+        for child in target.items() {
+            self.report_nested_item(&child, scene_name, groups);
+        }
+        groups.pop();
     }
 
     fn item(
@@ -905,7 +922,6 @@ impl Ctx<'_> {
         item: &ObsItem,
         scene_name: &str,
         group: Option<Parent<'_>>,
-        scene_ids: &HashMap<usize, SceneId>,
         out: &mut Vec<Pending>,
     ) {
         let item_entry = |report: &mut ImportReport, outcome: Outcome, reason: String| {
@@ -913,6 +929,28 @@ impl Ctx<'_> {
             e.scenes = vec![scene_name.to_owned()];
             report.push(e);
         };
+        let resolved = self.resolve(item);
+        if item.relative_only() && resolved.is_none() {
+            item_entry(
+                &mut self.report,
+                Outcome::Skipped,
+                "OBS 31 saved this item with relative positions only, which RBS does not read yet."
+                    .to_owned(),
+            );
+            return;
+        }
+        let Some(t) = resolved else {
+            item_entry(
+                &mut self.report,
+                Outcome::Skipped,
+                "It places a source that is not in the file.".to_owned(),
+            );
+            return;
+        };
+        let target = self.all[t].clone();
+        if target.is_scene() {
+            return;
+        }
         if item.relative_only() {
             item_entry(
                 &mut self.report,
@@ -922,25 +960,10 @@ impl Ctx<'_> {
             );
             return;
         }
-        let Some(t) = self.resolve(item) else {
-            item_entry(
-                &mut self.report,
-                Outcome::Skipped,
-                "It places a source that is not in the file.".to_owned(),
-            );
-            return;
-        };
-        let target = self.all[t].clone();
         let visible = item.visible && group.is_none_or(|g| g.2);
         let locked = item.locked || group.is_some_and(|g| g.3);
         let mut notes: Vec<String> = Vec::new();
-        let mut t_obs = obs_transform(item);
-        if target.is_scene() && (t_obs.crop != [0; 4] || t_obs.bounds_crop) {
-            // RBS draws a nested scene whole (CropOnScene): place it uncropped.
-            notes.push("A crop on a nested scene is not in RBS.".to_owned());
-            t_obs.crop = [0; 4];
-            t_obs.bounds_crop = false;
-        }
+        let t_obs = obs_transform(item);
 
         if target.is_group() {
             if group.is_some() {
@@ -974,41 +997,30 @@ impl Ctx<'_> {
                     &child,
                     scene_name,
                     Some((&gp, gsize, visible, locked, t)),
-                    scene_ids,
                     out,
                 );
             }
             return;
         }
 
-        let (content, native, crop_extra, audio_only) = if target.is_scene() {
-            if !scene_ids.contains_key(&t) {
-                return;
-            }
-            (PendingContent::Scene(t), self.obs_canvas, [0; 4], false)
-        } else {
-            let Some(imp) = self.imported.get(&target.name).cloned() else {
-                return; // The source's own entry says why, with this scene.
-            };
-            let native = imp.native.unwrap_or_else(|| {
-                notes.push(
-                    "The source's picture size is not known here, so its size on the canvas may differ."
-                        .to_owned(),
-                );
-                self.obs_canvas
-            });
-            let region = imp.region.unwrap_or([0; 4]);
-            let native = (
-                native.0.saturating_sub(region[0] + region[2]).max(1),
-                native.1.saturating_sub(region[1] + region[3]).max(1),
-            );
-            (
-                PendingContent::Source(imp.id),
-                native,
-                region,
-                imp.audio_only,
-            )
+        let Some(imp) = self.imported.get(&target.name).cloned() else {
+            return; // The source's own entry says why, with this scene.
         };
+        let native = imp.native.unwrap_or_else(|| {
+            notes.push(
+                "The source's picture size is not known here, so its size on the canvas may differ."
+                    .to_owned(),
+            );
+            self.obs_canvas
+        });
+        let region = imp.region.unwrap_or([0; 4]);
+        let native = (
+            native.0.saturating_sub(region[0] + region[2]).max(1),
+            native.1.saturating_sub(region[1] + region[3]).max(1),
+        );
+        let content = PendingContent::Source(imp.id);
+        let crop_extra = region;
+        let audio_only = imp.audio_only;
 
         let layout = if audio_only {
             full_canvas(self.obs_canvas)
@@ -1028,19 +1040,15 @@ impl Ctx<'_> {
             if sheared {
                 notes.push("Its group stretches it in a way RBS cannot draw exactly.".to_owned());
             }
-            if matches!(content, PendingContent::Scene(_)) {
-                layout.crop = rbs_scene::model::Crop::default();
-            } else {
-                // OBS adds the item crop to the crop filter; RBS takes the larger inset
-                // (ADR-0103 decision 2), so the item crop is written as their sum.
-                let c = layout.crop;
-                layout.crop = rbs_scene::model::Crop::new(
-                    c.left.saturating_add(crop_extra[0]),
-                    c.top.saturating_add(crop_extra[1]),
-                    c.right.saturating_add(crop_extra[2]),
-                    c.bottom.saturating_add(crop_extra[3]),
-                );
-            }
+            // OBS adds the item crop to the crop filter; RBS takes the larger inset
+            // (ADR-0103 decision 2), so the item crop is written as their sum.
+            let c = layout.crop;
+            layout.crop = rbs_scene::model::Crop::new(
+                c.left.saturating_add(crop_extra[0]),
+                c.top.saturating_add(crop_extra[1]),
+                c.right.saturating_add(crop_extra[2]),
+                c.bottom.saturating_add(crop_extra[3]),
+            );
             if !layout.is_valid() {
                 item_entry(
                     &mut self.report,
@@ -1082,57 +1090,14 @@ impl Ctx<'_> {
         });
     }
 
-    /// Drops items that would close a cycle, nest too deep or pass the layer limit;
-    /// returns the scene's depth and layers.
-    fn limit(
-        &mut self,
-        si: usize,
-        pending: &mut HashMap<usize, Vec<Pending>>,
-        memo: &mut HashMap<usize, (usize, u64)>,
-        on_stack: &mut Vec<usize>,
-        global_layers: u64,
-    ) -> (usize, u64) {
-        if let Some(m) = memo.get(&si) {
-            return *m;
-        }
-        on_stack.push(si);
+    /// Drops source items past the per-scene layer limit.
+    fn limit(&mut self, si: usize, pending: &mut HashMap<usize, Vec<Pending>>, global_layers: u64) {
         let items = pending.remove(&si).unwrap_or_default();
         let mut kept = Vec::with_capacity(items.len());
-        let mut depth = 1usize;
-        let mut layers = 0u64;
+        let mut layers = global_layers;
         let scene_name = self.all[si].name.clone();
         for p in items {
-            let (d, l) = match p.content {
-                PendingContent::Source(_) => (0, 1),
-                PendingContent::Scene(c) => {
-                    if on_stack.contains(&c) || on_stack.len() > MAX_NESTING_DEPTH {
-                        let mut e = entry(
-                            Outcome::Skipped,
-                            Area::Item,
-                            &self.all[c].name,
-                            "scene",
-                            "Nesting this scene here would loop or go deeper than RBS allows.",
-                        );
-                        e.scenes = vec![scene_name.clone()];
-                        self.report.push(e);
-                        continue;
-                    }
-                    self.limit(c, pending, memo, on_stack, global_layers)
-                }
-            };
-            if d + 1 > MAX_NESTING_DEPTH {
-                let mut e = entry(
-                    Outcome::Skipped,
-                    Area::Item,
-                    "",
-                    "scene",
-                    "This nested scene goes deeper than RBS allows.",
-                );
-                e.scenes = vec![scene_name.clone()];
-                self.report.push(e);
-                continue;
-            }
-            if layers + l + global_layers > MAX_LAYERS {
+            if layers >= MAX_LAYERS {
                 let mut e = entry(
                     Outcome::Skipped,
                     Area::Item,
@@ -1144,14 +1109,10 @@ impl Ctx<'_> {
                 self.report.push(e);
                 continue;
             }
-            depth = depth.max(d + 1);
-            layers += l;
+            layers += 1;
             kept.push(p);
         }
         pending.insert(si, kept);
-        on_stack.pop();
-        memo.insert(si, (depth, layers));
-        (depth, layers)
     }
 }
 

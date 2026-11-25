@@ -969,6 +969,145 @@ fn a_display_can_capture_the_system_sound_too() {
 }
 
 #[test]
+fn refused_source_add_with_audio_preserves_history_ids_and_recent_targets() {
+    let Some((_host, _updates, _api, mut c)) = start() else {
+        return;
+    };
+    let first_scene = ok(&c.call("scene.add", json!({"name": "Before"})))["scene"]
+        .as_u64()
+        .unwrap();
+    let picture = add(&mut c, "screen", "Before");
+    ok(&c.call("edit.undo", json!({})));
+    let before = sources(&mut c);
+    let targets = ok(&c.call("source.targets", json!({"kind": "audio_input"})))["targets"].clone();
+    let target = targets[0].clone();
+    for global in [false, true] {
+        let response = c.call(
+            "source.add",
+            json!({"kind": "audio_input", "adapter": target["adapter"], "target": target["target"],
+                   "name": "Refused", "with_audio": true, "global": global}),
+        );
+        assert_eq!(kind(&response), "invalid_params", "{response}");
+        assert_eq!(sources(&mut c), before);
+        assert_eq!(
+            ok(&c.call("source.targets", json!({"kind": "audio_input"})))["targets"],
+            targets
+        );
+    }
+    ok(&c.call("edit.redo", json!({})));
+    assert!(sources(&mut c).iter().any(|s| s["id"] == picture));
+    let next_picture = add(&mut c, "screen", "After");
+    assert_eq!(next_picture, picture + 1);
+    let next_scene = ok(&c.call("scene.add", json!({"name": "After"})))["scene"]
+        .as_u64()
+        .unwrap();
+    assert_eq!(next_scene, first_scene + 1);
+}
+
+#[test]
+fn global_picture_and_companion_add_and_undo_together() {
+    let Some((_host, _updates, _api, mut c)) = start() else {
+        return;
+    };
+    let target = ok(&c.call("source.targets", json!({"kind": "screen"})))["targets"][0].clone();
+    let picture = ok(&c.call(
+        "source.add",
+        json!({"kind": "screen", "adapter": target["adapter"], "target": target["target"],
+               "name": "Global picture", "with_audio": true, "global": true}),
+    ))["source"]
+        .as_u64()
+        .unwrap();
+    let globals = |c: &mut Client| {
+        ok(&c.call("global.list", json!({})))["sources"]
+            .as_array()
+            .unwrap()
+            .clone()
+    };
+    let before = globals(&mut c);
+    assert_eq!(before.len(), 2);
+    assert!(before.iter().any(|r| r["companion_of"] == picture));
+    ok(&c.call("edit.undo", json!({})));
+    assert!(globals(&mut c).is_empty());
+    ok(&c.call("edit.redo", json!({})));
+    assert_eq!(globals(&mut c), before);
+}
+
+#[test]
+fn companion_add_inherits_group_and_refuses_multiple_placements() {
+    let Some((_host, _updates, _api, mut c)) = start() else {
+        return;
+    };
+    let picture = add(&mut c, "screen", "Picture");
+    let other = add(&mut c, "screen", "Other");
+    let scene = ok(&c.call("scene.list", json!({})))["data"]["program"]
+        .as_u64()
+        .unwrap();
+    let rows = |c: &mut Client| {
+        ok(&c.call("scene.sources", json!({"scene": scene})))["sources"]
+            .as_array()
+            .unwrap()
+            .clone()
+    };
+    let before = rows(&mut c);
+    let item = |id| {
+        before.iter().find(|r| r["id"] == id).unwrap()["item"]
+            .as_u64()
+            .unwrap()
+    };
+    let group = ok(&c.call(
+        "group.create",
+        json!({"scene": scene, "items": [item(picture), item(other)]}),
+    ))["group"]
+        .as_u64()
+        .unwrap();
+    ok(&c.call(
+        "source.set_companion_audio",
+        json!({"source": picture, "enabled": true}),
+    ));
+    let added = rows(&mut c);
+    let sound = added.iter().find(|r| r["companion_of"] == picture).unwrap();
+    assert_eq!(sound["group"], group);
+    let picture_at = added.iter().position(|r| r["id"] == picture).unwrap();
+    let sound_at = added.iter().position(|r| r["id"] == sound["id"]).unwrap();
+    assert_eq!(sound_at + 1, picture_at);
+    ok(&c.call("edit.undo", json!({})));
+    assert!(rows(&mut c).iter().all(|r| r["companion_of"] != picture));
+    ok(&c.call("edit.redo", json!({})));
+    assert!(
+        rows(&mut c)
+            .iter()
+            .any(|r| r["companion_of"] == picture && r["group"] == group)
+    );
+    ok(&c.call("edit.undo", json!({})));
+    ok(&c.call("item.add", json!({"source": picture, "scene": scene})));
+    let before = rows(&mut c);
+    let refused = c.call(
+        "source.set_companion_audio",
+        json!({"source": picture, "enabled": true}),
+    );
+    assert_eq!(kind(&refused), "conflict", "{refused}");
+    assert_eq!(rows(&mut c), before);
+    ok(&c.call("edit.undo", json!({})));
+    assert_eq!(rows(&mut c).len(), before.len() - 1);
+    let another = ok(&c.call("scene.add", json!({"name": "Second"})))["scene"]
+        .as_u64()
+        .unwrap();
+    ok(&c.call("item.add", json!({"source": picture, "scene": another})));
+    let refused = c.call(
+        "source.set_companion_audio",
+        json!({"source": picture, "enabled": true}),
+    );
+    assert_eq!(kind(&refused), "conflict", "{refused}");
+    ok(&c.call("edit.undo", json!({})));
+    assert!(
+        ok(&c.call("scene.sources", json!({"scene": another})))["sources"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
 fn pointer_filters_stay_first_and_go_only_on_sources_with_a_mapping() {
     let Some((_host, _updates, _api, mut c)) = start() else {
         return;

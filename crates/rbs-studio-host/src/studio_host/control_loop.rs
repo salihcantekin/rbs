@@ -310,6 +310,8 @@ pub(super) fn take_msg(
         }
         Some(Msg::AttachApi(api)) => {
             host.events.attach(api.endpoint.event_link());
+            // A new API server lifetime: fresh public ids before it serves (ADR-0187).
+            host.studio.renew_group_run_ids();
             host.api = Some(*api);
         }
         Some(Msg::DetachApi) => {

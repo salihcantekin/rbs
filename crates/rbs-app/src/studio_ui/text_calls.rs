@@ -50,6 +50,9 @@ impl StudioUi {
         if ticket & super::crop_calls::EDIT_TICKET != 0 {
             return self.crop_answer(ticket & !super::crop_calls::EDIT_TICKET, result, out);
         }
+        let Some(result) = self.group_answer(ticket, result) else {
+            return;
+        };
         if self.font.1 != Some(ticket) {
             return;
         }

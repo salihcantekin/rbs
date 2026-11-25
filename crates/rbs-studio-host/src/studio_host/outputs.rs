@@ -275,7 +275,16 @@ impl Host {
         }
         self.note_collection();
         let before = std::mem::replace(&mut self.collection, draft);
-        let run = self.run_collection();
+        let run = match self.auxiliary_run_collection() {
+            Ok(run) => run,
+            Err(e) => {
+                self.note_collection();
+                self.collection = before;
+                return Err(Refusal::Failed(format!(
+                    "The vertical canvas did not start: {e}"
+                )));
+            }
+        };
         let running = run.as_ref().unwrap_or(&self.collection);
         match self.studio.activate_canvas(
             running,
@@ -317,7 +326,14 @@ impl Host {
             return;
         };
         let extra = self.vertical_extra(state.canvas);
-        let run = self.run_collection();
+        let run = match self.auxiliary_run_collection() {
+            Ok(run) => run,
+            Err(e) => {
+                self.verticals.vertical_restore_error =
+                    Some(format!("The vertical canvas did not start: {e}"));
+                return;
+            }
+        };
         let running = run.as_ref().unwrap_or(&self.collection);
         match self
             .studio
@@ -352,12 +368,19 @@ impl Host {
     /// The vertical canvas's panel opened or closed: its picture starts or stops, also
     /// while its outputs run.
     pub(super) fn set_vertical_picture(&mut self, on: bool) -> Result<(), Refusal> {
-        self.verticals.vertical_picture = on;
         let Some(v) = self.verticals.vertical else {
+            self.verticals.vertical_picture = on;
             return Ok(());
         };
-        let desc = self.vertical_extra(v.canvas).preview;
-        let run = self.run_collection();
+        let run = self
+            .auxiliary_run_collection()
+            .map_err(|e| Refusal::Failed(format!("The vertical preview did not start: {e}")))?;
+        self.verticals.vertical_picture = on;
+        let desc = if on {
+            self.vertical_extra(v.canvas).preview
+        } else {
+            None
+        };
         let running = run.as_ref().unwrap_or(&self.collection);
         self.studio
             .set_canvas_picture(running, &self.adapters.sources, v.canvas, desc)
@@ -381,8 +404,19 @@ impl Host {
         draft
             .remove_canvas(state.canvas)
             .map_err(|e| Refusal::of(&e))?;
+        // The scenes the add shared go back to the main canvas.
+        for id in &self.verticals.vertical_shared {
+            if draft
+                .scenes_for(self.canvas)
+                .any(|s| s.id == *id && s.scope == SceneScope::Shared)
+            {
+                let _ = draft.set_scene_scope(*id, SceneScope::Canvas(self.canvas));
+            }
+        }
         // The canvas leaves the engine while it is still in the collection.
-        let run = run_copy_or(&self.collection, self.canvas, self.program.held.as_ref());
+        let run = self
+            .auxiliary_run_collection()
+            .map_err(|e| Refusal::Failed(format!("The vertical canvas could not stop: {e}")))?;
         self.studio
             .deactivate_canvas(
                 run.as_ref().unwrap_or(&self.collection),
@@ -395,15 +429,7 @@ impl Host {
                 ),
                 e => Refusal::Failed(e.to_string()),
             })?;
-        // The scenes the add shared go back to the main canvas (the removal is one step).
-        for id in std::mem::take(&mut self.verticals.vertical_shared) {
-            if draft
-                .scenes_for(self.canvas)
-                .any(|s| s.id == id && s.scope == SceneScope::Shared)
-            {
-                let _ = draft.set_scene_scope(id, SceneScope::Canvas(self.canvas));
-            }
-        }
+        self.verticals.vertical_shared.clear();
         self.note_collection();
         self.collection = draft;
         self.verticals.vertical = None;
@@ -521,7 +547,9 @@ impl Host {
         draft
             .set_canvas_format(v.canvas, size, fps)
             .map_err(|e| Refusal::of(&e))?;
-        let run = run_copy_or(&self.collection, self.canvas, self.program.held.as_ref());
+        let run = self.auxiliary_run_collection().map_err(|e| {
+            Refusal::Failed(format!("The vertical canvas could not change size: {e}"))
+        })?;
         self.studio
             .deactivate_canvas(
                 run.as_ref().unwrap_or(&self.collection),
@@ -538,10 +566,11 @@ impl Host {
         let before = std::mem::replace(&mut self.collection, draft);
         let started = {
             let extra = self.vertical_extra(v.canvas);
-            let run = self.run_collection();
-            let running = run.as_ref().unwrap_or(&self.collection);
-            self.studio
-                .activate_canvas(running, &self.adapters.sources, extra)
+            self.auxiliary_run_collection().and_then(|run| {
+                let running = run.as_ref().unwrap_or(&self.collection);
+                self.studio
+                    .activate_canvas(running, &self.adapters.sources, extra)
+            })
         };
         match started {
             Ok(_) => {
@@ -554,11 +583,13 @@ impl Host {
                 self.note_collection();
                 self.collection = before;
                 let extra = self.vertical_extra(v.canvas);
-                let run = self.run_collection();
-                let running = run.as_ref().unwrap_or(&self.collection);
                 if self
-                    .studio
-                    .activate_canvas(running, &self.adapters.sources, extra)
+                    .auxiliary_run_collection()
+                    .and_then(|run| {
+                        let running = run.as_ref().unwrap_or(&self.collection);
+                        self.studio
+                            .activate_canvas(running, &self.adapters.sources, extra)
+                    })
                     .is_err()
                 {
                     self.verticals.vertical = None;

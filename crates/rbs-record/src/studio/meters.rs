@@ -10,6 +10,34 @@ use rbs_engine::EngineError;
 
 use super::*;
 
+pub(super) fn for_source(
+    meters: &mut BTreeMap<SourceId, Arc<LevelMeter>>,
+    source: SourceId,
+    graph: &AudioGraphConfig,
+) -> Arc<LevelMeter> {
+    Arc::clone(
+        meters
+            .entry(source)
+            .or_insert_with(|| Arc::new(LevelMeter::new(graph.format.channels.channels()))),
+    )
+}
+
+pub(super) fn ensure_sound_meters(studio: &mut Studio, scheduled: &BTreeSet<NodeId>) {
+    for entry in &studio.entries {
+        if studio
+            .binder
+            .sound_node(entry.source)
+            .is_some_and(|node| scheduled.contains(&node))
+        {
+            let _meter = for_source(
+                &mut studio.meters,
+                entry.source,
+                &studio.settings.audio_graph,
+            );
+        }
+    }
+}
+
 impl Studio {
     /// Puts meters on the mixer, or takes them off. A repeat of the current state
     /// sends nothing. Control thread only.

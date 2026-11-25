@@ -1068,12 +1068,14 @@ pub struct Scene {
 /// the scene's items whose [`SceneItem::group`] is this group's id; the group has no
 /// transform of its own.
 #[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Group {
     /// Its id.
     pub id: GroupId,
     /// Display name, non-blank and unique in the scene.
     pub name: String,
+    /// Saved group Scroll settings for each canvas.
+    pub scrolls: BTreeMap<CanvasId, GroupScroll>,
 }
 
 impl Group {
@@ -1082,6 +1084,7 @@ impl Group {
         Self {
             id,
             name: name.to_owned(),
+            scrolls: BTreeMap::new(),
         }
     }
 }
@@ -1444,6 +1447,60 @@ pub struct Scroll {
     /// the run while the item's source stays placed, so it picks up where it would be.
     /// `Resume` is not offered.
     pub on_return: OnReturn,
+}
+
+/// Saved Scroll of a composed group. Group runs end when no snapshot uses them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GroupScroll {
+    /// Direction of motion.
+    pub direction: ScrollDirection,
+    /// Layout units per second.
+    pub speed: f32,
+    /// Gap between copies in layout units.
+    pub gap: f32,
+    /// Repetition mode.
+    pub repeat: ScrollRepeat,
+    /// Starting position.
+    pub start: ScrollStart,
+    /// Edge fade in layout units.
+    pub fade: f32,
+    /// Pause and speed transition duration in milliseconds.
+    pub ramp_ms: u32,
+}
+
+impl GroupScroll {
+    /// A looping group Scroll with the ordinary Scroll defaults.
+    pub fn new(direction: ScrollDirection, speed: f32) -> Self {
+        Self::from_scroll(Scroll::new(direction, speed))
+    }
+
+    /// Converts the shared settings of an item Scroll.
+    pub fn from_scroll(scroll: Scroll) -> Self {
+        Self {
+            direction: scroll.direction,
+            speed: scroll.speed,
+            gap: scroll.gap,
+            repeat: scroll.repeat,
+            start: scroll.start,
+            fade: scroll.fade,
+            ramp_ms: scroll.ramp_ms,
+        }
+    }
+
+    /// The shared settings as an item Scroll with the default return policy.
+    pub fn as_scroll(self) -> Scroll {
+        Scroll::new(self.direction, self.speed)
+            .with_gap(self.gap)
+            .with_repeat(self.repeat)
+            .with_start(self.start)
+            .with_fade(self.fade)
+            .with_ramp_ms(self.ramp_ms)
+    }
+
+    /// Whether all settings are within the saved Scroll ranges.
+    pub fn is_valid(&self) -> bool {
+        self.as_scroll().is_valid()
+    }
 }
 
 impl Scroll {

@@ -647,7 +647,7 @@ fn the_scene_collection_is_saved_after_edits_and_runs_again_after_a_restart() {
     let Some(gpu) = gpu() else { return };
     let d = std::env::temp_dir().join(format!("rbs-app-host-collection-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
-    let (user, collection) = rbs_studio_host::user_session::open(&d, Arc::new(|_| {}));
+    let (user, collection) = rbs_studio_host::user_session::open(&d, Arc::new(|_| {})).unwrap();
     let start = |user: &rbs_studio_host::user_session::UserSession, collection| {
         let mut config = HostConfig::canvas(Size::new(1280, 720), FrameRate::FPS_30);
         config.preview = None;
@@ -671,7 +671,7 @@ fn the_scene_collection_is_saved_after_edits_and_runs_again_after_a_restart() {
     drop(user);
 
     // A new app: the same collection, with its source, runs again.
-    let (user, collection) = rbs_studio_host::user_session::open(&d, Arc::new(|_| {}));
+    let (user, collection) = rbs_studio_host::user_session::open(&d, Arc::new(|_| {})).unwrap();
     assert_eq!(collection.sources().count(), 1);
     let (host, rx) = start(&user, collection);
     let again = rows_where(&rx, |r| r.len() == 1);
@@ -686,7 +686,7 @@ fn another_scene_collection_runs_and_keeps_its_own_edits() {
     let Some(gpu) = gpu() else { return };
     let d = std::env::temp_dir().join(format!("rbs-app-host-switch-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
-    let (user, collection) = rbs_studio_host::user_session::open(&d, Arc::new(|_| {}));
+    let (user, collection) = rbs_studio_host::user_session::open(&d, Arc::new(|_| {})).unwrap();
     let first = user.collection_id.clone();
     let mut config = HostConfig::canvas(Size::new(1920, 1080), FrameRate::FPS_30);
     config.preview = None;

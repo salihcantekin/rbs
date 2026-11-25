@@ -7,7 +7,7 @@
 //! off air (`SceneCollection::on_air`) and it does not default to the program scene.
 //! Every other `edit` is refused while an output runs.
 
-use rbs_api::request::Effect;
+use rbs_api::request::{Effect, GroupOperation};
 use rbs_api::{ApiError, Command, ErrorKind};
 use rbs_scene::OnAir;
 use rbs_scene::model::{FilterId, ItemId, SceneId, SourceId};
@@ -54,6 +54,7 @@ const BY_TARGET: &[&str] = &[
     "item.remove",
     "item.move",
     "item.set_box",
+    "group.apply",
     "item.add",
     "source.add",
     "source.add_sample",
@@ -190,6 +191,47 @@ fn refusal(method: &str) -> ApiError {
 }
 
 impl Host {
+    /// `group.apply` names its members, but the check covers the group's actual
+    /// members, so stale or incomplete `items` cannot pass it (ADR-0184).
+    fn group_member_on_air(&self, command: &Command, on_air: &OnAir) -> bool {
+        let Command::GroupApply(p) = command else {
+            return false;
+        };
+        let id = rbs_scene::model::GroupId::from_raw(p.group);
+        let (scene, group) = (SceneId::from_raw(p.scene), Some(id));
+        let members: Vec<ItemId> = self
+            .collection
+            .scene(scene)
+            .map(|s| {
+                s.items
+                    .iter()
+                    .filter(|i| i.group == group)
+                    .map(|i| i.id)
+                    .collect()
+            })
+            .unwrap_or_default();
+        if members.iter().any(|i| on_air.items.contains(i)) {
+            return true;
+        }
+        // A removal also takes companions and the last placements of its sources,
+        // in other scenes too: check everything it would take.
+        matches!(p.operation, GroupOperation::RemoveMembers {})
+            && self
+                .collection
+                .clone()
+                .remove_group_members(scene, id, &members)
+                .is_ok_and(|(removed, _)| {
+                    removed
+                        .removed_items
+                        .iter()
+                        .any(|i| on_air.items.contains(i))
+                        || removed
+                            .deleted_sources
+                            .iter()
+                            .any(|s| on_air.sources.contains(s))
+                })
+    }
+
     /// A recording, a stream, the virtual camera or the replay buffer runs. Then
     /// every canvas counts as on air (stricter than per canvas, and simple).
     pub(super) fn output_running(&self) -> bool {
@@ -210,7 +252,9 @@ impl Host {
         }
         let on_air = self.collection.on_air();
         let filter_source = |f: FilterId| self.filter_owner(f).ok().map(|(s, _)| s);
-        if changes_on_air(command, &on_air, &filter_source) {
+        if changes_on_air(command, &on_air, &filter_source)
+            || self.group_member_on_air(command, &on_air)
+        {
             return Err(refusal(command.method()));
         }
         Ok(())

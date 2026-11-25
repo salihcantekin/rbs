@@ -34,6 +34,11 @@ pub(super) fn edit_error(e: &SceneError) -> String {
             "A source of a group cannot be moved away from the group. Ungroup it first.".to_owned()
         }
         SceneError::GroupScope => "Sources of two scenes cannot be in one group.".to_owned(),
+        SceneError::ItemAlreadyGrouped(_)
+        | SceneError::AmbiguousCompanion
+        | SceneError::PictureNotPlaced(_)
+        | SceneError::NestingUnsupported
+        | SceneError::CompanionExists(_) => e.to_string(),
         other => format!("The scene could not be changed ({other:?}). Try again."),
     }
 }

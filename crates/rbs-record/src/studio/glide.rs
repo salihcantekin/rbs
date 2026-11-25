@@ -9,7 +9,9 @@ use rbs_scene::binder::{BoundCompositor, BoundLayer};
 use rbs_scene::model::{CanvasId, SceneId};
 use rbs_sources::{glide_layers, glide_max_duration, node_layers};
 
+use super::group_scroll::{GroupRuns, with_spans};
 use super::{Studio, program_scene, transition};
+use rbs_gpu::node::LayerList;
 use rbs_sources::scroll::ScrollRuns;
 
 /// Boxes to glide from when a canvas's program scene changes.
@@ -32,27 +34,25 @@ pub(super) fn paint_layers(
     glide: Option<&Glide>,
     now: Timestamp,
     canvas: CanvasId,
-    runs: &ScrollRuns,
-) -> Vec<rbs_gpu::node::NodeLayer> {
+    (runs, groups): (&ScrollRuns, &GroupRuns),
+) -> LayerList {
     let layers = node_layers(bound, plan, runs);
-    let Some(glide) = glide else {
-        return layers;
-    };
-    if now.saturating_since(glide.start) >= glide.max_duration {
-        return layers;
-    }
-    let Some(from) = glide.from.get(&canvas) else {
-        return layers;
+    let from = glide
+        .filter(|g| now.saturating_since(g.start) < g.max_duration)
+        .and_then(|g| Some((g, g.from.get(&canvas)?)));
+    let Some((glide, from)) = from else {
+        return with_spans(bound, plan, layers, groups, &[]);
     };
     let overrides = &glide.source_glide;
-    glide_layers(
+    let layers = glide_layers(
         layers,
         &bound.layers,
         from,
         glide.start,
         glide.collection,
         |id| overrides.get(&id).copied(),
-    )
+    );
+    with_spans(bound, plan, layers, groups, &[])
 }
 
 impl Studio {

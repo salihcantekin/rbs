@@ -72,6 +72,10 @@ impl EntryWrite {
 }
 
 impl StudioUi {
+    pub(crate) fn collection_switch_in_progress(&self) -> bool {
+        self.switching.is_some()
+    }
+
     /// Output profile menu: uses the profile `id` (refused while live). `None` when it
     /// is the one in use.
     pub fn switch_profile(&mut self, id: &str) -> Result<Option<EntryWrite>, String> {
@@ -353,4 +357,40 @@ pub(super) fn finish(ui: &mut StudioUi, mut write: Option<EntryWrite>) -> Result
         write = done(ui, || {})?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nested_collection_load_failure_keeps_selection_and_clears_pending() {
+        let (mut ui, d) = super::super::tests::ui("nested-switch");
+        let id = ui.user.new_collection("Nested", &ui.canvas, false).unwrap();
+        let path = ui.user.data().scene_collections().path(&id);
+        let nested = "format = 30\nkind = \"scene-collection\"\nname = \"Nested\"\n\
+            [[scenes]]\nid = 1\nname = \"Parent\"\n\
+            [[scenes.items]]\nid = 1\nscene = 1\n";
+        std::fs::write(&path, nested).unwrap();
+        let current = ui.user.collection_id.clone();
+        ui.selected = 42;
+        ui.wait.api = Some(7);
+        let load = ui.user.load_collection_later(&id);
+        let write = EntryWrite::loaded(&mut ui, load, |_, _: LoadedCollection, _| {
+            panic!("a refused collection must not be used")
+        });
+        assert!(ui.wait.loading);
+        let err = finish(&mut ui, Some(write)).unwrap_err();
+        assert_eq!(err, "Scenes cannot be placed inside other scenes.");
+        assert!(!ui.wait.loading);
+        assert_eq!(ui.wait.api, None);
+        assert!(ui.switching.is_none());
+        assert_eq!(ui.selected, 42);
+        assert_eq!(ui.user.collection_id, current);
+        ui.user.flush();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), nested);
+        drop(ui);
+        std::fs::remove_dir_all(d).unwrap();
+    }
 }

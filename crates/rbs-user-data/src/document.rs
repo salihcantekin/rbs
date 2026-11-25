@@ -35,6 +35,11 @@ pub trait Document: Sized {
     /// that are small by nature and often shared (themes) set a lower limit.
     const MAX_SIZE: u64 = MAX_FILE;
 
+    /// Validates invariants that must be checked before upgrades.
+    fn check_before_upgrade(_body: &toml::Table) -> Result<(), BodyError> {
+        Ok(())
+    }
+
     /// Upgrades `body` (the file without `format`, `kind` and `name`) from format `from`
     /// to `from + 1`. The default refuses: a kind starts at format 1 with nothing to
     /// upgrade.
@@ -315,6 +320,7 @@ pub fn parse<T: Document>(text: &str) -> Result<Read<T>, DataError> {
         Some(toml::Value::String(n)) => Some(n),
         Some(_) => return Err(BodyError::NameNotText.into()),
     };
+    T::check_before_upgrade(&table)?;
     for from in format..T::FORMAT {
         T::upgrade(from, &mut table)?;
     }
@@ -635,6 +641,9 @@ fn check_previous<T: Document>(path: &Path, old: &str, writing: u32) -> Result<(
             rbs_core::debug!(Area::UserData, "newer file {}", path.display());
             Err(e)
         }
+        Err(
+            e @ DataError::Invalid(BodyError::Scene(rbs_scene::SceneError::NestingUnsupported)),
+        ) => Err(e),
         Err(e) => {
             rbs_core::warn!(Area::UserData, "an unreadable file was set aside: {e}");
             rbs_core::debug!(Area::UserData, "set aside {}", path.display());

@@ -1,6 +1,6 @@
 # ADR-0096: "Capture audio too" companions and the camera's own microphone
 
-- Status: Accepted
+- Status: Accepted (decision 2 superseded in part by ADR-0186)
 - Date: 2026-11-10
 - Deciders: Salih (owner)
 - Spec: [capture-port](../specs/capture-port.md), [scene-model](../specs/scene-model.md), [control-api](../specs/control-api.md), [audio-graph](../specs/audio-graph.md)

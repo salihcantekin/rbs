@@ -803,7 +803,6 @@ impl App {
                 library_transfer::when_answered(self, done, App::library_done);
             }
             Run::Collection(id) => {
-                self.dismiss_source_settings();
                 let done = self.studio.switch_collection(&id);
                 library_transfer::when_answered(self, done, App::library_done);
             }
@@ -1880,7 +1879,6 @@ impl Ctx {
             }
             if let Some((collection, id)) = applied.switch {
                 let done = if collection {
-                    app.dismiss_source_settings();
                     app.studio.switch_collection(&id)
                 } else {
                     app.studio.switch_profile(&id)
@@ -2370,7 +2368,7 @@ impl Ctx {
         } else {
             self.meter_timer.stop();
         }
-        app.meters_ui.mixer(s, mixer_shown);
+        meters_ui::sync(app, mixer_shown);
 
         #[cfg(any(target_os = "macos", windows))]
         {
@@ -5728,10 +5726,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
     let studio_config = config.clone();
     rbs_app::platform::note_user_folders();
     // The output profile and collection in use (ADR-0051); failed saves show as studio errors.
-    let (user, collection) = rbs_app::user_session::open(
-        &config,
-        std::sync::Arc::new(|why| deliver(studio_host::Update::Error(why))),
-    );
+    let (user, collection) = studio_start::open_user_session(&config)?;
     let mut user_notes = user.notes.clone();
     // Kept browser sign-ins no saved collection names any more (ADR-0132 decision 10).
     // The session stays on this thread: it owns the writer. The sweep thread reads a

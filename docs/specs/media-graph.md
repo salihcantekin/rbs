@@ -2,7 +2,7 @@
 
 - Status: Draft
 - Owner crate(s): `rbs-graph`, `rbs-core`
-- Related ADRs: [0037](../adr/0037-audio-graph.md), [0002](../adr/0002-headless-engine-and-media-graph.md), [0004](../adr/0004-single-master-clock.md), [0005](../adr/0005-gpu-compositing-with-wgpu.md), [0013](../adr/0013-zero-cost-when-unused.md), [0020](../adr/0020-node-contract-and-schedule-swap.md), [0027](../adr/0027-engine-loop.md)
+- Related ADRs: [0037](../adr/0037-audio-graph.md), [0002](../adr/0002-headless-engine-and-media-graph.md), [0004](../adr/0004-single-master-clock.md), [0005](../adr/0005-gpu-compositing-with-wgpu.md), [0013](../adr/0013-zero-cost-when-unused.md), [0020](../adr/0020-node-contract-and-schedule-swap.md), [0027](../adr/0027-engine-loop.md), [0193](../adr/0193-simple-group-show-and-scroll-resources.md)
 
 ## Purpose
 
@@ -15,7 +15,7 @@ The runtime model of the engine: nodes, typed links, scheduling and live editing
 | Source | no media (data allowed) | at least one output | screen, window, camera, media file, browser, remote guest; data-only producers (timers, chat events) |
 | VideoFilter | video | video | colour correction, chroma key, LUT, blur |
 | AudioFilter | audio (plus an optional second audio input named `key`, ADR-0095) | audio | gain, noise gate, ducker, noise suppression, compressor, CLAP plugin |
-| Compositor | many video | video | one per canvas, plus one per nested scene in use (its output feeds the parent compositor like a source) |
+| Compositor | many video | video | canvas compositors; active group Scroll uses compositor subpasses (ADR-0185, ADR-0188) |
 | Transition | two or more video (stinger: third), optional audio | video, optional audio | cut, fade, stinger, shader transition |
 | AudioMixer | many audio | audio | buses and mixes |
 | Encoder | video or audio | packets | via codec port |
@@ -102,6 +102,17 @@ Thread affinity: `prepare` and `release` run on the control thread, `warm`, `pro
 Failures: `process`, `warm`, `cool`, `begin_tick`, `end_tick`, `attach` and `detach` run inside `catch_unwind` (builds use `panic = "unwind"`; the panic path itself is not real-time). A returned error counts as a failed tick and partial event output of that tick is discarded; a video frame it wrote is kept. After `failure_limit` consecutive failed ticks (default 8), on any panic, or when `warm` fails, the node is bypassed: no longer called, video outputs keep the last frame, event outputs stay empty. `Executor::health` and `Collected::health` expose the counters. A bypassed node keeps its `prepare` resources until it leaves the plan. A failed `prepare` (error or panic) calls `release` and leaves the node idle. `NodeError::Permanent` from `process` bypasses at once.
 
 Restarts and containment ([ADR-0024](../adr/0024-node-restart-with-back-off.md)): a node whose `prepare` failed, or that waits for a restart, stays in the plan without an instance; its video outputs keep the last frame of the instance that left, and its dependants (and the nodes upstream of a failed output) keep running. The controller keeps a failure record per node: a failed `prepare`, or a bypass seen in the health of a retired schedule (counted once per instance epoch; health of an older instance is ignored). `RestartPolicy` waits `initial`, doubling up to `max` (defaults 0.5 s and 30 s), optionally gives up after `max_attempts`, and forgives a node whose current instance was not bypassed at a swap at least `stable_after` (10 s) after its restart. A scheduled instance that failed, or that `Controller::retry` superseded, is taken out (cooled, released) on the next `apply` and prepared and warmed again after its wait. `NodeError::Permanent` from `prepare`, `warm` or `process` is never restarted automatically. `Controller::retry(id)`, switching the node to Standby, or removing it clears the record (`Cleared`). A node whose wait is over but that the plan skips for another reason is parked until an edit schedules it. The executor bumps a shared counter on every bypass. The engine's control loop (`rbs_engine::Engine::service`, [engine spec](engine.md)), on each wake-up: `collect`; if `restart_due()`, `apply` the current description; sleep at most `next_due()` (a `Duration` on the controller's clock, set with `set_clock`). `ApplyReport::events` and `Collected::events` carry `RuntimeEvent::{Failed, Restarted, Recovered, Cleared}`; `ApplyReport::failed` is a snapshot of every node held without an instance. `NodeHealth::last_error` holds a static summary of the last error.
+
+### Group Show and group Scroll (ADR-0193)
+
+[ADR-0193](../adr/0193-simple-group-show-and-scroll-resources.md) supersedes
+ADR-0190, ADR-0191 and ADR-0192 in full: no non-tick executor service,
+incremental release, parked attachment or staged Show banks are planned. Group
+Show changes cues on the control thread and reaches the graph through ordinary
+`apply`; the compositor's group Scroll intermediates use the ordinary node
+lifecycle and the real-time exception of ADR-0062 decision 5 (acquire on a
+span appearing or changing size, `forget_texture` and `cool` to free).
+Implemented (2026-11-25).
 
 Parameters of running nodes ([ADR-0023](../adr/0023-node-parameter-channels.md)): values that change while a node keeps running (the compositor's layer list, mixer gains, transition progress) do not go through `apply`. `runtime::param::channel(initial)` returns a `ParamSender<T>` for the control thread and a `ParamReceiver<T>` that the node owns.
 

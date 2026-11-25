@@ -208,10 +208,9 @@ impl Host {
             ));
         };
         let name = self.name_of(source);
-        let (removed, undo) = self
-            .collection
-            .remove_from_scene(item)
-            .map_err(|e| Refusal::of(&e))?;
+        let mut draft = self.collection.clone();
+        let (removed, undo) = draft.remove_from_scene(item).map_err(|e| Refusal::of(&e))?;
+        self.collection = draft;
         let kind = if removed.source_deleted {
             EditKind::Delete
         } else {
@@ -459,7 +458,7 @@ impl Host {
     /// gets the system sound without RBS's own sound, a Window its application's
     /// sound. The companion joins the picture's last history step when `join` is set
     /// (adding both is one undo step), else it is a step of its own. It goes in the
-    /// scene of the picture's first item, named after the picture.
+    /// scene of the picture's unique item, named after the picture.
     pub(super) fn add_companion(
         &mut self,
         picture: SourceId,
@@ -480,110 +479,38 @@ impl Host {
                 source.name
             )));
         }
-        let scene = self
-            .collection
-            .placements_of(picture)
-            .first()
-            .map(|(scene, _)| *scene)
-            .ok_or_else(|| Refusal::Invalid("The source is not placed in any scene.".into()))?;
-        let (kind, target, name, exclude) = match SourceKind::of(&source.type_id) {
-            Some(SourceKind::Screen) => {
-                if !self.adapters.sources.can_exclude_own_sound() {
-                    return Err(Refusal::Failed(
-                        "This system cannot leave RBS's own sound out of the system sound.".into(),
-                    ));
-                }
-                let target = self
-                    .targets(SourceKind::SystemAudio)
-                    .into_iter()
-                    .find(|t| t.is_default)
-                    .ok_or_else(|| {
-                        Refusal::Failed("There is no sound output to capture.".into())
-                    })?;
-                (
-                    SourceKind::SystemAudio,
-                    target,
-                    "System sound".to_owned(),
-                    true,
-                )
-            }
-            Some(SourceKind::Window) => {
-                let app = source.hints.get(HINT_APP).cloned().ok_or_else(|| {
-                    Refusal::Failed("This window's application is not known.".into())
-                })?;
-                let target = self
-                    .targets(SourceKind::ApplicationAudio)
-                    .into_iter()
-                    .find(|t| super::targets::same_app(&t.name, &app))
-                    .ok_or_else(|| {
-                        Refusal::Failed(format!("{app} is not playing sound that can be captured."))
-                    })?;
-                (
-                    SourceKind::ApplicationAudio,
-                    target,
-                    format!("{} sound", source.name),
-                    false,
-                )
-            }
-            Some(SourceKind::Camera) => {
-                let target = self.camera_microphone(&source).ok_or_else(|| {
-                    Refusal::Failed("No microphone belongs with this camera.".into())
-                })?;
-                (
-                    SourceKind::AudioInput,
-                    target,
-                    format!("{} mic", source.name),
-                    false,
-                )
-            }
-            _ => {
-                return Err(Refusal::Invalid(
-                    "Only a Display, a Window or a Camera can capture audio too.".into(),
-                ));
-            }
-        };
+        self.collection
+            .companion_picture_placement(picture)
+            .map_err(|e| Refusal::of(&e))?;
+        let (kind, target, name, exclude) = self.companion_target(&source)?;
         let (mut settings, layout) = self.new_source(kind, &target)?;
         if exclude {
             settings.insert(keys::EXCLUDE_OWN_PROCESS.into(), SettingValue::Bool(true));
         }
         let name = unique_name(&self.collection, &name);
-        let (id, undo_source) = self
+        let layout = self.stored_layout(&layout);
+        let (id, _, undo) = self
             .collection
-            .add_source(&name, kind.type_id(), settings.clone())
+            .add_companion(
+                picture,
+                &name,
+                kind.type_id(),
+                settings,
+                hints_of(&target),
+                layout,
+            )
             .map_err(|e| Refusal::of(&e))?;
-        let mut hints = hints_of(&target);
-        hints.insert(COMPANION_OF_HINT.to_owned(), picture.get().to_string());
-        let hinted = self
-            .collection
-            .set_source_settings_and_hints(id, settings, hints);
-        let placed = hinted.and_then(|undo_hints| {
-            self.collection
-                .add_item(
-                    scene,
-                    ItemContent::Source(id),
-                    self.stored_layout(&layout),
-                    None,
-                )
-                .map(|(_, undo_item)| (undo_hints, undo_item))
-        });
-        match placed {
-            Ok((undo_hints, undo_item)) => {
-                let records = vec![undo_source, undo_hints, undo_item];
-                if join {
-                    self.edits
-                        .history
-                        .extend_last(EditKind::Add, &name, records);
-                } else {
-                    self.edits.history.record(EditKind::Add, &name, 0, records);
-                }
-                self.fill_device_offset(id, None, &name, EditKind::Add);
-                Ok(id)
-            }
-            Err(e) => {
-                let _ = self.collection.undo(undo_source);
-                Err(Refusal::of(&e))
-            }
+        if join {
+            self.edits
+                .history
+                .extend_last(EditKind::Add, &name, vec![undo]);
+        } else {
+            self.edits
+                .history
+                .record(EditKind::Add, &name, 0, vec![undo]);
         }
+        self.fill_device_offset(id, None, &name, EditKind::Add);
+        Ok(id)
     }
 
     /// Removes the companion of `picture` as one undo step.
@@ -1081,10 +1008,11 @@ impl Host {
             .ok_or_else(|| {
                 Refusal::NotFound("This source is not in the scene any more.".to_owned())
             })?;
-        let undo = self
-            .collection
+        let mut draft = self.collection.clone();
+        let undo = draft
             .delete_source(id)
             .map_err(|e| Refusal::Failed(format!("{e:?}")))?;
+        self.collection = draft;
         self.edits
             .history
             .record(EditKind::Delete, &name, 0, vec![undo]);

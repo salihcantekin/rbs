@@ -66,6 +66,7 @@ fn clear_window_gesture(command: &mut rbs_api::Command) {
         C::ItemAlign(p) => &mut p.gesture,
         C::ItemResetTransform(p) => &mut p.gesture,
         C::SourceSetSettings(p) => &mut p.gesture,
+        C::GroupApply(p) => &mut p.gesture,
         _ => return,
     };
     *gesture &= !WINDOW_GESTURE;
@@ -122,19 +123,27 @@ impl ApiTarget<'_> {
 
     /// Answers `command` for any caller; [`ApiTarget::run_for_window`] adds what the
     /// window waits for.
+    /// An output's refusal of `command`, before it is routed.
+    fn refuse_output(&mut self, command: &rbs_api::Command) -> Result<(), ApiError> {
+        let Some(e) = output_refusal(self.host, command) else {
+            return Ok(());
+        };
+        // The window's start waits for its output's state (ADR-0164 decision 3).
+        if self.window {
+            let waited = match command {
+                rbs_api::Command::VcamStart => {
+                    Some(Update::VirtualCamera(self.host.camera_status()))
+                }
+                call => failures::start_refused(call, &e.message),
+            };
+            waited.into_iter().for_each(self.notify);
+        }
+        Err(e)
+    }
+
     fn route(&mut self, command: rbs_api::Command) -> Result<Response, ApiError> {
         use rbs_api::Command as C;
-        if let Some(e) = output_refusal(self.host, &command) {
-            // The window's start waits for its output's state (ADR-0164 decision 3).
-            if self.window {
-                let waited = match &command {
-                    C::VcamStart => Some(Update::VirtualCamera(self.host.camera_status())),
-                    call => failures::start_refused(call, &e.message),
-                };
-                waited.into_iter().for_each(self.notify);
-            }
-            return Err(e);
-        }
+        self.refuse_output(&command)?;
         match command {
             C::StudioGet
             | C::SourceList
@@ -320,9 +329,12 @@ impl ApiTarget<'_> {
             | C::TokensList
             | C::TokensCreate(..)
             | C::TokensRevoke(..) => self.answer_source3(command),
-            C::GroupCreate(..) | C::GroupRemove(..) | C::GroupRename(..) | C::GroupList(..) => {
-                self.answer_group(command)
-            }
+            C::GroupCreate(..)
+            | C::GroupRemove(..)
+            | C::GroupRename(..)
+            | C::GroupList(..)
+            | C::GroupGet(..)
+            | C::GroupApply(..) => self.answer_group(command),
         }
     }
 

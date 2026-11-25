@@ -6,7 +6,7 @@ use super::{Op, SceneCollection, SceneError, Undo, issue};
 use crate::model::{ItemId, Scene, SceneAudio, SceneId, SceneLevel, SourceId};
 
 impl SceneCollection {
-    /// Copies a scene: new scene id and item ids, the same sources and nested scenes,
+    /// Copies a scene: new scene id and item ids, the same sources,
     /// same layouts. Does not put it on air. Refused for a canvas's global scene
     /// (ADR-0065).
     pub fn duplicate_scene(
@@ -18,6 +18,7 @@ impl SceneCollection {
             return Err(SceneError::GlobalScene(id));
         }
         let source = self.get_scene(id)?.clone();
+        super::check_items(&source.items)?;
         let mut next = self.next.clone();
         let new_id = SceneId(issue(&mut next.scene)?);
         let mut items = Vec::with_capacity(source.items.len());

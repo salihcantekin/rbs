@@ -107,6 +107,23 @@ impl Picked {
         self.settle();
     }
 
+    /// Picks one member when the complete group was selected. Group rows may be
+    /// ordered differently from the selected set.
+    fn select_group_member(&mut self, selected: &mut i32, id: i32, members: &[i32]) -> bool {
+        let is_group = self.0.len() > 1
+            && self.0.len() == members.len()
+            && members
+                .iter()
+                .enumerate()
+                .all(|(i, id)| self.0.contains(id) && !members[..i].contains(id));
+        if !is_group || !self.has(id) {
+            return false;
+        }
+        self.clear();
+        *selected = id;
+        true
+    }
+
     /// A set of fewer than two is not a multi-selection.
     fn settle(&mut self) {
         if self.0.len() < 2 {
@@ -130,11 +147,15 @@ impl super::StudioUi {
     /// A Sources row was clicked with Ctrl/Cmd or Shift held.
     pub fn select_with(&mut self, id: i32, ctrl: bool, shift: bool) {
         // Ctrl/Cmd on a member of a selected whole group picks that member alone.
-        if ctrl && !shift && self.group_of(id).is_some() && self.picked.has(id) {
-            let block = self.group_of(id).map(|g| self.group_members(g));
-            if block.is_some_and(|b| self.picked.ids(self.selected) == b) {
-                self.picked.clear();
-                self.selected = id;
+        if ctrl
+            && !shift
+            && let Some(group) = self.group_of(id)
+        {
+            let members = self.group_members(group);
+            if self
+                .picked
+                .select_group_member(&mut self.selected, id, &members)
+            {
                 self.mark_picked();
                 self.refresh_marks();
                 return;
@@ -221,6 +242,7 @@ impl super::StudioUi {
         for d in data {
             d.picked = self.picked.has(d.id);
         }
+        self.read_group(rows);
     }
 
     /// A plain selection of one source (or none, -1): ends any multi-selection. A source in a group selects its whole block (ADR-0182 decision 9).
@@ -242,9 +264,11 @@ impl super::StudioUi {
         self.mark_picked();
     }
 
-    /// Brings each Sources row's `picked` flag in line with the set. The rows are
-    /// only made again when the sources change, so a click must update them here.
-    pub(crate) fn mark_picked(&self) {
+    /// Brings each Sources row's `picked` flag in line with the set, and Properties
+    /// to the group it may now be. The rows are only made again when the sources
+    /// change, so a click must update them here.
+    pub(crate) fn mark_picked(&mut self) {
+        self.read_group_now();
         for i in 0..self.sources.row_count() {
             if let Some(mut row) = self.sources.row_data(i) {
                 let picked = self.picked.has(row.id);
@@ -312,5 +336,26 @@ mod tests {
         p.set([3]);
         assert!(!p.has(3), "one source is not a set");
         assert_eq!(p.ids(sel), vec![3]);
+    }
+
+    #[test]
+    fn control_click_selects_one_group_member_regardless_of_layer_order() {
+        let mut picked = Picked::default();
+        let mut selected = 4;
+        picked.set([2, 3, 4]);
+        assert!(picked.select_group_member(&mut selected, 2, &[4, 2, 3]));
+        assert_eq!((picked.ids(selected), selected), (vec![2], 2));
+    }
+
+    #[test]
+    fn control_click_only_treats_the_exact_group_as_a_group_selection() {
+        let mut picked = Picked::default();
+        let mut selected = 4;
+        picked.set([2, 3, 4]);
+        assert!(!picked.select_group_member(&mut selected, 2, &[4, 2]));
+        assert!(!picked.select_group_member(&mut selected, 2, &[4, 2, 5]));
+        assert!(!picked.select_group_member(&mut selected, 2, &[4, 2, 2]));
+        assert!(!picked.select_group_member(&mut selected, 5, &[4, 2, 3]));
+        assert_eq!((picked.ids(selected), selected), (vec![2, 3, 4], 4));
     }
 }

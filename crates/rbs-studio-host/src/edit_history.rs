@@ -105,7 +105,7 @@ pub struct StepInfo {
     pub name: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Step<R> {
     info: StepInfo,
     /// Edits of one gesture join one step; 0 never joins.
@@ -143,6 +143,13 @@ impl<R> Default for History<R> {
 }
 
 impl<R: Clone> History<R> {
+    pub(crate) fn fork(&self) -> Self {
+        Self {
+            undo: self.undo.clone(),
+            redo: self.redo.clone(),
+        }
+    }
+
     /// An empty history.
     pub fn new() -> Self {
         Self::default()

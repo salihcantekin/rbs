@@ -239,7 +239,8 @@ pub(super) mod tests {
     use std::task::Wake;
     use std::thread::Thread;
 
-    use super::super::{OnError, RECORDING, open};
+    use super::super::tests::open;
+    use super::super::{OnError, RECORDING};
     use super::*;
     use crate::canvas_profile::CanvasProfile;
     use crate::record_profile::RecordProfile;

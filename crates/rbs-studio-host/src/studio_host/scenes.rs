@@ -44,8 +44,8 @@ impl Host {
             self.canvas_changed(self.api_canvas(), notify);
             return Err(why);
         }
-        // The pages of the collection before go: their Interact windows close.
-        self.close_all_interacts(notify);
+        next.validate_no_nested_scenes()
+            .map_err(|why| Refusal::Failed(why.to_string()))?;
         let before = self.api_canvas();
         // Fixing up a missing canvas or scene below is an edit: it is saved.
         let loaded = next.generation();
@@ -65,6 +65,8 @@ impl Host {
                 )));
             }
         };
+        // The pages of the collection before go only after the target is usable.
+        self.close_all_interacts(notify);
         // Whatever the old collection's last change was, it is saved before this one.
         self.publish_save();
         self.save_text_timers();
@@ -77,7 +79,12 @@ impl Host {
         // A copy of the old collection's program never goes on air in the new one.
         let old_held = self.program.held.take();
         let _ = self.studio.shutdown();
-        let result = match self.restart() {
+        // The old collection's group runs and ids end only when the switch commits.
+        let old_runs = self.studio.retire_group_runs();
+        self.program.suppress_cue_capture = true;
+        let switched = self.restart();
+        self.program.suppress_cue_capture = false;
+        let result = match switched {
             Ok(()) => {
                 self.autosave = autosave;
                 // The new collection's timers, not the old one's.
@@ -95,6 +102,7 @@ impl Host {
                 self.note_collection();
                 (self.collection, self.canvas, self.scene) = old;
                 self.program.held = old_held;
+                self.studio.restore_group_runs(old_runs);
                 if let Err(again) = self.restart() {
                     self.dead = Some(again.into_text());
                 }
@@ -378,10 +386,11 @@ impl Host {
             .name
             .clone();
         let name = unique_scene_name(&self.collection, &base);
-        let (new_id, undo) = self
-            .collection
+        let mut draft = self.collection.clone();
+        let (new_id, undo) = draft
             .duplicate_scene(id, &name)
             .map_err(|e| Refusal::of(&e))?;
+        self.collection = draft;
         self.edits
             .history
             .record(EditKind::AddScene, &name, 0, vec![undo]);
@@ -419,10 +428,9 @@ impl Host {
                 .set_preview(self.canvas, Some(self.scene))
                 .map_err(|e| Refusal::of(&e))?;
         }
-        let undo = self
-            .collection
-            .remove_scene(id)
-            .map_err(|e| Refusal::of(&e))?;
+        let mut draft = self.collection.clone();
+        let undo = draft.remove_scene(id).map_err(|e| Refusal::of(&e))?;
+        self.collection = draft;
         self.edits
             .history
             .record(EditKind::RemoveScene, &name, 0, vec![undo]);
@@ -840,12 +848,22 @@ impl Host {
     /// it go otherwise. A copy is taken only when the hold starts, so later edits to
     /// the scene reach the program only through a transition.
     pub(super) fn sync_held(&mut self) {
+        let previous = self.program.held.as_ref().map(|h| (h.from, h.scene.id));
         self.program.held = next_held(
             self.program.held.take(),
             &self.collection,
             self.canvas,
             self.program.held_id_was,
         );
+        if let Some(held) = &mut self.program.held
+            && previous != Some((held.from, held.scene.id))
+        {
+            held.cues = Some(if self.program.suppress_cue_capture {
+                self.studio.capture_held_cues(&BTreeMap::new())
+            } else {
+                self.studio.capture_held_cues(&held.cue_items)
+            });
+        }
     }
 
     /// The collection the studio runs: the user's own, or with the program held
@@ -867,6 +885,13 @@ impl Host {
         // The same id as the copy it replaces: the hold goes on, no transition.
         let after = (held.scene.id.get() == HELD_IDS_NEXT).then(|| SceneId::from_raw(HELD_IDS));
         self.program.held = copy_of(&self.collection, held.from, after);
+        if let Some(held) = &mut self.program.held {
+            held.cues = Some(if self.program.suppress_cue_capture {
+                self.studio.capture_held_cues(&BTreeMap::new())
+            } else {
+                self.studio.capture_held_cues(&held.cue_items)
+            });
+        }
         let run = run_copy(&self.collection, self.canvas, self.program.held.as_ref()?);
         if run.is_none() {
             self.program.held = None;

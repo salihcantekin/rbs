@@ -134,6 +134,7 @@ pub(super) struct ProjectorRun {
     pub(super) canvas: OutputCanvas,
     /// Its picture in the running studio; `None` while suspended or not yet added.
     pub(super) picture: Option<PictureId>,
+    pub(super) closing: bool,
     /// Counted toward the limits (its canvas's size) while it has a picture.
     pub(super) size: Size,
     /// What was last sent to the UI.

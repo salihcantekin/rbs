@@ -9,6 +9,7 @@
 //! studio runs (P13): the stop thread and the budget timer exist only during a restart.
 
 use std::cell::{Cell, RefCell};
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -27,6 +28,18 @@ pub(crate) const STOP_BUDGET: Duration = Duration::from_secs(8);
 
 /// Shown after "The studio is not running: " when the old studio did not stop in time.
 pub(crate) const STUCK: &str = "the studio did not stop. Quit RBS and open it again.";
+
+pub(crate) fn open_user_session(
+    config: &Path,
+) -> Result<
+    (rbs_app::user_session::UserSession, SceneCollection),
+    rbs_app::user_session::SessionError,
+> {
+    rbs_app::user_session::open(config, Arc::new(|why| deliver(Update::Error(why)))).map_err(|e| {
+        rbs_core::error!(Area::App, "The scene collection could not be opened: {e}");
+        e
+    })
+}
 
 /// Which studio may talk to the window: raised by each restart.
 static GENERATION: AtomicU64 = AtomicU64::new(0);

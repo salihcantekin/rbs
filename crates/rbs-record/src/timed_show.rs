@@ -58,6 +58,52 @@ impl ShowCues {
         true
     }
 
+    /// Captures unexpired deadlines under their held-copy item ids.
+    ///
+    /// Only ids in `items` are copied; later changes to the original cues do not
+    /// affect the snapshot. Duplicate destination ids are rejected.
+    pub fn snapshot_remapped(
+        &self,
+        items: &BTreeMap<ItemId, ItemId>,
+        now: Timestamp,
+    ) -> Result<Self, ItemId> {
+        let mut destinations = BTreeSet::new();
+        for &held in items.values() {
+            if !destinations.insert(held) {
+                return Err(held);
+            }
+        }
+        let deadlines = items
+            .iter()
+            .filter_map(|(original, held)| {
+                self.deadlines
+                    .get(original)
+                    .filter(|deadline| **deadline > now)
+                    .map(|deadline| (*held, *deadline))
+            })
+            .collect();
+        Ok(Self { deadlines })
+    }
+
+    /// Captures the currently drawn cue ids for a frozen outgoing snapshot.
+    pub fn active_at(&self, now: Timestamp) -> BTreeSet<ItemId> {
+        self.deadlines
+            .iter()
+            .filter(|(_, deadline)| **deadline > now)
+            .map(|(item, _)| *item)
+            .collect()
+    }
+
+    pub(crate) fn rebased(&self, old_now: Timestamp, new_now: Timestamp) -> Self {
+        let deadlines = self
+            .deadlines
+            .iter()
+            .filter(|(_, deadline)| **deadline > old_now)
+            .map(|(item, deadline)| (*item, new_now + deadline.saturating_since(old_now)))
+            .collect();
+        Self { deadlines }
+    }
+
     /// Drops the cue for `item` (the eye was opened, or the item left the document).
     /// Returns whether a cue was running.
     pub fn drop_item(&mut self, item: ItemId) -> bool {
@@ -94,6 +140,11 @@ impl ShowCues {
         }
     }
 
+    /// When `item`'s cue ends. `None` when it has no cue.
+    pub fn deadline(&self, item: ItemId) -> Option<Timestamp> {
+        self.deadlines.get(&item).copied()
+    }
+
     /// Milliseconds left before `item`'s cue ends. `None` when it has no cue.
     pub fn remaining_ms(&self, item: ItemId, now: Timestamp) -> Option<u32> {
         let deadline = *self.deadlines.get(&item)?;
@@ -108,6 +159,7 @@ impl ShowCues {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::{BTreeMap, BTreeSet};
     use std::time::Duration;
 
     use rbs_core::time::{Clock, TestClock, Timestamp};
@@ -117,6 +169,72 @@ mod tests {
 
     fn item(id: u32) -> ItemId {
         ItemId::from_raw(id)
+    }
+
+    #[test]
+    fn held_snapshot_keeps_original_deadline_after_preview_cue_changes() {
+        let clock = TestClock::new();
+        let mut preview = ShowCues::new();
+        let a = item(1);
+        let b = item(2);
+        let held_a = item(101);
+        assert!(preview.show(a, false, Some(2_000), clock.now()));
+        let mut held = preview
+            .snapshot_remapped(&BTreeMap::from([(a, held_a)]), clock.now())
+            .unwrap();
+
+        clock.advance(Duration::from_millis(500));
+        assert!(preview.show(a, false, Some(3_000), clock.now()));
+        assert!(preview.show(b, false, Some(3_000), clock.now()));
+        assert!(preview.drop_item(a));
+        assert_eq!(held.remaining_ms(held_a, clock.now()), Some(1_500));
+        clock.advance(Duration::from_millis(1_500));
+        assert!(held.expire(clock.now()));
+        assert!(held.is_empty());
+        assert!(preview.active_at(clock.now()).contains(&b));
+    }
+
+    #[test]
+    fn snapshots_exclude_expired_cues_and_frozen_draw_state_does_not_change() {
+        let mut cues = ShowCues::new();
+        let a = item(1);
+        let b = item(2);
+        assert!(cues.show(a, false, Some(1_000), Timestamp::ZERO));
+        assert!(cues.show(b, false, Some(2_000), Timestamp::ZERO));
+        let now = Timestamp::ZERO + Duration::from_secs(1);
+        let frozen = cues.active_at(now);
+        let held = cues
+            .snapshot_remapped(&BTreeMap::from([(a, item(11)), (b, item(12))]), now)
+            .unwrap();
+        assert_eq!(frozen, BTreeSet::from([b]));
+        assert_eq!(held.items(), BTreeSet::from([item(12)]));
+        assert!(cues.drop_item(b));
+        assert_eq!(frozen, BTreeSet::from([b]));
+    }
+
+    #[test]
+    fn held_snapshot_refuses_duplicate_copy_ids() {
+        let cues = ShowCues::new();
+        let duplicate = item(11);
+        assert_eq!(
+            cues.snapshot_remapped(
+                &BTreeMap::from([(item(1), duplicate), (item(2), duplicate)]),
+                Timestamp::ZERO
+            ),
+            Err(duplicate)
+        );
+    }
+
+    #[test]
+    fn held_snapshot_retains_nested_item_ids_without_following_preview() {
+        let nested = item(8);
+        let mut preview = ShowCues::new();
+        assert!(preview.show(nested, false, Some(1_000), Timestamp::ZERO));
+        let held = preview
+            .snapshot_remapped(&BTreeMap::from([(nested, nested)]), Timestamp::ZERO)
+            .unwrap();
+        assert!(preview.drop_item(nested));
+        assert_eq!(held.active_at(Timestamp::ZERO), BTreeSet::from([nested]));
     }
 
     #[test]

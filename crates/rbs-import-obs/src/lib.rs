@@ -46,7 +46,7 @@ pub enum SceneChoice {
     /// Every scene.
     #[default]
     All,
-    /// These scenes by OBS name, and the scenes they nest.
+    /// Exactly these scenes by OBS name; referenced scenes are not added.
     Only(BTreeSet<String>),
 }
 

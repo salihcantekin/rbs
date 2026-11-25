@@ -110,7 +110,7 @@ fn allocs_per_frame_of(layer_count: usize, planar: bool, scrolling: bool) -> Opt
     }
 
     let mut frame = || {
-        comp.render_scrolled(ctx, &pool, &layers, canvas, binding.as_mut())
+        comp.render_scrolled(ctx, &pool, &layers, canvas, binding.as_mut(), 0)
             .unwrap();
         conv.convert(ctx, &pool, canvas, luma, chroma).unwrap();
         ctx.poll();
@@ -199,4 +199,97 @@ fn scrolling_layers_allocate_a_bounded_constant_more() {
     // One queue write and one bind group set per scrolling layer: a small constant.
     let per_layer = (scroll_b - rgb_b) / 8.0;
     assert!(per_layer <= 4.0, "per scrolling layer {per_layer}");
+}
+
+/// Allocations per frame of a group span (ADR-0193): eight members drawn into a
+/// 160 x 90 intermediate, then the canvas pass sampling it as one scrolling layer at a
+/// later record slot; against the same eight layers drawn straight onto the canvas.
+fn span_allocs_per_frame() -> Option<(f64, f64)> {
+    let ctx = common::gpu()?;
+    let mut pool = TexturePool::new();
+    let mut comp = Compositor::new(
+        ctx,
+        CanvasDesc {
+            width: W,
+            height: H,
+        },
+        64,
+    )
+    .unwrap();
+    let mut conv = YuvConverter::new(ctx, YuvFormat::Nv12, W, H).unwrap();
+    let canvas = pool.acquire(ctx, &TextureDesc::canvas(W, H)).unwrap();
+    let luma = pool
+        .acquire(ctx, &yuv::luma_desc(YuvFormat::Nv12, W, H))
+        .unwrap();
+    let chroma = pool
+        .acquire(ctx, &yuv::chroma_desc(YuvFormat::Nv12, W, H))
+        .unwrap();
+    let inter = pool.acquire(ctx, &TextureDesc::canvas(160, 90)).unwrap();
+    let src = solid(ctx, &mut pool, 16, 16, [0.2, 0.4, 0.6, 1.0]);
+    let members: Vec<Layer> = (0..8)
+        .map(|i| Layer::new(src, i as f32, i as f32, 64.0, 36.0))
+        .collect();
+    let group = rbs_gpu::LayerScroll {
+        direction: rbs_gpu::ScrollDirection::Left,
+        repeat: rbs_gpu::ScrollRepeat::Loop,
+        start: rbs_gpu::ScrollStart::Inside,
+        gap: 0.0,
+        fade: 0.0,
+        run: rbs_gpu::ScrollRun::start(rbs_core::time::Timestamp::ZERO, 50.0),
+    };
+    let mut span = Layer::new(inter, 20.0, 10.0, 160.0, 90.0);
+    let f = group
+        .frame(
+            &span.transform,
+            &span.crop,
+            160,
+            90,
+            rbs_core::time::Timestamp::ZERO,
+        )
+        .unwrap();
+    span.scroll = Some(f.gpu(group.direction, group.repeat, group.fade));
+    let mut binding = rbs_gpu::ScrollBinding::new(ctx);
+    let mut frame = || {
+        comp.render_intermediate(ctx, &pool, &members, inter, Some(&mut binding), 0)
+            .unwrap();
+        let drawn = comp
+            .render_scrolled(ctx, &pool, &[span], canvas, Some(&mut binding), 5)
+            .unwrap();
+        assert_eq!(drawn.drawn_layers, 1);
+        conv.convert(ctx, &pool, canvas, luma, chroma).unwrap();
+        ctx.poll();
+    };
+    for _ in 0..50 {
+        frame();
+    }
+    ctx.wait_idle().unwrap();
+    let mut window = |n: u64| {
+        let before = ALLOCS.load(Ordering::Relaxed);
+        for _ in 0..n {
+            frame();
+        }
+        (ALLOCS.load(Ordering::Relaxed) - before) as f64 / n as f64
+    };
+    let first = window(FRAMES);
+    let second = window(FRAMES);
+    ctx.wait_idle().unwrap();
+    Some((first, second))
+}
+
+#[test]
+fn a_group_span_allocates_a_bounded_constant_more() {
+    let Some((_, plain)) = allocs_per_frame(8, false) else {
+        return;
+    };
+    let Some((span_a, span_b)) = span_allocs_per_frame() else {
+        return;
+    };
+    eprintln!("allocations per frame, 8 layers: plain {plain:.1}, span {span_a:.1} / {span_b:.1}");
+    assert!(span_b <= span_a * 1.1 + 1.0, "span: {span_a} then {span_b}");
+    // One more encoder, pass, record write and submit in wgpu (70 on Metal); nothing in
+    // RBS code, and the same every frame.
+    assert!(
+        span_b <= plain + 96.0,
+        "span {span_b} against plain {plain}"
+    );
 }

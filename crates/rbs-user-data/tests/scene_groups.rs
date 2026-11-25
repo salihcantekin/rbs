@@ -6,7 +6,7 @@ use rbs_core::media::Size;
 use rbs_core::timing::FrameRate;
 use rbs_graph::node::NodeTypeId;
 use rbs_scene::SceneCollection;
-use rbs_scene::model::{ItemContent, Layout, SceneScope, Settings};
+use rbs_scene::model::{GroupScroll, ItemContent, Layout, SceneScope, ScrollDirection, Settings};
 use rbs_user_data::DataError;
 use rbs_user_data::document::{self, Document};
 
@@ -75,4 +75,71 @@ fn groups_in_a_format_before_30_are_refused() {
         Err(DataError::Invalid(why)) => assert!(why.to_string().contains("groups"), "{why}"),
         other => panic!("expected a refusal, got {:?}", other.map(|_| ())),
     }
+}
+
+#[test]
+fn group_scroll_round_trips_only_in_format_31_and_is_strict() {
+    let mut col = grouped();
+    let scene = col.scenes().next().unwrap().id;
+    let canvas = col.canvases().next().unwrap().id;
+    let group = col.groups(scene).unwrap()[0].id;
+    let members: Vec<_> = col
+        .scene(scene)
+        .unwrap()
+        .items
+        .iter()
+        .filter(|i| i.group == Some(group))
+        .map(|i| i.id)
+        .collect();
+    col.set_group_scroll(
+        scene,
+        group,
+        &members,
+        canvas,
+        Some(GroupScroll::new(ScrollDirection::Up, 125.0)),
+    )
+    .unwrap();
+    let text = document::render(&col, None).unwrap();
+    assert!(text.starts_with("format = 31"), "{text}");
+    assert_eq!(
+        document::parse::<SceneCollection>(&text).unwrap().document,
+        col
+    );
+    assert!(
+        document::parse::<SceneCollection>(&text.replacen("format = 31", "format = 30", 1))
+            .is_err()
+    );
+    let mut value: toml::Value = toml::from_str(&text).unwrap();
+    let groups = value["scenes"][0]["groups"].as_array_mut().unwrap();
+    let scrolls = groups[0]["scrolls"].as_array_mut().unwrap();
+    let entry = scrolls[0].clone();
+    scrolls.push(entry);
+    assert!(document::parse::<SceneCollection>(&toml::to_string(&value).unwrap()).is_err());
+    let scrolls = value["scenes"][0]["groups"][0]["scrolls"]
+        .as_array_mut()
+        .unwrap();
+    scrolls.pop();
+    scrolls[0]["scroll"]
+        .as_table_mut()
+        .unwrap()
+        .insert("on_return".into(), toml::Value::String("restart".into()));
+    assert!(document::parse::<SceneCollection>(&toml::to_string(&value).unwrap()).is_err());
+    let scrolls = value["scenes"][0]["groups"][0]["scrolls"]
+        .as_array_mut()
+        .unwrap();
+    scrolls[0]["scroll"]
+        .as_table_mut()
+        .unwrap()
+        .remove("on_return");
+    scrolls[0]["canvas"] = toml::Value::Integer(999);
+    assert!(document::parse::<SceneCollection>(&toml::to_string(&value).unwrap()).is_err());
+    let scrolls = value["scenes"][0]["groups"][0]["scrolls"]
+        .as_array_mut()
+        .unwrap();
+    scrolls[0]["canvas"] = toml::Value::Integer(i64::from(canvas.get()));
+    scrolls[0]["scroll"]["speed"] = toml::Value::Float(0.0);
+    assert!(document::parse::<SceneCollection>(&toml::to_string(&value).unwrap()).is_err());
+    col.set_group_scroll(scene, group, &members, canvas, None)
+        .unwrap();
+    assert_eq!(col.write_format(), 30);
 }

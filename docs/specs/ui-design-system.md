@@ -38,7 +38,7 @@ File layout (format 2; format 1 is format 2 without `[font]` and is still read, 
 | `color.button.fill` / `.button.hover` / `.button.pressed` | Secondary button at rest, under the pointer and pressed; ghost under the pointer and pressed (Tint look) |
 | `color.button.chip` | The small chip behind the lead icon of an unfilled button with text |
 | `color.action.destructive.subtle` / `.action.destructive.subtle.hover` | Danger button fill, at rest and under the pointer |
-| `color.brand` | The window of the RBS mark, drawn on `color.surface.raised` and `.overlay`; the camera in the bubble is `color.text.primary` and the cut-outs take the colour the mark sits on |
+| `color.brand` | The RBS mark (a 6-blade hexagonal aperture), drawn on `color.surface.raised` and `.overlay` |
 | `color.state.live` / `color.text.on-live` | Live and recording only (rule U12), and the text on it; fixed, themes cannot change them |
 | `color.caption.close-hover` / `color.caption.close-text` | The Close window button under the pointer, as Windows draws it (ADR-0071; the same on macOS, ADR-0180); fixed |
 | `color.projector.backdrop` | Around the picture in a projector window (ADR-0125): black in every theme, because a video call shares it; fixed |
@@ -306,6 +306,89 @@ The main window is a frame around a centre and three areas ([ADR-0049](../adr/00
 - **Areas.** `left`, `right` and `bottom` hold panels around the `centre`. Each has a size in logical pixels (width, or height for `bottom`) and can be hidden and shown with its toolbar toggle or the View menu (no shortcut is bound by default, U21); hiding keeps its panels and size. Hide side panels (`ui.area.hide_all`) hides all three and Show side panels (`ui.area.show_all`) shows them again. An area that is visible but empty takes no space. The bottom area spans the full width under the other three. The centre always exists and takes the remaining space; with every area hidden and an empty centre it shows an empty state with Show areas and Reset layout (U10).
 - **Edge tabs.** Auto-hidden panels show as tabs on the left, right or bottom window edge (outside the areas, inside the frame); there are no top edge tabs, so nothing sits between the toolbar and the content. An edge with no auto-hidden panel takes no space. Edge tabs stay visible when their area is hidden. Floating windows have no areas: their stacks can collapse but not auto-hide.
 - **Look** (implemented, matching the owner's chosen mockup E): the content sits on `surface.base`. Each tab stack is a card: `surface.raised`, `radius.lg`, with a `border.subtle` line only while `Theme.panel-outline` is on (ADR-0112 decision 3: the panel colour is closer than 1.15:1 to the window ground), with gaps of the layout's divider thickness (6 px) between cards and around them; a divider is invisible until hovered, dragged or keyboard-focused, then drawn in `accent`; releasing the pointer leaves it unfocused. A card's header is `size.control.lg` high and the same surface as the card, with no rule under the row. A collapsed stack draws only that title row, and an area whose stacks are all collapsed is only as tall or wide as those rows; it keeps its saved size for when a stack expands. One panel shows its name as plain text, with no underline. Two or more panels in the stack are tabs: text, the shown one underlined in `accent` for the width of its title (`size.tab.indicator`, no tab background), and on the right Auto-hide (`pin`), Collapse or Expand (`chevron-down` / `chevron-right`, reporting expanded or collapsed) and the panel menu (`more`, opening under the button); a right click on a tab opens that menu too, under the tab row's start. The centre's last expanded stack shows no Collapse and a centre of one stack no Auto-hide. Edge tabs are cards `size.control.md` wide with the panel's icon and its title turned along the edge; clicking one (or Enter or Space) slides its panel out over the dock area along that edge, `size` wide, as a card with Pin and Hide; Escape, Hide, the tab again, or a click on the dock outside the slid-out panel slides it back, and so does another command (a toolbar button, a menu item). Pinning, closing or adding an auto-hidden panel slides it back too. Opening a panel (`ui.panel.open`, including Properties from a source's menu) shows it: a hidden area is shown, a collapsed stack expands, and an auto-hidden panel slides out over the dock. The slid-out panel is reported to the preview layer like a toast (ADR-0054). Not yet: hover to open with its delay and grace period, and sliding animation. **Dragging a tab** (ADR-0049 decision 5, inside one window, not while the layout is locked) moves its panel: over a stack, its title row or middle drops the panel in as a tab, and the outer 30 % on each side puts it in a new stack on that side, sharing the stack's place half and half (one layout undo step); within 16 px of the dock area's edge it goes to that edge of the window (in the main window, that area's outer side). `rbs-ui` (`frame::drop_target`) decides the target; the shell shades the part the drop would fill in `accent.subtle` with an `accent` border, reported to the preview layer like a toast. Dropping a panel where nothing would change shows no guide. Tearing off to a new window and dropping into another window stay with the panel menu's Float and Dock for now. The toolbar row is `size.control.md` plus `space.1` above and below on `surface.base`: the Workspace picker as a secondary `Button` in its menu form reading "Workspace <name>" with `chevron-down`, commands as ghost buttons with their icon before the title, area toggles as their icon alone (tinted `accent.subtle` while on, the title as accessible name), Go live as the one primary button and Record as a secondary button with a `dot` in the live colour. The status bar is `size.control.sm` plus two borders high on `surface.sunken`: live and recording state with duration in words, the stream's connection text, then on the right Output profile and Scene collection (each opens its menu, with New, Duplicate, Rename, Delete, Import and Export) and the canvas size and frame rate. It shows values the app already has and polls nothing (P13); bitrate, dropped frames, CPU and GPU come when a cheap source for them exists. Properties groups its fields under section captions (`type.caption`, uppercase, `text.secondary`): a header row with the source's icon, name and type, then Position and size, Crop and Shape and border; the number fields carry their label inside on the left in `text.secondary` (X, Y, W, H, Left, Right, Top, Bottom) with the value right-aligned. A Mixer row in the rows arrangement is two lines: the kind's icon, the name, the level, the clip box and the icon buttons on the first, then the meter and the fader across the row. A column puts the name on top, the meter and fader in the leftover height, and the readout with the icon buttons under the fader, leaving out any control it does not show. Text fields draw the caret 2 px wide in the selection colour (`accent`, selected text in `text.inverse`) so it shows on `surface.sunken` in every theme.- **Commands.** Every command is in the menu bar; the toolbar only holds a chosen subset (see Commands, menus and the toolbar).
+
+### Planned independent source-placement selection (ADR-0189)
+
+**Not implemented; ADR-0189 is Proposed.** The owner approved independently
+selecting and highlighting placements and decided on 2026-11-25 that changing
+a shared capture region re-aspects only the selected placement while source
+pixels and region remain shared. The control/API contract remains unapproved.
+The Sources panel row and a preview hit carry the selected `ItemId`, not only
+its `SourceId`; repeated placements of the same source can be selected and
+highlighted independently. Properties, context menus, drag/resize, keyboard
+actions and attribute dialogs retain that item id for placement-scoped
+operations. The selection mark uses the existing selected row and preview
+treatments; no new token, component or visual exception is proposed.
+
+Properties keeps shared-source and placement state distinct. Source settings,
+filters, audio and playback controls still edit the shared source and affect
+every placement. Layout, crop, style, item attribute groups and item order
+affect the selected placement only, except for existing source-wide operations:
+`item.fit_text_box` still fits every placement of the source, and
+`item.set_filled` still changes shared fill with its border effect on the
+selected item. Changing the shared capture region re-aspects only the selected
+placement; `source.reset` of the `region` group follows the same rule. A Look
+changes the selected item's style and the shared source filters.
+
+The UI queries `api.describe` before sending a placement selector. If the
+server does not support it, the placement-specific action is disabled or
+refused with a plain-language reason and a fixing action; it is never retried
+as a source-only request. A request without `item` retains the older
+source-addressed behavior. A selected item in the global section is addressed
+by its item id without treating the hidden global scene as a showable scene.
+Properties opened from a placement must retain that item context. Where the
+legacy source-addressed lookup uses `Host::item_of`, it prefers the edited
+scene's first matching item and uses the global-scene item only as a fallback.
+
+The existing Paste attributes dialog targets its explicit item list. Pasting
+the shared `region` group changes the source region without re-aspecting item
+boxes, preserving existing client behavior. Requests without a new opt-in must
+retain this behavior. Owner input is needed on whether to keep all paste
+requests unchanged, add an opt-in to re-aspect every listed placement of each
+affected source, or add an opt-in naming one item from the list per affected
+source and re-aspect only that item. The opt-in request shape is unresolved.
+
+### Group Properties (ADR-0184, ADR-0185)
+
+**Implemented; independently reviewed 2026-11-25** (ADR-0185 decision 6). Built in `rbs-app` (`studio_ui/properties_target.rs`,
+`GroupProperties` in `studio.slint`) on `group.get` and `group.apply`, without a
+tab control (the group has one view). The owner approved the proposal and waived
+screenshots on 2026-11-25 (existing components only). Group Scroll is saved and
+its live actions act on the running group (`GroupScrollFields`); a live action
+without a run is refused with `conflict`, shown in the error bar. Selecting a
+group row or selecting a grouped member normally targets the group in Properties:
+the header shows its group name, not the topmost member's name. Ctrl/Cmd-click
+on a selected group member selects that member alone and restores its individual
+Properties. Multi-selection that is not exactly one group does not acquire a
+group target. The target uses scene and group ids and the complete current
+member item ids, not a source id standing in for the group.
+Members are source placements; nested-scene placements are not supported
+(ADR-0188). Group requires at least two selected placements and is refused
+with an ungroup-first reason if any explicit or automatically included member
+is already grouped (ADR-0186).
+
+The group view offers the covering box's Position and size, Timed show duration
+and Show, and the group's own Scroll settings and live controls. Its canvas
+selector follows the existing Properties canvas selector. A duration is shown
+as mixed when members differ, including a mixture of set and unset; choosing a
+value sets every member. A control that cannot act on every member is disabled
+with a plain-language reason, including a locked member for move or resize, a
+member without a picture for Scroll, or a hidden member without a duration for
+Show. Show on an entirely visible group does nothing.
+An edit refused after selection refreshes the group state and says why; it is
+never retried as separate member edits. A group Scroll moves the group's
+composed picture, not the members' individual Scroll runs. It is saved per
+canvas; live speed, pause, resume and restart are not undoable. Crop, shape,
+border, opacity, rotation, source settings and source filters are not offered
+as group controls. Selecting an individual member keeps those individual
+controls, with the selected item id preserved for individual placement actions
+(ADR-0189). Group changes and unavailable states use the existing library
+components, tokens, localisation and accessibility rules; no new visual
+exception is implied.
+
+Position and size show the existing unrotated group-transform box; resize
+maps that box. The Scroll window instead uses the rotated direct-picture union
+defined in the compositor spec, so it can differ from the displayed box.
 
 ## Studio panels (first version, ADR-0041)
 

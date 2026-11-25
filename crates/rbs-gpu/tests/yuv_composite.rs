@@ -280,7 +280,7 @@ fn scrolling_yuv_layers_wrap_with_their_gap() {
     let mut comp = compositor(ctx, 1);
     let canvas = pool.acquire(ctx, &TextureDesc::canvas(W, H)).unwrap();
     let stats = comp
-        .render_scrolled(ctx, &pool, &[l], canvas, Some(&mut binding))
+        .render_scrolled(ctx, &pool, &[l], canvas, Some(&mut binding), 0)
         .unwrap();
     assert_eq!(stats.drawn_layers, 1);
     let px = readback::read_linear(ctx, &pool, canvas).unwrap();

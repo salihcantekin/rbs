@@ -2,7 +2,7 @@
 
 - Status: Draft
 - Owner crate(s): `rbs-engine`
-- Related ADRs: [0037](../adr/0037-audio-graph.md), [0013](../adr/0013-zero-cost-when-unused.md), [0020](../adr/0020-node-contract-and-schedule-swap.md), [0024](../adr/0024-node-restart-with-back-off.md), [0026](../adr/0026-partitions-and-queues.md), [0027](../adr/0027-engine-loop.md), [0029](../adr/0029-final-ticks-on-drain.md), [0030](../adr/0030-worker-thread-setup.md)
+- Related ADRs: [0037](../adr/0037-audio-graph.md), [0013](../adr/0013-zero-cost-when-unused.md), [0020](../adr/0020-node-contract-and-schedule-swap.md), [0024](../adr/0024-node-restart-with-back-off.md), [0026](../adr/0026-partitions-and-queues.md), [0027](../adr/0027-engine-loop.md), [0029](../adr/0029-final-ticks-on-drain.md), [0030](../adr/0030-worker-thread-setup.md), [0193](../adr/0193-simple-group-show-and-scroll-resources.md)
 
 ## Purpose
 
@@ -90,6 +90,17 @@ Thread rules: every `Engine` method runs on the control thread and may block up 
 - `EngineHandle`: a panicking `run` job is reported (`EngineError::JobPanicked`) and the engine keeps running; a panicking `EventSink` ends the control thread. A node hung in `process` blocks shutdown (and so `EngineHandle`'s drop) until it returns.
 - `X::Local` and node instances move to a new OS thread whenever a partition's worker is stopped and started again (ADR-0013). A runtime that needs a thread-bound context (COM apartment, CUDA current context) binds it in `Runtime::attach` and unbinds it in `Runtime::detach`, which run on each thread before it ticks or swaps and before the executor leaves it (ADR-0030). Node instances themselves must not be thread-affine.
 - Node failures are contained by the executor and controller (ADR-0020, ADR-0024); the worker loop itself never panics on node errors.
+
+## Group Show and group Scroll (ADR-0193)
+
+[ADR-0193](../adr/0193-simple-group-show-and-scroll-resources.md) supersedes
+ADR-0190, ADR-0191 and ADR-0192 in full: there is no executor service mailbox,
+quiesce path, incremental release or staged Show commit. Group Show starts
+cues on the control thread like `item.show`, and the studio reconciles the
+graph through ordinary `apply`; group Scroll intermediates follow the ordinary
+node lifecycle (`prepare`, `warm`, `process`, `cool`, `release`) on the
+compositor's own executor ([gpu-compositor](gpu-compositor.md#scrolling-groups-adr-0185-adr-0188-adr-0193)).
+Nothing here changes the engine contract above. Not implemented yet.
 
 ## Performance requirements
 

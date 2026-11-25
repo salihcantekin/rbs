@@ -2,25 +2,30 @@
 //! (spec `docs/specs/gpu-compositor.md`, "Graph runtime and compositor node"; ADR-0020).
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 
 use rbs_core::media::{
-    ColorSpace, FramePayload, PixelFormat, Size, TextureId, VideoFormat, next_generation,
+    ColorSpace, FramePayload, PixelFormat, Size, TextureId, VideoFormat, VideoFrame,
+    next_generation,
 };
 use rbs_core::time::Timestamp;
 use rbs_graph::description::NodeId;
 use rbs_graph::node::{LinkKind, NodeDescriptor, NodeKind, NodeTypeId, Pin};
 use rbs_graph::runtime::param::{self, ParamReceiver, ParamSender};
-use rbs_graph::runtime::{Inputs, Node, NodeError, PrepareCtx, ProcessCtx, Runtime, Tick, WarmCtx};
+use rbs_graph::runtime::{
+    Inputs, Node, NodeError, Outputs, PrepareCtx, ProcessCtx, Runtime, Tick, WarmCtx,
+};
 
-use crate::compositor::{CanvasDesc, Compositor, Layer, LayerStyle, ScrollBinding, Transfer};
+use crate::compositor::{
+    CanvasDesc, Compositor, Layer, LayerStyle, MAX_SCROLL_LAYERS, ScrollBinding, Transfer,
+};
 use crate::context::GpuContext;
 use crate::error::GpuError;
 use crate::interop::Importer;
 use crate::math::{Affine2, UvRect};
 use crate::pool::{TextureDesc, TexturePool};
-use crate::scroll::LayerScroll;
+use crate::scroll::{LayerScroll, ScrollFrame};
 
 /// Node type id of the compositor (scene-model spec, "Graph binding").
 pub const COMPOSITOR_NODE_TYPE: &str = "org.rbs.compositor";
@@ -225,8 +230,122 @@ impl NodeLayer {
     }
 }
 
+/// The most group spans one compositor draws (ADR-0193 decision 4).
+pub const MAX_SPANS: usize = 4;
+/// The most pixels of one group span's intermediate (ADR-0193 decision 4).
+pub const MAX_SPAN_PIXELS: u64 = 8_388_608;
+/// The most pixels of one compositor's group span intermediates together (128 MiB of
+/// `Rgba16Float`, ADR-0193 decision 4).
+pub const MAX_SPANS_PIXELS: u64 = 16_777_216;
+
+/// A group drawn as one picture (ADR-0193 decision 2): its members, a range of the layer
+/// list, are drawn into an intermediate covering its window, which the canvas pass
+/// samples as one scrolling layer where the members were. Needs the node's
+/// [`ScrollBinding`] like any scrolling layer.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GroupSpan {
+    /// Index of the first member layer.
+    pub first: u32,
+    /// Number of member layers, at least one.
+    pub count: u32,
+    /// The window in canvas pixels (x, y, width, height). Its whole-pixel cover is the
+    /// intermediate; the fractional window is the clip.
+    pub window: [f32; 4],
+    /// The group's Scroll.
+    pub scroll: LayerScroll,
+    /// Moves the span's canvas layer by (x, y) canvas pixels, a push Swipe's offset;
+    /// its members are drawn unmoved into the intermediate.
+    pub offset: [f32; 2],
+    /// Animates the span's canvas layer to its moved window, like [`NodeLayer::slide`].
+    pub slide: Option<Slide>,
+    /// The sender's id for the span; the node ignores it. It names the span whose slot
+    /// [`CompositorStats::span_acquire_failing`] and `span_pass_failing` report.
+    pub tag: u64,
+}
+
+impl GroupSpan {
+    /// The intermediate: its origin (the window's corner, floored) and size in texels
+    /// (to the far corner, ceiled). `None` for a window that is not finite or has no
+    /// area.
+    pub fn texels(&self) -> Option<(f32, f32, u32, u32)> {
+        let [x, y, w, h] = self.window;
+        if !(w > 0.0 && h > 0.0 && x.is_finite() && y.is_finite() && (x + w + y + h).is_finite()) {
+            return None;
+        }
+        let (x0, y0) = (x.floor(), y.floor());
+        // `as` saturates; a size past the limits is refused by the caller.
+        Some((
+            x0,
+            y0,
+            ((x + w).ceil() - x0) as u32,
+            ((y + h).ceil() - y0) as u32,
+        ))
+    }
+
+    fn end(&self) -> usize {
+        (self.first as usize).saturating_add(self.count as usize)
+    }
+
+    /// The canvas layer's box at `now`: the window, moved by `offset` and `slide`.
+    fn placed(&self, now: Timestamp) -> Affine2 {
+        let [x, y, w, h] = self.window;
+        let to = Affine2::rect(x + self.offset[0], y + self.offset[1], w, h);
+        self.slide.map_or(to, |s| s.at(to, now))
+    }
+}
+
+/// A compositor node's layer list: the layers, bottom first, and the group spans over
+/// them, sorted by `first` and disjoint (ADR-0193 decision 2). A list without spans
+/// takes the node's path without groups.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LayerList {
+    /// The layers, bottom first.
+    pub layers: Vec<NodeLayer>,
+    /// The group spans.
+    pub spans: Vec<GroupSpan>,
+}
+
 /// The control-thread end of a compositor node's layer list.
-pub type LayerSender = ParamSender<Vec<NodeLayer>>;
+pub struct LayerSender(ParamSender<LayerList>);
+
+impl LayerSender {
+    /// Sends `layers` without group spans; see [`ParamSender::send`].
+    pub fn send(&mut self, layers: Vec<NodeLayer>) -> Option<Vec<NodeLayer>> {
+        let spans = Vec::new();
+        self.0.send(LayerList { layers, spans }).map(|l| l.layers)
+    }
+
+    /// Sends a list with group spans; see [`ParamSender::send`].
+    pub fn send_list(&mut self, list: LayerList) -> Option<LayerList> {
+        self.0.send(list)
+    }
+
+    /// The layers the node last replaced; see [`ParamSender::recycle`].
+    pub fn recycle(&mut self) -> Option<Vec<NodeLayer>> {
+        self.0.recycle().map(|l| l.layers)
+    }
+
+    /// The list the node last replaced, with its spans.
+    pub fn recycle_list(&mut self) -> Option<LayerList> {
+        self.0.recycle()
+    }
+
+    /// See [`ParamSender::pending`].
+    pub fn pending(&self) -> bool {
+        self.0.pending()
+    }
+
+    /// See [`ParamSender::is_closed`].
+    pub fn is_closed(&self) -> bool {
+        self.0.is_closed()
+    }
+}
+
+impl std::fmt::Debug for LayerSender {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
 
 /// The control-thread end of a compositor node's scroll records (ADR-0150 decision 7):
 /// send a [`ScrollBinding`] before the first list with a scrolling layer. Idempotent; a
@@ -330,6 +449,36 @@ pub struct CompositorStats {
     pub drawn: AtomicU64,
     /// Ticks that found every input unchanged and kept the last canvas ([`OnChange`]).
     pub unchanged: AtomicU64,
+    /// Group span intermediates drawn (ADR-0193).
+    pub span_passes: AtomicU64,
+    /// Group span intermediates acquired, retries after a failure included.
+    pub span_acquires: AtomicU64,
+    /// Groups drawn transparent at a draw (over a limit, no scroll record, a failed
+    /// acquire or pass), and malformed spans ignored, once per list.
+    pub span_failures: AtomicU64,
+    /// Bit `s` set: span `s` of the list last drawn has no intermediate, its acquire
+    /// failed (ADR-0193 decision 5). Written at every draw of a list with spans and
+    /// cleared by a list without, so it is the current state, not a history. A
+    /// standalone status word that publishes no other memory: relaxed.
+    pub span_acquire_failing: AtomicU32,
+    /// Bit `s` set: span `s` of the list last drawn failed its pass (no scroll record
+    /// or a failed render), written like `span_acquire_failing`.
+    pub span_pass_failing: AtomicU32,
+}
+
+// One bit per span slot.
+const _: () = assert!(MAX_SPANS <= 32);
+
+/// A group span's intermediate, by the span's index in the list.
+#[derive(Debug, Clone, Copy, Default)]
+struct SpanSlot {
+    texture: Option<TextureId>,
+    /// The size the span wants; `None` past a limit or without a span.
+    size: Option<(u32, u32)>,
+    /// The intermediate's origin on the canvas.
+    origin: (f32, f32),
+    /// The intermediate holds the members as last keyed.
+    drawn: bool,
 }
 
 /// What a layer showed at the last draw: its texture and the picture's key, or `None`
@@ -341,11 +490,15 @@ pub struct CompositorNode<R: ReadySignal = NoReady, D: Redraw = OnChange> {
     descriptor: NodeDescriptor,
     canvas: CanvasDesc,
     capacity: u32,
-    layers: ParamReceiver<Vec<NodeLayer>>,
+    layers: ParamReceiver<LayerList>,
     /// Built in `prepare`, dropped in `release`.
     compositor: Option<Compositor>,
     /// Reused every tick; room for `capacity` layers.
     scratch: Vec<Layer>,
+    /// The canvas pass of a list with group spans; room for `capacity` layers.
+    canvas_list: Vec<Layer>,
+    /// Group span intermediates (ADR-0193 decision 3).
+    spans: [SpanSlot; MAX_SPANS],
     /// An incoming compositor's ready counter (ADR-0128 decision 7): the last tick at
     /// which every layer of its list whose link resolves had a texture frame.
     /// [`NoReady`] for every other compositor, which then does no more work.
@@ -371,7 +524,8 @@ impl CompositorNode {
     /// A compositor for `canvas` drawing at most `capacity` layers, starting with `layers`.
     /// The sender replaces the list while the node runs (latest list wins).
     pub fn new(canvas: CanvasDesc, capacity: u32, layers: Vec<NodeLayer>) -> (Self, LayerSender) {
-        let (sender, receiver) = param::channel(layers);
+        let spans = Vec::new();
+        let (sender, receiver) = param::channel(LayerList { layers, spans });
         let node = Self {
             descriptor: compositor_descriptor(),
             canvas,
@@ -379,6 +533,8 @@ impl CompositorNode {
             layers: receiver,
             compositor: None,
             scratch: Vec::new(),
+            canvas_list: Vec::new(),
+            spans: Default::default(),
             ready: NoReady,
             drawn_key: Vec::new(),
             key: Vec::new(),
@@ -388,7 +544,7 @@ impl CompositorNode {
             stats: Arc::default(),
             redraw: std::marker::PhantomData,
         };
-        (node, sender)
+        (node, LayerSender(sender))
     }
 
     /// This compositor with a ready counter (ADR-0128 decision 7): `process` stores the
@@ -427,6 +583,8 @@ impl<R: ReadySignal, D: Redraw> CompositorNode<R, D> {
             layers: self.layers,
             compositor: self.compositor,
             scratch: self.scratch,
+            canvas_list: self.canvas_list,
+            spans: self.spans,
             ready,
             drawn_key: self.drawn_key,
             key: self.key,
@@ -561,6 +719,8 @@ impl<R: ReadySignal, D: Redraw> Node<GpuRuntime> for CompositorNode<R, D> {
             .map_err(|e| NodeError::Failed(e.to_string()))?;
         self.compositor = Some(compositor);
         self.scratch = Vec::with_capacity(self.capacity as usize);
+        // The canvas pass of a list with group spans (ADR-0193 decision 3).
+        self.canvas_list = Vec::with_capacity(self.capacity as usize);
         if D::ON_CHANGE {
             self.drawn_key = Vec::with_capacity(self.capacity as usize);
             self.key = Vec::with_capacity(self.capacity as usize);
@@ -582,61 +742,39 @@ impl<R: ReadySignal, D: Redraw> Node<GpuRuntime> for CompositorNode<R, D> {
     }
 
     fn process(&mut self, ctx: &mut ProcessCtx<'_, GpuRuntime>) -> Result<(), NodeError> {
+        let listed = self.layers.update();
+        // One emptiness check per tick: a list without group spans takes the path it
+        // always had (ADR-0193 decision 2).
+        if !self.layers.get().spans.is_empty() {
+            return self.process_spans(ctx, listed);
+        }
         let tick = ctx.tick();
         let gpu = ctx.shared();
         let desc = self.canvas_desc();
         let compositor = self.compositor.as_mut().ok_or(NodeError::NotReady)?;
         let (inputs, outputs, local) = ctx.parts();
-
-        let listed = self.layers.update();
+        if listed {
+            // Spans that left the list give their intermediates back.
+            free_spans(&mut self.spans, &mut local.pool);
+            clear_failing(&self.stats);
+        }
         // Scroll records arrive once; a change of binding needs no redraw by itself.
-        let binding = match self.scroll.as_mut() {
-            Some(rx) => {
-                rx.update();
-                rx.get_mut().as_mut()
-            }
-            None => None,
-        };
+        let binding = bound(&mut self.scroll);
         // A linked layer without a picture this tick (ADR-0128 decision 7).
         let mut missing = false;
         if D::ON_CHANGE {
             self.key.clear();
             // A fade, slide or scroll that had not ended at the last draw still moves.
             let mut moving = false;
-            for spec in self.layers.get().iter().take(self.capacity as usize) {
+            for spec in self.layers.get().layers.iter().take(self.capacity as usize) {
                 let Some(link) = link_of(&inputs, spec) else {
                     continue;
                 };
-                let picture = inputs.video(LAYERS_PIN, link).and_then(|frame| {
-                    let FramePayload::Texture(id) = *frame.payload() else {
-                        return None;
-                    };
-                    let tex = local.pool.get(id)?;
-                    Some((frame, id, tex.desc()))
-                });
+                let picture = picture(&inputs, &local.pool, link);
                 // Room for `capacity` entries was reserved in `prepare`: no allocation.
-                self.key
-                    .push(picture.map(|(f, id, _)| (id, f.timestamp(), f.sequence())));
-                let ends = |start: Timestamp, length: Duration| start + length;
-                moving |= spec
-                    .fade
-                    .is_some_and(|f| self.drawn_at <= ends(f.start, f.duration))
-                    || spec
-                        .slide
-                        .is_some_and(|m| self.drawn_at <= ends(m.start, m.duration));
-                let Some((_, _, d)) = picture else {
-                    missing = R::TRACKS;
-                    continue;
-                };
-                // Scroll motion uses the same box as the draw (tick time), so a slide
-                // that changes the window still forces a draw.
-                if let Some(sc) = &spec.scroll {
-                    let (transform, crop, _) = placement(spec, tick.time, d.width, d.height);
-                    let ended = sc
-                        .frame(&transform, &crop, d.width, d.height, self.drawn_at)
-                        .is_some_and(|f| f.ended);
-                    moving |= sc.moving_at(self.drawn_at, ended);
-                }
+                self.key.push(key_of(picture));
+                moving |= is_moving(spec, picture.map(|p| p.2), self.drawn_at, tick.time);
+                missing |= R::TRACKS && picture.is_none();
             }
             // Render on change (R-03): compare the key before building the draw list.
             // Nothing new to draw, so the canvas frame of the last draw stays on
@@ -654,71 +792,34 @@ impl<R: ReadySignal, D: Redraw> Node<GpuRuntime> for CompositorNode<R, D> {
         }
 
         self.scratch.clear();
-        for spec in self.layers.get().iter().take(self.capacity as usize) {
+        for spec in self.layers.get().layers.iter().take(self.capacity as usize) {
             let Some(link) = link_of(&inputs, spec) else {
                 continue;
             };
-            let picture = inputs.video(LAYERS_PIN, link).and_then(|frame| {
-                let FramePayload::Texture(id) = *frame.payload() else {
-                    return None;
-                };
-                let tex = local.pool.get(id)?;
-                Some((frame, id, tex.desc()))
-            });
-            let Some((frame, id, d)) = picture else {
+            let Some((frame, id, d)) = picture(&inputs, &local.pool, link) else {
                 missing = R::TRACKS;
                 continue;
             };
-            let (transform, crop, style) = placement(spec, tick.time, d.width, d.height);
-            let scroll = match &spec.scroll {
-                None => None,
-                Some(sc) => {
-                    // No length, or a Once picture that has left: nothing to draw.
-                    match sc.frame(&transform, &crop, d.width, d.height, tick.time) {
-                        Some(f) if !f.ended => Some(f.gpu(sc.direction, sc.repeat, sc.fade)),
-                        _ => continue,
-                    }
-                }
-            };
-            let source_transfer = Transfer::of(frame.format(), d.format);
             // Room for `capacity` layers was reserved in `prepare`, so this push does not
             // allocate.
-            self.scratch.push(Layer {
-                texture: id,
-                transform,
-                crop,
-                opacity: match &spec.fade {
-                    Some(fade) => fade.at(spec.opacity, tick.time),
-                    None => spec.opacity,
-                },
-                source_transfer,
-                opaque: spec.opaque,
-                style,
-                // A 4:2:0 picture is sampled as it is, with its own colour space (R-11).
-                ycbcr: frame.format().color,
-                scroll,
-            });
+            if let Some(layer) = draw_layer(spec, frame, id, &d, tick.time) {
+                self.scratch.push(layer);
+            }
         }
 
         // A failed draw below leaves the key invalid, so the next tick draws again.
         self.drawn_valid = false;
-
-        let canvas = local.pool.acquire(gpu, &desc).map_err(backend)?;
-        let drawn = compositor.render_scrolled(gpu, &local.pool, &self.scratch, canvas, binding);
-        let format = VideoFormat::new(
-            Size::new(desc.width, desc.height),
-            PixelFormat::Rgba16Float,
-            ColorSpace::LINEAR_BT709,
-        );
-        let frame = drawn.and_then(|_| local.pool.frame(canvas, format, tick.time));
-        // The frame's lease keeps the slot alive; the pool reuses it once it is dropped.
-        let released = local.pool.release(canvas);
-        let frame = frame.map_err(backend)?;
-        released.map_err(backend)?;
-        // A new generation per draw: an unchanged canvas keeps its key, so the key
-        // changes exactly when the picture does (ADR-0117 decision 4), and a node built
-        // anew never repeats an earlier instance's key.
-        drop(outputs.set_video(CANVAS_PIN, Some(frame.with_sequence(next_generation())))?);
+        let pool = &mut local.pool;
+        publish(
+            compositor,
+            gpu,
+            pool,
+            outputs,
+            &self.scratch,
+            binding,
+            0,
+            tick.time,
+        )?;
         self.stats.drawn.fetch_add(1, Ordering::Relaxed);
         if D::ON_CHANGE {
             std::mem::swap(&mut self.key, &mut self.drawn_key);
@@ -731,12 +832,476 @@ impl<R: ReadySignal, D: Redraw> Node<GpuRuntime> for CompositorNode<R, D> {
         Ok(())
     }
 
+    fn cool(&mut self, ctx: &mut WarmCtx<'_, GpuRuntime>) {
+        // Leaving the schedule: group span intermediates go back to the pool (ADR-0193
+        // decision 3). The canvas ring is the pool's to trim.
+        free_spans(&mut self.spans, &mut ctx.local.pool);
+        clear_failing(&self.stats);
+    }
+
     fn release(&mut self, _ctx: &mut PrepareCtx<'_, GpuRuntime>) {
         self.compositor = None;
         self.scratch = Vec::new();
+        self.canvas_list = Vec::new();
+        self.spans = Default::default();
         self.drawn_key = Vec::new();
         self.key = Vec::new();
         self.drawn_valid = false;
+    }
+}
+
+impl<R: ReadySignal, D: Redraw> CompositorNode<R, D> {
+    /// [`Node::process`] for a list with group spans (ADR-0193 decisions 2 and 3): each
+    /// span's members are drawn into its intermediate when they changed, then the canvas
+    /// pass draws the other layers and one scrolling layer per span. Scroll records go
+    /// bottom first in draw order, a span's before its members'; the span passes take
+    /// the first slots and the canvas pass the rest.
+    #[inline(never)]
+    fn process_spans(
+        &mut self,
+        ctx: &mut ProcessCtx<'_, GpuRuntime>,
+        listed: bool,
+    ) -> Result<(), NodeError> {
+        let (tick, gpu, desc) = (ctx.tick(), ctx.shared(), self.canvas_desc());
+        let now = tick.time;
+        let Self {
+            layers,
+            compositor,
+            scratch,
+            canvas_list,
+            spans: slots,
+            ready,
+            drawn_key,
+            key,
+            drawn_valid,
+            drawn_at,
+            scroll,
+            stats,
+            capacity,
+            ..
+        } = self;
+        let compositor = compositor.as_mut().ok_or(NodeError::NotReady)?;
+        let (inputs, outputs, local) = ctx.parts();
+        let pool = &mut local.pool;
+        let list = layers.get();
+        let n = list.layers.len().min(*capacity as usize);
+        let spans = &list.spans[..well_formed(&list.spans, n)];
+        if listed && spans.len() < list.spans.len() {
+            let ignored = (list.spans.len() - spans.len()) as u64;
+            stats.span_failures.fetch_add(ignored, Ordering::Relaxed);
+        }
+        size_spans(slots, spans, pool, gpu, stats);
+        let binding = bound(scroll);
+        let mut missing = false;
+        // Per span: a member moves, so its intermediate is drawn again.
+        let mut inner = [false; MAX_SPANS];
+        let was_valid = *drawn_valid;
+        if D::ON_CHANGE {
+            key.clear();
+            let (mut moving, mut at) = (false, 0);
+            for (i, spec) in list.layers[..n].iter().enumerate() {
+                let link = link_of(&inputs, spec);
+                let picture = link.and_then(|link| picture(&inputs, pool, link));
+                // One entry per layer, so a span compares its members' range. Room for
+                // `capacity` entries was reserved in `prepare`: no allocation.
+                key.push(key_of(picture));
+                missing |= R::TRACKS && link.is_some() && picture.is_none();
+                let m = is_moving(spec, picture.map(|p| p.2), *drawn_at, now);
+                match member_of(spans, i, &mut at) {
+                    Some(s) => inner.get_mut(s).into_iter().for_each(|f| *f |= m),
+                    None => moving |= m,
+                }
+            }
+            for ((span, slot), m) in spans.iter().zip(slots.iter()).zip(inner) {
+                moving |= m || span_moving(span, slot, *drawn_at);
+            }
+            let waiting = slots.iter().any(|s| s.size.is_some() && !s.drawn);
+            if was_valid && !listed && !moving && !waiting && key == drawn_key {
+                pool.touch(&desc);
+                stats.unchanged.fetch_add(1, Ordering::Relaxed);
+                if R::TRACKS && !missing {
+                    ready.mark(tick.index);
+                }
+                return Ok(());
+            }
+        }
+
+        *drawn_valid = false;
+        canvas_list.clear();
+        // Scroll records given so far, and those of the span passes.
+        let (mut used, mut base) = (0u32, 0u32);
+        let (mut i, mut at, mut failed, mut retry) = (0, 0, 0u64, false);
+        // Bit per span slot: a failed acquire, a failed pass.
+        let (mut no_texture, mut no_pass) = (0u32, 0u32);
+        let mut binding = binding;
+        while i < n {
+            let s = at;
+            let Some(span) = spans.get(s).filter(|span| span.first as usize == i) else {
+                let spec = &list.layers[i];
+                i += 1;
+                let Some(link) = link_of(&inputs, spec) else {
+                    continue;
+                };
+                let Some((frame, id, d)) = picture(&inputs, pool, link) else {
+                    missing = R::TRACKS;
+                    continue;
+                };
+                if let Some(layer) = draw_layer(spec, frame, id, &d, now)
+                    && (layer.scroll.is_none() || take_record(&mut used))
+                {
+                    // Room for `capacity` layers was reserved in `prepare`.
+                    canvas_list.push(layer);
+                }
+                continue;
+            };
+            (i, at) = (span.end(), at + 1);
+            // The span's record before its members' (ADR-0193 decision 2).
+            let (wanted, texture) = slots
+                .get(s)
+                .map_or((false, None), |sl| (sl.size.is_some(), sl.texture));
+            let (Some(slot), Some(texture)) = (slots.get_mut(s), texture) else {
+                // Past a limit, or its acquire failed (tried again on a later tick).
+                (failed, retry) = (failed + 1, retry || wanted);
+                no_texture |= u32::from(wanted) << s;
+                continue;
+            };
+            // A `Once` group whose picture has left draws nothing and needs no pass until
+            // a new list (not a failure).
+            let Some(layer) = span_layer(span, slot, texture, now) else {
+                slot.drawn = true;
+                continue;
+            };
+            if !take_record(&mut used) {
+                failed += 1;
+                no_pass |= 1 << s;
+                continue;
+            }
+            scratch.clear();
+            let (x0, y0) = slot.origin;
+            let first_record = used;
+            for spec in &list.layers[span.first as usize..span.end()] {
+                let Some(link) = link_of(&inputs, spec) else {
+                    continue;
+                };
+                let Some((frame, id, d)) = picture(&inputs, pool, link) else {
+                    missing = R::TRACKS;
+                    continue;
+                };
+                let Some(mut member) = draw_layer(spec, frame, id, &d, now) else {
+                    continue;
+                };
+                if member.scroll.is_some() && !take_record(&mut used) {
+                    continue;
+                }
+                // Into the span's window space.
+                member.transform.tx -= x0;
+                member.transform.ty -= y0;
+                scratch.push(member);
+            }
+            let range = span.first as usize..span.end();
+            let dirty = !D::ON_CHANGE
+                || !was_valid
+                || listed
+                || !slot.drawn
+                || inner.get(s).copied().unwrap_or(true)
+                || key.get(range.clone()) != drawn_key.get(range);
+            let records = binding.as_deref_mut();
+            if dirty {
+                slot.drawn = compositor
+                    .render_intermediate(gpu, pool, scratch, texture, records, base)
+                    .is_ok();
+                if !slot.drawn {
+                    // Drawn transparent; a later tick tries again.
+                    (failed, retry) = (failed + 1, true);
+                    no_pass |= 1 << s;
+                    base += used - first_record;
+                    continue;
+                }
+                stats.span_passes.fetch_add(1, Ordering::Relaxed);
+            }
+            base += used - first_record;
+            canvas_list.push(layer);
+        }
+        if failed > 0 {
+            stats.span_failures.fetch_add(failed, Ordering::Relaxed);
+        }
+        stats
+            .span_acquire_failing
+            .store(no_texture, Ordering::Relaxed);
+        stats.span_pass_failing.store(no_pass, Ordering::Relaxed);
+        publish(
+            compositor,
+            gpu,
+            pool,
+            outputs,
+            canvas_list,
+            binding,
+            base,
+            now,
+        )?;
+        stats.drawn.fetch_add(1, Ordering::Relaxed);
+        if D::ON_CHANGE {
+            std::mem::swap(key, drawn_key);
+            *drawn_valid = !retry;
+            *drawn_at = now;
+        }
+        if R::TRACKS && !missing {
+            ready.mark(tick.index);
+        }
+        Ok(())
+    }
+}
+
+/// The scroll records, once sent ([`CompositorNode::with_scroll`]).
+fn bound(scroll: &mut Option<ParamReceiver<Option<ScrollBinding>>>) -> Option<&mut ScrollBinding> {
+    let rx = scroll.as_mut()?;
+    rx.update();
+    rx.get_mut().as_mut()
+}
+
+/// The picture on layers link `link` this tick: frame, texture and its description.
+#[inline(always)]
+fn picture<'a>(
+    inputs: &Inputs<'a>,
+    pool: &TexturePool,
+    link: usize,
+) -> Option<(&'a VideoFrame, TextureId, TextureDesc)> {
+    let frame = inputs.video(LAYERS_PIN, link)?;
+    let FramePayload::Texture(id) = *frame.payload() else {
+        return None;
+    };
+    Some((frame, id, *pool.get(id)?.desc()))
+}
+
+#[inline(always)]
+fn key_of(picture: Option<(&VideoFrame, TextureId, TextureDesc)>) -> LayerKey {
+    picture.map(|(f, id, _)| (id, f.timestamp(), f.sequence()))
+}
+
+/// Whether a fade, slide or scroll of `spec` had not ended at the last draw
+/// (`drawn_at`). Scroll motion uses the same box as the draw (tick time `now`), so a
+/// slide that changes the window still forces a draw.
+#[inline(always)]
+fn is_moving(
+    spec: &NodeLayer,
+    d: Option<TextureDesc>,
+    drawn_at: Timestamp,
+    now: Timestamp,
+) -> bool {
+    let ends = |start: Timestamp, length: Duration| start + length;
+    let mut moving = spec
+        .fade
+        .is_some_and(|f| drawn_at <= ends(f.start, f.duration))
+        || spec
+            .slide
+            .is_some_and(|m| drawn_at <= ends(m.start, m.duration));
+    if let (Some(sc), Some(d)) = (&spec.scroll, d) {
+        let (transform, crop, _) = placement(spec, now, d.width, d.height);
+        let ended = sc
+            .frame(&transform, &crop, d.width, d.height, drawn_at)
+            .is_some_and(|f| f.ended);
+        moving |= sc.moving_at(drawn_at, ended);
+    }
+    moving
+}
+
+/// The layer `spec` draws at `now` from its picture; `None` for a scroll with no length
+/// or a `Once` picture that has left.
+#[inline(always)]
+fn draw_layer(
+    spec: &NodeLayer,
+    frame: &VideoFrame,
+    texture: TextureId,
+    d: &TextureDesc,
+    now: Timestamp,
+) -> Option<Layer> {
+    let (transform, crop, style) = placement(spec, now, d.width, d.height);
+    let scroll = match &spec.scroll {
+        None => None,
+        Some(sc) => match sc.frame(&transform, &crop, d.width, d.height, now) {
+            Some(f) if !f.ended => Some(f.gpu(sc.direction, sc.repeat, sc.fade)),
+            _ => return None,
+        },
+    };
+    Some(Layer {
+        texture,
+        transform,
+        crop,
+        opacity: match &spec.fade {
+            Some(fade) => fade.at(spec.opacity, now),
+            None => spec.opacity,
+        },
+        source_transfer: Transfer::of(frame.format(), d.format),
+        opaque: spec.opaque,
+        style,
+        // A 4:2:0 picture is sampled as it is, with its own colour space (R-11).
+        ycbcr: frame.format().color,
+        scroll,
+    })
+}
+
+/// Draws `layers` into a new canvas and publishes it on "canvas", scroll records from
+/// slot `base` on.
+#[allow(clippy::too_many_arguments)] // The canvas pass of both paths.
+fn publish(
+    compositor: &mut Compositor,
+    gpu: &GpuContext,
+    pool: &mut TexturePool,
+    outputs: &mut Outputs<'_>,
+    layers: &[Layer],
+    binding: Option<&mut ScrollBinding>,
+    base: u32,
+    time: Timestamp,
+) -> Result<(), NodeError> {
+    let canvas = compositor.canvas();
+    let desc = TextureDesc::canvas(canvas.width, canvas.height);
+    let canvas = pool.acquire(gpu, &desc).map_err(backend)?;
+    let drawn = compositor.render_scrolled(gpu, pool, layers, canvas, binding, base);
+    let format = VideoFormat::new(
+        Size::new(desc.width, desc.height),
+        PixelFormat::Rgba16Float,
+        ColorSpace::LINEAR_BT709,
+    );
+    let frame = drawn.and_then(|_| pool.frame(canvas, format, time));
+    // The frame's lease keeps the slot alive; the pool reuses it once it is dropped.
+    let released = pool.release(canvas);
+    let frame = frame.map_err(backend)?;
+    released.map_err(backend)?;
+    // A new generation per draw: an unchanged canvas keeps its key, so the key changes
+    // exactly when the picture does (ADR-0117 decision 4), and a node built anew never
+    // repeats an earlier instance's key.
+    drop(outputs.set_video(CANVAS_PIN, Some(frame.with_sequence(next_generation())))?);
+    Ok(())
+}
+
+/// Takes one scroll record if any is left (ADR-0150 decision 7).
+fn take_record(used: &mut u32) -> bool {
+    let free = *used < MAX_SCROLL_LAYERS;
+    *used += u32::from(free);
+    free
+}
+
+/// How many leading spans are well formed: at least one member, sorted, disjoint and
+/// within the first `n` layers. The rest are ignored (a binder bug).
+fn well_formed(spans: &[GroupSpan], n: usize) -> usize {
+    let mut end = 0;
+    spans
+        .iter()
+        .take_while(|s| {
+            let ok = s.count > 0 && s.first as usize >= end && s.end() <= n;
+            end = s.end();
+            ok
+        })
+        .count()
+}
+
+/// The span layer `i` is a member of, advancing `at` along the sorted spans.
+fn member_of(spans: &[GroupSpan], i: usize, at: &mut usize) -> Option<usize> {
+    while spans.get(*at).is_some_and(|s| s.end() <= i) {
+        *at += 1;
+    }
+    spans
+        .get(*at)
+        .filter(|s| s.first as usize <= i)
+        .map(|_| *at)
+}
+
+/// The span's window on its intermediate and its Scroll frame at `at`: the picture is
+/// the window, never a fill (ADR-0193).
+fn span_frame(span: &GroupSpan, slot: &SpanSlot, at: Timestamp) -> Option<(UvRect, ScrollFrame)> {
+    let (tw, th) = slot.size?;
+    let ((x0, y0), [x, y, w, h]) = (slot.origin, span.window);
+    let (fw, fh) = (tw as f32, th as f32);
+    let crop = UvRect {
+        u0: (x - x0) / fw,
+        v0: (y - y0) / fh,
+        u1: (x + w - x0) / fw,
+        v1: (y + h - y0) / fh,
+    };
+    let frame = span
+        .scroll
+        .frame(&Affine2::rect(x, y, w, h), &crop, tw, th, at)?;
+    Some((crop, frame))
+}
+
+/// Whether the span's Scroll still moved at the last draw.
+fn span_moving(span: &GroupSpan, slot: &SpanSlot, drawn_at: Timestamp) -> bool {
+    span.slide.is_some_and(|m| drawn_at <= m.start + m.duration)
+        || span_frame(span, slot, drawn_at)
+            .is_some_and(|(_, f)| span.scroll.moving_at(drawn_at, f.ended))
+}
+
+/// The canvas pass's layer for a span: its intermediate as one scrolling layer.
+fn span_layer(
+    span: &GroupSpan,
+    slot: &SpanSlot,
+    texture: TextureId,
+    now: Timestamp,
+) -> Option<Layer> {
+    let (crop, f) = span_frame(span, slot, now).filter(|(_, f)| !f.ended)?;
+    let sc = &span.scroll;
+    Some(Layer {
+        crop,
+        scroll: Some(f.gpu(sc.direction, sc.repeat, sc.fade)),
+        transform: span.placed(now),
+        ..Layer::new(texture, 0.0, 0.0, 1.0, 1.0)
+    })
+}
+
+/// Gives back the intermediates of spans that left or changed size and acquires those
+/// of spans that appeared or changed size, or failed to before (ADR-0193 decision 3:
+/// the real-time exception of ADR-0062 decision 5). Spans past a limit get none,
+/// bottom-most first keeping theirs (decision 4).
+fn size_spans(
+    slots: &mut [SpanSlot; MAX_SPANS],
+    spans: &[GroupSpan],
+    pool: &mut TexturePool,
+    gpu: &GpuContext,
+    stats: &CompositorStats,
+) {
+    let mut total = 0;
+    for (s, slot) in slots.iter_mut().enumerate() {
+        let want = spans.get(s).and_then(GroupSpan::texels).filter(|t| {
+            let px = u64::from(t.2) * u64::from(t.3);
+            let fits = px <= MAX_SPAN_PIXELS && total + px <= MAX_SPANS_PIXELS;
+            total += if fits { px } else { 0 };
+            fits
+        });
+        let size = want.map(|t| (t.2, t.3));
+        if slot.size != size {
+            free_span(slot, pool);
+            slot.size = size;
+        }
+        slot.origin = want.map_or((0.0, 0.0), |t| (t.0, t.1));
+        if let (Some((w, h)), None) = (slot.size, slot.texture) {
+            stats.span_acquires.fetch_add(1, Ordering::Relaxed);
+            slot.texture = pool.acquire(gpu, &TextureDesc::canvas(w, h)).ok();
+            slot.drawn = false;
+        }
+    }
+}
+
+/// Gives a span's intermediate back to the pool: forgotten first, so the release drops
+/// it instead of keeping it free. Does not allocate.
+fn free_span(slot: &mut SpanSlot, pool: &mut TexturePool) {
+    if let Some(id) = slot.texture.take() {
+        pool.forget_texture(id);
+        // Only fails for an id the pool no longer knows, which is then gone already.
+        let _ = pool.release(id);
+    }
+    slot.drawn = false;
+}
+
+/// No span fails: a list without spans, or none drawn.
+fn clear_failing(stats: &CompositorStats) {
+    stats.span_acquire_failing.store(0, Ordering::Relaxed);
+    stats.span_pass_failing.store(0, Ordering::Relaxed);
+}
+
+fn free_spans(slots: &mut [SpanSlot; MAX_SPANS], pool: &mut TexturePool) {
+    for slot in slots {
+        free_span(slot, pool);
+        slot.size = None;
     }
 }
 

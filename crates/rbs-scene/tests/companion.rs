@@ -9,10 +9,14 @@ use rbs_core::media::Size;
 use rbs_core::timing::FrameRate;
 use rbs_graph::node::NodeTypeId;
 use rbs_scene::model::{ItemContent, Layout, SceneScope, Settings, SourceId};
-use rbs_scene::{COMPANION_OF_HINT, SceneCollection};
+use rbs_scene::{COMPANION_OF_HINT, SceneCollection, SceneError};
 
 fn ty(name: &str) -> NodeTypeId {
     NodeTypeId::new(format!("org.rbs.source.{name}"))
+}
+
+fn full() -> Layout {
+    Layout::new([0.0, 0.0], [1920.0, 1080.0])
 }
 
 struct Fixture {
@@ -98,4 +102,141 @@ fn deleting_only_the_companion_keeps_the_picture() {
     let mut f = fixture();
     f.col.delete_source(f.sound).unwrap();
     assert!(f.col.source(f.picture).is_some());
+}
+
+#[test]
+fn new_companion_joins_a_group_directly_above_the_picture_and_undoes_as_one() {
+    let mut f = fixture();
+    f.col.delete_source(f.sound).unwrap();
+    let (other, _) = f
+        .col
+        .add_source("Other", ty("colour"), Settings::new())
+        .unwrap();
+    let (other_item, _) = f
+        .col
+        .add_item(f.scene, ItemContent::Source(other), full(), None)
+        .unwrap();
+    let (group, _) = f
+        .col
+        .group_items(f.scene, &[f.picture_item, other_item], None)
+        .unwrap();
+    let before = f.col.clone();
+    let (sound, item, undo) = f
+        .col
+        .add_companion(
+            f.picture,
+            "Sound",
+            ty("audio-input"),
+            Settings::new(),
+            BTreeMap::new(),
+            full(),
+        )
+        .unwrap();
+    let scene = f.col.scene(f.scene).unwrap();
+    let position = scene
+        .items
+        .iter()
+        .position(|i| i.id == f.picture_item)
+        .unwrap();
+    assert_eq!(scene.items[position + 1].id, item);
+    assert_eq!(scene.items[position + 1].group, Some(group));
+    assert_eq!(f.col.source(sound).unwrap().companion_of(), Some(f.picture));
+    let redo = f.col.undo(undo).unwrap();
+    assert_eq!(f.col, before);
+    f.col.undo(redo).unwrap();
+    assert_eq!(f.col.item(item).unwrap().1.group, Some(group));
+    assert_eq!(f.col.source(sound).unwrap().companion_of(), Some(f.picture));
+}
+
+#[test]
+fn companion_creation_refuses_ambiguous_placements_without_changing_counters() {
+    for other_scene in [false, true] {
+        let mut f = fixture();
+        f.col.delete_source(f.sound).unwrap();
+        let scene = if other_scene {
+            f.col
+                .add_scene("Other scene", SceneScope::Shared)
+                .unwrap()
+                .0
+        } else {
+            f.scene
+        };
+        f.col
+            .add_item(scene, ItemContent::Source(f.picture), full(), None)
+            .unwrap();
+        let before = f.col.clone();
+        let counters = f.col.id_counters();
+        assert_eq!(
+            f.col.add_companion(
+                f.picture,
+                "Sound",
+                ty("audio-input"),
+                Settings::new(),
+                BTreeMap::new(),
+                full()
+            ),
+            Err(SceneError::AmbiguousCompanion)
+        );
+        assert_eq!(f.col, before);
+        assert_eq!(f.col.id_counters(), counters);
+    }
+}
+
+#[test]
+fn companion_creation_failure_after_staging_leaves_no_source_item_or_id() {
+    let mut f = fixture();
+    f.col.delete_source(f.sound).unwrap();
+    let before = f.col.clone();
+    let counters = f.col.id_counters();
+    let bad_layout = Layout::new([f32::NAN, 0.0], [100.0, 100.0]);
+    assert_eq!(
+        f.col.add_companion(
+            f.picture,
+            "Sound",
+            ty("audio-input"),
+            Settings::new(),
+            BTreeMap::new(),
+            bad_layout
+        ),
+        Err(SceneError::InvalidLayout)
+    );
+    assert_eq!(f.col, before);
+    assert_eq!(f.col.id_counters(), counters);
+}
+
+#[test]
+fn companion_creation_refuses_missing_placement_and_existing_companion() {
+    let mut f = fixture();
+    assert_eq!(
+        f.col.add_companion(
+            f.picture,
+            "Sound",
+            ty("audio-input"),
+            Settings::new(),
+            BTreeMap::new(),
+            full()
+        ),
+        Err(SceneError::CompanionExists(f.picture))
+    );
+    f.col.delete_source(f.sound).unwrap();
+    f.col.remove_item(f.picture_item).unwrap();
+    let before = f.col.clone();
+    let counters = f.col.id_counters();
+    assert_eq!(
+        f.col.companion_picture_placement(f.picture),
+        Err(SceneError::PictureNotPlaced(f.picture))
+    );
+    assert_eq!(
+        f.col.add_companion(
+            f.picture,
+            "Sound",
+            ty("audio-input"),
+            Settings::new(),
+            BTreeMap::new(),
+            full()
+        ),
+        Err(SceneError::PictureNotPlaced(f.picture))
+    );
+    assert_eq!(f.col, before);
+    assert_eq!(f.col.id_counters(), counters);
 }

@@ -78,11 +78,22 @@ pub enum Topic {
     /// ADR-0145).
     #[serde(rename = "addon.changed")]
     AddonChanged,
+    /// One group's `group.get` state, one key per scene, group and canvas (state,
+    /// protocol 1.108, ADR-0184).
+    #[serde(rename = "group.changed")]
+    GroupChanged,
+    /// One group's failing rendered occurrences, one key per scene, group and canvas
+    /// (state, protocol 1.108, ADR-0193 decision 5).
+    #[serde(rename = "group.render_state")]
+    GroupRenderState,
+    /// A group `Once` Scroll run ended, one key per run (protocol 1.108, ADR-0185).
+    #[serde(rename = "group.scroll_finished")]
+    GroupScrollFinished,
 }
 
 impl Topic {
     /// Every topic.
-    pub const ALL: [Topic; 19] = [
+    pub const ALL: [Topic; 22] = [
         Topic::SourceChanged,
         Topic::RecordState,
         Topic::CanvasChanged,
@@ -102,6 +113,9 @@ impl Topic {
         Topic::TransitionState,
         Topic::AddonChanged,
         Topic::ItemScrollFinished,
+        Topic::GroupChanged,
+        Topic::GroupRenderState,
+        Topic::GroupScrollFinished,
     ];
 
     /// Its name on the wire.
@@ -126,6 +140,9 @@ impl Topic {
             Topic::TransitionState => "transition.state",
             Topic::AddonChanged => "addon.changed",
             Topic::ItemScrollFinished => "item.scroll_finished",
+            Topic::GroupChanged => "group.changed",
+            Topic::GroupRenderState => "group.render_state",
+            Topic::GroupScrollFinished => "group.scroll_finished",
         }
     }
 
@@ -307,6 +324,15 @@ pub enum EventPayload {
     /// One add-on's status (protocol 1.90).
     #[serde(rename = "addon.changed")]
     AddonChanged(crate::types::AddOnChanged),
+    /// One group's state or removal (protocol 1.108).
+    #[serde(rename = "group.changed")]
+    GroupChanged(crate::request::GroupChanged),
+    /// One group's render failures (protocol 1.108).
+    #[serde(rename = "group.render_state")]
+    GroupRenderState(crate::request::GroupRenderState),
+    /// A group `Once` run ended (protocol 1.108).
+    #[serde(rename = "group.scroll_finished")]
+    GroupScrollFinished(crate::request::GroupScrollFinished),
 }
 
 impl EventPayload {
@@ -332,6 +358,9 @@ impl EventPayload {
             EventPayload::TransitionState(_) => Topic::TransitionState,
             EventPayload::ItemScrollFinished(_) => Topic::ItemScrollFinished,
             EventPayload::AddonChanged(_) => Topic::AddonChanged,
+            EventPayload::GroupChanged(_) => Topic::GroupChanged,
+            EventPayload::GroupRenderState(_) => Topic::GroupRenderState,
+            EventPayload::GroupScrollFinished(_) => Topic::GroupScrollFinished,
         }
     }
 }

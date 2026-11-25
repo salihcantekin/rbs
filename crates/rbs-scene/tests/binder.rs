@@ -1,10 +1,5 @@
 //! Contract tests for the scene binder (scene model spec, "Graph binding").
-
 #![allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
-
-use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
-
 use rbs_core::lifecycle::Lifecycle;
 use rbs_core::media::Size;
 use rbs_core::timing::FrameRate;
@@ -17,6 +12,11 @@ use rbs_scene::model::{
     CanvasId, Crop, DisplayChrome, ItemContent, Layout, SceneId, SceneScope, SettingValue,
     Settings, SourceId, SourceRegion,
 };
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
+
+#[path = "binder/manual_cues.rs"]
+mod manual_cues;
 
 const AUDIO: PartitionId = PartitionId(7);
 

@@ -144,38 +144,29 @@ fn a_second_item_of_the_picture_in_the_scene_keeps_the_companion() {
 }
 
 #[test]
-fn a_picture_still_drawn_through_a_nested_scene_keeps_the_companion() {
+fn a_picture_in_another_scene_keeps_its_companion_there() {
     let mut f = fixture();
     let (n, _) = f.col.add_scene("Nested", SceneScope::Shared).unwrap();
     let (nested_pic, _) = f
         .col
         .add_item(n, ItemContent::Source(f.picture), full(), None)
         .unwrap();
-    let (nest, _) = f
-        .col
-        .add_item(f.a, ItemContent::Scene(n), full(), None)
-        .unwrap();
-    f.col.set_item_visible(nest, false).unwrap();
     let pic = item_of(&f.col, f.a, f.picture);
+    let sound = item_of(&f.col, f.a, f.sound);
     let (removed, _) = f.col.remove_from_scene(pic).unwrap();
-    assert_eq!(removed.removed_items, vec![pic]);
-    // Known limit (decision 2): removing it from the nested scene leaves A's
-    // companion item alone.
+    assert_eq!(removed.removed_items, vec![pic, sound]);
     let (removed, _) = f.col.remove_from_scene(nested_pic).unwrap();
     assert_eq!(removed.removed_items, vec![nested_pic]);
-    assert!(contents(&f.col, f.a).contains(&ItemContent::Source(f.sound)));
+    assert!(contents(&f.col, f.b).contains(&ItemContent::Source(f.sound)));
 }
 
 #[test]
-fn a_companion_in_a_nested_scene_stays() {
+fn a_companion_in_another_scene_stays() {
     let mut f = fixture();
     let (n, _) = f.col.add_scene("Nested", SceneScope::Shared).unwrap();
     let (nested_snd, _) = f
         .col
         .add_item(n, ItemContent::Source(f.sound), full(), None)
-        .unwrap();
-    f.col
-        .add_item(f.a, ItemContent::Scene(n), full(), None)
         .unwrap();
     let pic = item_of(&f.col, f.a, f.picture);
     let (removed, _) = f.col.remove_from_scene(pic).unwrap();
@@ -243,20 +234,12 @@ fn own_levels_are_kept_for_a_removed_companion_and_restored_for_a_deleted_one() 
 }
 
 #[test]
-fn a_companion_removed_on_its_own_and_a_nested_scene_item_go_alone() {
+fn a_companion_removed_on_its_own_goes_alone() {
     let mut f = fixture();
     let snd = item_of(&f.col, f.a, f.sound);
     let (removed, _) = f.col.remove_from_scene(snd).unwrap();
     assert_eq!(removed.removed_items, vec![snd]);
     assert!(contents(&f.col, f.a).contains(&ItemContent::Source(f.picture)));
-    let (n, _) = f.col.add_scene("Nested", SceneScope::Shared).unwrap();
-    let (nest, _) = f
-        .col
-        .add_item(f.a, ItemContent::Scene(n), full(), None)
-        .unwrap();
-    let (removed, _) = f.col.remove_from_scene(nest).unwrap();
-    assert_eq!(removed.removed_items, vec![nest]);
-    assert!(f.col.scene(n).is_some());
 }
 
 #[test]

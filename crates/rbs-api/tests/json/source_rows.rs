@@ -143,6 +143,24 @@ pub(super) fn group_requests() -> Vec<Request> {
             name: "Cam".into(),
         }),
         Command::GroupList(SceneRef { scene: 2 }),
+        Command::GroupGet(GetGroup {
+            scene: 2,
+            group: 1,
+            canvas: OutputCanvas::Vertical,
+        }),
+        Command::GroupApply(ApplyGroup {
+            scene: 2,
+            group: 1,
+            items: vec![4, 5],
+            canvas: OutputCanvas::Main,
+            operation: GroupOperation::Resize {
+                x: 1.0,
+                y: 2.0,
+                width: 30.0,
+                height: 40.0,
+            },
+            gesture: 7,
+        }),
         Command::ItemAlignItems(AlignItems {
             items: vec![4, 5],
             edge: AlignEdge::Middle,

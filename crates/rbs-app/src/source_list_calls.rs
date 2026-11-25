@@ -1,6 +1,6 @@
 //! The Sources list's callbacks: select, remove and delete a source, the "Capture
-//! audio too" companion and its row under the picture (ADR-0096, ADR-0173), and
-//! global sources (ADR-0065).
+//! audio too" companion and its row under the picture (ADR-0096, ADR-0173), global
+//! sources (ADR-0065), and the Properties of a selected whole group (ADR-0184).
 
 use super::{App, Ctx};
 use crate::ui::Studio;
@@ -39,6 +39,38 @@ pub fn install(g: &Studio<'_>, ctx: &Ctx) {
     });
     on!(on_remove_group, |app, group: i32| {
         app.studio.remove_group(group);
+    });
+    on!(on_group_set_show_for, |app, ms: i32| {
+        app.studio.group_set_show_for(ms);
+    });
+    on!(on_group_show, |app| {
+        app.studio.group_show();
+    });
+    on!(on_group_set_box, |app,
+                           x: f32,
+                           y: f32,
+                           w: f32,
+                           h: f32,
+                           gesture: i32| {
+        app.studio.group_set_box(x, y, w, h, gesture);
+    });
+    on!(
+        on_group_set_scroll,
+        |app,
+         on: bool,
+         dir: i32,
+         speed: f32,
+         gap: f32,
+         repeat: i32,
+         start: i32,
+         fade: f32,
+         gesture: i32| {
+            app.studio
+                .group_set_scroll(on, dir, speed, gap, repeat, start, fade, gesture);
+        }
+    );
+    on!(on_group_scroll_live, |app, action: i32, speed: f32| {
+        app.studio.group_scroll_live(action, speed);
     });
     on!(on_delete_source, |app, id: i32| {
         app.studio.delete_source(id);

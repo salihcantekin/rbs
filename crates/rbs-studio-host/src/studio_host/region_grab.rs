@@ -31,6 +31,8 @@ pub(super) struct StudioGrab {
     /// The grab in the studio, once added, and where its frame goes.
     added: Option<(PictureId, Arc<GrabSlot>)>,
     until: Timestamp,
+    next: Option<(u64, SourceId)>,
+    closing: bool,
 }
 
 /// The size a `width x height` picture is shown at in the Region section: fits a
@@ -94,11 +96,17 @@ impl Host {
             "region preview: the adapter has no grab, one frame of the running source instead"
         );
         self.end_studio_grab();
+        if let Some(grab) = &mut self.pickers.studio_grab {
+            grab.next = Some((generation, id));
+            return;
+        }
         self.pickers.studio_grab = Some(StudioGrab {
             generation,
             id,
             added: None,
             until: self.clock.now() + GRAB_WAIT,
+            next: None,
+            closing: false,
         });
     }
 
@@ -115,17 +123,30 @@ impl Host {
 
     /// Removes the studio grab, if any, without telling the section.
     pub(super) fn end_studio_grab(&mut self) {
-        let Some(grab) = self.pickers.studio_grab.take() else {
+        let Some(grab) = self.pickers.studio_grab.as_ref() else {
             return;
         };
-        if let Some((picture, _)) = grab.added {
-            let col = self.run_collection();
+        if let Some((picture, _)) = &grab.added {
+            let picture = *picture;
+            let Ok(col) = self.auxiliary_run_collection() else {
+                if let Some(grab) = &mut self.pickers.studio_grab {
+                    grab.closing = true;
+                }
+                return;
+            };
             let running = col.as_ref().unwrap_or(&self.collection);
-            let _ = self
+            let result = self
                 .studio
                 .remove_picture(running, &self.adapters.sources, picture);
             self.waiting = self.studio.waiting();
+            if result.is_err() && self.studio.pictures().contains(&picture) {
+                if let Some(grab) = &mut self.pickers.studio_grab {
+                    grab.closing = true;
+                }
+                return;
+            }
         }
+        self.pickers.studio_grab = None;
     }
 
     /// One look at the studio grab: adds it once the source runs, sends its frame, or
@@ -133,14 +154,22 @@ impl Host {
     pub(super) fn drive_studio_grab(&mut self, notify: &dyn Fn(Update)) -> Option<Duration> {
         let grab = self.pickers.studio_grab.as_ref()?;
         let (generation, id, until) = (grab.generation, grab.id, grab.until);
-        if generation != self.pickers.region_grabs.load(AtomicOrdering::Acquire) {
+        if grab.closing || generation != self.pickers.region_grabs.load(AtomicOrdering::Acquire) {
+            let next = grab.next;
             self.end_studio_grab();
-            return None;
+            if self.pickers.studio_grab.is_none()
+                && let Some((generation, id)) = next
+            {
+                self.start_studio_grab(generation, id);
+            }
+            return self.pickers.studio_grab.as_ref().map(|_| GRAB_POLL);
         }
         let late = self.clock.now() >= until;
         let picture = match &grab.added {
             None => {
-                let col = self.run_collection();
+                let Ok(col) = self.auxiliary_run_collection() else {
+                    return Some(GRAB_POLL);
+                };
                 let running = col.as_ref().unwrap_or(&self.collection);
                 let added = self
                     .studio
@@ -195,7 +224,7 @@ impl Host {
             generation,
             picture,
         });
-        None
+        self.pickers.studio_grab.as_ref().map(|_| GRAB_POLL)
     }
 }
 

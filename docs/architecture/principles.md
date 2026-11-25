@@ -46,6 +46,10 @@ The engine runs without any UI. Every UI (desktop, web, CLI, Stream Deck) is a c
 
 The plugin SDK, the control API and the scene document format are versioned with semver. Breaking changes only happen in major versions, and the host supports the previous major version for at least one release cycle.
 
+Exception: [ADR-0188](../adr/0188-defer-new-nested-scenes.md) removes nested
+scene placements for all clients and refuses documents containing them without
+the previous-major compatibility period, by the owner's explicit approval.
+
 ## P10. Measure, do not assume
 
 Performance claims require numbers. Hot-path changes come with a before/after benchmark. CI tracks the budgets in [performance budgets](../specs/performance-budgets.md) and fails on regressions beyond the allowed margin.

@@ -1,6 +1,6 @@
 # ADR-0131: Import OBS scene collections, profiles and settings
 
-- Status: Accepted
+- Status: Accepted (decisions 4, 6 and 7 superseded in part by ADR-0188)
 - Date: 2026-11-16
 - Deciders: Salih (owner)
 

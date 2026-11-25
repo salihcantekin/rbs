@@ -5,8 +5,10 @@
 use rbs_core::media::Size;
 use rbs_core::timing::FrameRate;
 use rbs_graph::node::NodeTypeId;
-use rbs_scene::SceneCollection;
-use rbs_scene::model::{ItemContent, ItemId, Layout, SceneId, SceneScope, Settings};
+use rbs_scene::model::{
+    GroupScroll, ItemContent, ItemId, Layout, SceneId, SceneScope, ScrollDirection, Settings,
+};
+use rbs_scene::{SceneCollection, SceneError};
 
 fn full() -> Layout {
     Layout::new([0.0, 0.0], [1920.0, 1080.0])
@@ -82,20 +84,123 @@ fn a_group_needs_two_distinct_items_of_one_scene() {
 }
 
 #[test]
-fn grouping_groups_merges_them() {
+fn regrouping_is_refused_without_changes() {
     let (mut col, scene, it) = fixture(5);
     col.group_items(scene, &[it[0], it[1]], None).unwrap();
-    let (g2, _) = col.group_items(scene, &[it[1], it[3]], None).unwrap();
-    // Item 0 came along with item 1's group; one group is left.
-    assert_eq!(col.groups(scene).unwrap().len(), 1);
-    let members = col
-        .scene(scene)
-        .unwrap()
-        .items
-        .iter()
-        .filter(|i| i.group == Some(g2))
-        .count();
-    assert_eq!(members, 3);
+    let before = col.scene(scene).unwrap().clone();
+    let ids = col.id_counters();
+    assert!(matches!(
+        col.group_items(scene, &[it[1], it[3]], None),
+        Err(SceneError::ItemAlreadyGrouped(_))
+    ));
+    assert_eq!(col.scene(scene).unwrap(), &before);
+    assert_eq!(col.id_counters(), ids);
+}
+
+#[test]
+fn grouping_expands_companions_and_refuses_ambiguous_placements() {
+    let (mut col, scene, items) = fixture(3);
+    let ItemContent::Source(picture) = col.item(items[0]).unwrap().1.content else {
+        panic!("source")
+    };
+    let ItemContent::Source(sound) = col.item(items[1]).unwrap().1.content else {
+        panic!("source")
+    };
+    let mut hints = std::collections::BTreeMap::new();
+    hints.insert(
+        rbs_scene::COMPANION_OF_HINT.to_owned(),
+        picture.get().to_string(),
+    );
+    col.set_source_settings_and_hints(sound, Settings::new(), hints)
+        .unwrap();
+    assert!(matches!(
+        col.group_items(scene, &[items[0]], None),
+        Err(SceneError::GroupTooSmall(_))
+    ));
+    let (group, undo) = col.group_items(scene, &[items[0], items[2]], None).unwrap();
+    assert_eq!(col.item(items[1]).unwrap().1.group, Some(group));
+    col.undo(undo).unwrap();
+    col.add_item(scene, ItemContent::Source(picture), full(), None)
+        .unwrap();
+    let before = col.scene(scene).unwrap().clone();
+    let ids = col.id_counters();
+    assert_eq!(
+        col.group_items(scene, &[items[0], items[2]], None),
+        Err(SceneError::AmbiguousCompanion)
+    );
+    assert_eq!(col.scene(scene).unwrap(), &before);
+    assert_eq!(col.id_counters(), ids);
+}
+
+#[test]
+fn group_duration_is_atomic_and_checks_membership_and_undo() {
+    let (mut col, scene, items) = fixture(3);
+    let (group, _) = col.group_items(scene, &items[..2], None).unwrap();
+    col.set_item_show_for(items[0], Some(100)).unwrap();
+    for members in [&items[..1], &items[..3], &[items[0], items[0]][..]] {
+        assert_eq!(
+            col.set_group_show_for(scene, group, members, Some(500)),
+            Err(SceneError::UndoConflict)
+        );
+    }
+    assert_eq!(
+        col.set_group_show_for(scene, group, &items[..2], Some(0)),
+        Err(SceneError::InvalidShowFor)
+    );
+    let undo = col
+        .set_group_show_for(scene, group, &[items[1], items[0]], Some(500))
+        .unwrap();
+    assert_eq!(col.item(items[0]).unwrap().1.show_for_ms, Some(500));
+    assert_eq!(col.item(items[1]).unwrap().1.show_for_ms, Some(500));
+    let redo = col.undo(undo).unwrap();
+    assert_eq!(col.item(items[0]).unwrap().1.show_for_ms, Some(100));
+    assert_eq!(col.item(items[1]).unwrap().1.show_for_ms, None);
+    col.undo(redo).unwrap();
+}
+
+#[test]
+fn group_scroll_survives_copy_canvas_removal_and_undo() {
+    let (mut col, scene, items) = fixture(2);
+    let canvas = col.canvases().next().unwrap().id;
+    let (group, _) = col.group_items(scene, &items, None).unwrap();
+    let scroll = GroupScroll::new(ScrollDirection::Left, 100.0);
+    col.set_group_scroll(scene, group, &items, canvas, Some(scroll))
+        .unwrap();
+    let (copy, _) = col.duplicate_scene(scene, "Copy").unwrap();
+    assert_eq!(
+        col.groups(copy).unwrap()[0].scrolls.get(&canvas),
+        Some(&scroll)
+    );
+    let undo = col.remove_canvas(canvas).unwrap();
+    assert!(col.groups(scene).unwrap()[0].scrolls.is_empty());
+    col.undo(undo).unwrap();
+    assert_eq!(
+        col.groups(scene).unwrap()[0].scrolls.get(&canvas),
+        Some(&scroll)
+    );
+    assert_eq!(
+        col.groups(copy).unwrap()[0].scrolls.get(&canvas),
+        Some(&scroll)
+    );
+}
+
+#[test]
+fn group_scroll_refuses_stale_membership_and_conflicting_undo() {
+    let (mut col, scene, items) = fixture(3);
+    let canvas = col.canvases().next().unwrap().id;
+    let (group, _) = col.group_items(scene, &items[..2], None).unwrap();
+    let scroll = GroupScroll::new(ScrollDirection::Left, 100.0);
+    assert_eq!(
+        col.set_group_scroll(scene, group, &items, canvas, Some(scroll)),
+        Err(SceneError::UndoConflict)
+    );
+    let undo = col
+        .set_group_scroll(scene, group, &items[..2], canvas, Some(scroll))
+        .unwrap();
+    col.remove_item(items[0]).unwrap();
+    let before = col.scene(scene).unwrap().clone();
+    assert!(col.undo(undo).is_err());
+    assert_eq!(col.scene(scene).unwrap(), &before);
 }
 
 #[test]
