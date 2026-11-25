@@ -275,6 +275,63 @@ fn a_44_1_khz_file_plays_at_the_right_speed() {
     rig.pair.picture.standby();
 }
 
+#[test]
+fn large_pcm_chunks_are_queued_only_as_their_blocks_enter_the_lead() {
+    let audio = InterleavedPcm {
+        sample_rate: 48_000,
+        channels: 2,
+        samples: vec![0.25; 48_000 * 2],
+    };
+    let factory = Arc::new(
+        ScriptFactory::new(ScriptClip {
+            audio: Some(audio),
+            ..ScriptClip::silent_frames()
+        })
+        .with_sound_chunk_frames(8192),
+    );
+    let clock = Arc::new(TestClock::new());
+    let mut pair = media_pair(
+        factory,
+        std::path::PathBuf::from(r"C:\clips\large-audio.mp4"),
+        false,
+        true,
+        clock.clone(),
+        config(),
+    );
+    pair.sound.attach().unwrap();
+    let mut left = [0.0f32; BLOCK];
+    let mut right = [0.0f32; BLOCK];
+    pair.sound
+        .fill(Timestamp::ZERO, &mut [&mut left, &mut right], BLOCK);
+    pair.picture.wake(Timestamp::ZERO).unwrap();
+
+    for t in (0..=1200).step_by(10) {
+        let at = ms(t);
+        clock.set(at);
+        wait_until(|| {
+            pair.picture.worker_ended() || pair.picture.worker_settled_at().is_some_and(|s| s >= at)
+        });
+        if t >= 50 {
+            let block_time = at - LATENCY;
+            let written = pair
+                .sound
+                .fill(block_time, &mut [&mut left, &mut right], BLOCK);
+            if (150..1150).contains(&(t - 50)) {
+                assert!(written, "missing audio block at {block_time:?}");
+                assert!(left.iter().all(|sample| *sample == 0.25));
+                assert!(right.iter().all(|sample| *sample == 0.25));
+            } else if t - 50 >= 1150 {
+                assert!(!written);
+            }
+        }
+    }
+
+    let stats = pair.picture.stats();
+    assert_eq!(stats.worker_dropped_blocks.load(Ordering::Relaxed), 0);
+    assert_eq!(stats.sound_underruns.load(Ordering::Relaxed), 0);
+    pair.picture.standby();
+}
+
 /// The level of `clip_with_steps` at media time `media_ms` (within one pass).
 fn step_level(media_ms: u64) -> f32 {
     [0.25, 0.5, 0.75][(media_ms / 100) as usize]

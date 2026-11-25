@@ -561,6 +561,16 @@ impl Run<'_> {
                     self.finish_sound(now);
                 }
                 if !job.loop_flag.load(Ordering::Acquire) {
+                    if attached && has_audio {
+                        if let Some(due) = self.sound_block_due(true) {
+                            let horizon = now.as_nanos() as i128 + LEAD.as_nanos() as i128;
+                            let wait = due - horizon;
+                            self.wait_for(Duration::from_nanos(
+                                u64::try_from(wait.max(0)).unwrap_or(u64::MAX),
+                            ));
+                            continue;
+                        }
+                    }
                     return;
                 }
                 let start = self.range_start();
@@ -641,16 +651,33 @@ impl Run<'_> {
         }
     }
 
-    fn next_due(&self) -> Option<i128> {
+    fn next_due(&mut self) -> Option<i128> {
         let mut due = None;
         if !self.pictures.done {
             due = Some(self.master(self.pictures.next));
         }
-        if !self.sound.done && self.sound.inlet.is_some() && self.sound_playing() {
-            let s = self.sound_next_master();
-            due = Some(due.map_or(s, |d: i128| d.min(s)));
+        if self.sound.inlet.is_some() && self.sound_playing() {
+            let decode = (!self.sound.done).then(|| self.sound_next_master());
+            let block = self.sound_block_due(self.sound.done && self.pictures.done);
+            if let Some(s) = decode.into_iter().chain(block).min() {
+                due = Some(due.map_or(s, |d: i128| d.min(s)));
+            }
         }
         due
+    }
+
+    /// Master time of the next complete buffered block, or final partial block.
+    fn sound_block_due(&mut self, last: bool) -> Option<i128> {
+        let grid = self.job.shared.grid()?;
+        let (stamp, first) = self.sound.next_block(grid, self.base())?;
+        let frames = i64::try_from(self.sound.block_frames).ok()?;
+        let available = self.sound.end_frame().saturating_sub(first);
+        (if last {
+            available > 0
+        } else {
+            available >= frames
+        })
+        .then_some(stamp)
     }
 
     /// True when another picture of the last size would be dropped. The first picture
@@ -1001,6 +1028,7 @@ impl Run<'_> {
             return false;
         };
         let mut busy = false;
+        let horizon = now.as_nanos() as i128 + LEAD.as_nanos() as i128;
         loop {
             let Some((stamp, first)) = self.sound.next_block(grid, base) else {
                 return busy;
@@ -1010,6 +1038,9 @@ impl Run<'_> {
                 return busy;
             }
             if last && self.sound.end_frame() <= first {
+                return busy;
+            }
+            if stamp > horizon {
                 return busy;
             }
             busy = true;

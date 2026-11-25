@@ -250,6 +250,7 @@ pub struct ScriptFactory {
     /// The clip's picture stream has alpha, and whether this factory keeps it
     /// (ADR-0140 decision 2).
     alpha: Option<bool>,
+    sound_chunk_frames: usize,
 }
 
 impl ScriptFactory {
@@ -277,7 +278,15 @@ impl ScriptFactory {
             pixel,
             native: false,
             alpha: None,
+            sound_chunk_frames: SOUND_CHUNK_FRAMES,
         }
+    }
+
+    /// Sets the number of PCM frames returned by each `next_sound` call.
+    #[must_use]
+    pub fn with_sound_chunk_frames(mut self, frames: usize) -> Self {
+        self.sound_chunk_frames = frames.max(1);
+        self
     }
 
     /// The clip's picture stream signals alpha. With `keeps` an open with
@@ -337,6 +346,7 @@ impl MediaDecoderFactory for ScriptFactory {
             alpha: self.alpha.is_some(),
             index: 0,
             sound_frame: 0,
+            sound_chunk_frames: self.sound_chunk_frames,
             native: self
                 .native
                 .then(|| Arc::new(NativeOwner(Arc::clone(&self.counts))) as Arc<dyn LeaseOwner>),
@@ -356,6 +366,7 @@ struct ScriptDecoder {
     alpha: bool,
     index: usize,
     sound_frame: usize,
+    sound_chunk_frames: usize,
     native: Option<Arc<dyn LeaseOwner>>,
     counts: Arc<ScriptCounts>,
 }
@@ -440,7 +451,7 @@ impl MediaDecoder for ScriptDecoder {
         if self.sound_frame >= total {
             return Ok(None);
         }
-        let end = (self.sound_frame + SOUND_CHUNK_FRAMES).min(total);
+        let end = (self.sound_frame + self.sound_chunk_frames).min(total);
         let rate = u64::from(audio.sample_rate.max(1));
         let pts = Duration::from_nanos(self.sound_frame as u64 * 1_000_000_000 / rate);
         let samples = audio.samples[self.sound_frame * channels..end * channels].to_vec();
