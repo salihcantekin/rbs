@@ -351,14 +351,17 @@ impl Rig {
     }
 
     /// Ticks until the probe has a frame, letting the GPU finish between ticks. The
-    /// bound is a hang guard, not a timing assertion.
+    /// readback helper thread lends pictures to the session between ticks, so the loop
+    /// waits for the condition; the time bound is a hang guard, not a timing assertion.
     pub fn until_output(&mut self) -> bool {
-        for _ in 0..100 {
+        let guard = std::time::Instant::now();
+        while guard.elapsed() < std::time::Duration::from_secs(20) {
             self.tick();
             self.ctx.wait_idle().unwrap();
             if lock(&self.last).is_some() {
                 return true;
             }
+            std::thread::yield_now();
         }
         false
     }

@@ -2,8 +2,9 @@
 //!
 //! Each tick with a new input picture the node draws it at the session's small size
 //! (sRGB, BGRA) on the GPU, copies that into one of a ring of staging buffers and maps
-//! it without waiting. A finished readback becomes a small system frame lent to the
-//! session; the newest matte the session has finished is uploaded to a one-channel
+//! it without waiting. A helper thread (`helper.rs`) waits for each copy, reads the bytes
+//! and lends them to the session as a small system frame at once, not at the next tick;
+//! the newest matte the session has finished is uploaded to a one-channel
 //! texture; the composite pass multiplies the full-size picture by the refined matte.
 //! Nothing waits: a ring that is full or a session that is busy drops the new picture,
 //! and the picture is drawn with the matte of an earlier one (ADR-0179 decision 4). Until
@@ -13,10 +14,10 @@
 //! The only readback is the small picture (named exception of ADR-0179 decision 3).
 //! The full-size picture never leaves the GPU.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use rbs_core::media::{
     ColorSpace, FramePayload, PixelFormat, PlaneLayout, Size, SystemFrame, TextureId, VideoFormat,
     VideoFrame, next_generation,
@@ -54,8 +55,10 @@ const FAILED: u8 = 3;
 const DOWNSCALE: &str = include_str!("shaders/downscale.wgsl");
 use crate::COMPOSITE;
 mod blur;
+mod helper;
 use crate::ring::{COPY, CopyPass, Ring, picture_to_draw};
 use blur::{BlurPass, render_output};
+use helper::{Job, Readback, Setup, SharedSession, SlotView};
 /// The small picture's format: `Bgra8Unorm` is BGRA in memory, which is what a backend
 /// takes as `PixelFormat::Bgra8`.
 const SMALL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
@@ -132,20 +135,6 @@ impl RemovalStats {
     }
 }
 
-/// One staging buffer. `state` is written by the map callback too.
-struct Slot {
-    buffer: wgpu::Buffer,
-    state: Arc<AtomicU8>,
-}
-
-/// What the render thread knows of the picture in a staging buffer: its order in the
-/// ring and the input's timestamp.
-#[derive(Debug, Clone, Copy, Default)]
-struct Meta {
-    seq: u64,
-    time: Timestamp,
-}
-
 /// GPU objects made in `prepare`.
 struct Prepared {
     down: wgpu::RenderPipeline,
@@ -156,7 +145,9 @@ struct Prepared {
     down_group: wgpu::BindGroup,
     comp_buffer: wgpu::Buffer,
     comp_group: wgpu::BindGroup,
-    slots: Vec<Slot>,
+    slots: Vec<SlotView>,
+    /// Finishes the readbacks on its own thread.
+    readback: Readback,
     /// Bytes per row of the staging buffers.
     stride: u32,
 }
@@ -184,7 +175,7 @@ pub struct BackgroundRemovalNode {
     values: ParamReceiver<Values>,
     stats: Arc<RemovalStats>,
     factory: SessionFactory,
-    session: Option<Box<dyn PersonMaskSession>>,
+    session: SharedSession,
     /// The small picture's size: what the session's level asks for.
     small: [u32; 2],
     gpu: Option<Prepared>,
@@ -201,10 +192,6 @@ pub struct BackgroundRemovalNode {
     submitted: Option<(TextureId, Timestamp)>,
     drawn: Option<Drawn>,
     last_output: Option<TextureId>,
-    seq: u64,
-    meta: [Meta; RING],
-    /// The buffer the small frame is built in; given back by the session's drop.
-    pixels: Option<BytesMut>,
     rgb: YuvToRgb,
     /// The last input pictures, to draw a picture with the matte made from it (Exact).
     ring: Ring,
@@ -228,7 +215,7 @@ impl BackgroundRemovalNode {
             values: receiver,
             stats: Arc::clone(&stats),
             factory,
-            session: None,
+            session: SharedSession::default(),
             small: [small[0].max(1), small[1].max(1)],
             gpu: None,
             small_texture: None,
@@ -240,9 +227,6 @@ impl BackgroundRemovalNode {
             submitted: None,
             drawn: None,
             last_output: None,
-            seq: 0,
-            meta: [Meta::default(); RING],
-            pixels: None,
             rgb: YuvToRgb::new(),
             ring: Ring::default(),
             held: None,
@@ -440,7 +424,7 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
         let stride = (self.small[0] * 4).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
             * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
         let slots = (0..RING)
-            .map(|_| Slot {
+            .map(|_| SlotView {
                 buffer: device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("rbs-filters-segment staging"),
                     size: u64::from(stride) * u64::from(self.small[1]),
@@ -449,7 +433,15 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
                 }),
                 state: Arc::new(AtomicU8::new(IDLE)),
             })
-            .collect();
+            .collect::<Vec<_>>();
+        let readback = Readback::start(Setup {
+            device: device.clone(),
+            slots: slots.clone(),
+            stride,
+            small: self.small,
+            session: Arc::clone(&self.session),
+            stats: Arc::clone(&self.stats),
+        })?;
         self.gpu = Some(Prepared {
             down,
             copy,
@@ -460,6 +452,7 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
             comp_buffer,
             comp_group,
             slots,
+            readback,
             stride,
         });
         self.down_written = None;
@@ -470,14 +463,19 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
 
     fn warm(&mut self, ctx: &mut WarmCtx<'_, GpuRuntime>) -> Result<(), NodeError> {
         // Control thread: the only place a model is loaded and a worker started (P13).
-        if self.session.is_none() {
+        let mut shared = self
+            .session
+            .lock()
+            .map_err(|_| NodeError::Failed("person mask session lock".into()))?;
+        if shared.is_none() {
             let mut session = (self.factory)()
                 .map_err(|e| NodeError::Failed(format!("person mask session: {e}")))?;
             session
                 .warm()
                 .map_err(|e| NodeError::Failed(format!("person mask session: {e}")))?;
-            self.session = Some(session);
+            *shared = Some(session);
         }
+        drop(shared);
         if self.small_texture.is_none() {
             let id = ctx
                 .local
@@ -485,12 +483,6 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
                 .acquire(ctx.shared, &self.small_desc())
                 .map_err(backend)?;
             self.small_texture = Some(id);
-        }
-        // The small frame's buffer, once.
-        if self.pixels.is_none() {
-            self.pixels = Some(BytesMut::with_capacity(
-                self.small[0] as usize * self.small[1] as usize * 4,
-            ));
         }
         Ok(())
     }
@@ -513,11 +505,10 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
         self.last_output = None;
         self.drawn = None;
         self.submitted = None;
-        self.pixels = None;
         self.ring.clear(pool);
         self.held = None;
         self.rgb.release();
-        if let Some(session) = self.session.take() {
+        if let Some(session) = self.session.lock().ok().and_then(|mut s| s.take()) {
             session.close();
         }
     }
@@ -545,7 +536,6 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
             return Ok(());
         };
         let prepared = self.gpu.as_ref().ok_or(NodeError::NotReady)?;
-        let session = self.session.as_mut().ok_or(NodeError::NotReady)?;
         if self.size != Some(size) {
             // A new picture size (spec rule 5): the old size's textures go back at once.
             // The matte has no size of its own, so it stays in use while the aspect is
@@ -553,7 +543,11 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
             if let Some(old) = self.size {
                 give_back(&mut local.pool, old, self.last_output.take());
                 if aspect_changed(old, size) {
-                    session.reset();
+                    if let Ok(mut guard) = self.session.lock()
+                        && let Some(session) = guard.as_mut()
+                    {
+                        session.reset();
+                    }
                     self.matte_generation = 0;
                     if let Some((id, _)) = self.matte.take() {
                         let _ = local.pool.release(id);
@@ -574,16 +568,7 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
             (input_id, size, decode, time),
         );
 
-        // 1. A finished readback becomes a small frame for the session.
-        deliver(
-            prepared,
-            session.as_mut(),
-            self.small,
-            &self.meta,
-            &mut self.pixels,
-            &self.stats,
-        );
-
+        // 1. (The helper thread lends finished readbacks to the session.)
         // 2. A new picture is drawn small and read back, when a staging buffer is free.
         if self.submitted != Some((input_id, time)) {
             let free = prepared
@@ -622,12 +607,12 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
                         small_id,
                         self.small,
                     );
-                    if queued.is_ok() {
-                        self.seq += 1;
-                        self.meta[index] = Meta {
-                            seq: self.seq,
+                    if let Ok(submission) = queued {
+                        prepared.readback.send(Job {
+                            slot: index,
                             time,
-                        };
+                            submission,
+                        });
                         self.submitted = Some((input_id, time));
                     } else {
                         self.stats.failed.fetch_add(1, Ordering::Relaxed);
@@ -638,7 +623,11 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
 
         // 3. The newest finished matte, uploaded.
         let mut matte_time = None;
-        match session.latest() {
+        let latest = match self.session.lock() {
+            Ok(mut guard) => guard.as_mut().ok_or(NodeError::NotReady)?.latest(),
+            Err(_) => return Err(NodeError::NotReady),
+        };
+        match latest {
             Ok(Some(matte)) => {
                 let time = matte.timestamp;
                 if take_matte(gpu, &mut local.pool, matte, &mut self.matte, &self.stats) {
@@ -724,7 +713,7 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
         self.drawn = None;
         self.submitted = None;
         self.held = None;
-        if let Some(session) = self.session.take() {
+        if let Some(session) = self.session.lock().ok().and_then(|mut s| s.take()) {
             session.close();
         }
     }
@@ -740,7 +729,7 @@ fn queue_readback(
     input: TextureId,
     small: TextureId,
     size: [u32; 2],
-) -> Result<(), GpuError> {
+) -> Result<wgpu::SubmissionIndex, GpuError> {
     let src = pool
         .get(input)
         .and_then(|t| t.sampled_bind_group())
@@ -781,8 +770,8 @@ fn queue_readback(
             depth_or_array_layers: 1,
         },
     );
-    gpu.queue().submit(Some(encoder.finish()));
     slot.state.store(MAPPING, Ordering::Release);
+    let submission = gpu.queue().submit(Some(encoder.finish()));
     let state = Arc::clone(&slot.state);
     slot.buffer
         .slice(..)
@@ -792,78 +781,7 @@ fn queue_readback(
                 Ordering::Release,
             );
         });
-    Ok(())
-}
-
-/// Lends the session the newest finished readback as a small system frame; older
-/// finished ones are dropped. The frame's bytes come back to the node's buffer when the
-/// session did not keep them.
-fn deliver(
-    prepared: &Prepared,
-    session: &mut dyn PersonMaskSession,
-    small: [u32; 2],
-    meta: &[Meta; RING],
-    pixels: &mut Option<BytesMut>,
-    stats: &RemovalStats,
-) {
-    let mut newest: Option<usize> = None;
-    for (i, slot) in prepared.slots.iter().enumerate() {
-        match slot.state.load(Ordering::Acquire) {
-            MAPPED if newest.is_none_or(|n| meta[i].seq > meta[n].seq) => newest = Some(i),
-            FAILED => {
-                stats.failed.fetch_add(1, Ordering::Relaxed);
-                slot.state.store(IDLE, Ordering::Release);
-            }
-            _ => {}
-        }
-    }
-    let Some(newest) = newest else { return };
-    let row = small[0] as usize * 4;
-    for (i, slot) in prepared.slots.iter().enumerate() {
-        if slot.state.load(Ordering::Acquire) != MAPPED {
-            continue;
-        }
-        if i == newest {
-            let mut bytes = pixels.take().unwrap_or_default();
-            bytes.clear();
-            if let Ok(view) = slot.buffer.slice(..).get_mapped_range() {
-                for y in 0..small[1] as usize {
-                    let start = y * prepared.stride as usize;
-                    bytes.extend_from_slice(&view[start..start + row]);
-                }
-            }
-            let bytes = bytes.freeze();
-            let format = VideoFormat::new(
-                Size::new(small[0], small[1]),
-                PixelFormat::Bgra8,
-                ColorSpace::SRGB,
-            );
-            let planes = [PlaneLayout {
-                offset: 0,
-                stride: row,
-            }];
-            match SystemFrame::new(format, bytes.clone(), &planes) {
-                Ok(system) => {
-                    let frame = VideoFrame::system(meta[i].time, system, None);
-                    match session.submit(&frame) {
-                        SubmitOutcome::Accepted => {
-                            stats.submitted.fetch_add(1, Ordering::Relaxed);
-                        }
-                        _ => {
-                            stats.dropped_busy.fetch_add(1, Ordering::Relaxed);
-                        }
-                    }
-                }
-                Err(_) => {
-                    stats.failed.fetch_add(1, Ordering::Relaxed);
-                }
-            }
-            // Back to the node's buffer when the session did not keep a reference.
-            *pixels = bytes.try_into_mut().ok();
-        }
-        slot.buffer.unmap();
-        slot.state.store(IDLE, Ordering::Release);
-    }
+    Ok(submission)
 }
 
 /// Uploads a CPU matte to the matte texture (made, or
