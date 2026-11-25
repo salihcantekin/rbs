@@ -119,7 +119,7 @@ fn cancellation_observers_run_once_and_late_registration_is_not_lost() {
         }
         let observed = count.clone();
         call.ticket
-            .on_cancel(move || {
+            .observe_cancellation(move || {
                 observed.fetch_add(1, Ordering::Relaxed);
             })
             .unwrap();

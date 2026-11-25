@@ -311,7 +311,7 @@ fn open_picker(app: &mut App, call: UiForwarded, reply: UiResponder, what: menu_
         return;
     }
     let ticket = call.ticket.clone();
-    if let Err(error) = call.ticket.on_cancel(move || {
+    if let Err(error) = call.ticket.observe_cancellation(move || {
         let _ = super::entry::invoke(move || {
             if let Some(ctx) = CTX.with(|ctx| ctx.borrow().clone()) {
                 ctx.update(move |app| {

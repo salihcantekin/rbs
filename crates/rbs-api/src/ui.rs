@@ -105,7 +105,10 @@ impl UiTicket {
 
     /// Install one non-blocking cancellation observer. Called outside the lock,
     /// including immediately when cancellation preceded registration.
-    pub fn on_cancel(&self, callback: impl FnOnce() + Send + 'static) -> Result<(), ApiError> {
+    pub fn observe_cancellation(
+        &self,
+        callback: impl FnOnce() + Send + 'static,
+    ) -> Result<(), ApiError> {
         let mut slot = self
             .cancellation
             .0

@@ -1,0 +1,2 @@
+# The YUV shader's embedded section markers require LF line endings.
+yuv.wgsl text eol=lf

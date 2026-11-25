@@ -35,13 +35,7 @@ pub fn run(root: &Path, args: &[String]) -> Result<ExitCode, String> {
     }
     let mut results: Vec<(&str, bool)> = Vec::new();
 
-    let (_, mut fmt) = crate::cargo_command();
-    let fmt_ok = fmt
-        .current_dir(root)
-        .args(["fmt", "--all", "--", "--check"])
-        .status()
-        .map_err(|e| format!("run cargo fmt: {e}"))?
-        .success();
+    let fmt_ok = check_format(root)?;
     results.push(("fmt", fmt_ok));
     results.push(("layers", report("check-layers", crate::check_workspace())));
     results.push(("ui", report("check-ui", crate::check_ui::check(root))));
@@ -102,6 +96,80 @@ pub fn run(root: &Path, args: &[String]) -> Result<ExitCode, String> {
     })
 }
 
+#[cfg(not(windows))]
+fn check_format(root: &Path) -> Result<bool, String> {
+    let (_, mut fmt) = crate::cargo_command();
+    fmt.current_dir(root)
+        .args(["fmt", "--all", "--", "--check"])
+        .status()
+        .map(|status| status.success())
+        .map_err(|e| format!("run cargo fmt: {e}"))
+}
+
+#[cfg(windows)]
+fn check_format(root: &Path) -> Result<bool, String> {
+    let (_, mut cargo) = crate::cargo_command();
+    let output = cargo
+        .current_dir(root)
+        .args(["metadata", "--no-deps", "--format-version", "1"])
+        .output()
+        .map_err(|e| format!("run cargo metadata: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "cargo metadata failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    let packages = workspace_packages(&output.stdout)?;
+    // cargo-fmt passes every target to rustfmt in one command, exceeding the
+    // Windows command-line limit for this workspace. Check the same targets in batches.
+    for batch in packages.chunks(8) {
+        let (_, mut fmt) = crate::cargo_command();
+        fmt.current_dir(root).arg("fmt");
+        for package in batch {
+            fmt.args(["-p", package]);
+        }
+        let status = fmt
+            .args(["--", "--check"])
+            .status()
+            .map_err(|e| format!("run cargo fmt: {e}"))?;
+        if !status.success() {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+#[cfg(any(windows, test))]
+fn workspace_packages(metadata: &[u8]) -> Result<Vec<String>, String> {
+    let value: serde_json::Value =
+        serde_json::from_slice(metadata).map_err(|e| format!("parse cargo metadata: {e}"))?;
+    let members = value["workspace_members"]
+        .as_array()
+        .ok_or("cargo metadata has no workspace_members")?;
+    let packages = value["packages"]
+        .as_array()
+        .ok_or("cargo metadata has no packages")?;
+    let mut names = Vec::new();
+    for member in members {
+        let id = member.as_str().ok_or("invalid workspace member id")?;
+        let package = packages
+            .iter()
+            .find(|package| package["id"].as_str() == Some(id))
+            .ok_or_else(|| format!("workspace member missing from cargo metadata: {id}"))?;
+        names.push(
+            package["name"]
+                .as_str()
+                .ok_or("workspace package has no name")?
+                .to_owned(),
+        );
+    }
+    if names.is_empty() {
+        return Err("cargo metadata has no workspace members".into());
+    }
+    Ok(names)
+}
+
 fn report(name: &str, result: Result<(), Vec<String>>) -> bool {
     match result {
         Ok(()) => true,
@@ -111,5 +179,29 @@ fn report(name: &str, result: Result<(), Vec<String>>) -> bool {
             }
             false
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::workspace_packages;
+
+    #[test]
+    fn formats_only_workspace_members() {
+        let metadata = br#"{
+            "workspace_members": ["a 1.0", "b 1.0"],
+            "packages": [
+                {"id": "a 1.0", "name": "a"},
+                {"id": "external 1.0", "name": "external"},
+                {"id": "b 1.0", "name": "b"}
+            ]
+        }"#;
+        assert_eq!(workspace_packages(metadata).unwrap(), ["a", "b"]);
+    }
+
+    #[test]
+    fn rejects_missing_workspace_members() {
+        let metadata = br#"{"workspace_members": ["a 1.0"], "packages": []}"#;
+        assert!(workspace_packages(metadata).is_err());
     }
 }
