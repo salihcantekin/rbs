@@ -247,8 +247,8 @@ component StackView inherits Rectangle {
                     icon: IconName.filter;
                     name: @tr("Filter scenes");
                     clicked => {
-                        Overlays.filter-x = self.absolute-position.x - root.absolute-position.x;
-                        Overlays.filter-y = bar;
+                        Overlays.filter-x = self.absolute-position.x;
+                        Overlays.filter-y = self.absolute-position.y + self.height + Tokens.space-1;
                         Overlays.filter-open = 1;
                     }
                 }
@@ -262,8 +262,8 @@ component StackView inherits Rectangle {
                     icon: IconName.filter;
                     name: @tr("Filter sources");
                     clicked => {
-                        Overlays.filter-x = self.absolute-position.x - root.absolute-position.x;
-                        Overlays.filter-y = bar;
+                        Overlays.filter-x = self.absolute-position.x;
+                        Overlays.filter-y = self.absolute-position.y + self.height + Tokens.space-1;
                         Overlays.filter-open = 2;
                     }
                 }

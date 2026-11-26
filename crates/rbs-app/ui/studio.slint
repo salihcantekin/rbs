@@ -557,7 +557,8 @@ component SceneRowView inherits Rectangle {
         allow-drag: true;
         drag-data: Studio.scene-data(data.id);
         drop-enabled: Studio.dragging-scene >= 0;
-        activated => { Studio.switch-scene(data.id); }
+        // An inactive scene cannot go on air (ADR-0195); only its own button works.
+        activated => { if data.active || root.studio { Studio.switch-scene(data.id); } }
         double-clicked => { self.editing = true; }
         menu-asked(at) => { menu.open(at); }
         renamed(t) => { Studio.rename-scene(data.id, t); }
