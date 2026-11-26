@@ -1668,6 +1668,13 @@ export global Studio {
     // A media file's play state in words (ADR-0108 decision 10).
     pure public function media-state-text(state: int) -> string {
         return state == 0 ? @tr("Playing")
+    // The time left on a timed show, rounded up to the second, as "mm:ss".
+    pure public function cue-left-text(ms: int) -> string {
+        let s = Math.ceil(ms / 1000);
+        let m = Math.floor(s / 60);
+        let sec = Math.mod(s, 60);
+        return (m < 10 ? "0" + m : "" + m) + ":" + (sec < 10 ? "0" + sec : "" + sec);
+    }
             : state == 1 ? @tr("Paused")
             : state == 2 ? @tr("Cued: plays when it goes on air")
             : state == 3 ? @tr("Ended")

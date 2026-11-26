@@ -368,10 +368,17 @@ component SourceRowView inherits Rectangle {
                     clicked => { Studio.set-source-muted(data.id, !data.muted); }
                 }
             }
-            // Eye = lasting hide/show (undoable). Hourglass = timed show (ADR-0105).
+            // Eye = lasting hide/show (undoable). Hourglass = timed show (ADR-0105), its
+            // time left beside it.
+            if data.picture && data.show-for-ms > 0 && data.cue-remaining-ms > 0: Text {
+                text: Studio.cue-left-text(data.cue-remaining-ms);
+                color: Theme.text-secondary;
+                font-size: Tokens.type-caption-size;
+                vertical-alignment: center;
+                accessible-role: none;
+            }
             VerticalLayout {
                 alignment: center;
-                spacing: Tokens.space-1;
                 IconButton {
                     icon: data.show-for-ms > 0
                         ? IconName.hourglass
@@ -395,12 +402,6 @@ component SourceRowView inherits Rectangle {
                             Studio.set-source-visible(data.id, !data.visible);
                         }
                     }
-                }
-                if data.picture && data.show-for-ms > 0 && data.cue-remaining-ms > 0: Text {
-                    text: data.cue-remaining-ms + @tr(" ms left");
-                    color: Theme.text-secondary;
-                    font-size: Tokens.type-caption-size;
-                    horizontal-alignment: center;
                 }
             }
             // Locked on the picture panel (sources with a picture only).
@@ -4857,7 +4858,7 @@ component SourceProperties inherits VerticalLayout {
             }
         }
         if data.cue-remaining-ms > 0: Text {
-            text: data.cue-remaining-ms + @tr(" ms left on Program");
+            text: @tr("{} left on Program", Studio.cue-left-text(data.cue-remaining-ms));
             color: Theme.text-secondary;
             font-size: Tokens.type-caption-size;
             wrap: word-wrap;
