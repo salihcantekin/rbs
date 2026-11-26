@@ -901,6 +901,7 @@ impl App {
             // (`confirm` false) does it at once, as the control API does.
             Run::SceneOwnLevels(id, false) if confirm => self.ask_shared_levels(id),
             Run::SceneOwnLevels(id, own) => self.studio.set_scene_own_levels(id, own),
+            Run::SceneActive(id, active) => self.studio.set_scene_active(id, active),
             Run::ResetSceneLevel(scene, source) => self.studio.reset_scene_level(scene, source),
             Run::ResetLoudness => self.studio.reset_loudness(),
             Run::MixerBulk(bulk) => match bulk {
@@ -4748,6 +4749,9 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
         if let Some(scene) = app.studio.levels_scene() {
             app.studio.reset_scene_level(scene, source);
         }
+    });
+    on!(on_set_scene_active, |app, scene: i32, active: bool| {
+        app.studio.set_scene_active(scene, active);
     });
     on!(on_use_shared_levels, |app, scene: i32| {
         app.studio.set_scene_own_levels(scene, false);

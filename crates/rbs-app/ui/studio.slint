@@ -539,7 +539,9 @@ component SceneRowView inherits Rectangle {
         lead: data.number;
         name: data.name;
         selected: root.marked;
-        accessible-name: @tr("{}{}{}{}", data.name,
+        dimmed: !data.active;
+        accessible-name: @tr("{}{}{}{}{}", data.name,
+            !data.active ? @tr(", inactive") : "",
             data.own-levels ? @tr(", own levels") : "",
             root.studio && data.preview ? @tr(", in preview") : "",
             !data.live ? ""
@@ -613,6 +615,17 @@ component SceneRowView inherits Rectangle {
                     font-size: Tokens.type-caption-size;
                     font-weight: Tokens.type-label-weight;
                     vertical-alignment: center;
+                }
+            }
+            if !row.editing: VerticalLayout {
+                alignment: center;
+                IconButton {
+                    // An inactive scene keeps its button shown, so the state reads at a glance.
+                    visible: row.hovered || !data.active;
+                    icon: IconName.power;
+                    name: data.active ? @tr("Make {} inactive", data.name) : @tr("Make {} active", data.name);
+                    tooltip: data.active ? @tr("Make inactive: Next, Previous and the number keys skip it") : @tr("Make active");
+                    clicked => { Studio.set-scene-active(data.id, !data.active); }
                 }
             }
             if !row.editing: VerticalLayout {

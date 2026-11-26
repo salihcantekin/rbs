@@ -164,6 +164,8 @@ export enum IconName {
     ban,
     text,
     flag,
+    power,
+    filter,
 }
 
 // An icon by its name in the icon set, as Rust passes it (registry and panel icons).
@@ -268,6 +270,8 @@ export global Icons {
         : name == "ban" ? IconName.ban
         : name == "text" ? IconName.text
         : name == "flag" ? IconName.flag
+        : name == "power" ? IconName.power
+        : name == "filter" ? IconName.filter
         : IconName.none;
     }
 }
@@ -1358,7 +1362,7 @@ export struct SourceData { id: int, name: string, kind: string, browser: bool, i
 // `own-levels`: the scene keeps its own volumes and mutes (Own levels, ADR-0091).
 // `transition-kind`: the scene's own transition into it (ADR-0135), -1 the collection's,
 // else the rail's index; `transition-ms` its own duration, -1 the kind's.
-export struct SceneData { id: int, name: string, live: bool, preview: bool, number: int, own-levels: bool, transition-kind: int, transition-ms: int }
+export struct SceneData { id: int, name: string, live: bool, preview: bool, number: int, own-levels: bool, active: bool, transition-kind: int, transition-ms: int }
 
 // A source of the collection for Add source's "Existing source" list.
 // A look in the Library (ADR-0075): `group` 0 colour, 1 effect, 2 shape. A sample
@@ -1814,6 +1818,8 @@ export global Studio {
     callback reset-scene-level(int /* source */);
     // Puts a scene back in Shared levels after the row's confirm (ADR-0091).
     callback use-shared-levels(int /* scene */);
+    // Makes a scene active or inactive from its row's power button (ADR-0195).
+    callback set-scene-active(int /* scene */, bool /* active */);
     // The monitor output (ADR-0097): a source's mode (0 off, 1 monitor and output,
     // 2 monitor only) and solo, and the Mixer row's and Settings › Audio's controls.
     callback set-source-monitor(int /* id */, int /* mode */);

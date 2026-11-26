@@ -480,6 +480,7 @@ impl CommandState for Shown<'_> {
             "scene.duplicate"
             | "scene.rename"
             | "scene.audio.own_levels.toggle"
+            | "scene.active.toggle"
             | "ui.scene.transition" => {
                 self.running()?;
                 self.scene(id).map(|_| ())
@@ -943,6 +944,7 @@ impl CommandState for Shown<'_> {
             "scene.audio.own_levels.toggle" => self
                 .scene(id)
                 .is_ok_and(|s| self.studio.scene_own_levels(s)),
+            "scene.active.toggle" => self.scene(id).is_ok_and(|s| self.studio.scene_active(s)),
             "source.mixer_hidden.toggle" => self.source(id).is_ok_and(|f| f.mixer_hidden),
             "source.monitor_solo.toggle" => self.source(id).is_ok_and(|f| f.soloed),
             "loudness.shown.toggle" => self.studio.loudness_shown(),
@@ -1822,6 +1824,7 @@ pub enum Run {
     /// A scene's Own levels on (`true`) or back to Shared levels, which asks first
     /// from a window (`scene.audio.own_levels.toggle`, ADR-0091).
     SceneOwnLevels(i32, bool),
+    SceneActive(i32, bool),
     /// Remove a scene's own level for a source (`scene.audio.reset_source`).
     ResetSceneLevel(i32, i32),
     /// Restart the loudness measurement (`loudness.reset`).
@@ -2126,6 +2129,7 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
         "source.monitor_solo.toggle" => Run::SourceSolo(state.source(&id).ok()?.id, !on),
         "loudness.shown.toggle" => Run::LoudnessShown(!on),
         "scene.audio.own_levels.toggle" => Run::SceneOwnLevels(state.scene(&id).ok()?, !on),
+        "scene.active.toggle" => Run::SceneActive(state.scene(&id).ok()?, !on),
         "scene.audio.reset_source" => {
             Run::ResetSceneLevel(state.scene(&id).ok()?, heard_source(&id)?)
         }

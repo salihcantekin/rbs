@@ -2369,6 +2369,15 @@ impl StudioUi {
         self.scene_list.as_ref().map(|l| l.program.get() as i32)
     }
 
+    /// Whether the scene is active (`scene.active.toggle`, ADR-0195).
+    pub fn scene_active(&self, scene: i32) -> bool {
+        self.scene_list.as_ref().is_some_and(|l| {
+            l.scenes
+                .iter()
+                .any(|s| s.id.get() as i32 == scene && s.active)
+        })
+    }
+
     /// Whether the scene keeps its own levels (`scene.audio.own_levels.toggle`).
     pub fn scene_own_levels(&self, scene: i32) -> bool {
         self.scene_list.as_ref().is_some_and(|l| {
@@ -5804,6 +5813,7 @@ impl StudioUi {
                         preview: Some(s.id) == list.preview,
                         number: i as i32 + 1,
                         own_levels: s.own_audio,
+                        active: s.active,
                         transition_kind: s
                             .transition_in
                             .and_then(|t| t.kind)
@@ -9300,6 +9310,7 @@ pub(crate) mod tests {
             preview: false,
             number: 1,
             own_levels: false,
+            active: true,
             transition_kind: -1,
             transition_ms: -1,
         }]);
