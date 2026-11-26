@@ -245,6 +245,7 @@ component StackView inherits Rectangle {
                 }
                 if active-id == "rbs.scenes" && !data.collapsed: IconButton {
                     icon: Studio.show-inactive-scenes ? IconName.filter : IconName.filter-active;
+                    checked: !Studio.show-inactive-scenes;
                     name: Studio.show-inactive-scenes ? @tr("Filter scenes") : @tr("Filter scenes, a filter is on");
                     clicked => {
                         Overlays.filter-x = self.absolute-position.x;
@@ -260,6 +261,7 @@ component StackView inherits Rectangle {
                 }
                 if active-id == "rbs.sources" && !data.collapsed: IconButton {
                     icon: !Studio.sources-filtered ? IconName.filter : IconName.filter-active;
+                    checked: Studio.sources-filtered;
                     name: !Studio.sources-filtered ? @tr("Filter sources") : @tr("Filter sources, a filter is on");
                     clicked => {
                         Overlays.filter-x = self.absolute-position.x;
