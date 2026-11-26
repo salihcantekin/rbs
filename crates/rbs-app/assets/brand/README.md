@@ -1,10 +1,11 @@
 # RBS brand assets
 
-- `rbs-mark.svg`: the mark alone (dark-theme colours). In the app it is drawn by `BrandMark` in `ui/components.slint` with theme tokens (`color.text.primary`, `color.brand`).
-- `rbs-icon.svg`: the application icon master: a window (title bar, sidebar, text lines) on a black tile with a thin rim and a camera bubble with a pink-to-violet ring in its lower right corner. Fixed colours, the OS does not follow the theme.
-- `icon-win-256.png`, `rbs.ico`: Windows (tile fills the canvas). `icon-mac-1024.png`, `icon-mac-256.png`, `rbs.icns`: macOS (tile with the system margin).
+- `rbs-mark.svg`: the 6-blade hexagonal aperture mark alone (dark-theme colour `#8A63FF`). In the app it is drawn by `BrandMark` in `ui/components.slint` with theme token `color.brand`.
+- `rbs-icon.svg`: the application icon master: an anodized RBS violet 6-blade hexagonal aperture lit softly from the top-left on a dark obsidian tile with a thin metallic rim. Fixed colours, the OS does not follow the theme.
+- `icon-win-256.png`, `rbs.ico`: Windows (tile fills the canvas; `.ico` includes 16, 24, 32, 48, 64, 128 and 256 px). `icon-mac-1024.png`, `icon-mac-256.png`, `rbs.icns`: macOS (tile with the system margin).
+- `favicon-32.png`, `favicon-16.png`: web favicons (full-bleed tile with wider seam spacing at small sizes).
 
-`generate_icons.py` draws `rbs-icon.svg`, the rasters, `rbs.ico` and `rbs.icns` from one design description (needs Pillow and macOS `iconutil`; run it from this directory after any change to the design). `BrandMark` in the app has the same geometry, drawn in theme colours; keep them in step.
+`generate_icons.py` draws `rbs-icon.svg`, `rbs-mark.svg`, the rasters, `rbs.ico` and `rbs.icns` from one design description (needs Pillow and macOS `iconutil`; run it from this directory after any change to the design). `BrandMark` in `ui/components.slint` embeds `rbs-mark.svg` at compile time and tints it with `Theme.brand`.
 
 ## Where the icons are used
 
