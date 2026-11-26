@@ -16,6 +16,7 @@
 "crates/rbs-scene/tests/binder.rs" = 2882
 "crates/rbs-scene/tests/collection.rs" = 2647
 "crates/rbs-ui/src/command.rs" = 2765
+"crates/rbs-user-data/src/scenes.rs" = 2010
 
 [functions]
 "crates/rbs-api/tests/json.rs::every_request" = 540
@@ -27,10 +28,10 @@
 "crates/rbs-app/src/main.rs::run" = 369
 "crates/rbs-app/src/main.rs::sync" = 327
 "crates/rbs-app/src/main.rs::sync_studio" = 206
-"crates/rbs-app/src/menu_bar.rs::enabled" = 488
+"crates/rbs-app/src/menu_bar.rs::enabled" = 483
 "crates/rbs-app/src/menu_bar.rs::run" = 243
 "crates/rbs-app/src/shortcuts_page.rs::install" = 203
-"crates/rbs-app/src/studio_ui.rs::apply" = 498
+"crates/rbs-app/src/studio_ui.rs::apply" = 479
 "crates/rbs-app/src/studio_ui.rs::new" = 223
 "crates/rbs-app/src/studio_ui.rs::push" = 274
 "crates/rbs-app/src/studio_ui.rs::set_rows" = 238
@@ -63,3 +64,4 @@
 "crates/rbs-studio-host/tests/studio/api.rs::a_control_api_client_adds_and_edits_a_text_source" = 225
 "crates/rbs-studio-host/tests/studio/api.rs::a_control_api_client_drives_the_studio" = 598
 "crates/rbs-ui/src/command/context.rs::context_menu" = 205
+"crates/rbs-user-data/src/scenes.rs::upgrade" = 210

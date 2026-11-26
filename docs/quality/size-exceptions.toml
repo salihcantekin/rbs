@@ -1,3 +1,115 @@
 # Approved size increases for `cargo xtask check-size`. Do not edit by hand.
 # An entry is added with `cargo xtask check-size --except` after the owner approves
 # in writing; `--lower` removes it once the item no longer needs it.
+
+[[exception]]
+item = "crates/rbs-api/src/request.rs"
+lines = 2461
+reason = "ADR-0195 inactive scenes and list filters"
+approved = "owner, 2026-11-26 (chat: 'istisna olsun')"
+date = "2026-11-26"
+
+[[exception]]
+item = "crates/rbs-api/src/types.rs"
+lines = 2882
+reason = "ADR-0195 inactive scenes and list filters"
+approved = "owner, 2026-11-26 (chat: 'istisna olsun')"
+date = "2026-11-26"
+
+[[exception]]
+item = "crates/rbs-api/tests/json.rs"
+lines = 3124
+reason = "ADR-0195 inactive scenes and list filters"
+approved = "owner, 2026-11-26 (chat: 'istisna olsun')"
+date = "2026-11-26"
+
+[[exception]]
+item = "crates/rbs-app/src/main.rs"
+lines = 6345
+reason = "ADR-0195 inactive scenes and list filters"
+approved = "owner, 2026-11-26 (chat: 'istisna olsun')"
+date = "2026-11-26"
+
+[[exception]]
+item = "crates/rbs-app/src/menu_bar.rs"
+lines = 2270
+reason = "ADR-0195 inactive scenes and list filters"
+approved = "owner, 2026-11-26 (chat: 'istisna olsun')"
+date = "2026-11-26"
+
+[[exception]]
+item = "crates/rbs-app/src/studio_ui.rs"
+lines = 9950
+reason = "ADR-0195 inactive scenes and list filters"
+approved = "owner, 2026-11-26 (chat: 'istisna olsun')"
+date = "2026-11-26"
+
+[[exception]]
+item = "crates/rbs-scene/src/collection.rs"
+lines = 2822
+reason = "ADR-0195 inactive scenes and list filters"
+approved = "owner, 2026-11-26 (chat: 'istisna olsun')"
+date = "2026-11-26"
+
+[[exception]]
+item = "crates/rbs-scene/tests/collection.rs"
+lines = 2686
+reason = "ADR-0195 inactive scenes and list filters"
+approved = "owner, 2026-11-26 (chat: 'istisna olsun')"
+date = "2026-11-26"
+
+[[exception]]
+item = "crates/rbs-ui/src/command.rs"
+lines = 2781
+reason = "ADR-0195 inactive scenes and list filters"
+approved = "owner, 2026-11-26 (chat: 'istisna olsun')"
+date = "2026-11-26"
+
+[[exception]]
+item = "crates/rbs-api/tests/json.rs::every_request"
+lines = 546
+reason = "ADR-0195 inactive scenes and list filters"
+approved = "owner, 2026-11-26 (chat: 'istisna olsun')"
+date = "2026-11-26"
+
+[[exception]]
+item = "crates/rbs-app/src/main.rs::install_studio"
+lines = 980
+reason = "ADR-0195 inactive scenes and list filters"
+approved = "owner, 2026-11-26 (chat: 'istisna olsun')"
+date = "2026-11-26"
+
+[[exception]]
+item = "crates/rbs-app/src/menu_bar.rs::run"
+lines = 244
+reason = "ADR-0195 inactive scenes and list filters"
+approved = "owner, 2026-11-26 (chat: 'istisna olsun')"
+date = "2026-11-26"
+
+[[exception]]
+item = "crates/rbs-app/src/studio_ui.rs::new"
+lines = 225
+reason = "ADR-0195 inactive scenes and list filters"
+approved = "owner, 2026-11-26 (chat: 'istisna olsun')"
+date = "2026-11-26"
+
+[[exception]]
+item = "crates/rbs-app/src/studio_ui.rs::push"
+lines = 279
+reason = "ADR-0195 inactive scenes and list filters"
+approved = "owner, 2026-11-26 (chat: 'istisna olsun')"
+date = "2026-11-26"
+
+[[exception]]
+item = "crates/rbs-app/src/studio_ui.rs::set_rows"
+lines = 243
+reason = "ADR-0195 inactive scenes and list filters"
+approved = "owner, 2026-11-26 (chat: 'istisna olsun')"
+date = "2026-11-26"
+
+[[exception]]
+item = "crates/rbs-scene/src/collection.rs::perform"
+lines = 529
+reason = "ADR-0195 inactive scenes and list filters"
+approved = "owner, 2026-11-26 (chat: 'istisna olsun')"
+date = "2026-11-26"

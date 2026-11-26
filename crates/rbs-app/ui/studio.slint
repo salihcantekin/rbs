@@ -805,17 +805,19 @@ export component SourcesPanel inherits Rectangle {
                 // A global row shows while the group is open or it is selected; a
                 // sound row under its picture while that is open or it is selected,
                 // and a selected sound shows its picture in a closed group (ADR-0173).
+                // The filter's choice; a selected row stays listed until the selection moves.
+                property <bool> hidden-by-filter: s.filtered-out && Studio.selected-source != s.id && !s.picked;
                 property <bool> shown: (!s.global || root.globals-open || Studio.selected-source == s.id || root.holds-selected(i))
                     && (!s.nested || s.open || Studio.selected-source == s.id)
-                    && (!s.grouped || s.group-open) && !s.filtered-out;
+                    && (!s.grouped || s.group-open) && !self.hidden-by-filter;
                 spacing: Tokens.space-1;
                 padding-left: s.nested ? Tokens.size-list-indent : 0;
-                padding-bottom: (self.shown || s.group-head || i == 0) && !s.filtered-out ? Tokens.space-1 : 0;
+                padding-bottom: (self.shown || s.group-head || i == 0) && !self.hidden-by-filter ? Tokens.space-1 : 0;
                 // Global sources come first, under their own heading (ADR-0065): they
                 // are drawn above every scene. The group is folded unless opened.
                 if s.global && i == 0: GlobalsHeader { open: root.globals-open; }
                 if !s.global && i > 0 && Studio.sources[i - 1].global: SectionHeader { title: @tr("This scene"); }
-                if s.group-head && !s.filtered-out: GroupRowView { data: s; }
+                if s.group-head && !self.hidden-by-filter: GroupRowView { data: s; }
                 if self.shown: HorizontalLayout {
                     padding-left: s.grouped ? Tokens.size-list-indent : 0;
                     SourceRowView {

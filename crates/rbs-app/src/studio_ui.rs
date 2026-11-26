@@ -5589,7 +5589,7 @@ impl StudioUi {
 
     fn save_filters(&self) {
         // Written on the writer thread; a lost write only forgets the choice.
-        let _ = self.user.set_view_state(&self.filters);
+        drop(self.user.set_view_state(&self.filters));
     }
 
     /// The Scenes list: the whole list, less the inactive scenes while they are
