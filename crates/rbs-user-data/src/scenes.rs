@@ -715,6 +715,9 @@ struct SceneDoc {
     /// The scene's groups (format 30, ADR-0182).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     groups: Vec<groups::GroupDoc>,
+    /// `false` for an inactive scene (format 32, ADR-0195). Absent: active.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    active: Option<bool>,
 }
 
 /// A scene's transition override in the document (ADR-0135 decision 9).
@@ -1329,9 +1332,13 @@ fn later(found: u32, keys: &'static str, since: u32) -> BodyError {
 
 impl Document for SceneCollection {
     const KIND: &'static str = "scene-collection";
-    const FORMAT: u32 = 31;
+    const FORMAT: u32 = 32;
 
     fn write_format(&self) -> u32 {
+        // An older build refuses `active` as an unknown key (ADR-0195).
+        if self.scenes().any(|s| !s.active) {
+            return 32;
+        }
         if groups::needs_31(self) {
             return 31;
         }
@@ -1473,7 +1480,17 @@ impl Document for SceneCollection {
     fn upgrade(from: u32, body: &mut toml::Table) -> Result<(), BodyError> {
         groups::refuse_old_keys(from, body)?;
         buses::refuse_before_29(from, body)?;
-        if (28..=30).contains(&from) {
+        let inactive = body
+            .get("scenes")
+            .and_then(toml::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(toml::Value::as_table)
+            .any(|s| s.contains_key("active"));
+        if from < 32 && inactive {
+            return Err(later(from, "scene `active`", 32));
+        }
+        if (28..=31).contains(&from) {
             return Ok(());
         }
         let direct = body
@@ -1803,6 +1820,7 @@ impl Document for SceneCollection {
                     audio: s.audio.as_ref().map(SceneAudioDoc::of),
                     transition_in: s.transition_in.map(SceneTransitionDoc::of),
                     groups: groups::group_docs(&s.groups),
+                    active: (!s.active).then_some(false),
                 })
             })
             .collect::<Result<_, BodyError>>()?;
@@ -1928,6 +1946,7 @@ impl Document for SceneCollection {
                     Scene::new(SceneId::from_raw(s.id), &s.name, scope).with_audio(audio);
                 scene.transition_in = transition_in;
                 scene.groups = groups::read(s.groups)?;
+                scene.active = s.active.unwrap_or(true);
                 scene.items = s
                     .items
                     .into_iter()

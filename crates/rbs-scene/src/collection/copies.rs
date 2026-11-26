@@ -250,6 +250,7 @@ impl SceneCollection {
                 audio,
                 transition_in: original.transition_in,
                 groups,
+                active: original.active,
             },
             placements: Vec::new(),
             shown: Vec::new(),

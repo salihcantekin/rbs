@@ -36,6 +36,7 @@ impl SceneCollection {
             audio: source.audio.clone(),
             transition_in: source.transition_in,
             groups,
+            active: source.active,
         };
         let undo = self.apply_with(
             Op::InsertScene {

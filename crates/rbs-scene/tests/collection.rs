@@ -2321,6 +2321,45 @@ fn a_scene_transition_is_set_cleared_undone_copied_and_bounded() {
 }
 
 #[test]
+fn next_and_previous_skip_inactive_scenes_and_slots_refuse_them() {
+    // ADR-0195 decisions 1 to 3.
+    let mut s = studio();
+    let w = s.wide;
+    let ids: Vec<SceneId> = ["A", "B", "C", "D"]
+        .iter()
+        .map(|n| s.col.add_scene(n, SceneScope::Canvas(w)).unwrap().0)
+        .collect();
+    let (a, b, c, d) = (ids[0], ids[1], ids[2], ids[3]);
+    assert!(s.col.scene(b).unwrap().active);
+    let undo = s.col.set_scene_active(b, false).unwrap();
+    assert_eq!(undo.deactivates(), Vec::<SceneId>::new());
+    s.col.set_scene_active(c, false).unwrap();
+    assert_eq!(s.col.next_active(w, Some(a), 1), Ok(d));
+    assert_eq!(s.col.next_active(w, Some(d), 1), Ok(a));
+    assert_eq!(s.col.next_active(w, Some(a), -1), Ok(d));
+    // An inactive anchor goes to the nearest active scene in the direction.
+    assert_eq!(s.col.next_active(w, Some(b), 1), Ok(d));
+    assert_eq!(s.col.next_active(w, Some(c), -1), Ok(a));
+    // A slot keeps its number and refuses an inactive scene.
+    assert_eq!(s.col.scene_at_slot(w, 4), Ok(d));
+    assert_eq!(s.col.scene_at_slot(w, 2), Err(SceneError::SceneInactive(b)));
+    s.col.set_scene_active(d, false).unwrap();
+    assert_eq!(
+        s.col.next_active(w, Some(a), 1),
+        Err(SceneError::NoOtherActiveScene)
+    );
+    // Undo and redo restore the flag; the record says which way it deactivates.
+    let mut col = s.col.clone();
+    let off = col.set_scene_active(a, false).unwrap();
+    let on = col.undo(off).unwrap();
+    assert!(col.scene(a).unwrap().active);
+    assert_eq!(on.deactivates(), vec![a]);
+    // A duplicate keeps the flag.
+    let (copy, _) = s.col.duplicate_scene(b, "B 2").unwrap();
+    assert!(!s.col.scene(copy).unwrap().active);
+}
+
+#[test]
 fn the_stinger_source_is_never_placed_by_an_edit_and_leaves_with_its_source() {
     // ADR-0140 decision 1.
     use rbs_scene::{CollectionTransition, StingerSettings, TransitionKind};
