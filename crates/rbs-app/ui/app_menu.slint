@@ -320,10 +320,11 @@ export component AppMenu inherits Rectangle {
                     }
                 }
                 // Why the current item is disabled (ADR-0050 decision 4).
-                if current >= 0 && current < shown.length && shown[current].reason != "": Text {
+                // The line is always there, so the panel keeps its height while the pointer moves.
+                Text {
                     x: Tokens.space-3;
                     height: Tokens.size-control-sm;
-                    text: shown[current].reason;
+                    text: current >= 0 && current < shown.length ? shown[current].reason : "";
                     color: Theme.text-secondary;
                     font-size: Tokens.type-caption-size;
                     vertical-alignment: center;
