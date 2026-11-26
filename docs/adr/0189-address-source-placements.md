@@ -158,7 +158,7 @@ only the selected placement; the source pixels and region remain shared.
     Resolve how an opt-in region paste chooses which targeted placement boxes
     to re-aspect, without changing existing `source.paste_attributes` requests.
     Independently review these contracts before implementation. Use the next
-    free protocol minor after 1.109 (currently 1.110, rechecked before
+    free protocol minor after 1.109 (currently 1.111, rechecked before
     implementation); do not advertise it until the full contract is
     implemented.
 

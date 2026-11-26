@@ -332,6 +332,10 @@ pub struct SceneInfo {
     /// collection's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transition_in: Option<SceneTransition>,
+    /// Whether next, previous and slot navigation reach it (protocol 1.112,
+    /// ADR-0195); absent means true.
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub active: bool,
 }
 
 /// A scene's transition override (protocol 1.86, ADR-0135 decision 8): an absent part
@@ -2531,4 +2535,8 @@ pub struct AddOnChanged {
     pub id: String,
     /// Where it is now.
     pub status: AddOnStatus,
+}
+
+fn is_true(v: &bool) -> bool {
+    *v
 }

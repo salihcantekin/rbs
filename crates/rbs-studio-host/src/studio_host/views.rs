@@ -13,6 +13,8 @@ pub struct SceneRow {
     pub own_audio: bool,
     /// The transition into this scene (ADR-0135); `None`: the collection's.
     pub transition_in: Option<rbs_scene::SceneTransition>,
+    /// Next, previous and slot navigation reach it (ADR-0195).
+    pub active: bool,
 }
 
 /// A source of the collection, for "Add existing source".

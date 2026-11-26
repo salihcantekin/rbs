@@ -459,6 +459,91 @@ impl Host {
         Ok(true)
     }
 
+    /// Every scene that is on air or about to be: the program and preview of every
+    /// canvas as the host resolves them, a held switch, and, while a transition runs,
+    /// any scene (its endpoints are not told apart; ADR-0195 decision 3).
+    pub(super) fn shown_scenes(&self) -> BTreeSet<SceneId> {
+        let mut shown = self.collection.on_air().scenes;
+        shown.insert(self.scene);
+        shown.extend(self.collection.canvases().filter_map(|c| c.preview));
+        shown.extend(self.program.held_switch);
+        shown.extend(self.vertical_shown());
+        shown
+    }
+
+    /// The first scene in `scenes` that is on air or about to be, for the refusal of
+    /// making it inactive (ADR-0195).
+    pub(super) fn refuse_inactive_on_air(&self, scenes: &[SceneId]) -> Result<(), Refusal> {
+        let shown = self.shown_scenes();
+        let busy = self.studio.transition_running(self.canvas);
+        for id in scenes {
+            if busy || shown.contains(id) {
+                let name = self.collection.scene(*id).map_or("", |s| s.name.as_str());
+                return Err(Refusal::Conflict(format!(
+                    "The scene {name:?} is on air or about to be, so it cannot be made inactive."
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Makes a scene active or inactive (one undo step); `Ok(false)` when it is so
+    /// already. An inactive scene may not be on air or about to be (ADR-0195).
+    pub(super) fn set_scene_active(&mut self, id: SceneId, active: bool) -> Result<bool, Refusal> {
+        let scene = self
+            .collection
+            .scene(id)
+            .filter(|_| self.listed(id))
+            .ok_or_else(|| Refusal::NotFound(format!("There is no scene {}.", id.get())))?;
+        if scene.active == active {
+            return Ok(false);
+        }
+        let name = scene.name.clone();
+        if !active {
+            self.refuse_inactive_on_air(&[id])?;
+        }
+        let undo = self
+            .collection
+            .set_scene_active(id, active)
+            .map_err(|e| Refusal::of(&e))?;
+        self.edits
+            .history
+            .record(EditKind::SceneActive, &name, 0, vec![undo]);
+        Ok(true)
+    }
+
+    /// The scene `scene.step` or `scene.position` reaches; the studio mode anchors on
+    /// the preview scene (ADR-0195 decision 2).
+    pub(super) fn navigate_scene(
+        &mut self,
+        step: Option<i32>,
+        slot: Option<usize>,
+    ) -> Result<bool, Refusal> {
+        let target = match (step, slot) {
+            (Some(step), _) => {
+                if step != 1 && step != -1 {
+                    return Err(Refusal::Invalid("step must be 1 or -1.".to_owned()));
+                }
+                let anchor = self.preview().unwrap_or(self.scene);
+                self.collection
+                    .next_active(self.canvas, Some(anchor), step)
+            }
+            (None, Some(n)) => self.collection.scene_at_slot(self.canvas, n),
+            (None, None) => return Ok(false),
+        }
+        .map_err(|e| match e {
+            SceneError::NoOtherActiveScene if slot.is_some() => {
+                Refusal::NotFound(format!("There is no scene in slot {}.", slot.unwrap_or(0)))
+            }
+            other => Refusal::Conflict(other.to_string()),
+        })?;
+        if self.preview().is_some() {
+            self.set_preview_scene(target)
+        } else {
+            self.switch_scene(target)
+        }
+    }
+
     /// Puts a scene on air: a live action, not on the undo stack (ADR-0021).
     /// `Ok(false)` when it is on air already.
     pub(super) fn switch_scene(&mut self, id: SceneId) -> Result<bool, Refusal> {
@@ -961,6 +1046,7 @@ impl Host {
                             name: s.name.clone(),
                             own_audio: s.own_levels(),
                             transition_in: s.transition_in,
+                            active: s.active,
                         })
                         .collect()
                 })

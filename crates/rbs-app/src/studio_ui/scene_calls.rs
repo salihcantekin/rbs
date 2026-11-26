@@ -45,6 +45,25 @@ impl StudioUi {
         }));
     }
 
+    /// Makes a scene active or inactive (ADR-0195); the host refuses one on air.
+    pub fn set_scene_active(&mut self, id: i32, active: bool) {
+        self.deleted.clear();
+        self.call(C::SceneSetActive(rq::SetSceneActive {
+            scene: id as u32,
+            active,
+        }));
+    }
+
+    /// Next (1) or previous (-1) active scene (ADR-0195 decision 2).
+    pub fn step_scene(&mut self, step: i32) {
+        self.call(C::SceneStep(rq::StepScene { step }));
+    }
+
+    /// The scene at 1-based slot `n` of the active scenes.
+    pub fn scene_position(&mut self, n: u32) {
+        self.call(C::ScenePosition(rq::ScenePosition { n }));
+    }
+
     pub fn move_scene(&mut self, id: i32, direction: rq::LayerDirection) {
         self.deleted.clear();
         self.call(C::SceneMove(rq::MoveScene {

@@ -97,6 +97,15 @@ refuses format 31 without overwriting it. Runs, pause, live speed and cues are
 never persisted. Removal and undo of a canvas, group or scene follow the
 scene-model contract.
 
+### Scene format 32: inactive scenes (ADR-0195)
+
+An optional `active = false` on a `scenes` entry marks an inactive scene; the key
+is never written for an active scene and an absent key means active. A document
+writes format 32 only while at least one scene is inactive, so one that never uses
+it stays readable by the previous build. A document older than 32 that carries the
+key is refused. The panel filters (Show inactive scenes, source categories) are not
+in the collection document: they are view state kept per collection (ADR-0195).
+
 ### Scene collection document (`kind = "scene-collection"`, format 30)
 
 The cumulative format selection below also chooses 31 when any group has saved

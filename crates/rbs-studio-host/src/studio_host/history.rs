@@ -93,6 +93,19 @@ impl Host {
         };
         match done {
             Ok(_) => {
+                // Undoing an activation, or redoing a deactivation, may not take a
+                // scene off the air (ADR-0195 decision 3).
+                let shown = self.shown_scenes();
+                if let Some(id) = shown
+                    .iter()
+                    .find(|id| collection.scene(**id).is_some_and(|s| !s.active))
+                {
+                    let name = collection.scene(*id).map_or("", |s| s.name.as_str());
+                    return Err((
+                        false,
+                        format!("The scene {name:?} is on air, so it cannot be made inactive."),
+                    ));
+                }
                 if self.recorded_text_boxes_in(&collection) != self.recorded_text_boxes() {
                     return Err((false, STOP_TO_CHANGE_BOX.to_owned()));
                 }

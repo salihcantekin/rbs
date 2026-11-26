@@ -1501,6 +1501,12 @@ pub enum Command {
     SceneRemove(SceneRef),
     /// `scene.rename` (protocol 1.6).
     SceneRename(RenameScene),
+    /// `scene.set_active` (protocol 1.112, ADR-0195).
+    SceneSetActive(SetSceneActive),
+    /// `scene.step` (protocol 1.112, ADR-0195).
+    SceneStep(StepScene),
+    /// `scene.position` (protocol 1.112, ADR-0195).
+    ScenePosition(ScenePosition),
     /// `group.create` (protocol 1.104, ADR-0182).
     GroupCreate(CreateGroup),
     /// `group.remove` (protocol 1.104): ungroups.

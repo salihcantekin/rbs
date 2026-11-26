@@ -697,21 +697,39 @@ to `invalid_params` with the message below.
   group Scroll never composes a nested scene or a nested group. The picture and
   all-or-none preflight rules of 1.111 otherwise remain.
 
-### Planned protocol 1.112: address source placements (ADR-0189)
+### Protocol 1.112: inactive scenes (ADR-0195)
+
+- **`scene.list`** rows gain `active` (`false` only when inactive; absent means
+  active). A server before 1.112 lists every scene as active.
+- **`scene.set_active {scene, active}`** (`Edit`, one undo step; a no-op when
+  unchanged). Making a scene inactive is refused with `conflict` while it is on
+  air or about to be: the program or preview of any canvas as the host resolves
+  it, a held switch, or any scene while a transition runs. Going active is never
+  refused. `scene.changed` follows every change, undo and redo included.
+- **`scene.step {step: 1|-1}`** moves to the next or previous *active* scene,
+  wrapping, from the program scene (the preview scene in studio mode, where it
+  selects the preview instead of switching). `conflict` with no other active scene.
+- **`scene.position {n}`** goes to the scene in slot `n` (1-based) of the full
+  scene list: `not_found` past the end, `conflict` when it is inactive.
+- `scene.switch`, `scene.select` and `canvas.set_preview` still accept any scene.
+- An undo or redo that would make an on-air scene inactive is refused with
+  `undo_conflict`, and the history is left untouched.
+
+### Planned protocol 1.113: address source placements (ADR-0189)
 
 **Proposed; not implemented.** ADR-0189 remains Proposed. The owner has
 approved independent placement selection and the `global.add` conflict below,
 but not the full contract. On 2026-11-25, the owner decided that a shared
 capture-region change re-aspects only the selected placement while source
-pixels and region remain shared. 1.112 is the next minor after 1.111 in
-this tree; recheck it before implementation. Do not advertise 1.110 until its
+pixels and region remain shared. 1.113 is the next minor after 1.112 in
+this tree; recheck it before implementation. Do not advertise 1.113 until its
 contract is implemented.
 
 - **Placement selector.** The following requests gain optional `item` (an
   `ItemId`) while retaining their existing required fields, other optional
   fields, response shapes and effects:
 
-  | Method | 1.110 request shape |
+  | Method | 1.111 request shape |
   | --- | --- |
   | `item.set_box` | `{source, item?, position, size, gesture?, seq?, canvas?}` |
   | `source.duplicate` | `{source, scene?, item?}` |
@@ -822,14 +840,14 @@ contract is implemented.
   retains ADR-0065 behavior. The refusal applies to clients of every version,
   as the owner's explicit exception to the major-version compatibility rule.
 
-- **Older servers.** A server before 1.110 does not support these selectors.
+- **Older servers.** A server before 1.111 does not support these selectors.
   A client checks `api.describe` before sending them. If unsupported, the UI
   disables or refuses the placement-scoped action with a clear reason and
   never retries it without `item`; it may continue to use an older request only
   for a genuinely source-scoped action. Existing clients that omit `item` keep
   their prior behavior, except for the approved `global.add` refusal.
   `method_not_found` remains the response to a new method not known by a
-  server, but 1.110 adds no methods.
+  server, but 1.111 adds no methods.
 
 > The group Properties and nested-scene deferral work was drafted as protocol 1.108 and 1.109 (the numbers the ADRs use). It shipped together as **1.111**, because 1.108 to 1.110 went to the typed catalog (ADR-0196).
 

@@ -89,6 +89,12 @@ pub(crate) enum WireRequest {
     SceneRemove(SceneRef),
     #[serde(rename = "scene.rename")]
     SceneRename(RenameScene),
+    #[serde(rename = "scene.set_active")]
+    SceneSetActive(SetSceneActive),
+    #[serde(rename = "scene.step")]
+    SceneStep(StepScene),
+    #[serde(rename = "scene.position")]
+    ScenePosition(ScenePosition),
     #[serde(rename = "scene.set_transition")]
     SceneSetTransition(SetSceneTransition),
     #[serde(rename = "scene.duplicate")]
@@ -547,7 +553,7 @@ wire_conversions! {
     same [
     SourceTargets, SourceAdd, SourceDelete, ItemSetStyle, ItemSetCrop, ItemFlip, ItemRotate,
     ItemFit, ItemAlign, ItemResetTransform, ItemFitTextBox, ItemSetFilled, ItemSetShownRegion,
-    SceneAdd, SceneRemove, SceneRename, SceneSetTransition, SceneDuplicate, SourceDuplicate,
+    SceneAdd, SceneRemove, SceneRename, SceneSetActive, SceneStep, ScenePosition, SceneSetTransition, SceneDuplicate, SourceDuplicate,
     SourceReset, SourceCopyAttributes, SourceSetText, SourcePasteAttributes, SceneSwitch,
     SourceRename, SourceSetVolume, SourceSetMuted, SourceSetMixerHidden, CanvasSetMasterVolume,
     CanvasSetMasterMuted, ItemAdd, FilterTypes, FilterAdd, FilterRemove, FilterMove,

@@ -77,6 +77,8 @@ Names are trimmed of surrounding whitespace on input.
 
 Volume, mute (ADR-0059) and the sync offset (ADR-0062) are live controls too: `set_source_volume`, `set_source_muted`, `set_source_mixer_hidden`, `set_source_monitor` and `set_source_sync_offset` (`InvalidSyncOffset` out of range) return an `Undo` with a record of their own that expects and replaces only the source's `audio`, and the application keeps them off the user's undo stack. Every other source record (rename, settings, filters, the whole-source replacement) ignores `audio` when it checks the state it expects and keeps the current `audio` when it applies, so a fader move or mute between an edit and its undo neither makes the undo conflict nor brings the old volume back. The binder ignores `audio` (no new source node); the application sends it to the mixer strip of the source (recording spec, `Studio::set_mix`).
 
+`Scene::active` (ADR-0195, default true) takes a scene out of next, previous and slot navigation; it never changes the picture. `set_scene_active(id, active)` is one undo step. `next_active(canvas, anchor, step)` wraps over `showable_scenes`, skips inactive scenes and accepts an inactive or absent anchor (`NoOtherActiveScene` when none is left); `scene_at_slot(canvas, n)` counts the full list and answers `SceneInactive` for an inactive scene. `Undo::deactivates()` lists the scenes an undo record would make inactive, so the host can refuse one that takes an on-air scene off the air. The model does not know what is on air; the host refuses.
+
 Equality of collections compares content and ignores id counters (undo does not wind them back).
 
 ### Invariants

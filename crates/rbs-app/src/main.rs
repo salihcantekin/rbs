@@ -808,6 +808,8 @@ impl App {
                 library_transfer::when_answered(self, done, App::library_done);
             }
             Run::Scene(id) => self.studio.switch_scene(id),
+            Run::SceneStep(step) => self.studio.step_scene(step),
+            Run::ScenePosition(n) => self.studio.scene_position(n),
             Run::Layout(c) => self.command(c, Origin::Command),
             Run::Maximize(id, on) => self.maximized = on.then_some(id),
             Run::SaveWorkspace => {

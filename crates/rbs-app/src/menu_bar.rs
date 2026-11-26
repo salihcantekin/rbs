@@ -660,16 +660,10 @@ impl CommandState for Shown<'_> {
             "scene.position" => {
                 self.running()?;
                 scene_position(id)
-                    .and_then(|n| s.scene_at(n))
                     .map(|_| ())
                     .ok_or_else(|| "No scene is at this position.".into())
             }
-            "scene.next" | "scene.previous" => {
-                self.running()?;
-                s.scene_step(1)
-                    .map(|_| ())
-                    .ok_or_else(|| "There is only one scene.".into())
-            }
+            "scene.next" | "scene.previous" => self.running(),
             "ui.panel.maximize" => match panel_of(id) {
                 Some(p) if self.workspace.is_open(&p) => Ok(()),
                 _ => Err("The panel is not open.".into()),
@@ -1770,6 +1764,10 @@ pub enum Run {
     AddVertical,
     /// Rename the scene with this id; without a name, ask for one in its row.
     RenameScene(i32, Option<String>),
+    /// Next (1) or previous (-1) active scene.
+    SceneStep(i32),
+    /// The active scene at this 1-based slot.
+    ScenePosition(u32),
     /// Opens the scene's "Transition into this scene" card (ADR-0135).
     SceneTransition(i32),
     /// Remove the scene with this id.
@@ -2059,9 +2057,9 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
         }
         "canvas.transition" => Run::Transition,
         "ui.transition.rehearse" => Run::Rehearse,
-        "scene.position" => Run::Scene(state.studio.scene_at(scene_position(&id)?)?),
-        "scene.next" => Run::Scene(state.studio.scene_step(1)?),
-        "scene.previous" => Run::Scene(state.studio.scene_step(-1)?),
+        "scene.position" => Run::ScenePosition(u32::try_from(scene_position(&id)?).ok()?),
+        "scene.next" => Run::SceneStep(1),
+        "scene.previous" => Run::SceneStep(-1),
         "scene.add" => Run::AddScene,
         "scene.duplicate" if id.param("sources") == Some("copied") => {
             Run::DuplicateSceneWithCopies(state.scene(&id).ok()?)

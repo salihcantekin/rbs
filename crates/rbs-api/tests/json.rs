@@ -168,12 +168,14 @@ fn scenes() -> SceneList {
                 id: 0,
                 name: "Talk".into(),
                 own_audio: true,
+                active: true,
                 transition_in: None,
             },
             SceneInfo {
                 id: 2,
                 name: "Game".into(),
                 own_audio: false,
+                active: false,
                 transition_in: None,
             },
         ],
@@ -303,6 +305,12 @@ fn every_request() -> Vec<Request> {
             scene: 2,
             name: "Game".into(),
         })),
+        c(Command::SceneSetActive(SetSceneActive {
+            scene: 2,
+            active: false,
+        })),
+        c(Command::SceneStep(StepScene { step: -1 })),
+        c(Command::ScenePosition(ScenePosition { n: 3 })),
         c(Command::SceneDuplicate(DuplicateScene {
             scene: 2,
             sources: Default::default(),

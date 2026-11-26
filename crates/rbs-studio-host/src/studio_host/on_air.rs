@@ -30,6 +30,7 @@ const OFF_AIR: &[&str] = &[
     "canvas.set_preview",
     "canvas.rehearse",
     "scene.add",
+    "scene.set_active",
     "source.copy_attributes",
 ];
 
