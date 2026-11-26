@@ -244,8 +244,8 @@ component StackView inherits Rectangle {
                     clicked => { Studio.add-scene-asked += 1; }
                 }
                 if active-id == "rbs.scenes" && !data.collapsed: IconButton {
-                    icon: IconName.filter;
-                    name: @tr("Filter scenes");
+                    icon: Studio.show-inactive-scenes ? IconName.filter : IconName.filter-active;
+                    name: Studio.show-inactive-scenes ? @tr("Filter scenes") : @tr("Filter scenes, a filter is on");
                     clicked => {
                         Overlays.filter-x = self.absolute-position.x;
                         Overlays.filter-y = self.absolute-position.y + self.height + Tokens.space-1;
@@ -259,8 +259,8 @@ component StackView inherits Rectangle {
                     clicked => { add-menu.open-from({ x: self.absolute-position.x - root.absolute-position.x, y: bar }, self.width, bar); }
                 }
                 if active-id == "rbs.sources" && !data.collapsed: IconButton {
-                    icon: IconName.filter;
-                    name: @tr("Filter sources");
+                    icon: !Studio.sources-filtered ? IconName.filter : IconName.filter-active;
+                    name: !Studio.sources-filtered ? @tr("Filter sources") : @tr("Filter sources, a filter is on");
                     clicked => {
                         Overlays.filter-x = self.absolute-position.x;
                         Overlays.filter-y = self.absolute-position.y + self.height + Tokens.space-1;
@@ -958,10 +958,12 @@ component ListFilterCard inherits PopoverLayer {
                 Button { text: @tr("None"); clicked => { Studio.set-all-source-categories(false); } }
             }
             if !root.scenes: VerticalLayout {
-                for name[i] in root.names: Checkbox {
-                    text: name;
-                    checked: Studio.source-category-shown[i];
-                    toggled(on) => { Studio.set-source-category(i, on); }
+                for name[i] in root.names: VerticalLayout {
+                    if Studio.source-category-present[i]: Checkbox {
+                        text: name;
+                        checked: Studio.source-category-shown[i];
+                        toggled(on) => { Studio.set-source-category(i, on); }
+                    }
                 }
             }
             if !root.scenes: Toggle {

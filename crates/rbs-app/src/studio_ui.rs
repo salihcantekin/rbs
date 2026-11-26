@@ -1042,6 +1042,12 @@ impl StudioUi {
         g.set_source_category_shown(slint::ModelRc::new(slint::VecModel::from(
             self.source_category_shown(),
         )));
+        g.set_sources_filtered(
+            !self.filters.show_hidden_sources || !self.filters.hidden_source_categories.is_empty(),
+        );
+        g.set_source_category_present(slint::ModelRc::new(slint::VecModel::from(
+            list_filter::categories_present(&self.rows, &self.filters),
+        )));
         g.set_switching(self.switching.is_some());
         g.set_rec_state(self.rec_state);
         g.set_rec_separate_names(self.separate_names.as_str().into());

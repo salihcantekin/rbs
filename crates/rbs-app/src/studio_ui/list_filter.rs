@@ -15,6 +15,18 @@ fn category(row: &SourceRow) -> &'static str {
     })
 }
 
+/// Which categories (in `SOURCE_CATEGORIES` order) the filter card lists: those with a
+/// source in the scene, and those hidden now, so a hidden one can be turned back on.
+pub(super) fn categories_present(rows: &[SourceRow], filters: &PanelFilters) -> Vec<bool> {
+    rbs_sources::SOURCE_CATEGORIES
+        .iter()
+        .map(|c| {
+            filters.hidden_source_categories.iter().any(|h| h == c)
+                || rows.iter().any(|r| category(r) == *c)
+        })
+        .collect()
+}
+
 /// For each row, whether the filter takes it out of the list. A group is listed while
 /// any member is, a sound under its picture follows the picture, and a selected row is
 /// always listed.

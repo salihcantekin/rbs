@@ -396,6 +396,11 @@ pub const ICONS: &[Icon] = &[
         "filter",
         "M 2.67 3.33 L 13.33 3.33 L 9.33 8.2 L 9.33 12.67 L 6.67 14 L 6.67 8.2 Z",
     ),
+    // The same funnel filled: the list is filtered (ADR-0195).
+    fill(
+        "filter-active",
+        "M 2.67 3.33 L 13.33 3.33 L 9.33 8.2 L 9.33 12.67 L 6.67 14 L 6.67 8.2 Z",
+    ),
 ];
 
 /// The icon named `name`, if the set has it.

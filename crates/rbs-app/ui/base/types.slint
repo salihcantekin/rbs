@@ -166,6 +166,7 @@ export enum IconName {
     flag,
     power,
     filter,
+    filter-active,
 }
 
 // An icon by its name in the icon set, as Rust passes it (registry and panel icons).
@@ -272,6 +273,7 @@ export global Icons {
         : name == "flag" ? IconName.flag
         : name == "power" ? IconName.power
         : name == "filter" ? IconName.filter
+        : name == "filter-active" ? IconName.filter-active
         : IconName.none;
     }
 }
@@ -1828,6 +1830,10 @@ export global Studio {
     in property <bool> show-hidden-sources: true;
     // Whether each source category is listed, in the order of rbs_sources::SOURCE_CATEGORIES.
     in property <[bool]> source-category-shown;
+    // Whether the filter card lists each category: it has a source in this scene, or is hidden.
+    in property <[bool]> source-category-present;
+    // A Sources filter choice differs from the default (the funnel is drawn filled).
+    in property <bool> sources-filtered;
     callback set-show-inactive-scenes(bool);
     callback set-show-hidden-sources(bool);
     callback set-source-category(int, bool);
