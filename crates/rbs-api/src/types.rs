@@ -10,7 +10,7 @@ mod capture_target;
 mod monitoring;
 mod output_settings;
 mod scroll;
-mod serde_defaults;
+pub(crate) mod serde_defaults;
 mod source_fault;
 pub use capture_target::CaptureTarget;
 pub use monitoring::*;

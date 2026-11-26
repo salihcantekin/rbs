@@ -5,23 +5,8 @@
 use serde::{Deserialize, Deserializer, Serialize};
 
 use super::super::{Axis, is_main, is_zero_u64};
+use crate::types::serde_defaults::{default_ramp_ms, is_default, is_default_ramp_ms, is_zero_f32};
 use crate::types::{OutputCanvas, ScrollDirection, ScrollRepeat, ScrollStart};
-
-fn default_ramp() -> u32 {
-    300
-}
-
-fn is_default_ramp(value: &u32) -> bool {
-    *value == default_ramp()
-}
-
-fn is_zero(value: &f32) -> bool {
-    *value == 0.0
-}
-
-fn is_default<T: Default + PartialEq>(value: &T) -> bool {
-    *value == T::default()
-}
 
 fn required_nullable<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where
@@ -41,7 +26,7 @@ pub struct GroupScroll {
     #[serde(default, skip_serializing_if = "is_default")]
     pub direction: ScrollDirection,
     /// Gap between copies in group layout units.
-    #[serde(default, skip_serializing_if = "is_zero")]
+    #[serde(default, skip_serializing_if = "is_zero_f32")]
     pub gap: f32,
     /// Whether to loop or cross once.
     #[serde(default, skip_serializing_if = "is_default")]
@@ -50,10 +35,13 @@ pub struct GroupScroll {
     #[serde(default, skip_serializing_if = "is_default")]
     pub start: ScrollStart,
     /// Edge fade in group layout units.
-    #[serde(default, skip_serializing_if = "is_zero")]
+    #[serde(default, skip_serializing_if = "is_zero_f32")]
     pub fade: f32,
     /// Ramp duration in milliseconds.
-    #[serde(default = "default_ramp", skip_serializing_if = "is_default_ramp")]
+    #[serde(
+        default = "default_ramp_ms",
+        skip_serializing_if = "is_default_ramp_ms"
+    )]
     pub ramp_ms: u32,
 }
 

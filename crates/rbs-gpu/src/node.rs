@@ -479,6 +479,9 @@ struct SpanSlot {
     origin: (f32, f32),
     /// The intermediate holds the members as last keyed.
     drawn: bool,
+    /// The pool refused the last acquire for `size`; not tried again until the size
+    /// changes (ADR-0193 decision 3: at most one acquire per span per event).
+    acquire_failed: bool,
 }
 
 /// What a layer showed at the last draw: its texture and the picture's key, or `None`
@@ -956,12 +959,13 @@ impl<R: ReadySignal, D: Redraw> CompositorNode<R, D> {
             };
             (i, at) = (span.end(), at + 1);
             // The span's record before its members' (ADR-0193 decision 2).
-            let (wanted, texture) = slots
-                .get(s)
-                .map_or((false, None), |sl| (sl.size.is_some(), sl.texture));
+            let (wanted, texture, gave_up) = slots.get(s).map_or((false, None, false), |sl| {
+                (sl.size.is_some(), sl.texture, sl.acquire_failed)
+            });
             let (Some(slot), Some(texture)) = (slots.get_mut(s), texture) else {
-                // Past a limit, or its acquire failed (tried again on a later tick).
-                (failed, retry) = (failed + 1, retry || wanted);
+                // Past a limit, or its acquire failed (tried again only when the size
+                // changes, so a full pool costs no redraw per tick).
+                (failed, retry) = (failed + 1, retry || (wanted && !gave_up));
                 no_texture |= u32::from(wanted) << s;
                 continue;
             };
@@ -1271,11 +1275,13 @@ fn size_spans(
         if slot.size != size {
             free_span(slot, pool);
             slot.size = size;
+            slot.acquire_failed = false;
         }
         slot.origin = want.map_or((0.0, 0.0), |t| (t.0, t.1));
-        if let (Some((w, h)), None) = (slot.size, slot.texture) {
+        if let (Some((w, h)), None, false) = (slot.size, slot.texture, slot.acquire_failed) {
             stats.span_acquires.fetch_add(1, Ordering::Relaxed);
             slot.texture = pool.acquire(gpu, &TextureDesc::canvas(w, h)).ok();
+            slot.acquire_failed = slot.texture.is_none();
             slot.drawn = false;
         }
     }

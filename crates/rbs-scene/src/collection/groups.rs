@@ -127,16 +127,7 @@ impl SceneCollection {
         if !s.groups.iter().any(|g| g.id == group) {
             return Err(SceneError::UnknownGroup(group));
         }
-        let expected: BTreeSet<_> = expected_members.iter().copied().collect();
-        let actual: BTreeSet<_> = s
-            .items
-            .iter()
-            .filter(|i| i.group == Some(group))
-            .map(|i| i.id)
-            .collect();
-        if expected.len() != expected_members.len() || expected != actual {
-            return Err(SceneError::UndoConflict);
-        }
+        check_members(s, group, expected_members)?;
         if !crate::model::show_for_is_valid(show_for_ms) {
             return Err(SceneError::InvalidShowFor);
         }
@@ -177,16 +168,7 @@ impl SceneCollection {
             .iter_mut()
             .find(|g| g.id == group)
             .ok_or(SceneError::UnknownGroup(group))?;
-        let wanted: BTreeSet<_> = expected_members.iter().copied().collect();
-        let actual: BTreeSet<_> = s
-            .items
-            .iter()
-            .filter(|i| i.group == Some(group))
-            .map(|i| i.id)
-            .collect();
-        if wanted.len() != expected_members.len() || wanted != actual {
-            return Err(SceneError::UndoConflict);
-        }
+        check_members(s, group, expected_members)?;
         if let Some(scroll) = scroll {
             target.scrolls.insert(canvas, scroll);
         } else {
@@ -435,4 +417,20 @@ impl SceneCollection {
             new: expected,
         })
     }
+}
+
+/// `UndoConflict` unless `expected` is, as a set without duplicates, exactly the members
+/// of `group` in `scene`.
+fn check_members(scene: &Scene, group: GroupId, expected: &[ItemId]) -> Result<(), SceneError> {
+    let wanted: BTreeSet<_> = expected.iter().copied().collect();
+    let actual: BTreeSet<_> = scene
+        .items
+        .iter()
+        .filter(|i| i.group == Some(group))
+        .map(|i| i.id)
+        .collect();
+    if wanted.len() != expected.len() || wanted != actual {
+        return Err(SceneError::UndoConflict);
+    }
+    Ok(())
 }
