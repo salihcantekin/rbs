@@ -2914,7 +2914,7 @@ impl StudioUi {
         self.edit.set_panel(size[0], size[1]);
         let placed = self.placed_where(|_| true);
         let hit = self.edit.source_at(at, self.canvas_px(), &placed);
-        self.select_one(hit.unwrap_or(-1));
+        self.select_on_picture(hit.unwrap_or(-1));
         self.pick_props(OutputCanvas::Main);
         self.refresh_marks();
         hit
@@ -2944,7 +2944,7 @@ impl StudioUi {
     fn run(&mut self, effect: Effect) {
         match effect {
             Effect::None => {}
-            Effect::Select(id) => self.select_one(id),
+            Effect::Select(id) => self.select_on_picture(id),
             Effect::Send(seq, id, b, gesture) => {
                 self.deleted.clear();
                 self.send_box(seq, id, b, gesture, OutputCanvas::Main);
@@ -2965,7 +2965,7 @@ impl StudioUi {
     fn run_vertical(&mut self, effect: Effect) {
         match effect {
             Effect::None => {}
-            Effect::Select(id) => self.select_one(id),
+            Effect::Select(id) => self.select_on_picture(id),
             Effect::Send(seq, id, b, gesture) => {
                 self.deleted.clear();
                 self.send_box(seq, id, b, gesture, OutputCanvas::Vertical);
@@ -3053,7 +3053,7 @@ impl StudioUi {
         self.vedit.set_panel(size[0], size[1]);
         let placed = self.placed_vertical(true);
         let hit = self.vedit.source_at(at, canvas, &placed);
-        self.select_one(hit.unwrap_or(-1));
+        self.select_on_picture(hit.unwrap_or(-1));
         self.pick_props(OutputCanvas::Vertical);
         self.refresh_marks();
         hit

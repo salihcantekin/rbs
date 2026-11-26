@@ -265,7 +265,9 @@ component SourceRowView inherits Rectangle {
         accessible-name: @tr("{}, {}, {}{}{}", data.name, data.kind, data.status, data.visible ? "" : @tr(", hidden"), data.locked ? @tr(", locked") : "")
             + (data.nested ? @tr(", sound of {}", data.parent-name) : "")
             + (data.expandable ? (data.sound-muted ? @tr(", has sound, sound muted") : @tr(", has sound")) : "");
-        accessible-hint: (data.global ? @tr("In every scene. ") : data.in-globals ? @tr("Also in every scene. ") : data.also-in != "" ? @tr("Also in {}. ", data.also-in) : "")
+        // A member row selects that member, its group's row the group (ADR-0194, U7).
+        accessible-hint: (data.grouped ? @tr("Selects this source alone; the row of group {} selects the group. ", data.group-name) : "")
+            + (data.global ? @tr("In every scene. ") : data.in-globals ? @tr("Also in every scene. ") : data.also-in != "" ? @tr("Also in {}. ", data.also-in) : "")
             + (data.picture ? @tr("Alt+Up or Alt+Down changes the layer, F2 renames it, double-click opens Source settings when available, Delete asks before removing it from this scene, the Menu key or Shift+F10 opens its menu") : @tr("F2 renames it, double-click opens Source settings when available, Delete asks before removing it from this scene, the Menu key or Shift+F10 opens its menu"));
         edit-label: @tr("Name of the source {}", data.name);
         confirm-question: root.delete-all ? @tr("Delete {} from every scene?", data.name)
@@ -450,7 +452,7 @@ component GroupRowView inherits Rectangle {
         expand-toggled(o) => { Studio.open-group(data.group-id, o); }
         selected: root.selected;
         accessible-name: @tr("Group {}", data.group-name);
-        accessible-hint: @tr("F2 renames it, the Menu key or Shift+F10 opens its menu, Ungroup is under Arrange");
+        accessible-hint: @tr("Selects the whole group; a member row selects that member. F2 renames it, the Menu key or Shift+F10 opens its menu, Ungroup is under Arrange");
         edit-label: @tr("Name of the group {}", data.group-name);
         activated => { Studio.select-group(data.group-id); }
         menu-asked(at) => {

@@ -76,7 +76,7 @@ impl PropsTarget {
 }
 
 /// The group `ids` (the selected sources) are exactly, if they are one whole group.
-fn whole_group(rows: &[SourceRow], ids: &[i32]) -> Option<u32> {
+pub(super) fn whole_group(rows: &[SourceRow], ids: &[i32]) -> Option<u32> {
     let group = rows
         .iter()
         .find(|r| ids.first() == Some(&(r.id.get() as i32)))?

@@ -13,6 +13,8 @@ use super::{OutputCanvas, SourceData, sound_nest};
 
 mod arrange;
 mod groups;
+#[cfg(test)]
+mod member_tests;
 use crate::preview_edit::{Effect, Placed};
 pub use arrange::ArrangeOp;
 
@@ -107,23 +109,6 @@ impl Picked {
         self.settle();
     }
 
-    /// Picks one member when the complete group was selected. Group rows may be
-    /// ordered differently from the selected set.
-    fn select_group_member(&mut self, selected: &mut i32, id: i32, members: &[i32]) -> bool {
-        let is_group = self.0.len() > 1
-            && self.0.len() == members.len()
-            && members
-                .iter()
-                .enumerate()
-                .all(|(i, id)| self.0.contains(id) && !members[..i].contains(id));
-        if !is_group || !self.has(id) {
-            return false;
-        }
-        self.clear();
-        *selected = id;
-        true
-    }
-
     /// A set of fewer than two is not a multi-selection.
     fn settle(&mut self) {
         if self.0.len() < 2 {
@@ -144,23 +129,9 @@ impl Picked {
 }
 
 impl super::StudioUi {
-    /// A Sources row was clicked with Ctrl/Cmd or Shift held.
+    /// A Sources row was clicked with Ctrl/Cmd or Shift held. A group member is
+    /// added or removed like any row (ADR-0194 decision 1).
     pub fn select_with(&mut self, id: i32, ctrl: bool, shift: bool) {
-        // Ctrl/Cmd on a member of a selected whole group picks that member alone.
-        if ctrl
-            && !shift
-            && let Some(group) = self.group_of(id)
-        {
-            let members = self.group_members(group);
-            if self
-                .picked
-                .select_group_member(&mut self.selected, id, &members)
-            {
-                self.mark_picked();
-                self.refresh_marks();
-                return;
-            }
-        }
         let order: Vec<i32> = self.rows.iter().map(|r| r.id.get() as i32).collect();
         self.picked.click(
             &order,
@@ -245,13 +216,22 @@ impl super::StudioUi {
         self.read_group(rows);
     }
 
-    /// A plain selection of one source (or none, -1): ends any multi-selection. A source in a group selects its whole block (ADR-0182 decision 9).
+    /// A plain selection of one source (or none, -1) from the Sources list: ends any
+    /// multi-selection. A group member is selected alone (ADR-0194 decision 1).
     pub(crate) fn select_one(&mut self, id: i32) {
-        if self.group_of(id).is_some() {
+        self.clear_picked();
+        self.selected = id;
+    }
+
+    /// A press on a picture hit `id` (or nothing, -1): a group member selects its
+    /// whole group (ADR-0182 decision 9), unless that member is already selected
+    /// alone, which then stays the selection (ADR-0194 decision 3).
+    pub(crate) fn select_on_picture(&mut self, id: i32) {
+        let alone = self.selected == id && self.picked.0.is_empty();
+        if self.group_of(id).is_some() && !alone {
             self.select_block(id);
         } else {
-            self.clear_picked();
-            self.selected = id;
+            self.select_one(id);
         }
     }
 
@@ -336,26 +316,5 @@ mod tests {
         p.set([3]);
         assert!(!p.has(3), "one source is not a set");
         assert_eq!(p.ids(sel), vec![3]);
-    }
-
-    #[test]
-    fn control_click_selects_one_group_member_regardless_of_layer_order() {
-        let mut picked = Picked::default();
-        let mut selected = 4;
-        picked.set([2, 3, 4]);
-        assert!(picked.select_group_member(&mut selected, 2, &[4, 2, 3]));
-        assert_eq!((picked.ids(selected), selected), (vec![2], 2));
-    }
-
-    #[test]
-    fn control_click_only_treats_the_exact_group_as_a_group_selection() {
-        let mut picked = Picked::default();
-        let mut selected = 4;
-        picked.set([2, 3, 4]);
-        assert!(!picked.select_group_member(&mut selected, 2, &[4, 2]));
-        assert!(!picked.select_group_member(&mut selected, 2, &[4, 2, 5]));
-        assert!(!picked.select_group_member(&mut selected, 2, &[4, 2, 2]));
-        assert!(!picked.select_group_member(&mut selected, 5, &[4, 2, 3]));
-        assert_eq!((picked.ids(selected), selected), (vec![2, 3, 4], 4));
     }
 }

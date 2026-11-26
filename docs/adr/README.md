@@ -189,7 +189,7 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0179](0179-camera-background-removal.md) | Camera background removal: a video filter on a person matte: model spike first, then a `PersonMask` port with a GPU-native backend (OS backends where they exist); GPU-only default path, worker off the render thread | Accepted |
 | [0180](0180-the-toolbar-row-is-the-title-bar-on-macos.md) | The toolbar row is the title bar on macOS too, with the window buttons on the right as on Windows, behind one `WindowFrame` interface (amends ADR-0071 decision 3) | Accepted |
 | [0181](0181-one-rbs-at-a-time.md) | One RBS per settings folder on every system and with either close setting: an `instance.lock`, a second launch brings the running RBS forward and ends; several copies parked (amends ADR-0056, ADR-0051, ADR-0156) | Accepted |
-| [0182](0182-source-groups.md) | Sources can be grouped, and a group moves, resizes and hides as one | Accepted (decisions 5 and 10 superseded in part by ADR-0186; decisions 7 and 8 superseded in part by ADR-0184) |
+| [0182](0182-source-groups.md) | Sources can be grouped, and a group moves, resizes and hides as one | Accepted (decisions 5 and 10 superseded in part by ADR-0186; decisions 7 and 8 superseded in part by ADR-0184; decision 9 superseded in part by ADR-0194) |
 | [0183](0183-background-removal-picture-and-mask-in-step.md) | Background removal draws each picture with its own mask (Exact); the newest picture stays an option (Fast) | Accepted |
 | [0184](0184-group-properties-batch-to-members.md) | Group Properties target the group and batch to its members | Accepted (decisions 3, 4 and 5 superseded in part by ADR-0185) |
 | [0185](0185-scroll-a-group-as-one-picture.md) | Scroll a group as one picture | Accepted (decision 1 superseded in part by ADR-0188; decision 3 superseded in part by ADR-0187; decision 5 superseded in part by ADR-0193) |
@@ -201,3 +201,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0191](0191-incremental-node-release-for-quiesce.md) | Bounded control-thread service and quiesce | Superseded by ADR-0193 |
 | [0192](0192-transactional-group-show.md) | Transactional group Show | Superseded by ADR-0193 |
 | [0193](0193-simple-group-show-and-scroll-resources.md) | Simple group Show and group Scroll resources (supersedes ADR-0190, ADR-0191, ADR-0192; ADR-0185 decision 5 in part) | Accepted |
+| [0194](0194-member-row-selects-the-member.md) | A member row in the Sources list selects that member (supersedes ADR-0182 decision 9 in part) | Accepted |
