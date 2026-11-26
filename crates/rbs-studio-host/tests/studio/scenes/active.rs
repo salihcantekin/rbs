@@ -49,10 +49,7 @@ fn an_inactive_scene_is_skipped_by_step_and_position_and_refused_on_air() {
     ok(&c.call("scene.step", json!({"step": 1})));
     c.event("scene.changed", |d| d["program"] == one);
     // Slots address the full list: slot 2 is inactive, slot 3 is not.
-    assert_eq!(
-        kind(&c.call("scene.position", json!({"n": 2}))),
-        "conflict"
-    );
+    assert_eq!(kind(&c.call("scene.position", json!({"n": 2}))), "conflict");
     ok(&c.call("scene.position", json!({"n": 3})));
     c.event("scene.changed", |d| d["program"] == three);
     assert_eq!(

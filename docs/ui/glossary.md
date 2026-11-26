@@ -5,6 +5,8 @@ UI text uses these terms and no synonyms (rule U13). Code may use different inte
 | Term in UI | Meaning | Not | Internal name |
 | --- | --- | --- | --- |
 | Scene | A layout of sources shown on a canvas | Layout, page | `Scene` |
+| Active scene / Inactive scene | An inactive scene is skipped by Next scene, Previous scene and the slot keys, is dimmed in the Scenes list and cannot go on air; it can still be selected and edited. The power button and the Active menu entry switch it (ADR-0195) | Disabled scene, hidden scene | `Scene::active`, `scene.set_active` |
+| Filter (Scenes, Sources) | The funnel button in a panel's title row: Show inactive scenes; or, for Sources, which kinds to show and Show hidden sources. It changes only the list, per panel, and is kept (ADR-0195) | Search, view | `PanelFilters` |
 | Source | Something that produces video or audio (screen capture, window capture, camera, image, text, media, browser, audio device), as placed in a scene with its position, size and crop. The panel listing them is "Sources" | Input, layer, element, item | Source node; placement is a scene item |
 | Slide show | A source that shows the PNG and JPEG pictures of one folder one after another, on a timer or with Next and Previous, with a transition between them (ADR-0171). Its buttons say "Next picture" and "Previous picture" | Slideshow, image slideshow, carousel, gallery | `org.rbs.source.slideshow`, `SourceKind::Slideshow` |
 | Look | A preset of a source's shape, border and filters, copied onto the selected source in one undoable step. Later edits to the source do not change the look | Preset, style, theme | `Look` |

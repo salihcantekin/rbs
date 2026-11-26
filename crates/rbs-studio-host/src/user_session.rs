@@ -761,6 +761,15 @@ impl UserSession {
         self.later(move |data, lock, _| data.set_shortcuts(lock, &doc).map_err(SessionError::from))
     }
 
+    /// Records the list filters of the collection in use (ADR-0195).
+    pub fn set_view_state(&self, filters: &rbs_user_data::PanelFilters) -> Pending<()> {
+        let (filters, id) = (filters.clone(), self.collection_id.clone());
+        self.later(move |data, lock, _| {
+            data.set_view_state(lock, &id, &filters)
+                .map_err(SessionError::from)
+        })
+    }
+
     /// Records the appearance choice.
     pub fn set_appearance(&self, appearance: &Appearance) -> Pending<()> {
         let appearance = appearance.clone();

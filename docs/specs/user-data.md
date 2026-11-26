@@ -106,6 +106,10 @@ it stays readable by the previous build. A document older than 32 that carries t
 key is refused. The panel filters (Show inactive scenes, source categories) are not
 in the collection document: they are view state kept per collection (ADR-0195).
 
+### View state (`kind = "view-state"`, format 1, ADR-0195)
+
+The Scenes and Sources list filters of one scene collection, in `view-state/<collection-id>.toml`, outside the collection so that sharing a collection never carries them. Keys: `show_inactive_scenes` (default true), `show_hidden_sources` (default true) and `hidden_source_categories` (category ids, lowercase `[a-z_]`, at most 32 bytes each and 64 entries). The file is at most 16 KiB. A missing or damaged file gives the defaults. Deleting the collection deletes it.
+
 ### Scene collection document (`kind = "scene-collection"`, format 30)
 
 The cumulative format selection below also chooses 31 when any group has saved

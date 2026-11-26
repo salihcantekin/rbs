@@ -243,11 +243,29 @@ component StackView inherits Rectangle {
                     enabled: Studio.state == 1;
                     clicked => { Studio.add-scene-asked += 1; }
                 }
+                if active-id == "rbs.scenes" && !data.collapsed: IconButton {
+                    icon: IconName.filter;
+                    name: @tr("Filter scenes");
+                    clicked => {
+                        Overlays.filter-x = self.absolute-position.x - root.absolute-position.x;
+                        Overlays.filter-y = bar;
+                        Overlays.filter-open = 1;
+                    }
+                }
                 if active-id == "rbs.sources" && !data.collapsed: IconButton {
                     icon: IconName.plus;
                     name: @tr("Add source");
                     enabled: Studio.state == 1;
                     clicked => { add-menu.open-from({ x: self.absolute-position.x - root.absolute-position.x, y: bar }, self.width, bar); }
+                }
+                if active-id == "rbs.sources" && !data.collapsed: IconButton {
+                    icon: IconName.filter;
+                    name: @tr("Filter sources");
+                    clicked => {
+                        Overlays.filter-x = self.absolute-position.x - root.absolute-position.x;
+                        Overlays.filter-y = bar;
+                        Overlays.filter-open = 2;
+                    }
                 }
                 if active-id == "rbs.preview" && !data.collapsed && !root.switch-in-rail: HorizontalLayout {
                     padding-right: Tokens.space-2;
@@ -891,6 +909,66 @@ component TransitionOptions inherits PopoverLayer {
                         Menus.run("ui.transition.rehearse");
                     }
                 }
+            }
+        }
+    }
+}
+
+// The list filter card of the Scenes and Sources panels (ADR-0195 decision 5): the
+// choices apply at once and last; a click outside or Escape closes it.
+component ListFilterCard inherits PopoverLayer {
+    property <bool> scenes: Overlays.filter-open == 1;
+    property <[string]> names: [@tr("Screens"), @tr("Windows"), @tr("Cameras"), @tr("Audio"), @tr("Pictures"), @tr("Media"), @tr("Browsers"), @tr("Text"), @tr("Slide shows"), @tr("Other")];
+    dismissed => { Overlays.filter-open = 0; }
+    card := PopoverCard {
+        width: max(Tokens.size-menu-md, body.preferred-width);
+        height: body.preferred-height;
+        x: clamp(Overlays.filter-x, Tokens.space-1, max(Tokens.space-1, root.width - self.width - Tokens.space-1));
+        y: Overlays.filter-y;
+        accessible-role: groupbox;
+        accessible-label: root.scenes ? @tr("Filter scenes") : @tr("Filter sources");
+        init => { keys.focus(); }
+        keys := FocusScope {
+            key-pressed(e) => {
+                if e.text == Key.Escape { Overlays.filter-open = 0; return accept; }
+                reject
+            }
+        }
+        body := VerticalLayout {
+            padding: Tokens.space-3;
+            spacing: Tokens.space-1;
+            if root.scenes: Toggle {
+                label: @tr("Show inactive scenes");
+                text: @tr("Show inactive scenes");
+                checked: Studio.show-inactive-scenes;
+                toggled(on) => { Studio.set-show-inactive-scenes(on); }
+            }
+            if !root.scenes: HorizontalLayout {
+                spacing: Tokens.space-1;
+                Text {
+                    text: @tr("Show these sources");
+                    color: Theme.text-primary;
+                    font-size: Tokens.type-body-size;
+                    font-weight: Tokens.type-label-weight;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                    accessible-role: none;
+                }
+                Button { text: @tr("All"); clicked => { Studio.set-all-source-categories(true); } }
+                Button { text: @tr("None"); clicked => { Studio.set-all-source-categories(false); } }
+            }
+            if !root.scenes: VerticalLayout {
+                for name[i] in root.names: Checkbox {
+                    text: name;
+                    checked: Studio.source-category-shown[i];
+                    toggled(on) => { Studio.set-source-category(i, on); }
+                }
+            }
+            if !root.scenes: Toggle {
+                label: @tr("Show hidden sources");
+                text: @tr("Show hidden sources");
+                checked: Studio.show-hidden-sources;
+                toggled(on) => { Studio.set-show-hidden-sources(on); }
             }
         }
     }
@@ -2761,6 +2839,7 @@ export component MainWindow inherits Window {
     if Overlays.transition-open: TransitionOptions { width: parent.width; height: parent.height; }
     // A scene's transition card (ADR-0135), under the hint and tooltip layer.
     if Overlays.scene-transition-open: SceneTransitionCard { width: parent.width; height: parent.height; }
+    if Overlays.filter-open != 0: ListFilterCard { width: parent.width; height: parent.height; }
     // The info hint and tooltip layer, drawn last (ADR-0094).
     OverlayHost { width: parent.width; height: parent.height; }
 }
@@ -3012,6 +3091,7 @@ export component FloatWindow inherits Window {
     }
     // A scene's transition card (ADR-0135) when the Scenes panel floats here.
     if Overlays.scene-transition-open: SceneTransitionCard { width: parent.width; height: parent.height; }
+    if Overlays.filter-open != 0: ListFilterCard { width: parent.width; height: parent.height; }
     // The info hint and tooltip layer, drawn last (ADR-0094).
     OverlayHost { width: parent.width; height: parent.height; }
 }

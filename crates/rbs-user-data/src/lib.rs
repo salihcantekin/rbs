@@ -24,6 +24,7 @@ pub mod profile;
 pub mod scenes;
 pub mod shortcuts;
 pub mod theme;
+pub mod view_state;
 
 use std::path::{Path, PathBuf};
 
@@ -32,6 +33,7 @@ pub use document::{BodyError, DataError, Document};
 pub use library::{Entry, EntryId, Library, Listed, Listing};
 pub use profile::OutputProfile;
 pub use theme::{Appearance, AppearanceMode, ThemeId};
+pub use view_state::PanelFilters;
 
 /// Directory of output profiles, under the config directory.
 pub const PROFILES_DIR: &str = "profiles";
@@ -45,6 +47,8 @@ pub const WORKSPACES_DIR: &str = "workspaces";
 pub const THEMES_DIR: &str = "themes";
 /// File holding the appearance choice (ADR-0057).
 pub const APPEARANCE_FILE: &str = "appearance.toml";
+/// List filters per scene collection (ADR-0195), one file per collection id.
+pub const VIEW_STATE_DIR: &str = "view-state";
 /// File holding the user's shortcut changes (ADR-0060).
 pub const SHORTCUTS_FILE: &str = "shortcuts.toml";
 /// Reserved: the asset library (format to be decided).
@@ -77,6 +81,41 @@ impl UserData {
     /// The scene collections.
     pub fn scene_collections(&self) -> Library<rbs_scene::SceneCollection> {
         Library::new(self.root.join(SCENE_COLLECTIONS_DIR))
+    }
+
+    /// Where the list filters of the collection `id` are kept.
+    pub fn view_state_path(&self, id: &EntryId) -> PathBuf {
+        self.root
+            .join(VIEW_STATE_DIR)
+            .join(format!("{}.toml", id.as_str()))
+    }
+
+    /// The list filters of the collection `id`; everything shown if there is no file,
+    /// or if it cannot be read (with the reason; the file is left as it is).
+    pub fn view_state(&self, id: &EntryId) -> (PanelFilters, Option<DataError>) {
+        match document::read::<PanelFilters>(&self.view_state_path(id)) {
+            Ok(Some(r)) => (r.document, None),
+            Ok(None) => (PanelFilters::default(), None),
+            Err(e) => (PanelFilters::default(), Some(e)),
+        }
+    }
+
+    /// Records the list filters of the collection `id`.
+    pub fn set_view_state(
+        &self,
+        _lock: &WriterLock,
+        id: &EntryId,
+        filters: &PanelFilters,
+    ) -> Result<(), DataError> {
+        document::write(&self.view_state_path(id), filters, None)
+    }
+
+    /// Removes the list filters of the collection `id` (with the collection).
+    pub fn delete_view_state(&self, _lock: &WriterLock, id: &EntryId) -> Result<(), DataError> {
+        match std::fs::remove_file(self.view_state_path(id)) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+            _ => Ok(()),
+        }
     }
 
     /// The user themes.

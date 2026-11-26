@@ -4750,6 +4750,18 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
             app.studio.reset_scene_level(scene, source);
         }
     });
+    on!(on_set_show_hidden_sources, |app, show: bool| {
+        app.studio.set_show_hidden_sources(show);
+    });
+    on!(on_set_source_category, |app, index: i32, shown: bool| {
+        app.studio.set_source_category(index, shown);
+    });
+    on!(on_set_all_source_categories, |app, shown: bool| {
+        app.studio.set_all_source_categories(shown);
+    });
+    on!(on_set_show_inactive_scenes, |app, show: bool| {
+        app.studio.set_show_inactive_scenes(show);
+    });
     on!(on_set_scene_active, |app, scene: i32, active: bool| {
         app.studio.set_scene_active(scene, active);
     });

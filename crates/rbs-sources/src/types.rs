@@ -233,3 +233,53 @@ pub fn class_of(type_id: &NodeTypeId) -> Option<SourceClass> {
         _ => return None,
     })
 }
+
+/// The categories of the Sources list filter (ADR-0195 decision 5): stable ids, in the
+/// order the filter lists them. "other" holds any type without a category.
+pub const SOURCE_CATEGORIES: [&str; 10] = [
+    "screen",
+    "window",
+    "camera",
+    "audio",
+    "picture",
+    "media",
+    "browser",
+    "text",
+    "slideshow",
+    "other",
+];
+
+/// The filter category of a source type. Interim: the type registry (ADR-0162) will
+/// carry it, and this is the only place that lists the built-in types for it.
+pub fn source_category(type_id: &str) -> &'static str {
+    match type_id {
+        DISPLAY_SOURCE => "screen",
+        WINDOW_SOURCE => "window",
+        CAMERA_SOURCE => "camera",
+        AUDIO_INPUT_SOURCE | AUDIO_OUTPUT_SOURCE | APPLICATION_AUDIO_SOURCE => "audio",
+        IMAGE_SOURCE | COLOR_SOURCE => "picture",
+        MEDIA_SOURCE => "media",
+        BROWSER_SOURCE => "browser",
+        TEXT_SOURCE => "text",
+        SLIDESHOW_SOURCE => "slideshow",
+        _ => "other",
+    }
+}
+
+#[cfg(test)]
+mod category_tests {
+    use super::*;
+
+    #[test]
+    fn built_in_types_have_a_listed_category() {
+        for id in [
+            DISPLAY_SOURCE,
+            TEXT_SOURCE,
+            COLOR_SOURCE,
+            AUDIO_OUTPUT_SOURCE,
+        ] {
+            assert!(SOURCE_CATEGORIES.contains(&source_category(id)));
+        }
+        assert_eq!(source_category("com.example.unknown"), "other");
+    }
+}

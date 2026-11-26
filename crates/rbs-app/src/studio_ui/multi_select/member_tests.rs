@@ -165,3 +165,21 @@ fn the_vertical_picture_keeps_a_member_selected_alone_and_else_selects_the_group
     assert_eq!(shown(&ui), (vec![1, 2, 3], Some(GROUP)), "else the group");
     let _ = std::fs::remove_dir_all(d);
 }
+
+#[test]
+fn the_list_filter_hides_by_category_and_keeps_groups_and_the_selection() {
+    use crate::studio_ui::list_filter::filtered_out;
+    let mut hidden = row(2, None, 0.0);
+    hidden.visible = false;
+    let rows = vec![row(1, Some(GROUP), 0.0), hidden, row(3, Some(GROUP), 0.0)];
+    let mut f = rbs_user_data::PanelFilters::default();
+    assert_eq!(filtered_out(&rows, &f, &[]), [false, false, false]);
+
+    f.show_hidden_sources = false;
+    assert_eq!(filtered_out(&rows, &f, &[]), [false, true, false]);
+    assert_eq!(filtered_out(&rows, &f, &[2]), [false, false, false]);
+
+    f.hidden_source_categories = vec!["picture".to_owned()];
+    assert_eq!(filtered_out(&rows, &f, &[]), [true, true, true]);
+    assert_eq!(filtered_out(&rows, &f, &[3]), [true, true, false]);
+}

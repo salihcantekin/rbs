@@ -525,8 +525,7 @@ impl Host {
                     return Err(Refusal::Invalid("step must be 1 or -1.".to_owned()));
                 }
                 let anchor = self.preview().unwrap_or(self.scene);
-                self.collection
-                    .next_active(self.canvas, Some(anchor), step)
+                self.collection.next_active(self.canvas, Some(anchor), step)
             }
             (None, Some(n)) => self.collection.scene_at_slot(self.canvas, n),
             (None, None) => return Ok(false),
