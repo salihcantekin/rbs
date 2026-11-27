@@ -9,11 +9,11 @@ export interface SourceSettings { source?: string; sourceName?: string }
 export type Mode = "toggle" | "on" | "off";
 export interface ModeSettings { mode?: Mode }
 export type Settings = SceneSettings & SourceSettings & ModeSettings;
-export type Kind = "scene" | "record" | "record-pause" | "scene-step" | "replay" | "vcam" | "marker" | "volume" | "stream" | "source-visible" | "mute";
+export type Kind = "scene" | "record" | "record-pause" | "scene-step" | "replay" | "vcam" | "marker" | "volume" | "studio" | "transition" | "stream" | "source-visible" | "mute";
 
 /** The parts of RBS's state the keys read, loosely typed (the server may add fields). */
 export interface ViewState {
-	scenes?: { scenes: { id: number; name: string; active?: boolean }[]; program: number; master?: { muted?: boolean; volume?: number }; sources?: { id: number; name: string }[] };
+	scenes?: { scenes: { id: number; name: string; active?: boolean }[]; program: number; preview?: number; master?: { muted?: boolean; volume?: number }; sources?: { id: number; name: string }[] };
 	sources?: { id: number; name: string; item?: number; visible?: boolean; muted?: boolean; volume?: number }[];
 	record?: { state: string; paused?: boolean };
 	stream?: { state: string; connected?: boolean; connects?: number };
@@ -91,12 +91,21 @@ export function stateIndex(kind: Kind, settings: Settings, state: ViewState): 0 
 		}
 		case "mute": return (settings.source === "master" ? state.scenes?.master?.muted : state.sources?.find((x) => String(x.id) === settings.source)?.muted) ? 1 : 0;
 		case "vcam": return state.vcam?.sending ? 1 : 0;
+		case "studio": return state.scenes?.preview !== undefined ? 1 : 0;
 		default: return 0;
 	}
 }
 
 /** The look of one key. Pure: everything it needs is passed in. */
+const LARGE = new Set<string>([glyphs.recordIdle, live(glyphs.recordIdle), glyphs.stop, glyphs.pause, glyphs.play]);
+
+/** The look of one key, with its icon size class. */
 export function look(kind: Kind, settings: Settings, state: ViewState, ctx: RenderContext): KeyLook {
+	const k = lookRaw(kind, settings, state, ctx);
+	return k.size ? k : { ...k, size: LARGE.has(k.glyph) ? "large" : k.glyph === glyphs.warn ? "small" : "medium" };
+}
+
+function lookRaw(kind: Kind, settings: Settings, state: ViewState, ctx: RenderContext): KeyLook {
 	const { elapsed, now } = ctx;
 	const pulse = Math.floor(now / 1000) % 2 === 0;
 	const mode = modeOf(settings);
@@ -121,7 +130,7 @@ export function look(kind: Kind, settings: Settings, state: ViewState, ctx: Rend
 			const r = state.record;
 			const recording = r?.state === "recording";
 			const paused = recording && r.paused === true;
-			if (paused) return mode === "on" ? { glyph: glyphs.pause, label: "Paused", tone: "live", untitled } : { glyph: glyphs.play, label: "Resume", tone: "live", untitled };
+			if (paused) return mode === "on" ? { glyph: glyphs.pause, label: "Paused", tone: "warn", untitled } : { glyph: glyphs.play, label: "Resume", tone: "go", untitled };
 			if (mode === "off") return { glyph: glyphs.play, label: "Resume", tone: "dim", untitled };
 			return { glyph: glyphs.pause, label: "Pause", tone: recording ? "neutral" : "dim", untitled };
 		}
@@ -157,6 +166,13 @@ export function look(kind: Kind, settings: Settings, state: ViewState, ctx: Rend
 			if (mode === "off") return { glyph: glyphs.camera, label: "Stop cam", tone: on ? "neutral" : "dim", untitled };
 			return { glyph: glyphs.camera, label: on ? "Camera on" : "Virtual cam", tone: on ? "accent" : "neutral", dot: on, untitled };
 		}
+		case "studio": {
+			const on = state.scenes?.preview !== undefined;
+			if (mode === "off") return { glyph: glyphs.studio, label: "Studio off", tone: on ? "neutral" : "dim", untitled };
+			return { glyph: glyphs.studio, label: on ? "Studio on" : "Studio mode", tone: on ? "accent" : "neutral", dot: on, untitled };
+		}
+		case "transition":
+			return { glyph: glyphs.transition, label: "Transition", tone: state.scenes?.preview !== undefined ? "neutral" : "dim", untitled };
 		case "scene-step": {
 			const dir = settings.direction === "previous" ? "previous" : "next";
 			const target = stepTarget(state, dir)?.name;

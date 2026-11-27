@@ -10,7 +10,9 @@ export interface KeyLook {
 	label: string;
 	/** A second, lighter line (time, target, status). */
 	sub?: string;
-	tone: "neutral" | "accent" | "live" | "dim" | "warn";
+	tone: "neutral" | "accent" | "live" | "dim" | "warn" | "go";
+	/** Icon size class; default medium. */
+	size?: "small" | "medium" | "large";
 	/** Colour of an `accent` tone; defaults to the token. */
 	accent?: string;
 	/** Blinking ring (recording, live): `pulse` is the current phase. */
@@ -50,10 +52,11 @@ const FONT = `font-family="Segoe UI, Helvetica, Arial, sans-serif"`;
 /** Draws a key: a soft gradient tile, a round badge with the glyph, and one or two text lines. */
 export function drawKey(k: KeyLook): string {
 	const tone = k.tone;
-	const main = tone === "live" ? t.live : tone === "accent" ? (k.accent ?? t.accent) : tone === "warn" ? t.warn : tone === "dim" ? t.fgDim : t.fg;
+	const main = tone === "live" ? t.live : tone === "accent" ? (k.accent ?? t.accent) : tone === "warn" ? t.warn : tone === "go" ? t.go : tone === "dim" ? t.fgDim : t.fg;
 	const [top, bottom] = tone === "accent" ? [mix(k.accent ?? t.accent, "#1a1c21", 0.55), mix(k.accent ?? t.accent, "#101114", 0.18)] : t.bg[tone];
 	const gid = `g${top.slice(1)}${bottom.slice(1)}`; // unique per colour pair, so tiles shown together do not share one gradient
 	const text = tone === "dim" ? t.fgDim : tone === "warn" ? t.warn : t.fg;
+	const sz = t.iconSize[k.size ?? "medium"];
 	const lines = fit(k.label);
 	const row = (y: number, txt: string, size: number, weight: number, fill: string, opacity = 1) =>
 		`<text x="72" y="${y}" text-anchor="middle" ${FONT} font-size="${size}" font-weight="${weight}" fill="${fill}" fill-opacity="${opacity}">${esc(txt)}</text>`;
@@ -63,9 +66,9 @@ export function drawKey(k: KeyLook): string {
 			? row(108, lines[0] ?? "", t.labelSize, 600, text) + row(129, k.sub, t.subSize, 400, text, 0.8)
 			: lines.map((l, i) => row((lines.length > 1 ? 108 : 122) + i * t.labelLineHeight, l, t.labelSize, 600, text)).join("");
 	// With no text the badge sits lower, centred in the tile.
-	const cy = k.untitled ? 72 : t.badgeY;
+	const cy = k.untitled ? 72 : sz.y;
 	const ring = k.ring
-		? `<circle cx="72" cy="${cy}" r="${t.badgeRadius + 5}" fill="none" stroke="${main}" stroke-width="3" stroke-opacity="${k.pulse === false ? 0.15 : 0.7}"/>`
+		? `<circle cx="72" cy="${cy}" r="${sz.radius + 5}" fill="none" stroke="${main}" stroke-width="3" stroke-opacity="${k.pulse === false ? 0.15 : 0.7}"/>`
 		: "";
 	const dot = k.dot ? `<circle cx="${72 + 24}" cy="${cy - 24}" r="6" fill="${main}" stroke="${top}" stroke-width="2.5"/>` : "";
 	return (
@@ -74,8 +77,8 @@ export function drawKey(k: KeyLook): string {
 		`<rect width="${t.size}" height="${t.size}" rx="${t.radius}" fill="url(#${gid})"/>` +
 		`<rect x="1.5" y="1.5" width="${t.size - 3}" height="${t.size - 3}" rx="${t.radius - 1.5}" fill="none" stroke="#fff" stroke-opacity=".09" stroke-width="3"/>` +
 		ring +
-		`<circle cx="72" cy="${cy}" r="${t.badgeRadius}" fill="${main}" fill-opacity="${tone === "neutral" ? 0.1 : 0.18}"/>` +
-		`<g transform="translate(${72 - 18} ${cy - 18}) scale(0.5625)" fill="none" stroke="${main}" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round" color="${main}">${k.glyph}</g>` +
+		`<circle cx="72" cy="${cy}" r="${sz.radius}" fill="${main}" fill-opacity="${tone === "neutral" ? 0.1 : 0.18}"/>` +
+		`<g transform="translate(${72 - 32 * sz.scale} ${cy - 32 * sz.scale}) scale(${sz.scale})" fill="none" stroke="${main}" stroke-width="${(6.5 / sz.scale) * 0.5625}" stroke-linecap="round" stroke-linejoin="round" color="${main}">${k.glyph}</g>` +
 		dot +
 		body +
 		`</svg>`
@@ -93,7 +96,7 @@ function mix(a: string, b: string, amount: number): string {
 
 export const glyphs = {
 	scene: `<rect x="6" y="10" width="52" height="36" rx="7"/><path d="M22 56h20M32 46v10"/>`,
-	recordIdle: `<circle cx="32" cy="32" r="14" fill="currentColor"/>`,
+	recordIdle: `<circle cx="32" cy="32" r="18" fill="currentColor"/>`,
 	stop: `<rect x="14" y="14" width="36" height="36" rx="8" fill="currentColor"/>`,
 	pause: `<path d="M22 14v36M42 14v36"/>`,
 	play: `<path d="M22 12l28 20-28 20z" fill="currentColor"/>`,
@@ -108,6 +111,8 @@ export const glyphs = {
 	replay: `<path d="M32 10a22 22 0 1 1-20 13M8 8v18h18"/><path d="M27 24l14 8-14 8z" fill="currentColor"/>`,
 	camera: `<circle cx="32" cy="26" r="18"/><circle cx="32" cy="26" r="7" fill="currentColor"/><path d="M20 58h24M32 44v14"/>`,
 	marker: `<path d="M14 8v50M14 10h34l-9 12 9 12H14" /><path d="M14 10h34l-9 12 9 12H14z" fill="currentColor" fill-opacity=".35"/>`,
+	studio: `<rect x="3" y="14" width="26" height="36" rx="6"/><rect x="35" y="14" width="26" height="36" rx="6" fill="currentColor" fill-opacity=".35"/>`,
+	transition: `<path d="M8 22h44M40 10l12 12-12 12M56 42H12M24 30L12 42l12 12"/>`,
 	warn: `<circle cx="32" cy="32" r="24"/><path d="M32 18v18M32 44v2"/>`,
 	volume: `<path d="M8 24h12l16-14v44L20 40H8z" fill="currentColor"/><path d="M45 22c6 6 6 14 0 20"/>`,
 };

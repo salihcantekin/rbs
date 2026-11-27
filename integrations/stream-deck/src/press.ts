@@ -39,6 +39,20 @@ export async function press(kind: Kind, settings: Settings, client: RbsClient): 
 			}
 			return;
 		}
+		case "studio": {
+			const on = state.scenes?.preview !== undefined;
+			const mode = modeOf(settings);
+			if ((mode === "on" && on) || (mode === "off" && !on)) return;
+			// Entering studio mode previews the scene on air; leaving clears the preview.
+			if (on) await client.call("canvas.set_preview", { scene: null });
+			else if (state.scenes) await client.call("canvas.set_preview", { scene: state.scenes.program });
+			return;
+		}
+		case "transition": {
+			if (state.scenes?.preview === undefined) return; // outside studio mode there is nothing to put on air
+			await client.call("canvas.transition", {});
+			return;
+		}
 		case "scene-step": {
 			const target = stepTarget(state, settings.direction === "previous" ? "previous" : "next");
 			if (target) await client.call("scene.switch", { scene: target.id });

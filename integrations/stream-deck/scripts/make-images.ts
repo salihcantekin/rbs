@@ -7,7 +7,7 @@ import { type Kind, type ViewState, look } from "../src/view.js";
 const dir = "com.rbs.streamdeck.sdPlugin/imgs/";
 const ctx = { elapsed: { ms: 0, at: 0, running: false }, liveSince: 0, now: 0, titled: false };
 const on: ViewState = {
-	scenes: { scenes: [{ id: 1, name: "Scene" }], program: 1, master: { muted: true } },
+	scenes: { scenes: [{ id: 1, name: "Scene" }], program: 1, preview: 1, master: { muted: true } },
 	sources: [{ id: 1, name: "Source", item: 1, visible: false, muted: true }],
 	record: { state: "recording" },
 	stream: { state: "live", connected: true },
@@ -16,7 +16,7 @@ const on: ViewState = {
 };
 const off: ViewState = { ...on, scenes: { scenes: [{ id: 1, name: "Scene" }], program: 2, master: { muted: false } }, sources: [{ id: 1, name: "Source", item: 1, visible: true, muted: false }], record: { state: "idle" }, stream: { state: "idle" }, vcam: { sending: false } };
 const kinds: [Kind, Record<string, string>][] = [
-	["scene", { scene: "1" }], ["record", {}], ["record-pause", {}], ["stream", {}], ["source-visible", { source: "1" }], ["mute", { source: "1" }], ["vcam", {}],
+	["scene", { scene: "1" }], ["record", {}], ["record-pause", {}], ["stream", {}], ["source-visible", { source: "1" }], ["mute", { source: "1" }], ["vcam", {}], ["studio", {}], ["transition", {}],
 	["scene-step", {}], ["replay", {}], ["marker", {}], ["volume", {}],
 ];
 for (const [kind, settings] of kinds) {

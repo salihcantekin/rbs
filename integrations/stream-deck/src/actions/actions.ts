@@ -38,6 +38,16 @@ export class MarkerAction extends RbsKeyAction {
 	readonly kind = "marker" as const;
 }
 
+@action({ UUID: `${PLUGIN_UUID}.studio` })
+export class StudioAction extends RbsKeyAction {
+	readonly kind = "studio" as const;
+}
+
+@action({ UUID: `${PLUGIN_UUID}.transition` })
+export class TransitionAction extends RbsKeyAction {
+	readonly kind = "transition" as const;
+}
+
 @action({ UUID: `${PLUGIN_UUID}.volume` })
 export class VolumeAction extends RbsKeyAction {
 	readonly kind = "volume" as const;

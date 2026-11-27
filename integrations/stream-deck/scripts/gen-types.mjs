@@ -40,6 +40,8 @@ export const METHODS = [
 	"vcam.stop",
 	"vcam.status",
 	"marker.add",
+	"canvas.set_preview",
+	"canvas.transition",
 ];
 
 const pascal = (m) => m.split(/[._]/).map((p) => p[0].toUpperCase() + p.slice(1)).join("");

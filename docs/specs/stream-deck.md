@@ -71,6 +71,8 @@ All actions are keys (`Controllers: ["Keypad"]`) except the volume dial (`Encode
 | `record-pause` | `record.pause_toggle` while recording; nothing otherwise | none | Pause icon, Resume while paused, dimmed when not recording |
 | `scene-step` | `scene.switch` to the next or previous scene that navigation reaches (`active` not false), wrapping | direction | arrow with the target scene's name |
 | `replay` | `replay.save`; refused when the buffer is not armed | none | dimmed "Replay off", "Save replay", "Saving" |
+| `studio` | `canvas.set_preview {scene: program}` to enter studio mode, `{scene: null}` to leave (state: `preview` present in the scene list) | none (mode setting) | accent while on |
+| `transition` | `canvas.transition` in studio mode; nothing outside it | none | dimmed outside studio mode |
 | `vcam` | `vcam.start` or `vcam.stop` | none | accent while sending |
 | `marker` | `marker.add` | none | dimmed while not recording |
 | `volume` (dial) | turn: `source.set_volume` or `canvas.set_master_volume`, a step of 1 to 25 percent per tick; press: mute | source or Master, step | built-in `$B1` layout: title, percent or Muted, bar |
@@ -123,3 +125,5 @@ HTML in `ui/` using Elgato's sdpi-components (vendored locally, not loaded from 
 Draft: not implemented. This spec and ADR-0198 come first; the client, actions and package follow in the same folder.
 
 **Pictures (0.2).** Recording and live keys blink their dot once a second and show the time (the stream's time only when its start was seen while connected); the 1 s timer exists only while such a key is visible. A scene key takes an optional colour for its active state. When the user sets a Stream Deck title on a key, the picture has no text.
+
+**Icon sizes.** Three classes in the tokens file: small, medium (default) and large. Glyphs that look small in their box (record dot, stop, pause, play) use large. Resume is green and Paused amber, never red, so they are not mistaken for Stop.

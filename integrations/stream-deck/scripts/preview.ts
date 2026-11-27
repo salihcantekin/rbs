@@ -19,11 +19,11 @@ const groups: [string, string[]][] = [
 	["Stream", [k("stream"), k("stream", rec), k("stream", { ...rec, stream: { state: "live", connected: false, connects: 2 } })]],
 	["Source", [k("source-visible", st, { source: "7" }), k("source-visible", st, { source: "8" }), k("source-visible", st, { source: "9" }), k("mute", st, { source: "7" }), k("mute", st, { source: "8" }), k("mute", st, { source: "master" })]],
 	["Modes", [k("record", st, { mode: "on" }), k("record", rec, { mode: "on" }), k("record", st, { mode: "off" }), k("record", rec, { mode: "off" }), k("source-visible", st, { source: "7", mode: "on" }), k("mute", st, { source: "7", mode: "off" })]],
-	["More", [k("scene-step", st, { direction: "next" }), k("scene-step", st, { direction: "previous" }), k("replay"), k("replay", { ...st, replay: { armed: true, saving: true } }), k("vcam"), k("vcam", { ...st, vcam: { sending: true } }), k("marker"), k("marker", rec)]],
+	["More", [k("scene-step", st, { direction: "next" }), k("scene-step", st, { direction: "previous" }), k("replay"), k("replay", { ...st, replay: { armed: true, saving: true } }), k("vcam"), k("vcam", { ...st, vcam: { sending: true } }), k("marker"), k("marker", rec), k("studio"), k("studio", { ...st, scenes: { ...st.scenes!, preview: 2 } }), k("transition", { ...st, scenes: { ...st.scenes!, preview: 2 } })]],
 	["No link", ["Not connected", "Set token", "Token rejected", "Update RBS"].map((title) => linkKey({ title }))],
 	["With your own title (no text)", [k("record", rec, {}, { ...ctx, titled: true }), k("scene", st, { scene: "1" }, { ...ctx, titled: true }), k("mute", st, { source: "7" }, { ...ctx, titled: true })]],
 ];
 const html = `<body style="margin:0;padding:16px;background:#0b0b0d;font:14px Segoe UI,sans-serif;color:#ddd;width:1100px">${groups
-	.map(([n, s]) => `<div style="margin:0 0 14px"><div style="margin:0 0 6px">${n}</div><div style="display:flex;gap:10px">${s.join("")}</div></div>`)
+	.map(([n, s]) => `<div style="margin:0 0 14px"><div style="margin:0 0 6px">${n}</div><div style="display:flex;flex-wrap:wrap;gap:10px">${s.join("")}</div></div>`)
 	.join("")}</body>`;
 writeFileSync(process.argv[2] ?? "preview.html", html);

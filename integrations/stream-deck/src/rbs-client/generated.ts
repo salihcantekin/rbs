@@ -3482,6 +3482,53 @@ export namespace MarkerAddResult {
 		while_paused?: boolean;
 	}
 }
+export namespace CanvasSetPreviewParams {
+	/**
+	 * `canvas.set_preview` (protocol 1.9, ADR-0061): a scene enters studio mode with it in
+	 * preview, or changes the preview scene; `null` leaves studio mode.
+	 */
+	export interface Root {
+		/**
+		 * The preview scene's id, or `null`.
+		 */
+		scene?: number | null;
+	}
+}
+export namespace CanvasSetPreviewResult {
+	/**
+	 * Parameters of a method that takes none. Unknown fields are ignored.
+	 */
+	export interface Root {}
+}
+export namespace CanvasTransitionParams {
+	/**
+	 * What a program-scene change looks like (protocol 1.81, ADR-0128).
+	 */
+	export type TransitionKind = "cut" | "fade" | "move" | "swipe" | "slide" | "stinger";
+
+	/**
+	 * A transition for one program change only (protocol 1.81, ADR-0128 decision 13):
+	 * `kind` and `duration_ms` replace the collection's for this change; absent ones keep
+	 * it. With kind `move`, `duration_ms` replaces the glide's duration and every
+	 * per-source override for this change.
+	 */
+	export interface Root {
+		/**
+		 * Milliseconds in `0..=5000` for this change.
+		 */
+		duration_ms?: number | null;
+		/**
+		 * The kind for this change.
+		 */
+		kind?: TransitionKind | null;
+	}
+}
+export namespace CanvasTransitionResult {
+	/**
+	 * Parameters of a method that takes none. Unknown fields are ignored.
+	 */
+	export interface Root {}
+}
 /** Every method the plugin calls, with its parameter and answer types. */
 export interface Methods {
 	"session.hello": { params: SessionHelloParams.Root; result: SessionHelloResult.Root };
@@ -3512,4 +3559,6 @@ export interface Methods {
 	"vcam.stop": { params: VcamStopParams.Root; result: VcamStopResult.Root };
 	"vcam.status": { params: VcamStatusParams.Root; result: VcamStatusResult.Root };
 	"marker.add": { params: MarkerAddParams.Root; result: MarkerAddResult.Root };
+	"canvas.set_preview": { params: CanvasSetPreviewParams.Root; result: CanvasSetPreviewResult.Root };
+	"canvas.transition": { params: CanvasTransitionParams.Root; result: CanvasTransitionResult.Root };
 }

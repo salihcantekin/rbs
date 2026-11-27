@@ -78,7 +78,8 @@ async function sendLists(): Promise<void> {
 			: link.state === "unreachable"
 				? "Not connected. Is RBS running with Settings, Remote control, Allow remote control on?"
 				: linkText(link).title + ".";
-	await streamDeck.ui.sendToPropertyInspector({ event: "status", status, error: err ?? "" });
+	const level = link.state === "ready" ? (link.scopes?.includes("control") ? "ok" : "warn") : link.state === "connecting" || link.state === "idle" ? "warn" : "bad";
+	await streamDeck.ui.sendToPropertyInspector({ event: "status", status, level, error: err ?? "" });
 	await streamDeck.ui.sendToPropertyInspector({ event: "getScenes", items: items(s.scenes?.scenes ?? []) });
 	// Every source of the collection, not only the scene on air: a key for a source that is
 	// not in the scene on air does nothing until it is.

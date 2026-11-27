@@ -239,6 +239,45 @@
       ]
     },
     {
+      "Name": "Studio mode",
+      "UUID": "com.rbs.streamdeck.studio",
+      "Icon": "imgs/studio",
+      "Tooltip": "Turn studio mode on or off.",
+      "Controllers": [
+        "Keypad"
+      ],
+      "PropertyInspectorPath": "ui/inspector.html",
+      "DisableAutomaticStates": true,
+      "States": [
+        {
+          "Name": "Off",
+          "Image": "imgs/studio-key",
+          "Title": ""
+        },
+        {
+          "Name": "On",
+          "Image": "imgs/studio-key-1",
+          "Title": ""
+        }
+      ]
+    },
+    {
+      "Name": "Transition",
+      "UUID": "com.rbs.streamdeck.transition",
+      "Icon": "imgs/transition",
+      "Tooltip": "Put the preview scene on air (studio mode).",
+      "Controllers": [
+        "Keypad"
+      ],
+      "PropertyInspectorPath": "ui/inspector.html",
+      "States": [
+        {
+          "Image": "imgs/transition-key",
+          "Title": ""
+        }
+      ]
+    },
+    {
       "Name": "Volume dial",
       "UUID": "com.rbs.streamdeck.volume",
       "Icon": "imgs/volume",

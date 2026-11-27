@@ -5,10 +5,20 @@
 	<title>RBS</title>
 	<script src="sdpi-components.js"></script>
 	<style>
-		body { font-family: Segoe UI, system-ui, sans-serif; font-size: 12px; }
-		.status { margin: 6px 0 0; line-height: 1.4; opacity: 0.85; }
-		.error { margin: 6px 0 0; line-height: 1.4; color: #f5b942; }
+		body { font-family: Segoe UI, system-ui, sans-serif; font-size: 12px; color: #d8d9dc; }
 		[hidden] { display: none !important; }
+		.section { margin: 18px 0 4px; padding-top: 12px; border-top: 1px solid #ffffff1f; font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #9a9ea8; }
+		.status { display: flex; align-items: center; gap: 8px; margin: 10px 0 0 94px; line-height: 1.4; }
+		.dot { flex: none; width: 9px; height: 9px; border-radius: 50%; background: #7b808b; }
+		.dot.ok { background: #34c77b; }
+		.dot.warn { background: #f5b942; }
+		.dot.bad { background: #ff4d57; }
+		.error { margin: 6px 0 0 94px; padding: 6px 8px; border-radius: 4px; background: #f5b9421f; color: #f5b942; line-height: 1.4; }
+		.hint { margin: 6px 0 0 94px; color: #9a9ea8; line-height: 1.4; }
+		details.help { margin: 10px 0 0 94px; color: #9a9ea8; }
+		details.help summary { cursor: pointer; color: #b9bdc6; }
+		details.help ol { margin: 6px 0 0; padding-left: 18px; line-height: 1.55; }
+		details.help li b { color: #d8d9dc; font-weight: 600; }
 	</style>
 </head>
 <body>
@@ -51,19 +61,28 @@
 		<sdpi-item label="When pressed">
 			<sdpi-select setting="mode" id="mode-select" placeholder="Toggle"></sdpi-select>
 		</sdpi-item>
-		<p class="status">Use "only" to give start and stop (or show and hide, mute and unmute, pause and resume) separate keys.</p>
+		<p class="hint">Choose "only" to put the two jobs (start and stop, show and hide, mute and unmute, pause and resume) on separate keys.</p>
 	</div>
 
-	<sdpi-heading>RBS connection</sdpi-heading>
+	<div class="section">RBS connection</div>
 	<sdpi-item label="Port">
 		<sdpi-textfield setting="port" global placeholder="4456" pattern="[0-9]*"></sdpi-textfield>
 	</sdpi-item>
 	<sdpi-item label="Token">
 		<sdpi-password setting="token" global placeholder="rbs1_..."></sdpi-password>
 	</sdpi-item>
-	<p class="status" id="status">Not connected.</p>
-	<p class="error" id="error" hidden></p>
-	<p class="status">In RBS: Settings, Remote control, Allow remote control, then make a token with the Control level and paste it here. Use a token made only for Stream Deck.</p>
+	<div class="status"><span class="dot" id="dot"></span><span id="status">Not connected.</span></div>
+	<div class="error" id="error" hidden></div>
+	<details class="help">
+		<summary>How do I get a token?</summary>
+		<ol>
+			<li>In RBS open <b>Settings</b>, then <b>Remote control</b>.</li>
+			<li>Turn on <b>Allow remote control</b>.</li>
+			<li>Make a token with the <b>Control</b> level and copy it.</li>
+			<li>Paste it above once. All RBS keys share it.</li>
+		</ol>
+		<p class="hint" style="margin-left:0">Use a token made only for Stream Deck, so you can revoke it on its own.</p>
+	</details>
 
 	<script>
 		const client = SDPIComponents.streamDeckClient;
@@ -76,6 +95,7 @@
 				record: ["Start and stop", "Start only", "Stop only"],
 				stream: ["Start and stop", "Start only", "Stop only"],
 				vcam: ["Start and stop", "Start only", "Stop only"],
+				studio: ["Turn on and off", "Turn on only", "Turn off only"],
 				"record-pause": ["Pause and resume", "Pause only", "Resume only"],
 				"source-visible": ["Show and hide", "Show only", "Hide only"],
 				mute: ["Mute and unmute", "Mute only", "Unmute only"],
@@ -95,6 +115,7 @@
 			const p = ev.payload;
 			if (!p || p.event !== "status") return;
 			document.getElementById("status").textContent = p.status;
+			document.getElementById("dot").className = "dot " + (p.level || "");
 			const e = document.getElementById("error");
 			e.textContent = p.error || "";
 			e.hidden = !p.error;
