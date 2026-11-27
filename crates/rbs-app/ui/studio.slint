@@ -3,7 +3,7 @@
 // Rust pushes state into the `Studio` global of every window and handles its callbacks
 // by sending commands to the studio's control thread.
 import { Theme, Tokens } from "tokens.slint";
-import { DialogActions, HScrollArea, ListBox, ScrollArea, Button, Checkbox, ColorPicker, FocusRing, RingFocus, SectionHeader, Tabs, Icon, IconButton, MenuItem, MenuSurface, EmptyState, NumberField, Select, SegmentedControl, SizeNest, Slider, VSlider, LevelText, ValueReadout, TextField, TextArea, Toggle, InfoHint, FeatureSection, SettingRow, ListRow, StatusLine, HintText as Hint, CaptionField as Field, MenuArea, SurfaceCard } from "components.slint";
+import { DialogActions, HScrollArea, ListBox, ScrollArea, Button, Checkbox, ColorPicker, FocusRing, RingFocus, HeaderBand, SectionHeader, Tabs, Icon, IconButton, MenuItem, MenuSurface, EmptyState, NumberField, Select, SegmentedControl, SizeNest, Slider, VSlider, LevelText, ValueReadout, TextField, TextArea, Toggle, InfoHint, FeatureSection, SettingRow, ListRow, StatusLine, HintText as Hint, CaptionField as Field, MenuArea, SurfaceCard } from "components.slint";
 import { SettingsCard, SettingBlock, SettingsStatus, SettingsNotice, SettingsCallout, RevealOnShow, Shown } from "settings.slint";
 import { CommandMenu } from "context_menu.slint";
 import { Section, BrowserFields, ActivityFields } from "browser_fields.slint";
@@ -2446,16 +2446,13 @@ export component LiveControlsPanel inherits Rectangle {
 
 // A section title that does not collapse (ADR-0076): the same look as SectionHeader,
 // with a rule to the end of the row, but plain text for screen readers.
-component SectionTitle inherits Rectangle {
+component SectionTitle inherits HeaderBand {
     in property <string> title;
-    height: Tokens.size-control-md;
-    border-radius: Tokens.radius-sm;
-    background: Theme.surface-overlay;
     accessible-role: text;
     accessible-label: root.title;
     Text {
-        x: Tokens.space-2;
-        width: parent.width - 2 * Tokens.space-2;
+        x: Tokens.space-1 + Tokens.space-2;
+        width: parent.width - Tokens.space-1 - 2 * Tokens.space-2;
         height: parent.height;
         text: root.title;
         color: Theme.text-primary;

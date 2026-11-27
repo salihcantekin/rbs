@@ -109,6 +109,41 @@ export component WellShade inherits Rectangle {
     }
 }
 
+// The band behind a section header in Properties and the Library: a raised strip with an
+// accent rail at its left edge and a tint that fades out to the right, so each category
+// reads as a heading, not as a flat grey line. With theme effects it also stands on the
+// soft shadow of a button and catches a hairline of light along its top (Glass, Tactile).
+// Calm draws only the strip, the rail and the tint. Put the header in it as children.
+export component HeaderBand inherits Rectangle {
+    // The header is open: the rail and tint are stronger than at rest.
+    in property <bool> open: true;
+    height: Tokens.size-control-md;
+    border-radius: Tokens.radius-sm;
+    background: Theme.surface-overlay;
+    drop-shadow-blur: Theme.effects-on ? Theme.effects-shadow-blur : 0px;
+    drop-shadow-offset-y: Theme.effects-on ? Theme.effects-shadow-offset : 0px;
+    drop-shadow-color: Theme.effects-on ? Theme.effects-shadow : transparent;
+    Rectangle {
+        border-radius: Tokens.radius-sm;
+        background: @linear-gradient(90deg, Theme.accent-subtle 0%, transparent 70%);
+    }
+    if Theme.effects-shade-secondary: Rectangle {
+        x: Tokens.radius-sm;
+        y: 0px;
+        width: root.width - 2 * Tokens.radius-sm;
+        height: Tokens.size-border;
+        background: Theme.effects-top-secondary-rest;
+    }
+    Rectangle {
+        x: 0px;
+        width: Tokens.space-1;
+        border-top-left-radius: Tokens.radius-sm;
+        border-bottom-left-radius: Tokens.radius-sm;
+        background: root.open ? Theme.accent : Theme.border-strong;
+    }
+    @children
+}
+
 // A raised card on a page: a settings card, a step of a wizard. `surface.raised`,
 // `radius.lg`, an outline only where colour does not separate it (ADR-0112 decision 3,
 // `outlined` defaults to the theme's `panel-outline`). With theme effects the card stands
@@ -5547,14 +5582,12 @@ export component FeatureSection inherits VerticalLayout {
     }
     spacing: Tokens.size-field-gap;
     // The header is a band, so each feature stands out from the fields under it.
-    Rectangle {
-        height: Tokens.size-control-md;
-        border-radius: Tokens.radius-sm;
-        background: Theme.surface-overlay;
+    HeaderBand {
+        open: !root.closed;
         HorizontalLayout {
             width: parent.width;
             height: parent.height;
-            padding-left: Tokens.space-2;
+            padding-left: Tokens.space-1 + Tokens.space-2;
             padding-right: Tokens.space-1;
             spacing: Tokens.space-2;
             Rectangle {

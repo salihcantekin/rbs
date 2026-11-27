@@ -13,7 +13,7 @@ use rbs_app_ui::{
     FilterData, FilterFieldData, PropertiesProbe, Sections, SourceData, Studio, TextData, Theme,
     Tokens,
 };
-use rbs_ui::tokens::{Base, ThemeBody, Tokens as TokenFile};
+use rbs_ui::tokens::{Base, Effects, ThemeBody, Tokens as TokenFile};
 use slint::{ComponentHandle, ModelRc, VecModel};
 
 fn colour(hex: u32) -> slint::Color {
@@ -106,9 +106,11 @@ struct Look {
     height: f32,
 }
 
-fn shot(file: &TokenFile, base: Base, look: &Look, dir: &std::path::Path) {
+fn shot(file: &TokenFile, base: Base, effects: Effects, look: &Look, dir: &std::path::Path) {
+    let mut body = ThemeBody::new(base);
+    body.set_effects(effects);
     let theme = file
-        .resolve(&ThemeBody::new(base))
+        .resolve(&body)
         .expect("the theme resolves");
     let s = slot(&theme, "").expect("a slot");
     let w = PropertiesProbe::new().expect("the probe window");
@@ -170,9 +172,19 @@ fn properties_redesign_screenshots() {
         ("audio", false, 2, false, 260.0, 900.0),
         ("filters", false, 1, false, 260.0, 900.0),
     ];
+    let fx = [
+        (Effects::Calm, "calm"),
+        (Effects::Glow, "glow"),
+        (Effects::Glass, "glass"),
+        (Effects::Tactile, "tactile"),
+    ];
     for (base, b) in [(Base::Dark, "dark"), (Base::Light, "light")] {
+      for (effects, e) in fx {
         for (n, text, tab, open, width, height) in looks {
-            let name = format!("{n}-{b}");
+            if e != "calm" && n != "text-tall" {
+                continue;
+            }
+            let name = format!("{n}-{b}-{e}");
             let look = Look {
                 name: Box::leak(name.into_boxed_str()),
                 text,
@@ -181,7 +193,8 @@ fn properties_redesign_screenshots() {
                 width,
                 height,
             };
-            shot(&file, base, &look, &dir);
+            shot(&file, base, effects, &look, &dir);
         }
+      }
     }
 }

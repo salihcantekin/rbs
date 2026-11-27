@@ -2,7 +2,7 @@
 // Properties panel's Page tab and the Source settings window, and the collapsible
 // Section both use.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, IconButton, InfoHint, NumberField, SectionHeader, SegmentedControl, Select, TextArea, TextField, Toggle, CaptionField as Field } from "components.slint";
+import { Button, IconButton, InfoHint, NumberField, HeaderBand, SectionHeader, SegmentedControl, Select, TextArea, TextField, Toggle, CaptionField as Field } from "components.slint";
 import { SettingsCallout } from "settings.slint";
 import { ToggleRow } from "properties_parts.slint";
 import { BrowserData, Studio, Sections, IconName } from "base/types.slint";
@@ -33,13 +33,12 @@ export component Section inherits VerticalLayout {
     }
     spacing: Tokens.size-field-gap;
     // The header is a band, so each category stands out from the fields under it.
-    Rectangle {
-        height: Tokens.size-control-md;
-        border-radius: Tokens.radius-sm;
-        background: Theme.surface-overlay;
+    HeaderBand {
+        open: !root.closed;
         HorizontalLayout {
             width: parent.width;
             height: parent.height;
+            padding-left: Tokens.space-1;
             padding-right: Tokens.space-1;
             spacing: Tokens.size-field-gap;
             SectionHeader {
