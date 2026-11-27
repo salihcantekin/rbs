@@ -18,32 +18,57 @@ use serde_json::json;
 use support::*;
 
 #[test]
-fn describe_advertises_only_available_schema_pairs() {
-    #[derive(serde::Deserialize)]
-    struct LegacyMethod {
-        name: String,
-    }
-
+fn describe_without_parameters_is_the_index_without_schemas() {
     let mut h = Harness::new();
     let conn = h.login(PeerInfo::loopback_websocket(), PANEL_TOKEN_SEED);
     h.call(conn, "api.describe", json!({}));
     let answer = h.one(conn);
     let methods = answer["result"]["methods"].as_array().unwrap();
+    assert_eq!(methods.len(), rbs_api::request::METHODS.len());
+    for method in methods {
+        assert!(method.get("input_schema").is_none(), "{method}");
+        assert!(method.get("output_schema").is_none(), "{method}");
+        assert!(method["effect"].is_string());
+    }
+}
+
+#[test]
+fn describe_schemas_covers_only_the_selection() {
+    let mut h = Harness::new();
+    let conn = h.login(PeerInfo::loopback_websocket(), PANEL_TOKEN_SEED);
     let schemas = rbs_api::schema::builtin_schemas().unwrap();
+    h.call(
+        conn,
+        "api.describe",
+        json!({"detail": "schemas", "namespaces": ["scene"], "methods": ["source.list"]}),
+    );
+    let answer = h.one(conn);
+    let methods = answer["result"]["methods"].as_array().unwrap();
+    assert!(!methods.is_empty());
     for method in methods {
         let name = method["name"].as_str().unwrap();
-        if let Some(pair) = schemas.get(name) {
-            assert_eq!(method["input_schema"], pair.input_schema);
-            assert_eq!(method["output_schema"], pair.output_schema);
-            let legacy: LegacyMethod = serde_json::from_value(method.clone()).unwrap();
-            assert_eq!(legacy.name, name);
-        } else {
-            assert!(method.get("input_schema").is_none(), "{name}");
-            assert!(method.get("output_schema").is_none(), "{name}");
-        }
+        assert!(name.starts_with("scene.") || name == "source.list", "{name}");
+        assert_eq!(method["input_schema"], schemas[name].input_schema, "{name}");
+        assert_eq!(method["output_schema"], schemas[name].output_schema, "{name}");
     }
-    for name in schemas.keys() {
-        assert!(methods.iter().any(|m| m["name"] == *name), "{name}");
+    assert!(methods.iter().any(|m| m["name"] == "source.list"));
+}
+
+#[test]
+fn describe_refuses_unknown_and_oversized_selections() {
+    let mut h = Harness::new();
+    let conn = h.login(PeerInfo::loopback_websocket(), PANEL_TOKEN_SEED);
+    let many: Vec<String> = (0..65).map(|i| format!("scene.m{i}")).collect();
+    for params in [
+        json!({"namespaces": ["nope"]}),
+        json!({"methods": ["scene.nope"]}),
+        json!({"methods": many}),
+        json!({"methods": ["x".repeat(65)]}),
+        json!({"detail": "everything"}),
+    ] {
+        h.call(conn, "api.describe", params.clone());
+        let answer = h.one(conn);
+        assert_eq!(answer["error"]["data"]["kind"], "invalid_params", "{params}");
     }
 }
 

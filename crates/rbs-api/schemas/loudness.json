@@ -1,0 +1,135 @@
+{
+  "loudness.reset": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "loudness.set_enabled": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`loudness.set_enabled` (protocol 1.47, ADR-0092): starts or stops the main canvas's\nloudness meter. Session state: a restart of the app starts with it off.",
+      "properties": {
+        "on": {
+          "description": "Measure (true) or not.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "on"
+      ],
+      "title": "SetLoudnessEnabled",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "loudness.status": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`loudness.status` (protocol 1.47, ADR-0092 stage 1): the loudness of the main\ncanvas's mix after ITU-R BS.1770-4 and EBU R 128. Each value is `null` while it has\nno data: the meter is off, its window has not filled since it started or was\nreset, or the programme so far is below the -70 LUFS gate.",
+      "properties": {
+        "enabled": {
+          "description": "The meter runs.",
+          "type": "boolean"
+        },
+        "integrated": {
+          "description": "Integrated loudness since the meter started or was reset, LUFS.",
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "momentary": {
+          "description": "Momentary loudness (400 ms), LUFS.",
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "momentary_max": {
+          "description": "Highest momentary loudness over the same time, LUFS.",
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "range": {
+          "description": "Loudness range (EBU Tech 3342) over the same time, LU.",
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "short_term": {
+          "description": "Short-term loudness (3 s), LUFS.",
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "short_term_max": {
+          "description": "Highest short-term loudness over the same time, LUFS.",
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "target": {
+          "description": "The saved target, LUFS (protocol 1.59; `settings.get` `loudness`).",
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "true_peak_limit": {
+          "description": "The saved true-peak limit, dBTP (protocol 1.59).",
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "true_peak_max": {
+          "description": "Highest true peak over the same time, dBTP.",
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "enabled"
+      ],
+      "title": "LoudnessStatus",
+      "type": "object"
+    }
+  }
+}

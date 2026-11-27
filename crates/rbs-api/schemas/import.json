@@ -1,0 +1,552 @@
+{
+  "import.obs.check": {
+    "input_schema": {
+      "$defs": {
+        "ObsImportChoice": {
+          "additionalProperties": false,
+          "description": "What `import.obs.check` and `import.obs.run` bring (protocol 1.82, ADR-0131\ndecision 12): the parts the desktop wizard offers. Every part is on when absent.",
+          "properties": {
+            "audio_filters": {
+              "description": "Audio filters.",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "canvas": {
+              "description": "The canvas size and frame rate of the profile.",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "global_audio": {
+              "description": "OBS's desktop audio and microphones.",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "hotkeys": {
+              "description": "Hotkeys (added; never replacing a shortcut of the user's).",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "recording": {
+              "description": "Recording settings.",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "scenes": {
+              "description": "The scenes to bring, by OBS name (and the scenes they nest); absent: all.",
+              "items": {
+                "type": "string"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "stream_key": {
+              "description": "The stream key (into the credential store only; needs `stream_server`).",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "stream_server": {
+              "description": "The stream server.",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "video_filters": {
+              "description": "Video filters.",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`import.obs.check` and `import.obs.run` (protocol 1.82): a collection and a\nprofile named as `import.obs.scan` found them, never by path.",
+      "properties": {
+        "choose": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ObsImportChoice"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What to bring; absent: everything."
+        },
+        "collection": {
+          "description": "A collection name from `import.obs.scan`.",
+          "type": "string"
+        },
+        "profile": {
+          "description": "A profile name from `import.obs.scan`; absent: no profile.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "collection"
+      ],
+      "title": "ObsImport",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "ObsCounts": {
+          "description": "What an OBS import brings exactly (protocol 1.82).",
+          "properties": {
+            "filters": {
+              "description": "Filters.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "items": {
+              "description": "Items placed in scenes.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "scenes": {
+              "description": "Scenes.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "sources": {
+              "description": "Sources.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "scenes",
+            "sources",
+            "items",
+            "filters"
+          ],
+          "type": "object"
+        },
+        "ObsReportEntry": {
+          "description": "One OBS object or setting not brought exactly (protocol 1.82, ADR-0131\ndecision 11). Never holds a credential or a full path.",
+          "properties": {
+            "area": {
+              "description": "`scene`, `source`, `filter`, `item`, `transition`, `hotkey`, `profile` or\n`setting`.",
+              "type": "string"
+            },
+            "hint": {
+              "description": "What the user can do.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "obs_name": {
+              "description": "The OBS name.",
+              "type": "string"
+            },
+            "obs_type": {
+              "description": "The OBS type id; absent for a setting.",
+              "type": "string"
+            },
+            "outcome": {
+              "description": "`approximated`, `skipped` or `not-chosen`.",
+              "type": "string"
+            },
+            "reason": {
+              "description": "Why, in one sentence.",
+              "type": "string"
+            },
+            "scenes": {
+              "description": "The scenes it is in.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "outcome",
+            "area",
+            "obs_name",
+            "reason"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`import.obs.check` (protocol 1.82): the report; nothing was written.",
+      "properties": {
+        "entries": {
+          "description": "What does not, in the order met.",
+          "items": {
+            "$ref": "#/$defs/ObsReportEntry"
+          },
+          "type": "array"
+        },
+        "exact": {
+          "$ref": "#/$defs/ObsCounts",
+          "description": "What comes across exactly."
+        },
+        "name": {
+          "description": "The OBS collection's name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "exact",
+        "entries"
+      ],
+      "title": "ObsCheck",
+      "type": "object"
+    }
+  },
+  "import.obs.run": {
+    "input_schema": {
+      "$defs": {
+        "ObsImportChoice": {
+          "additionalProperties": false,
+          "description": "What `import.obs.check` and `import.obs.run` bring (protocol 1.82, ADR-0131\ndecision 12): the parts the desktop wizard offers. Every part is on when absent.",
+          "properties": {
+            "audio_filters": {
+              "description": "Audio filters.",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "canvas": {
+              "description": "The canvas size and frame rate of the profile.",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "global_audio": {
+              "description": "OBS's desktop audio and microphones.",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "hotkeys": {
+              "description": "Hotkeys (added; never replacing a shortcut of the user's).",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "recording": {
+              "description": "Recording settings.",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "scenes": {
+              "description": "The scenes to bring, by OBS name (and the scenes they nest); absent: all.",
+              "items": {
+                "type": "string"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "stream_key": {
+              "description": "The stream key (into the credential store only; needs `stream_server`).",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "stream_server": {
+              "description": "The stream server.",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "video_filters": {
+              "description": "Video filters.",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`import.obs.check` and `import.obs.run` (protocol 1.82): a collection and a\nprofile named as `import.obs.scan` found them, never by path.",
+      "properties": {
+        "choose": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ObsImportChoice"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What to bring; absent: everything."
+        },
+        "collection": {
+          "description": "A collection name from `import.obs.scan`.",
+          "type": "string"
+        },
+        "profile": {
+          "description": "A profile name from `import.obs.scan`; absent: no profile.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "collection"
+      ],
+      "title": "ObsImport",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "LibraryEntry": {
+          "description": "One entry of a user data library (`profile.list`, `collection.list`; protocol 1.4).",
+          "properties": {
+            "id": {
+              "description": "Its stable id, passed to `profile.switch` and `collection.switch`.",
+              "type": "string"
+            },
+            "name": {
+              "description": "Its name, unique in the library ignoring case.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "name"
+          ],
+          "type": "object"
+        },
+        "ObsCheck": {
+          "description": "`import.obs.check` (protocol 1.82): the report; nothing was written.",
+          "properties": {
+            "entries": {
+              "description": "What does not, in the order met.",
+              "items": {
+                "$ref": "#/$defs/ObsReportEntry"
+              },
+              "type": "array"
+            },
+            "exact": {
+              "$ref": "#/$defs/ObsCounts",
+              "description": "What comes across exactly."
+            },
+            "name": {
+              "description": "The OBS collection's name.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "exact",
+            "entries"
+          ],
+          "type": "object"
+        },
+        "ObsCounts": {
+          "description": "What an OBS import brings exactly (protocol 1.82).",
+          "properties": {
+            "filters": {
+              "description": "Filters.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "items": {
+              "description": "Items placed in scenes.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "scenes": {
+              "description": "Scenes.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "sources": {
+              "description": "Sources.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "scenes",
+            "sources",
+            "items",
+            "filters"
+          ],
+          "type": "object"
+        },
+        "ObsReportEntry": {
+          "description": "One OBS object or setting not brought exactly (protocol 1.82, ADR-0131\ndecision 11). Never holds a credential or a full path.",
+          "properties": {
+            "area": {
+              "description": "`scene`, `source`, `filter`, `item`, `transition`, `hotkey`, `profile` or\n`setting`.",
+              "type": "string"
+            },
+            "hint": {
+              "description": "What the user can do.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "obs_name": {
+              "description": "The OBS name.",
+              "type": "string"
+            },
+            "obs_type": {
+              "description": "The OBS type id; absent for a setting.",
+              "type": "string"
+            },
+            "outcome": {
+              "description": "`approximated`, `skipped` or `not-chosen`.",
+              "type": "string"
+            },
+            "reason": {
+              "description": "Why, in one sentence.",
+              "type": "string"
+            },
+            "scenes": {
+              "description": "The scenes it is in.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "outcome",
+            "area",
+            "obs_name",
+            "reason"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`import.obs.run` (protocol 1.82): what was written.",
+      "properties": {
+        "collection": {
+          "$ref": "#/$defs/LibraryEntry",
+          "description": "The new scene collection (`collection.switch` takes its id)."
+        },
+        "notes": {
+          "description": "What writing left out.",
+          "items": {
+            "$ref": "#/$defs/ObsReportEntry"
+          },
+          "type": "array"
+        },
+        "profile": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LibraryEntry"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The new output profile, when one was written."
+        },
+        "report": {
+          "$ref": "#/$defs/ObsCheck",
+          "description": "The check's report."
+        },
+        "shortcuts_added": {
+          "description": "Hotkeys added as shortcuts.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "collection",
+        "shortcuts_added",
+        "report"
+      ],
+      "title": "ObsRun",
+      "type": "object"
+    }
+  },
+  "import.obs.scan": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`import.obs.scan` (protocol 1.82): what OBS's settings folders on the server's\ncomputer hold, by name only (never a path).",
+      "properties": {
+        "collections": {
+          "description": "Scene collection names, as `import.obs.check` takes them.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "profiles": {
+          "description": "Profile names.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "collections",
+        "profiles"
+      ],
+      "title": "ObsScan",
+      "type": "object"
+    }
+  }
+}

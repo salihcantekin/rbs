@@ -1,0 +1,317 @@
+{
+  "protection.status": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "OutputCanvas": {
+          "description": "The canvas an output records or streams (protocol 1.29, ADR-0093 decision 6).",
+          "oneOf": [
+            {
+              "const": "main",
+              "description": "The studio's main canvas.",
+              "type": "string"
+            },
+            {
+              "const": "vertical",
+              "description": "The vertical canvas (`canvas.add_vertical`).",
+              "type": "string"
+            }
+          ]
+        },
+        "OutputKind": {
+          "description": "Which output kind `output.set_with_vertical` changes.",
+          "oneOf": [
+            {
+              "const": "record",
+              "description": "Recording.",
+              "type": "string"
+            },
+            {
+              "const": "stream",
+              "description": "Stream.",
+              "type": "string"
+            }
+          ]
+        },
+        "ProtectionAlert": {
+          "description": "One thing the user should know, with a plain sentence.",
+          "properties": {
+            "canvas": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/OutputCanvas"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The canvas, for a lag alert."
+            },
+            "kind": {
+              "$ref": "#/$defs/ProtectionKind",
+              "description": "What it is about."
+            },
+            "level": {
+              "$ref": "#/$defs/ProtectionLevel",
+              "description": "How bad."
+            },
+            "output": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/OutputKind"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The output, for a lag alert."
+            },
+            "text": {
+              "description": "The sentence for the user.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "level",
+            "text"
+          ],
+          "type": "object"
+        },
+        "ProtectionDisk": {
+          "description": "One disk (volume) at least one running recording writes to.",
+          "properties": {
+            "free_bytes": {
+              "description": "Free bytes at the last reading.",
+              "format": "uint64",
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "level": {
+              "$ref": "#/$defs/ProtectionLevel",
+              "description": "Its level."
+            },
+            "recordings": {
+              "description": "The canvases whose recording writes there.",
+              "items": {
+                "$ref": "#/$defs/OutputCanvas"
+              },
+              "type": "array"
+            },
+            "seconds_left": {
+              "description": "Seconds until the reserve is reached at the measured rate, rounded to whole\nminutes; absent while the rate is unknown or free space does not fall.",
+              "format": "uint64",
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "level",
+            "recordings"
+          ],
+          "type": "object"
+        },
+        "ProtectionKind": {
+          "description": "What a protection alert is about (protocol 1.49).",
+          "oneOf": [
+            {
+              "const": "disk",
+              "description": "A disk a recording writes to is filling.",
+              "type": "string"
+            },
+            {
+              "const": "lag",
+              "description": "An output loses frames.",
+              "type": "string"
+            },
+            {
+              "const": "render",
+              "description": "The render worker is late (every canvas).",
+              "type": "string"
+            },
+            {
+              "const": "audio",
+              "description": "The audio worker is late.",
+              "type": "string"
+            },
+            {
+              "const": "memory",
+              "description": "System memory is low.",
+              "type": "string"
+            }
+          ]
+        },
+        "ProtectionLevel": {
+          "description": "A level of recording protection (protocol 1.49, ADR-0090 decision 9). A client\ntreats a level it does not know as `warning`.",
+          "oneOf": [
+            {
+              "const": "unavailable",
+              "description": "Nothing could be read (the platform has no reading, or the probe timed out).\nNever raises the overall level.",
+              "type": "string"
+            },
+            {
+              "const": "ok",
+              "description": "Fine.",
+              "type": "string"
+            },
+            {
+              "const": "notice",
+              "description": "Worth knowing.",
+              "type": "string"
+            },
+            {
+              "const": "warning",
+              "description": "Act soon.",
+              "type": "string"
+            },
+            {
+              "const": "critical",
+              "description": "Acting now (at the disk reserve the recordings there stop cleanly).",
+              "type": "string"
+            }
+          ]
+        },
+        "ProtectionMemory": {
+          "description": "System memory.",
+          "properties": {
+            "available_bytes": {
+              "description": "Available bytes at the last reading.",
+              "format": "uint64",
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "level": {
+              "$ref": "#/$defs/ProtectionLevel",
+              "description": "Its level."
+            }
+          },
+          "required": [
+            "level"
+          ],
+          "type": "object"
+        },
+        "ProtectionOutput": {
+          "description": "One running output's lag level.",
+          "properties": {
+            "canvas": {
+              "$ref": "#/$defs/OutputCanvas",
+              "description": "Its canvas."
+            },
+            "level": {
+              "$ref": "#/$defs/ProtectionLevel",
+              "description": "`ok` or `warning` in this version."
+            },
+            "output": {
+              "$ref": "#/$defs/OutputKind",
+              "description": "Recording or stream."
+            }
+          },
+          "required": [
+            "canvas",
+            "output",
+            "level"
+          ],
+          "type": "object"
+        },
+        "ProtectionStatus": {
+          "description": "`protection.status` and `protection.changed` (protocol 1.49, ADR-0090 decision 9).",
+          "properties": {
+            "alerts": {
+              "description": "Every item at `notice` or above, and a disk that could not be read, most\nsevere first.",
+              "items": {
+                "$ref": "#/$defs/ProtectionAlert"
+              },
+              "type": "array"
+            },
+            "audio": {
+              "$ref": "#/$defs/ProtectionLevel",
+              "description": "The audio worker."
+            },
+            "disks": {
+              "description": "Disks of the running recordings.",
+              "items": {
+                "$ref": "#/$defs/ProtectionDisk"
+              },
+              "type": "array"
+            },
+            "guarded": {
+              "description": "A guard runs: some recording or stream runs. While false the lists are empty.",
+              "type": "boolean"
+            },
+            "level": {
+              "$ref": "#/$defs/ProtectionLevel",
+              "description": "The highest level of all, `ok` when none is higher (`unavailable` never\nraises it)."
+            },
+            "memory": {
+              "$ref": "#/$defs/ProtectionMemory",
+              "description": "System memory."
+            },
+            "outputs": {
+              "description": "Running outputs.",
+              "items": {
+                "$ref": "#/$defs/ProtectionOutput"
+              },
+              "type": "array"
+            },
+            "render": {
+              "$ref": "#/$defs/ProtectionLevel",
+              "description": "The render worker."
+            }
+          },
+          "required": [
+            "guarded",
+            "level",
+            "disks",
+            "outputs",
+            "render",
+            "audio",
+            "memory",
+            "alerts"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "A state query's answer: the data and the `seq` of each state key it includes, so a\nclient ignores events with an equal or lower `seq`.",
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/ProtectionStatus",
+          "description": "The state."
+        },
+        "seq": {
+          "additionalProperties": {
+            "format": "uint64",
+            "maximum": 18446744073709551615,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "description": "`seq` per state key included in `data`.",
+          "type": "object"
+        }
+      },
+      "required": [
+        "seq",
+        "data"
+      ],
+      "title": "Snapshot",
+      "type": "object"
+    }
+  }
+}

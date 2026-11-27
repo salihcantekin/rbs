@@ -1,0 +1,878 @@
+{
+  "media.next": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`media.play`, `media.pause`, `media.restart` and `media.state` (protocol 1.83,\nADR-0108 decision 10): one media-file source.",
+      "properties": {
+        "source": {
+          "description": "The source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source"
+      ],
+      "title": "MediaSource",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "MediaPlayState": {
+          "description": "The play state of a media-file source (ADR-0108 decision 10).",
+          "oneOf": [
+            {
+              "const": "playing",
+              "description": "Picture and sound advance.",
+              "type": "string"
+            },
+            {
+              "const": "paused",
+              "description": "Stopped at the cursor.",
+              "type": "string"
+            },
+            {
+              "const": "cued",
+              "description": "Only a preview scene draws it: it plays when a program or hold scene does.",
+              "type": "string"
+            },
+            {
+              "const": "ended",
+              "description": "The end of the file without `loop`: the last picture holds.",
+              "type": "string"
+            },
+            {
+              "const": "standby",
+              "description": "Asleep with no stored pause or end.",
+              "type": "string"
+            },
+            {
+              "const": "unavailable",
+              "description": "A fault stopped playback.",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "A state this client does not know (a newer server).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "The answer of every `media.*` method (protocol 1.83).",
+      "properties": {
+        "count": {
+          "description": "A slide show's picture count (protocol 1.102); absent for a media file.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "cursor_ms": {
+          "description": "The media cursor in milliseconds: where a pause stopped, else the picture\nshown last.",
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "duration_ms": {
+          "description": "The file's stated duration in milliseconds, once it was opened. For a slide\nshow, the interval; absent with `advance = manual`.",
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "index": {
+          "description": "A slide show's shown picture, 0-based (protocol 1.102, ADR-0171 decision 9);\nabsent for a media file.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "source": {
+          "description": "The source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "state": {
+          "$ref": "#/$defs/MediaPlayState",
+          "description": "The play state after the command."
+        }
+      },
+      "required": [
+        "source",
+        "state",
+        "cursor_ms"
+      ],
+      "title": "MediaStateInfo",
+      "type": "object"
+    }
+  },
+  "media.pause": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`media.play`, `media.pause`, `media.restart` and `media.state` (protocol 1.83,\nADR-0108 decision 10): one media-file source.",
+      "properties": {
+        "source": {
+          "description": "The source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source"
+      ],
+      "title": "MediaSource",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "MediaPlayState": {
+          "description": "The play state of a media-file source (ADR-0108 decision 10).",
+          "oneOf": [
+            {
+              "const": "playing",
+              "description": "Picture and sound advance.",
+              "type": "string"
+            },
+            {
+              "const": "paused",
+              "description": "Stopped at the cursor.",
+              "type": "string"
+            },
+            {
+              "const": "cued",
+              "description": "Only a preview scene draws it: it plays when a program or hold scene does.",
+              "type": "string"
+            },
+            {
+              "const": "ended",
+              "description": "The end of the file without `loop`: the last picture holds.",
+              "type": "string"
+            },
+            {
+              "const": "standby",
+              "description": "Asleep with no stored pause or end.",
+              "type": "string"
+            },
+            {
+              "const": "unavailable",
+              "description": "A fault stopped playback.",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "A state this client does not know (a newer server).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "The answer of every `media.*` method (protocol 1.83).",
+      "properties": {
+        "count": {
+          "description": "A slide show's picture count (protocol 1.102); absent for a media file.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "cursor_ms": {
+          "description": "The media cursor in milliseconds: where a pause stopped, else the picture\nshown last.",
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "duration_ms": {
+          "description": "The file's stated duration in milliseconds, once it was opened. For a slide\nshow, the interval; absent with `advance = manual`.",
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "index": {
+          "description": "A slide show's shown picture, 0-based (protocol 1.102, ADR-0171 decision 9);\nabsent for a media file.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "source": {
+          "description": "The source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "state": {
+          "$ref": "#/$defs/MediaPlayState",
+          "description": "The play state after the command."
+        }
+      },
+      "required": [
+        "source",
+        "state",
+        "cursor_ms"
+      ],
+      "title": "MediaStateInfo",
+      "type": "object"
+    }
+  },
+  "media.play": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`media.play`, `media.pause`, `media.restart` and `media.state` (protocol 1.83,\nADR-0108 decision 10): one media-file source.",
+      "properties": {
+        "source": {
+          "description": "The source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source"
+      ],
+      "title": "MediaSource",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "MediaPlayState": {
+          "description": "The play state of a media-file source (ADR-0108 decision 10).",
+          "oneOf": [
+            {
+              "const": "playing",
+              "description": "Picture and sound advance.",
+              "type": "string"
+            },
+            {
+              "const": "paused",
+              "description": "Stopped at the cursor.",
+              "type": "string"
+            },
+            {
+              "const": "cued",
+              "description": "Only a preview scene draws it: it plays when a program or hold scene does.",
+              "type": "string"
+            },
+            {
+              "const": "ended",
+              "description": "The end of the file without `loop`: the last picture holds.",
+              "type": "string"
+            },
+            {
+              "const": "standby",
+              "description": "Asleep with no stored pause or end.",
+              "type": "string"
+            },
+            {
+              "const": "unavailable",
+              "description": "A fault stopped playback.",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "A state this client does not know (a newer server).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "The answer of every `media.*` method (protocol 1.83).",
+      "properties": {
+        "count": {
+          "description": "A slide show's picture count (protocol 1.102); absent for a media file.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "cursor_ms": {
+          "description": "The media cursor in milliseconds: where a pause stopped, else the picture\nshown last.",
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "duration_ms": {
+          "description": "The file's stated duration in milliseconds, once it was opened. For a slide\nshow, the interval; absent with `advance = manual`.",
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "index": {
+          "description": "A slide show's shown picture, 0-based (protocol 1.102, ADR-0171 decision 9);\nabsent for a media file.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "source": {
+          "description": "The source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "state": {
+          "$ref": "#/$defs/MediaPlayState",
+          "description": "The play state after the command."
+        }
+      },
+      "required": [
+        "source",
+        "state",
+        "cursor_ms"
+      ],
+      "title": "MediaStateInfo",
+      "type": "object"
+    }
+  },
+  "media.previous": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`media.play`, `media.pause`, `media.restart` and `media.state` (protocol 1.83,\nADR-0108 decision 10): one media-file source.",
+      "properties": {
+        "source": {
+          "description": "The source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source"
+      ],
+      "title": "MediaSource",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "MediaPlayState": {
+          "description": "The play state of a media-file source (ADR-0108 decision 10).",
+          "oneOf": [
+            {
+              "const": "playing",
+              "description": "Picture and sound advance.",
+              "type": "string"
+            },
+            {
+              "const": "paused",
+              "description": "Stopped at the cursor.",
+              "type": "string"
+            },
+            {
+              "const": "cued",
+              "description": "Only a preview scene draws it: it plays when a program or hold scene does.",
+              "type": "string"
+            },
+            {
+              "const": "ended",
+              "description": "The end of the file without `loop`: the last picture holds.",
+              "type": "string"
+            },
+            {
+              "const": "standby",
+              "description": "Asleep with no stored pause or end.",
+              "type": "string"
+            },
+            {
+              "const": "unavailable",
+              "description": "A fault stopped playback.",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "A state this client does not know (a newer server).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "The answer of every `media.*` method (protocol 1.83).",
+      "properties": {
+        "count": {
+          "description": "A slide show's picture count (protocol 1.102); absent for a media file.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "cursor_ms": {
+          "description": "The media cursor in milliseconds: where a pause stopped, else the picture\nshown last.",
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "duration_ms": {
+          "description": "The file's stated duration in milliseconds, once it was opened. For a slide\nshow, the interval; absent with `advance = manual`.",
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "index": {
+          "description": "A slide show's shown picture, 0-based (protocol 1.102, ADR-0171 decision 9);\nabsent for a media file.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "source": {
+          "description": "The source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "state": {
+          "$ref": "#/$defs/MediaPlayState",
+          "description": "The play state after the command."
+        }
+      },
+      "required": [
+        "source",
+        "state",
+        "cursor_ms"
+      ],
+      "title": "MediaStateInfo",
+      "type": "object"
+    }
+  },
+  "media.restart": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`media.play`, `media.pause`, `media.restart` and `media.state` (protocol 1.83,\nADR-0108 decision 10): one media-file source.",
+      "properties": {
+        "source": {
+          "description": "The source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source"
+      ],
+      "title": "MediaSource",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "MediaPlayState": {
+          "description": "The play state of a media-file source (ADR-0108 decision 10).",
+          "oneOf": [
+            {
+              "const": "playing",
+              "description": "Picture and sound advance.",
+              "type": "string"
+            },
+            {
+              "const": "paused",
+              "description": "Stopped at the cursor.",
+              "type": "string"
+            },
+            {
+              "const": "cued",
+              "description": "Only a preview scene draws it: it plays when a program or hold scene does.",
+              "type": "string"
+            },
+            {
+              "const": "ended",
+              "description": "The end of the file without `loop`: the last picture holds.",
+              "type": "string"
+            },
+            {
+              "const": "standby",
+              "description": "Asleep with no stored pause or end.",
+              "type": "string"
+            },
+            {
+              "const": "unavailable",
+              "description": "A fault stopped playback.",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "A state this client does not know (a newer server).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "The answer of every `media.*` method (protocol 1.83).",
+      "properties": {
+        "count": {
+          "description": "A slide show's picture count (protocol 1.102); absent for a media file.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "cursor_ms": {
+          "description": "The media cursor in milliseconds: where a pause stopped, else the picture\nshown last.",
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "duration_ms": {
+          "description": "The file's stated duration in milliseconds, once it was opened. For a slide\nshow, the interval; absent with `advance = manual`.",
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "index": {
+          "description": "A slide show's shown picture, 0-based (protocol 1.102, ADR-0171 decision 9);\nabsent for a media file.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "source": {
+          "description": "The source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "state": {
+          "$ref": "#/$defs/MediaPlayState",
+          "description": "The play state after the command."
+        }
+      },
+      "required": [
+        "source",
+        "state",
+        "cursor_ms"
+      ],
+      "title": "MediaStateInfo",
+      "type": "object"
+    }
+  },
+  "media.seek": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`media.seek` (protocol 1.83, ADR-0108 decision 10).",
+      "properties": {
+        "position_ms": {
+          "description": "The media time to move to, in milliseconds; past the file's stated duration it\nis clamped to it.",
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "source": {
+          "description": "The source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source",
+        "position_ms"
+      ],
+      "title": "MediaSeek",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "MediaPlayState": {
+          "description": "The play state of a media-file source (ADR-0108 decision 10).",
+          "oneOf": [
+            {
+              "const": "playing",
+              "description": "Picture and sound advance.",
+              "type": "string"
+            },
+            {
+              "const": "paused",
+              "description": "Stopped at the cursor.",
+              "type": "string"
+            },
+            {
+              "const": "cued",
+              "description": "Only a preview scene draws it: it plays when a program or hold scene does.",
+              "type": "string"
+            },
+            {
+              "const": "ended",
+              "description": "The end of the file without `loop`: the last picture holds.",
+              "type": "string"
+            },
+            {
+              "const": "standby",
+              "description": "Asleep with no stored pause or end.",
+              "type": "string"
+            },
+            {
+              "const": "unavailable",
+              "description": "A fault stopped playback.",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "A state this client does not know (a newer server).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "The answer of every `media.*` method (protocol 1.83).",
+      "properties": {
+        "count": {
+          "description": "A slide show's picture count (protocol 1.102); absent for a media file.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "cursor_ms": {
+          "description": "The media cursor in milliseconds: where a pause stopped, else the picture\nshown last.",
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "duration_ms": {
+          "description": "The file's stated duration in milliseconds, once it was opened. For a slide\nshow, the interval; absent with `advance = manual`.",
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "index": {
+          "description": "A slide show's shown picture, 0-based (protocol 1.102, ADR-0171 decision 9);\nabsent for a media file.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "source": {
+          "description": "The source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "state": {
+          "$ref": "#/$defs/MediaPlayState",
+          "description": "The play state after the command."
+        }
+      },
+      "required": [
+        "source",
+        "state",
+        "cursor_ms"
+      ],
+      "title": "MediaStateInfo",
+      "type": "object"
+    }
+  },
+  "media.state": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`media.play`, `media.pause`, `media.restart` and `media.state` (protocol 1.83,\nADR-0108 decision 10): one media-file source.",
+      "properties": {
+        "source": {
+          "description": "The source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source"
+      ],
+      "title": "MediaSource",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "MediaPlayState": {
+          "description": "The play state of a media-file source (ADR-0108 decision 10).",
+          "oneOf": [
+            {
+              "const": "playing",
+              "description": "Picture and sound advance.",
+              "type": "string"
+            },
+            {
+              "const": "paused",
+              "description": "Stopped at the cursor.",
+              "type": "string"
+            },
+            {
+              "const": "cued",
+              "description": "Only a preview scene draws it: it plays when a program or hold scene does.",
+              "type": "string"
+            },
+            {
+              "const": "ended",
+              "description": "The end of the file without `loop`: the last picture holds.",
+              "type": "string"
+            },
+            {
+              "const": "standby",
+              "description": "Asleep with no stored pause or end.",
+              "type": "string"
+            },
+            {
+              "const": "unavailable",
+              "description": "A fault stopped playback.",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "A state this client does not know (a newer server).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "The answer of every `media.*` method (protocol 1.83).",
+      "properties": {
+        "count": {
+          "description": "A slide show's picture count (protocol 1.102); absent for a media file.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "cursor_ms": {
+          "description": "The media cursor in milliseconds: where a pause stopped, else the picture\nshown last.",
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "duration_ms": {
+          "description": "The file's stated duration in milliseconds, once it was opened. For a slide\nshow, the interval; absent with `advance = manual`.",
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "index": {
+          "description": "A slide show's shown picture, 0-based (protocol 1.102, ADR-0171 decision 9);\nabsent for a media file.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "source": {
+          "description": "The source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "state": {
+          "$ref": "#/$defs/MediaPlayState",
+          "description": "The play state after the command."
+        }
+      },
+      "required": [
+        "source",
+        "state",
+        "cursor_ms"
+      ],
+      "title": "MediaStateInfo",
+      "type": "object"
+    }
+  }
+}

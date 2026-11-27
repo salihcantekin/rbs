@@ -1,11 +1,9 @@
-//! Regenerate the checked-in, type-derived method schemas.
+//! Regenerate the checked-in, type-derived method schemas (one file per namespace).
+//! Usage: `cargo run -p rbs-api --example generate-schemas --features schema`.
 
-use std::io::{self, Write};
+use std::path::Path;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let schemas = rbs_api::schema::generate_schemas()?;
-    let mut out = io::stdout().lock();
-    serde_json::to_writer_pretty(&mut out, &schemas)?;
-    writeln!(out)?;
-    Ok(())
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("schemas");
+    rbs_api::schema::write_shards(&dir)
 }

@@ -1,6 +1,7 @@
 //! Generated JSON Schema metadata for built-in control API methods.
 
 use std::collections::BTreeMap;
+use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -87,9 +88,105 @@ pub struct MethodSchemas {
     pub output_schema: Value,
 }
 
-/// Reads the checked-in schemas. A malformed snapshot is an explicit error.
+/// The checked-in schemas, one embedded document per namespace (ADR-0196). A shard is
+/// parsed on the first request that needs it, never at start-up.
+const SHARDS: &[(&str, &str)] = &[
+    ("addon", include_str!("../schemas/addon.json")),
+    ("api", include_str!("../schemas/api.json")),
+    ("browser", include_str!("../schemas/browser.json")),
+    ("calibration", include_str!("../schemas/calibration.json")),
+    ("canvas", include_str!("../schemas/canvas.json")),
+    ("collection", include_str!("../schemas/collection.json")),
+    ("edit", include_str!("../schemas/edit.json")),
+    ("events", include_str!("../schemas/events.json")),
+    ("filter", include_str!("../schemas/filter.json")),
+    ("global", include_str!("../schemas/global.json")),
+    ("group", include_str!("../schemas/group.json")),
+    ("import", include_str!("../schemas/import.json")),
+    ("item", include_str!("../schemas/item.json")),
+    ("look", include_str!("../schemas/look.json")),
+    ("loudness", include_str!("../schemas/loudness.json")),
+    ("marker", include_str!("../schemas/marker.json")),
+    ("media", include_str!("../schemas/media.json")),
+    ("monitor", include_str!("../schemas/monitor.json")),
+    ("output", include_str!("../schemas/output.json")),
+    ("profile", include_str!("../schemas/profile.json")),
+    ("project", include_str!("../schemas/project.json")),
+    ("protection", include_str!("../schemas/protection.json")),
+    ("record", include_str!("../schemas/record.json")),
+    ("replay", include_str!("../schemas/replay.json")),
+    ("scene", include_str!("../schemas/scene.json")),
+    ("session", include_str!("../schemas/session.json")),
+    ("settings", include_str!("../schemas/settings.json")),
+    ("source", include_str!("../schemas/source.json")),
+    ("stream", include_str!("../schemas/stream.json")),
+    ("studio", include_str!("../schemas/studio.json")),
+    ("sync", include_str!("../schemas/sync.json")),
+    ("text", include_str!("../schemas/text.json")),
+    ("tokens", include_str!("../schemas/tokens.json")),
+    ("vcam", include_str!("../schemas/vcam.json")),
+];
+
+type Shard = Result<BTreeMap<String, MethodSchemas>, String>;
+
+static PARSED: [OnceLock<Shard>; SHARDS.len()] = [const { OnceLock::new() }; SHARDS.len()];
+
+/// How many shards have been parsed so far (for tests of the lazy loading).
+#[doc(hidden)]
+pub fn parsed_shards() -> usize {
+    PARSED.iter().filter(|s| s.get().is_some()).count()
+}
+
+/// The namespaces that have a shard.
+pub fn shard_namespaces() -> impl Iterator<Item = &'static str> {
+    SHARDS.iter().map(|(ns, _)| *ns)
+}
+
+/// The shard of `namespace`, parsed now when it is the first request for it. `None`
+/// when the namespace has no shard; `Err` (cached) when its snapshot is malformed.
+pub fn namespace_schemas(
+    namespace: &str,
+) -> Option<Result<&'static BTreeMap<String, MethodSchemas>, &'static str>> {
+    let at = SHARDS.iter().position(|(ns, _)| *ns == namespace)?;
+    let shard = PARSED[at].get_or_init(|| {
+        serde_json::from_str(SHARDS[at].1).map_err(|_| "invalid built-in method schemas".to_owned())
+    });
+    Some(shard.as_ref().map_err(String::as_str))
+}
+
+/// The schemas of one method, parsing only its namespace's shard.
+pub fn method_schemas(method: &str) -> Option<Result<&'static MethodSchemas, &'static str>> {
+    let namespace = method.split('.').next().unwrap_or("");
+    match namespace_schemas(namespace)? {
+        Ok(map) => map.get(method).map(Ok),
+        Err(e) => Some(Err(e)),
+    }
+}
+
+/// Every shard merged. Parses all of them: for tests and tools, not the server path.
 pub fn builtin_schemas() -> Result<BTreeMap<String, MethodSchemas>, serde_json::Error> {
-    serde_json::from_str(include_str!("method_schemas.json"))
+    let mut all = BTreeMap::new();
+    for (_, text) in SHARDS {
+        let shard: BTreeMap<String, MethodSchemas> = serde_json::from_str(text)?;
+        all.extend(shard);
+    }
+    Ok(all)
+}
+
+/// Writes one pretty-printed, key-sorted shard file per namespace into `dir`.
+#[cfg(feature = "schema")]
+pub fn write_shards(dir: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    let mut by: BTreeMap<String, BTreeMap<String, MethodSchemas>> = BTreeMap::new();
+    for (name, pair) in generate_schemas()? {
+        let ns = name.split('.').next().unwrap_or("").to_owned();
+        by.entry(ns).or_default().insert(name, pair);
+    }
+    for (ns, map) in by {
+        let mut text = serde_json::to_string_pretty(&map)?;
+        text.push('\n');
+        std::fs::write(dir.join(format!("{ns}.json")), text)?;
+    }
+    Ok(())
 }
 
 /// Derives the currently supported methods' schemas from their Rust types.

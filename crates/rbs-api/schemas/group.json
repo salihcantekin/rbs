@@ -1,0 +1,220 @@
+{
+  "group.create": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`group.create` (protocol 1.104): groups items of one scene. Any group among them\nmerges into the new one with all its members; the members move next to the topmost\none (ADR-0182 decision 5). One undo step; answers [`GroupCreated`].",
+      "properties": {
+        "items": {
+          "description": "The items to group, at least two distinct ones of that scene, else\n`invalid_params`.",
+          "items": {
+            "format": "uint32",
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "name": {
+          "description": "The group's name, unique in the scene; absent: the first free \"Group N\".",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scene": {
+          "description": "The scene (`scene.list`).",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "scene",
+        "items"
+      ],
+      "title": "CreateGroup",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`group.create`'s answer.",
+      "properties": {
+        "group": {
+          "description": "The new group's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "name": {
+          "description": "Its name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "group",
+        "name"
+      ],
+      "title": "GroupCreated",
+      "type": "object"
+    }
+  },
+  "group.list": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`scene.remove` and `scene.switch` (protocol 1.6).",
+      "properties": {
+        "scene": {
+          "description": "The scene's id (`scene.list`).",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "scene"
+      ],
+      "title": "SceneRef",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "GroupInfo": {
+          "description": "One group in `group.list`.",
+          "properties": {
+            "id": {
+              "description": "The group's id.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "items": {
+              "description": "Its members' item ids, top first (the order of `scene.sources`).",
+              "items": {
+                "format": "uint32",
+                "maximum": 4294967295,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            "name": {
+              "description": "Its name.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "name",
+            "items"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`group.list`'s answer (protocol 1.104).",
+      "properties": {
+        "groups": {
+          "description": "Its groups, in creation order; none for a scene without groups.",
+          "items": {
+            "$ref": "#/$defs/GroupInfo"
+          },
+          "type": "array"
+        },
+        "scene": {
+          "description": "The scene.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "scene",
+        "groups"
+      ],
+      "title": "GroupList",
+      "type": "object"
+    }
+  },
+  "group.remove": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`group.remove` (protocol 1.104): ungroups. The members stay where they are, without\nthe group. One undo step.",
+      "properties": {
+        "group": {
+          "description": "The group's id (`group.list`).",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "scene": {
+          "description": "The scene.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "scene",
+        "group"
+      ],
+      "title": "GroupRef",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "group.rename": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`group.rename` (protocol 1.104). One undo step; `ok` when the name is unchanged.",
+      "properties": {
+        "group": {
+          "description": "The group's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "name": {
+          "description": "The new name: not blank, unique in the scene.",
+          "type": "string"
+        },
+        "scene": {
+          "description": "The scene.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "scene",
+        "group",
+        "name"
+      ],
+      "title": "RenameGroup",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  }
+}

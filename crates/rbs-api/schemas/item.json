@@ -1,0 +1,1864 @@
+{
+  "item.add": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`item.add` (protocol 1.6): a source the collection has, placed on top of the\nprogram scene.",
+      "properties": {
+        "scene": {
+          "description": "The scene it is placed in (protocol 1.9); absent: the program scene.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "source": {
+          "description": "The source's id (`scene.list` lists every source).",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source"
+      ],
+      "title": "AddItem",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`item.add`'s answer (protocol 1.6).",
+      "properties": {
+        "item": {
+          "description": "The new item's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "item"
+      ],
+      "title": "ItemAdded",
+      "type": "object"
+    }
+  },
+  "item.align": {
+    "input_schema": {
+      "$defs": {
+        "AlignAxis": {
+          "description": "Which axes `item.align` centres on.",
+          "oneOf": [
+            {
+              "const": "both",
+              "description": "Both.",
+              "type": "string"
+            },
+            {
+              "const": "horizontal",
+              "description": "Left to right only.",
+              "type": "string"
+            },
+            {
+              "const": "vertical",
+              "description": "Top to bottom only.",
+              "type": "string"
+            }
+          ]
+        },
+        "OutputCanvas": {
+          "description": "The canvas an output records or streams (protocol 1.29, ADR-0093 decision 6).",
+          "oneOf": [
+            {
+              "const": "main",
+              "description": "The studio's main canvas.",
+              "type": "string"
+            },
+            {
+              "const": "vertical",
+              "description": "The vertical canvas (`canvas.add_vertical`).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`item.align` (protocol 1.18, ADR-0084): centre the item on the canvas.",
+      "properties": {
+        "axis": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AlignAxis"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Centre on this axis only; both when left out."
+        },
+        "canvas": {
+          "$ref": "#/$defs/OutputCanvas",
+          "description": "The canvas whose layout changes: `\"main\"` (the default) or `\"vertical\"`, the\nvertical canvas's own layout (protocol 1.44, ADR-0093 decision 4)."
+        },
+        "gesture": {
+          "description": "Calls with the same non-zero gesture and edit kind that follow each other are\none undo step (one drag, protocol 1.100, ADR-0164 decision 2); 0, the default,\nis a step of its own. A gesture never refuses a call.",
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "item": {
+          "description": "The item's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "item"
+      ],
+      "title": "AlignItem",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "item.align_items": {
+    "input_schema": {
+      "$defs": {
+        "AlignEdge": {
+          "description": "The edge or centre line `item.align_items` lines the items up on.",
+          "oneOf": [
+            {
+              "const": "left",
+              "description": "Left edges meet.",
+              "type": "string"
+            },
+            {
+              "const": "center",
+              "description": "Horizontal centres meet.",
+              "type": "string"
+            },
+            {
+              "const": "right",
+              "description": "Right edges meet.",
+              "type": "string"
+            },
+            {
+              "const": "top",
+              "description": "Top edges meet.",
+              "type": "string"
+            },
+            {
+              "const": "middle",
+              "description": "Vertical centres meet.",
+              "type": "string"
+            },
+            {
+              "const": "bottom",
+              "description": "Bottom edges meet.",
+              "type": "string"
+            }
+          ]
+        },
+        "AlignTo": {
+          "description": "What `item.align_items` lines the items up to.",
+          "oneOf": [
+            {
+              "const": "selection",
+              "description": "The area the items cover together (the default).",
+              "type": "string"
+            },
+            {
+              "const": "canvas",
+              "description": "The canvas's edges.",
+              "type": "string"
+            }
+          ]
+        },
+        "OutputCanvas": {
+          "description": "The canvas an output records or streams (protocol 1.29, ADR-0093 decision 6).",
+          "oneOf": [
+            {
+              "const": "main",
+              "description": "The studio's main canvas.",
+              "type": "string"
+            },
+            {
+              "const": "vertical",
+              "description": "The vertical canvas (`canvas.add_vertical`).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`item.align_items` (protocol 1.106): lines up two or more items of the scene the\ncanvas edits, or one item with the canvas. One undo step. A locked item is\n`conflict`; fewer than two items without `to: \"canvas\"`, a repeated item or an item\nwithout a picture is `invalid_params`; an unknown item is `not_found`.",
+      "properties": {
+        "canvas": {
+          "$ref": "#/$defs/OutputCanvas",
+          "description": "The canvas whose layout changes: `\"main\"` (the default) or `\"vertical\"`."
+        },
+        "edge": {
+          "$ref": "#/$defs/AlignEdge",
+          "description": "The edge or centre line."
+        },
+        "gesture": {
+          "description": "Calls with the same non-zero gesture and edit kind that follow each other are\none undo step; 0, the default, is a step of its own.",
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "items": {
+          "description": "The item ids.",
+          "items": {
+            "format": "uint32",
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "to": {
+          "$ref": "#/$defs/AlignTo",
+          "description": "What to line up to; absent: the selection."
+        }
+      },
+      "required": [
+        "items",
+        "edge"
+      ],
+      "title": "AlignItems",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "item.distribute": {
+    "input_schema": {
+      "$defs": {
+        "Axis": {
+          "description": "A direction on the canvas, as the user sees it.",
+          "oneOf": [
+            {
+              "const": "horizontal",
+              "description": "Left to right.",
+              "type": "string"
+            },
+            {
+              "const": "vertical",
+              "description": "Top to bottom.",
+              "type": "string"
+            }
+          ]
+        },
+        "OutputCanvas": {
+          "description": "The canvas an output records or streams (protocol 1.29, ADR-0093 decision 6).",
+          "oneOf": [
+            {
+              "const": "main",
+              "description": "The studio's main canvas.",
+              "type": "string"
+            },
+            {
+              "const": "vertical",
+              "description": "The vertical canvas (`canvas.add_vertical`).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`item.distribute` (protocol 1.106): spreads three or more items so the gaps between\nneighbours along `axis` are equal; the two outermost stay. One undo step; the errors\nare those of `item.align_items`, and fewer than three items is `invalid_params`.",
+      "properties": {
+        "axis": {
+          "$ref": "#/$defs/Axis",
+          "description": "The direction the items are spread along."
+        },
+        "canvas": {
+          "$ref": "#/$defs/OutputCanvas",
+          "description": "The canvas whose layout changes: `\"main\"` (the default) or `\"vertical\"`."
+        },
+        "gesture": {
+          "description": "As in `item.align_items`.",
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "items": {
+          "description": "The item ids.",
+          "items": {
+            "format": "uint32",
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "items",
+        "axis"
+      ],
+      "title": "DistributeItems",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "item.fit": {
+    "input_schema": {
+      "$defs": {
+        "FitKind": {
+          "description": "How `item.fit` places the picture.",
+          "oneOf": [
+            {
+              "const": "fit",
+              "description": "The largest box that fits the canvas, aspect kept.",
+              "type": "string"
+            },
+            {
+              "const": "fill",
+              "description": "The smallest box that covers the canvas, aspect kept.",
+              "type": "string"
+            },
+            {
+              "const": "stretch",
+              "description": "The canvas size, aspect not kept.",
+              "type": "string"
+            }
+          ]
+        },
+        "OutputCanvas": {
+          "description": "The canvas an output records or streams (protocol 1.29, ADR-0093 decision 6).",
+          "oneOf": [
+            {
+              "const": "main",
+              "description": "The studio's main canvas.",
+              "type": "string"
+            },
+            {
+              "const": "vertical",
+              "description": "The vertical canvas (`canvas.add_vertical`).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`item.fit` (protocol 1.18, ADR-0084).",
+      "properties": {
+        "canvas": {
+          "$ref": "#/$defs/OutputCanvas",
+          "description": "The canvas whose layout changes: `\"main\"` (the default) or `\"vertical\"`, the\nvertical canvas's own layout (protocol 1.44, ADR-0093 decision 4)."
+        },
+        "gesture": {
+          "description": "Calls with the same non-zero gesture and edit kind that follow each other are\none undo step (one drag, protocol 1.100, ADR-0164 decision 2); 0, the default,\nis a step of its own. A gesture never refuses a call.",
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "item": {
+          "description": "The item's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "mode": {
+          "$ref": "#/$defs/FitKind",
+          "description": "How to place it."
+        }
+      },
+      "required": [
+        "item",
+        "mode"
+      ],
+      "title": "FitItem",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "item.fit_text_box": {
+    "input_schema": {
+      "$defs": {
+        "OutputCanvas": {
+          "description": "The canvas an output records or streams (protocol 1.29, ADR-0093 decision 6).",
+          "oneOf": [
+            {
+              "const": "main",
+              "description": "The studio's main canvas.",
+              "type": "string"
+            },
+            {
+              "const": "vertical",
+              "description": "The vertical canvas (`canvas.add_vertical`).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`item.fit_text_box` (protocol 1.100): a text source's box fitted to its text.\nEvery item that places the source keeps its centre and its scale. One undo step.",
+      "properties": {
+        "canvas": {
+          "$ref": "#/$defs/OutputCanvas",
+          "description": "The canvas the item is named on: `\"main\"` (the default) or `\"vertical\"`."
+        },
+        "item": {
+          "description": "An item of the text source.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "item"
+      ],
+      "title": "FitTextBox",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "item.flip": {
+    "input_schema": {
+      "$defs": {
+        "Axis": {
+          "description": "A direction on the canvas, as the user sees it.",
+          "oneOf": [
+            {
+              "const": "horizontal",
+              "description": "Left to right.",
+              "type": "string"
+            },
+            {
+              "const": "vertical",
+              "description": "Top to bottom.",
+              "type": "string"
+            }
+          ]
+        },
+        "OutputCanvas": {
+          "description": "The canvas an output records or streams (protocol 1.29, ADR-0093 decision 6).",
+          "oneOf": [
+            {
+              "const": "main",
+              "description": "The studio's main canvas.",
+              "type": "string"
+            },
+            {
+              "const": "vertical",
+              "description": "The vertical canvas (`canvas.add_vertical`).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`item.flip` (protocol 1.18, ADR-0084): mirror the item on the canvas.",
+      "properties": {
+        "axis": {
+          "$ref": "#/$defs/Axis",
+          "description": "The mirror axis."
+        },
+        "canvas": {
+          "$ref": "#/$defs/OutputCanvas",
+          "description": "The canvas whose layout changes: `\"main\"` (the default) or `\"vertical\"`, the\nvertical canvas's own layout (protocol 1.44, ADR-0093 decision 4)."
+        },
+        "gesture": {
+          "description": "Calls with the same non-zero gesture and edit kind that follow each other are\none undo step (one drag, protocol 1.100, ADR-0164 decision 2); 0, the default,\nis a step of its own. A gesture never refuses a call.",
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "item": {
+          "description": "The item's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "item",
+        "axis"
+      ],
+      "title": "FlipItem",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "item.move": {
+    "input_schema": {
+      "$defs": {
+        "LayerDirection": {
+          "description": "Which way `item.move` or `scene.move` steps in order.",
+          "oneOf": [
+            {
+              "const": "up",
+              "description": "Over the next source with a picture (or one place up in the scene list).",
+              "type": "string"
+            },
+            {
+              "const": "down",
+              "description": "Under the next source with a picture (or one place down in the scene list).",
+              "type": "string"
+            },
+            {
+              "const": "front",
+              "description": "To the top of the picture layers (or the start of the scene list). Protocol 1.36.",
+              "type": "string"
+            },
+            {
+              "const": "back",
+              "description": "To the bottom of the picture layers (or the end of the scene list). Protocol 1.36.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`item.move` (protocol 1.32; `front` / `back` since 1.36; `to_item` since 1.100):\nlayer order among sources with a picture. Exactly one of `direction` and\n`to_item` is given, else `invalid_params`.",
+      "properties": {
+        "direction": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LayerDirection"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Over, under, to the front or to the back among sources with a picture.\nSound-only sources are skipped."
+        },
+        "item": {
+          "description": "The item's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "to_item": {
+          "description": "The picture layer in the same scene whose place the item takes; the ones\nbetween shift by one toward its old place (protocol 1.100).",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "item"
+      ],
+      "title": "MoveItem",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "item.remove": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`item.remove` (protocol 1.10, ADR-0065): Remove from scene; `gesture` since 1.105.",
+      "properties": {
+        "gesture": {
+          "description": "As on `item.set_visible`: removals with the same non-zero gesture and edit kind\nthat follow each other are one undo step (Delete on a group's row).",
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "item": {
+          "description": "The item's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "item"
+      ],
+      "title": "ItemRef",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`item.remove`'s answer, and `global.remove`'s without `keep` (protocol 1.10).",
+      "properties": {
+        "deleted_sources": {
+          "description": "Every source deleted: the source at its last placement and companions left\nplaced nowhere (protocol 1.88, ADR-0142). Absent when none.",
+          "items": {
+            "format": "uint32",
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "removed_items": {
+          "description": "Every item removed in any scene, the named one first: a picture's companion\nitems in the same scene go with it (protocol 1.88, ADR-0142). Absent before.",
+          "items": {
+            "format": "uint32",
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "source_deleted": {
+          "description": "The source was deleted too: it was its last placement.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "source_deleted"
+      ],
+      "title": "ItemRemoved",
+      "type": "object"
+    }
+  },
+  "item.reset_transform": {
+    "input_schema": {
+      "$defs": {
+        "OutputCanvas": {
+          "description": "The canvas an output records or streams (protocol 1.29, ADR-0093 decision 6).",
+          "oneOf": [
+            {
+              "const": "main",
+              "description": "The studio's main canvas.",
+              "type": "string"
+            },
+            {
+              "const": "vertical",
+              "description": "The vertical canvas (`canvas.add_vertical`).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`item.reset_transform` (protocol 1.18, ADR-0084).",
+      "properties": {
+        "canvas": {
+          "$ref": "#/$defs/OutputCanvas",
+          "description": "The canvas whose layout changes: `\"main\"` (the default) or `\"vertical\"`, the\nvertical canvas's own layout (protocol 1.44, ADR-0093 decision 4)."
+        },
+        "gesture": {
+          "description": "Calls with the same non-zero gesture and edit kind that follow each other are\none undo step (one drag, protocol 1.100, ADR-0164 decision 2); 0, the default,\nis a step of its own. A gesture never refuses a call.",
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "item": {
+          "description": "The item's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "item"
+      ],
+      "title": "ResetItemTransform",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "item.rotate": {
+    "input_schema": {
+      "$defs": {
+        "OutputCanvas": {
+          "description": "The canvas an output records or streams (protocol 1.29, ADR-0093 decision 6).",
+          "oneOf": [
+            {
+              "const": "main",
+              "description": "The studio's main canvas.",
+              "type": "string"
+            },
+            {
+              "const": "vertical",
+              "description": "The vertical canvas (`canvas.add_vertical`).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`item.rotate` (protocol 1.18, ADR-0084): turn the item clockwise about its centre.",
+      "properties": {
+        "canvas": {
+          "$ref": "#/$defs/OutputCanvas",
+          "description": "The canvas whose layout changes: `\"main\"` (the default) or `\"vertical\"`, the\nvertical canvas's own layout (protocol 1.44, ADR-0093 decision 4)."
+        },
+        "degrees": {
+          "description": "Degrees clockwise: a non-zero multiple of 90 from -360 to 360.",
+          "format": "int32",
+          "maximum": 2147483647,
+          "minimum": -2147483648,
+          "type": "integer"
+        },
+        "gesture": {
+          "description": "Calls with the same non-zero gesture and edit kind that follow each other are\none undo step (one drag, protocol 1.100, ADR-0164 decision 2); 0, the default,\nis a step of its own. A gesture never refuses a call.",
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "item": {
+          "description": "The item's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "item",
+        "degrees"
+      ],
+      "title": "RotateItem",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "item.scroll_pause": {
+    "input_schema": {
+      "$defs": {
+        "OutputCanvas": {
+          "description": "The canvas an output records or streams (protocol 1.29, ADR-0093 decision 6).",
+          "oneOf": [
+            {
+              "const": "main",
+              "description": "The studio's main canvas.",
+              "type": "string"
+            },
+            {
+              "const": "vertical",
+              "description": "The vertical canvas (`canvas.add_vertical`).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`item.scroll_pause`, `item.scroll_resume` and `item.scroll_restart` (protocol 1.94,\nADR-0150 decision 11): live, not saved, not undone. They act on the item's run on\nthe canvas, so every item sharing that run moves too.",
+      "properties": {
+        "canvas": {
+          "$ref": "#/$defs/OutputCanvas",
+          "description": "`\"main\"` (the default) or `\"vertical\"`."
+        },
+        "item": {
+          "description": "The item's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "item"
+      ],
+      "title": "ScrollItem",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "item.scroll_restart": {
+    "input_schema": {
+      "$defs": {
+        "OutputCanvas": {
+          "description": "The canvas an output records or streams (protocol 1.29, ADR-0093 decision 6).",
+          "oneOf": [
+            {
+              "const": "main",
+              "description": "The studio's main canvas.",
+              "type": "string"
+            },
+            {
+              "const": "vertical",
+              "description": "The vertical canvas (`canvas.add_vertical`).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`item.scroll_pause`, `item.scroll_resume` and `item.scroll_restart` (protocol 1.94,\nADR-0150 decision 11): live, not saved, not undone. They act on the item's run on\nthe canvas, so every item sharing that run moves too.",
+      "properties": {
+        "canvas": {
+          "$ref": "#/$defs/OutputCanvas",
+          "description": "`\"main\"` (the default) or `\"vertical\"`."
+        },
+        "item": {
+          "description": "The item's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "item"
+      ],
+      "title": "ScrollItem",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "item.scroll_resume": {
+    "input_schema": {
+      "$defs": {
+        "OutputCanvas": {
+          "description": "The canvas an output records or streams (protocol 1.29, ADR-0093 decision 6).",
+          "oneOf": [
+            {
+              "const": "main",
+              "description": "The studio's main canvas.",
+              "type": "string"
+            },
+            {
+              "const": "vertical",
+              "description": "The vertical canvas (`canvas.add_vertical`).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`item.scroll_pause`, `item.scroll_resume` and `item.scroll_restart` (protocol 1.94,\nADR-0150 decision 11): live, not saved, not undone. They act on the item's run on\nthe canvas, so every item sharing that run moves too.",
+      "properties": {
+        "canvas": {
+          "$ref": "#/$defs/OutputCanvas",
+          "description": "`\"main\"` (the default) or `\"vertical\"`."
+        },
+        "item": {
+          "description": "The item's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "item"
+      ],
+      "title": "ScrollItem",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "item.scroll_speed": {
+    "input_schema": {
+      "$defs": {
+        "OutputCanvas": {
+          "description": "The canvas an output records or streams (protocol 1.29, ADR-0093 decision 6).",
+          "oneOf": [
+            {
+              "const": "main",
+              "description": "The studio's main canvas.",
+              "type": "string"
+            },
+            {
+              "const": "vertical",
+              "description": "The vertical canvas (`canvas.add_vertical`).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`item.scroll_speed` (protocol 1.94, ADR-0150 decision 11): live speed of the item's\nrun until a scroll edit, a restart or the run's end.",
+      "properties": {
+        "canvas": {
+          "$ref": "#/$defs/OutputCanvas",
+          "description": "`\"main\"` (the default) or `\"vertical\"`."
+        },
+        "item": {
+          "description": "The item's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "speed": {
+          "description": "Units per second, 1 to 4000 (0 is refused: pause is the call for it).",
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "required": [
+        "item",
+        "speed"
+      ],
+      "title": "SetScrollSpeed",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "item.set_box": {
+    "input_schema": {
+      "$defs": {
+        "OutputCanvas": {
+          "description": "The canvas an output records or streams (protocol 1.29, ADR-0093 decision 6).",
+          "oneOf": [
+            {
+              "const": "main",
+              "description": "The studio's main canvas.",
+              "type": "string"
+            },
+            {
+              "const": "vertical",
+              "description": "The vertical canvas (`canvas.add_vertical`).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`item.set_box` (protocol 1.34): the picture's box on the canvas the studio shows.",
+      "properties": {
+        "canvas": {
+          "$ref": "#/$defs/OutputCanvas",
+          "description": "The canvas whose layout changes: `\"main\"` (the default) or `\"vertical\"`, the\nvertical canvas's own layout (protocol 1.44, ADR-0093 decision 4)."
+        },
+        "gesture": {
+          "description": "Boxes with the same number other than 0 that follow each other are one undo\nstep (one drag). 0, the default, is a step of its own.",
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "position": {
+          "description": "Top-left corner, in canvas pixels.",
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
+        },
+        "seq": {
+          "description": "The caller's number for this request, echoed in the answer. 0 when the caller\ndoes not track one.",
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "size": {
+          "description": "Width and height, in canvas pixels. Zero, or a value that is not finite, is\nrefused.",
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
+        },
+        "source": {
+          "description": "The source's id. The box is the one on the scene being edited.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source",
+        "position",
+        "size"
+      ],
+      "title": "SetItemBox",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`item.set_box`'s answer: the request's `seq`, and that the box is the source's now.",
+      "properties": {
+        "ok": {
+          "description": "The box was taken (changed, or it was already that box).",
+          "type": "boolean"
+        },
+        "seq": {
+          "description": "The request's `seq`.",
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "seq",
+        "ok"
+      ],
+      "title": "BoxPlaced",
+      "type": "object"
+    }
+  },
+  "item.set_crop": {
+    "input_schema": {
+      "$defs": {
+        "OutputCanvas": {
+          "description": "The canvas an output records or streams (protocol 1.29, ADR-0093 decision 6).",
+          "oneOf": [
+            {
+              "const": "main",
+              "description": "The studio's main canvas.",
+              "type": "string"
+            },
+            {
+              "const": "vertical",
+              "description": "The vertical canvas (`canvas.add_vertical`).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`item.set_crop` (protocol 1.5, ADR-0058): the source pixels cut from each edge of\nan item's picture, on the item's layout on the studio's canvas.",
+      "properties": {
+        "canvas": {
+          "$ref": "#/$defs/OutputCanvas",
+          "description": "The canvas whose layout changes: `\"main\"` (the default) or `\"vertical\"`, the\nvertical canvas's own layout (protocol 1.44, ADR-0093 decision 4)."
+        },
+        "crop": {
+          "description": "Pixels cut from the left, top, right and bottom.",
+          "items": {
+            "format": "uint32",
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 4,
+          "minItems": 4,
+          "type": "array"
+        },
+        "gesture": {
+          "description": "Calls with the same non-zero gesture and edit kind that follow each other are\none undo step (one drag, protocol 1.100, ADR-0164 decision 2); 0, the default,\nis a step of its own. A gesture never refuses a call.",
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "item": {
+          "description": "The item's id (`source.list` gives each video source's program-scene item).",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "keep_scale": {
+          "description": "Keep the size of a source pixel on the canvas and the place of what stays (the\nbox changes); `false` sets only the crop, and what stays fills the box. Default\n`true`.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "item",
+        "crop"
+      ],
+      "title": "SetItemCrop",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "item.set_filled": {
+    "input_schema": {
+      "$defs": {
+        "OutputCanvas": {
+          "description": "The canvas an output records or streams (protocol 1.29, ADR-0093 decision 6).",
+          "oneOf": [
+            {
+              "const": "main",
+              "description": "The studio's main canvas.",
+              "type": "string"
+            },
+            {
+              "const": "vertical",
+              "description": "The vertical canvas (`canvas.add_vertical`).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`item.set_filled` (protocol 1.100): whether a colour source draws its fill. The\nfill is the source's setting, shared by every scene that places it. Turning it off\nadds a border to this item's style on `canvas` when it has none. One undo step.",
+      "properties": {
+        "canvas": {
+          "$ref": "#/$defs/OutputCanvas",
+          "description": "The canvas whose style gets the border: `\"main\"` (the default) or `\"vertical\"`."
+        },
+        "item": {
+          "description": "An item of the colour source.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "on": {
+          "description": "Draw the fill.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "item",
+        "on"
+      ],
+      "title": "SetItemFilled",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "item.set_locked": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`item.set_locked` (protocol 1.6; `gesture` since 1.105).",
+      "properties": {
+        "gesture": {
+          "description": "As on `item.set_visible`.",
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "item": {
+          "description": "The item's id (`source.list`).",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "locked": {
+          "description": "Locked.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "item",
+        "locked"
+      ],
+      "title": "SetItemLocked",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "item.set_rotation": {
+    "input_schema": {
+      "$defs": {
+        "OutputCanvas": {
+          "description": "The canvas an output records or streams (protocol 1.29, ADR-0093 decision 6).",
+          "oneOf": [
+            {
+              "const": "main",
+              "description": "The studio's main canvas.",
+              "type": "string"
+            },
+            {
+              "const": "vertical",
+              "description": "The vertical canvas (`canvas.add_vertical`).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`item.set_rotation` (protocol 1.100, ADR-0166): the item's clockwise rotation about\nits box's centre. The box, flips and crop stay. One undo step, or part of\n`gesture`'s.",
+      "properties": {
+        "canvas": {
+          "$ref": "#/$defs/OutputCanvas",
+          "description": "The canvas whose layout changes: `\"main\"` (the default) or `\"vertical\"`."
+        },
+        "degrees": {
+          "description": "Degrees clockwise, -360 to 360 inclusive, stored wrapped into `0..360`; 0\nresets the rotation. Anything else is `invalid_params`.",
+          "format": "double",
+          "type": "number"
+        },
+        "gesture": {
+          "description": "Calls with the same non-zero gesture and edit kind that follow each other are\none undo step (ADR-0164 decision 2); 0, the default, is a step of its own.",
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "item": {
+          "description": "The item's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "item",
+        "degrees"
+      ],
+      "title": "SetItemRotation",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "item.set_scroll": {
+    "input_schema": {
+      "$defs": {
+        "ItemScroll": {
+          "additionalProperties": false,
+          "description": "A picture moving through its item's box (protocol 1.94, ADR-0150). Lengths and\nspeed in the item's box units (canvas pixels for an item on the canvas); defaults\nare left out.",
+          "properties": {
+            "direction": {
+              "$ref": "#/$defs/ScrollDirection",
+              "description": "Which way it moves (`left`)."
+            },
+            "fade": {
+              "description": "Soft edges at both ends of the box, 0 to 2048 (0).",
+              "format": "float",
+              "type": "number"
+            },
+            "gap": {
+              "description": "Empty units between two copies, 0 to 16384 (0).",
+              "format": "float",
+              "type": "number"
+            },
+            "on_return": {
+              "$ref": "#/$defs/ScrollReturn",
+              "description": "`restart` (the default) or `continue` (protocol 1.99)."
+            },
+            "ramp_ms": {
+              "description": "How long a pause, resume or speed change eases, 0 to 5000 ms (300).",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "repeat": {
+              "$ref": "#/$defs/ScrollRepeat",
+              "description": "`loop` (the default) or `once`."
+            },
+            "speed": {
+              "description": "Units per second, 1 to 4000.",
+              "format": "float",
+              "type": "number"
+            },
+            "start": {
+              "$ref": "#/$defs/ScrollStart",
+              "description": "`inside` (the default) or `outside`."
+            }
+          },
+          "required": [
+            "speed"
+          ],
+          "type": "object"
+        },
+        "OutputCanvas": {
+          "description": "The canvas an output records or streams (protocol 1.29, ADR-0093 decision 6).",
+          "oneOf": [
+            {
+              "const": "main",
+              "description": "The studio's main canvas.",
+              "type": "string"
+            },
+            {
+              "const": "vertical",
+              "description": "The vertical canvas (`canvas.add_vertical`).",
+              "type": "string"
+            }
+          ]
+        },
+        "ScrollDirection": {
+          "description": "Which way a scrolling picture moves in its box (protocol 1.94, ADR-0150), in the\nbox's own frame.",
+          "oneOf": [
+            {
+              "const": "left",
+              "description": "Right to left, like a news ticker.",
+              "type": "string"
+            },
+            {
+              "const": "right",
+              "description": "Left to right.",
+              "type": "string"
+            },
+            {
+              "const": "up",
+              "description": "Bottom to top, like credits.",
+              "type": "string"
+            },
+            {
+              "const": "down",
+              "description": "Top to bottom.",
+              "type": "string"
+            }
+          ]
+        },
+        "ScrollRepeat": {
+          "description": "How often a scrolling picture crosses its box (ADR-0150).",
+          "oneOf": [
+            {
+              "const": "loop",
+              "description": "Copies follow each other forever.",
+              "type": "string"
+            },
+            {
+              "const": "once",
+              "description": "Once, then the box stays empty.",
+              "type": "string"
+            }
+          ]
+        },
+        "ScrollReturn": {
+          "description": "What a scroll's run does when a shown scene draws its item again (protocol 1.99,\nADR-0152 decision 6).",
+          "oneOf": [
+            {
+              "const": "restart",
+              "description": "Starts over.",
+              "type": "string"
+            },
+            {
+              "const": "continue",
+              "description": "Where it would be had it kept moving, while the item's source stays placed.",
+              "type": "string"
+            }
+          ]
+        },
+        "ScrollStart": {
+          "description": "Where a scroll run starts (ADR-0150).",
+          "oneOf": [
+            {
+              "const": "inside",
+              "description": "Where the picture is placed without a scroll.",
+              "type": "string"
+            },
+            {
+              "const": "outside",
+              "description": "Entering from the edge the motion comes from.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`item.set_scroll` (protocol 1.94, ADR-0150 decision 11): sets or clears the saved\nscroll of a source item's layout on a canvas. One undo step.",
+      "properties": {
+        "canvas": {
+          "$ref": "#/$defs/OutputCanvas",
+          "description": "`\"main\"` (the default) or `\"vertical\"`, as for the other item edits."
+        },
+        "gesture": {
+          "description": "Calls with the same non-zero gesture and edit kind that follow each other are\none undo step (one drag, protocol 1.100, ADR-0164 decision 2); 0, the default,\nis a step of its own. A gesture never refuses a call.",
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "item": {
+          "description": "The item's id (`source.list`).",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "scroll": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ItemScroll"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The scroll; `null` clears it."
+        }
+      },
+      "required": [
+        "item"
+      ],
+      "title": "SetItemScroll",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "item.set_show_for": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`item.set_show_for` (ADR-0105). Undoable document state. No protocol minor.",
+      "properties": {
+        "item": {
+          "description": "The item's id (`source.list`).",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "show_for_ms": {
+          "description": "Milliseconds in `1..=600000`, or `null` / absent to clear.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "item"
+      ],
+      "title": "SetItemShowFor",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "item.set_shown_region": {
+    "input_schema": {
+      "$defs": {
+        "OutputCanvas": {
+          "description": "The canvas an output records or streams (protocol 1.29, ADR-0093 decision 6).",
+          "oneOf": [
+            {
+              "const": "main",
+              "description": "The studio's main canvas.",
+              "type": "string"
+            },
+            {
+              "const": "vertical",
+              "description": "The vertical canvas (`canvas.add_vertical`).",
+              "type": "string"
+            }
+          ]
+        },
+        "ShownRegion": {
+          "description": "A part of a video source's picture, shown as large as fits the canvas.",
+          "oneOf": [
+            {
+              "const": "full",
+              "description": "The whole picture, fitted like a new source.",
+              "type": "string"
+            },
+            {
+              "const": "canvas_centred",
+              "description": "The centre, as large as the canvas (or the picture, if smaller).",
+              "type": "string"
+            },
+            {
+              "const": "left_half",
+              "description": "The left half.",
+              "type": "string"
+            },
+            {
+              "const": "right_half",
+              "description": "The right half.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`item.set_shown_region` (protocol 1.100, ADR-0058 Show buttons): the item's crop\nand box show `region`. One undo step.",
+      "properties": {
+        "canvas": {
+          "$ref": "#/$defs/OutputCanvas",
+          "description": "The canvas whose layout changes: `\"main\"` (the default) or `\"vertical\"`."
+        },
+        "item": {
+          "description": "The item's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "region": {
+          "$ref": "#/$defs/ShownRegion",
+          "description": "Which part."
+        }
+      },
+      "required": [
+        "item",
+        "region"
+      ],
+      "title": "SetItemShownRegion",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "item.set_style": {
+    "input_schema": {
+      "$defs": {
+        "ItemStyle": {
+          "additionalProperties": false,
+          "description": "Shape, border and shadow of a picture (ADR-0053). Lengths are in the item's box\nunits (canvas pixels for an item on the canvas); colours are `#rrggbb` or\n`#rrggbbaa`, sRGB with straight alpha. `{}` is the plain picture.",
+          "properties": {
+            "border": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/StyleBorder"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A line inside the shape's edge."
+            },
+            "radius": {
+              "default": 0.0,
+              "description": "Corner radius; only for `rectangle`.",
+              "format": "float",
+              "type": "number"
+            },
+            "shadow": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/StyleShadow"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A shadow under the shape; saved, not drawn yet."
+            },
+            "shape": {
+              "$ref": "#/$defs/ShapeKind",
+              "default": "rectangle",
+              "description": "The outline."
+            }
+          },
+          "type": "object"
+        },
+        "OutputCanvas": {
+          "description": "The canvas an output records or streams (protocol 1.29, ADR-0093 decision 6).",
+          "oneOf": [
+            {
+              "const": "main",
+              "description": "The studio's main canvas.",
+              "type": "string"
+            },
+            {
+              "const": "vertical",
+              "description": "The vertical canvas (`canvas.add_vertical`).",
+              "type": "string"
+            }
+          ]
+        },
+        "ShapeKind": {
+          "description": "The outline of a picture inside its box (ADR-0053).",
+          "oneOf": [
+            {
+              "const": "rectangle",
+              "description": "The box, with corners rounded by `radius`.",
+              "type": "string"
+            },
+            {
+              "const": "circle",
+              "description": "The largest circle centred in the box.",
+              "type": "string"
+            },
+            {
+              "const": "ellipse",
+              "description": "The ellipse that fills the box.",
+              "type": "string"
+            },
+            {
+              "const": "triangle",
+              "description": "An isosceles triangle, tip on the top edge of the box.",
+              "type": "string"
+            },
+            {
+              "const": "arrow",
+              "description": "An arrow pointing toward the right edge of the box.",
+              "type": "string"
+            }
+          ]
+        },
+        "StyleBorder": {
+          "additionalProperties": false,
+          "description": "A border (ADR-0053).",
+          "properties": {
+            "color": {
+              "description": "`#rrggbb` or `#rrggbbaa`.",
+              "type": "string"
+            },
+            "width": {
+              "description": "Width, more than 0.",
+              "format": "float",
+              "type": "number"
+            }
+          },
+          "required": [
+            "width",
+            "color"
+          ],
+          "type": "object"
+        },
+        "StyleShadow": {
+          "additionalProperties": false,
+          "description": "A shadow (ADR-0053).",
+          "properties": {
+            "blur": {
+              "default": 0.0,
+              "description": "Blur radius, not negative.",
+              "format": "float",
+              "type": "number"
+            },
+            "color": {
+              "description": "`#rrggbb` or `#rrggbbaa`.",
+              "type": "string"
+            },
+            "offset": {
+              "default": [
+                0.0,
+                0.0
+              ],
+              "description": "Offset, x right and y down.",
+              "items": {
+                "format": "float",
+                "type": "number"
+              },
+              "maxItems": 2,
+              "minItems": 2,
+              "type": "array"
+            }
+          },
+          "required": [
+            "color"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`item.set_style` (protocol 1.3, ADR-0053): replaces the whole style of the item's\nlayout on the studio's canvas.",
+      "properties": {
+        "canvas": {
+          "$ref": "#/$defs/OutputCanvas",
+          "description": "The canvas whose layout changes: `\"main\"` (the default) or `\"vertical\"`, the\nvertical canvas's own layout (protocol 1.44, ADR-0093 decision 4)."
+        },
+        "gesture": {
+          "description": "Calls with the same non-zero gesture and edit kind that follow each other are\none undo step (one drag, protocol 1.100, ADR-0164 decision 2); 0, the default,\nis a step of its own. A gesture never refuses a call.",
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "item": {
+          "description": "The item's id (`source.list` gives each video source's program-scene item).",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "style": {
+          "$ref": "#/$defs/ItemStyle",
+          "description": "The new style."
+        }
+      },
+      "required": [
+        "item",
+        "style"
+      ],
+      "title": "SetItemStyle",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "item.set_visible": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`item.set_visible` (protocol 1.6; `gesture` since 1.105).",
+      "properties": {
+        "gesture": {
+          "description": "Calls with the same non-zero gesture and edit kind that follow each other are\none undo step (a group's eye, protocol 1.105, ADR-0164 decision 2); 0, the\ndefault, is a step of its own. A gesture never refuses a call.",
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "item": {
+          "description": "The item's id (`source.list`).",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "visible": {
+          "description": "Shown.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "item",
+        "visible"
+      ],
+      "title": "SetItemVisible",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "item.show": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`item.show` (ADR-0105). Live session cue. Does not change `visible` and is not\nundone. No protocol minor.",
+      "properties": {
+        "item": {
+          "description": "The item's id (`source.list`).",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "item"
+      ],
+      "title": "ShowItem",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  }
+}

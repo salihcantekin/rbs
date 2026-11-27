@@ -1,0 +1,205 @@
+{
+  "session.authenticate": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`session.authenticate`.",
+      "properties": {
+        "token": {
+          "description": "The token's text.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "token"
+      ],
+      "title": "Authenticate",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "ClientInfo": {
+          "description": "A client's or server's name and version.",
+          "properties": {
+            "name": {
+              "description": "Name.",
+              "type": "string"
+            },
+            "version": {
+              "description": "Version.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "version"
+          ],
+          "type": "object"
+        },
+        "Scope": {
+          "description": "One permission. Every method declares exactly one scope (or none, for the\nhandshake); a call outside the session's scopes returns `scope_denied`.",
+          "oneOf": [
+            {
+              "const": "read",
+              "description": "Queries, `api.describe`, event subscriptions.",
+              "type": "string"
+            },
+            {
+              "const": "control",
+              "description": "Scene and source changes, capture-target lists, record start and stop with\nconfigured profiles, undo and redo, `ui.*`.",
+              "type": "string"
+            },
+            {
+              "const": "admin",
+              "description": "Settings, explicit file paths. Loopback and IPC only, unless the user turned on\n\"Allow remote admin\".",
+              "type": "string"
+            },
+            {
+              "const": "plugins",
+              "description": "Plugin management. Loopback and IPC only.",
+              "type": "string"
+            },
+            {
+              "const": "tokens",
+              "description": "Token management. Loopback and IPC only.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`session.authenticate`'s answer.",
+      "properties": {
+        "irreversible": {
+          "default": false,
+          "description": "Whether the token holds \"Allow actions that cannot be undone\" (protocol\n1.76). Absent from an older server: a client treats it as `false`.",
+          "type": "boolean"
+        },
+        "scopes": {
+          "description": "What the session may do (the token's scopes, limited by the channel).",
+          "items": {
+            "$ref": "#/$defs/Scope"
+          },
+          "type": "array"
+        },
+        "server": {
+          "$ref": "#/$defs/ClientInfo",
+          "description": "The server."
+        }
+      },
+      "required": [
+        "scopes",
+        "irreversible",
+        "server"
+      ],
+      "title": "AuthResult",
+      "type": "object"
+    }
+  },
+  "session.hello": {
+    "input_schema": {
+      "$defs": {
+        "ClientInfo": {
+          "description": "A client's or server's name and version.",
+          "properties": {
+            "name": {
+              "description": "Name.",
+              "type": "string"
+            },
+            "version": {
+              "description": "Version.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "version"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`session.hello`: the protocol versions the client speaks, and who it is.",
+      "properties": {
+        "client": {
+          "$ref": "#/$defs/ClientInfo",
+          "description": "The client."
+        },
+        "protocols": {
+          "description": "`major.minor` versions, for example `[\"1.0\"]`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "protocols",
+        "client"
+      ],
+      "title": "Hello",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "Scope": {
+          "description": "One permission. Every method declares exactly one scope (or none, for the\nhandshake); a call outside the session's scopes returns `scope_denied`.",
+          "oneOf": [
+            {
+              "const": "read",
+              "description": "Queries, `api.describe`, event subscriptions.",
+              "type": "string"
+            },
+            {
+              "const": "control",
+              "description": "Scene and source changes, capture-target lists, record start and stop with\nconfigured profiles, undo and redo, `ui.*`.",
+              "type": "string"
+            },
+            {
+              "const": "admin",
+              "description": "Settings, explicit file paths. Loopback and IPC only, unless the user turned on\n\"Allow remote admin\".",
+              "type": "string"
+            },
+            {
+              "const": "plugins",
+              "description": "Plugin management. Loopback and IPC only.",
+              "type": "string"
+            },
+            {
+              "const": "tokens",
+              "description": "Token management. Loopback and IPC only.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`session.hello`'s answer.",
+      "properties": {
+        "instance": {
+          "description": "A random id of this server run; `seq` counters restart with it.",
+          "type": "string"
+        },
+        "protocol": {
+          "description": "The protocol version the session speaks.",
+          "type": "string"
+        },
+        "scopes": {
+          "description": "On IPC, a verified same-user peer is authenticated by `session.hello` and gets\nits scopes here; otherwise `null`.",
+          "items": {
+            "$ref": "#/$defs/Scope"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "protocol",
+        "instance"
+      ],
+      "title": "HelloResult",
+      "type": "object"
+    }
+  }
+}

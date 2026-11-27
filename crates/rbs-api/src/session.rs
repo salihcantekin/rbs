@@ -139,7 +139,7 @@ use ui_routing::PendingUi;
 /// `record.start`, `tracks` on a running recording and `record_separately` on a source.
 /// 1.45 adds `"wav"` and `"flac"` on a recording profile (the mix with no picture).
 /// 1.44 is the vertical canvas layouts.
-pub const PROTOCOL_VERSION: &str = "1.109";
+pub const PROTOCOL_VERSION: &str = "1.110";
 
 /// Caps and timeouts (ADR-0044 decision 12). The defaults are the version 1 values in
 /// the control API spec.
@@ -1170,39 +1170,16 @@ impl Server {
                     self.update_mask();
                     self.send_now(conn, Some(&id), Ok(Response::Done(Empty {})));
                 }
+                Queued::Local(id, Request::Describe(params)) => {
+                    let answer = describe(&params).map(Response::Describe);
+                    self.send_now(conn, Some(&id), answer);
+                }
                 Queued::Local(id, _) => {
-                    let mut schemas = match crate::schema::builtin_schemas() {
-                        Ok(schemas) => schemas,
-                        Err(_) => {
-                            self.send_now(
-                                conn,
-                                Some(&id),
-                                Err(ApiError::new(
-                                    ErrorKind::Internal,
-                                    "invalid built-in method schemas",
-                                )),
-                            );
-                            continue;
-                        }
-                    };
-                    let d = Description {
-                        protocol: PROTOCOL_VERSION.into(),
-                        methods: METHODS
-                            .iter()
-                            .map(|m| {
-                                let pair = schemas.remove(m.name);
-                                MethodInfoOwned {
-                                    name: m.name.into(),
-                                    scope: m.scope,
-                                    effect: Some(m.effect),
-                                    input_schema: pair.as_ref().map(|p| p.input_schema.clone()),
-                                    output_schema: pair.map(|p| p.output_schema),
-                                }
-                            })
-                            .collect(),
-                        topics: Topic::ALL.to_vec(),
-                    };
-                    self.send_now(conn, Some(&id), Ok(Response::Describe(d)));
+                    self.send_now(
+                        conn,
+                        Some(&id),
+                        Err(ApiError::new(ErrorKind::Internal, "unexpected local request")),
+                    );
                 }
                 Queued::Ui(id, request) => {
                     self.forward_ui(conn, id, request);
@@ -1650,4 +1627,66 @@ fn admit(id: RequestId, request: Request, scopes: ScopeSet) -> Queued {
         Request::Command(command) => Queued::Forward(id, command),
         Request::Ui(request) => Queued::Ui(id, request),
     }
+}
+
+/// Most names in each list of `api.describe`'s parameters, and the longest name.
+const DESCRIBE_MAX_NAMES: usize = 64;
+const DESCRIBE_MAX_NAME_LEN: usize = 64;
+
+/// `api.describe` (ADR-0196): the catalogue, with schemas only when asked for, and
+/// only the namespaces' shards the selected methods live in are parsed.
+fn describe(params: &crate::request::DescribeParams) -> Result<Description, ApiError> {
+    use crate::request::DescribeDetail;
+    let bad = |what: &str| ApiError::new(ErrorKind::InvalidParams, what.to_owned());
+    for list in [&params.namespaces, &params.methods] {
+        if list.len() > DESCRIBE_MAX_NAMES || list.iter().any(|n| n.len() > DESCRIBE_MAX_NAME_LEN)
+        {
+            return Err(bad("too many or too long names"));
+        }
+    }
+    let namespace_of = |name: &str| name.split('.').next().unwrap_or("").to_owned();
+    if let Some(unknown) = params
+        .namespaces
+        .iter()
+        .find(|ns| !METHODS.iter().any(|m| namespace_of(m.name) == **ns))
+    {
+        return Err(bad(&format!("no namespace {unknown:?}")));
+    }
+    if let Some(unknown) = params
+        .methods
+        .iter()
+        .find(|name| !METHODS.iter().any(|m| m.name == name.as_str()))
+    {
+        return Err(bad(&format!("no method {unknown:?}")));
+    }
+    let all = params.namespaces.is_empty() && params.methods.is_empty();
+    let mut methods = Vec::new();
+    for m in METHODS {
+        let selected = all
+            || params.methods.iter().any(|n| n == m.name)
+            || params.namespaces.contains(&namespace_of(m.name));
+        if !selected {
+            continue;
+        }
+        let pair = match params.detail {
+            DescribeDetail::Index => None,
+            DescribeDetail::Schemas => match crate::schema::method_schemas(m.name) {
+                Some(Ok(pair)) => Some(pair),
+                Some(Err(why)) => return Err(ApiError::new(ErrorKind::Internal, why)),
+                None => None,
+            },
+        };
+        methods.push(MethodInfoOwned {
+            name: m.name.into(),
+            scope: m.scope,
+            effect: Some(m.effect),
+            input_schema: pair.map(|p| p.input_schema.clone()),
+            output_schema: pair.map(|p| p.output_schema.clone()),
+        });
+    }
+    Ok(Description {
+        protocol: PROTOCOL_VERSION.into(),
+        methods,
+        topics: Topic::ALL.to_vec(),
+    })
 }
