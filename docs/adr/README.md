@@ -191,4 +191,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0181](0181-one-rbs-at-a-time.md) | One RBS per settings folder on every system and with either close setting: an `instance.lock`, a second launch brings the running RBS forward and ends; several copies parked (amends ADR-0056, ADR-0051, ADR-0156) | Accepted |
 | [0182](0182-source-groups.md) | Sources can be grouped, and a group moves, resizes and hides as one | Accepted |
 | [0183](0183-background-removal-picture-and-mask-in-step.md) | Background removal draws each picture with its own mask (Exact); the newest picture stays an option (Fast) | Accepted |
-| [0196](0196-load-control-api-schemas-in-parts.md) | Control API schemas load in parts: `api.describe` is an index with schemas on request, one shard per namespace parsed on first use, `rbs-mcp` lists a small fixed tool set by default | Proposed |
+| [0196](0196-load-control-api-schemas-in-parts.md) | Control API schemas load in parts: `api.describe` is an index with schemas on request, one shard per namespace parsed on first use, `rbs-mcp` lists a small fixed tool set by default | Accepted |

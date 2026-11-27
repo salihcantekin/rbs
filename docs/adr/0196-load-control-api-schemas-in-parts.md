@@ -1,6 +1,6 @@
 # ADR-0196: Load control API schemas in parts
 
-- Status: Proposed
+- Status: Accepted (2026-11-27)
 - Date: 2026-11-27
 - Deciders: Salih (owner)
 - Refines: [ADR-0044](0044-control-api-protocol-and-security.md) (generated schema, served by `api.describe`), [ADR-0052](0052-ai-agent-control-through-mcp.md) (generated MCP tools), [ADR-0134](0134-ai-tools-settings-page.md)
@@ -48,4 +48,4 @@ The owner asked (2026-11-27) for a structure where an MCP client loads only the 
 ## Review
 
 - 2026-11-27, independent AI session (ADR, specs, code): changes requested, 3 blocking and 5 minor. Resolved in this text: fixed order of checks so the wrong-tool error never confirms a hidden method, `api_index` lists only callable methods, missing effect goes to `api_live` (decision 3); compatibility story with old servers and clients, accepted (decision 1); caps on names and lists, `api_schema` at most 16 (decisions 1, 3); shard parse errors, shard completeness, merging loader (decision 2); `--tools` intersection and unknown names, cache invalidation (decisions 3, 4); plugin methods a non-goal (decision 6).
-- Awaiting the owner's approval before Accepted.
+- 2026-11-27: Accepted by the owner (Salih) on a decision card, after the review above.
