@@ -392,20 +392,34 @@ pub fn drop_target(
         .min_by(|a, b| a.1.total_cmp(&b.1));
     if let (Some((edge, _)), false) = (near, title) {
         // Beside the bottom area, the side edges are the full-height areas (ADR-0197).
-        let beside_bottom = flat.bottom.is_some_and(|b| y >= b.y);
-        if matches!(edge, Edge::Left | Edge::Right) && beside_bottom {
-            return Some(DropTarget {
+        // The bottom area reaches this edge unless a full-height side area is there.
+        let bottom = flat.bottom.filter(|b| match edge {
+            Edge::Left => b.x <= content.x + 0.5,
+            Edge::Right => b.x + b.w >= content.x + content.w - 0.5,
+            Edge::Top | Edge::Bottom => false,
+        });
+        let strip = side_of(content, *edge, |extent| {
+            (extent * EDGE_SHARE).min(EDGE_GUIDE_MAX)
+        });
+        return Some(match bottom {
+            // Beside the bottom area the side edge is the full-height area (ADR-0197): its
+            // guide runs the whole height.
+            Some(b) if y >= b.y => DropTarget {
                 place: DropPlace::FullHeightEdge(*edge),
-                guide: side_of(content, *edge, |extent| {
-                    (extent * EDGE_SHARE).min(EDGE_GUIDE_MAX)
-                }),
-            });
-        }
-        return Some(DropTarget {
-            place: DropPlace::WindowEdge(*edge),
-            guide: side_of(content, *edge, |extent| {
-                (extent * EDGE_SHARE).min(EDGE_GUIDE_MAX)
-            }),
+                guide: strip,
+            },
+            // Above it, the area ends at the bottom area, and so does its guide.
+            Some(b) => DropTarget {
+                place: DropPlace::WindowEdge(*edge),
+                guide: Rect {
+                    h: (b.y - content.y).max(0.0),
+                    ..strip
+                },
+            },
+            None => DropTarget {
+                place: DropPlace::WindowEdge(*edge),
+                guide: strip,
+            },
         });
     }
     let s = under?;
@@ -572,6 +586,36 @@ mod tests {
         assert_eq!(low, Some(DropPlace::FullHeightEdge(Edge::Left)));
         let high = drop_target(&flat, WINDOW, &mixer, 4.0, 100.0).map(|t| t.place);
         assert_eq!(high, Some(DropPlace::WindowEdge(Edge::Left)));
+    }
+
+    #[test]
+    fn the_guides_of_the_side_edges_differ_above_and_beside_the_bottom_area() {
+        let m = layout(true, true, true);
+        let w = Window {
+            content: WindowContent::Main(Box::new(m)),
+            placement: None,
+        };
+        let flat = flatten_window(&w, WINDOW, false);
+        let panel = PanelId::parse("rbs.mixer").expect("id");
+        let b = flat.bottom.expect("bottom area");
+        let up = drop_target(&flat, WINDOW, &panel, 4.0, 100.0).expect("target");
+        assert_eq!(up.place, DropPlace::WindowEdge(Edge::Left));
+        assert_eq!(up.guide.h, b.y);
+        let low = drop_target(&flat, WINDOW, &panel, 4.0, b.y + 40.0).expect("target");
+        assert_eq!(low.place, DropPlace::FullHeightEdge(Edge::Left));
+        assert_eq!(low.guide.h, WINDOW.h);
+        // A side area that already runs the full height is an ordinary edge drop.
+        let mut m = layout(true, true, true);
+        m.left.full_height = true;
+        let w = Window {
+            content: WindowContent::Main(Box::new(m)),
+            placement: None,
+        };
+        let flat = flatten_window(&w, WINDOW, false);
+        let b = flat.bottom.expect("bottom area");
+        let t = drop_target(&flat, WINDOW, &panel, 4.0, b.y + 40.0).expect("target");
+        assert_eq!(t.place, DropPlace::WindowEdge(Edge::Left));
+        assert_eq!(t.guide.h, WINDOW.h);
     }
 
     fn collapsed_stack(id: &str) -> Node {

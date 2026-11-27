@@ -1323,6 +1323,9 @@ component DockArea inherits Rectangle {
             return DragAction.move;
         }
         dropped(e) => {
+            // The drop ends the drag even if it moves the panel and so removes the tab
+            // that started it, before that tab can report it (ADR-0197).
+            Shell.panel-dragging = false;
             if !Shell.is-panel(e.data) || Shell.drag-cancelled { return DragAction.none; }
             Shell.drag-drop(root.window, e.data, e.position.x, e.position.y);
             return DragAction.move;
@@ -1366,16 +1369,18 @@ component DockArea inherits Rectangle {
     // Every stack that takes the panel is outlined while it is dragged, so the user sees
     // at once that it moves and where it can go (ADR-0197). The stack the drop would
     // fill is shaded by the guide below.
-    for s in stacks: Rectangle {
-        visible: root.dragging && s.takes-drop;
-        x: s.x;
-        y: s.y;
-        width: s.w;
-        height: s.h;
-        border-radius: Tokens.radius-md;
-        border-width: Tokens.size-border;
-        border-color: Theme.accent;
-        background: transparent;
+    if root.dragging: Rectangle {
+        for s in stacks: Rectangle {
+            visible: s.takes-drop;
+            x: s.x;
+            y: s.y;
+            width: s.w;
+            height: s.h;
+            border-radius: Tokens.radius-md;
+            border-width: Tokens.size-border;
+            border-color: Theme.accent;
+            background: transparent;
+        }
     }
     // The drop guide: the part of the window the drop would fill.
     if drop.has-drag && Shell.drop-window == root.window && Shell.drop-guide.width > 0: Rectangle {

@@ -10,13 +10,6 @@ approved = "owner, 2026-11-26 (chat: 'istisna olsun')"
 date = "2026-11-26"
 
 [[exception]]
-item = "crates/rbs-app/src/main.rs"
-lines = 6307
-reason = "ADR-0195 inactive scenes and list filters"
-approved = "owner, 2026-11-26 (chat: 'istisna olsun')"
-date = "2026-11-26"
-
-[[exception]]
 item = "crates/rbs-app/src/studio_ui.rs"
 lines = 9908
 reason = "ADR-0195 inactive scenes and list filters"

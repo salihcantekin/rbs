@@ -125,3 +125,7 @@ What Slint 1.18.1 (the version we use) provides, checked in its source and with 
 - 2026-11-07: the studio split of decision 3 (`studio = true`, `rbs.transition` as a fixed-size child, `ui.layout.studio_split`) is superseded by ADR-0064 (a two-child studio split, the Transition rail drawn by the window between or below the pictures).
 - 2026-11-11, owner, while using the shell: a click on the dock outside a slid-out auto-hide panel slides it back, and so does running another command. Hover-to-open and the pointer-leave grace period in decision 2 are still not built. Opening a panel shows it: a hidden area is shown, a collapsed stack expands, and an auto-hidden panel slides out. A fully collapsed area is drawn at its title-row size, as decision 2 already required; a lone collapsed stack in an area was still given the area's saved size.
 - 2026-11-11, owner, while using the shell: a slid-out auto-hide panel's title drags like a docked tab, its menu is the panel menu, and Close closes the panel. Escape and a click on the dock still only slide it back. A pointer drag of a splitter does not leave the splitter focused.
+
+## Later notes
+
+- 2026-11-27, ADR-0197: a left or right area can be set to run the full window height, and then the bottom area spans only the width beside it (amends decision 1, only for that case).
