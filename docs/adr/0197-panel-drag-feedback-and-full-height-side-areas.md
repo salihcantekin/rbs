@@ -1,6 +1,6 @@
 # ADR-0197: Panel drag feedback and full-height side areas
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-27
 - Deciders: Salih (owner)
 - Builds on: [ADR-0049](0049-main-window-areas-panel-states-and-sizes.md) (areas, dragging), [ADR-0163](0163-one-command-path-for-the-window-and-the-api.md)
@@ -42,4 +42,11 @@
 
 ## Review
 
-Pending: independent review per ADR-0014 (a new workspace file key, a drop target and a control API method). The ADR stays Proposed until it is recorded and the owner approves.
+Independent AI session (fresh, given only the ADR, specs and code), 2026-11-27: changes requested, then fixed.
+
+- Blocking, fixed: specs now carry the flag, the drag feedback and the layout rule (`ui-design-system.md`, `control-api.md`); this ADR says it amends ADR-0049 decision 1 and ADR-0049 has a forward note; the two side-edge drop targets now have different guides (above the bottom area the guide ends at it) with a test; `Shell.panel-dragging` is cleared by the drop itself, so a drop that removes the source tab cannot leave Escape captured.
+- Non-blocking, fixed: the flag is cleared when its area empties; the outline elements exist only during a drag; lock behaviour (`conflict`) and the flip semantics of `ui.panel.full_height` are written down; the stale planned protocol number is 1.115.
+- Non-blocking, left: the source stack's own outline when the panel is its only tab (the drop is refused there); the older-build message for a file with `full_height` (the format number is not bumped); one `panel-right` icon for both sides.
+- Visuals: the owner approved the dark and light screenshots on 2026-11-27 and tests the build himself (rule 16).
+
+Owner approval of the decision: Salih, 2026-11-27 (proposal in the project thread, "Tamamdır bunu da beğendim").
