@@ -227,7 +227,7 @@ fn recent_entries() -> Result<Vec<(String, MethodSchemas)>, serde_json::Error> {
         ),
         (
             "api.describe".into(),
-            pair::<Empty, Description>(WireRequest::Describe)?,
+            pair::<DescribeParams, Description>(WireRequest::Describe)?,
         ),
         (
             "record.estimate".into(),

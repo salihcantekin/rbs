@@ -1866,7 +1866,7 @@ pub enum Request {
     /// `session.authenticate`.
     Authenticate(Authenticate),
     /// `api.describe`.
-    Describe,
+    Describe(DescribeParams),
     /// `events.unsubscribe`.
     Unsubscribe(Unsubscribe),
     /// A command for the control thread.
@@ -2027,6 +2027,35 @@ pub struct AuthResult {
     pub irreversible: bool,
     /// The server.
     pub server: ClientInfo,
+}
+
+/// How much of the catalogue `api.describe` sends (protocol 1.110, ADR-0196).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum DescribeDetail {
+    /// Name, scope and effect only.
+    #[default]
+    Index,
+    /// Also the input and output schema of each selected method.
+    Schemas,
+}
+
+/// `api.describe` parameters (protocol 1.110, ADR-0196). Both lists select what the
+/// answer covers; when both are empty it covers every method.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct DescribeParams {
+    /// Whether schemas are included. Default `index`.
+    #[serde(default)]
+    pub detail: DescribeDetail,
+    /// Only the methods of these namespaces (`source`, `scene`, ...).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub namespaces: Vec<String>,
+    /// Only these methods (`source.add`, ...).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub methods: Vec<String>,
 }
 
 /// `api.describe`'s answer.

@@ -226,7 +226,7 @@ fn every_request() -> Vec<Request> {
         Request::Authenticate(Authenticate {
             token: "rbs1_x".into(),
         }),
-        Request::Describe,
+        Request::Describe(Default::default()),
         Request::Unsubscribe(Unsubscribe {
             topics: vec![Topic::AudioLevels],
         }),

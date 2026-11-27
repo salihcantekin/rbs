@@ -1623,7 +1623,7 @@ fn admit(id: RequestId, request: Request, scopes: ScopeSet) -> Queued {
                 "the session is already authenticated",
             )),
         ),
-        Request::Describe | Request::Unsubscribe(_) => Queued::Local(id, request),
+        Request::Describe(_) | Request::Unsubscribe(_) => Queued::Local(id, request),
         Request::Command(Command::EventsSubscribe(sub)) => {
             if let Some(t) = sub
                 .topics
