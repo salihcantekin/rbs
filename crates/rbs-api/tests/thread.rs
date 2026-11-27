@@ -130,6 +130,7 @@ impl ControlTarget for Studio {
                         paused: false,
                         paused_ms: 0,
                         recorded_ms: 0,
+                        audio_tracks: Vec::new(),
                     })
                 });
                 Ok(Response::RecordStarted(RecordStarted {

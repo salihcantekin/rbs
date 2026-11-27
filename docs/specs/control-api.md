@@ -697,6 +697,14 @@ to `invalid_params` with the message below.
   group Scroll never composes a nested scene or a nested group. The picture and
   all-or-none preflight rules of 1.111 otherwise remain.
 
+### Protocol 1.113: multi-track recording (ADR-0170 decisions 7 and 11)
+
+- **Settings.** A recording profile's `audio_tracks` may name up to six distinct buses (1.103 refused more than one). An empty name, a repeated name, an empty list or more than six stay `invalid_params`.
+- **State.** `record.status`, `record.state` and `record.canvas_state` add `audio_tracks` to `recording`: one `{bus, encoder}` per audio track, track 1 first, only for a recording with more than one track (absent for one track, which `audio_encoder` names). `tracks` stays the separate files of 1.46; `audio_tracks` is a different field because that name was taken.
+- **Starting.** A recording whose format carries fewer audio tracks than its profile names (the muxer's `mux.audio_streams`: Matroska, MP4 and MOV take six; WAV and FLAC one) is refused by `record.start` and `record.start_to_file` before anything opens: `failed` with `data.reason: "tracks_unsupported"` and `data.allowed`, the number the format carries. The bus checks of 1.103 still apply to every track.
+- **Older clients and servers.** A 1.112 client ignores `audio_tracks` and reads the refusal as a plain `failed`. Servers of 1.103 to 1.112 refused several tracks in `settings.set` with `invalid_params` until 2026-11-22, when the studio's multi-track chain landed; servers built since accept them and answer a start the format cannot carry with a plain `failed` (`this format takes at most 1 audio track`).
+- **Order.** The track count is checked first, before the bus names, the folder and the separate files: a WAV profile naming an unknown bus gets `tracks_unsupported`.
+
 ### Protocol 1.112: inactive scenes (ADR-0195)
 
 - **`scene.list`** rows gain `active` (`false` only when inactive; absent means
@@ -1114,7 +1122,7 @@ restart or end does.
 
 - **Settings.** `stream` in `settings.get`, `settings.set` and `settings.changed` adds `audio_bus`, the name of the bus of the main canvas the stream sends (every destination sends it); omitted when `main`. In a `settings.set` patch, absent leaves it. A recording profile adds `audio_tracks`, the bus names it writes as audio tracks, track 1 first; omitted when `["main"]`, and in `settings.set` absent keeps the stored tracks. An empty name, a repeated name or more than six tracks are `invalid_params`; so are several tracks until multi-track recording is built (one track for now). Saved in the output profile's stream and recording sections, omitted at the default.
 - **Starting.** A name the main canvas has no bus for is checked when the output starts: `record.start` and `stream.start` answer `failed` with the reason (`no audio bus named "..."`); the output never falls back to `main`. A vertical canvas's outputs take the main canvas's buses.
-- **Not in 1.103.** Bus edits (`bus.*`), send levels, `tracks` in `record.status` and `tracks_unsupported`; they come with the Mixer's buses and multi-track recording.
+- **Not in 1.103.** Bus edits (`bus.*`), send levels and multi-track recording; 1.113 adds the last (`audio_tracks` in `record.status`, `tracks_unsupported`).
 
 ### Protocol 1.102: the slide show source (ADR-0171 decision 9)
 

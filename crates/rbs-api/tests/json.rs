@@ -771,8 +771,12 @@ fn engine() -> AddOnRef {
     }
 }
 
+#[path = "json/loudness.rs"]
+mod loudness;
 #[path = "json/media.rs"]
 mod media;
+#[path = "json/record_tracks.rs"]
+mod record_tracks;
 #[path = "json/samples.rs"]
 mod samples;
 use samples::{browser_events, capture_target};
@@ -1058,16 +1062,7 @@ fn every_result_and_event_type_round_trips() {
     for payload in [
         EventPayload::SourceChanged(vec![source()]),
         EventPayload::SceneChanged(scenes()),
-        EventPayload::RecordState(RecordState::Recording {
-            profile: Some("default".into()),
-            video_encoder: "VT".into(),
-            audio_encoder: None,
-            tracks: vec![],
-            skipped: vec![],
-            paused: false,
-            paused_ms: 0,
-            recorded_ms: 0,
-        }),
+        EventPayload::RecordState(record_tracks::recording(Vec::new())),
         EventPayload::CanvasChanged(canvas()),
         EventPayload::SettingsChanged(settings::plain(vec![], None, None)),
         EventPayload::AudioLevels(vec![SourceLevels {
@@ -1400,6 +1395,7 @@ fn canvas_states_are_the_main_object_with_canvas_added() {
                 paused: true,
                 paused_ms: 1500,
                 recorded_ms: 61_250,
+                audio_tracks: Vec::new(),
             },
         }),
     };
@@ -2175,6 +2171,7 @@ fn separate_files_round_trip_and_later_options_are_refused() {
         paused: false,
         paused_ms: 0,
         recorded_ms: 0,
+        audio_tracks: Vec::new(),
     };
     round_trip(&running);
     let value = serde_json::to_value(&running).unwrap();
@@ -2204,6 +2201,7 @@ fn separate_files_round_trip_and_later_options_are_refused() {
         paused: false,
         paused_ms: 0,
         recorded_ms: 0,
+        audio_tracks: Vec::new(),
     })
     .unwrap();
     assert!(plain.get("tracks").is_none());
@@ -2233,54 +2231,6 @@ fn separate_files_round_trip_and_later_options_are_refused() {
     })
     .unwrap();
     assert_eq!(skipped["reason"], "limit");
-}
-
-#[test]
-fn loudness_values_have_their_wire_form() {
-    let on: SetLoudnessEnabled = serde_json::from_value(json!({"on": true})).unwrap();
-    assert!(on.on);
-    assert!(serde_json::from_value::<SetLoudnessEnabled>(json!({"on": true, "x": 1})).is_err());
-    // Off: only `enabled`; values without data are left out, never NaN or infinity.
-    let off = serde_json::to_value(LoudnessStatus::default()).unwrap();
-    assert_eq!(off, json!({"enabled": false}));
-    let status = LoudnessStatus {
-        enabled: true,
-        momentary: Some(-22.5),
-        short_term: Some(-23.0),
-        integrated: Some(-23.5),
-        range: Some(4.5),
-        true_peak_max: Some(-1.5),
-        momentary_max: Some(-18.0),
-        short_term_max: Some(-20.0),
-        target: Some(-14.0),
-        true_peak_limit: Some(-1.0),
-    };
-    let v = serde_json::to_value(status).unwrap();
-    assert_eq!(v["integrated"], json!(-23.5));
-    assert_eq!(v["true_peak_max"], json!(-1.5));
-    assert_eq!(v["target"], json!(-14.0));
-    round_trip(&status);
-}
-
-/// Protocol 1.59 (ADR-0092 decision 5): `loudness` in the settings is optional both
-/// ways, so a 1.58 patch and a 1.58 server's settings read as before.
-#[test]
-fn loudness_settings_are_a_minor_addition() {
-    let old: SettingsPatch = serde_json::from_value(json!({"canvas": null})).unwrap();
-    assert_eq!(old.loudness, None);
-    let new: SettingsPatch =
-        serde_json::from_value(json!({"loudness": {"target": -23.0, "true_peak_limit": -2.0}}))
-            .unwrap();
-    assert_eq!(
-        new.loudness,
-        Some(LoudnessSettings {
-            target: -23.0,
-            true_peak_limit: -2.0
-        })
-    );
-    assert!(
-        serde_json::from_value::<SettingsPatch>(json!({"loudness": {"target": -23.0}})).is_err()
-    );
 }
 
 #[test]
@@ -2800,6 +2750,7 @@ fn a_paused_recording_reads_as_recording_and_older_states_as_not_paused() {
         paused: true,
         paused_ms: 2_000,
         recorded_ms: 10_000,
+        audio_tracks: Vec::new(),
     };
     round_trip(&paused);
     let value = serde_json::to_value(&paused).unwrap();

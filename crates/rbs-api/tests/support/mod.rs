@@ -300,6 +300,7 @@ impl FakeTarget {
                 paused: false,
                 paused_ms: 0,
                 recorded_ms: 0,
+                audio_tracks: Vec::new(),
             }
         } else {
             RecordState::Idle { last: None }

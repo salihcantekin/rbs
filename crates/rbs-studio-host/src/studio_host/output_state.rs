@@ -50,6 +50,10 @@ pub(super) enum StartError {
     Message(String),
     /// The start gate refused it (control API 1.54): `failed` with `data`.
     Refused(String, Box<api::StartRefusal>),
+    /// The destination carries fewer audio tracks than the profile names (ADR-0170
+    /// decision 7): `failed` with `data.reason: "tracks_unsupported"` and
+    /// `data.allowed`.
+    Tracks(String, usize),
 }
 
 impl From<String> for StartError {
@@ -67,7 +71,7 @@ impl From<Refusal> for StartError {
 impl StartError {
     pub(super) fn into_message(self) -> String {
         match self {
-            Self::Message(m) | Self::Refused(m, _) => m,
+            Self::Message(m) | Self::Refused(m, _) | Self::Tracks(m, _) => m,
         }
     }
 
@@ -75,6 +79,13 @@ impl StartError {
         match self {
             Self::Message(m) => failed(m),
             Self::Refused(m, r) => r.into_error(m),
+            Self::Tracks(m, allowed) => {
+                let mut e = failed_because("tracks_unsupported", m);
+                if let Some(data) = e.data.as_mut() {
+                    data.insert("allowed".into(), allowed.into());
+                }
+                e
+            }
         }
     }
 }
