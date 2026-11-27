@@ -40,6 +40,12 @@ export function linkText(s: LinkStatus): LinkText {
 	}
 }
 
+/** A filter's type id (`org.rbs.filter.color-correction`) as words: "Color correction". */
+export function filterName(type: string): string {
+	const last = type.slice(type.lastIndexOf(".") + 1).replace(/[-_]+/g, " ").trim();
+	return last ? last[0]!.toUpperCase() + last.slice(1) : type;
+}
+
 /** The filter a key points at, with the name of its source. */
 export function findFilter(state: ViewState, id: string | undefined): { source: string; name: string; type: string; enabled: boolean; id: number } | undefined {
 	for (const src of state.sources ?? []) {
@@ -296,7 +302,7 @@ function lookRaw(kind: Kind, settings: Settings, state: ViewState, ctx: RenderCo
 			const f = findFilter(state, settings.filter);
 			if (!settings.filter) return { glyph: glyphs.filter, label: "Filter", sub: "Choose one", tone: "dim", untitled };
 			if (!f) return { glyph: glyphs.filter, label: "Filter", sub: "Not in scene", tone: "dim", untitled };
-			const name = f.type.replace(/_/g, " ");
+			const name = filterName(f.type);
 			if (mode === "on") return { glyph: glyphs.filter, label: name, sub: "Turn on", tone: f.enabled ? "accent" : "neutral", untitled };
 			if (mode === "off") return { glyph: glyphs.filter, label: name, sub: "Turn off", tone: f.enabled ? "neutral" : "accent", untitled };
 			return { glyph: glyphs.filter, label: name, sub: name.includes(" ") ? undefined : f.source, tone: f.enabled ? "accent" : "dim", dot: f.enabled, untitled };

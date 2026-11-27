@@ -15,7 +15,7 @@ const paused: ViewState = { ...st, record: { state: "recording", paused: true } 
 const more: ViewState = {
 	...st,
 	scenes: { ...st.scenes!, preview: 1 },
-	sources: [{ id: 7, name: "Camera", item: 1, filters: [{ id: 31, type: "background_removal", enabled: true }] }],
+	sources: [{ id: 7, name: "Camera", item: 1, filters: [{ id: 31, type: "org.rbs.filter.background-removal", enabled: true }] }],
 	buses: { buses: [{ name: "Music", volume: 0.5, muted: false }] },
 	collections: { entries: [{ id: "a", name: "Show" }, { id: "b", name: "Talk" }], current: "a" },
 	profileLibrary: { entries: [{ id: "p", name: "Stream" }], current: "p" },
@@ -34,7 +34,7 @@ const groups: [string, string[]][] = [
 		k("preview", more, { scene: "1" }), k("preview", more, { scene: "2" }),
 		k("status"), k("status", rec, {}, { ...ctx, now: 1000 }),
 		k("go-live"), k("go-live", rec),
-		k("filter", more, { filter: "31" }), k("filter", { ...more, sources: [{ id: 7, name: "Camera", item: 1, filters: [{ id: 31, type: "background_removal", enabled: false }] }] }, { filter: "31" }),
+		k("filter", more, { filter: "31" }), k("filter", { ...more, sources: [{ id: 7, name: "Camera", item: 1, filters: [{ id: 31, type: "org.rbs.filter.background-removal", enabled: false }] }] }, { filter: "31" }),
 		k("bus-mute", more, { bus: "Music" }), k("bus-mute", { ...more, buses: { buses: [{ name: "Music", volume: 1, muted: true }] } }, { bus: "Music" }),
 	]],
 	["No link", ["Not connected", "Set token", "Token rejected", "Update RBS"].map((title) => linkKey({ title }))],

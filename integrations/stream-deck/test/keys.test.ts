@@ -6,7 +6,7 @@ import { ManualClock } from "../src/rbs-client/clock.js";
 import { RbsClient } from "../src/rbs-client/client.js";
 import { positionOf, volumeAt, volumeText } from "../src/fader.js";
 import { press, turnVolume } from "../src/press.js";
-import { type Elapsed, dialView, formatElapsed, jobDone, look, renderKey, stateIndex, stepTarget, type ViewState } from "../src/view.js";
+import { type Elapsed, dialView, filterName, formatElapsed, jobDone, look, renderKey, stateIndex, stepTarget, type ViewState } from "../src/view.js";
 import { FakeServer } from "./fake-server.js";
 
 const ready = { state: "ready" } as const;
@@ -184,7 +184,7 @@ describe("press", () => {
 describe("more keys", () => {
 	const st: ViewState = {
 		scenes: { scenes: [{ id: 1, name: "Main" }, { id: 2, name: "Chat" }], program: 1, preview: 1 },
-		sources: [{ id: 7, name: "Camera", item: 1, filters: [{ id: 31, type: "background_removal", enabled: true }] }],
+		sources: [{ id: 7, name: "Camera", item: 1, filters: [{ id: 31, type: "org.rbs.filter.background-removal", enabled: true }] }],
 		record: { state: "idle" },
 		stream: { state: "idle" },
 		replay: { armed: false },
@@ -200,7 +200,7 @@ describe("more keys", () => {
 		expect(look("profile", {}, st, c).sub).toBe("Choose one");
 		expect(look("preview", { scene: "2" }, st, c)).toMatchObject({ label: "Chat", sub: "Preview", tone: "neutral" });
 		expect(look("preview", { scene: "2" }, { ...st, scenes: { ...st.scenes!, preview: undefined } }, c)).toMatchObject({ sub: "Studio off", tone: "dim" });
-		expect(look("filter", { filter: "31" }, st, c)).toMatchObject({ label: "background removal", tone: "accent", sub: undefined });
+		expect(look("filter", { filter: "31" }, st, c)).toMatchObject({ label: "Background removal", tone: "accent", sub: undefined });
 		expect(look("filter", { filter: "99" }, st, c).sub).toBe("Not in scene");
 		expect(look("replay-buffer", {}, st, c).label).toBe("Replay off");
 		expect(look("bus-mute", { bus: "Music" }, st, c)).toMatchObject({ label: "Music", tone: "neutral" });
@@ -208,6 +208,10 @@ describe("more keys", () => {
 		expect(look("status", {}, { ...st, record: { state: "recording" }, stream: { state: "live", connected: true } }, c).label).toBe("Rec + Live");
 		expect(look("go-live", {}, st, c).label).toBe("Go live");
 		expect(look("go-live", {}, { ...st, stream: { state: "live" } }, c).label).toBe("End all");
+	});
+	it("names a filter from its type id", () => {
+		expect(filterName("org.rbs.filter.color-correction")).toBe("Color correction");
+		expect(filterName("blur")).toBe("Blur");
 	});
 	it("two-state indexes and one-job dimming", () => {
 		expect(stateIndex("collection", { entry: "a" }, st)).toBe(1);

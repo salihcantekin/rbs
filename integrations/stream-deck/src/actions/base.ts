@@ -4,7 +4,7 @@ import type { JsonObject } from "@elgato/utils";
 import { dialFeedback, toDataUrl } from "../pictures/pictures.js";
 import { explain, press, turnVolume } from "../press.js";
 import { client, elapsed, lease, live } from "../runtime.js";
-import { type Kind, type Settings, type ViewState, dialView, linkText, renderKey, stateIndex } from "../view.js";
+import { type Kind, type Settings, type ViewState, dialView, filterName, linkText, renderKey, stateIndex } from "../view.js";
 
 /** Every action instance, so a state change repaints all keys. */
 const instances = new Set<RbsKeyAction>();
@@ -89,7 +89,7 @@ async function sendLists(): Promise<void> {
 	await streamDeck.ui.sendToPropertyInspector({ event: "getProfiles", items: items(s.profileLibrary?.entries ?? []) });
 	await streamDeck.ui.sendToPropertyInspector({ event: "getBuses", items: (s.buses?.buses ?? []).map((b) => ({ label: b.name, value: b.name })) });
 	// Filters of the sources in the scene on air (the only ones RBS lists with their filters).
-	const filters = (s.sources ?? []).flatMap((src) => (src.filters ?? []).map((f) => ({ label: `${src.name}: ${f.type.replace(/_/g, " ")}`, value: String(f.id) })));
+	const filters = (s.sources ?? []).flatMap((src) => (src.filters ?? []).map((f) => ({ label: `${src.name}: ${filterName(f.type)}`, value: String(f.id) })));
 	await streamDeck.ui.sendToPropertyInspector({ event: "getFilters", items: filters });
 	await streamDeck.ui.sendToPropertyInspector({ event: "getMuteTargets", items: [{ label: "Master", value: "master" }, ...all] });
 }
