@@ -4,6 +4,7 @@ import { Lease } from "../src/lease.js";
 import { fit } from "../src/pictures/pictures.js";
 import { ManualClock } from "../src/rbs-client/clock.js";
 import { RbsClient } from "../src/rbs-client/client.js";
+import { positionOf, volumeAt, volumeText } from "../src/fader.js";
 import { press, turnVolume } from "../src/press.js";
 import { type Elapsed, dialView, formatElapsed, look, renderKey, stateIndex, stepTarget, type ViewState } from "../src/view.js";
 import { FakeServer } from "./fake-server.js";
@@ -160,6 +161,8 @@ describe("scene steps and dials", () => {
 	};
 	it("steps over inactive scenes and wraps", () => {
 		expect(stepTarget(state, "next")?.id).toBe(1);
+		// in studio mode it steps from the preview scene
+		expect(stepTarget({ ...state, scenes: { ...state.scenes!, preview: 1 } }, "next")?.id).toBe(3);
 		expect(stepTarget(state, "previous")?.id).toBe(1);
 		expect(stepTarget({ scenes: { scenes: [{ id: 1, name: "A" }], program: 1 } }, "next")).toBeUndefined();
 	});
@@ -175,10 +178,37 @@ describe("scene steps and dials", () => {
 		client.configure(server.port, "rbs1_good");
 		client.start();
 		await new Promise<void>((r) => client.onStatus((st) => st.state === "ready" && r()));
-		await turnVolume({ source: "7", step: "5" }, 2, client);
-		expect(server.requests.slice(-1)[0]).toEqual({ method: "source.set_volume", params: { source: 7, volume: 0.9 } });
+		// 0.8 is at fader position 0.968 (-1.9 dB); two steps of 10 percent down is position 0.768 (-13.9 dB)
+		await turnVolume({ source: "7", step: "10" }, -2, client);
+		const sent = (server.requests.slice(-1)[0]?.params as { volume: number }).volume;
+		expect(20 * Math.log10(sent)).toBeCloseTo(-13.94, 1);
+		expect(positionOf(sent)).toBeCloseTo(0.7677, 2);
 		await turnVolume({ source: "7", step: "25" }, 5, client);
 		expect(server.requests.slice(-1)[0]?.params).toEqual({ source: 7, volume: 1 });
+		client.stop();
+		await server.stop();
+	});
+});
+
+describe("fader scale", () => {
+	it("matches RBS's fader: linear in dB from -60 to 0, the left end is silence", () => {
+		expect(positionOf(1)).toBe(1);
+		expect(positionOf(0)).toBe(0);
+		expect(positionOf(10 ** (-30 / 20))).toBeCloseTo(0.5, 5);
+		expect(volumeAt(0.5)).toBeCloseTo(10 ** (-30 / 20), 5);
+		expect(volumeAt(0)).toBe(0);
+		expect(volumeText(10 ** (-6 / 20))).toBe("-6.0 dB");
+		expect(volumeText(0)).toBe("Silent");
+	});
+	it("next scene moves the preview in studio mode", async () => {
+		const server = await FakeServer.start();
+		server.options.answers["scene.list"] = { seq: { "scene.changed": 1 }, data: { scenes: [{ id: 1, name: "A" }, { id: 2, name: "B" }], program: 1, preview: 1, sources: [] } };
+		const client = new RbsClient({ clock: new ManualClock() });
+		client.configure(server.port, "rbs1_good");
+		client.start();
+		await new Promise<void>((r) => client.onStatus((st) => st.state === "ready" && r()));
+		await press("scene-step", { direction: "next" }, client);
+		expect(server.requests.slice(-1)[0]).toEqual({ method: "canvas.set_preview", params: { scene: 2 } });
 		client.stop();
 		await server.stop();
 	});

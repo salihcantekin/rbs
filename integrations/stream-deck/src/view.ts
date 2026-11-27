@@ -68,7 +68,9 @@ export interface RenderContext {
 /** The scene a step key goes to: the next or previous one that navigation reaches, wrapping around. */
 export function stepTarget(state: ViewState, direction: "next" | "previous"): { id: number; name: string } | undefined {
 	const scenes = (state.scenes?.scenes ?? []).filter((s) => s.active !== false);
-	const at = scenes.findIndex((s) => s.id === state.scenes?.program);
+	// Studio mode steps the preview scene; otherwise the program.
+	const from = state.scenes?.preview ?? state.scenes?.program;
+	const at = scenes.findIndex((s) => s.id === from);
 	if (scenes.length < 2) return undefined;
 	const i = at < 0 ? 0 : (at + (direction === "next" ? 1 : -1) + scenes.length) % scenes.length;
 	return scenes[i];

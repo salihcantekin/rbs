@@ -69,13 +69,13 @@ All actions are keys (`Controllers: ["Keypad"]`) except the volume dial (`Encode
 | `stream` | idle: `stream.start`; live: `stream.stop` | none | idle: broadcast icon; live: red icon, "Connecting" until `connected`, "Reconnecting" while it retries |
 | `source-visible` | `item.set_visible {item, visible: !visible}` on the source's item in the program scene | source (id and last name) | eye open or closed; dimmed with "Not in scene" when the source has no item in the program scene |
 | `record-pause` | `record.pause_toggle` while recording; nothing otherwise | none | Pause icon, Resume while paused, dimmed when not recording |
-| `scene-step` | `scene.switch` to the next or previous scene that navigation reaches (`active` not false), wrapping | direction | arrow with the target scene's name |
+| `scene-step` | the next or previous scene that navigation reaches (`active` not false), wrapping, counted from the preview scene in studio mode (then `canvas.set_preview`) and from the program scene otherwise (`scene.switch`), like the app's Next scene | direction | arrow with the target scene's name |
 | `replay` | `replay.save`; refused when the buffer is not armed | none | dimmed "Replay off", "Save replay", "Saving" |
 | `studio` | `canvas.set_preview {scene: program}` to enter studio mode, `{scene: null}` to leave (state: `preview` present in the scene list) | none (mode setting) | accent while on |
 | `transition` | `canvas.transition` in studio mode; nothing outside it | none | dimmed outside studio mode |
 | `vcam` | `vcam.start` or `vcam.stop` | none | accent while sending |
 | `marker` | `marker.add` | none | dimmed while not recording |
-| `volume` (dial) | turn: `source.set_volume` or `canvas.set_master_volume`, a step of 1 to 25 percent per tick; press: mute | source or Master, step | built-in `$B1` layout: title, percent or Muted, bar |
+| `volume` (dial) | turn: `source.set_volume` or `canvas.set_master_volume`, a step of 1 to 25 percent of the fader per tick (RBS's fader scale: linear in dB from -60 dB to 0 dB, the left end is silence); press: mute | source or Master, step | built-in `$B1` layout: title, percent or Muted, bar |
 | `mute` | `source.set_muted {source, muted: !muted}`, or `canvas.set_master_muted` for the target Master | target: Master or a source | speaker or crossed speaker |
 
 Master state is the `master {volume, muted}` field of the scene list (absent means not muted; protocol 1.15). Below 1.15 the Master target is shown as unavailable. A source's `muted` is known only for sources in the program scene (`source.changed` lists those); for another source the key shows its state as unknown (neutral picture) and a press sends the opposite of the last known value, defaulting to mute.

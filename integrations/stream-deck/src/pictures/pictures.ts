@@ -1,3 +1,4 @@
+import { positionOf, volumeText } from "../fader.js";
 import { tokens as t } from "./tokens.js";
 
 /** The state of a link as a key shows it. */
@@ -129,6 +130,5 @@ export function toDataUrl(svg: string): string {
 /** Text of a dial's touch strip (the built-in $B1 layout). */
 export function dialFeedback(title: string, volume: number | undefined, muted: boolean | undefined): { title: string; value: string; indicator: { value: number } } {
 	if (volume === undefined) return { title, value: "-", indicator: { value: 0 } };
-	const pct = Math.round(volume * 100);
-	return { title, value: muted ? "Muted" : `${pct}%`, indicator: { value: muted ? 0 : Math.min(100, pct) } };
+	return { title, value: muted ? "Muted" : volumeText(volume), indicator: { value: muted ? 0 : Math.round(positionOf(volume) * 100) } };
 }

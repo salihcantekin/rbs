@@ -1,5 +1,6 @@
 import { RbsError } from "./rbs-client/protocol.js";
 import type { RbsClient } from "./rbs-client/client.js";
+import { positionOf, volumeAt } from "./fader.js";
 import { type Kind, type Settings, type ViewState, modeOf, stepTarget } from "./view.js";
 
 /** Why a press failed, in words for the inspector's status line. */
@@ -55,7 +56,10 @@ export async function press(kind: Kind, settings: Settings, client: RbsClient): 
 		}
 		case "scene-step": {
 			const target = stepTarget(state, settings.direction === "previous" ? "previous" : "next");
-			if (target) await client.call("scene.switch", { scene: target.id });
+			if (!target) return;
+			// In studio mode the app's Next scene changes the preview, not the program.
+			if (state.scenes?.preview !== undefined) await client.call("canvas.set_preview", { scene: target.id });
+			else await client.call("scene.switch", { scene: target.id });
 			return;
 		}
 		case "replay": {
@@ -127,15 +131,16 @@ export async function turnVolume(settings: Settings, ticks: number, client: RbsC
 	const state = client.state as unknown as ViewState;
 	const step = Math.min(25, Math.max(1, Number(settings.step) || 5)) / 100;
 	if (settings.source === "master") {
-		const now = state.scenes?.master?.volume ?? 1;
-		await client.call("canvas.set_master_volume", { volume: clamp(now + ticks * step) });
+		await client.call("canvas.set_master_volume", { volume: moved(state.scenes?.master?.volume ?? 1, ticks, step) });
 		return;
 	}
 	const src = state.sources?.find((s) => String(s.id) === settings.source);
 	if (!src) return; // not in the scene on air: its volume is not known
-	await client.call("source.set_volume", { source: src.id, volume: clamp(Math.round((src.volume ?? 1) * 100 + ticks * step * 100) / 100) });
+	await client.call("source.set_volume", { source: src.id, volume: moved(src.volume ?? 1, ticks, step) });
 }
 
-function clamp(v: number): number {
-	return Math.min(1, Math.max(0, Math.round(v * 100) / 100));
+/** The volume after `ticks` steps on RBS's fader scale (steps are a share of the fader, not of the amplitude). */
+function moved(volume: number, ticks: number, step: number): number {
+	const pos = Math.min(1, Math.max(0, positionOf(volume) + ticks * step));
+	return Math.round(volumeAt(pos) * 10000) / 10000;
 }
