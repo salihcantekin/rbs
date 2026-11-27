@@ -77,6 +77,7 @@ const REPORT_EVERY: u32 = 30;
 pub(crate) mod activity_choice;
 mod add_calls;
 pub(crate) mod add_picker;
+pub(crate) use picker_calls::PickerView;
 pub(crate) mod ai;
 mod api_call;
 pub(crate) mod attributes;
@@ -91,6 +92,7 @@ mod step_view;
 use step_view::step_view;
 mod library_ops;
 mod output_calls;
+mod picker_calls;
 mod scene_calls;
 mod settings_choices;
 use settings_choices::{SettingsChoices, camera_sizes, rates_between};
@@ -330,7 +332,7 @@ pub struct StudioUi {
     filters_for: Option<EntryId>,
     scenes: Rc<VecModel<SceneData>>,
     /// The sources of other scenes the scene on air does not have (Add source).
-    existing: Vec<(SourceId, String)>,
+    existing: Vec<(SourceId, String, Option<SourceKind>)>,
     /// The open Add source picker (ADR-0094 B1) and whether the dialog must be redrawn.
     pub(super) add_picker: Option<add_picker::AddPicker>,
     picker_dirty: bool,
@@ -2028,6 +2030,9 @@ impl StudioUi {
         );
         self.source_pictures
             .insert((adapter, target), slint::Image::from_rgba8(buffer));
+        if self.add_picker.is_some() {
+            self.picker_dirty = true;
+        }
         let list = &self.source_target_list;
         let pictures = &self.source_pictures;
         for i in 0..self.source_targets.row_count() {
@@ -2507,98 +2512,6 @@ impl StudioUi {
         }
     }
 
-    /// Opens the Add source picker for a source type (its devices are listed by the
-    /// studio and fill the rows when they arrive) or for the sources of other scenes.
-    /// A picker that is open is replaced.
-    pub fn open_add_picker(&mut self, what: crate::menu_bar::AddWhat) {
-        use crate::menu_bar::AddWhat;
-        let picker = match what {
-            AddWhat::Kind(code) => {
-                let Some(kind) = self.kind_list.get(code as usize).copied() else {
-                    return;
-                };
-                self.list_kind_targets(kind);
-                add_picker::AddPicker::for_kind(kind)
-            }
-            AddWhat::Existing => add_picker::AddPicker::existing(&self.existing),
-        };
-        self.add_picker = Some(picker);
-        self.picker_dirty = true;
-    }
-
-    /// The picker was closed or cancelled: a late answer fills nothing.
-    pub fn close_add_picker(&mut self) {
-        self.add_picker = None;
-        self.picker_dirty = false;
-    }
-
-    /// "Capture audio too" in the Add source dialog was checked or unchecked.
-    pub fn set_picker_audio(&mut self, on: bool) {
-        if let Some(p) = &mut self.add_picker {
-            p.set_audio(on);
-            self.picker_dirty = true;
-        }
-    }
-
-    pub fn filter_add_picker(&mut self, text: &str) {
-        if let Some(p) = &mut self.add_picker {
-            p.set_query(text);
-            self.picker_dirty = true;
-        }
-    }
-
-    /// A row was chosen (`index` is of the picker's listing, see [`add_picker::Row`]).
-    /// Returns whether something was added, so the caller closes the dialog.
-    pub fn choose_add_picker(&mut self, index: usize) -> bool {
-        let pick = self
-            .add_picker
-            .as_ref()
-            .and_then(|p| p.pick(index))
-            .cloned();
-        match pick {
-            Some(add_picker::Pick::Target(kind, target)) => {
-                let audio = self.add_picker.as_ref().is_some_and(|p| p.audio());
-                self.adding = true;
-                self.deleted.clear();
-                // A camera without a microphone of its own adds just the camera.
-                let with_sound =
-                    audio && !target.picker && (kind != SourceKind::Camera || target.mic.is_some());
-                self.add_target(kind, target, with_sound, false);
-            }
-            Some(add_picker::Pick::Existing(id)) => self.add_existing_source(id.get() as i32),
-            Some(add_picker::Pick::Font(id, family)) => {
-                self.set_text_value(id.get() as i32, rbs_sources::types::keys::FONT, &family);
-            }
-            None => return false,
-        }
-        self.add_picker = None;
-        true
-    }
-
-    /// What the dialog shows now, once after each change.
-    pub fn take_picker_view(&mut self) -> Option<PickerView> {
-        if !std::mem::take(&mut self.picker_dirty) {
-            return None;
-        }
-        let p = self.add_picker.as_ref()?;
-        let what = p
-            .kind()
-            .map_or("existing source".to_owned(), |k| k.label().to_lowercase());
-        Some(PickerView {
-            title: if p.is_fonts() {
-                "Choose a font".to_owned()
-            } else {
-                format!("Add {what}")
-            },
-            fonts: p.is_fonts(),
-            status: p.status(),
-            rows: p.rows(),
-            offers_audio: p.offers_audio(),
-            offers_mic: p.offers_microphone(),
-            audio: p.audio(),
-        })
-    }
-
     /// Puts a scene on air (a click in the Scenes panel); in studio mode, in preview.
     pub fn switch_scene(&mut self, id: i32) {
         self.send(Command::SwitchScene(SceneId::from_raw(id as u32)));
@@ -2619,7 +2532,7 @@ impl StudioUi {
             .sources
             .iter()
             .filter(|s| !s.global && !self.rows.iter().any(|r| r.id == s.id))
-            .map(|s| (s.id, s.name.clone()))
+            .map(|s| (s.id, s.name.clone(), s.kind))
             .collect();
     }
 
@@ -6977,20 +6890,6 @@ fn snap(position: f32) -> f32 {
 }
 
 /// What [`StudioUi::apply`] asks of the shell.
-/// The Add source dialog's content ([`StudioUi::take_picker_view`]).
-pub struct PickerView {
-    pub title: String,
-    /// The picker lists font families (a text source's Font).
-    pub fonts: bool,
-    pub status: add_picker::Status,
-    pub rows: Vec<add_picker::Row>,
-    /// Show "Capture audio too" (displays and windows) and whether it is checked.
-    pub offers_audio: bool,
-    /// The dialog offers "Add its microphone too" (a camera with a microphone of its own).
-    pub offers_mic: bool,
-    pub audio: bool,
-}
-
 #[derive(Default)]
 pub struct Applied {
     pub error: Option<String>,
@@ -9289,7 +9188,7 @@ pub(crate) mod tests {
         assert_eq!(run_of(&ui, "source.add"), None);
         // No other scene has a source: "existing" is not offered and does not run.
         assert_eq!(run_of(&ui, "source.add?kind=existing"), None);
-        ui.existing = vec![(SourceId::from_raw(7), "Mic".to_owned())];
+        ui.existing = vec![(SourceId::from_raw(7), "Mic".to_owned(), None)];
         assert_eq!(
             run_of(&ui, "source.add?kind=existing"),
             Some(Run::AddSource(AddWhat::Existing))

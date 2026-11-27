@@ -39,6 +39,7 @@ mod obs_import_page;
 mod panel_drag;
 mod panels_menu;
 mod permissions_page;
+mod picker_ui;
 #[cfg(any(target_os = "macos", windows))]
 mod preview;
 mod preview_edit;
@@ -1309,45 +1310,7 @@ impl App {
         let Some(view) = self.studio.take_picker_view() else {
             return;
         };
-        use studio_ui::add_picker::Status;
-        let status = match view.status {
-            Status::Looking if view.fonts => "Reading the fonts...",
-            Status::Looking => "Looking for devices...",
-            Status::Nothing => "Nothing of this type was found.",
-            Status::NoMatch => "Nothing matches.",
-            Status::Ready => "",
-        };
-        let rows: Vec<PickerRow> = view
-            .rows
-            .into_iter()
-            .map(|r| PickerRow {
-                name: r.name.into(),
-                note: r.note.into(),
-                index: r.index as i32,
-            })
-            .collect();
-        self.with_picker_overlays(|o| {
-            o.set_picker_title(view.title.into());
-            o.set_picker_status(status.into());
-            let (label, hint) = if view.offers_audio {
-                (
-                    "Capture audio too",
-                    "Adds the sound that goes with the picture as its own audio source: a display's system sound without RBS's own sound, a window's application sound. Capturing the system sound and another app's sound can play the same audio twice.",
-                )
-            } else if view.offers_mic {
-                (
-                    "Add its microphone too",
-                    "A microphone that belongs with a camera was found; the rows that have one say '+ mic'. Adds it as its own audio source with the camera.",
-                )
-            } else {
-                ("", "")
-            };
-            o.set_picker_option_label(label.into());
-            o.set_picker_option_hint(hint.into());
-            o.set_picker_option(view.audio);
-            o.set_picker_rows(ModelRc::new(VecModel::from(rows)));
-            o.set_picker_open(true);
-        });
+        self.with_picker_overlays(|o| picker_ui::show(o, view));
     }
 
     fn undo(&mut self) {
@@ -3594,6 +3557,17 @@ fn install_picker(g: &Overlays<'_>, ctx: &Ctx) {
             entry::guard(|| {
                 ctx.update(move |app: &mut App| {
                     app.studio.set_picker_audio(on);
+                    app.sync_picker();
+                });
+            });
+        });
+    }
+    {
+        let ctx = ctx.clone();
+        g.on_picker_retry(move || {
+            entry::guard(|| {
+                ctx.update(move |app: &mut App| {
+                    app.studio.retry_add_picker();
                     app.sync_picker();
                 });
             });
