@@ -73,7 +73,7 @@ fn start_serves_only_ipc_and_stop_sends_rbs_mcp_back_to_the_hint() {
         token: TokenSource::choose(Some(ai_settings::token_file(&config)), None, &config),
         endpoint: Some(at.clone()),
     };
-    let mut mcp = Mcp::new(connector, clock.clone(), None);
+    let mut mcp = Mcp::new(connector, clock.clone(), rbs_mcp::ToolSet::All);
     mcp.start().unwrap();
     mcp.handle(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#);
     assert!(mcp.connected(), "{:?}", mcp.hint_reason());
