@@ -973,6 +973,21 @@ impl StudioUi {
         g.set_collections(ModelRc::from(self.collection_rows.clone()));
     }
 
+    /// The list filters of the Scenes and Sources lists (ADR-0195).
+    fn push_list_filters(&self, g: &Studio<'_>) {
+        g.set_show_inactive_scenes(self.filters.show_inactive_scenes);
+        g.set_show_hidden_sources(self.filters.show_hidden_sources);
+        g.set_source_category_shown(slint::ModelRc::new(slint::VecModel::from(
+            self.source_category_shown(),
+        )));
+        g.set_sources_filtered(
+            !self.filters.show_hidden_sources || !self.filters.hidden_source_categories.is_empty(),
+        );
+        g.set_source_category_present(slint::ModelRc::new(slint::VecModel::from(
+            list_filter::categories_present(&self.rows, &self.filters),
+        )));
+    }
+
     /// Pushes the scalar state into a window's `Studio` global.
     pub fn push(&self, g: &Studio<'_>, states: PictureStates, picture_panel: &str) {
         let preview_state = states.program;
@@ -1037,17 +1052,7 @@ impl StudioUi {
         g.set_browser_props(self.browser_data(shown));
         g.set_profile_name(self.user.profile_name.as_str().into());
         g.set_collection_name(self.user.collection_name.as_str().into());
-        g.set_show_inactive_scenes(self.filters.show_inactive_scenes);
-        g.set_show_hidden_sources(self.filters.show_hidden_sources);
-        g.set_source_category_shown(slint::ModelRc::new(slint::VecModel::from(
-            self.source_category_shown(),
-        )));
-        g.set_sources_filtered(
-            !self.filters.show_hidden_sources || !self.filters.hidden_source_categories.is_empty(),
-        );
-        g.set_source_category_present(slint::ModelRc::new(slint::VecModel::from(
-            list_filter::categories_present(&self.rows, &self.filters),
-        )));
+        self.push_list_filters(g);
         g.set_switching(self.switching.is_some());
         g.set_rec_state(self.rec_state);
         g.set_rec_separate_names(self.separate_names.as_str().into());

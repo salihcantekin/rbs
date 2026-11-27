@@ -202,6 +202,7 @@ pub fn generate_schemas() -> Result<BTreeMap<String, MethodSchemas>, serde_json:
         .chain(arrange_entries()?)
         .chain(scroll_entries()?)
         .chain(group_entries()?)
+        .chain(scene_entries()?)
         .chain(extra_entries()?)
         .chain(transition_entries()?)
         .chain(glide_entries()?)
@@ -816,6 +817,24 @@ fn arrange_entries() -> Result<Vec<(String, MethodSchemas)>, serde_json::Error> 
         (
             "item.distribute".into(),
             pair::<DistributeItems, Empty>(WireRequest::ItemDistribute)?,
+        ),
+    ])
+}
+
+#[cfg(feature = "schema")]
+fn scene_entries() -> Result<Vec<(String, MethodSchemas)>, serde_json::Error> {
+    Ok(vec![
+        (
+            "scene.set_active".into(),
+            pair::<SetSceneActive, Empty>(WireRequest::SceneSetActive)?,
+        ),
+        (
+            "scene.step".into(),
+            pair::<StepScene, Empty>(WireRequest::SceneStep)?,
+        ),
+        (
+            "scene.position".into(),
+            pair::<ScenePosition, Empty>(WireRequest::ScenePosition)?,
         ),
     ])
 }

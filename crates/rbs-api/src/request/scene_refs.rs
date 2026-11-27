@@ -78,6 +78,7 @@ pub struct SceneRef {
 
 /// `scene.set_active` (protocol 1.112, ADR-0195).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SetSceneActive {
     /// The scene's id.
@@ -88,6 +89,7 @@ pub struct SetSceneActive {
 
 /// `scene.step` (protocol 1.112, ADR-0195): the next or previous active scene.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct StepScene {
     /// 1 for next, -1 for previous.
@@ -96,6 +98,7 @@ pub struct StepScene {
 
 /// `scene.position` (protocol 1.112, ADR-0195): the scene in a slot of the list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct ScenePosition {
     /// The 1-based slot in the full scene list.
