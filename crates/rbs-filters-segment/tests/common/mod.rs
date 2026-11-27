@@ -353,7 +353,26 @@ impl Rig {
     /// Ticks until the probe has a frame, letting the GPU finish between ticks. The
     /// readback helper thread lends pictures to the session between ticks, so the loop
     /// waits for the condition; the time bound is a hang guard, not a timing assertion.
+    /// Then ticks through the fade-in (0.2 s of frame time), so the output shows the
+    /// person at full strength.
     pub fn until_output(&mut self) -> bool {
+        if !self.until_first_output() {
+            return false;
+        }
+        self.finish_fade();
+        true
+    }
+
+    /// Ticks through the fade-in: 13 ticks at 60 fps cover 0.2 s.
+    pub fn finish_fade(&mut self) {
+        for _ in 0..13 {
+            self.tick();
+            self.ctx.wait_idle().unwrap();
+        }
+    }
+
+    /// Like `until_output`, but stops at the first published frame (fade-in at 0).
+    pub fn until_first_output(&mut self) -> bool {
         let guard = std::time::Instant::now();
         while guard.elapsed() < std::time::Duration::from_secs(20) {
             self.tick();

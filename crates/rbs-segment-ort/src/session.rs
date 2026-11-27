@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread::JoinHandle;
+use std::time::Duration;
 
 use ort::environment::Environment;
 use ort::session::Session;
@@ -34,12 +35,51 @@ struct Mailbox {
     matte: Option<Matte>,
     failed: Option<SegmentError>,
     reset: bool,
+    /// The worker made its runtime session and ran its warm-up pictures.
+    ready: bool,
 }
 
 struct Shared {
     mailbox: Mutex<Mailbox>,
     wake: Condvar,
+    /// Signalled once when `ready` or `failed` is set.
+    readied: Condvar,
     stop: AtomicBool,
+}
+
+/// How long `warm` waits on the control thread for the worker to be ready. The filter
+/// shows nothing until its first matte (privacy), so a session that is ready when the
+/// filter joins the schedule turns a gap of seconds (DirectML compiles its shaders on the
+/// first run) into a few frames. A slower start goes on in the background.
+const READY_WAIT: Duration = Duration::from_millis(1500);
+
+/// Warm-up pictures the worker runs before it is ready: RVM's first run has empty
+/// recurrent states and its second the real ones, and each shape is compiled once.
+const WARM_UP_RUNS: usize = 2;
+
+/// Waits up to `limit` for the worker to report ready or failed. Returns whether it did.
+fn wait_ready(shared: &Shared, limit: Duration) -> bool {
+    let Ok(mailbox) = shared.mailbox.lock() else {
+        return false;
+    };
+    match shared
+        .readied
+        .wait_timeout_while(mailbox, limit, |m| !m.ready && m.failed.is_none())
+    {
+        Ok((m, _)) => m.ready || m.failed.is_some(),
+        Err(_) => false,
+    }
+}
+
+/// Marks the worker ready (or failed) and wakes a waiting `warm`.
+fn set_ready(shared: &Shared, failed: Option<SegmentError>) {
+    if let Ok(mut mailbox) = shared.mailbox.lock() {
+        mailbox.ready = failed.is_none();
+        if failed.is_some() {
+            mailbox.failed = failed;
+        }
+    }
+    shared.readied.notify_all();
 }
 
 /// Buffers in circulation: one being filled, one pending, one in the worker.
@@ -64,6 +104,7 @@ impl OrtSession {
             shared: Arc::new(Shared {
                 mailbox: Mutex::new(Mailbox::default()),
                 wake: Condvar::new(),
+                readied: Condvar::new(),
                 stop: AtomicBool::new(false),
             }),
             worker: None,
@@ -132,13 +173,17 @@ impl PersonMaskSession for OrtSession {
         }
         let shared = Arc::clone(&self.shared);
         let (spec, model, runtime) = (self.spec, Arc::clone(&self.model), self.runtime.clone());
-        // The worker makes the session itself (DirectML compiles shaders for seconds the
-        // first time), so `warm` returns at once and early pictures wait in the mailbox.
+        // The worker makes the session itself and runs warm-up pictures (DirectML
+        // compiles shaders on the first runs). `warm` runs on the control thread and
+        // waits for that up to `READY_WAIT`; a slower start goes on in the background and
+        // early pictures wait in the mailbox.
+        let size = self.input_size;
         let handle = std::thread::Builder::new()
             .name("rbs-segment-onnx".into())
-            .spawn(move || worker_main(&shared, spec, &model, &runtime))
+            .spawn(move || worker_main(&shared, spec, &model, &runtime, size))
             .map_err(|_| SegmentError::Unavailable)?;
         self.worker = Some(handle);
+        let _ = wait_ready(&self.shared, READY_WAIT);
         Ok(())
     }
 
@@ -347,19 +392,37 @@ impl Engine {
     }
 }
 
-fn worker_main(shared: &Shared, spec: Spec, model: &[u8], runtime: &Path) {
+fn worker_main(shared: &Shared, spec: Spec, model: &[u8], runtime: &Path, size: Size) {
     let engine = init_runtime(runtime)
         .and_then(|env| make_session(env, model))
         .map(|session| Engine::new(session, spec));
     let mut engine = match engine {
         Ok(engine) => engine,
         Err(error) => {
-            if let Ok(mut mailbox) = shared.mailbox.lock() {
-                mailbox.failed = Some(error);
-            }
+            set_ready(shared, Some(error));
             return;
         }
     };
+    // Warm-up on a blank picture, so the first real picture does not pay for the
+    // runtime's first-run work. A failure here shows up on the first real picture.
+    let blank = Pending {
+        timestamp: Timestamp::ZERO,
+        size,
+        bgra: vec![0; size.width as usize * size.height as usize * 4],
+    };
+    for _ in 0..WARM_UP_RUNS {
+        if shared.stop.load(Ordering::Acquire) {
+            break;
+        }
+        let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| engine.run(&blank)));
+        if !matches!(run, Ok(Ok(_))) {
+            break;
+        }
+    }
+    drop(blank);
+    engine.reset_states();
+    engine.strays = StrayFilter::new();
+    set_ready(shared, None);
     loop {
         let pending = {
             let Ok(mut mailbox) = shared.mailbox.lock() else {
@@ -396,5 +459,41 @@ fn worker_main(shared: &Shared, spec: Spec, model: &[u8], runtime: &Path) {
                 Err(error) => mailbox.failed = Some(error),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn shared() -> Arc<Shared> {
+        Arc::new(Shared {
+            mailbox: Mutex::new(Mailbox::default()),
+            wake: Condvar::new(),
+            readied: Condvar::new(),
+            stop: AtomicBool::new(false),
+        })
+    }
+
+    #[test]
+    fn warm_does_not_wait_past_its_limit_for_a_worker_that_is_not_ready() {
+        assert!(!wait_ready(&shared(), Duration::ZERO));
+    }
+
+    #[test]
+    fn warm_returns_once_the_worker_is_ready_or_failed() {
+        let ready = shared();
+        let worker = Arc::clone(&ready);
+        let thread = std::thread::spawn(move || set_ready(&worker, None));
+        // Hang guard only: the wait ends when the worker signals.
+        assert!(wait_ready(&ready, Duration::from_secs(20)));
+        thread.join().unwrap();
+
+        let failed = shared();
+        set_ready(&failed, Some(SegmentError::Unavailable));
+        assert!(wait_ready(&failed, Duration::ZERO));
+        let mailbox = failed.mailbox.lock().unwrap();
+        assert!(!mailbox.ready);
+        assert_eq!(mailbox.failed, Some(SegmentError::Unavailable));
     }
 }

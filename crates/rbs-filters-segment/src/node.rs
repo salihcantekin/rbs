@@ -9,7 +9,8 @@
 //! Nothing waits: a ring that is full or a session that is busy drops the new picture,
 //! and the picture is drawn with the matte of an earlier one (ADR-0179 decision 4). Until
 //! the first matte exists the node publishes nothing, so the unfiltered picture is
-//! never shown.
+//! never shown; then the result fades in over 0.2 s of master-clock time. The session
+//! is opened in `prepare` and closed in `release`, on the control thread.
 //!
 //! The only readback is the small picture (named exception of ADR-0179 decision 3).
 //! The full-size picture never leaves the GPU.
@@ -46,6 +47,9 @@ pub const OUT_PIN: usize = 0;
 pub const RING: usize = 3;
 /// Output textures kept by the node (the one read downstream and the one drawn next).
 const OUTPUT_RING: usize = 2;
+/// Frame time over which the person fades in after the first matte (owner, 2026-11-27):
+/// the filter shows nothing before it, and the fade softens the jump from nothing.
+const FADE_IN_NANOS: u64 = 200_000_000;
 
 const IDLE: u8 = 0;
 const MAPPING: u8 = 1;
@@ -64,8 +68,8 @@ use helper::{Job, Readback, Setup, SharedSession, SlotView};
 const SMALL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
 const MATTE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
 
-/// Opens a session. Called on the control thread each time the node enters the schedule
-/// (`warm`), so a disabled filter holds no model and no worker (P13).
+/// Opens a session. Called on the control thread each time the node is prepared to enter
+/// the schedule (`prepare`), so a disabled filter holds no model and no worker (P13).
 pub type SessionFactory =
     Box<dyn FnMut() -> Result<Box<dyn PersonMaskSession>, SegmentError> + Send>;
 
@@ -159,6 +163,8 @@ struct Written {
     size: [u32; 2],
     decode: Transfer,
     look: Look,
+    /// How far the fade-in is, 0 to 1.
+    fade: f32,
 }
 
 /// What the last published picture was made of.
@@ -197,6 +203,11 @@ pub struct BackgroundRemovalNode {
     ring: Ring,
     /// The picture drawn last in Exact mode, kept alive while the ring moves on.
     held: Option<VideoFrame>,
+    /// Tick time of the first picture drawn with a matte since the filter last showed
+    /// nothing: the fade-in starts there.
+    fade_from: Option<Timestamp>,
+    /// The previous tick's time while in the schedule.
+    last_tick: Option<Timestamp>,
 }
 
 impl BackgroundRemovalNode {
@@ -230,8 +241,28 @@ impl BackgroundRemovalNode {
             rgb: YuvToRgb::new(),
             ring: Ring::default(),
             held: None,
+            fade_from: None,
+            last_tick: None,
         };
         (node, sender, stats)
+    }
+
+    /// Opens the session and starts its worker, unless one is open. Control thread.
+    fn open_session(&mut self) -> Result<(), NodeError> {
+        let mut shared = self
+            .session
+            .lock()
+            .map_err(|_| NodeError::Failed("person mask session lock".into()))?;
+        if shared.is_none() {
+            let mut session = (self.factory)()
+                .map_err(|e| NodeError::Failed(format!("person mask session: {e}")))?;
+            if let Err(e) = session.warm() {
+                session.close();
+                return Err(NodeError::Failed(format!("person mask session: {e}")));
+            }
+            *shared = Some(session);
+        }
+        Ok(())
     }
 
     fn small_desc(&self) -> TextureDesc {
@@ -434,6 +465,12 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
                 state: Arc::new(AtomicU8::new(IDLE)),
             })
             .collect::<Vec<_>>();
+        // Control thread: the model is loaded and the session's worker started here,
+        // before the node joins the schedule, so the render thread never reads a model
+        // file or waits for a worker (spec rule 2, P6) and the first matte follows the
+        // first picture within a few ticks. `release` closes it, so a disabled filter
+        // holds no model and no worker (P13).
+        self.open_session()?;
         let readback = Readback::start(Setup {
             device: device.clone(),
             slots: slots.clone(),
@@ -462,20 +499,8 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
     }
 
     fn warm(&mut self, ctx: &mut WarmCtx<'_, GpuRuntime>) -> Result<(), NodeError> {
-        // Control thread: the only place a model is loaded and a worker started (P13).
-        let mut shared = self
-            .session
-            .lock()
-            .map_err(|_| NodeError::Failed("person mask session lock".into()))?;
-        if shared.is_none() {
-            let mut session = (self.factory)()
-                .map_err(|e| NodeError::Failed(format!("person mask session: {e}")))?;
-            session
-                .warm()
-                .map_err(|e| NodeError::Failed(format!("person mask session: {e}")))?;
-            *shared = Some(session);
-        }
-        drop(shared);
+        // Executor thread, between ticks: pool textures only. The session was opened in
+        // `prepare` on the control thread.
         if self.small_texture.is_none() {
             let id = ctx
                 .local
@@ -488,8 +513,8 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
     }
 
     fn cool(&mut self, ctx: &mut WarmCtx<'_, GpuRuntime>) {
-        // Leaving the schedule: give back every texture and stop the session, so a
-        // disabled filter holds no memory, no model and no worker (P13).
+        // Leaving the schedule: give back every texture. The session is closed in
+        // `release` on the control thread, because closing joins its worker.
         let pool = &mut ctx.local.pool;
         if let Some(id) = self.small_texture.take() {
             let _ = pool.release(id);
@@ -508,9 +533,8 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
         self.ring.clear(pool);
         self.held = None;
         self.rgb.release();
-        if let Some(session) = self.session.lock().ok().and_then(|mut s| s.take()) {
-            session.close();
-        }
+        self.fade_from = None;
+        self.last_tick = None;
     }
 
     fn process(&mut self, ctx: &mut ProcessCtx<'_, GpuRuntime>) -> Result<(), NodeError> {
@@ -518,6 +542,8 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
         let changed = self.values.update();
         let values = *self.values.get();
         let small_id = self.small_texture.ok_or(NodeError::NotReady)?;
+        let tick_time = ctx.tick().time;
+        let previous_tick = self.last_tick.replace(tick_time).unwrap_or(tick_time);
         let (inputs, outputs, local) = ctx.parts();
 
         // What the input offers; a 4:2:0 input is decoded to RGB first, once per picture.
@@ -647,6 +673,7 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
         // 4. Nothing is published before the first matte (ADR-0179 decision 4).
         let Some((matte_id, _)) = self.matte else {
             self.drawn = None;
+            self.fade_from = None;
             drop(outputs.set_video(OUT_PIN, None)?);
             return Ok(());
         };
@@ -660,11 +687,16 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
             (input_id, size, decode, time),
         );
         let (edge, look) = (edges_of(&values), look_of(&values));
+        // On the master clock, so a picture that does not change still fades in.
+        // It starts at the tick before, the last one that showed nothing, so the first
+        // frame is already one tick into the fade.
+        let fade = fade_in(*self.fade_from.get_or_insert(previous_tick), tick_time);
         let state = Written {
             edges: edge,
             size,
             decode,
             look,
+            fade,
         };
         let now = Drawn {
             input: input_id,
@@ -677,7 +709,7 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
             return Ok(());
         }
         if self.written != Some(state) {
-            write_composite(gpu, prepared, (edge, look), size, decode);
+            write_composite(gpu, prepared, (edge, look, fade), size, decode);
             self.written = Some(state);
         }
         let result = render_output(
@@ -841,14 +873,14 @@ fn take_matte(
 fn write_composite(
     gpu: &GpuContext,
     prepared: &Prepared,
-    (edge, look): ([f32; 2], Look),
+    (edge, look, fade): ([f32; 2], Look, f32),
     size: [u32; 2],
     decode: Transfer,
 ) {
     let mut u: UniformBlock = [[0.0; 4]; 16];
     u[0] = [edge[0], edge[1], 0.0, 0.0];
     u[1] = look.colour;
-    u[2] = [look.mode, look.blur[0], look.blur[1], 0.0];
+    u[2] = [look.mode, look.blur[0], look.blur[1], fade];
     u[15] = [
         1.0 / size[0] as f32,
         1.0 / size[1] as f32,
@@ -858,6 +890,12 @@ fn write_composite(
     gpu.queue()
         .write_buffer(&prepared.comp_buffer, 0, bytemuck::bytes_of(&u));
     blur::write(gpu, prepared, (edge, look), size, decode);
+}
+
+/// How far the fade-in is at `now` when it started at `from`: 0 to 1, on frame time.
+fn fade_in(from: Timestamp, now: Timestamp) -> f32 {
+    let done = now.as_nanos().saturating_sub(from.as_nanos());
+    (done as f64 / FADE_IN_NANOS as f64).min(1.0) as f32
 }
 
 /// True when the aspect ratio of `new` differs from `old` by more than 2 percent.

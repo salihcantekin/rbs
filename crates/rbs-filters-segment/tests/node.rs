@@ -38,6 +38,30 @@ fn it_publishes_nothing_until_a_matte_exists_then_cuts_the_person_out() {
 }
 
 #[test]
+fn the_person_fades_in_after_the_first_matte() {
+    let Some(ctx) = gpu() else { return };
+    let mut rig = Rig::new(ctx, [8, 4]);
+    rig.set_input(Picture::solid(16, 8, [0.25, 0.5, 0.125, 1.0]));
+    assert!(rig.until_first_output());
+    // The first frame with a matte is one tick (1/60 s) into the 0.2 s fade, not at
+    // full strength.
+    let first = rig.output().unwrap().at(2, 4);
+    assert!(
+        first[3] > 0.0 && first[3] < 0.2,
+        "fade starts low: {first:?}"
+    );
+    assert!(
+        (first[1] / first[3] - 0.5).abs() < 0.02,
+        "same colour: {first:?}"
+    );
+    // The picture does not change, but the fade runs on the master clock.
+    rig.finish_fade();
+    let full = rig.output().unwrap().at(2, 4);
+    assert!((full[1] - 0.5).abs() < 0.02, "faded in: {full:?}");
+    assert!((full[3] - 1.0).abs() < 0.02, "opaque: {full:?}");
+}
+
+#[test]
 fn the_session_gets_a_small_bgra_picture() {
     let Some(ctx) = gpu() else { return };
     let mut rig = Rig::new(ctx, [8, 4]);
@@ -120,14 +144,16 @@ fn exact_mode_draws_the_picture_the_matte_was_made_from() {
         rig.tick();
         rig.ctx.wait_idle().unwrap();
     }
-    assert!(rig.until_output());
+    assert!(rig.until_first_output());
     let time = lock(&rig.last).as_ref().unwrap().timestamp();
     let made_at = (0..40u64)
         .find(|n| Tick::of(&cadence, *n).time == time)
         .expect("the output carries the time of one of the pictures");
     let out = rig.output().unwrap();
-    // The output shows the picture of its own time, not the newest one.
-    let g = out.at(2, 4)[1];
+    // The output shows the picture of its own time, not the newest one (premultiplied:
+    // the fade-in has only begun).
+    let px = out.at(2, 4);
+    let g = px[1] / px[3];
     assert!(
         (g - level(made_at)).abs() < 0.02,
         "tick {made_at}: green {g}"
@@ -161,13 +187,14 @@ fn exact_mode_works_on_a_4_2_0_camera_picture() {
         rig.tick();
         rig.ctx.wait_idle().unwrap();
     }
-    assert!(rig.until_output());
+    assert!(rig.until_first_output());
     let time = lock(&rig.last).as_ref().unwrap().timestamp();
     let made_at = (0..40u64)
         .find(|n| Tick::of(&cadence, *n).time == time)
         .expect("the output carries the time of one of the pictures");
     let out = rig.output().unwrap();
-    let g = out.at(2, 4)[1];
+    let px = out.at(2, 4);
+    let g = px[1] / px[3];
     assert!(
         (g - grey_linear(grey(made_at))).abs() < 0.03,
         "tick {made_at}: {g} against {}",
