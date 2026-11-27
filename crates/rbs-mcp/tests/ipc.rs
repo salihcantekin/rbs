@@ -18,7 +18,7 @@ use rbs_api_ipc::{Endpoint, IpcConfig, IpcTransport};
 use rbs_core::time::TestClock;
 use rbs_mcp::link::IpcConnector;
 use rbs_mcp::token::TokenSource;
-use rbs_mcp::{HINT, Mcp, RETRY_EVERY};
+use rbs_mcp::{HINT, Mcp, RETRY_EVERY, ToolSet};
 use serde_json::Value;
 
 fn temp(name: &str) -> PathBuf {
@@ -101,7 +101,7 @@ fn the_token_file_narrows_the_session_and_rotation_needs_no_restart() {
         token: TokenSource::choose(Some(file.clone()), None, &dir),
         endpoint: Some(at.clone()),
     };
-    let mut mcp = Mcp::new(connector, clock.clone(), None);
+    let mut mcp = Mcp::new(connector, clock.clone(), ToolSet::All);
     let (api, _control, ipc) = serve(store, &at);
     mcp.start().unwrap();
     mcp.handle(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#);
@@ -189,7 +189,7 @@ fn a_wrong_token_waits_in_the_hint_state() {
         token: TokenSource::File(file),
         endpoint: Some(at),
     };
-    let mut mcp = Mcp::new(connector, Arc::new(TestClock::new()), None);
+    let mut mcp = Mcp::new(connector, Arc::new(TestClock::new()), ToolSet::All);
     mcp.start().unwrap();
     assert_eq!(mcp.hint_reason(), Some("RBS did not accept the token"));
     assert_eq!(tools(&mut mcp), ["studio_summary"]);

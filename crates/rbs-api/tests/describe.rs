@@ -6,8 +6,8 @@
 mod support;
 
 use rbs_api::request::METHODS;
-use serde_json::json;
 use rbs_api::transport::PeerInfo;
+use serde_json::json;
 use support::*;
 
 // One test: the shard counter is process-wide and the second half parses every shard.
@@ -18,7 +18,11 @@ fn shards_parse_lazily_and_match_the_method_namespaces() {
     assert_eq!(rbs_api::schema::parsed_shards(), 0);
     h.call(conn, "api.describe", json!({}));
     h.one(conn);
-    assert_eq!(rbs_api::schema::parsed_shards(), 0, "an index parses nothing");
+    assert_eq!(
+        rbs_api::schema::parsed_shards(),
+        0,
+        "an index parses nothing"
+    );
     h.call(
         conn,
         "api.describe",
@@ -32,7 +36,11 @@ fn shards_parse_lazily_and_match_the_method_namespaces() {
         json!({"detail": "schemas", "methods": ["scene.list", "scene.add"]}),
     );
     h.one(conn);
-    assert_eq!(rbs_api::schema::parsed_shards(), 1, "a shard is parsed once");
+    assert_eq!(
+        rbs_api::schema::parsed_shards(),
+        1,
+        "a shard is parsed once"
+    );
 
     let in_methods: std::collections::BTreeSet<&str> = METHODS
         .iter()
@@ -49,8 +57,16 @@ fn shards_parse_lazily_and_match_the_method_namespaces() {
         shards.iter().map(|ns| format!("{ns}.json")).collect();
     assert_eq!(files, expected);
     for ns in shards {
-        for name in rbs_api::schema::namespace_schemas(ns).unwrap().unwrap().keys() {
-            assert_eq!(name.split('.').next().unwrap(), ns, "{name} is in the wrong shard");
+        for name in rbs_api::schema::namespace_schemas(ns)
+            .unwrap()
+            .unwrap()
+            .keys()
+        {
+            assert_eq!(
+                name.split('.').next().unwrap(),
+                ns,
+                "{name} is in the wrong shard"
+            );
         }
     }
 }

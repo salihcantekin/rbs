@@ -22,12 +22,14 @@ struct FakeApi {
     protocol: &'static str,
     extra_methods: Vec<Value>,
     omitted_methods: Vec<&'static str>,
+    /// An older server: ignores the selection and sends no schemas on request.
+    legacy: bool,
 }
 
 impl Api for FakeApi {
     fn call(&mut self, method: &str, params: Value) -> Result<Value, CallError> {
         let mut calls = self.calls.lock().unwrap();
-        calls.push((method.to_owned(), params));
+        calls.push((method.to_owned(), params.clone()));
         if self.lose_after.is_some_and(|n| calls.len() > n) {
             return Err(CallError::Lost("gone".into()));
         }
@@ -41,13 +43,33 @@ impl Api for FakeApi {
                 }),
                 None => Ok(json!({ "scopes": self.scopes, "irreversible": self.irreversible })),
             },
-            "api.describe" => Ok(json!({
-                "protocol": "1.84",
-                "methods": rbs_api::request::METHODS.iter().filter(|m| !self.omitted_methods.contains(&m.name)).map(|m| json!({
-                    "name": m.name, "scope": m.scope, "effect": m.effect
-                })).chain(self.extra_methods.iter().cloned())
-                .collect::<Vec<_>>(),
-            })),
+            "api.describe" => {
+                let wanted: Vec<&str> = params["methods"]
+                    .as_array()
+                    .map(|a| a.iter().filter_map(Value::as_str).collect())
+                    .unwrap_or_default();
+                let with_schemas = params["detail"] == "schemas" && !self.legacy;
+                let known = rbs_api::schema::builtin_schemas().unwrap();
+                let mut methods: Vec<Value> = rbs_api::request::METHODS
+                    .iter()
+                    .filter(|m| !self.omitted_methods.contains(&m.name))
+                    .filter(|m| wanted.is_empty() || wanted.contains(&m.name))
+                    .map(|m| {
+                        let mut v = json!({
+                            "name": m.name, "scope": m.scope, "effect": m.effect
+                        });
+                        if let (true, Some(p)) = (with_schemas, known.get(m.name)) {
+                            v["input_schema"] = p.input_schema.clone();
+                            v["output_schema"] = p.output_schema.clone();
+                        }
+                        v
+                    })
+                    .collect();
+                if wanted.is_empty() {
+                    methods.extend(self.extra_methods.iter().cloned());
+                }
+                Ok(json!({ "protocol": "1.110", "methods": methods }))
+            }
             "scene.remove" => Err(CallError::Api {
                 kind: "not_permitted".into(),
                 message: "on air".into(),
@@ -85,6 +107,7 @@ fn api(calls: &Calls, scopes: &[Scope], irreversible: bool) -> FakeApi {
         protocol: "1.84",
         extra_methods: vec![json!({"name": "future.thing", "scope": "read", "effect": "read"})],
         omitted_methods: Vec::new(),
+        legacy: false,
     }
 }
 
@@ -97,6 +120,10 @@ struct Rig {
 }
 
 fn rig(plan: Vec<Option<FakeApi>>) -> Rig {
+    rig_with(plan, ToolSet::All)
+}
+
+fn rig_with(plan: Vec<Option<FakeApi>>, tools: ToolSet) -> Rig {
     let clock = Arc::new(TestClock::new());
     let attempts = Arc::new(Mutex::new(0));
     let token = Token::from_bytes(&[7; 32]);
@@ -105,7 +132,7 @@ fn rig(plan: Vec<Option<FakeApi>>) -> Rig {
         attempts: attempts.clone(),
         token: token.clone(),
     };
-    let mut mcp = Mcp::new(connector, clock.clone(), None);
+    let mut mcp = Mcp::new(connector, clock.clone(), tools);
     mcp.start().unwrap();
     let mut r = Rig {
         mcp,
@@ -174,6 +201,7 @@ fn unreachable_lists_only_studio_summary_with_the_start_hint() {
 fn tools_use_server_schemas_and_legacy_servers_keep_the_fallback() {
     let calls = Calls::default();
     let mut server = api(&calls, &[Scope::Read, Scope::Control], false);
+    server.legacy = true;
     server.omitted_methods.push("scene.add");
     let pair = rbs_api::schema::builtin_schemas()
         .unwrap()
@@ -672,7 +700,7 @@ fn a_call_is_forwarded_and_an_api_error_is_a_tool_error() {
 fn a_lost_connection_goes_back_to_the_hint_and_reconnects() {
     let calls = Calls::default();
     let mut first = api(&calls, &[Scope::Read, Scope::Control], false);
-    first.lose_after = Some(3);
+    first.lose_after = Some(4);
     let second = api(&calls, &[Scope::Read], false);
     let mut r = rig(vec![Some(first), Some(second)]);
     assert!(r.mcp.connected());
@@ -721,7 +749,7 @@ fn an_older_server_ends_rbs_mcp() {
             attempts: Arc::default(),
             token: Token::from_bytes(&[1; 32]),
         };
-        let mut mcp = Mcp::new(connector, Arc::new(TestClock::new()), None);
+        let mut mcp = Mcp::new(connector, Arc::new(TestClock::new()), ToolSet::All);
         assert!(mcp.start().is_err());
     }
     // Nothing after hello when the protocol is too old.
@@ -767,15 +795,17 @@ fn namespaces_limit_the_generated_tools() {
         attempts: Arc::default(),
         token: Token::from_bytes(&[1; 32]),
     };
-    let mut mcp = Mcp::new(connector, clock, Some(vec!["scene".into()]));
+    let mut mcp = Mcp::new(connector, clock, ToolSet::Namespaces(vec!["scene".into()]));
     mcp.start().unwrap();
     let o = mcp.handle(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#);
     let v: Value = serde_json::from_str(&o.out[0]).unwrap();
     for t in v["result"]["tools"].as_array().unwrap() {
         let name = t["name"].as_str().unwrap();
         assert!(
-            name == "studio_summary" || name.starts_with("scene_"),
+            name == "studio_summary" || name.starts_with("scene_") || name.starts_with("api_"),
             "{name}"
         );
     }
 }
+
+mod lazy;

@@ -195,7 +195,7 @@ The first slice covers what the desktop app does today; the full catalogue follo
 | Method | Scope | Purpose |
 | --- | --- | --- |
 | `session.hello`, `session.authenticate` | none | Handshake |
-| `api.describe` | `read` | Protocol version, methods with scopes, JSON Schema |
+| `api.describe` | `read` | Protocol version, methods with scope and effect; JSON Schema for the methods asked for (1.110) |
 | `studio.get` | `read` | Canvas size and rate, encoders, whether recording is possible |
 | `source.list` | `read` | Program scene sources |
 | `source.targets` | `control` | Capture targets of a kind (window titles can be private) |
@@ -539,10 +539,22 @@ An OBS WebSocket (v5) compatibility layer (subset) is a separate optional adapte
 
 ## Implementation status
 
+- **Protocol 1.110 schemas in parts (ADR-0196).** `api.describe` takes optional
+  `{ detail, namespaces, methods }`. `detail` is `index` (default: name, scope, effect) or
+  `schemas` (adds `input_schema` and `output_schema`). `namespaces` and `methods` select
+  what the answer covers (union; both empty means every method); each holds at most 64
+  names of at most 64 characters, duplicates are ignored, and an unknown name, an
+  overlong list or an unknown `detail` is `invalid_params`. A bare `api.describe` is now the
+  index, so it carries no schemas: a client that needs them asks with `detail: "schemas"`.
+  A pre-1.110 server ignores the parameters and sends every method with its schemas, which
+  a client accepts. The checked-in snapshot is one file per namespace,
+  `crates/rbs-api/schemas/<namespace>.json`, each parsed on first use and never at start-up
+  or for an index. Regenerate with the command below; the namespace set of the files must
+  equal the namespaces of `METHODS`.
 - **Protocol 1.108 typed discovery.** `api.describe` adds optional
   `input_schema` and `output_schema` to a method. Both are standalone JSON Schema
   documents generated from the Rust request and successful result types, respectively.
-  The checked-in snapshot covers all 192 built-in methods. A catalog test requires
+  The checked-in snapshot (since 1.110 one file per namespace) covers all 192 built-in methods. A catalog test requires
   every method to have both schemas. Input describes JSON-RPC `params`, output the successful
   `result`, not errors. Schemas describe the serde wire types; application-level
   constraints (such as valid ID existence and setting ranges) may be stricter.

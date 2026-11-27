@@ -1178,7 +1178,10 @@ impl Server {
                     self.send_now(
                         conn,
                         Some(&id),
-                        Err(ApiError::new(ErrorKind::Internal, "unexpected local request")),
+                        Err(ApiError::new(
+                            ErrorKind::Internal,
+                            "unexpected local request",
+                        )),
                     );
                 }
                 Queued::Ui(id, request) => {
@@ -1639,8 +1642,7 @@ fn describe(params: &crate::request::DescribeParams) -> Result<Description, ApiE
     use crate::request::DescribeDetail;
     let bad = |what: &str| ApiError::new(ErrorKind::InvalidParams, what.to_owned());
     for list in [&params.namespaces, &params.methods] {
-        if list.len() > DESCRIBE_MAX_NAMES || list.iter().any(|n| n.len() > DESCRIBE_MAX_NAME_LEN)
-        {
+        if list.len() > DESCRIBE_MAX_NAMES || list.iter().any(|n| n.len() > DESCRIBE_MAX_NAME_LEN) {
             return Err(bad("too many or too long names"));
         }
     }

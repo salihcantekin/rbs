@@ -66,8 +66,83 @@ pub struct Session {
     pub scopes: Vec<Scope>,
     /// "Allow actions that cannot be undone".
     pub irreversible: bool,
-    /// What `api.describe` listed.
+    /// What `api.describe` listed. Schemas are present only for methods whose schemas
+    /// were asked for (or that an older server sent unasked).
     pub methods: Vec<Method>,
+    /// Methods whose schemas were already requested, so an absent one is not asked again.
+    asked: BTreeSet<String>,
+}
+
+/// Most names one `api.describe` selection may hold (ADR-0196).
+const DESCRIBE_MAX_NAMES: usize = 64;
+
+impl Session {
+    /// Fetches the schemas of `names` (methods) that have none yet, in selections the
+    /// server accepts, validating each answer like the catalog.
+    pub fn load_schemas(&mut self, names: &[String]) -> Result<(), CallError> {
+        let missing: Vec<String> = names
+            .iter()
+            .filter(|n| {
+                !self.asked.contains(n.as_str())
+                    && self
+                        .methods
+                        .iter()
+                        .any(|m| &m.name == *n && m.input_schema.is_none())
+            })
+            .cloned()
+            .collect();
+        for chunk in missing.chunks(DESCRIBE_MAX_NAMES) {
+            let described = self.api.call(
+                "api.describe",
+                json!({ "detail": "schemas", "methods": chunk }),
+            )?;
+            self.asked.extend(chunk.iter().cloned());
+            self.merge(&described)?;
+        }
+        Ok(())
+    }
+
+    /// Fetches the schemas of every method of `namespaces` in one selection per 64
+    /// namespaces.
+    pub fn load_namespace_schemas(&mut self, namespaces: &[String]) -> Result<(), CallError> {
+        for chunk in namespaces.chunks(DESCRIBE_MAX_NAMES) {
+            let described = self.api.call(
+                "api.describe",
+                json!({ "detail": "schemas", "namespaces": chunk }),
+            )?;
+            self.merge(&described)?;
+            for m in &self.methods {
+                if chunk
+                    .iter()
+                    .any(|n| Some(n.as_str()) == m.name.split('.').next())
+                {
+                    self.asked.insert(m.name.clone());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Validates a described answer and copies its schemas to the methods that have none.
+    fn merge(&mut self, described: &Value) -> Result<(), CallError> {
+        let got = methods(described).map_err(|e| CallError::Api {
+            kind: "invalid_catalog".into(),
+            message: match e {
+                ConnectError::InvalidCatalog(w) => w,
+                _ => "RBS sent an invalid method catalog".into(),
+            },
+            data: Value::Null,
+        })?;
+        for new in got {
+            if let Some(old) = self.methods.iter_mut().find(|m| m.name == new.name) {
+                if old.input_schema.is_none() {
+                    old.input_schema = new.input_schema;
+                    old.output_schema = new.output_schema;
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 /// One method `api.describe` listed.
@@ -298,6 +373,7 @@ pub fn handshake(mut api: Box<dyn Api>, token: &Token) -> Result<Session, Connec
         scopes,
         irreversible,
         methods,
+        asked: BTreeSet::new(),
     })
 }
 

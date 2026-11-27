@@ -47,9 +47,15 @@ fn describe_schemas_covers_only_the_selection() {
     assert!(!methods.is_empty());
     for method in methods {
         let name = method["name"].as_str().unwrap();
-        assert!(name.starts_with("scene.") || name == "source.list", "{name}");
+        assert!(
+            name.starts_with("scene.") || name == "source.list",
+            "{name}"
+        );
         assert_eq!(method["input_schema"], schemas[name].input_schema, "{name}");
-        assert_eq!(method["output_schema"], schemas[name].output_schema, "{name}");
+        assert_eq!(
+            method["output_schema"], schemas[name].output_schema,
+            "{name}"
+        );
     }
     assert!(methods.iter().any(|m| m["name"] == "source.list"));
 }
@@ -68,7 +74,10 @@ fn describe_refuses_unknown_and_oversized_selections() {
     ] {
         h.call(conn, "api.describe", params.clone());
         let answer = h.one(conn);
-        assert_eq!(answer["error"]["data"]["kind"], "invalid_params", "{params}");
+        assert_eq!(
+            answer["error"]["data"]["kind"], "invalid_params",
+            "{params}"
+        );
     }
 }
 
