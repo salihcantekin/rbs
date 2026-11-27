@@ -109,7 +109,7 @@ export const glyphs = {
 	speakerOff: `<path d="M8 24h12l16-14v44L20 40H8z" fill="currentColor"/><path d="M46 24l14 16M60 24L46 40"/>`,
 	next: `<path d="M8 32h46M36 14l18 18-18 18"/>`,
 	previous: `<path d="M56 32H10M28 14L10 32l18 18"/>`,
-	replay: `<path d="M32 10a22 22 0 1 1-20 13M8 8v18h18"/><path d="M32 22v11l8 5"/>`,
+	replay: `<path d="M8 32a24 24 0 1 0 24-24 26 26 0 0 0-18 7.3L8 21.3"/><path d="M8 8v13h13M32 19v13l11 5"/>`,
 	camera: `<circle cx="32" cy="26" r="18"/><circle cx="32" cy="26" r="7" fill="currentColor"/><path d="M20 58h24M32 44v14"/>`,
 	marker: `<path d="M14 8v50M14 10h34l-9 12 9 12H14" /><path d="M14 10h34l-9 12 9 12H14z" fill="currentColor" fill-opacity=".35"/>`,
 	studio: `<rect x="3" y="14" width="26" height="36" rx="6"/><rect x="35" y="14" width="26" height="36" rx="6" fill="currentColor" fill-opacity=".35"/>`,
