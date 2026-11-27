@@ -342,7 +342,15 @@ export struct OverlayCover { x: length, y: length, width: length, height: length
 
 // A row of the picker: `index` is its place in the listing the app made it from, so a
 // filter never changes what choosing it means.
-export struct PickerRow { name: string, note: string, index: int }
+// One row of the searchable picker. `note` is the detail line under the name; `icon`
+// (an icon name, `Icons.named`) fills the lead tile until `picture` comes
+// (`has-picture`); `badge` is a short state on the right ("Main", "Current"),
+// `badge-icon` its icon and `badge-accent` the accent fill for the current choice;
+// `group` names the group this row starts (a band above it), `groups-before` counts
+// the bands above this row's own, so rows are placed without a layout; `font` draws the
+// name in that family (the font picker); `action` is the primary button's text while
+// this row is highlighted ("Add Display 1").
+export struct PickerRow { name: string, note: string, index: int, icon: string, picture: image, has-picture: bool, badge: string, badge-icon: string, badge-accent: bool, group: string, groups-before: int, font: string, action: string }
 
 // The menus RBS draws in the window (ADR-0137): every context menu (`CommandMenu`)
 // is a layer of the window's `OverlayHost`, drawn from tokens the same on every
@@ -542,17 +550,31 @@ export global Overlays {
         select-serial += 1;
     }
 
-    // The searchable picker (Add source; the font list next): a title, a filter field
-    // that keeps the focus, a status line while it says something (searching, nothing
-    // found), the rows the app made, Cancel. The app filters (`picker-filtered`) and
-    // sets the rows; Enter chooses the highlighted row, Up and Down move it, Escape or a
-    // click outside cancels. Reported as a cover like the name prompt (ADR-0054).
+    // The searchable picker (Add source, fonts): a header band with the kind's icon, the
+    // title and what to pick, a filter field that keeps the focus, a status line while it
+    // says something, the rows the app made, and a footer with the option, Cancel and
+    // the primary action. The app filters (`picker-filtered`) and sets the rows; a click
+    // highlights a row, a double-click, Enter or the primary button chooses the
+    // highlighted row, Up and Down move it, Escape or a click outside cancels. Reported as a cover like the name prompt (ADR-0054).
     in-out property <bool> picker-open;
     in-out property <string> picker-title;
     in-out property <string> picker-status;
     in-out property <[PickerRow]> picker-rows;
     in-out property <int> picker-current;
     in-out property <OverlayCover> picker-cover;
+    // The header: the kind's icon (an icon name) and one line that says what to pick.
+    in-out property <string> picker-icon;
+    in-out property <string> picker-hint;
+    // The rows list font families: a shorter row with an "Aa" sample instead of a picture.
+    in-out property <bool> picker-fonts;
+    // While the list is asked for, placeholder rows show under the status line.
+    in-out property <bool> picker-looking;
+    // Nothing to list: a title and a sentence in the list's place, and "Look again"
+    // when `picker-can-retry` (`picker-retry` lists again).
+    in-out property <string> picker-empty-title;
+    in-out property <string> picker-empty-text;
+    in-out property <bool> picker-can-retry;
+    callback picker-retry();
     // An optional checkbox next to Cancel (empty label: none), for example "Capture
     // audio too" when adding a display or window (ADR-0096). The explanation sits
     // behind its info button.

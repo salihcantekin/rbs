@@ -41,8 +41,8 @@ macro_rules! reexport_probes {
     ($probes:ident) => {
         pub use $probes::{
             EffectsProbe, ExperienceProbe, FocusRevealProbe, MenuProbe, MixerProbe,
-            NumberFieldProbe, OverlayProbe, PropertiesProbe, ReplayProbe, SegmentProbe,
-            SettingRowAlignProbe, SettingRowProbe, SourcesProbe,
+            NumberFieldProbe, OverlayProbe, PickerProbe, PropertiesProbe, ReplayProbe,
+            SegmentProbe, SettingRowAlignProbe, SettingRowProbe, SourcesProbe,
         };
     };
 }

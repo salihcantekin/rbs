@@ -160,6 +160,11 @@ format = 4
 # icon and its gap, so its icon sits under the parent's name.
 "size.list.indent" = 24
 "size.select.list-h" = 320
+# The searchable picker (Add source, fonts): its width, the most its list grows before it
+# scrolls, and the height of a badge on a row ("Main", "Current").
+"size.picker.w" = 420
+"size.picker.list-h" = 372
+"size.picker.badge" = 20
 "size.app-menu.w" = 600
 "size.app-menu.categories" = 165
 "size.app-menu.list-h" = 450

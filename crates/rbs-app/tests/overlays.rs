@@ -164,8 +164,9 @@ fn the_name_prompt_accepts_with_return_and_cancels_with_escape() {
 fn picker_row(name: &str, index: i32) -> rbs_app_ui::PickerRow {
     rbs_app_ui::PickerRow {
         name: name.into(),
-        note: "".into(),
         index,
+        action: format!("Add {name}").into(),
+        ..Default::default()
     }
 }
 

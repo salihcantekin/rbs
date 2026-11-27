@@ -2,9 +2,13 @@
 //! the sources other scenes have, as rows a filter field narrows. The picker keeps its
 //! own listing: the Source tab and Settings › Global sources ask the studio for target
 //! lists too, and an answer of theirs never changes what the user is looking at here.
+//! Each row says what it is (an icon, a detail line, a badge) and rows of one kind of
+//! thing are grouped under a band (design system, "Searchable picker").
 
 use rbs_app::studio_host::{SourceKind, Target};
 use rbs_scene::model::SourceId;
+
+use super::source_look::source_icon;
 
 /// What a picked row adds.
 #[derive(Debug, Clone, PartialEq)]
@@ -22,8 +26,26 @@ pub enum Pick {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
     pub name: String,
+    /// The detail line under the name; empty for none.
     pub note: String,
     pub index: usize,
+    /// The icon of the row's tile (an icon name), shown until a picture comes.
+    pub icon: &'static str,
+    /// A short state on the right ("Main", "Default", "Current"); empty for none.
+    pub badge: String,
+    pub badge_icon: &'static str,
+    /// The badge marks the current choice (accent fill).
+    pub badge_accent: bool,
+    /// The group this row starts (its band); empty when it continues the one above.
+    pub group: String,
+    /// How many bands are above this row's own.
+    pub groups_before: usize,
+    /// The family to draw the name in (fonts); empty for the UI font.
+    pub font: String,
+    /// The primary button's text while this row is highlighted.
+    pub action: String,
+    /// The capture target whose picture the row shows (displays and windows).
+    pub picture: Option<(String, String)>,
 }
 
 /// What the status line says.
@@ -39,13 +61,44 @@ pub enum Status {
     Ready,
 }
 
+/// One entry of the listing, as it was made from the answer.
+#[derive(Debug, Clone)]
+struct Entry {
+    name: String,
+    note: String,
+    badge: &'static str,
+    badge_icon: &'static str,
+    badge_accent: bool,
+    group: String,
+    icon: &'static str,
+    pick: Pick,
+}
+
+impl Entry {
+    fn new(name: String, pick: Pick) -> Self {
+        Self {
+            name,
+            note: String::new(),
+            badge: "",
+            badge_icon: "",
+            badge_accent: false,
+            group: String::new(),
+            icon: "",
+            pick,
+        }
+    }
+}
+
+/// A name short enough to stand in the primary button ("Add Display 1").
+const ACTION_NAME_MAX: usize = 22;
+
 #[derive(Debug)]
 pub struct AddPicker {
     kind: Option<SourceKind>,
     /// The text source whose font is being chosen (the font list instead of a kind).
     font_for: Option<SourceId>,
     waiting: bool,
-    entries: Vec<(String, String, Pick)>,
+    entries: Vec<Entry>,
     query: String,
     /// "Capture audio too" is checked (displays and windows only, off at first).
     audio: bool,
@@ -64,37 +117,57 @@ impl AddPicker {
         }
     }
 
-    /// A picker for the sources other scenes have (listed already).
-    pub fn existing(list: &[(SourceId, String)]) -> Self {
+    /// A picker for the sources other scenes have (listed already), grouped by kind in
+    /// the order the kinds are offered.
+    pub fn existing(list: &[(SourceId, String, Option<SourceKind>)]) -> Self {
+        let order = |k: &Option<SourceKind>| {
+            k.and_then(|k| SourceKind::ALL.iter().position(|a| *a == k))
+                .unwrap_or(usize::MAX)
+        };
+        let mut sorted: Vec<_> = list.iter().collect();
+        sorted.sort_by_key(|(_, _, k)| order(k));
+        let entries = sorted
+            .into_iter()
+            .map(|(id, name, kind)| {
+                let label = kind.map_or("Other", |k| k.label());
+                Entry {
+                    note: label.to_owned(),
+                    group: label.to_owned(),
+                    icon: source_icon(*kind),
+                    ..Entry::new(name.clone(), Pick::Existing(*id))
+                }
+            })
+            .collect();
         Self {
             kind: None,
             font_for: None,
             waiting: false,
-            entries: list
-                .iter()
-                .map(|(id, name)| (name.clone(), String::new(), Pick::Existing(*id)))
-                .collect(),
+            entries,
             query: String::new(),
             audio: false,
         }
     }
 
     /// A picker for the font of the text source `source`; the families come with
-    /// [`Self::answer_fonts`]. "System font" is the first row and `current` is marked.
+    /// [`Self::answer_fonts`]. The current font is first under "Current", then "System
+    /// font" (unless it is the current one) and the families under "All fonts".
     pub fn fonts(source: SourceId, current: &str) -> Self {
+        let system = Entry {
+            group: if current.is_empty() {
+                "Current"
+            } else {
+                "All fonts"
+            }
+            .to_owned(),
+            badge: if current.is_empty() { "Current" } else { "" },
+            badge_accent: true,
+            ..Entry::new("System font".to_owned(), Pick::Font(source, String::new()))
+        };
         Self {
             kind: None,
             font_for: Some(source),
             waiting: true,
-            entries: vec![(
-                "System font".to_owned(),
-                if current.is_empty() {
-                    "current".to_owned()
-                } else {
-                    String::new()
-                },
-                Pick::Font(source, String::new()),
-            )],
+            entries: vec![system],
             query: String::new(),
             audio: false,
         }
@@ -106,10 +179,23 @@ impl AddPicker {
             return false;
         };
         self.waiting = false;
-        self.entries.extend(families.iter().map(|f| {
-            let note = if f == current { "current" } else { "" };
-            (f.clone(), note.to_owned(), Pick::Font(source, f.clone()))
-        }));
+        let family = |f: &String| Entry {
+            group: "All fonts".to_owned(),
+            ..Entry::new(f.clone(), Pick::Font(source, f.clone()))
+        };
+        if let Some(f) = families.iter().find(|f| *f == current) {
+            self.entries.insert(
+                0,
+                Entry {
+                    group: "Current".to_owned(),
+                    badge: "Current",
+                    badge_accent: true,
+                    ..family(f)
+                },
+            );
+        }
+        self.entries
+            .extend(families.iter().filter(|f| *f != current).map(family));
         true
     }
 
@@ -119,26 +205,35 @@ impl AddPicker {
     }
 
     /// The studio's listing of `kind`. Taken once, while the picker waits for its own
-    /// kind; any other answer (another kind, a second answer) changes nothing.
+    /// kind; any other answer (another kind, a second answer) changes nothing. Windows
+    /// are grouped by their application (in the order the applications first come).
     pub fn answer(&mut self, kind: SourceKind, list: &[Target]) -> bool {
         if !self.waiting || self.kind != Some(kind) {
             return false;
         }
         self.waiting = false;
-        self.entries = list
-            .iter()
-            .map(|t| {
-                let note = match (&t.mic, t.is_default) {
-                    (Some(_), _) => "+ mic".to_owned(),
-                    (None, true) => "default".to_owned(),
-                    (None, false) => String::new(),
-                };
-                (t.name.clone(), note, Pick::Target(kind, t.clone()))
-            })
-            .collect();
+        let mut entries: Vec<Entry> = list.iter().map(|t| target_entry(kind, t)).collect();
+        if kind == SourceKind::Window {
+            let mut apps: Vec<String> = Vec::new();
+            for e in &entries {
+                if !apps.contains(&e.group) {
+                    apps.push(e.group.clone());
+                }
+            }
+            entries.sort_by_key(|e| apps.iter().position(|a| *a == e.group));
+        }
+        self.entries = entries;
         // Cameras with a microphone of their own start with it checked (ADR-0096 E).
         self.audio = self.offers_microphone();
         true
+    }
+
+    /// Asks again ("Look again" after an empty answer): the picker waits for a new one.
+    pub fn look_again(&mut self) -> Option<SourceKind> {
+        let kind = self.kind?;
+        self.waiting = true;
+        self.entries.clear();
+        Some(kind)
     }
 
     /// The dialog offers "Capture audio too": a display or a window is being added.
@@ -147,7 +242,7 @@ impl AddPicker {
             && self
                 .entries
                 .iter()
-                .any(|(_, _, p)| matches!(p, Pick::Target(_, t) if t.sound && !t.picker))
+                .any(|e| matches!(&e.pick, Pick::Target(_, t) if t.sound && !t.picker))
     }
 
     /// The dialog offers "Add its microphone too": a camera is listed and at least one
@@ -157,7 +252,7 @@ impl AddPicker {
             && self
                 .entries
                 .iter()
-                .any(|(_, _, p)| matches!(p, Pick::Target(_, t) if t.mic.is_some()))
+                .any(|e| matches!(&e.pick, Pick::Target(_, t) if t.mic.is_some()))
     }
 
     /// "Capture audio too" is checked.
@@ -178,20 +273,66 @@ impl AddPicker {
         self.query = text.trim().to_lowercase();
     }
 
-    /// The rows the filter keeps (case-insensitive, the name contains the text).
+    /// The rows the filter keeps (case-insensitive, the name or detail contains the
+    /// text). A row starts a band when its group differs from the row shown above it.
     pub fn rows(&self) -> Vec<Row> {
-        self.entries
-            .iter()
-            .enumerate()
-            .filter(|(_, (name, _, _))| {
-                self.query.is_empty() || name.to_lowercase().contains(&self.query)
-            })
-            .map(|(index, (name, note, _))| Row {
-                name: name.clone(),
-                note: note.clone(),
+        let mut rows = Vec::new();
+        let mut last: Option<&str> = None;
+        let mut bands = 0;
+        for (index, e) in self.entries.iter().enumerate() {
+            if !self.query.is_empty()
+                && !e.name.to_lowercase().contains(&self.query)
+                && !(self.kind == Some(SourceKind::Window)
+                    && e.note.to_lowercase().contains(&self.query))
+            {
+                continue;
+            }
+            let starts = !e.group.is_empty() && last != Some(e.group.as_str());
+            last = Some(e.group.as_str());
+            rows.push(Row {
+                name: e.name.clone(),
+                note: e.note.clone(),
                 index,
-            })
-            .collect()
+                icon: e.icon,
+                badge: e.badge.to_owned(),
+                badge_icon: e.badge_icon,
+                badge_accent: e.badge_accent,
+                group: if starts {
+                    e.group.clone()
+                } else {
+                    String::new()
+                },
+                groups_before: bands,
+                font: match &e.pick {
+                    Pick::Font(_, f) => f.clone(),
+                    _ => String::new(),
+                },
+                action: self.action(&e.name),
+                picture: match &e.pick {
+                    Pick::Target(SourceKind::Screen | SourceKind::Window, t) if !t.picker => {
+                        Some((t.adapter.clone(), t.target.clone()))
+                    }
+                    _ => None,
+                },
+            });
+            if starts {
+                bands += 1;
+            }
+        }
+        rows
+    }
+
+    /// The primary button's text for a row named `name`: the name when it is short,
+    /// else the kind of thing.
+    fn action(&self, name: &str) -> String {
+        let short = name.chars().count() <= ACTION_NAME_MAX;
+        match (self.is_fonts(), self.kind) {
+            (true, _) if short => format!("Use {name}"),
+            (true, _) => "Use this font".to_owned(),
+            (false, _) if short => format!("Add {name}"),
+            (false, Some(k)) => format!("Add {}", what_of(k)),
+            (false, None) => "Add source".to_owned(),
+        }
     }
 
     pub fn status(&self) -> Status {
@@ -208,7 +349,83 @@ impl AddPicker {
 
     /// The row `index` of the listing (not of the filtered rows).
     pub fn pick(&self, index: usize) -> Option<&Pick> {
-        self.entries.get(index).map(|(_, _, p)| p)
+        self.entries.get(index).map(|e| &e.pick)
+    }
+
+    /// The header: the kind's icon and one line that says what to pick.
+    pub fn header(&self) -> (&'static str, &'static str) {
+        if self.is_fonts() {
+            return ("text", "The text is drawn in the font you pick.");
+        }
+        match self.kind {
+            None => ("plus", "Place a source that other scenes already use."),
+            Some(k) => (
+                source_icon(Some(k)),
+                match k {
+                    SourceKind::Screen => "Choose the screen to capture.",
+                    SourceKind::Window => "Choose the window to capture.",
+                    SourceKind::Camera => "Choose the camera to add.",
+                    SourceKind::AudioInput => "Choose the microphone or input to add.",
+                    SourceKind::SystemAudio => "Choose the sound output to capture.",
+                    SourceKind::ApplicationAudio => "Choose the application to hear.",
+                    _ => "Choose what to add.",
+                },
+            ),
+        }
+    }
+}
+
+/// What a kind's targets are called in a sentence ("display", "window").
+fn what_of(kind: SourceKind) -> &'static str {
+    match kind {
+        SourceKind::Screen => "display",
+        SourceKind::Window => "window",
+        SourceKind::Camera => "camera",
+        SourceKind::AudioInput => "input",
+        SourceKind::SystemAudio => "output",
+        SourceKind::ApplicationAudio => "application",
+        _ => "source",
+    }
+}
+
+/// A target as a row: its size or application, and what makes it stand out.
+fn target_entry(kind: SourceKind, t: &Target) -> Entry {
+    let mut note: Vec<String> = Vec::new();
+    if let Some((w, h)) = t.size {
+        note.push(format!("{w} × {h}"));
+    }
+    let app = t.app.clone().filter(|a| !a.is_empty());
+    if kind == SourceKind::Window
+        && let Some(a) = &app
+    {
+        note.push(a.clone());
+    }
+    if t.mic.is_some() {
+        note.push("Has a microphone".to_owned());
+    }
+    if t.recent.is_some() {
+        note.push("Used recently".to_owned());
+    }
+    if t.picker {
+        note.push("Opens the system's picker".to_owned());
+    }
+    let (badge, badge_icon) = match (&t.mic, t.is_default) {
+        (Some(_), _) => ("Mic", "mic"),
+        (None, true) if kind == SourceKind::Screen => ("Main", ""),
+        (None, true) => ("Default", ""),
+        (None, false) => ("", ""),
+    };
+    Entry {
+        note: note.join(" · "),
+        badge,
+        badge_icon,
+        group: if kind == SourceKind::Window {
+            app.unwrap_or_else(|| "Other windows".to_owned())
+        } else {
+            String::new()
+        },
+        icon: source_icon(Some(kind)),
+        ..Entry::new(t.name.clone(), Pick::Target(kind, t.clone()))
     }
 }
 
@@ -273,7 +490,7 @@ mod tests {
         p.set_query(" CAM ");
         let rows = p.rows();
         assert_eq!(rows.iter().map(|r| r.index).collect::<Vec<_>>(), [0, 2]);
-        assert_eq!(rows[0].note, "default");
+        assert_eq!(rows[0].badge, "Default");
         let Some(Pick::Target(_, t)) = p.pick(rows[1].index) else {
             panic!("a target");
         };
@@ -296,10 +513,44 @@ mod tests {
 
     #[test]
     fn existing_sources_are_listed_at_once() {
-        let p = AddPicker::existing(&[(SourceId::from_raw(4), "Mic".into())]);
+        let p = AddPicker::existing(&[
+            (
+                SourceId::from_raw(4),
+                "Mic".into(),
+                Some(SourceKind::AudioInput),
+            ),
+            (
+                SourceId::from_raw(5),
+                "Logo".into(),
+                Some(SourceKind::Image),
+            ),
+            (
+                SourceId::from_raw(6),
+                "Desk".into(),
+                Some(SourceKind::Screen),
+            ),
+        ]);
         assert_eq!(p.status(), Status::Ready);
-        assert_eq!(p.pick(0), Some(&Pick::Existing(SourceId::from_raw(4))));
         assert_eq!(p.kind(), None);
+        // Grouped by kind in the order kinds are offered, each with its kind's icon.
+        let rows = p.rows();
+        let shown: Vec<_> = rows
+            .iter()
+            .map(|r| (r.name.as_str(), r.group.as_str(), r.groups_before, r.icon))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                ("Desk", "Screen capture", 0, "monitor"),
+                ("Mic", "Audio input", 1, "mic"),
+                ("Logo", "Image", 2, "image"),
+            ]
+        );
+        assert_eq!(
+            p.pick(rows[1].index),
+            Some(&Pick::Existing(SourceId::from_raw(4)))
+        );
+        assert_eq!(rows[1].action, "Add Mic");
     }
 
     #[test]
@@ -316,8 +567,12 @@ mod tests {
         assert!(p.offers_microphone());
         assert!(!p.offers_audio());
         assert!(p.audio());
-        assert_eq!(p.rows()[0].note, "+ mic");
-        assert_eq!(p.rows()[1].note, "");
+        assert_eq!(
+            (p.rows()[0].badge.as_str(), p.rows()[0].badge_icon),
+            ("Mic", "mic")
+        );
+        assert_eq!(p.rows()[0].note, "Has a microphone");
+        assert_eq!(p.rows()[1].badge, "");
         // No camera has one: nothing is offered and nothing is checked.
         let mut none = AddPicker::for_kind(SourceKind::Camera);
         none.answer(SourceKind::Camera, &[cam("Built-in", None)]);
@@ -326,7 +581,7 @@ mod tests {
     }
 
     #[test]
-    fn the_font_picker_lists_the_system_font_first_and_marks_the_current_one() {
+    fn the_font_picker_puts_the_current_font_first_then_the_system_font() {
         let id = SourceId::from_raw(4);
         let mut p = AddPicker::fonts(id, "Inter");
         assert_eq!(p.status(), Status::Looking);
@@ -339,12 +594,88 @@ mod tests {
         let rows = p.rows();
         assert_eq!(
             rows.iter()
-                .map(|r| (r.name.as_str(), r.note.as_str()))
+                .map(|r| (
+                    r.name.as_str(),
+                    r.badge.as_str(),
+                    r.group.as_str(),
+                    r.font.as_str()
+                ))
                 .collect::<Vec<_>>(),
-            [("System font", ""), ("Arial", ""), ("Inter", "current")]
+            [
+                ("Inter", "Current", "Current", "Inter"),
+                ("System font", "", "All fonts", ""),
+                ("Arial", "", "", "Arial"),
+            ]
         );
-        assert_eq!(p.pick(0), Some(&Pick::Font(id, String::new())));
+        assert_eq!(p.pick(rows[1].index), Some(&Pick::Font(id, String::new())));
+        assert_eq!(rows[0].action, "Use Inter");
         p.set_query("ari");
-        assert_eq!(p.rows()[0].index, 1);
+        let rows = p.rows();
+        assert_eq!(
+            (rows[0].name.as_str(), rows[0].group.as_str()),
+            ("Arial", "All fonts")
+        );
+        // With the system font current, it is the current row.
+        let mut sys = AddPicker::fonts(id, "");
+        sys.answer_fonts(&families, "");
+        let first = &sys.rows()[0];
+        assert_eq!(
+            (first.name.as_str(), first.badge.as_str()),
+            ("System font", "Current")
+        );
+    }
+
+    #[test]
+    fn windows_are_grouped_by_their_application_and_displays_show_a_picture() {
+        let win = |name: &str, app: &str| Target {
+            app: Some(app.to_owned()),
+            ..target(name, false)
+        };
+        let mut p = AddPicker::for_kind(SourceKind::Window);
+        p.answer(
+            SourceKind::Window,
+            &[
+                win("Docs", "Chrome"),
+                win("Shell", "Terminal"),
+                win("Mail", "Chrome"),
+            ],
+        );
+        let rows = p.rows();
+        let shown: Vec<_> = rows
+            .iter()
+            .map(|r| (r.name.as_str(), r.group.as_str(), r.groups_before))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                ("Docs", "Chrome", 0),
+                ("Mail", "", 1),
+                ("Shell", "Terminal", 1)
+            ]
+        );
+        assert_eq!(rows[0].picture, Some((String::new(), "Docs".to_owned())));
+        // The application is searched too.
+        p.set_query("term");
+        assert_eq!(p.rows().len(), 1);
+        let long = "A window title far too long for a button";
+        let mut q = AddPicker::for_kind(SourceKind::Window);
+        q.answer(SourceKind::Window, &[win(long, "App")]);
+        assert_eq!(q.rows()[0].action, "Add window");
+    }
+
+    #[test]
+    fn a_display_row_says_its_size_and_the_main_one() {
+        let mut p = AddPicker::for_kind(SourceKind::Screen);
+        let main = Target {
+            size: Some((2560, 1440)),
+            ..target("Display 1", true)
+        };
+        p.answer(SourceKind::Screen, &[main]);
+        let r = &p.rows()[0];
+        assert_eq!((r.note.as_str(), r.badge.as_str()), ("2560 × 1440", "Main"));
+        assert_eq!(p.header(), ("monitor", "Choose the screen to capture."));
+        // "Look again" waits for a new answer.
+        assert_eq!(p.look_again(), Some(SourceKind::Screen));
+        assert_eq!(p.status(), Status::Looking);
     }
 }
