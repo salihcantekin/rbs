@@ -632,7 +632,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 
     #[test]
     fn integrations_outside_the_workspace_select_nothing() {
-        assert_eq!(select(&["integrations/stream-deck/src/plugin.ts"]), some(&[]));
+        assert_eq!(
+            select(&["integrations/stream-deck/src/plugin.ts"]),
+            some(&[])
+        );
     }
 
     #[test]
