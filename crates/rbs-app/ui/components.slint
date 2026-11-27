@@ -2314,10 +2314,13 @@ export component SectionHeader inherits Rectangle {
     in property <string> title;
     in property <bool> collapsible: false;
     in property <bool> open: true;
+    // A band: the owner draws the band behind (a category of a panel, as Properties
+    // draws them); the header shows a framed arrow that reads as a control.
+    in property <bool> band: false;
     callback toggled(bool);
-    height: Tokens.size-control-sm;
+    height: root.band ? Tokens.size-control-md : Tokens.size-control-sm;
     border-radius: Tokens.radius-sm;
-    background: root.collapsible && touch.has-hover ? Theme.surface-overlay : transparent;
+    background: root.collapsible && touch.has-hover ? (root.band ? Theme.accent-subtle : Theme.surface-overlay) : transparent;
     accessible-role: button;
     accessible-label: title;
     accessible-expanded: root.open;
@@ -2325,9 +2328,24 @@ export component SectionHeader inherits Rectangle {
     forward-focus: focus;
     HorizontalLayout {
         spacing: Tokens.size-field-gap;
-        if root.collapsible: VerticalLayout {
+        padding-left: root.band ? Tokens.space-1 : 0px;
+        padding-right: root.band ? Tokens.space-1 : 0px;
+        if root.collapsible && !root.band: VerticalLayout {
             alignment: center;
             Icon { name: root.open ? IconName.chevron-down : IconName.chevron-right; ink: Theme.text-secondary; }
+        }
+        if root.collapsible && root.band: VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: Tokens.size-control-sm;
+                height: Tokens.size-control-sm;
+                border-radius: Tokens.radius-sm;
+                background: Theme.surface-raised;
+                Icon {
+                    name: root.open ? IconName.chevron-down : IconName.chevron-right;
+                    ink: Theme.text-primary;
+                }
+            }
         }
         VerticalLayout {
             alignment: center;
@@ -2346,7 +2364,7 @@ export component SectionHeader inherits Rectangle {
         VerticalLayout {
             horizontal-stretch: 1;
             alignment: center;
-            Rectangle { height: Tokens.size-border; background: Theme.border-subtle; }
+            if !root.band: Rectangle { height: Tokens.size-border; background: Theme.border-subtle; }
         }
     }
     focus := RingFocus {
@@ -5511,54 +5529,97 @@ export component FeatureSection inherits VerticalLayout {
     out property <bool> show-all: root.shown-here || (root.id != "" && Experience.shown(root.id, Experience.rev));
     in property <bool> has-toggle: true;
     in-out property <bool> on: true;
+    // What the section holds in a few words ("#f31aff · 9, 15, 4"), read beside the
+    // title while the section is closed, so its values show without opening it.
+    in property <string> summary;
     callback toggled(bool);
     property <bool> closed: Sections.closed(root.id, Sections.rev);
+    // The Properties search: see `Section`.
+    property <string> query: Studio.props-query;
+    changed query => {
+        if root.id != "" && Sections.props-matches(root.title, root.query) {
+            Sections.set-closed(root.id, false);
+            Studio.props-found(root.absolute-position.y);
+        }
+    }
     spacing: Tokens.size-field-gap;
-    HorizontalLayout {
-        spacing: Tokens.space-2;
-        Rectangle {
-            horizontal-stretch: 1;
-            min-height: Tokens.size-control-md;
-            Text {
-                x: 0;
-                width: parent.width;
-                height: parent.height;
-                text: root.title;
-                color: root.has-toggle && !root.on ? Theme.text-secondary : Theme.text-primary;
-                font-size: Tokens.type-body-size;
-                font-weight: Tokens.type-label-weight;
-                vertical-alignment: center;
-                overflow: elide;
-                accessible-role: none;
+    // The header is a band, so each feature stands out from the fields under it.
+    Rectangle {
+        height: Tokens.size-control-md;
+        border-radius: Tokens.radius-sm;
+        background: Theme.surface-overlay;
+        HorizontalLayout {
+            width: parent.width;
+            height: parent.height;
+            padding-left: Tokens.space-2;
+            padding-right: Tokens.space-1;
+            spacing: Tokens.space-2;
+            Rectangle {
+                horizontal-stretch: 1;
+                min-height: Tokens.size-control-md;
+                if root.closed && root.summary != "": Text {
+                    x: min(title-text.preferred-width, parent.width) + Tokens.space-2;
+                    width: max(0px, parent.width - self.x);
+                    height: parent.height;
+                    text: root.summary;
+                    color: Theme.text-secondary;
+                    font-size: Tokens.type-caption-size;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    accessible-role: none;
+                }
+                title-text := Text {
+                    x: 0;
+                    width: root.closed && root.summary != "" ? min(self.preferred-width, parent.width) : parent.width;
+                    height: parent.height;
+                    text: root.title;
+                    color: root.has-toggle && !root.on ? Theme.text-secondary : Theme.text-primary;
+                    font-size: Tokens.type-body-size;
+                    font-weight: Tokens.type-label-weight;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    accessible-role: none;
+                }
+                TouchArea { clicked => { Sections.set-closed(root.id, !root.closed); } }
             }
-            TouchArea { clicked => { Sections.set-closed(root.id, !root.closed); } }
-        }
-        if root.hint != "": VerticalLayout {
-            alignment: center;
-            InfoHint { label: root.title; text: root.hint; }
-        }
-        if root.has-toggle: Toggle {
-            label: root.title;
-            checked: root.on;
-            toggled(c) => { root.on = c; root.toggled(c); }
-        }
-        VerticalLayout {
-            alignment: center;
-            IconButton {
-                icon: root.closed ? IconName.chevron-right : IconName.chevron-down;
-                name: root.closed ? @tr("Show settings") : @tr("Hide settings");
-                accessible-expanded: !root.closed;
-                clicked => { Sections.set-closed(root.id, !root.closed); }
+            if root.hint != "": VerticalLayout {
+                alignment: center;
+                InfoHint { label: root.title; text: root.hint; }
             }
-        }
+            if root.has-toggle: Toggle {
+                label: root.title;
+                checked: root.on;
+                toggled(c) => { root.on = c; root.toggled(c); }
+            }
+            VerticalLayout {
+                alignment: center;
+                IconButton {
+                    icon: root.closed ? IconName.chevron-right : IconName.chevron-down;
+                framed: true;
+                    name: root.closed ? @tr("Show settings") : @tr("Hide settings");
+                    accessible-expanded: !root.closed;
+                    clicked => { Sections.set-closed(root.id, !root.closed); }
+                }
+            }
+            }
     }
     // Hidden, not removed, so @children keep their values. Hidden, they ask for no
     // width either, so a closed body does not widen a narrow panel.
     Rectangle {
         visible: !root.closed;
         height: root.closed ? 0px : inner.preferred-height;
-        min-width: root.closed ? 0px : inner.min-width;
+        min-width: root.closed ? 0px : inner.min-width + Tokens.space-1 + Tokens.space-3;
+        // The body is set in from the title with a guide line, so what belongs to
+        // the section reads as inside it.
+        Rectangle {
+            x: Tokens.space-1;
+            width: Tokens.size-border;
+            height: parent.height;
+            background: Theme.border-subtle;
+        }
         inner := VerticalLayout {
+            x: Tokens.space-1 + Tokens.space-3;
+            width: parent.width - self.x;
             spacing: Tokens.size-field-gap;
             @children
             if root.more-hidden && !root.show-all: MoreHidden {
