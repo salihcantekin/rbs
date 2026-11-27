@@ -5,6 +5,7 @@
 	<title>RBS</title>
 	<script src="sdpi-components.js"></script>
 	<style>
+		body { font-family: Segoe UI, system-ui, sans-serif; font-size: 12px; }
 		.status { margin: 6px 0 0; line-height: 1.4; opacity: 0.85; }
 		.error { margin: 6px 0 0; line-height: 1.4; color: #f5b942; }
 		[hidden] { display: none !important; }
@@ -48,7 +49,7 @@
 		(async () => {
 			const info = await client.getConnectionInfo();
 			const uuid = info.actionInfo.action;
-			const kind = uuid.slice(uuid.indexOf(".", uuid.indexOf(".") + 1) + 1);
+			const kind = uuid.slice(uuid.lastIndexOf(".") + 1);
 			document.querySelector(`[data-action="${kind}"]`)?.removeAttribute("hidden");
 		})();
 		client.sendToPropertyInspector.subscribe((ev) => {
