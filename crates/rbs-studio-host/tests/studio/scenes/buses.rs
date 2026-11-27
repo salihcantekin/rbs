@@ -131,6 +131,12 @@ fn a_bus_is_added_renamed_with_its_references_and_kept_while_a_track_names_it() 
     c.event("bus.changed", |d| {
         d["buses"][0]["volume"] == 0.25 && d["buses"][0]["muted"] == true
     });
+    // The window's Mixer gets the track with its fader and mute (ADR-0170 decision 9).
+    let track = next(&updates, |u| match u {
+        Update::Tracks(t) if t.first().is_some_and(|t| t.muted) => t.into_iter().next(),
+        _ => None,
+    });
+    assert_eq!((track.name.as_str(), track.volume), ("Music", 0.25));
     for bad in [
         json!({"name": "Music"}),
         json!({"name": "Music", "volume": 2.0}),

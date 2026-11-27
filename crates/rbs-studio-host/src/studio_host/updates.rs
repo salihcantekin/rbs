@@ -111,6 +111,10 @@ pub enum Update {
     /// The studio mixer's master meter, when the studio has one and each time it is
     /// made again (ADR-0081); `None` while there is no mixer.
     MasterMeter(Option<Arc<rbs_audio::LevelMeter>>),
+    /// The main canvas's tracks (its buses other than `main`, ADR-0170 decision 9) in
+    /// order, with their meters; sent when one is added, removed, renamed or set, and
+    /// when their meters are made again.
+    Tracks(Vec<TrackView>),
     /// The loudness meter for the Mixer (ADR-0092 decision 7): whether it is shown,
     /// the running meter's values (`None` while off or without audio), the target and
     /// the true-peak limit. Sent once at the start and when any of them changes.

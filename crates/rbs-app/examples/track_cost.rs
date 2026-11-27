@@ -13,7 +13,7 @@
 //! cargo run --release -p rbs-app --example track_cost -- 30
 //! ```
 #![allow(clippy::disallowed_methods)] // A measurement, not the app shell.
-#![allow(clippy::print_stdout, clippy::print_stderr, clippy::expect_used)] // Setup errors end it.
+#![allow(clippy::expect_used)] // Setup errors end it.
 
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
@@ -90,9 +90,9 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     };
     let budget = Duration::from_nanos(1_000_000_000 * u64::from(DEFAULT_BLOCK_FRAMES) / 48_000);
-    println!("block budget {budget:?}, {seconds} s of audio per run, warm-up run first");
+    rbs_crash::outln!("block budget {budget:?}, {seconds} s of audio per run, warm-up run first");
     let _ = run(factory.as_ref(), 1, 2);
-    println!("tracks  mean_us  p99_us  max_us  mean_share  p99_share");
+    rbs_crash::outln!("tracks  mean_us  p99_us  max_us  mean_share  p99_share");
     for tracks in 1..=6 {
         let mut times = run(factory.as_ref(), tracks, seconds);
         times.sort_unstable();
@@ -100,7 +100,7 @@ fn main() -> ExitCode {
         let p99 = times[times.len() * 99 / 100];
         let max = times[times.len() - 1];
         let share = |d: Duration| 100.0 * d.as_secs_f64() / budget.as_secs_f64();
-        println!(
+        rbs_crash::outln!(
             "{tracks:>6}  {:>7.1}  {:>6.1}  {:>6.1}  {:>9.2}%  {:>8.2}%",
             mean.as_secs_f64() * 1e6,
             p99.as_secs_f64() * 1e6,

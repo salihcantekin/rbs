@@ -109,6 +109,8 @@ mod list_filter;
 mod live_ticks;
 pub(crate) mod loudness;
 mod meter_values;
+mod tracks;
+pub use tracks::MAX_TRACKS;
 pub(crate) mod monitor;
 pub(crate) mod silence;
 pub(crate) mod text_props;
@@ -422,15 +424,8 @@ pub struct StudioUi {
     source_targets_for: Option<SourceId>,
     source_query: String,
     slots: Vec<MeterSlot>,
-    /// The master strip (ADR-0081): the mixer's master meter and its ballistics, and
-    /// the model of its one row (empty while the studio has no mixer).
-    master_slot: Option<(Arc<LevelMeter>, Meter)>,
-    /// Snapped bar last written on the master strip (see [`MeterSlot::shown`]).
-    master_shown: Option<MeterSnap>,
-    /// Readout last written on the master strip (see [`MeterSlot::readout`]).
-    master_readout: Option<meter::AccessibleLevel>,
-    master_meter: Rc<VecModel<MeterRow>>,
-    master_audio: rbs_scene::model::MasterAudio,
+    /// The master and track strips (ADR-0081, ADR-0170 decision 9).
+    strips: tracks::Strips,
     /// What the Mixer shows or hides, for its menus (ADR-0080): the heard sources.
     heard: Vec<HeardFact>,
     /// The heard sources' names by id, for the monitor's solo line.
@@ -802,11 +797,7 @@ impl StudioUi {
             source_pictures: std::collections::HashMap::new(),
             source_query: String::new(),
             slots: Vec::new(),
-            master_slot: None,
-            master_shown: None,
-            master_readout: None,
-            master_meter: Rc::new(VecModel::default()),
-            master_audio: rbs_scene::model::MasterAudio::default(),
+            strips: tracks::Strips::default(),
             heard: Vec::new(),
             heard_names: Vec::new(),
             mics: Vec::new(),
@@ -963,7 +954,7 @@ impl StudioUi {
         g.set_attributes(ModelRc::from(self.attributes.clone()));
         g.set_meters(ModelRc::from(self.meters.clone()));
         g.set_hidden_meters(ModelRc::from(self.hidden_meters.clone()));
-        g.set_master_meter(ModelRc::from(self.master_meter.clone()));
+        self.strips.attach(g);
         self.meter_values.attach(g);
         g.set_loudness_rows(ModelRc::from(self.loudness.rows.clone()));
         g.set_stats(ModelRc::from(self.stats.clone()));
@@ -1103,16 +1094,7 @@ impl StudioUi {
                 .position(|b| *b == p.bit_depth)
                 .unwrap_or(0) as i32,
         );
-        g.set_out_bit_depth_default(
-            p.format
-                .widths()
-                .iter()
-                .position(|b| *b == RecordProfile::default().bit_depth)
-                .unwrap_or(0) as i32,
-        );
-        g.set_out_pcm_widths(strings(
-            p.format.width_labels().iter().map(|s| (*s).to_owned()),
-        ));
+        self.push_audio_rows(g, p);
         g.set_rec_audio_only(self.profile.format.is_audio_only());
         g.set_vertical_audio_only(self.records_audio(OutputCanvas::Vertical));
         g.set_rec_button_audio(if self.rec_state == rec_state::OFF {
@@ -5646,7 +5628,7 @@ impl StudioUi {
         self.heard.clear();
         self.heard_names.clear();
         self.slots.clear();
-        self.master_slot = None;
+        self.strips.clear();
         self.scene_list = None;
         self.source_settings_view = None;
         self.sources.set_vec(Vec::new());
@@ -5654,9 +5636,6 @@ impl StudioUi {
         self.meters.set_vec(Vec::new());
         self.meter_values.clear();
         self.hidden_meters.set_vec(Vec::new());
-        self.master_meter.set_vec(Vec::new());
-        self.master_shown = None;
-        self.master_readout = None;
         self.source_settings.set_vec(Vec::new());
         self.source_targets.set_vec(Vec::new());
         self.marks.set_vec(Vec::new());
@@ -5918,13 +5897,11 @@ impl StudioUi {
                 self.vertical_known = true;
                 self.refresh_marks();
             }
-            Update::MasterMeter(level) => {
-                self.master_slot = level.map(|l| (l, Meter::new()));
-                self.show_master();
-            }
+            Update::MasterMeter(level) => self.set_master_meter(level),
+            Update::Tracks(tracks) => self.set_tracks(tracks),
             Update::Scenes(list) => {
-                if self.master_audio != list.master {
-                    self.master_audio = list.master;
+                if self.strips.master_audio != list.master {
+                    self.strips.master_audio = list.master;
                     self.show_master();
                 }
                 self.glide = list.glide;
@@ -6722,7 +6699,7 @@ impl StudioUi {
     /// Why a recording or stream started now would carry no voice; `None` while a
     /// microphone of the program scene is heard.
     pub fn silence(&self) -> Option<String> {
-        silence::reason(&self.mics, self.master_audio)
+        silence::reason(&self.mics, self.strips.master_audio)
     }
 
     /// True when a press of Record (`stream` false) or Go live would start an output
@@ -6764,51 +6741,7 @@ impl StudioUi {
 
     /// True while meters need refreshing.
     pub fn has_meters(&self) -> bool {
-        !self.slots.is_empty() || self.master_slot.is_some()
-    }
-
-    /// The master strip's row: its name, fader and mute from the model, its meter
-    /// parts from the last refresh (ADR-0081). One row while the studio has a mixer.
-    fn show_master(&mut self) {
-        self.meter_values.show_master(self.master_slot.is_some());
-        if self.master_slot.is_none() {
-            self.master_meter.set_vec(Vec::new());
-            self.master_shown = None;
-            self.master_readout = None;
-            return;
-        }
-        let m = self.master_audio;
-        let mut row = self.master_meter.row_data(0).unwrap_or_default();
-        row.muted = m.muted;
-        row.volume = fader::position_of(m.volume);
-        row.volume_text = fader::volume_text(m.volume).into();
-        row.icon = "speaker".into();
-        row.live = true;
-        self.master_shown = Some(meter_snap_row(&row));
-        if self.master_meter.row_count() == 0 {
-            self.master_meter.set_vec(vec![row]);
-        } else {
-            self.master_meter.set_row_data(0, row);
-        }
-    }
-
-    /// The master volume from the fader position (0 to 1, the fader law of the strips).
-    pub fn set_master_volume(&mut self, position: f32) {
-        self.send(Command::SetMasterVolume {
-            volume: fader::volume_at(position),
-        });
-    }
-
-    /// Mutes or unmutes the master.
-    pub fn set_master_muted(&mut self, muted: bool) {
-        self.send(Command::SetMasterMuted { muted });
-    }
-
-    /// Clears the master's clip latch.
-    pub fn reset_master_clip(&mut self) {
-        if let Some((_, ballistics)) = &mut self.master_slot {
-            ballistics.reset_clip();
-        }
+        !self.slots.is_empty() || self.strips.metered()
     }
 
     /// The live levels of a filter's meter, as bar positions (see `FilterUi::levels`).
@@ -6839,20 +6772,7 @@ impl StudioUi {
             let native = crate::meter_bridge::set_view(id, &view);
             write_meter_row(&*self.meters, index, &mut s.shown, &view, native);
         }
-        if let Some((level, ballistics)) = &mut self.master_slot {
-            let view = meter_view(level, ballistics, now);
-            if let Some(text) = due_readout(report, ballistics, &mut self.master_readout) {
-                self.meter_values.set_master(&text);
-            }
-            let native = crate::meter_bridge::set_view(-1, &view);
-            write_meter_row(
-                &*self.master_meter,
-                0,
-                &mut self.master_shown,
-                &view,
-                native,
-            );
-        }
+        self.tick_strips(now, report);
         self.tick_loudness(report);
         crate::meter_bridge::flush();
     }

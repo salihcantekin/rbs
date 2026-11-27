@@ -1,7 +1,7 @@
 // The Settings pages of the studio (ADR-0138: kept apart from the panels in
 // `studio.slint`, so a change to a page rebuilds only `rbs-app-ui-settings`).
 import { Theme, Tokens } from "tokens.slint";
-import { DialogActions, Button, IconButton, NumberField, Select, SegmentedControl, SizeNest, TextField, Toggle, InfoHint, SettingRow, SettingValue } from "components.slint";
+import { DialogActions, Button, Checkbox, IconButton, NumberField, Select, SegmentedControl, SizeNest, TextField, Toggle, InfoHint, SettingRow, SettingValue } from "components.slint";
 import { SettingsCard, SettingBlock, SettingsStatus, SettingsNotice, SettingsCallout, RevealOnShow, Shown } from "settings.slint";
 import { ReplaySettings } from "replay.slint";
 import { DestinationRow, EncoderData, Studio, Experience, IconName, Overlays } from "base/types.slint";
@@ -390,6 +390,23 @@ export component RecordingSettings inherits Rectangle {
                         index: Studio.out-container;
                         enabled: idle;
                         selected(i) => { Studio.set-container(i); }
+                    }
+                }
+            }
+            // Audio tracks (ADR-0170 decision 11): the mixes the file carries, while the
+            // main canvas has tracks.
+            if Experience.advanced: VerticalLayout {
+                if Studio.out-tracks.length > 0: SettingBlock {
+                    find: "recording.audio-tracks";
+                    label: @tr("Audio tracks");
+                    help: Studio.out-one-track ? @tr("This format writes one track.") : @tr("Each checked mix is its own audio track in the file, in this order.");
+                    VerticalLayout {
+                        for t[i] in Studio.out-tracks: Checkbox {
+                            text: t;
+                            checked: Studio.out-tracks-on[i];
+                            enabled: idle;
+                            toggled(on) => { Studio.set-audio-track(i, on); }
+                        }
                     }
                 }
             }
@@ -1137,6 +1154,27 @@ export component StreamSettings inherits Rectangle {
                                 enabled: idle;
                                 edited(v) => { Studio.set-output-long-side(1, v); }
                             }
+                        }
+                    }
+                }
+                // The mix the stream sends (ADR-0170 decision 3), while the main canvas
+                // has tracks.
+                if Experience.advanced: VerticalLayout {
+                    if Studio.st-audio-buses.length > 0: SettingRow {
+                        find: "stream.audio-bus";
+                        label: @tr("Audio");
+                        summary: @tr("The mix viewers hear");
+                        hint: @tr("Master, or a track from the Mixer. Every destination gets it. It applies to the next stream.");
+                        enabled: idle;
+                        changed: idle && Studio.st-audio-bus != 0;
+                        default-text: @tr("Master");
+                        reset => { Studio.set-stream-audio(0); }
+                        Select {
+                            label: @tr("Audio");
+                            options: Studio.st-audio-buses;
+                            index: Studio.st-audio-bus;
+                            enabled: idle;
+                            selected(i) => { Studio.set-stream-audio(i); }
                         }
                     }
                 }

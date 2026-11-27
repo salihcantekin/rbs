@@ -17,6 +17,7 @@ impl Shown<'_> {
         self.running()?;
         match id.base() {
             base if super::group_menu::is_group(base) => return self.group_enabled(id),
+            base if super::track_menu::is_track(base) => return self.track_enabled(id),
             "item.group" => return self.studio.group_items().map(|_| ()).map_err(Into::into),
             "item.ungroup" => return self.studio.ungroup_target().map(|_| ()).map_err(Into::into),
             "item.align_items" => {
@@ -56,6 +57,9 @@ impl Shown<'_> {
 pub(super) fn run(id: &CommandId, state: &Shown<'_>, on: bool) -> Option<Run> {
     Some(match id.base() {
         base if super::group_menu::is_group(base) => return super::group_menu::run(id, on),
+        base if super::track_menu::is_track(base) => {
+            return super::track_menu::run(id, state, None);
+        }
         "item.group" => Run::Arrange(ArrangeOp::Group(true)),
         "item.ungroup" => Run::Arrange(ArrangeOp::Group(false)),
         "item.flip" => Run::Transform(
@@ -82,6 +86,7 @@ pub(super) fn runs(base: &str) -> bool {
         base,
         "item.flip" | "item.reset_transform" | "item.group" | "item.ungroup"
     ) || super::group_menu::is_group(base)
+        || super::track_menu::is_track(base)
 }
 
 /// Whether `base` is an Arrange command this file answers.
@@ -98,12 +103,22 @@ pub(super) fn is_arrange(base: &str) -> bool {
             | "item.align_items"
             | "item.distribute"
     ) || super::group_menu::is_group(base)
+        || super::track_menu::is_track(base)
+}
+
+/// Whether `base` is a picker entry [`picked`] answers.
+pub(super) fn picks(base: &str) -> bool {
+    matches!(
+        base,
+        "item.rotate" | "item.fit" | "item.align" | "item.align_items" | "item.distribute"
+    ) || base == "source.sends"
 }
 
 /// What a picker entry of Arrange runs for the chosen `value`.
 pub(super) fn picked(id: &CommandId, value: &str, state: &Shown<'_>) -> Option<Run> {
     use rbs_scene::{CenterAxis, FitMode};
     Some(match id.base() {
+        "source.sends" => return super::track_menu::run(id, state, Some(value)),
         "item.rotate" => Run::Transform(
             state.source(id).ok()?.id,
             TransformOp::Turn(value.parse::<i32>().ok()? as f32),

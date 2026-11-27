@@ -18,10 +18,14 @@ mod errors;
 mod id;
 mod labels;
 mod layout;
+mod search;
 pub use context::*;
 pub use errors::{CommandIdError, Disabled};
 pub use labels::{choice_icon, icon, icon_only, title};
 pub use layout::{MENU_LAYOUT, NOT_IN_MENU};
+pub use search::{
+    MAX_SEARCH_RESULTS, SETTINGS_SEARCH_ROOM, search, settings_hit_title, settings_section_title,
+};
 
 use crate::panel::{PanelId, built_in};
 use crate::workspace::{Toolbar, ToolbarItem, ToolbarStyle};
@@ -110,6 +114,7 @@ const CATEGORY_RULES: &[(&str, Category)] = &[
     ("source.mixer_hidden.toggle", Category::Audio),
     ("source.monitor", Category::Audio),
     ("source.monitor_solo.toggle", Category::Audio),
+    ("source.sends", Category::Audio),
     ("scene.audio.", Category::Audio),
     ("mixer.", Category::Audio),
     ("ui.mixer.", Category::Audio),
@@ -1553,6 +1558,59 @@ pub const ENTRIES: &[Entry] = &[
         fixed: &[],
     },
     Entry {
+        id: "mixer.track.add",
+        title: "Add track",
+        tooltip: "Add a mix beside Master that sources can send to, for a recording's extra audio tracks or the stream",
+        icon: Some("plus"),
+        shortcut: None,
+        menu: Menu::Source,
+        kind: action("bus.add"),
+        // Without `name`: the UI asks for it.
+        params: &[target("name")],
+        checkable: false,
+        fixed: &[],
+    },
+    Entry {
+        id: "mixer.track.rename",
+        title: "Rename track",
+        tooltip: "Give the track another name; the recording and stream settings follow",
+        icon: Some("pencil"),
+        shortcut: None,
+        menu: Menu::Source,
+        kind: action("bus.set"),
+        // `track` is the track's place in the Mixer; without `rename` the UI asks.
+        params: &[target("track"), target("rename")],
+        checkable: false,
+        fixed: &[],
+    },
+    Entry {
+        id: "mixer.track.remove",
+        title: "Remove track",
+        tooltip: "Remove the track and the sends to it; refused while a recording or stream setting uses it",
+        icon: Some("trash"),
+        shortcut: None,
+        menu: Menu::Source,
+        kind: action("bus.remove"),
+        params: &[target("track")],
+        checkable: false,
+        fixed: &[],
+    },
+    Entry {
+        id: "source.sends",
+        title: "Send to tracks",
+        tooltip: "Which mixes the source is heard in: Master and each track",
+        icon: Some("speaker"),
+        shortcut: None,
+        menu: Menu::Source,
+        kind: Kind::Picker {
+            method: "source.set_sends",
+            param: "bus",
+        },
+        params: &[target("source"), choice("bus"), COLLECTION],
+        checkable: false,
+        fixed: &[],
+    },
+    Entry {
         id: "mixer.hide_all",
         title: "Hide all in Mixer",
         tooltip: "Keep every source out of the Mixer; they are still heard",
@@ -2561,144 +2619,6 @@ pub fn menus(state: &dyn CommandState) -> Vec<(Menu, Vec<MenuItem>)> {
         })
         .collect()
 }
-
-/// Most results [`search`] gives.
-pub const MAX_SEARCH_RESULTS: usize = 40;
-
-/// The title of a Settings section (`remote_control` reads "Remote control").
-pub fn settings_section_title(section: &str) -> String {
-    if section == "ai_tools" {
-        return "AI tools".to_owned();
-    }
-    let mut out = section.replace('_', " ");
-    if let Some(first) = out.get(0..1) {
-        let upper = first.to_ascii_uppercase();
-        out.replace_range(0..1, &upper);
-    }
-    out
-}
-
-/// A settings search hit as the RBS menu titles it: "Settings: Recording › Encoding ›
-/// Video encoder", or "Settings: Recording › Replay buffer" for a card.
-pub fn settings_hit_title(settings: &str, hit: &crate::settings_index::Hit) -> String {
-    let section = settings_section_title(hit.place.section);
-    match hit.card_title() {
-        Some(card) => format!("{settings}: {section} › {card} › {}", hit.setting.title),
-        None => format!("{settings}: {section} › {}", hit.setting.title),
-    }
-}
-
-/// The commands whose words hold every word of `query` (case-insensitive), for the
-/// RBS menu's search field: commands as the menus show them, each choice of a picker
-/// as its own command ("Workspace: Live"), each Settings section ("Settings:
-/// Appearance"), and each card and setting of the settings index that matches
-/// (`settings_index::search`, "Settings: Recording › Encoding › Video encoder"), after
-/// every command, with room for at least [`SETTINGS_SEARCH_ROOM`] of them. A command's menu title counts as one of its words, so "view" finds
-/// the View menu's commands. In menu order; at most [`MAX_SEARCH_RESULTS`]; none for
-/// a blank query.
-pub fn search(state: &dyn CommandState, query: &str) -> Vec<MenuItem> {
-    let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
-    if words.is_empty() {
-        return Vec::new();
-    }
-    let hit = |menu: Menu, title: &str| {
-        let text = format!("{} {}", menu.title(), title).to_lowercase();
-        words.iter().all(|w| text.contains(w.as_str()))
-    };
-    let mut out = Vec::new();
-    // Cards and settings follow every command, so a common word ("video") does not
-    // push commands past the result limit.
-    let mut settings = Vec::new();
-    for (menu, rows) in app_menu(state) {
-        for row in rows {
-            let AppRow::Item(item) = row else { continue };
-            match item {
-                MenuItem::Command {
-                    ref id,
-                    ref title,
-                    ref disabled,
-                    icon,
-                    ..
-                } => {
-                    let plain = hit(menu, title);
-                    let mut sections = Vec::new();
-                    if id.base() == "ui.settings.open" && id.param("section").is_none() {
-                        for s in SETTINGS_SECTIONS {
-                            let title = format!("{title}: {}", settings_section_title(s));
-                            if hit(menu, &title) {
-                                let mut run = id.clone();
-                                run.params.push(("section".to_owned(), s.to_owned()));
-                                sections.push(MenuItem::Command {
-                                    id: run,
-                                    title,
-                                    shortcut: None,
-                                    disabled: disabled.clone(),
-                                    checked: None,
-                                    icon,
-                                });
-                            }
-                        }
-                    }
-                    if id.base() == "ui.settings.open" && id.param("section").is_none() {
-                        for hit in crate::settings_index::search(
-                            query,
-                            &format!("{} {title}", menu.title()),
-                            &settings_section_title,
-                        ) {
-                            let mut run = id.clone();
-                            run.params
-                                .push(("section".to_owned(), hit.place.section.to_owned()));
-                            run.params
-                                .push(("setting".to_owned(), hit.setting.key.to_owned()));
-                            settings.push(MenuItem::Command {
-                                id: run,
-                                title: settings_hit_title(title, &hit),
-                                shortcut: None,
-                                disabled: disabled.clone(),
-                                checked: None,
-                                icon,
-                            });
-                        }
-                    }
-                    if plain {
-                        out.push(item);
-                    }
-                    out.extend(sections);
-                }
-                MenuItem::Choices {
-                    title,
-                    icon,
-                    disabled,
-                    choices,
-                } => {
-                    for (choice, run, current) in choices {
-                        let title = format!("{title}: {choice}");
-                        if hit(menu, &title) {
-                            out.push(MenuItem::Command {
-                                id: run,
-                                title,
-                                shortcut: None,
-                                disabled: disabled.clone(),
-                                checked: Some(current),
-                                icon,
-                            });
-                        }
-                    }
-                }
-                MenuItem::Separator => {}
-            }
-        }
-    }
-    // Keep room for a few settings when the commands alone fill the list.
-    let keep = settings.len().min(SETTINGS_SEARCH_ROOM);
-    out.truncate(MAX_SEARCH_RESULTS - keep);
-    out.extend(settings);
-    out.truncate(MAX_SEARCH_RESULTS);
-    out
-}
-
-/// Results [`search`] keeps for cards and settings when commands alone would fill it.
-pub const SETTINGS_SEARCH_ROOM: usize = 5;
 
 /// The default toolbar (Edit's, and that of user workspaces without one). Only
 /// commands the registry has; items join as their commands do.

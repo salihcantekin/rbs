@@ -473,6 +473,13 @@ pub const SETTINGS: &[Setting] = &[
         RECORDING_FILES,
         Simple,
     ),
+    row(
+        "recording.audio-tracks",
+        "Audio tracks",
+        "multitrack multi track bus mix tracks master vod",
+        RECORDING_FILES,
+        Advanced,
+    ),
     c(
         "settings.recording.separate",
         "Separate files",
@@ -696,6 +703,13 @@ pub const SETTINGS: &[Setting] = &[
         "Encoding",
         "encoder quality bitrate",
         STREAM_ENCODING,
+    ),
+    row(
+        "stream.audio-bus",
+        "Audio",
+        "sound mix track bus master music vod",
+        STREAM_ENCODING,
+        Advanced,
     ),
     // The Encoding card's rows, shown in Recording and Stream.
     row(

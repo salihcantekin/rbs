@@ -1259,6 +1259,8 @@ component LevelReadout inherits Rectangle {
 component StripControls inherits HorizontalLayout {
     in property <MeterRow> data;
     in property <bool> master;
+    // A track's strip (ADR-0170 decision 9): no monitor.
+    in property <bool> track;
     in property <string> title;
     // Columns: the readout shrinks with the strip. Rows keep it fixed.
     in property <bool> fixed-readout: true;
@@ -1330,7 +1332,7 @@ component StripControls inherits HorizontalLayout {
             TouchArea { clicked => { root.reset(); } }
         }
     }
-    if !root.master: VerticalLayout {
+    if !root.master && !root.track: VerticalLayout {
         alignment: center;
         horizontal-stretch: 0;
         MonitorButton { data: data; title: root.title; }
@@ -1412,22 +1414,26 @@ component MeterView inherits Rectangle {
     callback reset();
     // The master strip (ADR-0081): its own callbacks and its own menu (ADR-0092).
     in property <bool> master;
+    // A track's strip (ADR-0170 decision 9): its place in `Studio.track-meters`, else -1.
+    // No monitor; its own callbacks and menu.
+    in property <int> track: -1;
+    property <bool> is-track: root.track >= 0;
     property <string> title: root.master ? @tr("Master") : data.name;
     function set-volume(v: float) {
-        if root.master { Studio.set-master-volume(v); } else { Studio.set-source-volume(data.id, v); }
+        if root.master { Studio.set-master-volume(v); } else if root.is-track { Studio.set-track-volume(root.track, v); } else { Studio.set-source-volume(data.id, v); }
     }
     function toggle-muted() {
-        if root.master { Studio.set-master-muted(!data.muted); } else { Studio.set-source-muted(data.id, !data.muted); }
+        if root.master { Studio.set-master-muted(!data.muted); } else if root.is-track { Studio.set-track-muted(root.track, !data.muted); } else { Studio.set-source-muted(data.id, !data.muted); }
     }
     accessible-role: progress-indicator;
     accessible-label: data.scene-level ? @tr("{}, level of this scene", root.title) : root.title;
     accessible-value: root.value;
     // The source's menu (ADR-0080): the "more" button, a right-click or the Menu key.
-    // A source's menu, or the master's (ADR-0092: Show loudness and more).
+    // A source's menu, the master's (ADR-0092: Show loudness and more) or a track's.
     menu := CommandMenu {
-        context: root.master ? "mixer-master" : "mixer-source";
+        context: root.master ? "mixer-master" : root.is-track ? "mixer-track" : "mixer-source";
         // In Own levels the scene too, for "Use the source's level" (ADR-0091).
-        target: root.master ? "" : data.scene-level ? "source=" + data.id + "&scene=" + Studio.program-scene : "source=" + data.id;
+        target: root.master ? "" : root.is-track ? "track=" + root.track : data.scene-level ? "source=" + data.id + "&scene=" + Studio.program-scene : "source=" + data.id;
     }
     MenuArea { menu-at(x, y) => { menu.open({ x: x, y: y }); } }
     VerticalLayout {
@@ -1441,6 +1447,7 @@ component MeterView inherits Rectangle {
             spacing: Tokens.space-2;
             data: data;
             master: root.master;
+            track: root.is-track;
             title: root.title;
             reset => { root.reset(); }
             toggle-muted => { root.toggle-muted(); }
@@ -1463,7 +1470,7 @@ component MeterView inherits Rectangle {
                 padding-right: Tokens.space-3 / 2;
                 NativeMeter {
                     height: Tokens.size-meter-bar;
-                    key: root.master ? -1 : data.id;
+                    key: root.master ? -1 : root.is-track ? -10 - root.track : data.id;
                     data: data;
                     vertical: false;
                 }
@@ -1580,12 +1587,16 @@ component MeterStrip inherits Rectangle {
     callback reset();
     // The master strip (ADR-0081): its own callbacks and its own menu (ADR-0092).
     in property <bool> master;
+    // A track's strip (ADR-0170 decision 9): its place in `Studio.track-meters`, else -1.
+    // No monitor; its own callbacks and menu.
+    in property <int> track: -1;
+    property <bool> is-track: root.track >= 0;
     property <string> title: root.master ? @tr("Master") : data.name;
     function set-volume(v: float) {
-        if root.master { Studio.set-master-volume(v); } else { Studio.set-source-volume(data.id, v); }
+        if root.master { Studio.set-master-volume(v); } else if root.is-track { Studio.set-track-volume(root.track, v); } else { Studio.set-source-volume(data.id, v); }
     }
     function toggle-muted() {
-        if root.master { Studio.set-master-muted(!data.muted); } else { Studio.set-source-muted(data.id, !data.muted); }
+        if root.master { Studio.set-master-muted(!data.muted); } else if root.is-track { Studio.set-track-muted(root.track, !data.muted); } else { Studio.set-source-muted(data.id, !data.muted); }
     }
     // The panel sets the height. Width stays the token, so a long name cannot widen the column.
     // VSlider centres its track in its own width, so that width stays `size.control.sm`.
@@ -1611,11 +1622,11 @@ component MeterStrip inherits Rectangle {
     accessible-role: progress-indicator;
     accessible-label: data.scene-level ? @tr("{}, level of this scene", root.title) : root.title;
     accessible-value: data.live ? root.value : data.volume-text;
-    // A source's menu, or the master's (ADR-0092: Show loudness and more).
+    // A source's menu, the master's (ADR-0092: Show loudness and more) or a track's.
     menu := CommandMenu {
-        context: root.master ? "mixer-master" : "mixer-source";
+        context: root.master ? "mixer-master" : root.is-track ? "mixer-track" : "mixer-source";
         // In Own levels the scene too, for "Use the source's level" (ADR-0091).
-        target: root.master ? "" : data.scene-level ? "source=" + data.id + "&scene=" + Studio.program-scene : "source=" + data.id;
+        target: root.master ? "" : root.is-track ? "track=" + root.track : data.scene-level ? "source=" + data.id + "&scene=" + Studio.program-scene : "source=" + data.id;
     }
     MenuArea { menu-at(x, y) => { menu.open({ x: x, y: y }); } }
     HorizontalLayout {
@@ -1653,7 +1664,7 @@ component MeterStrip inherits Rectangle {
         y: root.body-y + root.track-inset;
         width: Tokens.size-meter-bar;
         height: max(0px, root.body-h - 2 * root.track-inset);
-        key: root.master ? -1 : data.id;
+        key: root.master ? -1 : root.is-track ? -10 - root.track : data.id;
         data: data;
         vertical: true;
         shown: root.shown;
@@ -1703,7 +1714,7 @@ component MeterStrip inherits Rectangle {
         accessible-action-default => { root.reset(); }
         TouchArea { clicked => { root.reset(); } }
     }
-    if !root.master: MonitorButton {
+    if !root.master && !root.is-track: MonitorButton {
         x: root.controls-x + (root.controls-w - self.width) / 2;
         y: root.controls-y + 2 * root.step;
         data: data;
@@ -1750,10 +1761,14 @@ component MixerCaption inherits Rectangle {
     in property <bool> more;
     in property <string> more-name;
     callback open-menu(length, length);
+    // A + button at the end (the Tracks group's Add track, ADR-0170 decision 9).
+    in property <bool> add;
+    in property <string> add-name;
+    callback add-clicked();
     height: Tokens.size-control-sm;
     min-width: 0px;
     property <length> lead: root.mark ? Tokens.size-icon-box + Tokens.space-1 : 0px;
-    property <length> tail: root.more ? Tokens.size-control-sm + Tokens.space-1 : 0px;
+    property <length> tail: root.more || root.add ? Tokens.size-control-sm + Tokens.space-1 : 0px;
     if root.mark: Icon {
         x: 0;
         y: (parent.height - self.height) / 2;
@@ -1766,6 +1781,13 @@ component MixerCaption inherits Rectangle {
         icon: IconName.more;
         name: root.more-name;
         clicked => { root.open-menu(self.absolute-position.x, self.absolute-position.y + self.height); }
+    }
+    if root.add: IconButton {
+        x: parent.width - self.width;
+        y: (parent.height - self.height) / 2;
+        icon: IconName.plus;
+        name: root.add-name;
+        clicked => { root.add-clicked(); }
     }
     Text {
         x: root.lead;
@@ -1787,10 +1809,10 @@ component MixerCaption inherits Rectangle {
 // so every strip (including Master) gets the same box.
 component MixerGroupCluster inherits Rectangle {
     in property <string> title;
-    // 0 = This scene, 1 = Global, 2 = Master.
+    // 0 = This scene, 1 = Global, 2 = Master, 3 = Tracks (ADR-0170 decision 9).
     in property <int> kind;
     in property <length> col-h;
-    property <int> count: root.kind == 2 ? Studio.master-meter.length : root.kind == 0 ? Studio.meter-scenes : Studio.meter-globals;
+    property <int> count: root.kind == 3 ? Studio.track-meters.length : root.kind == 2 ? Studio.master-meter.length : root.kind == 0 ? Studio.meter-scenes : Studio.meter-globals;
     property <length> strip-w: Tokens.size-mixer-strip + Tokens.size-field-gap;
     property <length> body-y: Tokens.size-control-sm + Tokens.size-field-gap;
     width: root.count > 0 ? (root.kind == 2 ? Tokens.size-mixer-strip + (Studio.loudness.on ? Tokens.size-meter-loudness + Tokens.space-1 : 0px) : root.count * root.strip-w) : 0px;
@@ -1810,6 +1832,10 @@ component MixerGroupCluster inherits Rectangle {
         mark: root.own;
         more: root.kind == 0;
         more-name: @tr("Levels of this scene");
+        // Five tracks with Master are the most a canvas has.
+        add: root.kind == 3 && root.count < 5;
+        add-name: @tr("Add track");
+        add-clicked => { Studio.add-track(); }
         accessible-role: text;
         accessible-label: root.own ? @tr("Scene levels of {}", Studio.scene-levels) : root.title;
         open-menu(x, y) => {
@@ -1828,7 +1854,29 @@ component MixerGroupCluster inherits Rectangle {
         value: Studio.master-meter-values[0];
         reset => { Studio.reset-master-clip(); }
     }
-    if root.kind != 2: HorizontalLayout {
+    if root.kind == 3: HorizontalLayout {
+        x: 0;
+        y: root.body-y;
+        width: parent.width;
+        height: root.height - root.body-y;
+        spacing: 0px;
+        alignment: start;
+        for t[i] in Studio.track-meters: Rectangle {
+            width: root.strip-w;
+            height: parent.height;
+            horizontal-stretch: 0;
+            MeterStrip {
+                x: 0;
+                y: 0;
+                height: parent.height;
+                track: i;
+                data: t;
+                value: Studio.track-meter-values[i];
+                reset => { Studio.reset-track-clip(i); }
+            }
+        }
+    }
+    if root.kind < 2: HorizontalLayout {
         x: 0;
         y: root.body-y;
         width: parent.width;
@@ -1918,6 +1966,8 @@ export component MixerPanel inherits Rectangle {
     // The loudness details after the master (ADR-0092), closed by default.
     property <bool> loudness-closed: Sections.closed("mixer.loudness", Sections.rev);
     property <bool> loudness-shown: Studio.loudness.on && Studio.master-meter.length > 0;
+    // The tracks (ADR-0170 decision 9), after the master, at the Advanced level (U16).
+    property <bool> tracks-shown: Experience.advanced && Studio.master-meter.length > 0 && Studio.track-meters.length > 0;
     property <bool> any: Studio.meters.length + Studio.hidden-meters.length > 0;
     // The native meter layer (ADR-0035) clips to this panel, and is told when the
     // bars are made again.
@@ -1934,8 +1984,9 @@ export component MixerPanel inherits Rectangle {
     changed scene-closed => { Studio.meters-relayout(); }
     changed global-closed => { Studio.meters-relayout(); }
     // A source added or removed makes or drops a bar too.
-    property <int> meter-count: Studio.meters.length + Studio.master-meter.length;
+    property <int> meter-count: Studio.meters.length + Studio.master-meter.length + Studio.track-meters.length;
     changed meter-count => { Studio.meters-relayout(); }
+    changed tracks-shown => { Studio.meters-relayout(); }
     changed loudness-shown => { Studio.meters-relayout(); }
     if !root.any: EmptyState {
         width: parent.width;
@@ -2007,6 +2058,17 @@ export component MixerPanel inherits Rectangle {
                 if Studio.master-meter.length > 0: MixerGroupCluster {
                     title: @tr("Master");
                     kind: 2;
+                    col-h: row.col-h;
+                }
+                if root.tracks-shown: Rectangle {
+                    width: Tokens.size-border;
+                    height: row.col-h;
+                    horizontal-stretch: 0;
+                    background: Theme.border-subtle;
+                }
+                if root.tracks-shown: MixerGroupCluster {
+                    title: @tr("Tracks");
+                    kind: 3;
                     col-h: row.col-h;
                 }
                 // The loudness details (ADR-0092): a folded strip, or a column.
@@ -2208,6 +2270,30 @@ export component MixerPanel inherits Rectangle {
                     data: Studio.master-meter[0];
                     value: Studio.master-meter-values[0];
                     reset => { Studio.reset-master-clip(); }
+                }
+            }
+            // The tracks (ADR-0170 decision 9) after the master, above the scale.
+            if root.tracks-shown: VerticalLayout {
+                padding-top: Tokens.size-section-gap;
+                spacing: Tokens.size-field-gap;
+                HorizontalLayout {
+                    spacing: Tokens.size-field-gap;
+                    SectionHeader {
+                        horizontal-stretch: 1;
+                        title: @tr("Tracks");
+                    }
+                    // Five tracks with Master are the most a canvas has.
+                    if Studio.track-meters.length < 5: IconButton {
+                        icon: IconName.plus;
+                        name: @tr("Add track");
+                        clicked => { Studio.add-track(); }
+                    }
+                }
+                for t[i] in Studio.track-meters: MeterView {
+                    track: i;
+                    data: t;
+                    value: Studio.track-meter-values[i];
+                    reset => { Studio.reset-track-clip(i); }
                 }
             }
             // The labelled scale (dBFS) under the faders, which are as wide as the row.

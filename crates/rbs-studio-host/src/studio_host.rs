@@ -120,6 +120,7 @@ mod canvas;
 pub use canvas::AUDIO_REST_AFTER;
 mod arrange;
 mod buses;
+pub use buses::TrackView;
 mod command;
 mod command_path;
 mod control_loop;

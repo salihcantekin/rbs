@@ -163,6 +163,7 @@ fn resolve_run(run: Run, state: &Shown<'_>) -> Result<Resolution, ApiError> {
         | SaveWorkspaceAs(None)
         | OpenAttributes(..)
         | SceneTransition(_)
+        | Track(TrackOp::Add(None) | TrackOp::Rename(_, None))
         | AddVertical => {
             return Err(ApiError::new(
                 ErrorKind::InvalidParams,

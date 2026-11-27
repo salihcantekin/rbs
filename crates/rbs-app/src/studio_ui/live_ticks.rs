@@ -131,8 +131,8 @@ impl StudioUi {
 
     /// Takes the master when only it changed (`Update::Master`).
     pub(super) fn patch_master(&mut self, master: rbs_scene::model::MasterAudio) {
-        if self.master_audio != master {
-            self.master_audio = master;
+        if self.strips.master_audio != master {
+            self.strips.master_audio = master;
             self.show_master();
         }
     }

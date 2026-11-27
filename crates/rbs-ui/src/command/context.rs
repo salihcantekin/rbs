@@ -31,6 +31,9 @@ pub enum Context {
     /// The Master strip or row in the Mixer, or its "more" button (no target;
     /// ADR-0092 decision 3).
     MixerMaster,
+    /// A track's strip or row in the Mixer, or its "more" button (target `track`, its
+    /// place in the Tracks group; ADR-0170 decision 9).
+    MixerTrack,
     /// The "This scene" group's header in the Mixer, or its "more" button (target
     /// `scene`, the program scene; ADR-0091 decision 5).
     MixerScene,
@@ -55,7 +58,7 @@ pub enum Context {
 
 impl Context {
     /// Every context.
-    pub const ALL: [Context; 19] = [
+    pub const ALL: [Context; 20] = [
         Context::Scene,
         Context::Scenes,
         Context::Source,
@@ -66,6 +69,7 @@ impl Context {
         Context::MixerMonitor,
         Context::Mixer,
         Context::MixerMaster,
+        Context::MixerTrack,
         Context::MixerScene,
         Context::Panel,
         Context::Workspace,
@@ -90,6 +94,7 @@ impl Context {
             Context::MixerMonitor => "mixer-monitor",
             Context::Mixer => "mixer",
             Context::MixerMaster => "mixer-master",
+            Context::MixerTrack => "mixer-track",
             Context::MixerScene => "mixer-scene",
             Context::Panel => "panel",
             Context::Workspace => "workspace",
@@ -262,6 +267,7 @@ pub const CONTEXT_LAYOUT: &[(Context, &[&str])] = &[
             "source.mixer_hidden.toggle",
             "source.monitor",
             "source.monitor_solo.toggle",
+            "source.sends",
             "|",
             "source.rename",
             "ui.panel.select?id=rbs.properties",
@@ -285,6 +291,7 @@ pub const CONTEXT_LAYOUT: &[(Context, &[&str])] = &[
             "mixer.unhide_all",
             "|",
             "loudness.shown.toggle",
+            "mixer.track.add",
         ],
     ),
     (
@@ -293,6 +300,19 @@ pub const CONTEXT_LAYOUT: &[(Context, &[&str])] = &[
             "loudness.shown.toggle",
             "loudness.reset",
             "ui.settings.open?setting=settings.audio.loudness",
+            "|",
+            "mixer.track.add",
+            "|",
+            "ui.mixer.orientation",
+        ],
+    ),
+    (
+        Context::MixerTrack,
+        &[
+            "mixer.track.rename",
+            "mixer.track.remove",
+            "|",
+            "mixer.track.add",
             "|",
             "ui.mixer.orientation",
         ],

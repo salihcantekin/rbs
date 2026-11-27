@@ -19,6 +19,33 @@ pub(super) struct BusEvents {
     /// The recording, stream, vertical recording and vertical stream settings, in
     /// that order, changed by a rename and not yet sent to the window to save.
     due: [bool; 4],
+    /// The tracks last sent to the window.
+    tracks: Vec<TrackView>,
+}
+
+/// One track as the window shows it: a bus of the main canvas other than `main`.
+#[derive(Debug, Clone)]
+pub struct TrackView {
+    /// Its name, unique on the canvas.
+    pub name: String,
+    /// Its fader, a linear factor from 0 to 1.
+    pub volume: f32,
+    /// Its mute.
+    pub muted: bool,
+    /// Its meter while the studio has a mixer (ADR-0170 decision 2: it moves while a
+    /// source sends to the track).
+    pub meter: Option<Arc<rbs_audio::LevelMeter>>,
+}
+
+impl PartialEq for TrackView {
+    fn eq(&self, other: &Self) -> bool {
+        let meter = match (&self.meter, &other.meter) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        };
+        meter && self.name == other.name && self.volume == other.volume && self.muted == other.muted
+    }
 }
 
 /// A conflict whose `data.reason` says why (and `data.uses` for a used bus).
@@ -469,6 +496,33 @@ impl Host {
             self.events.changed(StateKey::topic(Topic::BusChanged), || {
                 EventPayload::BusChanged(now)
             });
+        }
+        // The window's tracks, compared in place as well.
+        let shown = &self.bus_events.tracks;
+        let same = shown.len() == buses.len()
+            && shown.iter().zip(buses).all(|(t, b)| {
+                let meter = self.studio.bus_meter(&b.name);
+                t.name == b.name
+                    && t.volume == b.level.volume
+                    && t.muted == b.level.muted
+                    && match (&t.meter, meter) {
+                        (Some(a), Some(m)) => Arc::ptr_eq(a, m),
+                        (None, None) => true,
+                        _ => false,
+                    }
+            });
+        if !same {
+            let tracks: Vec<TrackView> = buses
+                .iter()
+                .map(|b| TrackView {
+                    name: b.name.clone(),
+                    volume: b.level.volume,
+                    muted: b.level.muted,
+                    meter: self.studio.bus_meter(&b.name).cloned(),
+                })
+                .collect();
+            self.bus_events.tracks.clone_from(&tracks);
+            notify(Update::Tracks(tracks));
         }
         let due = std::mem::take(&mut self.bus_events.due);
         if due == [false; 4] {

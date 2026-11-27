@@ -4,7 +4,7 @@ import { Theme, Tokens } from "tokens.slint";
 import { Button, SplitButton, InfoHint, IconButton, OverlayHost, FeatureSection, ColorPicker, Select, Tabs, ScrollArea, SettingRow, Toggle, NumberField, SegmentedControl, SettingValue, ListRow } from "components.slint";
 import { CommandMenu } from "context_menu.slint";
 import { SettingsCard } from "settings.slint";
-import { PropertiesPanel, SourcesPanel } from "studio.slint";
+import { PropertiesPanel, SourcesPanel, MixerPanel } from "studio.slint";
 import { ReplayControls } from "replay.slint";
 import { IconName, Experience } from "base/types.slint";
 
@@ -389,6 +389,17 @@ export component PropertiesProbe inherits Window {
 export component SourcesProbe inherits Window {
     background: Theme.surface-raised;
     SourcesPanel {
+        width: parent.width;
+        height: parent.height;
+    }
+    OverlayHost { width: parent.width; height: parent.height; }
+}
+
+// A window for screenshots of the Mixer (tests/tracks_shots.rs, ADR-0170): the panel as
+// the app draws it, with the strips a test sets. Not shown by the app.
+export component MixerProbe inherits Window {
+    background: Theme.surface-raised;
+    MixerPanel {
         width: parent.width;
         height: parent.height;
     }

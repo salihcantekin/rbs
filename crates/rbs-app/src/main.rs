@@ -55,6 +55,7 @@ mod studio_start;
 mod studio_ui;
 mod swap_setting;
 mod title_bar;
+mod track_calls;
 mod ui_commands;
 mod vcam_page;
 mod view;
@@ -888,6 +889,7 @@ impl App {
             Run::SourceLocked(id, on) => self.studio.set_source_locked(id, on),
             Run::Arrange(op) => self.studio.arrange_command(op),
             Run::Group(group, op) => self.run_group(group, op, confirm),
+            Run::Track(op) => self.run_track(op, confirm),
             Run::Transform(id, op, canvas) => self.studio.transform_source(id, op, canvas),
             Run::SourceMuted(id, on) => self.studio.set_source_muted(id, on),
             Run::SourceMixerHidden(id, on) => self.studio.set_source_mixer_hidden(id, on),
@@ -1004,7 +1006,7 @@ impl App {
     fn open_name_prompt(&mut self, ask: Ask) {
         use menu_bar::{EntryKind, EntryOp};
         let (title, confirm, value, field) = match ask {
-            Ask::Workspace => (
+            Ask::Workspace | Ask::Track(_) => (
                 "Save as new workspace".to_owned(),
                 "Save",
                 String::new(),
@@ -3425,6 +3427,7 @@ fn install_name_prompt(g: &Overlays<'_>, ctx: &Ctx) {
                 }
                 let done = match app.name_for {
                     Some(Ask::Entry(kind, op)) => app.entry_command(kind, op, &name),
+                    Some(Ask::Track(t)) => app.track_named(t, &name).map(|()| None),
                     _ => app.save_workspace_as(&name).map(|()| None),
                 };
                 match done {
@@ -3804,6 +3807,8 @@ enum Ask {
     /// The name for an Output profile or Scene collection command, or its delete
     /// confirmation.
     Entry(menu_bar::EntryKind, menu_bar::EntryOp),
+    /// A new track's name (`None`) or track `i`'s new name (ADR-0170 decision 9).
+    Track(Option<usize>),
 }
 
 /// The Library's "Choose a PNG file". The dialog is asynchronous (ADR-0055).
@@ -4777,15 +4782,7 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
             || rbs_ui::fader::parse_position(text.as_str()).unwrap_or(-1.0),
         )
     });
-    on!(on_set_master_volume, |app, position: f32| {
-        app.studio.set_master_volume(position);
-    });
-    on!(on_set_master_muted, |app, muted: bool| {
-        app.studio.set_master_muted(muted);
-    });
-    on!(on_reset_master_clip, |app| {
-        app.studio.reset_master_clip();
-    });
+    track_calls::install(g, ctx);
     on!(on_set_loudness_shown, |app, on: bool| {
         app.studio.set_loudness_shown(on);
     });

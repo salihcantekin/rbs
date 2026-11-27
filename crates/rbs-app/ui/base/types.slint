@@ -1591,6 +1591,10 @@ export global Studio {
     // changes, even when the drawn parts stay the same).
     in property <[string]> meter-values;
     in property <[string]> master-meter-values;
+    // The tracks (ADR-0170 decision 9): the main canvas's buses other than the master,
+    // one row each (`id` is its place in the list), and their accessible values.
+    in property <[MeterRow]> track-meters;
+    in property <[string]> track-meter-values;
     // How many of `meters` are the scene's own and how many are global (Mixer groups).
     in property <int> meter-scenes;
     in property <int> meter-globals;
@@ -2162,6 +2166,12 @@ export global Studio {
     // The master's fader position (0 to 1, the strips' fader law) and its mute (ADR-0081).
     callback set-master-volume(float);
     callback set-master-muted(bool);
+    // A track's fader position, mute and clip latch (by its place in `track-meters`),
+    // and Add track (ADR-0170 decision 9).
+    callback set-track-volume(int, float);
+    callback set-track-muted(int, bool);
+    callback reset-track-clip(int);
+    callback add-track();
     // The master's loudness meter (ADR-0092): Show loudness (`loudness.set_enabled`),
     // Reset loudness (`loudness.reset`) and what both show.
     // One row while Show loudness is on (a model, so the Mixer's 30 Hz refresh does not
@@ -2228,6 +2238,18 @@ export global Studio {
     in property <int> out-bit-depth;
     // The default sample width as an index into out-pcm-widths.
     in property <int> out-bit-depth-default;
+    // Audio tracks (ADR-0170 decision 11): Master and each track of the main canvas,
+    // and whether the recording writes each; empty while the canvas has no track or
+    // the Settings show the vertical canvas. `out-one-track`: the format (WAV, FLAC)
+    // writes one track, so choosing one replaces the other.
+    in property <[string]> out-tracks;
+    in property <[bool]> out-tracks-on;
+    in property <bool> out-one-track;
+    callback set-audio-track(int, bool);
+    // The stream's audio (ADR-0170 decision 3): the same list, and the one it sends.
+    in property <[string]> st-audio-buses;
+    in property <int> st-audio-bus;
+    callback set-stream-audio(int);
     // The main recording is audio only, so Record works with no video encoder.
     in property <bool> rec-audio-only;
     // The vertical canvas's next recording is audio only.

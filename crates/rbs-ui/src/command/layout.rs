@@ -218,6 +218,12 @@ pub const NOT_IN_MENU: &[&str] = &[
     // A scene's own level for a source the Mixer hears (ADR-0091): it runs from the
     // Mixer strip's menu and the control API, not from a menu bar menu.
     "scene.audio.reset_source",
+    // The tracks (ADR-0170 decision 9): a track strip's menu, the Mixer's menu and the
+    // + of the Tracks group, and a source strip's Send to tracks.
+    "mixer.track.add",
+    "mixer.track.rename",
+    "mixer.track.remove",
+    "source.sends",
     // A scene's transition into it (ADR-0135): a card under the scene's row, so it
     // runs from the Scene row's menu, not from a menu bar menu.
     "ui.scene.transition",

@@ -420,11 +420,15 @@ impl Shown<'_> {
 }
 
 mod arrange;
+mod density;
 mod group_menu;
 mod panel_ops;
 mod registry;
+mod track_menu;
+pub use density::{density_from_id, density_id};
 pub use group_menu::GroupOp;
 use registry::panel_of;
+pub use track_menu::TrackOp;
 
 impl CommandState for Shown<'_> {
     fn enabled(&self, id: &CommandId) -> Result<(), Disabled> {
@@ -977,6 +981,7 @@ impl CommandState for Shown<'_> {
                 }
                 out
             }
+            "source.sends" => self.send_choices(id),
             "source.monitor" => {
                 let Ok(f) = self.source(id) else {
                     return Vec::new();
@@ -1283,6 +1288,7 @@ impl CommandState for Shown<'_> {
         // them (a mic has no Transform). With no source selected they still apply so
         // the menu bar can show the entry disabled ("No source is selected.").
         match id.base() {
+            base if track_menu::is_track(base) => self.track_applies(id),
             "item.locked.toggle"
             | "item.flip"
             | "item.rotate"
@@ -1786,6 +1792,8 @@ pub enum Run {
     Arrange(ArrangeOp),
     /// A group row's menu entry, on the group with this id (ADR-0182).
     Group(i32, GroupOp),
+    /// A track entry (ADR-0170 decision 9).
+    Track(TrackOp),
     /// Arrange the scene the vertical canvas shows (`canvas.auto_layout`).
     AutoLayoutVertical(rbs_api::request::VerticalLayout),
     /// The vertical canvas's size in pixels (`canvas.vertical_size`).
@@ -1975,9 +1983,7 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
                     _ => return None,
                 })
             }
-            "item.rotate" | "item.fit" | "item.align" | "item.align_items" | "item.distribute" => {
-                return arrange::picked(&id, &value, state);
-            }
+            base if arrange::picks(base) => return arrange::picked(&id, &value, state),
             _ => return None,
         });
     }
@@ -2158,23 +2164,6 @@ fn size_of(id: &CommandId) -> Option<(u32, u32)> {
         id.param("width")?.parse().ok()?,
         id.param("height")?.parse().ok()?,
     ))
-}
-
-/// The command and API value of a density (`regular`, `compact`, `roomy`).
-pub fn density_id(density: rbs_ui::tokens::Density) -> &'static str {
-    match density {
-        rbs_ui::tokens::Density::Regular => "regular",
-        rbs_ui::tokens::Density::Compact => "compact",
-        rbs_ui::tokens::Density::Roomy => "roomy",
-    }
-}
-
-/// The density named `id`, if any.
-pub fn density_from_id(id: &str) -> Option<rbs_ui::tokens::Density> {
-    use rbs_ui::tokens::Density;
-    [Density::Regular, Density::Compact, Density::Roomy]
-        .into_iter()
-        .find(|d| density_id(*d) == id)
 }
 
 /// The source an id names by its `source` parameter: a source the Mixer hears may not
