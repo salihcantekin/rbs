@@ -38,7 +38,9 @@ fn set_scroll(col: &mut SceneCollection, at: (SceneId, GroupId, &[ItemId], Canva
 
 #[test]
 fn group_runs_are_shared_versioned_controlled_and_handed_over() {
-    let Some(gpu) = gpu() else { return };
+    let Some(gpu) = gpu().filter(|_| has_preview()) else {
+        return;
+    };
     let r = rig();
     let (mut col, canvas) = scene();
     let (scene, group, items) = group(&mut col, canvas);
@@ -212,6 +214,12 @@ fn group_runs_are_shared_versioned_controlled_and_handed_over() {
 }
 
 /// A studio with `col`'s program drawn and its preview shown, and a Fade transition.
+/// The preview node exists on Windows and Apple platforms only; elsewhere these
+/// tests skip like they do without a GPU adapter.
+fn has_preview() -> bool {
+    cfg!(any(windows, target_vendor = "apple"))
+}
+
 fn transition_studio(
     col: &mut SceneCollection,
     canvas: CanvasId,
@@ -239,7 +247,7 @@ fn transition_studio(
 
 #[test]
 fn an_outgoing_snapshot_keeps_its_group_run_when_its_scene_is_edited() {
-    if gpu().is_none() {
+    if gpu().is_none() || !has_preview() {
         return;
     }
     let r = rig();
@@ -278,7 +286,7 @@ fn an_outgoing_snapshot_keeps_its_group_run_when_its_scene_is_edited() {
 
 #[test]
 fn a_t_bar_outgoing_program_keeps_the_group_run_it_started_with() {
-    if gpu().is_none() {
+    if gpu().is_none() || !has_preview() {
         return;
     }
     let r = rig();
