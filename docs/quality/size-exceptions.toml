@@ -3,13 +3,6 @@
 # in writing; `--lower` removes it once the item no longer needs it.
 
 [[exception]]
-item = "crates/rbs-api/src/request.rs"
-lines = 2367
-reason = "ADR-0195 inactive scenes and list filters"
-approved = "owner, 2026-11-26 (chat: 'istisna olsun')"
-date = "2026-11-26"
-
-[[exception]]
 item = "crates/rbs-app/src/studio_ui.rs"
 lines = 9908
 reason = "ADR-0195 inactive scenes and list filters"

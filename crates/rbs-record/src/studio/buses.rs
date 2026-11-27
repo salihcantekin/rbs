@@ -189,6 +189,20 @@ impl super::Studio {
         self.mixer.as_ref()?;
         self.buses.meter(name)
     }
+
+    /// Whether the running output `id` reads the bus called `name` (not `main`) on one
+    /// of its tracks: the host refuses to remove such a bus (ADR-0097 decision 12).
+    pub fn output_reads_bus(&self, id: super::OutputId, name: &str) -> bool {
+        let Ok(Some(slot)) = self.buses.slot_of(Some(name)) else {
+            return false;
+        };
+        self.outputs
+            .iter()
+            .filter(|a| a.id == id)
+            .filter_map(|a| a.audio)
+            .filter_map(|i| self.chains.audio.get(i)?.as_ref())
+            .any(|c| c.reads(slot))
+    }
 }
 
 /// The mixer pin of a bus slot (`None`: `main`).

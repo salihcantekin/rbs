@@ -55,6 +55,9 @@ pub enum Topic {
     /// 1.30).
     #[serde(rename = "monitor.changed")]
     MonitorChanged,
+    /// The main canvas's audio buses (state, protocol 1.115).
+    #[serde(rename = "bus.changed")]
+    BusChanged,
     /// Recording protection: disks, lag, memory and alerts (state, protocol 1.49,
     /// ADR-0090).
     #[serde(rename = "protection.changed")]
@@ -94,7 +97,7 @@ pub enum Topic {
 
 impl Topic {
     /// Every topic.
-    pub const ALL: [Topic; 22] = [
+    pub const ALL: [Topic; 23] = [
         Topic::SourceChanged,
         Topic::RecordState,
         Topic::CanvasChanged,
@@ -107,6 +110,7 @@ impl Topic {
         Topic::RecordCanvasState,
         Topic::StreamCanvasState,
         Topic::MonitorChanged,
+        Topic::BusChanged,
         Topic::ProtectionChanged,
         Topic::CalibrationState,
         Topic::SyncMeasureChanged,
@@ -134,6 +138,7 @@ impl Topic {
             Topic::RecordCanvasState => "record.canvas_state",
             Topic::StreamCanvasState => "stream.canvas_state",
             Topic::MonitorChanged => "monitor.changed",
+            Topic::BusChanged => "bus.changed",
             Topic::ProtectionChanged => "protection.changed",
             Topic::CalibrationState => "calibration.state",
             Topic::SyncMeasureChanged => "sync.measure.changed",
@@ -304,6 +309,9 @@ pub enum EventPayload {
     /// The monitor output (protocol 1.30).
     #[serde(rename = "monitor.changed")]
     MonitorChanged(MonitorStatus),
+    /// The main canvas's audio buses (protocol 1.115).
+    #[serde(rename = "bus.changed")]
+    BusChanged(crate::request::BusList),
     /// Recording protection (protocol 1.49).
     #[serde(rename = "protection.changed")]
     ProtectionChanged(ProtectionStatus),
@@ -352,6 +360,7 @@ impl EventPayload {
             EventPayload::RecordCanvasState(_) => Topic::RecordCanvasState,
             EventPayload::StreamCanvasState(_) => Topic::StreamCanvasState,
             EventPayload::MonitorChanged(_) => Topic::MonitorChanged,
+            EventPayload::BusChanged(_) => Topic::BusChanged,
             EventPayload::ProtectionChanged(_) => Topic::ProtectionChanged,
             EventPayload::CalibrationState(_) => Topic::CalibrationState,
             EventPayload::SyncMeasureChanged(_) => Topic::SyncMeasureChanged,

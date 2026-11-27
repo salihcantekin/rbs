@@ -215,6 +215,16 @@ pub(crate) enum WireRequest {
     ItemScrollSpeed(SetScrollSpeed),
     #[serde(rename = "scene.sources")]
     SceneSources(SceneRef),
+    #[serde(rename = "bus.list")]
+    BusList(Empty),
+    #[serde(rename = "bus.add")]
+    BusAdd(AddBus),
+    #[serde(rename = "bus.remove")]
+    BusRemove(BusName),
+    #[serde(rename = "bus.set")]
+    BusSet(SetBus),
+    #[serde(rename = "source.set_sends")]
+    SourceSetSends(SetSourceSends),
     #[serde(rename = "group.create")]
     GroupCreate(CreateGroup),
     #[serde(rename = "group.remove")]
@@ -507,6 +517,11 @@ wire_conversions! {
         WireRequest::TokensList(_) => Request::Command(C::TokensList),
         WireRequest::ImportObsScan(_) => Request::Command(C::ImportObsScan),
         WireRequest::AddonList(_) => Request::Command(C::AddonList),
+        WireRequest::BusList(_) => Request::Command(C::Bus(BusCommand::List)),
+        WireRequest::BusAdd(p) => Request::Command(C::Bus(BusCommand::Add(p))),
+        WireRequest::BusRemove(p) => Request::Command(C::Bus(BusCommand::Remove(p))),
+        WireRequest::BusSet(p) => Request::Command(C::Bus(BusCommand::Set(p))),
+        WireRequest::SourceSetSends(p) => Request::Command(C::Bus(BusCommand::SetSends(p))),
     }
     to_wire {
         Request::Ui(crate::ui::UiRequest::List { client }) => WireRequest::UiList(crate::ui::UiList { client }),
@@ -549,6 +564,11 @@ wire_conversions! {
         C::TokensList => WireRequest::TokensList(Empty {}),
         C::ImportObsScan => WireRequest::ImportObsScan(Empty {}),
         C::AddonList => WireRequest::AddonList(Empty {}),
+        C::Bus(BusCommand::List) => WireRequest::BusList(Empty {}),
+        C::Bus(BusCommand::Add(p)) => WireRequest::BusAdd(p),
+        C::Bus(BusCommand::Remove(p)) => WireRequest::BusRemove(p),
+        C::Bus(BusCommand::Set(p)) => WireRequest::BusSet(p),
+        C::Bus(BusCommand::SetSends(p)) => WireRequest::SourceSetSends(p),
     }
     same [
     SourceTargets, SourceAdd, SourceDelete, ItemSetStyle, ItemSetCrop, ItemFlip, ItemRotate,

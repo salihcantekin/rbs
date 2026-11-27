@@ -46,6 +46,9 @@ pub struct SourceRow {
     /// What the mix hears while the program scene, in Own levels, has an entry for the
     /// source (ADR-0091); `None` when `audio` is what is heard.
     pub heard: Option<SourceAudio>,
+    /// Its send levels on the main canvas that differ from the default (1 to `main`,
+    /// 0 to every other bus), by bus name in bus id order (ADR-0170 decision 9).
+    pub sends: Vec<(String, f32)>,
     /// Its filters in chain order (ADR-0062).
     pub filters: Vec<filters::FilterRow>,
     /// A global source's row (ADR-0065): its item is in the canvas's global scene.
@@ -239,6 +242,7 @@ impl PartialEq for SourceRow {
             && self.locked == other.locked
             && self.audio == other.audio
             && self.heard == other.heard
+            && self.sends == other.sends
             && self.filters == other.filters
             && self.global == other.global
             && self.also_in == other.also_in
@@ -404,6 +408,10 @@ impl Host {
     ) {
         if seen.master != levels.master {
             self.patch_master(notify);
+            // A send change is a live level edit too, and rows carry the sends.
+            if self.sends_moved() {
+                self.publish_rows(notify);
+            }
         }
         if seen.source_audio != levels.source_audio && !self.patch_source_audio(notify) {
             self.publish_rows(notify);

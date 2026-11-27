@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 mod calibration;
 mod capture_target;
+mod glide;
 mod monitoring;
 mod obs_import;
 mod output_canvas;
@@ -21,6 +22,7 @@ mod source_kind;
 mod sync_device;
 pub use calibration::*;
 pub use capture_target::CaptureTarget;
+pub use glide::{Glide, GlideEasing};
 pub use monitoring::*;
 pub use obs_import::*;
 pub use output_canvas::{OutputCanvas, OutputTarget};
@@ -172,6 +174,10 @@ pub struct SourceInfo {
     /// when it is in none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<u32>,
+    /// Send levels that differ from the default, 1 to `main` and 0 to other buses
+    /// (protocol 1.115, ADR-0097); absent when every level is the default.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sends: Vec<crate::request::SendLevel>,
     /// Whether the source is heard on the monitor output (protocol 1.30, ADR-0097;
     /// absent when off).
     #[serde(default, skip_serializing_if = "MonitorMode::is_off")]
@@ -381,45 +387,6 @@ pub enum ActivityReturn {
     Resume,
     /// From the beginning.
     Restart,
-}
-
-/// How a slide maps unit time (protocol 1.35, ADR-0100). Fade-ins stay linear.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub enum GlideEasing {
-    /// Straight lerp.
-    #[serde(rename = "linear")]
-    Linear,
-    /// Smoothstep ease in and out.
-    #[serde(rename = "ease-in-out")]
-    #[default]
-    EaseInOut,
-}
-
-/// Collection or source glide timing (protocol 1.35, ADR-0100).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct Glide {
-    /// Milliseconds in `0..=5000`. `0` jumps.
-    pub duration_ms: u32,
-    /// Slide easing; fade-ins use the duration only.
-    pub easing: GlideEasing,
-}
-
-impl Default for Glide {
-    fn default() -> Self {
-        Self {
-            duration_ms: 400,
-            easing: GlideEasing::EaseInOut,
-        }
-    }
-}
-
-impl Glide {
-    /// True for the shipped default (400 ms, ease-in-out).
-    pub fn is_default(&self) -> bool {
-        *self == Self::default()
-    }
 }
 
 /// What a program-scene change looks like (protocol 1.81, ADR-0128).
