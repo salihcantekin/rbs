@@ -27,10 +27,11 @@ pub const MAX_STUN_SERVERS: usize = 8;
 /// Longest STUN server entry, in bytes.
 pub const MAX_STUN_SERVER_LEN: usize = 253;
 
-/// Settings both sides share.
+/// Settings each side sets for itself: the network, and whether this side compares
+/// the check phrase.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
-pub struct NetworkSettings {
+pub struct SideSettings {
     /// How long candidate gathering may take before the code is shown.
     pub gathering_timeout: Duration,
     /// STUN servers, `host:port` or `stun:host:port`. Empty: local network only.
@@ -41,7 +42,7 @@ pub struct NetworkSettings {
     pub check_phrase: bool,
 }
 
-impl NetworkSettings {
+impl SideSettings {
     /// Settings with the given STUN list and every other value at its default.
     pub fn with_stun_servers(stun_servers: Vec<String>) -> Self {
         Self {
@@ -71,16 +72,16 @@ impl NetworkSettings {
 pub struct InviteSettings {
     /// How long the invite stays valid.
     pub lifetime: Duration,
-    /// Network settings.
-    pub network: NetworkSettings,
+    /// Settings both sides share.
+    pub side: SideSettings,
 }
 
 impl InviteSettings {
     /// An invite with the default lifetime.
-    pub fn new(network: NetworkSettings) -> Self {
+    pub fn new(side: SideSettings) -> Self {
         Self {
             lifetime: DEFAULT_INVITE_LIFETIME,
-            network,
+            side,
         }
     }
 
@@ -89,7 +90,7 @@ impl InviteSettings {
         if !(MIN_LIFETIME..=MAX_INVITE_LIFETIME).contains(&self.lifetime) {
             return Err(SettingsError::Lifetime);
         }
-        self.network.validate()
+        self.side.validate()
     }
 }
 
@@ -99,16 +100,16 @@ impl InviteSettings {
 pub struct AcceptSettings {
     /// How long the answer stays valid.
     pub lifetime: Duration,
-    /// Network settings.
-    pub network: NetworkSettings,
+    /// Settings both sides share.
+    pub side: SideSettings,
 }
 
 impl AcceptSettings {
     /// An answer with the default lifetime.
-    pub fn new(network: NetworkSettings) -> Self {
+    pub fn new(side: SideSettings) -> Self {
         Self {
             lifetime: DEFAULT_ANSWER_LIFETIME,
-            network,
+            side,
         }
     }
 
@@ -117,11 +118,12 @@ impl AcceptSettings {
         if !(MIN_LIFETIME..=MAX_ANSWER_LIFETIME).contains(&self.lifetime) {
             return Err(SettingsError::Lifetime);
         }
-        self.network.validate()
+        self.side.validate()
     }
 }
 
-/// `host:port` or `stun:host:port`; an IPv6 host is in brackets.
+/// `host:port` or `stun:host:port`. A host is an IPv4 address, a DNS name (labels of
+/// letters, digits and inner hyphens) or an IPv6 address in brackets.
 fn validate_stun_server(entry: &str) -> Result<(), SettingsError> {
     if entry.is_empty() || entry.len() > MAX_STUN_SERVER_LEN {
         return Err(SettingsError::StunServer);
@@ -129,20 +131,14 @@ fn validate_stun_server(entry: &str) -> Result<(), SettingsError> {
     let rest = entry.strip_prefix("stun:").unwrap_or(entry);
     let (host, port) = rest.rsplit_once(':').ok_or(SettingsError::StunServer)?;
     let port_ok = !port.is_empty()
+        && !port.starts_with('0')
         && port.bytes().all(|b| b.is_ascii_digit())
-        && port.parse::<u16>().is_ok_and(|p| p != 0);
-    let host_ok = if let Some(inner) = host.strip_prefix('[') {
-        inner.strip_suffix(']').is_some_and(|ip| {
-            !ip.is_empty()
-                && ip
-                    .bytes()
-                    .all(|b| b.is_ascii_hexdigit() || b == b':' || b == b'.')
-        })
-    } else {
-        !host.is_empty()
-            && host
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
+        && port.parse::<u16>().is_ok();
+    let host_ok = match host.strip_prefix('[') {
+        Some(inner) => inner
+            .strip_suffix(']')
+            .is_some_and(|ip| ip.parse::<std::net::Ipv6Addr>().is_ok()),
+        None => host.parse::<std::net::Ipv4Addr>().is_ok() || is_dns_name(host),
     };
     if port_ok && host_ok {
         Ok(())
@@ -151,19 +147,32 @@ fn validate_stun_server(entry: &str) -> Result<(), SettingsError> {
     }
 }
 
+fn is_dns_name(host: &str) -> bool {
+    !host.is_empty()
+        && host.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn network() -> NetworkSettings {
-        NetworkSettings::with_stun_servers(vec!["stun.example.org:3478".to_owned()])
+    fn network() -> SideSettings {
+        SideSettings::with_stun_servers(vec!["stun.example.org:3478".to_owned()])
     }
 
     #[test]
     fn defaults_are_valid() {
         assert_eq!(InviteSettings::new(network()).validate(), Ok(()));
         assert_eq!(AcceptSettings::new(network()).validate(), Ok(()));
-        let local_only = NetworkSettings::with_stun_servers(Vec::new());
+        let local_only = SideSettings::with_stun_servers(Vec::new());
         assert_eq!(InviteSettings::new(local_only).validate(), Ok(()));
     }
 
@@ -221,6 +230,12 @@ mod tests {
             "[]:3478",
             "[::1:3478",
             "stun.example.org:+1",
+            "a..b:1",
+            "-x:1",
+            "x-:1",
+            "[1.2.3.4]:1",
+            "[:::]:1",
+            "stun.example.org:01",
         ] {
             assert_eq!(
                 validate_stun_server(bad),
@@ -234,10 +249,8 @@ mod tests {
 
     #[test]
     fn the_stun_list_is_bounded() {
-        let net = NetworkSettings::with_stun_servers(vec![
-            "a.example:1".to_owned();
-            MAX_STUN_SERVERS + 1
-        ]);
+        let net =
+            SideSettings::with_stun_servers(vec!["a.example:1".to_owned(); MAX_STUN_SERVERS + 1]);
         assert_eq!(
             InviteSettings::new(net).validate(),
             Err(SettingsError::TooManyStunServers)

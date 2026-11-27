@@ -7,6 +7,7 @@ use std::fmt;
 use std::time::Duration;
 
 use crate::error::CodeError;
+use crate::settings::{MAX_ANSWER_LIFETIME, MAX_INVITE_LIFETIME};
 
 /// The text every code starts with.
 pub const CODE_PREFIX: &str = "rbs-guest:";
@@ -180,7 +181,7 @@ impl Envelope {
         if input.len() > MAX_INPUT_LEN {
             return Err(CodeError::TooLarge);
         }
-        let text: String = input.chars().filter(|c| !c.is_ascii_whitespace()).collect();
+        let text: String = input.chars().filter(|&c| !is_paste_noise(c)).collect();
         if text.len() > MAX_CODE_LEN {
             return Err(CodeError::TooLarge);
         }
@@ -218,7 +219,8 @@ impl Envelope {
     }
 
     /// Checks that this is the expected kind of code, for `session` when given, and
-    /// that its advisory expiry has not passed by more than [`EXPIRY_TOLERANCE`].
+    /// that its advisory expiry has not passed by more than [`EXPIRY_TOLERANCE`] and
+    /// is not further ahead than its kind's longest lifetime allows.
     pub fn expect(
         &self,
         kind: CodeKind,
@@ -231,28 +233,52 @@ impl Envelope {
         if session.is_some_and(|id| id != self.session_id) {
             return Err(CodeError::WrongSession);
         }
-        check_expiry(self.expires_at_unix, now_unix)
+        let longest = match kind {
+            CodeKind::Invite => MAX_INVITE_LIFETIME,
+            CodeKind::Answer => MAX_ANSWER_LIFETIME,
+        };
+        check_expiry(self.expires_at_unix, now_unix, longest)
     }
 }
 
-/// `Expired` when `expires_at_unix` is more than [`EXPIRY_TOLERANCE`] before `now_unix`.
-pub fn check_expiry(expires_at_unix: u64, now_unix: u64) -> Result<(), CodeError> {
-    let limit = expires_at_unix.saturating_add(EXPIRY_TOLERANCE.as_secs());
-    if now_unix > limit {
-        Err(CodeError::Expired)
-    } else {
-        Ok(())
+/// `Expired` when `expires_at_unix` is more than [`EXPIRY_TOLERANCE`] before
+/// `now_unix`; `Malformed` when it is more than `longest` plus the tolerance after it
+/// (no issuer makes such a code, and the reader has no issuer to ask).
+pub fn check_expiry(
+    expires_at_unix: u64,
+    now_unix: u64,
+    longest: Duration,
+) -> Result<(), CodeError> {
+    let tolerance = EXPIRY_TOLERANCE.as_secs();
+    if now_unix > expires_at_unix.saturating_add(tolerance) {
+        return Err(CodeError::Expired);
     }
-}
-
-fn parse_version(text: &str) -> Result<u32, CodeError> {
-    if text.is_empty() || text.len() > 9 || !text.bytes().all(|b| b.is_ascii_digit()) {
+    let latest = now_unix
+        .saturating_add(longest.as_secs())
+        .saturating_add(tolerance);
+    if expires_at_unix > latest {
         return Err(CodeError::Malformed);
     }
-    match text.parse::<u32>() {
-        Ok(0) | Err(_) => Err(CodeError::Malformed),
-        Ok(version) => Ok(version),
+    Ok(())
+}
+
+/// Characters chat apps insert into long text: whitespace of any kind, zero-width
+/// spaces and joiners, the word joiner and the soft hyphen. None is in base64url.
+fn is_paste_noise(c: char) -> bool {
+    c.is_whitespace()
+        || matches!(
+            c,
+            '\u{200b}' | '\u{200c}' | '\u{200d}' | '\u{2060}' | '\u{feff}' | '\u{00ad}'
+        )
+}
+
+/// Decimal digits with no leading zero. A version too large for `u32` is still a
+/// newer version, so old readers refuse it by the prefix alone.
+fn parse_version(text: &str) -> Result<u32, CodeError> {
+    if text.is_empty() || text.starts_with('0') || !text.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(CodeError::Malformed);
     }
+    Ok(text.parse::<u32>().unwrap_or(u32::MAX))
 }
 
 /// A pairing code's text. A secret while its session is live: `Debug` and `Display`
@@ -436,7 +462,12 @@ mod tests {
             Envelope::decode("rbs-guest:2:anything-at-all"),
             Err(CodeError::NewerVersion { version: 2 })
         );
+        assert_eq!(
+            Envelope::decode("rbs-guest:99999999999:AA"),
+            Err(CodeError::NewerVersion { version: u32::MAX })
+        );
         for bad in [
+            "rbs-guest:01:AA",
             "rbs-guest:0:AA",
             "rbs-guest::AA",
             "rbs-guest:1a:AA",
@@ -534,10 +565,45 @@ mod tests {
     #[test]
     fn clock_skew_within_the_tolerance_is_accepted() {
         let expiry = 1_000_000;
-        assert_eq!(check_expiry(expiry, expiry - 500), Ok(()));
-        assert_eq!(check_expiry(expiry, expiry + 120), Ok(()));
-        assert_eq!(check_expiry(expiry, expiry + 121), Err(CodeError::Expired));
-        assert_eq!(check_expiry(u64::MAX, u64::MAX), Ok(()));
+        let longest = MAX_INVITE_LIFETIME;
+        assert_eq!(check_expiry(expiry, expiry - 500, longest), Ok(()));
+        assert_eq!(check_expiry(expiry, expiry + 120, longest), Ok(()));
+        assert_eq!(
+            check_expiry(expiry, expiry + 121, longest),
+            Err(CodeError::Expired)
+        );
+    }
+
+    #[test]
+    fn a_far_future_expiry_is_refused() {
+        let now = 1_000_000;
+        let ahead = MAX_INVITE_LIFETIME.as_secs() + EXPIRY_TOLERANCE.as_secs();
+        assert_eq!(check_expiry(now + ahead, now, MAX_INVITE_LIFETIME), Ok(()));
+        assert_eq!(
+            check_expiry(now + ahead + 1, now, MAX_INVITE_LIFETIME),
+            Err(CodeError::Malformed)
+        );
+        assert_eq!(
+            check_expiry(u64::MAX, now, MAX_INVITE_LIFETIME),
+            Err(CodeError::Malformed)
+        );
+        let mut answer = envelope(Vec::new());
+        answer.kind = CodeKind::Answer;
+        answer.expires_at_unix =
+            now + MAX_ANSWER_LIFETIME.as_secs() + EXPIRY_TOLERANCE.as_secs() + 1;
+        assert_eq!(
+            answer.expect(CodeKind::Answer, None, now),
+            Err(CodeError::Malformed)
+        );
+    }
+
+    #[test]
+    fn unicode_noise_from_chat_apps_is_ignored() {
+        let code = envelope(vec![2; 50]).encode().unwrap();
+        let text = code.expose();
+        let (a, b) = text.split_at(30);
+        let noisy = format!("\u{feff}{a}\u{200b}\u{00a0}\u{00ad}{b}\u{2060}");
+        assert_eq!(Envelope::decode(&noisy).unwrap().payload, vec![2; 50]);
     }
 
     #[test]

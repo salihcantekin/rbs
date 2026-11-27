@@ -1,6 +1,6 @@
 # Spec: Peer port (guest pairing)
 
-- Status: Draft, 2026-11-27. Lands with the first code of ADR-0139 phase 1b (`rbs-peer`), before any adapter. Needs an independent review (P14) before the adapter PR builds on it.
+- Status: Draft, 2026-11-27. Lands with the first code of ADR-0139 phase 1b (`rbs-peer`), before any adapter. Independent review round 1 (2026-11-27, approve with changes, 13 points) applied; see Review at the end.
 - Owner crate(s): `rbs-peer` (port), adapter `rbs-peer-str0m` (planned, phase 1b)
 - Related ADRs: [0139](../adr/0139-remote-guests-rbs-to-rbs-over-webrtc.md), [0013](../adr/0013-zero-cost-when-unused.md), [0019](../adr/0019-encode-mux-transport-ports.md), [0046](../adr/0046-network-access-over-tls.md), [0055](../adr/0055-crash-resilience.md)
 - Related specs: [output-ports.md](output-ports.md), [backend-ports.md](backend-ports.md), [control-api.md](control-api.md)
@@ -25,8 +25,8 @@ A code is text: the prefix `rbs-guest:`, the decimal format version, `:`, then t
 rbs-guest:1:<base64url body>
 ```
 
-- The whole code is at most **4096 bytes** (`MAX_CODE_LEN`). A reader first removes all ASCII whitespace (chat apps wrap long lines), then checks the length, then the prefix, then decodes. Input over 16 KiB before whitespace removal is refused without scanning it.
-- Version 1 is the only version. A reader refuses a higher version with `CodeError::NewerVersion` (UI text: "This code is from a newer RBS. Update RBS and try again."). Version 0, a missing version or a version with anything but ASCII digits is `Malformed`. A new version is a minor change only when old readers can refuse it cleanly by the prefix alone (ADR-0139 decision 5).
+- The whole code is at most **4096 bytes** (`MAX_CODE_LEN`). A reader first removes whitespace of any kind and the characters chat apps insert into long text (U+200B, U+200C, U+200D, U+2060, U+FEFF, U+00AD; none is in base64url), then checks the length, then the prefix, then decodes. Input over 16 KiB before whitespace removal is refused without scanning it.
+- Version 1 is the only version. A reader refuses a higher version with `CodeError::NewerVersion` (UI text: "This code is from a newer RBS. Update RBS and try again."). Version 0, a missing version, a leading zero (`01`) or a version with anything but ASCII digits is `Malformed`, so a code has one spelling. A version of digits too large for `u32` is `NewerVersion` too. A new version is a minor change only when old readers can refuse it cleanly by the prefix alone (ADR-0139 decision 5).
 - The prefix is matched case-sensitively; base64url is decoded strictly (no padding, no `+` or `/`, no non-zero trailing bits).
 
 Version 1 body, all integers big-endian:
@@ -45,7 +45,7 @@ Nothing may follow the payload (`Malformed`). A code carries only these fields. 
 ## Expiry and live sessions
 
 - The issuer's live session state is the only authority (ADR-0139 decision 4). An unknown, closed, used or expired session id is refused by the issuer whatever the code says. Pending invites and answers are never saved; an app restart invalidates them.
-- The expiry inside a code is advisory. A reader refuses a code whose expiry is more than **120 s** (`EXPIRY_TOLERANCE`) in the past by its own wall clock, so moderate clock skew between two computers is accepted.
+- The expiry inside a code is advisory. A reader refuses a code whose expiry is more than **120 s** (`EXPIRY_TOLERANCE`) in the past by its own wall clock, so moderate clock skew between two computers is accepted. It refuses as `Malformed` an expiry further ahead than its kind's longest lifetime plus the tolerance (30 min for an invite, 10 min for an answer), since the host has no issuer to ask about an invite.
 - An answer is bound to the invite's session id (checked by `Envelope::expect`) and to the offerer's fingerprint (checked by the adapter, inside DTLS).
 - An invite is single-use. After `accept_answer` succeeds, any further answer is `AlreadyUsed`. A malformed or wrong answer does not use up the invite, so a bad paste can be retried.
 
@@ -56,6 +56,8 @@ Nothing may follow the payload (`Malformed`). A code carries only these fields. 
 | Invite lifetime | 10 min | 1 to 30 min | sharing |
 | Answer lifetime | 3 min | 1 to 10 min | host |
 | Candidate gathering timeout | 3 s | 0.5 to 10 s | both |
+
+The minimums (1 min lifetime, 0.5 s gathering) and the 10 s gathering maximum are not in ADR-0139; they are this spec's choice and part of the owner's acceptance of it.
 | STUN servers | the default list in [user-data.md](user-data.md) | at most 8 entries, each `host:port` or `stun:host:port`, at most 253 bytes; empty means local network only | both |
 | Leave out private host addresses | off | | both |
 | Check phrase | on | | each side for itself |
@@ -87,68 +89,46 @@ All public enums and structs that may grow are `#[non_exhaustive]`. Every call r
 pub trait PeerFactory: Send + Sync {
     fn type_id(&self) -> &'static str;
     fn transport(&self) -> TransportKind;
-    /// Starts an invite: opens one socket, gathers candidates (bounded by the
-    /// gathering timeout) and starts the session's owner thread. Control thread.
+    /// Validates the settings, opens one socket and starts the owner thread, which
+    /// gathers candidates. Returns at once (never blocks the UI or an API worker).
     fn create_invite(&self, settings: &InviteSettings) -> Result<Box<dyn PendingInvite>, PeerError>;
-    /// Reads an invite, gathers candidates and returns the answer code together with
-    /// the session, which connects once the inviting side pastes the answer.
-    fn accept_invite(&self, invite: &str, settings: &AcceptSettings) -> Result<PendingAnswer, PeerError>;
+    /// Reads and checks the invite, then starts the answering session the same way.
+    fn accept_invite(&self, invite: &str, settings: &AcceptSettings) -> Result<Box<dyn PeerSession>, PeerError>;
 }
+
+pub enum InviteState { Gathering, Waiting, Used, Failed(FailureReason), Closed }
 
 pub trait PendingInvite: Send {
     fn session_id(&self) -> SessionId;
-    /// The invite code. A secret: never logged, never in events (ADR-0139 decision 14).
-    fn code(&self) -> &PairingCode;
+    fn state(&self) -> InviteState;
+    /// The invite code once gathering is done. A secret (ADR-0139 decision 14).
+    fn code(&self) -> Option<&PairingCode>;
     fn expires_at_unix(&self) -> u64;
-    /// Takes the answer. Wrong or malformed answers leave the invite usable;
-    /// after success the invite is used.
+    /// Wrong or malformed answers leave the invite usable. On success the returned
+    /// session owns the socket and the owner thread, the invite is `Used`, and
+    /// `close` no longer touches the connection.
     fn accept_answer(&mut self, answer: &str) -> Result<Box<dyn PeerSession>, PeerError>;
-    /// Closes the socket and the owner thread. Idempotent.
     fn close(&mut self);
-}
-
-#[non_exhaustive]
-pub struct PendingAnswer {
-    pub code: PairingCode,
-    pub session: Box<dyn PeerSession>,
 }
 
 pub trait PeerSession: Send {
     fn session_id(&self) -> SessionId;
     fn role(&self) -> PeerRole;          // Offerer (the sharing side) or Answerer (the host)
-    fn state(&self) -> PeerState;
-    /// Next event, oldest first; never blocks.
-    fn poll_event(&mut self) -> Option<PeerEvent>;
-    /// Known once DTLS is connected.
+    fn state(&self) -> PeerState;        // Gathering (answerer only), Connecting, Connected { confirmed }, Failed, Closed
+    /// The answering side's answer code once gathering is done; None on the offerer.
+    fn answer_code(&self) -> Option<&PairingCode>;
+    fn poll_event(&mut self) -> Option<PeerEvent>;   // AnswerReady, Connected { phrase }, Confirmed, Failed, Closed
     fn check_phrase(&self) -> Option<CheckPhrase>;
-    /// This side's user confirmed that the phrases match.
     fn confirm_phrase(&mut self) -> Result<(), PeerError>;
-    /// Ends the session and its owner thread. Idempotent.
+    /// Opaque media path for the adapter's transport or the guest source.
+    fn media(&self) -> MediaHandle;
     fn close(&mut self);
-}
-
-#[non_exhaustive]
-pub enum PeerState {
-    /// Codes exchanged; connectivity checks and DTLS running.
-    Connecting,
-    /// DTLS up; `confirmed` says whether this side may use media.
-    Connected { confirmed: bool },
-    Failed(FailureReason),
-    Closed,
-}
-
-#[non_exhaustive]
-pub enum PeerEvent {
-    /// DTLS is connected and the check phrase is known.
-    Connected { phrase: CheckPhrase },
-    /// This side is confirmed (by its user, or because its check is off).
-    Confirmed,
-    Failed(FailureReason),
-    Closed,
 }
 ```
 
-Media (draft, fixed by the adapter PR): the sending half is a `Transport` (input = packets) built by the composition root from an opaque session handle; the receiving half gives encoded packets with the sender's master-clock capture time through a bounded lock-free queue. Neither is a public type of this crate yet.
+`Confirmed` follows `Connected` at once on a side whose check is off. Expiry while gathering or waiting is `InviteState::Failed(Expired)` or `PeerState::Failed(Expired)`.
+
+Media: `MediaHandle` wraps an `Arc` of the adapter's own type and is downcast only by that adapter's code (its `Transport` on the sending side, built by the composition root; its packet reader in the guest source on the receiving side). The sending half is a `Transport` (input = packets); the receiving half gives encoded packets with the sender's master-clock capture time through a bounded lock-free queue. Those types belong to the adapter PR, not to this crate. The adapter enforces the gates: its transport sends nothing and its packet reader yields nothing while its side is not confirmed, and the adapter's tests prove it (ADR-0139 decision 16). A conformance suite in this crate follows with the first adapter, when there is a real session to drive.
 
 ### Failure reasons
 
@@ -165,7 +145,18 @@ Stable ids, shown in the UI and the control API (ADR-0139 decisions 7, 11, 12):
 
 ### Errors
 
+Which error for an expired or unknown pairing:
+
+| Situation | Result |
+| --- | --- |
+| A reader's advisory check of a pasted code (`Envelope::expect`) | `CodeError::Expired` (or `Malformed` for a far-future expiry) |
+| `accept_answer` for an invite whose session expired, closed or is from before a restart | `PeerError::UnknownSession` (the issuer is the authority) |
+| An invite or session that expires while gathering, waiting or connecting | `InviteState::Failed` / `PeerState::Failed` / `PeerEvent::Failed` with `FailureReason::Expired` |
+
+
 `CodeError` (reading a code): `NotACode`, `TooLarge`, `Malformed`, `NewerVersion { version }`, `UnknownTransport`, `WrongKind`, `WrongSession`, `Expired`.
+
+`guest_return_feed`, `guest_decode_cap` and `NoEncoderSlot` are refusals of the guest share output and the guest source before or outside a pairing; they belong to the control API and the studio, not to this port.
 
 `PeerError`: `Code(CodeError)`, `Settings(SettingsError)`, `UnknownSession`, `AlreadyUsed`, `NotConnected`, `Closed`, `Failed(FailureReason)`, `Io(String)` (socket errors with no secret in the text).
 
@@ -175,4 +166,23 @@ Stable ids, shown in the UI and the control API (ADR-0139 decisions 7, 11, 12):
 
 ## Tests
 
-In `rbs-peer`: codes round-trip; every malformed field, an oversized code, a newer version, a wrong kind and a wrong session are refused with their typed error; whitespace inside a pasted code is ignored; expiry within the tolerance is accepted and outside it refused; settings bounds; the check phrase is the same for the same input, differs when any input byte differs, matches a fixed test vector, and `phrase_input` is unambiguous (moving a byte between the two fingerprints changes it). A seeded generator round-trips a few thousand random envelopes (no new dependency). The adapter's tests (in-memory network on `TestClock`, NAT expiry, consent loss) are listed in ADR-0139 decision 16. A fuzz target for `Envelope::decode` is added with the adapter.
+In `rbs-peer`: codes round-trip; every malformed field, an oversized code, a newer version, a wrong kind and a wrong session are refused with their typed error; whitespace inside a pasted code is ignored; expiry within the tolerance is accepted and outside it refused; settings bounds; the check phrase is the same for the same input, differs when any input byte differs, matches a fixed test vector, and `phrase_input` is unambiguous (moving a byte between the two fingerprints changes it). A seeded generator round-trips a few thousand random envelopes (no new dependency). The adapter's tests (in-memory network on `TestClock`, NAT expiry, consent loss) are listed in ADR-0139 decision 16. The adapter PR adds the fuzz target for `Envelope::decode` (ADR-0139 decision 16) and the tests of its payload bounds (at most 8 candidates), which this port cannot see.
+
+## Review
+
+### Round 1
+
+Reviewer: independent AI session. Date: 2026-11-27. Verdict: approve with changes. All 13 points applied the same day:
+1. Invite state had no delivery path -> `PendingInvite::state` (`InviteState`).
+2. Hand-off after `accept_answer` undefined -> the session owns the connection; `close` on a used invite does not touch it.
+3. Gathering blocked the caller up to 10 s -> `create_invite` and `accept_invite` return at once; `Gathering` states, `answer_code`, `AnswerReady`.
+4. No media handle -> `PeerSession::media` (`MediaHandle`, opaque, downcast by the adapter).
+5. Gates untested at port level -> the adapter enforces and tests them; conformance suite with the first adapter; `Confirmed` at once when the check is off.
+6. Three overlapping expiry errors -> table under Errors.
+7. Far-future expiry accepted -> refused as `Malformed` past the kind's longest lifetime plus tolerance.
+8. Loose version parsing -> no leading zero; all-digit overflow is `NewerVersion`.
+9. ASCII-only whitespace -> Unicode whitespace and zero-width characters removed.
+10. Loose STUN check -> IPv4/IPv6 parsed with `std::net`, DNS labels checked.
+11. Deferred items need an owner -> adapter PR acceptance (Tests, `docs/status.md`).
+12. `guest_return_feed` placement -> stated under Errors.
+13. Settings naming and invented bounds -> `SideSettings`; minimums marked as this spec's choice.
