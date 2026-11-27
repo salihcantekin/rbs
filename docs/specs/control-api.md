@@ -747,17 +747,18 @@ A 1.114 server is the last without these methods. Buses belong to the main canva
   full height of the main window, with the bottom area spanning only the width
   beside it. `not_found` for a panel that is not open, `conflict` for a panel that
   is not in the left or right area of the main window, through the registry
-  entry's disabled reason. One layout history step; refused from the pointer
-  while the layout is locked, like other layout changes.
+  entry's disabled reason, and while the layout is locked (as `ui.panel.move`,
+  `float` and `close` are). It flips the flag: read `checked` in `ui.command.list`
+  for the current state. One layout history step.
 
-### Planned protocol 1.113: address source placements (ADR-0189)
+### Planned protocol 1.115: address source placements (ADR-0189)
 
 **Proposed; not implemented.** ADR-0189 remains Proposed. The owner has
 approved independent placement selection and the `global.add` conflict below,
 but not the full contract. On 2026-11-25, the owner decided that a shared
 capture-region change re-aspects only the selected placement while source
-pixels and region remain shared. 1.113 is the next minor after 1.112 in
-this tree; recheck it before implementation. Do not advertise 1.113 until its
+pixels and region remain shared. 1.115 is the next minor after 1.114 in
+this tree; recheck it before implementation. Do not advertise 1.115 until its
 contract is implemented.
 
 - **Placement selector.** The following requests gain optional `item` (an

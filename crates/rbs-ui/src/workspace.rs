@@ -599,6 +599,7 @@ impl Window {
                         if l.remove(id) {
                             if l.is_empty() {
                                 a.layout = None;
+                                a.full_height = false;
                             }
                             return true;
                         }
@@ -1901,6 +1902,7 @@ fn take_from_main(m: &mut MainLayout, id: &PanelId) -> Option<(Tabs, Option<Pane
                 let out = l.take_stack_of(id);
                 if l.is_empty() {
                     a.layout = None;
+                    a.full_height = false;
                 }
                 return out;
             }

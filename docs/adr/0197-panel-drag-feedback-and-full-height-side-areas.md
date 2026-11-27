@@ -1,9 +1,10 @@
 # ADR-0197: Panel drag feedback and full-height side areas
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-27
 - Deciders: Salih (owner)
 - Builds on: [ADR-0049](0049-main-window-areas-panel-states-and-sizes.md) (areas, dragging), [ADR-0163](0163-one-command-path-for-the-window-and-the-api.md)
+- Amends: ADR-0049 decision 1, only where it says the bottom area always spans the whole width: it now spans the whole width unless a side area is set to full height. Everything else in ADR-0049 stands.
 
 ## Context
 
@@ -20,8 +21,8 @@
    No new token: the colours, `radius.md`, `size.focus-ring`, `size.border` and `motion.fast` already exist. The card is drawn inside the window's dock area, so it follows the pointer only while that is over the dock area (Slint 1.18's winit backend has no native drag, so a drag cannot leave the window).
 2. **Full-height side areas.** `Area` gains `full_height` (left and right only; saved only when true, so older files load unchanged and an older build refuses a file that has it, as `deny_unknown_fields` does today). A full-height side area runs from the top to the bottom of the window content. The bottom area then spans only the width between the full-height areas (the whole width when none is). Everything else stays: sizes, limits, dividers (the area edge divider is as tall as the area), collapse, and the bottom area's own size. A full-height flag on an area without panels or on a hidden area does nothing. The default is off, so no existing layout changes.
 3. **How the user gets it.**
-   - **Drag:** dropping a panel near the left or right window edge beside the bottom area (a drop target `DropPlace::FullHeightEdge(edge)`, with a full-height guide) moves it to that side area and turns `full_height` on. Near the same edge above the bottom area the drop keeps its current meaning (`WindowEdge`). `drop_target` stays a pure function in `rbs-ui`; `WindowFlat` gains `bottom: Option<Rect>` to tell the two apart.
-   - **Panel menu:** `ui.panel.full_height {id}` (registry entry, checkable, in the panel context menu, not the menu bar, `NOT_IN_MENU`) toggles `full_height` of the side area that holds the panel; disabled with a reason for a panel in the bottom area, the centre or a floating window, and while the layout is locked. Control API: protocol 1.114, `ui.panel.full_height {id}`, a toggle like `ui.panel.float` is not; it sets the area to the opposite of its current state and answers `{}`.
+   - **Drag:** dropping a panel near the left or right window edge beside the bottom area (a drop target `DropPlace::FullHeightEdge(edge)`). Its guide is the strip along the whole window height; the ordinary edge drop above the bottom area now shows a guide that ends at the bottom area, so the two targets look different. A side area that already runs the full height takes an ordinary edge drop. Emptying a side area clears its flag moves it to that side area and turns `full_height` on. Near the same edge above the bottom area the drop keeps its current meaning (`WindowEdge`). `drop_target` stays a pure function in `rbs-ui`; `WindowFlat` gains `bottom: Option<Rect>` to tell the two apart.
+   - **Panel menu:** `ui.panel.full_height {id}` (registry entry, checkable, in the panel context menu, not the menu bar, `NOT_IN_MENU`) toggles `full_height` of the side area that holds the panel; disabled with a reason for a panel in the bottom area, the centre or a floating window, and while the layout is locked. Control API: protocol 1.114, `ui.panel.full_height {id}` flips the area's full-height flag and answers `{}`; a caller that needs a known result reads `checked` of the entry in `ui.command.list` first (an optional `on` can be added in a later minor). It is refused with `conflict` while the layout is locked, as `ui.panel.move`, `float` and `close` are.
    - Layout commands: `LayoutCommand::MoveToFullEdge`, `SetAreaFullHeight`; both are one layout history step and blocked by the lock when they come from the pointer.
 4. **Plugins.** Panels, including plugin panels, move like any other panel; the layout model knows no panel type.
 
@@ -41,4 +42,11 @@
 
 ## Review
 
-Pending: independent review per ADR-0014 (a new workspace file key, a drop target and a control API method). The ADR stays Proposed until it is recorded and the owner approves.
+Independent AI session (fresh, given only the ADR, specs and code), 2026-11-27: changes requested, then fixed.
+
+- Blocking, fixed: specs now carry the flag, the drag feedback and the layout rule (`ui-design-system.md`, `control-api.md`); this ADR says it amends ADR-0049 decision 1 and ADR-0049 has a forward note; the two side-edge drop targets now have different guides (above the bottom area the guide ends at it) with a test; `Shell.panel-dragging` is cleared by the drop itself, so a drop that removes the source tab cannot leave Escape captured.
+- Non-blocking, fixed: the flag is cleared when its area empties; the outline elements exist only during a drag; lock behaviour (`conflict`) and the flip semantics of `ui.panel.full_height` are written down; the stale planned protocol number is 1.115.
+- Non-blocking, left: the source stack's own outline when the panel is its only tab (the drop is refused there); the older-build message for a file with `full_height` (the format number is not bumped); one `panel-right` icon for both sides.
+- Visuals: the owner approved the dark and light screenshots on 2026-11-27 and tests the build himself (rule 16).
+
+Owner approval of the decision: Salih, 2026-11-27 (proposal in the project thread, "Tamamdır bunu da beğendim").
