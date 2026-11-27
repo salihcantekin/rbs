@@ -249,15 +249,21 @@ impl StudioUi {
 
     /// Solos a source on the monitor or ends its solo; other soloed sources stay.
     pub fn set_source_solo(&mut self, id: i32, on: bool) {
+        self.call(rbs_api::Command::MonitorSetSolo(
+            rbs_api::request::SetMonitorSolo {
+                sources: self.solo_sources(id, on),
+            },
+        ));
+    }
+
+    pub(crate) fn solo_sources(&self, id: i32, on: bool) -> Vec<u32> {
         let id = id as u32;
         let mut solo: Vec<u32> = self.monitor.solo().to_vec();
         solo.retain(|s| *s != id);
         if on {
             solo.push(id);
         }
-        self.call(rbs_api::Command::MonitorSetSolo(
-            rbs_api::request::SetMonitorSolo { sources: solo },
-        ));
+        solo
     }
 
     /// Ends solo for every source.

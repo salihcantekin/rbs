@@ -1,0 +1,232 @@
+{
+  "monitor.devices": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "MonitorDevice": {
+          "description": "One playback device of `monitor.devices` (protocol 1.30).",
+          "properties": {
+            "device": {
+              "description": "Its id, for `monitor.set_device`.",
+              "type": "string"
+            },
+            "is_default": {
+              "description": "The system's default output.",
+              "type": "boolean"
+            },
+            "name": {
+              "description": "The name the system gives it.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "device",
+            "name",
+            "is_default"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`monitor.devices` (protocol 1.30).",
+      "properties": {
+        "devices": {
+          "description": "The playback devices, best adapter first.",
+          "items": {
+            "$ref": "#/$defs/MonitorDevice"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "devices"
+      ],
+      "title": "MonitorDeviceList",
+      "type": "object"
+    }
+  },
+  "monitor.set_device": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`monitor.set_device` (protocol 1.30).",
+      "properties": {
+        "device": {
+          "description": "A `monitor.devices` id; `null`: System default.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "title": "SetMonitorDevice",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "monitor.set_solo": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`monitor.set_solo` (protocol 1.30).",
+      "properties": {
+        "sources": {
+          "description": "The soloed sources; empty ends solo.",
+          "items": {
+            "format": "uint32",
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "sources"
+      ],
+      "title": "SetMonitorSolo",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "monitor.set_volume": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`monitor.set_volume` (protocol 1.30).",
+      "properties": {
+        "volume": {
+          "description": "Linear factor from 0 to 1.",
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "required": [
+        "volume"
+      ],
+      "title": "SetMonitorVolume",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "monitor.status": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "MonitorStatus": {
+          "description": "`monitor.status` and `monitor.changed` (protocol 1.30, ADR-0097).",
+          "properties": {
+            "available": {
+              "description": "Some audio adapter can play to a device on this computer.",
+              "type": "boolean"
+            },
+            "device": {
+              "description": "The chosen device (`monitor.devices` `device`); `null`: System default.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "error": {
+              "description": "Why the device failed to open or play, until it plays again.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "latency_ms": {
+              "description": "How far the monitor plays behind real time, in milliseconds, while it plays.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "playing": {
+              "description": "The device plays the monitor mix.",
+              "type": "boolean"
+            },
+            "solo": {
+              "description": "The soloed sources (session state, never saved).",
+              "items": {
+                "format": "uint32",
+                "maximum": 4294967295,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            "volume": {
+              "description": "The monitor volume, a linear factor from 0 to 1.",
+              "format": "float",
+              "type": "number"
+            },
+            "wanted": {
+              "description": "A source is monitored or soloed, so the device should play.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "available",
+            "device",
+            "volume",
+            "wanted",
+            "playing"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "A state query's answer: the data and the `seq` of each state key it includes, so a\nclient ignores events with an equal or lower `seq`.",
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/MonitorStatus",
+          "description": "The state."
+        },
+        "seq": {
+          "additionalProperties": {
+            "format": "uint64",
+            "maximum": 18446744073709551615,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "description": "`seq` per state key included in `data`.",
+          "type": "object"
+        }
+      },
+      "required": [
+        "seq",
+        "data"
+      ],
+      "title": "Snapshot",
+      "type": "object"
+    }
+  }
+}

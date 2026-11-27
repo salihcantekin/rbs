@@ -1,0 +1,294 @@
+{
+  "api.describe": {
+    "input_schema": {
+      "$defs": {
+        "DescribeDetail": {
+          "description": "How much of the catalogue `api.describe` sends (protocol 1.110, ADR-0196).",
+          "oneOf": [
+            {
+              "const": "index",
+              "description": "Name, scope and effect only.",
+              "type": "string"
+            },
+            {
+              "const": "schemas",
+              "description": "Also the input and output schema of each selected method.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`api.describe` parameters (protocol 1.110, ADR-0196). Both lists select what the\nanswer covers; when both are empty it covers every method.",
+      "properties": {
+        "detail": {
+          "$ref": "#/$defs/DescribeDetail",
+          "default": "index",
+          "description": "Whether schemas are included. Default `index`."
+        },
+        "methods": {
+          "description": "Only these methods (`source.add`, ...).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "namespaces": {
+          "description": "Only the methods of these namespaces (`source`, `scene`, ...).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "title": "DescribeParams",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "Effect": {
+          "description": "What a method does to the studio (protocol 1.76, ADR-0052 decision 4). A client\ntreats a missing or unknown effect as [`Effect::Destructive`]. Without the token\npermission \"Allow actions that cannot be undone\", `live` and `destructive`\nmethods are refused with `not_permitted`.",
+          "oneOf": [
+            {
+              "const": "read",
+              "description": "Reads state; changes nothing.",
+              "type": "string"
+            },
+            {
+              "const": "edit",
+              "description": "Undoable, or reversed by another call with nothing lost, or only adds a new\nfile and never replaces one.",
+              "type": "string"
+            },
+            {
+              "const": "live",
+              "description": "Starts or stops what goes out: recordings, streams, the virtual camera, the\nreplay buffer, a calibration run; switches the output profile.",
+              "type": "string"
+            },
+            {
+              "const": "destructive",
+              "description": "Removes something outside the undo history.",
+              "type": "string"
+            }
+          ]
+        },
+        "MethodInfoOwned": {
+          "description": "A method and its scope, owned (for deserializing).",
+          "properties": {
+            "effect": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Effect"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What it does (protocol 1.76); absent from an older server, which a client\ntreats as `destructive`."
+            },
+            "input_schema": {
+              "description": "Schema of the request parameters, when available (protocol 1.108)."
+            },
+            "name": {
+              "description": "`namespace.verb`.",
+              "type": "string"
+            },
+            "output_schema": {
+              "description": "Schema of the successful result, when available (protocol 1.108)."
+            },
+            "scope": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Scope"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The scope it needs; `null` for the handshake."
+            }
+          },
+          "required": [
+            "name",
+            "scope"
+          ],
+          "type": "object"
+        },
+        "Scope": {
+          "description": "One permission. Every method declares exactly one scope (or none, for the\nhandshake); a call outside the session's scopes returns `scope_denied`.",
+          "oneOf": [
+            {
+              "const": "read",
+              "description": "Queries, `api.describe`, event subscriptions.",
+              "type": "string"
+            },
+            {
+              "const": "control",
+              "description": "Scene and source changes, capture-target lists, record start and stop with\nconfigured profiles, undo and redo, `ui.*`.",
+              "type": "string"
+            },
+            {
+              "const": "admin",
+              "description": "Settings, explicit file paths. Loopback and IPC only, unless the user turned on\n\"Allow remote admin\".",
+              "type": "string"
+            },
+            {
+              "const": "plugins",
+              "description": "Plugin management. Loopback and IPC only.",
+              "type": "string"
+            },
+            {
+              "const": "tokens",
+              "description": "Token management. Loopback and IPC only.",
+              "type": "string"
+            }
+          ]
+        },
+        "Topic": {
+          "description": "An event topic. Subscriptions and the subscriber mask are per topic.",
+          "oneOf": [
+            {
+              "const": "source.changed",
+              "description": "The program scene's source list (state).",
+              "type": "string"
+            },
+            {
+              "const": "record.state",
+              "description": "The recording state (state).",
+              "type": "string"
+            },
+            {
+              "const": "canvas.changed",
+              "description": "The canvas (state).",
+              "type": "string"
+            },
+            {
+              "const": "settings.changed",
+              "description": "The settings (state; `admin` is needed to subscribe).",
+              "type": "string"
+            },
+            {
+              "const": "audio.levels",
+              "description": "Audio levels (latest value, sampled at the client's rate).",
+              "type": "string"
+            },
+            {
+              "const": "stream.state",
+              "description": "The stream state (state): started, connected, reconnecting, ended.",
+              "type": "string"
+            },
+            {
+              "const": "scene.changed",
+              "description": "The scenes, the one on air and the collection's sources (state, protocol 1.6).",
+              "type": "string"
+            },
+            {
+              "const": "vcam.changed",
+              "description": "The virtual camera, without its counters (state, protocol 1.12).",
+              "type": "string"
+            },
+            {
+              "const": "replay.changed",
+              "description": "The replay buffer: armed, what it holds, the last clip (state, protocol 1.27).",
+              "type": "string"
+            },
+            {
+              "const": "record.canvas_state",
+              "description": "The recording state of a canvas other than the main one, one key per canvas\n(state, protocol 1.29).",
+              "type": "string"
+            },
+            {
+              "const": "stream.canvas_state",
+              "description": "The stream state of a canvas other than the main one, one key per canvas\n(state, protocol 1.29).",
+              "type": "string"
+            },
+            {
+              "const": "monitor.changed",
+              "description": "The monitor output: device, volume, solo, whether it plays (state, protocol\n1.30).",
+              "type": "string"
+            },
+            {
+              "const": "protection.changed",
+              "description": "Recording protection: disks, lag, memory and alerts (state, protocol 1.49,\nADR-0090).",
+              "type": "string"
+            },
+            {
+              "const": "calibration.state",
+              "description": "The calibration run, *Test this computer* (state, protocol 1.55, ADR-0087).",
+              "type": "string"
+            },
+            {
+              "const": "sync.measure.changed",
+              "description": "The sync offset measurement (state, protocol 1.66, ADR-0126).",
+              "type": "string"
+            },
+            {
+              "const": "source.attributes_clipboard.changed",
+              "description": "The attribute clipboard (state, protocol 1.68, ADR-0133).",
+              "type": "string"
+            },
+            {
+              "const": "transition.state",
+              "description": "A program change's transition started or ended (protocol 1.81, ADR-0128).",
+              "type": "string"
+            },
+            {
+              "const": "item.scroll_finished",
+              "description": "`item.scroll_finished` (protocol 1.94, ADR-0150): a `Once` scroll ended, per\ncanvas.",
+              "type": "string"
+            },
+            {
+              "const": "addon.changed",
+              "description": "One add-on's status, one key per catalog entry (state, protocol 1.90,\nADR-0145).",
+              "type": "string"
+            },
+            {
+              "const": "group.changed",
+              "description": "One group's `group.get` state, one key per scene, group and canvas (state,\nprotocol 1.111, ADR-0184).",
+              "type": "string"
+            },
+            {
+              "const": "group.render_state",
+              "description": "One group's failing rendered occurrences, one key per scene, group and canvas\n(state, protocol 1.111, ADR-0193 decision 5).",
+              "type": "string"
+            },
+            {
+              "const": "group.scroll_finished",
+              "description": "A group `Once` Scroll run ended, one key per run (protocol 1.111, ADR-0185).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`api.describe`'s answer.",
+      "properties": {
+        "methods": {
+          "description": "Every method and its scope.",
+          "items": {
+            "$ref": "#/$defs/MethodInfoOwned"
+          },
+          "type": "array"
+        },
+        "protocol": {
+          "description": "The protocol version the session speaks.",
+          "type": "string"
+        },
+        "topics": {
+          "description": "Every event topic.",
+          "items": {
+            "$ref": "#/$defs/Topic"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "protocol",
+        "methods",
+        "topics"
+      ],
+      "title": "Description",
+      "type": "object"
+    }
+  }
+}

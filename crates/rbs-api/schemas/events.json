@@ -1,0 +1,314 @@
+{
+  "events.subscribe": {
+    "input_schema": {
+      "$defs": {
+        "Topic": {
+          "description": "An event topic. Subscriptions and the subscriber mask are per topic.",
+          "oneOf": [
+            {
+              "const": "source.changed",
+              "description": "The program scene's source list (state).",
+              "type": "string"
+            },
+            {
+              "const": "record.state",
+              "description": "The recording state (state).",
+              "type": "string"
+            },
+            {
+              "const": "canvas.changed",
+              "description": "The canvas (state).",
+              "type": "string"
+            },
+            {
+              "const": "settings.changed",
+              "description": "The settings (state; `admin` is needed to subscribe).",
+              "type": "string"
+            },
+            {
+              "const": "audio.levels",
+              "description": "Audio levels (latest value, sampled at the client's rate).",
+              "type": "string"
+            },
+            {
+              "const": "stream.state",
+              "description": "The stream state (state): started, connected, reconnecting, ended.",
+              "type": "string"
+            },
+            {
+              "const": "scene.changed",
+              "description": "The scenes, the one on air and the collection's sources (state, protocol 1.6).",
+              "type": "string"
+            },
+            {
+              "const": "vcam.changed",
+              "description": "The virtual camera, without its counters (state, protocol 1.12).",
+              "type": "string"
+            },
+            {
+              "const": "replay.changed",
+              "description": "The replay buffer: armed, what it holds, the last clip (state, protocol 1.27).",
+              "type": "string"
+            },
+            {
+              "const": "record.canvas_state",
+              "description": "The recording state of a canvas other than the main one, one key per canvas\n(state, protocol 1.29).",
+              "type": "string"
+            },
+            {
+              "const": "stream.canvas_state",
+              "description": "The stream state of a canvas other than the main one, one key per canvas\n(state, protocol 1.29).",
+              "type": "string"
+            },
+            {
+              "const": "monitor.changed",
+              "description": "The monitor output: device, volume, solo, whether it plays (state, protocol\n1.30).",
+              "type": "string"
+            },
+            {
+              "const": "protection.changed",
+              "description": "Recording protection: disks, lag, memory and alerts (state, protocol 1.49,\nADR-0090).",
+              "type": "string"
+            },
+            {
+              "const": "calibration.state",
+              "description": "The calibration run, *Test this computer* (state, protocol 1.55, ADR-0087).",
+              "type": "string"
+            },
+            {
+              "const": "sync.measure.changed",
+              "description": "The sync offset measurement (state, protocol 1.66, ADR-0126).",
+              "type": "string"
+            },
+            {
+              "const": "source.attributes_clipboard.changed",
+              "description": "The attribute clipboard (state, protocol 1.68, ADR-0133).",
+              "type": "string"
+            },
+            {
+              "const": "transition.state",
+              "description": "A program change's transition started or ended (protocol 1.81, ADR-0128).",
+              "type": "string"
+            },
+            {
+              "const": "item.scroll_finished",
+              "description": "`item.scroll_finished` (protocol 1.94, ADR-0150): a `Once` scroll ended, per\ncanvas.",
+              "type": "string"
+            },
+            {
+              "const": "addon.changed",
+              "description": "One add-on's status, one key per catalog entry (state, protocol 1.90,\nADR-0145).",
+              "type": "string"
+            },
+            {
+              "const": "group.changed",
+              "description": "One group's `group.get` state, one key per scene, group and canvas (state,\nprotocol 1.111, ADR-0184).",
+              "type": "string"
+            },
+            {
+              "const": "group.render_state",
+              "description": "One group's failing rendered occurrences, one key per scene, group and canvas\n(state, protocol 1.111, ADR-0193 decision 5).",
+              "type": "string"
+            },
+            {
+              "const": "group.scroll_finished",
+              "description": "A group `Once` Scroll run ended, one key per run (protocol 1.111, ADR-0185).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`events.subscribe`.",
+      "properties": {
+        "rates": {
+          "additionalProperties": {
+            "format": "uint32",
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "default": {},
+          "description": "Sampling rates in Hz for latest-value topics; capped per topic.",
+          "type": "object"
+        },
+        "topics": {
+          "description": "Topics to add.",
+          "items": {
+            "$ref": "#/$defs/Topic"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "topics"
+      ],
+      "title": "Subscribe",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`events.subscribe`'s answer.",
+      "properties": {
+        "seq": {
+          "additionalProperties": {
+            "format": "uint64",
+            "maximum": 18446744073709551615,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "description": "The current `seq` per state key of the subscribed state topics.",
+          "type": "object"
+        }
+      },
+      "required": [
+        "seq"
+      ],
+      "title": "Subscribed",
+      "type": "object"
+    }
+  },
+  "events.unsubscribe": {
+    "input_schema": {
+      "$defs": {
+        "Topic": {
+          "description": "An event topic. Subscriptions and the subscriber mask are per topic.",
+          "oneOf": [
+            {
+              "const": "source.changed",
+              "description": "The program scene's source list (state).",
+              "type": "string"
+            },
+            {
+              "const": "record.state",
+              "description": "The recording state (state).",
+              "type": "string"
+            },
+            {
+              "const": "canvas.changed",
+              "description": "The canvas (state).",
+              "type": "string"
+            },
+            {
+              "const": "settings.changed",
+              "description": "The settings (state; `admin` is needed to subscribe).",
+              "type": "string"
+            },
+            {
+              "const": "audio.levels",
+              "description": "Audio levels (latest value, sampled at the client's rate).",
+              "type": "string"
+            },
+            {
+              "const": "stream.state",
+              "description": "The stream state (state): started, connected, reconnecting, ended.",
+              "type": "string"
+            },
+            {
+              "const": "scene.changed",
+              "description": "The scenes, the one on air and the collection's sources (state, protocol 1.6).",
+              "type": "string"
+            },
+            {
+              "const": "vcam.changed",
+              "description": "The virtual camera, without its counters (state, protocol 1.12).",
+              "type": "string"
+            },
+            {
+              "const": "replay.changed",
+              "description": "The replay buffer: armed, what it holds, the last clip (state, protocol 1.27).",
+              "type": "string"
+            },
+            {
+              "const": "record.canvas_state",
+              "description": "The recording state of a canvas other than the main one, one key per canvas\n(state, protocol 1.29).",
+              "type": "string"
+            },
+            {
+              "const": "stream.canvas_state",
+              "description": "The stream state of a canvas other than the main one, one key per canvas\n(state, protocol 1.29).",
+              "type": "string"
+            },
+            {
+              "const": "monitor.changed",
+              "description": "The monitor output: device, volume, solo, whether it plays (state, protocol\n1.30).",
+              "type": "string"
+            },
+            {
+              "const": "protection.changed",
+              "description": "Recording protection: disks, lag, memory and alerts (state, protocol 1.49,\nADR-0090).",
+              "type": "string"
+            },
+            {
+              "const": "calibration.state",
+              "description": "The calibration run, *Test this computer* (state, protocol 1.55, ADR-0087).",
+              "type": "string"
+            },
+            {
+              "const": "sync.measure.changed",
+              "description": "The sync offset measurement (state, protocol 1.66, ADR-0126).",
+              "type": "string"
+            },
+            {
+              "const": "source.attributes_clipboard.changed",
+              "description": "The attribute clipboard (state, protocol 1.68, ADR-0133).",
+              "type": "string"
+            },
+            {
+              "const": "transition.state",
+              "description": "A program change's transition started or ended (protocol 1.81, ADR-0128).",
+              "type": "string"
+            },
+            {
+              "const": "item.scroll_finished",
+              "description": "`item.scroll_finished` (protocol 1.94, ADR-0150): a `Once` scroll ended, per\ncanvas.",
+              "type": "string"
+            },
+            {
+              "const": "addon.changed",
+              "description": "One add-on's status, one key per catalog entry (state, protocol 1.90,\nADR-0145).",
+              "type": "string"
+            },
+            {
+              "const": "group.changed",
+              "description": "One group's `group.get` state, one key per scene, group and canvas (state,\nprotocol 1.111, ADR-0184).",
+              "type": "string"
+            },
+            {
+              "const": "group.render_state",
+              "description": "One group's failing rendered occurrences, one key per scene, group and canvas\n(state, protocol 1.111, ADR-0193 decision 5).",
+              "type": "string"
+            },
+            {
+              "const": "group.scroll_finished",
+              "description": "A group `Once` Scroll run ended, one key per run (protocol 1.111, ADR-0185).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`events.unsubscribe`.",
+      "properties": {
+        "topics": {
+          "description": "Topics to drop.",
+          "items": {
+            "$ref": "#/$defs/Topic"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "topics"
+      ],
+      "title": "Unsubscribe",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  }
+}

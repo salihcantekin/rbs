@@ -943,10 +943,14 @@ fn migrated_profile(config: &Path, notes: &mut Vec<String>) -> OutputProfile {
 /// note), picks the entries named in `current.toml` (else the first listed, else new
 /// "Default" ones; when the library's folder does not exist yet, they are made from
 /// the files older versions kept: `recording.toml` and `stream.toml` for the profile,
-/// `video.toml` for the collection's canvas; those files stay) and loads them. A collection that cannot be loaded is replaced by a starter
-/// collection, with a note; its file is moved aside when it is first saved over
-/// (ADR-0051). `on_error` reports failed saves later, on the writer thread.
-pub fn open(config: &Path, on_error: OnError) -> (UserSession, SceneCollection) {
+/// `video.toml` for the collection's canvas; those files stay) and loads them.
+/// A nested-scene document is refused without replacing it (ADR-0188); other
+/// unreadable collections use a starter with a note (ADR-0051).
+/// `on_error` reports failed saves later, on the writer thread.
+pub fn open(
+    config: &Path,
+    on_error: OnError,
+) -> Result<(UserSession, SceneCollection), SessionError> {
     let data = UserData::new(config);
     let mut notes = Vec::new();
     let lock = match data.try_lock() {
@@ -1019,6 +1023,11 @@ pub fn open(config: &Path, on_error: OnError) -> (UserSession, SceneCollection) 
     let collection = match collections.load(&collection_id) {
         Ok(e) => e.document,
         Err(DataError::NotFound(_)) => starter_collection(&new_canvas),
+        Err(
+            e @ DataError::Invalid(rbs_user_data::BodyError::Scene(
+                rbs_scene::SceneError::NestingUnsupported,
+            )),
+        ) => return Err(e.into()),
         Err(e) => {
             notes.push(format!(
                 "The scene collection {collection_name:?} could not be loaded, so a new one is used; the file is kept beside it: {e}"
@@ -1061,7 +1070,7 @@ pub fn open(config: &Path, on_error: OnError) -> (UserSession, SceneCollection) 
     };
     let mut collection = collection;
     session.own_loaded_profiles(&session.collection_id, &mut collection);
-    (session, collection)
+    Ok((session, collection))
 }
 
 /// Migration notes are about files the user cannot act on any more; they go nowhere.
@@ -1083,6 +1092,12 @@ pub fn first_canvas(collection: &SceneCollection) -> (Size, FrameRate) {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
 mod tests {
+    pub(super) fn open(
+        config: &std::path::Path,
+        on_error: super::OnError,
+    ) -> (super::UserSession, rbs_scene::SceneCollection) {
+        super::open(config, on_error).unwrap()
+    }
     use super::*;
     use crate::record_profile::RecordProfile;
     use crate::stream_profile::StreamProfile;
@@ -1110,6 +1125,43 @@ mod tests {
 
     fn quiet() -> OnError {
         Arc::new(|_| {})
+    }
+
+    #[test]
+    fn startup_refuses_nested_collection_without_touching_it() {
+        let d = Dir::new("nested-startup");
+        let (s, _) = open(&d.0, quiet());
+        let path = s.data().scene_collections().path(&s.collection_id);
+        s.flush();
+        drop(s);
+        let nested = "format = 30\nkind = \"scene-collection\"\nname = \"Default\"\n\
+            [[scenes]]\nid = 1\nname = \"Parent\"\n\
+            [[scenes.items]]\nid = 1\nscene = 1\n";
+        std::fs::write(&path, nested).unwrap();
+        let before: std::collections::BTreeSet<_> = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        let err = match super::open(&d.0, quiet()) {
+            Ok(_) => panic!("nested collection was opened"),
+            Err(err) => err,
+        };
+        assert!(matches!(
+            err,
+            SessionError::Data(DataError::Invalid(rbs_user_data::BodyError::Scene(
+                rbs_scene::SceneError::NestingUnsupported
+            )))
+        ));
+        assert_eq!(
+            err.to_string(),
+            "Scenes cannot be placed inside other scenes."
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), nested);
+        let after: std::collections::BTreeSet<_> = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(before, after);
     }
 
     #[test]

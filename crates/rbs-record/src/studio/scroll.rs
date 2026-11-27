@@ -4,7 +4,10 @@
 use std::collections::BTreeSet;
 use std::time::Duration;
 
-use rbs_gpu::node::{CompositorNode, LayerSender, NodeLayer};
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+
+use rbs_gpu::node::{CompositorNode, CompositorStats, LayerList, LayerSender, MAX_SPANS};
 use rbs_gpu::scroll::{is_fill, picture_length};
 use rbs_gpu::{GpuContext, ScrollBinding, ScrollSender};
 use rbs_scene::ScrollKey;
@@ -13,7 +16,12 @@ use rbs_scene::binder::BoundLayer;
 use rbs_scene::model::{CanvasId, ItemId, ScrollDirection, ScrollRepeat};
 use rbs_sources::scroll::{ScrollRuns, once_distance};
 
-use super::{ScrollHandover, Studio};
+use std::collections::BTreeMap;
+
+use rbs_scene::model::SourceId;
+
+use super::{GroupFailureReason, GroupRuns, Studio, StudioSettings};
+use rbs_core::time::Timestamp;
 
 /// A live call on an item's scroll run (ADR-0150 decision 11). Not saved, not undone;
 /// it acts on the run, so every item that shares it moves too.
@@ -56,12 +64,16 @@ pub(crate) struct CompositorPort {
     layers: LayerSender,
     scroll: ScrollSender,
     bound: bool,
+    stats: Arc<CompositorStats>,
+    /// The tag of each span slot of the last list sent.
+    sent: [Option<u64>; MAX_SPANS],
 }
 
 impl CompositorPort {
     /// A new compositor node (as [`CompositorNode::new`] returns it) with its scroll
     /// channel, and the port that feeds it.
     pub(crate) fn of_new((node, layers): (CompositorNode, LayerSender)) -> (CompositorNode, Self) {
+        let stats = node.stats();
         let (node, scroll) = node.with_scroll();
         (
             node,
@@ -69,18 +81,38 @@ impl CompositorPort {
                 layers,
                 scroll,
                 bound: false,
+                stats,
+                sent: [None; MAX_SPANS],
             },
         )
     }
 
-    /// Sends `layers`, first binding scrolling on `gpu` when one scrolls and this
-    /// compositor has no binding yet. Builds GPU objects then: control thread only.
-    pub(crate) fn send(&mut self, layers: Vec<NodeLayer>, gpu: &GpuContext) {
-        if !self.bound && layers.iter().any(|l| l.scroll.is_some()) {
+    /// Sends `list`, first binding scrolling on `gpu` when a layer or group scrolls
+    /// and this compositor has no binding yet. Builds GPU objects then: control thread
+    /// only.
+    pub(crate) fn send_list(&mut self, list: LayerList, gpu: &GpuContext) {
+        let scrolls = !list.spans.is_empty() || list.layers.iter().any(|l| l.scroll.is_some());
+        if !self.bound && scrolls {
             let _ = self.scroll.send(Some(ScrollBinding::new(gpu)));
             self.bound = true;
         }
-        let _ = self.layers.send(layers);
+        self.sent = [None; MAX_SPANS];
+        for (slot, span) in self.sent.iter_mut().zip(&list.spans) {
+            *slot = Some(span.tag);
+        }
+        let _ = self.layers.send_list(list);
+    }
+
+    /// Why a span tagged `tag` in the last list sent fails now, if it does (ADR-0193
+    /// decision 5): the node's state at its last draw. Unknown until it took that list.
+    /// Relaxed loads: each word is a standalone status, read as a snapshot.
+    pub(crate) fn span_failure(&self, tag: u64) -> Option<GroupFailureReason> {
+        if self.pending() {
+            return None;
+        }
+        let acquire = self.stats.span_acquire_failing.load(Ordering::Relaxed);
+        let pass = self.stats.span_pass_failing.load(Ordering::Relaxed);
+        failure_of(&self.sent, (acquire, pass), tag)
     }
 
     /// The last list sent has not been taken by the node yet.
@@ -92,6 +124,57 @@ impl CompositorPort {
     pub(crate) fn is_closed(&self) -> bool {
         self.layers.is_closed()
     }
+}
+
+/// Why the spans tagged `tag` among the slots `sent` fail, from the node's failing
+/// bits (acquire, pass): a failed acquire first.
+fn failure_of(
+    sent: &[Option<u64>; MAX_SPANS],
+    (acquire, pass): (u32, u32),
+    tag: u64,
+) -> Option<GroupFailureReason> {
+    let slots = (0..MAX_SPANS).filter(|&s| sent[s] == Some(tag));
+    let bits = slots.fold(0u32, |b, s| b | 1 << s);
+    if acquire & bits != 0 {
+        Some(GroupFailureReason::Allocation)
+    } else if pass & bits != 0 {
+        Some(GroupFailureReason::Render)
+    } else {
+        None
+    }
+}
+
+/// Scroll runs handed from a studio to the one that replaces it (ADR-0150 decision 5).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScrollHandover {
+    /// The runs, on the old studio's clock.
+    pub runs: ScrollRuns,
+    /// The old clock's time when they were taken; the new studio's start time is the
+    /// same instant on its clock, so the runs move by the difference (either sign).
+    pub at: Timestamp,
+    /// When each lingering source's linger ends, on the old clock; moved the same way
+    /// (ADR-0152 decision 8).
+    pub lingers: BTreeMap<SourceId, Timestamp>,
+    /// The group Scroll runs, on the old clock, moved the same way (ADR-0185).
+    pub groups: GroupRuns,
+}
+
+/// The runs a studio started with `settings` starts with: those of its handover, moved
+/// to `now` on its clock (ADR-0150 decision 5, ADR-0185), or none; group runs with the
+/// settings' allocators and held-copy mapping.
+pub(super) fn handed_over(settings: &StudioSettings, now: Timestamp) -> (ScrollRuns, GroupRuns) {
+    let (runs, groups) = match &settings.scroll_runs {
+        None => (ScrollRuns::new(), GroupRuns::default()),
+        Some(h) => {
+            let mut runs = h.runs.clone();
+            runs.moved(h.at, now);
+            (runs, h.groups.moved(h.at, now))
+        }
+    };
+    (
+        runs,
+        groups.starting(&settings.group_ids, &settings.scene_origins),
+    )
 }
 
 /// The run keys of `layers`.
@@ -115,6 +198,7 @@ impl Studio {
             runs: self.scroll_runs.clone(),
             at: self.engine.clock().now(),
             lingers: self.binder.lingers(),
+            groups: self.group_runs().clone(),
         }
     }
 
@@ -122,6 +206,7 @@ impl Studio {
     /// (keeping a continuing one while its source is placed, ADR-0152 decision 6), at
     /// the engine's time now.
     pub(super) fn keep_scroll_runs(&mut self) {
+        self.keep_group_runs();
         let keys = self.scroll_keys();
         if keys.is_empty() && self.scroll_runs.is_empty() {
             return;
@@ -134,7 +219,14 @@ impl Studio {
 
     /// Every layer of every list the studio sends (program and further canvases,
     /// preview, hold scenes, transitions).
-    fn all_layers(&self) -> Vec<&BoundLayer> {
+    pub(super) fn all_layers(&self) -> Vec<&BoundLayer> {
+        let mut out = self.live_layers();
+        out.extend(self.transitions.values().flat_map(|t| &t.from));
+        out
+    }
+
+    /// [`Self::all_layers`] without the transitions' outgoing snapshots.
+    pub(super) fn live_layers(&self) -> Vec<&BoundLayer> {
         let mut out: Vec<&BoundLayer> = self.bound.layers.iter().collect();
         for extra in &self.extras {
             out.extend(&extra.view.bound.layers);
@@ -145,7 +237,7 @@ impl Studio {
         for run in self.hold_scenes.values() {
             out.extend(run.bound_layers());
         }
-        out.extend(self.transition_layers_all());
+        out.extend(self.transition_incoming_layers());
         out
     }
 
@@ -206,6 +298,20 @@ impl Studio {
     /// Ends of `Once` runs since the last call, oldest first.
     pub fn take_scroll_finished(&mut self) -> Vec<ScrollFinished> {
         std::mem::take(&mut self.scroll_finished)
+    }
+
+    /// Item and group `Once` runs (ADR-0150 decision 11, ADR-0185): how long until the
+    /// next may end. Nothing runs without a run.
+    pub(super) fn service_scrolls(&mut self) -> Option<Duration> {
+        let items = if self.scroll_runs.is_empty() {
+            None
+        } else {
+            self.service_scroll()
+        };
+        match (items, self.service_group_scroll()) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
     }
 
     /// Reports `Once` runs whose picture has left, and returns how long until the next
@@ -290,5 +396,23 @@ impl Studio {
             }
         }
         due
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_failing_slot_names_its_own_span_and_reason() {
+        // Slots 0 and 2 draw run 7 (a split span), slot 1 run 9.
+        let sent = [Some(7), Some(9), Some(7), None];
+        let r = |bits, tag| failure_of(&sent, bits, tag);
+        assert_eq!(r((0b10, 0), 9), Some(GroupFailureReason::Allocation));
+        assert_eq!(r((0b10, 0), 7), None, "another span's failure");
+        assert_eq!(r((0, 0b100), 7), Some(GroupFailureReason::Render));
+        assert_eq!(r((0b1, 0b100), 7), Some(GroupFailureReason::Allocation));
+        assert_eq!(r((0, 0), 7), None, "recovered");
+        assert_eq!(r((0b1000, 0b1000), 3), None, "an unsent slot");
     }
 }

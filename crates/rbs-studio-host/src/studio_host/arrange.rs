@@ -17,7 +17,7 @@ const MAX_ITEMS: usize = 1000;
 
 /// The box that covers `layout` as drawn: its centre, with the width and height of the
 /// rotated rectangle's axis-aligned bounds. Flips do not change it.
-fn drawn_box(position: [f32; 2], size: [f32; 2], rotation: f32) -> SourceBox {
+pub(super) fn drawn_box(position: [f32; 2], size: [f32; 2], rotation: f32) -> SourceBox {
     let (w, h) = (size[0].abs(), size[1].abs());
     let (sin, cos) = rotation.to_radians().sin_cos();
     let (dw, dh) = (w * cos.abs() + h * sin.abs(), w * sin.abs() + h * cos.abs());

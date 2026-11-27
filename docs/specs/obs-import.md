@@ -2,7 +2,7 @@
 
 - Status: Draft (ADR-0131 Accepted; step 1 in progress)
 - Owner crate(s): `rbs-import-obs`, `rbs-app`, `rbs-cli`
-- Related ADRs: [0131](../adr/0131-import-obs-scene-collections-and-profiles.md), [0051](../adr/0051-user-data-profiles-and-scene-collections.md), [0065](../adr/0065-global-sources-and-safe-source-removal.md), [0077](../adr/0077-source-health-retarget-and-settings-window.md), [0103](../adr/0103-source-region.md), [0113](../adr/0113-experience-level-and-first-run.md)
+- Related ADRs: [0131](../adr/0131-import-obs-scene-collections-and-profiles.md), [0188](../adr/0188-defer-new-nested-scenes.md), [0051](../adr/0051-user-data-profiles-and-scene-collections.md), [0065](../adr/0065-global-sources-and-safe-source-removal.md), [0077](../adr/0077-source-health-retarget-and-settings-window.md), [0103](../adr/0103-source-region.md), [0113](../adr/0113-experience-level-and-first-run.md)
 
 ## Purpose
 
@@ -37,7 +37,7 @@ pub trait Lookup {
 pub struct LookupTarget { target: String, name: String, app: Option<String>, size: Option<(u32, u32)> }
 
 pub struct Options {                                           // the wizard's choices; all default on
-    scenes: SceneChoice,               // All, or Only(names): a chosen scene brings what it nests
+    scenes: SceneChoice,               // All scenes, or exactly Only(names); no implicit additions
     global_audio: bool, audio_filters: bool, video_filters: bool, hotkeys: bool,
     canvas: bool, recording: bool, stream_server: bool, stream_key: bool,
     replay: bool, audio_settings: bool,
@@ -87,6 +87,16 @@ pub trait TransitionMapper { /* same shape, TransitionOutcome */ }
 
 `ImportError`: `TooLarge`, `NotJson`, `NotACollection` (no `sources` array), `Internal(String)` (the built collection failed `from_parts` although the importer enforces its invariants first: a bug). A single bad source, filter or item, a name clash or a scene past `MAX_LAYERS` is never an error: it is a report entry.
 
+**ADR-0188 import contract.** `SceneChoice::All`
+imports every OBS scene separately; `Only(names)` imports exactly the selected
+scenes and does not add their referenced scenes. For each nested-scene
+placement in an imported scene, including one inside an OBS group, omit the
+placement rather than flattening it or importing the referenced scene
+implicitly. Report each omission as `Outcome::Skipped`, `Area::Scene`, with
+the referenced scene name as `obs_name`, the containing scene in `scenes`, and
+the reason "Scenes cannot be placed inside other scenes." The same report and
+selection rules apply to `import.obs.check` and `import.obs.run` for all clients.
+
 ### Report
 
 ```rust
@@ -114,7 +124,7 @@ ADR-0131 decision 8 is normative: absolute `pos`, `scale`, `bounds` are read; an
 
 ADR-0131 decision 7 is the first mapping table. Each mapper keeps its own row in this section when it is implemented.
 
-- `group` (ADR-0182 decision 13, replacing ADR-0131's flattening row) → an RBS group of the scene. The group's items are imported as before, with the group's transform composed into each child and a child shown only when group and child are, and they get the group's tag; they sit next to each other, in OBS order. The name is the OBS group's, made unique in the scene ("Name 2"). A group with fewer than two imported items (the others were skipped) becomes separate items and one report entry says so; a group inside a group does not occur in OBS. A crop on the group item, which clipped its children, is not kept and is reported. An import with no group adds no group list and no entry.
+- `group` (ADR-0182 decision 13, replacing ADR-0131's flattening row) → an RBS group of the scene. The group's surviving source items have the group's transform composed into each child and a child is shown only when group and child are; they get the group's tag and sit next to each other, in OBS order. The name is the OBS group's, made unique in the scene ("Name 2"). Count members after all omissions, including nested-scene placements: a group with fewer than two surviving items becomes separate items and one `Approximated` group entry says so, in addition to each skipped placement entry. A group inside a group does not occur in OBS. A crop on the group item, which clipped its children, is not kept and is reported. An import with no group adds no group list and no entry.
 - `image_source` → `org.rbs.source.image` for a `.png`, `.jpg` or `.jpeg` file (JPEG since ADR-0171); other formats are skipped. The picture size comes from the PNG header or the JPEG headers (upright by EXIF orientation).
 - `slideshow`, `slideshow_v2` → `org.rbs.source.slideshow` (ADR-0171 decision 11). The folder is the first `files` entry's folder (an entry that is not a picture name is a folder); entries in other folders, listed files (RBS shows every PNG and JPEG of the folder), and other picture formats are reported. `slide_time` → `interval_s` (nearest half second, 1 to 3600), `slide_mode: mode_manual` → `advance: manual`, `randomize` → `order: shuffle`, `loop`, `transition` (`cut`, `fade`, `slide`, `swipe`), `transition_speed` → `transition_ms` (down to a 50 ms step, at most 5000), `fit: contain`. `use_custom_size` `WxH` → `width`/`height`, else the canvas (an aspect ratio is reported). `playback_behavior` `always_play` (the default) → run `placed`; `pause_unpause` keeps the type default; `stop_restart` is reported (a slide show continues on return). `hide` is reported.
 
@@ -124,12 +134,14 @@ ADR-0131 decision 7 is the first mapping table. Each mapper keeps its own row in
 | --- | --- |
 | `DuplicateName` | "Name 2", "Name 3", ... |
 | `EmptyName` | the OBS type's readable name plus a number |
-| `TooManyLayers`, `NestingTooDeep`, `NestingCycle` | item left out, Skipped |
-| `CropOnScene`, `StyleOnScene`, `ScrollOnScene` | crop, style or scroll dropped, item kept, Approximated (the importer sets no scroll today) |
+| `TooManyLayers` | item left out, Skipped |
+| `NestingUnsupported` | each scene placement is omitted and reported as specified above before model construction; reaching `from_parts` with one is an importer bug (`Internal`) |
+| `NestingTooDeep`, `NestingCycle`, `CropOnScene`, `StyleOnScene`, `ScrollOnScene` | cannot arise from valid imported collections: scene placements are skipped before construction |
+| `ItemAlreadyGrouped`, `AmbiguousCompanion`, `PictureNotPlaced`, `CompanionExists` | cannot arise: the importer constructs groups directly and does not run regroup or companion-edit operations |
 | `InvalidLayout`, `InvalidVolume`, `InvalidSyncOffset`, `InvalidSetting` | value clamped or the key dropped, Approximated |
 | `CanvasTooLarge`, `EmptyCanvas`, `FrameRateTooHigh` (also a zero rate or `FPSDen` 0) | 1920×1080 at 30, Profile entry |
 | `ScopeViolation`, `GlobalScene` | cannot arise: user scenes are shared; the global scene is scoped to its canvas and made only by the importer |
-| `UnknownCanvas`, `UnknownSource`, `UnknownScene` | cannot arise: references are resolved in pass two (ADR-0131 decision 6); an item, nested scene or audio level whose target was skipped is left out and reported on the referring object |
+| `UnknownCanvas`, `UnknownSource`, `UnknownScene` | cannot arise: supported references are resolved before construction; an item or audio level whose target was skipped is left out and reported on the referring object. Scene placements are skipped and reported under `NestingUnsupported` |
 | `UnknownItem`, `UnknownFilter`, `IndexOutOfRange`, `CanvasHasScenes`, `UndoConflict` | cannot arise: edit-time errors, not raised by `from_parts` |
 | `DuplicateId`, `DuplicateFilter`, `IdsExhausted` | cannot arise: the importer issues ids from one counter per kind |
 | `BadTypeId` | cannot arise: mapper type ids are checked by the catalogue test in `rbs-cli` (`obs_import::tests`) |
@@ -152,7 +164,7 @@ Runs on the control thread on demand only. A 200-source collection plans in unde
 
 ## Conformance tests
 
-`crates/rbs-import-obs/tests`: golden fixtures (hand-written for this repository) for each mapper, groups, nested scenes, global audio devices, cross-platform ids, unsupported types; the property test of the transform conversion; a report and every `Debug` contain no stream key, password or user name; simple- and advanced-mode profile goldens (`tests/profile.rs`); `from_parts` accepts every fixture's collection.
+`crates/rbs-import-obs/tests`: golden fixtures (hand-written for this repository) for each mapper, groups, global audio devices, cross-platform ids, unsupported types; the property test of the transform conversion; a report and every `Debug` contain no stream key, password or user name; simple- and advanced-mode profile goldens (`tests/profile.rs`); `from_parts` accepts every fixture's collection. ADR-0188 tests cover `All` and exact `Only` selection, every skipped placement's containing and referenced names and reason, nested placements inside groups, and group counts after omissions with the additional `Approximated` entry.
 
 ## Open questions
 
@@ -161,6 +173,10 @@ Runs on the control thread on demand only. A 200-source collection plans in unde
 - Saved projectors to projector windows (ADR-0125).
 
 ## Implementation status
+
+ADR-0188's scene-placement omission, per-placement report and exact scene
+selection semantics are implemented in `rbs-import-obs`; `import.obs.check` and
+`import.obs.run` both use this plan and report.
 
 - Step 1 (done on this branch): `rbs-import-obs` with the collection planner, the source and filter mappers in the mapping table, the report and its golden fixtures; `rbs-cli obs-import scan|check|run` (`check` prints the report and writes nothing; `run` writes a new scene collection under the writer lock with a free name). The CLI's `Lookup` reads files only (PNG sizes, file presence) and enumerates no devices, so device targets keep their OBS ids and are reported. The catalogue test (every mapper type and field key exists in this build) lives in `rbs-cli`, a composition root that links the source and filter registries; `rbs-app` gets the same test with step 2.
 - Step 2a (done on this branch): the profile's output facts for both output modes (encoder table, rate control, bitrates, quality, keyframes, preset, B-frames, recording folder and format, replay buffer, audio), the stream server (kept only as `rtmp://` or `srt://` without `?`, `#`, `@` or spaces; the composition root still runs `parse_server` before writing it), the stream key in `ImportedSecrets`, and hotkeys as shortcuts. `rbs-cli obs-import run` adds the hotkeys to `shortcuts.toml` with `merge_shortcuts` after writing the collection; it does not write an output profile or a credential, and says the app imports those.

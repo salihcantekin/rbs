@@ -22,11 +22,21 @@ sha2 = "0.10"
 subtle = "2.6"
 # OS randomness for tokens and the server instance id.
 getrandom = "0.3"
+# Schema generation is offline and opt-in (ADR-0044 decision 1).
+schemars = { version = "1", optional = true }
 
 [features]
 # The transport conformance suite (`rbs_api::conformance`); adapter crates enable it in
 # their dev-dependencies.
 conformance = []
+schema = ["dep:schemars"]
+
+[dev-dependencies]
+jsonschema = { version = "0.29", default-features = false }
+
+[[example]]
+name = "generate-schemas"
+required-features = ["schema"]
 
 [lints]
 workspace = true

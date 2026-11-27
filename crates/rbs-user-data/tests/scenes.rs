@@ -21,7 +21,7 @@ fn ty(name: &str) -> NodeTypeId {
     NodeTypeId::new(format!("org.rbs.source.{name}"))
 }
 
-/// Two canvases, a shared scene nested in a canvas scene, filters, every setting type,
+/// Two canvases, shared and canvas-scoped scenes, filters, every setting type,
 /// per-canvas layouts, crop, rotation, opacity, a hidden item and studio mode.
 fn show() -> SceneCollection {
     let mut col = SceneCollection::new();
@@ -113,7 +113,7 @@ fn show() -> SceneCollection {
     let (pip, _) = col
         .add_item(
             game,
-            ItemContent::Scene(talk),
+            ItemContent::Source(cam),
             Layout::new([1440.5, 810.25], [-480.0, 270.0])
                 .with_rotation(12.5)
                 .with_opacity(0.75),
@@ -364,7 +364,10 @@ fn invalid_documents_are_refused_with_a_reason() {
     let scene = "[[scenes]]\nid = 0\nname = \"Sc\"\n[[scenes.items]]\nid = 0\n";
     let layout = "layout = { position = [0.0, 0.0], size = [1.0, 1.0] }\n";
     assert!(invalid(&format!("{SOURCE}{scene}{layout}")).contains("either source or scene"));
-    assert!(invalid(&format!("{SOURCE}{scene}source = 0\nscene = 0\n{layout}")).contains("either"));
+    assert!(
+        invalid(&format!("{SOURCE}{scene}source = 0\nscene = 0\n{layout}"))
+            .contains("Scenes cannot be placed inside other scenes.")
+    );
     invalid(&format!("{scene}source = 0\n{layout}"));
     // Layouts and settings must be finite; settings must be plain values.
     invalid(&format!(
@@ -425,24 +428,20 @@ fn every_scene_model_invariant_is_checked_on_load() {
     let two = "[[canvases]]\nid = 1\nname = \"V\"\nwidth = 2\nheight = 2\nframe_rate = [30, 1]\n";
     let lay = "layout = { position = [0.0, 0.0], size = [1.0, 1.0] }\n";
     let scene = |id: u32, extra: &str| format!("[[scenes]]\nid = {id}\nname = \"S{id}\"\n{extra}");
-    // A nesting cycle.
+    // Nesting is rejected before cycle and crop validation.
     let cycle = format!(
         "{}[[scenes.items]]\nid = 0\nscene = 1\n{lay}{}[[scenes.items]]\nid = 1\nscene = 0\n{lay}",
         scene(0, ""),
         scene(1, "")
     );
-    assert!(
-        invalid(&cycle).contains("contain itself"),
-        "{}",
-        invalid(&cycle)
-    );
+    assert!(invalid(&cycle).contains("Scenes cannot be placed inside other scenes."));
     // Crop on a nested scene.
     let crop = format!(
         "{}{}[[scenes.items]]\nid = 0\nscene = 0\nlayout = {{ position = [0.0, 0.0], size = [1.0, 1.0], crop = [1, 0, 0, 0] }}\n",
         scene(0, ""),
         scene(1, "")
     );
-    assert!(invalid(&crop).contains("crop"));
+    assert!(invalid(&crop).contains("Scenes cannot be placed inside other scenes."));
     // A per-canvas layout for a canvas that may not show the scene.
     let over = format!(
         "{CANVAS}{two}{SOURCE}{}[[scenes.items]]\nid = 0\nsource = 0\n{lay}overrides = [{{ canvas = 1, layout = {{ position = [0.0, 0.0], size = [1.0, 1.0] }} }}]\n",
@@ -462,14 +461,14 @@ fn every_scene_model_invariant_is_checked_on_load() {
         "{SOURCE}{filters}[[sources]]\nid = 1\nname = \"T\"\ntype = \"org.rbs.source.display\"\n{filters}"
     );
     assert!(invalid(&dup).contains("used twice"));
-    // Nesting deeper than the limit.
+    // Nesting is rejected before the former depth limit.
     let mut deep = String::new();
     for i in 0..=rbs_scene::MAX_NESTING_DEPTH as u32 {
         deep += &scene(i, "");
         deep += &format!("[[scenes.items]]\nid = {i}\nscene = {}\n{lay}", i + 1);
     }
     deep += &scene(rbs_scene::MAX_NESTING_DEPTH as u32 + 1, "");
-    assert!(invalid(&deep).contains("nests more"));
+    assert!(invalid(&deep).contains("Scenes cannot be placed inside other scenes."));
     // Canvas bounds: shared files are untrusted input.
     assert!(invalid("[[canvases]]\nid = 0\nname = \"M\"\nwidth = 4294967295\nheight = 2\nframe_rate = [30, 1]\n").contains("at most"));
     assert!(invalid("[[canvases]]\nid = 0\nname = \"M\"\nwidth = 2\nheight = 2\nframe_rate = [4294967295, 1]\n").contains("at most"));
@@ -680,11 +679,11 @@ fn styles_are_checked_on_load() {
         let reason = invalid(&item(style));
         assert!(reason.contains(why), "{style}: {reason}");
     }
-    // Shape and border are for sources, not nested scenes.
+    // A scene placement is refused before its style is checked.
     let nested = format!(
         "{CANVAS}[[scenes]]\nid = 0\nname = \"A\"\n[[scenes]]\nid = 1\nname = \"B\"\n[[scenes.items]]\nid = 0\nscene = 0\nlayout = {{ position = [0.0, 0.0], size = [10.0, 10.0], style = {{ shape = \"circle\" }} }}\n"
     );
-    assert!(invalid(&nested).contains("shape and border"));
+    assert!(invalid(&nested).contains("Scenes cannot be placed inside other scenes."));
 }
 
 #[test]

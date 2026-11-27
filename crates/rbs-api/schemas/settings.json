@@ -1,0 +1,2946 @@
+{
+  "settings.clear_recent_targets": {
+    "input_schema": {
+      "$defs": {
+        "SourceKind": {
+          "description": "A kind of source the user can add.",
+          "oneOf": [
+            {
+              "const": "screen",
+              "description": "A whole display.",
+              "type": "string"
+            },
+            {
+              "const": "window",
+              "description": "One window.",
+              "type": "string"
+            },
+            {
+              "const": "camera",
+              "description": "A camera or capture card.",
+              "type": "string"
+            },
+            {
+              "const": "audio_input",
+              "description": "A microphone or line input.",
+              "type": "string"
+            },
+            {
+              "const": "system_audio",
+              "description": "What the computer plays.",
+              "type": "string"
+            },
+            {
+              "const": "application_audio",
+              "description": "What one application plays.",
+              "type": "string"
+            },
+            {
+              "const": "image",
+              "description": "A picture: a file or a built-in sample (protocol 1.34, ADR-0075).",
+              "type": "string"
+            },
+            {
+              "const": "color",
+              "description": "A solid colour (protocol 1.34, ADR-0075).",
+              "type": "string"
+            },
+            {
+              "const": "media",
+              "description": "A local media file (protocol TBD, ADR-0108).",
+              "type": "string"
+            },
+            {
+              "const": "browser",
+              "description": "A browser page from the helper process (protocol TBD, ADR-0109).",
+              "type": "string"
+            },
+            {
+              "const": "text",
+              "description": "A text drawn by the server's text renderer (protocol 1.75, ADR-0129).",
+              "type": "string"
+            },
+            {
+              "const": "slideshow",
+              "description": "The pictures of one folder shown one after another (protocol 1.102, ADR-0171).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`source.targets`.",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/SourceKind",
+          "description": "The kind whose capture targets to list."
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "TargetsParams",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "settings.get": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "Canvas": {
+          "description": "The canvas's size and frame rate.",
+          "properties": {
+            "fps_den": {
+              "description": "Frame rate denominator.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "fps_num": {
+              "description": "Frame rate numerator.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "height": {
+              "description": "Height in pixels.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "width": {
+              "description": "Width in pixels.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "width",
+            "height",
+            "fps_num",
+            "fps_den"
+          ],
+          "type": "object"
+        },
+        "Container": {
+          "description": "A recording container.",
+          "oneOf": [
+            {
+              "const": "mkv",
+              "description": "Matroska (`.mkv`).",
+              "type": "string"
+            },
+            {
+              "const": "mp4",
+              "description": "Fragmented MP4 (`.mp4`).",
+              "type": "string"
+            },
+            {
+              "const": "wav",
+              "description": "WAV (`.wav`): the mix as PCM, with no picture (protocol 1.42).",
+              "type": "string"
+            },
+            {
+              "const": "flac",
+              "description": "FLAC (`.flac`): the mix, lossless, with no picture (protocol 1.43).",
+              "type": "string"
+            },
+            {
+              "const": "mov",
+              "description": "QuickTime (`.mov`), written fragmented like MP4 (protocol 1.51, ADR-0085).",
+              "type": "string"
+            }
+          ]
+        },
+        "Delivery": {
+          "description": "How a recording or a stream encodes colour (protocol 1.37). Omitted when\n[`Delivery::Video`], so an older file and a 1.36 client stay on Rec. 709 limited range.",
+          "oneOf": [
+            {
+              "const": "video",
+              "description": "Rec. 709 camera encoding, limited range. YouTube, TV and streams.",
+              "type": "string"
+            },
+            {
+              "const": "screen",
+              "description": "sRGB transfer, full range. Matches a desktop display.",
+              "type": "string"
+            }
+          ]
+        },
+        "Dimensions": {
+          "description": "Width and height in pixels.",
+          "properties": {
+            "height": {
+              "description": "Height in pixels.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "width": {
+              "description": "Width in pixels.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "width",
+            "height"
+          ],
+          "type": "object"
+        },
+        "Encoding": {
+          "description": "How a stream is encoded (`settings.get`, `settings.set`; protocol 1.2). The same\nfields as a [`RecordingProfile`]'s encoding.",
+          "properties": {
+            "audio_kbps": {
+              "description": "Audio bitrate in kbit/s.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "b_frames": {
+              "description": "Most B-frames.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "cbr_padding": {
+              "description": "With CBR, pad the video to its full bitrate.",
+              "type": "boolean"
+            },
+            "delivery": {
+              "$ref": "#/$defs/Delivery",
+              "description": "Colour encoding. Omitted when [`Delivery::Video`] (protocol 1.37)."
+            },
+            "encoder": {
+              "description": "The video encoder's adapter id, or `null` for the best one.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "keyframe_seconds": {
+              "description": "Seconds between keyframes.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "max_video_kbps": {
+              "description": "VBR peak in kbit/s; `null` is 1.5 times the target.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "open_shadows": {
+              "description": "Lifts only the darkest tones on a Video encode. Omitted when off (protocol 1.38).",
+              "type": "boolean"
+            },
+            "preset": {
+              "$ref": "#/$defs/Preset",
+              "description": "Speed versus quality."
+            },
+            "profile": {
+              "description": "Codec profile (`high`, `main`, `baseline`); `null` lets the encoder pick.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "quality": {
+              "description": "Constant-quality level, 0 (best) to 51.",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "rate_control": {
+              "$ref": "#/$defs/RateMode",
+              "description": "Rate control."
+            },
+            "video_codec": {
+              "$ref": "#/$defs/VideoCodec",
+              "description": "H.264, HEVC or AV1. Omitted when H.264, so a 1.33 client still reads the object.\n`\"av1\"` is protocol 1.40."
+            },
+            "video_kbps": {
+              "description": "Video bitrate in kbit/s: the CBR rate, or the VBR target.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "encoder",
+            "rate_control",
+            "video_kbps",
+            "max_video_kbps",
+            "quality",
+            "keyframe_seconds",
+            "profile",
+            "preset",
+            "b_frames",
+            "cbr_padding",
+            "audio_kbps"
+          ],
+          "type": "object"
+        },
+        "HardwareLimitPolicy": {
+          "description": "`record.start`'s `on_hardware_limit` (protocol 1.54, ADR-0087 decision 5).",
+          "oneOf": [
+            {
+              "const": "ask",
+              "description": "Refuse the start and say which files do not fit.",
+              "type": "string"
+            },
+            {
+              "const": "skip",
+              "description": "Start without the files that do not fit.",
+              "type": "string"
+            },
+            {
+              "const": "cpu",
+              "description": "Encode the files that do not fit on the CPU (refused until the CPU encoder for\nseparate files exists, ADR-0119 step (c)).",
+              "type": "string"
+            }
+          ]
+        },
+        "HoldPicture": {
+          "description": "What a held stream sends (protocol 1.64, ADR-0124 decision 13).",
+          "oneOf": [
+            {
+              "const": "freeze",
+              "description": "The program's last frame, repeated.",
+              "type": "string"
+            },
+            {
+              "const": "black",
+              "description": "A black picture.",
+              "type": "string"
+            },
+            {
+              "const": "scene",
+              "description": "A scene of the collection, drawn live (protocol 1.67, ADR-0124 phase 2b).",
+              "type": "string"
+            }
+          ]
+        },
+        "HoldSound": {
+          "description": "What a stream held with a scene sends for sound (protocol 1.67, ADR-0124 phase\n2b).",
+          "oneOf": [
+            {
+              "const": "silence",
+              "description": "Silence, as a freeze or black hold.",
+              "type": "string"
+            },
+            {
+              "const": "scene",
+              "description": "The scene's own sources, mixed at their levels.",
+              "type": "string"
+            }
+          ]
+        },
+        "LoudnessSettings": {
+          "description": "The loudness meter's target and true-peak limit (protocol 1.59, ADR-0092 decision\n5): part of `settings.get`, `settings.set` and `settings.changed`, and of\n`loudness.status`. Values are finite; equality compares them bit for bit.",
+          "properties": {
+            "target": {
+              "description": "The target, LUFS (-40 to -5): the mark on the Master's loudness bar.",
+              "format": "float",
+              "type": "number"
+            },
+            "true_peak_limit": {
+              "description": "The true-peak limit, dBTP (-10 to 0): the Master's dot lights once the true\npeak has passed it since the meter started or was reset.",
+              "format": "float",
+              "type": "number"
+            }
+          },
+          "required": [
+            "target",
+            "true_peak_limit"
+          ],
+          "type": "object"
+        },
+        "Preset": {
+          "description": "Speed versus quality.",
+          "oneOf": [
+            {
+              "const": "quality",
+              "description": "Best quality the machine sustains.",
+              "type": "string"
+            },
+            {
+              "const": "balanced",
+              "description": "The default.",
+              "type": "string"
+            },
+            {
+              "const": "speed",
+              "description": "Least GPU use.",
+              "type": "string"
+            }
+          ]
+        },
+        "ProjectFormat": {
+          "description": "An editor project format (protocol 1.58, ADR-0089 decision 9).",
+          "oneOf": [
+            {
+              "const": "fcpxml",
+              "description": "FCPXML 1.9, one `.fcpxml` file (Final Cut Pro).",
+              "type": "string"
+            },
+            {
+              "const": "xmeml",
+              "description": "FCP7 XML (xmeml version 5), one `.xml` file (DaVinci Resolve, Premiere Pro;\nprotocol 1.60).",
+              "type": "string"
+            }
+          ]
+        },
+        "RateMode": {
+          "description": "How the encoder spends bits.",
+          "oneOf": [
+            {
+              "const": "cbr",
+              "description": "Constant bitrate.",
+              "type": "string"
+            },
+            {
+              "const": "vbr",
+              "description": "Variable bitrate with a peak.",
+              "type": "string"
+            },
+            {
+              "const": "constant_quality",
+              "description": "Constant quality.",
+              "type": "string"
+            }
+          ]
+        },
+        "RecordingMarkers": {
+          "additionalProperties": false,
+          "description": "A recording profile's markers (protocol 1.62, ADR-0089 decisions 3 and 4).",
+          "properties": {
+            "lead_ms": {
+              "default": 0,
+              "description": "Moves a manual marker this many milliseconds earlier, 0 to 30 000.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "pause_markers": {
+              "default": true,
+              "description": "One marker per pause on its join in the editor project (on by default;\nprotocol 1.63, ADR-0124 decision 10).",
+              "type": "boolean"
+            },
+            "scene_changes": {
+              "default": true,
+              "description": "A marker each time the program scene changes (on by default).",
+              "type": "boolean"
+            },
+            "stream_events": {
+              "default": false,
+              "description": "A marker when a stream starts and when it ends (off by default).",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "lead_ms",
+            "scene_changes",
+            "stream_events",
+            "pause_markers"
+          ],
+          "type": "object"
+        },
+        "RecordingProfile": {
+          "description": "Every setting of a recording profile (`settings.get`, `settings.set`).",
+          "properties": {
+            "audio_kbps": {
+              "description": "Audio bitrate in kbit/s.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "audio_tracks": {
+              "description": "The buses the recording writes as audio tracks, by name, track 1 first\n(protocol 1.103, ADR-0170 decisions 3 and 11). Omitted when `[\"main\"]`. In\n`settings.set`, absent keeps the stored tracks. One track for now; several\nare `invalid_params` until multi-track recording is built.",
+              "items": {
+                "type": "string"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "b_frames": {
+              "description": "Most B-frames.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "bit_depth": {
+              "description": "Sample width of a WAV or FLAC recording. WAV is 16, 24 or 32 (float). FLAC\nis 16 or 24. Omitted when 16 (protocol 1.42; FLAC is protocol 1.43).",
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "cbr_padding": {
+              "description": "With CBR, pad the video to its full bitrate.",
+              "type": "boolean"
+            },
+            "container": {
+              "$ref": "#/$defs/Container",
+              "description": "The container."
+            },
+            "delivery": {
+              "$ref": "#/$defs/Delivery",
+              "description": "Colour encoding. Omitted when [`Delivery::Video`] (protocol 1.37)."
+            },
+            "editor_project": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ProjectFormat"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Write an editor project next to the recording when it stops (protocol 1.58,\nADR-0089 decision 10). Omitted or `null`: off. Also what makes a plain\nrecording keep its files' timing for a later `project.export`."
+            },
+            "encoder": {
+              "description": "The video encoder's adapter id, or `null` for the best one.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "folder": {
+              "description": "Where recordings are written (absolute).",
+              "type": "string"
+            },
+            "id": {
+              "description": "Its id.",
+              "type": "string"
+            },
+            "keyframe_seconds": {
+              "description": "Seconds between keyframes.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "markers": {
+              "$ref": "#/$defs/RecordingMarkers",
+              "description": "Markers: the reaction-time offset and the automatic markers (protocol 1.62,\nADR-0089 decisions 3 and 4). Absent: the defaults."
+            },
+            "max_video_kbps": {
+              "description": "VBR peak in kbit/s; `null` is 1.5 times the target.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "name": {
+              "description": "Its name.",
+              "type": "string"
+            },
+            "open_shadows": {
+              "description": "Lifts only the darkest tones on a Video encode. Omitted when off (protocol 1.38).",
+              "type": "boolean"
+            },
+            "output_size": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Dimensions"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Encoded picture size. Omitted or `null`: the same as this recording's canvas\n(protocol 1.39, ADR-0102)."
+            },
+            "preset": {
+              "$ref": "#/$defs/Preset",
+              "description": "Speed versus quality."
+            },
+            "profile": {
+              "description": "Codec profile (`high`, `main`, `baseline`); `null` lets the encoder pick.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "quality": {
+              "description": "Constant-quality level, 0 (best) to 51.",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "rate_control": {
+              "$ref": "#/$defs/RateMode",
+              "description": "Rate control."
+            },
+            "video_codec": {
+              "$ref": "#/$defs/VideoCodec",
+              "description": "H.264, HEVC or AV1. Omitted when H.264, so a 1.33 client still reads the object.\n`\"av1\"` is protocol 1.40."
+            },
+            "video_kbps": {
+              "description": "Video bitrate in kbit/s: the CBR rate, or the VBR target.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "id",
+            "name",
+            "folder",
+            "container",
+            "encoder",
+            "rate_control",
+            "video_kbps",
+            "max_video_kbps",
+            "quality",
+            "keyframe_seconds",
+            "profile",
+            "preset",
+            "b_frames",
+            "cbr_padding",
+            "audio_kbps"
+          ],
+          "type": "object"
+        },
+        "ReplaySettings": {
+          "additionalProperties": false,
+          "description": "`settings.replay` (protocol 1.100): the replay buffer's settings. A change applies\nat the next arm; a running buffer keeps its settings.",
+          "properties": {
+            "arm_on_start": {
+              "description": "Arm the buffer when RBS starts.",
+              "type": "boolean"
+            },
+            "audio": {
+              "description": "Keep the sound too.",
+              "type": "boolean"
+            },
+            "folder": {
+              "default": null,
+              "description": "Where clips go, absolute; absent or `null`: the recording profile's folder. A\nrelative path is `invalid_params`; one that is not local needs the\nirreversible-actions permission.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "length_secs": {
+              "description": "Wanted length of the past in seconds (`invalid_params` outside the bounds the\nspec gives).",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "memory_mib": {
+              "description": "Most memory the buffer may use, in MiB.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "arm_on_start",
+            "length_secs",
+            "memory_mib",
+            "audio",
+            "folder"
+          ],
+          "type": "object"
+        },
+        "SeparateFilesSettings": {
+          "additionalProperties": false,
+          "description": "`settings.separate_files` (protocol 1.100): Settings › Recording › Separate files.\nRefused with `conflict` while a recording runs.",
+          "properties": {
+            "enabled": {
+              "description": "Record and `record.start` without `iso` write the marked sources' files.",
+              "type": "boolean"
+            },
+            "on_hardware_limit": {
+              "$ref": "#/$defs/HardwareLimitPolicy",
+              "description": "What a `record.start` with the 1.54 parameters does with video files past\ntheir encoder's capacity when it does not say. `cpu` is `invalid_params` in a\npatch until the CPU encoder for separate files exists (ADR-0119 step (c))."
+            }
+          },
+          "required": [
+            "enabled",
+            "on_hardware_limit"
+          ],
+          "type": "object"
+        },
+        "Settings": {
+          "description": "Settings the control thread owns.",
+          "properties": {
+            "canvas": {
+              "$ref": "#/$defs/Canvas",
+              "description": "The canvas."
+            },
+            "loudness": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/LoudnessSettings"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The loudness meter's target and true-peak limit (protocol 1.59)."
+            },
+            "profiles": {
+              "description": "Recording profiles.",
+              "items": {
+                "$ref": "#/$defs/RecordingProfile"
+              },
+              "type": "array"
+            },
+            "replay": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ReplaySettings"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The replay buffer (protocol 1.100); absent from older servers."
+            },
+            "separate_files": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SeparateFilesSettings"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Separate files (protocol 1.100); absent from older servers."
+            },
+            "stream": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/StreamSettings"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The stream settings (protocol 1.2); absent while the app is still starting and\nfrom servers that do not stream."
+            },
+            "swap_after_transition": {
+              "description": "Switch Preview and Program after a transition (protocol 1.100); absent from\nolder servers.",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "vertical": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/VerticalWithMain"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Whether Record and Go live also act on the vertical outputs (protocol 1.42;\nread only here, set with `output.set_with_vertical`)."
+            },
+            "vertical_profile": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/RecordingProfile"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The vertical recording's own settings (protocol 1.100): `null` when the\nvertical recording uses the main profile; absent from older servers."
+            },
+            "vertical_stream": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/StreamSettings"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The vertical stream's settings (protocol 1.100): `null` when it is not set up;\nabsent from older servers."
+            }
+          },
+          "required": [
+            "profiles",
+            "canvas"
+          ],
+          "type": "object"
+        },
+        "StreamProtocol": {
+          "description": "How a stream reaches its server.",
+          "oneOf": [
+            {
+              "const": "rtmp",
+              "description": "RTMP (`rtmp://`), with a stream key.",
+              "type": "string"
+            },
+            {
+              "const": "srt",
+              "description": "SRT (`srt://`).",
+              "type": "string"
+            }
+          ]
+        },
+        "StreamSettings": {
+          "description": "The stream settings (`settings.get`; protocol 1.2). The server's address is not\npart of them: only the local user enters it, in the app, so an API client can neither\nread it nor send the program and the stream key elsewhere. The key is never shown.",
+          "properties": {
+            "audio_bus": {
+              "description": "The bus the stream sends, by name (protocol 1.103, ADR-0170 decision 3); every\ndestination sends it. Omitted when `main`, and `main` from older servers.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "auto_record": {
+              "default": false,
+              "description": "Record when the stream starts, with the recording settings; ending the stream\nstops that recording (protocol 1.11; `false` from older servers).",
+              "type": "boolean"
+            },
+            "encoding": {
+              "$ref": "#/$defs/Encoding",
+              "description": "How the stream is encoded."
+            },
+            "hold_picture": {
+              "$ref": "#/$defs/HoldPicture",
+              "default": "freeze",
+              "description": "What `stream.hold` and Break send when they name no picture (protocol 1.65,\nADR-0124); `freeze` from older servers."
+            },
+            "hold_scene": {
+              "default": null,
+              "description": "The scene a hold with `picture: \"scene\"` shows when it names none (protocol\n1.67, ADR-0124 phase 2b); `null` when none is set.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "hold_sound": {
+              "$ref": "#/$defs/HoldSound",
+              "default": "silence",
+              "description": "The sound such a hold sends when it names none (protocol 1.67); `silence` from\nolder servers."
+            },
+            "key_saved": {
+              "description": "A stream key is saved in the system's credential store.",
+              "type": "boolean"
+            },
+            "output_size": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Dimensions"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Encoded picture size. Omitted or `null`: the same as this stream's canvas\n(protocol 1.39, ADR-0102). Not inside `encoding`."
+            },
+            "protocol": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/StreamProtocol"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The saved server's protocol, or `null` when no server is saved."
+            },
+            "reconnect": {
+              "description": "Reconnect when the connection drops.",
+              "type": "boolean"
+            },
+            "srt_latency_ms": {
+              "description": "SRT latency in ms; `null`: the transport's default (120 ms).",
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "protocol",
+            "key_saved",
+            "reconnect",
+            "srt_latency_ms",
+            "encoding",
+            "auto_record",
+            "hold_picture",
+            "hold_scene",
+            "hold_sound"
+          ],
+          "type": "object"
+        },
+        "VerticalWithMain": {
+          "description": "Whether Record and Go live also start and stop the vertical output (protocol 1.42,\nADR-0111 decision 4). A server older than 1.42 has none: main only.",
+          "properties": {
+            "record_with_main": {
+              "description": "Record also starts and stops the vertical recording.",
+              "type": "boolean"
+            },
+            "stream_with_main": {
+              "description": "Go live also starts and stops the vertical stream.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "record_with_main",
+            "stream_with_main"
+          ],
+          "type": "object"
+        },
+        "VideoCodec": {
+          "description": "The video codec of a recording or a stream. H.264 is omitted on the wire.",
+          "oneOf": [
+            {
+              "const": "h264",
+              "description": "H.264.",
+              "type": "string"
+            },
+            {
+              "const": "hevc",
+              "description": "HEVC (H.265).",
+              "type": "string"
+            },
+            {
+              "const": "av1",
+              "description": "AV1 (protocol 1.40). A 1.39 client treats the value as unknown.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "A state query's answer: the data and the `seq` of each state key it includes, so a\nclient ignores events with an equal or lower `seq`.",
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/Settings",
+          "description": "The state."
+        },
+        "seq": {
+          "additionalProperties": {
+            "format": "uint64",
+            "maximum": 18446744073709551615,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "description": "`seq` per state key included in `data`.",
+          "type": "object"
+        }
+      },
+      "required": [
+        "seq",
+        "data"
+      ],
+      "title": "Snapshot",
+      "type": "object"
+    }
+  },
+  "settings.recent_targets": {
+    "input_schema": {
+      "$defs": {
+        "SourceKind": {
+          "description": "A kind of source the user can add.",
+          "oneOf": [
+            {
+              "const": "screen",
+              "description": "A whole display.",
+              "type": "string"
+            },
+            {
+              "const": "window",
+              "description": "One window.",
+              "type": "string"
+            },
+            {
+              "const": "camera",
+              "description": "A camera or capture card.",
+              "type": "string"
+            },
+            {
+              "const": "audio_input",
+              "description": "A microphone or line input.",
+              "type": "string"
+            },
+            {
+              "const": "system_audio",
+              "description": "What the computer plays.",
+              "type": "string"
+            },
+            {
+              "const": "application_audio",
+              "description": "What one application plays.",
+              "type": "string"
+            },
+            {
+              "const": "image",
+              "description": "A picture: a file or a built-in sample (protocol 1.34, ADR-0075).",
+              "type": "string"
+            },
+            {
+              "const": "color",
+              "description": "A solid colour (protocol 1.34, ADR-0075).",
+              "type": "string"
+            },
+            {
+              "const": "media",
+              "description": "A local media file (protocol TBD, ADR-0108).",
+              "type": "string"
+            },
+            {
+              "const": "browser",
+              "description": "A browser page from the helper process (protocol TBD, ADR-0109).",
+              "type": "string"
+            },
+            {
+              "const": "text",
+              "description": "A text drawn by the server's text renderer (protocol 1.75, ADR-0129).",
+              "type": "string"
+            },
+            {
+              "const": "slideshow",
+              "description": "The pictures of one folder shown one after another (protocol 1.102, ADR-0171).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`source.targets`.",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/SourceKind",
+          "description": "The kind whose capture targets to list."
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "TargetsParams",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "CaptureTarget": {
+          "description": "Something a source can capture: a display, window, camera or audio endpoint.",
+          "properties": {
+            "adapter": {
+              "description": "The adapter that listed it.",
+              "type": "string"
+            },
+            "app": {
+              "description": "The application that owns a window, when the OS tells it (protocol 1.101,\nADR-0168 decision 3).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "is_default": {
+              "description": "The OS default of its kind (audio endpoints).",
+              "type": "boolean"
+            },
+            "mic": {
+              "description": "A camera's own microphone, when it is not a source yet (protocol 1.101).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "name": {
+              "description": "Name from the OS (a window title can be private: `source.targets` needs\n`control`).",
+              "type": "string"
+            },
+            "picker": {
+              "description": "Not a target yet: adding it runs the OS picker on the computer running RBS,\nso a client skips it (`target` is empty; protocol 1.101).",
+              "type": "boolean"
+            },
+            "recent": {
+              "description": "Its rank among the user's recent picks for this kind, 0 the newest\n(`settings.recent_targets`; protocol 1.101).",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "size": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Dimensions"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Native size when known (displays and windows)."
+            },
+            "sound": {
+              "description": "The sound that goes with a display or window can be added too (protocol\n1.101).",
+              "type": "boolean"
+            },
+            "target": {
+              "description": "Its id for that adapter.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "adapter",
+            "target",
+            "is_default",
+            "size"
+          ],
+          "type": "object"
+        },
+        "Dimensions": {
+          "description": "Width and height in pixels.",
+          "properties": {
+            "height": {
+              "description": "Height in pixels.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "width": {
+              "description": "Width in pixels.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "width",
+            "height"
+          ],
+          "type": "object"
+        },
+        "SourceKind": {
+          "description": "A kind of source the user can add.",
+          "oneOf": [
+            {
+              "const": "screen",
+              "description": "A whole display.",
+              "type": "string"
+            },
+            {
+              "const": "window",
+              "description": "One window.",
+              "type": "string"
+            },
+            {
+              "const": "camera",
+              "description": "A camera or capture card.",
+              "type": "string"
+            },
+            {
+              "const": "audio_input",
+              "description": "A microphone or line input.",
+              "type": "string"
+            },
+            {
+              "const": "system_audio",
+              "description": "What the computer plays.",
+              "type": "string"
+            },
+            {
+              "const": "application_audio",
+              "description": "What one application plays.",
+              "type": "string"
+            },
+            {
+              "const": "image",
+              "description": "A picture: a file or a built-in sample (protocol 1.34, ADR-0075).",
+              "type": "string"
+            },
+            {
+              "const": "color",
+              "description": "A solid colour (protocol 1.34, ADR-0075).",
+              "type": "string"
+            },
+            {
+              "const": "media",
+              "description": "A local media file (protocol TBD, ADR-0108).",
+              "type": "string"
+            },
+            {
+              "const": "browser",
+              "description": "A browser page from the helper process (protocol TBD, ADR-0109).",
+              "type": "string"
+            },
+            {
+              "const": "text",
+              "description": "A text drawn by the server's text renderer (protocol 1.75, ADR-0129).",
+              "type": "string"
+            },
+            {
+              "const": "slideshow",
+              "description": "The pictures of one folder shown one after another (protocol 1.102, ADR-0171).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`source.targets`' answer.",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/SourceKind",
+          "description": "The kind."
+        },
+        "targets": {
+          "description": "Its capture targets, in OS order.",
+          "items": {
+            "$ref": "#/$defs/CaptureTarget"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind",
+        "targets"
+      ],
+      "title": "TargetList",
+      "type": "object"
+    }
+  },
+  "settings.set": {
+    "input_schema": {
+      "$defs": {
+        "Canvas": {
+          "description": "The canvas's size and frame rate.",
+          "properties": {
+            "fps_den": {
+              "description": "Frame rate denominator.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "fps_num": {
+              "description": "Frame rate numerator.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "height": {
+              "description": "Height in pixels.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "width": {
+              "description": "Width in pixels.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "width",
+            "height",
+            "fps_num",
+            "fps_den"
+          ],
+          "type": "object"
+        },
+        "Container": {
+          "description": "A recording container.",
+          "oneOf": [
+            {
+              "const": "mkv",
+              "description": "Matroska (`.mkv`).",
+              "type": "string"
+            },
+            {
+              "const": "mp4",
+              "description": "Fragmented MP4 (`.mp4`).",
+              "type": "string"
+            },
+            {
+              "const": "wav",
+              "description": "WAV (`.wav`): the mix as PCM, with no picture (protocol 1.42).",
+              "type": "string"
+            },
+            {
+              "const": "flac",
+              "description": "FLAC (`.flac`): the mix, lossless, with no picture (protocol 1.43).",
+              "type": "string"
+            },
+            {
+              "const": "mov",
+              "description": "QuickTime (`.mov`), written fragmented like MP4 (protocol 1.51, ADR-0085).",
+              "type": "string"
+            }
+          ]
+        },
+        "Delivery": {
+          "description": "How a recording or a stream encodes colour (protocol 1.37). Omitted when\n[`Delivery::Video`], so an older file and a 1.36 client stay on Rec. 709 limited range.",
+          "oneOf": [
+            {
+              "const": "video",
+              "description": "Rec. 709 camera encoding, limited range. YouTube, TV and streams.",
+              "type": "string"
+            },
+            {
+              "const": "screen",
+              "description": "sRGB transfer, full range. Matches a desktop display.",
+              "type": "string"
+            }
+          ]
+        },
+        "Dimensions": {
+          "description": "Width and height in pixels.",
+          "properties": {
+            "height": {
+              "description": "Height in pixels.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "width": {
+              "description": "Width in pixels.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "width",
+            "height"
+          ],
+          "type": "object"
+        },
+        "Encoding": {
+          "description": "How a stream is encoded (`settings.get`, `settings.set`; protocol 1.2). The same\nfields as a [`RecordingProfile`]'s encoding.",
+          "properties": {
+            "audio_kbps": {
+              "description": "Audio bitrate in kbit/s.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "b_frames": {
+              "description": "Most B-frames.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "cbr_padding": {
+              "description": "With CBR, pad the video to its full bitrate.",
+              "type": "boolean"
+            },
+            "delivery": {
+              "$ref": "#/$defs/Delivery",
+              "description": "Colour encoding. Omitted when [`Delivery::Video`] (protocol 1.37)."
+            },
+            "encoder": {
+              "description": "The video encoder's adapter id, or `null` for the best one.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "keyframe_seconds": {
+              "description": "Seconds between keyframes.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "max_video_kbps": {
+              "description": "VBR peak in kbit/s; `null` is 1.5 times the target.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "open_shadows": {
+              "description": "Lifts only the darkest tones on a Video encode. Omitted when off (protocol 1.38).",
+              "type": "boolean"
+            },
+            "preset": {
+              "$ref": "#/$defs/Preset",
+              "description": "Speed versus quality."
+            },
+            "profile": {
+              "description": "Codec profile (`high`, `main`, `baseline`); `null` lets the encoder pick.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "quality": {
+              "description": "Constant-quality level, 0 (best) to 51.",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "rate_control": {
+              "$ref": "#/$defs/RateMode",
+              "description": "Rate control."
+            },
+            "video_codec": {
+              "$ref": "#/$defs/VideoCodec",
+              "description": "H.264, HEVC or AV1. Omitted when H.264, so a 1.33 client still reads the object.\n`\"av1\"` is protocol 1.40."
+            },
+            "video_kbps": {
+              "description": "Video bitrate in kbit/s: the CBR rate, or the VBR target.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "rate_control",
+            "video_kbps",
+            "quality",
+            "keyframe_seconds",
+            "preset",
+            "b_frames",
+            "cbr_padding",
+            "audio_kbps"
+          ],
+          "type": "object"
+        },
+        "HardwareLimitPolicy": {
+          "description": "`record.start`'s `on_hardware_limit` (protocol 1.54, ADR-0087 decision 5).",
+          "oneOf": [
+            {
+              "const": "ask",
+              "description": "Refuse the start and say which files do not fit.",
+              "type": "string"
+            },
+            {
+              "const": "skip",
+              "description": "Start without the files that do not fit.",
+              "type": "string"
+            },
+            {
+              "const": "cpu",
+              "description": "Encode the files that do not fit on the CPU (refused until the CPU encoder for\nseparate files exists, ADR-0119 step (c)).",
+              "type": "string"
+            }
+          ]
+        },
+        "HoldPicture": {
+          "description": "What a held stream sends (protocol 1.64, ADR-0124 decision 13).",
+          "oneOf": [
+            {
+              "const": "freeze",
+              "description": "The program's last frame, repeated.",
+              "type": "string"
+            },
+            {
+              "const": "black",
+              "description": "A black picture.",
+              "type": "string"
+            },
+            {
+              "const": "scene",
+              "description": "A scene of the collection, drawn live (protocol 1.67, ADR-0124 phase 2b).",
+              "type": "string"
+            }
+          ]
+        },
+        "HoldSound": {
+          "description": "What a stream held with a scene sends for sound (protocol 1.67, ADR-0124 phase\n2b).",
+          "oneOf": [
+            {
+              "const": "silence",
+              "description": "Silence, as a freeze or black hold.",
+              "type": "string"
+            },
+            {
+              "const": "scene",
+              "description": "The scene's own sources, mixed at their levels.",
+              "type": "string"
+            }
+          ]
+        },
+        "LoudnessSettings": {
+          "description": "The loudness meter's target and true-peak limit (protocol 1.59, ADR-0092 decision\n5): part of `settings.get`, `settings.set` and `settings.changed`, and of\n`loudness.status`. Values are finite; equality compares them bit for bit.",
+          "properties": {
+            "target": {
+              "description": "The target, LUFS (-40 to -5): the mark on the Master's loudness bar.",
+              "format": "float",
+              "type": "number"
+            },
+            "true_peak_limit": {
+              "description": "The true-peak limit, dBTP (-10 to 0): the Master's dot lights once the true\npeak has passed it since the meter started or was reset.",
+              "format": "float",
+              "type": "number"
+            }
+          },
+          "required": [
+            "target",
+            "true_peak_limit"
+          ],
+          "type": "object"
+        },
+        "Preset": {
+          "description": "Speed versus quality.",
+          "oneOf": [
+            {
+              "const": "quality",
+              "description": "Best quality the machine sustains.",
+              "type": "string"
+            },
+            {
+              "const": "balanced",
+              "description": "The default.",
+              "type": "string"
+            },
+            {
+              "const": "speed",
+              "description": "Least GPU use.",
+              "type": "string"
+            }
+          ]
+        },
+        "ProjectFormat": {
+          "description": "An editor project format (protocol 1.58, ADR-0089 decision 9).",
+          "oneOf": [
+            {
+              "const": "fcpxml",
+              "description": "FCPXML 1.9, one `.fcpxml` file (Final Cut Pro).",
+              "type": "string"
+            },
+            {
+              "const": "xmeml",
+              "description": "FCP7 XML (xmeml version 5), one `.xml` file (DaVinci Resolve, Premiere Pro;\nprotocol 1.60).",
+              "type": "string"
+            }
+          ]
+        },
+        "RateMode": {
+          "description": "How the encoder spends bits.",
+          "oneOf": [
+            {
+              "const": "cbr",
+              "description": "Constant bitrate.",
+              "type": "string"
+            },
+            {
+              "const": "vbr",
+              "description": "Variable bitrate with a peak.",
+              "type": "string"
+            },
+            {
+              "const": "constant_quality",
+              "description": "Constant quality.",
+              "type": "string"
+            }
+          ]
+        },
+        "RecordingMarkers": {
+          "additionalProperties": false,
+          "description": "A recording profile's markers (protocol 1.62, ADR-0089 decisions 3 and 4).",
+          "properties": {
+            "lead_ms": {
+              "default": 0,
+              "description": "Moves a manual marker this many milliseconds earlier, 0 to 30 000.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "pause_markers": {
+              "default": true,
+              "description": "One marker per pause on its join in the editor project (on by default;\nprotocol 1.63, ADR-0124 decision 10).",
+              "type": "boolean"
+            },
+            "scene_changes": {
+              "default": true,
+              "description": "A marker each time the program scene changes (on by default).",
+              "type": "boolean"
+            },
+            "stream_events": {
+              "default": false,
+              "description": "A marker when a stream starts and when it ends (off by default).",
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
+        "RecordingProfile": {
+          "description": "Every setting of a recording profile (`settings.get`, `settings.set`).",
+          "properties": {
+            "audio_kbps": {
+              "description": "Audio bitrate in kbit/s.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "audio_tracks": {
+              "description": "The buses the recording writes as audio tracks, by name, track 1 first\n(protocol 1.103, ADR-0170 decisions 3 and 11). Omitted when `[\"main\"]`. In\n`settings.set`, absent keeps the stored tracks. One track for now; several\nare `invalid_params` until multi-track recording is built.",
+              "items": {
+                "type": "string"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "b_frames": {
+              "description": "Most B-frames.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "bit_depth": {
+              "description": "Sample width of a WAV or FLAC recording. WAV is 16, 24 or 32 (float). FLAC\nis 16 or 24. Omitted when 16 (protocol 1.42; FLAC is protocol 1.43).",
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "cbr_padding": {
+              "description": "With CBR, pad the video to its full bitrate.",
+              "type": "boolean"
+            },
+            "container": {
+              "$ref": "#/$defs/Container",
+              "description": "The container."
+            },
+            "delivery": {
+              "$ref": "#/$defs/Delivery",
+              "description": "Colour encoding. Omitted when [`Delivery::Video`] (protocol 1.37)."
+            },
+            "editor_project": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ProjectFormat"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Write an editor project next to the recording when it stops (protocol 1.58,\nADR-0089 decision 10). Omitted or `null`: off. Also what makes a plain\nrecording keep its files' timing for a later `project.export`."
+            },
+            "encoder": {
+              "description": "The video encoder's adapter id, or `null` for the best one.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "folder": {
+              "description": "Where recordings are written (absolute).",
+              "type": "string"
+            },
+            "id": {
+              "description": "Its id.",
+              "type": "string"
+            },
+            "keyframe_seconds": {
+              "description": "Seconds between keyframes.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "markers": {
+              "$ref": "#/$defs/RecordingMarkers",
+              "description": "Markers: the reaction-time offset and the automatic markers (protocol 1.62,\nADR-0089 decisions 3 and 4). Absent: the defaults."
+            },
+            "max_video_kbps": {
+              "description": "VBR peak in kbit/s; `null` is 1.5 times the target.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "name": {
+              "description": "Its name.",
+              "type": "string"
+            },
+            "open_shadows": {
+              "description": "Lifts only the darkest tones on a Video encode. Omitted when off (protocol 1.38).",
+              "type": "boolean"
+            },
+            "output_size": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Dimensions"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Encoded picture size. Omitted or `null`: the same as this recording's canvas\n(protocol 1.39, ADR-0102)."
+            },
+            "preset": {
+              "$ref": "#/$defs/Preset",
+              "description": "Speed versus quality."
+            },
+            "profile": {
+              "description": "Codec profile (`high`, `main`, `baseline`); `null` lets the encoder pick.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "quality": {
+              "description": "Constant-quality level, 0 (best) to 51.",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "rate_control": {
+              "$ref": "#/$defs/RateMode",
+              "description": "Rate control."
+            },
+            "video_codec": {
+              "$ref": "#/$defs/VideoCodec",
+              "description": "H.264, HEVC or AV1. Omitted when H.264, so a 1.33 client still reads the object.\n`\"av1\"` is protocol 1.40."
+            },
+            "video_kbps": {
+              "description": "Video bitrate in kbit/s: the CBR rate, or the VBR target.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "id",
+            "name",
+            "folder",
+            "container",
+            "rate_control",
+            "video_kbps",
+            "quality",
+            "keyframe_seconds",
+            "preset",
+            "b_frames",
+            "cbr_padding",
+            "audio_kbps"
+          ],
+          "type": "object"
+        },
+        "ReplaySettings": {
+          "additionalProperties": false,
+          "description": "`settings.replay` (protocol 1.100): the replay buffer's settings. A change applies\nat the next arm; a running buffer keeps its settings.",
+          "properties": {
+            "arm_on_start": {
+              "description": "Arm the buffer when RBS starts.",
+              "type": "boolean"
+            },
+            "audio": {
+              "description": "Keep the sound too.",
+              "type": "boolean"
+            },
+            "folder": {
+              "default": null,
+              "description": "Where clips go, absolute; absent or `null`: the recording profile's folder. A\nrelative path is `invalid_params`; one that is not local needs the\nirreversible-actions permission.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "length_secs": {
+              "description": "Wanted length of the past in seconds (`invalid_params` outside the bounds the\nspec gives).",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "memory_mib": {
+              "description": "Most memory the buffer may use, in MiB.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "arm_on_start",
+            "length_secs",
+            "memory_mib",
+            "audio"
+          ],
+          "type": "object"
+        },
+        "SeparateFilesSettings": {
+          "additionalProperties": false,
+          "description": "`settings.separate_files` (protocol 1.100): Settings › Recording › Separate files.\nRefused with `conflict` while a recording runs.",
+          "properties": {
+            "enabled": {
+              "description": "Record and `record.start` without `iso` write the marked sources' files.",
+              "type": "boolean"
+            },
+            "on_hardware_limit": {
+              "$ref": "#/$defs/HardwareLimitPolicy",
+              "description": "What a `record.start` with the 1.54 parameters does with video files past\ntheir encoder's capacity when it does not say. `cpu` is `invalid_params` in a\npatch until the CPU encoder for separate files exists (ADR-0119 step (c))."
+            }
+          },
+          "required": [
+            "enabled",
+            "on_hardware_limit"
+          ],
+          "type": "object"
+        },
+        "StreamSettingsPatch": {
+          "description": "The stream settings an API client may change (`settings.set`; protocol 1.2): all of\nthem but the server and the key. Unknown fields are ignored, so the\n[`StreamSettings`] that `settings.get` returned can be sent back changed.",
+          "properties": {
+            "audio_bus": {
+              "description": "The bus the stream sends (protocol 1.103); absent: unchanged.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "auto_record": {
+              "description": "Record when the stream starts (protocol 1.11); absent: unchanged, so a 1.2\nclient's patch never turns it off.",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "encoding": {
+              "$ref": "#/$defs/Encoding",
+              "description": "How the stream is encoded."
+            },
+            "hold_picture": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/HoldPicture"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What a hold sends when it names no picture (protocol 1.65); absent: unchanged."
+            },
+            "hold_scene": {
+              "description": "The hold scene (protocol 1.67): absent leaves it unchanged, `null` clears it.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "hold_sound": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/HoldSound"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The hold sound (protocol 1.67); absent: unchanged."
+            },
+            "output_size": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Dimensions"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Encoded picture size (protocol 1.39). Absent or `null` stores the same as this\nstream's canvas, which clears a custom size. Not inside `encoding`."
+            },
+            "reconnect": {
+              "description": "Reconnect when the connection drops.",
+              "type": "boolean"
+            },
+            "srt_latency_ms": {
+              "default": null,
+              "description": "SRT latency in ms (1 or more); `null`: the transport's default.",
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "reconnect",
+            "encoding"
+          ],
+          "type": "object"
+        },
+        "VideoCodec": {
+          "description": "The video codec of a recording or a stream. H.264 is omitted on the wire.",
+          "oneOf": [
+            {
+              "const": "h264",
+              "description": "H.264.",
+              "type": "string"
+            },
+            {
+              "const": "hevc",
+              "description": "HEVC (H.265).",
+              "type": "string"
+            },
+            {
+              "const": "av1",
+              "description": "AV1 (protocol 1.40). A 1.39 client treats the value as unknown.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`settings.set`: the sections given replace the current ones.",
+      "properties": {
+        "canvas": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Canvas"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "A new canvas; the studio restarts with it. Refused while recording."
+        },
+        "loudness": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LoudnessSettings"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The loudness meter's target and true-peak limit (protocol 1.59)."
+        },
+        "profiles": {
+          "default": null,
+          "description": "New recording profiles.",
+          "items": {
+            "$ref": "#/$defs/RecordingProfile"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "replay": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReplaySettings"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The replay buffer (protocol 1.100); applies at the next arm."
+        },
+        "separate_files": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SeparateFilesSettings"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Separate files (protocol 1.100). Refused while a recording runs."
+        },
+        "stream": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StreamSettingsPatch"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "New stream settings (protocol 1.2). Refused while a stream runs."
+        },
+        "swap_after_transition": {
+          "description": "Switch Preview and Program after a transition (protocol 1.100).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "vertical_profile": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordingProfile"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The vertical recording's own settings (protocol 1.100): one profile, with the\n`profiles` rules; `null` removes them, and the main profile applies. Refused\nwhile a vertical recording uses them."
+        },
+        "vertical_stream": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StreamSettingsPatch"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The vertical stream's settings (protocol 1.100), the `stream` patch shape: no\nserver and no key are written or erased. `null` is `invalid_params`. Refused\nwhile the vertical stream runs."
+        }
+      },
+      "title": "SettingsPatch",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "Canvas": {
+          "description": "The canvas's size and frame rate.",
+          "properties": {
+            "fps_den": {
+              "description": "Frame rate denominator.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "fps_num": {
+              "description": "Frame rate numerator.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "height": {
+              "description": "Height in pixels.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "width": {
+              "description": "Width in pixels.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "width",
+            "height",
+            "fps_num",
+            "fps_den"
+          ],
+          "type": "object"
+        },
+        "Container": {
+          "description": "A recording container.",
+          "oneOf": [
+            {
+              "const": "mkv",
+              "description": "Matroska (`.mkv`).",
+              "type": "string"
+            },
+            {
+              "const": "mp4",
+              "description": "Fragmented MP4 (`.mp4`).",
+              "type": "string"
+            },
+            {
+              "const": "wav",
+              "description": "WAV (`.wav`): the mix as PCM, with no picture (protocol 1.42).",
+              "type": "string"
+            },
+            {
+              "const": "flac",
+              "description": "FLAC (`.flac`): the mix, lossless, with no picture (protocol 1.43).",
+              "type": "string"
+            },
+            {
+              "const": "mov",
+              "description": "QuickTime (`.mov`), written fragmented like MP4 (protocol 1.51, ADR-0085).",
+              "type": "string"
+            }
+          ]
+        },
+        "Delivery": {
+          "description": "How a recording or a stream encodes colour (protocol 1.37). Omitted when\n[`Delivery::Video`], so an older file and a 1.36 client stay on Rec. 709 limited range.",
+          "oneOf": [
+            {
+              "const": "video",
+              "description": "Rec. 709 camera encoding, limited range. YouTube, TV and streams.",
+              "type": "string"
+            },
+            {
+              "const": "screen",
+              "description": "sRGB transfer, full range. Matches a desktop display.",
+              "type": "string"
+            }
+          ]
+        },
+        "Dimensions": {
+          "description": "Width and height in pixels.",
+          "properties": {
+            "height": {
+              "description": "Height in pixels.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "width": {
+              "description": "Width in pixels.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "width",
+            "height"
+          ],
+          "type": "object"
+        },
+        "Encoding": {
+          "description": "How a stream is encoded (`settings.get`, `settings.set`; protocol 1.2). The same\nfields as a [`RecordingProfile`]'s encoding.",
+          "properties": {
+            "audio_kbps": {
+              "description": "Audio bitrate in kbit/s.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "b_frames": {
+              "description": "Most B-frames.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "cbr_padding": {
+              "description": "With CBR, pad the video to its full bitrate.",
+              "type": "boolean"
+            },
+            "delivery": {
+              "$ref": "#/$defs/Delivery",
+              "description": "Colour encoding. Omitted when [`Delivery::Video`] (protocol 1.37)."
+            },
+            "encoder": {
+              "description": "The video encoder's adapter id, or `null` for the best one.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "keyframe_seconds": {
+              "description": "Seconds between keyframes.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "max_video_kbps": {
+              "description": "VBR peak in kbit/s; `null` is 1.5 times the target.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "open_shadows": {
+              "description": "Lifts only the darkest tones on a Video encode. Omitted when off (protocol 1.38).",
+              "type": "boolean"
+            },
+            "preset": {
+              "$ref": "#/$defs/Preset",
+              "description": "Speed versus quality."
+            },
+            "profile": {
+              "description": "Codec profile (`high`, `main`, `baseline`); `null` lets the encoder pick.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "quality": {
+              "description": "Constant-quality level, 0 (best) to 51.",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "rate_control": {
+              "$ref": "#/$defs/RateMode",
+              "description": "Rate control."
+            },
+            "video_codec": {
+              "$ref": "#/$defs/VideoCodec",
+              "description": "H.264, HEVC or AV1. Omitted when H.264, so a 1.33 client still reads the object.\n`\"av1\"` is protocol 1.40."
+            },
+            "video_kbps": {
+              "description": "Video bitrate in kbit/s: the CBR rate, or the VBR target.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "encoder",
+            "rate_control",
+            "video_kbps",
+            "max_video_kbps",
+            "quality",
+            "keyframe_seconds",
+            "profile",
+            "preset",
+            "b_frames",
+            "cbr_padding",
+            "audio_kbps"
+          ],
+          "type": "object"
+        },
+        "HardwareLimitPolicy": {
+          "description": "`record.start`'s `on_hardware_limit` (protocol 1.54, ADR-0087 decision 5).",
+          "oneOf": [
+            {
+              "const": "ask",
+              "description": "Refuse the start and say which files do not fit.",
+              "type": "string"
+            },
+            {
+              "const": "skip",
+              "description": "Start without the files that do not fit.",
+              "type": "string"
+            },
+            {
+              "const": "cpu",
+              "description": "Encode the files that do not fit on the CPU (refused until the CPU encoder for\nseparate files exists, ADR-0119 step (c)).",
+              "type": "string"
+            }
+          ]
+        },
+        "HoldPicture": {
+          "description": "What a held stream sends (protocol 1.64, ADR-0124 decision 13).",
+          "oneOf": [
+            {
+              "const": "freeze",
+              "description": "The program's last frame, repeated.",
+              "type": "string"
+            },
+            {
+              "const": "black",
+              "description": "A black picture.",
+              "type": "string"
+            },
+            {
+              "const": "scene",
+              "description": "A scene of the collection, drawn live (protocol 1.67, ADR-0124 phase 2b).",
+              "type": "string"
+            }
+          ]
+        },
+        "HoldSound": {
+          "description": "What a stream held with a scene sends for sound (protocol 1.67, ADR-0124 phase\n2b).",
+          "oneOf": [
+            {
+              "const": "silence",
+              "description": "Silence, as a freeze or black hold.",
+              "type": "string"
+            },
+            {
+              "const": "scene",
+              "description": "The scene's own sources, mixed at their levels.",
+              "type": "string"
+            }
+          ]
+        },
+        "LoudnessSettings": {
+          "description": "The loudness meter's target and true-peak limit (protocol 1.59, ADR-0092 decision\n5): part of `settings.get`, `settings.set` and `settings.changed`, and of\n`loudness.status`. Values are finite; equality compares them bit for bit.",
+          "properties": {
+            "target": {
+              "description": "The target, LUFS (-40 to -5): the mark on the Master's loudness bar.",
+              "format": "float",
+              "type": "number"
+            },
+            "true_peak_limit": {
+              "description": "The true-peak limit, dBTP (-10 to 0): the Master's dot lights once the true\npeak has passed it since the meter started or was reset.",
+              "format": "float",
+              "type": "number"
+            }
+          },
+          "required": [
+            "target",
+            "true_peak_limit"
+          ],
+          "type": "object"
+        },
+        "Preset": {
+          "description": "Speed versus quality.",
+          "oneOf": [
+            {
+              "const": "quality",
+              "description": "Best quality the machine sustains.",
+              "type": "string"
+            },
+            {
+              "const": "balanced",
+              "description": "The default.",
+              "type": "string"
+            },
+            {
+              "const": "speed",
+              "description": "Least GPU use.",
+              "type": "string"
+            }
+          ]
+        },
+        "ProjectFormat": {
+          "description": "An editor project format (protocol 1.58, ADR-0089 decision 9).",
+          "oneOf": [
+            {
+              "const": "fcpxml",
+              "description": "FCPXML 1.9, one `.fcpxml` file (Final Cut Pro).",
+              "type": "string"
+            },
+            {
+              "const": "xmeml",
+              "description": "FCP7 XML (xmeml version 5), one `.xml` file (DaVinci Resolve, Premiere Pro;\nprotocol 1.60).",
+              "type": "string"
+            }
+          ]
+        },
+        "RateMode": {
+          "description": "How the encoder spends bits.",
+          "oneOf": [
+            {
+              "const": "cbr",
+              "description": "Constant bitrate.",
+              "type": "string"
+            },
+            {
+              "const": "vbr",
+              "description": "Variable bitrate with a peak.",
+              "type": "string"
+            },
+            {
+              "const": "constant_quality",
+              "description": "Constant quality.",
+              "type": "string"
+            }
+          ]
+        },
+        "RecordingMarkers": {
+          "additionalProperties": false,
+          "description": "A recording profile's markers (protocol 1.62, ADR-0089 decisions 3 and 4).",
+          "properties": {
+            "lead_ms": {
+              "default": 0,
+              "description": "Moves a manual marker this many milliseconds earlier, 0 to 30 000.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "pause_markers": {
+              "default": true,
+              "description": "One marker per pause on its join in the editor project (on by default;\nprotocol 1.63, ADR-0124 decision 10).",
+              "type": "boolean"
+            },
+            "scene_changes": {
+              "default": true,
+              "description": "A marker each time the program scene changes (on by default).",
+              "type": "boolean"
+            },
+            "stream_events": {
+              "default": false,
+              "description": "A marker when a stream starts and when it ends (off by default).",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "lead_ms",
+            "scene_changes",
+            "stream_events",
+            "pause_markers"
+          ],
+          "type": "object"
+        },
+        "RecordingProfile": {
+          "description": "Every setting of a recording profile (`settings.get`, `settings.set`).",
+          "properties": {
+            "audio_kbps": {
+              "description": "Audio bitrate in kbit/s.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "audio_tracks": {
+              "description": "The buses the recording writes as audio tracks, by name, track 1 first\n(protocol 1.103, ADR-0170 decisions 3 and 11). Omitted when `[\"main\"]`. In\n`settings.set`, absent keeps the stored tracks. One track for now; several\nare `invalid_params` until multi-track recording is built.",
+              "items": {
+                "type": "string"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "b_frames": {
+              "description": "Most B-frames.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "bit_depth": {
+              "description": "Sample width of a WAV or FLAC recording. WAV is 16, 24 or 32 (float). FLAC\nis 16 or 24. Omitted when 16 (protocol 1.42; FLAC is protocol 1.43).",
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "cbr_padding": {
+              "description": "With CBR, pad the video to its full bitrate.",
+              "type": "boolean"
+            },
+            "container": {
+              "$ref": "#/$defs/Container",
+              "description": "The container."
+            },
+            "delivery": {
+              "$ref": "#/$defs/Delivery",
+              "description": "Colour encoding. Omitted when [`Delivery::Video`] (protocol 1.37)."
+            },
+            "editor_project": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ProjectFormat"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Write an editor project next to the recording when it stops (protocol 1.58,\nADR-0089 decision 10). Omitted or `null`: off. Also what makes a plain\nrecording keep its files' timing for a later `project.export`."
+            },
+            "encoder": {
+              "description": "The video encoder's adapter id, or `null` for the best one.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "folder": {
+              "description": "Where recordings are written (absolute).",
+              "type": "string"
+            },
+            "id": {
+              "description": "Its id.",
+              "type": "string"
+            },
+            "keyframe_seconds": {
+              "description": "Seconds between keyframes.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "markers": {
+              "$ref": "#/$defs/RecordingMarkers",
+              "description": "Markers: the reaction-time offset and the automatic markers (protocol 1.62,\nADR-0089 decisions 3 and 4). Absent: the defaults."
+            },
+            "max_video_kbps": {
+              "description": "VBR peak in kbit/s; `null` is 1.5 times the target.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "name": {
+              "description": "Its name.",
+              "type": "string"
+            },
+            "open_shadows": {
+              "description": "Lifts only the darkest tones on a Video encode. Omitted when off (protocol 1.38).",
+              "type": "boolean"
+            },
+            "output_size": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Dimensions"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Encoded picture size. Omitted or `null`: the same as this recording's canvas\n(protocol 1.39, ADR-0102)."
+            },
+            "preset": {
+              "$ref": "#/$defs/Preset",
+              "description": "Speed versus quality."
+            },
+            "profile": {
+              "description": "Codec profile (`high`, `main`, `baseline`); `null` lets the encoder pick.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "quality": {
+              "description": "Constant-quality level, 0 (best) to 51.",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "rate_control": {
+              "$ref": "#/$defs/RateMode",
+              "description": "Rate control."
+            },
+            "video_codec": {
+              "$ref": "#/$defs/VideoCodec",
+              "description": "H.264, HEVC or AV1. Omitted when H.264, so a 1.33 client still reads the object.\n`\"av1\"` is protocol 1.40."
+            },
+            "video_kbps": {
+              "description": "Video bitrate in kbit/s: the CBR rate, or the VBR target.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "id",
+            "name",
+            "folder",
+            "container",
+            "encoder",
+            "rate_control",
+            "video_kbps",
+            "max_video_kbps",
+            "quality",
+            "keyframe_seconds",
+            "profile",
+            "preset",
+            "b_frames",
+            "cbr_padding",
+            "audio_kbps"
+          ],
+          "type": "object"
+        },
+        "ReplaySettings": {
+          "additionalProperties": false,
+          "description": "`settings.replay` (protocol 1.100): the replay buffer's settings. A change applies\nat the next arm; a running buffer keeps its settings.",
+          "properties": {
+            "arm_on_start": {
+              "description": "Arm the buffer when RBS starts.",
+              "type": "boolean"
+            },
+            "audio": {
+              "description": "Keep the sound too.",
+              "type": "boolean"
+            },
+            "folder": {
+              "default": null,
+              "description": "Where clips go, absolute; absent or `null`: the recording profile's folder. A\nrelative path is `invalid_params`; one that is not local needs the\nirreversible-actions permission.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "length_secs": {
+              "description": "Wanted length of the past in seconds (`invalid_params` outside the bounds the\nspec gives).",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "memory_mib": {
+              "description": "Most memory the buffer may use, in MiB.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "arm_on_start",
+            "length_secs",
+            "memory_mib",
+            "audio",
+            "folder"
+          ],
+          "type": "object"
+        },
+        "SeparateFilesSettings": {
+          "additionalProperties": false,
+          "description": "`settings.separate_files` (protocol 1.100): Settings › Recording › Separate files.\nRefused with `conflict` while a recording runs.",
+          "properties": {
+            "enabled": {
+              "description": "Record and `record.start` without `iso` write the marked sources' files.",
+              "type": "boolean"
+            },
+            "on_hardware_limit": {
+              "$ref": "#/$defs/HardwareLimitPolicy",
+              "description": "What a `record.start` with the 1.54 parameters does with video files past\ntheir encoder's capacity when it does not say. `cpu` is `invalid_params` in a\npatch until the CPU encoder for separate files exists (ADR-0119 step (c))."
+            }
+          },
+          "required": [
+            "enabled",
+            "on_hardware_limit"
+          ],
+          "type": "object"
+        },
+        "Settings": {
+          "description": "Settings the control thread owns.",
+          "properties": {
+            "canvas": {
+              "$ref": "#/$defs/Canvas",
+              "description": "The canvas."
+            },
+            "loudness": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/LoudnessSettings"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The loudness meter's target and true-peak limit (protocol 1.59)."
+            },
+            "profiles": {
+              "description": "Recording profiles.",
+              "items": {
+                "$ref": "#/$defs/RecordingProfile"
+              },
+              "type": "array"
+            },
+            "replay": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ReplaySettings"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The replay buffer (protocol 1.100); absent from older servers."
+            },
+            "separate_files": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SeparateFilesSettings"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Separate files (protocol 1.100); absent from older servers."
+            },
+            "stream": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/StreamSettings"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The stream settings (protocol 1.2); absent while the app is still starting and\nfrom servers that do not stream."
+            },
+            "swap_after_transition": {
+              "description": "Switch Preview and Program after a transition (protocol 1.100); absent from\nolder servers.",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "vertical": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/VerticalWithMain"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Whether Record and Go live also act on the vertical outputs (protocol 1.42;\nread only here, set with `output.set_with_vertical`)."
+            },
+            "vertical_profile": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/RecordingProfile"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The vertical recording's own settings (protocol 1.100): `null` when the\nvertical recording uses the main profile; absent from older servers."
+            },
+            "vertical_stream": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/StreamSettings"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The vertical stream's settings (protocol 1.100): `null` when it is not set up;\nabsent from older servers."
+            }
+          },
+          "required": [
+            "profiles",
+            "canvas"
+          ],
+          "type": "object"
+        },
+        "StreamProtocol": {
+          "description": "How a stream reaches its server.",
+          "oneOf": [
+            {
+              "const": "rtmp",
+              "description": "RTMP (`rtmp://`), with a stream key.",
+              "type": "string"
+            },
+            {
+              "const": "srt",
+              "description": "SRT (`srt://`).",
+              "type": "string"
+            }
+          ]
+        },
+        "StreamSettings": {
+          "description": "The stream settings (`settings.get`; protocol 1.2). The server's address is not\npart of them: only the local user enters it, in the app, so an API client can neither\nread it nor send the program and the stream key elsewhere. The key is never shown.",
+          "properties": {
+            "audio_bus": {
+              "description": "The bus the stream sends, by name (protocol 1.103, ADR-0170 decision 3); every\ndestination sends it. Omitted when `main`, and `main` from older servers.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "auto_record": {
+              "default": false,
+              "description": "Record when the stream starts, with the recording settings; ending the stream\nstops that recording (protocol 1.11; `false` from older servers).",
+              "type": "boolean"
+            },
+            "encoding": {
+              "$ref": "#/$defs/Encoding",
+              "description": "How the stream is encoded."
+            },
+            "hold_picture": {
+              "$ref": "#/$defs/HoldPicture",
+              "default": "freeze",
+              "description": "What `stream.hold` and Break send when they name no picture (protocol 1.65,\nADR-0124); `freeze` from older servers."
+            },
+            "hold_scene": {
+              "default": null,
+              "description": "The scene a hold with `picture: \"scene\"` shows when it names none (protocol\n1.67, ADR-0124 phase 2b); `null` when none is set.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "hold_sound": {
+              "$ref": "#/$defs/HoldSound",
+              "default": "silence",
+              "description": "The sound such a hold sends when it names none (protocol 1.67); `silence` from\nolder servers."
+            },
+            "key_saved": {
+              "description": "A stream key is saved in the system's credential store.",
+              "type": "boolean"
+            },
+            "output_size": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Dimensions"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Encoded picture size. Omitted or `null`: the same as this stream's canvas\n(protocol 1.39, ADR-0102). Not inside `encoding`."
+            },
+            "protocol": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/StreamProtocol"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The saved server's protocol, or `null` when no server is saved."
+            },
+            "reconnect": {
+              "description": "Reconnect when the connection drops.",
+              "type": "boolean"
+            },
+            "srt_latency_ms": {
+              "description": "SRT latency in ms; `null`: the transport's default (120 ms).",
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "protocol",
+            "key_saved",
+            "reconnect",
+            "srt_latency_ms",
+            "encoding",
+            "auto_record",
+            "hold_picture",
+            "hold_scene",
+            "hold_sound"
+          ],
+          "type": "object"
+        },
+        "VerticalWithMain": {
+          "description": "Whether Record and Go live also start and stop the vertical output (protocol 1.42,\nADR-0111 decision 4). A server older than 1.42 has none: main only.",
+          "properties": {
+            "record_with_main": {
+              "description": "Record also starts and stops the vertical recording.",
+              "type": "boolean"
+            },
+            "stream_with_main": {
+              "description": "Go live also starts and stops the vertical stream.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "record_with_main",
+            "stream_with_main"
+          ],
+          "type": "object"
+        },
+        "VideoCodec": {
+          "description": "The video codec of a recording or a stream. H.264 is omitted on the wire.",
+          "oneOf": [
+            {
+              "const": "h264",
+              "description": "H.264.",
+              "type": "string"
+            },
+            {
+              "const": "hevc",
+              "description": "HEVC (H.265).",
+              "type": "string"
+            },
+            {
+              "const": "av1",
+              "description": "AV1 (protocol 1.40). A 1.39 client treats the value as unknown.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "A state query's answer: the data and the `seq` of each state key it includes, so a\nclient ignores events with an equal or lower `seq`.",
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/Settings",
+          "description": "The state."
+        },
+        "seq": {
+          "additionalProperties": {
+            "format": "uint64",
+            "maximum": 18446744073709551615,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "description": "`seq` per state key included in `data`.",
+          "type": "object"
+        }
+      },
+      "required": [
+        "seq",
+        "data"
+      ],
+      "title": "Snapshot",
+      "type": "object"
+    }
+  }
+}

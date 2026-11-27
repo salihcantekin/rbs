@@ -100,6 +100,18 @@ fn run(options: &Options, catalogue: &AllTypes, lookup: &dyn Lookup) -> ImportPl
     .expect("plan")
 }
 
+fn run_json(json: &str, options: &Options) -> ImportPlan {
+    plan(
+        json.as_bytes(),
+        None,
+        &Mappers::builtin(),
+        &all(),
+        &NoLookup,
+        options,
+    )
+    .expect("plan")
+}
+
 fn all() -> AllTypes {
     AllTypes {
         without: Vec::new(),
@@ -280,7 +292,7 @@ fn a_type_missing_from_the_build_is_reported_not_imported() {
 }
 
 #[test]
-fn chosen_scenes_bring_what_they_nest_and_nothing_else() {
+fn chosen_scenes_are_exact_and_nested_placements_are_reported() {
     let options = Options {
         scenes: SceneChoice::Only(BTreeSet::from(["Main".to_owned()])),
         global_audio: false,
@@ -289,9 +301,25 @@ fn chosen_scenes_bring_what_they_nest_and_nothing_else() {
     };
     let p = run(&options, &all(), &ThisComputer);
     let scenes: Vec<_> = p.collection.scenes().map(|s| s.name.clone()).collect();
-    assert_eq!(scenes, ["Main", "Overlay"]);
+    assert_eq!(scenes, ["Main"]);
     assert!(!p.collection.sources().any(|s| s.name == "Logo"));
     assert!(!p.collection.sources().any(|s| s.name == "Mic/Aux"));
+    let skipped_overlay: Vec<_> = p
+        .report
+        .entries
+        .iter()
+        .filter(|e| {
+            e.obs_name == "Overlay" && e.reason == "Scenes cannot be placed inside other scenes."
+        })
+        .collect();
+    assert_eq!(skipped_overlay.len(), 1);
+    assert_eq!(skipped_overlay[0].outcome, Outcome::Skipped);
+    assert_eq!(skipped_overlay[0].area, Area::Scene);
+    assert_eq!(skipped_overlay[0].scenes, ["Main"]);
+    assert_eq!(
+        skipped_overlay[0].reason,
+        "Scenes cannot be placed inside other scenes."
+    );
     let not_chosen: Vec<_> = p
         .report
         .with_outcome(Outcome::NotChosen)
@@ -307,6 +335,151 @@ fn chosen_scenes_bring_what_they_nest_and_nothing_else() {
     );
     // Every planned object is either imported or in the report.
     assert!(p.collection.canvases().all(|c| c.globals.is_none()));
+}
+
+#[test]
+fn all_and_only_skip_each_nested_placement_including_group_members() {
+    let json = r#"{
+        "name": "Nested scenes",
+        "scene_order": [{"name": "Main"}, {"name": "Nested"}, {"name": "Other"}],
+        "sources": [
+            {"id": "scene", "name": "Main", "settings": {"items": [
+                {"name": "Nested", "pos_rel": {"x": 0.1, "y": 0.1}, "scale_ref": {"x": 1920, "y": 1080}, "align": 5},
+                {"name": "Grouped", "pos": {"x": 0, "y": 0}, "scale": {"x": 1, "y": 1}, "align": 5},
+                {"name": "Empty group", "pos": {"x": 0, "y": 0}, "scale": {"x": 1, "y": 1}, "align": 5}
+            ]}},
+            {"id": "scene", "name": "Nested", "settings": {"items": [
+                {"name": "Nested-only source", "pos": {"x": 0, "y": 0}, "scale": {"x": 1, "y": 1}, "align": 5}
+            ]}},
+            {"id": "scene", "name": "Other", "settings": {"items": []}},
+            {"id": "color_source_v3", "name": "Dot", "settings": {"width": 4, "height": 4}},
+            {"id": "color_source_v3", "name": "Nested-only source", "settings": {"width": 4, "height": 4}}
+        ],
+        "groups": [{
+            "id": "group", "name": "Grouped", "settings": {"cx": 100, "cy": 100, "items": [
+                {"name": "Other", "pos": {"x": 0, "y": 0}, "scale": {"x": 1, "y": 1}, "align": 5},
+                {"name": "Dot", "pos": {"x": 0, "y": 0}, "scale": {"x": 1, "y": 1}, "align": 5}
+            ]}
+        }, {
+            "id": "group", "name": "Empty group", "settings": {"cx": 100, "cy": 100, "items": [
+                {"name": "Nested", "pos": {"x": 0, "y": 0}, "scale": {"x": 1, "y": 1}, "align": 5},
+                {"name": "Other", "pos": {"x": 0, "y": 0}, "scale": {"x": 1, "y": 1}, "align": 5}
+            ]}
+        }]
+    }"#;
+
+    let all_plan = run_json(json, &Options::default());
+    assert_eq!(
+        all_plan
+            .collection
+            .scenes()
+            .map(|scene| scene.name.as_str())
+            .collect::<Vec<_>>(),
+        ["Main", "Nested", "Other"]
+    );
+    assert!(all_plan.collection.scenes().all(|scene| {
+        scene
+            .items
+            .iter()
+            .all(|item| !matches!(item.content, ItemContent::Scene(_)))
+    }));
+    assert!(
+        all_plan
+            .collection
+            .sources()
+            .any(|source| source.name == "Nested-only source")
+    );
+
+    let only = Options {
+        scenes: SceneChoice::Only(BTreeSet::from(["Main".to_owned()])),
+        ..Options::default()
+    };
+    let only_plan = run_json(json, &only);
+    assert_eq!(
+        only_plan
+            .collection
+            .scenes()
+            .map(|scene| scene.name.as_str())
+            .collect::<Vec<_>>(),
+        ["Main"]
+    );
+    assert!(
+        !only_plan
+            .collection
+            .sources()
+            .any(|source| source.name == "Nested-only source")
+    );
+
+    for plan in [&all_plan, &only_plan] {
+        let nested: Vec<_> = plan
+            .report
+            .entries
+            .iter()
+            .filter(|e| e.reason == "Scenes cannot be placed inside other scenes.")
+            .collect();
+        assert_eq!(nested.len(), 4, "{}", plan.report);
+        assert_eq!(
+            nested
+                .iter()
+                .map(|e| (e.obs_name.as_str(), e.scenes.as_slice()))
+                .collect::<Vec<_>>(),
+            [
+                ("Nested", &["Main".to_owned()][..]),
+                ("Other", &["Main".to_owned()][..]),
+                ("Nested", &["Main".to_owned()][..]),
+                ("Other", &["Main".to_owned()][..])
+            ]
+        );
+        assert!(nested.iter().all(|e| {
+            e.outcome == Outcome::Skipped && e.area == Area::Scene && e.obs_type == "scene"
+        }));
+
+        let group = plan
+            .report
+            .entries
+            .iter()
+            .find(|e| e.obs_name == "Grouped" && e.obs_type == "group")
+            .expect("group loses its nested-scene member");
+        assert_eq!(group.outcome, Outcome::Approximated);
+        assert_eq!(group.area, Area::Scene);
+        assert_eq!(group.scenes, ["Main"]);
+        assert!(group.reason.contains("1 item(s)"));
+        let empty_group = plan
+            .report
+            .entries
+            .iter()
+            .find(|e| e.obs_name == "Empty group" && e.obs_type == "group")
+            .expect("group loses all of its nested-scene members");
+        assert_eq!(empty_group.outcome, Outcome::Approximated);
+        assert!(empty_group.reason.contains("0 item(s)"));
+        let main = plan
+            .collection
+            .scenes()
+            .find(|scene| scene.name == "Main")
+            .unwrap();
+        assert!(main.groups.is_empty());
+        assert!(
+            main.items
+                .iter()
+                .any(|item| item.group.is_none() && matches!(item.content, ItemContent::Source(_)))
+        );
+    }
+
+    let relative_group = json.replace(
+        r#""name": "Grouped", "pos": {"x": 0, "y": 0}, "scale": {"x": 1, "y": 1}, "align": 5"#,
+        r#""name": "Grouped", "pos_rel": {"x": 0.1, "y": 0.1}, "scale_ref": {"x": 1920, "y": 1080}, "align": 5"#,
+    );
+    assert_ne!(relative_group, json);
+    let relative_group_plan = run_json(&relative_group, &only);
+    assert_eq!(
+        relative_group_plan
+            .report
+            .entries
+            .iter()
+            .filter(|e| e.reason == "Scenes cannot be placed inside other scenes.")
+            .count(),
+        4
+    );
 }
 
 #[test]
@@ -342,8 +515,8 @@ fn bad_input_is_an_error_not_a_panic() {
 }
 
 #[test]
-fn deep_nesting_and_many_layers_degrade_per_item() {
-    // 20 scenes, each nesting the next: RBS allows 16 levels.
+fn nested_scenes_are_skipped_and_many_layers_degrade_per_item() {
+    // 20 scenes, each nesting the next; all scenes are imported independently.
     let mut sources = Vec::new();
     for i in 0..20 {
         let items = if i + 1 < 20 {
@@ -381,12 +554,24 @@ fn deep_nesting_and_many_layers_degrade_per_item() {
     .unwrap();
     let busy = p.collection.scenes().find(|s| s.name == "Busy").unwrap();
     assert_eq!(busy.items.len() as u64, rbs_scene::MAX_LAYERS);
-    assert!(
+    assert_eq!(
         p.report
             .entries
             .iter()
-            .any(|e| e.reason.contains("deeper than RBS allows"))
+            .filter(|e| {
+                e.outcome == Outcome::Skipped
+                    && e.area == Area::Scene
+                    && e.reason == "Scenes cannot be placed inside other scenes."
+            })
+            .count(),
+        19
     );
+    assert!(p.collection.scenes().all(|scene| {
+        scene
+            .items
+            .iter()
+            .all(|item| !matches!(item.content, ItemContent::Scene(_)))
+    }));
     assert!(
         p.report
             .entries

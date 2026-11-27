@@ -156,6 +156,10 @@ fn the_input_monitor_needs_the_master_clock() {
         let monitor = input.expect("macOS sets an input monitor");
         assert_eq!(monitor.backend_name(), "cg-event-tap");
         assert!(!monitor.is_running(), "registering starts nothing (P13)");
+    } else if cfg!(windows) {
+        let monitor = input.expect("Windows sets an input monitor");
+        assert_eq!(monitor.backend_name(), "raw-input");
+        assert!(!monitor.is_running(), "registering starts nothing (P13)");
     } else {
         assert!(input.is_none(), "no input adapter on this platform yet");
     }

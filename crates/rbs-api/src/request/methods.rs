@@ -3,6 +3,27 @@
 
 use super::{Command, Effect, MethodInfo, m};
 use crate::scope::Scope;
+use serde::{Deserialize, Serialize};
+
+/// A method and its scope, owned (for deserializing).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct MethodInfoOwned {
+    /// `namespace.verb`.
+    pub name: String,
+    /// The scope it needs; `null` for the handshake.
+    pub scope: Option<Scope>,
+    /// What it does (protocol 1.76); absent from an older server, which a client
+    /// treats as `destructive`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effect: Option<Effect>,
+    /// Schema of the request parameters, when available (protocol 1.108).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_schema: Option<serde_json::Value>,
+    /// Schema of the successful result, when available (protocol 1.108).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_schema: Option<serde_json::Value>,
+}
 
 impl Command {
     /// Its method name.
@@ -87,6 +108,8 @@ impl Command {
             Command::GroupRemove(_) => "group.remove",
             Command::GroupRename(_) => "group.rename",
             Command::GroupList(_) => "group.list",
+            Command::GroupGet(_) => "group.get",
+            Command::GroupApply(_) => "group.apply",
             Command::CanvasSetPreview(_) => "canvas.set_preview",
             Command::CanvasTransition(_) => "canvas.transition",
             Command::CanvasRehearse(_) => "canvas.rehearse",
@@ -353,6 +376,8 @@ pub const METHODS: &[MethodInfo] = &[
     m("group.remove", Some(Scope::Control), Effect::Edit),
     m("group.rename", Some(Scope::Control), Effect::Edit),
     m("group.list", Some(Scope::Read), Effect::Read),
+    m("group.get", Some(Scope::Read), Effect::Read),
+    m("group.apply", Some(Scope::Control), Effect::Edit),
     m("canvas.set_preview", Some(Scope::Control), Effect::Edit),
     m("canvas.transition", Some(Scope::Control), Effect::Edit),
     m("canvas.rehearse", Some(Scope::Control), Effect::Edit),
@@ -497,8 +522,8 @@ pub const METHODS: &[MethodInfo] = &[
 ];
 
 /// The client-scoped `ui.*` methods (control API spec, "Client-scoped UI commands").
-/// The API thread routes them to a UI client, so they are not in [`METHODS`]; the
-/// desktop UI's command registry may run them (ADR-0050, U20 test).
+/// Reserved for routing to a UI client; that API routing is not implemented yet, so
+/// they are not in [`METHODS`]. The desktop registry may run them locally (ADR-0050).
 pub const UI_METHODS: &[&str] = &[
     "ui.group.set_visible",
     "ui.group.set_locked",

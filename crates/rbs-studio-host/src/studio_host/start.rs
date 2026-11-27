@@ -41,15 +41,20 @@ pub(super) fn start(
         &gpu,
     );
     let browser_tree: Option<Arc<dyn BrowserTree>> = Some(Arc::clone(&browser) as _);
-    let settings = studio_settings(
+    let mut settings = studio_settings(
         config.preview,
         config.media_pause_release,
         canvas,
         run_fps,
         &collection,
     );
-    let held = held_copy(&collection, canvas, None);
+    let mut held = held_copy(&collection, canvas, None);
     let run = held.as_ref().and_then(|h| run_copy(&collection, canvas, h));
+    if held.is_some() && run.is_none() {
+        return Err("The held Program scene could not be prepared.".into());
+    }
+    // The held copy shares its original's group runs from the first frame.
+    settings.scene_origins = scene_origins(held.as_ref());
     let first = engine();
     let clock = first.clock();
     let studio = Studio::start_with_tree(
@@ -61,6 +66,9 @@ pub(super) fn start(
         browser_tree.clone(),
     )
     .map_err(|e| e.to_string())?;
+    if let Some(held) = &mut held {
+        held.cues = Some(studio.capture_held_cues(&held.cue_items));
+    }
     let display = seams::probe_display(config.main_display, &adapters.sources);
     let kinds = installed_kinds(&adapters.sources);
     // Video and audio encoders are probed on first use (ADR-0154's neighbour, F-08):
@@ -85,6 +93,7 @@ pub(super) fn start(
         collection_epoch: 0,
         list_stamp: None,
         cues_sent: Vec::new(),
+        group_events: Default::default(),
         canvas,
         scene,
         rows: Vec::new(),
@@ -152,6 +161,7 @@ pub(super) fn start(
         meters_applied: true,
         audio_rest_at: None,
         api: None,
+        group_ids: settings.group_ids.clone(),
         kinds,
         library: None,
         switch_pending: None,
@@ -162,6 +172,10 @@ pub(super) fn start(
         add_ons,
         levels,
     };
+    let cues = host
+        .begin_held_cues()
+        .map_err(|_| "The held Show cues could not be captured.".to_owned())?;
+    host.finish_held_cues(cues, true);
     // A vertical canvas saved with the collection runs again (ADR-0093 decision 9).
     host.restore_vertical();
     // Show loudness is saved: the meter runs again from the start.

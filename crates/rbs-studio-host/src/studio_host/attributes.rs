@@ -375,10 +375,11 @@ impl Host {
             names.push(name);
         }
         let name = unique_scene_name(&self.collection, &scene.name);
-        let (new_id, made, undo) = self
-            .collection
+        let mut draft = self.collection.clone();
+        let (new_id, made, undo) = draft
             .duplicate_scene_with_copies(id, &name, &copies, &source_fields)
             .map_err(|e| Refusal::of(&e))?;
+        self.collection = draft;
         self.edits
             .history
             .record(EditKind::AddScene, &name, 0, vec![undo]);

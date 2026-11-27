@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 /// `media.play`, `media.pause`, `media.restart` and `media.state` (protocol 1.83,
 /// ADR-0108 decision 10): one media-file source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct MediaSource {
     /// The source's id.
@@ -14,6 +15,7 @@ pub struct MediaSource {
 
 /// `media.seek` (protocol 1.83, ADR-0108 decision 10).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct MediaSeek {
     /// The source's id.
@@ -25,6 +27,7 @@ pub struct MediaSeek {
 
 /// The play state of a media-file source (ADR-0108 decision 10).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum MediaPlayState {
     /// Picture and sound advance.
@@ -46,6 +49,7 @@ pub enum MediaPlayState {
 
 /// The answer of every `media.*` method (protocol 1.83).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct MediaStateInfo {
     /// The source's id.
     pub source: u32,

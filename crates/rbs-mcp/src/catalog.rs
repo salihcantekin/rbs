@@ -38,6 +38,22 @@ pub fn entry(method: &str) -> Entry {
     }
 }
 
+/// The first sentence of [`entry`]'s description, at most 140 characters (for indexes).
+pub fn summary(method: &str) -> String {
+    let full = describe(method);
+    let first = full
+        .find(". ")
+        .map_or(full.as_str(), |i| &full[..=i])
+        .trim_end();
+    if first.chars().count() > 140 {
+        let mut cut: String = first.chars().take(139).collect();
+        cut.push('…');
+        cut
+    } else {
+        first.to_owned()
+    }
+}
+
 /// The parameters of the first `` `method {..}` `` in the spec, or `None`.
 fn signature(method: &str) -> Option<Vec<(String, bool)>> {
     let needle = format!("`{method} {{");

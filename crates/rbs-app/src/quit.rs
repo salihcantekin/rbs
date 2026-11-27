@@ -132,6 +132,7 @@ impl Ctx {
         app.vertical_preview_endpoint = None;
         self.meter_timer.stop();
         app.meters_ui.hidden(&app.studio);
+        app.studio.set_properties_shown(false);
         app.hidden = true;
         #[cfg(target_os = "macos")]
         rbs_app::native::set_hidden(true);

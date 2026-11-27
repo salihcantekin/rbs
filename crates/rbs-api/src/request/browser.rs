@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 /// `browser.reload` (protocol 1.91, ADR-0132 decision 5): reloads a browser source's
 /// running page without a new process.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct BrowserReload {
     /// The browser source's id.
@@ -18,6 +19,7 @@ pub struct BrowserReload {
 /// `browser.run_script` (protocol 1.91, ADR-0149 decision 7): runs `script`, or the
 /// saved script when absent, once in the running page, on the saved origin only.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct BrowserRunScript {
     /// The browser source's id.
@@ -30,6 +32,7 @@ pub struct BrowserRunScript {
 /// `browser.forget_sign_in` (protocol 1.96, ADR-0132 decision 10): deletes the kept
 /// profile of a browser source that keeps signed in. Cannot be undone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct BrowserForgetSignIn {
     /// The browser source's id.
@@ -43,6 +46,7 @@ pub struct BrowserForgetSignIn {
 /// `browser.input` (protocol 1.96, ADR-0132 decisions 6 and 9): pointer, wheel, key
 /// and text events for a browser source's running page, in page pixels.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct BrowserInput {
     /// The browser source's id.
@@ -60,6 +64,7 @@ impl BrowserInput {
 
 /// A mouse button of [`BrowserInputEvent::Button`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum BrowserMouseButton {
     /// The primary button.
@@ -72,6 +77,7 @@ pub enum BrowserMouseButton {
 
 /// Modifier keys held during a [`BrowserInputEvent`]; absent fields are false.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct BrowserModifiers {
     /// Shift.
@@ -161,6 +167,7 @@ impl<'de> Deserialize<'de> for BrowserHeld {
 /// One event of `browser.input`. Coordinates are page pixels, `0..width` and
 /// `0..height` of the source's page.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum BrowserInputEvent {
     /// The pointer moved to `x`, `y`.
@@ -174,6 +181,7 @@ pub enum BrowserInputEvent {
         modifiers: BrowserModifiers,
         /// Held mouse buttons, which a drag inside the page needs (protocol 1.101).
         #[serde(default, skip_serializing_if = "BrowserHeld::is_none")]
+        #[cfg_attr(feature = "schema", schemars(with = "Vec<BrowserMouseButton>"))]
         held: BrowserHeld,
     },
     /// The pointer left the page.
@@ -183,6 +191,7 @@ pub enum BrowserInputEvent {
         modifiers: BrowserModifiers,
         /// Held mouse buttons (protocol 1.101).
         #[serde(default, skip_serializing_if = "BrowserHeld::is_none")]
+        #[cfg_attr(feature = "schema", schemars(with = "Vec<BrowserMouseButton>"))]
         held: BrowserHeld,
     },
     /// A button went down or up at `x`, `y`; `clicks` counts a double click as 2.

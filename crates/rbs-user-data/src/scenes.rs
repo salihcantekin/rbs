@@ -59,7 +59,7 @@
 //!
 //! [[scenes.items]]
 //! id = 0
-//! source = 0                   # or: scene = <id> for a nested scene
+//! source = 0                   # nested scene items are refused (ADR-0188)
 //! layout = { position = [0.0, 0.0], size = [1920.0, 1080.0] }
 //! # show_for_ms = 5000         # timed show while hidden (format 13, ADR-0105)
 //! ```
@@ -97,6 +97,7 @@ use crate::document::{self, BodyError, Document};
 
 mod buses;
 mod groups;
+mod nesting;
 
 #[derive(Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
@@ -1328,9 +1329,12 @@ fn later(found: u32, keys: &'static str, since: u32) -> BodyError {
 
 impl Document for SceneCollection {
     const KIND: &'static str = "scene-collection";
-    const FORMAT: u32 = 30;
+    const FORMAT: u32 = 31;
 
     fn write_format(&self) -> u32 {
+        if groups::needs_31(self) {
+            return 31;
+        }
         // An older build refuses groups as unknown keys (ADR-0182).
         if groups::needs_30(self) {
             return 30;
@@ -1467,9 +1471,9 @@ impl Document for SceneCollection {
     /// `main`, the canvas master, and default sends), and a file is written as 29 only
     /// when a bus was ever added.
     fn upgrade(from: u32, body: &mut toml::Table) -> Result<(), BodyError> {
-        groups::refuse_before_30(from, body)?;
+        groups::refuse_old_keys(from, body)?;
         buses::refuse_before_29(from, body)?;
-        if (28..=29).contains(&from) {
+        if (28..=30).contains(&from) {
             return Ok(());
         }
         let direct = body
@@ -1667,7 +1671,12 @@ impl Document for SceneCollection {
         }
     }
 
+    fn check_before_upgrade(body: &toml::Table) -> Result<(), BodyError> {
+        nesting::check_before_upgrade(body)
+    }
+
     fn to_body(&self) -> Result<toml::Table, BodyError> {
+        self.validate_no_nested_scenes().map_err(BodyError::Scene)?;
         let n = self.id_counters();
         let glide = (!self.glide().is_default()).then(|| GlideDoc::from(self.glide()));
         let transition =
@@ -1816,6 +1825,7 @@ impl Document for SceneCollection {
     }
 
     fn from_body(body: toml::Table) -> Result<Self, BodyError> {
+        Self::check_before_upgrade(&body)?;
         let b: Body = document::from_body(body)?;
         let canvases = b
             .canvases
@@ -1917,7 +1927,7 @@ impl Document for SceneCollection {
                 let mut scene =
                     Scene::new(SceneId::from_raw(s.id), &s.name, scope).with_audio(audio);
                 scene.transition_in = transition_in;
-                scene.groups = groups::read(s.groups);
+                scene.groups = groups::read(s.groups)?;
                 scene.items = s
                     .items
                     .into_iter()

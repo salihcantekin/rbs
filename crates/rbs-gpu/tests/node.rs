@@ -17,8 +17,8 @@ use rbs_core::media::{
 use rbs_core::time::Timestamp;
 use rbs_core::timing::{Cadence, FrameRate};
 use rbs_gpu::node::{
-    CompositorNode, CompositorStats, Fade, GpuRuntime, LayerSender, NodeLayer, PixelCrop,
-    RenderLocal,
+    CompositorNode, CompositorStats, Fade, GpuRuntime, GroupSpan, LayerList, LayerSender,
+    NodeLayer, PixelCrop, RenderLocal,
 };
 use rbs_gpu::{
     CanvasDesc, GpuContext, GpuError, GpuRequest, LayerScroll, ScrollBinding, ScrollDirection,
@@ -292,6 +292,11 @@ impl Rig {
 
     /// Linear RGBA of canvas pixel (x, y) in the last frame the probe saw.
     fn pixel(&mut self, scene: &Scene, x: u32, y: u32) -> [f32; 4] {
+        at(&self.canvas(scene), W, x, y)
+    }
+
+    /// Every pixel of the last frame the probe saw, linear RGBA.
+    fn canvas(&mut self, scene: &Scene) -> Vec<[f32; 4]> {
         let guard = scene.last.lock().unwrap();
         let frame = guard.as_ref().expect("the probe saw a canvas");
         assert_eq!(frame.format().pixel_format, PixelFormat::Rgba16Float);
@@ -299,8 +304,7 @@ impl Rig {
         let FramePayload::Texture(canvas) = *frame.payload() else {
             panic!("canvas is a pool texture");
         };
-        let px = readback::read_rgba16f(&self.ctx, &self.exec.local().pool, canvas).unwrap();
-        at(&px, W, x, y)
+        readback::read_rgba16f(&self.ctx, &self.exec.local().pool, canvas).unwrap()
     }
 }
 
@@ -621,4 +625,260 @@ fn a_finished_once_scroll_draws_nothing_and_stops_drawing() {
     assert!(drawn <= 5, "drew {drawn}");
     assert!(unchanged >= 4, "skipped {unchanged}");
     assert_close(rig.pixel(&scene, 8, 16), [0.0; 4], 0.01);
+}
+
+/// A group Scroll held at zero (ADR-0193): its picture is exactly the window.
+fn still_group() -> LayerScroll {
+    LayerScroll {
+        direction: ScrollDirection::Left,
+        repeat: ScrollRepeat::Loop,
+        start: ScrollStart::Inside,
+        gap: 0.0,
+        fade: 0.0,
+        run: ScrollRun::start(Timestamp::ZERO, 0.0),
+    }
+}
+
+fn span(first: u32, count: u32, window: [f32; 4], scroll: LayerScroll) -> GroupSpan {
+    GroupSpan {
+        first,
+        count,
+        window,
+        scroll,
+        offset: [0.0; 2],
+        slide: None,
+        tag: 0,
+    }
+}
+
+impl Scene {
+    fn send_spans(&mut self, layers: Vec<NodeLayer>, spans: Vec<GroupSpan>) {
+        let _ = self.sender.send_list(LayerList { layers, spans });
+    }
+
+    /// Span passes, acquires and failures so far.
+    fn span_counts(&self) -> (u64, u64, u64) {
+        let s = &self.stats;
+        (
+            s.span_passes.load(Ordering::Relaxed),
+            s.span_acquires.load(Ordering::Relaxed),
+            s.span_failures.load(Ordering::Relaxed),
+        )
+    }
+}
+
+/// Translucent, styled, overlapping members at fractional places; their union is
+/// `[6.5, 4.25, 39.5, 20.25]`.
+fn members(red: NodeId, blue: NodeId) -> Vec<NodeLayer> {
+    let mut a = NodeLayer::new(red, 0, 6.5, 4.25, 20.0, 12.0);
+    a.opacity = 0.6;
+    let mut b = NodeLayer::new(blue, 1, 16.0, 8.5, 30.0, 16.0);
+    b.opacity = 0.8;
+    b.style = rbs_gpu::LayerStyle::new(
+        rbs_gpu::LayerShape::Rounded { radius: 5.0 },
+        2.0,
+        [255, 255, 255, 255],
+        [30.0, 16.0],
+    );
+    vec![a, b]
+}
+
+#[test]
+fn a_span_at_zero_scroll_draws_its_members_as_drawn_directly() {
+    let Some(mut rig) = Rig::new() else { return };
+    let mut scene = rig.scroll_scene(members);
+    rig.run(&scene, 2);
+    let direct = rig.canvas(&scene);
+    assert_eq!(scene.span_counts(), (0, 0, 0), "no span, no intermediate");
+    let layers = members(scene.red, scene.blue);
+    scene.send_spans(
+        layers,
+        vec![span(0, 2, [6.5, 4.25, 39.5, 20.25], still_group())],
+    );
+    rig.run(&scene, 2);
+    assert_eq!(scene.span_counts(), (1, 1, 0));
+    let grouped = rig.canvas(&scene);
+    // Parity inside the window; a styled member's soft edge past it is clipped.
+    let inside = |i: usize| {
+        let (x, y) = ((i as u32 % W) as f32 + 0.5, (i as u32 / W) as f32 + 0.5);
+        (6.5..46.0).contains(&x) && (4.25..24.5).contains(&y)
+    };
+    for (i, (g, d)) in grouped.iter().zip(&direct).enumerate() {
+        let d = if inside(i) { *d } else { [0.0; 4] };
+        for c in 0..4 {
+            assert!(
+                (g[c] - d[c]).abs() <= 1.0 / 1024.0,
+                "pixel {i}: grouped {g:?}, direct {d:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_moving_group_scroll_redraws_the_canvas_but_reuses_its_intermediate() {
+    let Some(mut rig) = Rig::new() else { return };
+    let mut scene = rig.scroll_scene(|red, _| vec![full(red, 0)]);
+    rig.run(&scene, 3);
+    let before = rig.exec.local().pool.allocated();
+    let mut moving = still_group();
+    moving.run = ScrollRun::start(Timestamp::ZERO, 60.0);
+    let (red, blue) = (scene.red, scene.blue);
+    let window = [8.0, 4.0, 32.0, 16.0];
+    let list = || vec![full(red, 0), NodeLayer::new(blue, 1, 8.0, 4.0, 32.0, 16.0)];
+    scene.send_spans(list(), vec![span(1, 1, window, moving)]);
+    let (drawn, _) = scene.counts();
+    rig.run(&scene, 6);
+    // Still members: one acquire, one span pass; the moving Scroll draws every tick.
+    assert_eq!(scene.span_counts(), (1, 1, 0));
+    assert_eq!(scene.counts().0, drawn + 6);
+    let shown = rig.exec.local().pool.allocated();
+    assert_eq!(shown, before + 1, "one intermediate");
+
+    // A size change gives the old one back and takes one new one.
+    scene.send_spans(list(), vec![span(1, 1, [8.0, 4.0, 16.0, 16.0], moving)]);
+    rig.run(&scene, 2);
+    assert_eq!(scene.span_counts(), (2, 2, 0));
+    assert_eq!(rig.exec.local().pool.allocated(), shown);
+
+    // Leaving the list gives it back at once.
+    let _ = scene.sender.send(list());
+    rig.run(&scene, 2);
+    assert_eq!(rig.exec.local().pool.allocated(), shown - 1);
+
+    // `cool` gives it back when the compositor leaves the schedule.
+    scene.send_spans(list(), vec![span(1, 1, window, moving)]);
+    rig.run(&scene, 2);
+    assert_eq!(scene.span_counts(), (3, 3, 0));
+    assert_eq!(rig.exec.local().pool.allocated(), shown);
+    rig.graph.set_state(scene.comp, Lifecycle::Standby).unwrap();
+    rig.ctl.apply(&rig.graph).unwrap();
+    rig.tick();
+    rig.tick();
+    assert_eq!(rig.exec.local().pool.allocated(), shown - 1);
+}
+
+#[test]
+fn a_failed_or_oversized_group_draws_transparent_and_the_rest_draws() {
+    let Some(mut rig) = Rig::new() else { return };
+    let mut scene = rig.scroll_scene(|red, _| vec![full(red, 0)]);
+    rig.run(&scene, 2);
+    let (red, blue) = (scene.red, scene.blue);
+    let list = || {
+        vec![
+            NodeLayer::new(red, 0, 0.0, 0.0, 32.0, H as f32),
+            right_half(blue, 1),
+        ]
+    };
+    // A side past the device's limit: the acquire fails with a typed error.
+    let max = rig.ctx.device().limits().max_texture_dimension_2d as f32;
+    scene.send_spans(
+        list(),
+        vec![span(1, 1, [32.0, 0.0, 1.0, max + 1.0], still_group())],
+    );
+    rig.run(&scene, 3);
+    let (passes, acquires, failures) = scene.span_counts();
+    assert_eq!(passes, 0);
+    assert!(acquires >= 1 && failures >= 1, "{:?}", scene.span_counts());
+    assert_close(rig.pixel(&scene, 8, 16), RED, 0.01);
+    assert_close(rig.pixel(&scene, 56, 16), [0.0; 4], 0.01);
+
+    // Over 8,388,608 pixels: no acquire at all.
+    scene.send_spans(
+        list(),
+        vec![span(1, 1, [0.0, 0.0, 4096.0, 4096.0], still_group())],
+    );
+    rig.run(&scene, 2);
+    let (_, after, more) = scene.span_counts();
+    assert!(
+        after - acquires <= 1,
+        "at most the retry before the new list"
+    );
+    assert!(more > failures);
+    assert_close(rig.pixel(&scene, 8, 16), RED, 0.01);
+    assert_close(rig.pixel(&scene, 56, 16), [0.0; 4], 0.01);
+}
+
+#[test]
+fn span_failing_bits_name_the_failing_slot_and_clear_when_it_recovers() {
+    let Some(mut rig) = Rig::new() else { return };
+    let mut scene = rig.scroll_scene(|red, _| vec![full(red, 0)]);
+    rig.run(&scene, 2);
+    let (red, blue) = (scene.red, scene.blue);
+    let list = || {
+        vec![
+            NodeLayer::new(red, 0, 0.0, 0.0, 32.0, H as f32),
+            right_half(blue, 1),
+        ]
+    };
+    let failing = |scene: &Scene| {
+        (
+            scene.stats.span_acquire_failing.load(Ordering::Relaxed),
+            scene.stats.span_pass_failing.load(Ordering::Relaxed),
+        )
+    };
+    let max = rig.ctx.device().limits().max_texture_dimension_2d as f32;
+    let good = span(0, 1, [0.0, 0.0, 32.0, H as f32], still_group());
+    // Slot 1's acquire fails; slot 0 draws.
+    scene.send_spans(
+        list(),
+        vec![good, span(1, 1, [32.0, 0.0, 1.0, max + 1.0], still_group())],
+    );
+    rig.run(&scene, 2);
+    assert_eq!(failing(&scene), (0b10, 0));
+    // A drawable list clears it.
+    scene.send_spans(
+        list(),
+        vec![good, span(1, 1, [32.0, 0.0, 32.0, H as f32], still_group())],
+    );
+    rig.run(&scene, 2);
+    assert_eq!(failing(&scene), (0, 0));
+    scene.send_spans(
+        list(),
+        vec![span(1, 1, [32.0, 0.0, 1.0, max + 1.0], still_group())],
+    );
+    rig.run(&scene, 2);
+    assert_eq!(failing(&scene), (0b1, 0));
+    // So does a list without spans.
+    let _ = scene.sender.send(list());
+    rig.run(&scene, 2);
+    assert_eq!(failing(&scene), (0, 0));
+}
+
+#[test]
+fn a_moved_span_moves_its_picture_without_a_new_pass() {
+    let Some(mut rig) = Rig::new() else { return };
+    let mut scene = rig.scroll_scene(|red, _| vec![full(red, 0)]);
+    rig.run(&scene, 2);
+    let blue = scene.blue;
+    let members = || vec![NodeLayer::new(blue, 1, 0.0, 0.0, 16.0, H as f32)];
+    let window = [0.0, 0.0, 16.0, H as f32];
+    scene.send_spans(members(), vec![span(0, 1, window, still_group())]);
+    rig.run(&scene, 2);
+    assert_close(rig.pixel(&scene, 8, 16), BLUE, 0.01);
+    let (passes, _, _) = scene.span_counts();
+    // Pushed out 32 px over 50 ms from the next tick: the members stay where they were
+    // in the intermediate, only the span's layer moves.
+    let mut moved = span(0, 1, window, still_group());
+    moved.offset = [32.0, 0.0];
+    moved.slide = Some(rbs_gpu::node::Slide {
+        from: rbs_gpu::Affine2::rect(0.0, 0.0, 16.0, H as f32),
+        start: Timestamp::from_nanos(rig.tick * 1_000_000_000 / 60),
+        duration: Duration::from_millis(50),
+        easing: rbs_gpu::node::Easing::Linear,
+        from_crop: None,
+    });
+    scene.send_spans(members(), vec![moved]);
+    let drawn = scene.counts().0;
+    rig.run(&scene, 8);
+    assert_eq!(
+        scene.span_counts().0,
+        passes + 1,
+        "one pass for the new list"
+    );
+    assert!(
+        scene.counts().0 >= drawn + 3,
+        "the canvas redraws while it slides"
+    );
+    assert_close(rig.pixel(&scene, 8, 16), [0.0; 4], 0.01);
+    assert_close(rig.pixel(&scene, 40, 16), BLUE, 0.01);
 }

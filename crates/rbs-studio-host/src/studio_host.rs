@@ -60,7 +60,7 @@ use rbs_scene::{
     AutoLayout, CenterAxis, ChromeFill, FitMode, Removed, SceneError, SceneLevel, Undo,
     place_chrome, recrop_keeping, visible_size,
 };
-use rbs_scene::{COMPANION_OF_HINT, STANDBY_HINT, SceneCollection};
+use rbs_scene::{STANDBY_HINT, SceneCollection};
 use rbs_sources::BrowserTree;
 use rbs_sources::permissions::{PermissionInfo, PermissionKind, PermissionStatus};
 use rbs_sources::types::{self, keys};
@@ -100,6 +100,7 @@ mod text_measure;
 use control_out::ControlOut;
 mod api_answers;
 mod api_convert;
+mod companion_add;
 mod control_api;
 use api_answers::*;
 use api_convert::*;
@@ -122,7 +123,13 @@ mod command;
 mod command_path;
 mod control_loop;
 mod cues;
+#[cfg(test)]
+mod generation_tests;
+#[allow(dead_code)] // Group Scroll runtime routing is not implemented.
+mod group_properties;
 mod groups;
+#[cfg(test)]
+mod held_cue_tests;
 mod history;
 mod items;
 mod outputs;
@@ -517,6 +524,8 @@ struct Host {
     slides_follow: u8,
     /// The Show cues sent last ([`Update::Cues`]).
     cues_sent: Vec<(ItemId, u32)>,
+    /// What the group topics last published (protocol 1.111).
+    group_events: group_properties::GroupEvents,
     /// The source pickers' state: thumbnail and region grabs, and the permission prompts.
     pickers: pickers::Pickers,
     /// [`Host::save_stamp`] as last handed to `autosave` or loaded (epoch 0 at start).
@@ -619,6 +628,9 @@ struct Host {
     audio_rest_at: Option<rbs_core::time::Timestamp>,
     /// The control API, while remote control is on.
     api: Option<Api>,
+    /// Group Scroll settings generations and public run ids for the host's lifetime,
+    /// shared by every studio it starts (ADR-0187 decisions 1 and 3).
+    group_ids: rbs_record::GroupIds,
     /// Kinds the adapters can add.
     kinds: Vec<SourceKind>,
     /// The output profiles and scene collections as the UI listed them last; `None`
@@ -883,6 +895,19 @@ impl Host {
         self.prune_monitor_solo();
         self.mark_scene_changes();
         let run = self.run_collection();
+        let cues = match self.begin_held_cues() {
+            Ok(cues) => cues,
+            Err(item) => {
+                self.finish_held_cues(None, false);
+                let target = item.map_or_else(String::new, |id| format!(" for item {}", id.get()));
+                notify(Update::Error(format!(
+                    "The held Show cue{target} could not be captured."
+                )));
+                return;
+            }
+        };
+        self.studio
+            .set_scene_origins(scene_origins(self.program.held.as_ref()));
         let running = run.as_ref().unwrap_or(&self.collection);
         let program = running
             .canvas(self.canvas)
@@ -895,15 +920,16 @@ impl Host {
                 (id, real)
             });
         let same = same_picture(self.program.ran_program, program);
-        self.program.ran_program = program;
         let updated = if same {
             self.studio
                 .update_same_picture(running, &self.adapters.sources)
         } else {
             self.studio.update(running, &self.adapters.sources)
         };
+        self.finish_held_cues(cues, updated.is_ok());
         match updated {
             Ok(u) => {
+                self.program.ran_program = program;
                 self.waiting = self.studio.waiting();
                 // Source failures show in the list; other failures need words.
                 for f in u.failed.iter().filter(|f| f.node != "source") {
@@ -983,6 +1009,7 @@ impl Host {
             }
         }
         self.publish_cues(notify);
+        self.publish_groups();
         let picture = self.studio.scene_preview();
         if picture != self.scene_preview_sent {
             self.scene_preview_sent = picture.clone();

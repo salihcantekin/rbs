@@ -57,7 +57,6 @@ source "Mic/Aux" org.rbs.source.audio-input
 scene "Main"
   source "Screen" pos [0.00, 0.00] size [1920.00, 1080.00] rot 0.00 crop [0, 0, 0, 0] visible true locked true
   source "Webcam" pos [1580.00, 860.00] size [300.00, 180.00] rot 0.00 crop [40, 0, 40, 0] visible true locked false
-  scene "Overlay" pos [0.00, 0.00] size [1920.00, 1080.00] rot 0.00 crop [0, 0, 0, 0] visible true locked false
   source "Alerts" pos [1520.00, 0.00] size [400.00, 300.00] rot 0.00 crop [0, 0, 0, 0] visible false locked false
   source "Badge colour" group "Badges" pos [960.00, 100.00] size [300.00, 100.00] rot 0.00 crop [0, 0, 0, 0] visible true locked false
   source "Badge logo" group "Badges" pos [1260.00, 100.00] size [1920.00, 1080.00] rot 0.00 crop [0, 0, 0, 0] visible false locked false
@@ -76,7 +75,7 @@ scene "Global sources"
   source "Mic/Aux" pos [0.00, 0.00] size [1920.00, 1080.00] rot 0.00 crop [0, 0, 0, 0] visible true locked false
 report
 Imported exactly: 4 scenes, 3 sources, 5 items, 2 filters.
-Imported, not exactly as in OBS (21):
+Imported, not exactly as in OBS (20):
 - approximated source "Screen" (monitor_capture) in Main: This computer's devices were not checked, so RBS uses the default one.
 - approximated filter "Webcam: Crop" (crop_filter): The crop now happens after the source's other filters.
 - approximated source "Webcam" (dshow_input) in Camera only, Main: This computer's devices were not checked, so RBS uses the default one.
@@ -91,15 +90,15 @@ Imported, not exactly as in OBS (21):
 - approximated filter "Mic/Aux: Gate" (noise_gate_filter): OBS fades the gate in amplitude, RBS in decibels, so it opens and closes a little differently. Out of RBS's range, so limited: attack.
 - approximated source "Mic/Aux" (wasapi_input_capture): This computer's devices were not checked, so RBS uses the default one.
 - approximated item "Screen" in Main: The source's picture size is not known here, so its size on the canvas may differ.
-- approximated item "Overlay" in Main: A crop on a nested scene is not in RBS.
 - approximated item "Alerts" in Main: Blending mode "additive" is not in RBS.
 - approximated item "Badge logo" in Main: The source's picture size is not known here, so its size on the canvas may differ.
 - approximated item "Logo" in Starting soon: The source's picture size is not known here, so its size on the canvas may differ.
 - approximated item "Old photo" in Starting soon: The source's picture size is not known here, so its size on the canvas may differ.
 - approximated item "Music" in Starting soon: The source's picture size is not known here, so its size on the canvas may differ.
 - approximated item "Frame" in Overlay: The source's picture size is not known here, so its size on the canvas may differ.
-Not imported (4):
+Not imported (5):
 - skipped source "Lower third" (text_ft2_source_v2) in Main: Text sources are not in RBS yet. A later RBS can add it from the saved report.
 - skipped filter "Mic/Aux: Noise suppression" (noise_suppress_filter_v2): This filter is not in RBS yet.
 - skipped filter "Main: Warm" (color_filter_v2): Filters on scenes are not in RBS.
+- skipped scene "Overlay" (scene) in Main: Scenes cannot be placed inside other scenes.
 - skipped item "Ghost" in Starting soon: OBS 31 saved this item with relative positions only, which RBS does not read yet.

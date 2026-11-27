@@ -41,7 +41,11 @@ use crate::model::{
     CanvasId, Crop, FilterId, ItemId, ItemStyle, SceneId, Scroll, Settings, SourceId,
 };
 
+mod cue_levels;
+mod group_spans;
 mod linger;
+
+pub use group_spans::{GroupMark, SpanLimits, SpanRefusal};
 
 /// Node type id of the canvas compositor.
 pub const COMPOSITOR_TYPE: &str = "org.rbs.compositor";
@@ -132,6 +136,9 @@ pub struct OutgoingScene {
     /// manual transition, ADR-0135 decision 2); its heard sources join the program
     /// mixer. `None`: the canvas's program scene.
     pub incoming_scene: Option<SceneId>,
+    /// Cue ids captured for the live outgoing program of a manual transition.
+    /// Other roles continue to use their live cue set.
+    pub program_cues: Option<BTreeSet<ItemId>>,
     /// The stinger's source (ADR-0140 decision 4): running, on air, linked to the
     /// program compositor and heard in the program mixer while the entry exists.
     pub stinger: Option<SourceId>,
@@ -153,6 +160,7 @@ impl OutgoingScene {
             heard,
             incoming: true,
             incoming_scene: None,
+            program_cues: None,
             stinger: None,
         }
     }
@@ -166,6 +174,7 @@ impl OutgoingScene {
             heard: BTreeSet::new(),
             incoming: true,
             incoming_scene: Some(scene),
+            program_cues: None,
             stinger: None,
         }
     }
@@ -178,6 +187,7 @@ impl OutgoingScene {
             heard,
             incoming: self.incoming,
             incoming_scene: None,
+            program_cues: None,
             stinger: self.stinger,
         }
     }
@@ -189,6 +199,7 @@ impl OutgoingScene {
             heard,
             incoming: false,
             incoming_scene: None,
+            program_cues: None,
             stinger: None,
         }
     }
@@ -198,6 +209,29 @@ impl OutgoingScene {
     pub fn with_stinger(mut self, source: Option<SourceId>) -> Self {
         self.stinger = source;
         self
+    }
+
+    /// Freeze only the outgoing program occurrence's cue visibility.
+    #[must_use]
+    pub fn with_program_cues(mut self, cues: BTreeSet<ItemId>) -> Self {
+        self.program_cues = Some(cues);
+        self
+    }
+}
+
+fn role_cues<'a>(
+    canvas: CanvasId,
+    role: Role,
+    live: &'a BTreeSet<ItemId>,
+    outgoing: &'a BTreeMap<CanvasId, &OutgoingScene>,
+) -> &'a BTreeSet<ItemId> {
+    if role == Role::Program {
+        outgoing
+            .get(&canvas)
+            .and_then(|o| o.program_cues.as_ref())
+            .unwrap_or(live)
+    } else {
+        live
     }
 }
 
@@ -244,6 +278,8 @@ pub struct BoundLayer {
     pub scroll: Option<Scroll>,
     /// Its run, as in [`FlatLayer::scroll_key`](crate::FlatLayer::scroll_key).
     pub scroll_key: Option<ScrollKey>,
+    /// Its group, when that has group Scroll on this canvas (ADR-0193).
+    pub group: Option<GroupMark>,
 }
 
 /// A bound compositor and what it draws.
@@ -332,6 +368,9 @@ pub enum BindProblem {
     /// (ADR-0152 decision 10): the type's default is in force and the saved value is
     /// kept. The host shows it as a source warning (`activity_unsupported`).
     ActivityUnsupported(SourceId),
+    /// A group with group Scroll gets no span on a canvas (ADR-0193 decision 4): its
+    /// members are drawn transparent there.
+    GroupSpanRefused(CanvasId, SceneId, crate::model::GroupId, SpanRefusal),
 }
 
 /// What [`SceneBinder::sync`] produced.
@@ -581,6 +620,8 @@ pub struct SceneBinder {
     /// The partition of the mixer and of audio-only sources; `None`: audio is not
     /// bound.
     audio: Option<PartitionId>,
+    /// Group span limits (ADR-0193 decision 4).
+    spans: SpanLimits,
     state: State,
 }
 
@@ -653,8 +694,16 @@ impl SceneBinder {
             types: Box::new(types),
             clock: None,
             audio: None,
+            spans: SpanLimits::default(),
             state: State::default(),
         }
+    }
+
+    /// Limits group span intermediates (ADR-0193 decision 4); the application passes
+    /// the device's largest texture side in `limits.max_side`.
+    pub fn with_span_limits(mut self, limits: SpanLimits) -> Self {
+        self.spans = limits;
+        self
     }
 
     /// Counts linger (ADR-0152 `linger_s`) on `clock`, read once per sync. Without a
@@ -793,6 +842,46 @@ impl SceneBinder {
         )
     }
 
+    /// Like [`Self::sync_held`], also binding a running transition per canvas in
+    /// `outgoing` (ADR-0128 decision 6): a compositor for `(canvas, Role::Incoming)`
+    /// drawing the canvas's program scene, linked into the program compositor (unless
+    /// [`OutgoingScene::incoming`] is false, for Move); the outgoing scene's `drawn`
+    /// sources linked to the program compositor and running; its `heard` sources in
+    /// the program mixer. A canvas not in the collection, or without a program scene,
+    /// is skipped. An empty map binds nothing of it and retires what an earlier call
+    /// bound.
+    pub fn sync_transition(
+        &mut self,
+        collection: &SceneCollection,
+        graph: &mut GraphDescription,
+        cued_items: &BTreeSet<ItemId>,
+        cued_sources: &BTreeSet<SourceId>,
+        hold: &BTreeMap<CanvasId, HoldScene>,
+        outgoing: &BTreeMap<CanvasId, OutgoingScene>,
+    ) -> Result<BindReport, BindError> {
+        let mut draft_graph = graph.clone();
+        let mut draft = self.state.clone();
+        draft.linger.now = self.clock.as_ref().map(|clock| clock.now());
+        let mut report = draft.sync(
+            &*self.types,
+            self.audio,
+            collection,
+            &mut draft_graph,
+            (cued_items, cued_sources),
+            (hold, outgoing),
+        )?;
+        group_spans::mark_groups(
+            &mut report,
+            collection,
+            &draft,
+            self.spans,
+            (hold, outgoing),
+        );
+        *graph = draft_graph;
+        self.state = draft;
+        Ok(report)
+    }
+
     /// Like [`Self::sync_cued`], also binding a hold scene per canvas in `hold`
     /// (ADR-0124 phase 2b): a compositor for `(canvas, Role::Hold)` drawing the
     /// scene's visible sources, the scene's temporal sources Active, and with
@@ -826,39 +915,6 @@ impl SceneBinder {
             .get(&source)
             .copied()
             .unwrap_or((Level::Unplaced, None))
-    }
-
-    /// Like [`Self::sync_held`], also binding a running transition per canvas in
-    /// `outgoing` (ADR-0128 decision 6): a compositor for `(canvas, Role::Incoming)`
-    /// drawing the canvas's program scene, linked into the program compositor (unless
-    /// [`OutgoingScene::incoming`] is false, for Move); the
-    /// outgoing scene's `drawn` sources linked to the program compositor and running;
-    /// its `heard` sources in the program mixer. A canvas not in the collection, or
-    /// without a program scene, is skipped. An empty map binds nothing of it and
-    /// retires what an earlier call bound.
-    pub fn sync_transition(
-        &mut self,
-        collection: &SceneCollection,
-        graph: &mut GraphDescription,
-        cued_items: &BTreeSet<ItemId>,
-        cued_sources: &BTreeSet<SourceId>,
-        hold: &BTreeMap<CanvasId, HoldScene>,
-        outgoing: &BTreeMap<CanvasId, OutgoingScene>,
-    ) -> Result<BindReport, BindError> {
-        let mut draft_graph = graph.clone();
-        let mut draft = self.state.clone();
-        draft.linger.now = self.clock.as_ref().map(|c| c.now());
-        let report = draft.sync(
-            &*self.types,
-            self.audio,
-            collection,
-            &mut draft_graph,
-            (cued_items, cued_sources),
-            (hold, outgoing),
-        )?;
-        *graph = draft_graph;
-        self.state = draft;
-        Ok(report)
     }
 }
 
@@ -1376,10 +1432,10 @@ impl State {
                 report.retired_compositors.push(b.node.node);
             }
         }
-        // Sources a shown scene draws above opacity 0. Flatten already omits the rest.
-        // Outgoing and stinger sources keep their filters for the transition.
+        // Drawn sources (flatten omits opacity 0); outgoing and stinger ones keep filters.
         let mut drawn_sources = BTreeSet::new();
         for (&(canvas, role), &scene) in &needed {
+            let cued_items = role_cues(canvas, role, cued_items, &outgoing);
             let flat = collection
                 .flatten_cued(canvas, scene, cued_items)
                 .map_err(BindError::Scene)?;
@@ -1419,6 +1475,7 @@ impl State {
             .map(|((c, _), b)| (*c, b.node.clone()))
             .collect();
         for (&(canvas, role), &scene) in &needed {
+            let cued_items = role_cues(canvas, role, cued_items, &outgoing);
             let mut created = fresh.contains(&(canvas, role));
             let comp = match self.compositors.entry((canvas, role)) {
                 std::collections::btree_map::Entry::Occupied(e) => e.into_mut(),
@@ -1460,6 +1517,7 @@ impl State {
                         box_size: layer.box_size,
                         scroll: layer.scroll,
                         scroll_key: layer.scroll_key,
+                        group: None,
                     });
                 }
             }
@@ -1591,11 +1649,9 @@ impl State {
                     }
                 };
                 let mut heard: BTreeSet<SourceId> = match canvas.program {
-                    Some(scene) => collection
-                        .visible_sources_cued(canvas.id, scene, cued_items)
-                        .map_err(BindError::Scene)?
-                        .into_iter()
-                        .collect(),
+                    Some(scene) => cue_levels::program_sources(
+                        collection, canvas.id, scene, cued_items, &outgoing,
+                    )?,
                     None => BTreeSet::new(),
                 };
                 // The outgoing scene is heard until its transition ends; a manual
@@ -1725,7 +1781,7 @@ fn activity_states(
     ),
     report: &mut BindReport,
 ) -> Result<ActivityStates, BindError> {
-    let mut levels = collection.source_levels(cued_items);
+    let mut levels = cue_levels::source_levels(collection, cued_items, outgoing)?;
     for id in cued_sources {
         if collection.source(*id).is_some_and(|s| !s.standby()) {
             let level = levels.entry(*id).or_insert(Level::Shown);

@@ -17,6 +17,7 @@ use crate::codec::RequestId;
 use crate::error::{ApiError, ErrorKind};
 use crate::event::{Event, EventPayload, StateKey, Topic, TopicSet};
 use crate::request::{Command, Response, Subscribed};
+use crate::scope::ScopeSet;
 use crate::transport::ConnectionId;
 use crate::types::SeqMap;
 use crate::wake::Wake;
@@ -34,8 +35,9 @@ pub struct Forwarded {
     pub caller: Caller,
 }
 
-/// Who sent a forwarded command (ADR-0052 decision 4): the token's name, or `None`
-/// for a same-user IPC peer without one, and whether it may do what cannot be undone.
+/// Who sent a forwarded command (ADR-0052 decision 4), including its effective
+/// channel-limited permissions for client-scoped routing (ADR-0050 decision 2).
+/// This is a snapshot, not authority to execute a later request after the session ends.
 /// The target refuses an `edit` that changes what is on air without the permission.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Caller {
@@ -43,6 +45,10 @@ pub struct Caller {
     pub token: Option<String>,
     /// "Allow actions that cannot be undone".
     pub irreversible: bool,
+    /// Scopes granted to this session after channel restrictions.
+    pub scopes: ScopeSet,
+    /// Whether the session is connected from another machine.
+    pub remote: bool,
 }
 
 impl Caller {
@@ -51,6 +57,8 @@ impl Caller {
         Self {
             token: None,
             irreversible: true,
+            scopes: ScopeSet::ALL,
+            remote: false,
         }
     }
 }
@@ -194,6 +202,12 @@ impl EventPublisher {
         self.link
             .as_ref()
             .is_some_and(|link| link.subscribed(topic))
+    }
+
+    /// True when a connected client or the in-process UI subscribes to `topic`, so a
+    /// payload of it would be built.
+    pub fn wanted(&self, topic: Topic) -> bool {
+        self.subscribed(topic) || self.local.as_ref().is_some_and(|(t, _)| t.contains(topic))
     }
 
     /// Registers the in-process UI as a permanent subscriber to `topics`; `sink` runs on

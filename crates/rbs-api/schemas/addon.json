@@ -1,0 +1,405 @@
+{
+  "addon.cancel": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`addon.install`, `addon.cancel`, `addon.clean` and `addon.remove` (protocol 1.90,\nADR-0145): an add-on of the built-in catalog, by id.",
+      "properties": {
+        "id": {
+          "description": "The add-on's id, as `addon.list` names it (`org.rbs.browser-engine`).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "title": "AddOnRef",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "addon.clean": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`addon.install`, `addon.cancel`, `addon.clean` and `addon.remove` (protocol 1.90,\nADR-0145): an add-on of the built-in catalog, by id.",
+      "properties": {
+        "id": {
+          "description": "The add-on's id, as `addon.list` names it (`org.rbs.browser-engine`).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "title": "AddOnRef",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "addon.install": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`addon.install`, `addon.cancel`, `addon.clean` and `addon.remove` (protocol 1.90,\nADR-0145): an add-on of the built-in catalog, by id.",
+      "properties": {
+        "id": {
+          "description": "The add-on's id, as `addon.list` names it (`org.rbs.browser-engine`).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "title": "AddOnRef",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "addon.list": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "AddOnFailReason": {
+          "description": "Why an add-on install failed.",
+          "oneOf": [
+            {
+              "const": "network",
+              "description": "The download failed or stalled.",
+              "type": "string"
+            },
+            {
+              "const": "host_not_allowed",
+              "description": "A URL or redirect was not `https` or went to a host outside the catalog's list.",
+              "type": "string"
+            },
+            {
+              "const": "too_large",
+              "description": "More bytes arrived than the catalog allows.",
+              "type": "string"
+            },
+            {
+              "const": "hash_mismatch",
+              "description": "The archive's SHA-256 differs from the catalog's.",
+              "type": "string"
+            },
+            {
+              "const": "unsafe_archive",
+              "description": "The archive broke a name, link, size or content rule.",
+              "type": "string"
+            },
+            {
+              "const": "no_space",
+              "description": "Not enough free space.",
+              "type": "string"
+            },
+            {
+              "const": "io",
+              "description": "A file system error.",
+              "type": "string"
+            },
+            {
+              "const": "other",
+              "description": "A reason this client does not know.",
+              "type": "string"
+            }
+          ]
+        },
+        "AddOnInfo": {
+          "description": "One add-on of `addon.list`. Carries no path.",
+          "properties": {
+            "available": {
+              "description": "The catalog has a download for this computer.",
+              "type": "boolean"
+            },
+            "id": {
+              "description": "Its id (`org.rbs.browser-engine`).",
+              "type": "string"
+            },
+            "kind": {
+              "description": "What it is: `runtime` (a native library a built-in feature loads).",
+              "type": "string"
+            },
+            "name": {
+              "description": "Its name as Settings shows it.",
+              "type": "string"
+            },
+            "size": {
+              "description": "The download size in bytes; `null` when there is none for this computer.",
+              "format": "uint64",
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "status": {
+              "$ref": "#/$defs/AddOnStatus",
+              "description": "Where it is."
+            },
+            "summary": {
+              "description": "One sentence on what it adds.",
+              "type": "string"
+            },
+            "unpacked_size": {
+              "description": "The size on disk after install in bytes; `null` when there is none for this\ncomputer.",
+              "format": "uint64",
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "version": {
+              "description": "The catalog's version.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "name",
+            "summary",
+            "version",
+            "size",
+            "unpacked_size",
+            "available",
+            "status"
+          ],
+          "type": "object"
+        },
+        "AddOnStatus": {
+          "description": "Where an add-on is (`addon.list`, `addon.changed`; add-ons spec, \"Status\").",
+          "oneOf": [
+            {
+              "description": "Not on disk (a version newer than this build's counts as not installed).",
+              "properties": {
+                "state": {
+                  "const": "not_installed",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "state"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Downloading.",
+              "properties": {
+                "bytes": {
+                  "description": "Bytes received.",
+                  "format": "uint64",
+                  "maximum": 18446744073709551615,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "state": {
+                  "const": "downloading",
+                  "type": "string"
+                },
+                "total": {
+                  "description": "Bytes expected.",
+                  "format": "uint64",
+                  "maximum": 18446744073709551615,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "state",
+                "bytes",
+                "total"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Checking the archive's hash.",
+              "properties": {
+                "state": {
+                  "const": "verifying",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "state"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Unpacking and moving into place.",
+              "properties": {
+                "state": {
+                  "const": "installing",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "state"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "The catalog's version is installed.",
+              "properties": {
+                "state": {
+                  "const": "installed",
+                  "type": "string"
+                },
+                "version": {
+                  "description": "That version.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "state",
+                "version"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Only a lower version is on disk.",
+              "properties": {
+                "available": {
+                  "description": "The catalog's version.",
+                  "type": "string"
+                },
+                "installed": {
+                  "description": "The highest lower version on disk.",
+                  "type": "string"
+                },
+                "state": {
+                  "const": "update_available",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "state",
+                "installed",
+                "available"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "The last install failed; Retry starts it again.",
+              "properties": {
+                "reason": {
+                  "$ref": "#/$defs/AddOnFailReason",
+                  "description": "Why."
+                },
+                "state": {
+                  "const": "failed",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "state",
+                "reason"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "A state this client does not know.",
+              "properties": {
+                "state": {
+                  "const": "other",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "state"
+              ],
+              "type": "object"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`addon.list` (protocol 1.90, ADR-0145): every add-on of the built-in catalog, in\ncatalog order.",
+      "properties": {
+        "add_ons": {
+          "description": "The add-ons.",
+          "items": {
+            "$ref": "#/$defs/AddOnInfo"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "add_ons"
+      ],
+      "title": "AddOnList",
+      "type": "object"
+    }
+  },
+  "addon.remove": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`addon.install`, `addon.cancel`, `addon.clean` and `addon.remove` (protocol 1.90,\nADR-0145): an add-on of the built-in catalog, by id.",
+      "properties": {
+        "id": {
+          "description": "The add-on's id, as `addon.list` names it (`org.rbs.browser-engine`).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "title": "AddOnRef",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "addon.update": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`addon.install`, `addon.cancel`, `addon.clean` and `addon.remove` (protocol 1.90,\nADR-0145): an add-on of the built-in catalog, by id.",
+      "properties": {
+        "id": {
+          "description": "The add-on's id, as `addon.list` names it (`org.rbs.browser-engine`).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "title": "AddOnRef",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  }
+}

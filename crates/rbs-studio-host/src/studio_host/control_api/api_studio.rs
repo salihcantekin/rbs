@@ -113,19 +113,20 @@ impl ApiTarget<'_> {
                             "a global source is in every scene: leave out scene",
                         ));
                     }
-                    host.add_global(kind, &target).map_err(|e| refused(&e))?
+                    if p.with_audio {
+                        host.add_with_audio(kind, &target, true)
+                            .map_err(|e| refused(&e))?
+                    } else {
+                        host.add_global(kind, &target).map_err(|e| refused(&e))?
+                    }
                 } else {
                     host.placing_into(p.scene, |h| {
-                        let id = h.add(kind, &target).map_err(|e| failed(e.into_text()))?;
                         if p.with_audio {
-                            // One undo step for the picture and its sound; a refused
-                            // companion takes the picture back out.
-                            if let Err(e) = h.add_companion(id, true) {
-                                let _ = h.delete(id);
-                                return Err(refused(&e));
-                            }
+                            h.add_with_audio(kind, &target, false)
+                                .map_err(|e| refused(&e))
+                        } else {
+                            h.add(kind, &target).map_err(|e| failed(e.into_text()))
                         }
-                        Ok(id)
                     })?
                 };
                 host.apply(notify);

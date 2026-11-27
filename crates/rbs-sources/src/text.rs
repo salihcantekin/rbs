@@ -731,10 +731,9 @@ mod tests {
             .unwrap()
             .0
         };
-        let (shown, hidden, nested, held, off, window) = (
+        let (shown, hidden, held, off, window) = (
             text(&mut col, "a"),
             text(&mut col, "b"),
-            text(&mut col, "c"),
             text(&mut col, "d"),
             text(&mut col, "e"),
             text(&mut col, "f"),
@@ -747,7 +746,6 @@ mod tests {
             )
             .unwrap();
         let (live, _) = col.add_scene("Live", SceneScope::Shared).unwrap();
-        let (inner, _) = col.add_scene("Inner", SceneScope::Shared).unwrap();
         let (hold, _) = col.add_scene("Hold", SceneScope::Shared).unwrap();
         let (other, _) = col.add_scene("Other", SceneScope::Shared).unwrap();
         let full = Layout::new([0.0, 0.0], [100.0, 100.0]);
@@ -759,20 +757,13 @@ mod tests {
         col.set_item_visible(item, false).unwrap();
         col.add_item(live, ItemContent::Source(color), full, None)
             .unwrap();
-        col.add_item(live, ItemContent::Scene(inner), full, None)
-            .unwrap();
-        col.add_item(inner, ItemContent::Source(nested), full, None)
-            .unwrap();
         col.add_item(hold, ItemContent::Source(held), full, None)
             .unwrap();
         col.add_item(other, ItemContent::Source(off), full, None)
             .unwrap();
         col.set_program(canvas, Some(live)).unwrap();
         let set = text_on_air(&col, [hold], [window, color]);
-        assert_eq!(
-            set,
-            [shown, hidden, nested, held, window].into_iter().collect()
-        );
+        assert_eq!(set, [shown, hidden, held, window].into_iter().collect());
     }
 
     #[test]

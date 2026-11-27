@@ -33,6 +33,14 @@ pub enum SceneError {
     GroupNotContiguous(GroupId),
     /// Items of two scenes cannot be grouped (ADR-0182).
     GroupScope,
+    /// An item selected for grouping already belongs to a group (ADR-0186).
+    ItemAlreadyGrouped(ItemId),
+    /// Picture or companion placements are ambiguous (ADR-0186).
+    AmbiguousCompanion,
+    /// The picture has no scene placement for a new companion (ADR-0186).
+    PictureNotPlaced(SourceId),
+    /// The picture already has a companion source (ADR-0096).
+    CompanionExists(SourceId),
     /// Another canvas, source or scene already has this name.
     DuplicateName(String),
     /// Names must not be empty or only whitespace.
@@ -55,6 +63,8 @@ pub enum SceneError {
     ScrollOnScene(ItemId),
     /// The scene would contain itself, directly or through other scenes.
     NestingCycle(SceneId),
+    /// Scene placements are not supported (ADR-0188).
+    NestingUnsupported,
     /// The scene's scope does not allow it here: a canvas scene shown on another
     /// canvas, or nested into a scene that other canvases may show (U15).
     ScopeViolation(SceneId),
@@ -136,6 +146,9 @@ impl fmt::Display for SceneError {
                 write!(f, "{id} places a scene; scroll is for sources")
             }
             SceneError::NestingCycle(id) => write!(f, "{id} would contain itself"),
+            SceneError::NestingUnsupported => {
+                f.write_str("Scenes cannot be placed inside other scenes.")
+            }
             SceneError::ScopeViolation(id) => write!(f, "{id} is not allowed here by its scope"),
             SceneError::IndexOutOfRange(i) => write!(f, "index {i} out of range"),
             SceneError::CanvasHasScenes(id) => write!(f, "{id} still owns scenes"),
@@ -192,6 +205,14 @@ impl fmt::Display for SceneError {
                 write!(f, "the items of {id} must be next to each other")
             }
             SceneError::GroupScope => write!(f, "items of two scenes cannot share a group"),
+            SceneError::ItemAlreadyGrouped(id) => {
+                write!(f, "{id} is already grouped; ungroup it first")
+            }
+            SceneError::AmbiguousCompanion => {
+                f.write_str("picture or companion placements are ambiguous")
+            }
+            SceneError::PictureNotPlaced(id) => write!(f, "{id} is not placed in a scene"),
+            SceneError::CompanionExists(id) => write!(f, "{id} already has a companion"),
             SceneError::TooManyBuses => {
                 write!(
                     f,

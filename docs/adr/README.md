@@ -33,7 +33,7 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0018](0018-media-frame-representation.md) | Media frames as small values with leased memory | Accepted |
 | [0019](0019-encode-mux-transport-ports.md) | Separate encode, mux and transport ports for outputs | Accepted |
 | [0020](0020-node-contract-and-schedule-swap.md) | Node contract and lock-free schedule swap | Accepted |
-| [0021](0021-scene-collection-model.md) | Scene collection as a validated model with scoped scenes and inverse-edit undo | Accepted |
+| [0021](0021-scene-collection-model.md) | Scene collection as a validated model with scoped scenes and inverse-edit undo | Accepted (decisions 2, 3 and 7 superseded in part by ADR-0188) |
 | [0022](0022-native-ui-toolkit.md) | Slint as the desktop UI toolkit | Accepted |
 | [0023](0023-node-parameter-channels.md) | Latest-value parameter channels for running nodes | Accepted |
 | [0024](0024-node-restart-with-back-off.md) | Restart failed nodes with back-off, contained to the failed node | Accepted |
@@ -63,7 +63,7 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0048](0048-selection-overlay-on-the-preview-layer.md) | Draw the preview's selection outline and handles as native layers of the preview | Accepted |
 | [0049](0049-main-window-areas-panel-states-and-sizes.md) | Main window areas, panel states (collapse, auto-hide, maximize) and size limits (workspace format 2) | Accepted |
 | [0050](0050-command-registry-menus-and-toolbar.md) | One command registry for menus, context menus, the toolbar and the palette | Accepted |
-| [0051](0051-user-data-profiles-and-scene-collections.md) | User data as versioned documents; output profiles and scene collections as libraries of named files | Accepted |
+| [0051](0051-user-data-profiles-and-scene-collections.md) | User data as versioned documents; output profiles and scene collections as libraries of named files | Accepted (decision 6 superseded in part by ADR-0188) |
 | [0052](0052-ai-agent-control-through-mcp.md) | AI agents control RBS through an MCP server that is a plain control API client | Accepted |
 | [0053](0053-item-style-and-video-filter-chains.md) | Item shape, border and shadow drawn by the compositor; video filters as a per-source chain of GPU nodes | Accepted (partly superseded by ADR-0110) |
 | [0054](0054-preview-never-disappears.md) | The preview picture never disappears behind popups: split it around covers | Accepted |
@@ -104,7 +104,7 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0093](0093-vertical-second-canvas-from-the-same-sources.md) | A vertical (9:16) second canvas running at the same time as the main one | Accepted |
 | [0094](0094-ui-interaction-patterns-and-tabler-icon-set.md) | UI interaction patterns (info hints, feature sections, one menu system) and the Tabler icon set | Accepted |
 | [0095](0095-audio-ducker-and-key-tap.md) | Audio ducker as a filter with a pre-fader key tap from another source | Accepted |
-| [0096](0096-capture-audio-companions-and-camera-microphone.md) | "Capture audio too" companions and the camera's own microphone | Accepted |
+| [0096](0096-capture-audio-companions-and-camera-microphone.md) | "Capture audio too" companions and the camera's own microphone | Accepted (decision 2 superseded in part by ADR-0186) |
 | [0097](0097-audio-monitoring-and-buses.md) | Audio monitoring (output port, per-strip monitor modes) and buses with per-source send levels | Accepted |
 | [0098](0098-transition-keeps-the-preview-scene.md) | Transition keeps the preview scene; swapping is a setting, off by default | Accepted |
 | [0099](0099-studio-in-its-own-process.md) | Run the studio in its own process | Accepted |
@@ -138,7 +138,7 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0128](0128-scene-transitions.md) | Scene transitions: Cut, Fade, Move, Swipe, Slide (Stinger later); the incoming scene drawn by its own compositor only while a transition runs | Accepted |
 | [0129](0129-text-source.md) | A text source: a fixed box drawn on the CPU once per change through a text rendering port, updated in place; live kinds (clock, countdown, stopwatch, elapsed time) and crisp resizing | Accepted |
 | [0130](0130-voice-filters-noise-suppression-compressor-limiter-eq.md) | Voice filters: noise suppression, compressor, limiter and equaliser, with filter latency | Accepted (decision 5 superseded in part by ADR-0155) |
-| [0131](0131-import-obs-scene-collections-and-profiles.md) | Import OBS scene collections, profiles and hotkeys as a new collection and output profile, through a mapper registry, with a report of what did not come across | Accepted |
+| [0131](0131-import-obs-scene-collections-and-profiles.md) | Import OBS scene collections, profiles and hotkeys as a new collection and output profile, through a mapper registry, with a report of what did not come across | Accepted (decisions 4, 6 and 7 superseded in part by ADR-0188) |
 | [0132](0132-browser-engine-css-interaction.md) | The browser source runs CEF fetched on first use, with custom CSS, reload, interaction and an opt-in sign-in | Accepted |
 | [0133](0133-duplicate-reset-and-paste-source-attributes.md) | Duplicate a source (and a scene with new sources), reset a source, and paste chosen attribute groups onto other sources in one undo step; sound stays live | Accepted |
 | [0134](0134-ai-tools-settings-page.md) | Start AI tools (`rbs-mcp`) from a Settings page, with a start-on-open option, an RBS-made token file and a generated connection line per AI tool | Accepted |
@@ -189,5 +189,17 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0179](0179-camera-background-removal.md) | Camera background removal: a video filter on a person matte: model spike first, then a `PersonMask` port with a GPU-native backend (OS backends where they exist); GPU-only default path, worker off the render thread | Accepted |
 | [0180](0180-the-toolbar-row-is-the-title-bar-on-macos.md) | The toolbar row is the title bar on macOS too, with the window buttons on the right as on Windows, behind one `WindowFrame` interface (amends ADR-0071 decision 3) | Accepted |
 | [0181](0181-one-rbs-at-a-time.md) | One RBS per settings folder on every system and with either close setting: an `instance.lock`, a second launch brings the running RBS forward and ends; several copies parked (amends ADR-0056, ADR-0051, ADR-0156) | Accepted |
-| [0182](0182-source-groups.md) | Sources can be grouped, and a group moves, resizes and hides as one | Accepted |
+| [0182](0182-source-groups.md) | Sources can be grouped, and a group moves, resizes and hides as one | Accepted (decisions 5 and 10 superseded in part by ADR-0186; decisions 7 and 8 superseded in part by ADR-0184; decision 9 superseded in part by ADR-0194) |
 | [0183](0183-background-removal-picture-and-mask-in-step.md) | Background removal draws each picture with its own mask (Exact); the newest picture stays an option (Fast) | Accepted |
+| [0184](0184-group-properties-batch-to-members.md) | Group Properties target the group and batch to its members | Accepted (decisions 3, 4 and 5 superseded in part by ADR-0185) |
+| [0185](0185-scroll-a-group-as-one-picture.md) | Scroll a group as one picture | Accepted (decision 1 superseded in part by ADR-0188; decision 3 superseded in part by ADR-0187; decision 5 superseded in part by ADR-0193) |
+| [0186](0186-do-not-regroup-grouped-items.md) | Do not regroup items already in a group | Accepted |
+| [0187](0187-version-group-scroll-settings.md) | Version group Scroll settings for run identity | Accepted |
+| [0188](0188-defer-new-nested-scenes.md) | Defer new nested scenes | Accepted |
+| [0189](0189-address-source-placements.md) | Address source placements independently | Proposed |
+| [0190](0190-prepare-group-resources-on-executors.md) | Prepare group resources on their owning executor | Superseded by ADR-0193 |
+| [0191](0191-incremental-node-release-for-quiesce.md) | Bounded control-thread service and quiesce | Superseded by ADR-0193 |
+| [0192](0192-transactional-group-show.md) | Transactional group Show | Superseded by ADR-0193 |
+| [0193](0193-simple-group-show-and-scroll-resources.md) | Simple group Show and group Scroll resources (supersedes ADR-0190, ADR-0191, ADR-0192; ADR-0185 decision 5 in part) | Accepted |
+| [0194](0194-member-row-selects-the-member.md) | A member row in the Sources list selects that member (supersedes ADR-0182 decision 9 in part) | Accepted |
+| [0196](0196-load-control-api-schemas-in-parts.md) | Control API schemas load in parts: `api.describe` is an index with schemas on request, one shard per namespace parsed on first use, `rbs-mcp` lists a small fixed tool set by default | Accepted |

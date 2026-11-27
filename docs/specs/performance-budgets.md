@@ -2,7 +2,7 @@
 
 - Status: Draft
 - Owner: whole project; enforced in CI
-- Related ADRs: [0009](../adr/0009-performance-budgets-in-ci.md)
+- Related ADRs: [0009](../adr/0009-performance-budgets-in-ci.md), [0193](../adr/0193-simple-group-show-and-scroll-resources.md)
 
 ## Purpose
 
@@ -34,6 +34,35 @@ Principle P13 and [ADR-0013](../adr/0013-zero-cost-when-unused.md). All checks u
 Recording protection (ADR-0090, [spec](recording-protection.md)) costs nothing while no recording or stream runs: no thread, timer or polling. During a take it adds one probe thread and one guard step a second on the control thread (integer arithmetic over at most four outputs and the volumes they write to), and one free-space and memory reading every 5 s on the probe thread. It reads existing counters only, so it adds nothing to any hot path.
 
 "Hot loops contain no checks for inactive features" cannot be measured by a benchmark; it is a review item in the `hot-path-review` skill.
+
+### Group Scroll (ADR-0193)
+
+**Implemented (2026-11-25).** [ADR-0193](../adr/0193-simple-group-show-and-scroll-resources.md)
+supersedes ADR-0190 and ADR-0191; there is no failure quarantine or exception
+to the idle budgets above. A layer list without group spans costs one
+emptiness check per tick; a scene with no shown, enabled group Scroll has no
+group intermediate, pass or per-frame work. Each intermediate is at most
+8,388,608 pixels, each compositor at most 4 spans and 16,777,216 summed span
+pixels (128 MiB `Rgba16Float`); one render executor's pool holds at most
+32 group intermediates, 1 GiB, in the worst case (owner-accepted). A scene
+leaving the schedule frees them through `cool`, so deactivation returns to
+baseline.
+
+Measured 2026-11-25 on an Apple M4 Pro (macOS), criterion, HEAD versus the
+change, each built in its own target directory and run interleaved:
+
+| Benchmark | HEAD | Change |
+| --- | --- | --- |
+| `render_tick_1080p/half_live/on_change` (min / median µs) | 217.6 / 229.4 | 200.3 / 222.8 |
+| `render_tick_1080p/half_live/on_change_scroll_channel` | 200.9 / 210.3 | 203.6 / 230.4 |
+| `render_tick_1080p/static/on_change`, node `process` (ns) | 28 | 32 |
+| `record_submit_32_layers_64px` (µs) | 147.5-151.4 | 147.7-151.9 |
+| `group_spans_1080p`: 0 / 1 / 4 / 4 reused spans (µs) | - | 208 / 242 / 303 / 230 |
+
+The `frame_1080p` compositor benchmarks stayed within ±5 %. The no-span path
+is unchanged within noise; the allocation guard shows no per-frame growth with
+spans. Hot-path review completed; human maintainer approval: Salih (owner),
+2026-11-25.
 
 ## Scenario budgets (initial targets, to be calibrated in Phase 0)
 

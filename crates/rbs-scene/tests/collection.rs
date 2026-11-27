@@ -16,7 +16,7 @@ use rbs_scene::model::{
     ScrollDirection, SettingValue, Settings, Shadow, Shape, SourceAudio, SourceGlide, SourceId,
     SourceMonitor, SourceRegion,
 };
-use rbs_scene::{Affine2, MAX_LAYERS, MAX_NESTING_DEPTH, SceneCollection, SceneError, Undo};
+use rbs_scene::{Affine2, MAX_LAYERS, SceneCollection, SceneError, Undo};
 
 /// Node types that declare only activity (ADR-0152): media and browser run while a
 /// shown scene draws them, as `rbs-sources` declares; every other type while placed.
@@ -123,17 +123,18 @@ fn canvas_scenes_stay_on_their_canvas() {
         s.col.set_program(s.tall, Some(own)),
         Err(SceneError::ScopeViolation(own))
     );
-    // A shared scene can be shown anywhere, so it must not nest a canvas scene.
+    // Neither direction allows a scene placement.
     assert_eq!(
         s.col
             .add_item(shared, ItemContent::Scene(own), full(10.0, 10.0), None)
             .map(|_| ()),
-        Err(SceneError::ScopeViolation(own))
+        Err(SceneError::NestingUnsupported)
     );
-    // The other way round is fine.
-    s.col
-        .add_item(own, ItemContent::Scene(shared), full(10.0, 10.0), None)
-        .unwrap();
+    assert_eq!(
+        s.col
+            .add_item(own, ItemContent::Scene(shared), full(10.0, 10.0), None),
+        Err(SceneError::NestingUnsupported)
+    );
     // Narrowing a scope is refused while something relies on the wider one.
     s.col.set_program(s.tall, Some(shared)).unwrap();
     assert_eq!(
@@ -145,52 +146,39 @@ fn canvas_scenes_stay_on_their_canvas() {
 }
 
 #[test]
-fn nesting_cycles_are_refused() {
+fn scene_placements_are_refused() {
     let mut s = studio();
     let (a, _) = s.col.add_scene("A", SceneScope::Shared).unwrap();
     let (b, _) = s.col.add_scene("B", SceneScope::Shared).unwrap();
     let (c, _) = s.col.add_scene("C", SceneScope::Shared).unwrap();
-    s.col
-        .add_item(a, ItemContent::Scene(b), full(1.0, 1.0), None)
-        .unwrap();
-    s.col
-        .add_item(b, ItemContent::Scene(c), full(1.0, 1.0), None)
-        .unwrap();
     let before = s.col.clone();
     assert!(matches!(
         s.col
-            .add_item(c, ItemContent::Scene(a), full(1.0, 1.0), None),
-        Err(SceneError::NestingCycle(_))
+            .add_item(a, ItemContent::Scene(b), full(1.0, 1.0), None),
+        Err(SceneError::NestingUnsupported)
     ));
     assert!(matches!(
         s.col
-            .add_item(a, ItemContent::Scene(a), full(1.0, 1.0), None),
-        Err(SceneError::NestingCycle(_))
+            .add_item(c, ItemContent::Scene(a), full(1.0, 1.0), None),
+        Err(SceneError::NestingUnsupported)
     ));
     assert_eq!(s.col, before, "a refused edit changes nothing");
 }
 
 #[test]
-fn nested_scenes_are_scaled_into_their_box_and_inherit_visibility_and_opacity() {
+fn source_placements_keep_visibility_and_opacity() {
     let mut s = studio();
     let (inner, _) = s.col.add_scene("Inner", SceneScope::Shared).unwrap();
     let (outer, _) = s.col.add_scene("Outer", SceneScope::Shared).unwrap();
-    // The camera fills the inner scene's right half.
-    s.col
-        .add_item(
-            inner,
-            ItemContent::Source(s.cam),
-            Layout::new([960.0, 0.0], [960.0, 1080.0]).with_crop(Crop::new(10, 0, 10, 0)),
-            None,
-        )
-        .unwrap();
-    // The inner scene is drawn into the top-left quarter at half opacity.
+    // A source can be placed with a crop and opacity.
     let (nest, _) = s
         .col
         .add_item(
             outer,
-            ItemContent::Scene(inner),
-            Layout::new([0.0, 0.0], [960.0, 540.0]).with_opacity(0.5),
+            ItemContent::Source(s.cam),
+            Layout::new([480.0, 0.0], [480.0, 540.0])
+                .with_crop(Crop::new(10, 0, 10, 0))
+                .with_opacity(0.5),
             None,
         )
         .unwrap();
@@ -201,14 +189,15 @@ fn nested_scenes_are_scaled_into_their_box_and_inherit_visibility_and_opacity() 
     assert_eq!(l.transform.apply(1.0, 1.0), (960.0, 540.0));
     assert_eq!(l.opacity, 0.5);
     assert_eq!(l.crop, Crop::new(10, 0, 10, 0));
-    assert_eq!(l.path.len(), 2);
+    assert_eq!(l.path.len(), 1);
     assert_eq!(l.path[0], nest);
     // A plain item carries the default style and its own box size.
     assert!(l.style.is_plain());
-    assert_eq!(l.box_size, [960.0, 1080.0]);
+    assert_eq!(l.box_size, [480.0, 540.0]);
 
     s.col.set_item_visible(nest, false).unwrap();
     assert!(s.col.flatten(s.wide, outer).unwrap().is_empty());
+    assert!(s.col.flatten(s.wide, inner).unwrap().is_empty());
 }
 
 #[test]
@@ -265,9 +254,6 @@ fn removing_a_scene_on_air_is_undoable() {
     let mut s = studio();
     let (outer, _) = s.col.add_scene("Outer", SceneScope::Shared).unwrap();
     let (scene, _) = s.col.add_scene("Live", SceneScope::Shared).unwrap();
-    s.col
-        .add_item(outer, ItemContent::Scene(scene), full(1.0, 1.0), None)
-        .unwrap();
     s.col.set_program(s.wide, Some(scene)).unwrap();
     s.col.set_preview(s.tall, Some(scene)).unwrap();
     let before = s.col.clone();
@@ -358,7 +344,7 @@ fn invalid_edits_are_refused() {
             full(1.0, 1.0).with_crop(Crop::new(1, 0, 0, 0)),
             None
         ),
-        Err(SceneError::CropOnScene(_))
+        Err(SceneError::NestingUnsupported)
     ));
     assert!(matches!(
         s.col.add_item(
@@ -367,7 +353,7 @@ fn invalid_edits_are_refused() {
             full(1.0, 1.0).with_style(ItemStyle::new(Shape::Circle)),
             None
         ),
-        Err(SceneError::StyleOnScene(_))
+        Err(SceneError::NestingUnsupported)
     ));
     // ADR-0150 decision 1: scroll is for sources, within its ranges.
     let ticker = Scroll::new(ScrollDirection::Left, 120.0);
@@ -378,7 +364,7 @@ fn invalid_edits_are_refused() {
             full(1.0, 1.0).with_scroll(Some(ticker)),
             None
         ),
-        Err(SceneError::ScrollOnScene(_))
+        Err(SceneError::NestingUnsupported)
     ));
     for bad in [
         Scroll::new(ScrollDirection::Left, 0.5),
@@ -595,7 +581,6 @@ fn timed_show_draws_a_hidden_item_without_writing_visible() {
     let mut s = studio();
     let (live, _) = s.col.add_scene("Live", SceneScope::Shared).unwrap();
     let (shelf, _) = s.col.add_scene("Shelf", SceneScope::Shared).unwrap();
-    let (inner, _) = s.col.add_scene("Inner", SceneScope::Shared).unwrap();
     let (preview, _) = s.col.add_scene("Preview", SceneScope::Shared).unwrap();
     let (media, _) = s
         .col
@@ -613,14 +598,6 @@ fn timed_show_draws_a_hidden_item_without_writing_visible() {
         .col
         .add_item(live, ItemContent::Source(logo), full(1.0, 1.0), None)
         .unwrap();
-    let (nest, _) = s
-        .col
-        .add_item(live, ItemContent::Scene(inner), full(1.0, 1.0), None)
-        .unwrap();
-    let (nested_logo, _) = s
-        .col
-        .add_item(inner, ItemContent::Source(logo), full(1.0, 1.0), None)
-        .unwrap();
     let (shelf_item, _) = s
         .col
         .add_item(shelf, ItemContent::Source(media), full(1.0, 1.0), None)
@@ -629,7 +606,7 @@ fn timed_show_draws_a_hidden_item_without_writing_visible() {
         .col
         .add_item(preview, ItemContent::Source(media), full(1.0, 1.0), None)
         .unwrap();
-    for id in [sponsor, plate, nest, nested_logo, shelf_item, preview_item] {
+    for id in [sponsor, plate, shelf_item, preview_item] {
         s.col.set_item_visible(id, false).unwrap();
     }
     s.col.set_program(s.wide, Some(live)).unwrap();
@@ -705,20 +682,6 @@ fn timed_show_draws_a_hidden_item_without_writing_visible() {
         1
     );
     assert!(s.col.cued_drawn_sources(&preview_cue).contains(&media));
-
-    // A hidden nested scene stays closed unless that nested item is cued.
-    let inner_only = BTreeSet::from([nested_logo]);
-    assert!(
-        s.col
-            .flatten_cued(s.wide, live, &inner_only)
-            .unwrap()
-            .is_empty()
-    );
-    let opened = BTreeSet::from([nest, nested_logo]);
-    let nested = s.col.flatten_cued(s.wide, live, &opened).unwrap();
-    assert_eq!(nested.len(), 1);
-    assert_eq!(nested[0].source, logo);
-    assert_eq!(nested[0].path, vec![nest, nested_logo]);
 
     // Opacity 0 is not a layer, and it still counts as drawn for the mixer set.
     s.col
@@ -1013,62 +976,26 @@ fn out_of_order_undo_is_refused_not_applied() {
 }
 
 #[test]
-fn nesting_depth_and_layer_count_are_bounded() {
-    let mut s = studio();
-    // A chain of MAX_NESTING_DEPTH scenes is fine; one more is refused.
-    let mut chain = Vec::new();
-    for i in 0..=MAX_NESTING_DEPTH {
-        chain.push(
-            s.col
-                .add_scene(&format!("L{i}"), SceneScope::Shared)
-                .unwrap()
-                .0,
-        );
-    }
-    for w in chain.windows(2).take(MAX_NESTING_DEPTH - 1) {
-        s.col
-            .add_item(w[0], ItemContent::Scene(w[1]), full(1.0, 1.0), None)
-            .unwrap();
-    }
-    let last = chain.len() - 1;
+fn layer_count_is_bounded_without_nesting() {
+    let s = studio();
+    let scene_id = SceneId::from_raw(1);
+    let mut scene = rbs_scene::model::Scene::new(scene_id, "Layers", SceneScope::Shared);
+    scene.items = (0..=MAX_LAYERS as u32)
+        .map(|id| {
+            rbs_scene::model::SceneItem::new(
+                ItemId::from_raw(id),
+                ItemContent::Source(s.cam),
+                full(1.0, 1.0),
+            )
+        })
+        .collect();
     assert!(matches!(
-        s.col.add_item(
-            chain[last - 1],
-            ItemContent::Scene(chain[last]),
-            full(1.0, 1.0),
-            None
+        SceneCollection::from_parts(
+            s.col.canvases().cloned().collect(), s.col.sources().cloned().collect(),
+            vec![scene], s.col.id_counters(),
         ),
-        Err(SceneError::NestingTooDeep(_))
+        Err(SceneError::TooManyLayers(id)) if id == scene_id
     ));
-
-    // Diamonds double the layer count per level.
-    let mut col = studio();
-    let (base, _) = col.col.add_scene("D0", SceneScope::Shared).unwrap();
-    col.col
-        .add_item(base, ItemContent::Source(col.cam), full(1.0, 1.0), None)
-        .unwrap();
-    let mut prev = base;
-    let mut result = Ok(());
-    for i in 1..14 {
-        let (d, _) = col
-            .col
-            .add_scene(&format!("D{i}"), SceneScope::Shared)
-            .unwrap();
-        col.col
-            .add_item(d, ItemContent::Scene(prev), full(1.0, 1.0), None)
-            .unwrap();
-        result = col
-            .col
-            .add_item(d, ItemContent::Scene(prev), full(1.0, 1.0), None)
-            .map(|_| ());
-        if result.is_err() {
-            break;
-        }
-        prev = d;
-    }
-    assert!(matches!(result, Err(SceneError::TooManyLayers(_))));
-    let biggest = col.col.flatten(col.wide, prev).unwrap().len() as u64;
-    assert!(biggest <= MAX_LAYERS);
 }
 
 #[test]
@@ -1122,25 +1049,14 @@ fn names_are_trimmed_before_comparing() {
 }
 
 #[test]
-fn negative_size_flips_and_rotation_composes_inside_nested_scenes() {
+fn negative_size_flips_and_rotation_compose() {
     let mut s = studio();
-    let (inner, _) = s.col.add_scene("In", SceneScope::Shared).unwrap();
     let (outer, _) = s.col.add_scene("Out", SceneScope::Shared).unwrap();
-    // Mirrored horizontally: unit x=0 lands on the right edge.
-    s.col
-        .add_item(
-            inner,
-            ItemContent::Source(s.cam),
-            Layout::new([1920.0, 0.0], [-1920.0, 1080.0]),
-            None,
-        )
-        .unwrap();
-    // Inner scene squeezed into a 960x1080 box, rotated 180 degrees.
     s.col
         .add_item(
             outer,
-            ItemContent::Scene(inner),
-            Layout::new([0.0, 0.0], [960.0, 1080.0]).with_rotation(180.0),
+            ItemContent::Source(s.cam),
+            Layout::new([960.0, 0.0], [-960.0, 1080.0]).with_rotation(180.0),
             None,
         )
         .unwrap();
@@ -1151,7 +1067,7 @@ fn negative_size_flips_and_rotation_composes_inside_nested_scenes() {
             "({x},{y}) vs ({ex},{ey})"
         );
     };
-    // Mirror then 180-degree turn: x=0 -> inner right edge -> box left edge; y flips.
+    // Mirror then 180-degree turn.
     close(t.apply(0.0, 0.0), (0.0, 1080.0));
     close(t.apply(1.0, 1.0), (960.0, 0.0));
 }
@@ -1331,25 +1247,14 @@ fn canvas_size_and_frame_rate_are_bounded() {
 #[test]
 fn a_style_reaches_the_layer_in_the_items_own_units() {
     let mut s = studio();
-    let (inner, _) = s.col.add_scene("Inner", SceneScope::Shared).unwrap();
     let (outer, _) = s.col.add_scene("Outer", SceneScope::Shared).unwrap();
     let style = ItemStyle::new(Shape::Rectangle { radius: 40.0 })
         .with_border(Some(Border::new(8.0, [255, 255, 255, 255])));
     s.col
         .add_item(
-            inner,
+            outer,
             ItemContent::Source(s.cam),
             Layout::new([0.0, 0.0], [-640.0, 360.0]).with_style(style),
-            None,
-        )
-        .unwrap();
-    // Nested at a quarter of the size: the style keeps the item's units, so the
-    // compositor scales it with the picture.
-    s.col
-        .add_item(
-            outer,
-            ItemContent::Scene(inner),
-            Layout::new([0.0, 0.0], [480.0, 270.0]),
             None,
         )
         .unwrap();
@@ -1650,20 +1555,19 @@ fn global_scenes_are_never_shown_nested_shared_or_nesting() {
         .col
         .add_scene("Wide scene", SceneScope::Canvas(s.wide))
         .unwrap();
-    refused(
-        s.col
-            .add_item(
-                wide_scene,
-                ItemContent::Scene(globals),
-                full(1.0, 1.0),
-                None,
-            )
-            .map(|x| x.1),
+    assert_eq!(
+        s.col.add_item(
+            wide_scene,
+            ItemContent::Scene(globals),
+            full(1.0, 1.0),
+            None
+        ),
+        Err(SceneError::NestingUnsupported)
     );
-    refused(
+    assert_eq!(
         s.col
-            .add_item(globals, ItemContent::Scene(shared), full(1.0, 1.0), None)
-            .map(|x| x.1),
+            .add_item(globals, ItemContent::Scene(shared), full(1.0, 1.0), None),
+        Err(SceneError::NestingUnsupported)
     );
     // Its scope cannot change away from its canvas.
     refused(s.col.set_scene_scope(globals, SceneScope::Shared));
@@ -2361,11 +2265,11 @@ fn a_text_resize_changes_settings_and_layout_as_one_undo_step() {
     assert_eq!(s.col.item(item).unwrap().1.layout, full(200.0, 50.0));
     // An item must place a source.
     let (other, _) = s.col.add_scene("Other", SceneScope::Shared).unwrap();
-    let (nested, _) = s
-        .col
-        .add_item(other, ItemContent::Scene(scene), full(10.0, 10.0), None)
-        .unwrap();
-    assert!(s.col.resize_text(nested, after, full(1.0, 1.0)).is_err());
+    assert_eq!(
+        s.col
+            .add_item(other, ItemContent::Scene(scene), full(10.0, 10.0), None),
+        Err(SceneError::NestingUnsupported)
+    );
 }
 
 #[test]
@@ -2558,22 +2462,6 @@ fn scroll_layers_carry_canvas_pixels_and_one_key_per_run() {
     let key = la[0].scroll_key.unwrap();
     assert_eq!(key.canvas, s.wide);
     assert_eq!(key.source, s.screen);
-
-    // Nested at half size: speed, gap and fade halve, and the cross size changes, so
-    // it is another run.
-    let (outer, _) = s.col.add_scene("Outer", SceneScope::Shared).unwrap();
-    s.col
-        .add_item(
-            outer,
-            ItemContent::Scene(a),
-            Layout::new([0.0, 0.0], [960.0, 540.0]),
-            None,
-        )
-        .unwrap();
-    let nested = s.col.flatten(s.wide, outer).unwrap();
-    let half = nested[0].scroll.unwrap();
-    assert_eq!((half.speed, half.gap, half.fade), (50.0, 20.0, 5.0));
-    assert_ne!(nested[0].scroll_key, Some(key));
 
     // An item faded to 0 is not drawn, but its run is still listed.
     let keys = |col: &SceneCollection, scene| {

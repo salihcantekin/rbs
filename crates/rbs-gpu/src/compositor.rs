@@ -263,7 +263,8 @@ const STYLED: u8 = 1;
 const YUV: u8 = 2;
 const WRAP: u8 = 4;
 
-/// The most scrolling layers one compositor draws per call (ADR-0150 decision 7).
+/// The most scrolling layers one compositor draws per call, or per tick over all the
+/// passes of a list with group spans (ADR-0150 decision 7, ADR-0193 decision 2).
 pub const MAX_SCROLL_LAYERS: u32 = 64;
 
 /// Bytes between two scroll records: the dynamic offset alignment WebGPU guarantees.
@@ -620,12 +621,14 @@ impl Compositor {
         layers: &[Layer],
         target: TextureId,
     ) -> Result<RenderStats, GpuError> {
-        self.render_scrolled(ctx, pool, layers, target, None)
+        self.render_scrolled(ctx, pool, layers, target, None, 0)
     }
 
     /// [`Compositor::render`] with this compositor's scroll records (ADR-0150): layers
     /// with [`Layer::scroll`] are drawn by the device's wrap pipelines, each with its
-    /// record. Without `scroll`, without the device's wrap pipelines
+    /// record, from record slot `base` on (ADR-0193 decision 2: several passes of one
+    /// tick write distinct slots, so a later pass never overwrites an earlier pass's
+    /// records before its submit). Without `scroll`, without the device's wrap pipelines
     /// ([`GpuContext::prepare_scrolling`]) or past [`MAX_SCROLL_LAYERS`], a scrolling
     /// layer draws nothing and counts in `unscrolled_layers`.
     ///
@@ -636,24 +639,69 @@ impl Compositor {
         pool: &TexturePool,
         layers: &[Layer],
         target: TextureId,
-        mut scroll: Option<&mut ScrollBinding>,
+        scroll: Option<&mut ScrollBinding>,
+        base: u32,
     ) -> Result<RenderStats, GpuError> {
-        let count = u32::try_from(layers.len()).unwrap_or(u32::MAX);
+        self.pass(ctx, pool, layers, target, scroll, base, true)
+    }
+
+    /// [`Compositor::render_scrolled`] into an intermediate of its own size (a group
+    /// span, ADR-0193 decision 3): any `Rgba16Float` render target; layer transforms map
+    /// to the target's pixels (the span's window space). The canvas-size check does not
+    /// apply.
+    pub fn render_intermediate(
+        &mut self,
+        ctx: &GpuContext,
+        pool: &TexturePool,
+        layers: &[Layer],
+        target: TextureId,
+        scroll: Option<&mut ScrollBinding>,
+        base: u32,
+    ) -> Result<RenderStats, GpuError> {
+        self.pass(ctx, pool, layers, target, scroll, base, false)
+    }
+
+    /// The pass's render target, checked: room for `layers`, the canvas format and a
+    /// render attachment, and with `canvas`, the canvas size.
+    fn target<'p>(
+        &self,
+        pool: &'p TexturePool,
+        layers: usize,
+        target: TextureId,
+        canvas: bool,
+    ) -> Result<&'p crate::pool::PooledTexture, GpuError> {
+        let count = u32::try_from(layers).unwrap_or(u32::MAX);
         if count > self.reserved {
             return Err(GpuError::TooManyLayers {
                 requested: count,
                 reserved: self.reserved,
             });
         }
-        let target_tex = pool.get(target).ok_or(GpuError::StaleTexture(target))?;
-        let desc = target_tex.desc();
+        let tex = pool.get(target).ok_or(GpuError::StaleTexture(target))?;
+        let desc = tex.desc();
         if desc.format != crate::CANVAS_FORMAT
-            || desc.width != self.canvas.width
-            || desc.height != self.canvas.height
+            || (canvas && (desc.width != self.canvas.width || desc.height != self.canvas.height))
             || !desc.usage.contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
         {
             return Err(GpuError::TargetMismatch(target));
         }
+        Ok(tex)
+    }
+
+    #[allow(clippy::too_many_arguments)] // The two public passes above name them.
+    fn pass(
+        &mut self,
+        ctx: &GpuContext,
+        pool: &TexturePool,
+        layers: &[Layer],
+        target: TextureId,
+        mut scroll: Option<&mut ScrollBinding>,
+        base: u32,
+        canvas: bool,
+    ) -> Result<RenderStats, GpuError> {
+        let target_tex = self.target(pool, layers.len(), target, canvas)?;
+        let desc = target_tex.desc();
+        let free_records = MAX_SCROLL_LAYERS.saturating_sub(base);
         let wrap = ctx.wrap.get();
         if wrap.is_none() {
             scroll = None;
@@ -662,7 +710,7 @@ impl Compositor {
             binding.staging.clear();
         }
 
-        let (w, h) = (self.canvas.width as f32, self.canvas.height as f32);
+        let (w, h) = (desc.width as f32, desc.height as f32);
         let mut stats = RenderStats::default();
         // Capacity is `reserved`, so these pushes never allocate.
         self.staging.clear();
@@ -695,9 +743,7 @@ impl Compositor {
             let mut kind = 0;
             if let Some(record) = layer.scroll {
                 // Draws nothing rather than the whole picture squeezed into the window.
-                let Some(binding) = scroll
-                    .as_deref_mut()
-                    .filter(|_| scrolled < MAX_SCROLL_LAYERS)
+                let Some(binding) = scroll.as_deref_mut().filter(|_| scrolled < free_records)
                 else {
                     stats.unscrolled_layers += 1;
                     continue;
@@ -767,8 +813,9 @@ impl Compositor {
         if let Some(binding) = scroll.as_deref()
             && !binding.staging.is_empty()
         {
+            let at = u64::from(base) * SCROLL_STRIDE;
             ctx.queue()
-                .write_buffer(&binding.buffer, 0, &binding.staging);
+                .write_buffer(&binding.buffer, at, &binding.staging);
         }
         let records = scroll.as_deref();
 
@@ -797,7 +844,7 @@ impl Compositor {
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.layers_bind_group, &[]);
             let mut bound = 0u8;
-            let mut slot = 0u32;
+            let mut slot = base;
             for (instance, (&kind, &index)) in self.kinds.iter().zip(&self.order).enumerate() {
                 let Some((bind_group, _)) = layers
                     .get(index as usize)

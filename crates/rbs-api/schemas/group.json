@@ -1,0 +1,1155 @@
+{
+  "group.apply": {
+    "input_schema": {
+      "$defs": {
+        "Axis": {
+          "description": "A direction on the canvas, as the user sees it.",
+          "oneOf": [
+            {
+              "const": "horizontal",
+              "description": "Left to right.",
+              "type": "string"
+            },
+            {
+              "const": "vertical",
+              "description": "Top to bottom.",
+              "type": "string"
+            }
+          ]
+        },
+        "GroupOperation": {
+          "description": "One all-or-none group operation.",
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "description": "Set or clear every member's timed-show duration.",
+              "properties": {
+                "show_for_ms": {
+                  "description": "Duration in milliseconds, or null to clear.",
+                  "format": "uint32",
+                  "maximum": 4294967295,
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "type": {
+                  "const": "set_show_for",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "Start cues for hidden members.",
+              "properties": {
+                "type": {
+                  "const": "show",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "Set all members' visibility.",
+              "properties": {
+                "type": {
+                  "const": "set_visible",
+                  "type": "string"
+                },
+                "visible": {
+                  "description": "Persistent visibility.",
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "type",
+                "visible"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "Set all members' lock state.",
+              "properties": {
+                "locked": {
+                  "description": "Persistent lock state.",
+                  "type": "boolean"
+                },
+                "type": {
+                  "const": "set_locked",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "locked"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "Remove all members from the scene.",
+              "properties": {
+                "type": {
+                  "const": "remove_members",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "Translate all members on the selected canvas.",
+              "properties": {
+                "dx": {
+                  "description": "Horizontal offset in canvas pixels.",
+                  "format": "float",
+                  "type": "number"
+                },
+                "dy": {
+                  "description": "Vertical offset in canvas pixels.",
+                  "format": "float",
+                  "type": "number"
+                },
+                "type": {
+                  "const": "move",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "dx",
+                "dy"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "Map the group's transform box to a new rectangle.",
+              "properties": {
+                "height": {
+                  "description": "Positive height.",
+                  "format": "float",
+                  "type": "number"
+                },
+                "type": {
+                  "const": "resize",
+                  "type": "string"
+                },
+                "width": {
+                  "description": "Positive width.",
+                  "format": "float",
+                  "type": "number"
+                },
+                "x": {
+                  "description": "Left edge in canvas pixels.",
+                  "format": "float",
+                  "type": "number"
+                },
+                "y": {
+                  "description": "Top edge in canvas pixels.",
+                  "format": "float",
+                  "type": "number"
+                }
+              },
+              "required": [
+                "type",
+                "x",
+                "y",
+                "width",
+                "height"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "Mirror the arrangement about its centre.",
+              "properties": {
+                "axis": {
+                  "$ref": "#/$defs/Axis",
+                  "description": "Axis to mirror."
+                },
+                "type": {
+                  "const": "flip",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "axis"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "Set or clear Scroll for the selected canvas.",
+              "properties": {
+                "scroll": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/GroupScroll"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Scroll settings, or null to clear."
+                },
+                "type": {
+                  "const": "set_scroll",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "Pause the group's live Scroll run.",
+              "properties": {
+                "type": {
+                  "const": "scroll_pause",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "Resume the group's live Scroll run.",
+              "properties": {
+                "type": {
+                  "const": "scroll_resume",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "Restart the group's live Scroll run.",
+              "properties": {
+                "type": {
+                  "const": "scroll_restart",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "Change the live run's target speed.",
+              "properties": {
+                "speed": {
+                  "description": "Speed in group layout units per second.",
+                  "format": "float",
+                  "type": "number"
+                },
+                "type": {
+                  "const": "scroll_speed",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "speed"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "GroupScroll": {
+          "additionalProperties": false,
+          "description": "Group-owned Scroll settings. Unlike item Scroll, these have no `on_return`.",
+          "properties": {
+            "direction": {
+              "$ref": "#/$defs/ScrollDirection",
+              "description": "Direction of motion."
+            },
+            "fade": {
+              "description": "Edge fade in group layout units.",
+              "format": "float",
+              "type": "number"
+            },
+            "gap": {
+              "description": "Gap between copies in group layout units.",
+              "format": "float",
+              "type": "number"
+            },
+            "ramp_ms": {
+              "description": "Ramp duration in milliseconds.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "repeat": {
+              "$ref": "#/$defs/ScrollRepeat",
+              "description": "Whether to loop or cross once."
+            },
+            "speed": {
+              "description": "Units per second, 1 to 4000.",
+              "format": "float",
+              "type": "number"
+            },
+            "start": {
+              "$ref": "#/$defs/ScrollStart",
+              "description": "Where the picture starts."
+            }
+          },
+          "required": [
+            "speed"
+          ],
+          "type": "object"
+        },
+        "OutputCanvas": {
+          "description": "The canvas an output records or streams (protocol 1.29, ADR-0093 decision 6).",
+          "oneOf": [
+            {
+              "const": "main",
+              "description": "The studio's main canvas.",
+              "type": "string"
+            },
+            {
+              "const": "vertical",
+              "description": "The vertical canvas (`canvas.add_vertical`).",
+              "type": "string"
+            }
+          ]
+        },
+        "ScrollDirection": {
+          "description": "Which way a scrolling picture moves in its box (protocol 1.94, ADR-0150), in the\nbox's own frame.",
+          "oneOf": [
+            {
+              "const": "left",
+              "description": "Right to left, like a news ticker.",
+              "type": "string"
+            },
+            {
+              "const": "right",
+              "description": "Left to right.",
+              "type": "string"
+            },
+            {
+              "const": "up",
+              "description": "Bottom to top, like credits.",
+              "type": "string"
+            },
+            {
+              "const": "down",
+              "description": "Top to bottom.",
+              "type": "string"
+            }
+          ]
+        },
+        "ScrollRepeat": {
+          "description": "How often a scrolling picture crosses its box (ADR-0150).",
+          "oneOf": [
+            {
+              "const": "loop",
+              "description": "Copies follow each other forever.",
+              "type": "string"
+            },
+            {
+              "const": "once",
+              "description": "Once, then the box stays empty.",
+              "type": "string"
+            }
+          ]
+        },
+        "ScrollStart": {
+          "description": "Where a scroll run starts (ADR-0150).",
+          "oneOf": [
+            {
+              "const": "inside",
+              "description": "Where the picture is placed without a scroll.",
+              "type": "string"
+            },
+            {
+              "const": "outside",
+              "description": "Entering from the edge the motion comes from.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`group.apply`: one atomic group edit.",
+      "properties": {
+        "canvas": {
+          "$ref": "#/$defs/OutputCanvas",
+          "description": "Canvas whose layout is edited."
+        },
+        "gesture": {
+          "description": "Consecutive saved edits with the same nonzero gesture can coalesce.",
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "group": {
+          "description": "Group id in the scene.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "items": {
+          "description": "Complete expected member item ids.",
+          "items": {
+            "format": "uint32",
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "operation": {
+          "$ref": "#/$defs/GroupOperation",
+          "description": "The operation to perform."
+        },
+        "scene": {
+          "description": "Scene containing the group.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "scene",
+        "group",
+        "items",
+        "operation"
+      ],
+      "title": "ApplyGroup",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "group.create": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`group.create`: groups ungrouped items of one scene, including their eligible\ncompanion items. Existing group members are refused (ADR-0186). One undo step;\nanswers [`GroupCreated`].",
+      "properties": {
+        "items": {
+          "description": "The items to group, at least two distinct ones of that scene, else\n`invalid_params`.",
+          "items": {
+            "format": "uint32",
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "name": {
+          "description": "The group's name, unique in the scene; absent: the first free \"Group N\".",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scene": {
+          "description": "The scene (`scene.list`).",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "scene",
+        "items"
+      ],
+      "title": "CreateGroup",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`group.create`'s answer.",
+      "properties": {
+        "group": {
+          "description": "The new group's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "name": {
+          "description": "Its name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "group",
+        "name"
+      ],
+      "title": "GroupCreated",
+      "type": "object"
+    }
+  },
+  "group.get": {
+    "input_schema": {
+      "$defs": {
+        "OutputCanvas": {
+          "description": "The canvas an output records or streams (protocol 1.29, ADR-0093 decision 6).",
+          "oneOf": [
+            {
+              "const": "main",
+              "description": "The studio's main canvas.",
+              "type": "string"
+            },
+            {
+              "const": "vertical",
+              "description": "The vertical canvas (`canvas.add_vertical`).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`group.get`: a group's state on one canvas.",
+      "properties": {
+        "canvas": {
+          "$ref": "#/$defs/OutputCanvas",
+          "description": "Canvas whose state is requested."
+        },
+        "group": {
+          "description": "Group id in the scene.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "scene": {
+          "description": "Scene containing the group.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "scene",
+        "group"
+      ],
+      "title": "GetGroup",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "GroupBounds": {
+          "description": "A group box in canvas pixels.",
+          "properties": {
+            "height": {
+              "description": "Positive height.",
+              "format": "float",
+              "type": "number"
+            },
+            "width": {
+              "description": "Positive width.",
+              "format": "float",
+              "type": "number"
+            },
+            "x": {
+              "description": "Left edge.",
+              "format": "float",
+              "type": "number"
+            },
+            "y": {
+              "description": "Top edge.",
+              "format": "float",
+              "type": "number"
+            }
+          },
+          "required": [
+            "x",
+            "y",
+            "width",
+            "height"
+          ],
+          "type": "object"
+        },
+        "GroupMemberState": {
+          "description": "One group member's persistent and live state.",
+          "properties": {
+            "cued": {
+              "description": "Whether this edited-scene item has an active cue.",
+              "type": "boolean"
+            },
+            "has_picture": {
+              "description": "Whether the direct member can supply a picture.",
+              "type": "boolean"
+            },
+            "item": {
+              "description": "Item id, not source id.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "locked": {
+              "description": "Persistent lock state.",
+              "type": "boolean"
+            },
+            "remaining_ms": {
+              "description": "Remaining cue time at the read instant, or null.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "show_for_ms": {
+              "description": "Timed-show duration, or null when unset.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "visible": {
+              "description": "Persistent visibility.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "item",
+            "visible",
+            "locked",
+            "show_for_ms",
+            "cued",
+            "remaining_ms",
+            "has_picture"
+          ],
+          "type": "object"
+        },
+        "GroupRenderFailure": {
+          "description": "Current failure for one rendered occurrence.",
+          "properties": {
+            "occurrence": {
+              "description": "Opaque occurrence identifier.",
+              "type": "string"
+            },
+            "reason": {
+              "$ref": "#/$defs/GroupRenderFailureReason",
+              "description": "Reason for the failure."
+            },
+            "role": {
+              "$ref": "#/$defs/GroupRenderRole",
+              "description": "Consumer role."
+            }
+          },
+          "required": [
+            "occurrence",
+            "role",
+            "reason"
+          ],
+          "type": "object"
+        },
+        "GroupRenderFailureReason": {
+          "description": "Recoverable group-composition failure.",
+          "oneOf": [
+            {
+              "const": "invalid_bounds",
+              "description": "Bounds are invalid.",
+              "type": "string"
+            },
+            {
+              "const": "too_large",
+              "description": "Bounds exceed a per-texture limit.",
+              "type": "string"
+            },
+            {
+              "const": "budget",
+              "description": "The studio-wide budget is exhausted.",
+              "type": "string"
+            },
+            {
+              "const": "allocation",
+              "description": "The intermediate could not be allocated.",
+              "type": "string"
+            },
+            {
+              "const": "render",
+              "description": "The intermediate could not be rendered.",
+              "type": "string"
+            }
+          ]
+        },
+        "GroupRenderRole": {
+          "description": "Which rendered occurrence has failed.",
+          "oneOf": [
+            {
+              "const": "program",
+              "description": "Program.",
+              "type": "string"
+            },
+            {
+              "const": "preview",
+              "description": "Preview.",
+              "type": "string"
+            },
+            {
+              "const": "incoming",
+              "description": "Incoming transition.",
+              "type": "string"
+            },
+            {
+              "const": "outgoing",
+              "description": "Outgoing transition.",
+              "type": "string"
+            },
+            {
+              "const": "hold",
+              "description": "Live hold scene.",
+              "type": "string"
+            }
+          ]
+        },
+        "GroupRunState": {
+          "description": "Live state of the edited scene's group Scroll run.",
+          "properties": {
+            "id": {
+              "description": "Run incarnation, unique for the API server's lifetime.",
+              "format": "uint64",
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "paused": {
+              "description": "Whether the run is paused.",
+              "type": "boolean"
+            },
+            "speed": {
+              "description": "Target speed, including a speed queued while paused.",
+              "format": "float",
+              "type": "number"
+            }
+          },
+          "required": [
+            "id",
+            "paused",
+            "speed"
+          ],
+          "type": "object"
+        },
+        "GroupScroll": {
+          "additionalProperties": false,
+          "description": "Group-owned Scroll settings. Unlike item Scroll, these have no `on_return`.",
+          "properties": {
+            "direction": {
+              "$ref": "#/$defs/ScrollDirection",
+              "description": "Direction of motion."
+            },
+            "fade": {
+              "description": "Edge fade in group layout units.",
+              "format": "float",
+              "type": "number"
+            },
+            "gap": {
+              "description": "Gap between copies in group layout units.",
+              "format": "float",
+              "type": "number"
+            },
+            "ramp_ms": {
+              "description": "Ramp duration in milliseconds.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "repeat": {
+              "$ref": "#/$defs/ScrollRepeat",
+              "description": "Whether to loop or cross once."
+            },
+            "speed": {
+              "description": "Units per second, 1 to 4000.",
+              "format": "float",
+              "type": "number"
+            },
+            "start": {
+              "$ref": "#/$defs/ScrollStart",
+              "description": "Where the picture starts."
+            }
+          },
+          "required": [
+            "speed"
+          ],
+          "type": "object"
+        },
+        "OutputCanvas": {
+          "description": "The canvas an output records or streams (protocol 1.29, ADR-0093 decision 6).",
+          "oneOf": [
+            {
+              "const": "main",
+              "description": "The studio's main canvas.",
+              "type": "string"
+            },
+            {
+              "const": "vertical",
+              "description": "The vertical canvas (`canvas.add_vertical`).",
+              "type": "string"
+            }
+          ]
+        },
+        "ScrollDirection": {
+          "description": "Which way a scrolling picture moves in its box (protocol 1.94, ADR-0150), in the\nbox's own frame.",
+          "oneOf": [
+            {
+              "const": "left",
+              "description": "Right to left, like a news ticker.",
+              "type": "string"
+            },
+            {
+              "const": "right",
+              "description": "Left to right.",
+              "type": "string"
+            },
+            {
+              "const": "up",
+              "description": "Bottom to top, like credits.",
+              "type": "string"
+            },
+            {
+              "const": "down",
+              "description": "Top to bottom.",
+              "type": "string"
+            }
+          ]
+        },
+        "ScrollRepeat": {
+          "description": "How often a scrolling picture crosses its box (ADR-0150).",
+          "oneOf": [
+            {
+              "const": "loop",
+              "description": "Copies follow each other forever.",
+              "type": "string"
+            },
+            {
+              "const": "once",
+              "description": "Once, then the box stays empty.",
+              "type": "string"
+            }
+          ]
+        },
+        "ScrollStart": {
+          "description": "Where a scroll run starts (ADR-0150).",
+          "oneOf": [
+            {
+              "const": "inside",
+              "description": "Where the picture is placed without a scroll.",
+              "type": "string"
+            },
+            {
+              "const": "outside",
+              "description": "Entering from the edge the motion comes from.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Complete group state for the selected canvas.",
+      "properties": {
+        "bounds": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GroupBounds"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Position-and-size union for group transforms."
+        },
+        "canvas": {
+          "$ref": "#/$defs/OutputCanvas",
+          "description": "Canvas whose state is reported."
+        },
+        "group": {
+          "description": "Group id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "items": {
+          "description": "Current member item ids, top first.",
+          "items": {
+            "format": "uint32",
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "members": {
+          "description": "Member state in the same order as `items`.",
+          "items": {
+            "$ref": "#/$defs/GroupMemberState"
+          },
+          "type": "array"
+        },
+        "name": {
+          "description": "Display name.",
+          "type": "string"
+        },
+        "render_failures": {
+          "description": "Currently failing rendered occurrences.",
+          "items": {
+            "$ref": "#/$defs/GroupRenderFailure"
+          },
+          "type": "array"
+        },
+        "run": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GroupRunState"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Matching live run, if present."
+        },
+        "scene": {
+          "description": "Scene containing the group.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "scroll": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GroupScroll"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Saved group Scroll settings, if present."
+        },
+        "scroll_bounds": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GroupBounds"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Rotated picture union for the Scroll window."
+        }
+      },
+      "required": [
+        "scene",
+        "group",
+        "name",
+        "items",
+        "members",
+        "canvas",
+        "bounds",
+        "scroll_bounds",
+        "scroll",
+        "run",
+        "render_failures"
+      ],
+      "title": "GroupState",
+      "type": "object"
+    }
+  },
+  "group.list": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`scene.remove` and `scene.switch` (protocol 1.6).",
+      "properties": {
+        "scene": {
+          "description": "The scene's id (`scene.list`).",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "scene"
+      ],
+      "title": "SceneRef",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "GroupInfo": {
+          "description": "One group in `group.list`.",
+          "properties": {
+            "id": {
+              "description": "The group's id.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "items": {
+              "description": "Its members' item ids, top first (the order of `scene.sources`).",
+              "items": {
+                "format": "uint32",
+                "maximum": 4294967295,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            "name": {
+              "description": "Its name.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "name",
+            "items"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`group.list`'s answer (protocol 1.104).",
+      "properties": {
+        "groups": {
+          "description": "Its groups, in creation order; none for a scene without groups.",
+          "items": {
+            "$ref": "#/$defs/GroupInfo"
+          },
+          "type": "array"
+        },
+        "scene": {
+          "description": "The scene.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "scene",
+        "groups"
+      ],
+      "title": "GroupList",
+      "type": "object"
+    }
+  },
+  "group.remove": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`group.remove` (protocol 1.104): ungroups. The members stay where they are, without\nthe group. One undo step.",
+      "properties": {
+        "group": {
+          "description": "The group's id (`group.list`).",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "scene": {
+          "description": "The scene.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "scene",
+        "group"
+      ],
+      "title": "GroupRef",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "group.rename": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`group.rename` (protocol 1.104). One undo step; `ok` when the name is unchanged.",
+      "properties": {
+        "group": {
+          "description": "The group's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "name": {
+          "description": "The new name: not blank, unique in the scene.",
+          "type": "string"
+        },
+        "scene": {
+          "description": "The scene.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "scene",
+        "group",
+        "name"
+      ],
+      "title": "RenameGroup",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  }
+}

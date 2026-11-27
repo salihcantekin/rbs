@@ -5,7 +5,6 @@
 
 use rbs_browser_ipc::control::Control;
 use rbs_core::log::Area;
-use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -84,8 +83,10 @@ pub(crate) mod attributes;
 pub(crate) mod browser_props;
 mod crop_calls;
 pub(crate) mod destinations;
+mod external_commands;
 pub(crate) mod filters;
 mod item_calls;
+mod mixer_audio;
 mod step_view;
 use step_view::step_view;
 mod library_ops;
@@ -98,6 +99,7 @@ mod slides;
 mod source_look;
 use source_look::{source_icon, unavailable_text};
 pub(crate) mod multi_select;
+mod properties_target;
 mod sound_nest;
 mod source_calls;
 mod target_calls;
@@ -323,7 +325,7 @@ pub struct StudioUi {
     /// The sources of other scenes the scene on air does not have (Add source).
     existing: Vec<(SourceId, String)>,
     /// The open Add source picker (ADR-0094 B1) and whether the dialog must be redrawn.
-    add_picker: Option<add_picker::AddPicker>,
+    pub(super) add_picker: Option<add_picker::AddPicker>,
     picker_dirty: bool,
     /// The font the font picker marks as current, and the ticket of the
     /// `text.fonts` question it waits on.
@@ -340,15 +342,14 @@ pub struct StudioUi {
     /// while it holds something. Follows the host, so a copy made through the control
     /// API counts too.
     pub attributes_clipboard: Option<rbs_api::types::AttributesClipboard>,
-    /// The source Properties last showed. It stays when the selection is cleared,
-    /// so the panel is empty only when the scene has no sources.
-    inspected: Cell<i32>,
     /// The Filters tab's selection and the drag in progress (ADR-0062).
     filter_ui: filters::FilterUi,
     /// The pictures whose sound rows are open in the Sources list (ADR-0173).
     nest: sound_nest::Open,
     /// Several sources selected in the Sources list (ADR pending; see multi_select).
     pub picked: multi_select::Picked,
+    /// What Properties shows: the source it last showed, or a whole group (ADR-0184).
+    props_target: properties_target::PropsTarget,
     /// The play state of each media source and the time left on each Show cue.
     live: live_ticks::LiveTicks,
     /// An Add source is on its way: the next new source is selected.
@@ -753,6 +754,7 @@ impl StudioUi {
             filter_ui: filters::FilterUi::default(),
             nest: sound_nest::Open::default(),
             picked: multi_select::Picked::default(),
+            props_target: properties_target::PropsTarget::default(),
             live: live_ticks::LiveTicks::default(),
             selected: -1,
             attributes_clipboard: None,
@@ -760,7 +762,6 @@ impl StudioUi {
             permissions_serial: 0,
             add_ons: Vec::new(),
             open_add_on: None,
-            inspected: Cell::new(-1),
             adding: false,
             reveal_shape: false,
             focus_shape: None,
@@ -941,6 +942,7 @@ impl StudioUi {
     /// Gives a window's `Studio` global the shared models (once per window).
     pub fn attach_models(&self, g: &Studio<'_>) {
         g.set_sources(ModelRc::from(self.sources.clone()));
+        g.set_group_props(self.props_target.model());
         g.set_scenes(ModelRc::from(self.scenes.clone()));
         g.set_library_looks(ModelRc::from(self.library_looks.clone()));
         g.set_library_look_names(ModelRc::new(VecModel::from(library_look_names())));
@@ -962,17 +964,6 @@ impl StudioUi {
         g.set_rc_tokens(ModelRc::from(self.tokens.clone()));
         g.set_profiles(ModelRc::from(self.profile_rows.clone()));
         g.set_collections(ModelRc::from(self.collection_rows.clone()));
-    }
-
-    /// The source Properties shows: the selection, else the last source it showed
-    /// that still exists. `-1` otherwise.
-    fn remember_properties(&self) -> i32 {
-        let ids: Vec<i32> = (0..self.sources.row_count())
-            .filter_map(|i| self.sources.row_data(i).map(|s| s.id))
-            .collect();
-        let shown = properties_source(self.selected, self.inspected.get(), &ids);
-        self.inspected.set(shown);
-        shown
     }
 
     /// Pushes the scalar state into a window's `Studio` global.
@@ -1463,60 +1454,6 @@ impl StudioUi {
                     .slot(ai_settings::union_store(&self.remote, &self.ai)),
             );
         }
-    }
-
-    /// Starts the API thread and attaches it to the control thread, with local IPC
-    /// when it can be served (so `rbs-cli token` changes reach this app at once).
-    /// False (the reason in `remote_failure`) when it did not start.
-    fn start_api(&mut self) -> bool {
-        let Some(host) = &self.host else {
-            return false;
-        };
-        // The sink is fixed while the server runs: AI tools records go to the forward,
-        // which keeps them only while AI tools are started (ADR-0134 decision 7).
-        let forward = self.ai_forward.clone();
-        let flags = self.slot_flags.clone();
-        let options = RemoteOptions {
-            control_waker: Box::new(host.api_waker()),
-            audit: Box::new(move |a| {
-                forward.record(&a, unix_now(), flags.ai_tools_started());
-                rbs_core::debug!(Area::Remote, "{a:?}");
-            }),
-            ipc: None,
-            levels: Some(host.level_feed()),
-        };
-        self.slot_flags.set(self.ai_started, self.remote.enabled);
-        let slot = self
-            .slot_flags
-            .slot(ai_settings::union_store(&self.remote, &self.ai));
-        let (mut server, endpoint) = match RemoteServer::start_api(slot, options) {
-            Ok(started) => started,
-            Err(e) => {
-                rbs_core::error!(Area::Remote, "did not start: {e}");
-                self.remote_failure = Some(format!("Remote control did not start: {e}"));
-                return false;
-            }
-        };
-        match rbs_api_ipc::Endpoint::for_current_user() {
-            Ok(e) => {
-                let shown = e.to_string();
-                match server.start_ipc(e) {
-                    Ok(()) => rbs_core::info!(Area::Remote, "local IPC at {shown}"),
-                    Err(why) => {
-                        rbs_core::warn!(Area::Remote, "no local IPC: {why}")
-                    }
-                }
-            }
-            Err(why) => {
-                rbs_core::warn!(Area::Remote, "no local IPC endpoint: {why}")
-            }
-        }
-        host.attach_api(
-            endpoint,
-            Some(server.api_tokens(self.config.clone(), self.slot_flags.clone())),
-        );
-        self.remote_server = Some(server);
-        true
     }
 
     /// The TLS identity and settings for network access when it is on, made or renewed
@@ -2924,7 +2861,7 @@ impl StudioUi {
         self.edit.set_panel(size[0], size[1]);
         let placed = self.placed_where(|_| true);
         let hit = self.edit.source_at(at, self.canvas_px(), &placed);
-        self.select_one(hit.unwrap_or(-1));
+        self.select_on_picture(hit.unwrap_or(-1));
         self.pick_props(OutputCanvas::Main);
         self.refresh_marks();
         hit
@@ -2954,7 +2891,7 @@ impl StudioUi {
     fn run(&mut self, effect: Effect) {
         match effect {
             Effect::None => {}
-            Effect::Select(id) => self.select_one(id),
+            Effect::Select(id) => self.select_on_picture(id),
             Effect::Send(seq, id, b, gesture) => {
                 self.deleted.clear();
                 self.send_box(seq, id, b, gesture, OutputCanvas::Main);
@@ -2975,7 +2912,7 @@ impl StudioUi {
     fn run_vertical(&mut self, effect: Effect) {
         match effect {
             Effect::None => {}
-            Effect::Select(id) => self.select_one(id),
+            Effect::Select(id) => self.select_on_picture(id),
             Effect::Send(seq, id, b, gesture) => {
                 self.deleted.clear();
                 self.send_box(seq, id, b, gesture, OutputCanvas::Vertical);
@@ -3063,7 +3000,7 @@ impl StudioUi {
         self.vedit.set_panel(size[0], size[1]);
         let placed = self.placed_vertical(true);
         let hit = self.vedit.source_at(at, canvas, &placed);
-        self.select_one(hit.unwrap_or(-1));
+        self.select_on_picture(hit.unwrap_or(-1));
         self.pick_props(OutputCanvas::Vertical);
         self.refresh_marks();
         hit
@@ -5375,7 +5312,7 @@ impl StudioUi {
             monitor: row.audio.monitor,
             soloed: self.is_soloed(row.id.get()),
             picture: row.layout.is_some(),
-            audio: row.kind.is_some_and(SourceKind::is_audio),
+            audio: mixer_audio::has_mixer_audio(row.kind, row.meter.is_some()),
             reloadable: row.kind.is_some(),
             has_settings: matches!(
                 row.kind,
@@ -5574,7 +5511,7 @@ impl StudioUi {
     /// delete never leaves the previous collection's rows on screen.
     fn clear_collection_view(&mut self) {
         self.selected = -1;
-        self.inspected.set(-1);
+        self.props_target.inspected.set(-1);
         self.rows.clear();
         self.heard.clear();
         self.heard_names.clear();
@@ -6805,12 +6742,11 @@ impl StudioUi {
     }
 }
 
-/// A Mixer row: a shown audio source, including one whose device is not running yet.
-/// Picture sources stay in the Sources list only. A source hidden with Show/Hide in
-/// Sources is left out until it is shown again; that is the scene item, not
-/// `mixer_hidden` (ADR-0080), which still lists the source under Hidden.
+/// A Mixer row: a shown audio source. Metered picture sources are included; device
+/// sources appear before they run. Show/Hide in Sources affects `visible`, not
+/// `mixer_hidden` (ADR-0080), which keeps the source in Hidden.
 fn mixer_source(r: &SourceRow) -> bool {
-    r.visible && (r.meter.is_some() || r.kind.is_some_and(SourceKind::is_audio))
+    r.visible && mixer_audio::has_mixer_audio(r.kind, r.meter.is_some())
 }
 
 /// Paints `view` into `row` and says whether anything changed, so the caller writes
@@ -7411,7 +7347,7 @@ pub struct SourceFacts {
     pub soloed: bool,
     /// It has a picture (it can be locked on the picture panel).
     pub picture: bool,
-    /// It makes sound only (it can be muted in the Mixer).
+    /// It has sound in the Mixer, either by kind or with a level meter.
     pub audio: bool,
     /// It captures something that can be opened again (a screen, window, camera or
     /// audio endpoint), so it can be reloaded (ADR-0077).
@@ -7844,20 +7780,6 @@ fn source_target_rows(list: &[Target], current: &str, query: &str) -> Vec<Source
         .collect()
 }
 
-/// Which source Properties shows. The selection wins; otherwise the last source
-/// the panel showed, if it is still in `ids`; otherwise none (`-1`), so a fresh
-/// start or a removed source leaves the "Nothing selected" state instead of an
-/// arbitrary first source.
-fn properties_source(selected: i32, remembered: i32, ids: &[i32]) -> i32 {
-    if selected >= 0 && ids.contains(&selected) {
-        return selected;
-    }
-    if remembered >= 0 && ids.contains(&remembered) {
-        return remembered;
-    }
-    -1
-}
-
 /// The Outputs card's line for the files a recording writes beside its master
 /// (ADR-0086): empty when there are none.
 /// The Outputs card's Separate files line: each file's source and kind, as the host
@@ -7959,7 +7881,7 @@ fn rgb_hex(s: &str) -> Option<[u8; 3]> {
 /// media source `id`, as the rows show them.
 #[cfg(test)]
 #[allow(clippy::unwrap_used)] // Tests fail by panicking.
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::cell::RefCell;
 
@@ -8206,17 +8128,6 @@ mod tests {
             mic: None,
             sound: true,
         }
-    }
-
-    #[test]
-    fn properties_keeps_the_last_source_when_nothing_is_selected() {
-        let ids = [4, 7, 9];
-        assert_eq!(properties_source(7, 4, &ids), 7);
-        assert_eq!(properties_source(-1, 7, &ids), 7);
-        // The remembered source was removed, or none was ever shown: the panel is empty.
-        assert_eq!(properties_source(-1, 3, &ids), -1);
-        assert_eq!(properties_source(-1, -1, &ids), -1);
-        assert_eq!(properties_source(-1, 7, &[]), -1);
     }
 
     #[test]
@@ -8472,11 +8383,11 @@ mod tests {
         assert_eq!((c.value.as_str(), c.bad), ("Not connected", true));
     }
 
-    pub(super) fn ui(name: &str) -> (StudioUi, std::path::PathBuf) {
+    pub(crate) fn ui(name: &str) -> (StudioUi, std::path::PathBuf) {
         let d = std::env::temp_dir().join(format!("rbs-app-ui-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
-        let (user, col) = rbs_app::user_session::open(&d, std::sync::Arc::new(|_| {}));
+        let (user, col) = rbs_app::user_session::open(&d, std::sync::Arc::new(|_| {})).unwrap();
         let canvas = rbs_app::user_session::first_canvas(&col);
         let mut ui = StudioUi::new(&d, &MemoryKeyStore::new(), user, canvas);
         // As after `Update::Started`: Go live is possible.
@@ -8499,7 +8410,7 @@ mod tests {
         let saved = ui.destinations.clone();
         drop(ui);
         // As after a restart: a new session of the same folder.
-        let (user, col) = rbs_app::user_session::open(&d, std::sync::Arc::new(|_| {}));
+        let (user, col) = rbs_app::user_session::open(&d, std::sync::Arc::new(|_| {})).unwrap();
         let canvas = rbs_app::user_session::first_canvas(&col);
         let mut ui = StudioUi::new(&d, &MemoryKeyStore::new(), user, canvas);
         assert_eq!(ui.destinations, saved);

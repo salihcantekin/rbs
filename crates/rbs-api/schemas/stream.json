@@ -1,0 +1,4714 @@
+{
+  "stream.destination.set_enabled": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`stream.destination.set_enabled` (protocol 1.74).",
+      "properties": {
+        "enabled": {
+          "description": "Go live sends to it.",
+          "type": "boolean"
+        },
+        "id": {
+          "description": "The destination's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "enabled"
+      ],
+      "title": "SetDestinationEnabled",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "stream.destination.start": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`stream.destination.start` and `stream.destination.stop` (protocol 1.74).",
+      "properties": {
+        "id": {
+          "description": "The destination's id (`stream.destinations`).",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "title": "DestinationRef",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "EmptyResult": {
+          "additionalProperties": false,
+          "type": "object"
+        },
+        "StreamStarted": {
+          "description": "`stream.start`'s answer: the stream runs and connects in the background\n(`stream.state` says when it reaches the server).",
+          "properties": {
+            "audio_encoder": {
+              "description": "The audio encoder's name, when audio is sent.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "video_encoder": {
+              "description": "The video encoder's name.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "video_encoder",
+            "audio_encoder"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/EmptyResult"
+        },
+        {
+          "$ref": "#/$defs/StreamStarted"
+        }
+      ],
+      "title": "DestinationStartResult",
+      "type": "object"
+    }
+  },
+  "stream.destination.stop": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`stream.destination.start` and `stream.destination.stop` (protocol 1.74).",
+      "properties": {
+        "id": {
+          "description": "The destination's id (`stream.destinations`).",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "title": "DestinationRef",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "stream.destinations": {
+    "input_schema": {
+      "$defs": {
+        "OutputCanvas": {
+          "description": "The canvas an output records or streams (protocol 1.29, ADR-0093 decision 6).",
+          "oneOf": [
+            {
+              "const": "main",
+              "description": "The studio's main canvas.",
+              "type": "string"
+            },
+            {
+              "const": "vertical",
+              "description": "The vertical canvas (`canvas.add_vertical`).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`stream.destinations` (protocol 1.74, ADR-0127 decision 16): one canvas's\ndestinations, or both canvases' when `canvas` is absent.",
+      "properties": {
+        "canvas": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OutputCanvas"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The canvas; both when absent or `null`."
+        }
+      },
+      "title": "DestinationsOf",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "DestinationEncodingKind": {
+          "description": "Whether a destination shares the stream's encoding (protocol 1.77).",
+          "oneOf": [
+            {
+              "const": "shared",
+              "description": "The stream's encoder, shared.",
+              "type": "string"
+            },
+            {
+              "const": "own",
+              "description": "An encoder of its own.",
+              "type": "string"
+            }
+          ]
+        },
+        "OutputCanvas": {
+          "description": "The canvas an output records or streams (protocol 1.29, ADR-0093 decision 6).",
+          "oneOf": [
+            {
+              "const": "main",
+              "description": "The studio's main canvas.",
+              "type": "string"
+            },
+            {
+              "const": "vertical",
+              "description": "The vertical canvas (`canvas.add_vertical`).",
+              "type": "string"
+            }
+          ]
+        },
+        "StreamDestination": {
+          "description": "One saved destination (`stream.destinations`, protocol 1.77, ADR-0127 decision 16).\nNever its server or key.",
+          "properties": {
+            "canvas": {
+              "$ref": "#/$defs/OutputCanvas",
+              "description": "The canvas it belongs to."
+            },
+            "configured": {
+              "description": "A server is saved for it (a key may still be missing; Go live says so).",
+              "type": "boolean"
+            },
+            "enabled": {
+              "description": "Go live sends to it.",
+              "type": "boolean"
+            },
+            "encoding": {
+              "$ref": "#/$defs/DestinationEncodingKind",
+              "description": "The stream's encoding, or its own."
+            },
+            "id": {
+              "description": "Its id, unique in the output profile and never reused.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "name": {
+              "description": "Its name.",
+              "type": "string"
+            },
+            "service": {
+              "description": "Its service preset's id, or `custom`.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "name",
+            "service",
+            "canvas",
+            "enabled",
+            "configured",
+            "encoding"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`stream.destinations` (protocol 1.77).",
+      "properties": {
+        "destinations": {
+          "description": "The asked canvas's destinations (both canvases' without `canvas`), by id.",
+          "items": {
+            "$ref": "#/$defs/StreamDestination"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "destinations"
+      ],
+      "title": "StreamDestinations",
+      "type": "object"
+    }
+  },
+  "stream.hold": {
+    "input_schema": {
+      "$defs": {
+        "HoldPicture": {
+          "description": "What a held stream sends (protocol 1.64, ADR-0124 decision 13).",
+          "oneOf": [
+            {
+              "const": "freeze",
+              "description": "The program's last frame, repeated.",
+              "type": "string"
+            },
+            {
+              "const": "black",
+              "description": "A black picture.",
+              "type": "string"
+            },
+            {
+              "const": "scene",
+              "description": "A scene of the collection, drawn live (protocol 1.67, ADR-0124 phase 2b).",
+              "type": "string"
+            }
+          ]
+        },
+        "HoldSound": {
+          "description": "What a stream held with a scene sends for sound (protocol 1.67, ADR-0124 phase\n2b).",
+          "oneOf": [
+            {
+              "const": "silence",
+              "description": "Silence, as a freeze or black hold.",
+              "type": "string"
+            },
+            {
+              "const": "scene",
+              "description": "The scene's own sources, mixed at their levels.",
+              "type": "string"
+            }
+          ]
+        },
+        "OutputTarget": {
+          "description": "The canvases `record.start`, `record.stop`, `stream.start` and `stream.stop` act on:\none canvas, or every canvas the studio runs, main first (`all`, protocol 1.42,\nADR-0111 decision 3).",
+          "oneOf": [
+            {
+              "const": "main",
+              "description": "The studio's main canvas.",
+              "type": "string"
+            },
+            {
+              "const": "vertical",
+              "description": "The vertical canvas.",
+              "type": "string"
+            },
+            {
+              "const": "all",
+              "description": "Every canvas the studio runs, main first (protocol 1.42).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`stream.hold` and `stream.hold_toggle` (protocol 1.64, ADR-0124 decisions 12 and\n13): the canvases as in [`OnCanvases`] and the picture sent while held (a scene\nand its sound from protocol 1.67). Unknown\nfields are ignored; an unknown `picture` is `invalid_params`.",
+      "properties": {
+        "canvas": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OutputTarget"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The canvases; the main one when absent or `null`."
+        },
+        "picture": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HoldPicture"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What the stream sends while held; the stream settings' `hold_picture` when\nabsent or `null`."
+        },
+        "scene": {
+          "description": "With `picture: \"scene\"`: the scene shown (protocol 1.67); the stream settings'\n`hold_scene` when absent or `null`.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "sound": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HoldSound"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "With `picture: \"scene\"`: the sound sent (protocol 1.67); the stream settings'\n`hold_sound` when absent or `null`. With `freeze` or `black` it is\n`invalid_params`."
+        }
+      },
+      "title": "StreamHold",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "EmptyResult": {
+          "additionalProperties": false,
+          "type": "object"
+        },
+        "ErrorKind": {
+          "description": "The stable error kinds of protocol version 1.",
+          "oneOf": [
+            {
+              "const": "parse_error",
+              "description": "The message is not JSON.",
+              "type": "string"
+            },
+            {
+              "const": "invalid_request",
+              "description": "The message is JSON but not a JSON-RPC 2.0 request.",
+              "type": "string"
+            },
+            {
+              "const": "method_not_found",
+              "description": "No method of this name.",
+              "type": "string"
+            },
+            {
+              "const": "invalid_params",
+              "description": "The method's parameters do not match its schema.",
+              "type": "string"
+            },
+            {
+              "const": "internal",
+              "description": "A server bug; the message says what.",
+              "type": "string"
+            },
+            {
+              "const": "batch_unsupported",
+              "description": "A JSON array of requests (refused in version 1).",
+              "type": "string"
+            },
+            {
+              "const": "unsupported_protocol",
+              "description": "None of the client's protocol versions is supported.",
+              "type": "string"
+            },
+            {
+              "const": "not_authenticated",
+              "description": "The method needs an authenticated session.",
+              "type": "string"
+            },
+            {
+              "const": "auth_failed",
+              "description": "The token is unknown or wrong (the same for both).",
+              "type": "string"
+            },
+            {
+              "const": "scope_denied",
+              "description": "The method needs a scope the session does not have.",
+              "type": "string"
+            },
+            {
+              "const": "not_permitted",
+              "description": "The token lacks the irreversible-actions permission (protocol 1.76,\nADR-0052 decision 4); `data.reason` says why.",
+              "type": "string"
+            },
+            {
+              "const": "busy",
+              "description": "The session's request queue is full.",
+              "type": "string"
+            },
+            {
+              "const": "rate_limited",
+              "description": "The session sends requests faster than its rate limit.",
+              "type": "string"
+            },
+            {
+              "const": "message_too_large",
+              "description": "The message is larger than allowed.",
+              "type": "string"
+            },
+            {
+              "const": "not_found",
+              "description": "The object named does not exist.",
+              "type": "string"
+            },
+            {
+              "const": "conflict",
+              "description": "The request conflicts with the current state (for example a recording runs).",
+              "type": "string"
+            },
+            {
+              "const": "undo_conflict",
+              "description": "An undo record was used out of order.",
+              "type": "string"
+            },
+            {
+              "const": "file_exists",
+              "description": "An explicit file already exists; it is never overwritten.",
+              "type": "string"
+            },
+            {
+              "const": "failed",
+              "description": "The request was valid but could not be carried out; the message says why.",
+              "type": "string"
+            },
+            {
+              "const": "forbidden",
+              "description": "The API may not do this whatever the token's scope (protocol 1.75): for\nexample writing a text source's `file` (ADR-0129 decision 8).",
+              "type": "string"
+            },
+            {
+              "const": "not_ready",
+              "description": "The answer is being prepared; ask again shortly (protocol 1.75): for example\n`text.fonts` before the first font list exists (ADR-0129 decision 7).",
+              "type": "string"
+            }
+          ]
+        },
+        "EstimateCode": {
+          "description": "Why a resource is not `fits`, or what is missing (protocol 1.53, a closed list).",
+          "oneOf": [
+            {
+              "const": "unknown",
+              "description": "A limit no calibration can measure is not known.",
+              "type": "string"
+            },
+            {
+              "const": "no_adapter",
+              "description": "No adapter can open the track.",
+              "type": "string"
+            },
+            {
+              "const": "open_failed",
+              "description": "The track's file could not open.",
+              "type": "string"
+            },
+            {
+              "const": "sessions",
+              "description": "Encoder sessions are heavy or over.",
+              "type": "string"
+            },
+            {
+              "const": "sessions_unknown",
+              "description": "A hardware encoder's session limit is not known.",
+              "type": "string"
+            },
+            {
+              "const": "throughput",
+              "description": "Encoder throughput is heavy or over.",
+              "type": "string"
+            },
+            {
+              "const": "software_fallback",
+              "description": "A track would fall to a software encoder.",
+              "type": "string"
+            },
+            {
+              "const": "cpu_load",
+              "description": "The software encoders' load is heavy or over.",
+              "type": "string"
+            },
+            {
+              "const": "workers",
+              "description": "An encode worker of the separate files is heavy or over.",
+              "type": "string"
+            },
+            {
+              "const": "render_share",
+              "description": "The separate files' render share is heavy or over.",
+              "type": "string"
+            },
+            {
+              "const": "disk_unknown",
+              "description": "The recording folder's speed or free space is not known.",
+              "type": "string"
+            },
+            {
+              "const": "disk_full",
+              "description": "The recording folder is (nearly) full.",
+              "type": "string"
+            },
+            {
+              "const": "disk_slow",
+              "description": "The recording folder is too slow.",
+              "type": "string"
+            },
+            {
+              "const": "ceiling",
+              "description": "More separate tracks than the ceiling.",
+              "type": "string"
+            },
+            {
+              "const": "source_inactive",
+              "description": "A marked source cannot be kept active.",
+              "type": "string"
+            },
+            {
+              "const": "other",
+              "description": "A code this client does not know (a later minor).",
+              "type": "string"
+            }
+          ]
+        },
+        "EstimateLevel": {
+          "description": "The level of a plan or of one resource in `record.estimate` (protocol 1.53,\nADR-0087 decision 2).",
+          "oneOf": [
+            {
+              "const": "fits",
+              "description": "Below 70 % of a rate limit, or within a count limit.",
+              "type": "string"
+            },
+            {
+              "const": "heavy",
+              "description": "Between 70 % and 100 % of a rate limit.",
+              "type": "string"
+            },
+            {
+              "const": "over",
+              "description": "Past the limit.",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "The limit is not known (a resource row only).",
+              "type": "string"
+            },
+            {
+              "const": "other",
+              "description": "A level this client does not know (a later minor).",
+              "type": "string"
+            }
+          ]
+        },
+        "EstimateReason": {
+          "description": "A reason of `record.estimate` (protocol 1.53).",
+          "properties": {
+            "code": {
+              "$ref": "#/$defs/EstimateCode",
+              "description": "The code."
+            },
+            "resource": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/EstimateResource"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The resource it concerns, when one does."
+            },
+            "track": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/EstimateTrack"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The track it concerns, when one does."
+            }
+          },
+          "required": [
+            "code"
+          ],
+          "type": "object"
+        },
+        "EstimateResource": {
+          "description": "A resource the estimate counts (protocol 1.53).",
+          "oneOf": [
+            {
+              "const": "encoder_sessions",
+              "description": "Encoder sessions on one adapter.",
+              "type": "string"
+            },
+            {
+              "const": "encoder_throughput",
+              "description": "Pixels per second on one hardware adapter.",
+              "type": "string"
+            },
+            {
+              "const": "iso_workers",
+              "description": "The busiest encode worker of the separate files.",
+              "type": "string"
+            },
+            {
+              "const": "iso_render_share",
+              "description": "The render partition's share taken by the separate files' exports.",
+              "type": "string"
+            },
+            {
+              "const": "cpu_load",
+              "description": "Software video encoders' pixel rate.",
+              "type": "string"
+            },
+            {
+              "const": "memory",
+              "description": "Export buffers of the separate files (informational).",
+              "type": "string"
+            },
+            {
+              "const": "disk_speed",
+              "description": "The recording folder's write speed.",
+              "type": "string"
+            },
+            {
+              "const": "disk_space",
+              "description": "The recording folder's free space.",
+              "type": "string"
+            },
+            {
+              "const": "iso_ceiling",
+              "description": "The most separate files of one kind.",
+              "type": "string"
+            },
+            {
+              "const": "active_sources",
+              "description": "Sources kept active for their files (informational).",
+              "type": "string"
+            },
+            {
+              "const": "other",
+              "description": "A resource this client does not know (a later minor).",
+              "type": "string"
+            }
+          ]
+        },
+        "EstimateSummary": {
+          "description": "The estimate in `record.start`'s answer (protocol 1.53).",
+          "properties": {
+            "level": {
+              "$ref": "#/$defs/EstimateLevel",
+              "description": "The plan's level."
+            },
+            "reasons": {
+              "default": [],
+              "description": "Coded reasons.",
+              "items": {
+                "$ref": "#/$defs/EstimateReason"
+              },
+              "type": "array"
+            },
+            "unknown": {
+              "default": [],
+              "description": "The resources whose limit is unknown.",
+              "items": {
+                "$ref": "#/$defs/EstimateResource"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "level",
+            "unknown",
+            "reasons"
+          ],
+          "type": "object"
+        },
+        "EstimateTrack": {
+          "description": "A separate track named by the estimate: its source and what it carries.",
+          "properties": {
+            "role": {
+              "$ref": "#/$defs/TrackRole",
+              "description": "What the file carries."
+            },
+            "source": {
+              "description": "The source's id.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "source",
+            "role"
+          ],
+          "type": "object"
+        },
+        "OutputCanvas": {
+          "description": "The canvas an output records or streams (protocol 1.29, ADR-0093 decision 6).",
+          "oneOf": [
+            {
+              "const": "main",
+              "description": "The studio's main canvas.",
+              "type": "string"
+            },
+            {
+              "const": "vertical",
+              "description": "The vertical canvas (`canvas.add_vertical`).",
+              "type": "string"
+            }
+          ]
+        },
+        "OutputEntry": {
+          "description": "One canvas's entry in an `all` answer.",
+          "properties": {
+            "audio_encoder": {
+              "description": "On `started`: the audio encoder's name, absent when no audio is encoded.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "canvas": {
+              "$ref": "#/$defs/OutputCanvas",
+              "description": "The canvas."
+            },
+            "error": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/OutputError"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "On `refused`: why."
+            },
+            "estimate": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/EstimateSummary"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "On a started main recording: the estimate of its plan (protocol 1.53)."
+            },
+            "kind": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/OutputKind"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Which output of the canvas, on `output.break_toggle` only (protocol 1.64),\nwhich answers for recordings and streams."
+            },
+            "outcome": {
+              "$ref": "#/$defs/OutputOutcome",
+              "description": "What happened."
+            },
+            "skipped": {
+              "description": "On a started main recording: marked sources left without a file (protocol\n1.53).",
+              "items": {
+                "$ref": "#/$defs/SkippedTrack"
+              },
+              "type": "array"
+            },
+            "video_encoder": {
+              "description": "On `started`: the video encoder's name.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "canvas",
+            "outcome"
+          ],
+          "type": "object"
+        },
+        "OutputError": {
+          "description": "The error object of a refused entry: the same `code`, `message` and `data.kind` a\nsingle-canvas call would answer with.",
+          "properties": {
+            "code": {
+              "description": "The JSON-RPC error code.",
+              "format": "int32",
+              "maximum": 2147483647,
+              "minimum": -2147483648,
+              "type": "integer"
+            },
+            "data": {
+              "$ref": "#/$defs/OutputErrorData",
+              "description": "`{ \"kind\": ... }`."
+            },
+            "message": {
+              "description": "What went wrong, in words.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "data"
+          ],
+          "type": "object"
+        },
+        "OutputErrorData": {
+          "additionalProperties": true,
+          "description": "`data` of an [`OutputError`].",
+          "properties": {
+            "kind": {
+              "$ref": "#/$defs/ErrorKind",
+              "description": "The machine-readable error."
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        "OutputKind": {
+          "description": "Which output kind `output.set_with_vertical` changes.",
+          "oneOf": [
+            {
+              "const": "record",
+              "description": "Recording.",
+              "type": "string"
+            },
+            {
+              "const": "stream",
+              "description": "Stream.",
+              "type": "string"
+            }
+          ]
+        },
+        "OutputOutcome": {
+          "description": "What a call with `canvas: \"all\"` did with one canvas's output (protocol 1.42).",
+          "oneOf": [
+            {
+              "const": "started",
+              "description": "Start: it started now.",
+              "type": "string"
+            },
+            {
+              "const": "running",
+              "description": "Start: it was already starting or running.",
+              "type": "string"
+            },
+            {
+              "const": "stopped",
+              "description": "Stop: it was stopped now.",
+              "type": "string"
+            },
+            {
+              "const": "not_running",
+              "description": "Stop: it was not running (idle, or still ending). Pause and resume: no\nrecording runs (protocol 1.61).",
+              "type": "string"
+            },
+            {
+              "const": "paused",
+              "description": "Pause: it was paused now (protocol 1.61).",
+              "type": "string"
+            },
+            {
+              "const": "resumed",
+              "description": "Resume: it was resumed now (protocol 1.61); for a stream, back on the\nprogram (protocol 1.64).",
+              "type": "string"
+            },
+            {
+              "const": "held",
+              "description": "Hold: the stream was put on hold now (protocol 1.64).",
+              "type": "string"
+            },
+            {
+              "const": "not_configured",
+              "description": "Start of a vertical stream with no server saved: skipped, not an error.",
+              "type": "string"
+            },
+            {
+              "const": "refused",
+              "description": "Start: refused; `error` says why. Pause and resume: refused (already in the\nasked state, or the pause cannot be made); `error` says why (protocol 1.61).",
+              "type": "string"
+            }
+          ]
+        },
+        "OutputsResult": {
+          "description": "The answer of `record.start`, `record.stop`, `stream.start` and `stream.stop` with\n`canvas: \"all\"` (protocol 1.42): one entry per canvas, main first.",
+          "properties": {
+            "outputs": {
+              "description": "The entries.",
+              "items": {
+                "$ref": "#/$defs/OutputEntry"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "outputs"
+          ],
+          "type": "object"
+        },
+        "SkipReason": {
+          "description": "Why a marked source has no file (protocol 1.46).",
+          "oneOf": [
+            {
+              "const": "not_heard",
+              "description": "The program mix does not hear the source when the recording starts.",
+              "type": "string"
+            },
+            {
+              "const": "limit",
+              "description": "More video files than this version writes beside the recording (protocol\n1.52; a fixed number until the ADR-0087 estimate).",
+              "type": "string"
+            },
+            {
+              "const": "no_picture",
+              "description": "The source has no picture when the recording starts (protocol 1.52).",
+              "type": "string"
+            },
+            {
+              "const": "audio_only",
+              "description": "The recording has no picture (WAV or FLAC), so a video file has no encoder\nsettings to match (protocol 1.52).",
+              "type": "string"
+            },
+            {
+              "const": "open_failed",
+              "description": "The file could not be opened (protocol 1.52).",
+              "type": "string"
+            },
+            {
+              "const": "other",
+              "description": "A reason this client does not know (a later minor).",
+              "type": "string"
+            }
+          ]
+        },
+        "SkippedTrack": {
+          "description": "A marked source that has no file in a running recording (protocol 1.46).",
+          "properties": {
+            "reason": {
+              "$ref": "#/$defs/SkipReason",
+              "description": "Why."
+            },
+            "role": {
+              "$ref": "#/$defs/TrackRole",
+              "description": "The feed that was not written."
+            },
+            "source": {
+              "description": "The source (`source.list`).",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "source",
+            "role",
+            "reason"
+          ],
+          "type": "object"
+        },
+        "TrackRole": {
+          "description": "What a separate file carries (protocol 1.46).",
+          "oneOf": [
+            {
+              "const": "video",
+              "description": "The source's picture as a video file (written from 1.52).",
+              "type": "string"
+            },
+            {
+              "const": "audio",
+              "description": "The source's sound.",
+              "type": "string"
+            },
+            {
+              "const": "image",
+              "description": "A still source's picture as PNG images (protocol 1.52, ADR-0117).",
+              "type": "string"
+            },
+            {
+              "const": "other",
+              "description": "A role this client does not know (a later minor).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/EmptyResult"
+        },
+        {
+          "$ref": "#/$defs/OutputsResult"
+        }
+      ],
+      "title": "OutputCommandResult",
+      "type": "object"
+    }
+  },
+  "stream.hold_toggle": {
+    "input_schema": {
+      "$defs": {
+        "HoldPicture": {
+          "description": "What a held stream sends (protocol 1.64, ADR-0124 decision 13).",
+          "oneOf": [
+            {
+              "const": "freeze",
+              "description": "The program's last frame, repeated.",
+              "type": "string"
+            },
+            {
+              "const": "black",
+              "description": "A black picture.",
+              "type": "string"
+            },
+            {
+              "const": "scene",
+              "description": "A scene of the collection, drawn live (protocol 1.67, ADR-0124 phase 2b).",
+              "type": "string"
+            }
+          ]
+        },
+        "HoldSound": {
+          "description": "What a stream held with a scene sends for sound (protocol 1.67, ADR-0124 phase\n2b).",
+          "oneOf": [
+            {
+              "const": "silence",
+              "description": "Silence, as a freeze or black hold.",
+              "type": "string"
+            },
+            {
+              "const": "scene",
+              "description": "The scene's own sources, mixed at their levels.",
+              "type": "string"
+            }
+          ]
+        },
+        "OutputTarget": {
+          "description": "The canvases `record.start`, `record.stop`, `stream.start` and `stream.stop` act on:\none canvas, or every canvas the studio runs, main first (`all`, protocol 1.42,\nADR-0111 decision 3).",
+          "oneOf": [
+            {
+              "const": "main",
+              "description": "The studio's main canvas.",
+              "type": "string"
+            },
+            {
+              "const": "vertical",
+              "description": "The vertical canvas.",
+              "type": "string"
+            },
+            {
+              "const": "all",
+              "description": "Every canvas the studio runs, main first (protocol 1.42).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`stream.hold` and `stream.hold_toggle` (protocol 1.64, ADR-0124 decisions 12 and\n13): the canvases as in [`OnCanvases`] and the picture sent while held (a scene\nand its sound from protocol 1.67). Unknown\nfields are ignored; an unknown `picture` is `invalid_params`.",
+      "properties": {
+        "canvas": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OutputTarget"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The canvases; the main one when absent or `null`."
+        },
+        "picture": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HoldPicture"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What the stream sends while held; the stream settings' `hold_picture` when\nabsent or `null`."
+        },
+        "scene": {
+          "description": "With `picture: \"scene\"`: the scene shown (protocol 1.67); the stream settings'\n`hold_scene` when absent or `null`.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "sound": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HoldSound"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "With `picture: \"scene\"`: the sound sent (protocol 1.67); the stream settings'\n`hold_sound` when absent or `null`. With `freeze` or `black` it is\n`invalid_params`."
+        }
+      },
+      "title": "StreamHold",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "EmptyResult": {
+          "additionalProperties": false,
+          "type": "object"
+        },
+        "ErrorKind": {
+          "description": "The stable error kinds of protocol version 1.",
+          "oneOf": [
+            {
+              "const": "parse_error",
+              "description": "The message is not JSON.",
+              "type": "string"
+            },
+            {
+              "const": "invalid_request",
+              "description": "The message is JSON but not a JSON-RPC 2.0 request.",
+              "type": "string"
+            },
+            {
+              "const": "method_not_found",
+              "description": "No method of this name.",
+              "type": "string"
+            },
+            {
+              "const": "invalid_params",
+              "description": "The method's parameters do not match its schema.",
+              "type": "string"
+            },
+            {
+              "const": "internal",
+              "description": "A server bug; the message says what.",
+              "type": "string"
+            },
+            {
+              "const": "batch_unsupported",
+              "description": "A JSON array of requests (refused in version 1).",
+              "type": "string"
+            },
+            {
+              "const": "unsupported_protocol",
+              "description": "None of the client's protocol versions is supported.",
+              "type": "string"
+            },
+            {
+              "const": "not_authenticated",
+              "description": "The method needs an authenticated session.",
+              "type": "string"
+            },
+            {
+              "const": "auth_failed",
+              "description": "The token is unknown or wrong (the same for both).",
+              "type": "string"
+            },
+            {
+              "const": "scope_denied",
+              "description": "The method needs a scope the session does not have.",
+              "type": "string"
+            },
+            {
+              "const": "not_permitted",
+              "description": "The token lacks the irreversible-actions permission (protocol 1.76,\nADR-0052 decision 4); `data.reason` says why.",
+              "type": "string"
+            },
+            {
+              "const": "busy",
+              "description": "The session's request queue is full.",
+              "type": "string"
+            },
+            {
+              "const": "rate_limited",
+              "description": "The session sends requests faster than its rate limit.",
+              "type": "string"
+            },
+            {
+              "const": "message_too_large",
+              "description": "The message is larger than allowed.",
+              "type": "string"
+            },
+            {
+              "const": "not_found",
+              "description": "The object named does not exist.",
+              "type": "string"
+            },
+            {
+              "const": "conflict",
+              "description": "The request conflicts with the current state (for example a recording runs).",
+              "type": "string"
+            },
+            {
+              "const": "undo_conflict",
+              "description": "An undo record was used out of order.",
+              "type": "string"
+            },
+            {
+              "const": "file_exists",
+              "description": "An explicit file already exists; it is never overwritten.",
+              "type": "string"
+            },
+            {
+              "const": "failed",
+              "description": "The request was valid but could not be carried out; the message says why.",
+              "type": "string"
+            },
+            {
+              "const": "forbidden",
+              "description": "The API may not do this whatever the token's scope (protocol 1.75): for\nexample writing a text source's `file` (ADR-0129 decision 8).",
+              "type": "string"
+            },
+            {
+              "const": "not_ready",
+              "description": "The answer is being prepared; ask again shortly (protocol 1.75): for example\n`text.fonts` before the first font list exists (ADR-0129 decision 7).",
+              "type": "string"
+            }
+          ]
+        },
+        "EstimateCode": {
+          "description": "Why a resource is not `fits`, or what is missing (protocol 1.53, a closed list).",
+          "oneOf": [
+            {
+              "const": "unknown",
+              "description": "A limit no calibration can measure is not known.",
+              "type": "string"
+            },
+            {
+              "const": "no_adapter",
+              "description": "No adapter can open the track.",
+              "type": "string"
+            },
+            {
+              "const": "open_failed",
+              "description": "The track's file could not open.",
+              "type": "string"
+            },
+            {
+              "const": "sessions",
+              "description": "Encoder sessions are heavy or over.",
+              "type": "string"
+            },
+            {
+              "const": "sessions_unknown",
+              "description": "A hardware encoder's session limit is not known.",
+              "type": "string"
+            },
+            {
+              "const": "throughput",
+              "description": "Encoder throughput is heavy or over.",
+              "type": "string"
+            },
+            {
+              "const": "software_fallback",
+              "description": "A track would fall to a software encoder.",
+              "type": "string"
+            },
+            {
+              "const": "cpu_load",
+              "description": "The software encoders' load is heavy or over.",
+              "type": "string"
+            },
+            {
+              "const": "workers",
+              "description": "An encode worker of the separate files is heavy or over.",
+              "type": "string"
+            },
+            {
+              "const": "render_share",
+              "description": "The separate files' render share is heavy or over.",
+              "type": "string"
+            },
+            {
+              "const": "disk_unknown",
+              "description": "The recording folder's speed or free space is not known.",
+              "type": "string"
+            },
+            {
+              "const": "disk_full",
+              "description": "The recording folder is (nearly) full.",
+              "type": "string"
+            },
+            {
+              "const": "disk_slow",
+              "description": "The recording folder is too slow.",
+              "type": "string"
+            },
+            {
+              "const": "ceiling",
+              "description": "More separate tracks than the ceiling.",
+              "type": "string"
+            },
+            {
+              "const": "source_inactive",
+              "description": "A marked source cannot be kept active.",
+              "type": "string"
+            },
+            {
+              "const": "other",
+              "description": "A code this client does not know (a later minor).",
+              "type": "string"
+            }
+          ]
+        },
+        "EstimateLevel": {
+          "description": "The level of a plan or of one resource in `record.estimate` (protocol 1.53,\nADR-0087 decision 2).",
+          "oneOf": [
+            {
+              "const": "fits",
+              "description": "Below 70 % of a rate limit, or within a count limit.",
+              "type": "string"
+            },
+            {
+              "const": "heavy",
+              "description": "Between 70 % and 100 % of a rate limit.",
+              "type": "string"
+            },
+            {
+              "const": "over",
+              "description": "Past the limit.",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "The limit is not known (a resource row only).",
+              "type": "string"
+            },
+            {
+              "const": "other",
+              "description": "A level this client does not know (a later minor).",
+              "type": "string"
+            }
+          ]
+        },
+        "EstimateReason": {
+          "description": "A reason of `record.estimate` (protocol 1.53).",
+          "properties": {
+            "code": {
+              "$ref": "#/$defs/EstimateCode",
+              "description": "The code."
+            },
+            "resource": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/EstimateResource"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The resource it concerns, when one does."
+            },
+            "track": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/EstimateTrack"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The track it concerns, when one does."
+            }
+          },
+          "required": [
+            "code"
+          ],
+          "type": "object"
+        },
+        "EstimateResource": {
+          "description": "A resource the estimate counts (protocol 1.53).",
+          "oneOf": [
+            {
+              "const": "encoder_sessions",
+              "description": "Encoder sessions on one adapter.",
+              "type": "string"
+            },
+            {
+              "const": "encoder_throughput",
+              "description": "Pixels per second on one hardware adapter.",
+              "type": "string"
+            },
+            {
+              "const": "iso_workers",
+              "description": "The busiest encode worker of the separate files.",
+              "type": "string"
+            },
+            {
+              "const": "iso_render_share",
+              "description": "The render partition's share taken by the separate files' exports.",
+              "type": "string"
+            },
+            {
+              "const": "cpu_load",
+              "description": "Software video encoders' pixel rate.",
+              "type": "string"
+            },
+            {
+              "const": "memory",
+              "description": "Export buffers of the separate files (informational).",
+              "type": "string"
+            },
+            {
+              "const": "disk_speed",
+              "description": "The recording folder's write speed.",
+              "type": "string"
+            },
+            {
+              "const": "disk_space",
+              "description": "The recording folder's free space.",
+              "type": "string"
+            },
+            {
+              "const": "iso_ceiling",
+              "description": "The most separate files of one kind.",
+              "type": "string"
+            },
+            {
+              "const": "active_sources",
+              "description": "Sources kept active for their files (informational).",
+              "type": "string"
+            },
+            {
+              "const": "other",
+              "description": "A resource this client does not know (a later minor).",
+              "type": "string"
+            }
+          ]
+        },
+        "EstimateSummary": {
+          "description": "The estimate in `record.start`'s answer (protocol 1.53).",
+          "properties": {
+            "level": {
+              "$ref": "#/$defs/EstimateLevel",
+              "description": "The plan's level."
+            },
+            "reasons": {
+              "default": [],
+              "description": "Coded reasons.",
+              "items": {
+                "$ref": "#/$defs/EstimateReason"
+              },
+              "type": "array"
+            },
+            "unknown": {
+              "default": [],
+              "description": "The resources whose limit is unknown.",
+              "items": {
+                "$ref": "#/$defs/EstimateResource"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "level",
+            "unknown",
+            "reasons"
+          ],
+          "type": "object"
+        },
+        "EstimateTrack": {
+          "description": "A separate track named by the estimate: its source and what it carries.",
+          "properties": {
+            "role": {
+              "$ref": "#/$defs/TrackRole",
+              "description": "What the file carries."
+            },
+            "source": {
+              "description": "The source's id.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "source",
+            "role"
+          ],
+          "type": "object"
+        },
+        "OutputCanvas": {
+          "description": "The canvas an output records or streams (protocol 1.29, ADR-0093 decision 6).",
+          "oneOf": [
+            {
+              "const": "main",
+              "description": "The studio's main canvas.",
+              "type": "string"
+            },
+            {
+              "const": "vertical",
+              "description": "The vertical canvas (`canvas.add_vertical`).",
+              "type": "string"
+            }
+          ]
+        },
+        "OutputEntry": {
+          "description": "One canvas's entry in an `all` answer.",
+          "properties": {
+            "audio_encoder": {
+              "description": "On `started`: the audio encoder's name, absent when no audio is encoded.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "canvas": {
+              "$ref": "#/$defs/OutputCanvas",
+              "description": "The canvas."
+            },
+            "error": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/OutputError"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "On `refused`: why."
+            },
+            "estimate": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/EstimateSummary"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "On a started main recording: the estimate of its plan (protocol 1.53)."
+            },
+            "kind": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/OutputKind"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Which output of the canvas, on `output.break_toggle` only (protocol 1.64),\nwhich answers for recordings and streams."
+            },
+            "outcome": {
+              "$ref": "#/$defs/OutputOutcome",
+              "description": "What happened."
+            },
+            "skipped": {
+              "description": "On a started main recording: marked sources left without a file (protocol\n1.53).",
+              "items": {
+                "$ref": "#/$defs/SkippedTrack"
+              },
+              "type": "array"
+            },
+            "video_encoder": {
+              "description": "On `started`: the video encoder's name.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "canvas",
+            "outcome"
+          ],
+          "type": "object"
+        },
+        "OutputError": {
+          "description": "The error object of a refused entry: the same `code`, `message` and `data.kind` a\nsingle-canvas call would answer with.",
+          "properties": {
+            "code": {
+              "description": "The JSON-RPC error code.",
+              "format": "int32",
+              "maximum": 2147483647,
+              "minimum": -2147483648,
+              "type": "integer"
+            },
+            "data": {
+              "$ref": "#/$defs/OutputErrorData",
+              "description": "`{ \"kind\": ... }`."
+            },
+            "message": {
+              "description": "What went wrong, in words.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "data"
+          ],
+          "type": "object"
+        },
+        "OutputErrorData": {
+          "additionalProperties": true,
+          "description": "`data` of an [`OutputError`].",
+          "properties": {
+            "kind": {
+              "$ref": "#/$defs/ErrorKind",
+              "description": "The machine-readable error."
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        "OutputKind": {
+          "description": "Which output kind `output.set_with_vertical` changes.",
+          "oneOf": [
+            {
+              "const": "record",
+              "description": "Recording.",
+              "type": "string"
+            },
+            {
+              "const": "stream",
+              "description": "Stream.",
+              "type": "string"
+            }
+          ]
+        },
+        "OutputOutcome": {
+          "description": "What a call with `canvas: \"all\"` did with one canvas's output (protocol 1.42).",
+          "oneOf": [
+            {
+              "const": "started",
+              "description": "Start: it started now.",
+              "type": "string"
+            },
+            {
+              "const": "running",
+              "description": "Start: it was already starting or running.",
+              "type": "string"
+            },
+            {
+              "const": "stopped",
+              "description": "Stop: it was stopped now.",
+              "type": "string"
+            },
+            {
+              "const": "not_running",
+              "description": "Stop: it was not running (idle, or still ending). Pause and resume: no\nrecording runs (protocol 1.61).",
+              "type": "string"
+            },
+            {
+              "const": "paused",
+              "description": "Pause: it was paused now (protocol 1.61).",
+              "type": "string"
+            },
+            {
+              "const": "resumed",
+              "description": "Resume: it was resumed now (protocol 1.61); for a stream, back on the\nprogram (protocol 1.64).",
+              "type": "string"
+            },
+            {
+              "const": "held",
+              "description": "Hold: the stream was put on hold now (protocol 1.64).",
+              "type": "string"
+            },
+            {
+              "const": "not_configured",
+              "description": "Start of a vertical stream with no server saved: skipped, not an error.",
+              "type": "string"
+            },
+            {
+              "const": "refused",
+              "description": "Start: refused; `error` says why. Pause and resume: refused (already in the\nasked state, or the pause cannot be made); `error` says why (protocol 1.61).",
+              "type": "string"
+            }
+          ]
+        },
+        "OutputsResult": {
+          "description": "The answer of `record.start`, `record.stop`, `stream.start` and `stream.stop` with\n`canvas: \"all\"` (protocol 1.42): one entry per canvas, main first.",
+          "properties": {
+            "outputs": {
+              "description": "The entries.",
+              "items": {
+                "$ref": "#/$defs/OutputEntry"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "outputs"
+          ],
+          "type": "object"
+        },
+        "SkipReason": {
+          "description": "Why a marked source has no file (protocol 1.46).",
+          "oneOf": [
+            {
+              "const": "not_heard",
+              "description": "The program mix does not hear the source when the recording starts.",
+              "type": "string"
+            },
+            {
+              "const": "limit",
+              "description": "More video files than this version writes beside the recording (protocol\n1.52; a fixed number until the ADR-0087 estimate).",
+              "type": "string"
+            },
+            {
+              "const": "no_picture",
+              "description": "The source has no picture when the recording starts (protocol 1.52).",
+              "type": "string"
+            },
+            {
+              "const": "audio_only",
+              "description": "The recording has no picture (WAV or FLAC), so a video file has no encoder\nsettings to match (protocol 1.52).",
+              "type": "string"
+            },
+            {
+              "const": "open_failed",
+              "description": "The file could not be opened (protocol 1.52).",
+              "type": "string"
+            },
+            {
+              "const": "other",
+              "description": "A reason this client does not know (a later minor).",
+              "type": "string"
+            }
+          ]
+        },
+        "SkippedTrack": {
+          "description": "A marked source that has no file in a running recording (protocol 1.46).",
+          "properties": {
+            "reason": {
+              "$ref": "#/$defs/SkipReason",
+              "description": "Why."
+            },
+            "role": {
+              "$ref": "#/$defs/TrackRole",
+              "description": "The feed that was not written."
+            },
+            "source": {
+              "description": "The source (`source.list`).",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "source",
+            "role",
+            "reason"
+          ],
+          "type": "object"
+        },
+        "TrackRole": {
+          "description": "What a separate file carries (protocol 1.46).",
+          "oneOf": [
+            {
+              "const": "video",
+              "description": "The source's picture as a video file (written from 1.52).",
+              "type": "string"
+            },
+            {
+              "const": "audio",
+              "description": "The source's sound.",
+              "type": "string"
+            },
+            {
+              "const": "image",
+              "description": "A still source's picture as PNG images (protocol 1.52, ADR-0117).",
+              "type": "string"
+            },
+            {
+              "const": "other",
+              "description": "A role this client does not know (a later minor).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/EmptyResult"
+        },
+        {
+          "$ref": "#/$defs/OutputsResult"
+        }
+      ],
+      "title": "OutputCommandResult",
+      "type": "object"
+    }
+  },
+  "stream.resume": {
+    "input_schema": {
+      "$defs": {
+        "OutputTarget": {
+          "description": "The canvases `record.start`, `record.stop`, `stream.start` and `stream.stop` act on:\none canvas, or every canvas the studio runs, main first (`all`, protocol 1.42,\nADR-0111 decision 3).",
+          "oneOf": [
+            {
+              "const": "main",
+              "description": "The studio's main canvas.",
+              "type": "string"
+            },
+            {
+              "const": "vertical",
+              "description": "The vertical canvas.",
+              "type": "string"
+            },
+            {
+              "const": "all",
+              "description": "Every canvas the studio runs, main first (protocol 1.42).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`record.stop`, `stream.start` and `stream.stop`: one canvas (protocol 1.29) or every\ncanvas the studio runs, main first (`all`, protocol 1.42); also `record.pause`,\n`record.resume` and `record.pause_toggle` (protocol 1.61). Unknown fields are\nignored.",
+      "properties": {
+        "canvas": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OutputTarget"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The canvases; the main one when absent or `null`."
+        }
+      },
+      "title": "OnCanvases",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "EmptyResult": {
+          "additionalProperties": false,
+          "type": "object"
+        },
+        "ErrorKind": {
+          "description": "The stable error kinds of protocol version 1.",
+          "oneOf": [
+            {
+              "const": "parse_error",
+              "description": "The message is not JSON.",
+              "type": "string"
+            },
+            {
+              "const": "invalid_request",
+              "description": "The message is JSON but not a JSON-RPC 2.0 request.",
+              "type": "string"
+            },
+            {
+              "const": "method_not_found",
+              "description": "No method of this name.",
+              "type": "string"
+            },
+            {
+              "const": "invalid_params",
+              "description": "The method's parameters do not match its schema.",
+              "type": "string"
+            },
+            {
+              "const": "internal",
+              "description": "A server bug; the message says what.",
+              "type": "string"
+            },
+            {
+              "const": "batch_unsupported",
+              "description": "A JSON array of requests (refused in version 1).",
+              "type": "string"
+            },
+            {
+              "const": "unsupported_protocol",
+              "description": "None of the client's protocol versions is supported.",
+              "type": "string"
+            },
+            {
+              "const": "not_authenticated",
+              "description": "The method needs an authenticated session.",
+              "type": "string"
+            },
+            {
+              "const": "auth_failed",
+              "description": "The token is unknown or wrong (the same for both).",
+              "type": "string"
+            },
+            {
+              "const": "scope_denied",
+              "description": "The method needs a scope the session does not have.",
+              "type": "string"
+            },
+            {
+              "const": "not_permitted",
+              "description": "The token lacks the irreversible-actions permission (protocol 1.76,\nADR-0052 decision 4); `data.reason` says why.",
+              "type": "string"
+            },
+            {
+              "const": "busy",
+              "description": "The session's request queue is full.",
+              "type": "string"
+            },
+            {
+              "const": "rate_limited",
+              "description": "The session sends requests faster than its rate limit.",
+              "type": "string"
+            },
+            {
+              "const": "message_too_large",
+              "description": "The message is larger than allowed.",
+              "type": "string"
+            },
+            {
+              "const": "not_found",
+              "description": "The object named does not exist.",
+              "type": "string"
+            },
+            {
+              "const": "conflict",
+              "description": "The request conflicts with the current state (for example a recording runs).",
+              "type": "string"
+            },
+            {
+              "const": "undo_conflict",
+              "description": "An undo record was used out of order.",
+              "type": "string"
+            },
+            {
+              "const": "file_exists",
+              "description": "An explicit file already exists; it is never overwritten.",
+              "type": "string"
+            },
+            {
+              "const": "failed",
+              "description": "The request was valid but could not be carried out; the message says why.",
+              "type": "string"
+            },
+            {
+              "const": "forbidden",
+              "description": "The API may not do this whatever the token's scope (protocol 1.75): for\nexample writing a text source's `file` (ADR-0129 decision 8).",
+              "type": "string"
+            },
+            {
+              "const": "not_ready",
+              "description": "The answer is being prepared; ask again shortly (protocol 1.75): for example\n`text.fonts` before the first font list exists (ADR-0129 decision 7).",
+              "type": "string"
+            }
+          ]
+        },
+        "EstimateCode": {
+          "description": "Why a resource is not `fits`, or what is missing (protocol 1.53, a closed list).",
+          "oneOf": [
+            {
+              "const": "unknown",
+              "description": "A limit no calibration can measure is not known.",
+              "type": "string"
+            },
+            {
+              "const": "no_adapter",
+              "description": "No adapter can open the track.",
+              "type": "string"
+            },
+            {
+              "const": "open_failed",
+              "description": "The track's file could not open.",
+              "type": "string"
+            },
+            {
+              "const": "sessions",
+              "description": "Encoder sessions are heavy or over.",
+              "type": "string"
+            },
+            {
+              "const": "sessions_unknown",
+              "description": "A hardware encoder's session limit is not known.",
+              "type": "string"
+            },
+            {
+              "const": "throughput",
+              "description": "Encoder throughput is heavy or over.",
+              "type": "string"
+            },
+            {
+              "const": "software_fallback",
+              "description": "A track would fall to a software encoder.",
+              "type": "string"
+            },
+            {
+              "const": "cpu_load",
+              "description": "The software encoders' load is heavy or over.",
+              "type": "string"
+            },
+            {
+              "const": "workers",
+              "description": "An encode worker of the separate files is heavy or over.",
+              "type": "string"
+            },
+            {
+              "const": "render_share",
+              "description": "The separate files' render share is heavy or over.",
+              "type": "string"
+            },
+            {
+              "const": "disk_unknown",
+              "description": "The recording folder's speed or free space is not known.",
+              "type": "string"
+            },
+            {
+              "const": "disk_full",
+              "description": "The recording folder is (nearly) full.",
+              "type": "string"
+            },
+            {
+              "const": "disk_slow",
+              "description": "The recording folder is too slow.",
+              "type": "string"
+            },
+            {
+              "const": "ceiling",
+              "description": "More separate tracks than the ceiling.",
+              "type": "string"
+            },
+            {
+              "const": "source_inactive",
+              "description": "A marked source cannot be kept active.",
+              "type": "string"
+            },
+            {
+              "const": "other",
+              "description": "A code this client does not know (a later minor).",
+              "type": "string"
+            }
+          ]
+        },
+        "EstimateLevel": {
+          "description": "The level of a plan or of one resource in `record.estimate` (protocol 1.53,\nADR-0087 decision 2).",
+          "oneOf": [
+            {
+              "const": "fits",
+              "description": "Below 70 % of a rate limit, or within a count limit.",
+              "type": "string"
+            },
+            {
+              "const": "heavy",
+              "description": "Between 70 % and 100 % of a rate limit.",
+              "type": "string"
+            },
+            {
+              "const": "over",
+              "description": "Past the limit.",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "The limit is not known (a resource row only).",
+              "type": "string"
+            },
+            {
+              "const": "other",
+              "description": "A level this client does not know (a later minor).",
+              "type": "string"
+            }
+          ]
+        },
+        "EstimateReason": {
+          "description": "A reason of `record.estimate` (protocol 1.53).",
+          "properties": {
+            "code": {
+              "$ref": "#/$defs/EstimateCode",
+              "description": "The code."
+            },
+            "resource": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/EstimateResource"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The resource it concerns, when one does."
+            },
+            "track": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/EstimateTrack"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The track it concerns, when one does."
+            }
+          },
+          "required": [
+            "code"
+          ],
+          "type": "object"
+        },
+        "EstimateResource": {
+          "description": "A resource the estimate counts (protocol 1.53).",
+          "oneOf": [
+            {
+              "const": "encoder_sessions",
+              "description": "Encoder sessions on one adapter.",
+              "type": "string"
+            },
+            {
+              "const": "encoder_throughput",
+              "description": "Pixels per second on one hardware adapter.",
+              "type": "string"
+            },
+            {
+              "const": "iso_workers",
+              "description": "The busiest encode worker of the separate files.",
+              "type": "string"
+            },
+            {
+              "const": "iso_render_share",
+              "description": "The render partition's share taken by the separate files' exports.",
+              "type": "string"
+            },
+            {
+              "const": "cpu_load",
+              "description": "Software video encoders' pixel rate.",
+              "type": "string"
+            },
+            {
+              "const": "memory",
+              "description": "Export buffers of the separate files (informational).",
+              "type": "string"
+            },
+            {
+              "const": "disk_speed",
+              "description": "The recording folder's write speed.",
+              "type": "string"
+            },
+            {
+              "const": "disk_space",
+              "description": "The recording folder's free space.",
+              "type": "string"
+            },
+            {
+              "const": "iso_ceiling",
+              "description": "The most separate files of one kind.",
+              "type": "string"
+            },
+            {
+              "const": "active_sources",
+              "description": "Sources kept active for their files (informational).",
+              "type": "string"
+            },
+            {
+              "const": "other",
+              "description": "A resource this client does not know (a later minor).",
+              "type": "string"
+            }
+          ]
+        },
+        "EstimateSummary": {
+          "description": "The estimate in `record.start`'s answer (protocol 1.53).",
+          "properties": {
+            "level": {
+              "$ref": "#/$defs/EstimateLevel",
+              "description": "The plan's level."
+            },
+            "reasons": {
+              "default": [],
+              "description": "Coded reasons.",
+              "items": {
+                "$ref": "#/$defs/EstimateReason"
+              },
+              "type": "array"
+            },
+            "unknown": {
+              "default": [],
+              "description": "The resources whose limit is unknown.",
+              "items": {
+                "$ref": "#/$defs/EstimateResource"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "level",
+            "unknown",
+            "reasons"
+          ],
+          "type": "object"
+        },
+        "EstimateTrack": {
+          "description": "A separate track named by the estimate: its source and what it carries.",
+          "properties": {
+            "role": {
+              "$ref": "#/$defs/TrackRole",
+              "description": "What the file carries."
+            },
+            "source": {
+              "description": "The source's id.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "source",
+            "role"
+          ],
+          "type": "object"
+        },
+        "OutputCanvas": {
+          "description": "The canvas an output records or streams (protocol 1.29, ADR-0093 decision 6).",
+          "oneOf": [
+            {
+              "const": "main",
+              "description": "The studio's main canvas.",
+              "type": "string"
+            },
+            {
+              "const": "vertical",
+              "description": "The vertical canvas (`canvas.add_vertical`).",
+              "type": "string"
+            }
+          ]
+        },
+        "OutputEntry": {
+          "description": "One canvas's entry in an `all` answer.",
+          "properties": {
+            "audio_encoder": {
+              "description": "On `started`: the audio encoder's name, absent when no audio is encoded.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "canvas": {
+              "$ref": "#/$defs/OutputCanvas",
+              "description": "The canvas."
+            },
+            "error": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/OutputError"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "On `refused`: why."
+            },
+            "estimate": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/EstimateSummary"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "On a started main recording: the estimate of its plan (protocol 1.53)."
+            },
+            "kind": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/OutputKind"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Which output of the canvas, on `output.break_toggle` only (protocol 1.64),\nwhich answers for recordings and streams."
+            },
+            "outcome": {
+              "$ref": "#/$defs/OutputOutcome",
+              "description": "What happened."
+            },
+            "skipped": {
+              "description": "On a started main recording: marked sources left without a file (protocol\n1.53).",
+              "items": {
+                "$ref": "#/$defs/SkippedTrack"
+              },
+              "type": "array"
+            },
+            "video_encoder": {
+              "description": "On `started`: the video encoder's name.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "canvas",
+            "outcome"
+          ],
+          "type": "object"
+        },
+        "OutputError": {
+          "description": "The error object of a refused entry: the same `code`, `message` and `data.kind` a\nsingle-canvas call would answer with.",
+          "properties": {
+            "code": {
+              "description": "The JSON-RPC error code.",
+              "format": "int32",
+              "maximum": 2147483647,
+              "minimum": -2147483648,
+              "type": "integer"
+            },
+            "data": {
+              "$ref": "#/$defs/OutputErrorData",
+              "description": "`{ \"kind\": ... }`."
+            },
+            "message": {
+              "description": "What went wrong, in words.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "data"
+          ],
+          "type": "object"
+        },
+        "OutputErrorData": {
+          "additionalProperties": true,
+          "description": "`data` of an [`OutputError`].",
+          "properties": {
+            "kind": {
+              "$ref": "#/$defs/ErrorKind",
+              "description": "The machine-readable error."
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        "OutputKind": {
+          "description": "Which output kind `output.set_with_vertical` changes.",
+          "oneOf": [
+            {
+              "const": "record",
+              "description": "Recording.",
+              "type": "string"
+            },
+            {
+              "const": "stream",
+              "description": "Stream.",
+              "type": "string"
+            }
+          ]
+        },
+        "OutputOutcome": {
+          "description": "What a call with `canvas: \"all\"` did with one canvas's output (protocol 1.42).",
+          "oneOf": [
+            {
+              "const": "started",
+              "description": "Start: it started now.",
+              "type": "string"
+            },
+            {
+              "const": "running",
+              "description": "Start: it was already starting or running.",
+              "type": "string"
+            },
+            {
+              "const": "stopped",
+              "description": "Stop: it was stopped now.",
+              "type": "string"
+            },
+            {
+              "const": "not_running",
+              "description": "Stop: it was not running (idle, or still ending). Pause and resume: no\nrecording runs (protocol 1.61).",
+              "type": "string"
+            },
+            {
+              "const": "paused",
+              "description": "Pause: it was paused now (protocol 1.61).",
+              "type": "string"
+            },
+            {
+              "const": "resumed",
+              "description": "Resume: it was resumed now (protocol 1.61); for a stream, back on the\nprogram (protocol 1.64).",
+              "type": "string"
+            },
+            {
+              "const": "held",
+              "description": "Hold: the stream was put on hold now (protocol 1.64).",
+              "type": "string"
+            },
+            {
+              "const": "not_configured",
+              "description": "Start of a vertical stream with no server saved: skipped, not an error.",
+              "type": "string"
+            },
+            {
+              "const": "refused",
+              "description": "Start: refused; `error` says why. Pause and resume: refused (already in the\nasked state, or the pause cannot be made); `error` says why (protocol 1.61).",
+              "type": "string"
+            }
+          ]
+        },
+        "OutputsResult": {
+          "description": "The answer of `record.start`, `record.stop`, `stream.start` and `stream.stop` with\n`canvas: \"all\"` (protocol 1.42): one entry per canvas, main first.",
+          "properties": {
+            "outputs": {
+              "description": "The entries.",
+              "items": {
+                "$ref": "#/$defs/OutputEntry"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "outputs"
+          ],
+          "type": "object"
+        },
+        "SkipReason": {
+          "description": "Why a marked source has no file (protocol 1.46).",
+          "oneOf": [
+            {
+              "const": "not_heard",
+              "description": "The program mix does not hear the source when the recording starts.",
+              "type": "string"
+            },
+            {
+              "const": "limit",
+              "description": "More video files than this version writes beside the recording (protocol\n1.52; a fixed number until the ADR-0087 estimate).",
+              "type": "string"
+            },
+            {
+              "const": "no_picture",
+              "description": "The source has no picture when the recording starts (protocol 1.52).",
+              "type": "string"
+            },
+            {
+              "const": "audio_only",
+              "description": "The recording has no picture (WAV or FLAC), so a video file has no encoder\nsettings to match (protocol 1.52).",
+              "type": "string"
+            },
+            {
+              "const": "open_failed",
+              "description": "The file could not be opened (protocol 1.52).",
+              "type": "string"
+            },
+            {
+              "const": "other",
+              "description": "A reason this client does not know (a later minor).",
+              "type": "string"
+            }
+          ]
+        },
+        "SkippedTrack": {
+          "description": "A marked source that has no file in a running recording (protocol 1.46).",
+          "properties": {
+            "reason": {
+              "$ref": "#/$defs/SkipReason",
+              "description": "Why."
+            },
+            "role": {
+              "$ref": "#/$defs/TrackRole",
+              "description": "The feed that was not written."
+            },
+            "source": {
+              "description": "The source (`source.list`).",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "source",
+            "role",
+            "reason"
+          ],
+          "type": "object"
+        },
+        "TrackRole": {
+          "description": "What a separate file carries (protocol 1.46).",
+          "oneOf": [
+            {
+              "const": "video",
+              "description": "The source's picture as a video file (written from 1.52).",
+              "type": "string"
+            },
+            {
+              "const": "audio",
+              "description": "The source's sound.",
+              "type": "string"
+            },
+            {
+              "const": "image",
+              "description": "A still source's picture as PNG images (protocol 1.52, ADR-0117).",
+              "type": "string"
+            },
+            {
+              "const": "other",
+              "description": "A role this client does not know (a later minor).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/EmptyResult"
+        },
+        {
+          "$ref": "#/$defs/OutputsResult"
+        }
+      ],
+      "title": "OutputCommandResult",
+      "type": "object"
+    }
+  },
+  "stream.start": {
+    "input_schema": {
+      "$defs": {
+        "OutputTarget": {
+          "description": "The canvases `record.start`, `record.stop`, `stream.start` and `stream.stop` act on:\none canvas, or every canvas the studio runs, main first (`all`, protocol 1.42,\nADR-0111 decision 3).",
+          "oneOf": [
+            {
+              "const": "main",
+              "description": "The studio's main canvas.",
+              "type": "string"
+            },
+            {
+              "const": "vertical",
+              "description": "The vertical canvas.",
+              "type": "string"
+            },
+            {
+              "const": "all",
+              "description": "Every canvas the studio runs, main first (protocol 1.42).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`record.stop`, `stream.start` and `stream.stop`: one canvas (protocol 1.29) or every\ncanvas the studio runs, main first (`all`, protocol 1.42); also `record.pause`,\n`record.resume` and `record.pause_toggle` (protocol 1.61). Unknown fields are\nignored.",
+      "properties": {
+        "canvas": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OutputTarget"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The canvases; the main one when absent or `null`."
+        }
+      },
+      "title": "OnCanvases",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "ErrorKind": {
+          "description": "The stable error kinds of protocol version 1.",
+          "oneOf": [
+            {
+              "const": "parse_error",
+              "description": "The message is not JSON.",
+              "type": "string"
+            },
+            {
+              "const": "invalid_request",
+              "description": "The message is JSON but not a JSON-RPC 2.0 request.",
+              "type": "string"
+            },
+            {
+              "const": "method_not_found",
+              "description": "No method of this name.",
+              "type": "string"
+            },
+            {
+              "const": "invalid_params",
+              "description": "The method's parameters do not match its schema.",
+              "type": "string"
+            },
+            {
+              "const": "internal",
+              "description": "A server bug; the message says what.",
+              "type": "string"
+            },
+            {
+              "const": "batch_unsupported",
+              "description": "A JSON array of requests (refused in version 1).",
+              "type": "string"
+            },
+            {
+              "const": "unsupported_protocol",
+              "description": "None of the client's protocol versions is supported.",
+              "type": "string"
+            },
+            {
+              "const": "not_authenticated",
+              "description": "The method needs an authenticated session.",
+              "type": "string"
+            },
+            {
+              "const": "auth_failed",
+              "description": "The token is unknown or wrong (the same for both).",
+              "type": "string"
+            },
+            {
+              "const": "scope_denied",
+              "description": "The method needs a scope the session does not have.",
+              "type": "string"
+            },
+            {
+              "const": "not_permitted",
+              "description": "The token lacks the irreversible-actions permission (protocol 1.76,\nADR-0052 decision 4); `data.reason` says why.",
+              "type": "string"
+            },
+            {
+              "const": "busy",
+              "description": "The session's request queue is full.",
+              "type": "string"
+            },
+            {
+              "const": "rate_limited",
+              "description": "The session sends requests faster than its rate limit.",
+              "type": "string"
+            },
+            {
+              "const": "message_too_large",
+              "description": "The message is larger than allowed.",
+              "type": "string"
+            },
+            {
+              "const": "not_found",
+              "description": "The object named does not exist.",
+              "type": "string"
+            },
+            {
+              "const": "conflict",
+              "description": "The request conflicts with the current state (for example a recording runs).",
+              "type": "string"
+            },
+            {
+              "const": "undo_conflict",
+              "description": "An undo record was used out of order.",
+              "type": "string"
+            },
+            {
+              "const": "file_exists",
+              "description": "An explicit file already exists; it is never overwritten.",
+              "type": "string"
+            },
+            {
+              "const": "failed",
+              "description": "The request was valid but could not be carried out; the message says why.",
+              "type": "string"
+            },
+            {
+              "const": "forbidden",
+              "description": "The API may not do this whatever the token's scope (protocol 1.75): for\nexample writing a text source's `file` (ADR-0129 decision 8).",
+              "type": "string"
+            },
+            {
+              "const": "not_ready",
+              "description": "The answer is being prepared; ask again shortly (protocol 1.75): for example\n`text.fonts` before the first font list exists (ADR-0129 decision 7).",
+              "type": "string"
+            }
+          ]
+        },
+        "EstimateCode": {
+          "description": "Why a resource is not `fits`, or what is missing (protocol 1.53, a closed list).",
+          "oneOf": [
+            {
+              "const": "unknown",
+              "description": "A limit no calibration can measure is not known.",
+              "type": "string"
+            },
+            {
+              "const": "no_adapter",
+              "description": "No adapter can open the track.",
+              "type": "string"
+            },
+            {
+              "const": "open_failed",
+              "description": "The track's file could not open.",
+              "type": "string"
+            },
+            {
+              "const": "sessions",
+              "description": "Encoder sessions are heavy or over.",
+              "type": "string"
+            },
+            {
+              "const": "sessions_unknown",
+              "description": "A hardware encoder's session limit is not known.",
+              "type": "string"
+            },
+            {
+              "const": "throughput",
+              "description": "Encoder throughput is heavy or over.",
+              "type": "string"
+            },
+            {
+              "const": "software_fallback",
+              "description": "A track would fall to a software encoder.",
+              "type": "string"
+            },
+            {
+              "const": "cpu_load",
+              "description": "The software encoders' load is heavy or over.",
+              "type": "string"
+            },
+            {
+              "const": "workers",
+              "description": "An encode worker of the separate files is heavy or over.",
+              "type": "string"
+            },
+            {
+              "const": "render_share",
+              "description": "The separate files' render share is heavy or over.",
+              "type": "string"
+            },
+            {
+              "const": "disk_unknown",
+              "description": "The recording folder's speed or free space is not known.",
+              "type": "string"
+            },
+            {
+              "const": "disk_full",
+              "description": "The recording folder is (nearly) full.",
+              "type": "string"
+            },
+            {
+              "const": "disk_slow",
+              "description": "The recording folder is too slow.",
+              "type": "string"
+            },
+            {
+              "const": "ceiling",
+              "description": "More separate tracks than the ceiling.",
+              "type": "string"
+            },
+            {
+              "const": "source_inactive",
+              "description": "A marked source cannot be kept active.",
+              "type": "string"
+            },
+            {
+              "const": "other",
+              "description": "A code this client does not know (a later minor).",
+              "type": "string"
+            }
+          ]
+        },
+        "EstimateLevel": {
+          "description": "The level of a plan or of one resource in `record.estimate` (protocol 1.53,\nADR-0087 decision 2).",
+          "oneOf": [
+            {
+              "const": "fits",
+              "description": "Below 70 % of a rate limit, or within a count limit.",
+              "type": "string"
+            },
+            {
+              "const": "heavy",
+              "description": "Between 70 % and 100 % of a rate limit.",
+              "type": "string"
+            },
+            {
+              "const": "over",
+              "description": "Past the limit.",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "The limit is not known (a resource row only).",
+              "type": "string"
+            },
+            {
+              "const": "other",
+              "description": "A level this client does not know (a later minor).",
+              "type": "string"
+            }
+          ]
+        },
+        "EstimateReason": {
+          "description": "A reason of `record.estimate` (protocol 1.53).",
+          "properties": {
+            "code": {
+              "$ref": "#/$defs/EstimateCode",
+              "description": "The code."
+            },
+            "resource": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/EstimateResource"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The resource it concerns, when one does."
+            },
+            "track": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/EstimateTrack"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The track it concerns, when one does."
+            }
+          },
+          "required": [
+            "code"
+          ],
+          "type": "object"
+        },
+        "EstimateResource": {
+          "description": "A resource the estimate counts (protocol 1.53).",
+          "oneOf": [
+            {
+              "const": "encoder_sessions",
+              "description": "Encoder sessions on one adapter.",
+              "type": "string"
+            },
+            {
+              "const": "encoder_throughput",
+              "description": "Pixels per second on one hardware adapter.",
+              "type": "string"
+            },
+            {
+              "const": "iso_workers",
+              "description": "The busiest encode worker of the separate files.",
+              "type": "string"
+            },
+            {
+              "const": "iso_render_share",
+              "description": "The render partition's share taken by the separate files' exports.",
+              "type": "string"
+            },
+            {
+              "const": "cpu_load",
+              "description": "Software video encoders' pixel rate.",
+              "type": "string"
+            },
+            {
+              "const": "memory",
+              "description": "Export buffers of the separate files (informational).",
+              "type": "string"
+            },
+            {
+              "const": "disk_speed",
+              "description": "The recording folder's write speed.",
+              "type": "string"
+            },
+            {
+              "const": "disk_space",
+              "description": "The recording folder's free space.",
+              "type": "string"
+            },
+            {
+              "const": "iso_ceiling",
+              "description": "The most separate files of one kind.",
+              "type": "string"
+            },
+            {
+              "const": "active_sources",
+              "description": "Sources kept active for their files (informational).",
+              "type": "string"
+            },
+            {
+              "const": "other",
+              "description": "A resource this client does not know (a later minor).",
+              "type": "string"
+            }
+          ]
+        },
+        "EstimateSummary": {
+          "description": "The estimate in `record.start`'s answer (protocol 1.53).",
+          "properties": {
+            "level": {
+              "$ref": "#/$defs/EstimateLevel",
+              "description": "The plan's level."
+            },
+            "reasons": {
+              "default": [],
+              "description": "Coded reasons.",
+              "items": {
+                "$ref": "#/$defs/EstimateReason"
+              },
+              "type": "array"
+            },
+            "unknown": {
+              "default": [],
+              "description": "The resources whose limit is unknown.",
+              "items": {
+                "$ref": "#/$defs/EstimateResource"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "level",
+            "unknown",
+            "reasons"
+          ],
+          "type": "object"
+        },
+        "EstimateTrack": {
+          "description": "A separate track named by the estimate: its source and what it carries.",
+          "properties": {
+            "role": {
+              "$ref": "#/$defs/TrackRole",
+              "description": "What the file carries."
+            },
+            "source": {
+              "description": "The source's id.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "source",
+            "role"
+          ],
+          "type": "object"
+        },
+        "OutputCanvas": {
+          "description": "The canvas an output records or streams (protocol 1.29, ADR-0093 decision 6).",
+          "oneOf": [
+            {
+              "const": "main",
+              "description": "The studio's main canvas.",
+              "type": "string"
+            },
+            {
+              "const": "vertical",
+              "description": "The vertical canvas (`canvas.add_vertical`).",
+              "type": "string"
+            }
+          ]
+        },
+        "OutputEntry": {
+          "description": "One canvas's entry in an `all` answer.",
+          "properties": {
+            "audio_encoder": {
+              "description": "On `started`: the audio encoder's name, absent when no audio is encoded.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "canvas": {
+              "$ref": "#/$defs/OutputCanvas",
+              "description": "The canvas."
+            },
+            "error": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/OutputError"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "On `refused`: why."
+            },
+            "estimate": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/EstimateSummary"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "On a started main recording: the estimate of its plan (protocol 1.53)."
+            },
+            "kind": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/OutputKind"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Which output of the canvas, on `output.break_toggle` only (protocol 1.64),\nwhich answers for recordings and streams."
+            },
+            "outcome": {
+              "$ref": "#/$defs/OutputOutcome",
+              "description": "What happened."
+            },
+            "skipped": {
+              "description": "On a started main recording: marked sources left without a file (protocol\n1.53).",
+              "items": {
+                "$ref": "#/$defs/SkippedTrack"
+              },
+              "type": "array"
+            },
+            "video_encoder": {
+              "description": "On `started`: the video encoder's name.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "canvas",
+            "outcome"
+          ],
+          "type": "object"
+        },
+        "OutputError": {
+          "description": "The error object of a refused entry: the same `code`, `message` and `data.kind` a\nsingle-canvas call would answer with.",
+          "properties": {
+            "code": {
+              "description": "The JSON-RPC error code.",
+              "format": "int32",
+              "maximum": 2147483647,
+              "minimum": -2147483648,
+              "type": "integer"
+            },
+            "data": {
+              "$ref": "#/$defs/OutputErrorData",
+              "description": "`{ \"kind\": ... }`."
+            },
+            "message": {
+              "description": "What went wrong, in words.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "data"
+          ],
+          "type": "object"
+        },
+        "OutputErrorData": {
+          "additionalProperties": true,
+          "description": "`data` of an [`OutputError`].",
+          "properties": {
+            "kind": {
+              "$ref": "#/$defs/ErrorKind",
+              "description": "The machine-readable error."
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        "OutputKind": {
+          "description": "Which output kind `output.set_with_vertical` changes.",
+          "oneOf": [
+            {
+              "const": "record",
+              "description": "Recording.",
+              "type": "string"
+            },
+            {
+              "const": "stream",
+              "description": "Stream.",
+              "type": "string"
+            }
+          ]
+        },
+        "OutputOutcome": {
+          "description": "What a call with `canvas: \"all\"` did with one canvas's output (protocol 1.42).",
+          "oneOf": [
+            {
+              "const": "started",
+              "description": "Start: it started now.",
+              "type": "string"
+            },
+            {
+              "const": "running",
+              "description": "Start: it was already starting or running.",
+              "type": "string"
+            },
+            {
+              "const": "stopped",
+              "description": "Stop: it was stopped now.",
+              "type": "string"
+            },
+            {
+              "const": "not_running",
+              "description": "Stop: it was not running (idle, or still ending). Pause and resume: no\nrecording runs (protocol 1.61).",
+              "type": "string"
+            },
+            {
+              "const": "paused",
+              "description": "Pause: it was paused now (protocol 1.61).",
+              "type": "string"
+            },
+            {
+              "const": "resumed",
+              "description": "Resume: it was resumed now (protocol 1.61); for a stream, back on the\nprogram (protocol 1.64).",
+              "type": "string"
+            },
+            {
+              "const": "held",
+              "description": "Hold: the stream was put on hold now (protocol 1.64).",
+              "type": "string"
+            },
+            {
+              "const": "not_configured",
+              "description": "Start of a vertical stream with no server saved: skipped, not an error.",
+              "type": "string"
+            },
+            {
+              "const": "refused",
+              "description": "Start: refused; `error` says why. Pause and resume: refused (already in the\nasked state, or the pause cannot be made); `error` says why (protocol 1.61).",
+              "type": "string"
+            }
+          ]
+        },
+        "OutputsResult": {
+          "description": "The answer of `record.start`, `record.stop`, `stream.start` and `stream.stop` with\n`canvas: \"all\"` (protocol 1.42): one entry per canvas, main first.",
+          "properties": {
+            "outputs": {
+              "description": "The entries.",
+              "items": {
+                "$ref": "#/$defs/OutputEntry"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "outputs"
+          ],
+          "type": "object"
+        },
+        "SkipReason": {
+          "description": "Why a marked source has no file (protocol 1.46).",
+          "oneOf": [
+            {
+              "const": "not_heard",
+              "description": "The program mix does not hear the source when the recording starts.",
+              "type": "string"
+            },
+            {
+              "const": "limit",
+              "description": "More video files than this version writes beside the recording (protocol\n1.52; a fixed number until the ADR-0087 estimate).",
+              "type": "string"
+            },
+            {
+              "const": "no_picture",
+              "description": "The source has no picture when the recording starts (protocol 1.52).",
+              "type": "string"
+            },
+            {
+              "const": "audio_only",
+              "description": "The recording has no picture (WAV or FLAC), so a video file has no encoder\nsettings to match (protocol 1.52).",
+              "type": "string"
+            },
+            {
+              "const": "open_failed",
+              "description": "The file could not be opened (protocol 1.52).",
+              "type": "string"
+            },
+            {
+              "const": "other",
+              "description": "A reason this client does not know (a later minor).",
+              "type": "string"
+            }
+          ]
+        },
+        "SkippedTrack": {
+          "description": "A marked source that has no file in a running recording (protocol 1.46).",
+          "properties": {
+            "reason": {
+              "$ref": "#/$defs/SkipReason",
+              "description": "Why."
+            },
+            "role": {
+              "$ref": "#/$defs/TrackRole",
+              "description": "The feed that was not written."
+            },
+            "source": {
+              "description": "The source (`source.list`).",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "source",
+            "role",
+            "reason"
+          ],
+          "type": "object"
+        },
+        "StreamStarted": {
+          "description": "`stream.start`'s answer: the stream runs and connects in the background\n(`stream.state` says when it reaches the server).",
+          "properties": {
+            "audio_encoder": {
+              "description": "The audio encoder's name, when audio is sent.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "video_encoder": {
+              "description": "The video encoder's name.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "video_encoder",
+            "audio_encoder"
+          ],
+          "type": "object"
+        },
+        "TrackRole": {
+          "description": "What a separate file carries (protocol 1.46).",
+          "oneOf": [
+            {
+              "const": "video",
+              "description": "The source's picture as a video file (written from 1.52).",
+              "type": "string"
+            },
+            {
+              "const": "audio",
+              "description": "The source's sound.",
+              "type": "string"
+            },
+            {
+              "const": "image",
+              "description": "A still source's picture as PNG images (protocol 1.52, ADR-0117).",
+              "type": "string"
+            },
+            {
+              "const": "other",
+              "description": "A role this client does not know (a later minor).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StreamStarted"
+        },
+        {
+          "$ref": "#/$defs/OutputsResult"
+        }
+      ],
+      "title": "StreamStartResult",
+      "type": "object"
+    }
+  },
+  "stream.status": {
+    "input_schema": {
+      "$defs": {
+        "OutputCanvas": {
+          "description": "The canvas an output records or streams (protocol 1.29, ADR-0093 decision 6).",
+          "oneOf": [
+            {
+              "const": "main",
+              "description": "The studio's main canvas.",
+              "type": "string"
+            },
+            {
+              "const": "vertical",
+              "description": "The vertical canvas (`canvas.add_vertical`).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`record.status` and `stream.status`: the canvas they report (protocol 1.29). Unknown\nfields are ignored.",
+      "properties": {
+        "canvas": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OutputCanvas"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The canvas; the main one when absent or `null`."
+        }
+      },
+      "title": "OnCanvas",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "CanvasStreamState": {
+          "description": "A stream state of a canvas other than the main one (`stream.canvas_state`,\nprotocol 1.29): the `stream.state` object with `canvas` added.",
+          "oneOf": [
+            {
+              "description": "Nothing streams.",
+              "properties": {
+                "available": {
+                  "default": true,
+                  "description": "Streaming is available on the canvas (protocol 1.94, ADR-0148): one of its\ndestinations is on. Absent from an older server: read as true.",
+                  "type": "boolean"
+                },
+                "last": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/StreamSummary"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "How the last stream of this server run ended, if one ran."
+                },
+                "state": {
+                  "const": "idle",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "state",
+                "last",
+                "available"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "A stream runs; it connects, and reconnects, in the background.",
+              "properties": {
+                "audio_encoder": {
+                  "description": "The audio encoder's name, when audio is sent.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "available": {
+                  "default": true,
+                  "description": "Streaming is available on the canvas (protocol 1.94, ADR-0148). A running\nstream goes on when it turns false.",
+                  "type": "boolean"
+                },
+                "connected": {
+                  "description": "The server takes the stream now.",
+                  "type": "boolean"
+                },
+                "connects": {
+                  "description": "Times it connected so far (0: it has not reached the server yet).",
+                  "format": "uint64",
+                  "maximum": 18446744073709551615,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "destinations": {
+                  "description": "Each destination of the stream (protocol 1.77, ADR-0127 decision 16), in\nthe order Go live started them; the top-level `connected`, `connects` and\n`reconnect_attempts` sum the running ones.",
+                  "items": {
+                    "$ref": "#/$defs/LiveDestination"
+                  },
+                  "type": "array"
+                },
+                "held": {
+                  "default": false,
+                  "description": "On hold (protocol 1.64, ADR-0124): the connection stays up and a hold\npicture goes out with silence. Set from the call on, including while the\nhold waits for a recording sharing the encoder to pause.",
+                  "type": "boolean"
+                },
+                "held_ms": {
+                  "default": 0,
+                  "description": "Time on hold so far, in milliseconds, as of this state (an open hold\ncounted up to the change) (protocol 1.64).",
+                  "format": "uint64",
+                  "maximum": 18446744073709551615,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "hold_fallback": {
+                  "default": false,
+                  "description": "The scene hold fell back to the last frame and silence (protocol 1.67), with\nwhy in `hold_fallback_reason`.",
+                  "type": "boolean"
+                },
+                "hold_fallback_reason": {
+                  "default": null,
+                  "description": "Why the hold fell back, while it does (protocol 1.67).",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "hold_picture": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/HoldPicture"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "description": "What the hold sends while held (protocol 1.67); `null` while not held. A\nscene hold that fell back says `freeze`."
+                },
+                "hold_scene": {
+                  "default": null,
+                  "description": "The hold scene while held with one (protocol 1.67).",
+                  "format": "uint32",
+                  "maximum": 4294967295,
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "hold_sound": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/HoldSound"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "description": "The sound asked for while held with a scene (protocol 1.67)."
+                },
+                "hold_sound_fallback": {
+                  "default": false,
+                  "description": "The hold scene's sound alone fell back to silence while its picture runs on\n(protocol 1.67), with why in `hold_fallback_reason`.",
+                  "type": "boolean"
+                },
+                "protocol": {
+                  "$ref": "#/$defs/StreamProtocol",
+                  "description": "How it reaches the server."
+                },
+                "reconnect_attempts": {
+                  "description": "Reconnect attempts so far.",
+                  "format": "uint64",
+                  "maximum": 18446744073709551615,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "state": {
+                  "const": "live",
+                  "type": "string"
+                },
+                "video_encoder": {
+                  "description": "The video encoder's name.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "state",
+                "available",
+                "protocol",
+                "connected",
+                "connects",
+                "reconnect_attempts",
+                "video_encoder",
+                "audio_encoder",
+                "held",
+                "held_ms",
+                "hold_picture",
+                "hold_scene",
+                "hold_sound",
+                "hold_fallback",
+                "hold_sound_fallback",
+                "hold_fallback_reason"
+              ],
+              "type": "object"
+            }
+          ],
+          "properties": {
+            "canvas": {
+              "$ref": "#/$defs/OutputCanvas",
+              "description": "The canvas."
+            }
+          },
+          "required": [
+            "canvas"
+          ],
+          "type": "object"
+        },
+        "DestinationState": {
+          "description": "Where one destination of a live stream stands (protocol 1.77).",
+          "oneOf": [
+            {
+              "const": "connecting",
+              "description": "Started; not connected yet.",
+              "type": "string"
+            },
+            {
+              "const": "live",
+              "description": "Connected and sending.",
+              "type": "string"
+            },
+            {
+              "const": "reconnecting",
+              "description": "The connection dropped; it tries again.",
+              "type": "string"
+            },
+            {
+              "const": "failed",
+              "description": "Refused at start, gave up, or failed; the others go on.",
+              "type": "string"
+            },
+            {
+              "const": "stopped",
+              "description": "Stopped with `stream.destination.stop` while the others go on.",
+              "type": "string"
+            }
+          ]
+        },
+        "HoldPicture": {
+          "description": "What a held stream sends (protocol 1.64, ADR-0124 decision 13).",
+          "oneOf": [
+            {
+              "const": "freeze",
+              "description": "The program's last frame, repeated.",
+              "type": "string"
+            },
+            {
+              "const": "black",
+              "description": "A black picture.",
+              "type": "string"
+            },
+            {
+              "const": "scene",
+              "description": "A scene of the collection, drawn live (protocol 1.67, ADR-0124 phase 2b).",
+              "type": "string"
+            }
+          ]
+        },
+        "HoldSound": {
+          "description": "What a stream held with a scene sends for sound (protocol 1.67, ADR-0124 phase\n2b).",
+          "oneOf": [
+            {
+              "const": "silence",
+              "description": "Silence, as a freeze or black hold.",
+              "type": "string"
+            },
+            {
+              "const": "scene",
+              "description": "The scene's own sources, mixed at their levels.",
+              "type": "string"
+            }
+          ]
+        },
+        "LiveDestination": {
+          "description": "One destination of a live stream (protocol 1.77, ADR-0127 decision 16). Never its\nserver or key.",
+          "properties": {
+            "connects": {
+              "description": "Times it connected so far.",
+              "format": "uint64",
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "dropped": {
+              "description": "Items its transport dropped while the connection was slow or down.",
+              "format": "uint64",
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "error": {
+              "description": "Why it failed; never the server or the key.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "id": {
+              "description": "Its id in the output profile (`stream.destinations`).",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "name": {
+              "description": "Its name.",
+              "type": "string"
+            },
+            "on_air_ms": {
+              "description": "Time since it first connected, in milliseconds, as of this state; 0 before.",
+              "format": "uint64",
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "reconnect_attempts": {
+              "description": "Reconnect attempts so far.",
+              "format": "uint64",
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "service": {
+              "description": "Its service preset's id, or `custom`.",
+              "type": "string"
+            },
+            "state": {
+              "$ref": "#/$defs/DestinationState",
+              "description": "Where it stands."
+            }
+          },
+          "required": [
+            "id",
+            "name",
+            "service",
+            "state",
+            "connects",
+            "reconnect_attempts",
+            "dropped",
+            "on_air_ms"
+          ],
+          "type": "object"
+        },
+        "OutputCanvas": {
+          "description": "The canvas an output records or streams (protocol 1.29, ADR-0093 decision 6).",
+          "oneOf": [
+            {
+              "const": "main",
+              "description": "The studio's main canvas.",
+              "type": "string"
+            },
+            {
+              "const": "vertical",
+              "description": "The vertical canvas (`canvas.add_vertical`).",
+              "type": "string"
+            }
+          ]
+        },
+        "Snapshot": {
+          "description": "A state query's answer: the data and the `seq` of each state key it includes, so a\nclient ignores events with an equal or lower `seq`.",
+          "properties": {
+            "data": {
+              "$ref": "#/$defs/StreamState",
+              "description": "The state."
+            },
+            "seq": {
+              "additionalProperties": {
+                "format": "uint64",
+                "maximum": 18446744073709551615,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "description": "`seq` per state key included in `data`.",
+              "type": "object"
+            }
+          },
+          "required": [
+            "seq",
+            "data"
+          ],
+          "type": "object"
+        },
+        "Snapshot2": {
+          "description": "A state query's answer: the data and the `seq` of each state key it includes, so a\nclient ignores events with an equal or lower `seq`.",
+          "properties": {
+            "data": {
+              "$ref": "#/$defs/CanvasStreamState",
+              "description": "The state."
+            },
+            "seq": {
+              "additionalProperties": {
+                "format": "uint64",
+                "maximum": 18446744073709551615,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "description": "`seq` per state key included in `data`.",
+              "type": "object"
+            }
+          },
+          "required": [
+            "seq",
+            "data"
+          ],
+          "type": "object"
+        },
+        "StreamProtocol": {
+          "description": "How a stream reaches its server.",
+          "oneOf": [
+            {
+              "const": "rtmp",
+              "description": "RTMP (`rtmp://`), with a stream key.",
+              "type": "string"
+            },
+            {
+              "const": "srt",
+              "description": "SRT (`srt://`).",
+              "type": "string"
+            }
+          ]
+        },
+        "StreamState": {
+          "description": "What the stream is doing. The server's address is not part of it: it is a setting,\nand the stream key is never shown.",
+          "oneOf": [
+            {
+              "description": "Nothing streams.",
+              "properties": {
+                "available": {
+                  "default": true,
+                  "description": "Streaming is available on the canvas (protocol 1.94, ADR-0148): one of its\ndestinations is on. Absent from an older server: read as true.",
+                  "type": "boolean"
+                },
+                "last": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/StreamSummary"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "How the last stream of this server run ended, if one ran."
+                },
+                "state": {
+                  "const": "idle",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "state",
+                "last",
+                "available"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "A stream runs; it connects, and reconnects, in the background.",
+              "properties": {
+                "audio_encoder": {
+                  "description": "The audio encoder's name, when audio is sent.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "available": {
+                  "default": true,
+                  "description": "Streaming is available on the canvas (protocol 1.94, ADR-0148). A running\nstream goes on when it turns false.",
+                  "type": "boolean"
+                },
+                "connected": {
+                  "description": "The server takes the stream now.",
+                  "type": "boolean"
+                },
+                "connects": {
+                  "description": "Times it connected so far (0: it has not reached the server yet).",
+                  "format": "uint64",
+                  "maximum": 18446744073709551615,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "destinations": {
+                  "description": "Each destination of the stream (protocol 1.77, ADR-0127 decision 16), in\nthe order Go live started them; the top-level `connected`, `connects` and\n`reconnect_attempts` sum the running ones.",
+                  "items": {
+                    "$ref": "#/$defs/LiveDestination"
+                  },
+                  "type": "array"
+                },
+                "held": {
+                  "default": false,
+                  "description": "On hold (protocol 1.64, ADR-0124): the connection stays up and a hold\npicture goes out with silence. Set from the call on, including while the\nhold waits for a recording sharing the encoder to pause.",
+                  "type": "boolean"
+                },
+                "held_ms": {
+                  "default": 0,
+                  "description": "Time on hold so far, in milliseconds, as of this state (an open hold\ncounted up to the change) (protocol 1.64).",
+                  "format": "uint64",
+                  "maximum": 18446744073709551615,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "hold_fallback": {
+                  "default": false,
+                  "description": "The scene hold fell back to the last frame and silence (protocol 1.67), with\nwhy in `hold_fallback_reason`.",
+                  "type": "boolean"
+                },
+                "hold_fallback_reason": {
+                  "default": null,
+                  "description": "Why the hold fell back, while it does (protocol 1.67).",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "hold_picture": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/HoldPicture"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "description": "What the hold sends while held (protocol 1.67); `null` while not held. A\nscene hold that fell back says `freeze`."
+                },
+                "hold_scene": {
+                  "default": null,
+                  "description": "The hold scene while held with one (protocol 1.67).",
+                  "format": "uint32",
+                  "maximum": 4294967295,
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "hold_sound": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/HoldSound"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "description": "The sound asked for while held with a scene (protocol 1.67)."
+                },
+                "hold_sound_fallback": {
+                  "default": false,
+                  "description": "The hold scene's sound alone fell back to silence while its picture runs on\n(protocol 1.67), with why in `hold_fallback_reason`.",
+                  "type": "boolean"
+                },
+                "protocol": {
+                  "$ref": "#/$defs/StreamProtocol",
+                  "description": "How it reaches the server."
+                },
+                "reconnect_attempts": {
+                  "description": "Reconnect attempts so far.",
+                  "format": "uint64",
+                  "maximum": 18446744073709551615,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "state": {
+                  "const": "live",
+                  "type": "string"
+                },
+                "video_encoder": {
+                  "description": "The video encoder's name.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "state",
+                "available",
+                "protocol",
+                "connected",
+                "connects",
+                "reconnect_attempts",
+                "video_encoder",
+                "audio_encoder",
+                "held",
+                "held_ms",
+                "hold_picture",
+                "hold_scene",
+                "hold_sound",
+                "hold_fallback",
+                "hold_sound_fallback",
+                "hold_fallback_reason"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "StreamSummary": {
+          "description": "How a stream ended.",
+          "properties": {
+            "connects": {
+              "description": "Times it connected (0: it never reached the server).",
+              "format": "uint64",
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "dropped": {
+              "description": "Video frames dropped, and items the transport dropped while the connection was\nslow or down.",
+              "format": "uint64",
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "failure": {
+              "description": "Why it stopped on its own, or `null` when it was asked to.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "frames": {
+              "description": "Video frames encoded.",
+              "format": "uint64",
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "failure",
+            "frames",
+            "dropped",
+            "connects"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Snapshot"
+        },
+        {
+          "$ref": "#/$defs/Snapshot2"
+        }
+      ],
+      "title": "StreamStatusResult",
+      "type": "object"
+    }
+  },
+  "stream.stop": {
+    "input_schema": {
+      "$defs": {
+        "OutputTarget": {
+          "description": "The canvases `record.start`, `record.stop`, `stream.start` and `stream.stop` act on:\none canvas, or every canvas the studio runs, main first (`all`, protocol 1.42,\nADR-0111 decision 3).",
+          "oneOf": [
+            {
+              "const": "main",
+              "description": "The studio's main canvas.",
+              "type": "string"
+            },
+            {
+              "const": "vertical",
+              "description": "The vertical canvas.",
+              "type": "string"
+            },
+            {
+              "const": "all",
+              "description": "Every canvas the studio runs, main first (protocol 1.42).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`record.stop`, `stream.start` and `stream.stop`: one canvas (protocol 1.29) or every\ncanvas the studio runs, main first (`all`, protocol 1.42); also `record.pause`,\n`record.resume` and `record.pause_toggle` (protocol 1.61). Unknown fields are\nignored.",
+      "properties": {
+        "canvas": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OutputTarget"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The canvases; the main one when absent or `null`."
+        }
+      },
+      "title": "OnCanvases",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "EmptyResult": {
+          "additionalProperties": false,
+          "type": "object"
+        },
+        "ErrorKind": {
+          "description": "The stable error kinds of protocol version 1.",
+          "oneOf": [
+            {
+              "const": "parse_error",
+              "description": "The message is not JSON.",
+              "type": "string"
+            },
+            {
+              "const": "invalid_request",
+              "description": "The message is JSON but not a JSON-RPC 2.0 request.",
+              "type": "string"
+            },
+            {
+              "const": "method_not_found",
+              "description": "No method of this name.",
+              "type": "string"
+            },
+            {
+              "const": "invalid_params",
+              "description": "The method's parameters do not match its schema.",
+              "type": "string"
+            },
+            {
+              "const": "internal",
+              "description": "A server bug; the message says what.",
+              "type": "string"
+            },
+            {
+              "const": "batch_unsupported",
+              "description": "A JSON array of requests (refused in version 1).",
+              "type": "string"
+            },
+            {
+              "const": "unsupported_protocol",
+              "description": "None of the client's protocol versions is supported.",
+              "type": "string"
+            },
+            {
+              "const": "not_authenticated",
+              "description": "The method needs an authenticated session.",
+              "type": "string"
+            },
+            {
+              "const": "auth_failed",
+              "description": "The token is unknown or wrong (the same for both).",
+              "type": "string"
+            },
+            {
+              "const": "scope_denied",
+              "description": "The method needs a scope the session does not have.",
+              "type": "string"
+            },
+            {
+              "const": "not_permitted",
+              "description": "The token lacks the irreversible-actions permission (protocol 1.76,\nADR-0052 decision 4); `data.reason` says why.",
+              "type": "string"
+            },
+            {
+              "const": "busy",
+              "description": "The session's request queue is full.",
+              "type": "string"
+            },
+            {
+              "const": "rate_limited",
+              "description": "The session sends requests faster than its rate limit.",
+              "type": "string"
+            },
+            {
+              "const": "message_too_large",
+              "description": "The message is larger than allowed.",
+              "type": "string"
+            },
+            {
+              "const": "not_found",
+              "description": "The object named does not exist.",
+              "type": "string"
+            },
+            {
+              "const": "conflict",
+              "description": "The request conflicts with the current state (for example a recording runs).",
+              "type": "string"
+            },
+            {
+              "const": "undo_conflict",
+              "description": "An undo record was used out of order.",
+              "type": "string"
+            },
+            {
+              "const": "file_exists",
+              "description": "An explicit file already exists; it is never overwritten.",
+              "type": "string"
+            },
+            {
+              "const": "failed",
+              "description": "The request was valid but could not be carried out; the message says why.",
+              "type": "string"
+            },
+            {
+              "const": "forbidden",
+              "description": "The API may not do this whatever the token's scope (protocol 1.75): for\nexample writing a text source's `file` (ADR-0129 decision 8).",
+              "type": "string"
+            },
+            {
+              "const": "not_ready",
+              "description": "The answer is being prepared; ask again shortly (protocol 1.75): for example\n`text.fonts` before the first font list exists (ADR-0129 decision 7).",
+              "type": "string"
+            }
+          ]
+        },
+        "EstimateCode": {
+          "description": "Why a resource is not `fits`, or what is missing (protocol 1.53, a closed list).",
+          "oneOf": [
+            {
+              "const": "unknown",
+              "description": "A limit no calibration can measure is not known.",
+              "type": "string"
+            },
+            {
+              "const": "no_adapter",
+              "description": "No adapter can open the track.",
+              "type": "string"
+            },
+            {
+              "const": "open_failed",
+              "description": "The track's file could not open.",
+              "type": "string"
+            },
+            {
+              "const": "sessions",
+              "description": "Encoder sessions are heavy or over.",
+              "type": "string"
+            },
+            {
+              "const": "sessions_unknown",
+              "description": "A hardware encoder's session limit is not known.",
+              "type": "string"
+            },
+            {
+              "const": "throughput",
+              "description": "Encoder throughput is heavy or over.",
+              "type": "string"
+            },
+            {
+              "const": "software_fallback",
+              "description": "A track would fall to a software encoder.",
+              "type": "string"
+            },
+            {
+              "const": "cpu_load",
+              "description": "The software encoders' load is heavy or over.",
+              "type": "string"
+            },
+            {
+              "const": "workers",
+              "description": "An encode worker of the separate files is heavy or over.",
+              "type": "string"
+            },
+            {
+              "const": "render_share",
+              "description": "The separate files' render share is heavy or over.",
+              "type": "string"
+            },
+            {
+              "const": "disk_unknown",
+              "description": "The recording folder's speed or free space is not known.",
+              "type": "string"
+            },
+            {
+              "const": "disk_full",
+              "description": "The recording folder is (nearly) full.",
+              "type": "string"
+            },
+            {
+              "const": "disk_slow",
+              "description": "The recording folder is too slow.",
+              "type": "string"
+            },
+            {
+              "const": "ceiling",
+              "description": "More separate tracks than the ceiling.",
+              "type": "string"
+            },
+            {
+              "const": "source_inactive",
+              "description": "A marked source cannot be kept active.",
+              "type": "string"
+            },
+            {
+              "const": "other",
+              "description": "A code this client does not know (a later minor).",
+              "type": "string"
+            }
+          ]
+        },
+        "EstimateLevel": {
+          "description": "The level of a plan or of one resource in `record.estimate` (protocol 1.53,\nADR-0087 decision 2).",
+          "oneOf": [
+            {
+              "const": "fits",
+              "description": "Below 70 % of a rate limit, or within a count limit.",
+              "type": "string"
+            },
+            {
+              "const": "heavy",
+              "description": "Between 70 % and 100 % of a rate limit.",
+              "type": "string"
+            },
+            {
+              "const": "over",
+              "description": "Past the limit.",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "The limit is not known (a resource row only).",
+              "type": "string"
+            },
+            {
+              "const": "other",
+              "description": "A level this client does not know (a later minor).",
+              "type": "string"
+            }
+          ]
+        },
+        "EstimateReason": {
+          "description": "A reason of `record.estimate` (protocol 1.53).",
+          "properties": {
+            "code": {
+              "$ref": "#/$defs/EstimateCode",
+              "description": "The code."
+            },
+            "resource": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/EstimateResource"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The resource it concerns, when one does."
+            },
+            "track": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/EstimateTrack"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The track it concerns, when one does."
+            }
+          },
+          "required": [
+            "code"
+          ],
+          "type": "object"
+        },
+        "EstimateResource": {
+          "description": "A resource the estimate counts (protocol 1.53).",
+          "oneOf": [
+            {
+              "const": "encoder_sessions",
+              "description": "Encoder sessions on one adapter.",
+              "type": "string"
+            },
+            {
+              "const": "encoder_throughput",
+              "description": "Pixels per second on one hardware adapter.",
+              "type": "string"
+            },
+            {
+              "const": "iso_workers",
+              "description": "The busiest encode worker of the separate files.",
+              "type": "string"
+            },
+            {
+              "const": "iso_render_share",
+              "description": "The render partition's share taken by the separate files' exports.",
+              "type": "string"
+            },
+            {
+              "const": "cpu_load",
+              "description": "Software video encoders' pixel rate.",
+              "type": "string"
+            },
+            {
+              "const": "memory",
+              "description": "Export buffers of the separate files (informational).",
+              "type": "string"
+            },
+            {
+              "const": "disk_speed",
+              "description": "The recording folder's write speed.",
+              "type": "string"
+            },
+            {
+              "const": "disk_space",
+              "description": "The recording folder's free space.",
+              "type": "string"
+            },
+            {
+              "const": "iso_ceiling",
+              "description": "The most separate files of one kind.",
+              "type": "string"
+            },
+            {
+              "const": "active_sources",
+              "description": "Sources kept active for their files (informational).",
+              "type": "string"
+            },
+            {
+              "const": "other",
+              "description": "A resource this client does not know (a later minor).",
+              "type": "string"
+            }
+          ]
+        },
+        "EstimateSummary": {
+          "description": "The estimate in `record.start`'s answer (protocol 1.53).",
+          "properties": {
+            "level": {
+              "$ref": "#/$defs/EstimateLevel",
+              "description": "The plan's level."
+            },
+            "reasons": {
+              "default": [],
+              "description": "Coded reasons.",
+              "items": {
+                "$ref": "#/$defs/EstimateReason"
+              },
+              "type": "array"
+            },
+            "unknown": {
+              "default": [],
+              "description": "The resources whose limit is unknown.",
+              "items": {
+                "$ref": "#/$defs/EstimateResource"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "level",
+            "unknown",
+            "reasons"
+          ],
+          "type": "object"
+        },
+        "EstimateTrack": {
+          "description": "A separate track named by the estimate: its source and what it carries.",
+          "properties": {
+            "role": {
+              "$ref": "#/$defs/TrackRole",
+              "description": "What the file carries."
+            },
+            "source": {
+              "description": "The source's id.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "source",
+            "role"
+          ],
+          "type": "object"
+        },
+        "OutputCanvas": {
+          "description": "The canvas an output records or streams (protocol 1.29, ADR-0093 decision 6).",
+          "oneOf": [
+            {
+              "const": "main",
+              "description": "The studio's main canvas.",
+              "type": "string"
+            },
+            {
+              "const": "vertical",
+              "description": "The vertical canvas (`canvas.add_vertical`).",
+              "type": "string"
+            }
+          ]
+        },
+        "OutputEntry": {
+          "description": "One canvas's entry in an `all` answer.",
+          "properties": {
+            "audio_encoder": {
+              "description": "On `started`: the audio encoder's name, absent when no audio is encoded.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "canvas": {
+              "$ref": "#/$defs/OutputCanvas",
+              "description": "The canvas."
+            },
+            "error": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/OutputError"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "On `refused`: why."
+            },
+            "estimate": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/EstimateSummary"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "On a started main recording: the estimate of its plan (protocol 1.53)."
+            },
+            "kind": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/OutputKind"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Which output of the canvas, on `output.break_toggle` only (protocol 1.64),\nwhich answers for recordings and streams."
+            },
+            "outcome": {
+              "$ref": "#/$defs/OutputOutcome",
+              "description": "What happened."
+            },
+            "skipped": {
+              "description": "On a started main recording: marked sources left without a file (protocol\n1.53).",
+              "items": {
+                "$ref": "#/$defs/SkippedTrack"
+              },
+              "type": "array"
+            },
+            "video_encoder": {
+              "description": "On `started`: the video encoder's name.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "canvas",
+            "outcome"
+          ],
+          "type": "object"
+        },
+        "OutputError": {
+          "description": "The error object of a refused entry: the same `code`, `message` and `data.kind` a\nsingle-canvas call would answer with.",
+          "properties": {
+            "code": {
+              "description": "The JSON-RPC error code.",
+              "format": "int32",
+              "maximum": 2147483647,
+              "minimum": -2147483648,
+              "type": "integer"
+            },
+            "data": {
+              "$ref": "#/$defs/OutputErrorData",
+              "description": "`{ \"kind\": ... }`."
+            },
+            "message": {
+              "description": "What went wrong, in words.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "data"
+          ],
+          "type": "object"
+        },
+        "OutputErrorData": {
+          "additionalProperties": true,
+          "description": "`data` of an [`OutputError`].",
+          "properties": {
+            "kind": {
+              "$ref": "#/$defs/ErrorKind",
+              "description": "The machine-readable error."
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        "OutputKind": {
+          "description": "Which output kind `output.set_with_vertical` changes.",
+          "oneOf": [
+            {
+              "const": "record",
+              "description": "Recording.",
+              "type": "string"
+            },
+            {
+              "const": "stream",
+              "description": "Stream.",
+              "type": "string"
+            }
+          ]
+        },
+        "OutputOutcome": {
+          "description": "What a call with `canvas: \"all\"` did with one canvas's output (protocol 1.42).",
+          "oneOf": [
+            {
+              "const": "started",
+              "description": "Start: it started now.",
+              "type": "string"
+            },
+            {
+              "const": "running",
+              "description": "Start: it was already starting or running.",
+              "type": "string"
+            },
+            {
+              "const": "stopped",
+              "description": "Stop: it was stopped now.",
+              "type": "string"
+            },
+            {
+              "const": "not_running",
+              "description": "Stop: it was not running (idle, or still ending). Pause and resume: no\nrecording runs (protocol 1.61).",
+              "type": "string"
+            },
+            {
+              "const": "paused",
+              "description": "Pause: it was paused now (protocol 1.61).",
+              "type": "string"
+            },
+            {
+              "const": "resumed",
+              "description": "Resume: it was resumed now (protocol 1.61); for a stream, back on the\nprogram (protocol 1.64).",
+              "type": "string"
+            },
+            {
+              "const": "held",
+              "description": "Hold: the stream was put on hold now (protocol 1.64).",
+              "type": "string"
+            },
+            {
+              "const": "not_configured",
+              "description": "Start of a vertical stream with no server saved: skipped, not an error.",
+              "type": "string"
+            },
+            {
+              "const": "refused",
+              "description": "Start: refused; `error` says why. Pause and resume: refused (already in the\nasked state, or the pause cannot be made); `error` says why (protocol 1.61).",
+              "type": "string"
+            }
+          ]
+        },
+        "OutputsResult": {
+          "description": "The answer of `record.start`, `record.stop`, `stream.start` and `stream.stop` with\n`canvas: \"all\"` (protocol 1.42): one entry per canvas, main first.",
+          "properties": {
+            "outputs": {
+              "description": "The entries.",
+              "items": {
+                "$ref": "#/$defs/OutputEntry"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "outputs"
+          ],
+          "type": "object"
+        },
+        "SkipReason": {
+          "description": "Why a marked source has no file (protocol 1.46).",
+          "oneOf": [
+            {
+              "const": "not_heard",
+              "description": "The program mix does not hear the source when the recording starts.",
+              "type": "string"
+            },
+            {
+              "const": "limit",
+              "description": "More video files than this version writes beside the recording (protocol\n1.52; a fixed number until the ADR-0087 estimate).",
+              "type": "string"
+            },
+            {
+              "const": "no_picture",
+              "description": "The source has no picture when the recording starts (protocol 1.52).",
+              "type": "string"
+            },
+            {
+              "const": "audio_only",
+              "description": "The recording has no picture (WAV or FLAC), so a video file has no encoder\nsettings to match (protocol 1.52).",
+              "type": "string"
+            },
+            {
+              "const": "open_failed",
+              "description": "The file could not be opened (protocol 1.52).",
+              "type": "string"
+            },
+            {
+              "const": "other",
+              "description": "A reason this client does not know (a later minor).",
+              "type": "string"
+            }
+          ]
+        },
+        "SkippedTrack": {
+          "description": "A marked source that has no file in a running recording (protocol 1.46).",
+          "properties": {
+            "reason": {
+              "$ref": "#/$defs/SkipReason",
+              "description": "Why."
+            },
+            "role": {
+              "$ref": "#/$defs/TrackRole",
+              "description": "The feed that was not written."
+            },
+            "source": {
+              "description": "The source (`source.list`).",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "source",
+            "role",
+            "reason"
+          ],
+          "type": "object"
+        },
+        "TrackRole": {
+          "description": "What a separate file carries (protocol 1.46).",
+          "oneOf": [
+            {
+              "const": "video",
+              "description": "The source's picture as a video file (written from 1.52).",
+              "type": "string"
+            },
+            {
+              "const": "audio",
+              "description": "The source's sound.",
+              "type": "string"
+            },
+            {
+              "const": "image",
+              "description": "A still source's picture as PNG images (protocol 1.52, ADR-0117).",
+              "type": "string"
+            },
+            {
+              "const": "other",
+              "description": "A role this client does not know (a later minor).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/EmptyResult"
+        },
+        {
+          "$ref": "#/$defs/OutputsResult"
+        }
+      ],
+      "title": "OutputCommandResult",
+      "type": "object"
+    }
+  }
+}

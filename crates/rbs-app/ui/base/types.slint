@@ -1344,6 +1344,13 @@ export struct FilterLevels { input: float, reduction: float }
 
 export struct FilterData { id: int, name: string, enabled: bool, known: bool, gate: bool, latency-text: string, latency-warn: bool, curve: string, curve-text: string, bar-label: string, open-pos: float, close-pos: float, can-up: bool, can-down: bool, perm-text: string, perm-action: int, cursor: int, fields: [FilterFieldData] }
 
+// A whole group selected in Sources, as Properties shows it (ADR-0184): `anchor` is the
+// selected source it was read for, `rev` changes with every read. Reasons, 0 none:
+// `box-why` 1 a member is locked, 2 no picture; `show-why` 1 every member is shown,
+// 2 a hidden member has no duration; `scroll-why` 1 a member has no picture, 2 no
+// valid picture area. Scroll fields use the codes of `SourceData`'s.
+export struct GroupPropsData { anchor: int, rev: int, name: string, can-vertical: bool, vertical: bool, x: float, y: float, w: float, h: float, box-why: int, show-for-ms: int, show-mixed: bool, show-why: int, scroll-on: bool, scroll-dir: int, scroll-speed: float, scroll-gap: float, scroll-repeat: int, scroll-start: int, scroll-fade: float, scroll-why: int, run-paused: bool, run-speed: float }
+
 export struct SourceData { id: int, name: string, kind: string, browser: bool, icon: string, status: string, ok: bool, picture: bool, visible: bool, x: float, y: float, w: float, h: float, can-up: bool, can-down: bool, shape: int, radius: float, scroll-on: bool, scroll-dir: int, scroll-speed: float, scroll-gap: float, scroll-repeat: int, scroll-start: int, scroll-return: int, scroll-fade: float, scroll-paused: bool, border: bool, border-width: float, border-color: string, border-swatch: color, crop-l: int, crop-t: int, crop-r: int, crop-b: int, pic-w: int, pic-h: int, locked: bool, flip-h: bool, flip-v: bool, rotation: float, audio: bool, muted: bool, volume: float, volume-text: string, filters: [FilterData], selected-filter: int, sync-offset: int, global: bool, also-in: string, in-globals: bool, places: int, kind-code: int, companion: bool, custom-glide: bool, glide-duration: int, glide-easing: int, solid: bool, fill: string, fill-swatch: color, filled: bool, item-id: int, cap-has: bool, cap-l: int, cap-t: int, cap-r: int, cap-b: int, chrome-on: bool, chrome-t: int, chrome-r: int, chrome-b: int, chrome-l: int, chrome-fill: int, has-work-rect: bool, show-for-ms: int, cue-remaining-ms: int, record-separately: bool, record-choice: int, record-form: int, media: bool, media-path: string, media-loop: bool, act-on: bool, act-run: int, act-return: int, act-linger: int, act-warm-up: string, media-start-ms: int, media-end-ms: int, media-state: int, media-pos-ms: int, media-len-ms: int, scene-level: bool, scene-entry: bool, own-volume-text: string, device-peers: string, peer-count: int, perm-kind: int, perm-action: int, slides: bool, slides-folder: string, slides-note: string, slides-position: string, slides-paused: bool, slides-fields: [FilterFieldData], nested: bool, parent: int, parent-name: string, expandable: bool, open: bool, arrow-room: bool, sound-muted: bool, picked: bool, grouped: bool, group-id: int, group-head: bool, group-open: bool, group-name: string, group-hidden: bool, group-locked: bool }
 
 // `global`: a global source's row (ADR-0065). `also-in`: the other scenes that place it,
@@ -1745,6 +1752,18 @@ export global Studio {
     // The source Properties shows: the selection, else the last selected source that
     // still exists, else -1 (the Nothing selected state).
     in property <int> properties-source: -1;
+    // The selected whole group (none or one row): Properties then edits the group, not
+    // its first member (ADR-0184). Each edit is one `group.apply` on Properties' canvas.
+    in property <[GroupPropsData]> group-props;
+    // Timed show duration of every member; 0 clears it. `group-show` is live.
+    callback group-set-show-for(int /* show_for_ms */);
+    callback group-show();
+    // The covering box in canvas pixels; members keep their places inside it.
+    callback group-set-box(float /* x */, float /* y */, float /* w */, float /* h */, int /* gesture */);
+    // The group's own Scroll, with `set-source-scroll`'s codes.
+    callback group-set-scroll(bool /* on */, int /* direction */, float /* speed */, float /* gap */, int /* repeat */, int /* start */, float /* fade */, int /* gesture */);
+    // Live, not an undo step: 0 pause, 1 resume, 2 restart, 3 speed.
+    callback group-scroll-live(int /* action */, float /* speed */);
     callback select-source(int /* id */);
     // A Sources row clicked with Ctrl/Cmd (add or remove) or Shift (range).
     callback select-source-with(int /* id */, bool /* ctrl */, bool /* shift */);

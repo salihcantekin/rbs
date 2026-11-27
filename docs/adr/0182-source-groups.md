@@ -1,6 +1,6 @@
 # ADR-0182: Sources can be grouped, and a group moves, resizes and hides as one
 
-- Status: Accepted
+- Status: Accepted (decisions 5 and 10 superseded in part by ADR-0186; decisions 7 and 8 superseded in part by ADR-0184; decision 9 superseded in part by ADR-0194)
 - Date: 2026-11-24
 - Deciders: Salih (owner)
 - Spec: [scene-model](../specs/scene-model.md), [ui-design-system](../specs/ui-design-system.md) (Sources panel), [control-api](../specs/control-api.md)

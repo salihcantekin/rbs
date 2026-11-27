@@ -26,14 +26,7 @@ impl Host {
         let program = self.scene;
         let preview = self.preview();
         let offsets = filters::audio_offsets(&self.collection);
-        let boxes = self.recorded_text_boxes();
-        let mut result = self.undo_or_redo_records(back);
-        if result.is_ok() && self.recorded_text_boxes() != boxes {
-            // The step would change the box of a text with a separate picture track
-            // in the running take (ADR-0129 decision 5): stepped back, refused.
-            let _ = self.undo_or_redo_records(!back);
-            result = Err((false, STOP_TO_CHANGE_BOX.to_owned()));
-        }
+        let result = self.undo_or_redo_records(back);
         self.resync_audio_offsets(&offsets);
         // Undo and redo never change what is on air (ADR-0059) or the preview scene
         // (ADR-0061): a record that put a scene back on air or in preview is
@@ -61,10 +54,17 @@ impl Host {
     pub(super) fn recorded_text_boxes(
         &self,
     ) -> Vec<(SourceId, Option<SettingValue>, Option<SettingValue>)> {
+        self.recorded_text_boxes_in(&self.collection)
+    }
+
+    fn recorded_text_boxes_in(
+        &self,
+        collection: &SceneCollection,
+    ) -> Vec<(SourceId, Option<SettingValue>, Option<SettingValue>)> {
         if !self.studio.iso_video_running() {
             return Vec::new();
         }
-        self.collection
+        collection
             .sources()
             .filter(|s| {
                 rbs_sources::types::class_of(&s.type_id)
@@ -83,15 +83,23 @@ impl Host {
     }
 
     pub(super) fn undo_or_redo_records(&mut self, back: bool) -> Result<(), (bool, String)> {
-        let collection = &mut self.collection;
+        let mut collection = self.collection.clone();
+        let mut history = self.edits.history.fork();
         let apply = |r: Undo| collection.undo(r);
         let done = if back {
-            self.edits.history.undo(apply)
+            history.undo(apply)
         } else {
-            self.edits.history.redo(apply)
+            history.redo(apply)
         };
         match done {
-            Ok(_) => Ok(()),
+            Ok(_) => {
+                if self.recorded_text_boxes_in(&collection) != self.recorded_text_boxes() {
+                    return Err((false, STOP_TO_CHANGE_BOX.to_owned()));
+                }
+                self.collection = collection;
+                self.edits.history = history;
+                Ok(())
+            }
             Err(HistoryError::Empty) => Err((
                 true,
                 if back {
@@ -105,12 +113,15 @@ impl Host {
                 false,
                 format!("The scene changed in a way this step cannot be applied to ({e:?})."),
             )),
-            Err(HistoryError::Lost(e)) => Err((
-                false,
-                format!(
-                    "The scene changed in a way this step cannot be applied to ({e:?}), and part of it may have been applied; the undo history was cleared."
-                ),
-            )),
+            Err(HistoryError::Lost(e)) => {
+                self.edits.history = history;
+                Err((
+                    false,
+                    format!(
+                        "The scene changed in a way this step cannot be applied to ({e:?}), and part of it may have been applied; the undo history was cleared."
+                    ),
+                ))
+            }
         }
     }
 

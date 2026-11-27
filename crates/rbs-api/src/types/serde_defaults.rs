@@ -41,18 +41,18 @@ pub(super) fn full_volume() -> f32 {
     1.0
 }
 
-pub(super) fn default_ramp_ms() -> u32 {
+pub(crate) fn default_ramp_ms() -> u32 {
     300
 }
 
-pub(super) fn is_default_ramp_ms(v: &u32) -> bool {
+pub(crate) fn is_default_ramp_ms(v: &u32) -> bool {
     *v == 300
 }
 
-pub(super) fn is_zero_f32(v: &f32) -> bool {
+pub(crate) fn is_zero_f32(v: &f32) -> bool {
     *v == 0.0
 }
 
-pub(super) fn is_default<T: Default + PartialEq>(v: &T) -> bool {
+pub(crate) fn is_default<T: Default + PartialEq>(v: &T) -> bool {
     *v == T::default()
 }

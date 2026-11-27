@@ -356,13 +356,11 @@ impl Studio {
         }
         // Filter scheduling, input offsets and mapping switches follow too.
         self.apply_input_offsets(&scheduled);
-        self.layers.send(
-            node_layers(&self.bound, &plan, &self.scroll_runs),
-            &self.gpu,
-        );
+        let (runs, groups) = (&self.scroll_runs, &self.group_runs);
+        let list = |b: &BoundCompositor| super::group_scroll::node_list(b, &plan, runs, groups);
+        self.layers.send_list(list(&self.bound), &self.gpu);
         if let Some(sp) = &mut self.scene_preview {
-            sp.layers
-                .send(node_layers(&sp.bound, &plan, &self.scroll_runs), &self.gpu);
+            sp.layers.send_list(list(&sp.bound), &self.gpu);
         }
         errors
     }

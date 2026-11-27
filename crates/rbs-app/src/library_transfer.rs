@@ -90,7 +90,11 @@ pub(crate) fn when_written(
             return;
         };
         ctx.update(move |app| {
-            match finish.and_then(|f| f(&mut app.studio, crate::close_preview)) {
+            let done = finish.and_then(|f| f(&mut app.studio, crate::close_preview));
+            if done.is_ok() && app.studio.collection_switch_in_progress() {
+                app.dismiss_source_settings();
+            }
+            match done {
                 Ok(Some(next)) => when_written(next, then),
                 done => then(app, done.map(drop)),
             }
@@ -157,14 +161,12 @@ impl App {
                 self.studio.delete_profile(&id).map(Some)
             }
             (EntryKind::Collection, EntryOp::New | EntryOp::Duplicate) => {
-                self.dismiss_source_settings();
                 self.studio.new_collection(name, copy).map(Some)
             }
             (EntryKind::Collection, EntryOp::Rename) => {
                 Ok(Some(self.studio.rename_collection(name)))
             }
             (EntryKind::Collection, EntryOp::Delete) => {
-                self.dismiss_source_settings();
                 let id = self.studio.user.collection_id.as_str().to_owned();
                 self.studio.delete_collection(&id).map(Some)
             }

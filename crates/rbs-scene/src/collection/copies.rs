@@ -192,7 +192,7 @@ impl SceneCollection {
     /// Duplicate scene with new sources (ADR-0133 decision 4): a copy of scene `id`
     /// named `name` whose items point at copies of their sources. `copies` lists every
     /// source to copy, each once (the host includes companions); items of sources not
-    /// listed (global or not wanted) and nested scenes stay references. Own levels are
+    /// listed (global or not wanted) stay references. Own levels are
     /// re-keyed to the copies and key links inside the set are remapped. Refused for a
     /// canvas's global scene. One undo record.
     pub fn duplicate_scene_with_copies(
@@ -206,6 +206,7 @@ impl SceneCollection {
             return Err(SceneError::GlobalScene(id));
         }
         let original = self.get_scene(id)?.clone();
+        super::check_items(&original.items)?;
         let mut next = self.next.clone();
         let (made, map) = self.copied_sources(copies, &mut next, source_fields)?;
         let new_id = SceneId(issue(&mut next.scene)?);

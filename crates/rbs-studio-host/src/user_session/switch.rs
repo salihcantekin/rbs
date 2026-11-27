@@ -179,8 +179,9 @@ fn profile_ids_except(data: &UserData, except: &EntryId) -> BTreeSet<String> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)] // Tests fail by panicking.
 mod tests {
+    use super::super::RECORDING;
     use super::super::later::tests::{block_on, dir, quiet};
-    use super::super::{RECORDING, open};
+    use super::super::tests::open;
     use super::*;
     use crate::record_profile::RecordProfile;
 

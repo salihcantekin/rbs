@@ -134,6 +134,7 @@ fn is_permitted(irreversible: &bool) -> bool {
 
 /// Who made a token and what may use it (ADR-0134 decision 3).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum TokenKind {
     /// Made by the user for an app (Settings, Remote control; `tokens.create`).

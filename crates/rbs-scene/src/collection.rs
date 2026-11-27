@@ -11,8 +11,11 @@ mod copies;
 mod error;
 pub use error::SceneError;
 mod buses;
+mod canvas_ops;
+mod companion;
 mod field;
 mod groups;
+mod nesting;
 mod scene_ops;
 pub use field::LevelEdits;
 mod removal;
@@ -23,14 +26,14 @@ pub use removal::Removed;
 use crate::arrange::{AutoItem, AutoLayout, auto_layout};
 use crate::model::{
     AudioFrom, Canvas, CanvasId, CollectionGlide, CollectionTransition, DISPLAY_SOURCE_TYPE,
-    DisplayChrome, Fallback, Filter, FilterId, Group, ItemContent, ItemId, Layout, MasterAudio,
-    RecordSeparately, Scene, SceneAudio, SceneId, SceneItem, SceneLevel, SceneScope,
-    SceneTransition, Sends, SettingValue, Settings, Source, SourceAudio, SourceGlide, SourceId,
-    SourceMonitor, SourceRegion, show_for_is_valid,
+    DisplayChrome, Fallback, Filter, FilterId, Group, GroupId, GroupScroll, ItemContent, ItemId,
+    Layout, MasterAudio, RecordSeparately, Scene, SceneAudio, SceneId, SceneItem, SceneLevel,
+    SceneScope, SceneTransition, Sends, SettingValue, Settings, Source, SourceAudio, SourceGlide,
+    SourceId, SourceMonitor, SourceRegion, show_for_is_valid,
 };
+use nesting::{check_items, check_scene_items};
 
-/// Most levels of scenes in a nesting chain, counting the shown scene. Bounds the
-/// recursion of [`SceneCollection::flatten`].
+/// Legacy nesting limit, retained for source compatibility (ADR-0188).
 pub const MAX_NESTING_DEPTH: usize = 16;
 
 /// Largest canvas side, in pixels. Documents are shared and so untrusted; no GPU path
@@ -41,8 +44,7 @@ pub const MAX_CANVAS_SIDE: u32 = 16_384;
 pub const MAX_FRAME_RATE: u32 = 1000;
 
 /// Most layers one scene may flatten to (counting hidden items, so showing an item
-/// never fails). Diamond-shaped nesting multiplies layers, so this is checked on every
-/// edit rather than left to the compositor.
+/// never fails). This is checked on every edit rather than left to the compositor.
 pub const MAX_LAYERS: u64 = 4096;
 
 /// An inverse edit. Applying it with [`SceneCollection::undo`] restores the state
@@ -59,6 +61,7 @@ enum Op {
     InsertCanvas {
         canvas: Canvas,
         overrides: Vec<(ItemId, Layout)>,
+        group_scrolls: Vec<(SceneId, GroupId, GroupScroll)>,
         /// Its global scene, removed with it (ADR-0065).
         globals: Option<Scene>,
     },
@@ -356,6 +359,7 @@ impl SceneCollection {
         counters: IdCounters,
         glide: CollectionGlide,
     ) -> Result<Self, SceneError> {
+        check_scene_items(&scenes)?;
         if !glide.is_valid() {
             return Err(SceneError::InvalidGlide);
         }
@@ -377,6 +381,7 @@ impl SceneCollection {
         glide: CollectionGlide,
         transition: CollectionTransition,
     ) -> Result<Self, SceneError> {
+        check_scene_items(&scenes)?;
         if !transition.is_valid() {
             return Err(SceneError::InvalidTransition);
         }
@@ -605,6 +610,7 @@ impl SceneCollection {
             Op::InsertCanvas {
                 canvas,
                 overrides: Vec::new(),
+                group_scrolls: Vec::new(),
                 globals: None,
             },
             next,
@@ -1457,8 +1463,8 @@ impl SceneCollection {
         self.apply(Op::ReplaceSceneHeader { id, expected, new })
     }
 
-    /// Changes which canvases may show a scene. Refused if a canvas that shows it, or a
-    /// scene that nests it, would no longer be allowed to.
+    /// Changes which canvases may show a scene. Refused if a canvas showing it would
+    /// no longer be allowed to.
     pub fn set_scene_scope(&mut self, id: SceneId, scope: SceneScope) -> Result<Undo, SceneError> {
         let scene = self.get_scene(id)?;
         let expected = (scene.name.clone(), scene.scope);
@@ -1466,8 +1472,8 @@ impl SceneCollection {
         self.apply(Op::ReplaceSceneHeader { id, expected, new })
     }
 
-    /// Places a source or scene in `scene` at `index` (0 is the bottom; `None` puts it
-    /// on top).
+    /// Places a source in `scene` at `index` (0 is the bottom; `None` puts it on top).
+    /// A scene placement is refused with [`SceneError::NestingUnsupported`].
     pub fn add_item(
         &mut self,
         scene: SceneId,
@@ -1475,6 +1481,9 @@ impl SceneCollection {
         layout: Layout,
         index: Option<usize>,
     ) -> Result<(ItemId, Undo), SceneError> {
+        if matches!(content, ItemContent::Scene(_)) {
+            return Err(SceneError::NestingUnsupported);
+        }
         let mut next = self.next.clone();
         let id = ItemId(issue(&mut next.item)?);
         let items = &self.get_scene(scene)?.items;
@@ -1625,6 +1634,7 @@ impl SceneCollection {
         scene: SceneId,
         items: Vec<SceneItem>,
     ) -> Result<Undo, SceneError> {
+        check_items(&items)?;
         let expected = self.get_scene(scene)?.items.clone();
         self.apply(Op::SetSceneItems {
             scene,
@@ -1699,6 +1709,7 @@ impl SceneCollection {
     /// hold hundreds of objects and edits are user-paced, on the control thread.
     /// A field edit is applied in place instead (`field.rs`).
     fn apply_with(&mut self, op: Op, next: NextIds) -> Result<Undo, SceneError> {
+        nesting::check_op(&op)?;
         if Self::field_edit(&op) {
             return self.apply_field(op, next);
         }
@@ -1819,58 +1830,10 @@ impl SceneCollection {
             Op::InsertCanvas {
                 canvas,
                 overrides,
+                group_scrolls,
                 globals,
-            } => {
-                let id = canvas.id;
-                Self::restorable(self.next.canvas, id.0, self.canvases.contains_key(&id))?;
-                self.canvases.insert(id, canvas);
-                if let Some(scene) = globals {
-                    let sid = scene.id;
-                    Self::restorable(self.next.scene, sid.0, self.scenes.contains_key(&sid))?;
-                    for item in &scene.items {
-                        Self::restorable(self.next.item, item.id.0, self.item(item.id).is_some())?;
-                    }
-                    self.index_scene(&scene);
-                    self.scenes.insert(sid, scene);
-                }
-                for (item, layout) in overrides {
-                    let item = self.item_mut(item)?;
-                    item.overrides.insert(id, layout);
-                }
-                Ok(Op::RemoveCanvas(id))
-            }
-            Op::RemoveCanvas(id) => {
-                let canvas = self
-                    .canvases
-                    .remove(&id)
-                    .ok_or(SceneError::UnknownCanvas(id))?;
-                // Its global scene goes with it (ADR-0065): the user never sees it as
-                // a scene of its own. Validation keeps it nested nowhere.
-                let globals = canvas.globals.and_then(|g| self.scenes.remove(&g));
-                if let Some(scene) = &globals {
-                    self.unindex_scene(scene);
-                }
-                if self
-                    .scenes
-                    .values()
-                    .any(|s| s.scope == SceneScope::Canvas(id))
-                {
-                    return Err(SceneError::CanvasHasScenes(id));
-                }
-                let mut overrides = Vec::new();
-                for scene in self.scenes.values_mut() {
-                    for item in scene.items.iter_mut() {
-                        if let Some(layout) = item.overrides.remove(&id) {
-                            overrides.push((item.id, layout));
-                        }
-                    }
-                }
-                Ok(Op::InsertCanvas {
-                    canvas,
-                    overrides,
-                    globals,
-                })
-            }
+            } => self.perform_insert_canvas(canvas, overrides, group_scrolls, globals),
+            Op::RemoveCanvas(id) => self.perform_remove_canvas(id),
             Op::SetCanvasMaster {
                 canvas,
                 expected,
@@ -2415,6 +2378,7 @@ impl SceneCollection {
 
     /// Checks every invariant of the scene model spec.
     fn validate(&self) -> Result<(), SceneError> {
+        self.validate_no_nested_scenes()?;
         debug_assert!(
             self.item_index_matches(),
             "the item index does not match the scenes"
@@ -2513,6 +2477,7 @@ impl SceneCollection {
         for s in self.scenes.values() {
             check_name(&s.name)?;
             groups::validate_scene(s)?;
+            self.validate_group_scrolls(s)?;
             // A global scene is never listed, so its name never takes one from the
             // user (ADR-0065).
             if !globals.contains(&s.id) && !names.insert(s.name.as_str()) {

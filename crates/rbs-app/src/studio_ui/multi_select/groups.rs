@@ -1,7 +1,9 @@
 //! Groups in the Sources list and the Group and Ungroup commands (ADR-0182): the first
 //! row of a group's block is marked as its header (arrow, name, combined Show/Hide and
-//! Lock), the members sit under it while it is open, and a click on a member selects
-//! the whole block. Runs when the rows are made again or on a click, never per frame.
+//! Lock), the members sit under it while it is open. A click on the header selects the
+//! whole block, a click on a member row that member alone (ADR-0194), and a press on a
+//! member's picture the whole block. Runs when the rows are made again or on a click,
+//! never per frame.
 //! Nothing here costs anything while no scene has a group.
 
 use rbs_api::Command as C;

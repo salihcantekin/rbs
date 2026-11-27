@@ -4,12 +4,13 @@
 use std::collections::BTreeSet;
 
 use rbs_core::time::Timestamp;
-use rbs_gpu::node::{Fade, NodeLayer};
+use rbs_gpu::node::{Fade, LayerList};
 use rbs_graph::description::{NodeId, SchedulePlan};
 use rbs_scene::binder::{BoundCompositor, BoundLayer};
 use rbs_scene::model::SourceId;
-use rbs_sources::{node_layers, stack_leaving};
+use rbs_sources::node_layers;
 
+use super::super::group_scroll::{insert, joined, node_list};
 use super::super::{Studio, paint_layers};
 
 /// When and where a Move runs.
@@ -32,23 +33,24 @@ impl Studio {
         program: &BoundCompositor,
         from: &[BoundLayer],
         is_global: &dyn Fn(&BoundLayer) -> bool,
-    ) -> Vec<NodeLayer> {
+    ) -> LayerList {
         let mut current = program.clone();
         current.layers.retain(|l| !is_global(l));
         let drawn: BTreeSet<SourceId> = current.layers.iter().map(|l| l.source).collect();
-        let layers = paint_layers(
+        let mut list = paint_layers(
             &current,
             plan,
             self.glide.as_ref(),
             glide.now,
             glide.canvas,
-            &self.scroll_runs,
+            (&self.scroll_runs, &self.group_runs),
         );
         let from: Vec<&BoundLayer> = from.iter().filter(|l| !is_global(l)).collect();
         let mut one = program.clone();
         let mut leaving = Vec::new();
         for (index, layer) in from.iter().enumerate() {
-            if drawn.contains(&layer.source) {
+            // A leaving group member is not drawn on its own (ADR-0193 decision 5).
+            if drawn.contains(&layer.source) || layer.group.is_some() {
                 continue;
             }
             one.layers.clear();
@@ -71,10 +73,21 @@ impl Studio {
             .map(|l| (l.source, l.producer))
             .collect();
         let order: Vec<SourceId> = from.iter().map(|l| l.source).collect();
-        let mut layers = stack_leaving(layers, &shared, &order, leaving);
+        // As `rbs_sources::stack_leaving`, keeping the spans.
+        for (index, layer) in leaving {
+            let anchor = order
+                .iter()
+                .skip(index + 1)
+                .find_map(|above| shared.iter().find(|(source, _)| source == above))
+                .and_then(|(_, p)| list.layers.iter().position(|l| l.producer == *p));
+            let at = anchor.unwrap_or(list.layers.len());
+            insert(&mut list, at, layer);
+        }
         let mut above = program.clone();
         above.layers.retain(|l| is_global(l));
-        layers.extend(node_layers(&above, plan, &self.scroll_runs));
-        layers
+        joined(
+            list,
+            node_list(&above, plan, &self.scroll_runs, &self.group_runs),
+        )
     }
 }

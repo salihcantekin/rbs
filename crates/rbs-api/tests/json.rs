@@ -226,7 +226,7 @@ fn every_request() -> Vec<Request> {
         Request::Authenticate(Authenticate {
             token: "rbs1_x".into(),
         }),
-        Request::Describe,
+        Request::Describe(Default::default()),
         Request::Unsubscribe(Unsubscribe {
             topics: vec![Topic::AudioLevels],
         }),
@@ -788,7 +788,6 @@ fn every_scroll_field() -> ItemScroll {
     }
 }
 
-/// Source rows (`source.list`).
 #[path = "json/source_rows.rs"]
 mod source_rows;
 
@@ -796,6 +795,7 @@ mod source_rows;
 fn every_request_round_trips_and_every_method_is_covered() {
     let mut all = every_request();
     all.extend(source_rows::group_requests());
+    source_rows::schema::validate_requests(&all);
     for r in &all {
         round_trip(r);
     }
@@ -939,11 +939,7 @@ fn every_result_and_event_type_round_trips() {
     });
     round_trip(&Description {
         protocol: "1.0".into(),
-        methods: vec![MethodInfoOwned {
-            name: "studio.get".into(),
-            scope: Some(rbs_api::Scope::Read),
-            effect: Some(rbs_api::request::Effect::Read),
-        }],
+        methods: vec![serde_json::from_value(json!({"name": "x", "effect": "read"})).unwrap()],
         topics: Topic::ALL.to_vec(),
     });
     round_trip(&Snapshot {

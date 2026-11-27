@@ -54,6 +54,7 @@ mod studio_start;
 mod studio_ui;
 mod swap_setting;
 mod title_bar;
+mod ui_commands;
 mod vcam_page;
 mod view;
 mod window_place;
@@ -805,7 +806,6 @@ impl App {
                 library_transfer::when_answered(self, done, App::library_done);
             }
             Run::Collection(id) => {
-                self.dismiss_source_settings();
                 let done = self.studio.switch_collection(&id);
                 library_transfer::when_answered(self, done, App::library_done);
             }
@@ -1344,12 +1344,6 @@ impl App {
         });
     }
 
-    fn close_picker_ui(&mut self) {
-        self.studio.close_add_picker();
-        self.with_picker_overlays(|o| o.set_picker_open(false));
-        self.picker_host = None;
-    }
-
     fn undo(&mut self) {
         self.flush();
         if self.session.undo() {
@@ -1882,7 +1876,6 @@ impl Ctx {
             }
             if let Some((collection, id)) = applied.switch {
                 let done = if collection {
-                    app.dismiss_source_settings();
                     app.studio.switch_collection(&id)
                 } else {
                     app.studio.switch_profile(&id)
@@ -2372,7 +2365,7 @@ impl Ctx {
         } else {
             self.meter_timer.stop();
         }
-        app.meters_ui.mixer(s, mixer_shown);
+        meters_ui::sync(app, mixer_shown);
 
         #[cfg(any(target_os = "macos", windows))]
         {
@@ -3584,7 +3577,7 @@ fn install_picker(g: &Overlays<'_>, ctx: &Ctx) {
         g.on_picker_chosen(move |index| {
             entry::guard(|| {
                 ctx.update(move |app: &mut App| {
-                    if usize::try_from(index).is_ok_and(|i| app.studio.choose_add_picker(i)) {
+                    if ui_commands::chosen(app, index) {
                         app.close_picker_ui();
                     }
                 });
@@ -5709,10 +5702,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
     let studio_config = config.clone();
     rbs_app::platform::note_user_folders();
     // The output profile and collection in use (ADR-0051); failed saves show as studio errors.
-    let (user, collection) = rbs_app::user_session::open(
-        &config,
-        std::sync::Arc::new(|why| deliver(studio_host::Update::Error(why))),
-    );
+    let (user, collection) = studio_start::open_user_session(&config)?;
     let mut user_notes = user.notes.clone();
     // Kept browser sign-ins no saved collection names any more (ADR-0132 decision 10).
     // The session stays on this thread: it owns the writer. The sweep thread reads a

@@ -1,5 +1,6 @@
 //! Control API answers for `group.*` (protocol 1.104, ADR-0182 decision 10; routed by
-//! `ApiTarget::run`).
+//! `ApiTarget::run`), and `group.get` and `group.apply` (protocol 1.111, ADR-0184,
+//! ADR-0193).
 
 use super::*;
 use rbs_scene::model::GroupId;
@@ -71,6 +72,15 @@ impl ApiTarget<'_> {
                     scene: p.scene,
                     groups,
                 }))
+            }
+            C::GroupGet(p) => Ok(Response::Group(
+                host.group_get(&p).map_err(|e| refused(&e))?,
+            )),
+            C::GroupApply(p) => {
+                if host.group_apply(&p).map_err(|e| refused(&e))? {
+                    host.apply(notify);
+                }
+                Ok(Response::Done(Empty {}))
             }
             _ => Err(rbs_api::control::unsupported(&command)),
         }

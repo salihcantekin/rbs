@@ -13,6 +13,8 @@ use super::{OutputCanvas, SourceData, sound_nest};
 
 mod arrange;
 mod groups;
+#[cfg(test)]
+mod member_tests;
 use crate::preview_edit::{Effect, Placed};
 pub use arrange::ArrangeOp;
 
@@ -127,19 +129,9 @@ impl Picked {
 }
 
 impl super::StudioUi {
-    /// A Sources row was clicked with Ctrl/Cmd or Shift held.
+    /// A Sources row was clicked with Ctrl/Cmd or Shift held. A group member is
+    /// added or removed like any row (ADR-0194 decision 1).
     pub fn select_with(&mut self, id: i32, ctrl: bool, shift: bool) {
-        // Ctrl/Cmd on a member of a selected whole group picks that member alone.
-        if ctrl && !shift && self.group_of(id).is_some() && self.picked.has(id) {
-            let block = self.group_of(id).map(|g| self.group_members(g));
-            if block.is_some_and(|b| self.picked.ids(self.selected) == b) {
-                self.picked.clear();
-                self.selected = id;
-                self.mark_picked();
-                self.refresh_marks();
-                return;
-            }
-        }
         let order: Vec<i32> = self.rows.iter().map(|r| r.id.get() as i32).collect();
         self.picked.click(
             &order,
@@ -221,15 +213,25 @@ impl super::StudioUi {
         for d in data {
             d.picked = self.picked.has(d.id);
         }
+        self.read_group(rows);
     }
 
-    /// A plain selection of one source (or none, -1): ends any multi-selection. A source in a group selects its whole block (ADR-0182 decision 9).
+    /// A plain selection of one source (or none, -1) from the Sources list: ends any
+    /// multi-selection. A group member is selected alone (ADR-0194 decision 1).
     pub(crate) fn select_one(&mut self, id: i32) {
-        if self.group_of(id).is_some() {
+        self.clear_picked();
+        self.selected = id;
+    }
+
+    /// A press on a picture hit `id` (or nothing, -1): a group member selects its
+    /// whole group (ADR-0182 decision 9), unless that member is already selected
+    /// alone, which then stays the selection (ADR-0194 decision 3).
+    pub(crate) fn select_on_picture(&mut self, id: i32) {
+        let alone = self.selected == id && self.picked.0.is_empty();
+        if self.group_of(id).is_some() && !alone {
             self.select_block(id);
         } else {
-            self.clear_picked();
-            self.selected = id;
+            self.select_one(id);
         }
     }
 
@@ -242,9 +244,11 @@ impl super::StudioUi {
         self.mark_picked();
     }
 
-    /// Brings each Sources row's `picked` flag in line with the set. The rows are
-    /// only made again when the sources change, so a click must update them here.
-    pub(crate) fn mark_picked(&self) {
+    /// Brings each Sources row's `picked` flag in line with the set, and Properties
+    /// to the group it may now be. The rows are only made again when the sources
+    /// change, so a click must update them here.
+    pub(crate) fn mark_picked(&mut self) {
+        self.read_group_now();
         for i in 0..self.sources.row_count() {
             if let Some(mut row) = self.sources.row_data(i) {
                 let picked = self.picked.has(row.id);

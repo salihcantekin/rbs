@@ -1,0 +1,112 @@
+{
+  "text.fonts": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`text.fonts`' answer (protocol 1.75, ADR-0129 decision 7).",
+      "properties": {
+        "families": {
+          "description": "The installed font families, sorted, without duplicates.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "families"
+      ],
+      "title": "TextFonts",
+      "type": "object"
+    }
+  },
+  "text.timer": {
+    "input_schema": {
+      "$defs": {
+        "TimerAction": {
+          "description": "What `text.timer` does (protocol 1.84, ADR-0129 decision 11).",
+          "oneOf": [
+            {
+              "const": "start",
+              "description": "Runs it from its value; a countdown at zero starts over.",
+              "type": "string"
+            },
+            {
+              "const": "pause",
+              "description": "Stops it at its value.",
+              "type": "string"
+            },
+            {
+              "const": "reset",
+              "description": "Back to zero, stopped.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`text.timer` (protocol 1.84, ADR-0129 decision 11): starts, pauses or resets a\ncountdown (by duration) or stopwatch text source. A live action: not an undo step\nand not in the scene collection.",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/TimerAction",
+          "description": "What to do."
+        },
+        "source": {
+          "description": "The text source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source",
+        "action"
+      ],
+      "title": "TextTimer",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`text.timer`'s answer (protocol 1.84, ADR-0129 decision 11): the timer as it\nstands now.",
+      "properties": {
+        "kind": {
+          "description": "`countdown` or `stopwatch`.",
+          "type": "string"
+        },
+        "running": {
+          "description": "It runs.",
+          "type": "boolean"
+        },
+        "source": {
+          "description": "The text source's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "value_ms": {
+          "description": "Time counted, in milliseconds (a countdown's is the time gone, not the time\nleft).",
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source",
+        "kind",
+        "running",
+        "value_ms"
+      ],
+      "title": "TextTimerState",
+      "type": "object"
+    }
+  }
+}

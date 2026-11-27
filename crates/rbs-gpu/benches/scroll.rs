@@ -179,7 +179,7 @@ fn bench(c: &mut Criterion) {
     ] {
         group.bench_with_input(BenchmarkId::new("composite", name), layers, |b, layers| {
             b.iter(|| {
-                comp.render_scrolled(&ctx, &pool, layers, canvas, Some(&mut binding))
+                comp.render_scrolled(&ctx, &pool, layers, canvas, Some(&mut binding), 0)
                     .expect("render");
                 ctx.wait_idle().expect("wait");
             });

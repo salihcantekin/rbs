@@ -436,7 +436,7 @@ fn bench(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench);
+criterion_group!(benches, bench, spans);
 criterion_main!(benches);
 
 /// sRGB `Rgba8` uploads (stills, text, browser pages) decoded in the shader: the
@@ -476,4 +476,125 @@ fn srgb_alpha(
             });
         });
     }
+}
+
+/// Group spans (ADR-0193) at 1080p: eight 480x270 tiles over a full-canvas layer drawn
+/// straight (`0`), with the top four as one span (`1`), as four spans of two (`4`), and
+/// four spans whose intermediates are reused (`4_reused`: the canvas pass only). Each
+/// span pass redraws its members, the worst case; every span layer scrolls at zero.
+fn spans(c: &mut Criterion) {
+    let Ok(ctx) = GpuContext::new(&GpuRequest {
+        allow_software: true,
+        ..GpuRequest::default()
+    }) else {
+        eprintln!("SKIPPED span benchmarks: no adapter");
+        return;
+    };
+    let mut pool = TexturePool::new();
+    let canvas = pool
+        .acquire(&ctx, &TextureDesc::canvas(W, H))
+        .expect("canvas");
+    let src = pool
+        .acquire(
+            &ctx,
+            &TextureDesc::source(480, 270, wgpu::TextureFormat::Rgba8UnormSrgb),
+        )
+        .expect("source");
+    let pixels: Vec<u8> = (0..480 * 270)
+        .flat_map(|i| [(i % 251) as u8, 90, 200, 255])
+        .collect();
+    readback::upload(&ctx, &pool, src, &pixels).expect("upload");
+    let mut comp = Compositor::new(
+        &ctx,
+        CanvasDesc {
+            width: W,
+            height: H,
+        },
+        32,
+    )
+    .expect("comp");
+    let mut binding = rbs_gpu::ScrollBinding::new(&ctx);
+    let tile = |i: usize| {
+        Layer::new(
+            src,
+            (i % 4) as f32 * 480.0,
+            (i / 4) as f32 * 270.0,
+            480.0,
+            270.0,
+        )
+    };
+    let back = Layer::new(src, 0.0, 0.0, W as f32, H as f32);
+    let held = rbs_gpu::LayerScroll {
+        direction: rbs_gpu::ScrollDirection::Left,
+        repeat: rbs_gpu::ScrollRepeat::Loop,
+        start: rbs_gpu::ScrollStart::Inside,
+        gap: 0.0,
+        fade: 0.0,
+        run: rbs_gpu::ScrollRun::start(rbs_core::time::Timestamp::ZERO, 0.0),
+    };
+    // A span: its intermediate, its members in window space and its canvas layer.
+    let mut span = |members: std::ops::Range<usize>, [x, y, w, h]: [f32; 4]| {
+        let id = pool
+            .acquire(&ctx, &TextureDesc::canvas(w as u32, h as u32))
+            .expect("intermediate");
+        let inner: Vec<Layer> = members
+            .map(|i| {
+                let mut l = tile(i);
+                l.transform.tx -= x;
+                l.transform.ty -= y;
+                l
+            })
+            .collect();
+        let mut layer = Layer::new(id, x, y, w, h);
+        let f = held
+            .frame(
+                &layer.transform,
+                &layer.crop,
+                w as u32,
+                h as u32,
+                rbs_core::time::Timestamp::ZERO,
+            )
+            .expect("frame");
+        layer.scroll = Some(f.gpu(held.direction, held.repeat, held.fade));
+        (id, inner, layer)
+    };
+    let one = vec![span(0..4, [0.0, 0.0, W as f32, 270.0])];
+    let four: Vec<_> = (0..4)
+        .map(|s| {
+            span(
+                s * 2..s * 2 + 2,
+                [(s % 2) as f32 * 960.0, (s / 2) as f32 * 270.0, 960.0, 270.0],
+            )
+        })
+        .collect();
+    let canvas_of = |spans: &[(rbs_gpu::TextureId, Vec<Layer>, Layer)],
+                     rest: std::ops::Range<usize>| {
+        let mut l = vec![back];
+        l.extend(spans.iter().map(|s| s.2));
+        l.extend(rest.map(tile));
+        l
+    };
+    let cases = [
+        ("0", Vec::new(), canvas_of(&[], 0..8), true),
+        ("1", one.clone(), canvas_of(&one, 4..8), true),
+        ("4", four.clone(), canvas_of(&four, 0..0), true),
+        ("4_reused", four.clone(), canvas_of(&four, 0..0), false),
+    ];
+    let mut group = c.benchmark_group("group_spans_1080p");
+    group.sample_size(20);
+    for (name, spans, layers, passes) in &cases {
+        group.bench_function(BenchmarkId::new("spans", name), |b| {
+            b.iter(|| {
+                // Members do not scroll: the span passes take no record slot.
+                for (id, inner, _) in spans.iter().filter(|_| *passes) {
+                    comp.render_intermediate(&ctx, &pool, inner, *id, Some(&mut binding), 0)
+                        .expect("span pass");
+                }
+                comp.render_scrolled(&ctx, &pool, layers, canvas, Some(&mut binding), 0)
+                    .expect("canvas pass");
+                ctx.wait_idle().expect("wait");
+            });
+        });
+    }
+    group.finish();
 }

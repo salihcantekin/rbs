@@ -4,28 +4,27 @@
 # increase the owner approved goes to size-exceptions.toml with `--except`.
 
 [files]
-"crates/rbs-api/src/request.rs" = 2513
-"crates/rbs-api/src/types.rs" = 2874
-"crates/rbs-api/tests/json.rs" = 3116
-"crates/rbs-app/src/main.rs" = 6313
-"crates/rbs-app/src/menu_bar.rs" = 2268
-"crates/rbs-app/src/studio_ui.rs" = 9880
-"crates/rbs-record/src/studio.rs" = 5582
+"crates/rbs-api/src/request.rs" = 2361
+"crates/rbs-api/src/types.rs" = 2534
+"crates/rbs-api/tests/json.rs" = 3112
+"crates/rbs-app/src/main.rs" = 6303
+"crates/rbs-app/src/menu_bar.rs" = 2218
+"crates/rbs-app/src/studio_ui.rs" = 9791
+"crates/rbs-record/src/studio.rs" = 5535
 "crates/rbs-record/tests/studio.rs" = 3241
-"crates/rbs-scene/src/collection.rs" = 2758
+"crates/rbs-scene/src/collection.rs" = 2723
 "crates/rbs-scene/tests/binder.rs" = 2882
-"crates/rbs-scene/tests/collection.rs" = 2759
+"crates/rbs-scene/tests/collection.rs" = 2647
 "crates/rbs-ui/src/command.rs" = 2765
 
 [functions]
-"crates/rbs-api/src/session.rs::message" = 249
 "crates/rbs-api/tests/json.rs::every_request" = 540
-"crates/rbs-api/tests/json.rs::every_result_and_event_type_round_trips" = 351
+"crates/rbs-api/tests/json.rs::every_result_and_event_type_round_trips" = 347
 "crates/rbs-app/examples/audio_graph.rs::main" = 248
 "crates/rbs-app/examples/remote_preview.rs::run" = 313
 "crates/rbs-app/examples/transition_cost.rs::main" = 203
 "crates/rbs-app/src/main.rs::install_studio" = 965
-"crates/rbs-app/src/main.rs::run" = 372
+"crates/rbs-app/src/main.rs::run" = 369
 "crates/rbs-app/src/main.rs::sync" = 327
 "crates/rbs-app/src/main.rs::sync_studio" = 206
 "crates/rbs-app/src/menu_bar.rs::enabled" = 488
@@ -43,8 +42,7 @@
 "crates/rbs-codec-vaapi/src/engine.rs::open" = 204
 "crates/rbs-codec-videotoolbox/src/mac/session.rs::new" = 235
 "crates/rbs-gpu/benches/compositor.rs::bench" = 417
-"crates/rbs-gpu/src/compositor.rs::render_scrolled" = 207
-"crates/rbs-import-obs/src/build.rs::build" = 300
+"crates/rbs-import-obs/src/build.rs::build" = 268
 "crates/rbs-import-obs/src/profile.rs::read" = 240
 "crates/rbs-mux-fmp4/src/muxer.rs::new" = 323
 "crates/rbs-mux-matroska/src/muxer.rs::new" = 242
@@ -55,14 +53,13 @@
 "crates/rbs-record/src/estimate.rs::rows_of" = 281
 "crates/rbs-record/src/studio.rs::add_output" = 267
 "crates/rbs-record/src/studio.rs::reconcile" = 625
-"crates/rbs-record/src/studio.rs::start_with" = 322
+"crates/rbs-record/src/studio.rs::start_with" = 317
 "crates/rbs-record/src/studio/iso_video.rs::start_iso_video" = 292
 "crates/rbs-record/src/studio/transition.rs::note_transitions" = 224
 "crates/rbs-scene/src/binder.rs::sync" = 684
-"crates/rbs-scene/src/collection.rs::perform" = 558
+"crates/rbs-scene/src/collection.rs::perform" = 510
 "crates/rbs-scene/tests/binder.rs::check_consistent" = 218
 "crates/rbs-sources/examples/scene_sources.rs::run" = 321
-"crates/rbs-studio-host/src/studio_host/control_api.rs::route" = 201
 "crates/rbs-studio-host/tests/studio/api.rs::a_control_api_client_adds_and_edits_a_text_source" = 225
 "crates/rbs-studio-host/tests/studio/api.rs::a_control_api_client_drives_the_studio" = 598
 "crates/rbs-ui/src/command/context.rs::context_menu" = 205

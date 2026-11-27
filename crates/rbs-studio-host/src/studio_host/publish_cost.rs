@@ -103,11 +103,34 @@ fn collection(n: usize) -> SceneCollection {
     col
 }
 
-fn host(n: usize) -> Option<Host> {
+pub(super) fn host(n: usize) -> Option<Host> {
+    host_with_clock(n, Arc::new(TestClock::new()))
+}
+
+pub(super) fn host_with_clock(n: usize, clock: Arc<TestClock>) -> Option<Host> {
+    host_with_engine(n, move || {
+        Engine::with_clock(
+            Arc::clone(&clock) as Arc<dyn Clock>,
+            EngineConfig::default().swap_timeout(Duration::from_secs(20)),
+        )
+    })
+}
+
+pub(super) fn host_with_engine(n: usize, engine: impl Fn() -> Engine + 'static) -> Option<Host> {
+    host_with_document(n, |_| {}, engine)
+}
+
+pub(super) fn host_with_document(
+    n: usize,
+    configure: impl FnOnce(&mut SceneCollection),
+    engine: impl Fn() -> Engine + 'static,
+) -> Option<Host> {
     let gpu = gpu()?;
     let mut config = HostConfig::canvas(Size::new(1280, 720), FrameRate::FPS_30);
     config.preview = None;
-    config.collection = Some(collection(n));
+    let mut document = collection(n);
+    configure(&mut document);
+    config.collection = Some(document);
     let (host, _) = start(
         config,
         || {
@@ -121,12 +144,7 @@ fn host(n: usize) -> Option<Host> {
             (a, Vec::new())
         },
         move || Ok(gpu),
-        || {
-            Engine::with_clock(
-                Arc::new(TestClock::new()),
-                EngineConfig::default().swap_timeout(Duration::from_secs(20)),
-            )
-        },
+        engine,
         crate::levels::LevelFeed::new(),
     )
     .unwrap();

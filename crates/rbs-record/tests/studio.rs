@@ -2,14 +2,14 @@
 //! mixer is metered while nothing records, recordings start and stop on the running
 //! engine, and scene edits open and close sources while it runs. Reference adapters on
 //! a `TestClock`, as in `record.rs`; tests wait for counts, never for a duration.
-
 #![allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
-
-mod support;
 
 /// Source activity (ADR-0152) in the running studio.
 #[path = "studio/activity.rs"]
 mod activity;
+#[path = "studio/held_cues.rs"]
+mod held_cues;
+mod support;
 
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -1503,6 +1503,7 @@ fn media_and_browser_sources_are_adopted_on_the_render_partition() {
             &OutputSettings::new("mem://page", ContainerId::Matroska),
         )
         .unwrap();
+    assert!(studio.meter(clip).is_some() && studio.meter(page).is_some());
     // The picture node is drawn by the program compositor; its sound node (in the
     // audio partition) is the mixer's producer (ADR-0106).
     let media = studio
@@ -2366,8 +2367,7 @@ fn a_browser_page_is_heard_in_the_program_mix() {
             &OutputSettings::new("mem://tone", ContainerId::Matroska),
         )
         .unwrap();
-    // No level meter on picture-and-sound strips yet; the master hears only the page.
-    assert!(studio.meter(page).is_none());
+    assert!(studio.meter(page).is_some(), "page mixer strip meter");
     let master = Arc::clone(studio.master_meter().expect("a program mixer"));
     let heard = run_until(&mut studio, &clock, |_| master.observe().peak(0) > 0.4);
     assert!(heard, "{:?}", studio.progress());

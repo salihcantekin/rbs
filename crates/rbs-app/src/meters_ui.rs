@@ -50,6 +50,13 @@ impl Readers {
     }
 }
 
+/// After a layout sync: the Mixer and Properties tell what they read while shown.
+pub(crate) fn sync(app: &mut App, mixer_shown: bool) {
+    app.meters_ui.mixer(&app.studio, mixer_shown);
+    let properties = properties_shown(app);
+    app.studio.set_properties_shown(properties);
+}
+
 /// A gate bar's read of `filter`'s levels: the window reads levels until a read is
 /// [`GATE_QUIET`] late.
 pub(crate) fn gate_levels(ctx: &Ctx, app: &App, filter: i32) -> (f32, f32) {

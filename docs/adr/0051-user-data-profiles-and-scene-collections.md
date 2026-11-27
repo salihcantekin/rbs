@@ -1,6 +1,6 @@
 # ADR-0051: User data as versioned documents; output profiles and scene collections as libraries of named files
 
-- Status: Accepted
+- Status: Accepted (decision 6 superseded in part by ADR-0188)
 - Date: 2026-11-06
 - Deciders: Salih (owner)
 

@@ -378,6 +378,7 @@ impl Host {
             .canvas(self.canvas)
             .ok_or_else(|| Refusal::Failed("the canvas is gone".to_owned()))?;
         let mut settings = StudioSettings::new(self.canvas);
+        settings.group_ids = self.group_ids.clone();
         let preview = self
             .preview_surfaces
             .map(|_| preview_desc(canvas.size, canvas.frame_rate));
@@ -397,25 +398,76 @@ impl Host {
         } else if self.verticals.vertical.take().is_some() {
             self.forget_vertical_outputs();
         }
+        let previous_held = self.program.held.clone();
+        let previous_held_was = self.program.held_was;
+        let previous_held_id_was = self.program.held_id_was;
         let run = self.run_collection();
+        let matching = match (&self.program.held, &self.program.applied_cues) {
+            (Some(held), Some(applied)) => Arc::ptr_eq(&held.cue_identity, applied),
+            _ => false,
+        };
+        let held_cues = if matching {
+            Ok(self.studio.held_cues().cloned())
+        } else {
+            match self.program.held.as_ref() {
+                None => Ok(None),
+                Some(held) => held
+                    .cues
+                    .as_ref()
+                    .ok_or(None)
+                    .and_then(|cues| cues.clone().map(Some).map_err(Some)),
+            }
+        };
+        let held_cues = match held_cues {
+            Ok(cues) => cues,
+            Err(item) => {
+                self.program.held = previous_held;
+                self.program.held_was = previous_held_was;
+                self.program.held_id_was = previous_held_id_was;
+                let target = item.map_or_else(String::new, |id| format!(" for item {}", id.get()));
+                return Err(Refusal::Failed(format!(
+                    "The held Show cue{target} could not be captured."
+                )));
+            }
+        };
         // Tickers go on where they were (ADR-0150 decision 5).
+        settings.scene_origins = scene_origins(self.program.held.as_ref());
         settings.scroll_runs = Some(self.studio.scroll_handover());
         // Timers and elapsed times run on across the restart (ADR-0129 decision 11).
         let timers = self.studio.text_timers();
-        let old_now = self.clock.now();
         let engine = (self.engine)();
         let clock = engine.clock();
-        let studio = Studio::start_with_tree(
+        let old_now = self.clock.now();
+        let new_now = clock.now();
+        settings.held_cues = held_cues.map(|cues| cues.rebased(old_now, new_now));
+        let result = Studio::start_with_tree(
             engine,
             Arc::clone(&self.gpu),
             run.as_ref().unwrap_or(&self.collection),
             &self.adapters.sources,
             &settings,
             self.browser_tree.clone(),
-        )
-        .map_err(|e| Refusal::Failed(e.to_string()))?;
+        );
+        let studio = match result {
+            Ok(studio) => studio,
+            Err(error) => {
+                self.program.held = previous_held;
+                self.program.held_was = previous_held_was;
+                self.program.held_id_was = previous_held_id_was;
+                return Err(Refusal::Failed(error.to_string()));
+            }
+        };
         self.studio = studio;
         self.clock = clock;
+        if let Some(held) = &mut self.program.held {
+            held.cues = self.studio.held_cues().cloned().map(Ok);
+        }
+        self.program.applied_held = self.program.held.clone();
+        self.program.applied_cues = self
+            .program
+            .held
+            .as_ref()
+            .map(|h| Arc::clone(&h.cue_identity));
         self.studio.set_meters_on(self.meters_applied);
         self.audio_rest_at = self
             .audio_rest_at
@@ -428,6 +480,7 @@ impl Host {
         for p in &mut self.projectors {
             p.picture = None;
         }
+        self.restart_interacts();
         self.restart_studio_grab();
         // The camera keeps sending across a canvas change; when it cannot, the next
         // round says so.

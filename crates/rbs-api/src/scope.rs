@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 /// One permission. Every method declares exactly one scope (or none, for the
 /// handshake); a call outside the session's scopes returns `scope_denied`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Scope {
     /// Queries, `api.describe`, event subscriptions.

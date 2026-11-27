@@ -1,0 +1,65 @@
+{
+  "project.export": {
+    "input_schema": {
+      "$defs": {
+        "ProjectFormat": {
+          "description": "An editor project format (protocol 1.58, ADR-0089 decision 9).",
+          "oneOf": [
+            {
+              "const": "fcpxml",
+              "description": "FCPXML 1.9, one `.fcpxml` file (Final Cut Pro).",
+              "type": "string"
+            },
+            {
+              "const": "xmeml",
+              "description": "FCP7 XML (xmeml version 5), one `.xml` file (DaVinci Resolve, Premiere Pro;\nprotocol 1.60).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`project.export` (protocol 1.58, ADR-0089 decisions 8 and 11): an editor project\nfrom a finished recording's manifest.",
+      "properties": {
+        "format": {
+          "$ref": "#/$defs/ProjectFormat",
+          "description": "The project format."
+        },
+        "recording": {
+          "description": "The recording's folder name, or a plain recording's file name, inside the\nprofile's recordings folder: one path segment.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "recording",
+        "format"
+      ],
+      "title": "ProjectExport",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`project.export`'s answer.",
+      "properties": {
+        "file": {
+          "description": "The project's file name, next to the manifest (never an absolute path).",
+          "type": "string"
+        },
+        "missing": {
+          "description": "Separate files the manifest names that were not in the folder; left out.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "file",
+        "missing"
+      ],
+      "title": "ProjectExported",
+      "type": "object"
+    }
+  }
+}

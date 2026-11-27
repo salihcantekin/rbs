@@ -34,6 +34,7 @@ pub(super) struct InteractRun {
     source: SourceId,
     /// Its picture in the running studio; `None` until added (or after a restart).
     picture: Option<PictureId>,
+    closing: bool,
     /// The page size the picture was made at.
     size: (u32, u32),
     /// What was last sent to the UI.
@@ -50,6 +51,13 @@ fn page_size(settings: &rbs_scene::model::Settings) -> (u32, u32) {
 }
 
 impl Host {
+    /// Picture ids belong to the old studio and must not name a new picture.
+    pub(super) fn restart_interacts(&mut self) {
+        for run in &mut self.interacts {
+            run.picture = None;
+        }
+    }
+
     /// Opens the Interact window of browser source `source`. Refused, as
     /// [`InteractState::Closed`], for a source that is not a browser page and beyond
     /// [`MAX_INTERACT`]. Its picture is added by [`Self::sync_interacts`].
@@ -79,6 +87,7 @@ impl Host {
         self.interacts.push(InteractRun {
             source,
             picture: None,
+            closing: false,
             size: (0, 0),
             sent: None,
             refused: None,
@@ -92,15 +101,27 @@ impl Host {
         let Some(at) = self.interacts.iter().position(|r| r.source == source) else {
             return;
         };
-        let run = self.interacts.remove(at);
-        if let Some(picture) = run.picture {
-            let col = self.run_collection();
+        let col = if self.interacts[at].picture.is_some() {
+            let Ok(col) = self.auxiliary_run_collection() else {
+                self.interacts[at].closing = true;
+                return;
+            };
+            col
+        } else {
+            None
+        };
+        if let Some(picture) = self.interacts[at].picture {
             let running = col.as_ref().unwrap_or(&self.collection);
-            let _ = self
+            let result = self
                 .studio
                 .remove_picture(running, &self.adapters.sources, picture);
             self.waiting = self.studio.waiting();
+            if result.is_err() && self.studio.pictures().contains(&picture) {
+                self.interacts[at].closing = true;
+                return;
+            }
         }
+        self.interacts.remove(at);
     }
 
     /// Closes every Interact window (another scene collection): the UI closes them
@@ -125,9 +146,21 @@ impl Host {
         if self.interacts.is_empty() {
             return;
         }
+        let closing: Vec<_> = self
+            .interacts
+            .iter()
+            .filter(|r| r.closing)
+            .map(|r| r.source)
+            .collect();
+        for source in closing {
+            self.close_interact(source);
+        }
         let present = self.studio.pictures();
         let mut closed = Vec::new();
         for at in 0..self.interacts.len() {
+            if self.interacts[at].closing {
+                continue;
+            }
             let source = self.interacts[at].source;
             let Some(now) = self
                 .collection
@@ -147,12 +180,21 @@ impl Host {
                     || self.studio.picture_failure(pid).is_some()
                     || run.size != size
             });
-            if stale && let Some(pid) = run.picture.take() {
-                let col = self.run_collection();
+            if stale {
+                let Ok(col) = self.auxiliary_run_collection() else {
+                    continue;
+                };
+                let Some(pid) = self.interacts[at].picture.take() else {
+                    continue;
+                };
                 let running = col.as_ref().unwrap_or(&self.collection);
-                let _ = self
+                let result = self
                     .studio
                     .remove_picture(running, &self.adapters.sources, pid);
+                if result.is_err() && self.studio.pictures().contains(&pid) {
+                    self.interacts[at].picture = Some(pid);
+                    continue;
+                }
             }
             if self.interacts[at].picture.is_some()
                 || self.interacts[at].refused.as_ref() == Some(&now)
@@ -174,7 +216,9 @@ impl Host {
                         .unwrap_or(rbs_core::timing::FrameRate::FPS_30),
                 ),
             };
-            let col = self.run_collection();
+            let Ok(col) = self.auxiliary_run_collection() else {
+                continue;
+            };
             let running = col.as_ref().unwrap_or(&self.collection);
             // A page that cannot run (no engine, no slot, standby) still gets its
             // window: it shows the reason.
@@ -206,6 +250,9 @@ impl Host {
             });
         }
         for run in &mut self.interacts {
+            if run.closing {
+                continue;
+            }
             let now = run.picture.and_then(|pid| self.studio.picture(pid));
             if run.sent.as_ref() != Some(&now) {
                 run.sent = Some(now.clone());
