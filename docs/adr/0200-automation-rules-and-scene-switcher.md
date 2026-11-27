@@ -1,6 +1,6 @@
 # ADR-0200: Automation rules and the automatic scene switcher
 
-- Status: Proposed
+- Status: Accepted (2026-11-27)
 - Date: 2026-11-27
 - Deciders: Salih (owner)
 - Builds on: [ADR-0013](0013-zero-cost-when-unused.md) (zero cost when unused), [ADR-0044](0044-control-api-protocol-and-security.md) (control API), [ADR-0158](0158-diagnostics-log.md) (diagnostics log), [ADR-0162](0162-extension-ready-registries-and-plugin-order.md) (extension-ready registries; this ADR is its "automation triggers" registry, step 5), [ADR-0163](0163-one-command-path-for-the-window-and-the-api.md) (one command path)
@@ -103,3 +103,5 @@ Verdict: changes requested (round 3), one blocking concern; round-2 resolutions 
 Concerns:
 1. A caller with no token passes `check_local_only`, so a token-authored rule could run `browser.run_script` -> decision 5: token-authored rules run as a token caller for every token-only check; the origin marker is a separate field.
 Nits: who owns the level reader with the API thread off and RMS per consumer -> named in decision 8, details in the spec; `set_meters_on` also calls `observe` to clear, and the third queue's order in the Threads table -> spec follow-ups.
+
+Owner approval: Salih accepted the ADR on 2026-11-27 after round 3.
