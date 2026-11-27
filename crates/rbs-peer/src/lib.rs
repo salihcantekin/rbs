@@ -24,6 +24,7 @@ pub use code::{
 pub use error::{CodeError, FailureReason, PeerError, PhraseError, SettingsError};
 pub use phrase::{CheckPhrase, PHRASE_DOMAIN, phrase_input};
 pub use session::{
-    PeerEvent, PeerFactory, PeerRole, PeerSession, PeerState, PendingAnswer, PendingInvite,
+    InviteState, MediaHandle, PeerEvent, PeerFactory, PeerRole, PeerSession, PeerState,
+    PendingInvite,
 };
-pub use settings::{AcceptSettings, InviteSettings, NetworkSettings};
+pub use settings::{AcceptSettings, InviteSettings, SideSettings};
