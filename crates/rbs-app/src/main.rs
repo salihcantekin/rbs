@@ -6256,11 +6256,15 @@ mod fold_tests {
     fn properties_folds_name_every_properties_section() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/studio.slint");
         let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path:?}: {e}"));
-        let start = text
-            .find("property <string> folds:")
-            .unwrap_or_else(|| panic!("SourceProperties has its folds list"));
-        let end = start + text[start..].find(';').unwrap_or(0);
-        let folds = &text[start..end];
+        // SourceProperties' computed list, and the fixed list GroupProperties sets.
+        let mut folds = String::new();
+        for marker in ["property <string> folds:", "Studio.properties-folds = \""] {
+            let start = text
+                .find(marker)
+                .unwrap_or_else(|| panic!("a folds list starting {marker:?}"));
+            let end = start + text[start..].find(';').unwrap_or(0);
+            folds.push_str(&text[start..end]);
+        }
         let mut ids = 0;
         for line in text.lines() {
             if let Some(id) = line.trim().strip_prefix("id: \"properties.") {
