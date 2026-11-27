@@ -41,7 +41,7 @@ function repaintAll(fromTick = false): void {
 			stateOf.set(id, idx);
 			void action.setState(idx);
 		}
-		const svg = toDataUrl(renderKey(kind, settings, client.status, state, { elapsed, liveSince: live.since, now, titled: titles.get(id)?.get(idx) === true }));
+		const svg = toDataUrl(renderKey(kind, settings, client.status, state, { elapsed, liveSince: live.since, now, titled: [...(titles.get(id)?.values() ?? [])].some(Boolean) }));
 		if (shown.get(id) === svg) continue;
 		shown.set(id, svg);
 		void action.setImage(svg);
