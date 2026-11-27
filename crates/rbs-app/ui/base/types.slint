@@ -164,6 +164,12 @@ export enum IconName {
     ban,
     text,
     flag,
+    region-canvas,
+    region-whole,
+    region-left,
+    region-right,
+    bold,
+    italic,
 }
 
 // An icon by its name in the icon set, as Rust passes it (registry and panel icons).
@@ -268,6 +274,12 @@ export global Icons {
         : name == "ban" ? IconName.ban
         : name == "text" ? IconName.text
         : name == "flag" ? IconName.flag
+        : name == "region-canvas" ? IconName.region-canvas
+        : name == "region-whole" ? IconName.region-whole
+        : name == "region-left" ? IconName.region-left
+        : name == "region-right" ? IconName.region-right
+        : name == "bold" ? IconName.bold
+        : name == "italic" ? IconName.italic
         : IconName.none;
     }
 }

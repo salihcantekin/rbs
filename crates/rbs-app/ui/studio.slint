@@ -9,7 +9,7 @@ import { CommandMenu } from "context_menu.slint";
 import { Section, BrowserFields, ActivityFields } from "browser_fields.slint";
 import { ReplayControls, ReplaySettings } from "replay.slint";
 import { SourceOptions } from "source_options.slint";
-import { ActionPair, ToggleRow } from "properties_parts.slint";
+import { ToggleRow } from "properties_parts.slint";
 import { FilterFieldData, FilterLevels, FilterData, GroupPropsData, SourceData, SceneData, LookData, SampleData, KindData, MarkData, ModeData, SyncMeasureData, AttributeGroupRow, AttributeTargetRow, AttributesData, TextData, BrowserData, SourceSettingsData, SourceTargetData, MeterRow, ScaleMark, LoudnessData, DestinationRow, EncoderData, TokenRow, AiActionRow, StatRow, EntryRow, PermissionRowData, Studio, Sections, Experience, IconName, Icons, SizeBand, Overlays } from "base/types.slint";
 export { FilterFieldData, FilterLevels, FilterData, SourceData, SceneData, LookData, SampleData, KindData, MarkData, ModeData, SyncMeasureData, AttributeGroupRow, AttributeTargetRow, AttributesData, TextData, BrowserData, SourceSettingsData, SourceTargetData, MeterRow, ScaleMark, LoudnessData, DestinationRow, EncoderData, TokenRow, AiActionRow, StatRow, EntryRow, PermissionRowData, Studio }
 
@@ -2823,45 +2823,6 @@ component ArrangeFields inherits Section {
     }
 }
 
-// Two crop shortcuts side by side, sharing the line; one under the other when the
-// panel is too narrow for both labels, so nothing is cut off (U11).
-component RegionPair inherits Rectangle {
-    in property <SourceData> data;
-    in property <bool> enabled;
-    in property <string> first;
-    in property <string> first-name;
-    in property <int> first-region;
-    in property <string> second;
-    in property <string> second-name;
-    in property <int> second-region;
-    property <bool> stacked: root.width < one.min-width + Tokens.size-field-gap + two.min-width;
-    property <length> half: (root.width - Tokens.size-field-gap) / 2;
-    min-width: max(one.min-width, two.min-width);
-    height: root.stacked ? one.height + Tokens.size-field-gap + two.height : one.height;
-    one := Button {
-        x: 0px;
-        y: 0px;
-        width: root.stacked ? root.width : root.half;
-        text: root.first;
-        dense: true;
-        kind: "secondary";
-        enabled: root.enabled;
-        accessible-name: root.first-name;
-        clicked => { Studio.set-source-region(root.data.id, root.first-region); }
-    }
-    two := Button {
-        x: root.stacked ? 0px : root.half + Tokens.size-field-gap;
-        y: root.stacked ? one.height + Tokens.size-field-gap : 0px;
-        width: root.stacked ? root.width : root.half;
-        text: root.second;
-        dense: true;
-        kind: "secondary";
-        enabled: root.enabled;
-        accessible-name: root.second-name;
-        clicked => { Studio.set-source-region(root.data.id, root.second-region); }
-    }
-}
-
 // Crop of a picture in source pixels (ADR-0058), under its position and size. Every
 // change is one undo step and keeps the picture's scale; the Region buttons show a part
 // of the picture as large as the canvas allows.
@@ -2920,27 +2881,32 @@ component CropFields inherits Section {
     }
     Field {
         label: @tr("Show");
-        VerticalLayout {
+        HorizontalLayout {
             spacing: Tokens.size-field-gap;
-            RegionPair {
-                data: root.data;
+            alignment: start;
+            IconButton {
+                icon: IconName.region-canvas;
+                name: @tr("Show the centre of {} at canvas size", data.name);
                 enabled: can-edit;
-                first: @tr("Canvas size");
-                first-name: @tr("Show the centre of {} at canvas size", data.name);
-                first-region: 1;
-                second: @tr("Whole picture");
-                second-name: @tr("Show all of {}, fitted to the canvas", data.name);
-                second-region: 0;
+                clicked => { Studio.set-source-region(data.id, 1); }
             }
-            RegionPair {
-                data: root.data;
+            IconButton {
+                icon: IconName.region-whole;
+                name: @tr("Show all of {}, fitted to the canvas", data.name);
                 enabled: can-edit;
-                first: @tr("Left half");
-                first-name: @tr("Show the left half of {}", data.name);
-                first-region: 2;
-                second: @tr("Right half");
-                second-name: @tr("Show the right half of {}", data.name);
-                second-region: 3;
+                clicked => { Studio.set-source-region(data.id, 0); }
+            }
+            IconButton {
+                icon: IconName.region-left;
+                name: @tr("Show the left half of {}", data.name);
+                enabled: can-edit;
+                clicked => { Studio.set-source-region(data.id, 2); }
+            }
+            IconButton {
+                icon: IconName.region-right;
+                name: @tr("Show the right half of {}", data.name);
+                enabled: can-edit;
+                clicked => { Studio.set-source-region(data.id, 3); }
             }
         }
     }
@@ -3774,9 +3740,9 @@ component AudioFields inherits VerticalLayout {
                     step: 10;
                     edited(v) => { Studio.sync-offer-for = data.id; Studio.set-source-sync-offset(data.id, round(max(-200, min(200, v)))); }
                 }
-                Button {
-                    text: @tr("Measure");
-                    lead: IconName.wand;
+                IconButton {
+                    icon: IconName.wand;
+                    name: @tr("Measure the sync offset of {} from claps", data.name);
                     clicked => { Studio.open-sync-measure(data.id); }
                 }
             }
@@ -4407,15 +4373,21 @@ component TextFields inherits VerticalLayout {
     }
     Field {
         label: @tr("Style");
-        ActionPair {
-            first: @tr("Bold");
-            first-name: @tr("Bold {}", data.name);
-            first-checked: t.bold;
-            first-clicked => { Studio.set-text-number(t.id, "weight", t.bold ? 400 : 700, 0); }
-            second: @tr("Italic");
-            second-name: @tr("Italic {}", data.name);
-            second-checked: t.italic;
-            second-clicked => { Studio.set-text-flag(t.id, "italic", !t.italic); }
+        HorizontalLayout {
+            spacing: Tokens.size-field-gap;
+            alignment: start;
+            IconButton {
+                icon: IconName.bold;
+                name: @tr("Bold {}", data.name);
+                checked: t.bold;
+                clicked => { Studio.set-text-number(t.id, "weight", t.bold ? 400 : 700, 0); }
+            }
+            IconButton {
+                icon: IconName.italic;
+                name: @tr("Italic {}", data.name);
+                checked: t.italic;
+                clicked => { Studio.set-text-flag(t.id, "italic", !t.italic); }
+            }
         }
     }
     Field {

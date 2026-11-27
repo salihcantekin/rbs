@@ -3,12 +3,10 @@
 // - a value (a drop-down, a number, a text, a slider, a choice) has its name above it
 //   (`CaptionField`), and fills the width;
 // - an on/off setting is a `ToggleRow`: its name at the left, the switch at the right edge;
-// - a command is a dense text button (`ActionPair`: two equal buttons side by side); icon
-//   buttons are for what a row repeats (move, remove, show, lock) and say their name in a
-//   tooltip.
+// - a command is an icon button when the icon says it (its name is the tooltip), else a
+//   dense text button.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, InfoHint, Toggle } from "components.slint";
-import { IconName } from "base/types.slint";
+import { InfoHint, Toggle } from "components.slint";
 
 // An on/off setting: name (and an info hint) at the left, the switch at the right edge.
 export component ToggleRow inherits HorizontalLayout {
@@ -44,46 +42,4 @@ export component ToggleRow inherits HorizontalLayout {
             toggled(on) => { root.toggled(on); }
         }
     }
-}
-
-// Two equal dense text buttons side by side, each with its icon in front. A second
-// button left empty keeps the first at half the width. `checked` shows a button that
-// stays on (Flip, Bold).
-export component ActionPair inherits HorizontalLayout {
-    in property <string> first;
-    in property <string> first-name;
-    in property <IconName> first-lead;
-    in property <bool> first-checked;
-    in property <bool> first-enabled: true;
-    in property <string> second;
-    in property <string> second-name;
-    in property <IconName> second-lead;
-    in property <bool> second-checked;
-    in property <bool> second-enabled: true;
-    callback first-clicked();
-    callback second-clicked();
-    spacing: Tokens.size-field-gap;
-    Button {
-        horizontal-stretch: 1;
-        preferred-width: 0;
-        dense: true;
-        text: root.first;
-        lead: root.first-lead;
-        checked: root.first-checked;
-        enabled: root.first-enabled;
-        accessible-name: root.first-name != "" ? root.first-name : root.first;
-        clicked => { root.first-clicked(); }
-    }
-    if root.second != "": Button {
-        horizontal-stretch: 1;
-        preferred-width: 0;
-        dense: true;
-        text: root.second;
-        lead: root.second-lead;
-        checked: root.second-checked;
-        enabled: root.second-enabled;
-        accessible-name: root.second-name != "" ? root.second-name : root.second;
-        clicked => { root.second-clicked(); }
-    }
-    if root.second == "": Rectangle { horizontal-stretch: 1; preferred-width: 0; }
 }
