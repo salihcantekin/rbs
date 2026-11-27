@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
+use crate::feedback::EncoderFeedback;
 use crate::output_cut::{CutGate, Gated, NoCut, OutputCut, PacketGate};
 use rbs_core::media::{
     ContainerId, EncodedPacket, MuxChunk, StreamDescriptor, StreamIndex, StreamParams,
@@ -59,8 +60,15 @@ pub struct OutputNodeStats {
     pub mux_drops: AtomicU64,
     /// Largest backlog seen.
     pub backlog_peak: AtomicU64,
-    /// `KeyframeRequested` events from the transport (not forwarded yet).
+    /// `KeyframeRequested` events from the transport.
     pub keyframe_requests: AtomicU64,
+    /// Keyframe requests forwarded to the encoder (an output that owns its encoder
+    /// chain, at most one per second; ADR-0139 decision 8).
+    pub keyframes_forwarded: AtomicU64,
+    /// `BitrateHint` events from the transport.
+    pub bitrate_hints: AtomicU64,
+    /// Bitrate changes the output's limiter sent to the encoder (ADR-0139 decision 9).
+    pub bitrate_steps: AtomicU64,
     /// `Connected` events: the transport reached its destination (a file opened, a
     /// stream published), counting every reconnection.
     pub connects: AtomicU64,
@@ -98,6 +106,9 @@ impl Default for OutputNodeStats {
             mux_drops: AtomicU64::new(0),
             backlog_peak: AtomicU64::new(0),
             keyframe_requests: AtomicU64::new(0),
+            keyframes_forwarded: AtomicU64::new(0),
+            bitrate_hints: AtomicU64::new(0),
+            bitrate_steps: AtomicU64::new(0),
             connects: AtomicU64::new(0),
             reconnect_attempts: AtomicU64::new(0),
             connected: AtomicBool::new(false),
@@ -343,6 +354,9 @@ pub struct OutputNode<S: SpanPolicy = NoSpan, G: PacketGate = NoCut> {
     /// Set by the owner before it removes the node without a drain (ADR-0127
     /// decision 5); read once, in `release`.
     abandon: Arc<AtomicBool>,
+    /// Feedback to the encoder this output owns; read only when the transport sends a
+    /// `KeyframeRequested` or `BitrateHint` event, never per packet.
+    feedback: Option<Box<EncoderFeedback>>,
 }
 
 impl OutputNode {
@@ -382,6 +396,7 @@ impl OutputNode {
             chunks: Vec::new(),
             events: Vec::new(),
             abandon: Arc::default(),
+            feedback: None,
         }
     }
 
@@ -435,6 +450,7 @@ impl<S: SpanPolicy, G: PacketGate> OutputNode<S, G> {
             gate,
             stats: self.stats,
             abandon: self.abandon,
+            feedback: self.feedback,
         }
     }
 }
@@ -466,6 +482,14 @@ impl<S: SpanPolicy, G: PacketGate> OutputNode<S, G> {
     /// How long `release` may block delivering the tail and closing the transport.
     pub fn with_finish_timeout(mut self, timeout: Duration) -> Self {
         self.finish_timeout = timeout;
+        self
+    }
+
+    /// Sends the transport's keyframe requests and bitrate hints to the encoder this
+    /// output owns (ADR-0139 decisions 8 and 9). Only for an output whose encoder chain
+    /// no other output shares (ADR-0047 decision 6, ADR-0127 decision 4).
+    pub fn with_encoder_feedback(mut self, feedback: EncoderFeedback) -> Self {
+        self.feedback = Some(Box::new(feedback));
         self
     }
 
@@ -808,6 +832,7 @@ impl<S: SpanPolicy, G: PacketGate, X: Runtime> Node<X> for OutputNode<S, G> {
     }
 
     fn process(&mut self, ctx: &mut ProcessCtx<'_, X>) -> Result<(), NodeError> {
+        let now = ctx.tick().time;
         let inputs = ctx.inputs();
         self.drain_backlog()?;
         self.gate.tick();
@@ -827,7 +852,22 @@ impl<S: SpanPolicy, G: PacketGate, X: Runtime> Node<X> for OutputNode<S, G> {
         let mut disconnected = None;
         for (i, event) in self.events.iter().enumerate() {
             match event {
-                TransportEvent::KeyframeRequested => add(&self.stats.keyframe_requests, 1),
+                TransportEvent::KeyframeRequested => {
+                    add(&self.stats.keyframe_requests, 1);
+                    if let Some(f) = self.feedback.as_mut()
+                        && f.on_event(event, now).keyframe
+                    {
+                        add(&self.stats.keyframes_forwarded, 1);
+                    }
+                }
+                TransportEvent::BitrateHint { .. } => {
+                    add(&self.stats.bitrate_hints, 1);
+                    if let Some(f) = self.feedback.as_mut()
+                        && f.on_event(event, now).bitrate.is_some()
+                    {
+                        add(&self.stats.bitrate_steps, 1);
+                    }
+                }
                 TransportEvent::Connected => {
                     add(&self.stats.connects, 1);
                     self.stats.connected.store(true, Ordering::Relaxed);

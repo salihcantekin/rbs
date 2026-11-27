@@ -27,6 +27,7 @@
 pub mod capture;
 pub mod encode;
 pub mod export;
+pub mod feedback;
 pub mod image_track;
 pub mod media;
 pub mod output;
@@ -47,6 +48,7 @@ pub use export::{
     ExportEnd, ExportHold, LeaseOwners, NativeExport, VIDEO_EXPORT_NODE_TYPE, VideoExportNode,
     black_frame, export_preference, video_export_descriptor, video_export_hold_descriptor,
 };
+pub use feedback::{BitrateLimiter, BitrateTarget, EncoderFeedback};
 pub use image_track::{
     IMAGE_TRACK_NODE_TYPE, ImageTrackNode, ImageTrackStats, MAX_IMAGES_PER_TRACK,
     MIN_IMAGE_INTERVAL, image_track_descriptor,
