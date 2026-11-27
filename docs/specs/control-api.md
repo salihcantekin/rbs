@@ -60,7 +60,7 @@ WebSocket close codes: 1001 when the server stops, 1009 for a message before aut
 
 The same JSON-RPC messages over a local stream (`rbs-api-ipc`):
 
-- **Endpoint.** Linux: `$XDG_RUNTIME_DIR/rbs/control.sock`, or `/tmp/rbs-<uid>/control.sock` without it; macOS: `$TMPDIR/rbs/control.sock`; Windows: the named pipe `\\.\pipe\rbs-control-<user SID>`. The Unix directory is made with mode 0700 and refused unless it is a real directory (not a symbolic link) owned by the current user that nobody else can enter; the socket is mode 0600. While serving, the server holds an advisory lock on `control.sock.lock` beside it: a second server is refused before it touches the socket file, and under the lock a socket file left by a process that ended is replaced. The pipe is created with a protected DACL that grants access to the current user's SID only, `PIPE_REJECT_REMOTE_CLIENTS`, and `FILE_FLAG_FIRST_PIPE_INSTANCE` for its first instance (a name someone else holds stops the server); one instance always waits, so the name stays the server's.
+- **Endpoint.** Linux: `$XDG_RUNTIME_DIR/rbs/control.sock`; without it `/run/user/<uid>/rbs/control.sock` when that is a directory of the current user, else `/tmp/rbs-<uid>/control.sock`; macOS: `<per-user temporary folder>/rbs/control.sock`, the folder read from the OS (`confstr(_CS_DARWIN_USER_TEMP_DIR)`, the folder a normal session's `TMPDIR` names), with `$TMPDIR` and then `/tmp/rbs-<uid>` only when the OS gives none. The server and every client must find the same endpoint whatever environment they were started with: MCP hosts start `rbs-mcp` with only a few variables (`HOME`, `PATH`, ...), and sandboxes or terminals may point `TMPDIR` elsewhere; Windows: the named pipe `\\.\pipe\rbs-control-<user SID>`. A client and a server of different versions can pick different Unix paths in two rare cases (Linux without `XDG_RUNTIME_DIR` but with `/run/user/<uid>`; macOS with a `TMPDIR` that differs from the OS folder); the client then reports "not running" and names the path it looked at. Server and client run from the same installation, one RBS at a time (ADR-0181). The Unix directory is made with mode 0700 and refused unless it is a real directory (not a symbolic link) owned by the current user that nobody else can enter; the socket is mode 0600. While serving, the server holds an advisory lock on `control.sock.lock` beside it: a second server is refused before it touches the socket file, and under the lock a socket file left by a process that ended is replaced. The pipe is created with a protected DACL that grants access to the current user's SID only, `PIPE_REJECT_REMOTE_CLIENTS`, and `FILE_FLAG_FIRST_PIPE_INSTANCE` for its first instance (a name someone else holds stops the server); one instance always waits, so the name stays the server's.
 - **Peers.** The server asks the OS who the peer is (`SO_PEERCRED` on Linux, `getpeereid` on macOS and the BSDs; on Windows the user of the connection's own token, read while briefly impersonating the client at identification level, not looked up by process id) and closes the connection of any other user before it reaches the API. Every accepted peer is a same-user IPC peer, which `session.hello` authenticates with all scopes. The client checks the server the same way (Windows: the token user of the server process, found by `GetNamedPipeServerProcessId`; it opens the pipe with `SECURITY_IDENTIFICATION`, so the server can read its identity but not act as it). A Windows client whose pipe instances are all busy for a moment waits for one (`WaitNamedPipeW`) within its connect timeout and sends nothing to a server of another user.
 - **Framing.** An accepted connection starts with the server's 4-byte preamble `RBS` `0x01` (framing version 1). Then each message in either direction is a 4-byte big-endian header, bit 31 clear and the low 31 bits the length, followed by that many bytes of UTF-8 text. A header with bit 31 set is a close frame: a big-endian `u16` code (the WebSocket close codes above; 1000 from a client closing normally) and up to 123 bytes of reason text. A connection refused at accept (connection cap) gets a close frame with 4004 instead of the preamble. A message over the connection's limit is skipped as it arrives and reported as `Oversized`; the connection keeps working. A message that is not UTF-8 ends the connection.
 - **Threads.** One accept thread while serving, and a reader and a writer thread per connection, each blocked in the OS until there is work: no periodic wake-up. The reader stops reading a connection that used its inbox quota until the API thread drains it; output per connection is bounded (1 MiB, then `Full`, `Writable` when half has drained). A write that makes no progress for 10 s ends the connection, so a peer that stops reading cannot hold its slot. When the server closes a connection, what is queued and then the close frame are written, also while its reading is paused. On stop, the queued output is dropped, every connection gets its close frame (1001), and after one grace period for all of them (1 s) the streams are cut. The accept thread waits on the listener and a wake-up of its own, so stopping does not depend on the socket file.
@@ -667,7 +667,7 @@ Source rows carry `kind` `image` and `color` for those picture sources. A client
 - **State.** `record.state` and `record.canvas_state` add `paused` (bool), `paused_ms` and `recorded_ms`; `state` stays `recording` while paused. `paused` is set from the call on, including the ticks before the pause begins. `paused_ms` (time left out so far) and `recorded_ms` (time since the start less `paused_ms`) are as of the change; they are published on each pause and resume, never per frame, so a client counts on from them while not paused.
 - **Older clients and servers.** A 1.60 client ignores the new fields; a 1.60 server answers the methods `method_not_found` and omits the fields, which read as not paused.
 
-### Protocol 1.111: defer nested scenes (ADR-0188)
+### Protocol 1.111: scenes cannot contain scenes (ADR-0188)
 
 The owner approved this behavioural change for older clients as an exception
 to P9 and the major-version rule. A server before 1.111 retains its own scene
@@ -697,21 +697,39 @@ to `invalid_params` with the message below.
   group Scroll never composes a nested scene or a nested group. The picture and
   all-or-none preflight rules of 1.111 otherwise remain.
 
-### Planned protocol 1.112: address source placements (ADR-0189)
+### Protocol 1.112: inactive scenes (ADR-0195)
+
+- **`scene.list`** rows gain `active` (`false` only when inactive; absent means
+  active). A server before 1.112 lists every scene as active.
+- **`scene.set_active {scene, active}`** (`Edit`, one undo step; a no-op when
+  unchanged). Making a scene inactive is refused with `conflict` while it is on
+  air or about to be: the program or preview of any canvas as the host resolves
+  it, a held switch, or any scene while a transition runs. Going active is never
+  refused. `scene.changed` follows every change, undo and redo included.
+- **`scene.step {step: 1|-1}`** moves to the next or previous *active* scene,
+  wrapping, from the program scene (the preview scene in studio mode, where it
+  selects the preview instead of switching). `conflict` with no other active scene.
+- **`scene.position {n}`** goes to the scene in slot `n` (1-based) of the full
+  scene list: `not_found` past the end, `conflict` when it is inactive.
+- `scene.switch`, `scene.select` and `canvas.set_preview` still accept any scene.
+- An undo or redo that would make an on-air scene inactive is refused with
+  `undo_conflict`, and the history is left untouched.
+
+### Planned protocol 1.113: address source placements (ADR-0189)
 
 **Proposed; not implemented.** ADR-0189 remains Proposed. The owner has
 approved independent placement selection and the `global.add` conflict below,
 but not the full contract. On 2026-11-25, the owner decided that a shared
 capture-region change re-aspects only the selected placement while source
-pixels and region remain shared. 1.112 is the next minor after 1.111 in
-this tree; recheck it before implementation. Do not advertise 1.110 until its
+pixels and region remain shared. 1.113 is the next minor after 1.112 in
+this tree; recheck it before implementation. Do not advertise 1.113 until its
 contract is implemented.
 
 - **Placement selector.** The following requests gain optional `item` (an
   `ItemId`) while retaining their existing required fields, other optional
   fields, response shapes and effects:
 
-  | Method | 1.110 request shape |
+  | Method | 1.111 request shape |
   | --- | --- |
   | `item.set_box` | `{source, item?, position, size, gesture?, seq?, canvas?}` |
   | `source.duplicate` | `{source, scene?, item?}` |
@@ -822,16 +840,16 @@ contract is implemented.
   retains ADR-0065 behavior. The refusal applies to clients of every version,
   as the owner's explicit exception to the major-version compatibility rule.
 
-- **Older servers.** A server before 1.110 does not support these selectors.
+- **Older servers.** A server before 1.111 does not support these selectors.
   A client checks `api.describe` before sending them. If unsupported, the UI
   disables or refuses the placement-scoped action with a clear reason and
   never retries it without `item`; it may continue to use an older request only
   for a genuinely source-scoped action. Existing clients that omit `item` keep
   their prior behavior, except for the approved `global.add` refusal.
   `method_not_found` remains the response to a new method not known by a
-  server, but 1.110 adds no methods.
+  server, but 1.111 adds no methods.
 
-> The group Properties and nested-scene deferral work was drafted as protocol 1.108 and 1.109 (the numbers the ADRs use). It shipped together as **1.111**, because 1.108 to 1.110 went to the typed catalog (ADR-0196).
+> The group Properties and nested-scene removal work was drafted as protocol 1.108 and 1.109 (the numbers the ADRs use). It shipped together as **1.111**, because 1.108 to 1.110 went to the typed catalog (ADR-0196).
 
 ### Protocol 1.111: group Properties (ADR-0184, ADR-0185)
 
@@ -840,7 +858,7 @@ the group API, scene, document, compositor and UI contracts). The group
 Properties operations do not change `item.*`. The ADR-0186 exceptions below
 also change existing group and companion-add commands for older clients.
 ADR-0187 changes run identity; its session-only settings generation is not a
-public run id. The nested-scene deferral (ADR-0188) replaces the nested-scene portions of
+public run id. The nested-scene removal (ADR-0188) replaces the nested-scene portions of
 this contract.
 **As built (2026-11-25).** The studio, not the host, issues settings
 generations and run ids; a collection switch retires them and a failed switch

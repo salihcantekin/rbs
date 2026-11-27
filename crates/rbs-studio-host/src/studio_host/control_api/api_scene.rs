@@ -24,6 +24,31 @@ impl ApiTarget<'_> {
                 }
                 Ok(Response::Done(Empty {}))
             }
+            C::SceneSetActive(p) => {
+                let changed = host
+                    .set_scene_active(SceneId::from_raw(p.scene), p.active)
+                    .map_err(|e| refused(&e))?;
+                if changed {
+                    host.apply(notify);
+                }
+                Ok(Response::Done(Empty {}))
+            }
+            C::SceneStep(p) => {
+                let changed = host
+                    .navigate_scene(Some(p.step), None)
+                    .map_err(|e| refused(&e));
+                host.apply(notify);
+                changed?;
+                Ok(Response::Done(Empty {}))
+            }
+            C::ScenePosition(p) => {
+                let changed = host
+                    .navigate_scene(None, Some(p.n as usize))
+                    .map_err(|e| refused(&e));
+                host.apply(notify);
+                changed?;
+                Ok(Response::Done(Empty {}))
+            }
             C::SceneDuplicate(p) => host.api_scene_duplicate(p, notify),
             C::SourceDuplicate(p) => host.api_source_duplicate(p, notify),
             C::SourceReset(p) => host.api_source_reset(p, notify),

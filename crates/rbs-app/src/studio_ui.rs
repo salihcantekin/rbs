@@ -105,6 +105,7 @@ mod source_calls;
 mod target_calls;
 mod text_calls;
 pub use library_ops::EntryWrite;
+mod list_filter;
 mod live_ticks;
 pub(crate) mod loudness;
 mod meter_values;
@@ -321,6 +322,10 @@ pub struct StudioUi {
     sources: Rc<VecModel<SourceData>>,
     /// The scenes and sources as the host last sent them (ADR-0059).
     scene_list: Option<SceneList>,
+    /// The list filters of the collection in use (ADR-0195) and the collection they
+    /// were read for.
+    filters: rbs_user_data::PanelFilters,
+    filters_for: Option<EntryId>,
     scenes: Rc<VecModel<SceneData>>,
     /// The sources of other scenes the scene on air does not have (Add source).
     existing: Vec<(SourceId, String)>,
@@ -744,6 +749,8 @@ impl StudioUi {
             rows: Vec::new(),
             sources: Rc::new(VecModel::default()),
             scene_list: None,
+            filters: rbs_user_data::PanelFilters::default(),
+            filters_for: None,
             scenes: Rc::new(VecModel::default()),
             existing: Vec::new(),
             add_picker: None,
@@ -966,6 +973,21 @@ impl StudioUi {
         g.set_collections(ModelRc::from(self.collection_rows.clone()));
     }
 
+    /// The list filters of the Scenes and Sources lists (ADR-0195).
+    fn push_list_filters(&self, g: &Studio<'_>) {
+        g.set_show_inactive_scenes(self.filters.show_inactive_scenes);
+        g.set_show_hidden_sources(self.filters.show_hidden_sources);
+        g.set_source_category_shown(slint::ModelRc::new(slint::VecModel::from(
+            self.source_category_shown(),
+        )));
+        g.set_sources_filtered(
+            !self.filters.show_hidden_sources || !self.filters.hidden_source_categories.is_empty(),
+        );
+        g.set_source_category_present(slint::ModelRc::new(slint::VecModel::from(
+            list_filter::categories_present(&self.rows, &self.filters),
+        )));
+    }
+
     /// Pushes the scalar state into a window's `Studio` global.
     pub fn push(&self, g: &Studio<'_>, states: PictureStates, picture_panel: &str) {
         let preview_state = states.program;
@@ -1030,6 +1052,7 @@ impl StudioUi {
         g.set_browser_props(self.browser_data(shown));
         g.set_profile_name(self.user.profile_name.as_str().into());
         g.set_collection_name(self.user.collection_name.as_str().into());
+        self.push_list_filters(g);
         g.set_switching(self.switching.is_some());
         g.set_rec_state(self.rec_state);
         g.set_rec_separate_names(self.separate_names.as_str().into());
@@ -2367,6 +2390,15 @@ impl StudioUi {
     pub fn levels_scene(&self) -> Option<i32> {
         self.scene_levels()?;
         self.scene_list.as_ref().map(|l| l.program.get() as i32)
+    }
+
+    /// Whether the scene is active (`scene.active.toggle`, ADR-0195).
+    pub fn scene_active(&self, scene: i32) -> bool {
+        self.scene_list.as_ref().is_some_and(|l| {
+            l.scenes
+                .iter()
+                .any(|s| s.id.get() as i32 == scene && s.active)
+        })
     }
 
     /// Whether the scene keeps its own levels (`scene.audio.own_levels.toggle`).
@@ -5337,26 +5369,6 @@ impl StudioUi {
         Some((i > 0, i + 1 < n))
     }
 
-    /// The id of the scene at 1-based position `n` in panel order.
-    pub fn scene_at(&self, n: usize) -> Option<i32> {
-        let l = self.scene_list.as_ref()?;
-        let s = l.scenes.get(n.checked_sub(1)?)?;
-        Some(s.id.get() as i32)
-    }
-
-    /// The id of the scene `step` places after (or, negative, before) the one on
-    /// air, wrapping; `None` with fewer than two scenes.
-    pub fn scene_step(&self, step: isize) -> Option<i32> {
-        let l = self.scene_list.as_ref()?;
-        let len = l.scenes.len();
-        if len < 2 {
-            return None;
-        }
-        let at = l.scenes.iter().position(|s| s.id == l.program).unwrap_or(0);
-        let next = (at as isize + step).rem_euclid(len as isize) as usize;
-        Some(l.scenes.get(next)?.id.get() as i32)
-    }
-
     /// Refused, in words, while a recording or stream runs: `doing` is what would
     /// change ("switching output profiles").
     fn idle_for(&self, doing: &str) -> Result<(), String> {
@@ -5505,6 +5517,124 @@ impl StudioUi {
             return Err("The studio is still restarting.".into());
         }
         Ok(())
+    }
+
+    /// Reads the list filters of the collection in use, once per collection.
+    fn load_filters_once(&mut self) {
+        let id = &self.user.collection_id;
+        if self.filters_for.as_ref() == Some(id) {
+            return;
+        }
+        let (filters, _) = self.user.data().view_state(id);
+        self.filters = filters;
+        self.filters_for = Some(id.clone());
+    }
+
+    /// Shows or hides the inactive scenes in the list and keeps the choice.
+    pub fn set_show_inactive_scenes(&mut self, show: bool) {
+        if self.filters.show_inactive_scenes == show {
+            return;
+        }
+        self.filters.show_inactive_scenes = show;
+        self.save_filters();
+        if let Some(list) = self.scene_list.take() {
+            let rows = self.scene_rows(&list);
+            set_rows(&self.scenes, rows);
+            self.scene_list = Some(list);
+        }
+    }
+
+    /// Shows or hides one source category (an index of `SOURCE_CATEGORIES`).
+    pub fn set_source_category(&mut self, index: i32, shown: bool) {
+        let Some(id) = usize::try_from(index)
+            .ok()
+            .and_then(|i| rbs_sources::SOURCE_CATEGORIES.get(i))
+        else {
+            return;
+        };
+        let hidden = &mut self.filters.hidden_source_categories;
+        hidden.retain(|c| c != id);
+        if !shown {
+            hidden.push((*id).to_owned());
+        }
+        self.source_filter_changed();
+    }
+
+    /// The All and None shortcuts of the category list.
+    pub fn set_all_source_categories(&mut self, shown: bool) {
+        self.filters.hidden_source_categories = if shown {
+            Vec::new()
+        } else {
+            rbs_sources::SOURCE_CATEGORIES
+                .iter()
+                .map(|c| (*c).to_owned())
+                .collect()
+        };
+        self.source_filter_changed();
+    }
+
+    /// Shows or hides the hidden sources in the list.
+    pub fn set_show_hidden_sources(&mut self, show: bool) {
+        self.filters.show_hidden_sources = show;
+        self.source_filter_changed();
+    }
+
+    /// Which categories the list shows, in `SOURCE_CATEGORIES` order.
+    pub fn source_category_shown(&self) -> Vec<bool> {
+        rbs_sources::SOURCE_CATEGORIES
+            .iter()
+            .map(|c| !self.filters.hidden_source_categories.iter().any(|h| h == c))
+            .collect()
+    }
+
+    fn source_filter_changed(&mut self) {
+        self.save_filters();
+        let out =
+            list_filter::filtered_out(&self.rows, &self.filters, &self.picked.ids(self.selected));
+        let mut data: Vec<SourceData> = self.sources.iter().collect();
+        for (d, out) in data.iter_mut().zip(out) {
+            d.filtered_out = out;
+        }
+        set_rows(&self.sources, data);
+    }
+
+    fn save_filters(&self) {
+        // Written on the writer thread; a lost write only forgets the choice.
+        drop(self.user.set_view_state(&self.filters));
+    }
+
+    /// The Scenes list: the whole list, less the inactive scenes while they are
+    /// hidden. The program and preview scenes stay listed. A scene's number is its
+    /// place in the whole list (`scene.position`).
+    fn scene_rows(&self, list: &SceneList) -> Vec<SceneData> {
+        let shown = |s: &rbs_app::studio_host::SceneRow| {
+            self.filters.show_inactive_scenes
+                || s.active
+                || s.id == list.program
+                || Some(s.id) == list.preview
+        };
+        list.scenes
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| shown(s))
+            .map(|(i, s)| SceneData {
+                id: s.id.get() as i32,
+                name: s.name.as_str().into(),
+                live: s.id == list.program,
+                preview: Some(s.id) == list.preview,
+                number: i as i32 + 1,
+                own_levels: s.own_audio,
+                active: s.active,
+                transition_kind: s
+                    .transition_in
+                    .and_then(|t| t.kind)
+                    .map_or(-1, transition_index),
+                transition_ms: s
+                    .transition_in
+                    .and_then(|t| t.duration_ms)
+                    .map_or(-1, |ms| ms as i32),
+            })
+            .collect()
     }
 
     /// Drops the Scenes, Sources and Mixer lists at once so a collection switch or
@@ -5813,27 +5943,8 @@ impl StudioUi {
                     looking: list.stinger_looking,
                     alpha_unsupported: list.stinger_alpha_unsupported,
                 };
-                let data: Vec<SceneData> = list
-                    .scenes
-                    .iter()
-                    .enumerate()
-                    .map(|(i, s)| SceneData {
-                        id: s.id.get() as i32,
-                        name: s.name.as_str().into(),
-                        live: s.id == list.program,
-                        preview: Some(s.id) == list.preview,
-                        number: i as i32 + 1,
-                        own_levels: s.own_audio,
-                        transition_kind: s
-                            .transition_in
-                            .and_then(|t| t.kind)
-                            .map_or(-1, transition_index),
-                        transition_ms: s
-                            .transition_in
-                            .and_then(|t| t.duration_ms)
-                            .map_or(-1, |ms| ms as i32),
-                    })
-                    .collect();
+                self.load_filters_once();
+                let data = self.scene_rows(&list);
                 set_rows(&self.scenes, data);
                 self.hold_scenes = list
                     .hold_scenes
@@ -6245,6 +6356,7 @@ impl StudioUi {
     }
 
     fn set_rows(&mut self, rows: Vec<SourceRow>) {
+        self.load_filters_once();
         let rows = sound_nest::order(rows, sound_nest::key);
         // Layers move within their group: the global sources, then the scene's.
         let pictures = |global: bool| -> Vec<usize> {
@@ -6472,6 +6584,10 @@ impl StudioUi {
         }
         let keys: Vec<sound_nest::Key> = rows.iter().map(sound_nest::key).collect();
         self.mark_rows(&mut data, &keys, &rows);
+        let out = list_filter::filtered_out(&rows, &self.filters, &self.picked.ids(self.selected));
+        for (d, out) in data.iter_mut().zip(out) {
+            d.filtered_out = out;
+        }
         set_rows(&self.sources, data);
         self.text_settings = rows
             .iter()
@@ -9320,6 +9436,7 @@ pub(crate) mod tests {
             preview: false,
             number: 1,
             own_levels: false,
+            active: true,
             transition_kind: -1,
             transition_ms: -1,
         }]);

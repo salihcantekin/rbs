@@ -1062,6 +1062,9 @@ pub struct Scene {
     /// The scene's groups (ADR-0182), in creation order. Their members are items of
     /// this scene whose `group` names the group.
     pub groups: Vec<Group>,
+    /// Whether next, previous and slot navigation may reach it (ADR-0195). An inactive
+    /// scene still works when named by id.
+    pub active: bool,
 }
 
 /// A group of two or more contiguous items of one scene (ADR-0182). The members are
@@ -1100,6 +1103,7 @@ impl Scene {
             audio: None,
             transition_in: None,
             groups: Vec::new(),
+            active: true,
         }
     }
 

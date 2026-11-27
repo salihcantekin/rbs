@@ -57,6 +57,8 @@ pub enum EditKind {
     RemoveScene,
     /// A scene was renamed (the name is the old one).
     RenameScene,
+    /// A scene was made active or inactive (ADR-0195; the name is the scene's).
+    SceneActive,
     /// A source's filters changed: added, removed, moved, turned on or off, or their
     /// settings (ADR-0062).
     Filter,

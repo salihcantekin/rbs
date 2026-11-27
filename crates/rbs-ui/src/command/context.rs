@@ -139,6 +139,7 @@ pub const CONTEXT_LAYOUT: &[(Context, &[&str])] = &[
             "scene.rename",
             "scene.duplicate",
             "scene.duplicate?sources=copied",
+            "scene.active.toggle",
             "scene.audio.own_levels.toggle",
             "ui.scene.transition",
             "|",

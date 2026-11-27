@@ -1266,6 +1266,22 @@ pub const ENTRIES: &[Entry] = &[
         fixed: &[],
     },
     Entry {
+        id: "scene.active.toggle",
+        title: "Active",
+        tooltip: "An inactive scene is skipped by Next, Previous and the number keys; it can still be chosen",
+        icon: Some("power"),
+        shortcut: None,
+        menu: Menu::Scene,
+        // ADR-0195: both halves are `scene.set_active`, the window passes `active`.
+        kind: Kind::Toggle {
+            on: "scene.set_active",
+            off: "scene.set_active",
+        },
+        params: &[target("scene"), COLLECTION],
+        checkable: true,
+        fixed: &[],
+    },
+    Entry {
         id: "scene.audio.own_levels.toggle",
         title: "Own levels",
         tooltip: "Let the scene keep its own volumes and mutes; off goes back to the sources' own",

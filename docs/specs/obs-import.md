@@ -150,6 +150,7 @@ ADR-0131 decision 7 is the first mapping table. Each mapper keeps its own row in
 | `ChromeNotDisplay` | cannot arise: chrome is never imported |
 | `StingerPlaced` | cannot arise: no stinger is imported, so the transition never names a source (ADR-0140 decision 1) |
 | `UnknownGroup`, `GroupTooSmall`, `GroupNotContiguous`, `GroupScope` | cannot arise: a group is made only from two or more items of one scene that sit next to each other; a group with fewer than two imported items becomes separate items and is reported (ADR-0182 decision 13) |
+| `NoOtherActiveScene`, `SceneInactive` | cannot arise: the import makes no scene inactive and never removes or deactivates a scene (ADR-0195) |
 | `UnknownBus`, `TooManyBuses` | cannot arise: the import adds no bus (ADR-0170); OBS track flags are mapped later |
 
 A test (`crates/rbs-import-obs/tests/scene_errors.rs`) reads the variants of `SceneError` from its source and fails when one has no row here, so a new variant fails until it has an action. `SceneError` is `#[non_exhaustive]`, so an exhaustive `match` outside `rbs-scene` is not possible.

@@ -195,11 +195,12 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0185](0185-scroll-a-group-as-one-picture.md) | Scroll a group as one picture | Accepted (decision 1 superseded in part by ADR-0188; decision 3 superseded in part by ADR-0187; decision 5 superseded in part by ADR-0193) |
 | [0186](0186-do-not-regroup-grouped-items.md) | Do not regroup items already in a group | Accepted |
 | [0187](0187-version-group-scroll-settings.md) | Version group Scroll settings for run identity | Accepted |
-| [0188](0188-defer-new-nested-scenes.md) | Defer new nested scenes | Accepted |
+| [0188](0188-defer-new-nested-scenes.md) | Scenes cannot contain scenes | Accepted |
 | [0189](0189-address-source-placements.md) | Address source placements independently | Proposed |
 | [0190](0190-prepare-group-resources-on-executors.md) | Prepare group resources on their owning executor | Superseded by ADR-0193 |
 | [0191](0191-incremental-node-release-for-quiesce.md) | Bounded control-thread service and quiesce | Superseded by ADR-0193 |
 | [0192](0192-transactional-group-show.md) | Transactional group Show | Superseded by ADR-0193 |
 | [0193](0193-simple-group-show-and-scroll-resources.md) | Simple group Show and group Scroll resources (supersedes ADR-0190, ADR-0191, ADR-0192; ADR-0185 decision 5 in part) | Accepted |
 | [0194](0194-member-row-selects-the-member.md) | A member row in the Sources list selects that member (supersedes ADR-0182 decision 9 in part) | Accepted |
+| [0195](0195-inactive-scenes-and-list-filters.md) | Inactive scenes and filters for the Scenes and Sources lists | Proposed |
 | [0196](0196-load-control-api-schemas-in-parts.md) | Control API schemas load in parts: `api.describe` is an index with schemas on request, one shard per namespace parsed on first use, `rbs-mcp` lists a small fixed tool set by default | Accepted |

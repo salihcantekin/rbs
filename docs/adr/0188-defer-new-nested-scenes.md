@@ -1,4 +1,4 @@
-# ADR-0188: Defer new nested scenes
+# ADR-0188: Scenes cannot contain scenes
 
 - Status: Accepted
 - Date: 2026-11-25
@@ -10,7 +10,7 @@
 The scene model supports one scene as an item of another, including scenes
 imported from OBS. Group Scroll would need to compose such scenes recursively
 ([ADR-0185](0185-scroll-a-group-as-one-picture.md)). The owner said there are no
-existing nested scenes to preserve and chose to defer nesting and that extra
+existing nested scenes to preserve and chose to drop nesting and that extra
 group Scroll complexity.
 
 ## Decision
@@ -119,3 +119,10 @@ Owner approval: Salih, 2026-11-25, after the independent review.
 Independent AI contract review, 2026-11-25: approved after correcting the
 control API's copy and on-air wording and the media-graph compositor description.
 The implementation must still satisfy the reviewed contracts and their tests.
+
+Owner clarification, 2026-11-27 (correction in place, decision unchanged): this ADR
+was drafted as a deferral. The owner confirmed that was a misunderstanding: RBS
+does not want scenes inside scenes at all, now or later. The decisions above
+already refuse every nested-scene path, so they stand. Only the wording changes:
+"defer" and "deferred" mean "not supported". The file keeps its name so links
+stay valid. A future nested-scene feature would need a new ADR.

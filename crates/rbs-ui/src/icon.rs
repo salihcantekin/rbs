@@ -409,6 +409,21 @@ pub const ICONS: &[Icon] = &[
         "M 5 3 L 5 13 M 5 3 L 8.5 3 C 10.2 3 11 4 11 5.25 C 11 6.5 10.2 7.5 8.5 7.5 L 5 7.5 M 8.5 7.5 C 10.5 7.5 11.5 8.5 11.5 10.25 C 11.5 12 10.5 13 8.5 13 L 5 13",
     ),
     line("italic", "M 7 3 L 11 3 M 5 13 L 9 13 M 9.5 3 L 6.5 13"),
+    // Lucide-style power symbol, 16 box: a scene's Active / Inactive switch (ADR-0195).
+    line(
+        "power",
+        "M 8 1.33 L 8 8 M 12.59 4.13 C 14.09 5.91 14.42 8.41 13.44 10.53 C 12.46 12.64 10.34 14 8 14 C 5.67 14 3.55 12.65 2.56 10.53 C 1.58 8.42 1.91 5.92 3.41 4.14",
+    ),
+    // A funnel: the list filter of the Scenes and Sources panels (ADR-0195).
+    line(
+        "filter",
+        "M 2.67 3.33 L 13.33 3.33 L 9.33 8.2 L 9.33 12.67 L 6.67 14 L 6.67 8.2 Z",
+    ),
+    // The same funnel filled: the list is filtered (ADR-0195).
+    fill(
+        "filter-active",
+        "M 2.67 3.33 L 13.33 3.33 L 9.33 8.2 L 9.33 12.67 L 6.67 14 L 6.67 8.2 Z",
+    ),
 ];
 
 /// The icon named `name`, if the set has it.

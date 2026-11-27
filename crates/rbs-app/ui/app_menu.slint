@@ -14,6 +14,9 @@ component CategoryRow inherits Rectangle {
     in property <string> text;
     in property <bool> selected;
     callback picked();
+    callback hovered();
+    property <bool> over: touch.has-hover;
+    changed over => { if self.over && !root.selected { root.hovered(); } }
     height: Tokens.size-control-md;
     border-radius: Tokens.radius-sm;
     background: selected ? Theme.accent : touch.has-hover ? Theme.surface-raised : transparent;
@@ -266,6 +269,8 @@ export component AppMenu inherits Rectangle {
                             text: c;
                             selected: i == root.category;
                             picked => { root.column = 0; root.pick-category(i); }
+                            // Hovering shows the menu: it only rebuilds the rows of an open menu.
+                            hovered => { root.column = 0; root.pick-category(i); }
                         }
                     }
                     if query.text == "": Rectangle { width: Tokens.size-border; background: Theme.border-subtle; }

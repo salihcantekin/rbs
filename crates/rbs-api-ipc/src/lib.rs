@@ -54,9 +54,11 @@ use windows as platform;
 pub struct Endpoint(pub PathBuf);
 
 impl Endpoint {
-    /// The current user's endpoint: on Linux `$XDG_RUNTIME_DIR/rbs/control.sock` (or
-    /// `/tmp/rbs-<uid>/control.sock` without it), on macOS
-    /// `$TMPDIR/rbs/control.sock`, on Windows `\\.\pipe\rbs-control-<user SID>`.
+    /// The current user's endpoint: on Linux `$XDG_RUNTIME_DIR/rbs/control.sock`, else
+    /// `/run/user/<uid>/rbs/control.sock`, else `/tmp/rbs-<uid>/control.sock`; on macOS
+    /// the per-user temporary folder from the OS (`confstr`), else `$TMPDIR`, else
+    /// `/tmp/rbs-<uid>`, then `rbs/control.sock`; on Windows
+    /// `\\.\pipe\rbs-control-<user SID>`.
     pub fn for_current_user() -> Result<Endpoint, String> {
         platform::default_endpoint().map(Endpoint)
     }

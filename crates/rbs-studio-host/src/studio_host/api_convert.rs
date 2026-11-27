@@ -545,6 +545,7 @@ pub(super) fn api_scenes(list: &SceneList) -> api::SceneList {
                 id: s.id.get(),
                 name: s.name.clone(),
                 own_audio: s.own_audio,
+                active: s.active,
                 transition_in: s.transition_in.map(|t| api::SceneTransition {
                     kind: t.kind.map(api_transition_kind),
                     duration_ms: t.duration_ms,

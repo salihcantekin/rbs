@@ -480,6 +480,7 @@ impl CommandState for Shown<'_> {
             "scene.duplicate"
             | "scene.rename"
             | "scene.audio.own_levels.toggle"
+            | "scene.active.toggle"
             | "ui.scene.transition" => {
                 self.running()?;
                 self.scene(id).map(|_| ())
@@ -660,16 +661,10 @@ impl CommandState for Shown<'_> {
             "scene.position" => {
                 self.running()?;
                 scene_position(id)
-                    .and_then(|n| s.scene_at(n))
                     .map(|_| ())
                     .ok_or_else(|| "No scene is at this position.".into())
             }
-            "scene.next" | "scene.previous" => {
-                self.running()?;
-                s.scene_step(1)
-                    .map(|_| ())
-                    .ok_or_else(|| "There is only one scene.".into())
-            }
+            "scene.next" | "scene.previous" => self.running(),
             "ui.panel.maximize" => match panel_of(id) {
                 Some(p) if self.workspace.is_open(&p) => Ok(()),
                 _ => Err("The panel is not open.".into()),
@@ -949,6 +944,7 @@ impl CommandState for Shown<'_> {
             "scene.audio.own_levels.toggle" => self
                 .scene(id)
                 .is_ok_and(|s| self.studio.scene_own_levels(s)),
+            "scene.active.toggle" => self.scene(id).is_ok_and(|s| self.studio.scene_active(s)),
             "source.mixer_hidden.toggle" => self.source(id).is_ok_and(|f| f.mixer_hidden),
             "source.monitor_solo.toggle" => self.source(id).is_ok_and(|f| f.soloed),
             "loudness.shown.toggle" => self.studio.loudness_shown(),
@@ -1770,6 +1766,10 @@ pub enum Run {
     AddVertical,
     /// Rename the scene with this id; without a name, ask for one in its row.
     RenameScene(i32, Option<String>),
+    /// Next (1) or previous (-1) active scene.
+    SceneStep(i32),
+    /// The active scene at this 1-based slot.
+    ScenePosition(u32),
     /// Opens the scene's "Transition into this scene" card (ADR-0135).
     SceneTransition(i32),
     /// Remove the scene with this id.
@@ -1824,6 +1824,7 @@ pub enum Run {
     /// A scene's Own levels on (`true`) or back to Shared levels, which asks first
     /// from a window (`scene.audio.own_levels.toggle`, ADR-0091).
     SceneOwnLevels(i32, bool),
+    SceneActive(i32, bool),
     /// Remove a scene's own level for a source (`scene.audio.reset_source`).
     ResetSceneLevel(i32, i32),
     /// Restart the loudness measurement (`loudness.reset`).
@@ -2059,9 +2060,9 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
         }
         "canvas.transition" => Run::Transition,
         "ui.transition.rehearse" => Run::Rehearse,
-        "scene.position" => Run::Scene(state.studio.scene_at(scene_position(&id)?)?),
-        "scene.next" => Run::Scene(state.studio.scene_step(1)?),
-        "scene.previous" => Run::Scene(state.studio.scene_step(-1)?),
+        "scene.position" => Run::ScenePosition(u32::try_from(scene_position(&id)?).ok()?),
+        "scene.next" => Run::SceneStep(1),
+        "scene.previous" => Run::SceneStep(-1),
         "scene.add" => Run::AddScene,
         "scene.duplicate" if id.param("sources") == Some("copied") => {
             Run::DuplicateSceneWithCopies(state.scene(&id).ok()?)
@@ -2128,6 +2129,7 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
         "source.monitor_solo.toggle" => Run::SourceSolo(state.source(&id).ok()?.id, !on),
         "loudness.shown.toggle" => Run::LoudnessShown(!on),
         "scene.audio.own_levels.toggle" => Run::SceneOwnLevels(state.scene(&id).ok()?, !on),
+        "scene.active.toggle" => Run::SceneActive(state.scene(&id).ok()?, !on),
         "scene.audio.reset_source" => {
             Run::ResetSceneLevel(state.scene(&id).ok()?, heard_source(&id)?)
         }

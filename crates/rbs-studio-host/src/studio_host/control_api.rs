@@ -155,6 +155,9 @@ impl ApiTarget<'_> {
             | C::SceneAdd(..) => self.answer_studio(command),
             C::SceneRemove(..)
             | C::SceneRename(..)
+            | C::SceneSetActive(..)
+            | C::SceneStep(..)
+            | C::ScenePosition(..)
             | C::SceneDuplicate(..)
             | C::SourceDuplicate(..)
             | C::SourceReset(..)

@@ -31,6 +31,8 @@ use ui_routing::PendingUi;
 
 /// The protocol version this server speaks.
 ///
+/// 1.112 adds inactive scenes (ADR-0195): `scene.set_active`, `scene.step`, `scene.position`
+/// and `active` on `scene.list` rows.
 /// 1.111 adds group Properties (ADR-0184, ADR-0185, ADR-0186, ADR-0193): `group.get`,
 /// `group.apply` and the topics `group.changed`, `group.render_state` and
 /// `group.scroll_finished`; `group.create` refuses grouped items. It also defers
@@ -145,7 +147,7 @@ use ui_routing::PendingUi;
 /// `record.start`, `tracks` on a running recording and `record_separately` on a source.
 /// 1.45 adds `"wav"` and `"flac"` on a recording profile (the mix with no picture).
 /// 1.44 is the vertical canvas layouts.
-pub const PROTOCOL_VERSION: &str = "1.111";
+pub const PROTOCOL_VERSION: &str = "1.112";
 
 /// Caps and timeouts (ADR-0044 decision 12). The defaults are the version 1 values in
 /// the control API spec.

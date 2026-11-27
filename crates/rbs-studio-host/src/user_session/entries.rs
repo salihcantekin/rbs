@@ -139,6 +139,7 @@ pub(super) fn delete_collection(id: EntryId) -> impl Task<()> {
             .delete(lock, &id)
             .map_err(SessionError::from)?;
         let _ = std::fs::remove_file(crate::obs_import::report_path(data.root(), &id));
+        let _ = data.delete_view_state(lock, &id);
         Ok(())
     }
 }

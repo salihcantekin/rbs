@@ -72,7 +72,7 @@ pub use registry::{
     SourceInstance, SourceMode, SourcePicker, SourceTarget, SourceTypes, StillSource, TextSource,
     VideoSource, activity_traits, apply_media_live, option_keys, validate_settings,
 };
-pub use types::{SourceClass, class_of};
+pub use types::{SOURCE_CATEGORIES, SourceClass, class_of, source_category};
 
 /// The separate-recording mark a source keeps after its settings become `settings`
 /// (ADR-0129 decision 1, "marks follow stillness"): a picture marked `video_as: image`

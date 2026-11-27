@@ -810,6 +810,8 @@ impl App {
                 library_transfer::when_answered(self, done, App::library_done);
             }
             Run::Scene(id) => self.studio.switch_scene(id),
+            Run::SceneStep(step) => self.studio.step_scene(step),
+            Run::ScenePosition(n) => self.studio.scene_position(n),
             Run::Layout(c) => self.command(c, Origin::Command),
             Run::Maximize(id, on) => self.maximized = on.then_some(id),
             Run::SaveWorkspace => {
@@ -901,6 +903,7 @@ impl App {
             // (`confirm` false) does it at once, as the control API does.
             Run::SceneOwnLevels(id, false) if confirm => self.ask_shared_levels(id),
             Run::SceneOwnLevels(id, own) => self.studio.set_scene_own_levels(id, own),
+            Run::SceneActive(id, active) => self.studio.set_scene_active(id, active),
             Run::ResetSceneLevel(scene, source) => self.studio.reset_scene_level(scene, source),
             Run::ResetLoudness => self.studio.reset_loudness(),
             Run::MixerBulk(bulk) => match bulk {
@@ -4727,6 +4730,21 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
         if let Some(scene) = app.studio.levels_scene() {
             app.studio.reset_scene_level(scene, source);
         }
+    });
+    on!(on_set_show_hidden_sources, |app, show: bool| {
+        app.studio.set_show_hidden_sources(show);
+    });
+    on!(on_set_source_category, |app, index: i32, shown: bool| {
+        app.studio.set_source_category(index, shown);
+    });
+    on!(on_set_all_source_categories, |app, shown: bool| {
+        app.studio.set_all_source_categories(shown);
+    });
+    on!(on_set_show_inactive_scenes, |app, show: bool| {
+        app.studio.set_show_inactive_scenes(show);
+    });
+    on!(on_set_scene_active, |app, scene: i32, active: bool| {
+        app.studio.set_scene_active(scene, active);
     });
     on!(on_use_shared_levels, |app, scene: i32| {
         app.studio.set_scene_own_levels(scene, false);

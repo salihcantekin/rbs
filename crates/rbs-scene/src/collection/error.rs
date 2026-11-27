@@ -105,6 +105,10 @@ pub enum SceneError {
     InvalidShowFor,
     /// A transition duration is above [`MAX_GLIDE_MS`] (ADR-0128).
     InvalidTransition,
+    /// No scene other than the anchor is active for next or previous (ADR-0195).
+    NoOtherActiveScene,
+    /// The scene is inactive and was reached by slot (ADR-0195).
+    SceneInactive(SceneId),
     /// Chrome was set on a source that is not a display (ADR-0104).
     ChromeNotDisplay,
     /// A global scene (ADR-0065) would be shown as program or preview, nested, nest a
@@ -187,6 +191,8 @@ impl fmt::Display for SceneError {
             SceneError::InvalidActivity => {
                 write!(f, "linger must be from 0 to {MAX_LINGER_S} s")
             }
+            SceneError::NoOtherActiveScene => f.write_str("No other active scene."),
+            SceneError::SceneInactive(_) => f.write_str("The scene is inactive"),
             SceneError::InvalidTransition => {
                 write!(f, "transition duration must be from 0 to {MAX_GLIDE_MS} ms")
             }

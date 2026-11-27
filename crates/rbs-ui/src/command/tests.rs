@@ -484,6 +484,7 @@ fn context_menus_fill_targets_and_tidy_separators() {
             "scene.rename?scene=7",
             "scene.duplicate?scene=7",
             "scene.duplicate?scene=7&sources=copied",
+            "scene.active.toggle?scene=7",
             "scene.audio.own_levels.toggle?scene=7",
             "ui.scene.transition?scene=7",
             "|",

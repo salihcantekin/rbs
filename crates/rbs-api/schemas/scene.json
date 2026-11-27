@@ -461,6 +461,10 @@
         "SceneInfo": {
           "description": "A scene as `scene.list` lists it (protocol 1.6, ADR-0059).",
           "properties": {
+            "active": {
+              "description": "Whether next, previous and slot navigation reach it (protocol 1.112,\nADR-0195); absent means true.",
+              "type": "boolean"
+            },
             "id": {
               "description": "Its id in the scene collection.",
               "format": "uint32",
@@ -955,6 +959,33 @@
       "type": "object"
     }
   },
+  "scene.position": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`scene.position` (protocol 1.112, ADR-0195): the scene in a slot of the list.",
+      "properties": {
+        "n": {
+          "description": "The 1-based slot in the full scene list.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "n"
+      ],
+      "title": "ScenePosition",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
   "scene.remove": {
     "input_schema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1005,6 +1036,38 @@
         "name"
       ],
       "title": "RenameScene",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
+      "type": "object"
+    }
+  },
+  "scene.set_active": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`scene.set_active` (protocol 1.112, ADR-0195).",
+      "properties": {
+        "active": {
+          "description": "Whether next, previous and slot navigation may reach it.",
+          "type": "boolean"
+        },
+        "scene": {
+          "description": "The scene's id.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "scene",
+        "active"
+      ],
+      "title": "SetSceneActive",
       "type": "object"
     },
     "output_schema": {
@@ -2014,6 +2077,33 @@
         "sources"
       ],
       "title": "SceneSourceList",
+      "type": "object"
+    }
+  },
+  "scene.step": {
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`scene.step` (protocol 1.112, ADR-0195): the next or previous active scene.",
+      "properties": {
+        "step": {
+          "description": "1 for next, -1 for previous.",
+          "format": "int32",
+          "maximum": 2147483647,
+          "minimum": -2147483648,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "step"
+      ],
+      "title": "StepScene",
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Parameters of a method that takes none. Unknown fields are ignored.",
+      "title": "Empty",
       "type": "object"
     }
   },

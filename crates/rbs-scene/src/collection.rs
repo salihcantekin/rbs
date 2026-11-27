@@ -55,6 +55,25 @@ pub const MAX_LAYERS: u64 = 4096;
 #[derive(Debug, Clone, PartialEq)]
 pub struct Undo(Op);
 
+impl Undo {
+    /// The scenes this record would make Inactive when applied (ADR-0195), so the host
+    /// can refuse an undo or redo that would take a scene off the air.
+    pub fn deactivates(&self) -> Vec<SceneId> {
+        fn walk(op: &Op, out: &mut Vec<SceneId>) {
+            match op {
+                Op::SetSceneActive {
+                    scene, new: false, ..
+                } => out.push(*scene),
+                Op::Batch(ops) => ops.iter().for_each(|o| walk(o, out)),
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        walk(&self.0, &mut out);
+        out
+    }
+}
+
 /// One primitive, invertible change.
 #[derive(Debug, Clone, PartialEq)]
 enum Op {
@@ -120,6 +139,12 @@ enum Op {
         scene: SceneId,
         expected: Option<SceneTransition>,
         new: Option<SceneTransition>,
+    },
+    /// Replaces a scene's Active flag (ADR-0195).
+    SetSceneActive {
+        scene: SceneId,
+        expected: bool,
+        new: bool,
     },
     /// Replaces a source's optional glide override (ADR-0100).
     SetSourceGlide {
@@ -1154,6 +1179,60 @@ impl SceneCollection {
         })
     }
 
+    /// Makes a scene Active or Inactive (ADR-0195; one undo step). The caller refuses
+    /// a scene that is on air or about to be; this only edits the flag.
+    pub fn set_scene_active(&mut self, id: SceneId, active: bool) -> Result<Undo, SceneError> {
+        let expected = self.get_scene(id)?.active;
+        self.apply(Op::SetSceneActive {
+            scene: id,
+            expected,
+            new: active,
+        })
+    }
+
+    /// The active showable scene `step` places (1 or -1) from `anchor` in `canvas`'s
+    /// list order, wrapping (ADR-0195). An inactive or absent anchor goes to the
+    /// nearest active scene after (or before) its place; `NoOtherActiveScene` when
+    /// there is none other than the anchor.
+    pub fn next_active(
+        &self,
+        canvas: CanvasId,
+        anchor: Option<SceneId>,
+        step: i32,
+    ) -> Result<SceneId, SceneError> {
+        let list = self.showable_scenes(canvas);
+        let n = list.len();
+        let at = anchor.and_then(|a| list.iter().position(|s| s.id == a));
+        let forward = step >= 0;
+        for k in 1..=n {
+            let index = match (at, forward) {
+                (Some(i), true) => (i + k) % n,
+                (Some(i), false) => (i + n - k % n) % n,
+                (None, true) => k - 1,
+                (None, false) => n - k,
+            };
+            let scene = list[index];
+            if scene.active && Some(scene.id) != anchor {
+                return Ok(scene.id);
+            }
+        }
+        Err(SceneError::NoOtherActiveScene)
+    }
+
+    /// The scene in slot `n` (1-based) of `canvas`'s full list; `SceneInactive` when
+    /// it is inactive (ADR-0195).
+    pub fn scene_at_slot(&self, canvas: CanvasId, n: usize) -> Result<SceneId, SceneError> {
+        let scene = n
+            .checked_sub(1)
+            .and_then(|i| self.showable_scenes(canvas).get(i).map(|s| s.id))
+            .ok_or(SceneError::NoOtherActiveScene)?;
+        if self.get_scene(scene)?.active {
+            Ok(scene)
+        } else {
+            Err(SceneError::SceneInactive(scene))
+        }
+    }
+
     /// Sets or clears a source's slide override (ADR-0100; `InvalidGlide` when out of
     /// range). `None` clears it so the collection glide applies.
     pub fn set_source_glide(
@@ -1336,6 +1415,7 @@ impl SceneCollection {
             audio: None,
             transition_in: None,
             groups: Vec::new(),
+            active: true,
         };
         let undo = self.apply_with(
             Op::InsertScene {
@@ -1967,6 +2047,25 @@ impl SceneCollection {
                 }
                 slot.transition_in = new;
                 Ok(Op::SetSceneTransition {
+                    scene,
+                    expected: new,
+                    new: expected,
+                })
+            }
+            Op::SetSceneActive {
+                scene,
+                expected,
+                new,
+            } => {
+                let slot = self
+                    .scenes
+                    .get_mut(&scene)
+                    .ok_or(SceneError::UnknownScene(scene))?;
+                if slot.active != expected {
+                    return Err(SceneError::UndoConflict);
+                }
+                slot.active = new;
+                Ok(Op::SetSceneActive {
                     scene,
                     expected: new,
                     new: expected,

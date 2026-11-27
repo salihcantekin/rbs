@@ -79,6 +79,7 @@ pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
             "scene.move?direction=down",
             "scene.remove",
             "}",
+            "scene.active.toggle",
             "scene.audio.own_levels.toggle",
             "|",
             "canvas.studio_mode.toggle",
