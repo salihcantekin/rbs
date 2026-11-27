@@ -66,6 +66,7 @@ const DOWNSCALE: &str = include_str!("shaders/downscale.wgsl");
 use crate::COMPOSITE;
 mod blur;
 mod helper;
+mod report;
 use crate::ring::{COPY, CopyPass, Ring, picture_to_draw};
 use blur::{BlurPass, render_output};
 use helper::{Job, Readback, Setup, SharedSession, SlotView};
@@ -221,6 +222,12 @@ pub struct BackgroundRemovalNode {
     start: Start,
     /// The previous tick's time while in the schedule.
     last_tick: Option<Timestamp>,
+    /// Set by the host when the filter was turned on while its source was on screen;
+    /// taken in `prepare` (ADR-0199).
+    turned_on: Arc<AtomicBool>,
+    /// What the last stay in the schedule looked like before its first matte (turned
+    /// on, blank ticks, plain ticks, first matte delay), logged in `release`.
+    left: Option<(bool, u32, u32, Option<u64>)>,
 }
 
 impl BackgroundRemovalNode {
@@ -256,8 +263,16 @@ impl BackgroundRemovalNode {
             held: None,
             start: Start::default(),
             last_tick: None,
+            turned_on: Arc::new(AtomicBool::new(false)),
+            left: None,
         };
         (node, sender, stats)
+    }
+
+    /// The flag the host sets when the filter was turned on while its source was on
+    /// screen: only then is the plain picture kept until the first matte (ADR-0199).
+    pub fn turned_on(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.turned_on)
     }
 
     /// Opens the session and starts its worker, unless one is open. Control thread.
@@ -483,7 +498,12 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
         // file or waits for a worker (spec rule 2, P6) and the first matte follows the
         // first picture within a few ticks. `release` closes it, so a disabled filter
         // holds no model and no worker (P13).
+        let opening = std::time::Instant::now();
         self.open_session()?;
+        report::ready(opening.elapsed());
+        // Taken here, before the swap, so a later join (a scene switch, a restart after
+        // a fault) never finds an old turn-on.
+        self.start.allowed = self.turned_on.swap(false, Ordering::AcqRel);
         let readback = Readback::start(Setup {
             device: device.clone(),
             slots: slots.clone(),
@@ -546,6 +566,12 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
         self.ring.clear(pool);
         self.held = None;
         self.rgb.release();
+        self.left = Some((
+            self.start.allowed,
+            self.start.blank,
+            self.start.plain,
+            self.start.first_matte_ms,
+        ));
         self.start = Start::default();
         self.last_tick = None;
     }
@@ -598,12 +624,16 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
                     }
                 }
             }
+            // A new size in the first 0.5 s ends the plain picture too (ADR-0053
+            // decision 6: a size change never shows the unfiltered input).
+            self.start.allowed &= self.size.is_none();
             self.size = Some(size);
             self.submitted = None;
             self.drawn = None;
             self.held = None;
             self.ring.clear(&mut local.pool);
         }
+        let plain = plain.filter(|_| self.start.allowed);
         self.ring.sync(
             exact,
             &mut self.held,
@@ -678,7 +708,7 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
             self.drawn = None;
             self.start.fade_from = None;
             // Only right after the filter was turned on; else nothing (decision 4).
-            self.start.plain_shown = plain.is_some();
+            self.start.no_matte(plain.is_some());
             drop(outputs.set_video(OUT_PIN, plain)?);
             return Ok(());
         };
@@ -745,6 +775,9 @@ impl Node<GpuRuntime> for BackgroundRemovalNode {
     }
 
     fn release(&mut self, _ctx: &mut PrepareCtx<'_, GpuRuntime>) {
+        if let Some((turned_on, blank, plain, first)) = self.left.take() {
+            report::left(turned_on, blank, plain, first);
+        }
         self.gpu = None;
         self.down_written = None;
         self.written = None;
@@ -901,6 +934,8 @@ fn write_composite(
 /// What the node does right after it joins the schedule (ADR-0199).
 #[derive(Debug, Default)]
 struct Start {
+    /// The filter was turned on while its source was on screen (taken in `prepare`).
+    allowed: bool,
     /// The first tick in the schedule: the plain picture is kept from there.
     joined: Option<Timestamp>,
     /// A matte was drawn since the node joined the schedule.
@@ -911,14 +946,29 @@ struct Start {
     fade_from: Option<Timestamp>,
     /// The running fade starts from the plain picture, not from nothing.
     fade_from_plain: bool,
+    /// Ticks published blank and plain before the first matte, and that matte's delay
+    /// from the first tick: logged when the node leaves (cold path).
+    blank: u32,
+    plain: u32,
+    first_matte_ms: Option<u64>,
 }
 
 impl Start {
+    /// A tick published without a matte: the plain picture or nothing.
+    fn no_matte(&mut self, plain: bool) {
+        self.plain_shown = plain;
+        if !self.had_matte {
+            self.plain += u32::from(plain);
+            self.blank += u32::from(!plain);
+        }
+    }
+
     /// Whether the input is published unchanged: only right after the node joined the
     /// schedule, before its first matte and for 0.5 s at most (ADR-0199).
     fn keeps_plain(&mut self, now: Timestamp, has_matte: bool) -> bool {
         let joined = *self.joined.get_or_insert(now);
-        !self.had_matte
+        self.allowed
+            && !self.had_matte
             && !has_matte
             && now.as_nanos().saturating_sub(joined.as_nanos()) < KEEP_PLAIN_NANOS
     }
@@ -930,6 +980,10 @@ impl Start {
         if self.fade_from.is_none() {
             self.fade_from = Some(previous);
             self.fade_from_plain = self.plain_shown;
+        }
+        if !self.had_matte {
+            let joined = self.joined.unwrap_or(now);
+            self.first_matte_ms = Some(now.saturating_since(joined).as_millis() as u64);
         }
         self.had_matte = true;
         self.plain_shown = false;

@@ -44,6 +44,8 @@ use crate::model::{
 mod cue_levels;
 mod group_spans;
 mod linger;
+mod turned_on;
+use turned_on::{drawn, note_joined, turned_on};
 
 pub use group_spans::{GroupMark, SpanLimits, SpanRefusal};
 
@@ -419,6 +421,11 @@ pub struct BindReport {
     /// sync (ADR-0062 decision 3): the application sends the new values to the
     /// running instance; the node is never rebuilt for it.
     pub changed_filters: Vec<(FilterId, NodeId)>,
+    /// Video filters that joined their source's chain in this sync (turned on or added)
+    /// while a shown layer drew the source both before and after it: the picture the
+    /// filter receives was on screen up to now. Background removal keeps it until its
+    /// first mask on this edge only (ADR-0199); a scene switch or restart is not listed.
+    pub turned_on_filters: Vec<(FilterId, NodeId)>,
     /// The mixer of each canvas, when audio is enabled.
     pub mixers: BTreeMap<CanvasId, BoundMixer>,
     /// Mixer nodes this sync removed (their canvas is gone, or a hold mixer no
@@ -636,6 +643,8 @@ struct State {
     levels: BTreeMap<SourceId, (Level, Option<OnReturn>)>,
     /// Lingering sources (ADR-0152 decision 3).
     linger: linger::Linger,
+    /// The sources a shown layer drew after the last sync (for `turned_on_filters`).
+    drawn: BTreeSet<SourceId>,
 }
 
 impl fmt::Debug for SceneBinder {
@@ -1091,6 +1100,7 @@ impl State {
         ),
     ) -> Result<BindReport, BindError> {
         let mut report = BindReport::default();
+        let mut joined = Vec::new();
         // Transitions the collection can run: their canvas has a program scene.
         let outgoing: BTreeMap<CanvasId, &OutgoingScene> = outgoing
             .iter()
@@ -1371,6 +1381,7 @@ impl State {
                 .filter(|f| f.enabled && bound.filters.contains_key(&f.id))
                 .map(|f| f.id)
                 .collect();
+            note_joined(&mut joined, is_audio, source.id, &chain, bound);
             if chain != bound.chain {
                 // Only the links this binder made; links into removed filters went
                 // with their node.
@@ -1433,23 +1444,8 @@ impl State {
             }
         }
         // Drawn sources (flatten omits opacity 0); outgoing and stinger ones keep filters.
-        let mut drawn_sources = BTreeSet::new();
-        for (&(canvas, role), &scene) in &needed {
-            let cued_items = role_cues(canvas, role, cued_items, &outgoing);
-            let flat = collection
-                .flatten_cued(canvas, scene, cued_items)
-                .map_err(BindError::Scene)?;
-            for layer in flat {
-                if role == Role::Preview && !running.contains(&layer.source) {
-                    continue;
-                }
-                drawn_sources.insert(layer.source);
-            }
-        }
-        for o in outgoing.values() {
-            drawn_sources.extend(o.drawn.iter().copied());
-            drawn_sources.extend(o.stinger);
-        }
+        let drawn_sources = drawn(collection, &needed, cued_items, &outgoing, &running)?;
+        report.turned_on_filters = turned_on(&joined, &mut self.drawn, &drawn_sources);
         // An incoming compositor exists before the program compositor of its canvas
         // is linked, so the program compositor can draw it as a layer.
         let mut fresh: BTreeSet<(CanvasId, Role)> = BTreeSet::new();

@@ -257,6 +257,8 @@ pub struct Rig {
     pub values: ParamSender<Values>,
     pub stats: Arc<RemovalStats>,
     pub log: Arc<Log>,
+    /// The node's turned-on flag (ADR-0199).
+    pub turned_on: Arc<AtomicBool>,
 }
 
 impl Rig {
@@ -277,6 +279,9 @@ impl Rig {
         );
         let (node, values, stats) =
             BackgroundRemovalNode::new(factory, small, Values::defaults(&Defaults));
+        // As the studio does when the filter is turned on while its source is shown.
+        let turned_on = node.turned_on();
+        turned_on.store(true, Ordering::Release);
         let (mut ctl, exec) = channel::<GpuRuntime>(Arc::clone(&ctx), RenderLocal::default());
         let mut graph = GraphDescription::new();
         let next = Arc::new(Mutex::new(None));
@@ -329,6 +334,7 @@ impl Rig {
             values,
             stats,
             log,
+            turned_on,
         };
         let report = rig.ctl.apply(&rig.graph).unwrap();
         assert!(
@@ -412,6 +418,14 @@ impl Rig {
             .with(&Defaults, pairs.iter().copied())
             .unwrap();
         let _ = self.values.send(next);
+    }
+
+    /// Puts the filter back in the schedule; `turned_on` as the studio sets it.
+    pub fn enable(&mut self, turned_on: bool) {
+        self.turned_on.store(turned_on, Ordering::Release);
+        self.graph.set_state(self.node, Lifecycle::Active).unwrap();
+        self.ctl.apply(&self.graph).unwrap();
+        *lock(&self.last) = None;
     }
 
     pub fn disable(&mut self) {

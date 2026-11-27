@@ -17,9 +17,7 @@ use rbs_audio::{
     AudioGraphConfig, EncoderNode, InputParams, InputStats, LevelMeter, MeterSinkNode, MixerNode,
     MixerParams, MixerStats, Strip,
 };
-use rbs_audio_filters::{
-    AudioFilterNode, AudioFilterStats, AudioFilterType, DspSetup, FilterMeter,
-};
+use rbs_audio_filters::{AudioFilterNode, AudioFilterType, DspSetup, FilterMeter};
 use rbs_codec::{EncoderTuning, VideoEncoderConfig};
 use rbs_core::lifecycle::Lifecycle;
 use rbs_core::media::{ContainerId, GpuDeviceId, MemoryKind, Size, StreamDescriptor};
@@ -105,6 +103,7 @@ mod meters;
 mod monitor;
 mod pause;
 mod pointer;
+use pointer::FilterInstance;
 mod rehearse;
 mod replay;
 mod scroll;
@@ -477,27 +476,6 @@ struct FilterEntry {
     scheduled: bool,
     /// Its instance was lent the pointer (ADR-0165), so its source's mapping is wanted.
     fed: bool,
-}
-
-/// A running filter: the value channel the studio keeps and what the node shares
-/// (ADR-0062 decision 8; ADR-0082 decision 8 for audio filters).
-enum FilterInstance {
-    /// A video filter on the render partition.
-    Video(ParamSender<Values>, Arc<FilterStats>),
-    /// An audio filter on the audio partition, with its meter if it has one.
-    Audio {
-        sender: ParamSender<Values>,
-        meter: Option<Arc<FilterMeter>>,
-        stats: Arc<AudioFilterStats>,
-    },
-}
-
-impl FilterInstance {
-    fn sender(&mut self) -> &mut ParamSender<Values> {
-        match self {
-            FilterInstance::Video(sender, _) | FilterInstance::Audio { sender, .. } => sender,
-        }
-    }
 }
 
 /// The built-in type of a filter: video or audio (ADR-0082 decision 8).
@@ -2891,11 +2869,10 @@ impl Studio {
             }
             match kind {
                 FilterKind::Video(ty) => {
-                    let (node, sender, stats, fed) =
-                        pointer::video_filter(&self.entries, entry.source, ty, values, sources);
-                    entry.fed = fed;
+                    let (node, instance) =
+                        pointer::video_filter(&self.entries, entry, ty, values, sources);
                     self.engine.adopt::<GpuRuntime>(RENDER, entry.node, node)?;
-                    entry.instance = Some(FilterInstance::Video(sender, stats));
+                    entry.instance = Some(instance);
                 }
                 FilterKind::Audio(ty) => {
                     let graph = self.settings.audio_graph;
@@ -2993,6 +2970,7 @@ impl Studio {
             &self.browser_background,
         ));
         self.drive_background_pages();
+        self.mark_turned_on(report.as_ref());
         let applied = self.send_raw(None, false);
         if applied.is_ok()
             && let Some(report) = report.as_mut()
@@ -3699,7 +3677,7 @@ impl Studio {
     pub fn filter_stats(&self, filter: FilterId) -> Option<&Arc<FilterStats>> {
         let f = self.filters.iter().find(|f| f.filter == filter)?;
         match f.instance.as_ref()? {
-            FilterInstance::Video(_, stats) => Some(stats),
+            FilterInstance::Video(_, stats, _) => Some(stats),
             FilterInstance::Audio { .. } => None,
         }
     }

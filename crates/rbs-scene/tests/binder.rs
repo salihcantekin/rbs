@@ -15,8 +15,8 @@ use rbs_scene::model::{
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-#[path = "binder/manual_cues.rs"]
-mod manual_cues;
+#[path = "binder/parts.rs"]
+mod parts;
 
 const AUDIO: PartitionId = PartitionId(7);
 

@@ -68,6 +68,10 @@ pub struct CustomNode {
     pub values: ParamSender<Values>,
     /// What the node shares with the control thread.
     pub stats: Arc<crate::FilterStats>,
+    /// Set by the host before the apply in which the filter was turned on while its
+    /// source was on screen (`BindReport::turned_on_filters`); the node takes it when it
+    /// joins the schedule. `None`: the type does not care (ADR-0199).
+    pub turned_on: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 /// A catalogue entry used where an owned type is wanted: `Arc::new(entry)`.

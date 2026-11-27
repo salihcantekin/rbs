@@ -277,3 +277,44 @@ fn a_blurred_background_is_the_room_not_the_person() {
         "blur: {room:?}"
     );
 }
+
+#[test]
+fn a_join_that_is_not_a_turn_on_shows_nothing_until_the_first_matte() {
+    let Some(ctx) = gpu() else { return };
+    let mut rig = Rig::new(ctx, [8, 4]);
+    rig.set_input(Picture::solid(16, 8, [0.25, 0.5, 0.125, 1.0]));
+    assert!(rig.until_output());
+    // Left and joined again without a turn-on (a scene switch, a restart): the room was
+    // not on screen, so it must not show before the matte.
+    rig.disable();
+    let frames = rig.stats.frames();
+    rig.enable(false);
+    for _ in 0..3 {
+        rig.tick();
+        rig.ctx.wait_idle().unwrap();
+        if rig.stats.frames() > frames {
+            break;
+        }
+        assert!(lock(&rig.last).is_none(), "the plain picture must not show");
+    }
+}
+
+#[test]
+fn a_size_change_before_the_first_matte_ends_the_plain_picture() {
+    let Some(ctx) = gpu() else { return };
+    let mut rig = Rig::new(ctx, [8, 4]);
+    rig.log.hold.store(true, Ordering::Relaxed);
+    rig.set_input(Picture::solid(16, 8, [0.25, 0.5, 0.125, 1.0]));
+    rig.tick();
+    rig.tick();
+    assert!(
+        lock(&rig.last).is_some(),
+        "plain picture right after the turn-on"
+    );
+    rig.set_input(Picture::solid(32, 16, [0.25, 0.5, 0.125, 1.0]));
+    rig.tick();
+    assert!(
+        lock(&rig.last).is_none(),
+        "a size change never shows the plain input"
+    );
+}

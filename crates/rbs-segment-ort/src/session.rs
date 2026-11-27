@@ -51,7 +51,7 @@ struct Shared {
 /// shows nothing until its first matte (privacy), so a session that is ready when the
 /// filter joins the schedule turns a gap of seconds (DirectML compiles its shaders on the
 /// first run) into a few frames. A slower start goes on in the background.
-const READY_WAIT: Duration = Duration::from_millis(1500);
+const READY_WAIT: Duration = Duration::from_millis(500);
 
 /// Warm-up pictures the worker runs before it is ready: RVM's first run has empty
 /// recurrent states and its second the real ones, and each shape is compiled once.
