@@ -40,10 +40,17 @@
       "PropertyInspectorPath": "ui/inspector.html",
       "States": [
         {
+          "Name": "Inactive",
           "Image": "imgs/scene-key",
           "Title": ""
+        },
+        {
+          "Name": "On air",
+          "Image": "imgs/scene-key-1",
+          "Title": ""
         }
-      ]
+      ],
+      "DisableAutomaticStates": true
     },
     {
       "Name": "Record",
@@ -56,10 +63,17 @@
       "PropertyInspectorPath": "ui/inspector.html",
       "States": [
         {
+          "Name": "Start",
           "Image": "imgs/record-key",
           "Title": ""
+        },
+        {
+          "Name": "Stop",
+          "Image": "imgs/record-key-1",
+          "Title": ""
         }
-      ]
+      ],
+      "DisableAutomaticStates": true
     },
     {
       "Name": "Pause / Resume",
@@ -72,10 +86,17 @@
       "PropertyInspectorPath": "ui/inspector.html",
       "States": [
         {
+          "Name": "Pause",
           "Image": "imgs/record-pause-key",
           "Title": ""
+        },
+        {
+          "Name": "Resume",
+          "Image": "imgs/record-pause-key-1",
+          "Title": ""
         }
-      ]
+      ],
+      "DisableAutomaticStates": true
     },
     {
       "Name": "Stream",
@@ -88,10 +109,17 @@
       "PropertyInspectorPath": "ui/inspector.html",
       "States": [
         {
+          "Name": "Start",
           "Image": "imgs/stream-key",
           "Title": ""
+        },
+        {
+          "Name": "Stop",
+          "Image": "imgs/stream-key-1",
+          "Title": ""
         }
-      ]
+      ],
+      "DisableAutomaticStates": true
     },
     {
       "Name": "Show / hide source",
@@ -104,10 +132,17 @@
       "PropertyInspectorPath": "ui/inspector.html",
       "States": [
         {
+          "Name": "Shown",
           "Image": "imgs/source-visible-key",
           "Title": ""
+        },
+        {
+          "Name": "Hidden",
+          "Image": "imgs/source-visible-key-1",
+          "Title": ""
         }
-      ]
+      ],
+      "DisableAutomaticStates": true
     },
     {
       "Name": "Mute",
@@ -120,10 +155,17 @@
       "PropertyInspectorPath": "ui/inspector.html",
       "States": [
         {
+          "Name": "Unmuted",
           "Image": "imgs/mute-key",
           "Title": ""
+        },
+        {
+          "Name": "Muted",
+          "Image": "imgs/mute-key-1",
+          "Title": ""
         }
-      ]
+      ],
+      "DisableAutomaticStates": true
     },
     {
       "Name": "Next / previous scene",
@@ -168,10 +210,17 @@
       "PropertyInspectorPath": "ui/inspector.html",
       "States": [
         {
+          "Name": "Off",
           "Image": "imgs/vcam-key",
           "Title": ""
+        },
+        {
+          "Name": "On",
+          "Image": "imgs/vcam-key-1",
+          "Title": ""
         }
-      ]
+      ],
+      "DisableAutomaticStates": true
     },
     {
       "Name": "Marker",

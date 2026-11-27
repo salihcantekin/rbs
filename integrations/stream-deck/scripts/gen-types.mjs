@@ -25,6 +25,8 @@ export const METHODS = [
 	"record.start",
 	"record.stop",
 	"record.pause_toggle",
+	"record.pause",
+	"record.resume",
 	"profile.list",
 	"stream.status",
 	"stream.start",

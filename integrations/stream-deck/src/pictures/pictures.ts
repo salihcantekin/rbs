@@ -3,6 +3,25 @@ import { tokens as t } from "./tokens.js";
 /** The state of a link as a key shows it. */
 export type LinkText = { title: string; hint?: string };
 
+/** What a key looks like, before it is drawn. Tests compare these. */
+export interface KeyLook {
+	/** SVG shapes in a 64 by 64 box, drawn with the tone's colour. */
+	glyph: string;
+	label: string;
+	/** A second, lighter line (time, target, status). */
+	sub?: string;
+	tone: "neutral" | "accent" | "live" | "dim" | "warn";
+	/** Colour of an `accent` tone; defaults to the token. */
+	accent?: string;
+	/** Blinking ring (recording, live): `pulse` is the current phase. */
+	ring?: boolean;
+	pulse?: boolean;
+	/** A small dot in the badge corner (what is on air). */
+	dot?: boolean;
+	/** The user set a Stream Deck title: it is drawn by the app, so draw no text. */
+	untitled?: boolean;
+}
+
 export function esc(s: string): string {
 	return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
@@ -26,118 +45,80 @@ export function fit(text: string): string[] {
 	return out;
 }
 
-interface Frame {
-	bg: string;
-	fg?: string;
-	icon: string;
-	label: string;
-	/** Smaller second text under the icon (for example the elapsed time). */
-	sub?: string;
-	dim?: boolean;
-	/** The user set a Stream Deck title: it is drawn by the app, so draw no text. */
-	untitled?: boolean;
-	/** Drawn over the background, under the icon (a tint). */
-	under?: string;
-}
+const FONT = `font-family="Segoe UI, Helvetica, Arial, sans-serif"`;
 
-function frame(f: Frame): string {
-	const fg = f.dim ? t.fgDim : (f.fg ?? t.fg);
-	const lines = fit(f.label);
-	const font = `font-family="Segoe UI, Helvetica, Arial, sans-serif" fill="${fg}"`;
-	const row = (y: number, txt: string, weight: number) =>
-		`<text x="72" y="${y}" text-anchor="middle" ${font} font-size="${t.labelSize}" font-weight="${weight}">${esc(txt)}</text>`;
-	const text = f.untitled
+/** Draws a key: a soft gradient tile, a round badge with the glyph, and one or two text lines. */
+export function drawKey(k: KeyLook): string {
+	const tone = k.tone;
+	const main = tone === "live" ? t.live : tone === "accent" ? (k.accent ?? t.accent) : tone === "warn" ? t.warn : tone === "dim" ? t.fgDim : t.fg;
+	const [top, bottom] = tone === "accent" ? [mix(k.accent ?? t.accent, "#1a1c21", 0.55), mix(k.accent ?? t.accent, "#101114", 0.18)] : t.bg[tone];
+	const gid = `g${top.slice(1)}${bottom.slice(1)}`; // unique per colour pair, so tiles shown together do not share one gradient
+	const text = tone === "dim" ? t.fgDim : tone === "warn" ? t.warn : t.fg;
+	const lines = fit(k.label);
+	const row = (y: number, txt: string, size: number, weight: number, fill: string, opacity = 1) =>
+		`<text x="72" y="${y}" text-anchor="middle" ${FONT} font-size="${size}" font-weight="${weight}" fill="${fill}" fill-opacity="${opacity}">${esc(txt)}</text>`;
+	const body = k.untitled
 		? ""
-		: f.sub
-		? row(103, lines[0] ?? "", 600) + row(128, f.sub, 400)
-		: lines.map((l, i) => row((lines.length > 1 ? 106 : 120) + i * t.labelLineHeight, l, 600)).join("");
+		: k.sub
+			? row(108, lines[0] ?? "", t.labelSize, 600, text) + row(129, k.sub, t.subSize, 400, text, 0.8)
+			: lines.map((l, i) => row((lines.length > 1 ? 108 : 122) + i * t.labelLineHeight, l, t.labelSize, 600, text)).join("");
+	// With no text the badge sits lower, centred in the tile.
+	const cy = k.untitled ? 72 : t.badgeY;
+	const ring = k.ring
+		? `<circle cx="72" cy="${cy}" r="${t.badgeRadius + 5}" fill="none" stroke="${main}" stroke-width="3" stroke-opacity="${k.pulse === false ? 0.15 : 0.7}"/>`
+		: "";
+	const dot = k.dot ? `<circle cx="${72 + 24}" cy="${cy - 24}" r="6" fill="${main}" stroke="${top}" stroke-width="2.5"/>` : "";
 	return (
 		`<svg xmlns="http://www.w3.org/2000/svg" width="${t.size}" height="${t.size}" viewBox="0 0 ${t.size} ${t.size}">` +
-		`<rect width="${t.size}" height="${t.size}" rx="${t.radius}" fill="${f.bg}"/>` +
-		(f.under ?? "") +
-		`<g transform="translate(40 14)" fill="none" stroke="${fg}" stroke-width="5" stroke-linecap="round" stroke-linejoin="round">${f.icon}</g>` +
-		text +
+		`<defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${top}"/><stop offset="1" stop-color="${bottom}"/></linearGradient></defs>` +
+		`<rect width="${t.size}" height="${t.size}" rx="${t.radius}" fill="url(#${gid})"/>` +
+		`<rect x="1.5" y="1.5" width="${t.size - 3}" height="${t.size - 3}" rx="${t.radius - 1.5}" fill="none" stroke="#fff" stroke-opacity=".09" stroke-width="3"/>` +
+		ring +
+		`<circle cx="72" cy="${cy}" r="${t.badgeRadius}" fill="${main}" fill-opacity="${tone === "neutral" ? 0.1 : 0.18}"/>` +
+		`<g transform="translate(${72 - 18} ${cy - 18}) scale(0.5625)" fill="none" stroke="${main}" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round" color="${main}">${k.glyph}</g>` +
+		dot +
+		body +
 		`</svg>`
 	);
 }
 
-const sceneIcon = `<rect x="2" y="8" width="60" height="42" rx="6"/><path d="M20 58h24"/>`;
-const eyeOpen = `<path d="M2 30c10-16 20-22 30-22s20 6 30 22c-10 16-20 22-30 22S12 46 2 30z"/><circle cx="32" cy="30" r="9"/>`;
-const eyeShut = `<path d="M2 30c10-16 20-22 30-22s20 6 30 22c-10 16-20 22-30 22S12 46 2 30z"/><path d="M8 54L56 6"/>`;
-const speaker = `<path d="M6 22h12l16-14v44L18 38H6z"/>`;
-const speakerOn = `${speaker}<path d="M44 20c6 6 6 18 0 24M52 12c10 10 10 30 0 40"/>`;
-const speakerOff = `${speaker}<path d="M44 22l16 16M60 22L44 38"/>`;
-
-export function sceneKey(name: string, active: boolean, missing: boolean, untitled = false, color: string = t.accent): string {
-	const tint = active ? `<rect x="0" y="0" width="${t.size}" height="${t.size}" rx="${t.radius}" fill="${color}" fill-opacity=".28"/>` : "";
-	return frame({ bg: active ? t.bgActive : t.bg, under: tint, icon: sceneIcon.replace("<rect", active ? `<rect fill="${color}" fill-opacity=".35" stroke="${color}"` : "<rect"), label: missing ? "Missing scene" : name, dim: missing, untitled });
+/** Mixes two #rrggbb colours: `amount` of `a`. */
+function mix(a: string, b: string, amount: number): string {
+	const p = (c: string, i: number) => parseInt(c.slice(1 + i * 2, 3 + i * 2), 16);
+	const h = (i: number) => Math.round(p(a, i) * amount + p(b, i) * (1 - amount)).toString(16).padStart(2, "0");
+	return `#${h(0)}${h(1)}${h(2)}`;
 }
 
-export function recordKey(kind: "idle" | "recording" | "paused", elapsed?: string, untitled = false, pulse = true): string {
-	const dot = `<circle cx="32" cy="30" r="22"/>`;
-	if (kind === "idle") return frame({ bg: t.bg, icon: dot + `<circle cx="32" cy="30" r="9" fill="${t.fg}"/>`, label: "Record", untitled });
-	const pause = `<path d="M22 18v24M42 18v24"/>`;
-	return frame({ bg: t.bgLive, fg: t.fg, icon: kind === "paused" ? dot + pause : `<circle cx="32" cy="30" r="22" stroke="${t.live}"/><circle cx="32" cy="30" r="12" fill="${t.live}" fill-opacity="${pulse ? 1 : 0.25}" stroke="${t.live}" stroke-opacity="${pulse ? 1 : 0.25}"/>`, label: "Stop", sub: elapsed, untitled });
-}
+// ---- glyphs (64 by 64) -----------------------------------------------------------
 
-export function streamKey(kind: "idle" | "connecting" | "live" | "reconnecting", untitled = false, sub?: string, pulse = true): string {
-	const waves = `<circle cx="32" cy="30" r="6" fill="${t.fg}"/><path d="M18 16a20 20 0 0 0 0 28M46 16a20 20 0 0 1 0 28M8 8a34 34 0 0 0 0 44M56 8a34 34 0 0 1 0 44"/>`;
-	if (kind === "idle") return frame({ bg: t.bg, icon: waves, label: "Stream", untitled });
-	const red = waves.replace(/fill="[^"]*"/, `fill="${t.live}" fill-opacity="${pulse ? 1 : 0.25}"`);
-	return frame({ bg: t.bgLive, icon: `<g stroke="${t.live}">${red}</g>`, label: "Stop", sub: kind === "live" ? (sub ?? "Live") : kind === "connecting" ? "Connecting" : "Reconnecting", untitled });
-}
-
-export function visibleKey(name: string, visible: boolean | undefined, untitled = false): string {
-	if (visible === undefined) return frame({ bg: t.bgDim, icon: eyeShut, label: name || "Source", sub: "Not in scene", dim: true, untitled });
-	return frame({ bg: t.bg, icon: visible ? eyeOpen : eyeShut, label: name || "Source", dim: !visible, untitled });
-}
-
-export function muteKey(name: string, muted: boolean | undefined, untitled = false): string {
-	if (muted === undefined) return frame({ bg: t.bg, icon: speaker, label: name || "Mute", dim: true, untitled });
-	return frame({ bg: muted ? t.bgDim : t.bg, icon: muted ? speakerOff : speakerOn, label: name || "Mute", dim: muted, untitled });
-}
+export const glyphs = {
+	scene: `<rect x="6" y="10" width="52" height="36" rx="7"/><path d="M22 56h20M32 46v10"/>`,
+	recordIdle: `<circle cx="32" cy="32" r="14" fill="currentColor"/>`,
+	stop: `<rect x="14" y="14" width="36" height="36" rx="8" fill="currentColor"/>`,
+	pause: `<path d="M22 14v36M42 14v36"/>`,
+	play: `<path d="M22 12l28 20-28 20z" fill="currentColor"/>`,
+	stream: `<circle cx="32" cy="32" r="5" fill="currentColor"/><path d="M20 20a17 17 0 0 0 0 24M44 20a17 17 0 0 1 0 24M11 11a30 30 0 0 0 0 42M53 11a30 30 0 0 1 0 42"/>`,
+	eyeOpen: `<path d="M3 32C12 17 22 10 32 10s20 7 29 22C52 47 42 54 32 54S12 47 3 32z"/><circle cx="32" cy="32" r="9" fill="currentColor"/>`,
+	eyeShut: `<path d="M3 32C12 17 22 10 32 10s20 7 29 22C52 47 42 54 32 54S12 47 3 32z"/><path d="M10 56L54 8"/>`,
+	speaker: `<path d="M8 24h12l16-14v44L20 40H8z" fill="currentColor"/>`,
+	speakerOn: `<path d="M8 24h12l16-14v44L20 40H8z" fill="currentColor"/><path d="M45 22c6 6 6 14 0 20M53 14c11 11 11 25 0 36"/>`,
+	speakerOff: `<path d="M8 24h12l16-14v44L20 40H8z" fill="currentColor"/><path d="M46 24l14 16M60 24L46 40"/>`,
+	next: `<path d="M8 32h46M36 14l18 18-18 18"/>`,
+	previous: `<path d="M56 32H10M28 14L10 32l18 18"/>`,
+	replay: `<path d="M32 10a22 22 0 1 1-20 13M8 8v18h18"/><path d="M27 24l14 8-14 8z" fill="currentColor"/>`,
+	camera: `<circle cx="32" cy="26" r="18"/><circle cx="32" cy="26" r="7" fill="currentColor"/><path d="M20 58h24M32 44v14"/>`,
+	marker: `<path d="M14 8v50M14 10h34l-9 12 9 12H14" /><path d="M14 10h34l-9 12 9 12H14z" fill="currentColor" fill-opacity=".35"/>`,
+	warn: `<circle cx="32" cy="32" r="24"/><path d="M32 18v18M32 44v2"/>`,
+	volume: `<path d="M8 24h12l16-14v44L20 40H8z" fill="currentColor"/><path d="M45 22c6 6 6 14 0 20"/>`,
+};
 
 /** A key whose link to RBS is down. */
 export function linkKey(text: LinkText): string {
-	const warn = `<circle cx="32" cy="30" r="24"/><path d="M32 16v18M32 42v2"/>`;
-	return frame({ bg: t.bgDim, fg: t.warn, icon: warn, label: text.title });
+	return drawKey({ glyph: glyphs.warn, label: text.title, tone: "warn" });
 }
 
 export function toDataUrl(svg: string): string {
 	return `data:image/svg+xml;charset=utf8,${encodeURIComponent(svg)}`;
-}
-
-/** Pause or resume a recording. */
-export function pauseKey(kind: "idle" | "recording" | "paused", untitled = false): string {
-	const bars = `<path d="M22 16v28M42 16v28"/>`;
-	const play = `<path d="M24 14l26 16-26 16z"/>`;
-	if (kind === "idle") return frame({ bg: t.bgDim, icon: bars, label: "Pause", dim: true, untitled });
-	if (kind === "paused") return frame({ bg: t.bgLive, icon: play, label: "Resume", untitled });
-	return frame({ bg: t.bg, icon: bars, label: "Pause", untitled });
-}
-
-/** Next or previous scene; `target` is the scene it would switch to. */
-export function sceneStepKey(direction: "next" | "previous", target: string | undefined, untitled = false): string {
-	const arrow = direction === "next" ? `<path d="M10 30h44M38 14l16 16-16 16"/>` : `<path d="M54 30H10M26 14L10 30l16 16"/>`;
-	return frame({ bg: t.bg, icon: arrow, label: direction === "next" ? "Next scene" : "Previous", sub: target, dim: target === undefined, untitled });
-}
-
-export function replayKey(kind: "off" | "armed" | "saving", untitled = false): string {
-	const rewind = `<path d="M32 10a20 20 0 1 1-18 12M10 8v16h16"/>`;
-	if (kind === "off") return frame({ bg: t.bgDim, icon: rewind, label: "Replay off", dim: true, untitled });
-	if (kind === "saving") return frame({ bg: t.bgActive, icon: rewind.replace("<path", `<g stroke="${t.accent}"><path`) + "</g>", label: "Saving", untitled });
-	return frame({ bg: t.bg, icon: rewind, label: "Save replay", untitled });
-}
-
-export function vcamKey(kind: "off" | "on", untitled = false): string {
-	const cam = `<circle cx="32" cy="26" r="16"/><circle cx="32" cy="26" r="6"/><path d="M22 54h20M32 42v12"/>`;
-	if (kind === "on") return frame({ bg: t.bgActive, icon: `<g stroke="${t.accent}">${cam}</g>`, label: "Camera on", untitled });
-	return frame({ bg: t.bg, icon: cam, label: "Virtual cam", untitled });
-}
-
-export function markerKey(recording: boolean, untitled = false): string {
-	const flag = `<path d="M16 8v48M16 10h32l-8 10 8 10H16"/>`;
-	return frame({ bg: t.bg, icon: flag, label: "Marker", dim: !recording, untitled });
 }
 
 /** Text of a dial's touch strip (the built-in $B1 layout). */

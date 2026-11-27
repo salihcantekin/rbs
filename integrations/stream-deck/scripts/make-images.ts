@@ -1,17 +1,25 @@
-// Writes the default key images (the idle pictures) and the plugin icon source.
+// Writes the default key images of both states of every action (manifest.json refers to them).
 // Run: npx vite-node scripts/make-images.ts
 import { writeFileSync } from "node:fs";
-import { markerKey, replayKey, sceneStepKey, vcamKey, pauseKey, muteKey, recordKey, sceneKey, streamKey, visibleKey } from "../src/pictures/pictures.js";
+import { drawKey } from "../src/pictures/pictures.js";
+import { type Kind, type ViewState, look } from "../src/view.js";
 
 const dir = "com.rbs.streamdeck.sdPlugin/imgs/";
-writeFileSync(dir + "scene-key.svg", sceneKey("Scene", false, false));
-writeFileSync(dir + "record-key.svg", recordKey("idle"));
-writeFileSync(dir + "record-pause-key.svg", pauseKey("idle"));
-writeFileSync(dir + "stream-key.svg", streamKey("idle"));
-writeFileSync(dir + "source-visible-key.svg", visibleKey("Source", true));
-writeFileSync(dir + "mute-key.svg", muteKey("Mute", false));
-writeFileSync(dir + "scene-step-key.svg", sceneStepKey("next", undefined));
-writeFileSync(dir + "replay-key.svg", replayKey("armed"));
-writeFileSync(dir + "vcam-key.svg", vcamKey("off"));
-writeFileSync(dir + "marker-key.svg", markerKey(true));
-writeFileSync(dir + "volume-key.svg", muteKey("Volume", false));
+const ctx = { elapsed: { ms: 0, at: 0, running: false }, liveSince: 0, now: 0, titled: false };
+const on: ViewState = {
+	scenes: { scenes: [{ id: 1, name: "Scene" }], program: 1, master: { muted: true } },
+	sources: [{ id: 1, name: "Source", item: 1, visible: false, muted: true }],
+	record: { state: "recording" },
+	stream: { state: "live", connected: true },
+	vcam: { sending: true },
+	replay: { armed: true },
+};
+const off: ViewState = { ...on, scenes: { scenes: [{ id: 1, name: "Scene" }], program: 2, master: { muted: false } }, sources: [{ id: 1, name: "Source", item: 1, visible: true, muted: false }], record: { state: "idle" }, stream: { state: "idle" }, vcam: { sending: false } };
+const kinds: [Kind, Record<string, string>][] = [
+	["scene", { scene: "1" }], ["record", {}], ["record-pause", {}], ["stream", {}], ["source-visible", { source: "1" }], ["mute", { source: "1" }], ["vcam", {}],
+	["scene-step", {}], ["replay", {}], ["marker", {}], ["volume", {}],
+];
+for (const [kind, settings] of kinds) {
+	writeFileSync(`${dir}${kind}-key.svg`, drawKey(look(kind, settings, off, ctx)));
+	writeFileSync(`${dir}${kind}-key-1.svg`, drawKey(look(kind, settings, on, ctx)));
+}

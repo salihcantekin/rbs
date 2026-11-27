@@ -1879,6 +1879,448 @@ export namespace RecordPauseToggleResult {
 		source: number;
 	}
 }
+export namespace RecordPauseParams {
+	/**
+	 * The canvases `record.start`, `record.stop`, `stream.start` and `stream.stop` act on:
+	 * one canvas, or every canvas the studio runs, main first (`all`, protocol 1.42,
+	 * ADR-0111 decision 3).
+	 */
+	export type OutputTarget = "main" | "vertical" | "all";
+
+	/**
+	 * `record.stop`, `stream.start` and `stream.stop`: one canvas (protocol 1.29) or every
+	 * canvas the studio runs, main first (`all`, protocol 1.42); also `record.pause`,
+	 * `record.resume` and `record.pause_toggle` (protocol 1.61). Unknown fields are
+	 * ignored.
+	 */
+	export interface Root {
+		/**
+		 * The canvases; the main one when absent or `null`.
+		 */
+		canvas?: OutputTarget | null;
+	}
+}
+export namespace RecordPauseResult {
+	export type Root = EmptyResult | OutputsResult;
+	/**
+	 * A resource the estimate counts (protocol 1.53).
+	 */
+	export type EstimateResource =
+		| "encoder_sessions"
+		| "encoder_throughput"
+		| "iso_workers"
+		| "iso_render_share"
+		| "cpu_load"
+		| "memory"
+		| "disk_speed"
+		| "disk_space"
+		| "iso_ceiling"
+		| "active_sources"
+		| "other";
+	/**
+	 * Which output kind `output.set_with_vertical` changes.
+	 */
+	export type OutputKind = "record" | "stream";
+
+	export interface EmptyResult {}
+	/**
+	 * The answer of `record.start`, `record.stop`, `stream.start` and `stream.stop` with
+	 * `canvas: "all"` (protocol 1.42): one entry per canvas, main first.
+	 */
+	export interface OutputsResult {
+		/**
+		 * The entries.
+		 */
+		outputs: OutputEntry[];
+	}
+	/**
+	 * One canvas's entry in an `all` answer.
+	 */
+	export interface OutputEntry {
+		/**
+		 * On `started`: the audio encoder's name, absent when no audio is encoded.
+		 */
+		audio_encoder?: string | null;
+		/**
+		 * The canvas.
+		 */
+		canvas: "main" | "vertical";
+		/**
+		 * On `refused`: why.
+		 */
+		error?: OutputError | null;
+		/**
+		 * On a started main recording: the estimate of its plan (protocol 1.53).
+		 */
+		estimate?: EstimateSummary | null;
+		/**
+		 * Which output of the canvas, on `output.break_toggle` only (protocol 1.64),
+		 * which answers for recordings and streams.
+		 */
+		kind?: OutputKind | null;
+		/**
+		 * What happened.
+		 */
+		outcome:
+			"started" | "running" | "stopped" | "not_running" | "paused" | "resumed" | "held" | "not_configured" | "refused";
+		/**
+		 * On a started main recording: marked sources left without a file (protocol
+		 * 1.53).
+		 */
+		skipped?: SkippedTrack[];
+		/**
+		 * On `started`: the video encoder's name.
+		 */
+		video_encoder?: string | null;
+	}
+	/**
+	 * The error object of a refused entry: the same `code`, `message` and `data.kind` a
+	 * single-canvas call would answer with.
+	 */
+	export interface OutputError {
+		/**
+		 * The JSON-RPC error code.
+		 */
+		code: number;
+		data: OutputErrorData;
+		/**
+		 * What went wrong, in words.
+		 */
+		message: string;
+	}
+	/**
+	 * `{ "kind": ... }`.
+	 */
+	export interface OutputErrorData {
+		/**
+		 * The machine-readable error.
+		 */
+		kind:
+			| "parse_error"
+			| "invalid_request"
+			| "method_not_found"
+			| "invalid_params"
+			| "internal"
+			| "batch_unsupported"
+			| "unsupported_protocol"
+			| "not_authenticated"
+			| "auth_failed"
+			| "scope_denied"
+			| "not_permitted"
+			| "busy"
+			| "rate_limited"
+			| "message_too_large"
+			| "not_found"
+			| "conflict"
+			| "undo_conflict"
+			| "file_exists"
+			| "failed"
+			| "forbidden"
+			| "not_ready";
+		[k: string]: unknown | undefined;
+	}
+	/**
+	 * The estimate in `record.start`'s answer (protocol 1.53).
+	 */
+	export interface EstimateSummary {
+		/**
+		 * The plan's level.
+		 */
+		level: "fits" | "heavy" | "over" | "unknown" | "other";
+		/**
+		 * Coded reasons.
+		 */
+		reasons: EstimateReason[];
+		/**
+		 * The resources whose limit is unknown.
+		 */
+		unknown: EstimateResource[];
+	}
+	/**
+	 * A reason of `record.estimate` (protocol 1.53).
+	 */
+	export interface EstimateReason {
+		/**
+		 * The code.
+		 */
+		code:
+			| "unknown"
+			| "no_adapter"
+			| "open_failed"
+			| "sessions"
+			| "sessions_unknown"
+			| "throughput"
+			| "software_fallback"
+			| "cpu_load"
+			| "workers"
+			| "render_share"
+			| "disk_unknown"
+			| "disk_full"
+			| "disk_slow"
+			| "ceiling"
+			| "source_inactive"
+			| "other";
+		/**
+		 * The resource it concerns, when one does.
+		 */
+		resource?: EstimateResource | null;
+		/**
+		 * The track it concerns, when one does.
+		 */
+		track?: EstimateTrack | null;
+	}
+	/**
+	 * A separate track named by the estimate: its source and what it carries.
+	 */
+	export interface EstimateTrack {
+		/**
+		 * What the file carries.
+		 */
+		role: "video" | "audio" | "image" | "other";
+		/**
+		 * The source's id.
+		 */
+		source: number;
+	}
+	/**
+	 * A marked source that has no file in a running recording (protocol 1.46).
+	 */
+	export interface SkippedTrack {
+		/**
+		 * Why.
+		 */
+		reason: "not_heard" | "limit" | "no_picture" | "audio_only" | "open_failed" | "other";
+		/**
+		 * The feed that was not written.
+		 */
+		role: "video" | "audio" | "image" | "other";
+		/**
+		 * The source (`source.list`).
+		 */
+		source: number;
+	}
+}
+export namespace RecordResumeParams {
+	/**
+	 * The canvases `record.start`, `record.stop`, `stream.start` and `stream.stop` act on:
+	 * one canvas, or every canvas the studio runs, main first (`all`, protocol 1.42,
+	 * ADR-0111 decision 3).
+	 */
+	export type OutputTarget = "main" | "vertical" | "all";
+
+	/**
+	 * `record.stop`, `stream.start` and `stream.stop`: one canvas (protocol 1.29) or every
+	 * canvas the studio runs, main first (`all`, protocol 1.42); also `record.pause`,
+	 * `record.resume` and `record.pause_toggle` (protocol 1.61). Unknown fields are
+	 * ignored.
+	 */
+	export interface Root {
+		/**
+		 * The canvases; the main one when absent or `null`.
+		 */
+		canvas?: OutputTarget | null;
+	}
+}
+export namespace RecordResumeResult {
+	export type Root = EmptyResult | OutputsResult;
+	/**
+	 * A resource the estimate counts (protocol 1.53).
+	 */
+	export type EstimateResource =
+		| "encoder_sessions"
+		| "encoder_throughput"
+		| "iso_workers"
+		| "iso_render_share"
+		| "cpu_load"
+		| "memory"
+		| "disk_speed"
+		| "disk_space"
+		| "iso_ceiling"
+		| "active_sources"
+		| "other";
+	/**
+	 * Which output kind `output.set_with_vertical` changes.
+	 */
+	export type OutputKind = "record" | "stream";
+
+	export interface EmptyResult {}
+	/**
+	 * The answer of `record.start`, `record.stop`, `stream.start` and `stream.stop` with
+	 * `canvas: "all"` (protocol 1.42): one entry per canvas, main first.
+	 */
+	export interface OutputsResult {
+		/**
+		 * The entries.
+		 */
+		outputs: OutputEntry[];
+	}
+	/**
+	 * One canvas's entry in an `all` answer.
+	 */
+	export interface OutputEntry {
+		/**
+		 * On `started`: the audio encoder's name, absent when no audio is encoded.
+		 */
+		audio_encoder?: string | null;
+		/**
+		 * The canvas.
+		 */
+		canvas: "main" | "vertical";
+		/**
+		 * On `refused`: why.
+		 */
+		error?: OutputError | null;
+		/**
+		 * On a started main recording: the estimate of its plan (protocol 1.53).
+		 */
+		estimate?: EstimateSummary | null;
+		/**
+		 * Which output of the canvas, on `output.break_toggle` only (protocol 1.64),
+		 * which answers for recordings and streams.
+		 */
+		kind?: OutputKind | null;
+		/**
+		 * What happened.
+		 */
+		outcome:
+			"started" | "running" | "stopped" | "not_running" | "paused" | "resumed" | "held" | "not_configured" | "refused";
+		/**
+		 * On a started main recording: marked sources left without a file (protocol
+		 * 1.53).
+		 */
+		skipped?: SkippedTrack[];
+		/**
+		 * On `started`: the video encoder's name.
+		 */
+		video_encoder?: string | null;
+	}
+	/**
+	 * The error object of a refused entry: the same `code`, `message` and `data.kind` a
+	 * single-canvas call would answer with.
+	 */
+	export interface OutputError {
+		/**
+		 * The JSON-RPC error code.
+		 */
+		code: number;
+		data: OutputErrorData;
+		/**
+		 * What went wrong, in words.
+		 */
+		message: string;
+	}
+	/**
+	 * `{ "kind": ... }`.
+	 */
+	export interface OutputErrorData {
+		/**
+		 * The machine-readable error.
+		 */
+		kind:
+			| "parse_error"
+			| "invalid_request"
+			| "method_not_found"
+			| "invalid_params"
+			| "internal"
+			| "batch_unsupported"
+			| "unsupported_protocol"
+			| "not_authenticated"
+			| "auth_failed"
+			| "scope_denied"
+			| "not_permitted"
+			| "busy"
+			| "rate_limited"
+			| "message_too_large"
+			| "not_found"
+			| "conflict"
+			| "undo_conflict"
+			| "file_exists"
+			| "failed"
+			| "forbidden"
+			| "not_ready";
+		[k: string]: unknown | undefined;
+	}
+	/**
+	 * The estimate in `record.start`'s answer (protocol 1.53).
+	 */
+	export interface EstimateSummary {
+		/**
+		 * The plan's level.
+		 */
+		level: "fits" | "heavy" | "over" | "unknown" | "other";
+		/**
+		 * Coded reasons.
+		 */
+		reasons: EstimateReason[];
+		/**
+		 * The resources whose limit is unknown.
+		 */
+		unknown: EstimateResource[];
+	}
+	/**
+	 * A reason of `record.estimate` (protocol 1.53).
+	 */
+	export interface EstimateReason {
+		/**
+		 * The code.
+		 */
+		code:
+			| "unknown"
+			| "no_adapter"
+			| "open_failed"
+			| "sessions"
+			| "sessions_unknown"
+			| "throughput"
+			| "software_fallback"
+			| "cpu_load"
+			| "workers"
+			| "render_share"
+			| "disk_unknown"
+			| "disk_full"
+			| "disk_slow"
+			| "ceiling"
+			| "source_inactive"
+			| "other";
+		/**
+		 * The resource it concerns, when one does.
+		 */
+		resource?: EstimateResource | null;
+		/**
+		 * The track it concerns, when one does.
+		 */
+		track?: EstimateTrack | null;
+	}
+	/**
+	 * A separate track named by the estimate: its source and what it carries.
+	 */
+	export interface EstimateTrack {
+		/**
+		 * What the file carries.
+		 */
+		role: "video" | "audio" | "image" | "other";
+		/**
+		 * The source's id.
+		 */
+		source: number;
+	}
+	/**
+	 * A marked source that has no file in a running recording (protocol 1.46).
+	 */
+	export interface SkippedTrack {
+		/**
+		 * Why.
+		 */
+		reason: "not_heard" | "limit" | "no_picture" | "audio_only" | "open_failed" | "other";
+		/**
+		 * The feed that was not written.
+		 */
+		role: "video" | "audio" | "image" | "other";
+		/**
+		 * The source (`source.list`).
+		 */
+		source: number;
+	}
+}
 export namespace ProfileListParams {
 	/**
 	 * Parameters of a method that takes none. Unknown fields are ignored.
@@ -3055,6 +3497,8 @@ export interface Methods {
 	"record.start": { params: RecordStartParams.Root; result: RecordStartResult.Root };
 	"record.stop": { params: RecordStopParams.Root; result: RecordStopResult.Root };
 	"record.pause_toggle": { params: RecordPauseToggleParams.Root; result: RecordPauseToggleResult.Root };
+	"record.pause": { params: RecordPauseParams.Root; result: RecordPauseResult.Root };
+	"record.resume": { params: RecordResumeParams.Root; result: RecordResumeResult.Root };
 	"profile.list": { params: ProfileListParams.Root; result: ProfileListResult.Root };
 	"stream.status": { params: StreamStatusParams.Root; result: StreamStatusResult.Root };
 	"stream.start": { params: StreamStartParams.Root; result: StreamStartResult.Root };

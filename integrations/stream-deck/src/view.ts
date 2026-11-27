@@ -1,10 +1,14 @@
 import type { LinkStatus } from "./rbs-client/client.js";
-import { type LinkText, linkKey, markerKey, muteKey, pauseKey, recordKey, replayKey, sceneKey, sceneStepKey, streamKey, vcamKey, visibleKey } from "./pictures/pictures.js";
+import { type KeyLook, type LinkText, drawKey, glyphs, linkKey } from "./pictures/pictures.js";
+import { tokens } from "./pictures/tokens.js";
 
 /** Settings of each action (stored by Stream Deck; ids are strings from the inspector). */
 export interface SceneSettings { scene?: string; sceneName?: string; color?: string; direction?: "next" | "previous"; step?: string }
 export interface SourceSettings { source?: string; sourceName?: string }
-export type Settings = SceneSettings & SourceSettings;
+/** What a press does on a two-state key: both ways, only the first (start, show, mute, pause), or only the second. */
+export type Mode = "toggle" | "on" | "off";
+export interface ModeSettings { mode?: Mode }
+export type Settings = SceneSettings & SourceSettings & ModeSettings;
 export type Kind = "scene" | "record" | "record-pause" | "scene-step" | "replay" | "vcam" | "marker" | "volume" | "stream" | "source-visible" | "mute";
 
 /** The parts of RBS's state the keys read, loosely typed (the server may add fields). */
@@ -70,55 +74,108 @@ export function stepTarget(state: ViewState, direction: "next" | "previous"): { 
 	return scenes[i];
 }
 
-export function renderKey(kind: Kind, settings: Settings, link: LinkStatus, state: ViewState, ctx: RenderContext): string {
-	const { elapsed, now, titled } = ctx;
+const live = (g: string) => g.replace(/currentColor/g, tokens.live);
+const validColor = (c: string | undefined) => (/^#[0-9a-f]{6}$/i.test(c ?? "") ? c : undefined);
+export const modeOf = (s: Settings): Mode => (s.mode === "on" || s.mode === "off" ? s.mode : "toggle");
+
+/** The key's state index (the manifest's two states): what the user can give a title of its own. */
+export function stateIndex(kind: Kind, settings: Settings, state: ViewState): 0 | 1 {
+	switch (kind) {
+		case "scene": return state.scenes?.program === Number(settings.scene) ? 1 : 0;
+		case "record": return state.record?.state === "recording" ? 1 : 0;
+		case "record-pause": return state.record?.state === "recording" && state.record.paused ? 1 : 0;
+		case "stream": return state.stream?.state === "live" ? 1 : 0;
+		case "source-visible": {
+			const src = state.sources?.find((x) => String(x.id) === settings.source);
+			return src && src.item !== undefined && src.visible === false ? 1 : 0;
+		}
+		case "mute": return (settings.source === "master" ? state.scenes?.master?.muted : state.sources?.find((x) => String(x.id) === settings.source)?.muted) ? 1 : 0;
+		case "vcam": return state.vcam?.sending ? 1 : 0;
+		default: return 0;
+	}
+}
+
+/** The look of one key. Pure: everything it needs is passed in. */
+export function look(kind: Kind, settings: Settings, state: ViewState, ctx: RenderContext): KeyLook {
+	const { elapsed, now } = ctx;
 	const pulse = Math.floor(now / 1000) % 2 === 0;
-	if (link.state !== "ready") return linkKey(linkText(link));
+	const mode = modeOf(settings);
+	const untitled = ctx.titled;
 	switch (kind) {
 		case "scene": {
 			const id = Number(settings.scene);
-			const scene = state.scenes?.scenes.find((s) => s.id === id);
-			return sceneKey(scene?.name ?? settings.sceneName ?? "", scene !== undefined && state.scenes?.program === id, scene === undefined, titled, /^#[0-9a-f]{6}$/i.test(settings.color ?? "") ? settings.color : undefined);
+			const scene = state.scenes?.scenes.find((x) => x.id === id);
+			if (!scene) return { glyph: glyphs.scene, label: "Missing scene", tone: "dim", untitled };
+			const active = state.scenes?.program === id;
+			return { glyph: glyphs.scene, label: scene.name, tone: active ? "accent" : "neutral", accent: validColor(settings.color), dot: active, untitled };
 		}
 		case "record": {
 			const r = state.record;
-			if (r?.state !== "recording") return recordKey("idle", undefined, titled);
-			const ms = elapsed.ms + (elapsed.running ? now - elapsed.at : 0);
-			return recordKey(r.paused ? "paused" : "recording", formatElapsed(ms), titled, pulse);
+			const recording = r?.state === "recording";
+			const time = formatElapsed(elapsed.ms + (elapsed.running ? now - elapsed.at : 0));
+			if (!recording) return mode === "off" ? { glyph: glyphs.stop, label: "Stop", tone: "dim", untitled } : { glyph: live(glyphs.recordIdle), label: "Record", tone: "neutral", untitled };
+			if (mode === "on") return { glyph: live(glyphs.recordIdle), label: "Recording", sub: time, tone: "live", ring: true, pulse, untitled };
+			return { glyph: glyphs.stop, label: r?.paused ? "Stop (paused)" : "Stop", sub: time, tone: "live", ring: !r?.paused, pulse, untitled };
 		}
 		case "record-pause": {
 			const r = state.record;
-			return pauseKey(r?.state !== "recording" ? "idle" : r.paused ? "paused" : "recording", titled);
+			const recording = r?.state === "recording";
+			const paused = recording && r.paused === true;
+			if (paused) return mode === "on" ? { glyph: glyphs.pause, label: "Paused", tone: "live", untitled } : { glyph: glyphs.play, label: "Resume", tone: "live", untitled };
+			if (mode === "off") return { glyph: glyphs.play, label: "Resume", tone: "dim", untitled };
+			return { glyph: glyphs.pause, label: "Pause", tone: recording ? "neutral" : "dim", untitled };
 		}
 		case "stream": {
 			const s = state.stream;
-			if (s?.state !== "live") return streamKey("idle", titled);
-			const sub = ctx.liveSince > 0 ? formatElapsed(now - ctx.liveSince) : undefined;
-			return streamKey(s.connected ? "live" : (s.connects ?? 0) > 0 ? "reconnecting" : "connecting", titled, sub, pulse);
+			const on = s?.state === "live";
+			if (!on) return mode === "off" ? { glyph: glyphs.stream, label: "Stop", tone: "dim", untitled } : { glyph: glyphs.stream, label: "Stream", tone: "neutral", untitled };
+			const status = s.connected ? (ctx.liveSince > 0 ? formatElapsed(now - ctx.liveSince) : "Live") : (s.connects ?? 0) > 0 ? "Reconnecting" : "Connecting";
+			return { glyph: glyphs.stream, label: mode === "on" ? "Live" : "Stop", sub: status, tone: "live", ring: true, pulse, untitled };
 		}
 		case "source-visible": {
-			const src = state.sources?.find((s) => String(s.id) === settings.source);
-			const visible = src && src.item !== undefined ? src.visible !== false : undefined;
-			return visibleKey(src?.name ?? settings.sourceName ?? "", visible, titled);
+			const src = state.sources?.find((x) => String(x.id) === settings.source);
+			const name = src?.name ?? settings.sourceName ?? "Source";
+			if (!src || src.item === undefined) return { glyph: glyphs.eyeShut, label: name, sub: "Not in scene", tone: "dim", untitled };
+			const visible = src.visible !== false;
+			if (mode === "on") return { glyph: glyphs.eyeOpen, label: name, sub: "Show", tone: visible ? "accent" : "neutral", untitled };
+			if (mode === "off") return { glyph: glyphs.eyeShut, label: name, sub: "Hide", tone: visible ? "neutral" : "accent", untitled };
+			return { glyph: visible ? glyphs.eyeOpen : glyphs.eyeShut, label: name, tone: visible ? "neutral" : "dim", untitled };
+		}
+		case "mute": {
+			const master = settings.source === "master";
+			const src = state.sources?.find((x) => String(x.id) === settings.source);
+			const name = master ? "Master" : (src?.name ?? settings.sourceName ?? "Mute");
+			const muted = master ? (state.scenes ? state.scenes.master?.muted === true : undefined) : src ? src.muted === true : undefined;
+			if (mode === "on") return { glyph: glyphs.speakerOff, label: name, sub: "Mute", tone: muted ? "accent" : "neutral", untitled };
+			if (mode === "off") return { glyph: glyphs.speakerOn, label: name, sub: "Unmute", tone: muted === false ? "accent" : "neutral", untitled };
+			if (muted === undefined) return { glyph: glyphs.speaker, label: name, tone: "dim", untitled };
+			return { glyph: muted ? glyphs.speakerOff : glyphs.speakerOn, label: name, tone: muted ? "dim" : "neutral", untitled };
+		}
+		case "vcam": {
+			const on = state.vcam?.sending === true;
+			if (mode === "on") return { glyph: glyphs.camera, label: on ? "Camera on" : "Start cam", tone: on ? "accent" : "neutral", dot: on, untitled };
+			if (mode === "off") return { glyph: glyphs.camera, label: "Stop cam", tone: on ? "neutral" : "dim", untitled };
+			return { glyph: glyphs.camera, label: on ? "Camera on" : "Virtual cam", tone: on ? "accent" : "neutral", dot: on, untitled };
 		}
 		case "scene-step": {
 			const dir = settings.direction === "previous" ? "previous" : "next";
-			return sceneStepKey(dir, stepTarget(state, dir)?.name, titled);
+			const target = stepTarget(state, dir)?.name;
+			return { glyph: glyphs[dir], label: dir === "next" ? "Next scene" : "Previous", sub: target, tone: target ? "neutral" : "dim", untitled };
 		}
 		case "replay": {
 			const r = state.replay;
-			return replayKey(r?.saving ? "saving" : r?.armed ? "armed" : "off", titled);
+			if (r?.saving) return { glyph: glyphs.replay, label: "Saving", tone: "accent", ring: true, pulse, untitled };
+			return { glyph: glyphs.replay, label: r?.armed ? "Save replay" : "Replay off", tone: r?.armed ? "neutral" : "dim", untitled };
 		}
-		case "vcam":
-			return vcamKey(state.vcam?.sending ? "on" : "off", titled);
 		case "marker":
-			return markerKey(state.record?.state === "recording", titled);
+			return { glyph: glyphs.marker, label: "Marker", tone: state.record?.state === "recording" ? "neutral" : "dim", untitled };
 		case "volume":
-			return ""; // a dial: drawn by `dialView`, not as a picture
-		case "mute": {
-			if (settings.source === "master") return muteKey("Master", state.scenes ? state.scenes.master?.muted === true : undefined, titled);
-			const src = state.sources?.find((s) => String(s.id) === settings.source);
-			return muteKey(src?.name ?? settings.sourceName ?? "", src ? src.muted === true : undefined, titled);
-		}
+			return { glyph: glyphs.volume, label: "Volume", tone: "neutral", untitled };
 	}
+}
+
+/** The SVG of one key. */
+export function renderKey(kind: Kind, settings: Settings, link: LinkStatus, state: ViewState, ctx: RenderContext): string {
+	if (link.state !== "ready") return linkKey(linkText(link));
+	return drawKey(look(kind, settings, state, ctx));
 }

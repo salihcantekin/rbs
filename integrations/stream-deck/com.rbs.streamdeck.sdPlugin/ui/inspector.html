@@ -47,6 +47,13 @@
 		</sdpi-item>
 	</div>
 
+	<div id="mode" hidden>
+		<sdpi-item label="When pressed">
+			<sdpi-select setting="mode" id="mode-select" placeholder="Toggle"></sdpi-select>
+		</sdpi-item>
+		<p class="status">Use "only" to give start and stop (or show and hide, mute and unmute, pause and resume) separate keys.</p>
+	</div>
+
 	<sdpi-heading>RBS connection</sdpi-heading>
 	<sdpi-item label="Port">
 		<sdpi-textfield setting="port" global placeholder="4456" pattern="[0-9]*"></sdpi-textfield>
@@ -65,6 +72,24 @@
 			const uuid = info.actionInfo.action;
 			const kind = uuid.slice(uuid.lastIndexOf(".") + 1);
 			document.querySelector(`[data-action="${kind}"]`)?.removeAttribute("hidden");
+			const modes = {
+				record: ["Start and stop", "Start only", "Stop only"],
+				stream: ["Start and stop", "Start only", "Stop only"],
+				vcam: ["Start and stop", "Start only", "Stop only"],
+				"record-pause": ["Pause and resume", "Pause only", "Resume only"],
+				"source-visible": ["Show and hide", "Show only", "Hide only"],
+				mute: ["Mute and unmute", "Mute only", "Unmute only"],
+			}[kind];
+			if (modes) {
+				const sel = document.getElementById("mode-select");
+				["toggle", "on", "off"].forEach((v, i) => {
+					const o = document.createElement("option");
+					o.value = v;
+					o.textContent = modes[i];
+					sel.appendChild(o);
+				});
+				document.getElementById("mode").removeAttribute("hidden");
+			}
 		})();
 		client.sendToPropertyInspector.subscribe((ev) => {
 			const p = ev.payload;

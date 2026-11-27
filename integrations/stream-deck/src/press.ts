@@ -1,6 +1,6 @@
 import { RbsError } from "./rbs-client/protocol.js";
 import type { RbsClient } from "./rbs-client/client.js";
-import { type Kind, type Settings, type ViewState, stepTarget } from "./view.js";
+import { type Kind, type Settings, type ViewState, modeOf, stepTarget } from "./view.js";
 
 /** Why a press failed, in words for the inspector's status line. */
 export function explain(err: unknown): string {
@@ -25,7 +25,10 @@ export async function press(kind: Kind, settings: Settings, client: RbsClient): 
 			return;
 		}
 		case "record": {
-			if (state.record?.state === "recording") await client.call("record.stop", {});
+			const recording = state.record?.state === "recording";
+			const mode = modeOf(settings);
+			if ((mode === "on" && recording) || (mode === "off" && !recording)) return; // not this key's job
+			if (recording) await client.call("record.stop", {});
 			else {
 				// The profile RBS has selected: the user chose it in RBS, not on the key.
 				const current = (await client.call("profile.list", {})).current;
@@ -47,7 +50,10 @@ export async function press(kind: Kind, settings: Settings, client: RbsClient): 
 			return;
 		}
 		case "vcam": {
-			if (state.vcam?.sending) await client.call("vcam.stop", {});
+			const on = state.vcam?.sending === true;
+			const mode = modeOf(settings);
+			if ((mode === "on" && on) || (mode === "off" && !on)) return;
+			if (on) await client.call("vcam.stop", {});
 			else await client.call("vcam.start", {});
 			return;
 		}
@@ -57,30 +63,46 @@ export async function press(kind: Kind, settings: Settings, client: RbsClient): 
 		}
 		case "record-pause": {
 			if (state.record?.state !== "recording") return;
-			await client.call("record.pause_toggle", {});
+			const paused = state.record.paused === true;
+			const mode = modeOf(settings);
+			if (mode === "on") {
+				if (!paused) await client.call("record.pause", {});
+			} else if (mode === "off") {
+				if (paused) await client.call("record.resume", {});
+			} else await client.call("record.pause_toggle", {});
 			return;
 		}
 		case "stream": {
-			if (state.stream?.state === "live") await client.call("stream.stop", {});
+			const live = state.stream?.state === "live";
+			const mode = modeOf(settings);
+			if ((mode === "on" && live) || (mode === "off" && !live)) return;
+			if (live) await client.call("stream.stop", {});
 			else await client.call("stream.start", {});
 			return;
 		}
 		case "source-visible": {
 			const src = state.sources?.find((s) => String(s.id) === settings.source);
 			if (!src || src.item === undefined) return; // not in the scene on air: nothing to do
-			await client.call("item.set_visible", { item: src.item, visible: src.visible === false } as never);
+			const visible = src.visible !== false;
+			const want = modeOf(settings) === "toggle" ? !visible : modeOf(settings) === "on";
+			if (want !== visible) await client.call("item.set_visible", { item: src.item, visible: want } as never);
 			return;
 		}
 		case "volume": // a dial press mutes, like the mute key
 		case "mute": {
 			if (settings.source === "master") {
-				await client.call("canvas.set_master_muted", { muted: state.scenes?.master?.muted !== true });
+				const muted = state.scenes?.master?.muted === true;
+				const want = modeOf(settings) === "toggle" ? !muted : modeOf(settings) === "on";
+				if (want !== muted) await client.call("canvas.set_master_muted", { muted: want });
 				return;
 			}
 			const src = state.sources?.find((s) => String(s.id) === settings.source);
 			const source = Number(settings.source);
 			if (!Number.isInteger(source)) throw new Error("Choose a source in the inspector.");
-			await client.call("source.set_muted", { source, muted: src ? src.muted !== true : true });
+			const muted = src?.muted === true;
+			const mode = modeOf(settings);
+			const want = kind === "volume" || mode === "toggle" ? (src ? !muted : true) : mode === "on";
+			if (!src || want !== muted) await client.call("source.set_muted", { source, muted: want });
 			return;
 		}
 	}

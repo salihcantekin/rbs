@@ -4,7 +4,7 @@ import type { JsonObject } from "@elgato/utils";
 import { dialFeedback, toDataUrl } from "../pictures/pictures.js";
 import { explain, press, turnVolume } from "../press.js";
 import { client, elapsed, lease, live } from "../runtime.js";
-import { type Kind, type Settings, type ViewState, dialView, linkText, renderKey } from "../view.js";
+import { type Kind, type Settings, type ViewState, dialView, linkText, renderKey, stateIndex } from "../view.js";
 
 /** Every action instance, so a state change repaints all keys. */
 const instances = new Set<RbsKeyAction>();
@@ -13,7 +13,8 @@ const shown = new Map<string, string>();
 const known = new Map<string, { settings: Settings; action: WillAppearEvent["action"] }>();
 const lastError = new Map<string, string>();
 /** Keys whose user set a Stream Deck title: the app draws it, so the picture has no text. */
-const titled = new Set<string>();
+const titles = new Map<string, Map<number, boolean>>();
+const stateOf = new Map<string, number>();
 const busy = new Set<string>();
 let tick: ReturnType<typeof setInterval> | undefined;
 
@@ -34,7 +35,13 @@ function repaintAll(fromTick = false): void {
 			continue;
 		}
 		if (!action.isKey()) continue;
-		const svg = toDataUrl(renderKey(kind, settings, client.status, state, { elapsed, liveSince: live.since, now, titled: titled.has(id) }));
+		// Two-state keys: the user may give each state its own title (and Stream Deck draws it).
+		const idx = client.status.state === "ready" ? stateIndex(kind, settings, state) : 0;
+		if (stateOf.get(id) !== idx) {
+			stateOf.set(id, idx);
+			void action.setState(idx);
+		}
+		const svg = toDataUrl(renderKey(kind, settings, client.status, state, { elapsed, liveSince: live.since, now, titled: titles.get(id)?.get(idx) === true }));
 		if (shown.get(id) === svg) continue;
 		shown.set(id, svg);
 		void action.setImage(svg);
@@ -102,7 +109,8 @@ export abstract class RbsKeyAction extends SingletonAction<JsonObject> {
 		known.delete(ev.action.id);
 		shown.delete(ev.action.id);
 		lastError.delete(ev.action.id);
-		titled.delete(ev.action.id);
+		titles.delete(ev.action.id);
+		stateOf.delete(ev.action.id);
 		lease.release(ev.action.id);
 		updateTick();
 	}
@@ -115,8 +123,9 @@ export abstract class RbsKeyAction extends SingletonAction<JsonObject> {
 	}
 
 	override onTitleParametersDidChange(ev: TitleParametersDidChangeEvent<JsonObject>): void {
-		if (ev.payload.title) titled.add(ev.action.id);
-		else titled.delete(ev.action.id);
+		const m = titles.get(ev.action.id) ?? new Map<number, boolean>();
+		m.set(ev.payload.state ?? 0, Boolean(ev.payload.title));
+		titles.set(ev.action.id, m);
 		shown.delete(ev.action.id);
 		repaintAll();
 	}

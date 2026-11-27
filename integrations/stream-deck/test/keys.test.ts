@@ -5,7 +5,7 @@ import { fit } from "../src/pictures/pictures.js";
 import { ManualClock } from "../src/rbs-client/clock.js";
 import { RbsClient } from "../src/rbs-client/client.js";
 import { press, turnVolume } from "../src/press.js";
-import { type Elapsed, dialView, formatElapsed, renderKey, stepTarget, type ViewState } from "../src/view.js";
+import { type Elapsed, dialView, formatElapsed, look, renderKey, stateIndex, stepTarget, type ViewState } from "../src/view.js";
 import { FakeServer } from "./fake-server.js";
 
 const ready = { state: "ready" } as const;
@@ -60,9 +60,26 @@ describe("renderKey", () => {
 		renderKey(kind, settings, link, s, { elapsed: noElapsed, liveSince: 0, now: 0, titled: false });
 
 	it("highlights the program scene only", () => {
-		expect(svg("scene", { scene: "1" })).toContain("#16355f");
-		expect(svg("scene", { scene: "2" })).not.toContain("#16355f");
+		const c = { elapsed: noElapsed, liveSince: 0, now: 0, titled: false };
+		expect(look("scene", { scene: "1" }, state, c).tone).toBe("accent");
+		expect(look("scene", { scene: "2" }, state, c).tone).toBe("neutral");
 		expect(svg("scene", { scene: "9" })).toContain("Missing");
+	});
+	it("two-state keys report their state index", () => {
+		expect(stateIndex("record", {}, state)).toBe(1);
+		expect(stateIndex("scene", { scene: "1" }, state)).toBe(1);
+		expect(stateIndex("scene", { scene: "2" }, state)).toBe(0);
+		expect(stateIndex("source-visible", { source: "7" }, state)).toBe(1); // hidden
+		expect(stateIndex("mute", { source: "7" }, state)).toBe(1); // muted
+		expect(stateIndex("mute", { source: "master" }, state)).toBe(1);
+		expect(stateIndex("marker", {}, state)).toBe(0);
+	});
+	it("a key set to one job labels it so", () => {
+		const c = { elapsed: noElapsed, liveSince: 0, now: 0, titled: false };
+		expect(look("record", { mode: "on" }, { ...state, record: { state: "idle" } }, c).label).toBe("Record");
+		expect(look("record", { mode: "on" }, state, c).label).toBe("Recording");
+		expect(look("record", { mode: "off" }, { ...state, record: { state: "idle" } }, c)).toMatchObject({ label: "Stop", tone: "dim" });
+		expect(look("record-pause", { mode: "off" }, state, c).tone).toBe("dim");
 	});
 	it("shows the link state instead of RBS state when not ready", () => {
 		expect(svg("scene", { scene: "1" }, state, { state: "unreachable" })).toContain(">connected<");
@@ -83,6 +100,26 @@ describe("renderKey", () => {
 		const out = renderKey("record", {}, ready, state, { elapsed: { ms: 61_000, at: 1000, running: true }, liveSince: 0, now: 4000, titled: false });
 		expect(out).toContain("01:04");
 		expect(formatElapsed(3_725_000)).toBe("1:02:05");
+	});
+});
+
+describe("press modes", () => {
+	it("a start-only key does nothing while recording, a stop-only key nothing while idle", async () => {
+		const server = await FakeServer.start();
+		server.options.answers["record.status"] = { seq: { "record.state": 1 }, data: { state: "recording" } };
+		const client = new RbsClient({ clock: new ManualClock() });
+		client.configure(server.port, "rbs1_good");
+		client.start();
+		await new Promise<void>((r) => client.onStatus((st) => st.state === "ready" && r()));
+		const before = server.requests.length;
+		await press("record", { mode: "on" }, client);
+		expect(server.requests.length).toBe(before);
+		await press("record", { mode: "off" }, client);
+		expect(server.requests.slice(-1)[0]?.method).toBe("record.stop");
+		await press("record-pause", { mode: "on" }, client);
+		expect(server.requests.slice(-1)[0]?.method).toBe("record.pause");
+		client.stop();
+		await server.stop();
 	});
 });
 
