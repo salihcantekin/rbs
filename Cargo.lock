@@ -5672,6 +5672,10 @@ name = "rbs-params"
 version = "0.0.1"
 
 [[package]]
+name = "rbs-peer"
+version = "0.0.1"
+
+[[package]]
 name = "rbs-platform"
 version = "0.0.1"
 dependencies = [
