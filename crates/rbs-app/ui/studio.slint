@@ -2699,74 +2699,75 @@ component ArrangeFields inherits Section {
     hint: data.locked
         ? @tr("Unlock the source to change its transform.")
         : @tr("Drag the rotation, or turn by 90 with the buttons.");
-    // Text buttons in captioned pairs (owner 2026-11-27, replacing ADR-0084's icon rows):
-    // every command in Properties is a dense text button. Center H/V stay in the menus.
+    // Icon buttons, each named in its tooltip (owner 2026-11-27: an icon that says it
+    // well replaces a text button). Center H/V stay in the menus.
     Field {
-        label: @tr("Flip");
-        ActionPair {
-            first: @tr("Horizontal");
-            first-name: @tr("Flip {} horizontally", data.name);
-            first-lead: IconName.flip-h;
-            first-checked: data.flip-h;
-            first-enabled: !data.locked;
-            first-clicked => { Studio.transform-source(data.id, 0); }
-            second: @tr("Vertical");
-            second-name: @tr("Flip {} vertically", data.name);
-            second-lead: IconName.flip-v;
-            second-checked: data.flip-v;
-            second-enabled: !data.locked;
-            second-clicked => { Studio.transform-source(data.id, 1); }
-        }
-    }
-    Field {
-        label: @tr("Rotate by 90°");
-        ActionPair {
-            first: @tr("Left");
-            first-name: @tr("Rotate {} 90 degrees counter-clockwise", data.name);
-            first-lead: IconName.rotate-ccw;
-            first-enabled: !data.locked;
-            first-clicked => { Studio.transform-source(data.id, 3); }
-            second: @tr("Right");
-            second-name: @tr("Rotate {} 90 degrees clockwise", data.name);
-            second-lead: IconName.rotate-cw;
-            second-enabled: !data.locked;
-            second-clicked => { Studio.transform-source(data.id, 2); }
+        label: @tr("Flip and rotate");
+        HorizontalLayout {
+            spacing: Tokens.size-field-gap;
+            alignment: start;
+            IconButton {
+                icon: IconName.flip-h;
+                name: @tr("Flip {} horizontally", data.name);
+            checked: data.flip-h;
+                enabled: !data.locked;
+                clicked => { Studio.transform-source(data.id, 0); }
+            }
+            IconButton {
+                icon: IconName.flip-v;
+                name: @tr("Flip {} vertically", data.name);
+            checked: data.flip-v;
+                enabled: !data.locked;
+                clicked => { Studio.transform-source(data.id, 1); }
+            }
+            IconButton {
+                icon: IconName.rotate-ccw;
+                name: @tr("Rotate {} 90 degrees counter-clockwise", data.name);
+                enabled: !data.locked;
+                clicked => { Studio.transform-source(data.id, 3); }
+            }
+            IconButton {
+                icon: IconName.rotate-cw;
+                name: @tr("Rotate {} 90 degrees clockwise", data.name);
+                enabled: !data.locked;
+                clicked => { Studio.transform-source(data.id, 2); }
+            }
         }
     }
     Field {
         label: @tr("Place on the canvas");
-        VerticalLayout {
+        HorizontalLayout {
             spacing: Tokens.size-field-gap;
-            ActionPair {
-                first: @tr("Fit");
-                first-name: @tr("Fit {} inside the canvas", data.name);
-                first-lead: IconName.fit;
-                first-enabled: known && !data.locked;
-                first-clicked => { Studio.transform-source(data.id, 5); }
-                second: @tr("Fill");
-                second-name: @tr("Fill the canvas with {}", data.name);
-                second-lead: IconName.fill-canvas;
-                second-enabled: known && !data.locked;
-                second-clicked => { Studio.transform-source(data.id, 6); }
+            alignment: start;
+            IconButton {
+                icon: IconName.fit;
+                name: @tr("Fit {} inside the canvas", data.name);
+                enabled: known && !data.locked;
+                clicked => { Studio.transform-source(data.id, 5); }
             }
-            ActionPair {
-                first: @tr("Stretch");
-                first-name: @tr("Stretch {} to the canvas", data.name);
-                first-lead: IconName.stretch;
-                first-enabled: known && !data.locked;
-                first-clicked => { Studio.transform-source(data.id, 7); }
-                second: @tr("Centre");
-                second-name: @tr("Center {} on the canvas", data.name);
-                second-lead: IconName.center;
-                second-enabled: !data.locked;
-                second-clicked => { Studio.transform-source(data.id, 8); }
+            IconButton {
+                icon: IconName.fill-canvas;
+                name: @tr("Fill the canvas with {}", data.name);
+                enabled: known && !data.locked;
+                clicked => { Studio.transform-source(data.id, 6); }
             }
-            ActionPair {
-                first: @tr("Reset");
-                first-name: @tr("Reset the transform of {}", data.name);
-                first-lead: IconName.reset;
-                first-enabled: known && !data.locked;
-                first-clicked => { Studio.transform-source(data.id, 9); }
+            IconButton {
+                icon: IconName.stretch;
+                name: @tr("Stretch {} to the canvas", data.name);
+                enabled: known && !data.locked;
+                clicked => { Studio.transform-source(data.id, 7); }
+            }
+            IconButton {
+                icon: IconName.center;
+                name: @tr("Center {} on the canvas", data.name);
+                enabled: !data.locked;
+                clicked => { Studio.transform-source(data.id, 8); }
+            }
+            IconButton {
+                icon: IconName.reset;
+                name: @tr("Reset the transform of {}", data.name);
+                enabled: known && !data.locked;
+                clicked => { Studio.transform-source(data.id, 9); }
             }
         }
     }
@@ -4283,11 +4284,9 @@ component TextFields inherits VerticalLayout {
                 vertical-alignment: center;
                 overflow: elide;
             }
-            Button {
-                lead: IconName.folder;
-                text: @tr("Choose…");
-                accessible-name: @tr("Choose a file for {}", data.name);
-                dense: true;
+            IconButton {
+                icon: IconName.folder;
+                name: @tr("Choose a file for {}", data.name);
                 clicked => { Studio.choose-text-file(t.id); }
             }
             if t.file != "": IconButton {

@@ -186,34 +186,28 @@ export component SourceOptions inherits Rectangle {
                 }
                 if root.timed: Field {
                     label: @tr("Show for");
-                    NumberField {
-                        live: false;
-                        label: @tr("Show duration of {} in milliseconds", data.name);
-                        unit: @tr("ms");
-                        value: data.show-for-ms;
-                        edited(v) => { Studio.set-item-show-for(data.item-id, max(0, min(600000, round(v)))); }
-                    }
-                }
-                if root.timed: HorizontalLayout {
-                    spacing: Tokens.size-field-gap;
-                    Button {
-                        horizontal-stretch: 1;
-                        preferred-width: 0;
-                        lead: IconName.eye;
-                        text: @tr("Show now");
-                        kind: "primary";
-                        dense: true;
-                        enabled: data.show-for-ms > 0 && !data.visible;
-                        clicked => { Studio.show-item(data.item-id); }
-                    }
-                    Button {
-                        horizontal-stretch: 1;
-                        preferred-width: 0;
-                        lead: IconName.eraser;
-                        text: @tr("Clear");
-                        dense: true;
-                        enabled: data.show-for-ms > 0;
-                        clicked => { Studio.set-item-show-for(data.item-id, 0); }
+                    HorizontalLayout {
+                        spacing: Tokens.size-field-gap;
+                        NumberField {
+                            horizontal-stretch: 1;
+                            live: false;
+                            label: @tr("Show duration of {} in milliseconds", data.name);
+                            unit: @tr("ms");
+                            value: data.show-for-ms;
+                            edited(v) => { Studio.set-item-show-for(data.item-id, max(0, min(600000, round(v)))); }
+                        }
+                        IconButton {
+                            icon: IconName.eye;
+                            name: @tr("Show {} now", data.name);
+                            enabled: data.show-for-ms > 0 && !data.visible;
+                            clicked => { Studio.show-item(data.item-id); }
+                        }
+                        IconButton {
+                            icon: IconName.eraser;
+                            name: @tr("Clear the show duration of {}", data.name);
+                            enabled: data.show-for-ms > 0;
+                            clicked => { Studio.set-item-show-for(data.item-id, 0); }
+                        }
                     }
                 }
                 // Custom glide (ADR-0100): only for a picture source with more than one place.
