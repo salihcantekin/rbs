@@ -986,19 +986,34 @@ fn fill_font_picker(ctx: &Ctx, filter: &str) {
             .enumerate()
             .map(|(i, name)| PickerRow {
                 name: name.as_str().into(),
-                note: "".into(),
                 index: i as i32,
+                font: name.as_str().into(),
+                action: picker_action(name).into(),
+                ..PickerRow::default()
             })
             .collect();
         let o = w.global::<Overlays>();
-        let status = if rows.is_empty() {
-            "No font on this computer has that in its name."
+        let (title, text) = if rows.is_empty() {
+            (
+                "Nothing matches",
+                "No font on this computer has that in its name.",
+            )
         } else {
-            ""
+            ("", "")
         };
-        o.set_picker_status(status.into());
+        o.set_picker_empty_title(title.into());
+        o.set_picker_empty_text(text.into());
         o.set_picker_rows(ModelRc::new(VecModel::from(rows)));
     });
+}
+
+/// The primary button's text for a family: its name when it is short.
+fn picker_action(family: &str) -> String {
+    if family.chars().count() <= 22 {
+        format!("Add {family}")
+    } else {
+        "Add this font".to_owned()
+    }
 }
 
 /// The Settings window's picker callbacks: a filter refills the list, a pick goes back

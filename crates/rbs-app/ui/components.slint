@@ -3877,6 +3877,143 @@ export component ListRow inherits Rectangle {
     FocusRing { show: focus.ring; border-radius: Tokens.radius-md; }
 }
 
+// One row of the searchable picker (design system, "Searchable picker"): a lead tile
+// (the row's picture in a 16:9 well, or the kind's icon on `accent.subtle` until a
+// picture comes; an "Aa" sample in the row's own font for fonts), the name and a detail
+// line, a badge, and a check on the highlighted row. Hover is a `surface.overlay` plate;
+// the highlighted row is `accent.subtle` with an accent border and an accent edge on
+// its start (never colour alone: the check). A click highlights it, a double-click
+// chooses it. It takes no focus: the picker's filter field keeps the keys.
+export component PickerItem inherits Rectangle {
+    in property <PickerRow> item;
+    in property <bool> fonts;
+    in property <bool> selected;
+    // Draw the name in the row's own font family (rows near the view only, so a long
+    // font list loads only the families shown).
+    in property <bool> own-font;
+    callback clicked();
+    callback chosen();
+    property <string> family: root.own-font && root.item.font != "" ? root.item.font : Theme.font-family;
+    clip: true;
+    border-radius: Tokens.radius-sm;
+    border-width: root.selected ? Tokens.size-border : 0px;
+    border-color: Theme.accent;
+    background: root.selected ? Theme.accent-subtle : touch.has-hover ? Theme.surface-overlay : transparent;
+    accessible-role: list-item;
+    accessible-label: root.item.name;
+    accessible-description: root.item.badge != "" && root.item.note != "" ? root.item.note + ", " + root.item.badge
+        : root.item.badge != "" ? root.item.badge : root.item.note;
+    accessible-item-selectable: true;
+    accessible-item-selected: root.selected;
+    accessible-action-default => { root.chosen(); }
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+        double-clicked => { root.chosen(); }
+    }
+    if root.selected: Rectangle {
+        x: 0px;
+        y: Tokens.space-2;
+        width: Tokens.space-1;
+        height: root.height - 2 * Tokens.space-2;
+        border-radius: Tokens.radius-sm;
+        background: Theme.accent;
+    }
+    HorizontalLayout {
+        padding-left: Tokens.space-2;
+        padding-right: Tokens.space-2;
+        spacing: Tokens.space-3;
+        if !root.fonts: VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: Tokens.size-row-picture-md * 16 / 9;
+                height: Tokens.size-row-picture-md;
+                border-radius: Tokens.radius-sm;
+                border-width: root.item.has-picture ? Tokens.size-border : 0px;
+                border-color: Theme.border-subtle;
+                background: root.item.has-picture ? Theme.surface-overlay : Theme.accent-subtle;
+                clip: true;
+                if root.item.has-picture: Image {
+                    source: root.item.picture;
+                    width: 100%;
+                    height: 100%;
+                    image-fit: contain;
+                    accessible-role: none;
+                }
+                if !root.item.has-picture: Icon { name: Icons.named(root.item.icon); ink: Theme.accent; }
+            }
+        }
+        if root.fonts: VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: Tokens.size-control-lg;
+                height: Tokens.size-control-md;
+                border-radius: Tokens.radius-sm;
+                background: Theme.surface-overlay;
+                Text {
+                    // A sample of the face, the same two letters on every row.
+                    text: "Aa";
+                    font-family: root.family;
+                    color: Theme.text-primary;
+                    font-size: Tokens.type-title-size;
+                    accessible-role: none;
+                }
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+            min-width: 0px;
+            Text {
+                text: root.item.name;
+                font-family: root.family;
+                color: Theme.text-primary;
+                font-size: root.fonts ? Tokens.type-title-size : Tokens.type-label-size;
+                font-weight: root.fonts ? Tokens.type-body-weight : Tokens.type-label-weight;
+                overflow: elide;
+                accessible-role: none;
+            }
+            if root.item.note != "": Text {
+                text: root.item.note;
+                color: Theme.text-secondary;
+                font-size: Tokens.type-caption-size;
+                overflow: elide;
+                accessible-role: none;
+            }
+        }
+        if root.item.badge != "": VerticalLayout {
+            alignment: center;
+            Rectangle {
+                height: Tokens.size-picker-badge;
+                border-radius: Tokens.size-picker-badge / 2;
+                background: root.item.badge-accent ? Theme.accent : Theme.button-chip;
+                HorizontalLayout {
+                    padding-left: Tokens.space-2;
+                    padding-right: Tokens.space-2;
+                    spacing: Tokens.space-1;
+                    if root.item.badge-icon != "": VerticalLayout {
+                        alignment: center;
+                        Icon {
+                            name: Icons.named(root.item.badge-icon);
+                            ink: root.item.badge-accent ? Theme.text-inverse : Theme.text-primary;
+                        }
+                    }
+                    Text {
+                        text: root.item.badge;
+                        color: root.item.badge-accent ? Theme.text-inverse : Theme.text-primary;
+                        font-size: Tokens.type-caption-size;
+                        vertical-alignment: center;
+                        accessible-role: none;
+                    }
+                }
+            }
+        }
+        if root.selected: VerticalLayout {
+            alignment: center;
+            Icon { name: IconName.check; ink: Theme.accent; }
+        }
+    }
+}
+
 // The one vertical scrolling surface (design system, ScrollArea). The trailing
 // `size.scrollbar.hit` is always kept for the bar, so the content's width never
 // depends on its height. The bar shows while the content is taller than the area:
@@ -4877,6 +5014,13 @@ export component OverlayHost inherits Rectangle {
                     font-weight: Tokens.type-title-weight;
                     accessible-role: none;
                 }
+                if Overlays.name-detail != "": Text {
+                    text: Overlays.name-detail;
+                    color: Theme.text-secondary;
+                    font-size: Tokens.type-body-size;
+                    wrap: word-wrap;
+                    accessible-role: text;
+                }
                 Rectangle {
                     visible: Overlays.name-ask;
                     border-width: Tokens.size-border;
@@ -4911,7 +5055,7 @@ export component OverlayHost inherits Rectangle {
                     accessible-role: text;
                 }
                 name-actions := DialogActions {
-                    cancel-text: Overlays.name-ask ? @tr("Cancel") : @tr("Keep");
+                    cancel-text: Overlays.name-cancel != "" ? Overlays.name-cancel : Overlays.name-ask ? @tr("Cancel") : @tr("Keep");
                     confirm-text: Overlays.name-confirm;
                     confirm-enabled: !Overlays.name-ask || name-input.text != "";
                     cancelled => { Overlays.name-cancelled(); }
@@ -5342,17 +5486,43 @@ export component OverlayHost inherits Rectangle {
     }
     // The searchable picker: modal, above the name prompt and the hint (Escape closes
     // the topmost only, E1). It exists only while open; nothing runs while it is closed.
+    // A header band says what to pick, the rows are `PickerItem`s in a framed well
+    // (pictures or the kind's icon, a detail line, a badge), groups get a `HeaderBand`,
+    // and the footer names the result on the primary button (owner 2026-11-27).
     if Overlays.picker-open: picker := Rectangle {
         width: root.width;
         height: root.height;
+        // The height of one row, and of a group's band above its first row (the band
+        // and the gap under it).
+        property <length> row-h: Overlays.picker-fonts ? Tokens.size-control-lg + Tokens.space-2
+            : Tokens.size-row-picture-md + 2 * Tokens.space-2;
+        property <length> head-h: Tokens.size-control-md + Tokens.space-1;
+        property <int> count: Overlays.picker-rows.length;
+        property <int> heads: self.count == 0 ? 0
+            : Overlays.picker-rows[self.count - 1].groups-before + (Overlays.picker-rows[self.count - 1].group != "" ? 1 : 0);
+        property <int> current: min(Overlays.picker-current, max(0, self.count - 1));
+        // Where row `i` starts in the list (its band, when it has one, is above it).
+        pure function row-top(i: int) -> length {
+            return Tokens.space-1 + i * picker.row-h
+                + (Overlays.picker-rows[i].groups-before + (Overlays.picker-rows[i].group != "" ? 1 : 0)) * picker.head-h;
+        }
+        function choose-current() {
+            if picker.count > 0 { Overlays.picker-chosen(Overlays.picker-rows[picker.current].index); }
+        }
+        function show-current() {
+            picker-list.scroll-into-view(picker.row-top(picker.current) - Tokens.space-1, picker.row-h + 2 * Tokens.space-1);
+        }
         TouchArea { clicked => { Overlays.picker-cancelled(); } }
         picker-card := MenuSurface {
-            width: Tokens.size-menu-md;
+            width: min(Tokens.size-picker-w, root.width - 2 * Tokens.space-2);
             height: picker-body.preferred-height;
             x: (root.width - self.width) / 2;
             y: max(Tokens.space-1, (root.height - self.height) / 3);
+            border-radius: Tokens.radius-lg;
+            clip: true;
             accessible-role: groupbox;
             accessible-label: Overlays.picker-title;
+            accessible-description: Overlays.picker-hint;
             init => {
                 Overlays.picker-current = 0;
                 Overlays.picker-cover = { x: self.x, y: self.y, width: self.width, height: self.height };
@@ -5361,124 +5531,253 @@ export component OverlayHost inherits Rectangle {
             changed x => { Overlays.picker-cover = { x: self.x, y: self.y, width: self.width, height: self.height }; }
             changed y => { Overlays.picker-cover = { x: self.x, y: self.y, width: self.width, height: self.height }; }
             changed height => { Overlays.picker-cover = { x: self.x, y: self.y, width: self.width, height: self.height }; }
+            // Clicks on the card never reach the layer under it (which cancels).
+            TouchArea { }
             picker-body := VerticalLayout {
-                padding: Tokens.space-3;
-                spacing: Tokens.space-2;
-                Text {
-                    text: Overlays.picker-title;
-                    wrap: word-wrap;
-                    color: Theme.text-primary;
-                    font-size: Tokens.type-body-size;
-                    font-weight: Tokens.type-title-weight;
-                    accessible-role: none;
-                }
+                // The header band: the kind's icon, the title and what to pick, Close.
                 Rectangle {
-                    border-width: Tokens.size-border;
-                    border-radius: Tokens.radius-sm;
-                    border-color: picker-input.has-focus ? Theme.border-focus : Theme.border-subtle;
-                    background: Theme.surface-sunken;
-                    height: Tokens.size-control-md;
-                    Icon {
-                        name: IconName.search;
-                        ink: Theme.text-secondary;
-                        x: Tokens.space-2;
-                    }
-                    if picker-input.text == "": Text {
-                        x: Tokens.space-2 + Tokens.size-icon-box + Tokens.space-1;
-                        text: @tr("Search");
-                        color: Theme.text-secondary;
-                        font-size: Tokens.type-body-size;
-                        vertical-alignment: center;
-                        height: parent.height;
-                        accessible-role: none;
-                    }
-                    picker-input := TextInput {
-                        selection-background-color: Theme.accent;
-                        selection-foreground-color: Theme.text-inverse;
-                        text-cursor-width: Tokens.size-focus-ring;
-                        x: Tokens.space-2 + Tokens.size-icon-box + Tokens.space-1;
-                        width: parent.width - 2 * Tokens.space-2 - Tokens.size-icon-box - Tokens.space-1;
-                        color: Theme.text-primary;
-                        font-size: Tokens.type-body-size;
-                        vertical-alignment: center;
-                        accessible-label: @tr("Filter");
-                        edited => { Overlays.picker-current = 0; picker-list.scroll-into-view(0px, 0px); Overlays.picker-filtered(self.text); }
-                        accepted => {
-                            if Overlays.picker-rows.length > 0 {
-                                Overlays.picker-chosen(Overlays.picker-rows[min(Overlays.picker-current, Overlays.picker-rows.length - 1)].index);
-                            }
-                        }
-                        key-pressed(e) => {
-                            if e.text == Key.Escape { Overlays.picker-cancelled(); return accept; }
-                            if e.text == Key.DownArrow && Overlays.picker-rows.length > 0 {
-                                Overlays.picker-current = min(Overlays.picker-current + 1, Overlays.picker-rows.length - 1);
-                                picker-list.scroll-into-view(Overlays.picker-current * Tokens.size-control-md, Tokens.size-control-md);
-                                return accept;
-                            }
-                            if e.text == Key.UpArrow && Overlays.picker-rows.length > 0 {
-                                Overlays.picker-current = max(Overlays.picker-current - 1, 0);
-                                picker-list.scroll-into-view(Overlays.picker-current * Tokens.size-control-md, Tokens.size-control-md);
-                                return accept;
-                            }
-                            reject
-                        }
-                    }
-                }
-                if Overlays.picker-status != "": Text {
-                    text: Overlays.picker-status;
-                    color: Theme.text-secondary;
-                    font-size: Tokens.type-caption-size;
-                    wrap: word-wrap;
-                    accessible-role: text;
-                }
-                // The rows are list rows (ListRow, the same as the panel lists) in a
-                // framed well, with a chevron at the end of each, so they read as a list
-                // to choose from, not as another field.
-                Rectangle {
-                    height: picker-list.height + 2 * Tokens.size-border;
-                    border-width: Tokens.size-border;
-                    border-radius: Tokens.radius-sm;
-                    border-color: Theme.border-subtle;
-                    background: Theme.surface-base;
-                    clip: true;
-                picker-list := ScrollArea {
-                    y: Tokens.size-border;
-                    x: Tokens.size-border;
-                    width: parent.width - 2 * Tokens.size-border;
-                    height: min(Overlays.picker-rows.length * Tokens.size-control-md, Tokens.size-select-list-h);
-                    content-height: Overlays.picker-rows.length * Tokens.size-control-md;
-                    accessible-role: list;
-                    accessible-label: Overlays.picker-title;
-                    for r[i] in Overlays.picker-rows: ListRow {
-                        y: i * Tokens.size-control-md;
-                        width: parent.width;
-                        name: r.name;
-                        note: r.note;
-                        note-beside: true;
-                        selected: i == Overlays.picker-current;
-                        activated => { Overlays.picker-chosen(r.index); }
+                    background: Theme.surface-overlay;
+                    HorizontalLayout {
+                        padding: Tokens.space-3;
+                        padding-left: Tokens.space-4;
+                        spacing: Tokens.space-3;
                         VerticalLayout {
                             alignment: center;
-                            Icon { name: IconName.chevron-right; ink: Theme.text-secondary; }
+                            Rectangle {
+                                width: Tokens.size-row-picture-md;
+                                height: Tokens.size-row-picture-md;
+                                border-radius: Tokens.radius-md;
+                                background: Theme.accent-subtle;
+                                Icon { name: Icons.named(Overlays.picker-icon); ink: Theme.accent; }
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            horizontal-stretch: 1;
+                            Text {
+                                text: Overlays.picker-title;
+                                wrap: word-wrap;
+                                color: Theme.text-primary;
+                                font-size: Tokens.type-title-size;
+                                font-weight: Tokens.type-title-weight;
+                                accessible-role: none;
+                            }
+                            if Overlays.picker-hint != "": Text {
+                                text: Overlays.picker-hint;
+                                wrap: word-wrap;
+                                color: Theme.text-secondary;
+                                font-size: Tokens.type-caption-size;
+                                accessible-role: none;
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            IconButton {
+                                icon: IconName.close;
+                                name: @tr("Cancel");
+                                clicked => { Overlays.picker-cancelled(); }
+                            }
                         }
                     }
                 }
+                Rectangle { height: Tokens.size-border; background: Theme.border-subtle; }
+                VerticalLayout {
+                    padding-top: Tokens.space-3;
+                    padding-bottom: Tokens.space-3;
+                    padding-left: Tokens.space-4;
+                    padding-right: Tokens.space-4;
+                    spacing: Tokens.space-2;
+                    Rectangle {
+                        border-width: Tokens.size-border;
+                        border-radius: Tokens.radius-md;
+                        border-color: picker-input.has-focus ? Theme.border-focus : Theme.border-subtle;
+                        background: Theme.surface-sunken;
+                        height: Tokens.size-control-lg;
+                        Icon {
+                            name: IconName.search;
+                            ink: Theme.text-secondary;
+                            x: Tokens.space-2;
+                        }
+                        if picker-input.text == "": Text {
+                            x: Tokens.space-2 + Tokens.size-icon-box + Tokens.space-2;
+                            text: @tr("Search");
+                            color: Theme.text-secondary;
+                            font-size: Tokens.type-body-size;
+                            vertical-alignment: center;
+                            height: parent.height;
+                            accessible-role: none;
+                        }
+                        picker-input := TextInput {
+                            selection-background-color: Theme.accent;
+                            selection-foreground-color: Theme.text-inverse;
+                            text-cursor-width: Tokens.size-focus-ring;
+                            x: Tokens.space-2 + Tokens.size-icon-box + Tokens.space-2;
+                            width: parent.width - 3 * Tokens.space-2 - Tokens.size-icon-box;
+                            color: Theme.text-primary;
+                            font-size: Tokens.type-body-size;
+                            vertical-alignment: center;
+                            accessible-label: @tr("Filter");
+                            edited => { Overlays.picker-current = 0; picker-list.scroll-into-view(0px, 0px); Overlays.picker-filtered(self.text); }
+                            accepted => { picker.choose-current(); }
+                            key-pressed(e) => {
+                                if e.text == Key.Escape { Overlays.picker-cancelled(); return accept; }
+                                if e.text == Key.DownArrow && picker.count > 0 {
+                                    Overlays.picker-current = min(picker.current + 1, picker.count - 1);
+                                    picker.show-current();
+                                    return accept;
+                                }
+                                if e.text == Key.UpArrow && picker.count > 0 {
+                                    Overlays.picker-current = max(picker.current - 1, 0);
+                                    picker.show-current();
+                                    return accept;
+                                }
+                                reject
+                            }
+                        }
+                    }
+                    if Overlays.picker-status != "": Text {
+                        text: Overlays.picker-status;
+                        color: Theme.text-secondary;
+                        font-size: Tokens.type-caption-size;
+                        wrap: word-wrap;
+                        accessible-role: text;
+                    }
+                    // The rows in a framed well, so they read as a list to choose from;
+                    // placeholder rows while the list is asked for (the dialog keeps its
+                    // shape), or what happened and the way on when there is nothing (U10).
+                    Rectangle {
+                        border-width: Tokens.size-border;
+                        border-radius: Tokens.radius-md;
+                        border-color: Theme.border-subtle;
+                        background: Theme.surface-sunken;
+                        clip: true;
+                        VerticalLayout {
+                            padding: Tokens.size-border;
+                            if Overlays.picker-looking: VerticalLayout {
+                                padding: Tokens.space-1;
+                                for share in [0.55, 0.42, 0.6]: HorizontalLayout {
+                                    height: picker.row-h;
+                                    padding-left: Tokens.space-2;
+                                    padding-right: Tokens.space-2;
+                                    spacing: Tokens.space-3;
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Rectangle {
+                                            width: Overlays.picker-fonts ? Tokens.size-control-lg : Tokens.size-row-picture-md * 16 / 9;
+                                            height: Overlays.picker-fonts ? Tokens.size-control-md : Tokens.size-row-picture-md;
+                                            border-radius: Tokens.radius-sm;
+                                            background: Theme.surface-overlay;
+                                        }
+                                    }
+                                    VerticalLayout {
+                                        alignment: center;
+                                        spacing: Tokens.space-2;
+                                        horizontal-stretch: 1;
+                                        // The bars' widths do not feed the layout.
+                                        Rectangle {
+                                            height: Tokens.space-2;
+                                            Rectangle {
+                                                x: 0px;
+                                                width: parent.width * share;
+                                                border-radius: Tokens.space-1;
+                                                background: Theme.surface-overlay;
+                                            }
+                                        }
+                                        if !Overlays.picker-fonts: Rectangle {
+                                            height: Tokens.space-2;
+                                            Rectangle {
+                                                x: 0px;
+                                                width: parent.width * share * 0.6;
+                                                border-radius: Tokens.space-1;
+                                                background: Theme.surface-overlay;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if !Overlays.picker-looking && picker.count == 0: EmptyState {
+                                title: Overlays.picker-empty-title;
+                                message: Overlays.picker-empty-text;
+                                action: Overlays.picker-can-retry ? @tr("Look again") : "";
+                                action-icon: IconName.refresh;
+                                act => { Overlays.picker-retry(); }
+                            }
+                            picker-list := ScrollArea {
+                                property <length> full: picker.count * picker.row-h + picker.heads * picker.head-h + 2 * Tokens.space-1;
+                                height: picker.count > 0 ? min(self.full, Tokens.size-picker-list-h) : 0px;
+                                visible: picker.count > 0;
+                                content-height: self.full;
+                                accessible-role: list;
+                                accessible-label: Overlays.picker-title;
+                                for r[i] in Overlays.picker-rows: Rectangle {
+                                    y: picker.row-top(i) - (r.group != "" ? picker.head-h : 0px);
+                                    x: Tokens.space-1;
+                                    width: parent.width - 2 * Tokens.space-1;
+                                    height: (r.group != "" ? picker.head-h : 0px) + picker.row-h;
+                                    // Off screen, a row's subtree is skipped (as ListRow).
+                                    clip: true;
+                                    if r.group != "": HeaderBand {
+                                        y: 0px;
+                                        width: parent.width;
+                                        HorizontalLayout {
+                                            width: parent.width;
+                                            height: parent.height;
+                                            padding-left: Tokens.space-1 + Tokens.space-2;
+                                            padding-right: Tokens.space-1;
+                                            Text {
+                                                text: r.group;
+                                                color: Theme.text-primary;
+                                                font-size: Tokens.type-label-size;
+                                                font-weight: Tokens.type-label-weight;
+                                                vertical-alignment: center;
+                                                overflow: elide;
+                                                accessible-role: text;
+                                            }
+                                        }
+                                    }
+                                    PickerItem {
+                                        y: r.group != "" ? picker.head-h : 0px;
+                                        width: parent.width;
+                                        height: picker.row-h;
+                                        item: r;
+                                        fonts: Overlays.picker-fonts;
+                                        selected: i == picker.current;
+                                        // Only rows near the view load their own font family.
+                                        own-font: parent.y + parent.height >= picker-list.offset - Tokens.size-picker-list-h
+                                            && parent.y <= picker-list.offset + 2 * Tokens.size-picker-list-h;
+                                        clicked => { Overlays.picker-current = i; picker-input.focus(); }
+                                        chosen => { Overlays.picker-chosen(r.index); }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
-                HorizontalLayout {
-                    spacing: Tokens.space-1;
-                    if Overlays.picker-option-label != "": Checkbox {
-                        text: Overlays.picker-option-label;
-                        checked: Overlays.picker-option;
-                        toggled(on) => { Overlays.picker-option-toggled(on); }
-                    }
-                    if Overlays.picker-option-label != "": InfoHint {
-                        label: Overlays.picker-option-label;
-                        text: Overlays.picker-option-hint;
-                    }
-                    Rectangle { horizontal-stretch: 1; }
-                    Button {
-                        text: @tr("Cancel");
-                        clicked => { Overlays.picker-cancelled(); }
+                Rectangle { height: Tokens.size-border; background: Theme.border-subtle; }
+                // The footer band: the option, then Cancel and the primary action.
+                Rectangle {
+                    background: Theme.surface-overlay;
+                    HorizontalLayout {
+                        padding: Tokens.space-3;
+                        padding-left: Tokens.space-4;
+                        padding-right: Tokens.space-4;
+                        spacing: Tokens.space-1;
+                        if Overlays.picker-option-label != "": Checkbox {
+                            text: Overlays.picker-option-label;
+                            checked: Overlays.picker-option;
+                            toggled(on) => { Overlays.picker-option-toggled(on); }
+                        }
+                        if Overlays.picker-option-label != "": InfoHint {
+                            label: Overlays.picker-option-label;
+                            text: Overlays.picker-option-hint;
+                        }
+                        Rectangle { horizontal-stretch: 1; min-width: Tokens.space-2; }
+                        DialogActions {
+                            // Nothing listed: only the way back.
+                            confirm-text: picker.count > 0 ? Overlays.picker-rows[picker.current].action : "";
+                            cancelled => { Overlays.picker-cancelled(); }
+                            confirmed => { picker.choose-current(); }
+                        }
                     }
                 }
             }

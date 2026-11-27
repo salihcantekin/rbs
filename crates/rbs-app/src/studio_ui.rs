@@ -14,7 +14,7 @@ use ai::unix_now;
 use rbs_api::types::{OutputKind, OutputTarget};
 use rbs_app::ai_tools::{Forward as AiForward, Tool};
 use rbs_app::canvas_profile::{self, CanvasProfile, RATES};
-use rbs_app::edit_history::{EditKind, StepInfo};
+use rbs_app::edit_history::StepInfo;
 use rbs_app::encoder_form::{Choices, EncoderForm};
 use rbs_app::network_access::{self, Source};
 use rbs_app::permission_text;
@@ -77,6 +77,7 @@ const REPORT_EVERY: u32 = 30;
 pub(crate) mod activity_choice;
 mod add_calls;
 pub(crate) mod add_picker;
+pub(crate) use picker_calls::PickerView;
 pub(crate) mod ai;
 mod api_call;
 pub(crate) mod attributes;
@@ -86,11 +87,13 @@ pub(crate) mod destinations;
 mod external_commands;
 pub(crate) mod filters;
 mod item_calls;
+mod levels_undo;
 mod mixer_audio;
 mod step_view;
 use step_view::step_view;
 mod library_ops;
 mod output_calls;
+mod picker_calls;
 mod scene_calls;
 mod settings_choices;
 use settings_choices::{SettingsChoices, camera_sizes, rates_between};
@@ -330,7 +333,7 @@ pub struct StudioUi {
     filters_for: Option<EntryId>,
     scenes: Rc<VecModel<SceneData>>,
     /// The sources of other scenes the scene on air does not have (Add source).
-    existing: Vec<(SourceId, String)>,
+    existing: Vec<(SourceId, String, Option<SourceKind>)>,
     /// The open Add source picker (ADR-0094 B1) and whether the dialog must be redrawn.
     pub(super) add_picker: Option<add_picker::AddPicker>,
     picker_dirty: bool,
@@ -489,7 +492,8 @@ pub struct StudioUi {
     pub deleted: String,
     /// The toast's source was only removed from one scene (ADR-0065).
     pub deleted_from_scene: bool,
-    pub deleted_serial: u64,
+    /// The undo toasts' countdowns and the Shared levels toast.
+    levels_undo: levels_undo::LevelsUndo,
     /// Settings › Global sources (ADR-0065): the kind picked (an index into
     /// [`Self::kind_codes`], -1 none), its devices and the collection's sources of that
     /// kind that are not global, in the Source field's order.
@@ -828,8 +832,8 @@ impl StudioUi {
             vertical_preview_failed: false,
             vertical_picture_failed: false,
             deleted: String::new(),
-            deleted_serial: 0,
             deleted_from_scene: false,
+            levels_undo: Default::default(),
             global_kind: -1,
             global_targets: Vec::new(),
             global_existing: Vec::new(),
@@ -1208,9 +1212,7 @@ impl StudioUi {
         g.set_state(self.state);
         g.set_failure(self.failure.as_str().into());
         g.set_preview_state(preview_state);
-        g.set_deleted(self.deleted.as_str().into());
-        g.set_deleted_from_scene(self.deleted_from_scene);
-        g.set_deleted_generation(self.deleted_serial as i32);
+        self.push_undo_toasts(g);
         g.set_rec_markers(self.rec_markers as i32);
         g.set_rec_pausable(
             self.rec_state == rec_state::RECORDING || self.vertical_rec == VerticalOut::On,
@@ -2028,6 +2030,9 @@ impl StudioUi {
         );
         self.source_pictures
             .insert((adapter, target), slint::Image::from_rgba8(buffer));
+        if self.add_picker.is_some() {
+            self.picker_dirty = true;
+        }
         let list = &self.source_target_list;
         let pictures = &self.source_pictures;
         for i in 0..self.source_targets.row_count() {
@@ -2354,6 +2359,7 @@ impl StudioUi {
 
     /// Turns a scene's Own levels on or puts it back in Shared levels (ADR-0091).
     pub fn set_scene_own_levels(&mut self, scene: i32, own: bool) {
+        self.shared_levels_toast(false);
         self.send(Command::SetSceneOwnLevels {
             scene: SceneId::from_raw(scene as u32),
             own,
@@ -2507,98 +2513,6 @@ impl StudioUi {
         }
     }
 
-    /// Opens the Add source picker for a source type (its devices are listed by the
-    /// studio and fill the rows when they arrive) or for the sources of other scenes.
-    /// A picker that is open is replaced.
-    pub fn open_add_picker(&mut self, what: crate::menu_bar::AddWhat) {
-        use crate::menu_bar::AddWhat;
-        let picker = match what {
-            AddWhat::Kind(code) => {
-                let Some(kind) = self.kind_list.get(code as usize).copied() else {
-                    return;
-                };
-                self.list_kind_targets(kind);
-                add_picker::AddPicker::for_kind(kind)
-            }
-            AddWhat::Existing => add_picker::AddPicker::existing(&self.existing),
-        };
-        self.add_picker = Some(picker);
-        self.picker_dirty = true;
-    }
-
-    /// The picker was closed or cancelled: a late answer fills nothing.
-    pub fn close_add_picker(&mut self) {
-        self.add_picker = None;
-        self.picker_dirty = false;
-    }
-
-    /// "Capture audio too" in the Add source dialog was checked or unchecked.
-    pub fn set_picker_audio(&mut self, on: bool) {
-        if let Some(p) = &mut self.add_picker {
-            p.set_audio(on);
-            self.picker_dirty = true;
-        }
-    }
-
-    pub fn filter_add_picker(&mut self, text: &str) {
-        if let Some(p) = &mut self.add_picker {
-            p.set_query(text);
-            self.picker_dirty = true;
-        }
-    }
-
-    /// A row was chosen (`index` is of the picker's listing, see [`add_picker::Row`]).
-    /// Returns whether something was added, so the caller closes the dialog.
-    pub fn choose_add_picker(&mut self, index: usize) -> bool {
-        let pick = self
-            .add_picker
-            .as_ref()
-            .and_then(|p| p.pick(index))
-            .cloned();
-        match pick {
-            Some(add_picker::Pick::Target(kind, target)) => {
-                let audio = self.add_picker.as_ref().is_some_and(|p| p.audio());
-                self.adding = true;
-                self.deleted.clear();
-                // A camera without a microphone of its own adds just the camera.
-                let with_sound =
-                    audio && !target.picker && (kind != SourceKind::Camera || target.mic.is_some());
-                self.add_target(kind, target, with_sound, false);
-            }
-            Some(add_picker::Pick::Existing(id)) => self.add_existing_source(id.get() as i32),
-            Some(add_picker::Pick::Font(id, family)) => {
-                self.set_text_value(id.get() as i32, rbs_sources::types::keys::FONT, &family);
-            }
-            None => return false,
-        }
-        self.add_picker = None;
-        true
-    }
-
-    /// What the dialog shows now, once after each change.
-    pub fn take_picker_view(&mut self) -> Option<PickerView> {
-        if !std::mem::take(&mut self.picker_dirty) {
-            return None;
-        }
-        let p = self.add_picker.as_ref()?;
-        let what = p
-            .kind()
-            .map_or("existing source".to_owned(), |k| k.label().to_lowercase());
-        Some(PickerView {
-            title: if p.is_fonts() {
-                "Choose a font".to_owned()
-            } else {
-                format!("Add {what}")
-            },
-            fonts: p.is_fonts(),
-            status: p.status(),
-            rows: p.rows(),
-            offers_audio: p.offers_audio(),
-            offers_mic: p.offers_microphone(),
-            audio: p.audio(),
-        })
-    }
-
     /// Puts a scene on air (a click in the Scenes panel); in studio mode, in preview.
     pub fn switch_scene(&mut self, id: i32) {
         self.send(Command::SwitchScene(SceneId::from_raw(id as u32)));
@@ -2619,7 +2533,7 @@ impl StudioUi {
             .sources
             .iter()
             .filter(|s| !s.global && !self.rows.iter().any(|r| r.id == s.id))
-            .map(|s| (s.id, s.name.clone()))
+            .map(|s| (s.id, s.name.clone(), s.kind))
             .collect();
     }
 
@@ -6036,25 +5950,13 @@ impl StudioUi {
             Update::Deleted { name, from_scene } => {
                 self.deleted = name;
                 self.deleted_from_scene = from_scene;
-                self.deleted_serial += 1;
+                self.levels_undo.serial += 1;
             }
             Update::Error(e) => {
                 self.adding = false;
                 out.error = Some(e);
             }
-            Update::History { undo, redo } => {
-                // The toast undoes only the delete it names: once another edit (also
-                // one from a control API client) or an undo changed what is newest,
-                // it goes.
-                let still = undo
-                    .as_ref()
-                    .is_some_and(|s| s.kind == EditKind::Delete && s.name == self.deleted);
-                if !still {
-                    self.deleted.clear();
-                }
-                self.next_undo = undo;
-                self.next_redo = redo;
-            }
+            Update::History { undo, redo } => self.history(undo, redo),
             Update::Recording(r) => self.recording(r, &mut out),
             Update::Markers { counts, placed } => self.markers(counts, placed),
             Update::RecordPause(states) => self.record_pause(states),
@@ -6977,20 +6879,6 @@ fn snap(position: f32) -> f32 {
 }
 
 /// What [`StudioUi::apply`] asks of the shell.
-/// The Add source dialog's content ([`StudioUi::take_picker_view`]).
-pub struct PickerView {
-    pub title: String,
-    /// The picker lists font families (a text source's Font).
-    pub fonts: bool,
-    pub status: add_picker::Status,
-    pub rows: Vec<add_picker::Row>,
-    /// Show "Capture audio too" (displays and windows) and whether it is checked.
-    pub offers_audio: bool,
-    /// The dialog offers "Add its microphone too" (a camera with a microphone of its own).
-    pub offers_mic: bool,
-    pub audio: bool,
-}
-
 #[derive(Default)]
 pub struct Applied {
     pub error: Option<String>,
@@ -9289,7 +9177,7 @@ pub(crate) mod tests {
         assert_eq!(run_of(&ui, "source.add"), None);
         // No other scene has a source: "existing" is not offered and does not run.
         assert_eq!(run_of(&ui, "source.add?kind=existing"), None);
-        ui.existing = vec![(SourceId::from_raw(7), "Mic".to_owned())];
+        ui.existing = vec![(SourceId::from_raw(7), "Mic".to_owned(), None)];
         assert_eq!(
             run_of(&ui, "source.add?kind=existing"),
             Some(Run::AddSource(AddWhat::Existing))

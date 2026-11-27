@@ -39,6 +39,7 @@ mod obs_import_page;
 mod panel_drag;
 mod panels_menu;
 mod permissions_page;
+mod picker_ui;
 #[cfg(any(target_os = "macos", windows))]
 mod preview;
 mod preview_edit;
@@ -48,6 +49,7 @@ mod quit;
 mod replay_page;
 mod reveal;
 mod section_keys;
+mod shared_levels;
 mod shortcuts_page;
 mod single;
 mod source_list_calls;
@@ -902,7 +904,7 @@ impl App {
                 self.changed();
             }
             Run::LoudnessShown(on) => self.studio.set_loudness_shown(on),
-            // Discarding a scene's levels asks in its row first; a control surface
+            // Discarding a scene's levels asks in a dialog first; a control surface
             // (`confirm` false) does it at once, as the control API does.
             Run::SceneOwnLevels(id, false) if confirm => self.ask_shared_levels(id),
             Run::SceneOwnLevels(id, own) => self.studio.set_scene_own_levels(id, own),
@@ -1006,6 +1008,7 @@ impl App {
     fn open_name_prompt(&mut self, ask: Ask) {
         use menu_bar::{EntryKind, EntryOp};
         let (title, confirm, value, field) = match ask {
+            Ask::SharedLevels(id) => return self.ask_shared_levels(id),
             Ask::Workspace | Ask::Track(_) => (
                 "Save as new workspace".to_owned(),
                 "Save",
@@ -1038,6 +1041,8 @@ impl App {
         o.set_name_title(title.into());
         o.set_name_confirm(confirm.into());
         o.set_name_ask(field);
+        o.set_name_detail("".into());
+        o.set_name_cancel("".into());
         o.set_name_open(true);
         self.name_for = Some(ask);
     }
@@ -1074,22 +1079,11 @@ impl App {
     /// Shows the scene row's confirm before Remove scene from a menu or a shortcut.
     /// The Scenes panel opens so the row is there.
     fn ask_remove_scene(&mut self, id: i32) {
-        self.ask_scene(id, 0);
-    }
-
-    /// Asks in the scene's row before its own levels are discarded (ADR-0091).
-    fn ask_shared_levels(&mut self, id: i32) {
-        self.ask_scene(id, 1);
-    }
-
-    /// Shows the scene's row with its confirm: `kind` 0 remove, 1 discard own levels.
-    fn ask_scene(&mut self, id: i32, kind: i32) {
         if let Some(p) = panel("rbs.scenes") {
             self.command(LayoutCommand::OpenPanel(p.clone()), Origin::Command);
             self.raise_host_of(&p);
         }
         let ask = |g: Studio<'_>| {
-            g.set_confirm_scene_kind(kind);
             g.set_confirming_scene(id);
             g.set_confirm_scene_asked(g.get_confirm_scene_asked() + 1);
         };
@@ -1309,45 +1303,7 @@ impl App {
         let Some(view) = self.studio.take_picker_view() else {
             return;
         };
-        use studio_ui::add_picker::Status;
-        let status = match view.status {
-            Status::Looking if view.fonts => "Reading the fonts...",
-            Status::Looking => "Looking for devices...",
-            Status::Nothing => "Nothing of this type was found.",
-            Status::NoMatch => "Nothing matches.",
-            Status::Ready => "",
-        };
-        let rows: Vec<PickerRow> = view
-            .rows
-            .into_iter()
-            .map(|r| PickerRow {
-                name: r.name.into(),
-                note: r.note.into(),
-                index: r.index as i32,
-            })
-            .collect();
-        self.with_picker_overlays(|o| {
-            o.set_picker_title(view.title.into());
-            o.set_picker_status(status.into());
-            let (label, hint) = if view.offers_audio {
-                (
-                    "Capture audio too",
-                    "Adds the sound that goes with the picture as its own audio source: a display's system sound without RBS's own sound, a window's application sound. Capturing the system sound and another app's sound can play the same audio twice.",
-                )
-            } else if view.offers_mic {
-                (
-                    "Add its microphone too",
-                    "A microphone that belongs with a camera was found; the rows that have one say '+ mic'. Adds it as its own audio source with the camera.",
-                )
-            } else {
-                ("", "")
-            };
-            o.set_picker_option_label(label.into());
-            o.set_picker_option_hint(hint.into());
-            o.set_picker_option(view.audio);
-            o.set_picker_rows(ModelRc::new(VecModel::from(rows)));
-            o.set_picker_open(true);
-        });
+        self.with_picker_overlays(|o| picker_ui::show(o, view));
     }
 
     fn undo(&mut self) {
@@ -3428,6 +3384,10 @@ fn install_name_prompt(g: &Overlays<'_>, ctx: &Ctx) {
                 let done = match app.name_for {
                     Some(Ask::Entry(kind, op)) => app.entry_command(kind, op, &name),
                     Some(Ask::Track(t)) => app.track_named(t, &name).map(|()| None),
+                    Some(Ask::SharedLevels(id)) => {
+                        app.studio.use_shared_levels(id);
+                        Ok(None)
+                    }
                     _ => app.save_workspace_as(&name).map(|()| None),
                 };
                 match done {
@@ -3594,6 +3554,17 @@ fn install_picker(g: &Overlays<'_>, ctx: &Ctx) {
             entry::guard(|| {
                 ctx.update(move |app: &mut App| {
                     app.studio.set_picker_audio(on);
+                    app.sync_picker();
+                });
+            });
+        });
+    }
+    {
+        let ctx = ctx.clone();
+        g.on_picker_retry(move || {
+            entry::guard(|| {
+                ctx.update(move |app: &mut App| {
+                    app.studio.retry_add_picker();
                     app.sync_picker();
                 });
             });
@@ -3809,6 +3780,8 @@ enum Ask {
     Entry(menu_bar::EntryKind, menu_bar::EntryOp),
     /// A new track's name (`None`) or track `i`'s new name (ADR-0170 decision 9).
     Track(Option<usize>),
+    /// Scene `id` goes back to Shared levels (ADR-0091): a confirmation, no field.
+    SharedLevels(i32),
 }
 
 /// The Library's "Choose a PNG file". The dialog is asynchronous (ADR-0055).
@@ -4737,8 +4710,8 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_set_scene_active, |app, scene: i32, active: bool| {
         app.studio.set_scene_active(scene, active);
     });
-    on!(on_use_shared_levels, |app, scene: i32| {
-        app.studio.set_scene_own_levels(scene, false);
+    on!(on_shared_levels_toast, |app, undo: bool| {
+        app.studio.shared_levels_toast(undo);
     });
     on!(
         on_set_source_record_separately,

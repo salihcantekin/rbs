@@ -475,3 +475,13 @@ export component ReplayProbe inherits Window {
         ReplayControls { }
     }
 }
+
+// A window for tests/picker_shots.rs: room for the searchable picker at its own width.
+export component PickerProbe inherits Window {
+    // literal-begin: a test window; its size is test data
+    width: 480px;
+    height: 640px;
+    // literal-end
+    background: Theme.surface-base;
+    OverlayHost { width: parent.width; height: parent.height; }
+}

@@ -7,9 +7,9 @@
 "crates/rbs-api/src/request.rs" = 2355
 "crates/rbs-api/src/types.rs" = 2399
 "crates/rbs-api/tests/json.rs" = 2995
-"crates/rbs-app/src/main.rs" = 6267
+"crates/rbs-app/src/main.rs" = 6240
 "crates/rbs-app/src/menu_bar.rs" = 2176
-"crates/rbs-app/src/studio_ui.rs" = 9791
+"crates/rbs-app/src/studio_ui.rs" = 9716
 "crates/rbs-record/src/studio.rs" = 5509
 "crates/rbs-record/tests/studio.rs" = 3241
 "crates/rbs-scene/src/collection.rs" = 2723
@@ -31,9 +31,9 @@
 "crates/rbs-app/src/menu_bar.rs::enabled" = 462
 "crates/rbs-app/src/menu_bar.rs::run" = 240
 "crates/rbs-app/src/shortcuts_page.rs::install" = 203
-"crates/rbs-app/src/studio_ui.rs::apply" = 477
+"crates/rbs-app/src/studio_ui.rs::apply" = 465
 "crates/rbs-app/src/studio_ui.rs::new" = 221
-"crates/rbs-app/src/studio_ui.rs::push" = 266
+"crates/rbs-app/src/studio_ui.rs::push" = 264
 "crates/rbs-app/src/studio_ui.rs::set_rows" = 238
 "crates/rbs-app/src/studio_ui.rs::the_vertical_output_commands_follow_the_vertical_canvas_and_its_outputs" = 218
 "crates/rbs-audio-io-pipewire/src/linux.rs::run_stream" = 212

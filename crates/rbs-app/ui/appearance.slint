@@ -107,6 +107,12 @@ component FontMenu inherits Button {
         Appearance.font-owner = root.for-label;
         Overlays.picker-title = @tr("Add a font to {}", root.for-label);
         Overlays.picker-status = "";
+        Overlays.picker-icon = "text";
+        Overlays.picker-hint = @tr("Fonts are tried in order; the first one installed is used.");
+        Overlays.picker-fonts = true;
+        Overlays.picker-looking = false;
+        Overlays.picker-can-retry = false;
+        Overlays.picker-option-label = "";
         Overlays.picker-open = true;
         Appearance.find-fonts("");
     }

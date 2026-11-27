@@ -2820,9 +2820,22 @@ export component MainWindow inherits Window {
         dismiss => { Studio.dismiss-deleted(); }
         stay: Tokens.delay-toast-undo;
     }
+    // A scene went back to Shared levels from its confirm dialog (ADR-0091): Undo
+    // brings its own levels back.
+    if Studio.levels-undo != "" && Shell.toast-kind == 0 && Studio.deleted == "": Toast {
+        x: (parent.width - self.width) / 2;
+        y: parent.height - self.height - Tokens.space-6;
+        title: @tr("{} uses shared levels", Studio.levels-undo);
+        mark: IconName.sliders;
+        action: @tr("Undo");
+        generation: Studio.levels-undo-generation;
+        act => { Studio.shared-levels-toast(true); }
+        dismiss => { Studio.shared-levels-toast(false); }
+        stay: Tokens.delay-toast-undo;
+    }
     // The main output stopped and its vertical one runs on (ADR-0111 decision 6): once
     // per such stop, not modal; Stop ends that output (a stream asks first, U4).
-    if Shell.vertical-left != 0 && Shell.toast-kind == 0 && Studio.deleted == "": Toast {
+    if Shell.vertical-left != 0 && Shell.toast-kind == 0 && Studio.deleted == "" && Studio.levels-undo == "": Toast {
         x: (parent.width - self.width) / 2;
         y: parent.height - self.height - Tokens.space-6;
         mark: IconName.canvas-vertical;
@@ -2835,7 +2848,7 @@ export component MainWindow inherits Window {
     }
     // A marker was added (ADR-0089 decision 10): its name and place in the
     // recording; Undo takes it back. The notices above take the place first.
-    if Studio.marker-note != "" && Shell.toast-kind == 0 && Studio.deleted == "" && Shell.vertical-left == 0: Toast {
+    if Studio.marker-note != "" && Shell.toast-kind == 0 && Studio.deleted == "" && Studio.levels-undo == "" && Shell.vertical-left == 0: Toast {
         x: (parent.width - self.width) / 2;
         y: parent.height - self.height - Tokens.space-6;
         mark: IconName.flag;

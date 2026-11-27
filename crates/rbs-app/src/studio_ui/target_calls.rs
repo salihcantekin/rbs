@@ -67,6 +67,7 @@ impl StudioUi {
             && p.answer(kind, &list)
         {
             self.picker_dirty = true;
+            self.ask_picker_pictures();
         }
         let picked = self.kind_list.get(self.global_kind as usize).copied();
         if picked == Some(kind) {
