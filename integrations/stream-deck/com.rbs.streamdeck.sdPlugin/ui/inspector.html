@@ -16,6 +16,25 @@
 		<sdpi-item label="Scene">
 			<sdpi-select setting="scene" datasource="getScenes" loading="Loading scenes..." hot-reload placeholder="Choose a scene"></sdpi-select>
 		</sdpi-item>
+		<sdpi-item label="Color">
+			<sdpi-color setting="color" default="#4c9aff"></sdpi-color>
+		</sdpi-item>
+	</div>
+	<div data-action="scene-step" hidden>
+		<sdpi-item label="Direction">
+			<sdpi-select setting="direction" placeholder="Next">
+				<option value="next">Next scene</option>
+				<option value="previous">Previous scene</option>
+			</sdpi-select>
+		</sdpi-item>
+	</div>
+	<div data-action="volume" hidden>
+		<sdpi-item label="Source">
+			<sdpi-select setting="source" datasource="getMuteTargets" loading="Loading..." hot-reload placeholder="Choose a source or Master"></sdpi-select>
+		</sdpi-item>
+		<sdpi-item label="Step (%)">
+			<sdpi-range setting="step" min="1" max="25" default="5" showlabels></sdpi-range>
+		</sdpi-item>
 	</div>
 	<div data-action="source-visible" hidden>
 		<sdpi-item label="Source">

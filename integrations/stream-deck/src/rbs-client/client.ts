@@ -2,7 +2,7 @@ import WebSocket from "ws";
 
 import { type Clock, systemClock } from "./clock.js";
 import type { Methods } from "./generated.js";
-import type { OutputProfilesResult, RecordStatusResult, SceneListResult, SourceListResult, StreamStatusResult } from "./generated.js";
+import type { OutputProfilesResult, RecordStatusResult, ReplayStatusResult, VcamStatusResult, SceneListResult, SourceListResult, StreamStatusResult } from "./generated.js";
 import { CLOSE, LinkError, RbsError, SUBPROTOCOL, isLoopbackHost, versionVerdict } from "./protocol.js";
 
 /** What the plugin shows on its keys and in the inspector (docs/specs/stream-deck.md, Connection). */
@@ -24,6 +24,8 @@ export type SceneListData = SceneListResult.Root["data"];
 export type SourceListData = SourceListResult.Root["data"];
 export type RecordStateData = Extract<RecordStatusResult.Root, { data: unknown }>["data"];
 export type StreamStateData = Extract<StreamStatusResult.Root, { data: unknown }>["data"];
+export type ReplayData = Extract<ReplayStatusResult.Root, { data: unknown }>["data"];
+export type VcamData = Extract<VcamStatusResult.Root, { data: unknown }>["data"];
 export type ProfileData = OutputProfilesResult.Root["profiles"];
 
 /** The latest state of the four subscribed topics, plus the recording profiles. */
@@ -32,16 +34,21 @@ export interface RbsState {
 	sources?: SourceListData;
 	record?: RecordStateData;
 	stream?: StreamStateData;
+	/** Replay buffer and virtual camera; absent on a server without them. */
+	replay?: ReplayData;
+	vcam?: VcamData;
 	profiles?: ProfileData;
 }
 
-export type StateKey = "scenes" | "sources" | "record" | "stream";
+export type StateKey = "scenes" | "sources" | "record" | "stream" | "replay" | "vcam";
 
 const TOPICS: Record<string, StateKey> = {
 	"scene.changed": "scenes",
 	"source.changed": "sources",
 	"record.state": "record",
 	"stream.state": "stream",
+	"replay.changed": "replay",
+	"vcam.changed": "vcam",
 };
 
 const CLIENT_NAME = "rbs-stream-deck";
@@ -251,18 +258,24 @@ export class RbsClient {
 			};
 			if (gen !== this.generation) return;
 			await this.rpc("events.subscribe", { topics: Object.keys(TOPICS) as never });
-			const [scenes, sources, record, stream, profiles] = await Promise.all([
+			// Replay buffer and virtual camera are optional: an older server may lack them.
+			const optional = (method: "replay.status" | "vcam.status") => this.rpc(method, {}).catch((e) => (e instanceof RbsError ? undefined : Promise.reject(e)));
+			const [scenes, sources, record, stream, profiles, replay, vcam] = await Promise.all([
 				this.rpc("scene.list", {}),
 				this.rpc("source.list", {}),
 				this.rpc("record.status", {}),
 				this.rpc("stream.status", {}),
 				this.rpc("output.profiles", {}),
+				optional("replay.status"),
+				optional("vcam.status"),
 			]);
 			if (gen !== this.generation) return;
 			this.applySnapshot("scenes", scenes as never);
 			this.applySnapshot("sources", sources as never);
 			this.applySnapshot("record", record as never);
 			this.applySnapshot("stream", stream as never);
+			if (replay) this.applySnapshot("replay", replay as never);
+			if (vcam) this.applySnapshot("vcam", vcam as never);
 			this.data = { ...this.data, profiles: (profiles as { profiles: ProfileData }).profiles };
 			this.cancelConnectTimer?.();
 			this.cancelConnectTimer = undefined;

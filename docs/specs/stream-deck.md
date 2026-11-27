@@ -12,7 +12,7 @@ Let a user press Elgato Stream Deck keys to control RBS and see RBS's state on t
 
 In scope: the plugin's actions, their settings and pictures, how it connects, authenticates and recovers, how it is built, packaged and tested.
 
-Out of scope: OBS WebSocket compatibility, dials and touch strips (keys only in this version), pairing or discovery, network (non-loopback) connections, Marketplace submission, other languages.
+Out of scope: OBS WebSocket compatibility, touch-strip layouts beyond the built-in volume layout, pairing or discovery, network (non-loopback) connections, Marketplace submission, other languages.
 
 ## Requirements on the user's side
 
@@ -40,7 +40,7 @@ integrations/stream-deck/
 - **Target.** `ws://127.0.0.1:<port>`, subprotocol `rbs.v1`; port default 4456. The host is fixed; the client refuses to send a token anywhere but a loopback address (spec: *Channels*). The token and port are the plugin's global settings, edited in the property inspector of any RBS action.
 - **Lazy.** No socket exists while no RBS key is visible. The first `onWillAppear` connects; after the last `onWillDisappear` the client waits 10 s, then closes (1000). A new appearance within the grace period cancels the close.
 - **Handshake.** `session.hello {protocols: ["1.0"], client: {name: "rbs-stream-deck", version}}`, then `session.authenticate {token}`. A request error `unsupported_protocol` (-32003) on `session.hello` or close 4003 is `incompatible` (plugin too old); `auth_failed` (-32002, then close 4002) is `auth_failed`. The answer's `protocol` (the server's) must be major 1 and minor 6 or higher, checked by the client (`incompatible`, RBS too old, otherwise). The socket is opened without an `Origin` header (the server refuses any) and with `Host` a literal loopback address. The scopes of the authenticate answer are kept; a missing `control` shows `read_only` in the property inspector.
-- **Subscribe, then snapshot.** `events.subscribe {topics: ["scene.changed", "source.changed", "record.state", "stream.state"]}`, then `scene.list`, `source.list`, `record.status`, `stream.status`, `output.profiles`. Every state answer (all but `output.profiles`, which is a plain list) is `{seq: {key: n}, data}`; every event is `{topic, seq, data}` carrying the whole state of its key. The client holds the latest `data` per key and applies an event or snapshot only when its `seq` is higher than the held one (equal or lower is dropped; skipped values are normal). `seq` restarts with each server run (`instance`), so every new connection clears all held `seq` values and data before it subscribes; nothing carries over a reconnect. Event payloads: `scene.changed` is the `scene.list` data, `source.changed` the `source.list` data, `record.state` and `stream.state` the `record.status` and `stream.status` data of the main canvas.
+- **Subscribe, then snapshot.** `events.subscribe {topics: ["scene.changed", "source.changed", "record.state", "stream.state", "replay.changed", "vcam.changed"]}`, then `scene.list`, `source.list`, `record.status`, `stream.status`, `output.profiles` and, when the server has them, `replay.status` and `vcam.status` (a `method_not_found` there is ignored). Every state answer (all but `output.profiles`, which is a plain list) is `{seq: {key: n}, data}`; every event is `{topic, seq, data}` carrying the whole state of its key. The client holds the latest `data` per key and applies an event or snapshot only when its `seq` is higher than the held one (equal or lower is dropped; skipped values are normal). `seq` restarts with each server run (`instance`), so every new connection clears all held `seq` values and data before it subscribes; nothing carries over a reconnect. Event payloads: `scene.changed` is the `scene.list` data, `source.changed` the `source.list` data, `record.state` and `stream.state` the `record.status` and `stream.status` data of the main canvas.
 - **Main canvas only.** Keys follow the main canvas: `canvas` is never sent (the default is main) and `all` is never used; a vertical canvas's recording or stream (`*.canvas_state` topics) is not shown in this version.
 - **State of the link**, shown on every key and in the property inspector:
 
@@ -60,14 +60,20 @@ integrations/stream-deck/
 
 ## Actions
 
-All actions are key-only (`Controllers: ["Keypad"]`). The action UUID is the plugin UUID plus the suffix.
+All actions are keys (`Controllers: ["Keypad"]`) except the volume dial (`Encoder`, Stream Deck +). The action UUID is the plugin UUID plus the suffix.
 
 | Suffix | Press | Settings | Picture |
 | --- | --- | --- | --- |
 | `scene` | `scene.switch {scene}` | scene (id and the name last seen) | scene name; accent highlight while it is the program scene; dimmed when the scene no longer exists |
-| `record` | idle: `record.start {profile}`; recording: `record.stop` | profile (id; empty uses the first of `output.profiles`) | idle: record icon; recording: red icon with elapsed time; paused: paused icon |
+| `record` | idle: `record.start {profile}`; recording: `record.stop` | none (uses the profile selected in RBS) | idle: record icon; recording: red icon with elapsed time; paused: paused icon |
 | `stream` | idle: `stream.start`; live: `stream.stop` | none | idle: broadcast icon; live: red icon, "Connecting" until `connected`, "Reconnecting" while it retries |
 | `source-visible` | `item.set_visible {item, visible: !visible}` on the source's item in the program scene | source (id and last name) | eye open or closed; dimmed with "Not in scene" when the source has no item in the program scene |
+| `record-pause` | `record.pause_toggle` while recording; nothing otherwise | none | Pause icon, Resume while paused, dimmed when not recording |
+| `scene-step` | `scene.switch` to the next or previous scene that navigation reaches (`active` not false), wrapping | direction | arrow with the target scene's name |
+| `replay` | `replay.save`; refused when the buffer is not armed | none | dimmed "Replay off", "Save replay", "Saving" |
+| `vcam` | `vcam.start` or `vcam.stop` | none | accent while sending |
+| `marker` | `marker.add` | none | dimmed while not recording |
+| `volume` (dial) | turn: `source.set_volume` or `canvas.set_master_volume`, a step of 1 to 25 percent per tick; press: mute | source or Master, step | built-in `$B1` layout: title, percent or Muted, bar |
 | `mute` | `source.set_muted {source, muted: !muted}`, or `canvas.set_master_muted` for the target Master | target: Master or a source | speaker or crossed speaker |
 
 Master state is the `master {volume, muted}` field of the scene list (absent means not muted; protocol 1.15). Below 1.15 the Master target is shown as unavailable. A source's `muted` is known only for sources in the program scene (`source.changed` lists those); for another source the key shows its state as unknown (neutral picture) and a press sends the opposite of the last known value, defaulting to mute.
@@ -83,7 +89,7 @@ Master state is the `master {volume, muted}` field of the scene list (absent mea
 
 ## Property inspector
 
-HTML in `ui/` using Elgato's sdpi-components (vendored locally, not loaded from the network). Every action shows the **Connection** section (port, token as a password field, status line with the link state and the RBS version) bound to global settings, then its own fields. Lists (scenes, sources, recording profiles) come from the plugin, which answers the inspector's `getScenes`, `getSources` and `getProfiles` requests from the held state and refreshes the inspector when the state changes. With no connection the lists are empty and the status line says why.
+HTML in `ui/` using Elgato's sdpi-components (vendored locally, not loaded from the network). Every action shows the **Connection** section (port, token as a password field, status line with the link state and the RBS version) bound to global settings, then its own fields. Lists (scenes; every source of the collection, not only the scene on air, plus Master for mute and volume) come from the plugin, which answers the inspector's `getScenes`, `getSources` and `getMuteTargets` requests from the held state and refreshes the inspector when the state changes. With no connection the lists are empty and the status line says why.
 
 ## Errors
 
@@ -114,3 +120,5 @@ HTML in `ui/` using Elgato's sdpi-components (vendored locally, not loaded from 
 ## Implementation status
 
 Draft: not implemented. This spec and ADR-0198 come first; the client, actions and package follow in the same folder.
+
+**Pictures (0.2).** Recording and live keys blink their dot once a second and show the time (the stream's time only when its start was seen while connected); the 1 s timer exists only while such a key is visible. A scene key takes an optional colour for its active state. When the user sets a Stream Deck title on a key, the picture has no text.

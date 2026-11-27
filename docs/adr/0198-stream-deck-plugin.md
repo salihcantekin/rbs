@@ -1,6 +1,6 @@
 # ADR-0198: Stream Deck plugin as a Control API client in `integrations/stream-deck/`
 
-- Status: Proposed
+- Status: Accepted (2026-11-27)
 - Date: 2026-11-27
 - Deciders: Salih (owner)
 - Refines: [ADR-0044](0044-control-api-protocol-and-security.md) (Control API, tokens, events), [ADR-0006](0006-three-tier-plugin-model.md) (add-ons stay outside the core), [ADR-0013](0013-zero-cost-when-unused.md)
@@ -41,4 +41,4 @@ A Stream Deck plugin is a separate process started by the Stream Deck app. Elgat
 
 ## Review
 
-Round 1 (independent AI session, 2026-11-27): changes requested; all 10 concerns applied (seq reset per connection, `affected` ignores `integrations/`, drift check scope stated, on-air permission for every action, master mute and protocol 1.15, main canvas only, locally computed elapsed time, handshake error mapping, token storage and Origin/Host notes, stale presses). Pending: owner approval; the ADR stays Proposed until then.
+Round 1 (independent AI session, 2026-11-27): changes requested; all 10 concerns applied (seq reset per connection, `affected` ignores `integrations/`, drift check scope stated, on-air permission for every action, master mute and protocol 1.15, main canvas only, locally computed elapsed time, handshake error mapping, token storage and Origin/Host notes, stale presses). Owner approved 2026-11-27.

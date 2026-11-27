@@ -4,8 +4,8 @@ import { Lease } from "../src/lease.js";
 import { fit } from "../src/pictures/pictures.js";
 import { ManualClock } from "../src/rbs-client/clock.js";
 import { RbsClient } from "../src/rbs-client/client.js";
-import { press } from "../src/press.js";
-import { type Elapsed, formatElapsed, renderKey, type ViewState } from "../src/view.js";
+import { press, turnVolume } from "../src/press.js";
+import { type Elapsed, dialView, formatElapsed, renderKey, stepTarget, type ViewState } from "../src/view.js";
 import { FakeServer } from "./fake-server.js";
 
 const ready = { state: "ready" } as const;
@@ -57,7 +57,7 @@ describe("renderKey", () => {
 		stream: { state: "live", connected: true },
 	};
 	const svg = (kind: Parameters<typeof renderKey>[0], settings: object, s = state, link: Parameters<typeof renderKey>[2] = ready) =>
-		renderKey(kind, settings, link, s, noElapsed, 0);
+		renderKey(kind, settings, link, s, { elapsed: noElapsed, liveSince: 0, now: 0, titled: false });
 
 	it("highlights the program scene only", () => {
 		expect(svg("scene", { scene: "1" })).toContain("#16355f");
@@ -80,7 +80,7 @@ describe("renderKey", () => {
 		expect(svg("source-visible", { source: "7" })).toContain("Camera");
 	});
 	it("elapsed time advances while recording runs", () => {
-		const out = renderKey("record", {}, ready, state, { ms: 61_000, at: 1000, running: true }, 4000);
+		const out = renderKey("record", {}, ready, state, { elapsed: { ms: 61_000, at: 1000, running: true }, liveSince: 0, now: 4000, titled: false });
 		expect(out).toContain("01:04");
 		expect(formatElapsed(3_725_000)).toBe("1:02:05");
 	});
@@ -111,6 +111,37 @@ describe("press", () => {
 		await press("mute", { source: "master" }, client);
 		expect(calls()).toEqual({ method: "canvas.set_master_muted", params: { muted: true } });
 		await expect(press("scene", {}, client)).rejects.toThrow(/Choose a scene/);
+		client.stop();
+		await server.stop();
+	});
+});
+
+describe("scene steps and dials", () => {
+	const state: ViewState = {
+		scenes: { scenes: [{ id: 1, name: "A" }, { id: 2, name: "B", active: false }, { id: 3, name: "C" }], program: 3, master: { volume: 0.5 } },
+		sources: [{ id: 7, name: "Mic", volume: 0.8, muted: false }],
+	};
+	it("steps over inactive scenes and wraps", () => {
+		expect(stepTarget(state, "next")?.id).toBe(1);
+		expect(stepTarget(state, "previous")?.id).toBe(1);
+		expect(stepTarget({ scenes: { scenes: [{ id: 1, name: "A" }], program: 1 } }, "next")).toBeUndefined();
+	});
+	it("reads a dial's source", () => {
+		expect(dialView({ source: "7" }, state)).toMatchObject({ title: "Mic", volume: 0.8 });
+		expect(dialView({ source: "master" }, state)).toMatchObject({ title: "Master", volume: 0.5 });
+		expect(dialView({ source: "99" }, state).volume).toBeUndefined();
+	});
+	it("turns volume in steps and clamps", async () => {
+		const server = await FakeServer.start();
+		server.options.answers["source.list"] = { seq: { "source.changed": 1 }, data: [{ id: 7, name: "Mic", item: 1, volume: 0.8 }] };
+		const client = new RbsClient({ clock: new ManualClock() });
+		client.configure(server.port, "rbs1_good");
+		client.start();
+		await new Promise<void>((r) => client.onStatus((st) => st.state === "ready" && r()));
+		await turnVolume({ source: "7", step: "5" }, 2, client);
+		expect(server.requests.slice(-1)[0]).toEqual({ method: "source.set_volume", params: { source: 7, volume: 0.9 } });
+		await turnVolume({ source: "7", step: "25" }, 5, client);
+		expect(server.requests.slice(-1)[0]?.params).toEqual({ source: 7, volume: 1 });
 		client.stop();
 		await server.stop();
 	});

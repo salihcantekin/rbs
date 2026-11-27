@@ -19,8 +19,17 @@ export const lease = new Lease(systemClock, () => client.start(), () => client.s
 
 /** Recording time anchor, updated on every `record.state` event. */
 export const elapsed: Elapsed = { ms: 0, at: 0, running: false };
+/** Live time anchor: when the stream was last seen to start. */
+export const live = { since: 0, on: false };
 
-client.onState((state) => {
+client.onState((state, changed) => {
+	if (changed === "stream" || changed === "profiles") {
+		const on = (state as unknown as ViewState).stream?.state === "live";
+		// The start time is known only for a start seen while connected.
+		if (on && !live.on) live.since = changed === "stream" ? Date.now() : 0;
+		live.on = on;
+	}
+	if (changed !== "record" && changed !== "profiles") return;
 	const r = (state as unknown as ViewState).record as { state: string; recorded_ms?: number; paused?: boolean } | undefined;
 	elapsed.ms = r?.recorded_ms ?? 0;
 	elapsed.at = Date.now();

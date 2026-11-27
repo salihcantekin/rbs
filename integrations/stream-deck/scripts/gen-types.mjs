@@ -30,6 +30,14 @@ export const METHODS = [
 	"stream.start",
 	"stream.stop",
 	"output.profiles",
+	"source.set_volume",
+	"canvas.set_master_volume",
+	"replay.save",
+	"replay.status",
+	"vcam.start",
+	"vcam.stop",
+	"vcam.status",
+	"marker.add",
 ];
 
 const pascal = (m) => m.split(/[._]/).map((p) => p[0].toUpperCase() + p.slice(1)).join("");

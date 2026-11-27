@@ -61,7 +61,7 @@ describe("RbsClient", () => {
 		expect(client.state.scenes?.program).toBe(1);
 		expect(client.state.profiles?.[0]?.id).toBe("p1");
 		const sub = server.requests.find((r) => r.method === "events.subscribe");
-		expect(sub?.params).toEqual({ topics: ["scene.changed", "source.changed", "record.state", "stream.state"] });
+		expect(sub?.params).toEqual({ topics: ["scene.changed", "source.changed", "record.state", "stream.state", "replay.changed", "vcam.changed"] });
 		expect(server.requests[0]?.method).toBe("session.hello");
 	});
 

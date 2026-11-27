@@ -1,10 +1,10 @@
-import streamDeck, { type DidReceiveSettingsEvent, type TitleParametersDidChangeEvent, type KeyDownEvent, type SendToPluginEvent, SingletonAction, type WillAppearEvent, type WillDisappearEvent } from "@elgato/streamdeck";
+import streamDeck, { type DialDownEvent, type DialRotateEvent, type DidReceiveSettingsEvent, type TitleParametersDidChangeEvent, type KeyDownEvent, type SendToPluginEvent, SingletonAction, type WillAppearEvent, type WillDisappearEvent } from "@elgato/streamdeck";
 
 import type { JsonObject } from "@elgato/utils";
-import { toDataUrl } from "../pictures/pictures.js";
-import { explain, press } from "../press.js";
-import { client, elapsed, lease } from "../runtime.js";
-import { type Kind, type Settings, type ViewState, linkText, renderKey } from "../view.js";
+import { dialFeedback, toDataUrl } from "../pictures/pictures.js";
+import { explain, press, turnVolume } from "../press.js";
+import { client, elapsed, lease, live } from "../runtime.js";
+import { type Kind, type Settings, type ViewState, dialView, linkText, renderKey } from "../view.js";
 
 /** Every action instance, so a state change repaints all keys. */
 const instances = new Set<RbsKeyAction>();
@@ -17,24 +17,37 @@ const titled = new Set<string>();
 const busy = new Set<string>();
 let tick: ReturnType<typeof setInterval> | undefined;
 
-function repaintAll(): void {
+function repaintAll(fromTick = false): void {
 	const now = Date.now();
 	for (const [id, { settings, action }] of known) {
 		const kind = [...instances].find((i) => i.actions.some((a) => a.id === id))?.kind;
-		if (!kind || !action.isKey()) continue;
-		const svg = toDataUrl(renderKey(kind, settings, client.status, client.state as unknown as ViewState, elapsed, now, titled.has(id)));
+		if (!kind) continue;
+		const state = client.state as unknown as ViewState;
+		if (action.isDial()) {
+			const v = dialView(settings, state);
+			const fb = client.status.state === "ready" ? dialFeedback(v.title, v.volume, v.muted) : { title: linkText(client.status).title, value: "", indicator: { value: 0 } };
+			const key = JSON.stringify(fb);
+			if (shown.get(id) !== key) {
+				shown.set(id, key);
+				void action.setFeedback(fb);
+			}
+			continue;
+		}
+		if (!action.isKey()) continue;
+		const svg = toDataUrl(renderKey(kind, settings, client.status, state, { elapsed, liveSince: live.since, now, titled: titled.has(id) }));
 		if (shown.get(id) === svg) continue;
 		shown.set(id, svg);
 		void action.setImage(svg);
 	}
 	updateTick();
-	void sendLists();
+	if (!fromTick) void sendLists();
 }
 
-/** The 1 s timer for the elapsed time exists only while a recording runs and a key shows it (P13). */
+/** The 1 s timer (times, blinking) exists only while a recording or stream runs and a key shows it (P13). */
 function updateTick(): void {
-	const need = elapsed.running && [...instances].some((i) => i.kind === "record" && [...i.actions].length > 0);
-	if (need && !tick) tick = setInterval(repaintAll, 1000);
+	const shows = (kind: Kind) => [...instances].some((i) => i.kind === kind && [...i.actions].length > 0);
+	const need = (elapsed.running && shows("record")) || (live.on && shows("stream"));
+	if (need && !tick) tick = setInterval(() => repaintAll(true), 1000);
 	else if (!need && tick) {
 		clearInterval(tick);
 		tick = undefined;
@@ -67,8 +80,8 @@ async function sendLists(): Promise<void> {
 	await streamDeck.ui.sendToPropertyInspector({ event: "getMuteTargets", items: [{ label: "Master", value: "master" }, ...all] });
 }
 
-client.onStatus(repaintAll);
-client.onState(repaintAll);
+client.onStatus(() => repaintAll());
+client.onState(() => repaintAll());
 
 /** Base of every RBS key action (docs/specs/stream-deck.md, Actions). */
 export abstract class RbsKeyAction extends SingletonAction<JsonObject> {
@@ -115,6 +128,24 @@ export abstract class RbsKeyAction extends SingletonAction<JsonObject> {
 	override onSendToPlugin(_ev: SendToPluginEvent<never, JsonObject>): void {
 		// Data sources are answered by `sendLists`, which runs on every state change.
 		void sendLists();
+	}
+
+	override async onDialRotate(ev: DialRotateEvent<JsonObject>): Promise<void> {
+		if (client.status.state !== "ready") return;
+		try {
+			await turnVolume(ev.payload.settings as Settings, ev.payload.ticks, client);
+		} catch (err) {
+			lastError.set(ev.action.id, explain(err));
+		}
+	}
+
+	override async onDialDown(ev: DialDownEvent<JsonObject>): Promise<void> {
+		if (client.status.state !== "ready") return;
+		try {
+			await press("volume", ev.payload.settings as Settings, client);
+		} catch (err) {
+			lastError.set(ev.action.id, explain(err));
+		}
 	}
 
 	override async onKeyDown(ev: KeyDownEvent<JsonObject>): Promise<void> {

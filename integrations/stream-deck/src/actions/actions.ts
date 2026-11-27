@@ -18,6 +18,31 @@ export class RecordPauseAction extends RbsKeyAction {
 	readonly kind = "record-pause" as const;
 }
 
+@action({ UUID: `${PLUGIN_UUID}.scene-step` })
+export class SceneStepAction extends RbsKeyAction {
+	readonly kind = "scene-step" as const;
+}
+
+@action({ UUID: `${PLUGIN_UUID}.replay` })
+export class ReplayAction extends RbsKeyAction {
+	readonly kind = "replay" as const;
+}
+
+@action({ UUID: `${PLUGIN_UUID}.vcam` })
+export class VcamAction extends RbsKeyAction {
+	readonly kind = "vcam" as const;
+}
+
+@action({ UUID: `${PLUGIN_UUID}.marker` })
+export class MarkerAction extends RbsKeyAction {
+	readonly kind = "marker" as const;
+}
+
+@action({ UUID: `${PLUGIN_UUID}.volume` })
+export class VolumeAction extends RbsKeyAction {
+	readonly kind = "volume" as const;
+}
+
 @action({ UUID: `${PLUGIN_UUID}.stream` })
 export class StreamAction extends RbsKeyAction {
 	readonly kind = "stream" as const;

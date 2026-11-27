@@ -124,6 +124,93 @@
           "Title": ""
         }
       ]
+    },
+    {
+      "Name": "Next / previous scene",
+      "UUID": "com.rbs.streamdeck.scene-step",
+      "Icon": "imgs/scene-step",
+      "Tooltip": "Go to the next or previous scene.",
+      "Controllers": [
+        "Keypad"
+      ],
+      "PropertyInspectorPath": "ui/inspector.html",
+      "States": [
+        {
+          "Image": "imgs/scene-step-key",
+          "Title": ""
+        }
+      ]
+    },
+    {
+      "Name": "Save replay",
+      "UUID": "com.rbs.streamdeck.replay",
+      "Icon": "imgs/replay",
+      "Tooltip": "Save the replay buffer.",
+      "Controllers": [
+        "Keypad"
+      ],
+      "PropertyInspectorPath": "ui/inspector.html",
+      "States": [
+        {
+          "Image": "imgs/replay-key",
+          "Title": ""
+        }
+      ]
+    },
+    {
+      "Name": "Virtual camera",
+      "UUID": "com.rbs.streamdeck.vcam",
+      "Icon": "imgs/vcam",
+      "Tooltip": "Start or stop the virtual camera.",
+      "Controllers": [
+        "Keypad"
+      ],
+      "PropertyInspectorPath": "ui/inspector.html",
+      "States": [
+        {
+          "Image": "imgs/vcam-key",
+          "Title": ""
+        }
+      ]
+    },
+    {
+      "Name": "Marker",
+      "UUID": "com.rbs.streamdeck.marker",
+      "Icon": "imgs/marker",
+      "Tooltip": "Add a marker to the recording.",
+      "Controllers": [
+        "Keypad"
+      ],
+      "PropertyInspectorPath": "ui/inspector.html",
+      "States": [
+        {
+          "Image": "imgs/marker-key",
+          "Title": ""
+        }
+      ]
+    },
+    {
+      "Name": "Volume dial",
+      "UUID": "com.rbs.streamdeck.volume",
+      "Icon": "imgs/volume",
+      "Tooltip": "Turn to change a source's volume, press to mute.",
+      "PropertyInspectorPath": "ui/inspector.html",
+      "States": [
+        {
+          "Image": "imgs/volume-key",
+          "Title": ""
+        }
+      ],
+      "Encoder": {
+        "layout": "$B1",
+        "TriggerDescription": {
+          "Rotate": "Volume",
+          "Push": "Mute"
+        }
+      },
+      "Controllers": [
+        "Encoder"
+      ]
     }
   ]
 }

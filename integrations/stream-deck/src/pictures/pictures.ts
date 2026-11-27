@@ -36,6 +36,8 @@ interface Frame {
 	dim?: boolean;
 	/** The user set a Stream Deck title: it is drawn by the app, so draw no text. */
 	untitled?: boolean;
+	/** Drawn over the background, under the icon (a tint). */
+	under?: string;
 }
 
 function frame(f: Frame): string {
@@ -52,6 +54,7 @@ function frame(f: Frame): string {
 	return (
 		`<svg xmlns="http://www.w3.org/2000/svg" width="${t.size}" height="${t.size}" viewBox="0 0 ${t.size} ${t.size}">` +
 		`<rect width="${t.size}" height="${t.size}" rx="${t.radius}" fill="${f.bg}"/>` +
+		(f.under ?? "") +
 		`<g transform="translate(40 14)" fill="none" stroke="${fg}" stroke-width="5" stroke-linecap="round" stroke-linejoin="round">${f.icon}</g>` +
 		text +
 		`</svg>`
@@ -65,22 +68,23 @@ const speaker = `<path d="M6 22h12l16-14v44L18 38H6z"/>`;
 const speakerOn = `${speaker}<path d="M44 20c6 6 6 18 0 24M52 12c10 10 10 30 0 40"/>`;
 const speakerOff = `${speaker}<path d="M44 22l16 16M60 22L44 38"/>`;
 
-export function sceneKey(name: string, active: boolean, missing: boolean, untitled = false): string {
-	return frame({ bg: active ? t.bgActive : t.bg, icon: sceneIcon.replace("<rect", active ? `<rect fill="${t.accent}" fill-opacity=".35" stroke="${t.accent}"` : "<rect"), label: missing ? "Missing scene" : name, dim: missing, untitled });
+export function sceneKey(name: string, active: boolean, missing: boolean, untitled = false, color: string = t.accent): string {
+	const tint = active ? `<rect x="0" y="0" width="${t.size}" height="${t.size}" rx="${t.radius}" fill="${color}" fill-opacity=".28"/>` : "";
+	return frame({ bg: active ? t.bgActive : t.bg, under: tint, icon: sceneIcon.replace("<rect", active ? `<rect fill="${color}" fill-opacity=".35" stroke="${color}"` : "<rect"), label: missing ? "Missing scene" : name, dim: missing, untitled });
 }
 
-export function recordKey(kind: "idle" | "recording" | "paused", elapsed?: string, untitled = false): string {
+export function recordKey(kind: "idle" | "recording" | "paused", elapsed?: string, untitled = false, pulse = true): string {
 	const dot = `<circle cx="32" cy="30" r="22"/>`;
 	if (kind === "idle") return frame({ bg: t.bg, icon: dot + `<circle cx="32" cy="30" r="9" fill="${t.fg}"/>`, label: "Record", untitled });
 	const pause = `<path d="M22 18v24M42 18v24"/>`;
-	return frame({ bg: t.bgLive, fg: t.fg, icon: kind === "paused" ? dot + pause : `<circle cx="32" cy="30" r="22" stroke="${t.live}"/><circle cx="32" cy="30" r="12" fill="${t.live}" stroke="${t.live}"/>`, label: "Stop", sub: elapsed, untitled });
+	return frame({ bg: t.bgLive, fg: t.fg, icon: kind === "paused" ? dot + pause : `<circle cx="32" cy="30" r="22" stroke="${t.live}"/><circle cx="32" cy="30" r="12" fill="${t.live}" fill-opacity="${pulse ? 1 : 0.25}" stroke="${t.live}" stroke-opacity="${pulse ? 1 : 0.25}"/>`, label: "Stop", sub: elapsed, untitled });
 }
 
-export function streamKey(kind: "idle" | "connecting" | "live" | "reconnecting", untitled = false): string {
+export function streamKey(kind: "idle" | "connecting" | "live" | "reconnecting", untitled = false, sub?: string, pulse = true): string {
 	const waves = `<circle cx="32" cy="30" r="6" fill="${t.fg}"/><path d="M18 16a20 20 0 0 0 0 28M46 16a20 20 0 0 1 0 28M8 8a34 34 0 0 0 0 44M56 8a34 34 0 0 1 0 44"/>`;
 	if (kind === "idle") return frame({ bg: t.bg, icon: waves, label: "Stream", untitled });
-	const red = waves.replace(/fill="[^"]*"/, `fill="${t.live}"`);
-	return frame({ bg: t.bgLive, icon: `<g stroke="${t.live}">${red}</g>`, label: "Stop", sub: kind === "live" ? "Live" : kind === "connecting" ? "Connecting" : "Reconnecting", untitled });
+	const red = waves.replace(/fill="[^"]*"/, `fill="${t.live}" fill-opacity="${pulse ? 1 : 0.25}"`);
+	return frame({ bg: t.bgLive, icon: `<g stroke="${t.live}">${red}</g>`, label: "Stop", sub: kind === "live" ? (sub ?? "Live") : kind === "connecting" ? "Connecting" : "Reconnecting", untitled });
 }
 
 export function visibleKey(name: string, visible: boolean | undefined, untitled = false): string {
@@ -110,4 +114,35 @@ export function pauseKey(kind: "idle" | "recording" | "paused", untitled = false
 	if (kind === "idle") return frame({ bg: t.bgDim, icon: bars, label: "Pause", dim: true, untitled });
 	if (kind === "paused") return frame({ bg: t.bgLive, icon: play, label: "Resume", untitled });
 	return frame({ bg: t.bg, icon: bars, label: "Pause", untitled });
+}
+
+/** Next or previous scene; `target` is the scene it would switch to. */
+export function sceneStepKey(direction: "next" | "previous", target: string | undefined, untitled = false): string {
+	const arrow = direction === "next" ? `<path d="M10 30h44M38 14l16 16-16 16"/>` : `<path d="M54 30H10M26 14L10 30l16 16"/>`;
+	return frame({ bg: t.bg, icon: arrow, label: direction === "next" ? "Next scene" : "Previous", sub: target, dim: target === undefined, untitled });
+}
+
+export function replayKey(kind: "off" | "armed" | "saving", untitled = false): string {
+	const rewind = `<path d="M32 10a20 20 0 1 1-18 12M10 8v16h16"/>`;
+	if (kind === "off") return frame({ bg: t.bgDim, icon: rewind, label: "Replay off", dim: true, untitled });
+	if (kind === "saving") return frame({ bg: t.bgActive, icon: rewind.replace("<path", `<g stroke="${t.accent}"><path`) + "</g>", label: "Saving", untitled });
+	return frame({ bg: t.bg, icon: rewind, label: "Save replay", untitled });
+}
+
+export function vcamKey(kind: "off" | "on", untitled = false): string {
+	const cam = `<circle cx="32" cy="26" r="16"/><circle cx="32" cy="26" r="6"/><path d="M22 54h20M32 42v12"/>`;
+	if (kind === "on") return frame({ bg: t.bgActive, icon: `<g stroke="${t.accent}">${cam}</g>`, label: "Camera on", untitled });
+	return frame({ bg: t.bg, icon: cam, label: "Virtual cam", untitled });
+}
+
+export function markerKey(recording: boolean, untitled = false): string {
+	const flag = `<path d="M16 8v48M16 10h32l-8 10 8 10H16"/>`;
+	return frame({ bg: t.bg, icon: flag, label: "Marker", dim: !recording, untitled });
+}
+
+/** Text of a dial's touch strip (the built-in $B1 layout). */
+export function dialFeedback(title: string, volume: number | undefined, muted: boolean | undefined): { title: string; value: string; indicator: { value: number } } {
+	if (volume === undefined) return { title, value: "-", indicator: { value: 0 } };
+	const pct = Math.round(volume * 100);
+	return { title, value: muted ? "Muted" : `${pct}%`, indicator: { value: muted ? 0 : Math.min(100, pct) } };
 }

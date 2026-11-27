@@ -2735,6 +2735,311 @@ export namespace OutputProfilesResult {
 		video_kbps: number;
 	}
 }
+export namespace SourceSetVolumeParams {
+	/**
+	 * `source.set_volume` (protocol 1.6).
+	 */
+	export interface Root {
+		/**
+		 * The source's id.
+		 */
+		source: number;
+		/**
+		 * A linear factor from 0 to 1.
+		 */
+		volume: number;
+	}
+}
+export namespace SourceSetVolumeResult {
+	/**
+	 * Parameters of a method that takes none. Unknown fields are ignored.
+	 */
+	export interface Root {}
+}
+export namespace CanvasSetMasterVolumeParams {
+	/**
+	 * `canvas.set_master_volume` (protocol 1.15, ADR-0081): the studio canvas's master.
+	 */
+	export interface Root {
+		/**
+		 * A linear factor from 0 to 1.
+		 */
+		volume: number;
+	}
+}
+export namespace CanvasSetMasterVolumeResult {
+	/**
+	 * Parameters of a method that takes none. Unknown fields are ignored.
+	 */
+	export interface Root {}
+}
+export namespace ReplaySaveParams {
+	/**
+	 * `replay.save` (protocol 1.27).
+	 */
+	export interface Root {
+		/**
+		 * How many seconds back, 1 to the buffer's length; everything it holds when absent.
+		 */
+		seconds?: number | null;
+	}
+}
+export namespace ReplaySaveResult {
+	/**
+	 * Parameters of a method that takes none. Unknown fields are ignored.
+	 */
+	export interface Root {}
+}
+export namespace ReplayStatusParams {
+	/**
+	 * Parameters of a method that takes none. Unknown fields are ignored.
+	 */
+	export interface Root {}
+}
+export namespace ReplayStatusResult {
+	/**
+	 * A state query's answer: the data and the `seq` of each state key it includes, so a
+	 * client ignores events with an equal or lower `seq`.
+	 */
+	export interface Root {
+		data: ReplayStatus;
+		/**
+		 * `seq` per state key included in `data`.
+		 */
+		seq: {
+			[k: string]: number | undefined;
+		};
+	}
+	/**
+	 * The state.
+	 */
+	export interface ReplayStatus {
+		/**
+		 * The buffer runs and keeps the past.
+		 */
+		armed: boolean;
+		/**
+		 * Payload bytes held.
+		 */
+		bytes: number;
+		/**
+		 * The usable past in whole seconds; `0` while disarmed.
+		 */
+		held_secs: number;
+		/**
+		 * Why the last save failed, until a save succeeds.
+		 */
+		last_error?: string | null;
+		/**
+		 * The file of the last clip saved since the server started.
+		 */
+		last_saved?: string | null;
+		/**
+		 * The wanted length in seconds.
+		 */
+		length_secs: number;
+		/**
+		 * The memory limit in bytes.
+		 */
+		memory_limit: number;
+		/**
+		 * Memory, not the length setting, is why the past is short.
+		 */
+		memory_limited: boolean;
+		/**
+		 * A clip is being cut or written.
+		 */
+		saving: boolean;
+	}
+}
+export namespace VcamStartParams {
+	/**
+	 * Parameters of a method that takes none. Unknown fields are ignored.
+	 */
+	export interface Root {}
+}
+export namespace VcamStartResult {
+	/**
+	 * Parameters of a method that takes none. Unknown fields are ignored.
+	 */
+	export interface Root {}
+}
+export namespace VcamStopParams {
+	/**
+	 * Parameters of a method that takes none. Unknown fields are ignored.
+	 */
+	export interface Root {}
+}
+export namespace VcamStopResult {
+	/**
+	 * Parameters of a method that takes none. Unknown fields are ignored.
+	 */
+	export interface Root {}
+}
+export namespace VcamStatusParams {
+	/**
+	 * Parameters of a method that takes none. Unknown fields are ignored.
+	 */
+	export interface Root {}
+}
+export namespace VcamStatusResult {
+	/**
+	 * Whether the virtual camera is on this computer (protocol 1.12, ADR-0066).
+	 */
+	export type VcamInstall = "added" | "not_added" | "needs_update" | "unavailable";
+
+	/**
+	 * A state query's answer: the data and the `seq` of each state key it includes, so a
+	 * client ignores events with an equal or lower `seq`.
+	 */
+	export interface Root {
+		data: VcamStatus;
+		/**
+		 * `seq` per state key included in `data`.
+		 */
+		seq: {
+			[k: string]: number | undefined;
+		};
+	}
+	/**
+	 * The state.
+	 */
+	export interface VcamStatus {
+		/**
+		 * While sending, why the camera's node failed, until it runs again.
+		 */
+		failure: string | null;
+		/**
+		 * While sending, the session's counters when the adapter shares them; always
+		 * `null` in `vcam.changed`.
+		 */
+		frames: VcamFrames | null;
+		/**
+		 * Height in pixels: sent now, or saved for the next start.
+		 */
+		height: number;
+		/**
+		 * Frames per second, rounded: sent now, or saved for the next start.
+		 */
+		rate: number;
+		/**
+		 * Why, in words for the user, with `needs_update` and `unavailable`.
+		 */
+		reason?: string | null;
+		/**
+		 * RBS sends the program to the camera now.
+		 */
+		sending: boolean;
+		/**
+		 * Whether the camera is added; `null` while the app has not read it yet.
+		 */
+		state: VcamInstall | null;
+		/**
+		 * Width in pixels: sent now, or saved for the next start.
+		 */
+		width: number;
+	}
+	/**
+	 * What the virtual camera's session did with the frames since sending started
+	 * (the virtual camera spec, "Ring and stats").
+	 */
+	export interface VcamFrames {
+		/**
+		 * Frames sent while no app read the camera.
+		 */
+		consumer_absent: number;
+		/**
+		 * Frames skipped or dropped for lack of room on the consumer side.
+		 */
+		consumer_busy: number;
+		/**
+		 * Frames dropped while the camera's format was being changed.
+		 */
+		format_pending: number;
+		/**
+		 * Operating system errors.
+		 */
+		os_errors: number;
+		/**
+		 * Frames the session refused.
+		 */
+		refused: number;
+		/**
+		 * Frames a newer frame replaced before the sender took them.
+		 */
+		replaced: number;
+		/**
+		 * Frames handed to the consumer side.
+		 */
+		sent: number;
+	}
+}
+export namespace MarkerAddParams {
+	/**
+	 * The canvases `record.start`, `record.stop`, `stream.start` and `stream.stop` act on:
+	 * one canvas, or every canvas the studio runs, main first (`all`, protocol 1.42,
+	 * ADR-0111 decision 3).
+	 */
+	export type OutputTarget = "main" | "vertical" | "all";
+	/**
+	 * A marker colour (protocol 1.50, ADR-0089 decision 2): a fixed, semantic set that
+	 * mirrors the recording manifest's. The app draws each from a theme token.
+	 */
+	export type MarkerColor = "blue" | "red" | "orange" | "yellow" | "green" | "purple";
+
+	/**
+	 * `marker.add` (protocol 1.50, ADR-0089): a manual marker in the running
+	 * recordings.
+	 */
+	export interface Root {
+		/**
+		 * `main`, `vertical` or `all`; absent is `all` (every running recording).
+		 */
+		canvas?: OutputTarget | null;
+		/**
+		 * Absent is `blue`.
+		 */
+		color?: MarkerColor | null;
+		/**
+		 * One line of at most 200 characters; absent or blank is "Marker N".
+		 */
+		label?: string | null;
+	}
+}
+export namespace MarkerAddResult {
+	/**
+	 * `marker.add`'s answer: one entry per recording that got the marker.
+	 */
+	export interface Root {
+		/**
+		 * Main canvas first.
+		 */
+		markers: MarkerPlaced[];
+	}
+	/**
+	 * One marker `marker.add` placed.
+	 */
+	export interface MarkerPlaced {
+		/**
+		 * The recording's canvas.
+		 */
+		canvas: "main" | "vertical";
+		/**
+		 * 1-based, in the order the recording's markers were added.
+		 */
+		index: number;
+		/**
+		 * Position from the recording's start (`t0`), after the reaction-time offset, in
+		 * nanoseconds. File time: the pauses before it are left out (protocol 1.63).
+		 */
+		t_ns: number;
+		/**
+		 * Added while the recording was paused: the marker sits on that pause's join
+		 * (protocol 1.63, ADR-0124 decision 10). Absent when false.
+		 */
+		while_paused?: boolean;
+	}
+}
 /** Every method the plugin calls, with its parameter and answer types. */
 export interface Methods {
 	"session.hello": { params: SessionHelloParams.Root; result: SessionHelloResult.Root };
@@ -2755,4 +3060,12 @@ export interface Methods {
 	"stream.start": { params: StreamStartParams.Root; result: StreamStartResult.Root };
 	"stream.stop": { params: StreamStopParams.Root; result: StreamStopResult.Root };
 	"output.profiles": { params: OutputProfilesParams.Root; result: OutputProfilesResult.Root };
+	"source.set_volume": { params: SourceSetVolumeParams.Root; result: SourceSetVolumeResult.Root };
+	"canvas.set_master_volume": { params: CanvasSetMasterVolumeParams.Root; result: CanvasSetMasterVolumeResult.Root };
+	"replay.save": { params: ReplaySaveParams.Root; result: ReplaySaveResult.Root };
+	"replay.status": { params: ReplayStatusParams.Root; result: ReplayStatusResult.Root };
+	"vcam.start": { params: VcamStartParams.Root; result: VcamStartResult.Root };
+	"vcam.stop": { params: VcamStopParams.Root; result: VcamStopResult.Root };
+	"vcam.status": { params: VcamStatusParams.Root; result: VcamStatusResult.Root };
+	"marker.add": { params: MarkerAddParams.Root; result: MarkerAddResult.Root };
 }
