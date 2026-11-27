@@ -4,14 +4,7 @@
 
 [[exception]]
 item = "crates/rbs-app/src/main.rs"
-lines = 6321
-reason = "ADR-0195 inactive scenes and list filters"
-approved = "owner, 2026-11-26 (chat: 'istisna olsun')"
-date = "2026-11-26"
-
-[[exception]]
-item = "crates/rbs-app/src/menu_bar.rs"
-lines = 2220
+lines = 6307
 reason = "ADR-0195 inactive scenes and list filters"
 approved = "owner, 2026-11-26 (chat: 'istisna olsun')"
 date = "2026-11-26"
@@ -38,13 +31,6 @@ approved = "owner, 2026-11-26 (chat: 'istisna olsun')"
 date = "2026-11-26"
 
 [[exception]]
-item = "crates/rbs-ui/src/command.rs"
-lines = 2781
-reason = "ADR-0195 inactive scenes and list filters"
-approved = "owner, 2026-11-26 (chat: 'istisna olsun')"
-date = "2026-11-26"
-
-[[exception]]
 item = "crates/rbs-api/tests/json.rs::every_request"
 lines = 546
 reason = "ADR-0195 inactive scenes and list filters"
@@ -54,13 +40,6 @@ date = "2026-11-26"
 [[exception]]
 item = "crates/rbs-app/src/main.rs::install_studio"
 lines = 980
-reason = "ADR-0195 inactive scenes and list filters"
-approved = "owner, 2026-11-26 (chat: 'istisna olsun')"
-date = "2026-11-26"
-
-[[exception]]
-item = "crates/rbs-app/src/menu_bar.rs::run"
-lines = 244
 reason = "ADR-0195 inactive scenes and list filters"
 approved = "owner, 2026-11-26 (chat: 'istisna olsun')"
 date = "2026-11-26"

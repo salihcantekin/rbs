@@ -1310,14 +1310,20 @@ component DockArea inherits Rectangle {
     }
     // Under the stacks: the stacks' own items ignore drag events, so every drag over
     // the dock area reaches it.
+    // The pointer while a panel is dragged, for the card that follows it (ADR-0197).
+    property <length> pointer-x;
+    property <length> pointer-y;
+    property <bool> dragging: drop.has-drag && Shell.panel-dragging && !Shell.drag-cancelled;
     drop := DropArea {
         can-drop(e) => {
-            if !Shell.is-panel(e.data) { return DragAction.none; }
+            if !Shell.is-panel(e.data) || Shell.drag-cancelled { return DragAction.none; }
+            root.pointer-x = e.position.x;
+            root.pointer-y = e.position.y;
             Shell.drag-over(root.window, e.data, e.position.x, e.position.y);
             return DragAction.move;
         }
         dropped(e) => {
-            if !Shell.is-panel(e.data) { return DragAction.none; }
+            if !Shell.is-panel(e.data) || Shell.drag-cancelled { return DragAction.none; }
             Shell.drag-drop(root.window, e.data, e.position.x, e.position.y);
             return DragAction.move;
         }
@@ -1357,6 +1363,20 @@ component DockArea inherits Rectangle {
         height: rail.below ? rail.h : rail.h - root.switch-h - Shell.gap;
         below: rail.below;
     }
+    // Every stack that takes the panel is outlined while it is dragged, so the user sees
+    // at once that it moves and where it can go (ADR-0197). The stack the drop would
+    // fill is shaded by the guide below.
+    for s in stacks: Rectangle {
+        visible: root.dragging && s.takes-drop;
+        x: s.x;
+        y: s.y;
+        width: s.w;
+        height: s.h;
+        border-radius: Tokens.radius-md;
+        border-width: Tokens.size-border;
+        border-color: Theme.accent;
+        background: transparent;
+    }
     // The drop guide: the part of the window the drop would fill.
     if drop.has-drag && Shell.drop-window == root.window && Shell.drop-guide.width > 0: Rectangle {
         x: Shell.drop-guide.x;
@@ -1370,6 +1390,40 @@ component DockArea inherits Rectangle {
         border-radius: Tokens.radius-md;
         border-width: Tokens.size-focus-ring;
         border-color: Theme.accent;
+    }
+    // The card that follows the pointer while a panel is dragged: its icon and title,
+    // in the raised card look with an accent outline. It fades in at the pointer.
+    if root.dragging: Rectangle {
+        property <bool> shown: false;
+        init => { self.shown = true; }
+        x: min(root.pointer-x + Tokens.space-3, max(root.width - self.width, 0px));
+        y: min(root.pointer-y + Tokens.space-3, max(root.height - self.height, 0px));
+        height: Tokens.size-control-lg;
+        width: ghost-row.preferred-width + 2 * Tokens.space-2;
+        background: Theme.surface-overlay;
+        border-radius: Tokens.radius-md;
+        border-width: Tokens.size-focus-ring;
+        border-color: Theme.accent;
+        opacity: self.shown ? 1 : 0;
+        animate opacity { duration: Tokens.motion-fast; easing: ease-out; }
+        accessible-role: AccessibleRole.none;
+        ghost-row := HorizontalLayout {
+            padding-left: Tokens.space-2;
+            padding-right: Tokens.space-2;
+            spacing: Tokens.space-1;
+            alignment: center;
+            VerticalLayout {
+                alignment: center;
+                Icon { name: Icons.named(Shell.drag-icon); ink: Theme.accent; }
+            }
+            Text {
+                text: Shell.drag-title;
+                color: Theme.text-primary;
+                font-size: Tokens.type-label-size;
+                font-weight: Tokens.type-title-weight;
+                vertical-alignment: center;
+            }
+        }
     }
 }
 
@@ -1496,6 +1550,12 @@ component Flyout inherits Rectangle {
                         horizontal-stretch: 1;
                         allow-move: !Shell.locked;
                         data: Shell.panel-data(data.id);
+                        changed dragging => {
+                            Shell.drag-cancelled = false;
+                            Shell.drag-title = data.title;
+                            Shell.drag-icon = data.icon;
+                            Shell.panel-dragging = self.dragging;
+                        }
                         Text {
                             text: data.title;
                             color: Theme.text-primary;
@@ -2623,6 +2683,12 @@ export component MainWindow inherits Window {
                 Shell.app-menu-asked += 1;
                 return accept;
             }
+            // Escape cancels a panel drag: nothing is docked (ADR-0197).
+            if e.text == Key.Escape && Shell.panel-dragging && !Shell.drag-cancelled {
+                Shell.drag-cancelled = true;
+                Shell.drag-leave();
+                return accept;
+            }
             // Escape answers the quit question as Keep (ADR-0156 decision 1).
             if e.text == Key.Escape && Shell.quit-confirm {
                 Shell.quit-keep();
@@ -3055,6 +3121,12 @@ export component FloatWindow inherits Window {
     edit-keys := FocusScope {
         focus-on-tab-navigation: false;
         key-pressed(e) => {
+            // Escape cancels a panel drag: nothing is docked (ADR-0197).
+            if e.text == Key.Escape && Shell.panel-dragging && !Shell.drag-cancelled {
+                Shell.drag-cancelled = true;
+                Shell.drag-leave();
+                return accept;
+            }
             // Escape answers the silent output question as Cancel.
             if e.text == Key.Escape && Shell.silent-confirm != 0 {
                 Shell.silent-answer(false, false);

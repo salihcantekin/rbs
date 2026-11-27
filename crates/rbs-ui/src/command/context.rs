@@ -305,6 +305,7 @@ pub const CONTEXT_LAYOUT: &[(Context, &[&str])] = &[
             "ui.panel.move",
             "ui.panel.float",
             "ui.panel.auto_hide",
+            "ui.panel.full_height",
             "|",
             "ui.panel.close",
         ],

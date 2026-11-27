@@ -21,7 +21,7 @@ mod layout;
 pub use context::*;
 pub use errors::{CommandIdError, Disabled};
 pub use labels::{choice_icon, icon, icon_only, title};
-pub use layout::MENU_LAYOUT;
+pub use layout::{MENU_LAYOUT, NOT_IN_MENU};
 
 use crate::panel::{PanelId, built_in};
 use crate::workspace::{Toolbar, ToolbarItem, ToolbarStyle};
@@ -1081,6 +1081,18 @@ pub const ENTRIES: &[Entry] = &[
         kind: action("ui.panel.auto_hide"),
         params: &[PANEL_ID],
         checkable: false,
+        fixed: &[],
+    },
+    Entry {
+        id: "ui.panel.full_height",
+        title: "Full window height",
+        tooltip: "Let the side area that holds a panel run the whole height of the window, down beside the bottom area",
+        icon: Some("panel-right"),
+        shortcut: None,
+        menu: Menu::Window,
+        kind: action("ui.panel.full_height"),
+        params: &[PANEL_ID],
+        checkable: true,
         fixed: &[],
     },
     Entry {
@@ -2314,64 +2326,6 @@ pub enum MenuItem {
     /// A separator.
     Separator,
 }
-
-/// Entries no menu lists: `scene.position` is for shortcuts and the palette (the
-/// Scene menu lists the scenes through `scene.select`).
-pub const NOT_IN_MENU: &[&str] = &[
-    // The group row's menu (`group`, ADR-0182): it acts on the group the row stands for.
-    "ui.group.visible.toggle",
-    "ui.group.locked.toggle",
-    "ui.group.rename",
-    "ui.group.remove",
-    "scene.position",
-    // A projector's shared size is the first line of its own menu (ADR-0125 decision 6).
-    "ui.projector.shared",
-    "ui.layout.rail_size",
-    // The panel commands name a panel (`id`): they run from the panel menu and the
-    // control API, not from a menu bar menu.
-    "ui.panel.collapse",
-    "ui.panel.auto_hide",
-    "ui.panel.move",
-    "ui.panel.float",
-    "ui.panel.close",
-    // Add filter acts on a source (`source`): it runs from the Add filter button of
-    // Properties and the control API's `filter.add`, not from a menu bar menu.
-    "filter.add",
-    // A scene's own level for a source the Mixer hears (ADR-0091): it runs from the
-    // Mixer strip's menu and the control API, not from a menu bar menu.
-    "scene.audio.reset_source",
-    // A scene's transition into it (ADR-0135): a card under the scene's row, so it
-    // runs from the Scene row's menu, not from a menu bar menu.
-    "ui.scene.transition",
-    // The profile and collection commands run from the status bar's pickers and the
-    // control API; the File menu keeps the two pickers.
-    "ui.profile.new",
-    "ui.profile.duplicate",
-    "ui.profile.rename",
-    "ui.profile.import",
-    "ui.profile.export",
-    "ui.profile.delete",
-    "ui.collection.new",
-    "ui.collection.duplicate",
-    "ui.collection.rename",
-    "ui.collection.import",
-    "ui.collection.import_obs",
-    "ui.collection.export",
-    "ui.collection.delete",
-    // Show and its duration run from the Sources row (not built yet) and from a
-    // shortcut or the control API. They are not on the menu bar (ADR-0105).
-    "item.show",
-    "item.set_show_for",
-    // A slide show's Next and Previous (ADR-0171 decision 9) run from its Properties
-    // and from a shortcut or the control API.
-    "media.next",
-    "media.previous",
-    // The vertical canvas's Auto layout and Size run from the vertical picture's panel
-    // menu and right-click menu (they act on that picture), the palette and the
-    // control API.
-    "canvas.auto_layout",
-    "canvas.vertical_size",
-];
 
 fn item(id: CommandId, e: &Entry, state: &dyn CommandState) -> MenuItem {
     if let Kind::Picker { param, .. } = e.kind

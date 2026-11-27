@@ -699,7 +699,7 @@ to `invalid_params` with the message below.
 
 ### Protocol 1.115: audio buses (ADR-0097 decisions 12 and 13, ADR-0170 decision 9)
 
-1.114 is reserved for another change; a 1.113 server is the last without these methods. Buses belong to the main canvas; `main` is its master (`canvas.set_master_volume`, `canvas.set_master_muted`) and is never listed, added, removed or renamed. A vertical canvas has no buses. Names are trimmed by the server (in requests and when profile references are compared) and then compared exactly; `main` is reserved, other spellings such as `Main` are ordinary names.
+A 1.114 server is the last without these methods. Buses belong to the main canvas; `main` is its master (`canvas.set_master_volume`, `canvas.set_master_muted`) and is never listed, added, removed or renamed. A vertical canvas has no buses. Names are trimmed by the server (in requests and when profile references are compared) and then compared exactly; `main` is reserved, other spellings such as `Main` are ordinary names.
 
 - **`bus.list`** (`read`): `{buses: [{name, volume, muted}]}`, the buses other than `main` in the order they were added; `volume` is linear `0..=1`.
 - **`bus.add {name}`** (`control`, `edit`): one undo step; answers `{}`. The new bus is at full volume, not muted, with no filters and no sends, so it is silent until a source sends to it. An empty name or `main` is `invalid_params`; a taken name, or five buses besides `main` already (`MAX_BUSES` 6), is `conflict` (`data.reason` `"name_taken"` or `"too_many_buses"`).
@@ -712,7 +712,7 @@ to `invalid_params` with the message below.
 - **Source rows** (`source.list`, `scene.sources`, `source.changed`) add `sends: [{bus, level}]`, only for the levels that differ from the default (1 to `main`, 0 to every other bus); absent means the default. `source.changed` follows a send change and a bus rename or removal that changes a row's `sends`.
 - **Topic `bus.changed`**: the `bus.list` answer, sent on every change to the buses (also by undo, redo, a collection switch and a window edit). Bus volume and send changes are coalesced to one per frame, as for the master.
 - **Not in 1.115.** Bus filters (the scene model has them; methods come with the Mixer's bus strips).
-- **Older clients and servers.** A 1.113 server answers the methods `method_not_found` and has no topic; a 1.113 client ignores `sends` in rows.
+- **Older clients and servers.** A 1.114 server answers the methods `method_not_found` and has no topic; a 1.114 client ignores `sends` in rows.
 
 ### Protocol 1.113: multi-track recording (ADR-0170 decisions 7 and 11)
 
@@ -739,6 +739,16 @@ to `invalid_params` with the message below.
 - `scene.switch`, `scene.select` and `canvas.set_preview` still accept any scene.
 - An undo or redo that would make an on-air scene inactive is refused with
   `undo_conflict`, and the history is left untouched.
+
+### Protocol 1.114: full-height side areas (ADR-0197)
+
+- **`ui.panel.full_height {id}`** (`control`, a `ui.*` method routed to the UI
+  client): toggles whether the left or right area that holds panel `id` runs the
+  full height of the main window, with the bottom area spanning only the width
+  beside it. `not_found` for a panel that is not open, `conflict` for a panel that
+  is not in the left or right area of the main window, through the registry
+  entry's disabled reason. One layout history step; refused from the pointer
+  while the layout is locked, like other layout changes.
 
 ### Planned protocol 1.113: address source placements (ADR-0189)
 

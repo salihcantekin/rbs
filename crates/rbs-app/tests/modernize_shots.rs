@@ -90,6 +90,7 @@ fn modernize_screenshots() {
                 collapsed: false,
                 can_collapse: true,
                 can_hide: true,
+                takes_drop: true,
             };
             m.set_stacks(slint::ModelRc::new(slint::VecModel::from(vec![
                 stack(

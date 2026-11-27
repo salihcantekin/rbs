@@ -732,7 +732,7 @@ export struct LiveDestinationRow { id: int, name: string, state: string, detail:
 
 export struct TabData { id: string, title: string, known: bool, icon: string }
 
-export struct StackData { window: int, stack: int, x: length, y: length, w: length, h: length, tabs: [TabData], active: int, collapsed: bool, can-collapse: bool, can-hide: bool }
+export struct StackData { window: int, stack: int, x: length, y: length, w: length, h: length, tabs: [TabData], active: int, collapsed: bool, can-collapse: bool, can-hide: bool, takes-drop: bool }
 
 // The Transition rail of the centre's studio split, in studio mode (ADR-0064).
 export struct RailData { shown: bool, x: length, y: length, w: length, h: length, below: bool }
@@ -939,6 +939,13 @@ export global Shell {
     callback drag-over(int /* window */, data-transfer, length, length);
     callback drag-drop(int /* window */, data-transfer, length, length);
     callback drag-leave();
+    // A panel is being dragged (set by the tab or title that is dragged): the dock areas
+    // show every place it can go and a card that follows the pointer (ADR-0197). Escape
+    // while it is set cancels the drag: nothing is docked and the guide goes away.
+    in-out property <bool> panel-dragging;
+    in-out property <bool> drag-cancelled;
+    in-out property <string> drag-title;
+    in-out property <string> drag-icon;
     // The maximized panel's id, or empty (ADR-0049 decision 2; not saved).
     in property <string> maximized;
     in property <int> drop-window: -1;

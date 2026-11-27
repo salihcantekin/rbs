@@ -31,6 +31,9 @@ use ui_routing::PendingUi;
 
 /// The protocol version this server speaks.
 ///
+/// 1.115 adds audio bus editing (ADR-0170): `bus.*`, `source.set_sends`, `bus.changed`.
+/// 1.114 adds `ui.panel.full_height` (ADR-0197): a side area runs the full window height.
+/// 1.113 adds audio tracks in `record.status` (ADR-0170).
 /// 1.112 adds inactive scenes (ADR-0195): `scene.set_active`, `scene.step`, `scene.position`
 /// and `active` on `scene.list` rows.
 /// 1.111 adds group Properties (ADR-0184, ADR-0185, ADR-0186, ADR-0193): `group.get`,

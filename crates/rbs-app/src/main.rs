@@ -36,6 +36,7 @@ mod menu_bar;
 mod meter_bridge;
 mod meters_ui;
 mod obs_import_page;
+mod panel_drag;
 mod panels_menu;
 mod permissions_page;
 #[cfg(any(target_os = "macos", windows))]
@@ -70,7 +71,7 @@ use rbs_app::background::{self, OnClose, Request};
 use rbs_app::studio_host;
 use rbs_core::log::Area;
 use rbs_ui::command::{CommandId, CommandState};
-use rbs_ui::frame::{DropPlace, DropTarget, drop_target};
+use rbs_ui::frame::DropPlace;
 use rbs_ui::layout::{Axis, Edge, Rect};
 use rbs_ui::session::CommandError;
 use rbs_ui::store::{StoreError, WorkspaceStore};
@@ -1407,22 +1408,6 @@ impl App {
         self.command(c, Origin::Pointer);
     }
 
-    /// Where panel `panel` dragged to `(x, y)` in window `window`'s dock area would go.
-    fn drop_at(&self, window: usize, panel: &PanelId, x: f32, y: f32) -> Option<DropTarget> {
-        let area = self.area(window);
-        let w = self.session.workspace().windows.get(window)?;
-        let flat = view::shown_flat(w, area, self.maximized.as_ref(), self.studio.studio_mode);
-        drop_target(&flat, area, panel, x, y)
-    }
-
-    /// A tab is dragged over window `window`'s dock area: show where it would go.
-    fn drag_over(&mut self, window: usize, panel: Option<PanelId>, x: f32, y: f32) {
-        let guide = panel
-            .and_then(|p| self.drop_at(window, &p, x, y))
-            .map(|t| (window, t.guide));
-        self.show_drop_guide(guide);
-    }
-
     /// A tab is dropped on window `window`'s dock area.
     fn drag_drop(&mut self, window: usize, panel: Option<PanelId>, x: f32, y: f32) {
         self.show_drop_guide(None);
@@ -1447,6 +1432,7 @@ impl App {
                 window,
                 edge,
             },
+            DropPlace::FullHeightEdge(edge) => LayoutCommand::MoveToFullEdge { panel, edge },
         };
         self.command(c, Origin::Pointer);
     }
@@ -6270,11 +6256,15 @@ mod fold_tests {
     fn properties_folds_name_every_properties_section() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/studio.slint");
         let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path:?}: {e}"));
-        let start = text
-            .find("property <string> folds:")
-            .unwrap_or_else(|| panic!("SourceProperties has its folds list"));
-        let end = start + text[start..].find(';').unwrap_or(0);
-        let folds = &text[start..end];
+        // SourceProperties' computed list, and the fixed list GroupProperties sets.
+        let mut folds = String::new();
+        for marker in ["property <string> folds:", "Studio.properties-folds = \""] {
+            let start = text
+                .find(marker)
+                .unwrap_or_else(|| panic!("a folds list starting {marker:?}"));
+            let end = start + text[start..].find(';').unwrap_or(0);
+            folds.push_str(&text[start..end]);
+        }
         let mut ids = 0;
         for line in text.lines() {
             if let Some(id) = line.trim().strip_prefix("id: \"properties.") {

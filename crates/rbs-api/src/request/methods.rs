@@ -570,6 +570,7 @@ pub const UI_METHODS: &[&str] = &[
     "ui.panel.collapse",
     "ui.panel.expand",
     "ui.panel.auto_hide",
+    "ui.panel.full_height",
     "ui.panel.move",
     "ui.panel.float",
     "ui.panel.dock",
