@@ -4107,6 +4107,24 @@
     },
     "output_schema": {
       "$defs": {
+        "AudioTrack": {
+          "description": "One audio track of a multi-track recording (protocol 1.113): the bus it records,\nwhich is also the track's name in the file, and its encoder.",
+          "properties": {
+            "bus": {
+              "description": "The bus, by name (`main` or a bus of the main canvas).",
+              "type": "string"
+            },
+            "encoder": {
+              "description": "The audio encoder's name.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "bus",
+            "encoder"
+          ],
+          "type": "object"
+        },
         "CanvasRecordState": {
           "description": "A recording state of a canvas other than the main one (`record.canvas_state`,\nprotocol 1.29): the `record.state` object with `canvas` added.",
           "oneOf": [
@@ -4144,6 +4162,13 @@
                     "string",
                     "null"
                   ]
+                },
+                "audio_tracks": {
+                  "description": "The audio tracks of a recording with more than one, track 1 first\n(protocol 1.113, ADR-0170 decision 11); absent for one track, which\n`audio_encoder` names.",
+                  "items": {
+                    "$ref": "#/$defs/AudioTrack"
+                  },
+                  "type": "array"
                 },
                 "paused": {
                   "default": false,
@@ -4271,6 +4296,13 @@
                     "string",
                     "null"
                   ]
+                },
+                "audio_tracks": {
+                  "description": "The audio tracks of a recording with more than one, track 1 first\n(protocol 1.113, ADR-0170 decision 11); absent for one track, which\n`audio_encoder` names.",
+                  "items": {
+                    "$ref": "#/$defs/AudioTrack"
+                  },
+                  "type": "array"
                 },
                 "paused": {
                   "default": false,

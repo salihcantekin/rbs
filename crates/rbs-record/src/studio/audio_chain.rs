@@ -163,6 +163,20 @@ fn track_names(out: &OutputSettings) -> impl Iterator<Item = &str> {
         .chain(out.more_tracks.iter().map(String::as_str))
 }
 
+impl super::Studio {
+    /// Audio tracks one destination of `out` carries: its muxer's `mux.audio_streams`,
+    /// 1 for a transport that takes packets or a muxer that declares none (ADR-0170
+    /// decision 7). A start with more is refused with `TracksUnsupported`; this lets a
+    /// caller say so before anything opens. `NoAdapter` when no muxer takes `out`'s
+    /// container.
+    pub fn audio_tracks_allowed(
+        adapters: &RecordAdapters,
+        out: &OutputSettings,
+    ) -> Result<usize, RecordError> {
+        allowed_tracks(adapters, out)
+    }
+}
+
 /// Audio streams one destination of `out` carries: its muxer's `mux.audio_streams`,
 /// 1 for a transport that takes packets (ADR-0170 decision 7).
 fn allowed_tracks(adapters: &RecordAdapters, out: &OutputSettings) -> Result<usize, RecordError> {

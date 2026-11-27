@@ -60,3 +60,8 @@ Round 3, independent AI session (2026-11-22): per-stream start hold sound and re
 Round 4, independent AI session (2026-11-22): approve, round 3 resolved, nothing blocking. Two wording notes (meter sink named as a bus reader; merged order in the no-video flush and all holds counted in `finish_lost`) applied in decisions 2 and 5.
 
 Owner acceptance: Salih, 2026-11-22 ("Kabul, uygulamaya başla").
+
+Factual fix (2026-11-27, protocol 1.113, rule 9): decision 11's `tracks` list in `record.status` and `record.state` is named `audio_tracks`, because `tracks` already carries the separate files there (protocol 1.46); and decision 7's "error code `tracks_unsupported`" is `data.reason: "tracks_unsupported"` on a `failed` answer, the API's form for refusals of `record.start` (control-api.md, 1.99 reasons), with `data.allowed`. The decisions are unchanged.
+
+Review of protocol 1.113 (independent AI session, 2026-11-27): changes requested, 2 blocking (the track check ran after a take's separate files opened; the older-server note was wrong), both fixed: the host checks the track count in `start_recording` before any folder or file, and control-api.md says what 1.103 to 1.112 servers did. Notes taken: check order stated in the spec, the host test checks the folder stays empty.
+Round 2 (same session, 2026-11-27): approve; both blocking findings fixed. Note: the separate-files and `record.start_to_file` paths share the one check and have no test of their own.

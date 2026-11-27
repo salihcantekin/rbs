@@ -596,6 +596,7 @@ fn events_reach_subscribers_with_seq_and_coalesce_while_blocked() {
                 paused: false,
                 paused_ms: 0,
                 recorded_ms: 0,
+                audio_tracks: Vec::new(),
             }
         } else {
             RecordState::Idle { last: None }

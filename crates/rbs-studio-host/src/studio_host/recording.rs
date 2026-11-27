@@ -104,10 +104,35 @@ impl Host {
         if !r.path.is_absolute() {
             return Err(format!("{} is not a full path.", r.path.display()).into());
         }
+        self.check_audio_tracks(canvas, r)?;
         if c == OutputCanvas::Main && r.iso && self.marks_separate() {
             return self.start_recording_with_tracks(c, r, profile, gate);
         }
         self.start_master(c, canvas, r, &r.path, profile, None)
+    }
+
+    /// Refuses a recording with more audio tracks than its format carries (ADR-0170
+    /// decision 7, protocol 1.113), before any folder or file is made; the studio
+    /// refuses the same at start.
+    fn check_audio_tracks(
+        &self,
+        canvas: Option<CanvasId>,
+        r: &RecordRequest,
+    ) -> Result<(), StartError> {
+        if r.more_tracks.is_empty() {
+            return Ok(());
+        }
+        let out = self.master_settings(canvas, r, &r.path);
+        match rbs_record::Studio::audio_tracks_allowed(&self.adapters, &out) {
+            Ok(allowed) if out.audio.is_some() && 1 + r.more_tracks.len() > allowed => {
+                let tracks = if allowed == 1 { "track" } else { "tracks" };
+                Err(StartError::Tracks(
+                    format!("This format records at most {allowed} audio {tracks}."),
+                    allowed,
+                ))
+            }
+            _ => Ok(()),
+        }
     }
 
     /// The start gate of a main recording with separate video files (ADR-0087
@@ -808,6 +833,14 @@ impl Host {
             if c == OutputCanvas::Main {
                 self.recording.iso = iso;
             }
+            let audio_tracks = self.studio.output(*id).map_or_else(Vec::new, |r| {
+                (r.tracks.iter())
+                    .map(|t| api::AudioTrack {
+                        bus: t.bus.clone(),
+                        encoder: t.encoder.name.clone(),
+                    })
+                    .collect()
+            });
             self.set_record_state(
                 c,
                 api::RecordState::Recording {
@@ -819,6 +852,7 @@ impl Host {
                     paused: false,
                     paused_ms: 0,
                     recorded_ms: 0,
+                    audio_tracks,
                 },
             );
         } else if std::fs::metadata(path).is_ok_and(|m| m.len() == 0) {
