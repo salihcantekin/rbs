@@ -3,7 +3,7 @@
 - Status: Proposed
 - Date: 2026-11-27
 - Deciders: Salih (owner)
-- Refines: [ADR-0044](0044-control-api.md) (generated schema, served by `api.describe`), [ADR-0052](0052-ai-agent-control.md) (generated MCP tools), [ADR-0134](0134-settings-ai-tools.md)
+- Refines: [ADR-0044](0044-control-api-protocol-and-security.md) (generated schema, served by `api.describe`), [ADR-0052](0052-ai-agent-control-through-mcp.md) (generated MCP tools), [ADR-0134](0134-ai-tools-settings-page.md)
 
 ## Context
 
