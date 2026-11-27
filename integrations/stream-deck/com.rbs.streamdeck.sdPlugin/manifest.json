@@ -1,0 +1,108 @@
+{
+  "$schema": "https://schemas.elgato.com/streamdeck/plugins/manifest.json",
+  "UUID": "com.rbs.streamdeck",
+  "Name": "RBS",
+  "Version": "0.1.0.0",
+  "Author": "RBS",
+  "Description": "Control RBS from your Stream Deck: switch scenes, record, stream, show or hide sources and mute, with live state on the keys.",
+  "Category": "RBS",
+  "CategoryIcon": "imgs/category",
+  "Icon": "imgs/plugin",
+  "CodePath": "bin/plugin.js",
+  "SDKVersion": 3,
+  "Software": {
+    "MinimumVersion": "7.1"
+  },
+  "OS": [
+    {
+      "Platform": "windows",
+      "MinimumVersion": "10"
+    },
+    {
+      "Platform": "mac",
+      "MinimumVersion": "12"
+    }
+  ],
+  "Nodejs": {
+    "Version": "24",
+    "Debug": "enabled"
+  },
+  "PropertyInspectorPath": "ui/inspector.html",
+  "Actions": [
+    {
+      "Name": "Scene",
+      "UUID": "com.rbs.streamdeck.scene",
+      "Icon": "imgs/scene",
+      "Tooltip": "Switch to a scene. The key lights up while the scene is on air.",
+      "Controllers": [
+        "Keypad"
+      ],
+      "PropertyInspectorPath": "ui/inspector.html",
+      "States": [
+        {
+          "Image": "imgs/scene-key"
+        }
+      ]
+    },
+    {
+      "Name": "Record",
+      "UUID": "com.rbs.streamdeck.record",
+      "Icon": "imgs/record",
+      "Tooltip": "Start or stop recording. Shows the recording time.",
+      "Controllers": [
+        "Keypad"
+      ],
+      "PropertyInspectorPath": "ui/inspector.html",
+      "States": [
+        {
+          "Image": "imgs/record-key"
+        }
+      ]
+    },
+    {
+      "Name": "Stream",
+      "UUID": "com.rbs.streamdeck.stream",
+      "Icon": "imgs/stream",
+      "Tooltip": "Start or stop streaming. Shows when you are live.",
+      "Controllers": [
+        "Keypad"
+      ],
+      "PropertyInspectorPath": "ui/inspector.html",
+      "States": [
+        {
+          "Image": "imgs/stream-key"
+        }
+      ]
+    },
+    {
+      "Name": "Show / hide source",
+      "UUID": "com.rbs.streamdeck.source-visible",
+      "Icon": "imgs/source-visible",
+      "Tooltip": "Show or hide a source in the scene on air.",
+      "Controllers": [
+        "Keypad"
+      ],
+      "PropertyInspectorPath": "ui/inspector.html",
+      "States": [
+        {
+          "Image": "imgs/source-visible-key"
+        }
+      ]
+    },
+    {
+      "Name": "Mute",
+      "UUID": "com.rbs.streamdeck.mute",
+      "Icon": "imgs/mute",
+      "Tooltip": "Mute or unmute a source, or the master.",
+      "Controllers": [
+        "Keypad"
+      ],
+      "PropertyInspectorPath": "ui/inspector.html",
+      "States": [
+        {
+          "Image": "imgs/mute-key"
+        }
+      ]
+    }
+  ]
+}

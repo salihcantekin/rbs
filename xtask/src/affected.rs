@@ -11,7 +11,7 @@
 //! - the whole workspace, for a build-wide file (`Cargo.toml` at the root, `.cargo/`,
 //!   `.config/`, a toolchain file) or any root file it does not know.
 //!
-//! Documentation (`docs/`, `.claude/`, Markdown at the root), `.github/`, `prototypes/`
+//! Documentation (`docs/`, `.claude/`, Markdown at the root), `.github/`, `prototypes/`, `integrations/`
 //! and the CEF runner (outside the workspace, ADR-0132) select nothing unless a source
 //! names them. The selection is then closed over reverse dependencies, normal, build
 //! and dev, as `Cargo.lock` records them, so a crate's dependents are retested too.
@@ -257,7 +257,7 @@ fn classify(path: &str) -> Kind {
     }
     match first {
         "crates" | "xtask" => Kind::Source,
-        "docs" | ".claude" | ".github" | "prototypes" | "tools" => Kind::Ignored,
+        "docs" | ".claude" | ".github" | "prototypes" | "tools" | "integrations" => Kind::Ignored,
         ".cargo" | ".config" => Kind::BuildWide,
         _ => Kind::BuildWide,
     }
@@ -628,6 +628,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
     fn documentation_selects_only_crates_that_read_it() {
         assert_eq!(select(&["docs/adr/0001-x.md", "README.md"]), some(&[]));
         assert_eq!(select(&["docs/specs/lone.md"]), some(&["lone"]));
+    }
+
+    #[test]
+    fn integrations_outside_the_workspace_select_nothing() {
+        assert_eq!(select(&["integrations/stream-deck/src/plugin.ts"]), some(&[]));
     }
 
     #[test]

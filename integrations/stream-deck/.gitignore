@@ -1,0 +1,5 @@
+node_modules/
+dist/
+com.rbs.streamdeck.sdPlugin/bin/
+com.rbs.streamdeck.sdPlugin/logs/
+logs/

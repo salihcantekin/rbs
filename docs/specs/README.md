@@ -44,5 +44,6 @@ Specs are the current contracts of RBS. Code must match them; a PR that changes 
 | [settings-search.md](settings-search.md) | Draft | `rbs-ui` (`settings_index`, RBS menu search), `rbs-app` (`find:` keys, `SettingsFind`, the Settings window's search field, `ui.settings.open {setting, command}`) |
 | [shortcuts.md](shortcuts.md) | Draft | `rbs-ui` (`shortcut`), `rbs-user-data`, `rbs-app` (shortcuts, global shortcuts, Settings › Shortcuts; ADR-0060) |
 | [studio-host.md](studio-host.md) | Draft | `rbs-studio-host` (ADR-0159); system seams in `rbs-app` |
+| [stream-deck.md](stream-deck.md) | Draft | `integrations/stream-deck/` (TypeScript Stream Deck plugin, a Control API client; ADR-0198) |
 
 New specs start from [template.md](template.md).

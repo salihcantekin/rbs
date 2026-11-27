@@ -1,0 +1,64 @@
+<!doctype html>
+<html>
+<head lang="en">
+	<meta charset="utf-8" />
+	<title>RBS</title>
+	<script src="sdpi-components.js"></script>
+	<style>
+		.status { margin: 6px 0 0; line-height: 1.4; opacity: 0.85; }
+		.error { margin: 6px 0 0; line-height: 1.4; color: #f5b942; }
+		[hidden] { display: none !important; }
+	</style>
+</head>
+<body>
+	<div data-action="scene" hidden>
+		<sdpi-item label="Scene">
+			<sdpi-select setting="scene" datasource="getScenes" loading="Loading scenes..." hot-reload placeholder="Choose a scene"></sdpi-select>
+		</sdpi-item>
+	</div>
+	<div data-action="record" hidden>
+		<sdpi-item label="Profile">
+			<sdpi-select setting="profile" datasource="getProfiles" loading="Loading profiles..." hot-reload placeholder="First profile"></sdpi-select>
+		</sdpi-item>
+	</div>
+	<div data-action="source-visible" hidden>
+		<sdpi-item label="Source">
+			<sdpi-select setting="source" datasource="getSources" loading="Loading sources..." hot-reload placeholder="Choose a source"></sdpi-select>
+		</sdpi-item>
+	</div>
+	<div data-action="mute" hidden>
+		<sdpi-item label="Target">
+			<sdpi-select setting="source" datasource="getMuteTargets" loading="Loading..." hot-reload placeholder="Choose a source or Master"></sdpi-select>
+		</sdpi-item>
+	</div>
+
+	<sdpi-heading>RBS connection</sdpi-heading>
+	<sdpi-item label="Port">
+		<sdpi-textfield setting="port" global placeholder="4456" pattern="[0-9]*"></sdpi-textfield>
+	</sdpi-item>
+	<sdpi-item label="Token">
+		<sdpi-password setting="token" global placeholder="rbs1_..."></sdpi-password>
+	</sdpi-item>
+	<p class="status" id="status">Not connected.</p>
+	<p class="error" id="error" hidden></p>
+	<p class="status">In RBS: Settings, Remote control, Allow remote control, then make a token with the Control level and paste it here. Use a token made only for Stream Deck.</p>
+
+	<script>
+		const client = SDPIComponents.streamDeckClient;
+		(async () => {
+			const info = await client.getConnectionInfo();
+			const uuid = info.actionInfo.action;
+			const kind = uuid.slice(uuid.indexOf(".", uuid.indexOf(".") + 1) + 1);
+			document.querySelector(`[data-action="${kind}"]`)?.removeAttribute("hidden");
+		})();
+		client.sendToPropertyInspector.subscribe((ev) => {
+			const p = ev.payload;
+			if (!p || p.event !== "status") return;
+			document.getElementById("status").textContent = p.status;
+			const e = document.getElementById("error");
+			e.textContent = p.error || "";
+			e.hidden = !p.error;
+		});
+	</script>
+</body>
+</html>
