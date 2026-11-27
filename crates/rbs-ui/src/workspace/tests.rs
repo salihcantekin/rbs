@@ -859,3 +859,25 @@ fn the_leaf_cannot_move_collapse_hide_or_float() {
     assert!(w.main().pictures_leaf().is_some());
     w.validate().unwrap();
 }
+
+#[test]
+fn full_height_areas_round_trip_and_old_files_are_not_full_height() {
+    let mut w = builtin::edit();
+    assert!(!w.to_toml().unwrap().contains("full_height"));
+    w.set_area_full(Side::Right, true).unwrap();
+    let text = w.to_toml().unwrap();
+    assert!(text.contains("full_height"));
+    let again = Workspace::from_toml(&text).unwrap();
+    assert!(again.main_layout().is_some_and(|m| m.right.full_height));
+    assert!(again.main_layout().is_some_and(|m| !m.left.full_height));
+    assert!(w.set_area_full(Side::Bottom, true).is_err());
+}
+
+#[test]
+fn a_panel_moved_to_the_full_height_edge_makes_that_area_full_height() {
+    let mut w = builtin::edit();
+    w.move_to_full_edge(&id("rbs.mixer"), Edge::Left).unwrap();
+    let m = w.main_layout().expect("main window");
+    assert!(m.left.full_height && m.left.layout.is_some());
+    assert!(w.move_to_full_edge(&id("rbs.mixer"), Edge::Top).is_err());
+}

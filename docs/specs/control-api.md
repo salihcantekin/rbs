@@ -715,6 +715,16 @@ to `invalid_params` with the message below.
 - An undo or redo that would make an on-air scene inactive is refused with
   `undo_conflict`, and the history is left untouched.
 
+### Protocol 1.114: full-height side areas (ADR-0197)
+
+- **`ui.panel.full_height {id}`** (`control`, a `ui.*` method routed to the UI
+  client): toggles whether the left or right area that holds panel `id` runs the
+  full height of the main window, with the bottom area spanning only the width
+  beside it. `not_found` for a panel that is not open, `conflict` for a panel that
+  is not in the left or right area of the main window, through the registry
+  entry's disabled reason. One layout history step; refused from the pointer
+  while the layout is locked, like other layout changes.
+
 ### Planned protocol 1.113: address source placements (ADR-0189)
 
 **Proposed; not implemented.** ADR-0189 remains Proposed. The owner has

@@ -421,6 +421,7 @@ impl Shown<'_> {
 
 mod arrange;
 mod group_menu;
+mod panel_ops;
 mod registry;
 pub use group_menu::GroupOp;
 use registry::panel_of;
@@ -688,33 +689,12 @@ impl CommandState for Shown<'_> {
             }
             "ui.layout.undo" if !self.can_undo => Err("There is no layout change to undo.".into()),
             "ui.layout.redo" if !self.can_redo => Err("There is no layout change to redo.".into()),
-            "ui.panel.collapse" | "ui.panel.auto_hide" | "ui.panel.move" | "ui.panel.float"
-            | "ui.panel.close" => {
-                let Some(c) = self.panel_caps(id) else {
-                    return Err("The panel is not open.".into());
-                };
-                match id.base() {
-                    // The lock stops what rearranges; collapse and auto-hide still work.
-                    "ui.panel.move" | "ui.panel.float" | "ui.panel.close"
-                        if self.workspace.locked =>
-                    {
-                        Err("The layout is locked.".into())
-                    }
-                    "ui.panel.collapse" if !c.can_collapse => Err(
-                        "Preview and Program, and the last open stack of the centre, stay open."
-                            .into(),
-                    ),
-                    "ui.panel.auto_hide" if !c.can_hide => Err(
-                        "Only a stack at the edge of the main window can hide, and not the \
-                         only stack of the centre."
-                            .into(),
-                    ),
-                    "ui.panel.move" if id.param("to") == Some("next_stack") && c.stacks < 2 => {
-                        Err("This window has one tab stack.".into())
-                    }
-                    _ => Ok(()),
-                }
-            }
+            "ui.panel.collapse"
+            | "ui.panel.auto_hide"
+            | "ui.panel.move"
+            | "ui.panel.float"
+            | "ui.panel.close"
+            | "ui.panel.full_height" => self.panel_enabled(id),
             "ui.layout.rail_size" => match (self.workspace.studio_rail(), id.param("px")) {
                 (None, _) => Err("This workspace has no Preview and Program side by side in \
                                   the centre."
@@ -917,6 +897,7 @@ impl CommandState for Shown<'_> {
             }
             "ui.panel.maximize" => panel_of(id).is_some_and(|p| self.maximized == Some(&p)),
             "ui.panel.collapse" => self.panel_caps(id).is_some_and(|c| c.collapsed),
+            "ui.panel.full_height" => self.panel_full_height(id),
             "ui.layout.lock" => self.workspace.locked,
             "ui.panel.float" => self.panel_caps(id).is_some_and(|c| c.floating),
             "ui.layout.studio_rail" => {
@@ -1926,18 +1907,6 @@ fn direct_choices(
         .collect()
 }
 
-/// `ui.panel.float`: docks a floating panel's window back (`on`), or floats the panel.
-fn float_or_dock(state: &Shown<'_>, id: &CommandId, on: bool) -> Option<Run> {
-    let panel = panel_of(id)?;
-    Some(Run::Layout(if on {
-        rbs_ui::LayoutCommand::Dock {
-            window: state.workspace.find(&panel)?.0,
-        }
-    } else {
-        rbs_ui::LayoutCommand::Float(panel)
-    }))
-}
-
 /// What `text` runs in this state; `None` for ids that cannot run (unknown, bad
 /// parameters, a bare picker, disabled).
 pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
@@ -2033,10 +2002,6 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
         base if base.starts_with("ui.window.") => Run::Window(WindowCommand::from_id(base)?),
         "ui.collection.import_obs" => Run::OpenObsImport,
         "ui.panel.maximize" => Run::Maximize(panel_of(&id)?, !on),
-        "ui.panel.collapse" => Run::Layout(L::SetCollapsed {
-            panel: panel_of(&id)?,
-            collapsed: !on,
-        }),
         "ui.panel.auto_hide" => Run::AutoHide(panel_of(&id)?),
         "ui.workspace.save" => Run::SaveWorkspace,
         base if entry_op(base).is_some() => {
@@ -2047,7 +2012,9 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
         "ui.layout.lock" => Run::Layout(L::SetLocked(!on)),
         "ui.layout.undo" => Run::LayoutHistory(true),
         "ui.layout.redo" => Run::LayoutHistory(false),
-        "ui.panel.float" => float_or_dock(state, &id, on)?,
+        "ui.panel.collapse" | "ui.panel.float" | "ui.panel.full_height" => {
+            panel_ops::run(state, &id, on)?
+        }
         "ui.panel.close" => Run::Layout(L::ClosePanel(panel_of(&id)?)),
         "canvas.studio_mode.toggle" => Run::StudioMode(!on),
         "canvas.vertical_preview.toggle" => {

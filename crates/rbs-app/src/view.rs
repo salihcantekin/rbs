@@ -69,6 +69,7 @@ pub fn window_view(
         stacks,
         handles,
         rail,
+        bottom: _,
     } = shown_flat(win, area, maximized, studio_mode);
     let rail = rail.map_or_else(RailData::default, |(r, at)| RailData {
         shown: true,
@@ -99,6 +100,7 @@ pub fn window_view(
             can_collapse: !in_studio(&s)
                 && (s.collapsed || s.stack >= centre_stacks || centre_expanded > 1),
             can_hide: win.is_main() && !in_studio(&s) && !(s.stack < centre_stacks && lone_centre),
+            takes_drop: s.stack < rbs_ui::layout::PICTURES_PREVIEW_STACK,
             window: window as i32,
             stack: s.stack as i32,
             x: s.rect.x,

@@ -45,6 +45,7 @@ fn shot(file: &TokenFile, base: Base, stuck: bool, name: &str, dir: &std::path::
             collapsed: false,
             can_collapse: true,
             can_hide: true,
+            takes_drop: true,
         },
     ])));
     let g = m.global::<Studio>();

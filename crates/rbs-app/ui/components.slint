@@ -1504,7 +1504,12 @@ export component PanelTab inherits Rectangle {
     height: Tokens.size-control-lg;
     width: title.preferred-width + 2 * Tokens.space-2;
     border-radius: Tokens.radius-sm;
-    background: root.sole ? transparent
+    // While it is dragged the tab stays behind as an empty slot: sunken, with an outline
+    // and a quiet title, so the user sees where it came from (ADR-0197).
+    border-width: drag.dragging ? Tokens.size-border : 0px;
+    border-color: Theme.border-strong;
+    background: drag.dragging ? Theme.surface-sunken
+        : root.sole ? transparent
         : touch.pressed ? Theme.surface-sunken
         : !root.selected && touch.has-hover ? Theme.surface-overlay : transparent;
     animate background { duration: Tokens.motion-fast; }
@@ -1529,6 +1534,12 @@ export component PanelTab inherits Rectangle {
     drag := DragArea {
         allow-move: !Shell.locked;
         data: Shell.panel-data(tab.id);
+        changed dragging => {
+            Shell.drag-cancelled = false;
+            Shell.drag-title = tab.title;
+            Shell.drag-icon = tab.icon;
+            Shell.panel-dragging = self.dragging;
+        }
         touch := TouchArea {
             clicked => { focus.focus-pointer(); root.activate(); }
             double-clicked => { root.maximize(); }
@@ -1540,7 +1551,8 @@ export component PanelTab inherits Rectangle {
     title := Text {
         x: Tokens.space-2;
         text: tab.title;
-        color: root.selected || touch.has-hover ? Theme.text-primary : Theme.text-secondary;
+        color: drag.dragging ? Theme.text-disabled
+            : root.selected || touch.has-hover ? Theme.text-primary : Theme.text-secondary;
         font-size: Tokens.type-label-size;
         font-weight: root.selected && !root.sole ? Tokens.type-title-weight : Tokens.type-label-weight;
         vertical-alignment: center;

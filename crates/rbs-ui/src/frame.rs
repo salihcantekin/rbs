@@ -2,7 +2,7 @@
 //! tab stacks and dividers (ADR-0049 decisions 1 and 3).
 //!
 //! The bottom area spans the width under the left area, the centre and the right
-//! area. An area takes space only while it is shown and holds panels. Sizes are the
+//! area, except beside a side area that runs the full height (ADR-0197). An area takes space only while it is shown and holds panels. Sizes are the
 //! areas' own, clamped to their limits (spec, Size limits), and when the window is too
 //! small the centre keeps its minimum first and the side areas shrink in proportion.
 //! An area whose stacks are all collapsed is drawn at their title-row size and keeps
@@ -82,6 +82,11 @@ impl MainRects {
     }
 }
 
+/// Does the area on `side` run the full height of the window (ADR-0197)?
+pub fn is_full_height(m: &MainLayout, side: Side) -> bool {
+    side != Side::Bottom && m.area(side).full_height && shown(m, side)
+}
+
 /// Lay out the centre and areas of `m` in `content`.
 pub fn main_rects(m: &MainLayout, content: Rect) -> MainRects {
     let t = HANDLE_THICKNESS;
@@ -90,31 +95,8 @@ pub fn main_rects(m: &MainLayout, content: Rect) -> MainRects {
         areas: Vec::new(),
         dividers: Vec::new(),
     };
-    // Bottom first: it spans the full width.
-    let mut upper_h = content.h;
-    if shown(m, Side::Bottom) {
-        let wanted = area_span(m, Side::Bottom, content);
-        let h = wanted.min(content.h - CENTRE_MIN.1 - t).max(0.0);
-        upper_h = (content.h - h - t).max(0.0);
-        out.dividers.push((
-            Side::Bottom,
-            Rect {
-                x: content.x,
-                y: content.y + upper_h,
-                w: content.w,
-                h: t,
-            },
-        ));
-        out.areas.push((
-            Side::Bottom,
-            Rect {
-                x: content.x,
-                y: content.y + upper_h + t,
-                w: content.w,
-                h,
-            },
-        ));
-    }
+    // The side areas' widths first: the bottom area spans the width between the ones
+    // that run the full height, and the whole width when none does.
     let sides: Vec<Side> = [Side::Left, Side::Right]
         .into_iter()
         .filter(|s| shown(m, *s))
@@ -125,6 +107,41 @@ pub fn main_rects(m: &MainLayout, content: Rect) -> MainRects {
     if total > avail && total > 0.0 {
         let k = avail / total;
         widths.iter_mut().for_each(|w| *w *= k);
+    }
+    let mut bottom_x = content.x;
+    let mut bottom_right = content.x + content.w;
+    for (side, w) in sides.iter().zip(&widths) {
+        if is_full_height(m, *side) {
+            match side {
+                Side::Left => bottom_x += w + t,
+                _ => bottom_right -= w + t,
+            }
+        }
+    }
+    let bottom_w = (bottom_right - bottom_x).max(0.0);
+    let mut upper_h = content.h;
+    if shown(m, Side::Bottom) {
+        let wanted = area_span(m, Side::Bottom, content);
+        let h = wanted.min(content.h - CENTRE_MIN.1 - t).max(0.0);
+        upper_h = (content.h - h - t).max(0.0);
+        out.dividers.push((
+            Side::Bottom,
+            Rect {
+                x: bottom_x,
+                y: content.y + upper_h,
+                w: bottom_w,
+                h: t,
+            },
+        ));
+        out.areas.push((
+            Side::Bottom,
+            Rect {
+                x: bottom_x,
+                y: content.y + upper_h + t,
+                w: bottom_w,
+                h,
+            },
+        ));
     }
     let mut left = content.x;
     let mut right = content.x + content.w;
@@ -140,13 +157,18 @@ pub fn main_rects(m: &MainLayout, content: Rect) -> MainRects {
                 (right + t, right)
             }
         };
+        let h = if is_full_height(m, side) {
+            content.h
+        } else {
+            upper_h
+        };
         out.areas.push((
             side,
             Rect {
                 x: area_x,
                 y: content.y,
                 w,
-                h: upper_h,
+                h,
             },
         ));
         out.dividers.push((
@@ -155,7 +177,7 @@ pub fn main_rects(m: &MainLayout, content: Rect) -> MainRects {
                 x: divider_x,
                 y: content.y,
                 w: t,
-                h: upper_h,
+                h,
             },
         ));
     }
@@ -201,6 +223,9 @@ pub struct WindowFlat {
     pub handles: Vec<WindowHandle>,
     /// The Transition rail of the centre's studio split in studio mode (ADR-0064).
     pub rail: Option<(Rect, crate::layout::RailAt)>,
+    /// The main window's bottom area, when it is laid out: a drop near the left or right
+    /// edge beside it offers a full-height side area (ADR-0197).
+    pub bottom: Option<Rect>,
 }
 
 /// Flatten window `w` laid out in `content`.
@@ -227,6 +252,7 @@ pub fn flatten_window(w: &Window, content: Rect, studio_mode: bool) -> WindowFla
     match &w.content {
         WindowContent::Main(m) => {
             let rects = main_rects(m, content);
+            out.bottom = rects.area(Side::Bottom);
             place(0, 0, &m.centre, rects.centre);
             let mut tree = 1;
             let mut first = m.centre.stack_count();
@@ -297,6 +323,7 @@ pub fn maximized(flat: &WindowFlat, content: Rect, panel: &PanelId) -> Option<Wi
         }],
         handles: Vec::new(),
         rail: None,
+        bottom: None,
     })
 }
 
@@ -320,6 +347,9 @@ pub enum DropPlace {
     Beside(usize, Edge),
     /// To edge `edge` of the window (in the main window, that area's outer side).
     WindowEdge(Edge),
+    /// To the left or right edge of the main window as an area that runs the full
+    /// height of the window, down beside the bottom area (ADR-0197).
+    FullHeightEdge(Edge),
 }
 
 /// A drop target: where the panel goes and the rectangle the shell shades for it.
@@ -361,6 +391,16 @@ pub fn drop_target(
         .filter(|(_, d)| *d < EDGE_TARGET)
         .min_by(|a, b| a.1.total_cmp(&b.1));
     if let (Some((edge, _)), false) = (near, title) {
+        // Beside the bottom area, the side edges are the full-height areas (ADR-0197).
+        let beside_bottom = flat.bottom.is_some_and(|b| y >= b.y);
+        if matches!(edge, Edge::Left | Edge::Right) && beside_bottom {
+            return Some(DropTarget {
+                place: DropPlace::FullHeightEdge(*edge),
+                guide: side_of(content, *edge, |extent| {
+                    (extent * EDGE_SHARE).min(EDGE_GUIDE_MAX)
+                }),
+            });
+        }
         return Some(DropTarget {
             place: DropPlace::WindowEdge(*edge),
             guide: side_of(content, *edge, |extent| {
@@ -488,6 +528,50 @@ mod tests {
         assert_eq!(r.centre.w, 1280.0 - 2.0 * (260.0 + t));
         assert_eq!(r.centre.h, 720.0 - 200.0 - t);
         assert_eq!(r.dividers.len(), 3);
+    }
+
+    #[test]
+    fn a_full_height_side_area_runs_beside_the_bottom_area() {
+        let mut m = layout(true, true, true);
+        m.right.full_height = true;
+        let r = main_rects(&m, WINDOW);
+        let t = HANDLE_THICKNESS;
+        let right = r.area(Side::Right).expect("right");
+        assert_eq!((right.y, right.h), (0.0, 720.0));
+        let bottom = r.area(Side::Bottom).expect("bottom");
+        assert_eq!(bottom.x, 0.0);
+        assert_eq!(bottom.w, 1280.0 - 260.0 - t);
+        let left = r.area(Side::Left).expect("left");
+        assert_eq!(left.h, 720.0 - 200.0 - t);
+        assert_eq!(r.centre.h, left.h);
+        // Both full: the bottom area sits between them.
+        m.left.full_height = true;
+        let r = main_rects(&m, WINDOW);
+        let bottom = r.area(Side::Bottom).expect("bottom");
+        assert_eq!(bottom.x, 260.0 + t);
+        assert_eq!(bottom.w, 1280.0 - 2.0 * (260.0 + t));
+        // No bottom area: full height changes nothing.
+        let mut m = layout(true, true, false);
+        let plain = main_rects(&m, WINDOW);
+        m.right.full_height = true;
+        assert_eq!(main_rects(&m, WINDOW), plain);
+    }
+
+    #[test]
+    fn dropping_beside_the_bottom_area_offers_a_full_height_edge() {
+        let m = layout(true, true, true);
+        let w = Window {
+            content: WindowContent::Main(Box::new(m)),
+            placement: None,
+        };
+        let flat = flatten_window(&w, WINDOW, false);
+        let mixer = PanelId::parse("rbs.mixer").expect("id");
+        let bottom = flat.bottom.expect("bottom area");
+        let low =
+            drop_target(&flat, WINDOW, &mixer, 4.0, bottom.y + bottom.h / 2.0).map(|t| t.place);
+        assert_eq!(low, Some(DropPlace::FullHeightEdge(Edge::Left)));
+        let high = drop_target(&flat, WINDOW, &mixer, 4.0, 100.0).map(|t| t.place);
+        assert_eq!(high, Some(DropPlace::WindowEdge(Edge::Left)));
     }
 
     fn collapsed_stack(id: &str) -> Node {

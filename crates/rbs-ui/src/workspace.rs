@@ -17,6 +17,7 @@ use crate::command::CommandId;
 use crate::layout::{Axis, Edge, MAX_DEPTH, Node, RailAt, Rect, Tabs};
 use crate::panel::PanelId;
 
+mod full_height;
 mod spots;
 
 /// The workspace file format this crate writes. Format 1 files are read and
@@ -100,6 +101,9 @@ pub struct Area {
     pub size: u32,
     /// Shown. A hidden area keeps its contents and size.
     pub visible: bool,
+    /// Left and right areas only: the area runs the full height of the window and the
+    /// bottom area spans only the width beside it (ADR-0197). Ignored on the bottom.
+    pub full_height: bool,
     /// Its panels; `None` when empty. Never holds an empty tab stack.
     pub layout: Option<Node>,
 }
@@ -110,6 +114,7 @@ impl Area {
         Area {
             size: side.default_size(),
             visible: true,
+            full_height: false,
             layout: None,
         }
     }
@@ -127,6 +132,8 @@ struct RawArea {
     size: Option<u32>,
     #[serde(default = "yes", skip_serializing_if = "is_true")]
     visible: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    full_height: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     layout: Option<Node>,
 }
@@ -147,6 +154,14 @@ fn is_true(b: &bool) -> bool {
     clippy::trivially_copy_pass_by_ref,
     reason = "serde's skip_serializing_if signature"
 )]
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if signature"
+)]
 fn is_zero(n: &usize) -> bool {
     *n == 0
 }
@@ -156,6 +171,7 @@ impl RawArea {
         Area {
             size: self.size.unwrap_or(side.default_size()),
             visible: self.visible,
+            full_height: self.full_height && side != Side::Bottom,
             layout: self.layout,
         }
     }
@@ -165,6 +181,7 @@ impl RawArea {
         (a != Area::empty(side)).then_some(RawArea {
             size: Some(a.size),
             visible: a.visible,
+            full_height: a.full_height,
             layout: a.layout,
         })
     }

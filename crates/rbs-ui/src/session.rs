@@ -45,6 +45,21 @@ pub enum LayoutCommand {
         /// Edge.
         edge: Edge,
     },
+    /// Move a panel to the left or right edge of the main window as a full-height area
+    /// (ADR-0197).
+    MoveToFullEdge {
+        /// Panel.
+        panel: PanelId,
+        /// Edge: left or right.
+        edge: Edge,
+    },
+    /// Make a side area run the full height of the window, or not (ADR-0197).
+    SetAreaFullHeight {
+        /// Left or right.
+        side: Side,
+        /// Full height.
+        full: bool,
+    },
     /// Move a panel into a new stack beside a stack: a drop on one side of the
     /// five-way guide (ADR-0049 decision 5).
     MoveBeside {
@@ -230,6 +245,8 @@ impl LayoutSession {
             LayoutCommand::ClosePanel(_)
                 | LayoutCommand::MoveToStack { .. }
                 | LayoutCommand::MoveToEdge { .. }
+                | LayoutCommand::MoveToFullEdge { .. }
+                | LayoutCommand::SetAreaFullHeight { .. }
                 | LayoutCommand::MoveBeside { .. }
                 | LayoutCommand::Float(_)
                 | LayoutCommand::Dock { .. }
@@ -271,6 +288,10 @@ impl LayoutSession {
                 window,
                 edge,
             } => next.move_to_edge(&panel, window, edge)?,
+            LayoutCommand::MoveToFullEdge { panel, edge } => {
+                next.move_to_full_edge(&panel, edge)?;
+            }
+            LayoutCommand::SetAreaFullHeight { side, full } => next.set_area_full(side, full)?,
             LayoutCommand::MoveBeside {
                 panel,
                 window,

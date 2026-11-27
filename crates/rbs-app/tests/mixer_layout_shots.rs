@@ -107,6 +107,7 @@ fn mixer(
         collapsed: false,
         can_collapse: true,
         can_hide: true,
+        takes_drop: true,
     }])));
     m.window()
         .set_size(slint::LogicalSize::new(w + 32.0, h + 120.0));
