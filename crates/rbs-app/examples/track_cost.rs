@@ -86,7 +86,7 @@ fn main() -> ExitCode {
         .and_then(|s| s.parse().ok())
         .unwrap_or(30);
     let Some(factory) = factory() else {
-        eprintln!("no AAC encoder on this platform");
+        rbs_crash::errln!("no AAC encoder on this platform");
         return ExitCode::FAILURE;
     };
     let budget = Duration::from_nanos(1_000_000_000 * u64::from(DEFAULT_BLOCK_FRAMES) / 48_000);
