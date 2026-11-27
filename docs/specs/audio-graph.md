@@ -13,7 +13,7 @@ Turns audio from input streams into mixed, master-clock-timed blocks for audio e
 
 In scope: the graph format and block timing, the audio partition's pacing, audio values on links and across partitions, the input node, the resampler and channel matrix, the mixer, level meters, the audio encoder node.
 
-Out of scope (later): bus meter sinks for buses no output reads and bus filters (ADR-0097 F2, ADR-0170), audio filters, the mixer's monitor output and the host wiring of monitoring (ADR-0097 F1, later steps), the scene model's audio items and the binder that creates these nodes, mux and transport nodes, adaptive latency.
+Out of scope (later): bus filters (ADR-0097 F2, ADR-0170; bus meter sinks are in the recording spec, "Bus meters"), audio filters, the mixer's monitor output and the host wiring of monitoring (ADR-0097 F1, later steps), the scene model's audio items and the binder that creates these nodes, mux and transport nodes, adaptive latency.
 
 ## Contract
 

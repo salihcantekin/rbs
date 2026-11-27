@@ -59,12 +59,117 @@ impl Studio {
     }
 }
 
-/// The meter sink while the branch rests: left out of the graph the engine gets.
-pub(super) fn resting_sink(studio: &Studio) -> Option<NodeId> {
-    if studio.audio_awake {
-        return None;
+/// The mixer's meter sinks: `main`'s for the studio's life, and one on each bus pin
+/// with a send (ADR-0170 decision 2), by bus slot.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Sinks {
+    pub(super) main: NodeId,
+    buses: [Option<NodeId>; rbs_audio::MAX_BUS_OUTPUTS],
+}
+
+impl Sinks {
+    pub(super) fn new(main: NodeId) -> Self {
+        Self {
+            main,
+            buses: [None; rbs_audio::MAX_BUS_OUTPUTS],
+        }
     }
-    studio.mixer.as_ref().map(|m| m.sink)
+}
+
+/// The meter sinks (`main` and every bus's) while the branch rests: left out of the
+/// graph the engine gets. Empty while awake, so an awake apply allocates nothing.
+pub(super) fn resting_sinks(studio: &Studio) -> Vec<NodeId> {
+    match &studio.mixer {
+        Some(m) if !studio.audio_awake => std::iter::once(m.sinks.main)
+            .chain(m.sinks.buses.iter().flatten().copied())
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+impl Studio {
+    /// Gives each bus pin with a send a meter sink and takes it from a bus that lost
+    /// its last send or left the canvas (ADR-0170 decision 2), in the studio's graph;
+    /// the next apply sends it. True when a sink came or went.
+    pub(super) fn sync_bus_sinks(&mut self) -> Result<bool, RecordError> {
+        let Some(mixer) = &self.mixer else {
+            return Ok(false);
+        };
+        let (node, mut sinks) = (mixer.node, mixer.sinks.buses);
+        let want = self.buses.metered();
+        let partition = self.settings.partitions.audio;
+        let mut changed = false;
+        for (slot, wanted) in want.into_iter().enumerate() {
+            match (sinks[slot], wanted) {
+                (None, true) => {
+                    let sink = MeterSinkNode::new();
+                    let id = add_active(&mut self.graph, Node::<()>::descriptor(&sink), partition)?;
+                    self.graph.connect(node, buses::pin(Some(slot)), id, "in")?;
+                    self.engine.adopt::<()>(partition, id, Box::new(sink))?;
+                    sinks[slot] = Some(id);
+                    changed = true;
+                }
+                (Some(id), false) => {
+                    let _ = self.graph.set_state(id, Lifecycle::Standby);
+                    let _ = self.graph.remove_node(id);
+                    // Taken back once the apply that leaves it out has run.
+                    let leaving = Added {
+                        node: id,
+                        partition,
+                        gpu: false,
+                    };
+                    self.pending_takes.push((leaving, None));
+                    sinks[slot] = None;
+                    changed = true;
+                }
+                _ => {}
+            }
+        }
+        if let Some(m) = &mut self.mixer {
+            m.sinks.buses = sinks;
+        }
+        Ok(changed)
+    }
+
+    /// What `reconcile` brings in line before its apply: the bus meter sinks and, after
+    /// a sync, the preview scene's, hold scenes' and incoming scene's views.
+    pub(super) fn sync_before_apply(
+        &mut self,
+        report: Option<&BindReport>,
+        leaving: &mut Vec<Added>,
+    ) -> Result<(), RecordError> {
+        self.sync_bus_sinks()?;
+        if let Some(report) = report {
+            self.sync_scene_preview(report, leaving)?;
+            self.sync_hold_views(report, leaving)?;
+            self.sync_incoming(report, leaving)?;
+        }
+        Ok(())
+    }
+
+    /// How many buses have a meter sink now (ADR-0170 decision 2).
+    pub fn bus_meter_sinks(&self) -> usize {
+        self.mixer
+            .as_ref()
+            .map_or(0, |m| m.sinks.buses.iter().flatten().count())
+    }
+
+    /// [`Studio::sync_bus_sinks`] for a live send or bus edit ([`Studio::set_mix`]):
+    /// a sink that came or went is applied at once. Control path; a failure is only
+    /// logged, as the meter is not essential.
+    pub(super) fn apply_bus_sinks(&mut self) {
+        let result = match self.sync_bus_sinks() {
+            Ok(true) => self
+                .send_graph(None, false)
+                .map(drop)
+                .map_err(RecordError::from),
+            Ok(false) => Ok(()),
+            Err(e) => Err(e),
+        };
+        if let Err(e) = result {
+            rbs_core::warn!(rbs_core::log::Area::Audio, "bus meter: {e}");
+        }
+    }
 }
 
 impl Studio {
@@ -115,8 +220,8 @@ impl Studio {
         graph: Option<&GraphDescription>,
         drain: bool,
     ) -> Result<Applied, EngineError> {
-        let rest = resting_sink(self);
-        send_to(&mut self.engine, graph.unwrap_or(&self.graph), rest, drain)
+        let rest = resting_sinks(self);
+        send_to(&mut self.engine, graph.unwrap_or(&self.graph), &rest, drain)
     }
 
     /// What `reconcile`'s apply failed: essential and output nodes as failures, a
@@ -185,19 +290,20 @@ impl Studio {
 pub(super) fn send_to(
     engine: &mut Engine,
     graph: &GraphDescription,
-    rest: Option<NodeId>,
+    rest: &[NodeId],
     drain: bool,
 ) -> Result<Applied, EngineError> {
     let stripped;
-    let graph = match rest {
-        Some(sink) => {
-            let mut g = graph.clone();
-            let _ = g.set_state(sink, Lifecycle::Standby);
-            let _ = g.remove_node(sink);
-            stripped = g;
-            &stripped
+    let graph = if rest.is_empty() {
+        graph
+    } else {
+        let mut g = graph.clone();
+        for sink in rest {
+            let _ = g.set_state(*sink, Lifecycle::Standby);
+            let _ = g.remove_node(*sink);
         }
-        None => graph,
+        stripped = g;
+        &stripped
     };
     if drain {
         engine.apply_draining(graph)

@@ -1079,8 +1079,8 @@ struct Queues {
 /// The mixer of the canvas and what the studio keeps of it.
 struct Mixer {
     node: NodeId,
-    /// The meter sink on `main`, left out of the engine's graph while resting.
-    sink: NodeId,
+    /// The meter sinks on `main` and the buses, left out of the engine's graph while resting.
+    sinks: meters::Sinks,
     params: ParamSender<MixerParams>,
     stats: Arc<MixerStats>,
     master: Arc<LevelMeter>,
@@ -1605,7 +1605,7 @@ impl Studio {
             essential.insert(sink_id, "meter sink");
             mixer = Some(Mixer {
                 node: mixer_id,
-                sink: sink_id,
+                sinks: meters::Sinks::new(sink_id),
                 params,
                 stats,
                 master,
@@ -2456,11 +2456,7 @@ impl Studio {
         // The preview scene's compositor and picture when studio mode ends, taken back
         // after the apply.
         let mut leaving: Vec<Added> = Vec::new();
-        if let Some(report) = &report {
-            self.sync_scene_preview(report, &mut leaving)?;
-            self.sync_hold_views(report, &mut leaving)?;
-            self.sync_incoming(report, &mut leaving)?;
-        }
+        self.sync_before_apply(report.as_ref(), &mut leaving)?;
         let mut gone_filters: Vec<FilterEntry> = Vec::new();
         let collection = &self.collection;
         if let Some(report) = report.as_mut() {
@@ -2623,8 +2619,8 @@ impl Studio {
                     let _ = first.set_state(*new, Lifecycle::Standby);
                     let _ = first.remove_node(*new);
                 }
-                let rest = meters::resting_sink(self);
-                let applied = meters::send_to(&mut self.engine, &first, rest, false)?;
+                let rest = meters::resting_sinks(self);
+                let applied = meters::send_to(&mut self.engine, &first, &rest, false)?;
                 failed.extend(engine_failures(&applied));
                 for e in gone.iter_mut() {
                     if !take_instance(&mut self.engine, e, &mut self.pending_takes) {
@@ -3155,6 +3151,7 @@ impl Studio {
         self.mix = mix_of(collection, self.settings.canvas);
         self.refresh_buses(collection);
         self.set_hold_mix(collection);
+        self.apply_bus_sinks();
         self.send_mix()
     }
 

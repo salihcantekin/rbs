@@ -120,6 +120,16 @@ impl MixBuses {
         }
     }
 
+    /// The slots whose bus is on the canvas and has at least one non-zero send: each
+    /// gets a meter sink on its pin (ADR-0170 decision 2). A bus without sends shows an
+    /// idle meter.
+    pub(super) fn metered(&self) -> [bool; MAX_BUS_OUTPUTS] {
+        std::array::from_fn(|slot| match (self.slots[slot], &self.names[slot]) {
+            (Some(bus), Some(_)) => self.sends.values().any(|s| s.level(bus) > 0.0),
+            _ => false,
+        })
+    }
+
     /// The meter of the bus called `name` (not `main`).
     pub(super) fn meter(&self, name: &str) -> Option<&Arc<LevelMeter>> {
         let slot = self.slot_of(Some(name)).ok()??;

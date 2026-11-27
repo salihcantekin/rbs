@@ -197,3 +197,59 @@ fn a_recording_writes_one_named_track_per_bus_on_the_same_packet_grid() {
     let (_, errors) = studio.shutdown();
     assert!(errors.is_empty(), "{errors:?}");
 }
+
+/// ADR-0170 decision 2: a bus with a send has a meter sink on its pin, so its Mixer
+/// meter moves with no output; it goes with the last send, and rests with the branch.
+#[test]
+fn a_bus_with_a_send_has_a_meter_while_no_output_reads_it() {
+    let Some(gpu) = gpu() else { return };
+    let r = rig();
+    let (mut col, canvas) = scene();
+    let mic = col.sources().find(|s| s.name == "Microphone").unwrap().id;
+    let (music, _) = col.add_bus(canvas, "Music").unwrap();
+    let (engine, clock) = engine_at_start();
+    let mut studio = Studio::start(
+        engine,
+        gpu,
+        &col,
+        &r.adapters.sources,
+        &StudioSettings::new(canvas),
+    )
+    .unwrap();
+    studio.set_meters_on(true);
+    let blocks = |s: &Studio| s.engine().worker_stats(AUDIO).unwrap().ticks();
+    let wait = |s: &mut Studio, n| {
+        let t = blocks(s);
+        assert!(run_until(s, &clock, |s| blocks(s) >= t + n));
+    };
+    let meter = std::sync::Arc::clone(studio.bus_meter("Music").unwrap());
+    assert_eq!(studio.bus_meter_sinks(), 0, "no sends, no sink");
+
+    col.set_send(canvas, mic, music, 1.0).unwrap();
+    studio.set_mix(&col);
+    assert_eq!(studio.bus_meter_sinks(), 1);
+    wait(&mut studio, 10);
+    let _ = meter.take();
+    wait(&mut studio, 10);
+    assert!(meter.take().peak(0) > 0.0, "the meter moves with no output");
+
+    // Resting keeps the sink in the studio's model; waking needs no new apply of it.
+    assert!(studio.set_audio_awake(false).is_empty());
+    assert_eq!(studio.bus_meter_sinks(), 1);
+    assert!(
+        !studio.engine().has_worker(AUDIO),
+        "the bus sink does not keep it awake"
+    );
+    assert_eq!(r.audio.active_streams(), 0);
+    assert!(studio.set_audio_awake(true).is_empty());
+    wait(&mut studio, 10);
+    let _ = meter.take();
+    wait(&mut studio, 10);
+    assert!(meter.take().peak(0) > 0.0, "awake again");
+
+    col.set_send(canvas, mic, music, 0.0).unwrap();
+    studio.set_mix(&col);
+    assert_eq!(studio.bus_meter_sinks(), 0, "the last send went");
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+}
